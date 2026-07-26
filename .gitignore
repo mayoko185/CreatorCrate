@@ -1,0 +1,12 @@
+node_modules/
+*.log
+.env
+.DS_Store
+coverage/
+dist/
+
+# Application data must not be committed; it lives on bind-mounted host directories.
+data/
+*.db
+*.db-shm
+*.db-wal
