@@ -157,6 +157,50 @@ describe('project repository', () => {
     expect(list.rows.map((p) => p.id)).toContain(archived.id);
     expect(list.rows.map((p) => p.id)).not.toContain(active.id);
   });
+
+  describe('project_dir', () => {
+    it('defaults to null for new projects', () => {
+      const project = repository.create(sampleProject({ title: 'Dir Test' }));
+      expect(project.project_dir).toBeNull();
+    });
+
+    it('can set and retrieve project_dir', () => {
+      const project = repository.create(sampleProject({ title: 'Dir Update' }));
+      const updated = repository.setProjectDir(project.id, 'active/dir-update');
+      expect(updated.project_dir).toBe('active/dir-update');
+
+      const found = repository.findById(project.id);
+      expect(found.project_dir).toBe('active/dir-update');
+    });
+
+    it('can set project_dir to null', () => {
+      const project = repository.create(sampleProject({ title: 'Dir Nullable' }));
+      repository.setProjectDir(project.id, 'tbd/some-path');
+      const cleared = repository.setProjectDir(project.id, null);
+      expect(cleared.project_dir).toBeNull();
+    });
+
+    it('finds projects without project_dir', () => {
+      const withDir = repository.create(sampleProject({ title: 'Has Dir' }));
+      repository.setProjectDir(withDir.id, 'tbd/has-dir');
+
+      const without = repository.create(sampleProject({ title: 'No Dir' }));
+
+      const nullRows = repository.findByProjectDirNull();
+      const ids = nullRows.map((p) => p.id);
+      expect(ids).not.toContain(withDir.id);
+      expect(ids).toContain(without.id);
+    });
+
+    it('returns empty array when all projects have project_dir', () => {
+      const p1 = repository.create(sampleProject({ title: 'A' }));
+      const p2 = repository.create(sampleProject({ title: 'B' }));
+      repository.setProjectDir(p1.id, 'tbd/a');
+      repository.setProjectDir(p2.id, 'tbd/b');
+
+      expect(repository.findByProjectDirNull()).toHaveLength(0);
+    });
+  });
 });
 
 function sampleProject(overrides = {}) {

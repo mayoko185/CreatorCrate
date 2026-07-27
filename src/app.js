@@ -9,7 +9,7 @@ import { createProjectService } from './services/project-service.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-export function createApp({ appName, db }) {
+export function createApp({ appName, db, projectsRoot }) {
   const app = express();
 
   const env = nunjucks.configure(path.join(__dirname, 'views'), {
@@ -22,7 +22,7 @@ export function createApp({ appName, db }) {
   app.use(express.json());
   app.use(express.urlencoded({ extended: true }));
 
-  const projectService = createProjectService(db);
+  const projectService = createProjectService(db, projectsRoot);
 
   app.use('/', createIndexRouter({ appName, projectService }));
   app.use('/health', createHealthRouter({ db }));

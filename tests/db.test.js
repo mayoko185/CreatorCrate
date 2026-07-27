@@ -65,6 +65,26 @@ describe('database and migrations', () => {
     expect(indexes.some((name) => name.startsWith('sqlite_autoindex_projects_'))).toBe(true);
   });
 
+  it('adds project_dir column from migration 003', () => {
+    db = openDatabase(dbPath);
+    runMigrations(db, MIGRATIONS_DIR);
+    const columns = db
+      .prepare("SELECT name FROM pragma_table_info('projects')")
+      .pluck()
+      .all();
+    expect(columns).toContain('project_dir');
+  });
+
+  it('adds idx_projects_project_dir index', () => {
+    db = openDatabase(dbPath);
+    runMigrations(db, MIGRATIONS_DIR);
+    const indexes = db
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'projects'")
+      .pluck()
+      .all();
+    expect(indexes).toContain('idx_projects_project_dir');
+  });
+
   it('is idempotent across repeated migration runs', () => {
     db = openDatabase(dbPath);
     runMigrations(db, MIGRATIONS_DIR);

@@ -34,7 +34,21 @@ This phase adds project metadata and a basic project-management workflow:
 - Validation for required fields, status/priority values, dates, and Patreon URLs.
 - Focused tests for the migration, repository, service, validation, and HTTP workflow.
 
-Project directories and `project.json` manifest files are **not** created yet. File uploads, asset indexing, thumbnails, tags, filesystem watchers, authentication, Patreon API integration, and backup automation remain deferred.
+Project directories and `project.json` manifest files are created, renamed, moved, or cleaned up as part of every project create, edit, and archive operation. File uploads, asset indexing, thumbnails, tags, filesystem watchers, authentication, Patreon API integration, and backup automation remain deferred.
+
+## Phase 3 scope
+
+This phase adds the filesystem project directory lifecycle to the Phase 2 metadata workflow:
+
+- **Canonical project directories** — every project receives a standard directory tree on disk at creation time.
+- **`project.json` manifest** — each project directory contains an atomic-write manifest with schema version 1.
+- **Standard subdirectories** — `source/`, `references/`, `extras/`, `thumbnails/`, `exports/full/`, `exports/web/`.
+- **Title-change rename** — changing a project's title renames its directory (same-filesystem rename, no copy).
+- **Status-change move** — changing status moves the directory to the corresponding status root.
+- **Archive move** — archiving moves the directory to `archived/`; the manifest and `archived_at` are both updated.
+- **Existing-record backfill** — projects created before Phase 3 receive directories on next startup (adoption or fresh creation).
+- **Safe error handling** — creation, update, and archive failures are fully compensated (filesystem and database rollback) and never expose absolute paths to the user.
+- **Error-preserving forms** — when a filesystem failure occurs during create or edit, the form is rerendered with the submitted values and a safe error message.
 
 ## Required software
 
@@ -129,6 +143,116 @@ CreatorCrate stores all persistent data outside the container filesystem:
 
 No permanent data lives inside the container. Recreating the container leaves the SQLite database and project files intact in the host directories.
 
+## Project directory structure
+
+### Canonical layout
+
+```
+PROJECTS_ROOT/
+├── active/           # tbd, planned, in-progress, ready, published
+│   ├── 000001-my-project/
+│   │   ├── project.json
+│   │   ├── source/
+│   │   ├── references/
+│   │   ├── extras/
+│   │   ├── thumbnails/
+│   │   └── exports/
+│   │       ├── full/
+│   │       └── web/
+│   └── 000042-another-project/
+│       └── ...
+├── published/        # published projects (mapped from active/ on status change)
+│   └── ...
+└── archived/         # archived projects (moved here by archive action)
+    └── ...
+```
+
+### Status-to-directory mapping
+
+| Project status | Status root directory |
+|---|---|
+| `tbd` | `active/` |
+| `planned` | `active/` |
+| `in-progress` | `active/` |
+| `ready` | `active/` |
+| `published` | `published/` |
+| `archived` | `archived/` |
+
+### Directory naming
+
+Each project directory is named `{padded-id}-{slug}`:
+
+```
+000001-my-project
+000042-another-project
+```
+
+- `padded-id` — zero-padded to 6 digits (e.g., project 1 → `000001`).
+- `slug` — generated from the title by `@sindresorhus/slugify`.
+
+### Standard subdirectories
+
+Every project directory contains:
+
+| Directory | Purpose |
+|---|---|
+| `source/` | Original source files (render inputs, PSDs, etc.) |
+| `references/ | Reference images and materials |
+| `extras/` | Extra deliverables not part of the primary export set |
+| `thumbnails/` | Generated or manually placed thumbnails |
+| `exports/full/` | Full-resolution exports |
+| `exports/web/` | Web-optimized exports |
+
+### project.json manifest
+
+Every project directory contains a `project.json` manifest written atomically (write to temp file, fsync, rename). Schema version 1 fields:
+
+```json
+{
+  "schemaVersion": 1,
+  "id": 1,
+  "title": "My Project",
+  "slug": "my-project",
+  "status": "tbd",
+  "priority": "normal",
+  "description": "",
+  "notes": "",
+  "tags": [],
+  "createdAt": "2026-07-26T00:00:00.000Z",
+  "updatedAt": "2026-07-26T12:00:00.000Z",
+  "plannedDate": null,
+  "publishedDate": null,
+  "patreonUrl": null,
+  "thumbnail": null
+}
+```
+
+### Source of truth model
+
+The **SQLite database is the authoritative source of truth** for project metadata (title, status, dates, notes, etc.). The filesystem mirror (directories + `project.json`) is derived from the database:
+
+- **Creation** — database record first (to obtain the numeric ID), then filesystem.
+- **Update** — database updated first, then filesystem (directory rename + manifest rewrite). On manifest failure, database is rolled back.
+- **Archive** — filesystem move first, then database archive. On database failure, filesystem is rolled back.
+- **Backfill** — database records without a `project_dir` path are reconciled on startup: existing directories are adopted if they match, otherwise a new directory is created.
+
+### Filesystem lifecycle operations
+
+**Title change** — when the project title changes, the slug is regenerated and the directory is renamed (same-filesystem `renameSync`, atomic on the same filesystem). The manifest is rewritten at the new path.
+
+**Status change** — changing the status moves the directory to the corresponding status root (e.g., `active/` → `published/`). The manifest is updated with the new status.
+
+**Archive** — the directory is moved to `archived/`, the manifest is updated, and the database record is marked with an `archived_at` timestamp. Archived projects are excluded from the default list view.
+
+**Existing-record backfill** — on startup, any project record whose `project_dir` is `NULL` receives a canonical directory:
+- If a directory already exists at the canonical path and passes all safety checks (real directory, not a symlink, matching manifest), it is **adopted** — the path is stored without modification.
+- If no directory exists, one is **created fresh** with standard subdirectories and a manifest.
+- Conflicts (symlinks, wrong manifest content, non-matching ownership) are logged and skipped.
+
+**Warning**: do not manually rename or restructure project directories inside `PROJECTS_ROOT`. The application manages directory names and paths based on the database slug and status. Manual changes will cause ownership verification failures until the next operation on the project (which will report a clear error). Path-based access (`project_dir` in the database) is equally important — moving directories without updating the database breaks the association.
+
+**Source and exported files remain directly accessible over SMB** — the directory structure under `PROJECTS_ROOT` is a plain POSIX filesystem tree with no symlinks or bind-mount indirection. Any SMB/NFS export of `PROJECTS_ROOT` sees the same layout.
+
 ## Environment variables
 
 | Variable | Default | Description |
@@ -185,9 +309,15 @@ The slug is generated automatically from the title. If the title collides with a
 
 Validation failures rerender the form with the entered values and errors. Successful creation or editing redirects to the project detail page.
 
+On success, the application also creates or updates the project's on-disk directory tree under the configured `PROJECTS_ROOT` share (see [Project directory structure](#project-directory-structure)). Each project receives a canonical directory with standard subdirectories and an atomic-written `project.json` manifest. If the filesystem operation fails, the database state is rolled back and the form is rerendered with a safe error message.
+
+**Title changes** rename the project directory. **Status changes** move the directory to the appropriate status root (`active/`, `published/`, or `archived/`). Both operations use same-filesystem rename — no data is copied, and custom files inside the directory survive.
+
 ### Archiving
 
-The project detail page has an **Archive** action. Archiving sets the status to `archived`, records the archived timestamp, and preserves the database record. Archived projects are excluded from the default project list but can still be viewed and filtered on the list page.
+The project detail page has an **Archive** action. Archiving moves the project directory to the `archived/` status root, rewrites the manifest with the archived status, sets the status to `archived` in the database, and records the archived timestamp. Archived projects are excluded from the default project list but can still be viewed and filtered on the list page.
+
+If the filesystem move or database update fails, the operation is fully compensated (directory moved back if already moved, database restored).
 
 ## Health endpoint
 
@@ -225,15 +355,13 @@ docker compose build       # rebuild image
 
 ## Features intentionally deferred
 
-- Project directories on disk
-- `project.json` metadata files
-- Asset indexing
-- File uploads, deletion, and rename
-- Filesystem watchers
+- Asset indexing (scanning project directories for changes)
+- File uploads, deletion, and rename through the web UI
+- Filesystem watchers (automatic detection of external file changes)
 - Authentication and authorization
 - Patreon API integration
 - Tags and file-type filtering
-- Thumbnail generation
+- Thumbnail generation (automatic thumbnail creation from source files)
 - Backup automation
 
 These will be added in subsequent phases.
@@ -250,7 +378,7 @@ docker compose build
 docker compose up -d
 curl http://localhost:3000/health
 
-# Create a project through the API or UI, then verify persistence across recreation.
+# Create a project through the web UI, then verify persistence across recreation.
 curl -X POST -d 'title=Smoke+Test' -d 'status=tbd' -d 'priority=normal' \
   http://localhost:3000/projects
 docker compose down

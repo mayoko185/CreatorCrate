@@ -6,7 +6,7 @@ coverage/
 dist/
 
 # Application data must not be committed; it lives on bind-mounted host directories.
-data/
+/data/
 *.db
 *.db-shm
 *.db-wal

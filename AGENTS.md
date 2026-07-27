@@ -23,6 +23,10 @@ Use LeanCTX by default for repository work.
 - Scope LeanCTX searches to the smallest relevant file or directory and keep result limits small.
 - Do not use `lean-ctx_ctx_search` for broad whole-repository discovery.
 - If a LeanCTX search times out, do not repeat the same search; narrow the path or return to CodeGraph.
+- Do not use `lean-ctx_ctx_shell` with inline-code flags such as `node -e`, `python -c`, or `powershell -Command`.
+- Use `lean-ctx_ctx_execute` for inline or multi-line scripts.
+- When `ctx_execute` is unsuitable, write a temporary script file in the project, run it with `lean-ctx_ctx_shell`, and delete it afterward.
+- Do not retry commands that LeanCTX marks as permanently blocked; change the execution method.
 
 ## Mandatory CodeGraph usage
 

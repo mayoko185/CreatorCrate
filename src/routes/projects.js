@@ -73,7 +73,17 @@ export function createProjectsRouter({ appName, projectService }) {
         });
         return;
       }
-      next(err);
+      // Filesystem or other error: render form with safe message + preserved values
+      res.status(500).render('projects/form.njk', {
+        appName,
+        project: null,
+        values: req.body,
+        errors: { general: 'Project creation failed. Please try again.' },
+        statuses: WORKFLOW_STATUSES,
+        priorities: PRIORITIES,
+        action: 'Create',
+        submitUrl: '/projects',
+      });
     }
   });
 
@@ -145,7 +155,18 @@ export function createProjectsRouter({ appName, projectService }) {
         });
         return;
       }
-      next(err);
+      // Filesystem or other error: render form with safe message + preserved values
+      const existing = projectService.findById(id);
+      res.status(500).render('projects/form.njk', {
+        appName,
+        project: existing || { id },
+        values: req.body,
+        errors: { general: 'Project update failed. Please try again.' },
+        statuses: WORKFLOW_STATUSES,
+        priorities: PRIORITIES,
+        action: 'Edit',
+        submitUrl: `/projects/${id}`,
+      });
     }
   });
 

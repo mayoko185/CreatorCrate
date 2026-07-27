@@ -4,7 +4,9 @@ import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { createConfig, ConfigError } from './config.js';
 import { validateMounts, FilesystemError } from './filesystem.js';
+import { ensureStatusDirs, StorageError } from './storage/path-manager.js';
 import { openDatabase, runMigrations, closeDatabase, DatabaseError } from './db.js';
+import { createProjectService } from './services/project-service.js';
 import { createApp } from './app.js';
 
 async function main() {
@@ -29,6 +31,16 @@ async function main() {
     throw err;
   }
 
+  try {
+    ensureStatusDirs(config.projectsRoot);
+  } catch (err) {
+    if (err instanceof StorageError) {
+      console.error(`Storage error: ${err.message}`);
+      process.exit(1);
+    }
+    throw err;
+  }
+
   const db = openDatabase(config.databasePath);
 
   try {
@@ -42,7 +54,17 @@ async function main() {
     throw err;
   }
 
-  const app = createApp({ appName: config.appName, db });
+  // Backfill project directories for existing Phase 2 records with no path
+  const backfillService = createProjectService(db, config.projectsRoot);
+  const backfillResults = backfillService.backfillProjectDirs();
+  if (backfillResults.errors.length > 0) {
+    console.error(
+      `[CreatorCrate] Backfill completed with ${backfillResults.errors.length} error(s). ` +
+      `Check logs above for details.`
+    );
+  }
+
+  const app = createApp({ appName: config.appName, db, projectsRoot: config.projectsRoot });
 
   const server = app.listen(config.port, () => {
     console.log(`${config.appName} listening on port ${config.port} in ${config.nodeEnv} mode`);

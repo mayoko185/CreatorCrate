@@ -12,6 +12,11 @@
   </div>
 
   <dl class="detail-list">
+    {% if project.project_dir %}
+      <dt>Project directory</dt>
+      <dd><code>{{ project.project_dir }}</code> <small>(relative to projects share)</small></dd>
+    {% endif %}
+
     <dt>Slug</dt>
     <dd><code>{{ project.slug }}</code></dd>
 
