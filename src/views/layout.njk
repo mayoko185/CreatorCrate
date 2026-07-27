@@ -174,6 +174,31 @@
       .detail-list dt { color: var(--muted); }
       .detail-list dd { margin: 0; }
       .description, .notes { white-space: pre-wrap; }
+      .asset-table { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+      .asset-table th, .asset-table td {
+        padding: 0.5rem 0.75rem;
+        text-align: left;
+        border-bottom: 1px solid #2a2e36;
+        font-size: 0.875rem;
+      }
+      .asset-table th { color: var(--muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; }
+      .asset-filename { font-weight: 600; }
+      .asset-path code { font-size: 0.8rem; color: var(--muted); }
+      .asset-size { text-align: right; font-variant-numeric: tabular-nums; }
+      .asset-date { color: var(--muted); font-size: 0.8rem; }
+      .scan-error, .scan-success {
+        padding: 1rem 1.25rem;
+        border-radius: 0 0.5rem 0.5rem 0;
+        margin-bottom: 1rem;
+      }
+      .scan-error {
+        background: rgba(229, 72, 77, 0.15);
+        border-left: 4px solid var(--danger);
+      }
+      .scan-success {
+        background: rgba(70, 180, 100, 0.15);
+        border-left: 4px solid #46b464;
+      }
     </style>
   </head>
   <body>

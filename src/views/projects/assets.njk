@@ -1,0 +1,112 @@
+{% extends "layout.njk" %}
+
+{% block content %}
+  <div class="page-header">
+    <h1>Assets — {{ project.title }}</h1>
+    <div class="actions">
+      <form method="post" action="/projects/{{ project.id }}/scan" class="inline-form">
+        <button class="button button-primary" type="submit">Scan Now</button>
+      </form>
+      <a class="button" href="/projects/{{ project.id }}">Back to Project</a>
+    </div>
+  </div>
+
+  {% if query.scan_result %}
+    <div class="scan-success">
+      <p>
+        {% if query.scan_result == 'no_changes' %}
+          Scan complete: no changes. {{ query.total or '?' }} total assets.
+        {% else %}
+          Scan complete: {{ query.scan_result | replace('_', ' ') }}. {{ query.total or '?' }} total assets.
+        {% endif %}
+      </p>
+    </div>
+  {% endif %}
+
+  {% if query.scan_error %}
+    <div class="scan-error">
+      <p>Scan failed. The project directory may be missing or inaccessible.</p>
+    </div>
+  {% endif %}
+
+  <p class="results-meta">{{ total }} asset{% if total != 1 %}s{% endif %} found</p>
+
+  <form class="filters" method="get" action="/projects/{{ project.id }}/assets">
+    <div class="field">
+      <label for="search">Search filename</label>
+      <input type="search" id="search" name="search" value="{{ query.search or '' }}">
+    </div>
+
+    <div class="field">
+      <label for="extension">Type</label>
+      <select id="extension" name="extension">
+        <option value="" {% if not query.extension %}selected{% endif %}>All types</option>
+        {% for ext in extensions %}
+          {% set typeLabel = ext if ext else 'unknown' %}
+          <option value="{{ ext }}" {% if query.extension == ext %}selected{% endif %}>{{ typeLabel }}</option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <div class="field">
+      <label for="sort">Sort</label>
+      <select id="sort" name="sort">
+        {% for opt in sortOptions %}
+          <option value="{{ opt }}" {% if query.sort == opt or (not query.sort and opt == 'filename') %}selected{% endif %}>{{ opt | title }}</option>
+        {% endfor %}
+      </select>
+      <select name="order">
+        <option value="asc" {% if query.order != 'desc' %}selected{% endif %}>Asc</option>
+        <option value="desc" {% if query.order == 'desc' %}selected{% endif %}>Desc</option>
+      </select>
+    </div>
+
+    <button class="button" type="submit">Filter</button>
+    <a class="button button-secondary" href="/projects/{{ project.id }}/assets">Clear</a>
+  </form>
+
+  {% if assets.length > 0 %}
+    <table class="asset-table">
+      <thead>
+        <tr>
+          <th>Filename</th>
+          <th>Path</th>
+          <th>Type</th>
+          <th>Extension</th>
+          <th>Size</th>
+          <th>Modified</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for asset in assets %}
+          <tr>
+            <td class="asset-filename">{{ asset.filename }}</td>
+            <td class="asset-path"><code>{{ asset.relative_path }}</code></td>
+            <td>
+              {% if asset.extension in ['png','webp','jpg','jpeg','gif'] %}
+                image
+              {% elif asset.extension in ['kra','krz'] %}
+                krita
+              {% else %}
+                unknown
+              {% endif %}
+            </td>
+            <td><code>{{ asset.extension }}</code></td>
+            <td class="asset-size">
+              {% if asset.size_bytes >= 1048576 %}
+                {{ (asset.size_bytes / 1048576) | round(1) }} MB
+              {% elif asset.size_bytes >= 1024 %}
+                {{ (asset.size_bytes / 1024) | round(1) }} KB
+              {% else %}
+                {{ asset.size_bytes }} B
+              {% endif %}
+            </td>
+            <td class="asset-date">{{ asset.modified_at or '—' }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p class="placeholder">No assets found. Click <strong>Scan Now</strong> to discover files in the project directory.</p>
+  {% endif %}
+{% endblock %}

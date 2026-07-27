@@ -21,6 +21,15 @@
     </div>
   </section>
 
+  {% if totalAssets is defined %}
+    <section class="dashboard-counts">
+      <h2>Assets</h2>
+      <div class="count-grid">
+        <div class="count-card"><span class="count">{{ totalAssets }}</span> Total assets</div>
+      </div>
+    </section>
+  {% endif %}
+
   <section class="recent-projects">
     <h2>Recently updated</h2>
     {% if recentlyUpdated.length > 0 %}

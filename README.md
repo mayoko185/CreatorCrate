@@ -227,6 +227,22 @@ Every project directory contains a `project.json` manifest written atomically (w
 }
 ```
 
+## Phase 4 scope
+
+This phase adds awareness of files inside project directories:
+
+- **Asset indexing** — each project directory can be manually scanned to discover files.
+- **Asset database records** — discovered files are stored in an `assets` table with metadata (filename, extension, MIME type, size, modified date, relative path).
+- **Asset listing page** — `GET /projects/:id/assets` shows all assets for a project with extension filtering, filename search, and sorting by filename, size, or modified date.
+- **Manual scan trigger** — `POST /projects/:id/scan` triggers an on-demand scan and redirects to the asset listing with a summary of changes.
+- **Reconciliation** — scans detect new, changed, and deleted files; the database is updated to match the filesystem.
+- **Path safety** — only relative paths (forward-slash-normalized) are stored; existing `resolveProjectDir` safety checks (containment, symlink rejection) are reused.
+- **Supported types** — images (`png`, `webp`, `jpg`, `jpeg`, `gif`) and Krita files (`kra`, `krz`) are recognized; other files are indexed as unknown.
+- **Ignore rules** — `project.json`, temporary manifest files, `.DS_Store`, and hidden files/directories are excluded from indexing.
+- **Dashboard asset count** — the home page shows the total number of indexed assets across all projects.
+
+No filesystem watchers, file uploads, file modification, thumbnail generation, image processing, or automatic scanning. The filesystem remains authoritative — files added, modified, or removed externally are discovered on the next scan.
+
 ### Source of truth model
 
 The **SQLite database is the authoritative source of truth** for project metadata (title, status, dates, notes, etc.). The filesystem mirror (directories + `project.json`) is derived from the database:
@@ -267,6 +283,38 @@ The **SQLite database is the authoritative source of truth** for project metadat
 | `CREATORCRATE_PROJECTS_PATH` | (required in Docker) | Host bind-mount source for project files (Docker Compose only) |
 
 Inside Docker the defaults are set to `/data/app/creatorcrate.db` and the bind mounts provide `/data/app` and `/data/projects`. The two `CREATORCRATE_*_PATH` variables are required when using Docker Compose; an unset or empty value produces an actionable error.
+
+## Phase 4 usage
+
+### Asset scanning workflow
+
+1. Create a project through the web UI (or use an existing one).
+2. Project files are added externally through the SMB share — place `.kra`, `.png`, `.webp`, `.jpg`, `.jpeg`, `.gif`, or `.krz` files in the project directory or its subdirectories.
+3. Navigate to the project detail page and click **View Assets**.
+4. Click **Scan Now** to discover files. The scan compares the filesystem against the database and returns a summary (`X added`, `Y updated`, `Z removed`).
+5. Assets appear in the listing with their filename, relative path, type, extension, size, and modified date.
+
+### Asset listing
+
+The asset list supports:
+
+- **Filter by type** — select a file extension from the dropdown.
+- **Search by filename** — type a search term to filter by filename.
+- **Sorting** — sort by filename, size, or modified date, ascending or descending.
+
+### Scanning behavior
+
+- Scanning is always manual — there is no background watcher.
+- The filesystem is authoritative. Files added, modified, or deleted through the SMB share are reflected in the asset index after the next scan.
+- Only relative paths (forward-slash-normalized) are stored in the database.
+- `project.json`, temporary manifest files, `.DS_Store`, `Thumbs.db`, and hidden files/directories are ignored.
+- Symlinks are rejected. The scan verifies the project directory is a real directory before walking it.
+- Unknown file types are indexed with `application/octet-stream` as their MIME type.
+- Scanning does not modify, move, rename, or delete any files on disk.
+
+### Dashboard
+
+The home page now shows a **Total assets** count across all projects.
 
 ## Phase 2 usage
 
@@ -355,13 +403,14 @@ docker compose build       # rebuild image
 
 ## Features intentionally deferred
 
-- Asset indexing (scanning project directories for changes)
+- Filesystem watchers and automatic background scanning
 - File uploads, deletion, and rename through the web UI
-- Filesystem watchers (automatic detection of external file changes)
+- Thumbnail generation and image processing
+- Duplicate detection
+- Cloud storage integration
 - Authentication and authorization
 - Patreon API integration
-- Tags and file-type filtering
-- Thumbnail generation (automatic thumbnail creation from source files)
+- Tags and file-type filtering beyond extension
 - Backup automation
 
 These will be added in subsequent phases.

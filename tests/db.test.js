@@ -100,4 +100,61 @@ describe('database and migrations', () => {
     db = openDatabase(dbPath);
     expect(() => closeDatabase(db)).not.toThrow();
   });
+
+  // ─── Phase 4: asset migration tests ──────────────────────────────
+
+  it('creates the assets table from migration 004', () => {
+    db = openDatabase(dbPath);
+    runMigrations(db, MIGRATIONS_DIR);
+    const row = db
+      .prepare("SELECT name FROM sqlite_master WHERE type = ? AND name = ?")
+      .get('table', 'assets');
+    expect(row).toBeTruthy();
+  });
+
+  it('assets table has foreign key to projects', () => {
+    db = openDatabase(dbPath);
+    runMigrations(db, MIGRATIONS_DIR);
+    // Verify foreign key exists by checking table DDL
+    const ddl = db
+      .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'assets'")
+      .pluck()
+      .get();
+    expect(ddl).toMatch(/FOREIGN KEY\s*\(project_id\)\s*REFERENCES\s*projects\(id\)/i);
+  });
+
+  it('assets table has expected indexes', () => {
+    db = openDatabase(dbPath);
+    runMigrations(db, MIGRATIONS_DIR);
+    const indexes = db
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'assets'")
+      .pluck()
+      .all();
+
+    expect(indexes).toContain('idx_assets_project_id');
+    expect(indexes).toContain('idx_assets_extension');
+    expect(indexes).toContain('idx_assets_filename');
+    expect(indexes).toContain('idx_assets_modified_at');
+    expect(indexes).toContain('idx_assets_project_path');
+  });
+
+  it('assets table has expected columns', () => {
+    db = openDatabase(dbPath);
+    runMigrations(db, MIGRATIONS_DIR);
+    const columns = db
+      .prepare("SELECT name FROM pragma_table_info('assets')")
+      .pluck()
+      .all();
+
+    expect(columns).toContain('id');
+    expect(columns).toContain('project_id');
+    expect(columns).toContain('relative_path');
+    expect(columns).toContain('filename');
+    expect(columns).toContain('extension');
+    expect(columns).toContain('mime_type');
+    expect(columns).toContain('size_bytes');
+    expect(columns).toContain('modified_at');
+    expect(columns).toContain('created_at');
+    expect(columns).toContain('updated_at');
+  });
 });

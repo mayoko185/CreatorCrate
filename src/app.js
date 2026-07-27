@@ -5,7 +5,9 @@ import { fileURLToPath } from 'node:url';
 import { createIndexRouter } from './routes/index.js';
 import { createHealthRouter } from './routes/health.js';
 import { createProjectsRouter } from './routes/projects.js';
+import { createAssetsRouter } from './routes/assets.js';
 import { createProjectService } from './services/project-service.js';
+import { createAssetScanner } from './services/asset-scanner.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -23,10 +25,12 @@ export function createApp({ appName, db, projectsRoot }) {
   app.use(express.urlencoded({ extended: true }));
 
   const projectService = createProjectService(db, projectsRoot);
+  const assetScanner = createAssetScanner(db, projectsRoot, { projectService });
 
-  app.use('/', createIndexRouter({ appName, projectService }));
+  app.use('/', createIndexRouter({ appName, projectService, assetScanner }));
   app.use('/health', createHealthRouter({ db }));
   app.use('/projects', createProjectsRouter({ appName, projectService }));
+  app.use('/projects', createAssetsRouter({ appName, projectService, assetScanner }));
 
   app.use((_req, _res, next) => {
     const err = new Error('Not found');
