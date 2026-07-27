@@ -14,6 +14,9 @@ const ASSET_COLUMNS = [
   'mime_type',
   'size_bytes',
   'modified_at',
+  'is_present',
+  'last_seen_at',
+  'missing_since',
   'created_at',
   'updated_at',
 ];
@@ -45,6 +48,12 @@ export function createAssetRepository(db) {
     WHERE project_id = ?
   `);
 
+  const findByIdStmt = db.prepare(`
+    SELECT ${ASSET_COLUMNS.join(', ')}
+    FROM assets
+    WHERE id = ?
+  `);
+
   const findByPathStmt = db.prepare(`
     SELECT ${ASSET_COLUMNS.join(', ')}
     FROM assets
@@ -52,14 +61,17 @@ export function createAssetRepository(db) {
   `);
 
   const upsertStmt = db.prepare(`
-    INSERT INTO assets (project_id, relative_path, filename, extension, mime_type, size_bytes, modified_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO assets (project_id, relative_path, filename, extension, mime_type, size_bytes, modified_at, is_present, last_seen_at, missing_since)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 1, datetime('now'), NULL)
     ON CONFLICT(project_id, relative_path) DO UPDATE SET
       filename = excluded.filename,
       extension = excluded.extension,
       mime_type = excluded.mime_type,
       size_bytes = excluded.size_bytes,
       modified_at = excluded.modified_at,
+      is_present = 1,
+      last_seen_at = datetime('now'),
+      missing_since = NULL,
       updated_at = datetime('now')
     RETURNING ${ASSET_COLUMNS.join(', ')}
   `);
@@ -82,6 +94,15 @@ export function createAssetRepository(db) {
   `);
 
   return {
+    /**
+     * Find an asset by its id.
+     * @param {number} id
+     * @returns {import('./asset-repository.js').AssetRecord|undefined}
+     */
+    findById(id) {
+      return findByIdStmt.get(id);
+    },
+
     /**
      * Find all assets for a project, with optional filtering and sorting.
      * @param {number} projectId
@@ -151,25 +172,100 @@ export function createAssetRepository(db) {
       );
     },
 
-    /**
-     * Delete assets for a project whose relative_path is NOT in the given list.
-     * Designed for scanner reconciliation — removes records for files that no
-     * longer exist on disk.
-     * @param {number} projectId
-     * @param {string[]} keepPaths - Array of relative paths to keep
-     * @returns {number} Number of deleted rows
-     */
-    deleteByProjectIdAndPathNotIn(projectId, keepPaths) {
-      if (keepPaths.length === 0) {
-        // Delete all assets for the project
-        return this.deleteByProjectId(projectId);
-      }
+  /**
+   * Mark assets as missing for a project whose relative_path is NOT in the given list.
+   * Designed for scanner reconciliation — marks records as missing instead of deleting.
+   * @param {number} projectId
+   * @param {string[]} presentPaths - Array of relative paths that are present on disk
+   * @returns {number} Number of marked rows
+   */
+  markMissingByProjectIdAndPathNotIn(projectId, presentPaths) {
+    if (presentPaths.length === 0) {
+      // All assets for the project are missing
+      return this.markAllMissing(projectId);
+    }
 
-      const placeholders = keepPaths.map(() => '?').join(',');
-      const sql = `DELETE FROM assets WHERE project_id = ? AND relative_path NOT IN (${placeholders})`;
-      const result = db.prepare(sql).run(projectId, ...keepPaths);
-      return result.changes;
-    },
+    const placeholders = presentPaths.map(() => '?').join(',');
+    const sql = `
+      UPDATE assets
+      SET is_present = 0,
+          missing_since = COALESCE(missing_since, datetime('now')),
+          updated_at = datetime('now')
+      WHERE project_id = ? AND relative_path NOT IN (${placeholders}) AND is_present = 1
+    `;
+    const result = db.prepare(sql).run(projectId, ...presentPaths);
+    return result.changes;
+  },
+
+  /**
+   * Mark all assets for a project as missing.
+   * @param {number} projectId
+   * @returns {number} Number of marked rows
+   */
+  markAllMissing(projectId) {
+    const sql = `
+      UPDATE assets
+      SET is_present = 0,
+          missing_since = COALESCE(missing_since, datetime('now')),
+          updated_at = datetime('now')
+      WHERE project_id = ? AND is_present = 1
+    `;
+    const result = db.prepare(sql).run(projectId);
+    return result.changes;
+  },
+
+  /**
+   * Restore present assets by marking them as present again.
+   * Only affects assets that are currently marked as missing.
+   * @param {number} projectId
+   * @param {string[]} presentPaths - Array of relative paths that are present on disk
+   * @returns {number} Number of restored rows
+   */
+  restorePresent(projectId, presentPaths) {
+    if (presentPaths.length === 0) {
+      return 0;
+    }
+
+    const placeholders = presentPaths.map(() => '?').join(',');
+    const sql = `
+      UPDATE assets
+      SET is_present = 1,
+          last_seen_at = datetime('now'),
+          missing_since = NULL,
+          updated_at = datetime('now')
+      WHERE project_id = ? AND relative_path IN (${placeholders}) AND is_present = 0
+    `;
+    const result = db.prepare(sql).run(projectId, ...presentPaths);
+    return result.changes;
+  },
+
+  /**
+   * Find missing assets for a project.
+   * @param {number} projectId
+   * @returns {import('./asset-repository.js').AssetRecord[]}
+   */
+  findMissingByProjectId(projectId) {
+    return db.prepare(`
+      SELECT ${ASSET_COLUMNS.join(', ')}
+      FROM assets
+      WHERE project_id = ? AND is_present = 0
+      ORDER BY missing_since DESC
+    `).all(projectId);
+  },
+
+  /**
+   * Find present assets for a project.
+   * @param {number} projectId
+   * @returns {import('./asset-repository.js').AssetRecord[]}
+   */
+  findPresentByProjectId(projectId) {
+    return db.prepare(`
+      SELECT ${ASSET_COLUMNS.join(', ')}
+      FROM assets
+      WHERE project_id = ? AND is_present = 1
+      ORDER BY filename COLLATE NOCASE
+    `).all(projectId);
+  },
 
     /**
      * Delete all assets for a project.
@@ -227,6 +323,9 @@ export function createAssetRepository(db) {
  * @property {string} mime_type
  * @property {number} size_bytes
  * @property {string|null} modified_at
+ * @property {number} is_present
+ * @property {string|null} last_seen_at
+ * @property {string|null} missing_since
  * @property {string} created_at
  * @property {string} updated_at
  */

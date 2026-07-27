@@ -1,0 +1,110 @@
+{% extends "layout.njk" %}
+
+{% block content %}
+  <div class="page-header">
+    <h1>{{ release.title }}</h1>
+    <div class="actions">
+      <a class="button" href="/releases/{{ release.id }}/edit">Edit</a>
+      <form method="post" action="/releases/{{ release.id }}/archive" class="inline-form">
+        <button class="button button-danger" type="submit" onclick="return confirm('Archive this release?')">Archive</button>
+      </form>
+    </div>
+  </div>
+
+  {% if errors.general %}
+    <div class="error-summary" role="alert">
+      <p>{{ errors.general }}</p>
+    </div>
+  {% endif %}
+
+  <dl class="detail-list">
+    {% if project %}
+      <dt>Project</dt>
+      <dd><a href="/projects/{{ project.id }}">{{ project.title }}</a></dd>
+    {% endif %}
+
+    <dt>Status</dt>
+    <dd>{{ release.status | replace('-', ' ') | title }}</dd>
+
+    {% if release.planned_date %}
+      <dt>Planned date</dt>
+      <dd>{{ release.planned_date }}</dd>
+    {% endif %}
+
+    {% if release.published_date %}
+      <dt>Published date</dt>
+      <dd>{{ release.published_date }}</dd>
+    {% endif %}
+
+    {% if release.patreon_url %}
+      <dt>Patreon URL</dt>
+      <dd><a href="{{ release.patreon_url }}" target="_blank" rel="noopener">{{ release.patreon_url }}</a></dd>
+    {% endif %}
+
+    <dt>Created</dt>
+    <dd>{{ release.created_at }}</dd>
+
+    <dt>Updated</dt>
+    <dd>{{ release.updated_at }}</dd>
+
+    {% if release.archived_at %}
+      <dt>Archived</dt>
+      <dd>{{ release.archived_at }}</dd>
+    {% endif %}
+  </dl>
+
+  <section>
+    <h2>Assets</h2>
+    <p>
+      <a class="button" href="/releases/{{ release.id }}/assets">Manage Assets</a>
+      <span class="meta">{{ assetCount }} asset{% if assetCount != 1 %}s{% endif %} selected</span>
+    </p>
+  </section>
+
+  {% if release.description %}
+    <section>
+      <h2>Description</h2>
+      <p class="description">{{ release.description }}</p>
+    </section>
+  {% endif %}
+
+  {% if release.notes %}
+    <section>
+      <h2>Notes</h2>
+      <p class="notes">{{ release.notes }}</p>
+    </section>
+  {% endif %}
+
+  {% if releaseAssets.length > 0 %}
+    <section>
+      <h2>Selected Assets</h2>
+      <table class="asset-table">
+        <thead>
+          <tr>
+            <th>Filename</th>
+            <th>Role</th>
+            <th>Path</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for ra in releaseAssets %}
+            <tr>
+              <td class="asset-filename">{{ ra.filename }}</td>
+              <td>{{ ra.role | title }}</td>
+              <td class="asset-path"><code>{{ ra.relative_path }}</code></td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+  {% endif %}
+
+  <div class="form-actions" style="margin-top: 2rem;">
+    <form method="post" action="/releases/{{ release.id }}/publish" class="inline-form">
+      {% if release.published_date %}
+        <input type="hidden" name="publishedDate" value="{{ release.published_date }}">
+      {% endif %}
+      <button class="button button-primary" type="submit" onclick="return confirm('Publish this release?')">Publish</button>
+    </form>
+  </div>
+{% endblock %}

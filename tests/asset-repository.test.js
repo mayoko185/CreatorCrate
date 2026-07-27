@@ -131,9 +131,9 @@ describe('asset repository', () => {
     expect(missing).toBeUndefined();
   });
 
-  // ─── Delete ──────────────────────────────────────────────────────
+  // ─── Presence marking (replaces delete) ─────────────────────────
 
-  it('deletes assets not in a keep list', () => {
+  it('marks missing assets instead of deleting', () => {
     assetRepo.upsert(projectId, 'keep.png', {
       filename: 'keep.png', extension: 'png', mimeType: 'image/png',
       sizeBytes: 100, modifiedAt: null,
@@ -147,15 +147,18 @@ describe('asset repository', () => {
       sizeBytes: 100, modifiedAt: null,
     });
 
-    const removed = assetRepo.deleteByProjectIdAndPathNotIn(projectId, ['keep.png']);
-    expect(removed).toBe(2);
+    const marked = assetRepo.markMissingByProjectIdAndPathNotIn(projectId, ['keep.png']);
+    expect(marked).toBe(2);
 
+    // All assets still exist, but some are marked missing
     const remaining = assetRepo.findByProjectId(projectId);
-    expect(remaining).toHaveLength(1);
-    expect(remaining[0].filename).toBe('keep.png');
+    expect(remaining).toHaveLength(3);
+
+    const missing = assetRepo.findMissingByProjectId(projectId);
+    expect(missing).toHaveLength(2);
   });
 
-  it('deletes all assets for a project with empty keep list', () => {
+  it('marks all assets as missing with empty keep list', () => {
     assetRepo.upsert(projectId, 'a.png', {
       filename: 'a.png', extension: 'png', mimeType: 'image/png',
       sizeBytes: 100, modifiedAt: null,
@@ -165,10 +168,12 @@ describe('asset repository', () => {
       sizeBytes: 100, modifiedAt: null,
     });
 
-    const removed = assetRepo.deleteByProjectIdAndPathNotIn(projectId, []);
-    expect(removed).toBe(2);
+    const marked = assetRepo.markMissingByProjectIdAndPathNotIn(projectId, []);
+    expect(marked).toBe(2);
 
-    expect(assetRepo.findByProjectId(projectId)).toHaveLength(0);
+    // All assets still exist, all are now missing
+    expect(assetRepo.findByProjectId(projectId)).toHaveLength(2);
+    expect(assetRepo.findMissingByProjectId(projectId)).toHaveLength(2);
   });
 
   it('deletes all assets for a project', () => {
@@ -334,5 +339,184 @@ describe('asset repository', () => {
 
     const extensions = assetRepo.getExtensions(projectId);
     expect(extensions).toEqual(['jpg', 'png']);
+  });
+
+  // ─── Presence tracking ─────────────────────────────────────────────
+
+  it('upsert marks new assets as present', () => {
+    const asset = assetRepo.upsert(projectId, 'present.png', {
+      filename: 'present.png', extension: 'png', mimeType: 'image/png',
+      sizeBytes: 100, modifiedAt: null,
+    });
+
+    expect(asset.is_present).toBe(1);
+    expect(asset.last_seen_at).toBeTruthy();
+    expect(asset.missing_since).toBeNull();
+  });
+
+  it('upsert restores previously missing assets', () => {
+    // Create asset initially
+    assetRepo.upsert(projectId, 'file.png', {
+      filename: 'file.png', extension: 'png', mimeType: 'image/png',
+      sizeBytes: 100, modifiedAt: null,
+    });
+
+    // Mark it as missing
+    assetRepo.markMissingByProjectIdAndPathNotIn(projectId, []);
+
+    const missing = assetRepo.findMissingByProjectId(projectId);
+    expect(missing).toHaveLength(1);
+    expect(missing[0].relative_path).toBe('file.png');
+
+    // Upsert with updated data
+    const restored = assetRepo.upsert(projectId, 'file.png', {
+      filename: 'file.png', extension: 'png', mimeType: 'image/png',
+      sizeBytes: 200, modifiedAt: '2026-07-27T00:00:00.000Z',
+    });
+
+    expect(restored.is_present).toBe(1);
+    expect(restored.missing_since).toBeNull();
+    expect(restored.last_seen_at).toBeTruthy();
+  });
+
+  it('markMissingByProjectIdAndPathNotIn marks absent assets', () => {
+    assetRepo.upsert(projectId, 'keep.png', {
+      filename: 'keep.png', extension: 'png', mimeType: 'image/png',
+      sizeBytes: 100, modifiedAt: null,
+    });
+    assetRepo.upsert(projectId, 'remove.png', {
+      filename: 'remove.png', extension: 'png', mimeType: 'image/png',
+      sizeBytes: 100, modifiedAt: null,
+    });
+
+    const marked = assetRepo.markMissingByProjectIdAndPathNotIn(projectId, ['keep.png']);
+    expect(marked).toBe(1);
+
+    const missing = assetRepo.findMissingByProjectId(projectId);
+    expect(missing).toHaveLength(1);
+    expect(missing[0].filename).toBe('remove.png');
+    expect(missing[0].missing_since).toBeTruthy();
+  });
+
+  it('markMissingByProjectIdAndPathNotIn preserves existing missing_since', () => {
+    assetRepo.upsert(projectId, 'gone.png', {
+      filename: 'gone.png', extension: 'png', mimeType: 'image/png',
+      sizeBytes: 100, modifiedAt: null,
+    });
+
+    // Mark as missing first time
+    assetRepo.markMissingByProjectIdAndPathNotIn(projectId, []);
+    const first = assetRepo.findMissingByProjectId(projectId)[0];
+    const firstMissingSince = first.missing_since;
+
+    // Wait a bit then mark missing again (simulating another scan cycle)
+    assetRepo.markMissingByProjectIdAndPathNotIn(projectId, []);
+    const second = assetRepo.findMissingByProjectId(projectId)[0];
+
+    // missing_since should not change on subsequent marks
+    expect(second.missing_since).toBe(firstMissingSince);
+  });
+
+  it('markAllMissing marks all assets as missing', () => {
+    assetRepo.upsert(projectId, 'a.png', {
+      filename: 'a.png', extension: 'png', mimeType: 'image/png',
+      sizeBytes: 100, modifiedAt: null,
+    });
+    assetRepo.upsert(projectId, 'b.png', {
+      filename: 'b.png', extension: 'png', mimeType: 'image/png',
+      sizeBytes: 100, modifiedAt: null,
+    });
+
+    const marked = assetRepo.markAllMissing(projectId);
+    expect(marked).toBe(2);
+
+    const missing = assetRepo.findMissingByProjectId(projectId);
+    expect(missing).toHaveLength(2);
+  });
+
+  it('restorePresent restores missing assets', () => {
+    assetRepo.upsert(projectId, 'was-gone.png', {
+      filename: 'was-gone.png', extension: 'png', mimeType: 'image/png',
+      sizeBytes: 100, modifiedAt: null,
+    });
+    assetRepo.markMissingByProjectIdAndPathNotIn(projectId, []);
+
+    const missing = assetRepo.findMissingByProjectId(projectId);
+    expect(missing).toHaveLength(1);
+
+    const restored = assetRepo.restorePresent(projectId, ['was-gone.png']);
+    expect(restored).toBe(1);
+
+    const present = assetRepo.findPresentByProjectId(projectId);
+    expect(present).toHaveLength(1);
+    expect(present[0].filename).toBe('was-gone.png');
+  });
+
+  it('restorePresent only affects currently missing assets', () => {
+    assetRepo.upsert(projectId, 'present.png', {
+      filename: 'present.png', extension: 'png', mimeType: 'image/png',
+      sizeBytes: 100, modifiedAt: null,
+    });
+
+    const restored = assetRepo.restorePresent(projectId, ['present.png']);
+    expect(restored).toBe(0);
+  });
+
+  it('restorePresent ignores empty path list', () => {
+    assetRepo.upsert(projectId, 'a.png', {
+      filename: 'a.png', extension: 'png', mimeType: 'image/png',
+      sizeBytes: 100, modifiedAt: null,
+    });
+
+    const restored = assetRepo.restorePresent(projectId, []);
+    expect(restored).toBe(0);
+  });
+
+  it('findPresentByProjectId returns only present assets', () => {
+    assetRepo.upsert(projectId, 'present.png', {
+      filename: 'present.png', extension: 'png', mimeType: 'image/png',
+      sizeBytes: 100, modifiedAt: null,
+    });
+    assetRepo.upsert(projectId, 'missing.png', {
+      filename: 'missing.png', extension: 'png', mimeType: 'image/png',
+      sizeBytes: 100, modifiedAt: null,
+    });
+
+    assetRepo.markMissingByProjectIdAndPathNotIn(projectId, ['present.png']);
+
+    const present = assetRepo.findPresentByProjectId(projectId);
+    expect(present).toHaveLength(1);
+    expect(present[0].filename).toBe('present.png');
+  });
+
+  it('findMissingByProjectId returns only missing assets', () => {
+    assetRepo.upsert(projectId, 'present.png', {
+      filename: 'present.png', extension: 'png', mimeType: 'image/png',
+      sizeBytes: 100, modifiedAt: null,
+    });
+    assetRepo.upsert(projectId, 'missing.png', {
+      filename: 'missing.png', extension: 'png', mimeType: 'image/png',
+      sizeBytes: 100, modifiedAt: null,
+    });
+
+    assetRepo.markMissingByProjectIdAndPathNotIn(projectId, ['present.png']);
+
+    const missing = assetRepo.findMissingByProjectId(projectId);
+    expect(missing).toHaveLength(1);
+    expect(missing[0].filename).toBe('missing.png');
+  });
+
+  it('identity preserved: missing asset keeps same ID', () => {
+    const original = assetRepo.upsert(projectId, 'file.png', {
+      filename: 'file.png', extension: 'png', mimeType: 'image/png',
+      sizeBytes: 100, modifiedAt: null,
+    });
+
+    assetRepo.markMissingByProjectIdAndPathNotIn(projectId, []);
+
+    const missing = assetRepo.findMissingByProjectId(projectId)[0];
+    expect(missing.id).toBe(original.id);
+    expect(missing.is_present).toBe(0);
+    expect(missing.filename).toBe('file.png'); // metadata preserved
   });
 });

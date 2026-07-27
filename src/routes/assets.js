@@ -33,21 +33,21 @@ export function createAssetsRouter({ appName, projectService, assetScanner }) {
 
       const { extension, search, sort, order } = parseAssetQuery(req.query);
 
-      const assets = assetScanner.repository.findByProjectId(id, {
+      const assets = assetScanner.listProjectAssets(id, {
         extension: extension || undefined,
         search: search || undefined,
         sortBy: sort,
         order,
       });
 
-      const extensions = assetScanner.repository.getExtensions(id);
-      const total = assetScanner.repository.countByProjectId(id);
+      const extensions = assetScanner.getExtensionList(id);
+      const counts = assetScanner.getAssetCounts(id);
 
       res.render('projects/assets.njk', {
         appName,
         project,
         assets,
-        total,
+        total: counts.total,
         extensions,
         query: { extension, search, sort, order },
         sortOptions: SORT_OPTIONS,

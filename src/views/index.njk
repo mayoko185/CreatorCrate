@@ -7,6 +7,7 @@
   <div class="actions">
     <a class="button button-primary" href="/projects/new">New Project</a>
     <a class="button" href="/projects">View All Projects</a>
+    <a class="button" href="/releases">View All Releases</a>
   </div>
 
   <section class="dashboard-counts">
@@ -21,12 +22,54 @@
     </div>
   </section>
 
+  {% if releaseStatusCounts %}
+    <section class="dashboard-counts">
+      <h2>Release counts</h2>
+      <div class="count-grid">
+        <div class="count-card"><span class="count">{{ releaseStatusCounts.idea or 0 }}</span> Idea</div>
+        <div class="count-card"><span class="count">{{ releaseStatusCounts.planned or 0 }}</span> Planned</div>
+        <div class="count-card"><span class="count">{{ releaseStatusCounts.drafting or 0 }}</span> Drafting</div>
+        <div class="count-card"><span class="count">{{ releaseStatusCounts.ready or 0 }}</span> Ready</div>
+        <div class="count-card"><span class="count">{{ releaseStatusCounts.published or 0 }}</span> Published</div>
+        <div class="count-card"><span class="count">{{ releaseStatusCounts.cancelled or 0 }}</span> Cancelled</div>
+      </div>
+    </section>
+  {% endif %}
+
   {% if totalAssets is defined %}
     <section class="dashboard-counts">
       <h2>Assets</h2>
       <div class="count-grid">
         <div class="count-card"><span class="count">{{ totalAssets }}</span> Total assets</div>
       </div>
+    </section>
+  {% endif %}
+
+  {% if overdueReleases.length > 0 %}
+    <section class="recent-projects">
+      <h2>Overdue releases</h2>
+      <ul class="project-list">
+        {% for release in overdueReleases %}
+          <li>
+            <a href="/releases/{{ release.id }}">{{ release.title }}</a>
+            <span class="meta">{{ release.status }} · planned {{ release.planned_date }}</span>
+          </li>
+        {% endfor %}
+      </ul>
+    </section>
+  {% endif %}
+
+  {% if upcomingReleases.length > 0 %}
+    <section class="recent-projects">
+      <h2>Upcoming releases</h2>
+      <ul class="project-list">
+        {% for release in upcomingReleases %}
+          <li>
+            <a href="/releases/{{ release.id }}">{{ release.title }}</a>
+            <span class="meta">{{ release.status }} · planned {{ release.planned_date }}</span>
+          </li>
+        {% endfor %}
+      </ul>
     </section>
   {% endif %}
 

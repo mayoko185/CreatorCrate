@@ -6,8 +6,10 @@ import { createIndexRouter } from './routes/index.js';
 import { createHealthRouter } from './routes/health.js';
 import { createProjectsRouter } from './routes/projects.js';
 import { createAssetsRouter } from './routes/assets.js';
+import { createReleasesRouter } from './routes/releases.js';
 import { createProjectService } from './services/project-service.js';
 import { createAssetScanner } from './services/asset-scanner.js';
+import { createReleaseService } from './services/release-service.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -26,11 +28,13 @@ export function createApp({ appName, db, projectsRoot }) {
 
   const projectService = createProjectService(db, projectsRoot);
   const assetScanner = createAssetScanner(db, projectsRoot, { projectService });
+  const releaseService = createReleaseService(db);
 
-  app.use('/', createIndexRouter({ appName, projectService, assetScanner }));
+  app.use('/', createIndexRouter({ appName, projectService, assetScanner, releaseService }));
   app.use('/health', createHealthRouter({ db }));
   app.use('/projects', createProjectsRouter({ appName, projectService }));
   app.use('/projects', createAssetsRouter({ appName, projectService, assetScanner }));
+  app.use('/releases', createReleasesRouter({ appName, releaseService, projectService }));
 
   app.use((_req, _res, next) => {
     const err = new Error('Not found');

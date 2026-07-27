@@ -15,7 +15,9 @@ Use LeanCTX by default for repository work.
 - Use `lean-ctx_ctx_read` instead of native file reads.
 - Use `lean-ctx_ctx_search` instead of native grep/search.
 - Use `lean-ctx_ctx_shell` instead of native shell commands when available.
-- Use `lean-ctx_ctx_callgraph` for callers and dependency relationships.
+- Use `lean-ctx_ctx_callgraph` only after CodeGraph has identified the specific symbol or file area.
+- Never run callgraph analysis against the entire repository.
+- If callgraph times out, use CodeGraph for relationship discovery instead.
 - Use `lean-ctx_ctx_expand` only when compressed output omitted required details.
 - Use native tools only when the corresponding `lean-ctx_*` tool is unavailable or fails.
 - Avoid full-file mode unless exact complete contents are required.

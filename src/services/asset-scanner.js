@@ -37,6 +37,18 @@ function isTempManifest(name) {
 }
 
 /**
+ * Categorize a filesystem error to determine how to handle it.
+ * @param {NodeJS.ErrnoException} err
+ * @returns {'enoent' | 'access' | 'other'} - ENOENT means file disappeared (mark missing),
+ *   access means permission error (abort reconciliation), other means unexpected error (abort).
+ */
+function categorizeFsError(err) {
+  if (err.code === 'ENOENT') return 'enoent';
+  if (err.code === 'EACCES' || err.code === 'EPERM') return 'access';
+  return 'other';
+}
+
+/**
  * Map a file extension to its MIME type.
  * @param {string} ext - Extension without the leading dot, lowercased
  * @returns {string}
@@ -59,9 +71,11 @@ function classifyType(ext) {
 /**
  * Recursively walk a directory and collect file metadata.
  * Returns only relative paths and metadata — no absolute paths stored.
+ * Throws on permission/traversal errors to prevent false missing states.
  *
  * @param {string} dirPath - Absolute path to the directory to scan
  * @param {string} projectRelPrefix - Relative path prefix (empty string for root)
+ * @throws {Error} if a permission or I/O error occurs during traversal
  * @returns {Array<{relativePath: string, filename: string, extension: string, mimeType: string, sizeBytes: number, modifiedAt: string|null}>}
  */
 function walkDirectory(dirPath, projectRelPrefix = '') {
@@ -71,9 +85,15 @@ function walkDirectory(dirPath, projectRelPrefix = '') {
   let dirEntries;
   try {
     dirEntries = fs.readdirSync(dirPath, { withFileTypes: true });
-  } catch {
-    // Directory may have been removed between scan start and read
-    return entries;
+  } catch (err) {
+    const cat = categorizeFsError(err);
+    if (cat === 'enoent') {
+      // Directory disappeared between scan start and read — treat as empty
+      return entries;
+    }
+    // Permission or I/O error — abort reconciliation, do not mutate asset presence
+    const rel = projectRelPrefix || dirPath;
+    throw new Error(`Cannot read directory "${rel}": ${err.code || err.message}`);
   }
 
   for (const entry of dirEntries) {
@@ -101,13 +121,19 @@ function walkDirectory(dirPath, projectRelPrefix = '') {
       }
 
       // Skip symlink directories to prevent traversing outside project root
+      let dirStats;
       try {
-        const dirStats = fs.lstatSync(fullPath);
-        if (dirStats.isSymbolicLink()) {
+        dirStats = fs.lstatSync(fullPath);
+      } catch (err) {
+        const cat = categorizeFsError(err);
+        if (cat === 'enoent') {
+          // Symlink target disappeared — skip
           continue;
         }
-      } catch {
-        // Continue safely if lstat fails
+        // Permission or I/O error — abort
+        throw new Error(`Cannot stat directory "${fullPath}": ${err.code || err.message}`);
+      }
+      if (dirStats.isSymbolicLink()) {
         continue;
       }
 
@@ -117,12 +143,19 @@ function walkDirectory(dirPath, projectRelPrefix = '') {
       entries.push(...subEntries);
     } else if (entry.isFile()) {
       // Skip symlinks — only index real files
+      let fileStats;
       try {
-        const stats = fs.lstatSync(fullPath);
-        if (stats.isSymbolicLink()) {
+        fileStats = fs.lstatSync(fullPath);
+      } catch (err) {
+        const cat = categorizeFsError(err);
+        if (cat === 'enoent') {
+          // Symlink target disappeared — skip
           continue;
         }
-      } catch {
+        // Permission or I/O error — abort
+        throw new Error(`Cannot stat file "${fullPath}": ${err.code || err.message}`);
+      }
+      if (fileStats.isSymbolicLink()) {
         continue;
       }
 
@@ -142,9 +175,14 @@ function walkDirectory(dirPath, projectRelPrefix = '') {
         const stats = fs.statSync(fullPath);
         sizeBytes = stats.size;
         modifiedAt = stats.mtime.toISOString();
-      } catch {
-        // File may have been removed between readdir and stat
-        continue;
+      } catch (err) {
+        const cat = categorizeFsError(err);
+        if (cat === 'enoent') {
+          // File disappeared between readdir and stat — skip this file
+          continue;
+        }
+        // Permission or I/O error — abort (do not mark file as missing incorrectly)
+        throw new Error(`Cannot read file "${fullPath}": ${err.code || err.message}`);
       }
 
       entries.push({
@@ -222,13 +260,20 @@ export function createAssetScanner(db, projectsRoot, { projectService }) {
     }
 
     // Walk the directory and collect file metadata
-    const discovered = walkDirectory(absPath);
+    // Throws on permission/I/O errors to prevent false missing states
+    let discovered;
+    try {
+      discovered = walkDirectory(absPath);
+    } catch (err) {
+      // Rethrow with a safe message (no path leakage)
+      throw new Error('Project directory cannot be scanned.');
+    }
 
-    // Compare with existing database records and sync
-    const existingPaths = new Set(
-      repository.findByProjectId(projectId).map((a) => a.relative_path),
-    );
-    const discoveredPaths = new Set(discovered.map((d) => d.relativePath));
+    // Discover present paths and restore any that were previously missing
+    const discoveredPaths = discovered.map((d) => d.relativePath);
+
+    // Restore any previously-missing assets that are now present
+    repository.restorePresent(projectId, discoveredPaths);
 
     // Find new/changed files
     let added = 0;
@@ -241,26 +286,74 @@ export function createAssetScanner(db, projectsRoot, { projectService }) {
         repository.upsert(projectId, file.relativePath, file);
         added++;
       } else if (
+        existing.is_present === 0 ||
         existing.size_bytes !== file.sizeBytes ||
         existing.modified_at !== file.modifiedAt
       ) {
-        // Changed file (size or modification time differs)
+        // File was missing and is back, or content changed
         repository.upsert(projectId, file.relativePath, file);
         updated++;
       }
     }
 
-    // Remove records for files that no longer exist on disk
-    const removed = repository.deleteByProjectIdAndPathNotIn(projectId, [...discoveredPaths]);
+    // Mark records as missing for files that no longer exist on disk
+    const removed = repository.markMissingByProjectIdAndPathNotIn(projectId, discoveredPaths);
 
     const total = repository.countByProjectId(projectId);
 
     return { added, updated, removed, total };
   }
 
+  /**
+   * List assets for a project with optional filtering.
+   * @param {number} projectId
+   * @param {object} [options]
+   * @param {string} [options.extension]
+   * @param {string} [options.search]
+   * @param {string} [options.sortBy]
+   * @param {string} [options.order]
+   * @returns {Array}
+   */
+  function listProjectAssets(projectId, options = {}) {
+    return repository.findByProjectId(projectId, options);
+  }
+
+  /**
+   * Get asset counts for a project (present, missing, total).
+   * @param {number} projectId
+   * @returns {{ present: number, missing: number, total: number }}
+   */
+  function getAssetCounts(projectId) {
+    const all = repository.findByProjectId(projectId);
+    const present = all.filter((a) => a.is_present === 1).length;
+    const missing = all.filter((a) => a.is_present === 0).length;
+    return { present, missing, total: all.length };
+  }
+
+  /**
+   * Get distinct extensions for a project's assets.
+   * @param {number} projectId
+   * @returns {string[]}
+   */
+  function getExtensionList(projectId) {
+    return repository.getExtensions(projectId);
+  }
+
+  /**
+   * Get total asset count across all projects.
+   * @returns {number}
+   */
+  function getTotalAssetCount() {
+    return repository.getTotalCount();
+  }
+
   return {
     repository,
     scanProjectAssets,
     classifyType,
+    listProjectAssets,
+    getAssetCounts,
+    getExtensionList,
+    getTotalAssetCount,
   };
 }

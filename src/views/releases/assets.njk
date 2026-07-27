@@ -1,0 +1,107 @@
+{% extends "layout.njk" %}
+
+{% block content %}
+  <div class="page-header">
+    <h1>Assets — {{ release.title }}</h1>
+    <div class="actions">
+      <a class="button" href="/releases/{{ release.id }}">Back to Release</a>
+    </div>
+  </div>
+
+  {% if errors.general or errors.assets %}
+    <div class="error-summary" role="alert">
+      <p>{{ errors.general or errors.assets }}</p>
+    </div>
+  {% endif %}
+
+  <p class="results-meta">{{ assets.length }} asset{% if assets.length != 1 %}s{% endif %} in project</p>
+
+  <form method="post" action="/releases/{{ release.id }}/assets" class="release-assets-form">
+    <table class="asset-table">
+      <thead>
+        <tr>
+          <th>Select</th>
+          <th>Filename</th>
+          <th>Path</th>
+          <th>Status</th>
+          <th>Role</th>
+          <th>Order</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for asset in assets %}
+          {% set isSelected = false %}
+          {% set currentRole = 'attachment' %}
+          {% set currentSortOrder = 0 %}
+          {% for ra in releaseAssets %}
+            {% if ra.asset_id == asset.id %}
+              {% set isSelected = true %}
+              {% set currentRole = ra.role %}
+              {% set currentSortOrder = ra.sort_order %}
+            {% endif %}
+          {% endfor %}
+          <tr class="{% if asset.is_present == 0 %}asset-missing{% endif %}" data-asset-id="{{ asset.id }}">
+            <td>
+              {% if asset.is_present == 1 %}
+                <input type="checkbox" name="selectedAssetIds[]" value="{{ asset.id }}" {% if isSelected %}checked{% endif %} class="asset-checkbox">
+              {% else %}
+                <span class="missing-indicator" title="Asset is missing from disk">✗</span>
+              {% endif %}
+            </td>
+            <td class="asset-filename">{{ asset.filename }}</td>
+            <td class="asset-path"><code>{{ asset.relative_path }}</code></td>
+            <td>
+              {% if asset.is_present == 1 %}
+                <span class="asset-present">Present</span>
+              {% else %}
+                <span class="asset-missing-label">Missing</span>
+              {% endif %}
+            </td>
+            <td>
+              {% if asset.is_present == 1 %}
+                <select name="roles[]" {% if not isSelected %}disabled{% endif %} class="asset-role">
+                  {% for role in roles %}
+                    <option value="{{ role }}" {% if currentRole == role %}selected{% endif %}>{{ role | title }}</option>
+                  {% endfor %}
+                </select>
+              {% else %}
+                <span class="asset-missing-label">—</span>
+              {% endif %}
+            </td>
+            <td>
+              {% if asset.is_present == 1 %}
+                <input type="number" name="sortOrder[]" value="{{ currentSortOrder }}" min="0" style="width: 4rem;" {% if not isSelected %}disabled{% endif %} class="asset-sort-order">
+              {% else %}
+                —
+              {% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    <div class="form-actions">
+      <button class="button button-primary" type="submit">Save Selection</button>
+      <a class="button button-secondary" href="/releases/{{ release.id }}">Cancel</a>
+    </div>
+  </form>
+
+  {% if assets.length == 0 %}
+    <p class="placeholder">No assets found in this project. Scan the project to discover files.</p>
+  {% endif %}
+
+  <script>
+    (function() {
+      // Enable/disable role and sortOrder fields when checkbox is toggled
+      document.querySelectorAll('.asset-checkbox').forEach(function(checkbox) {
+        checkbox.addEventListener('change', function() {
+          var row = this.closest('tr');
+          var roleSelect = row.querySelector('.asset-role');
+          var sortOrderInput = row.querySelector('.asset-sort-order');
+          if (roleSelect) roleSelect.disabled = !this.checked;
+          if (sortOrderInput) sortOrderInput.disabled = !this.checked;
+        });
+      });
+    })();
+  </script>
+{% endblock %}
