@@ -1,0 +1,86 @@
+{% extends "layout.njk" %}
+
+{% block content %}
+  <div class="page-header">
+    <h1>Projects</h1>
+    <a class="button button-primary" href="/projects/new">New Project</a>
+  </div>
+
+  <form class="filters" method="get" action="/projects">
+    <div class="field">
+      <label for="search">Search</label>
+      <input type="search" id="search" name="search" value="{{ query.search or '' }}">
+    </div>
+
+    <div class="field">
+      <label for="status">Status</label>
+      <select id="status" name="status">
+        <option value="" {% if not query.status %}selected{% endif %}>All active</option>
+        {% for s in statuses %}
+          <option value="{{ s }}" {% if query.status == s %}selected{% endif %}>{{ s | replace('-', ' ') | title }}</option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <div class="field">
+      <label for="sort">Sort</label>
+      <select id="sort" name="sort">
+        {% for opt in sortOptions %}
+          <option value="{{ opt }}" {% if query.sort == opt or (not query.sort and opt == 'updated') %}selected{% endif %}>{{ opt | replace('-', ' ') | title }}</option>
+        {% endfor %}
+      </select>
+      <select name="order">
+        <option value="desc" {% if query.order != 'asc' %}selected{% endif %}>Desc</option>
+        <option value="asc" {% if query.order == 'asc' %}selected{% endif %}>Asc</option>
+      </select>
+    </div>
+
+    <button class="button" type="submit">Filter</button>
+    <a class="button button-secondary" href="/projects">Clear</a>
+  </form>
+
+  <p class="results-meta">{{ total }} project{% if total != 1 %}s{% endif %} found</p>
+
+  {% if projects.length > 0 %}
+    <table class="project-table">
+      <thead>
+        <tr>
+          <th>Title</th>
+          <th>Status</th>
+          <th>Priority</th>
+          <th>Updated</th>
+          <th>Planned</th>
+          <th>Published</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for project in projects %}
+          <tr>
+            <td><a href="/projects/{{ project.id }}">{{ project.title }}</a></td>
+            <td>{{ project.status | replace('-', ' ') | title }}</td>
+            <td>{{ project.priority | title }}</td>
+            <td>{{ project.updated_at }}</td>
+            <td>{{ project.planned_date or '—' }}</td>
+            <td>{{ project.published_date or '—' }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    {% if pageCount > 1 %}
+      <nav class="pagination" aria-label="Project list pages">
+        {% if page > 1 %}
+          <a class="button" href="{{ pageUrl({ page: page - 1 }) }}">Previous</a>
+        {% endif %}
+
+        <span>Page {{ page }} of {{ pageCount }}</span>
+
+        {% if page < pageCount %}
+          <a class="button" href="{{ pageUrl({ page: page + 1 }) }}">Next</a>
+        {% endif %}
+      </nav>
+    {% endif %}
+  {% else %}
+    <p class="placeholder">No projects match the current filters.</p>
+  {% endif %}
+{% endblock %}

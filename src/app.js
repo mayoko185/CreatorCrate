@@ -4,13 +4,15 @@ import nunjucks from 'nunjucks';
 import { fileURLToPath } from 'node:url';
 import { createIndexRouter } from './routes/index.js';
 import { createHealthRouter } from './routes/health.js';
+import { createProjectsRouter } from './routes/projects.js';
+import { createProjectService } from './services/project-service.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export function createApp({ appName, db }) {
   const app = express();
 
-  nunjucks.configure(path.join(__dirname, 'views'), {
+  const env = nunjucks.configure(path.join(__dirname, 'views'), {
     autoescape: true,
     express: app,
     noCache: true,
@@ -18,9 +20,13 @@ export function createApp({ appName, db }) {
   app.set('view engine', 'njk');
 
   app.use(express.json());
+  app.use(express.urlencoded({ extended: true }));
 
-  app.use('/', createIndexRouter({ appName }));
+  const projectService = createProjectService(db);
+
+  app.use('/', createIndexRouter({ appName, projectService }));
   app.use('/health', createHealthRouter({ db }));
+  app.use('/projects', createProjectsRouter({ appName, projectService }));
 
   app.use((_req, _res, next) => {
     const err = new Error('Not found');

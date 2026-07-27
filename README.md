@@ -20,6 +20,22 @@ This phase establishes the application foundation:
 
 Project management, file indexing, uploads, search, and other features are intentionally deferred.
 
+## Phase 2 scope
+
+This phase adds project metadata and a basic project-management workflow:
+
+- `projects` SQLite table with title, slug, description, notes, status, priority, planned and published dates, Patreon URL, timestamps, and archive state.
+- Project statuses: `tbd`, `planned`, `in-progress`, `ready`, `published`, `archived`.
+- Project priorities: `low`, `normal`, `high`.
+- Dashboard with counts per status and recently updated projects.
+- Project list with search, status filter, sorting, and pagination.
+- Create, edit, archive, and detail pages for projects.
+- Slug generation from the title with safe collision handling.
+- Validation for required fields, status/priority values, dates, and Patreon URLs.
+- Focused tests for the migration, repository, service, validation, and HTTP workflow.
+
+Project directories and `project.json` manifest files are **not** created yet. File uploads, asset indexing, thumbnails, tags, filesystem watchers, authentication, Patreon API integration, and backup automation remain deferred.
+
 ## Required software
 
 For local development:
@@ -128,6 +144,51 @@ No permanent data lives inside the container. Recreating the container leaves th
 
 Inside Docker the defaults are set to `/data/app/creatorcrate.db` and the bind mounts provide `/data/app` and `/data/projects`. The two `CREATORCRATE_*_PATH` variables are required when using Docker Compose; an unset or empty value produces an actionable error.
 
+## Phase 2 usage
+
+After starting the application, open <http://localhost:3000> to see the dashboard.
+
+### Dashboard
+
+The dashboard shows:
+
+- The application name.
+- Counts for every status: TBD, Planned, In Progress, Ready, Published, and Archived.
+- The most recently updated non-archived projects.
+- A **New Project** button and a link to the full project list.
+
+### Project list
+
+`/projects` lists active projects by default. Each row shows the title, status, priority, updated timestamp, planned date, and published date.
+
+Use the filter bar to:
+
+- Search titles, descriptions, and notes.
+- Filter by status, including `archived` for archived records.
+- Sort by recently updated, newest, oldest, or title, ascending or descending.
+
+The list is paginated and preserves search, status, sort, and page parameters when navigating.
+
+### Creating and editing projects
+
+Click **New Project** to create a project. Required fields are marked with `*`:
+
+- **Title** (required, up to 200 characters).
+- Description (up to 4000 characters).
+- Notes (up to 10000 characters).
+- Status (one of `tbd`, `planned`, `in-progress`, `ready`, `published`; archiving is handled by the dedicated Archive action).
+- Priority (one of `low`, `normal`, `high`).
+- Planned date and Published date (`YYYY-MM-DD` when present).
+- Patreon URL (must be an `https://` URL on a `patreon.com` host when present).
+
+The slug is generated automatically from the title. If the title collides with another project, the form shows a field-level error.
+
+Validation failures rerender the form with the entered values and errors. Successful creation or editing redirects to the project detail page.
+
+### Archiving
+
+The project detail page has an **Archive** action. Archiving sets the status to `archived`, records the archived timestamp, and preserves the database record. Archived projects are excluded from the default project list but can still be viewed and filtered on the list page.
+
 ## Health endpoint
 
 `GET /health` returns JSON:
@@ -164,14 +225,14 @@ docker compose build       # rebuild image
 
 ## Features intentionally deferred
 
-- Project CRUD and project directories
+- Project directories on disk
 - `project.json` metadata files
 - Asset indexing
 - File uploads, deletion, and rename
 - Filesystem watchers
 - Authentication and authorization
 - Patreon API integration
-- Tags and search
+- Tags and file-type filtering
 - Thumbnail generation
 - Backup automation
 
@@ -188,5 +249,13 @@ docker compose config
 docker compose build
 docker compose up -d
 curl http://localhost:3000/health
+
+# Create a project through the API or UI, then verify persistence across recreation.
+curl -X POST -d 'title=Smoke+Test' -d 'status=tbd' -d 'priority=normal' \
+  http://localhost:3000/projects
+docker compose down
+docker compose up -d
+curl http://localhost:3000/health
+curl -s http://localhost:3000/projects?search=Smoke | grep 'Smoke Test'
 docker compose down
 ```

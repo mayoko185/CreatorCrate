@@ -15,6 +15,7 @@
     "check": "pnpm test"
   },
   "dependencies": {
+    "@sindresorhus/slugify": "^2.2.1",
     "better-sqlite3": "^11.5.0",
     "dotenv": "^16.4.5",
     "express": "^4.21.1",

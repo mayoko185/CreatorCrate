@@ -48,6 +48,23 @@ describe('database and migrations', () => {
     expect(row).toBeTruthy();
   });
 
+  it('creates intended project indexes without a duplicate slug index', () => {
+    db = openDatabase(dbPath);
+    runMigrations(db, MIGRATIONS_DIR);
+    const indexes = db
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'projects'")
+      .pluck()
+      .all();
+
+    expect(indexes).toContain('idx_projects_archived_updated');
+    expect(indexes).toContain('idx_projects_status_archived');
+    expect(indexes).toContain('idx_projects_title');
+    expect(indexes).toContain('idx_projects_description');
+    expect(indexes).toContain('idx_projects_notes');
+    expect(indexes).not.toContain('idx_projects_slug');
+    expect(indexes.some((name) => name.startsWith('sqlite_autoindex_projects_'))).toBe(true);
+  });
+
   it('is idempotent across repeated migration runs', () => {
     db = openDatabase(dbPath);
     runMigrations(db, MIGRATIONS_DIR);

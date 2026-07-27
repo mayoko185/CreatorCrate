@@ -1,9 +1,39 @@
 {% extends "layout.njk" %}
 
 {% block content %}
-  <h1>Welcome to {{ appName }}</h1>
-  <p>{{ appName }} organizes your Patreon art projects and their files in one self-hosted place.</p>
-  <div class="placeholder">
-    Project management, file indexing, uploads, and search will be added in the next phase.
+  <h1>{{ appName }}</h1>
+  <p>Organize your Patreon art projects in one self-hosted place.</p>
+
+  <div class="actions">
+    <a class="button button-primary" href="/projects/new">New Project</a>
+    <a class="button" href="/projects">View All Projects</a>
   </div>
+
+  <section class="dashboard-counts">
+    <h2>Project counts</h2>
+    <div class="count-grid">
+      <div class="count-card"><span class="count">{{ counts.tbd }}</span> TBD</div>
+      <div class="count-card"><span class="count">{{ counts.planned }}</span> Planned</div>
+      <div class="count-card"><span class="count">{{ counts['in-progress'] }}</span> In Progress</div>
+      <div class="count-card"><span class="count">{{ counts.ready }}</span> Ready</div>
+      <div class="count-card"><span class="count">{{ counts.published }}</span> Published</div>
+      <div class="count-card"><span class="count">{{ counts.archived }}</span> Archived</div>
+    </div>
+  </section>
+
+  <section class="recent-projects">
+    <h2>Recently updated</h2>
+    {% if recentlyUpdated.length > 0 %}
+      <ul class="project-list">
+        {% for project in recentlyUpdated %}
+          <li>
+            <a href="/projects/{{ project.id }}">{{ project.title }}</a>
+            <span class="meta">{{ project.status }} · {{ project.priority }} · updated {{ project.updated_at }}</span>
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="placeholder">No projects yet. Create one to get started.</p>
+    {% endif %}
+  </section>
 {% endblock %}

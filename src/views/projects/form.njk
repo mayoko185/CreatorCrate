@@ -1,0 +1,82 @@
+{% extends "layout.njk" %}
+
+{% set title = action ~ ' Project' %}
+
+{% block content %}
+  <div class="page-header">
+    <h1>{{ title }}</h1>
+  </div>
+
+  {% if errors.general %}
+    <div class="error-summary" role="alert">
+      <p>{{ errors.general }}</p>
+    </div>
+  {% endif %}
+
+  <form method="post" action="{{ submitUrl }}" class="project-form" novalidate>
+    <div class="field {% if errors.title %}field-error{% endif %}">
+      <label for="title">Title <span class="required" aria-label="required">*</span></label>
+      <input type="text" id="title" name="title" value="{{ values.title or '' }}" maxlength="200" required>
+      {% if errors.title %}<span class="field-error-message">{{ errors.title }}</span>{% endif %}
+    </div>
+
+    <div class="field {% if errors.description %}field-error{% endif %}">
+      <label for="description">Description</label>
+      <textarea id="description" name="description" rows="4" maxlength="4000">{{ values.description or '' }}</textarea>
+      {% if errors.description %}<span class="field-error-message">{{ errors.description }}</span>{% endif %}
+    </div>
+
+    <div class="field {% if errors.notes %}field-error{% endif %}">
+      <label for="notes">Notes</label>
+      <textarea id="notes" name="notes" rows="6" maxlength="10000">{{ values.notes or '' }}</textarea>
+      {% if errors.notes %}<span class="field-error-message">{{ errors.notes }}</span>{% endif %}
+    </div>
+
+    <div class="field-row">
+      <div class="field {% if errors.status %}field-error{% endif %}">
+        <label for="status">Status <span class="required" aria-label="required">*</span></label>
+        <select id="status" name="status" required>
+          {% for s in statuses %}
+            <option value="{{ s }}" {% if values.status == s %}selected{% endif %}>{{ s | replace('-', ' ') | title }}</option>
+          {% endfor %}
+        </select>
+        {% if errors.status %}<span class="field-error-message">{{ errors.status }}</span>{% endif %}
+      </div>
+
+      <div class="field {% if errors.priority %}field-error{% endif %}">
+        <label for="priority">Priority <span class="required" aria-label="required">*</span></label>
+        <select id="priority" name="priority" required>
+          {% for p in priorities %}
+            <option value="{{ p }}" {% if values.priority == p %}selected{% endif %}>{{ p | title }}</option>
+          {% endfor %}
+        </select>
+        {% if errors.priority %}<span class="field-error-message">{{ errors.priority }}</span>{% endif %}
+      </div>
+    </div>
+
+    <div class="field-row">
+      <div class="field {% if errors.plannedDate %}field-error{% endif %}">
+        <label for="plannedDate">Planned date</label>
+        <input type="date" id="plannedDate" name="plannedDate" value="{{ values.plannedDate or '' }}">
+        {% if errors.plannedDate %}<span class="field-error-message">{{ errors.plannedDate }}</span>{% endif %}
+      </div>
+
+      <div class="field {% if errors.publishedDate %}field-error{% endif %}">
+        <label for="publishedDate">Published date</label>
+        <input type="date" id="publishedDate" name="publishedDate" value="{{ values.publishedDate or '' }}">
+        {% if errors.publishedDate %}<span class="field-error-message">{{ errors.publishedDate }}</span>{% endif %}
+      </div>
+    </div>
+
+    <div class="field {% if errors.patreonUrl %}field-error{% endif %}">
+      <label for="patreonUrl">Patreon URL</label>
+      <input type="url" id="patreonUrl" name="patreonUrl" value="{{ values.patreonUrl or '' }}">
+      {% if errors.patreonUrl %}<span class="field-error-message">{{ errors.patreonUrl }}</span>{% endif %}
+    </div>
+
+    <div class="form-actions">
+      <button class="button button-primary" type="submit">{{ action }}</button>
+      <a class="button button-secondary" href="{% if project %}/projects/{{ project.id }}{% else %}/projects{% endif %}">Cancel</a>
+    </div>
+  </form>
+{% endblock %}
