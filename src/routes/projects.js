@@ -10,7 +10,7 @@ import {
 const SORT_OPTIONS = ['updated', 'created', 'title'];
 const PAGE_SIZE = 25;
 
-export function createProjectsRouter({ appName, projectService }) {
+export function createProjectsRouter({ appName, projectService, workflowQueryService }) {
   const router = express.Router();
 
   router.get('/', (req, res, next) => {
@@ -93,12 +93,17 @@ export function createProjectsRouter({ appName, projectService }) {
       return next(createNotFound());
     }
 
-    const project = projectService.findById(id);
-    if (!project) {
+    const workspace = workflowQueryService.getProjectWorkspace(id);
+    if (!workspace) {
       return next(createNotFound());
     }
 
-    res.render('projects/detail.njk', { appName, project });
+    res.render('projects/detail.njk', {
+      appName,
+      project: workspace.project,
+      releaseSummary: workspace.releaseSummary,
+      assetHealth: workspace.assetHealth,
+    });
   });
 
   router.get('/:id/edit', (req, res, next) => {
@@ -110,6 +115,13 @@ export function createProjectsRouter({ appName, projectService }) {
     const project = projectService.findById(id);
     if (!project) {
       return next(createNotFound());
+    }
+
+    // Archived projects are immutable. The edit form would render but POST
+    // would still reject archived_at, so block access to the form itself
+    // and route the user back to the detail page (read-only workspace).
+    if (project.archived_at) {
+      return res.redirect(`/projects/${project.id}`);
     }
 
     res.render('projects/form.njk', {

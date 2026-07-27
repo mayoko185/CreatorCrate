@@ -8,6 +8,7 @@ import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { createReleaseRepository } from '../src/data/release-repository.js';
 import { createProjectRepository } from '../src/data/project-repository.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
+import { getLocalTodayIso } from '../src/util/date.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 
@@ -294,36 +295,41 @@ describe('release repository', () => {
 
   describe('upcomingReleases', () => {
     it('returns releases with future planned_date sorted asc', () => {
-      const future1 = new Date();
+      const today = new Date();
+      const future1 = new Date(today);
       future1.setDate(future1.getDate() + 30);
-      const future2 = new Date();
+      const future2 = new Date(today);
       future2.setDate(future2.getDate() + 60);
       const fmt = (d) => d.toISOString().split('T')[0];
+      const todayIso = fmt(today);
 
       releaseRepo.create({ projectId, ...sampleRelease({ title: 'Later', plannedDate: fmt(future2), status: 'planned' }) });
       releaseRepo.create({ projectId, ...sampleRelease({ title: 'Sooner', plannedDate: fmt(future1), status: 'planned' }) });
-      const upcoming = releaseRepo.upcomingReleases();
+      const upcoming = releaseRepo.upcomingReleases(todayIso);
       expect(upcoming[0].title).toBe('Sooner');
       expect(upcoming[1].title).toBe('Later');
     });
 
     it('excludes releases without planned_date', () => {
       releaseRepo.create({ projectId, ...sampleRelease({ title: 'No Date', plannedDate: null, status: 'planned' }) });
-      const upcoming = releaseRepo.upcomingReleases();
+      const today = getLocalTodayIso();
+      const upcoming = releaseRepo.upcomingReleases(today);
       expect(upcoming).toHaveLength(0);
     });
 
     it('excludes published releases', () => {
       const r1 = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Published', status: 'published', plannedDate: '2099-01-01' }) });
       releaseRepo.publish(r1.id, '2025-01-01');
-      const upcoming = releaseRepo.upcomingReleases();
+      const today = getLocalTodayIso();
+      const upcoming = releaseRepo.upcomingReleases(today);
       expect(upcoming).toHaveLength(0);
     });
 
     it('excludes archived releases', () => {
       const r1 = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Archived', plannedDate: '2099-01-01', status: 'planned' }) });
       releaseRepo.archive(r1.id);
-      const overdue = releaseRepo.overdueReleases();
+      const today = getLocalTodayIso();
+      const overdue = releaseRepo.overdueReleases(today);
       expect(overdue).toHaveLength(0);
     });
   });
@@ -558,40 +564,239 @@ describe('release repository', () => {
 
   describe('overdueReleases', () => {
     it('returns releases past their planned_date', () => {
-      const past = new Date();
+      const today = new Date();
+      const past = new Date(today);
       past.setDate(past.getDate() - 10);
       const fmt = (d) => d.toISOString().split('T')[0];
+      const todayIso = fmt(today);
 
       releaseRepo.create({ projectId, ...sampleRelease({ title: 'Overdue', plannedDate: fmt(past), status: 'planned' }) });
-      const overdue = releaseRepo.overdueReleases();
+      const overdue = releaseRepo.overdueReleases(todayIso);
       expect(overdue).toHaveLength(1);
       expect(overdue[0].title).toBe('Overdue');
     });
 
     it('excludes releases with future planned_date', () => {
-      const future = new Date();
+      const today = new Date();
+      const future = new Date(today);
       future.setDate(future.getDate() + 30);
       const fmt = (d) => d.toISOString().split('T')[0];
+      const todayIso = fmt(today);
 
       releaseRepo.create({ projectId, ...sampleRelease({ title: 'Future', plannedDate: fmt(future), status: 'planned' }) });
-      const overdue = releaseRepo.overdueReleases();
+      const overdue = releaseRepo.overdueReleases(todayIso);
       expect(overdue).toHaveLength(0);
     });
 
     it('excludes releases without planned_date', () => {
       releaseRepo.create({ projectId, ...sampleRelease({ title: 'No Date', plannedDate: null, status: 'planned' }) });
-      const overdue = releaseRepo.overdueReleases();
+      const today = new Date().toISOString().split('T')[0];
+      const overdue = releaseRepo.overdueReleases(today);
       expect(overdue).toHaveLength(0);
     });
 
     it('excludes published releases', () => {
-      const past = new Date();
+      const today = new Date();
+      const past = new Date(today);
       past.setDate(past.getDate() - 10);
       const fmt = (d) => d.toISOString().split('T')[0];
+      const todayIso = fmt(today);
       const r1 = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Overdue Pub', plannedDate: fmt(past), status: 'planned' }) });
       releaseRepo.publish(r1.id, fmt(past));
-      const overdue = releaseRepo.overdueReleases();
+      const overdue = releaseRepo.overdueReleases(todayIso);
       expect(overdue).toHaveLength(0);
+    });
+  });
+
+  // ─── Phase 6B regression: dashboard queries hide releases under archived parents ──
+  //
+  // The dashboard queries (findOverdue, findUpcoming, findReady,
+  // findActiveWithoutPlannedDate, findReleasesWithMissingSelectedAssets,
+  // findReleasesWithoutSelectedAssets) used to surface active releases
+  // whose parent project had been archived. They now filter by
+  // projects.archived_at IS NULL so the dashboard only shows actionable
+  // work. Historical release rows remain in the database — the project
+  // workspace and per-project recent list still surface them.
+
+  describe('dashboard queries — archived parent project filter', () => {
+    function archiveProject(projectId) {
+      db.prepare(`UPDATE projects SET archived_at = datetime('now') WHERE id = ?`).run(projectId);
+    }
+
+    it('findOverdue excludes releases whose parent project is archived', () => {
+      const overdue = releaseRepo.create({
+        projectId,
+        ...sampleRelease({ title: 'Overdue In Archived', plannedDate: '2020-01-01', status: 'planned' }),
+      });
+      archiveProject(projectId);
+      const today = new Date().toISOString().split('T')[0];
+      expect(releaseRepo.findOverdue(10, today)).toEqual([]);
+      // The release row is still in the database — only the dashboard query
+      // filters it out.
+      const fromDb = db.prepare(`SELECT archived_at FROM releases WHERE id = ?`).get(overdue.id);
+      expect(fromDb.archived_at).toBeNull();
+    });
+
+    it('findUpcoming excludes releases whose parent project is archived', () => {
+      const upcoming = releaseRepo.create({
+        projectId,
+        ...sampleRelease({ title: 'Upcoming In Archived', plannedDate: '2099-01-01', status: 'planned' }),
+      });
+      archiveProject(projectId);
+      const today = new Date().toISOString().split('T')[0];
+      expect(releaseRepo.findUpcoming(10, today)).toEqual([]);
+      // Sanity: the release is still in the database.
+      expect(db.prepare(`SELECT id FROM releases WHERE id = ?`).get(upcoming.id)).toBeTruthy();
+    });
+
+    it('findReady excludes releases whose parent project is archived', () => {
+      releaseRepo.create({
+        projectId,
+        ...sampleRelease({ title: 'Ready In Archived', plannedDate: '2099-01-01', status: 'ready' }),
+      });
+      archiveProject(projectId);
+      expect(releaseRepo.findReady(10)).toEqual([]);
+    });
+
+    it('findActiveWithoutPlannedDate excludes releases whose parent project is archived', () => {
+      releaseRepo.create({
+        projectId,
+        ...sampleRelease({ title: 'No Date In Archived', plannedDate: null, status: 'drafting' }),
+      });
+      archiveProject(projectId);
+      expect(releaseRepo.findActiveWithoutPlannedDate(10)).toEqual([]);
+    });
+
+    it('findReleasesWithMissingSelectedAssets excludes releases whose parent project is archived', () => {
+      const release = releaseRepo.create({
+        projectId,
+        ...sampleRelease({ title: 'Has Missing In Archived', plannedDate: '2099-01-01', status: 'planned' }),
+      });
+      const missing = assetRepo.upsert(projectId, 'gone.txt', {
+        relativePath: 'gone.txt', filename: 'gone.txt', extension: 'txt',
+        mimeType: 'text/plain', sizeBytes: 0, modifiedAt: null,
+      });
+      db.prepare(`UPDATE assets SET is_present = 0, missing_since = datetime('now') WHERE id = ?`).run(missing.id);
+      releaseRepo.addReleaseAsset(release.id, missing.id, 'attachment', 0);
+      archiveProject(projectId);
+      expect(releaseRepo.findReleasesWithMissingSelectedAssets(10)).toEqual([]);
+    });
+
+    it('findReleasesWithoutSelectedAssets excludes releases whose parent project is archived', () => {
+      releaseRepo.create({
+        projectId,
+        ...sampleRelease({ title: 'No Selection In Archived', plannedDate: '2099-01-01', status: 'planned' }),
+      });
+      archiveProject(projectId);
+      expect(releaseRepo.findReleasesWithoutSelectedAssets(10)).toEqual([]);
+    });
+
+    it('still surfaces releases from non-archived projects alongside an archived sibling', () => {
+      // Multi-project control case: only the archived project's releases
+      // are hidden — releases from active projects still appear.
+      const otherProject = projectRepo.create(sampleProject({ title: 'Other Project' }));
+      const archivedRelease = releaseRepo.create({
+        projectId,
+        ...sampleRelease({ title: 'Hidden Overdue', plannedDate: '2020-01-01', status: 'planned' }),
+      });
+      const activeOverdue = releaseRepo.create({
+        projectId: otherProject.id,
+        ...sampleRelease({ title: 'Visible Overdue', plannedDate: '2020-01-01', status: 'planned' }),
+      });
+      archiveProject(projectId);
+      const today = new Date().toISOString().split('T')[0];
+      const overdue = releaseRepo.findOverdue(10, today);
+      const ids = overdue.map((r) => r.id);
+      expect(ids).not.toContain(archivedRelease.id);
+      expect(ids).toContain(activeOverdue.id);
+    });
+  });
+
+  // ─── Phase 6B regression: legacy upcomingReleases / overdueReleases ──
+  //
+  // The legacy release-repository methods (upcomingReleases, overdueReleases)
+  // previously surfaced active releases belonging to archived projects. They
+  // now mirror the dashboard queries' parent-project filter so callers that
+  // use them directly (e.g. tests, ad-hoc reports) see the same set of
+  // actionable releases. The injected `today` parameter is still the
+  // single source of truth for the date boundary.
+
+  describe('legacy upcomingReleases / overdueReleases — archived parent project filter', () => {
+    function archiveProject(projectId) {
+      db.prepare(`UPDATE projects SET archived_at = datetime('now') WHERE id = ?`).run(projectId);
+    }
+
+    it('upcomingReleases excludes releases whose parent project is archived', () => {
+      const future = releaseRepo.create({
+        projectId,
+        ...sampleRelease({ title: 'Upcoming In Archived', plannedDate: '2099-01-01', status: 'planned' }),
+      });
+      archiveProject(projectId);
+      expect(releaseRepo.upcomingReleases('2025-06-15').map((r) => r.id)).not.toContain(future.id);
+      // Sanity: the release row is still in the database.
+      expect(db.prepare(`SELECT id FROM releases WHERE id = ?`).get(future.id)).toBeTruthy();
+    });
+
+    it('overdueReleases excludes releases whose parent project is archived', () => {
+      const past = releaseRepo.create({
+        projectId,
+        ...sampleRelease({ title: 'Overdue In Archived', plannedDate: '2020-01-01', status: 'planned' }),
+      });
+      archiveProject(projectId);
+      expect(releaseRepo.overdueReleases('2025-06-15').map((r) => r.id)).not.toContain(past.id);
+      // Sanity: the release row is still in the database.
+      expect(db.prepare(`SELECT id FROM releases WHERE id = ?`).get(past.id)).toBeTruthy();
+    });
+
+    it('still surfaces releases from non-archived projects alongside an archived sibling', () => {
+      const otherProject = projectRepo.create(sampleProject({ title: 'Other Project' }));
+      const hiddenUpcoming = releaseRepo.create({
+        projectId,
+        ...sampleRelease({ title: 'Hidden Upcoming', plannedDate: '2099-01-01', status: 'planned' }),
+      });
+      const visibleUpcoming = releaseRepo.create({
+        projectId: otherProject.id,
+        ...sampleRelease({ title: 'Visible Upcoming', plannedDate: '2099-01-01', status: 'planned' }),
+      });
+      archiveProject(projectId);
+      const upcomingIds = releaseRepo.upcomingReleases('2025-06-15').map((r) => r.id);
+      expect(upcomingIds).not.toContain(hiddenUpcoming.id);
+      expect(upcomingIds).toContain(visibleUpcoming.id);
+    });
+  });
+
+  // ─── Phase 6B regression: repository methods accept an injected today ──
+  //
+  // The legacy upcomingReleases / overdueReleases methods previously called
+  // `new Date().toISOString()` internally, so two consecutive calls could
+  // disagree if the system clock crossed midnight, and the boundary was
+  // always UTC. They now require an explicit `today` and must not
+  // independently calculate it. The dashboard service injects a single
+  // application-local value so every section stays consistent.
+
+  describe('upcomingReleases / overdueReleases — injected today', () => {
+    it('upcomingReleases classification changes when today is injected', () => {
+      // A release planned for 2025-06-15 must be:
+      //   - upcoming when today is 2025-06-14
+      //   - NOT upcoming when today is 2025-06-16 (it is in the past)
+      const release = releaseRepo.create({
+        projectId,
+        ...sampleRelease({ title: 'Future Release', plannedDate: '2025-06-15', status: 'planned' }),
+      });
+      expect(releaseRepo.upcomingReleases('2025-06-14').map((r) => r.id)).toContain(release.id);
+      expect(releaseRepo.upcomingReleases('2025-06-16').map((r) => r.id)).not.toContain(release.id);
+    });
+
+    it('overdueReleases classification changes when today is injected', () => {
+      // A release planned for 2025-06-15 must be:
+      //   - overdue when today is 2025-06-16
+      //   - NOT overdue when today is 2025-06-14 (it is in the future)
+      const release = releaseRepo.create({
+        projectId,
+        ...sampleRelease({ title: 'Yesterday Release', plannedDate: '2025-06-15', status: 'planned' }),
+      });
+      expect(releaseRepo.overdueReleases('2025-06-16').map((r) => r.id)).toContain(release.id);
+      expect(releaseRepo.overdueReleases('2025-06-14').map((r) => r.id)).not.toContain(release.id);
     });
   });
 });

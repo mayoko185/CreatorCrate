@@ -8,6 +8,7 @@ import { createApp } from '../src/app.js';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { STATUS_DIR_MAP } from '../src/storage/project-storage.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
+import { getLocalTodayIso } from '../src/util/date.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 
@@ -887,7 +888,7 @@ describe('release HTTP workflow', () => {
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
-    const today = new Date().toISOString().split('T')[0];
+    const today = getLocalTodayIso();
     await request(app)
       .post(`${createRes.headers.location}/publish`)
       .set('Content-Type', 'application/x-www-form-urlencoded')
@@ -895,5 +896,251 @@ describe('release HTTP workflow', () => {
 
     const detail = await request(app).get(createRes.headers.location).expect(200);
     expect(detail.text).toContain(today);
+  });
+
+  // ─── Phase 6B regression: archived parent gates release mutation controls ──
+  //
+  // When the parent project is archived the release detail and assets pages
+  // must hide the Edit, Archive, Publish, and Manage Assets affordances.
+  // The release stays visible (read-only workspace) and the route layer
+  // additionally rejects POSTs to the mutation endpoints. The combination
+  // prevents users from triggering operations that the service would reject.
+
+  describe('archived parent project gates release mutation controls', () => {
+    it('release detail hides Edit, Archive, Publish, and Manage Assets when parent project is archived', async () => {
+      const projRes = await request(app)
+        .post('/projects')
+        .send('title=Gated+Controls+Project')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectId = projRes.headers.location.replace('/projects/', '');
+
+      const createRes = await request(app)
+        .post('/releases')
+        .send(`projectId=${projectId}`)
+        .send('title=Gated+Release')
+        .send('status=ready')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const releaseLocation = createRes.headers.location;
+
+      // Archive the parent project. The release stays active in the DB.
+      await request(app)
+        .post(`/projects/${projectId}/archive`)
+        .expect(302);
+
+      const detail = await request(app).get(releaseLocation).expect(200);
+      // Read-only notice must be present.
+      expect(detail.text).toMatch(/read-only/i);
+      // Mutation controls must be hidden.
+      expect(detail.text).not.toMatch(/href="\/releases\/\d+\/edit"/);
+      expect(detail.text).not.toMatch(/action="\/releases\/\d+\/archive"/);
+      expect(detail.text).not.toMatch(/action="\/releases\/\d+\/publish"/);
+      expect(detail.text).not.toMatch(/href="\/releases\/\d+\/assets"/);
+    });
+
+    it('release detail still exposes mutation controls for an active project (regression)', async () => {
+      const projRes = await request(app)
+        .post('/projects')
+        .send('title=Active+Controls+Project')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectId = projRes.headers.location.replace('/projects/', '');
+
+      const createRes = await request(app)
+        .post('/releases')
+        .send(`projectId=${projectId}`)
+        .send('title=Active+Release')
+        .send('status=ready')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const releaseLocation = createRes.headers.location;
+
+      const detail = await request(app).get(releaseLocation).expect(200);
+      // Mutation controls are visible.
+      expect(detail.text).toMatch(/href="\/releases\/\d+\/edit"/);
+      expect(detail.text).toMatch(/action="\/releases\/\d+\/archive"/);
+      expect(detail.text).toMatch(/action="\/releases\/\d+\/publish"/);
+      expect(detail.text).toMatch(/href="\/releases\/\d+\/assets"/);
+    });
+
+    it('asset selection page hides Save and disables inputs when parent project is archived', async () => {
+      const projRes = await request(app)
+        .post('/projects')
+        .send('title=Gated+Assets+Project')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectId = projRes.headers.location.replace('/projects/', '');
+
+      const getProjectDir = () => {
+        const slug = 'gated-assets-project';
+        const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
+        const matching = entries.filter((e) => e.endsWith(`-${slug}`));
+        return path.join(projectsRoot, 'tbd', matching[0]);
+      };
+      const projectDir = getProjectDir();
+      fs.writeFileSync(path.join(projectDir, 'gated.png'), 'png');
+      await request(app).post(`/projects/${projectId}/scan`).expect(302);
+
+      const createRes = await request(app)
+        .post('/releases')
+        .send(`projectId=${projectId}`)
+        .send('title=Gated+Asset+Release')
+        .send('status=idea')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const releaseLocation = createRes.headers.location;
+
+      // Archive the parent project.
+      await request(app)
+        .post(`/projects/${projectId}/archive`)
+        .expect(302);
+
+      const assets = await request(app)
+        .get(`${releaseLocation}/assets`)
+        .expect(200);
+      // Read-only notice must be present.
+      expect(assets.text).toMatch(/read-only/i);
+      // Save Selection button must not be rendered.
+      expect(assets.text).not.toMatch(/type="submit"[^>]*>Save Selection/);
+      // Checkboxes/role/sortOrder must be disabled.
+      expect(assets.text).toMatch(/class="asset-checkbox"[\s\S]*?disabled/);
+    });
+
+    it('POST /releases/:id update returns 422 when parent project is archived', async () => {
+      const projRes = await request(app)
+        .post('/projects')
+        .send('title=Update+Reject+Archived')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectId = projRes.headers.location.replace('/projects/', '');
+
+      const createRes = await request(app)
+        .post('/releases')
+        .send(`projectId=${projectId}`)
+        .send('title=Update+Reject+Release')
+        .send('status=idea')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      await request(app).post(`/projects/${projectId}/archive`).expect(302);
+
+      // The update POST must be rejected with 422 because the parent project
+      // is archived. The error page must surface the rejection reason.
+      const res = await request(app)
+        .post(createRes.headers.location)
+        .send('title=New+Title')
+        .send('status=planned')
+        .set('Content-Type', 'application/x-www-form-urlencoded');
+      expect(res.status).toBe(422);
+      expect(res.text).toMatch(/archived/i);
+    });
+
+    it('POST /releases/:id/publish returns 422 when parent project is archived', async () => {
+      const projRes = await request(app)
+        .post('/projects')
+        .send('title=Publish+Reject+Archived')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectId = projRes.headers.location.replace('/projects/', '');
+
+      const createRes = await request(app)
+        .post('/releases')
+        .send(`projectId=${projectId}`)
+        .send('title=Publish+Reject+Release')
+        .send('status=ready')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      await request(app).post(`/projects/${projectId}/archive`).expect(302);
+
+      const res = await request(app)
+        .post(`${createRes.headers.location}/publish`)
+        .set('Content-Type', 'application/x-www-form-urlencoded');
+      expect(res.status).toBe(422);
+      expect(res.text).toMatch(/archived/i);
+    });
+
+    it('POST /releases/:id/archive returns 422 when parent project is archived', async () => {
+      const projRes = await request(app)
+        .post('/projects')
+        .send('title=Archive+Reject+Archived')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectId = projRes.headers.location.replace('/projects/', '');
+
+      const createRes = await request(app)
+        .post('/releases')
+        .send(`projectId=${projectId}`)
+        .send('title=Archive+Reject+Release')
+        .send('status=idea')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      await request(app).post(`/projects/${projectId}/archive`).expect(302);
+
+      const res = await request(app)
+        .post(`${createRes.headers.location}/archive`)
+        .set('Content-Type', 'application/x-www-form-urlencoded');
+      expect(res.status).toBe(422);
+      expect(res.text).toMatch(/archived/i);
+    });
+
+    it('POST /releases/:id/assets returns 422 when parent project is archived', async () => {
+      const projRes = await request(app)
+        .post('/projects')
+        .send('title=Asset+Reject+Archived')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectId = projRes.headers.location.replace('/projects/', '');
+
+      const getProjectDir = () => {
+        const slug = 'asset-reject-archived';
+        const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
+        const matching = entries.filter((e) => e.endsWith(`-${slug}`));
+        return path.join(projectsRoot, 'tbd', matching[0]);
+      };
+      const projectDir = getProjectDir();
+      fs.writeFileSync(path.join(projectDir, 'a.png'), 'png');
+      await request(app).post(`/projects/${projectId}/scan`).expect(302);
+
+      const assetRepo = createAssetRepository(db);
+      const assets = assetRepo.findByProjectId(Number(projectId));
+      expect(assets.length).toBeGreaterThan(0);
+      const assetId = String(assets[0].id);
+
+      const createRes = await request(app)
+        .post('/releases')
+        .send(`projectId=${projectId}`)
+        .send('title=Asset+Reject+Release')
+        .send('status=idea')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      await request(app).post(`/projects/${projectId}/archive`).expect(302);
+
+      const res = await request(app)
+        .post(`${createRes.headers.location}/assets`)
+        .send(`selectedAssetIds[]=${assetId}`)
+        .send('roles[]=primary')
+        .send('sortOrder[]=0')
+        .set('Content-Type', 'application/x-www-form-urlencoded');
+      expect(res.status).toBe(422);
+      expect(res.text).toMatch(/archived/i);
+    });
   });
 });

@@ -8,6 +8,7 @@ services:
     environment:
       NODE_ENV: production
       PORT: 3000
+      TZ: ${TZ:-UTC}
       APP_NAME: ${APP_NAME:-CreatorCrate}
       APP_DATA_ROOT: /data/app
       PROJECTS_ROOT: /data/projects

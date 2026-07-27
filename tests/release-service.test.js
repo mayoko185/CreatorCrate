@@ -5,9 +5,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import slugify from '@sindresorhus/slugify';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
-import { createReleaseService, ReleaseValidationError, ReleaseNotFoundError, ReleaseArchivedError, AssetNotFoundError } from '../src/services/release-service.js';
+import { createReleaseService, ReleaseValidationError, ReleaseNotFoundError, ReleaseArchivedError, ReleaseParentArchivedError, AssetNotFoundError } from '../src/services/release-service.js';
 import { createProjectRepository } from '../src/data/project-repository.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
+import { getLocalTodayIso } from '../src/util/date.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 
@@ -197,12 +198,12 @@ describe('release service', () => {
       }).toThrow(ReleaseNotFoundError);
     });
 
-    it('throws if project was archived after release creation', () => {
+    it('throws ReleaseParentArchivedError if project was archived after release creation', () => {
       const created = service.createRelease(projectId, validInput());
       projectRepo.archive(projectId);
       expect(() => {
         service.updateRelease(created.id, validInput({ title: 'Should Fail' }));
-      }).toThrow(ReleaseValidationError);
+      }).toThrow(ReleaseParentArchivedError);
     });
 
     it('rejects invalid status on update', () => {
@@ -601,48 +602,56 @@ describe('release service', () => {
 
   describe('upcomingReleases (service)', () => {
     it('returns releases with future planned_date sorted asc', () => {
-      const future1 = new Date();
+      const today = new Date();
+      const future1 = new Date(today);
       future1.setDate(future1.getDate() + 30);
-      const future2 = new Date();
+      const future2 = new Date(today);
       future2.setDate(future2.getDate() + 60);
       const fmt = (d) => d.toISOString().split('T')[0];
+      const todayIso = fmt(today);
 
       service.createRelease(projectId, validInput({ title: 'Later', plannedDate: fmt(future2), status: 'planned' }));
       service.createRelease(projectId, validInput({ title: 'Sooner', plannedDate: fmt(future1), status: 'planned' }));
-      const upcoming = service.upcomingReleases();
+      const upcoming = service.upcomingReleases(todayIso);
       expect(upcoming[0].title).toBe('Sooner');
       expect(upcoming[1].title).toBe('Later');
     });
 
     it('excludes archived releases', () => {
-      const future = new Date();
+      const today = new Date();
+      const future = new Date(today);
       future.setDate(future.getDate() + 30);
       const fmt = (d) => d.toISOString().split('T')[0];
+      const todayIso = fmt(today);
       const r1 = service.createRelease(projectId, validInput({ title: 'Archived', plannedDate: fmt(future), status: 'planned' }));
       service.archiveRelease(r1.id);
-      const upcoming = service.upcomingReleases();
+      const upcoming = service.upcomingReleases(todayIso);
       expect(upcoming).toHaveLength(0);
     });
   });
 
   describe('overdueReleases (service)', () => {
     it('returns releases past their planned_date', () => {
-      const past = new Date();
+      const today = new Date();
+      const past = new Date(today);
       past.setDate(past.getDate() - 10);
       const fmt = (d) => d.toISOString().split('T')[0];
+      const todayIso = fmt(today);
       service.createRelease(projectId, validInput({ title: 'Overdue', plannedDate: fmt(past), status: 'planned' }));
-      const overdue = service.overdueReleases();
+      const overdue = service.overdueReleases(todayIso);
       expect(overdue).toHaveLength(1);
       expect(overdue[0].title).toBe('Overdue');
     });
 
     it('excludes archived releases', () => {
-      const past = new Date();
+      const today = new Date();
+      const past = new Date(today);
       past.setDate(past.getDate() - 10);
       const fmt = (d) => d.toISOString().split('T')[0];
+      const todayIso = fmt(today);
       const r1 = service.createRelease(projectId, validInput({ title: 'Archived', plannedDate: fmt(past), status: 'planned' }));
       service.archiveRelease(r1.id);
-      const overdue = service.overdueReleases();
+      const overdue = service.overdueReleases(todayIso);
       expect(overdue).toHaveLength(0);
     });
   });
@@ -703,6 +712,126 @@ describe('release service', () => {
       expect(() => {
         service.removeAssetFromRelease(release.id, asset.id);
       }).toThrow(ReleaseArchivedError);
+    });
+  });
+
+  // ─── Phase 6B regression: archived parent project guard ────────────
+  //
+  // Archived projects must make their releases immutable. Every release
+  // mutation (update, publish, archive, asset selection) must reject when
+  // the parent project has been archived. Read operations remain available
+  // so the project workspace can still display historical information.
+
+  describe('archived parent project guard', () => {
+    function archiveProject() {
+      projectRepo.archive(projectId);
+    }
+
+    it('updateRelease throws ReleaseParentArchivedError when parent project is archived', () => {
+      const release = service.createRelease(projectId, validInput());
+      archiveProject();
+
+      expect(() => {
+        service.updateRelease(release.id, validInput({ title: 'New Title' }));
+      }).toThrow(ReleaseParentArchivedError);
+    });
+
+    it('publishRelease throws ReleaseParentArchivedError when parent project is archived', () => {
+      const release = service.createRelease(projectId, validInput({ status: 'ready' }));
+      archiveProject();
+
+      expect(() => {
+        service.publishRelease(release.id);
+      }).toThrow(ReleaseParentArchivedError);
+    });
+
+    it('archiveRelease throws ReleaseParentArchivedError when parent project is archived', () => {
+      const release = service.createRelease(projectId, validInput());
+      archiveProject();
+
+      expect(() => {
+        service.archiveRelease(release.id);
+      }).toThrow(ReleaseParentArchivedError);
+    });
+
+    it('selectAssets throws ReleaseParentArchivedError when parent project is archived', () => {
+      const release = service.createRelease(projectId, validInput());
+      const asset = assetRepo.upsert(projectId, 'file.txt', sampleAsset(projectId));
+      archiveProject();
+
+      expect(() => {
+        service.selectAssets(release.id, [{ assetId: asset.id }]);
+      }).toThrow(ReleaseParentArchivedError);
+    });
+
+    it('addAssetToRelease throws ReleaseParentArchivedError when parent project is archived', () => {
+      const release = service.createRelease(projectId, validInput());
+      const asset = assetRepo.upsert(projectId, 'file.txt', sampleAsset(projectId));
+      archiveProject();
+
+      expect(() => {
+        service.addAssetToRelease(release.id, asset.id);
+      }).toThrow(ReleaseParentArchivedError);
+    });
+
+    it('removeAssetFromRelease throws ReleaseParentArchivedError when parent project is archived', () => {
+      const release = service.createRelease(projectId, validInput());
+      const asset = assetRepo.upsert(projectId, 'file.txt', sampleAsset(projectId));
+      service.addAssetToRelease(release.id, asset.id);
+      archiveProject();
+
+      expect(() => {
+        service.removeAssetFromRelease(release.id, asset.id);
+      }).toThrow(ReleaseParentArchivedError);
+    });
+
+    it('does not mutate the release when an archived-parent guard rejects', () => {
+      // The guard must short-circuit BEFORE any write so a failed update
+      // does not change the title, status, or other persisted fields.
+      const release = service.createRelease(projectId, validInput({ title: 'Before' }));
+      const originalUpdatedAt = release.updated_at;
+      archiveProject();
+
+      try {
+        service.updateRelease(release.id, validInput({ title: 'After' }));
+      } catch (_) {
+        // expected
+      }
+      const after = service.findRelease(release.id);
+      expect(after.title).toBe('Before');
+      // The repository uses a WHERE id = AND archived_at IS NULL guard for
+      // update; a non-archived release in an archived project must not be
+      // touched by the failed call.
+    });
+
+    it('read operations remain available when parent project is archived', () => {
+      // Archived projects do not lose their historical data. Reads through
+      // findRelease, listReleaseAssets, listReleases, and findReleasesByAsset
+      // must still work so the project workspace can render history.
+      const release = service.createRelease(projectId, validInput());
+      const asset = assetRepo.upsert(projectId, 'file.txt', sampleAsset(projectId));
+      service.addAssetToRelease(release.id, asset.id);
+      archiveProject();
+
+      expect(service.findRelease(release.id)).toBeTruthy();
+      expect(service.findRelease(release.id).title).toBe(release.title);
+      expect(service.listReleaseAssets(release.id)).toHaveLength(1);
+      expect(service.listReleases(projectId)).toHaveLength(1);
+      expect(service.findReleasesByAsset(asset.id)).toHaveLength(1);
+    });
+
+    it('preserves the failed call message so the route can render a useful error', () => {
+      const release = service.createRelease(projectId, validInput());
+      archiveProject();
+
+      try {
+        service.updateRelease(release.id, validInput());
+        expect.fail('Should have thrown');
+      } catch (err) {
+        expect(err).toBeInstanceOf(ReleaseParentArchivedError);
+        expect(err.status).toBe(422);
+        expect(err.message).toMatch(/archived/i);
+      }
     });
   });
 
@@ -850,29 +979,33 @@ describe('release service', () => {
 
   describe('upcomingReleases excludes past dates', () => {
     it('excludes releases with past planned_date', () => {
-      const past = new Date();
+      const today = new Date();
+      const past = new Date(today);
       past.setDate(past.getDate() - 30);
       const fmt = (d) => d.toISOString().split('T')[0];
+      const todayIso = fmt(today);
 
       service.createRelease(projectId, validInput({ title: 'Past Release', plannedDate: fmt(past), status: 'planned' }));
-      const upcoming = service.upcomingReleases();
+      const upcoming = service.upcomingReleases(todayIso);
       expect(upcoming).toHaveLength(0);
     });
 
     it('excludes releases with today as planned_date', () => {
-      const today = new Date().toISOString().split('T')[0];
+      const today = '2025-06-15';
       service.createRelease(projectId, validInput({ title: 'Today Release', plannedDate: today, status: 'planned' }));
-      const upcoming = service.upcomingReleases();
+      const upcoming = service.upcomingReleases(today);
       expect(upcoming).toHaveLength(0);
     });
 
     it('excludes cancelled releases', () => {
-      const future = new Date();
+      const today = new Date();
+      const future = new Date(today);
       future.setDate(future.getDate() + 30);
       const fmt = (d) => d.toISOString().split('T')[0];
+      const todayIso = fmt(today);
 
       service.createRelease(projectId, validInput({ title: 'Cancelled Future', plannedDate: fmt(future), status: 'cancelled' }));
-      const upcoming = service.upcomingReleases();
+      const upcoming = service.upcomingReleases(todayIso);
       expect(upcoming).toHaveLength(0);
     });
   });
@@ -999,21 +1132,22 @@ describe('release service', () => {
       expect(published.published_date).toBe('2025-09-30');
     });
 
-    it('falls back to today when no date is provided', () => {
+    it('falls back to the application-local today when no date is provided', () => {
+      // The publish fallback must use the application-local date helper, not
+      // UTC, so a release published near local midnight does not pick up
+      // the wrong day. Pin the expected value to the helper's output.
       const created = service.createRelease(projectId, validInput({ status: 'ready' }));
       const published = service.publishRelease(created.id);
-      const today = new Date().toISOString().split('T')[0];
-      expect(published.published_date).toBe(today);
+      expect(published.published_date).toBe(getLocalTodayIso());
     });
 
-    it('rejects an empty string and falls back behavior is at the route', () => {
+    it('rejects an empty string and falls back to local today', () => {
       // The service treats empty string the same as null — falling back to
-      // today. The route is responsible for converting empty form input to
-      // null before passing it to the service.
+      // the application-local today. The route is responsible for converting
+      // empty form input to null before passing it to the service.
       const created = service.createRelease(projectId, validInput({ status: 'ready' }));
       const published = service.publishRelease(created.id, '');
-      const today = new Date().toISOString().split('T')[0];
-      expect(published.published_date).toBe(today);
+      expect(published.published_date).toBe(getLocalTodayIso());
     });
   });
 });

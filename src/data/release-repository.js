@@ -28,6 +28,48 @@ const RELEASE_ASSET_COLUMNS = [
 const SELECT_ALL = `SELECT ${COLUMNS.join(', ')} FROM releases`;
 
 /**
+ * Shared WHERE fragment: releases that are not archived and are in the active
+ * workflow (idea/planned/drafting/ready). Used by overdue, upcoming, ready,
+ * and missing-planned-date queries so the active-set definition stays in one
+ * place.
+ */
+const ACTIVE_UNARCHIVED = `archived_at IS NULL AND status IN ('idea', 'planned', 'drafting', 'ready')`;
+
+/**
+ * Shared EXISTS fragment: release belongs to a project that is not archived.
+ * Used by every dashboard workflow query so an active release whose parent
+ * project has been archived is hidden from attention lists. Archived
+ * projects remain readable through the project workspace (historical recent
+ * list, status counts) — only the actionable attention lists are filtered.
+ *
+ * The fragment references `releases.project_id` and assumes the implicit
+ * from-table of the surrounding query is `releases`. Queries that alias the
+ * table as `r` use {@link ACTIVE_PARENT_PROJECT_R} instead.
+ */
+const ACTIVE_PARENT_PROJECT = `EXISTS (
+  SELECT 1 FROM projects
+  WHERE projects.id = releases.project_id
+    AND projects.archived_at IS NULL
+)`;
+
+/**
+ * Same as {@link ACTIVE_PARENT_PROJECT} but for queries that alias the
+ * releases table as `r` (currently only findReleasesWithMissingSelectedAssets).
+ */
+const ACTIVE_PARENT_PROJECT_R = `EXISTS (
+  SELECT 1 FROM projects
+  WHERE projects.id = r.project_id
+    AND projects.archived_at IS NULL
+)`;
+
+/**
+ * Shared full WHERE fragment for the dashboard attention lists: release is
+ * not archived, in an active workflow status, and belongs to a non-archived
+ * project. Combines {@link ACTIVE_UNARCHIVED} with the parent-project check.
+ */
+const DASHBOARD_ACTIVE = `${ACTIVE_UNARCHIVED} AND ${ACTIVE_PARENT_PROJECT}`;
+
+/**
  * @typedef {object} ReleaseRecord
  * @property {number} id
  * @property {number} project_id
@@ -285,35 +327,269 @@ export function createReleaseRepository(db) {
     },
 
     /**
+     * Active, non-archived releases whose planned_date is strictly after the
+     * supplied `today`. Releases whose parent project has been archived are
+     * excluded — the project workspace surfaces them, but date classification
+     * lists only include actionable work. The caller is expected to inject
+     * `today` so every consumer shares a single application-local date
+     * snapshot — this method must not call `new Date()` itself.
+     * @param {string} today ISO date string YYYY-MM-DD
      * @returns {ReleaseRecord[]}
      */
-    upcomingReleases() {
-      const today = new Date().toISOString().split('T')[0];
+    upcomingReleases(today) {
       const sql = `
         ${SELECT_ALL}
         WHERE archived_at IS NULL
           AND status IN ('idea', 'planned', 'drafting', 'ready')
           AND planned_date IS NOT NULL
           AND planned_date > ?
+          AND ${ACTIVE_PARENT_PROJECT}
         ORDER BY planned_date ASC
       `;
       return db.prepare(sql).all(today);
     },
 
     /**
+     * Active, non-archived releases whose planned_date is strictly before the
+     * supplied `today`. Releases whose parent project has been archived are
+     * excluded — the project workspace surfaces them, but date classification
+     * lists only include actionable work. The caller is expected to inject
+     * `today` so every consumer shares a single application-local date
+     * snapshot — this method must not call `new Date()` itself.
+     * @param {string} today ISO date string YYYY-MM-DD
      * @returns {ReleaseRecord[]}
      */
-    overdueReleases() {
-      const today = new Date().toISOString().split('T')[0];
+    overdueReleases(today) {
       const sql = `
         ${SELECT_ALL}
         WHERE archived_at IS NULL
           AND status IN ('idea', 'planned', 'drafting', 'ready')
           AND planned_date IS NOT NULL
           AND planned_date < ?
+          AND ${ACTIVE_PARENT_PROJECT}
         ORDER BY planned_date ASC
       `;
       return db.prepare(sql).all(today);
+    },
+
+    /**
+     * Overdue releases with a bounded limit. Ordered by planned_date ascending
+     * (most overdue first). Active, non-archived only. The caller is expected
+     * to inject `today` so the dashboard and other consumers share a single
+     * date snapshot — this method must not call `new Date()` itself.
+     * Overdue means planned_date strictly before today.
+     * @param {number} limit
+     * @param {string} today ISO date string YYYY-MM-DD
+     * @returns {ReleaseRecord[]}
+     */
+    findOverdue(limit, today) {
+      const sql = `
+        ${SELECT_ALL}
+        WHERE ${DASHBOARD_ACTIVE}
+          AND planned_date IS NOT NULL
+          AND planned_date < ?
+        ORDER BY planned_date ASC
+        LIMIT ?
+      `;
+      return db.prepare(sql).all(today, limit);
+    },
+
+    /**
+     * Upcoming releases with a bounded limit. Ordered by planned_date
+     * ascending (soonest first). Active, non-archived only. The caller is
+     * expected to inject `today` so the dashboard and other consumers share
+     * a single date snapshot — this method must not call `new Date()` itself.
+     * Upcoming includes today: planned_date >= today.
+     * @param {number} limit
+     * @param {string} today ISO date string YYYY-MM-DD
+     * @returns {ReleaseRecord[]}
+     */
+    findUpcoming(limit, today) {
+      const sql = `
+        ${SELECT_ALL}
+        WHERE ${DASHBOARD_ACTIVE}
+          AND planned_date IS NOT NULL
+          AND planned_date >= ?
+        ORDER BY planned_date ASC
+        LIMIT ?
+      `;
+      return db.prepare(sql).all(today, limit);
+    },
+
+    /**
+     * Releases with status 'ready'. These are waiting to be published.
+     * Bounded; ordered by planned_date ascending (NULLs last), then by
+     * updated_at descending as a tie-breaker.
+     * @param {number} limit
+     * @returns {ReleaseRecord[]}
+     */
+    findReady(limit) {
+      const sql = `
+        ${SELECT_ALL}
+        WHERE ${DASHBOARD_ACTIVE}
+          AND status = 'ready'
+        ORDER BY (planned_date IS NULL), planned_date ASC, updated_at DESC
+        LIMIT ?
+      `;
+      return db.prepare(sql).all(limit);
+    },
+
+    /**
+     * Active releases with no planned date. These need scheduling attention.
+     * Bounded; ordered by updated_at descending (most recently touched first).
+     * @param {number} limit
+     * @returns {ReleaseRecord[]}
+     */
+    findActiveWithoutPlannedDate(limit) {
+      const sql = `
+        ${SELECT_ALL}
+        WHERE ${DASHBOARD_ACTIVE}
+          AND planned_date IS NULL
+        ORDER BY updated_at DESC
+        LIMIT ?
+      `;
+      return db.prepare(sql).all(limit);
+    },
+
+    /**
+     * Active releases that have at least one selected asset currently marked
+     * as missing (is_present = 0). The result is enriched with a synthetic
+     * `missing_asset_count` field for display. Ordered by planned_date
+     * ascending (NULLs last) so the most urgent surface first.
+     * @param {number} limit
+     * @returns {Array<ReleaseRecord & {missing_asset_count: number}>}
+     */
+    findReleasesWithMissingSelectedAssets(limit) {
+      const sql = `
+        SELECT ${COLUMNS.map((c) => `r.${c}`).join(', ')},
+               COUNT(a.id) AS missing_asset_count
+        FROM releases r
+        JOIN release_assets ra ON ra.release_id = r.id
+        JOIN assets a ON a.id = ra.asset_id
+        WHERE r.archived_at IS NULL
+          AND r.status IN ('idea', 'planned', 'drafting', 'ready')
+          AND a.is_present = 0
+          AND ${ACTIVE_PARENT_PROJECT_R}
+        GROUP BY r.id
+        ORDER BY (r.planned_date IS NULL), r.planned_date ASC, r.updated_at DESC
+        LIMIT ?
+      `;
+      return db.prepare(sql).all(limit);
+    },
+
+    /**
+     * Active releases that have NO selected assets at all. This is distinct
+     * from findReleasesWithMissingSelectedAssets (which requires at least one
+     * selected asset that is physically missing). A release with zero
+     * release_assets rows has nothing to publish and needs asset-selection
+     * attention. Ordered by planned_date ascending (NULLs last) so the most
+     * urgent surface first.
+     * @param {number} limit
+     * @returns {ReleaseRecord[]}
+     */
+    findReleasesWithoutSelectedAssets(limit) {
+      const sql = `
+        ${SELECT_ALL}
+        WHERE ${DASHBOARD_ACTIVE}
+          AND NOT EXISTS (
+            SELECT 1 FROM release_assets ra WHERE ra.release_id = id
+          )
+        ORDER BY (planned_date IS NULL), planned_date ASC, updated_at DESC
+        LIMIT ?
+      `;
+      return db.prepare(sql).all(limit);
+    },
+
+    /**
+     * Per-project release status counts (all releases, including archived).
+     * Returns an object keyed by status with 0 for missing statuses.
+     * @param {number} projectId
+     * @returns {Object.<string, number>}
+     */
+    countByStatusByProjectId(projectId) {
+      const rows = db.prepare(`
+        SELECT status, COUNT(*) AS c
+        FROM releases
+        WHERE project_id = ?
+        GROUP BY status
+      `).all(projectId);
+      const counts = Object.fromEntries(RELEASE_STATUSES.map((s) => [s, 0]));
+      for (const row of rows) {
+        if (counts[row.status] !== undefined) {
+          counts[row.status] = row.c;
+        }
+      }
+      return counts;
+    },
+
+    /**
+     * Active (non-terminal, non-archived) releases for a project, bounded.
+     * Ordered by planned_date ascending (NULLs last) then by updated_at DESC.
+     * @param {number} projectId
+     * @param {number} limit
+     * @returns {ReleaseRecord[]}
+     */
+    findActiveByProjectId(projectId, limit) {
+      const sql = `
+        ${SELECT_ALL}
+        WHERE project_id = ? AND ${ACTIVE_UNARCHIVED}
+        ORDER BY (planned_date IS NULL), planned_date ASC, updated_at DESC
+        LIMIT ?
+      `;
+      return db.prepare(sql).all(projectId, limit);
+    },
+
+    /**
+     * Recently updated releases for a project (any status, including archived).
+     * @param {number} projectId
+     * @param {number} limit
+     * @returns {ReleaseRecord[]}
+     */
+    findRecentByProjectId(projectId, limit) {
+      const sql = `
+        ${SELECT_ALL}
+        WHERE project_id = ?
+        ORDER BY updated_at DESC
+        LIMIT ?
+      `;
+      return db.prepare(sql).all(projectId, limit);
+    },
+
+    /**
+     * Count of distinct assets that are currently missing and are referenced
+     * by at least one non-archived release. Global scope.
+     * @returns {number}
+     */
+    countMissingAssetsReferenced() {
+      const row = db.prepare(`
+        SELECT COUNT(DISTINCT a.id) AS c
+        FROM release_assets ra
+        JOIN assets a ON a.id = ra.asset_id
+        JOIN releases r ON r.id = ra.release_id
+        WHERE a.is_present = 0
+          AND r.archived_at IS NULL
+      `).get();
+      return row.c;
+    },
+
+    /**
+     * Count of distinct assets for a given project that are currently missing
+     * and are referenced by at least one non-archived release of that same
+     * project.
+     * @param {number} projectId
+     * @returns {number}
+     */
+    countMissingAssetsReferencedByProjectId(projectId) {
+      const row = db.prepare(`
+        SELECT COUNT(DISTINCT a.id) AS c
+        FROM release_assets ra
+        JOIN assets a ON a.id = ra.asset_id
+        JOIN releases r ON r.id = ra.release_id
+        WHERE a.is_present = 0
+          AND r.archived_at IS NULL
+          AND a.project_id = ?
+      `).get(projectId);
+      return row.c;
     },
 
     // ─── Release Asset Selection ─────────────────────────────────────────

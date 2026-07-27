@@ -3,13 +3,23 @@
 {% block content %}
   <div class="page-header">
     <h1>{{ project.title }}</h1>
-    <div class="actions">
-      <a class="button" href="/projects/{{ project.id }}/edit">Edit</a>
-      <form method="post" action="/projects/{{ project.id }}/archive" class="inline-form">
-        <button class="button button-danger" type="submit" onclick="return confirm('Archive this project?')">Archive</button>
-      </form>
-    </div>
+    {% if not project.archived_at %}
+      <div class="actions">
+        <a class="button" href="/projects/{{ project.id }}/edit">Edit</a>
+        <form method="post" action="/projects/{{ project.id }}/archive" class="inline-form">
+          <button class="button button-danger" type="submit" onclick="return confirm('Archive this project?')">Archive</button>
+        </form>
+      </div>
+    {% endif %}
   </div>
+
+  {# ─── Workflow actions ───────────────────────────────────────────── #}
+  <section class="workflow-actions">
+    {% if not project.archived_at %}
+      <a class="button button-primary" href="/releases/new?projectId={{ project.id }}">Create release</a>
+    {% endif %}
+    <a class="button" href="/projects/{{ project.id }}/assets">View Assets</a>
+  </section>
 
   <dl class="detail-list">
     {% if project.project_dir %}
@@ -53,9 +63,72 @@
     {% endif %}
   </dl>
 
-  <section>
-    <h2>Assets</h2>
-    <p><a class="button" href="/projects/{{ project.id }}/assets">View Assets</a></p>
+  {# ─── Release summary ────────────────────────────────────────────── #}
+  <section class="release-summary">
+    <h2>Releases</h2>
+
+    <h3>Status</h3>
+    <div class="count-grid">
+      <div class="count-card"><span class="count">{{ releaseSummary.statusCounts.idea or 0 }}</span> Idea</div>
+      <div class="count-card"><span class="count">{{ releaseSummary.statusCounts.planned or 0 }}</span> Planned</div>
+      <div class="count-card"><span class="count">{{ releaseSummary.statusCounts.drafting or 0 }}</span> Drafting</div>
+      <div class="count-card"><span class="count">{{ releaseSummary.statusCounts.ready or 0 }}</span> Ready</div>
+      <div class="count-card"><span class="count">{{ releaseSummary.statusCounts.published or 0 }}</span> Published</div>
+      <div class="count-card"><span class="count">{{ releaseSummary.statusCounts.cancelled or 0 }}</span> Cancelled</div>
+    </div>
+
+    <h3>Active releases</h3>
+    {% if releaseSummary.active.length > 0 %}
+      <ul class="release-list">
+        {% for r in releaseSummary.active %}
+          <li>
+            <a href="/releases/{{ r.id }}">{{ r.title }}</a>
+            <span class="meta">
+              {{ r.status }}{% if r.planned_date %} · planned {{ r.planned_date }}{% endif %}
+            </span>
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="placeholder">No active releases.</p>
+    {% endif %}
+
+    <h3>Recent releases</h3>
+    {% if releaseSummary.recent.length > 0 %}
+      <ul class="release-list">
+        {% for r in releaseSummary.recent %}
+          <li>
+            <a href="/releases/{{ r.id }}">{{ r.title }}</a>
+            <span class="meta">
+              {{ r.status }}{% if r.published_date %} · published {{ r.published_date }}{% elif r.planned_date %} · planned {{ r.planned_date }}{% endif %}
+              · updated {{ r.updated_at }}
+            </span>
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="placeholder">No releases yet.</p>
+    {% endif %}
+  </section>
+
+  {# ─── Asset health ───────────────────────────────────────────────── #}
+  <section class="asset-health">
+    <h2>Asset health</h2>
+    <dl class="summary-list">
+      <dt>Total assets</dt>
+      <dd>{{ assetHealth.total }}</dd>
+
+      <dt>Present</dt>
+      <dd>{{ assetHealth.present }}</dd>
+
+      <dt>Missing</dt>
+      <dd>
+        {{ assetHealth.missing }}
+        {% if assetHealth.missingByReleases > 0 %}
+          <small>({{ assetHealth.missingByReleases }} referenced by releases)</small>
+        {% endif %}
+      </dd>
+    </dl>
   </section>
 
   {% if project.description %}

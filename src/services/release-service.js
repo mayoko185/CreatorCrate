@@ -1,6 +1,7 @@
 import { createReleaseRepository, RELEASE_STATUSES, ACTIVE_RELEASE_STATUSES, RELEASE_ASSET_ROLES } from '../data/release-repository.js';
 import { createProjectRepository } from '../data/project-repository.js';
 import { createAssetRepository } from '../data/asset-repository.js';
+import { getLocalTodayIso } from '../util/date.js';
 
 export { RELEASE_STATUSES, ACTIVE_RELEASE_STATUSES };
 
@@ -24,6 +25,20 @@ export class ReleaseArchivedError extends Error {
   constructor(id) {
     super(`Release ${id} is archived and cannot be modified.`);
     this.name = 'ReleaseArchivedError';
+    this.status = 422;
+  }
+}
+
+/**
+ * Thrown when a release mutation is attempted for a release whose parent
+ * project has been archived. Archived projects are immutable, so any attempt
+ * to update, publish, archive, or mutate asset selection on a release inside
+ * an archived project must fail with this error.
+ */
+export class ReleaseParentArchivedError extends Error {
+  constructor(projectId) {
+    super(`Project ${projectId} is archived and cannot be modified.`);
+    this.name = 'ReleaseParentArchivedError';
     this.status = 422;
   }
 }
@@ -214,6 +229,24 @@ export function createReleaseService(db) {
     }
   }
 
+  /**
+   * Shared guard: reject a release mutation when the parent project has been
+   * archived. Archived projects are immutable, so any update, publish,
+   * archive, or asset-selection mutation on a release inside such a project
+   * must fail with {@link ReleaseParentArchivedError}. Read operations are
+   * unaffected — the project remains queryable through findRelease,
+   * listReleaseAssets, etc.
+   *
+   * @param {number} projectId
+   * @throws {ReleaseParentArchivedError} when the project is archived
+   */
+  function guardParentProjectNotArchived(projectId) {
+    const parent = projectRepository.findById(projectId);
+    if (parent && parent.archived_at) {
+      throw new ReleaseParentArchivedError(projectId);
+    }
+  }
+
   return {
     RELEASE_STATUSES,
     ACTIVE_RELEASE_STATUSES,
@@ -244,6 +277,10 @@ export function createReleaseService(db) {
         throw new ReleaseNotFoundError(id);
       }
 
+      // Reject mutations when the parent project has been archived. Archived
+      // projects are immutable — releases inside them are read-only.
+      guardParentProjectNotArchived(release.project_id);
+
       // Validate project still exists and is not archived
       validateProjectExists(release.project_id);
 
@@ -270,6 +307,10 @@ export function createReleaseService(db) {
         throw new ReleaseNotFoundError(id);
       }
 
+      // Reject mutations when the parent project has been archived. Archived
+      // projects are immutable — releases inside them cannot be published.
+      guardParentProjectNotArchived(release.project_id);
+
       if (release.archived_at) {
         throw new ReleaseValidationError({ general: 'Cannot publish an archived release.' });
       }
@@ -282,7 +323,7 @@ export function createReleaseService(db) {
         throw new ReleaseValidationError({ general: 'Only releases with status "ready" can be published.' });
       }
 
-      const date = publishedDate || new Date().toISOString().split('T')[0];
+      const date = publishedDate || getLocalTodayIso();
       if (!isValidDate(date)) {
         throw new ReleaseValidationError({ publishedDate: 'Published date must be a valid date (YYYY-MM-DD).' });
       }
@@ -304,6 +345,12 @@ export function createReleaseService(db) {
       if (!release) {
         throw new ReleaseNotFoundError(id);
       }
+
+      // Reject mutations when the parent project has been archived. The
+      // release is already inside an archived project; archiving the
+      // release itself adds no information and the operation must be
+      // rejected.
+      guardParentProjectNotArchived(release.project_id);
 
       if (release.archived_at) {
         throw new ReleaseValidationError({ general: 'Release is already archived.' });
@@ -345,17 +392,25 @@ export function createReleaseService(db) {
     },
 
     /**
+     * The repository must not compute `today` itself — callers must inject
+     * a single application-local date boundary so all dashboard sections
+     * stay consistent.
+     * @param {string} today ISO date string YYYY-MM-DD
      * @returns {ReleaseRecord[]}
      */
-    upcomingReleases() {
-      return repository.upcomingReleases();
+    upcomingReleases(today) {
+      return repository.upcomingReleases(today);
     },
 
     /**
+     * The repository must not compute `today` itself — callers must inject
+     * a single application-local date boundary so all dashboard sections
+     * stay consistent.
+     * @param {string} today ISO date string YYYY-MM-DD
      * @returns {ReleaseRecord[]}
      */
-    overdueReleases() {
-      return repository.overdueReleases();
+    overdueReleases(today) {
+      return repository.overdueReleases(today);
     },
 
     // ─── Release Asset Selection ───────────────────────────────────────────
@@ -439,6 +494,8 @@ export function createReleaseService(db) {
         throw new ReleaseNotFoundError(releaseId);
       }
       guardReleaseNotArchived(release);
+      // Reject mutations when the parent project has been archived.
+      guardParentProjectNotArchived(release.project_id);
 
       const { assetIds, cleaned } = this.validateSelections(selections, releaseId);
 
@@ -504,6 +561,8 @@ export function createReleaseService(db) {
         throw new ReleaseNotFoundError(releaseId);
       }
       guardReleaseNotArchived(release);
+      // Reject mutations when the parent project has been archived.
+      guardParentProjectNotArchived(release.project_id);
 
       // Validate role
       if (!RELEASE_ASSET_ROLES.includes(role)) {
@@ -560,6 +619,8 @@ export function createReleaseService(db) {
         throw new ReleaseNotFoundError(releaseId);
       }
       guardReleaseNotArchived(release);
+      // Reject mutations when the parent project has been archived.
+      guardParentProjectNotArchived(release.project_id);
       return repository.removeReleaseAsset(releaseId, assetId);
     },
 

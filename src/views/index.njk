@@ -10,71 +10,162 @@
     <a class="button" href="/releases">View All Releases</a>
   </div>
 
-  <section class="dashboard-counts">
-    <h2>Project counts</h2>
+  {# ─── Releases needing attention ──────────────────────────────────── #}
+  <section class="needs-attention">
+    <h2>Releases needing attention</h2>
+
+    {% if attention.totalCount == 0 %}
+      <p class="placeholder">All releases are in good shape. Nothing needs attention right now.</p>
+    {% else %}
+      {% if attention.overdue.length > 0 %}
+        <div class="attention-group attention-overdue">
+          <h3>Overdue ({{ attention.overdue.length }})</h3>
+          <ul class="release-list">
+            {% for r in attention.overdue %}
+              <li>
+                <a href="/releases/{{ r.id }}">{{ r.title }}</a>
+                <span class="meta">{{ r.status }} · planned {{ r.planned_date }}</span>
+              </li>
+            {% endfor %}
+          </ul>
+        </div>
+      {% endif %}
+
+      {% if attention.ready.length > 0 %}
+        <div class="attention-group attention-ready">
+          <h3>Ready to publish ({{ attention.ready.length }})</h3>
+          <ul class="release-list">
+            {% for r in attention.ready %}
+              <li>
+                <a href="/releases/{{ r.id }}">{{ r.title }}</a>
+                <span class="meta">{{ r.status }}{% if r.planned_date %} · planned {{ r.planned_date }}{% endif %}</span>
+              </li>
+            {% endfor %}
+          </ul>
+        </div>
+      {% endif %}
+
+      {% if attention.missingPlannedDate.length > 0 %}
+        <div class="attention-group attention-scheduling">
+          <h3>Active without planned date ({{ attention.missingPlannedDate.length }})</h3>
+          <ul class="release-list">
+            {% for r in attention.missingPlannedDate %}
+              <li>
+                <a href="/releases/{{ r.id }}">{{ r.title }}</a>
+                <span class="meta">{{ r.status }}</span>
+              </li>
+            {% endfor %}
+          </ul>
+        </div>
+      {% endif %}
+
+      {% if attention.releasesWithoutAssets.length > 0 %}
+        <div class="attention-group attention-selection">
+          <h3>Missing selection ({{ attention.releasesWithoutAssets.length }})</h3>
+          <ul class="release-list">
+            {% for r in attention.releasesWithoutAssets %}
+              <li>
+                <a href="/releases/{{ r.id }}">{{ r.title }}</a>
+                <span class="meta">
+                  {{ r.status }}{% if r.planned_date %} · planned {{ r.planned_date }}{% endif %}
+                  · no assets selected
+                </span>
+              </li>
+            {% endfor %}
+          </ul>
+        </div>
+      {% endif %}
+
+      {% if attention.missingSelectedAssets.length > 0 %}
+        <div class="attention-group attention-warning">
+          <h3>Missing selected assets ({{ attention.missingSelectedAssets.length }})</h3>
+          <ul class="release-list">
+            {% for r in attention.missingSelectedAssets %}
+              <li>
+                <a href="/releases/{{ r.id }}">{{ r.title }}</a>
+                <span class="meta">
+                  {{ r.status }}{% if r.planned_date %} · planned {{ r.planned_date }}{% endif %}
+                  · {{ r.missing_asset_count }} missing
+                </span>
+              </li>
+            {% endfor %}
+          </ul>
+        </div>
+      {% endif %}
+    {% endif %}
+  </section>
+
+  {# ─── Upcoming releases ──────────────────────────────────────────── #}
+  <section class="upcoming-releases">
+    <h2>Upcoming releases</h2>
+    {% if upcomingReleases.length > 0 %}
+      <div class="upcoming-grouped">
+        {% for group in upcomingReleases %}
+          <h3 class="upcoming-date">{{ group.plannedDate }}</h3>
+          <ul class="release-list">
+            {% for r in group.releases %}
+              <li>
+                <a href="/releases/{{ r.id }}">{{ r.title }}</a>
+                <span class="meta">{{ r.status }}</span>
+              </li>
+            {% endfor %}
+          </ul>
+        {% endfor %}
+      </div>
+    {% else %}
+      <p class="placeholder">No upcoming releases scheduled.</p>
+    {% endif %}
+  </section>
+
+  {# ─── Workflow summary (primary) ─────────────────────────────────── #}
+  <section class="workflow-summary">
+    <h2>Workflow summary</h2>
+
+    <dl class="summary-list">
+      <dt>Total projects</dt>
+      <dd>{{ summary.totalProjects }}</dd>
+
+      <dt>Total assets</dt>
+      <dd>{{ summary.totalAssets }}</dd>
+
+      <dt>Missing assets</dt>
+      <dd>
+        {{ summary.missingAssetSummary.total }}
+        {% if summary.missingAssetSummary.referencedByReleases > 0 %}
+          <small>({{ summary.missingAssetSummary.referencedByReleases }} referenced by releases)</small>
+        {% endif %}
+      </dd>
+    </dl>
+
+    <h3>Release status</h3>
     <div class="count-grid">
-      <div class="count-card"><span class="count">{{ counts.tbd }}</span> TBD</div>
-      <div class="count-card"><span class="count">{{ counts.planned }}</span> Planned</div>
-      <div class="count-card"><span class="count">{{ counts['in-progress'] }}</span> In Progress</div>
-      <div class="count-card"><span class="count">{{ counts.ready }}</span> Ready</div>
-      <div class="count-card"><span class="count">{{ counts.published }}</span> Published</div>
-      <div class="count-card"><span class="count">{{ counts.archived }}</span> Archived</div>
+      <div class="count-card"><span class="count">{{ summary.releaseStatusCounts.idea or 0 }}</span> Idea</div>
+      <div class="count-card"><span class="count">{{ summary.releaseStatusCounts.planned or 0 }}</span> Planned</div>
+      <div class="count-card"><span class="count">{{ summary.releaseStatusCounts.drafting or 0 }}</span> Drafting</div>
+      <div class="count-card"><span class="count">{{ summary.releaseStatusCounts.ready or 0 }}</span> Ready</div>
+      <div class="count-card"><span class="count">{{ summary.releaseStatusCounts.published or 0 }}</span> Published</div>
+      <div class="count-card"><span class="count">{{ summary.releaseStatusCounts.cancelled or 0 }}</span> Cancelled</div>
     </div>
   </section>
 
-  {% if releaseStatusCounts %}
-    <section class="dashboard-counts">
-      <h2>Release counts</h2>
+  {# ─── Project counts (secondary, demoted) ────────────────────────── #}
+  <section class="project-counts-secondary">
+    <details>
+      <summary>Project counts</summary>
       <div class="count-grid">
-        <div class="count-card"><span class="count">{{ releaseStatusCounts.idea or 0 }}</span> Idea</div>
-        <div class="count-card"><span class="count">{{ releaseStatusCounts.planned or 0 }}</span> Planned</div>
-        <div class="count-card"><span class="count">{{ releaseStatusCounts.drafting or 0 }}</span> Drafting</div>
-        <div class="count-card"><span class="count">{{ releaseStatusCounts.ready or 0 }}</span> Ready</div>
-        <div class="count-card"><span class="count">{{ releaseStatusCounts.published or 0 }}</span> Published</div>
-        <div class="count-card"><span class="count">{{ releaseStatusCounts.cancelled or 0 }}</span> Cancelled</div>
+        <div class="count-card"><span class="count">{{ projectCounts.tbd }}</span> TBD</div>
+        <div class="count-card"><span class="count">{{ projectCounts.planned }}</span> Planned</div>
+        <div class="count-card"><span class="count">{{ projectCounts['in-progress'] }}</span> In Progress</div>
+        <div class="count-card"><span class="count">{{ projectCounts.ready }}</span> Ready</div>
+        <div class="count-card"><span class="count">{{ projectCounts.published }}</span> Published</div>
+        <div class="count-card"><span class="count">{{ projectCounts.archived }}</span> Archived</div>
       </div>
-    </section>
-  {% endif %}
+    </details>
+  </section>
 
-  {% if totalAssets is defined %}
-    <section class="dashboard-counts">
-      <h2>Assets</h2>
-      <div class="count-grid">
-        <div class="count-card"><span class="count">{{ totalAssets }}</span> Total assets</div>
-      </div>
-    </section>
-  {% endif %}
-
-  {% if overdueReleases.length > 0 %}
-    <section class="recent-projects">
-      <h2>Overdue releases</h2>
-      <ul class="project-list">
-        {% for release in overdueReleases %}
-          <li>
-            <a href="/releases/{{ release.id }}">{{ release.title }}</a>
-            <span class="meta">{{ release.status }} · planned {{ release.planned_date }}</span>
-          </li>
-        {% endfor %}
-      </ul>
-    </section>
-  {% endif %}
-
-  {% if upcomingReleases.length > 0 %}
-    <section class="recent-projects">
-      <h2>Upcoming releases</h2>
-      <ul class="project-list">
-        {% for release in upcomingReleases %}
-          <li>
-            <a href="/releases/{{ release.id }}">{{ release.title }}</a>
-            <span class="meta">{{ release.status }} · planned {{ release.planned_date }}</span>
-          </li>
-        {% endfor %}
-      </ul>
-    </section>
-  {% endif %}
-
+  {# ─── Recently updated (context) ─────────────────────────────────── #}
   <section class="recent-projects">
-    <h2>Recently updated</h2>
+    <h2>Recently updated projects</h2>
     {% if recentlyUpdated.length > 0 %}
       <ul class="project-list">
         {% for project in recentlyUpdated %}

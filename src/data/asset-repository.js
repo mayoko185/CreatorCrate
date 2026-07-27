@@ -93,6 +93,18 @@ export function createAssetRepository(db) {
     SELECT COUNT(*) AS c FROM assets
   `);
 
+  const totalMissingCountStmt = db.prepare(`
+    SELECT COUNT(*) AS c FROM assets WHERE is_present = 0
+  `);
+
+  const presentCountByProjectStmt = db.prepare(`
+    SELECT COUNT(*) AS c FROM assets WHERE project_id = ? AND is_present = 1
+  `);
+
+  const missingCountByProjectStmt = db.prepare(`
+    SELECT COUNT(*) AS c FROM assets WHERE project_id = ? AND is_present = 0
+  `);
+
   return {
     /**
      * Find an asset by its id.
@@ -293,6 +305,35 @@ export function createAssetRepository(db) {
      */
     getTotalCount() {
       const row = totalCountStmt.get();
+      return row.c;
+    },
+
+    /**
+     * Count assets currently marked as missing across all projects.
+     * @returns {number}
+     */
+    getTotalMissingCount() {
+      const row = totalMissingCountStmt.get();
+      return row.c;
+    },
+
+    /**
+     * Count present assets for a single project.
+     * @param {number} projectId
+     * @returns {number}
+     */
+    countPresentByProjectId(projectId) {
+      const row = presentCountByProjectStmt.get(projectId);
+      return row.c;
+    },
+
+    /**
+     * Count missing assets for a single project.
+     * @param {number} projectId
+     * @returns {number}
+     */
+    countMissingByProjectId(projectId) {
+      const row = missingCountByProjectStmt.get(projectId);
       return row.c;
     },
 

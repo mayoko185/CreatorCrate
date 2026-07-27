@@ -10,6 +10,7 @@ import { createReleasesRouter } from './routes/releases.js';
 import { createProjectService } from './services/project-service.js';
 import { createAssetScanner } from './services/asset-scanner.js';
 import { createReleaseService } from './services/release-service.js';
+import { createWorkflowQueryService } from './services/workflow-query-service.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -29,10 +30,11 @@ export function createApp({ appName, db, projectsRoot }) {
   const projectService = createProjectService(db, projectsRoot);
   const assetScanner = createAssetScanner(db, projectsRoot, { projectService });
   const releaseService = createReleaseService(db);
+  const workflowQueryService = createWorkflowQueryService({ db });
 
-  app.use('/', createIndexRouter({ appName, projectService, assetScanner, releaseService }));
+  app.use('/', createIndexRouter({ appName, workflowQueryService }));
   app.use('/health', createHealthRouter({ db }));
-  app.use('/projects', createProjectsRouter({ appName, projectService }));
+  app.use('/projects', createProjectsRouter({ appName, projectService, workflowQueryService }));
   app.use('/projects', createAssetsRouter({ appName, projectService, assetScanner }));
   app.use('/releases', createReleasesRouter({ appName, releaseService, projectService }));
 

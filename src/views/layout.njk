@@ -204,6 +204,51 @@
       .asset-missing-label { color: var(--danger); }
       .asset-present { color: #46b464; }
       .release-assets-form { margin-top: 1rem; }
+      .needs-attention, .upcoming-releases, .workflow-summary,
+      .release-summary, .asset-health, .workflow-actions {
+        margin: 1.5rem 0;
+      }
+      .needs-attention h2, .upcoming-releases h2, .workflow-summary h2,
+      .release-summary h2, .asset-health h2, .workflow-actions { margin-top: 0; }
+      .attention-group, .upcoming-grouped { margin-bottom: 1rem; }
+      .attention-group h3, .upcoming-grouped h3, .release-summary h3 {
+        margin: 0.75rem 0 0.5rem 0;
+        font-size: 1rem;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }
+      .upcoming-date {
+        margin-top: 1rem !important;
+        color: var(--accent) !important;
+        text-transform: none !important;
+        letter-spacing: 0 !important;
+        font-size: 1rem !important;
+      }
+      .release-list { list-style: none; padding: 0; margin: 0; }
+      .release-list li { padding: 0.5rem 0; border-bottom: 1px solid #2a2e36; }
+      .release-list li:last-child { border-bottom: none; }
+      .release-list a { font-weight: 600; }
+      .attention-overdue h3 { color: var(--danger) !important; }
+      .attention-ready h3 { color: var(--accent) !important; }
+      .attention-warning h3 { color: var(--danger) !important; }
+      .summary-list {
+        display: grid;
+        grid-template-columns: 12rem 1fr;
+        gap: 0.5rem 1rem;
+        margin: 0.75rem 0;
+      }
+      .summary-list dt { color: var(--muted); }
+      .summary-list dd { margin: 0; }
+      .summary-list small { color: var(--muted); font-size: 0.8rem; }
+      .project-counts-secondary { margin: 1rem 0; }
+      .project-counts-secondary summary {
+        color: var(--muted);
+        font-size: 0.9rem;
+        cursor: pointer;
+        padding: 0.25rem 0;
+      }
+      .project-counts-secondary[open] summary { margin-bottom: 0.5rem; }
     </style>
   </head>
   <body>

@@ -950,4 +950,51 @@ describe('project HTTP workflow', () => {
         .expect(404);
     });
   });
+
+  // ─── Phase 6B regression: archived project edit route guard ─────────
+  //
+  // Archived projects are immutable. The edit form must not be reachable
+  // through GET /projects/:id/edit; the route must redirect to the detail
+  // page (the read-only workspace) instead. The detail page is unaffected.
+
+  describe('archived project edit guard', () => {
+    it('GET /projects/:id/edit redirects to the detail page when the project is archived', async () => {
+      const createRes = await request(app)
+        .post('/projects')
+        .send('title=Edit+Redirect+Archived')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const id = createRes.headers.location.replace('/projects/', '');
+      await request(app).post(`/projects/${id}/archive`).expect(302);
+
+      // The edit form must not be reachable — the route must redirect to the
+      // detail page (the read-only workspace) rather than rendering the
+      // editable form.
+      const res = await request(app).get(`/projects/${id}/edit`);
+      expect(res.status).toBe(302);
+      expect(res.headers.location).toBe(`/projects/${id}`);
+    });
+
+    it('GET /projects/:id/edit still renders for active projects (regression)', async () => {
+      const createRes = await request(app)
+        .post('/projects')
+        .send('title=Edit+Active+Allowed')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const id = createRes.headers.location.replace('/projects/', '');
+
+      const res = await request(app).get(`/projects/${id}/edit`);
+      expect(res.status).toBe(200);
+      expect(res.text).toContain('Edit Project');
+    });
+
+    it('GET /projects/:id/edit still 404s for non-existent projects (regression)', async () => {
+      // The redirect must not hide the 404 path for missing projects.
+      await request(app).get('/projects/9999/edit').expect(404);
+    });
+  });
 });

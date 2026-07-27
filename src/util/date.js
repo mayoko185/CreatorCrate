@@ -1,0 +1,40 @@
+/**
+ * Application timezone policy — single source of truth for "today".
+ *
+ * The dashboard and other workflow consumers must classify releases against
+ * the local calendar date, not UTC. `Date.prototype.toISOString()` always
+ * serialises in UTC, so a release planned for "today" near local midnight
+ * can be misclassified as overdue (or upcoming) when the local date and the
+ * UTC date disagree. This helper formats a Date using its LOCAL year/month/
+ * day so the dashboard sees a stable, application-local date boundary.
+ *
+ * If a real timezone policy is ever introduced (e.g. a server-side setting
+ * or per-user preference), this is the one place that needs to change.
+ */
+
+/**
+ * Format a Date as a YYYY-MM-DD string using the date's local year, month,
+ * and day. Pure function of its input — useful for tests that need to pin
+ * down a specific moment.
+ *
+ * @param {Date} date
+ * @returns {string} ISO-style date (YYYY-MM-DD) in local time
+ */
+export function formatLocalDate(date) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+/**
+ * The application's current local calendar date as a YYYY-MM-DD string.
+ * Callers that need to thread a single `today` value through several
+ * date-sensitive operations should call this once and pass the result to
+ * every consumer — repository methods do not compute today themselves.
+ *
+ * @returns {string} today's date in YYYY-MM-DD (local time)
+ */
+export function getLocalTodayIso() {
+  return formatLocalDate(new Date());
+}

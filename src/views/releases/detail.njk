@@ -1,15 +1,24 @@
 {% extends "layout.njk" %}
 
 {% block content %}
+  {% set projectArchived = project and project.archived_at %}
   <div class="page-header">
     <h1>{{ release.title }}</h1>
-    <div class="actions">
-      <a class="button" href="/releases/{{ release.id }}/edit">Edit</a>
-      <form method="post" action="/releases/{{ release.id }}/archive" class="inline-form">
-        <button class="button button-danger" type="submit" onclick="return confirm('Archive this release?')">Archive</button>
-      </form>
-    </div>
+    {% if not projectArchived %}
+      <div class="actions">
+        <a class="button" href="/releases/{{ release.id }}/edit">Edit</a>
+        <form method="post" action="/releases/{{ release.id }}/archive" class="inline-form">
+          <button class="button button-danger" type="submit" onclick="return confirm('Archive this release?')">Archive</button>
+        </form>
+      </div>
+    {% endif %}
   </div>
+
+  {% if projectArchived %}
+    <div class="notice" role="status">
+      <p>The parent project is archived. This release is read-only.</p>
+    </div>
+  {% endif %}
 
   {% if errors.general %}
     <div class="error-summary" role="alert">
@@ -56,7 +65,9 @@
   <section>
     <h2>Assets</h2>
     <p>
-      <a class="button" href="/releases/{{ release.id }}/assets">Manage Assets</a>
+      {% if not projectArchived %}
+        <a class="button" href="/releases/{{ release.id }}/assets">Manage Assets</a>
+      {% endif %}
       <span class="meta">{{ assetCount }} asset{% if assetCount != 1 %}s{% endif %} selected</span>
     </p>
   </section>
@@ -99,12 +110,14 @@
     </section>
   {% endif %}
 
-  <div class="form-actions" style="margin-top: 2rem;">
-    <form method="post" action="/releases/{{ release.id }}/publish" class="inline-form">
-      {% if release.published_date %}
-        <input type="hidden" name="publishedDate" value="{{ release.published_date }}">
-      {% endif %}
-      <button class="button button-primary" type="submit" onclick="return confirm('Publish this release?')">Publish</button>
-    </form>
-  </div>
+  {% if not projectArchived %}
+    <div class="form-actions" style="margin-top: 2rem;">
+      <form method="post" action="/releases/{{ release.id }}/publish" class="inline-form">
+        {% if release.published_date %}
+          <input type="hidden" name="publishedDate" value="{{ release.published_date }}">
+        {% endif %}
+        <button class="button button-primary" type="submit" onclick="return confirm('Publish this release?')">Publish</button>
+      </form>
+    </div>
+  {% endif %}
 {% endblock %}
