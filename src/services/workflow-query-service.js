@@ -57,6 +57,10 @@ function mergeLimits(options) {
   return { ...DEFAULT_LIMITS, ...(options?.limits || {}) };
 }
 
+function isLeapYear(year) {
+  return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+}
+
 function totalFromCounts(counts) {
   if (!counts) return 0;
   return Object.values(counts).reduce((sum, n) => sum + (Number.isFinite(n) ? n : 0), 0);
@@ -249,9 +253,251 @@ export function createWorkflowQueryService({ db }) {
     };
   }
 
+  // ─── Phase 6C: Release Planning Views ─────────────────────────────────
+
+  /**
+   * Normalize and validate release list filters.
+   * Uses strict positive-integer validation for numeric fields to reject
+   * malformed values like "1junk", "2.5", "1e2", "+2", "-2", or "0".
+   *
+   * The validator operates on the ORIGINAL (untrimmed) string. URL decoding
+   * converts "+2" to a leading space, and trimming would happily bring it
+   * back to "2" — bypassing the strict check. Validating the raw string
+   * keeps "+2", leading/trailing whitespace, and other URL-encoded garbage
+   * out of the numeric pipeline.
+   * @param {Object} raw
+   * @returns {Object} normalized filters
+   */
+  function normalizeListFilters(raw) {
+    // Strict positive-integer validation: rejects malformed strings before conversion.
+    // parseStrictInt is defined in releases.js and imported at route level; here we
+    // use the same regex approach inline to avoid a cross-module call in the service.
+    // NOTE: do NOT trim — URL decoding makes "+2" become " 2", and trimming would
+    // turn it into a valid "2". The regex below already rejects whitespace inputs.
+    function parseStrictPositiveInt(value) {
+      if (value == null) return null;
+      const str = String(value);
+      if (!/^[1-9]\d*$/.test(str)) return null;
+      const num = Number(str);
+      if (!Number.isInteger(num) || num < 1) return null;
+      return num;
+    }
+
+    const projectId = parseStrictPositiveInt(raw.project);
+    const status = RELEASE_STATUSES.includes(raw.status) ? raw.status : null;
+    const schedule = ['overdue', 'today', 'upcoming', 'unscheduled'].includes(raw.schedule)
+      ? raw.schedule
+      : null;
+    const includeArchived = raw.includeArchived === '1';
+    const sortBy = ['updated', 'created', 'planned', 'title'].includes(raw.sort) ? raw.sort : 'updated';
+    const order = raw.order === 'asc' ? 'asc' : 'desc';
+
+    const pageRaw = parseStrictPositiveInt(raw.page);
+    const page = pageRaw !== null ? pageRaw : 1;
+
+    const pageSizeRaw = parseStrictPositiveInt(raw.pageSize);
+    let pageSize = pageSizeRaw !== null ? pageSizeRaw : 25;
+    if (pageSize > 100) pageSize = 100;
+
+    return { projectId, status, schedule, includeArchived, sortBy, order, page, pageSize };
+  }
+
+  /**
+   * Paginated release list with project title and asset counts.
+   * Computes one local `today` for date-sensitive schedule filters.
+   * @param {Object} rawFilters - raw query parameters
+   * @param {Object} [options]
+   * @param {string} [options.today] - ISO date YYYY-MM-DD override
+   * @returns {{ releases: Array, total: number, page: number, pageSize: number, pageCount: number, today: string }}
+   */
+  function getReleaseList(rawFilters, options = {}) {
+    const filters = normalizeListFilters(rawFilters);
+    const today = options.today || defaultToday();
+
+    // List view always excludes archived-parent releases per Phase 6C:
+    // "Archived parent projects make releases hidden from active workflow views"
+    const activeScheduleFilter = true;
+
+    const total = releaseRepository.countFiltered({
+      ...filters,
+      today,
+      activeScheduleFilter,
+    });
+
+    const pageCount = Math.max(1, Math.ceil(total / filters.pageSize));
+    const page = Math.min(filters.page, pageCount);
+    const offset = (page - 1) * filters.pageSize;
+
+    const releases = releaseRepository.findPage({
+      ...filters,
+      today,
+      activeScheduleFilter,
+      limit: filters.pageSize,
+      offset,
+    });
+
+    return { releases, total, page, pageSize: filters.pageSize, pageCount, today };
+  }
+
+  /**
+   * Board-ready release data grouped by status columns.
+   * @param {Object} rawFilters - raw query parameters
+   * @param {Object} [options]
+   * @param {string} [options.today] - ISO date YYYY-MM-DD override
+   * @returns {{ columns: Object, today: string }} columns keyed by status
+   */
+  function getReleaseBoard(rawFilters, options = {}) {
+    const filters = normalizeListFilters(rawFilters);
+    const today = options.today || defaultToday();
+
+    // Board always excludes archived-parent releases for active workflow view
+    const activeScheduleFilter = true;
+
+    const rows = releaseRepository.findBoard({
+      ...filters,
+      today,
+      activeScheduleFilter,
+    });
+
+    // Group into columns by status
+    const BOARD_STATUSES = ['idea', 'planned', 'drafting', 'ready', 'published', 'cancelled'];
+    const columns = Object.fromEntries(BOARD_STATUSES.map((s) => [s, []]));
+
+    for (const release of rows) {
+      if (columns[release.status]) {
+        columns[release.status].push(release);
+      }
+    }
+
+    return { columns, today };
+  }
+
+  /**
+   * Validate and parse a YYYY-MM month string.
+   * Returns { year, month } or null if invalid.
+   * @param {string} month
+   * @returns {{ year: number, month: number } | null}
+   */
+  function parseMonth(month) {
+    if (typeof month !== 'string') return null;
+    if (!/^\d{4}-\d{2}$/.test(month)) return null;
+    const [yearStr, monthStr] = month.split('-');
+    const year = parseInt(yearStr, 10);
+    const monthNum = parseInt(monthStr, 10);
+    if (monthNum < 1 || monthNum > 12) return null;
+    if (year < 1000 || year > 9999) return null;
+    return { year, month: monthNum };
+  }
+
+  /**
+   * Compute the previous month string (YYYY-MM).
+   * Returns null when the previous month would step outside the supported
+   * year range (1000-9999) — calendar navigation must never render an
+   * unsupported URL like "999-12" or "10000-01".
+   * @param {string} yearMonth
+   * @returns {string | null}
+   */
+  function prevMonth(yearMonth) {
+    const parsed = parseMonth(yearMonth);
+    if (!parsed) return null;
+    const { year, month } = parsed;
+    if (month === 1) {
+      if (year - 1 < 1000) return null;
+      return `${year - 1}-12`;
+    }
+    return `${year}-${String(month - 1).padStart(2, '0')}`;
+  }
+
+  /**
+   * Compute the next month string (YYYY-MM).
+   * Returns null when the next month would step outside the supported
+   * year range (1000-9999) — calendar navigation must never render an
+   * unsupported URL like "999-12" or "10000-01".
+   * @param {string} yearMonth
+   * @returns {string | null}
+   */
+  function nextMonth(yearMonth) {
+    const parsed = parseMonth(yearMonth);
+    if (!parsed) return null;
+    const { year, month } = parsed;
+    if (month === 12) {
+      if (year + 1 > 9999) return null;
+      return `${year + 1}-01`;
+    }
+    return `${year}-${String(month + 1).padStart(2, '0')}`;
+  }
+
+  /**
+   * Calendar view data for a given month.
+   * @param {string} month - YYYY-MM month string
+   * @param {Object} [options]
+   * @param {string} [options.today] - ISO date YYYY-MM-DD override
+   * @returns {{ month: string, days: Array<{ date: string, releases: Array }>, prevMonth: string, nextMonth: string, today: string }}
+   */
+  function getReleaseCalendar(month, options = {}) {
+    const today = options.today || defaultToday();
+    const validated = parseMonth(month);
+
+    // Fall back to current month if invalid
+    const { year, month: monthNum } = validated || parseMonth(today.slice(0, 7)) || { year: 2026, month: 7 };
+
+    // Calculate inclusive start (first day of month) and exclusive end (first day of next month)
+    const startDate = `${year}-${String(monthNum).padStart(2, '0')}-01`;
+    let endYear = year;
+    let endMonth = monthNum + 1;
+    if (endMonth > 12) {
+      endMonth = 1;
+      endYear++;
+    }
+    const endDate = `${endYear}-${String(endMonth).padStart(2, '0')}-01`;
+
+    const releases = releaseRepository.findCalendarRange(startDate, endDate, {
+      activeScheduleFilter: true,
+    });
+
+    // Group releases by planned_date
+    const byDate = new Map();
+    for (const release of releases) {
+      const date = release.planned_date;
+      if (!byDate.has(date)) {
+        byDate.set(date, []);
+      }
+      byDate.get(date).push(release);
+    }
+
+    // Build days array for the month
+    const daysInMonth = [31, isLeapYear(year) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][monthNum - 1];
+    const days = [];
+    for (let d = 1; d <= daysInMonth; d++) {
+      const date = `${year}-${String(monthNum).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+      days.push({ date, releases: byDate.get(date) || [] });
+    }
+
+    // Compute first day of month weekday (Monday=0, Sunday=6) for calendar grid padding
+    const firstDay = new Date(year, monthNum - 1, 1);
+    const firstDayWeekday = (firstDay.getDay() + 6) % 7;
+
+    const monthStr = `${year}-${String(monthNum).padStart(2, '0')}`;
+    return {
+      month: monthStr,
+      days,
+      firstDayWeekday,
+      prevMonth: prevMonth(monthStr),
+      nextMonth: nextMonth(monthStr),
+      today,
+    };
+  }
+
   return {
     getDashboardData,
     getProjectWorkspace,
+    getReleaseList,
+    getReleaseBoard,
+    getReleaseCalendar,
+    // Exposed for tests
+    parseMonth,
+    prevMonth,
+    nextMonth,
     // Exposed for tests and advanced callers that want a single source of
     // truth for the active-set definition. Not intended for route use.
     constants: {

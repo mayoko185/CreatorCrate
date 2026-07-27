@@ -1,0 +1,180 @@
+{% extends "layout.njk" %}
+
+{% block content %}
+  <div class="page-header">
+    <h1>Release Calendar</h1>
+    <div class="view-switcher">
+      <a class="button" href="/releases">List</a>
+      <a class="button" href="/releases?view=board">Board</a>
+      <span class="button button-primary">Calendar</span>
+    </div>
+  </div>
+
+  <div class="calendar-nav">
+    {% if prevMonth %}
+      <a class="button" href="{{ pageUrl({ month: prevMonth }) }}">← Previous</a>
+    {% else %}
+      <span class="button button-disabled" aria-hidden="true">← Previous</span>
+    {% endif %}
+    <h2>{{ month }}</h2>
+    {% if nextMonth %}
+      <a class="button" href="{{ pageUrl({ month: nextMonth }) }}">Next →</a>
+    {% else %}
+      <span class="button button-disabled" aria-hidden="true">Next →</span>
+    {% endif %}
+  </div>
+
+  {% if days.length > 0 %}
+    <table class="calendar-table">
+      <thead>
+        <tr>
+          <th>Mon</th>
+          <th>Tue</th>
+          <th>Wed</th>
+          <th>Thu</th>
+          <th>Fri</th>
+          <th>Sat</th>
+          <th>Sun</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          {# Leading padding cells — fill the first week from the start of the week #}
+          {% if firstDayWeekday > 0 %}
+            {% for i in range(0, firstDayWeekday) %}
+              <td class="calendar-day empty-day"></td>
+            {% endfor %}
+          {% endif %}
+
+          {# Day cells — break to a new <tr> after every 7th cell in the logical grid #}
+          {% for day in days %}
+            <td class="calendar-day{% if day.releases.length === 0 %} empty{% endif %}{% if day.date == today %} today{% endif %}">
+              <div class="day-header">{{ day.date.split('-')[2] }}</div>
+              <div class="day-releases">
+                {% for release in day.releases %}
+                  <div class="calendar-release{% if release.archived_at %} archived{% endif %}">
+                    <a href="/releases/{{ release.id }}">{{ release.title }}</a>
+                    <span class="release-project">{{ release.project_title }}</span>
+                    <span class="release-status status-{{ release.status }}">{{ release.status }}</span>
+                    {% if release.missing_asset_count > 0 %}
+                      <span class="missing-indicator" title="{{ release.missing_asset_count }} missing asset(s)">⚠</span>
+                    {% endif %}
+                  </div>
+                {% endfor %}
+              </div>
+            </td>
+
+            {% if (loop.index + firstDayWeekday) % 7 === 0 and not loop.last %}
+        </tr>
+        <tr>
+            {% endif %}
+          {% endfor %}
+
+          {# Trailing padding cells — complete the final week row #}
+          {% set lastDow = (days.length + firstDayWeekday) % 7 %}
+          {% if lastDow !== 0 %}
+            {% for i in range(0, 7 - lastDow) %}
+              <td class="calendar-day empty-day"></td>
+            {% endfor %}
+          {% endif %}
+        </tr>
+      </tbody>
+    </table>
+  {% else %}
+    <p class="placeholder">No releases scheduled for {{ month }}.</p>
+  {% endif %}
+
+  <style>
+    .calendar-nav {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin: 1rem 0;
+      gap: 1rem;
+    }
+    .calendar-nav h2 {
+      margin: 0;
+      text-align: center;
+    }
+    .view-switcher {
+      display: flex;
+      gap: 0.5rem;
+    }
+    .calendar-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 1rem;
+    }
+    .calendar-table th {
+      padding: 0.5rem;
+      text-align: center;
+      color: var(--muted);
+      font-size: 0.875rem;
+    }
+    .calendar-day {
+      width: 14.28%;
+      min-height: 6rem;
+      vertical-align: top;
+      padding: 0.25rem;
+      border: 1px solid #2a2e36;
+    }
+    .calendar-day.empty-day {
+      background: var(--surface);
+      opacity: 0.5;
+    }
+    .calendar-day.today .day-header {
+      background: var(--accent);
+      color: var(--bg);
+      border-radius: 0.25rem;
+    }
+    .day-header {
+      font-size: 0.875rem;
+      font-weight: 600;
+      margin-bottom: 0.25rem;
+      padding: 0.125rem 0.25rem;
+    }
+    .day-releases {
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+    }
+    .calendar-release {
+      font-size: 0.75rem;
+      padding: 0.125rem 0.25rem;
+      background: var(--surface);
+      border-radius: 0.25rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.125rem;
+    }
+    .calendar-release.archived {
+      opacity: 0.5;
+    }
+    .calendar-release a {
+      font-weight: 600;
+      color: var(--text);
+      text-decoration: none;
+    }
+    .calendar-release a:hover {
+      text-decoration: underline;
+    }
+    .release-project {
+      color: var(--muted);
+      font-size: 0.7rem;
+    }
+    .release-status {
+      font-size: 0.65rem;
+      text-transform: uppercase;
+    }
+    .status-idea { color: #888; }
+    .status-planned { color: #4a9eff; }
+    .status-drafting { color: #f5a623; }
+    .status-ready { color: #46b464; }
+    .status-published { color: #46b464; }
+    .status-cancelled { color: #e5484d; }
+    .missing-indicator {
+      color: var(--danger);
+      font-size: 0.7rem;
+    }
+  </style>
+{% endblock %}

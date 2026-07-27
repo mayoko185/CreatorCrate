@@ -1310,4 +1310,738 @@ describe('workflow query service', () => {
       expect(typeof assetRepo.getTotalMissingCount).toBe('function');
     });
   });
+
+  // ─── Phase 6C: Release Planning Views — getReleaseList ──────────────────────
+
+  describe('getReleaseList', () => {
+    it('returns paginated releases with metadata', () => {
+      const project = insertProject(db, { title: 'List Project' });
+      for (let i = 0; i < 5; i++) {
+        insertRelease(db, { projectId: project.id, title: `R${i}`, status: 'idea' });
+      }
+
+      const result = service.getReleaseList({}, { today: '2025-06-15' });
+      expect(result.releases).toHaveLength(5);
+      expect(result.total).toBe(5);
+      expect(result.page).toBe(1);
+      expect(result.pageSize).toBe(25);
+      expect(result.pageCount).toBe(1);
+    });
+
+    it('respects page and pageSize parameters', () => {
+      const project = insertProject(db, { title: 'Page Project' });
+      for (let i = 0; i < 10; i++) {
+        insertRelease(db, { projectId: project.id, title: `P${i}`, status: 'idea' });
+      }
+
+      const result = service.getReleaseList({ page: 2, pageSize: 3 }, { today: '2025-06-15' });
+      expect(result.releases).toHaveLength(3);
+      expect(result.page).toBe(2);
+      expect(result.pageSize).toBe(3);
+      expect(result.pageCount).toBe(4);
+    });
+
+    it('invalid page falls back to 1', () => {
+      const result = service.getReleaseList({ page: -1 }, { today: '2025-06-15' });
+      expect(result.page).toBe(1);
+    });
+
+    it('invalid pageSize falls back to 25', () => {
+      const result = service.getReleaseList({ pageSize: 0 }, { today: '2025-06-15' });
+      expect(result.pageSize).toBe(25);
+    });
+
+    it('pageSize is capped at 100', () => {
+      const result = service.getReleaseList({ pageSize: 200 }, { today: '2025-06-15' });
+      expect(result.pageSize).toBe(100);
+    });
+
+    it('invalid status falls back to null (no filter)', () => {
+      const project = insertProject(db, { title: 'Status Filter' });
+      insertRelease(db, { projectId: project.id, title: 'Idea', status: 'idea' });
+      insertRelease(db, { projectId: project.id, title: 'Planned', status: 'planned' });
+
+      const result = service.getReleaseList({ status: 'invalid' }, { today: '2025-06-15' });
+      expect(result.total).toBe(2);
+    });
+
+    it('returns releases with project_title and asset counts', () => {
+      const project = insertProject(db, { title: 'Asset Count Project' });
+      const release = insertRelease(db, { projectId: project.id, title: 'With Assets', status: 'planned' });
+      const asset = insertAsset(db, { projectId: project.id, relativePath: 'a.txt', filename: 'a.txt', isPresent: 1 });
+      linkAssetToRelease(db, { releaseId: release.id, assetId: asset.id });
+
+      const result = service.getReleaseList({}, { today: '2025-06-15' });
+      const row = result.releases.find((r) => r.id === release.id);
+      expect(row.project_title).toBe('Asset Count Project');
+      expect(row.selected_asset_count).toBe(1);
+      expect(row.missing_asset_count).toBe(0);
+    });
+
+    it('filters by project', () => {
+      const p1 = insertProject(db, { title: 'P1' });
+      const p2 = insertProject(db, { title: 'P2' });
+      insertRelease(db, { projectId: p1.id, title: 'R1', status: 'idea' });
+      insertRelease(db, { projectId: p2.id, title: 'R2', status: 'idea' });
+
+      const result = service.getReleaseList({ project: String(p1.id) }, { today: '2025-06-15' });
+      expect(result.total).toBe(1);
+      expect(result.releases[0].title).toBe('R1');
+    });
+
+    it('filters by schedule: overdue', () => {
+      const project = insertProject(db, { title: 'Overdue Schedule' });
+      insertRelease(db, { projectId: project.id, title: 'Overdue', status: 'planned', plannedDate: '2025-06-01' });
+      insertRelease(db, { projectId: project.id, title: 'Future', status: 'planned', plannedDate: '2025-06-20' });
+
+      const result = service.getReleaseList({ schedule: 'overdue' }, { today: '2025-06-15' });
+      expect(result.total).toBe(1);
+      expect(result.releases[0].title).toBe('Overdue');
+    });
+
+    it('filters by schedule: today', () => {
+      const project = insertProject(db, { title: 'Today Schedule' });
+      insertRelease(db, { projectId: project.id, title: 'Yesterday', status: 'planned', plannedDate: '2025-06-14' });
+      insertRelease(db, { projectId: project.id, title: 'Today', status: 'planned', plannedDate: '2025-06-15' });
+
+      const result = service.getReleaseList({ schedule: 'today' }, { today: '2025-06-15' });
+      expect(result.total).toBe(1);
+      expect(result.releases[0].title).toBe('Today');
+    });
+
+    it('filters by schedule: upcoming', () => {
+      const project = insertProject(db, { title: 'Upcoming Schedule' });
+      insertRelease(db, { projectId: project.id, title: 'Today', status: 'planned', plannedDate: '2025-06-15' });
+      insertRelease(db, { projectId: project.id, title: 'Tomorrow', status: 'planned', plannedDate: '2025-06-20' });
+
+      const result = service.getReleaseList({ schedule: 'upcoming' }, { today: '2025-06-15' });
+      expect(result.total).toBe(1);
+      expect(result.releases[0].title).toBe('Tomorrow');
+    });
+
+    it('filters by schedule: unscheduled', () => {
+      const project = insertProject(db, { title: 'Unscheduled Schedule' });
+      insertRelease(db, { projectId: project.id, title: 'No Date', status: 'drafting', plannedDate: null });
+      insertRelease(db, { projectId: project.id, title: 'Has Date', status: 'planned', plannedDate: '2025-06-15' });
+
+      const result = service.getReleaseList({ schedule: 'unscheduled' }, { today: '2025-06-15' });
+      expect(result.total).toBe(1);
+      expect(result.releases[0].title).toBe('No Date');
+    });
+
+    it('uses one shared today for classification', () => {
+      const project = insertProject(db, { title: 'Shared Today Project' });
+      const yesterday = insertRelease(db, { projectId: project.id, title: 'Yesterday', status: 'planned', plannedDate: '2025-06-14' });
+      const today = insertRelease(db, { projectId: project.id, title: 'Today', status: 'planned', plannedDate: '2025-06-15' });
+
+      const result = service.getReleaseList({ schedule: 'overdue' }, { today: '2025-06-15' });
+      expect(result.releases.map((r) => r.id)).toEqual([yesterday.id]);
+
+      const resultToday = service.getReleaseList({ schedule: 'today' }, { today: '2025-06-15' });
+      expect(resultToday.releases.map((r) => r.id)).toEqual([today.id]);
+
+      // Same today is exposed in result
+      expect(result.today).toBe('2025-06-15');
+    });
+
+    // ─── Strict positive-integer validation: malformed input rejection ──
+    //
+    // URL-decoded query strings can carry artefacts that bypass a naive
+    // trim-then-parse pipeline. The validator must reject these WITHOUT
+    // trimming, so "%2B2" (decoded as "+2", which URL-decodes again to a
+    // leading-space "2") cannot sneak through as a valid integer.
+
+    it('rejects leading-plus page value (URL-decoded "+2")', () => {
+      // URL decode of "+2" is " 2" — the leading space must cause rejection.
+      const result = service.getReleaseList({ page: '+2' }, { today: '2025-06-15' });
+      expect(result.page).toBe(1);
+    });
+
+    it('rejects leading-whitespace page value', () => {
+      const result = service.getReleaseList({ page: ' 2' }, { today: '2025-06-15' });
+      expect(result.page).toBe(1);
+    });
+
+    it('rejects trailing-whitespace page value', () => {
+      const result = service.getReleaseList({ page: '2 ' }, { today: '2025-06-15' });
+      expect(result.page).toBe(1);
+    });
+
+    it('rejects "1junk" page value', () => {
+      const result = service.getReleaseList({ page: '1junk' }, { today: '2025-06-15' });
+      expect(result.page).toBe(1);
+    });
+
+    it('rejects "2.5" page value', () => {
+      const result = service.getReleaseList({ page: '2.5' }, { today: '2025-06-15' });
+      expect(result.page).toBe(1);
+    });
+
+    it('rejects "1e2" page value', () => {
+      const result = service.getReleaseList({ page: '1e2' }, { today: '2025-06-15' });
+      expect(result.page).toBe(1);
+    });
+
+    it('rejects "-2" page value', () => {
+      const result = service.getReleaseList({ page: '-2' }, { today: '2025-06-15' });
+      expect(result.page).toBe(1);
+    });
+
+    it('rejects "0" page value', () => {
+      const result = service.getReleaseList({ page: '0' }, { today: '2025-06-15' });
+      expect(result.page).toBe(1);
+    });
+
+    it('rejects blank page value', () => {
+      const result = service.getReleaseList({ page: '' }, { today: '2025-06-15' });
+      expect(result.page).toBe(1);
+    });
+
+    it('rejects leading-plus project id — falls back to no filter, returns both projects', () => {
+      const p1 = insertProject(db, { title: 'Malformed Proj Alpha' });
+      const p2 = insertProject(db, { title: 'Malformed Proj Beta' });
+      const r1 = insertRelease(db, { projectId: p1.id, title: 'Alpha-Malformed-Proj-Release', status: 'idea' });
+      const r2 = insertRelease(db, { projectId: p2.id, title: 'Beta-Malformed-Proj-Release', status: 'idea' });
+
+      const result = service.getReleaseList({ project: '+2' }, { today: '2025-06-15' });
+      // projectId is null → no project filter → both releases returned.
+      expect(result.total).toBe(2);
+      const ids = result.releases.map((r) => r.id).sort();
+      expect(ids).toEqual([r1.id, r2.id].sort());
+    });
+
+    it('rejects "1junk" project id — falls back to no filter, returns both projects', () => {
+      const p1 = insertProject(db, { title: 'Junk Filter Alpha' });
+      const p2 = insertProject(db, { title: 'Junk Filter Beta' });
+      const r1 = insertRelease(db, { projectId: p1.id, title: 'Alpha-Junk-Filter-Release', status: 'idea' });
+      const r2 = insertRelease(db, { projectId: p2.id, title: 'Beta-Junk-Filter-Release', status: 'idea' });
+
+      const result = service.getReleaseList({ project: '1junk' }, { today: '2025-06-15' });
+      expect(result.total).toBe(2);
+      const ids = result.releases.map((r) => r.id).sort();
+      expect(ids).toEqual([r1.id, r2.id].sort());
+    });
+
+    it('rejects decimal project id — falls back to no filter', () => {
+      const p1 = insertProject(db, { title: 'Decimal Filter A' });
+      const p2 = insertProject(db, { title: 'Decimal Filter B' });
+      const r1 = insertRelease(db, { projectId: p1.id, title: 'Alpha-Dec-Filter-Release', status: 'idea' });
+      const r2 = insertRelease(db, { projectId: p2.id, title: 'Beta-Dec-Filter-Release', status: 'idea' });
+
+      const result = service.getReleaseList({ project: '1.5' }, { today: '2025-06-15' });
+      expect(result.total).toBe(2);
+      const ids = result.releases.map((r) => r.id).sort();
+      expect(ids).toEqual([r1.id, r2.id].sort());
+    });
+
+    it('rejects scientific-notation project id — falls back to no filter', () => {
+      const p1 = insertProject(db, { title: 'Sci Note Filter A' });
+      const p2 = insertProject(db, { title: 'Sci Note Filter B' });
+      const r1 = insertRelease(db, { projectId: p1.id, title: 'Alpha-Sci-Note-Release', status: 'idea' });
+      const r2 = insertRelease(db, { projectId: p2.id, title: 'Beta-Sci-Note-Release', status: 'idea' });
+
+      const result = service.getReleaseList({ project: '1e2' }, { today: '2025-06-15' });
+      expect(result.total).toBe(2);
+      const ids = result.releases.map((r) => r.id).sort();
+      expect(ids).toEqual([r1.id, r2.id].sort());
+    });
+
+    it('rejects whitespace project id — falls back to no filter', () => {
+      const p1 = insertProject(db, { title: 'WS Filter A' });
+      const p2 = insertProject(db, { title: 'WS Filter B' });
+      const r1 = insertRelease(db, { projectId: p1.id, title: 'Alpha-WS-Filter-Release', status: 'idea' });
+      const r2 = insertRelease(db, { projectId: p2.id, title: 'Beta-WS-Filter-Release', status: 'idea' });
+
+      const result = service.getReleaseList({ project: ' 2' }, { today: '2025-06-15' });
+      expect(result.total).toBe(2);
+      const ids = result.releases.map((r) => r.id).sort();
+      expect(ids).toEqual([r1.id, r2.id].sort());
+    });
+
+    it('accepts a valid project id — returns only that project\'s releases', () => {
+      const p1 = insertProject(db, { title: 'Valid Filter Alpha' });
+      const p2 = insertProject(db, { title: 'Valid Filter Beta' });
+      insertRelease(db, { projectId: p1.id, title: 'Alpha-Valid-Filter-Release', status: 'idea' });
+      insertRelease(db, { projectId: p2.id, title: 'Beta-Valid-Filter-Release', status: 'idea' });
+
+      const result = service.getReleaseList({ project: String(p1.id) }, { today: '2025-06-15' });
+      expect(result.total).toBe(1);
+      expect(result.releases[0].title).toBe('Alpha-Valid-Filter-Release');
+    });
+
+    it('rejects leading-plus pageSize', () => {
+      const result = service.getReleaseList({ pageSize: '+10' }, { today: '2025-06-15' });
+      // Falls back to default pageSize of 25.
+      expect(result.pageSize).toBe(25);
+    });
+
+    it('rejects "1junk" pageSize', () => {
+      const result = service.getReleaseList({ pageSize: '1junk' }, { today: '2025-06-15' });
+      expect(result.pageSize).toBe(25);
+    });
+
+    it('rejects "2.5" pageSize', () => {
+      const result = service.getReleaseList({ pageSize: '2.5' }, { today: '2025-06-15' });
+      expect(result.pageSize).toBe(25);
+    });
+
+    it('rejects "1e2" pageSize', () => {
+      const result = service.getReleaseList({ pageSize: '1e2' }, { today: '2025-06-15' });
+      expect(result.pageSize).toBe(25);
+    });
+
+    it('rejects "-2" pageSize', () => {
+      const result = service.getReleaseList({ pageSize: '-2' }, { today: '2025-06-15' });
+      expect(result.pageSize).toBe(25);
+    });
+
+    it('rejects "0" pageSize', () => {
+      const result = service.getReleaseList({ pageSize: '0' }, { today: '2025-06-15' });
+      expect(result.pageSize).toBe(25);
+    });
+
+    it('rejects blank pageSize', () => {
+      const result = service.getReleaseList({ pageSize: '' }, { today: '2025-06-15' });
+      expect(result.pageSize).toBe(25);
+    });
+
+    it('accepts valid positive integer page', () => {
+      const project = insertProject(db, { title: 'Valid Page Project' });
+      // Need enough releases that page=3 is meaningful (pageSize defaults
+      // to 25, so 75 releases guarantees pageCount >= 3).
+      for (let i = 0; i < 75; i++) {
+        insertRelease(db, { projectId: project.id, title: `Valid Page R${i}`, status: 'idea' });
+      }
+      const result = service.getReleaseList({ page: '3' }, { today: '2025-06-15' });
+      expect(result.page).toBe(3);
+    });
+
+    it('accepts valid positive integer pageSize', () => {
+      const result = service.getReleaseList({ pageSize: '50' }, { today: '2025-06-15' });
+      expect(result.pageSize).toBe(50);
+    });
+  });
+
+  // ─── Phase 6C: Release Planning Views — getReleaseBoard ─────────────────────
+
+  describe('getReleaseBoard', () => {
+    it('groups releases into columns by status', () => {
+      const project = insertProject(db, { title: 'Board Project' });
+      insertRelease(db, { projectId: project.id, title: 'Idea R', status: 'idea' });
+      insertRelease(db, { projectId: project.id, title: 'Planned R', status: 'planned' });
+
+      const { columns } = service.getReleaseBoard({}, { today: '2025-06-15' });
+      expect(columns.idea).toHaveLength(1);
+      expect(columns.planned).toHaveLength(1);
+      expect(columns.drafting).toHaveLength(0);
+    });
+
+    it('returns all six board columns with exact keys and no extras', () => {
+      const { columns } = service.getReleaseBoard({}, { today: '2025-06-15' });
+      const keys = Object.keys(columns).sort();
+      // Exact keys, sorted alphabetically — verifies all six and no extras.
+      expect(keys).toEqual(['cancelled', 'drafting', 'idea', 'planned', 'published', 'ready']);
+      // Every column value must be an array.
+      for (const key of keys) {
+        expect(Array.isArray(columns[key])).toBe(true);
+      }
+    });
+
+    it('exposes empty arrays for columns with no releases', () => {
+      const { columns } = service.getReleaseBoard({}, { today: '2025-06-15' });
+      expect(Array.isArray(columns.idea)).toBe(true);
+      expect(Array.isArray(columns.published)).toBe(true);
+    });
+
+    it('board includes project_title and asset counts', () => {
+      const project = insertProject(db, { title: 'Board Assets Project' });
+      const release = insertRelease(db, { projectId: project.id, title: 'Board Release', status: 'planned' });
+      const asset = insertAsset(db, { projectId: project.id, relativePath: 'a.txt', filename: 'a.txt', isPresent: 1 });
+      linkAssetToRelease(db, { releaseId: release.id, assetId: asset.id });
+
+      const { columns } = service.getReleaseBoard({}, { today: '2025-06-15' });
+      const row = columns.planned.find((r) => r.id === release.id);
+      expect(row.project_title).toBe('Board Assets Project');
+      expect(row.selected_asset_count).toBe(1);
+    });
+
+    it('does not include archived parent releases', () => {
+      const project = insertProject(db, { title: 'Board Archived Parent' });
+      insertRelease(db, { projectId: project.id, title: 'Should Not Appear', status: 'planned', plannedDate: '2025-06-20' });
+      db.prepare(`UPDATE projects SET archived_at = datetime('now') WHERE id = ?`).run(project.id);
+
+      const { columns } = service.getReleaseBoard({}, { today: '2025-06-15' });
+      const allIds = Object.values(columns).flatMap((c) => c.map((r) => r.id));
+      expect(allIds).toHaveLength(0);
+    });
+
+    it('filters by status', () => {
+      const project = insertProject(db, { title: 'Board Status Filter' });
+      insertRelease(db, { projectId: project.id, title: 'Idea R', status: 'idea' });
+      insertRelease(db, { projectId: project.id, title: 'Planned R', status: 'planned' });
+
+      const { columns } = service.getReleaseBoard({ status: 'idea' }, { today: '2025-06-15' });
+      expect(columns.idea).toHaveLength(1);
+      expect(columns.planned).toHaveLength(0);
+    });
+
+    it('uses one shared today for classification', () => {
+      const { columns, today } = service.getReleaseBoard({}, { today: '2025-06-15' });
+      expect(today).toBe('2025-06-15');
+    });
+  });
+
+  // ─── Phase 6C: Release Planning Views — getReleaseCalendar ──────────────────
+
+  describe('getReleaseCalendar', () => {
+    it('returns month string and days array', () => {
+      const result = service.getReleaseCalendar('2025-06', { today: '2025-06-15' });
+      expect(result.month).toBe('2025-06');
+      expect(Array.isArray(result.days)).toBe(true);
+    });
+
+    it('returns 30 days for June', () => {
+      const result = service.getReleaseCalendar('2025-06', { today: '2025-06-15' });
+      expect(result.days).toHaveLength(30);
+    });
+
+    it('returns 31 days for July', () => {
+      const result = service.getReleaseCalendar('2025-07', { today: '2025-07-15' });
+      expect(result.days).toHaveLength(31);
+    });
+
+    it('returns 28 days for non-leap February', () => {
+      const result = service.getReleaseCalendar('2025-02', { today: '2025-02-15' });
+      expect(result.days).toHaveLength(28);
+    });
+
+    it('returns 29 days for leap year February', () => {
+      const result = service.getReleaseCalendar('2024-02', { today: '2024-02-15' });
+      expect(result.days).toHaveLength(29);
+    });
+
+    it('invalid month falls back to current month', () => {
+      const result = service.getReleaseCalendar('invalid', { today: '2025-06-15' });
+      // Must be the exact current month derived from the today option —
+      // not "any YYYY-MM" that happens to satisfy the format regex.
+      expect(result.month).toBe('2025-06');
+      // prev/next must be derived from the EXACT fallback month.
+      expect(result.prevMonth).toBe('2025-05');
+      expect(result.nextMonth).toBe('2025-07');
+    });
+
+    it('invalid month format falls back to current month', () => {
+      const result = service.getReleaseCalendar('2025-13', { today: '2025-06-15' });
+      // 13 is not a valid month — must fall back to today's month.
+      expect(result.month).toBe('2025-06');
+      expect(result.prevMonth).toBe('2025-05');
+      expect(result.nextMonth).toBe('2025-07');
+    });
+
+    // ─── Exact-fallback assertions for malformed and out-of-range months
+    //
+    // The previous tests only asserted `result.month` matched a YYYY-MM
+    // regex. That lets a buggy implementation that always returns
+    // "1000-01" pass. These tests pin the exact fallback to the
+    // current month from the `today` option, and also assert the exact
+    // prev/next values derived from that fallback. The exact-fallback
+    // contract: every malformed or out-of-range month string in
+    // [0001-01, 0999-12, 10000-01, 2025-00, 2025-13, "invalid", null,
+    // undefined] must resolve to the current local month.
+
+    const MALFORMED_MONTHS = [
+      '0001-01',
+      '0999-12',
+      '10000-01',
+      '2025-00',
+      '2025-13',
+      'invalid',
+      '',
+    ];
+
+    it.each(MALFORMED_MONTHS)(
+      'malformed/unsupported month %s falls back to the exact current month',
+      (bad) => {
+        const result = service.getReleaseCalendar(bad, { today: '2025-06-15' });
+        expect(result.month).toBe('2025-06');
+        // prev/next must be exact values derived from the fallback.
+        expect(result.prevMonth).toBe('2025-05');
+        expect(result.nextMonth).toBe('2025-07');
+      },
+    );
+
+    it('falls back to a hardcoded year/month when the today option is also invalid', () => {
+      // Last-resort path: even if today is null/garbage, the function
+      // must NOT return null — it falls back to a hardcoded default
+      // (year=2026, month=7). The exact value is part of the contract.
+      const result = service.getReleaseCalendar('0001-01', { today: 'invalid-today' });
+      expect(result.month).toBe('2026-07');
+      expect(result.prevMonth).toBe('2026-06');
+      expect(result.nextMonth).toBe('2026-08');
+    });
+
+    it('calculates previous month correctly', () => {
+      const result = service.getReleaseCalendar('2025-06', { today: '2025-06-15' });
+      expect(result.prevMonth).toBe('2025-05');
+    });
+
+    it('calculates previous month at January correctly', () => {
+      const result = service.getReleaseCalendar('2025-01', { today: '2025-01-15' });
+      expect(result.prevMonth).toBe('2024-12');
+    });
+
+    it('calculates next month correctly', () => {
+      const result = service.getReleaseCalendar('2025-06', { today: '2025-06-15' });
+      expect(result.nextMonth).toBe('2025-07');
+    });
+
+    it('calculates next month at December correctly', () => {
+      const result = service.getReleaseCalendar('2025-12', { today: '2025-12-15' });
+      expect(result.nextMonth).toBe('2026-01');
+    });
+
+    it('groups releases by planned_date', () => {
+      const project = insertProject(db, { title: 'Calendar Group Project' });
+      insertRelease(db, { projectId: project.id, title: 'June 15 R', status: 'planned', plannedDate: '2025-06-15' });
+      insertRelease(db, { projectId: project.id, title: 'June 15 Another', status: 'planned', plannedDate: '2025-06-15' });
+      insertRelease(db, { projectId: project.id, title: 'June 20', status: 'planned', plannedDate: '2025-06-20' });
+
+      const result = service.getReleaseCalendar('2025-06', { today: '2025-06-15' });
+      const june15 = result.days.find((d) => d.date === '2025-06-15');
+      const june20 = result.days.find((d) => d.date === '2025-06-20');
+
+      expect(june15.releases).toHaveLength(2);
+      expect(june20.releases).toHaveLength(1);
+    });
+
+    it('days without releases have empty arrays', () => {
+      const result = service.getReleaseCalendar('2025-06', { today: '2025-06-15' });
+      const daysWithReleases = result.days.filter((d) => d.releases.length > 0);
+      expect(daysWithReleases).toHaveLength(0); // no releases created
+    });
+
+    it('calendar excludes releases from archived parent projects', () => {
+      const project = insertProject(db, { title: 'Calendar Archived Parent' });
+      insertRelease(db, { projectId: project.id, title: 'Hidden', status: 'planned', plannedDate: '2025-06-15' });
+      db.prepare(`UPDATE projects SET archived_at = datetime('now') WHERE id = ?`).run(project.id);
+
+      const result = service.getReleaseCalendar('2025-06', { today: '2025-06-15' });
+      const june15 = result.days.find((d) => d.date === '2025-06-15');
+      expect(june15.releases).toHaveLength(0);
+    });
+
+    it('exposes today in result', () => {
+      const result = service.getReleaseCalendar('2025-06', { today: '2025-06-15' });
+      expect(result.today).toBe('2025-06-15');
+    });
+
+    // ─── Calendar grid structure ─────────────────────────────────────────
+
+    it('September 2025: September 1 is Monday, firstDayWeekday=0', () => {
+      const result = service.getReleaseCalendar('2025-09', { today: '2025-09-15' });
+      // new Date(2025, 8, 1).getDay() = 1 (Monday)
+      // (1 + 6) % 7 = 0 → Monday-first offset
+      expect(result.firstDayWeekday).toBe(0);
+    });
+
+    it('September 2025: 30 days in the month', () => {
+      const result = service.getReleaseCalendar('2025-09', { today: '2025-09-15' });
+      expect(result.days).toHaveLength(30);
+    });
+
+    it('September 2025: Monday-first with 0 leading padding, 5 trailing padding, 5 rows', () => {
+      // September 2025: Sep 1 is Monday (getDay=1), firstDayWeekday=(1+6)%7=0.
+      // 0 leading empty cells. 30 days. cellCount=0+30=30. remainder=2. trailing=5.
+      // rows = floor(30/7) + 1 = 4 + 1 = 5 rows.
+      const result = service.getReleaseCalendar('2025-09', { today: '2025-09-15' });
+      const cellCount = result.firstDayWeekday + result.days.length;
+      expect(cellCount).toBe(30);
+      expect(cellCount % 7).toBe(2);
+      const rows = Math.floor(cellCount / 7) + (cellCount % 7 > 0 ? 1 : 0);
+      expect(rows).toBe(5);
+    });
+
+    it('July 2025: July 1 is Tuesday, leading padding=1, trailing=3, 5 rows', () => {
+      // July 2025: Jul 1 is Tuesday (getDay=2), firstDayWeekday=(2+6)%7=1.
+      // 1 leading empty cell. 31 days. cellCount=1+31=32. remainder=4. trailing=3.
+      // rows = floor(32/7) + 1 = 4 + 1 = 5 rows.
+      const result = service.getReleaseCalendar('2025-07', { today: '2025-07-15' });
+      expect(result.firstDayWeekday).toBe(1);
+      const cellCount = result.firstDayWeekday + result.days.length;
+      expect(cellCount).toBe(32);
+      expect(cellCount % 7).toBe(4);
+      const rows = Math.floor(cellCount / 7) + (cellCount % 7 > 0 ? 1 : 0);
+      expect(rows).toBe(5);
+    });
+
+    it('February 2025: Feb 1 is Saturday, leading padding=5, 5 rows', () => {
+      // February 2025: Feb 1 is Saturday (getDay=6), firstDayWeekday=(6+6)%7=5.
+      // 5 leading empty cells. 28 days. cellCount=5+28=33. remainder=5. trailing=2.
+      // rows = floor(33/7) + 1 = 4 + 1 = 5 rows.
+      const result = service.getReleaseCalendar('2025-02', { today: '2025-02-15' });
+      expect(result.firstDayWeekday).toBe(5);
+      const cellCount = result.firstDayWeekday + result.days.length;
+      expect(cellCount).toBe(33);
+      const rows = Math.floor(cellCount / 7) + (cellCount % 7 > 0 ? 1 : 0);
+      expect(rows).toBe(5);
+    });
+
+    it('releases outside the month are excluded', () => {
+      const project = insertProject(db, { title: 'Outside Month Project' });
+      insertRelease(db, { projectId: project.id, title: 'August 31', status: 'planned', plannedDate: '2025-08-31' });
+      insertRelease(db, { projectId: project.id, title: 'September 15', status: 'planned', plannedDate: '2025-09-15' });
+      insertRelease(db, { projectId: project.id, title: 'October 1', status: 'planned', plannedDate: '2025-10-01' });
+
+      const result = service.getReleaseCalendar('2025-09', { today: '2025-09-15' });
+      const titles = result.days.flatMap((d) => d.releases).map((r) => r.title);
+      expect(titles).toContain('September 15');
+      expect(titles).not.toContain('August 31');
+      expect(titles).not.toContain('October 1');
+    });
+
+    it('multiple releases on the same day are all retained', () => {
+      const project = insertProject(db, { title: 'Multi Day Project' });
+      insertRelease(db, { projectId: project.id, title: 'Sept 15 - Alpha', status: 'idea', plannedDate: '2025-09-15' });
+      insertRelease(db, { projectId: project.id, title: 'Sept 15 - Beta', status: 'planned', plannedDate: '2025-09-15' });
+      insertRelease(db, { projectId: project.id, title: 'Sept 15 - Gamma', status: 'drafting', plannedDate: '2025-09-15' });
+
+      const result = service.getReleaseCalendar('2025-09', { today: '2025-09-15' });
+      const sept15 = result.days.find((d) => d.date === '2025-09-15');
+      expect(sept15.releases).toHaveLength(3);
+      expect(sept15.releases.map((r) => r.title).sort()).toEqual(['Sept 15 - Alpha', 'Sept 15 - Beta', 'Sept 15 - Gamma']);
+    });
+
+    // ─── parseMonth year-range validation ───────────────────────────────
+
+    it('parseMonth accepts years 1000-9999', () => {
+      const { parseMonth } = service;
+      expect(parseMonth('1000-01')).toEqual({ year: 1000, month: 1 });
+      expect(parseMonth('9999-12')).toEqual({ year: 9999, month: 12 });
+      expect(parseMonth('2025-06')).toEqual({ year: 2025, month: 6 });
+    });
+
+    it('parseMonth rejects year 0001', () => {
+      const { parseMonth } = service;
+      expect(parseMonth('0001-01')).toBeNull();
+    });
+
+    it('parseMonth rejects year 0999', () => {
+      const { parseMonth } = service;
+      expect(parseMonth('0999-12')).toBeNull();
+    });
+
+    it('parseMonth rejects year 10000', () => {
+      const { parseMonth } = service;
+      expect(parseMonth('10000-01')).toBeNull();
+    });
+
+    it('parseMonth rejects invalid month values', () => {
+      const { parseMonth } = service;
+      expect(parseMonth('2025-00')).toBeNull();
+      expect(parseMonth('2025-13')).toBeNull();
+      expect(parseMonth('2025-99')).toBeNull();
+    });
+
+    it('parseMonth rejects non-string and malformed input', () => {
+      const { parseMonth } = service;
+      expect(parseMonth(null)).toBeNull();
+      expect(parseMonth(undefined)).toBeNull();
+      expect(parseMonth(2025)).toBeNull();
+      expect(parseMonth('2025')).toBeNull();
+      expect(parseMonth('2025-1')).toBeNull();
+      expect(parseMonth('2025-6')).toBeNull();
+      expect(parseMonth('25-06')).toBeNull();
+      expect(parseMonth('2025-06-01')).toBeNull();
+    });
+
+    it('getReleaseCalendar falls back to current month for year 0001 (HTTP 200, not 500)', () => {
+      // Invalid low-year month must not throw — service must fall back gracefully.
+      const result = service.getReleaseCalendar('0001-01', { today: '2025-06-15' });
+      expect(result.month).toBe('2025-06');
+    });
+
+    it('getReleaseCalendar falls back for year 0999', () => {
+      const result = service.getReleaseCalendar('0999-12', { today: '2025-06-15' });
+      expect(result.month).toBe('2025-06');
+    });
+
+    it('getReleaseCalendar falls back for year 10000', () => {
+      const result = service.getReleaseCalendar('10000-01', { today: '2025-06-15' });
+      expect(result.month).toBe('2025-06');
+    });
+
+    it('prevMonth returns null for invalid month string', () => {
+      const { prevMonth } = service;
+      expect(prevMonth('0001-01')).toBeNull();
+      expect(prevMonth('invalid')).toBeNull();
+      expect(prevMonth('0999-12')).toBeNull();
+      expect(prevMonth('10000-01')).toBeNull();
+    });
+
+    it('nextMonth returns null for invalid month string', () => {
+      const { nextMonth } = service;
+      expect(nextMonth('0001-01')).toBeNull();
+      expect(nextMonth('invalid')).toBeNull();
+      expect(nextMonth('0999-12')).toBeNull();
+      expect(nextMonth('10000-01')).toBeNull();
+    });
+
+    it('prevMonth and nextMonth work correctly at year boundaries', () => {
+      const { prevMonth, nextMonth } = service;
+      expect(prevMonth('2025-01')).toBe('2024-12');
+      expect(nextMonth('2025-12')).toBe('2026-01');
+      // Input 1000-01 is the lowest supported year; prevMonth crosses below
+      // the supported 1000-9999 range and must return null (no "999-12" URL).
+      expect(prevMonth('1000-01')).toBeNull();
+      // Input 9999-12 is the highest supported year; nextMonth crosses above
+      // the supported range and must return null (no "10000-01" URL).
+      expect(nextMonth('9999-12')).toBeNull();
+    });
+
+    it('prevMonth returns null at the lower boundary (1000-01)', () => {
+      const { prevMonth } = service;
+      expect(prevMonth('1000-01')).toBeNull();
+    });
+
+    it('nextMonth returns null at the upper boundary (9999-12)', () => {
+      const { nextMonth } = service;
+      expect(nextMonth('9999-12')).toBeNull();
+    });
+
+    it('prevMonth stays in-range just above the lower boundary (1000-02)', () => {
+      const { prevMonth } = service;
+      expect(prevMonth('1000-02')).toBe('1000-01');
+    });
+
+    it('nextMonth stays in-range just below the upper boundary (9999-11)', () => {
+      const { nextMonth } = service;
+      expect(nextMonth('9999-11')).toBe('9999-12');
+    });
+
+    it('getReleaseCalendar exposes null prevMonth at the lower boundary', () => {
+      const result = service.getReleaseCalendar('1000-01', { today: '1000-01-15' });
+      expect(result.month).toBe('1000-01');
+      expect(result.prevMonth).toBeNull();
+      expect(result.nextMonth).toBe('1000-02');
+    });
+
+    it('getReleaseCalendar exposes null nextMonth at the upper boundary', () => {
+      const result = service.getReleaseCalendar('9999-12', { today: '9999-12-15' });
+      expect(result.month).toBe('9999-12');
+      expect(result.nextMonth).toBeNull();
+      expect(result.prevMonth).toBe('9999-11');
+    });
+
+    it('getReleaseCalendar exposes both links for in-range months', () => {
+      const result = service.getReleaseCalendar('2025-06', { today: '2025-06-15' });
+      expect(result.prevMonth).toBe('2025-05');
+      expect(result.nextMonth).toBe('2025-07');
+    });
+
+    it('prevMonth and nextMonth work for valid years', () => {
+      const { prevMonth, nextMonth } = service;
+      expect(prevMonth('2025-06')).toBe('2025-05');
+      expect(nextMonth('2025-06')).toBe('2025-07');
+    });
+  });
 });

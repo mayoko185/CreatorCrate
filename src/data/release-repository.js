@@ -25,6 +25,14 @@ const RELEASE_ASSET_COLUMNS = [
   'created_at',
 ];
 
+const COLUMNS_WITH_PROJECT = [
+  ...COLUMNS.slice(0, 2), // id, project_id
+  'projects.title AS project_title',
+  ...COLUMNS.slice(2), // title, description, notes, status, planned_date, published_date, patreon_url, created_at, updated_at, archived_at
+];
+
+const SELECT_WITH_PROJECT = `SELECT ${COLUMNS_WITH_PROJECT.join(', ')} FROM releases JOIN projects ON projects.id = releases.project_id`;
+
 const SELECT_ALL = `SELECT ${COLUMNS.join(', ')} FROM releases`;
 
 /**
@@ -666,6 +674,275 @@ export function createReleaseRepository(db) {
     replaceReleaseAssets(releaseId, selections) {
       replaceReleaseAssetsTx(releaseId, selections);
     },
+
+    // ─── Phase 6C: Release Planning Views ─────────────────────────────────
+
+    /**
+     * Build the WHERE conditions and params for release list queries.
+     * Returns { conditions: string[], params: any[] }.
+     * @param {Object} filters
+     * @param {number|null} filters.projectId
+     * @param {string|null} filters.status
+     * @param {string|null} filters.schedule - 'overdue'|'today'|'upcoming'|'unscheduled'
+     * @param {boolean} filters.includeArchived
+     * @param {string} filters.today - ISO date YYYY-MM-DD for schedule classification
+     * @param {boolean} filters.activeScheduleFilter - when true, exclude archived parents
+     */
+    _buildFilterConditions(filters) {
+      const conditions = [];
+      const params = [];
+
+      if (filters.projectId != null) {
+        conditions.push('releases.project_id = ?');
+        params.push(filters.projectId);
+      }
+
+      if (filters.status && RELEASE_STATUSES.includes(filters.status)) {
+        conditions.push('releases.status = ?');
+        params.push(filters.status);
+      }
+
+      // Schedule filters (overdue, today, upcoming, unscheduled) ALWAYS exclude
+      // archived release records — even when includeArchived=1 — because they
+      // are active-workflow views. The includeArchived flag only affects
+      // schedule=all (no schedule filter).
+      const isScheduleFilter = filters.schedule
+        && ['overdue', 'today', 'upcoming', 'unscheduled'].includes(filters.schedule);
+
+      if (!filters.includeArchived || isScheduleFilter) {
+        conditions.push('releases.archived_at IS NULL');
+      }
+
+      // Schedule filters apply to active releases (non-terminal, non-archived).
+      // Per Phase 6C: schedule filters ALWAYS exclude archived parent projects
+      // because they are used in active workflow views — even when includeArchived=1.
+      if (isScheduleFilter) {
+        // Always apply active-release predicate for schedule filters
+        conditions.push(`releases.status IN ('idea', 'planned', 'drafting', 'ready')`);
+
+        // Always exclude archived parent projects for schedule filters
+        conditions.push(ACTIVE_PARENT_PROJECT);
+
+        if (filters.schedule === 'overdue') {
+          conditions.push('releases.planned_date IS NOT NULL');
+          conditions.push('releases.planned_date < ?');
+          params.push(filters.today);
+        } else if (filters.schedule === 'today') {
+          conditions.push('releases.planned_date IS NOT NULL');
+          conditions.push('releases.planned_date = ?');
+          params.push(filters.today);
+        } else if (filters.schedule === 'upcoming') {
+          conditions.push('releases.planned_date IS NOT NULL');
+          conditions.push('releases.planned_date > ?');
+          params.push(filters.today);
+        } else if (filters.schedule === 'unscheduled') {
+          conditions.push('releases.planned_date IS NULL');
+        }
+      } else if (filters.activeScheduleFilter) {
+        // Default: when activeScheduleFilter is set, exclude archived parents
+        conditions.push(ACTIVE_PARENT_PROJECT);
+      }
+
+      return { conditions, params };
+    },
+
+    /**
+     * Paginated release list with project title and asset counts.
+     * Uses SQL LIMIT/OFFSET for pagination — no in-memory slicing.
+     * @param {Object} filters
+     * @param {number|null} filters.projectId
+     * @param {string|null} filters.status
+     * @param {string|null} filters.schedule
+     * @param {boolean} filters.includeArchived
+     * @param {string} filters.today
+     * @param {boolean} filters.activeScheduleFilter
+     * @param {string} [filters.sortBy='updated']
+     * @param {string} [filters.order='desc']
+     * @param {number} [filters.limit=25]
+     * @param {number} [filters.offset=0]
+     * @returns {Array<ReleaseRecord & {project_title: string, selected_asset_count: number, missing_asset_count: number}>}
+     */
+    findPage(filters) {
+      const {
+        projectId,
+        status,
+        schedule,
+        includeArchived = false,
+        today,
+        activeScheduleFilter = false,
+        sortBy = 'updated',
+        order = 'desc',
+        limit = 25,
+        offset = 0,
+      } = filters;
+
+      const { conditions, params } = this._buildFilterConditions({
+        projectId, status, schedule, includeArchived, today, activeScheduleFilter,
+      });
+
+      const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+      const orderClause = buildOrderClauseWithTable('releases', sortBy, order);
+
+      // Subqueries for asset counts — correlated aggregates avoid duplicate rows
+      const selectedCountSubquery = `(SELECT COUNT(*) FROM release_assets WHERE release_id = releases.id)`;
+      const missingCountSubquery = `(SELECT COUNT(*) FROM release_assets ra JOIN assets a ON a.id = ra.asset_id WHERE ra.release_id = releases.id AND a.is_present = 0)`;
+
+      const sql = `
+        SELECT releases.id, releases.project_id, projects.title AS project_title,
+               releases.title, releases.description, releases.notes,
+               releases.status, releases.planned_date, releases.published_date,
+               releases.patreon_url, releases.created_at, releases.updated_at,
+               releases.archived_at,
+               ${selectedCountSubquery} AS selected_asset_count,
+               ${missingCountSubquery} AS missing_asset_count
+        FROM releases
+        JOIN projects ON projects.id = releases.project_id
+        ${where}
+        ${orderClause}
+        LIMIT ? OFFSET ?
+      `;
+
+      return db.prepare(sql).all(...params, limit, offset);
+    },
+
+    /**
+     * Count of matching releases for pagination metadata.
+     * Uses the same filter conditions as findPage but without LIMIT/OFFSET.
+     * @param {Object} filters - same shape as findPage (without limit/offset/sort)
+     * @returns {number}
+     */
+    countFiltered(filters) {
+      const {
+        projectId,
+        status,
+        schedule,
+        includeArchived = false,
+        today,
+        activeScheduleFilter = false,
+      } = filters;
+
+      const { conditions, params } = this._buildFilterConditions({
+        projectId, status, schedule, includeArchived, today, activeScheduleFilter,
+      });
+
+      const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+      const sql = `SELECT COUNT(*) AS c FROM releases JOIN projects ON projects.id = releases.project_id ${where}`;
+      const row = db.prepare(sql).get(...params);
+      return row.c;
+    },
+
+    /**
+     * Board-ready release data grouped by status.
+     * Returns flat array — service layer performs the grouping into columns.
+     * @param {Object} filters
+     * @param {number|null} filters.projectId
+     * @param {string|null} filters.status
+     * @param {string|null} filters.schedule
+     * @param {boolean} filters.includeArchived
+     * @param {string} filters.today
+     * @param {boolean} filters.activeScheduleFilter
+     * @returns {Array<ReleaseRecord & {project_title: string, selected_asset_count: number, missing_asset_count: number}>}
+     */
+    findBoard(filters) {
+      const {
+        projectId,
+        status,
+        schedule,
+        includeArchived = false,
+        today,
+        activeScheduleFilter = true, // Board view excludes archived parent releases by default
+      } = filters;
+
+      const { conditions, params } = this._buildFilterConditions({
+        projectId, status, schedule, includeArchived, today, activeScheduleFilter,
+      });
+
+      const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+      const selectedCountSubquery = `(SELECT COUNT(*) FROM release_assets WHERE release_id = releases.id)`;
+      const missingCountSubquery = `(SELECT COUNT(*) FROM release_assets ra JOIN assets a ON a.id = ra.asset_id WHERE ra.release_id = releases.id AND a.is_present = 0)`;
+
+      // Board: sort by planned_date ascending (NULLs last), then updated_at desc,
+      // then releases.id DESC as the final deterministic tie-breaker.
+      const sql = `
+        SELECT releases.id, releases.project_id, projects.title AS project_title,
+               releases.title, releases.description, releases.notes,
+               releases.status, releases.planned_date, releases.published_date,
+               releases.patreon_url, releases.created_at, releases.updated_at,
+               releases.archived_at,
+               ${selectedCountSubquery} AS selected_asset_count,
+               ${missingCountSubquery} AS missing_asset_count
+        FROM releases
+        JOIN projects ON projects.id = releases.project_id
+        ${where}
+        ORDER BY (releases.planned_date IS NULL), releases.planned_date ASC, releases.updated_at DESC, releases.id DESC
+      `;
+
+      return db.prepare(sql).all(...params);
+    },
+
+    /**
+     * Releases within a bounded calendar range (inclusive start, exclusive end).
+     * Uses planned_date for grouping — no in-memory filtering.
+     * @param {string} startDate - ISO date YYYY-MM-DD (inclusive)
+     * @param {string} endDate - ISO date YYYY-MM-DD (exclusive)
+     * @param {Object} filters
+     * @param {number|null} filters.projectId
+     * @param {boolean} filters.includeArchived
+     * @param {boolean} filters.activeScheduleFilter
+     * @returns {Array<ReleaseRecord & {project_title: string, selected_asset_count: number, missing_asset_count: number}>}
+     */
+    findCalendarRange(startDate, endDate, filters) {
+      const {
+        projectId,
+        includeArchived = false,
+        activeScheduleFilter = false,
+      } = filters;
+
+      const conditions = [];
+      const params = [];
+
+      if (projectId != null) {
+        conditions.push('releases.project_id = ?');
+        params.push(projectId);
+      }
+
+      if (!includeArchived) {
+        conditions.push('releases.archived_at IS NULL');
+      }
+
+      // For calendar: include all releases with planned_date in [startDate, endDate)
+      conditions.push('releases.planned_date IS NOT NULL');
+      conditions.push('releases.planned_date >= ?');
+      params.push(startDate);
+      conditions.push('releases.planned_date < ?');
+      params.push(endDate);
+
+      if (activeScheduleFilter) {
+        conditions.push(ACTIVE_PARENT_PROJECT);
+      }
+
+      const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+      const selectedCountSubquery = `(SELECT COUNT(*) FROM release_assets WHERE release_id = releases.id)`;
+      const missingCountSubquery = `(SELECT COUNT(*) FROM release_assets ra JOIN assets a ON a.id = ra.asset_id WHERE ra.release_id = releases.id AND a.is_present = 0)`;
+
+      const sql = `
+        SELECT releases.id, releases.project_id, projects.title AS project_title,
+               releases.title, releases.description, releases.notes,
+               releases.status, releases.planned_date, releases.published_date,
+               releases.patreon_url, releases.created_at, releases.updated_at,
+               releases.archived_at,
+               ${selectedCountSubquery} AS selected_asset_count,
+               ${missingCountSubquery} AS missing_asset_count
+        FROM releases
+        JOIN projects ON projects.id = releases.project_id
+        ${where}
+        ORDER BY releases.planned_date ASC, releases.updated_at DESC, releases.id DESC
+      `;
+
+      return db.prepare(sql).all(...params);
+    },
   };
 }
 
@@ -681,4 +958,12 @@ function buildOrderClause(sortBy, order) {
   const direction = order === 'asc' ? 'ASC' : 'DESC';
   // Always break ties by id for stable ordering
   return `ORDER BY ${sort.column} ${direction}, id DESC`;
+}
+
+function buildOrderClauseWithTable(table, sortBy, order) {
+  const sort = ALLOWED_SORTS[sortBy] || ALLOWED_SORTS.updated;
+  const direction = order === 'asc' ? 'ASC' : 'DESC';
+  // Qualify the column with the table name to avoid ambiguity in JOINs
+  const col = sort.column.includes('.') ? sort.column : `${table}.${sort.column}`;
+  return `ORDER BY ${col} ${direction}, ${table}.id DESC`;
 }

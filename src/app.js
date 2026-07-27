@@ -36,7 +36,7 @@ export function createApp({ appName, db, projectsRoot }) {
   app.use('/health', createHealthRouter({ db }));
   app.use('/projects', createProjectsRouter({ appName, projectService, workflowQueryService }));
   app.use('/projects', createAssetsRouter({ appName, projectService, assetScanner }));
-  app.use('/releases', createReleasesRouter({ appName, releaseService, projectService }));
+  app.use('/releases', createReleasesRouter({ appName, releaseService, projectService, workflowQueryService }));
 
   app.use((_req, _res, next) => {
     const err = new Error('Not found');

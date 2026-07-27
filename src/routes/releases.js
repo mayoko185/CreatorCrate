@@ -10,35 +10,68 @@ import {
 const SORT_OPTIONS = ['updated', 'created', 'planned', 'title'];
 const PAGE_SIZE = 25;
 
-export function createReleasesRouter({ appName, releaseService, projectService }) {
+export function createReleasesRouter({ appName, releaseService, projectService, workflowQueryService }) {
   const router = express.Router();
 
-  // GET /releases — Release list across all projects
+  // GET /releases — Release list across all projects (list or board view)
   router.get('/', (req, res, next) => {
     try {
-      const parsedQuery = parseListQuery(req.query);
+      const view = req.query.view === 'board' ? 'board' : 'list';
 
-      // Build global list (all projects, optionally filtered)
-      const releases = releaseService.listAllReleases(parsedQuery);
-      const total = releases.length;
-      const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
-      const currentPage = Math.min(parsedQuery.page, pageCount);
-      const offset = (currentPage - 1) * PAGE_SIZE;
+      if (view === 'board') {
+        const { columns, today } = workflowQueryService.getReleaseBoard(req.query);
+        const pageUrl = buildPageUrl(req);
+        return res.render('releases/index.njk', {
+          appName,
+          view: 'board',
+          columns,
+          today,
+          query: req.query,
+          statuses: RELEASE_STATUSES,
+          pageUrl,
+        });
+      }
 
-      const paged = releases.slice(offset, offset + PAGE_SIZE);
+      // List view
+      const { releases, total, page, pageSize, pageCount, today } = workflowQueryService.getReleaseList(req.query);
       const pageUrl = buildPageUrl(req);
 
       res.render('releases/index.njk', {
         appName,
-        releases: paged,
+        view: 'list',
+        releases,
         total,
-        page: currentPage,
-        pageSize: PAGE_SIZE,
+        page,
+        pageSize,
         pageCount,
+        today,
         pageUrl,
         query: req.query,
         statuses: RELEASE_STATUSES,
         sortOptions: SORT_OPTIONS,
+      });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // GET /releases/calendar — Monthly calendar view
+  router.get('/calendar', (req, res, next) => {
+    try {
+      const month = req.query.month || null;
+      const { month: validatedMonth, days, firstDayWeekday, prevMonth, nextMonth, today } = workflowQueryService.getReleaseCalendar(month);
+      const pageUrl = buildPageUrl(req);
+
+      res.render('releases/calendar.njk', {
+        appName,
+        month: validatedMonth,
+        days,
+        firstDayWeekday,
+        prevMonth,
+        nextMonth,
+        today,
+        query: req.query,
+        pageUrl,
       });
     } catch (err) {
       next(err);
@@ -527,6 +560,11 @@ function createNotFound() {
 }
 
 function buildPageUrl(req) {
+  // Use req.baseUrl + req.path to get the full path for pagination URLs
+  // req.path is relative to the router mount point (/), so we need baseUrl (/releases)
+  // When req.path is '/', we get a trailing slash which we strip
+  const basePath = req.baseUrl + req.path;
+  const cleanPath = basePath === '/releases/' ? '/releases' : basePath;
   return function pageUrl(overrides) {
     const query = { ...req.query };
     for (const [key, value] of Object.entries(overrides)) {
@@ -537,6 +575,6 @@ function buildPageUrl(req) {
       }
     }
     const search = new URLSearchParams(query).toString();
-    return search ? `${req.path}?${search}` : req.path;
+    return search ? `${cleanPath}?${search}` : cleanPath;
   };
 }

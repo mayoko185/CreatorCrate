@@ -799,4 +799,349 @@ describe('release repository', () => {
       expect(releaseRepo.overdueReleases('2025-06-14').map((r) => r.id)).not.toContain(release.id);
     });
   });
+
+  // ─── Phase 6C: Release Planning Views — findPage ─────────────────────────
+
+  describe('findPage', () => {
+    it('returns paginated releases with project title and asset counts', () => {
+      const release = releaseRepo.create({
+        projectId,
+        ...sampleRelease({ title: 'Paged Release', status: 'planned', plannedDate: '2025-06-15' }),
+      });
+      const asset = assetRepo.upsert(projectId, 'file.txt', sampleAsset(projectId));
+      releaseRepo.addReleaseAsset(release.id, asset.id, 'primary', 0);
+
+      const rows = releaseRepo.findPage({ today: '2025-06-15' });
+      expect(rows).toHaveLength(1);
+      expect(rows[0].project_title).toBe('Parent Project');
+      expect(rows[0].selected_asset_count).toBe(1);
+      expect(rows[0].missing_asset_count).toBe(0);
+    });
+
+    it('paginates with limit and offset in SQL', () => {
+      for (let i = 0; i < 10; i++) {
+        releaseRepo.create({ projectId, ...sampleRelease({ title: `R${i}`, status: 'idea' }) });
+      }
+      const page1 = releaseRepo.findPage({ limit: 3, offset: 0, today: '2025-06-15' });
+      const page2 = releaseRepo.findPage({ limit: 3, offset: 3, today: '2025-06-15' });
+      const page4 = releaseRepo.findPage({ limit: 3, offset: 9, today: '2025-06-15' });
+
+      expect(page1).toHaveLength(3);
+      expect(page2).toHaveLength(3);
+      expect(page4).toHaveLength(1);
+    });
+
+    it('filters by project', () => {
+      const otherProject = projectRepo.create(sampleProject({ title: 'Other' }));
+      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Mine', status: 'idea' }) });
+      releaseRepo.create({ projectId: otherProject.id, ...sampleRelease({ title: 'Other', status: 'idea' }) });
+
+      const rows = releaseRepo.findPage({ projectId, today: '2025-06-15' });
+      expect(rows).toHaveLength(1);
+      expect(rows[0].title).toBe('Mine');
+    });
+
+    it('filters by status', () => {
+      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Idea', status: 'idea' }) });
+      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Planned', status: 'planned' }) });
+
+      const ideaRows = releaseRepo.findPage({ status: 'idea', today: '2025-06-15' });
+      expect(ideaRows).toHaveLength(1);
+      expect(ideaRows[0].title).toBe('Idea');
+
+      const plannedRows = releaseRepo.findPage({ status: 'planned', today: '2025-06-15' });
+      expect(plannedRows).toHaveLength(1);
+      expect(plannedRows[0].title).toBe('Planned');
+    });
+
+    it('orders by sort column with stable tie-breaking', () => {
+      releaseRepo.create({ projectId, ...sampleRelease({ title: 'A', status: 'planned', plannedDate: '2025-06-01' }) });
+      releaseRepo.create({ projectId, ...sampleRelease({ title: 'B', status: 'planned', plannedDate: '2025-06-01' }) });
+
+      const asc = releaseRepo.findPage({ sortBy: 'title', order: 'asc', today: '2025-06-15' });
+      expect(asc[0].title).toBe('A');
+      expect(asc[1].title).toBe('B');
+
+      const desc = releaseRepo.findPage({ sortBy: 'title', order: 'desc', today: '2025-06-15' });
+      expect(desc[0].title).toBe('B');
+      expect(desc[1].title).toBe('A');
+    });
+
+    it('returns zero asset count for release with no assets', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'No Assets' }) });
+      const rows = releaseRepo.findPage({ today: '2025-06-15' });
+      const row = rows.find((r) => r.id === release.id);
+      expect(row.selected_asset_count).toBe(0);
+      expect(row.missing_asset_count).toBe(0);
+    });
+
+    it('returns correct counts when release has multiple assets', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Multi' }) });
+      const a1 = assetRepo.upsert(projectId, 'a1.txt', sampleAsset(projectId, { relativePath: 'a1.txt' }));
+      const a2 = assetRepo.upsert(projectId, 'a2.txt', sampleAsset(projectId, { relativePath: 'a2.txt' }));
+      releaseRepo.addReleaseAsset(release.id, a1.id, 'primary', 0);
+      releaseRepo.addReleaseAsset(release.id, a2.id, 'attachment', 1);
+
+      const rows = releaseRepo.findPage({ today: '2025-06-15' });
+      const row = rows.find((r) => r.id === release.id);
+      expect(row.selected_asset_count).toBe(2);
+    });
+
+    it('returns correct missing_asset_count when assets are missing', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Missing' }) });
+      const present = assetRepo.upsert(projectId, 'present.txt', sampleAsset(projectId, { relativePath: 'present.txt' }));
+      const missing = assetRepo.upsert(projectId, 'gone.txt', sampleAsset(projectId, { relativePath: 'gone.txt' }));
+      releaseRepo.addReleaseAsset(release.id, present.id, 'primary', 0);
+      releaseRepo.addReleaseAsset(release.id, missing.id, 'attachment', 1);
+      db.prepare(`UPDATE assets SET is_present = 0, missing_since = datetime('now') WHERE id = ?`).run(missing.id);
+
+      const rows = releaseRepo.findPage({ today: '2025-06-15' });
+      const row = rows.find((r) => r.id === release.id);
+      expect(row.selected_asset_count).toBe(2);
+      expect(row.missing_asset_count).toBe(1);
+    });
+
+    it('excludes archived releases by default', () => {
+      const r1 = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Active' }) });
+      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Archived' }) });
+      releaseRepo.archive(r1.id);
+
+      const rows = releaseRepo.findPage({ today: '2025-06-15' });
+      expect(rows.map((r) => r.title)).toEqual(['Archived']);
+    });
+
+    it('includes archived releases when includeArchived is true', () => {
+      const r1 = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Active' }) });
+      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Archived' }) });
+      releaseRepo.archive(r1.id);
+
+      const rows = releaseRepo.findPage({ includeArchived: true, today: '2025-06-15' });
+      expect(rows.map((r) => r.title).sort()).toEqual(['Active', 'Archived']);
+    });
+  });
+
+  // ─── Phase 6C: Release Planning Views — countFiltered ────────────────────
+
+  describe('countFiltered', () => {
+    it('returns total count matching filters', () => {
+      releaseRepo.create({ projectId, ...sampleRelease({ title: 'R1', status: 'idea' }) });
+      releaseRepo.create({ projectId, ...sampleRelease({ title: 'R2', status: 'idea' }) });
+      releaseRepo.create({ projectId, ...sampleRelease({ title: 'R3', status: 'planned' }) });
+
+      expect(releaseRepo.countFiltered({ today: '2025-06-15' })).toBe(3);
+      expect(releaseRepo.countFiltered({ status: 'idea', today: '2025-06-15' })).toBe(2);
+      expect(releaseRepo.countFiltered({ status: 'planned', today: '2025-06-15' })).toBe(1);
+    });
+
+    it('counts only matching project', () => {
+      const other = projectRepo.create(sampleProject({ title: 'Other' }));
+      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Mine' }) });
+      releaseRepo.create({ projectId: other.id, ...sampleRelease({ title: 'Other' }) });
+
+      expect(releaseRepo.countFiltered({ projectId, today: '2025-06-15' })).toBe(1);
+    });
+
+    it('returns zero for empty result set', () => {
+      expect(releaseRepo.countFiltered({ status: 'published', today: '2025-06-15' })).toBe(0);
+    });
+  });
+
+  // ─── Phase 6C: Release Planning Views — schedule filters ───────────────────
+
+  describe('findPage — schedule filters', () => {
+    const FIXED_TODAY = '2025-06-15';
+
+    it('overdue: planned_date < today', () => {
+      const overdue = releaseRepo.create({
+        projectId, ...sampleRelease({ title: 'Overdue', status: 'planned', plannedDate: '2025-06-01' }),
+      });
+      releaseRepo.create({
+        projectId, ...sampleRelease({ title: 'Today', status: 'planned', plannedDate: '2025-06-15' }),
+      });
+      releaseRepo.create({
+        projectId, ...sampleRelease({ title: 'Future', status: 'planned', plannedDate: '2025-06-20' }),
+      });
+
+      const rows = releaseRepo.findPage({ schedule: 'overdue', today: FIXED_TODAY });
+      expect(rows.map((r) => r.title)).toEqual(['Overdue']);
+    });
+
+    it('today: planned_date = today', () => {
+      releaseRepo.create({
+        projectId, ...sampleRelease({ title: 'Yesterday', status: 'planned', plannedDate: '2025-06-14' }),
+      });
+      const today = releaseRepo.create({
+        projectId, ...sampleRelease({ title: 'Today', status: 'planned', plannedDate: '2025-06-15' }),
+      });
+      releaseRepo.create({
+        projectId, ...sampleRelease({ title: 'Tomorrow', status: 'planned', plannedDate: '2025-06-16' }),
+      });
+
+      const rows = releaseRepo.findPage({ schedule: 'today', today: FIXED_TODAY });
+      expect(rows.map((r) => r.title)).toEqual(['Today']);
+    });
+
+    it('upcoming: planned_date > today', () => {
+      releaseRepo.create({
+        projectId, ...sampleRelease({ title: 'Yesterday', status: 'planned', plannedDate: '2025-06-14' }),
+      });
+      releaseRepo.create({
+        projectId, ...sampleRelease({ title: 'Today', status: 'planned', plannedDate: '2025-06-15' }),
+      });
+      const upcoming = releaseRepo.create({
+        projectId, ...sampleRelease({ title: 'Tomorrow', status: 'planned', plannedDate: '2025-06-20' }),
+      });
+
+      const rows = releaseRepo.findPage({ schedule: 'upcoming', today: FIXED_TODAY });
+      expect(rows.map((r) => r.title)).toEqual(['Tomorrow']);
+    });
+
+    it('unscheduled: planned_date IS NULL', () => {
+      releaseRepo.create({
+        projectId, ...sampleRelease({ title: 'No Date', status: 'drafting', plannedDate: null }),
+      });
+      releaseRepo.create({
+        projectId, ...sampleRelease({ title: 'Has Date', status: 'planned', plannedDate: '2025-06-15' }),
+      });
+
+      const rows = releaseRepo.findPage({ schedule: 'unscheduled', today: FIXED_TODAY });
+      expect(rows.map((r) => r.title)).toEqual(['No Date']);
+    });
+
+    it('schedule filters exclude archived parent releases', () => {
+      const overdue = releaseRepo.create({
+        projectId, ...sampleRelease({ title: 'Overdue In Archived', status: 'planned', plannedDate: '2025-06-01' }),
+      });
+      db.prepare(`UPDATE projects SET archived_at = datetime('now') WHERE id = ?`).run(projectId);
+
+      const rows = releaseRepo.findPage({ schedule: 'overdue', today: FIXED_TODAY });
+      expect(rows.map((r) => r.id)).not.toContain(overdue.id);
+      // Sanity: release row is still in DB
+      expect(db.prepare(`SELECT id FROM releases WHERE id = ?`).get(overdue.id)).toBeTruthy();
+    });
+  });
+
+  // ─── Phase 6C: Release Planning Views — findBoard ─────────────────────────
+
+  describe('findBoard', () => {
+    it('returns releases ordered by planned_date asc', () => {
+      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Later', status: 'idea', plannedDate: '2025-07-01' }) });
+      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Earlier', status: 'idea', plannedDate: '2025-06-01' }) });
+
+      const rows = releaseRepo.findBoard({ today: '2025-06-15' });
+      expect(rows[0].title).toBe('Earlier');
+      expect(rows[1].title).toBe('Later');
+    });
+
+    it('releases with NULL planned_date sort last', () => {
+      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Has Date', status: 'idea', plannedDate: '2025-06-01' }) });
+      releaseRepo.create({ projectId, ...sampleRelease({ title: 'No Date', status: 'idea', plannedDate: null }) });
+
+      const rows = releaseRepo.findBoard({ today: '2025-06-15' });
+      expect(rows[0].title).toBe('Has Date');
+      expect(rows[rows.length - 1].title).toBe('No Date');
+    });
+
+    it('excludes archived parent releases from board by default', () => {
+      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Hidden', status: 'planned', plannedDate: '2025-06-20' }) });
+      db.prepare(`UPDATE projects SET archived_at = datetime('now') WHERE id = ?`).run(projectId);
+
+      const rows = releaseRepo.findBoard({ today: '2025-06-15' });
+      expect(rows.map((r) => r.title)).toEqual([]);
+    });
+
+    it('id DESC is the deterministic tie-breaker when status, planned_date, and updated_at all match', () => {
+      // Three releases sharing the same status, the same planned_date, and
+      // the same updated_at — the only meaningful difference is the row id.
+      // The board view must produce a deterministic order across runs by
+      // appending releases.id DESC as the final tie-breaker.
+      const r1 = releaseRepo.create({ projectId, ...sampleRelease({ title: 'First Created', status: 'planned', plannedDate: '2025-06-15' }) });
+      const r2 = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Second Created', status: 'planned', plannedDate: '2025-06-15' }) });
+      const r3 = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Third Created', status: 'planned', plannedDate: '2025-06-15' }) });
+
+      // Force identical updated_at via direct SQL update.
+      db.prepare(`UPDATE releases SET updated_at = '2025-06-01 00:00:00' WHERE id IN (?, ?, ?)`).run(r1.id, r2.id, r3.id);
+
+      const rows = releaseRepo.findBoard({ today: '2025-06-15' });
+      // With id DESC tie-breaker: r3 (highest id) first, then r2, then r1.
+      expect(rows.map((r) => r.id)).toEqual([r3.id, r2.id, r1.id]);
+    });
+  });
+
+  // ─── Phase 6C: Release Planning Views — findCalendarRange ──────────────────
+
+  describe('findCalendarRange', () => {
+    it('returns releases with planned_date in [start, end)', () => {
+      releaseRepo.create({ projectId, ...sampleRelease({ title: 'June 15', status: 'planned', plannedDate: '2025-06-15' }) });
+      releaseRepo.create({ projectId, ...sampleRelease({ title: 'June 30', status: 'planned', plannedDate: '2025-06-30' }) });
+      releaseRepo.create({ projectId, ...sampleRelease({ title: 'July 1', status: 'planned', plannedDate: '2025-07-01' }) });
+      releaseRepo.create({ projectId, ...sampleRelease({ title: 'May 31', status: 'planned', plannedDate: '2025-05-31' }) });
+
+      const rows = releaseRepo.findCalendarRange('2025-06-01', '2025-07-01', {});
+      expect(rows.map((r) => r.title).sort()).toEqual(['June 15', 'June 30']);
+    });
+
+    it('end-exclusive boundary: release on end date is NOT included', () => {
+      releaseRepo.create({ projectId, ...sampleRelease({ title: 'July 1', status: 'planned', plannedDate: '2025-07-01' }) });
+
+      const rows = releaseRepo.findCalendarRange('2025-06-01', '2025-07-01', {});
+      expect(rows.map((r) => r.title)).toEqual([]);
+    });
+
+    it('start-inclusive boundary: release on start date IS included', () => {
+      releaseRepo.create({ projectId, ...sampleRelease({ title: 'June 1', status: 'planned', plannedDate: '2025-06-01' }) });
+
+      const rows = releaseRepo.findCalendarRange('2025-06-01', '2025-07-01', {});
+      expect(rows.map((r) => r.title)).toEqual(['June 1']);
+    });
+
+    it('excludes releases without planned_date', () => {
+      releaseRepo.create({ projectId, ...sampleRelease({ title: 'No Date', status: 'planned', plannedDate: null }) });
+
+      const rows = releaseRepo.findCalendarRange('2025-06-01', '2025-07-01', {});
+      expect(rows.map((r) => r.title)).toEqual([]);
+    });
+
+    it('filters by project', () => {
+      const other = projectRepo.create(sampleProject({ title: 'Other' }));
+      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Mine', status: 'planned', plannedDate: '2025-06-15' }) });
+      releaseRepo.create({ projectId: other.id, ...sampleRelease({ title: 'Other', status: 'planned', plannedDate: '2025-06-15' }) });
+
+      const rows = releaseRepo.findCalendarRange('2025-06-01', '2025-07-01', { projectId });
+      expect(rows.map((r) => r.title)).toEqual(['Mine']);
+    });
+
+    it('excludes archived parent releases when activeScheduleFilter is true', () => {
+      const hidden = releaseRepo.create({
+        projectId, ...sampleRelease({ title: 'Hidden', status: 'planned', plannedDate: '2025-06-15' }),
+      });
+      db.prepare(`UPDATE projects SET archived_at = datetime('now') WHERE id = ?`).run(projectId);
+
+      const rows = releaseRepo.findCalendarRange('2025-06-01', '2025-07-01', { activeScheduleFilter: true });
+      expect(rows.map((r) => r.id)).not.toContain(hidden.id);
+    });
+
+    it('leap year February has 29 days (findCalendarRange boundary)', () => {
+      // 2024 is a leap year
+      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Feb 28', status: 'planned', plannedDate: '2024-02-28' }) });
+      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Mar 1', status: 'planned', plannedDate: '2024-03-01' }) });
+
+      const rows = releaseRepo.findCalendarRange('2024-02-01', '2024-03-01', {});
+      expect(rows.map((r) => r.title)).toEqual(['Feb 28']);
+    });
+
+    it('id DESC is the final tie-breaker when planned_date and updated_at match', () => {
+      // Insert three releases on the same planned_date with forced identical updated_at.
+      const r1 = releaseRepo.create({ projectId, ...sampleRelease({ title: 'First Created', status: 'planned', plannedDate: '2025-06-15' }) });
+      const r2 = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Second Created', status: 'planned', plannedDate: '2025-06-15' }) });
+      const r3 = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Third Created', status: 'planned', plannedDate: '2025-06-15' }) });
+
+      // Force identical updated_at via direct SQL update.
+      db.prepare(`UPDATE releases SET updated_at = '2025-06-01 00:00:00' WHERE id IN (?, ?, ?)`).run(r1.id, r2.id, r3.id);
+
+      const rows = releaseRepo.findCalendarRange('2025-06-01', '2025-07-01', {});
+      // With id DESC tie-breaker: r3 (highest id) first, then r2, then r1.
+      expect(rows.map((r) => r.id)).toEqual([r3.id, r2.id, r1.id]);
+    });
+  });
 });
