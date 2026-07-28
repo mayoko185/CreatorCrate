@@ -56,6 +56,15 @@
                     <a href="/releases/{{ release.id }}">{{ release.title }}</a>
                     <span class="release-project">{{ release.project_title }}</span>
                     <span class="release-status status-{{ release.status }}">{{ release.status }}</span>
+                    {% if release._readiness %}
+                      <span class="release-readiness">
+                        {%- if release._readiness.publishable -%}
+                          <span class="readiness-publishable">Publishable</span>
+                        {%- else -%}
+                          <span class="readiness-blocked">Blocked</span>
+                        {%- endif -%}
+                      </span>
+                    {% endif %}
                     {% if release.missing_asset_count > 0 %}
                       <span class="missing-indicator" title="{{ release.missing_asset_count }} missing asset(s)">⚠</span>
                     {% endif %}
@@ -175,6 +184,16 @@
     .missing-indicator {
       color: var(--danger);
       font-size: 0.7rem;
+    }
+    .release-readiness {
+      font-size: 0.65rem;
+      font-weight: 600;
+    }
+    .readiness-publishable {
+      color: #46b464;
+    }
+    .readiness-blocked {
+      color: #e5484d;
     }
   </style>
 {% endblock %}

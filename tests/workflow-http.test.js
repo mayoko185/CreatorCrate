@@ -173,8 +173,26 @@ describe('Phase 6B HTTP workflow', () => {
       });
 
       const res = await request(app).get('/').expect(200);
-      expect(res.text).toContain('Ready to publish (1)');
+      // Without assets, this release is blocked — appears in "Ready but blocked"
+      expect(res.text).toContain('Ready but blocked (1)');
       expect(res.text).toContain('Ready To Publish');
+      expect(res.text).toContain('no assets selected');
+    });
+
+    it('shows ready-to-publish releases with present assets', async () => {
+      const projectId = await createProject(app, { title: 'Ready Publish Project' });
+      const releaseId = await createRelease(app, {
+        projectId,
+        title: 'Publishable Release',
+        status: 'ready',
+        plannedDate: '2099-01-01',
+      });
+      // Use the existing helper to create a present asset and link it
+      attachPresentAssetToRelease(db, projectId, Number(releaseId), { name: 'asset.txt', present: true });
+
+      const res = await request(app).get('/').expect(200);
+      expect(res.text).toContain('Ready to publish (1)');
+      expect(res.text).toContain('Publishable Release');
     });
 
     it('shows active releases without planned date', async () => {
@@ -2361,6 +2379,45 @@ describe('Phase 6B HTTP workflow', () => {
         expect(nextUrl.searchParams.size).toBe(4);
         expect(nextUrl.searchParams.has('junk')).toBe(false);
       });
+    });
+  });
+
+  // ─── Phase 7B: Readiness disclaimer rendering ──────────────────────────
+
+  describe('readiness disclaimer rendering', () => {
+    it('renders the scan-state disclaimer for a publishable release', async () => {
+      const projectId = await createProject(app, { title: 'Disclaimer Publishable' });
+      const releaseId = await createRelease(app, {
+        projectId,
+        title: 'Publishable Release',
+        status: 'ready',
+        plannedDate: '2099-01-01',
+      });
+      attachPresentAssetToRelease(db, Number(projectId), Number(releaseId), { name: 'asset.txt', present: true });
+
+      const res = await request(app).get(`/releases/${releaseId}`).expect(200);
+      // The readiness panel must contain the scan-state wording
+      const panelMatch = res.text.match(/<section class="readiness-panel">[\s\S]*?<\/section>/);
+      expect(panelMatch).not.toBeNull();
+      expect(panelMatch[0]).toContain('Asset presence reflects the last completed scan');
+      expect(panelMatch[0]).toContain('not performing a live filesystem check');
+    });
+
+    it('renders the scan-state disclaimer for a blocked release', async () => {
+      const projectId = await createProject(app, { title: 'Disclaimer Blocked' });
+      const releaseId = await createRelease(app, {
+        projectId,
+        title: 'Blocked Release',
+        status: 'ready',
+        plannedDate: '2099-01-01',
+      });
+      // No assets — blocked by assets_selected
+
+      const res = await request(app).get(`/releases/${releaseId}`).expect(200);
+      const panelMatch = res.text.match(/<section class="readiness-panel">[\s\S]*?<\/section>/);
+      expect(panelMatch).not.toBeNull();
+      expect(panelMatch[0]).toContain('Asset presence reflects the last completed scan');
+      expect(panelMatch[0]).toContain('not performing a live filesystem check');
     });
   });
 });

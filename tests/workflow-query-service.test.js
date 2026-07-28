@@ -95,7 +95,8 @@ describe('workflow query service', () => {
 
       expect(data.releasesNeedingAttention).toEqual({
         overdue: [],
-        ready: [],
+        readyToPublish: [],
+        readyButBlocked: [],
         missingPlannedDate: [],
         missingSelectedAssets: [],
         releasesWithoutAssets: [],
@@ -165,18 +166,193 @@ describe('workflow query service', () => {
       expect(data.upcomingReleases[0].releases[0].title).toBe('Upcoming Release');
     });
 
-    it('ready releases appear in the ready-to-publish section', () => {
+    it('ready release with present asset appears in ready-to-publish', () => {
       const project = insertProject(db, { title: 'Ready Project', status: 'ready' });
-      insertRelease(db, {
+      const release = insertRelease(db, {
         projectId: project.id,
         title: 'Ready Release',
         status: 'ready',
         plannedDate: '2099-01-01',
       });
+      const asset = insertAsset(db, {
+        projectId: project.id,
+        relativePath: 'a.txt',
+        filename: 'a.txt',
+        isPresent: 1,
+      });
+      linkAssetToRelease(db, { releaseId: release.id, assetId: asset.id });
 
       const data = service.getDashboardData();
-      expect(data.releasesNeedingAttention.ready).toHaveLength(1);
-      expect(data.releasesNeedingAttention.ready[0].title).toBe('Ready Release');
+      expect(data.releasesNeedingAttention.readyToPublish).toHaveLength(1);
+      expect(data.releasesNeedingAttention.readyToPublish[0].title).toBe('Ready Release');
+      expect(data.releasesNeedingAttention.readyButBlocked).toHaveLength(0);
+    });
+
+    it('ready release with zero assets appears in ready-but-blocked', () => {
+      const project = insertProject(db, { title: 'Zero Asset Project', status: 'ready' });
+      insertRelease(db, {
+        projectId: project.id,
+        title: 'Zero Asset Release',
+        status: 'ready',
+        plannedDate: '2099-01-01',
+      });
+      // No assets linked.
+
+      const data = service.getDashboardData();
+      expect(data.releasesNeedingAttention.readyButBlocked).toHaveLength(1);
+      expect(data.releasesNeedingAttention.readyButBlocked[0].title).toBe('Zero Asset Release');
+      expect(data.releasesNeedingAttention.readyToPublish).toHaveLength(0);
+      // Blocker key is assets_selected
+      expect(data.releasesNeedingAttention.readyButBlocked[0].blockers).toEqual(
+        expect.arrayContaining([expect.objectContaining({ key: 'assets_selected' })])
+      );
+    });
+
+    it('ready release with missing asset appears in ready-but-blocked', () => {
+      const project = insertProject(db, { title: 'Missing Asset Project', status: 'ready' });
+      const release = insertRelease(db, {
+        projectId: project.id,
+        title: 'Missing Asset Release',
+        status: 'ready',
+        plannedDate: '2099-01-01',
+      });
+      const missingAsset = insertAsset(db, {
+        projectId: project.id,
+        relativePath: 'gone.txt',
+        filename: 'gone.txt',
+        isPresent: 0,
+      });
+      linkAssetToRelease(db, { releaseId: release.id, assetId: missingAsset.id });
+
+      const data = service.getDashboardData();
+      expect(data.releasesNeedingAttention.readyButBlocked).toHaveLength(1);
+      expect(data.releasesNeedingAttention.readyButBlocked[0].title).toBe('Missing Asset Release');
+      expect(data.releasesNeedingAttention.readyToPublish).toHaveLength(0);
+      // Blocker key is selected_assets_present
+      expect(data.releasesNeedingAttention.readyButBlocked[0].blockers).toEqual(
+        expect.arrayContaining([expect.objectContaining({ key: 'selected_assets_present' })])
+      );
+    });
+
+    it('archived ready release is excluded from both groups', () => {
+      const project = insertProject(db, { title: 'Archived Ready Project', status: 'ready' });
+      insertRelease(db, {
+        projectId: project.id,
+        title: 'Archived Ready',
+        status: 'ready',
+        plannedDate: '2099-01-01',
+        archivedAt: '2025-06-15 10:00:00',
+      });
+
+      const data = service.getDashboardData();
+      expect(data.releasesNeedingAttention.readyToPublish).toHaveLength(0);
+      expect(data.releasesNeedingAttention.readyButBlocked).toHaveLength(0);
+    });
+
+    it('ready release under archived parent project is excluded from both groups', () => {
+      const project = insertProject(db, { title: 'Archived Parent Ready' });
+      const release = insertRelease(db, {
+        projectId: project.id,
+        title: 'Hidden Ready',
+        status: 'ready',
+        plannedDate: '2099-01-01',
+      });
+      db.prepare(`UPDATE projects SET archived_at = datetime('now') WHERE id = ?`).run(project.id);
+
+      const data = service.getDashboardData();
+      expect(data.releasesNeedingAttention.readyToPublish).toHaveLength(0);
+      expect(data.releasesNeedingAttention.readyButBlocked).toHaveLength(0);
+    });
+
+    it('non-ready releases are excluded from both groups', () => {
+      const project = insertProject(db, { title: 'Non Ready Project', status: 'planned' });
+      insertRelease(db, {
+        projectId: project.id,
+        title: 'Planned Release',
+        status: 'planned',
+        plannedDate: '2099-01-01',
+      });
+      insertRelease(db, {
+        projectId: project.id,
+        title: 'Drafting Release',
+        status: 'drafting',
+        plannedDate: '2099-01-01',
+      });
+
+      const data = service.getDashboardData();
+      expect(data.releasesNeedingAttention.readyToPublish).toHaveLength(0);
+      expect(data.releasesNeedingAttention.readyButBlocked).toHaveLength(0);
+    });
+
+    it('blocked release includes the correct blocker key', () => {
+      const project = insertProject(db, { title: 'Blocker Key Project', status: 'ready' });
+      const release = insertRelease(db, {
+        projectId: project.id,
+        title: 'Blocker Key Release',
+        status: 'ready',
+        plannedDate: '2099-01-01',
+      });
+      // Link a missing asset — triggers selected_assets_present blocker.
+      const missingAsset = insertAsset(db, {
+        projectId: project.id,
+        relativePath: 'gone.txt',
+        filename: 'gone.txt',
+        isPresent: 0,
+      });
+      linkAssetToRelease(db, { releaseId: release.id, assetId: missingAsset.id });
+
+      const data = service.getDashboardData();
+      expect(data.releasesNeedingAttention.readyButBlocked).toHaveLength(1);
+      const blockers = data.releasesNeedingAttention.readyButBlocked[0].blockers;
+      expect(blockers).toHaveLength(1);
+      expect(blockers[0].key).toBe('selected_assets_present');
+      expect(blockers[0].details.missingSelectedAssetCount).toBe(1);
+    });
+
+    it('respects the bounded limit on ready releases', () => {
+      const project = insertProject(db, { title: 'Bounded Ready' });
+      for (let i = 0; i < 10; i++) {
+        const release = insertRelease(db, {
+          projectId: project.id,
+          title: `Ready ${i}`,
+          status: 'ready',
+          plannedDate: '2099-01-01',
+        });
+        const asset = insertAsset(db, {
+          projectId: project.id,
+          relativePath: `a${i}.txt`,
+          filename: `a${i}.txt`,
+          isPresent: 1,
+        });
+        linkAssetToRelease(db, { releaseId: release.id, assetId: asset.id });
+      }
+
+      const data = service.getDashboardData({ limits: { ready: 3 } });
+      expect(data.releasesNeedingAttention.readyToPublish).toHaveLength(3);
+    });
+
+    it('no duplicate releases across both groups', () => {
+      const project = insertProject(db, { title: 'No Dup Project', status: 'ready' });
+      const release = insertRelease(db, {
+        projectId: project.id,
+        title: 'Unique',
+        status: 'ready',
+        plannedDate: '2099-01-01',
+      });
+      const asset = insertAsset(db, {
+        projectId: project.id,
+        relativePath: 'a.txt',
+        filename: 'a.txt',
+        isPresent: 1,
+      });
+      linkAssetToRelease(db, { releaseId: release.id, assetId: asset.id });
+
+      const data = service.getDashboardData();
+      const allIds = [
+        ...data.releasesNeedingAttention.readyToPublish.map((r) => r.id),
+        ...data.releasesNeedingAttention.readyButBlocked.map((r) => r.id),
+      ];
+      expect(new Set(allIds).size).toBe(allIds.length);
     });
 
     it('active releases without planned date appear in the missing-planned-date section', () => {
@@ -297,7 +473,8 @@ describe('workflow query service', () => {
       expect(data.releasesNeedingAttention.totalCount).toBe(4);
       // Sanity: every list non-empty except missing-selection
       expect(data.releasesNeedingAttention.overdue).toHaveLength(1);
-      expect(data.releasesNeedingAttention.ready).toHaveLength(1);
+      expect(data.releasesNeedingAttention.readyToPublish).toHaveLength(1);
+      expect(data.releasesNeedingAttention.readyButBlocked).toHaveLength(0);
       expect(data.releasesNeedingAttention.missingPlannedDate).toHaveLength(1);
       expect(data.releasesNeedingAttention.missingSelectedAssets).toHaveLength(1);
       expect(data.releasesNeedingAttention.releasesWithoutAssets).toHaveLength(0);
@@ -971,7 +1148,8 @@ describe('workflow query service', () => {
       const allUpcoming = data.upcomingReleases.flatMap((g) => g.releases);
       expect(allUpcoming.map((r) => r.id)).not.toContain(release.id);
       expect(data.releasesNeedingAttention.overdue.map((r) => r.id)).not.toContain(release.id);
-      expect(data.releasesNeedingAttention.ready.map((r) => r.id)).not.toContain(release.id);
+      expect(data.releasesNeedingAttention.readyToPublish.map((r) => r.id)).not.toContain(release.id);
+      expect(data.releasesNeedingAttention.readyButBlocked.map((r) => r.id)).not.toContain(release.id);
       expect(data.releasesNeedingAttention.missingPlannedDate.map((r) => r.id)).not.toContain(release.id);
       expect(data.releasesNeedingAttention.missingSelectedAssets.map((r) => r.id)).not.toContain(release.id);
       expect(data.releasesNeedingAttention.releasesWithoutAssets.map((r) => r.id)).not.toContain(release.id);
@@ -1011,7 +1189,8 @@ describe('workflow query service', () => {
       db.prepare(`UPDATE projects SET archived_at = datetime('now') WHERE id = ?`).run(project.id);
 
       const data = service.getDashboardData();
-      expect(data.releasesNeedingAttention.ready.map((r) => r.id)).not.toContain(release.id);
+      expect(data.releasesNeedingAttention.readyToPublish.map((r) => r.id)).not.toContain(release.id);
+      expect(data.releasesNeedingAttention.readyButBlocked.map((r) => r.id)).not.toContain(release.id);
     });
 
     it('release without planned date and archived parent project does NOT appear on the dashboard', () => {
@@ -1087,7 +1266,8 @@ describe('workflow query service', () => {
       const dash = service.getDashboardData();
       const allAttentionIds = [
         ...dash.releasesNeedingAttention.overdue,
-        ...dash.releasesNeedingAttention.ready,
+        ...dash.releasesNeedingAttention.readyToPublish,
+        ...dash.releasesNeedingAttention.readyButBlocked,
         ...dash.releasesNeedingAttention.missingPlannedDate,
         ...dash.releasesNeedingAttention.missingSelectedAssets,
         ...dash.releasesNeedingAttention.releasesWithoutAssets,
@@ -2760,6 +2940,244 @@ describe('workflow query service', () => {
       const published = releaseService.publishRelease(release.id, '2025-06-15');
       expect(published.status).toBe('published');
       expect(published.published_date).toBe('2025-06-15');
+    });
+  });
+
+  // ─── Phase 7B-3: Planning View Readiness Indicators ──────────────────
+  //
+  // Compact readiness indicators (_readiness) are attached to releases in
+  // getReleaseList, getReleaseBoard, and getReleaseCalendar. All three use
+  // the same _attachReadiness helper so one set of scenarios is sufficient,
+  // but each method's result shape is verified for completeness.
+
+  function insertReadyReleaseWithPresentAsset(db, project, title) {
+    const release = insertRelease(db, {
+      projectId: project.id, title, status: 'ready', plannedDate: '2099-01-01',
+    });
+    const asset = insertAsset(db, {
+      projectId: project.id, relativePath: `${title}.txt`, filename: `${title}.txt`, isPresent: 1,
+    });
+    linkAssetToRelease(db, { releaseId: release.id, assetId: asset.id });
+    return release;
+  }
+
+  function insertReadyReleaseWithMissingAsset(db, project, title) {
+    const release = insertRelease(db, {
+      projectId: project.id, title, status: 'ready', plannedDate: '2099-01-01',
+    });
+    const missing = insertAsset(db, {
+      projectId: project.id, relativePath: `${title}-missing.txt`, filename: `${title}-missing.txt`, isPresent: 0,
+    });
+    linkAssetToRelease(db, { releaseId: release.id, assetId: missing.id });
+    return release;
+  }
+
+  function insertReadyReleaseWithNoAssets(db, project, title) {
+    return insertRelease(db, {
+      projectId: project.id, title, status: 'ready', plannedDate: '2099-01-01',
+    });
+  }
+
+  describe('getReleaseList — readiness indicators', () => {
+    it('ready + present asset → _readiness.publishable === true', () => {
+      const project = insertProject(db, { title: 'Publishable Project' });
+      const release = insertReadyReleaseWithPresentAsset(db, project, 'Publishable Release');
+
+      const result = service.getReleaseList({}, { today: '2099-01-01' });
+      const found = result.releases.find((r) => r.id === release.id);
+      expect(found._readiness).toBeDefined();
+      expect(found._readiness.publishable).toBe(true);
+    });
+
+    it('ready + zero assets → _readiness.publishable === false, blocker', () => {
+      const project = insertProject(db, { title: 'No Asset Project' });
+      const release = insertReadyReleaseWithNoAssets(db, project, 'No Asset Release');
+
+      const result = service.getReleaseList({}, { today: '2099-01-01' });
+      const found = result.releases.find((r) => r.id === release.id);
+      expect(found._readiness).toBeDefined();
+      expect(found._readiness.publishable).toBe(false);
+      expect(found._readiness.blockerCount).toBeGreaterThan(0);
+      expect(found._readiness.blockerKeys).toContain('assets_selected');
+    });
+
+    it('ready + missing asset → _readiness.publishable === false, blocker', () => {
+      const project = insertProject(db, { title: 'Missing Asset Project' });
+      const release = insertReadyReleaseWithMissingAsset(db, project, 'Missing Asset Release');
+
+      const result = service.getReleaseList({}, { today: '2099-01-01' });
+      const found = result.releases.find((r) => r.id === release.id);
+      expect(found._readiness).toBeDefined();
+      expect(found._readiness.publishable).toBe(false);
+      expect(found._readiness.blockerKeys).toContain('selected_assets_present');
+    });
+
+    it('non-ready release has no _readiness', () => {
+      const project = insertProject(db, { title: 'Non Ready Project' });
+      const release = insertRelease(db, {
+        projectId: project.id, title: 'Planned', status: 'planned', plannedDate: '2099-01-01',
+      });
+
+      const result = service.getReleaseList({}, { today: '2099-01-01' });
+      const found = result.releases.find((r) => r.id === release.id);
+      expect(found._readiness).toBeUndefined();
+    });
+
+    it('no duplicate rows when attachment adds readiness', () => {
+      const project = insertProject(db, { title: 'No Dup Project' });
+      const release = insertReadyReleaseWithPresentAsset(db, project, 'No Dup');
+
+      const result = service.getReleaseList({}, { today: '2099-01-01' });
+      expect(result.releases.filter((r) => r.id === release.id)).toHaveLength(1);
+    });
+
+    it('pagination totals unchanged after readiness attachment', () => {
+      const project = insertProject(db, { title: 'Pagination Project' });
+      for (let i = 0; i < 5; i++) {
+        insertReadyReleaseWithPresentAsset(db, project, `Page Release ${i}`);
+      }
+
+      // Page size of 100 should return all 5
+      const result = service.getReleaseList({ pageSize: '100' }, { today: '2099-01-01' });
+      expect(result.total).toBe(5);
+      expect(result.releases).toHaveLength(5);
+    });
+
+    it('filters remain preserved after readiness attachment', () => {
+      const project = insertProject(db, { title: 'Filter Project' });
+      insertReadyReleaseWithPresentAsset(db, project, 'Ready In Project');
+      const otherProject = insertProject(db, { title: 'Other Project' });
+      insertReadyReleaseWithPresentAsset(db, otherProject, 'Other Ready');
+
+      // Filter by the first project
+      const result = service.getReleaseList({ project: String(project.id) }, { today: '2099-01-01' });
+      expect(result.releases).toHaveLength(1);
+      expect(result.releases[0].project_title).toBe('Filter Project');
+      expect(result.releases[0]._readiness).toBeDefined();
+    });
+  });
+
+  describe('getReleaseBoard — readiness indicators', () => {
+    it('board cards use the same readiness results as list', () => {
+      const project = insertProject(db, { title: 'Board Project' });
+      const publishable = insertReadyReleaseWithPresentAsset(db, project, 'Board Publishable');
+      const blocked = insertReadyReleaseWithNoAssets(db, project, 'Board Blocked');
+
+      const result = service.getReleaseBoard({}, { today: '2099-01-01' });
+
+      const readyCol = result.columns.ready || [];
+      const foundPub = readyCol.find((r) => r.id === publishable.id);
+      const foundBlocked = readyCol.find((r) => r.id === blocked.id);
+
+      expect(foundPub._readiness.publishable).toBe(true);
+      expect(foundBlocked._readiness.publishable).toBe(false);
+      expect(foundBlocked._readiness.blockerKeys).toContain('assets_selected');
+    });
+
+    it('non-ready board cards have no _readiness', () => {
+      const project = insertProject(db, { title: 'Board NonReady' });
+      insertRelease(db, {
+        projectId: project.id, title: 'Idea', status: 'idea', plannedDate: '2099-01-01',
+      });
+      insertRelease(db, {
+        projectId: project.id, title: 'Published', status: 'published', plannedDate: '2099-01-01',
+      });
+
+      const result = service.getReleaseBoard({}, { today: '2099-01-01' });
+      for (const status of ['idea', 'planned', 'drafting', 'published', 'cancelled']) {
+        for (const release of (result.columns[status] || [])) {
+          expect(release._readiness).toBeUndefined();
+        }
+      }
+    });
+
+    it('no duplicate board cards after readiness attachment', () => {
+      const project = insertProject(db, { title: 'Board No Dup' });
+      const release = insertReadyReleaseWithPresentAsset(db, project, 'Board Unique');
+
+      const result = service.getReleaseBoard({}, { today: '2099-01-01' });
+      const readyCol = result.columns.ready || [];
+      expect(readyCol.filter((r) => r.id === release.id)).toHaveLength(1);
+    });
+  });
+
+  describe('getReleaseCalendar — readiness indicators', () => {
+    it('calendar entries remain readable and correct after readiness attachment', () => {
+      const project = insertProject(db, { title: 'Calendar Project' });
+      const readyPub = insertReadyReleaseWithPresentAsset(db, project, 'Calendar Pub');
+      const readyBlocked = insertReadyReleaseWithNoAssets(db, project, 'Calendar Blocked');
+      const planned = insertRelease(db, {
+        projectId: project.id, title: 'Calendar Planned', status: 'planned', plannedDate: '2099-01-01',
+      });
+
+      const result = service.getReleaseCalendar('2099-01', { today: '2099-01-01' });
+
+      // Find releases on Jan 1
+      const jan1 = result.days.find((d) => d.date === '2099-01-01');
+      expect(jan1).toBeDefined();
+      const releases = jan1.releases;
+
+      const foundPub = releases.find((r) => r.id === readyPub.id);
+      const foundBlocked = releases.find((r) => r.id === readyBlocked.id);
+      const foundPlanned = releases.find((r) => r.id === planned.id);
+
+      expect(foundPub._readiness.publishable).toBe(true);
+      expect(foundBlocked._readiness.publishable).toBe(false);
+      expect(foundPlanned._readiness).toBeUndefined();
+    });
+
+    it('no duplicate calendar entries after readiness attachment', () => {
+      const project = insertProject(db, { title: 'Calendar No Dup' });
+      const release = insertReadyReleaseWithPresentAsset(db, project, 'Calendar Unique');
+
+      const result = service.getReleaseCalendar('2099-01', { today: '2099-01-01' });
+      const jan1 = result.days.find((d) => d.date === '2099-01-01');
+      const matches = jan1.releases.filter((r) => r.id === release.id);
+      expect(matches).toHaveLength(1);
+    });
+  });
+
+  describe('planning-view readiness — cross-view consistency', () => {
+    it('detail, dashboard, list, and board agree for the same release', () => {
+      const project = insertProject(db, { title: 'Consistency Project' });
+      const release = insertReadyReleaseWithPresentAsset(db, project, 'Consistent Release');
+
+      // Detail readiness
+      const detail = service.getReleaseReadiness(release.id);
+      expect(detail.publishable).toBe(true);
+
+      // Dashboard groups
+      const dash = service.getDashboardData();
+      const dashPublishableIds = dash.releasesNeedingAttention.readyToPublish.map((r) => r.id);
+      const dashBlockedIds = dash.releasesNeedingAttention.readyButBlocked.map((r) => r.id);
+      expect(dashPublishableIds).toContain(release.id);
+      expect(dashBlockedIds).not.toContain(release.id);
+
+      // List
+      const listResult = service.getReleaseList({}, { today: '2099-01-01' });
+      const listRow = listResult.releases.find((r) => r.id === release.id);
+      expect(listRow._readiness.publishable).toBe(true);
+
+      // Board
+      const boardResult = service.getReleaseBoard({}, { today: '2099-01-01' });
+      const boardRow = (boardResult.columns.ready || []).find((r) => r.id === release.id);
+      expect(boardRow._readiness.publishable).toBe(true);
+    });
+
+    it('publication behavior remains unchanged', async () => {
+      const project = insertProject(db, { title: 'Pub Unchanged' });
+      const release = insertReadyReleaseWithNoAssets(db, project, 'Unchanged');
+
+      // Readiness says blocked
+      const listResult = service.getReleaseList({}, { today: '2099-01-01' });
+      const listRow = listResult.releases.find((r) => r.id === release.id);
+      expect(listRow._readiness.publishable).toBe(false);
+
+      // But publish still works (does not consult readiness)
+      const { createReleaseService } = await import('../src/services/release-service.js');
+      const releaseService = createReleaseService(db);
+      const published = releaseService.publishRelease(release.id, '2025-06-15');
+      expect(published.status).toBe('published');
     });
   });
 });

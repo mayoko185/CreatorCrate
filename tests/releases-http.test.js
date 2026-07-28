@@ -2558,4 +2558,340 @@ describe('release HTTP workflow', () => {
       expect(res.text).toMatch(/archived/i);
     });
   });
+
+  // ─── Phase 7B-1: Release Detail Readiness Panel ──────────────────────────
+
+  describe('release detail readiness panel', () => {
+    /**
+     * Helper: create a project, scan a file into it, create a release, and
+     * select the scanned asset. Returns { projectId, releaseLocation, assetId }.
+     */
+    async function setupPublishableRelease(app, projectsRoot, db) {
+      const projRes = await request(app)
+        .post('/projects')
+        .send('title=Readiness+Test+Project')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectId = projRes.headers.location.replace('/projects/', '');
+
+      const slug = 'readiness-test-project';
+      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
+      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
+      const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
+      fs.writeFileSync(path.join(projectDir, 'asset.png'), 'png');
+      await request(app).post(`/projects/${projectId}/scan`).expect(302);
+
+      const assetRepo = createAssetRepository(db);
+      const assets = assetRepo.findByProjectId(Number(projectId));
+      const assetId = String(assets[0].id);
+
+      const createRes = await request(app)
+        .post('/releases')
+        .send(`projectId=${projectId}`)
+        .send('title=Readiness+Test+Release')
+        .send('status=ready')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const releaseLocation = createRes.headers.location;
+
+      // Select the asset
+      await request(app)
+        .post(releaseLocation + '/assets')
+        .send(`selectedAssetIds[]=${assetId}`)
+        .send('roles[]=primary')
+        .send('sortOrder[]=0')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      return { projectId, releaseLocation, assetId };
+    }
+
+    it('fully publishable release shows Publishable and all checks pass', async () => {
+      const { releaseLocation } = await setupPublishableRelease(app, projectsRoot, db);
+      const res = await request(app).get(releaseLocation).expect(200);
+
+      expect(res.text).toContain('Publishable');
+      expect(res.text).toContain('Status is ready');
+      expect(res.text).toContain('Assets selected');
+      expect(res.text).toContain('Selected assets present');
+      expect(res.text).toContain('Scope is mutable');
+      // All checks pass — no "Needs attention"
+      expect(res.text).not.toContain('Needs attention');
+    });
+
+    it('non-ready status shows blocked with status detail', async () => {
+      const projRes = await request(app)
+        .post('/projects')
+        .send('title=Non+Ready+Status+Test')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectId = projRes.headers.location.replace('/projects/', '');
+
+      const createRes = await request(app)
+        .post('/releases')
+        .send(`projectId=${projectId}`)
+        .send('title=Non+Ready+Release')
+        .send('status=idea')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      const res = await request(app).get(createRes.headers.location).expect(200);
+      expect(res.text).toContain('Needs attention');
+      expect(res.text).toContain('Status: idea');
+      expect(res.text).not.toContain('Publishable');
+    });
+
+    it('zero selected assets shows blocked with count', async () => {
+      const projRes = await request(app)
+        .post('/projects')
+        .send('title=Zero+Selected+Test')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectId = projRes.headers.location.replace('/projects/', '');
+
+      const createRes = await request(app)
+        .post('/releases')
+        .send(`projectId=${projectId}`)
+        .send('title=Zero+Selected+Release')
+        .send('status=ready')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      const res = await request(app).get(createRes.headers.location).expect(200);
+      expect(res.text).toContain('Needs attention');
+      expect(res.text).toContain('0 selected');
+    });
+
+    it('missing selected asset shows blocked with missing count', async () => {
+      const { releaseLocation, projectId, assetId } = await setupPublishableRelease(app, projectsRoot, db);
+
+      // Mark the selected asset as missing
+      const assetRepo = createAssetRepository(db);
+      assetRepo.markMissingByProjectIdAndPathNotIn(Number(projectId), []);
+
+      const res = await request(app).get(releaseLocation).expect(200);
+      expect(res.text).toContain('Needs attention');
+      expect(res.text).toContain('1 missing');
+    });
+
+    it('archived release shows scope blocked', async () => {
+      const { releaseLocation } = await setupPublishableRelease(app, projectsRoot, db);
+
+      // Archive the release
+      await request(app)
+        .post(`${releaseLocation}/archive`)
+        .expect(302);
+
+      const res = await request(app).get(releaseLocation).expect(200);
+      expect(res.text).toContain('Needs attention');
+      expect(res.text).toContain('Release is archived');
+    });
+
+    it('archived parent project shows scope blocked', async () => {
+      const { releaseLocation, projectId } = await setupPublishableRelease(app, projectsRoot, db);
+
+      // Archive the parent project
+      await request(app)
+        .post(`/projects/${projectId}/archive`)
+        .expect(302);
+
+      const res = await request(app).get(releaseLocation).expect(200);
+      expect(res.text).toContain('Needs attention');
+      expect(res.text).toContain('Project is archived');
+    });
+
+    it('multiple blockers render simultaneously', async () => {
+      const projRes = await request(app)
+        .post('/projects')
+        .send('title=Multiple+Blockers+Test')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectId = projRes.headers.location.replace('/projects/', '');
+
+      // Create release with idea status and no assets — two blockers
+      const createRes = await request(app)
+        .post('/releases')
+        .send(`projectId=${projectId}`)
+        .send('title=Multiple+Blockers+Release')
+        .send('status=idea')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      const res = await request(app).get(createRes.headers.location).expect(200);
+      expect(res.text).toContain('Needs attention');
+      expect(res.text).toContain('Status: idea');
+      expect(res.text).toContain('0 selected');
+    });
+
+    it('all four check labels render', async () => {
+      const { releaseLocation } = await setupPublishableRelease(app, projectsRoot, db);
+      const res = await request(app).get(releaseLocation).expect(200);
+
+      expect(res.text).toContain('Status is ready');
+      expect(res.text).toContain('Assets selected');
+      expect(res.text).toContain('Selected assets present');
+      expect(res.text).toContain('Scope is mutable');
+    });
+
+    it('factual selected count renders', async () => {
+      const { releaseLocation } = await setupPublishableRelease(app, projectsRoot, db);
+      const res = await request(app).get(releaseLocation).expect(200);
+
+      expect(res.text).toContain('1 selected');
+    });
+
+    it('last-completed-scan wording renders when blocked', async () => {
+      const projRes = await request(app)
+        .post('/projects')
+        .send('title=Scan+Wording+Test')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectId = projRes.headers.location.replace('/projects/', '');
+
+      const createRes = await request(app)
+        .post('/releases')
+        .send(`projectId=${projectId}`)
+        .send('title=Scan+Wording+Release')
+        .send('status=idea')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      const res = await request(app).get(createRes.headers.location).expect(200);
+      expect(res.text).toContain('Asset presence reflects the last completed scan');
+      expect(res.text).toContain('not performing a live filesystem check');
+    });
+
+    it('corrective links appear when valid', async () => {
+      const projRes = await request(app)
+        .post('/projects')
+        .send('title=Corrective+Links+Test')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectId = projRes.headers.location.replace('/projects/', '');
+
+      const createRes = await request(app)
+        .post('/releases')
+        .send(`projectId=${projectId}`)
+        .send('title=Corrective+Links+Release')
+        .send('status=idea')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      const res = await request(app).get(createRes.headers.location).expect(200);
+      // Check within the readiness panel section
+      const panelMatch = res.text.match(/<section class="readiness-panel">[\s\S]*?<\/section>/);
+      expect(panelMatch).not.toBeNull();
+      const panelHtml = panelMatch[0];
+      // Non-ready status → Edit release link
+      expect(panelHtml).toMatch(/href="\/releases\/\d+\/edit"/);
+      // No assets selected → Manage assets link
+      expect(panelHtml).toMatch(/href="\/releases\/\d+\/assets"/);
+    });
+
+    it('corrective links hidden for archived release', async () => {
+      const { releaseLocation } = await setupPublishableRelease(app, projectsRoot, db);
+
+      // Archive the release
+      await request(app)
+        .post(`${releaseLocation}/archive`)
+        .expect(302);
+
+      const res = await request(app).get(releaseLocation).expect(200);
+      // The readiness panel must not contain corrective links for archived release
+      // Extract the readiness panel section and check within it
+      const panelMatch = res.text.match(/<section class="readiness-panel">[\s\S]*?<\/section>/);
+      expect(panelMatch).not.toBeNull();
+      const panelHtml = panelMatch[0];
+      expect(panelHtml).not.toMatch(/href="\/releases\/\d+\/edit"/);
+      expect(panelHtml).not.toMatch(/href="\/releases\/\d+\/assets"/);
+    });
+
+    it('corrective links hidden for archived parent project', async () => {
+      const { releaseLocation, projectId } = await setupPublishableRelease(app, projectsRoot, db);
+
+      await request(app)
+        .post(`/projects/${projectId}/archive`)
+        .expect(302);
+
+      const res = await request(app).get(releaseLocation).expect(200);
+      // The readiness panel must not contain corrective links for archived parent
+      const panelMatch = res.text.match(/<section class="readiness-panel">[\s\S]*?<\/section>/);
+      expect(panelMatch).not.toBeNull();
+      const panelHtml = panelMatch[0];
+      expect(panelHtml).not.toMatch(/href="\/releases\/\d+\/edit"/);
+      expect(panelHtml).not.toMatch(/href="\/releases\/\d+\/assets"/);
+    });
+
+    it('missing release remains 404', async () => {
+      await request(app).get('/releases/99999').expect(404);
+    });
+
+    it('no absolute filesystem paths render', async () => {
+      const projRes = await request(app)
+        .post('/projects')
+        .send('title=No+Path+Readiness+Test')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectId = projRes.headers.location.replace('/projects/', '');
+
+      const createRes = await request(app)
+        .post('/releases')
+        .send(`projectId=${projectId}`)
+        .send('title=No+Path+Readiness+Release')
+        .send('status=idea')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      const res = await request(app).get(createRes.headers.location).expect(200);
+      expect(res.text).not.toMatch(/[A-Z]:\\/);
+    });
+
+    // ─── Phase 7A regression: publication is not enforced yet ──────────────
+
+    it('publish still works for a blocked release (readiness not enforced)', async () => {
+      const projRes = await request(app)
+        .post('/projects')
+        .send('title=Not+Enforced+Test')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectId = projRes.headers.location.replace('/projects/', '');
+
+      // Create a release with ready status (publishable by status) but no
+      // assets selected — readiness panel shows blocked, but publish works.
+      const createRes = await request(app)
+        .post('/releases')
+        .send(`projectId=${projectId}`)
+        .send('title=Not+Enforced+Release')
+        .send('status=ready')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      // Verify the readiness panel shows it's blocked (no assets selected)
+      const detail = await request(app).get(createRes.headers.location).expect(200);
+      expect(detail.text).toContain('Needs attention');
+      expect(detail.text).toContain('0 selected');
+
+      // But publish still works — readiness is NOT enforced yet
+      const publishRes = await request(app)
+        .post(`${createRes.headers.location}/publish`)
+        .expect(302);
+      expect(publishRes.headers.location).toBe(createRes.headers.location);
+    });
+  });
 });

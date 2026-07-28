@@ -80,6 +80,15 @@
                         <span class="missing-indicator" title="{{ release.missing_asset_count }} missing">⚠ {{ release.missing_asset_count }}</span>
                       {% endif %}
                     </span>
+                    {% if release._readiness %}
+                      <span class="card-readiness">
+                        {%- if release._readiness.publishable -%}
+                          <span class="readiness-publishable">Publishable</span>
+                        {%- else -%}
+                          <span class="readiness-blocked">Blocked</span>
+                        {%- endif -%}
+                      </span>
+                    {% endif %}
                   </div>
                 </div>
               {% endfor %}
@@ -151,6 +160,7 @@
             <th>Title</th>
             <th>Project</th>
             <th>Status</th>
+            <th>Readiness</th>
             <th>Planned</th>
             <th>Published</th>
             <th>Assets</th>
@@ -163,6 +173,20 @@
               <td><a href="/releases/{{ release.id }}">{{ release.title }}</a></td>
               <td>{{ release.project_title }}</td>
               <td>{{ release.status | replace('-', ' ') | title }}</td>
+              <td>
+                {% if release._readiness %}
+                  {% if release._readiness.publishable %}
+                    <span class="readiness-publishable">Publishable</span>
+                  {% else %}
+                    <span class="readiness-blocked">
+                      Blocked
+                      {%- if release._readiness.blockerCount %} ({{ release._readiness.blockerCount }}){% endif -%}
+                    </span>
+                  {% endif %}
+                {% else %}
+                  <span class="readiness-none">—</span>
+                {% endif %}
+              </td>
               <td>{{ release.planned_date or '—' }}</td>
               <td>{{ release.published_date or '—' }}</td>
               <td>
@@ -310,6 +334,23 @@
       background: rgba(136,136,136,0.3);
       padding: 0.125rem 0.375rem;
       border-radius: 0.25rem;
+    }
+    .card-readiness {
+      margin-top: 0.125rem;
+    }
+    .readiness-publishable {
+      color: #46b464;
+      font-size: 0.7rem;
+      font-weight: 600;
+    }
+    .readiness-blocked {
+      color: #e5484d;
+      font-size: 0.7rem;
+      font-weight: 600;
+    }
+    .readiness-none {
+      color: var(--muted);
+      font-size: 0.7rem;
     }
   </style>
 {% endblock %}

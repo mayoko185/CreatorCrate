@@ -161,6 +161,7 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
     const project = projectService.findById(release.project_id);
     const releaseAssets = releaseService.listReleaseAssets(id);
     const assetCount = releaseAssets.length;
+    const readiness = workflowQueryService.getReleaseReadiness(id);
 
     res.render('releases/detail.njk', {
       appName,
@@ -169,6 +170,7 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
       releaseAssets,
       assetCount,
       statuses: RELEASE_STATUSES,
+      readiness,
     });
   });
 
@@ -270,6 +272,7 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
         }
         const project = projectService.findById(release.project_id);
         const releaseAssets = releaseService.listReleaseAssets(id);
+        const readiness = workflowQueryService.getReleaseReadiness(id);
         res.status(422).render('releases/detail.njk', {
           appName,
           release,
@@ -278,6 +281,7 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
           assetCount: releaseAssets.length,
           statuses: RELEASE_STATUSES,
           errors: err.errors,
+          readiness,
         });
         return;
       }
@@ -306,6 +310,7 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
         }
         const project = projectService.findById(release.project_id);
         const releaseAssets = releaseService.listReleaseAssets(id);
+        const readiness = workflowQueryService.getReleaseReadiness(id);
         res.status(422).render('releases/detail.njk', {
           appName,
           release,
@@ -314,6 +319,7 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
           assetCount: releaseAssets.length,
           statuses: RELEASE_STATUSES,
           errors: err.errors,
+          readiness,
         });
         return;
       }

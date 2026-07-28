@@ -465,6 +465,70 @@ export function createReleaseRepository(db) {
     },
 
     /**
+     * Batch readiness facts for all status=ready releases on the dashboard.
+     * Returns one row per ready release with the same fact columns as
+     * findReadinessFactsById, plus display fields (title, planned_date,
+     * updated_at, project_title). Excludes archived releases and releases
+     * under archived parent projects. Bounded; deterministic ordering.
+     *
+     * This is the single batch query that prevents N+1 readiness evaluation
+     * in the dashboard — the service layer calls evaluateReleaseReadiness
+     * on each returned fact row without additional per-release queries.
+     *
+     * @param {number} limit
+     * @returns {Array<{
+     *   release_id: number,
+     *   project_id: number,
+     *   title: string,
+     *   release_status: string,
+     *   planned_date: string|null,
+     *   updated_at: string,
+     *   release_archived_at: string|null,
+     *   project_title: string,
+     *   project_archived_at: string|null,
+     *   selected_asset_count: number,
+     *   present_selected_asset_count: number,
+     *   missing_selected_asset_count: number,
+     *   primary_role_count: number,
+     *   preview_role_count: number,
+     *   attachment_role_count: number,
+     *   source_role_count: number,
+     * }>}
+     */
+    findReadyDashboardFacts(limit) {
+      const sql = `
+        SELECT
+          r.id AS release_id,
+          r.project_id,
+          r.title,
+          r.status AS release_status,
+          r.planned_date,
+          r.updated_at,
+          r.archived_at AS release_archived_at,
+          p.title AS project_title,
+          p.archived_at AS project_archived_at,
+          COUNT(DISTINCT CASE WHEN a.id IS NOT NULL THEN a.id END) AS selected_asset_count,
+          COUNT(DISTINCT CASE WHEN a.is_present = 1 THEN a.id END) AS present_selected_asset_count,
+          COUNT(DISTINCT CASE WHEN a.is_present = 0 THEN a.id END) AS missing_selected_asset_count,
+          COUNT(DISTINCT CASE WHEN a.id IS NOT NULL AND ra.role = 'primary' THEN a.id END) AS primary_role_count,
+          COUNT(DISTINCT CASE WHEN a.id IS NOT NULL AND ra.role = 'preview' THEN a.id END) AS preview_role_count,
+          COUNT(DISTINCT CASE WHEN a.id IS NOT NULL AND ra.role = 'attachment' THEN a.id END) AS attachment_role_count,
+          COUNT(DISTINCT CASE WHEN a.id IS NOT NULL AND ra.role = 'source' THEN a.id END) AS source_role_count
+        FROM releases r
+        JOIN projects p ON p.id = r.project_id
+        LEFT JOIN release_assets ra ON ra.release_id = r.id
+        LEFT JOIN assets a ON a.id = ra.asset_id AND a.project_id = r.project_id
+        WHERE r.status = 'ready'
+          AND r.archived_at IS NULL
+          AND p.archived_at IS NULL
+        GROUP BY r.id
+        ORDER BY (r.planned_date IS NULL), r.planned_date ASC, r.updated_at DESC, r.id DESC
+        LIMIT ?
+      `;
+      return db.prepare(sql).all(limit);
+    },
+
+    /**
      * Active releases with no planned date. These need scheduling attention.
      * Bounded; ordered by updated_at descending (most recently touched first).
      * @param {number} limit
@@ -667,6 +731,88 @@ export function createReleaseRepository(db) {
      */
     findReadinessFactsById(releaseId) {
       return readinessFactsById.get(releaseId);
+    },
+
+    /**
+     * Batch readiness facts for an array of release IDs.
+     * Returns one row per release with the same fact columns as
+     * findReadinessFactsById. Releases with no release_assets rows still
+     * appear with zero counts (LEFT JOIN). Cross-project corrupt junction
+     * rows are ignored via the asset project_id guard.
+     *
+     * This is the single batch query that prevents N+1 readiness evaluation
+     * in planning views — the service layer calls evaluateReleaseReadiness
+     * on each returned fact row.
+     *
+     * IDs are deduplicated and processed in bounded chunks to stay below
+     * SQLite's variable limit (~999 per query). Results are combined and
+     * returned in deterministic order (r.id ASC).
+     *
+     * @param {number[]} ids — release IDs (empty array returns [])
+     * @returns {Array<{
+     *   release_id: number,
+     *   project_id: number,
+     *   release_status: string,
+     *   release_archived_at: string|null,
+     *   project_archived_at: string|null,
+     *   selected_asset_count: number,
+     *   present_selected_asset_count: number,
+     *   missing_selected_asset_count: number,
+     *   primary_role_count: number,
+     *   preview_role_count: number,
+     *   attachment_role_count: number,
+     *   source_role_count: number,
+     * }>}
+     */
+    findReadinessFactsByIds(ids) {
+      if (!Array.isArray(ids) || ids.length === 0) return [];
+
+      // Deduplicate and keep only valid positive integers
+      const unique = [...new Set(ids.filter((id) => Number.isInteger(id) && id > 0))];
+      if (unique.length === 0) return [];
+
+      // Sort numerically so chunk boundaries produce globally ordered results
+      // when each chunk sorts internally by r.id ASC. Without this, insertion
+      // order from Set iteration can place high IDs in early chunks and low
+      // IDs in later chunks, breaking the release_id ASC contract.
+      unique.sort((a, b) => a - b);
+
+      const CHUNK_SIZE = 500;
+      const results = [];
+
+      for (let i = 0; i < unique.length; i += CHUNK_SIZE) {
+        const chunk = unique.slice(i, i + CHUNK_SIZE);
+        const placeholders = chunk.map(() => '?').join(',');
+        const sql = `
+          SELECT
+            r.id AS release_id,
+            r.project_id,
+            r.status AS release_status,
+            r.archived_at AS release_archived_at,
+            p.archived_at AS project_archived_at,
+            COUNT(DISTINCT CASE WHEN a.id IS NOT NULL THEN a.id END) AS selected_asset_count,
+            COUNT(DISTINCT CASE WHEN a.is_present = 1 THEN a.id END) AS present_selected_asset_count,
+            COUNT(DISTINCT CASE WHEN a.is_present = 0 THEN a.id END) AS missing_selected_asset_count,
+            COUNT(DISTINCT CASE WHEN a.id IS NOT NULL AND ra.role = 'primary' THEN a.id END) AS primary_role_count,
+            COUNT(DISTINCT CASE WHEN a.id IS NOT NULL AND ra.role = 'preview' THEN a.id END) AS preview_role_count,
+            COUNT(DISTINCT CASE WHEN a.id IS NOT NULL AND ra.role = 'attachment' THEN a.id END) AS attachment_role_count,
+            COUNT(DISTINCT CASE WHEN a.id IS NOT NULL AND ra.role = 'source' THEN a.id END) AS source_role_count
+          FROM releases r
+          JOIN projects p ON p.id = r.project_id
+          LEFT JOIN release_assets ra ON ra.release_id = r.id
+          LEFT JOIN assets a ON a.id = ra.asset_id AND a.project_id = r.project_id
+          WHERE r.id IN (${placeholders})
+          GROUP BY r.id
+          ORDER BY r.id ASC
+        `;
+        const chunkResults = db.prepare(sql).all(...chunk);
+        results.push(...chunkResults);
+      }
+
+      // Defensive: ensure globally sorted even if chunk boundaries shift
+      results.sort((a, b) => a.release_id - b.release_id);
+
+      return results;
     },
 
     /**

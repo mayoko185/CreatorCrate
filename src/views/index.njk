@@ -31,14 +31,42 @@
         </div>
       {% endif %}
 
-      {% if attention.ready.length > 0 %}
+      {% if attention.readyToPublish.length > 0 %}
         <div class="attention-group attention-ready">
-          <h3>Ready to publish ({{ attention.ready.length }})</h3>
+          <h3>Ready to publish ({{ attention.readyToPublish.length }})</h3>
           <ul class="release-list">
-            {% for r in attention.ready %}
+            {% for r in attention.readyToPublish %}
               <li>
                 <a href="/releases/{{ r.id }}">{{ r.title }}</a>
                 <span class="meta">{{ r.status }}{% if r.planned_date %} · planned {{ r.planned_date }}{% endif %}</span>
+              </li>
+            {% endfor %}
+          </ul>
+        </div>
+      {% endif %}
+
+      {% if attention.readyButBlocked.length > 0 %}
+        <div class="attention-group attention-blocked">
+          <h3>Ready but blocked ({{ attention.readyButBlocked.length }})</h3>
+          <ul class="release-list">
+            {% for r in attention.readyButBlocked %}
+              <li>
+                <a href="/releases/{{ r.id }}">{{ r.title }}</a>
+                <span class="meta">
+                  {{ r.status }}{% if r.planned_date %} · planned {{ r.planned_date }}{% endif %}
+                  {% if r.blockers.length > 0 %}
+                    · blocked:
+                    {% for b in r.blockers %}
+                      {%- if b.key == 'assets_selected' %}no assets selected{%- endif %}
+                      {%- if b.key == 'selected_assets_present' %}{{ b.details.missingSelectedAssetCount }} selected asset{{ 's' if b.details.missingSelectedAssetCount != 1 }} missing{%- endif %}
+                      {%- if b.key == 'scope_mutable' %}
+                        {%- if b.details.releaseArchived %}archived release{%- endif %}
+                        {%- if b.details.projectArchived %}archived project{%- endif %}
+                      {%- endif %}
+                      {%- if not loop.last %}, {% endif %}
+                    {%- endfor %}
+                  {% endif %}
+                </span>
               </li>
             {% endfor %}
           </ul>

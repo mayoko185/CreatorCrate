@@ -139,12 +139,43 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
     const today = options.today || defaultToday();
 
     const overdue = releaseRepository.findOverdue(limits.overdue, today);
-    const ready = releaseRepository.findReady(limits.ready);
     const missingPlannedDate = releaseRepository.findActiveWithoutPlannedDate(limits.missingPlannedDate);
     const missingSelectedAssets = releaseRepository.findReleasesWithMissingSelectedAssets(limits.missingSelectedAssets);
     const releasesWithoutAssets = releaseRepository.findReleasesWithoutSelectedAssets(limits.missingSelectedAssets);
     const upcomingRaw = releaseRepository.findUpcoming(limits.upcoming, today);
     const upcoming = groupByDate(upcomingRaw);
+
+    // ── Phase 7B-2: Dashboard Publishability Groups ──────────────────────
+    // Batch-load readiness facts for all status=ready releases, then
+    // evaluate each through the shared policy. This is a single batch query
+    // — no N+1 readiness queries per release.
+    const readyFacts = releaseRepository.findReadyDashboardFacts(limits.ready);
+    const readyToPublish = [];
+    const readyButBlocked = [];
+
+    for (const facts of readyFacts) {
+      const result = evaluateReleaseReadiness(facts);
+      const release = {
+        id: facts.release_id,
+        project_id: facts.project_id,
+        title: facts.title,
+        project_title: facts.project_title,
+        planned_date: facts.planned_date,
+        updated_at: facts.updated_at,
+        status: facts.release_status,
+      };
+
+      if (result.publishable) {
+        readyToPublish.push(release);
+      } else {
+        // Collect only the failed blocker keys and their details for
+        // concise presentation — no policy logic duplicated here.
+        const blockers = result.checks
+          .filter((c) => !c.passed)
+          .map((c) => ({ key: c.key, details: c.details }));
+        readyButBlocked.push({ ...release, blockers });
+      }
+    }
 
     const releaseStatusCounts = releaseRepository.countByStatus();
     const projectCounts = projectRepository.countByStatus();
@@ -162,13 +193,15 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
     return {
       releasesNeedingAttention: {
         overdue,
-        ready,
+        readyToPublish,
+        readyButBlocked,
         missingPlannedDate,
         missingSelectedAssets,
         releasesWithoutAssets,
         totalCount:
           overdue.length
-          + ready.length
+          + readyToPublish.length
+          + readyButBlocked.length
           + missingPlannedDate.length
           + missingSelectedAssets.length
           + releasesWithoutAssets.length,
@@ -339,7 +372,12 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
       offset,
     });
 
-    return { releases, total, page, pageSize: filters.pageSize, pageCount, today };
+    // ── Phase 7B-3: Compact Release Readiness Indicators ──────────────
+    // Batch-attach readiness facts for all status=ready releases on this
+    // page — no N+1 readiness queries per release.
+    const enhanced = _attachReadiness(releases);
+
+    return { releases: enhanced, total, page, pageSize: filters.pageSize, pageCount, today };
   }
 
   /**
@@ -362,11 +400,16 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
       activeScheduleFilter,
     });
 
+    // ── Phase 7B-3: Compact Release Readiness Indicators ──────────────
+    // Batch-attach readiness facts for all status=ready releases on the
+    // board — no N+1 readiness queries per release.
+    const enhanced = _attachReadiness(rows);
+
     // Group into columns by status
     const BOARD_STATUSES = ['idea', 'planned', 'drafting', 'ready', 'published', 'cancelled'];
     const columns = Object.fromEntries(BOARD_STATUSES.map((s) => [s, []]));
 
-    for (const release of rows) {
+    for (const release of enhanced) {
       if (columns[release.status]) {
         columns[release.status].push(release);
       }
@@ -458,9 +501,14 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
       activeScheduleFilter: true,
     });
 
+    // ── Phase 7B-3: Compact Release Readiness Indicators ──────────────
+    // Batch-attach readiness facts for all status=ready releases in the
+    // calendar month — no N+1 readiness queries per release.
+    const enhanced = _attachReadiness(releases);
+
     // Group releases by planned_date
     const byDate = new Map();
-    for (const release of releases) {
+    for (const release of enhanced) {
       const date = release.planned_date;
       if (!byDate.has(date)) {
         byDate.set(date, []);
@@ -604,6 +652,68 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
         usage: filters.usage,
       },
     };
+  }
+
+  // ─── Phase 7B-3: Batch Readiness Attachment ────────────────────────────
+
+  /**
+   * Batch-attach compact readiness indicators to an array of releases.
+   *
+   * For status=ready releases, evaluates readiness via the shared policy
+   * and attaches a `_readiness` property with:
+   *   - publishable: boolean
+   *   - blockerCount: number (only when not publishable)
+   *   - blockerKeys: string[]  (only when not publishable)
+   *
+   * For non-ready releases, no `_readiness` property is attached so
+   * templates can distinguish "no claim" from "blocked".
+   *
+   * This is a single batch query: all readiness facts are loaded in one
+   * round-trip, then evaluated through the shared pure policy per release.
+   * No N+1 readiness queries.
+   *
+   * @param {Array} releases — release rows from findPage/findBoard/findCalendarRange
+   * @returns {Array} same releases with optional _readiness attached
+   */
+  function _attachReadiness(releases) {
+    if (typeof evaluateReleaseReadiness !== 'function') return releases;
+    if (!Array.isArray(releases) || releases.length === 0) return releases;
+
+    // Collect IDs of status=ready releases
+    const readyIds = releases
+      .filter((r) => r.status === 'ready')
+      .map((r) => r.id);
+
+    if (readyIds.length === 0) return releases;
+
+    // Single batch query — no N+1
+    const factsList = releaseRepository.findReadinessFactsByIds(readyIds);
+
+    // Index facts by release_id for O(1) lookup
+    const factsByReleaseId = new Map();
+    for (const facts of factsList) {
+      factsByReleaseId.set(facts.release_id, facts);
+    }
+
+    // Index by release_id
+    const readinessByReleaseId = new Map();
+    for (const facts of factsList) {
+      const result = evaluateReleaseReadiness(facts);
+      const indicator = { publishable: result.publishable };
+      if (!result.publishable) {
+        const blockers = result.checks.filter((c) => !c.passed);
+        indicator.blockerCount = blockers.length;
+        indicator.blockerKeys = blockers.map((c) => c.key);
+      }
+      readinessByReleaseId.set(facts.release_id, indicator);
+    }
+
+    return releases.map((release) => {
+      if (release.status !== 'ready') return release;
+      const indicator = readinessByReleaseId.get(release.id);
+      if (!indicator) return release;
+      return { ...release, _readiness: indicator };
+    });
   }
 
   // ─── Phase 7A: Release Readiness ──────────────────────────────────────

@@ -1607,4 +1607,227 @@ describe('release repository', () => {
       expect(facts.source_role_count).toBe(1);
     });
   });
+
+  // ─── Phase 7B-2: findReadyDashboardFacts ──────────────────────────────
+
+  describe('findReadyDashboardFacts', () => {
+    it('returns empty array when no ready releases exist', () => {
+      const rows = releaseRepo.findReadyDashboardFacts(5);
+      expect(rows).toEqual([]);
+    });
+
+    it('returns facts for ready releases only', () => {
+      const ready = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Ready', status: 'ready' }) });
+      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Planned', status: 'planned' }) });
+      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Drafting', status: 'drafting' }) });
+
+      const rows = releaseRepo.findReadyDashboardFacts(5);
+      expect(rows).toHaveLength(1);
+      expect(rows[0].release_id).toBe(ready.id);
+      expect(rows[0].release_status).toBe('ready');
+    });
+
+    it('includes display fields: title, project_title, planned_date, updated_at', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Display Fields', status: 'ready', plannedDate: '2099-01-01' }) });
+
+      const rows = releaseRepo.findReadyDashboardFacts(5);
+      expect(rows).toHaveLength(1);
+      expect(rows[0].title).toBe('Display Fields');
+      expect(rows[0].project_title).toBe('Parent Project');
+      expect(rows[0].planned_date).toBe('2099-01-01');
+      expect(rows[0].updated_at).toBeTruthy();
+    });
+
+    it('includes readiness fact columns (selected_asset_count, present/missing counts)', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Fact Counts', status: 'ready' }) });
+      const asset = assetRepo.upsert(projectId, 'a.txt', sampleAsset(projectId, { relativePath: 'a.txt' }));
+      releaseRepo.addReleaseAsset(release.id, asset.id, 'primary', 0);
+
+      const rows = releaseRepo.findReadyDashboardFacts(5);
+      expect(rows).toHaveLength(1);
+      expect(rows[0].selected_asset_count).toBe(1);
+      expect(rows[0].present_selected_asset_count).toBe(1);
+      expect(rows[0].missing_selected_asset_count).toBe(0);
+    });
+
+    it('excludes archived ready releases', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Archived Ready', status: 'ready' }) });
+      db.prepare(`UPDATE releases SET archived_at = datetime('now') WHERE id = ?`).run(release.id);
+
+      const rows = releaseRepo.findReadyDashboardFacts(5);
+      expect(rows).toHaveLength(0);
+    });
+
+    it('excludes ready releases under archived parent projects', () => {
+      const otherProject = projectRepo.create(sampleProject({ title: 'Archived Parent' }));
+      db.prepare(`UPDATE projects SET archived_at = datetime('now') WHERE id = ?`).run(otherProject.id);
+      releaseRepo.create({ projectId: otherProject.id, ...sampleRelease({ title: 'Archived Parent Ready', status: 'ready' }) });
+
+      const rows = releaseRepo.findReadyDashboardFacts(5);
+      // Only the original project's releases (none ready) should appear
+      expect(rows).toHaveLength(0);
+    });
+
+    it('respects the bounded limit', () => {
+      for (let i = 0; i < 10; i++) {
+        releaseRepo.create({ projectId, ...sampleRelease({ title: `Ready ${i}`, status: 'ready' }) });
+      }
+
+      const rows = releaseRepo.findReadyDashboardFacts(3);
+      expect(rows).toHaveLength(3);
+    });
+
+    it('returns deterministic ordering (planned_date ASC, updated_at DESC, id DESC)', () => {
+      const r1 = releaseRepo.create({ projectId, ...sampleRelease({ title: 'A', status: 'ready', plannedDate: '2099-01-01' }) });
+      const r2 = releaseRepo.create({ projectId, ...sampleRelease({ title: 'B', status: 'ready', plannedDate: '2099-02-01' }) });
+      const r3 = releaseRepo.create({ projectId, ...sampleRelease({ title: 'C', status: 'ready', plannedDate: '2099-01-01' }) });
+
+      const rows = releaseRepo.findReadyDashboardFacts(5);
+      // r1 and r3 have same planned_date; r3 has higher id so it sorts first (id DESC)
+      expect(rows[0].release_id).toBe(r3.id);
+      expect(rows[1].release_id).toBe(r1.id);
+      expect(rows[2].release_id).toBe(r2.id);
+    });
+
+    it('does not duplicate releases when multiple assets are linked', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Multi Asset', status: 'ready' }) });
+      const a1 = assetRepo.upsert(projectId, 'a1.txt', sampleAsset(projectId, { relativePath: 'a1.txt' }));
+      const a2 = assetRepo.upsert(projectId, 'a2.txt', sampleAsset(projectId, { relativePath: 'a2.txt' }));
+      releaseRepo.addReleaseAsset(release.id, a1.id, 'primary', 0);
+      releaseRepo.addReleaseAsset(release.id, a2.id, 'attachment', 1);
+
+      const rows = releaseRepo.findReadyDashboardFacts(5);
+      expect(rows).toHaveLength(1);
+      expect(rows[0].selected_asset_count).toBe(2);
+    });
+  });
+
+  // ─── Phase 7B: findReadinessFactsByIds — chunking, dedup, ordering ─────
+
+  describe('findReadinessFactsByIds', () => {
+    it('returns empty array for empty input', () => {
+      const results = releaseRepo.findReadinessFactsByIds([]);
+      expect(results).toEqual([]);
+    });
+
+    it('returns empty array for non-array input', () => {
+      const results = releaseRepo.findReadinessFactsByIds(null);
+      expect(results).toEqual([]);
+    });
+
+    it('returns empty array when no IDs match', () => {
+      const results = releaseRepo.findReadinessFactsByIds([99999]);
+      expect(results).toEqual([]);
+    });
+
+    it('returns facts for a single valid ID', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Single Fact', status: 'ready' }) });
+      const results = releaseRepo.findReadinessFactsByIds([release.id]);
+      expect(results).toHaveLength(1);
+      expect(results[0].release_id).toBe(release.id);
+      expect(results[0].release_status).toBe('ready');
+    });
+
+    it('deduplicates repeated IDs', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Dedup', status: 'ready' }) });
+      const results = releaseRepo.findReadinessFactsByIds([release.id, release.id, release.id]);
+      expect(results).toHaveLength(1);
+      expect(results[0].release_id).toBe(release.id);
+    });
+
+    it('returns results in deterministic r.id ASC order regardless of input order', () => {
+      const r1 = releaseRepo.create({ projectId, ...sampleRelease({ title: 'C', status: 'ready' }) });
+      const r2 = releaseRepo.create({ projectId, ...sampleRelease({ title: 'B', status: 'ready' }) });
+      const r3 = releaseRepo.create({ projectId, ...sampleRelease({ title: 'A', status: 'ready' }) });
+
+      // Input in reverse order
+      const results = releaseRepo.findReadinessFactsByIds([r3.id, r2.id, r1.id]);
+      expect(results).toHaveLength(3);
+      expect(results[0].release_id).toBe(r1.id);
+      expect(results[1].release_id).toBe(r2.id);
+      expect(results[2].release_id).toBe(r3.id);
+    });
+
+    it('ignores missing IDs and returns only matching ones', () => {
+      const r1 = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Exists', status: 'ready' }) });
+      const results = releaseRepo.findReadinessFactsByIds([r1.id, 99999, 88888]);
+      expect(results).toHaveLength(1);
+      expect(results[0].release_id).toBe(r1.id);
+    });
+
+    it('handles input larger than one chunk (501 IDs)', () => {
+      // Create enough releases to span two chunks
+      const ids = [];
+      for (let i = 0; i < 501; i++) {
+        const release = releaseRepo.create({ projectId, ...sampleRelease({ title: `Chunk ${i}`, status: 'ready' }) });
+        ids.push(release.id);
+      }
+
+      const results = releaseRepo.findReadinessFactsByIds(ids);
+      expect(results).toHaveLength(501);
+      // Results must be in r.id ASC order
+      for (let i = 1; i < results.length; i++) {
+        expect(results[i].release_id).toBeGreaterThan(results[i - 1].release_id);
+      }
+    });
+
+    it('handles input spanning several chunks (1500 IDs)', () => {
+      const ids = [];
+      for (let i = 0; i < 1500; i++) {
+        const release = releaseRepo.create({ projectId, ...sampleRelease({ title: `Big ${i}`, status: 'ready' }) });
+        ids.push(release.id);
+      }
+
+      const results = releaseRepo.findReadinessFactsByIds(ids);
+      expect(results).toHaveLength(1500);
+      // Every requested valid ID is returned exactly once
+      const resultIds = new Set(results.map((r) => r.release_id));
+      for (const id of ids) {
+        expect(resultIds.has(id)).toBe(true);
+      }
+      // Deterministic order across chunks
+      for (let i = 1; i < results.length; i++) {
+        expect(results[i].release_id).toBeGreaterThan(results[i - 1].release_id);
+      }
+    });
+
+    it('deduplicates across chunk boundaries', () => {
+      const ids = [];
+      for (let i = 0; i < 600; i++) {
+        const release = releaseRepo.create({ projectId, ...sampleRelease({ title: `DupChunk ${i}`, status: 'ready' }) });
+        ids.push(release.id);
+      }
+      // Duplicate every ID
+      const duped = [...ids, ...ids];
+      const results = releaseRepo.findReadinessFactsByIds(duped);
+      expect(results).toHaveLength(600);
+    });
+
+    it('returns globally sorted results for descending input spanning chunk boundaries', () => {
+      // Create enough releases to span at least two chunks (CHUNK_SIZE=500)
+      const releases = [];
+      for (let i = 0; i < 550; i++) {
+        const release = releaseRepo.create({ projectId, ...sampleRelease({ title: `DescChunk ${i}`, status: 'ready' }) });
+        releases.push(release);
+      }
+      // Supply IDs in descending order — high IDs first, low IDs last
+      const ids = releases.map((r) => r.id).reverse();
+      const results = releaseRepo.findReadinessFactsByIds(ids);
+
+      // Every result is returned exactly once
+      expect(results).toHaveLength(550);
+      const resultIds = results.map((r) => r.release_id);
+      const uniqueResultIds = new Set(resultIds);
+      expect(uniqueResultIds.size).toBe(550);
+
+      // The complete returned sequence must be globally ascending
+      const sorted = [...resultIds].sort((a, b) => a - b);
+      expect(resultIds).toEqual(sorted);
+    });
+
+    it('returns empty array when all IDs are invalid (non-positive)', () => {
+      const results = releaseRepo.findReadinessFactsByIds([0, -1, -5]);
+      expect(results).toEqual([]);
+    });
+  });
 });
