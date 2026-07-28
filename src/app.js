@@ -30,7 +30,7 @@ export function createApp({ appName, db, projectsRoot }) {
 
   const projectService = createProjectService(db, projectsRoot);
   const assetScanner = createAssetScanner(db, projectsRoot, { projectService });
-  const releaseService = createReleaseService(db);
+  const releaseService = createReleaseService({ db, evaluateReleaseReadiness });
   const workflowQueryService = createWorkflowQueryService({ db, evaluateReleaseReadiness });
 
   app.use('/', createIndexRouter({ appName, workflowQueryService }));

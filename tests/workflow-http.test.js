@@ -76,6 +76,34 @@ function attachPresentAssetToRelease(db, projectId, releaseId, { name, present =
   return asset.id;
 }
 
+function snapshotReleaseRow(db, releaseId) {
+  return db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+}
+
+function findReadinessFacts(db, releaseId) {
+  return db.prepare(`
+    SELECT
+      r.id AS release_id,
+      r.project_id,
+      r.status AS release_status,
+      r.archived_at AS release_archived_at,
+      p.archived_at AS project_archived_at,
+      COUNT(DISTINCT CASE WHEN a.id IS NOT NULL THEN a.id END) AS selected_asset_count,
+      COUNT(DISTINCT CASE WHEN a.is_present = 1 THEN a.id END) AS present_selected_asset_count,
+      COUNT(DISTINCT CASE WHEN a.is_present = 0 THEN a.id END) AS missing_selected_asset_count,
+      COUNT(DISTINCT CASE WHEN a.id IS NOT NULL AND ra.role = 'primary' THEN a.id END) AS primary_role_count,
+      COUNT(DISTINCT CASE WHEN a.id IS NOT NULL AND ra.role = 'preview' THEN a.id END) AS preview_role_count,
+      COUNT(DISTINCT CASE WHEN a.id IS NOT NULL AND ra.role = 'attachment' THEN a.id END) AS attachment_role_count,
+      COUNT(DISTINCT CASE WHEN a.id IS NOT NULL AND ra.role = 'source' THEN a.id END) AS source_role_count
+    FROM releases r
+    JOIN projects p ON p.id = r.project_id
+    LEFT JOIN release_assets ra ON ra.release_id = r.id
+    LEFT JOIN assets a ON a.id = ra.asset_id AND a.project_id = r.project_id
+    WHERE r.id = ?
+    GROUP BY r.id
+  `).get(releaseId);
+}
+
 /**
  * Extract the href of the pagination anchor whose visible text matches
  * the supplied label (e.g. "Next" or "Previous"). Returns null when no
@@ -433,6 +461,8 @@ describe('Phase 6B HTTP workflow', () => {
         title: 'Old Release',
         status: 'ready',
       });
+      // Select an asset so readiness passes
+      attachPresentAssetToRelease(db, Number(projectId), Number(oldReleaseId));
       await request(app)
         .post(`/releases/${oldReleaseId}/publish`)
         .send('publishedDate=2024-01-01')
@@ -514,6 +544,8 @@ describe('Phase 6B HTTP workflow', () => {
         status: 'ready',
         plannedDate: '2020-01-01',
       });
+      // Select an asset so readiness passes
+      attachPresentAssetToRelease(db, Number(projectId), Number(releaseId));
       await request(app)
         .post(`/releases/${releaseId}/publish`)
         .send('publishedDate=2020-01-15')
@@ -608,6 +640,8 @@ describe('Phase 6B HTTP workflow', () => {
         status: 'ready',
         plannedDate: '2020-01-01',
       });
+      // Select an asset so readiness passes
+      attachPresentAssetToRelease(db, Number(projectId), Number(releaseId));
       await request(app)
         .post(`/releases/${releaseId}/publish`)
         .send('publishedDate=2020-01-15')
@@ -2418,6 +2452,141 @@ describe('Phase 6B HTTP workflow', () => {
       expect(panelMatch).not.toBeNull();
       expect(panelMatch[0]).toContain('Asset presence reflects the last completed scan');
       expect(panelMatch[0]).toContain('not performing a live filesystem check');
+    });
+  });
+
+  // ─── Phase 7C: Cross-view publish consistency ────────────────────────────
+
+  describe('cross-view publish consistency', () => {
+    function findAttentionGroup(html, className) {
+      const match = html.match(new RegExp(`<div class="attention-group ${className}">[\\s\\S]*?<\\/div>`));
+      return match ? match[0] : null;
+    }
+
+    function findListRow(html, releaseId) {
+      const match = html.match(new RegExp(
+        `<tr[^>]*>[\\s\\S]*?<a href="/releases/${releaseId}">[^<]+<\\/a>[\\s\\S]*?<\\/tr>`,
+      ));
+      return match ? match[0] : null;
+    }
+
+    function findBoardCard(html, releaseId) {
+      const cards = html.match(/<div class="board-card[^"]*"[^>]*>[\s\S]*?<\/div>\s*<\/div>/g) || [];
+      return cards.find((card) => card.includes(`href="/releases/${releaseId}"`)) || null;
+    }
+
+    function findCalendarEntry(html, releaseId) {
+      const entries = html.match(/<div class="calendar-release[^"]*"[^>]*>[\s\S]*?<\/div>/g) || [];
+      return entries.find((entry) => entry.includes(`href="/releases/${releaseId}"`)) || null;
+    }
+
+    function findReadinessPanel(html) {
+      const match = html.match(/<section class="readiness-panel">[\s\S]*?<\/section>/);
+      return match ? match[0] : null;
+    }
+
+    it('keeps publishable and blocked readiness consistent across every planning view and publish endpoint', async () => {
+      const projectId = await createProject(app, { title: 'Cross View Consistency Project' });
+      const publishableId = await createRelease(app, {
+        projectId,
+        title: 'Cross View Publishable Release',
+        status: 'ready',
+        plannedDate: '2025-06-15',
+      });
+      attachPresentAssetToRelease(db, Number(projectId), Number(publishableId), {
+        name: 'cross-view-publishable.txt',
+        present: true,
+      });
+
+      const blockedId = await createRelease(app, {
+        projectId,
+        title: 'Cross View Blocked Release',
+        status: 'ready',
+        plannedDate: '2025-06-16',
+      });
+      // Keep the blocked release's facts unchanged: it has no selected asset.
+      expect(db.prepare('SELECT COUNT(*) AS count FROM release_assets WHERE release_id = ?').get(Number(blockedId)).count).toBe(0);
+
+      const publishableDetail = await request(app).get(`/releases/${publishableId}`).expect(200);
+      const publishablePanel = findReadinessPanel(publishableDetail.text);
+      expect(publishablePanel).not.toBeNull();
+      expect(publishablePanel).toMatch(/<p class="readiness-badge readiness-publishable">Publishable<\/p>/);
+
+      const blockedDetail = await request(app).get(`/releases/${blockedId}`).expect(200);
+      const blockedPanel = findReadinessPanel(blockedDetail.text);
+      expect(blockedPanel).not.toBeNull();
+      expect(blockedPanel).toMatch(/<p class="readiness-badge readiness-blocked">Needs attention<\/p>/);
+      expect(blockedPanel).toMatch(/<span class="check-label">\s*Assets selected\s*<\/span>/);
+      expect(blockedPanel).toContain('0 selected');
+
+      const dashboard = await request(app).get('/').expect(200);
+      const readyGroup = findAttentionGroup(dashboard.text, 'attention-ready');
+      const blockedGroup = findAttentionGroup(dashboard.text, 'attention-blocked');
+      expect(readyGroup).not.toBeNull();
+      expect(readyGroup).toContain(`href="/releases/${publishableId}">Cross View Publishable Release</a>`);
+      expect(readyGroup).not.toContain(`Cross View Blocked Release`);
+      expect(blockedGroup).not.toBeNull();
+      expect(blockedGroup).toContain(`href="/releases/${blockedId}">Cross View Blocked Release</a>`);
+      expect(blockedGroup).not.toContain(`Cross View Publishable Release`);
+
+      const list = await request(app).get('/releases').expect(200);
+      const publishableRow = findListRow(list.text, publishableId);
+      const blockedRow = findListRow(list.text, blockedId);
+      expect(publishableRow).not.toBeNull();
+      expect(publishableRow).toMatch(/<span class="readiness-publishable">Publishable<\/span>/);
+      expect(blockedRow).not.toBeNull();
+      expect(blockedRow).toMatch(/<span class="readiness-blocked">\s*Blocked(?:\s*\(\d+\))?\s*<\/span>/);
+
+      const board = await request(app).get('/releases?view=board').expect(200);
+      const publishableCard = findBoardCard(board.text, publishableId);
+      const blockedCard = findBoardCard(board.text, blockedId);
+      expect(publishableCard).not.toBeNull();
+      expect(publishableCard).toMatch(/<span class="readiness-publishable">Publishable<\/span>/);
+      expect(blockedCard).not.toBeNull();
+      expect(blockedCard).toMatch(/<span class="readiness-blocked">Blocked<\/span>/);
+
+      const calendar = await request(app).get('/releases/calendar?month=2025-06').expect(200);
+      expect(calendar.text).toMatch(/<div class="calendar-nav"[^>]*>[\s\S]*?<h2>2025-06<\/h2>/);
+      const publishableCalendarEntry = findCalendarEntry(calendar.text, publishableId);
+      const blockedCalendarEntry = findCalendarEntry(calendar.text, blockedId);
+      expect(publishableCalendarEntry).not.toBeNull();
+      expect(publishableCalendarEntry).toMatch(/<span class="readiness-publishable">Publishable<\/span>/);
+      expect(blockedCalendarEntry).not.toBeNull();
+      expect(blockedCalendarEntry).toMatch(/<span class="readiness-blocked">Blocked<\/span>/);
+
+      const blockedBefore = snapshotReleaseRow(db, Number(blockedId));
+      const blockedBeforeFacts = findReadinessFacts(db, Number(blockedId));
+      const blockedBeforeJunction = db.prepare(
+        'SELECT release_id, asset_id, role, sort_order FROM release_assets WHERE release_id = ? ORDER BY sort_order ASC, asset_id ASC'
+      ).all(Number(blockedId));
+      const blockedBeforeAssets = db.prepare(
+        'SELECT * FROM assets WHERE id IN (SELECT asset_id FROM release_assets WHERE release_id = ?)'
+      ).all(Number(blockedId));
+      await request(app)
+        .post(`/releases/${blockedId}/publish`)
+        .expect(422);
+      expect(snapshotReleaseRow(db, Number(blockedId))).toEqual(blockedBefore);
+      expect(findReadinessFacts(db, Number(blockedId))).toEqual(blockedBeforeFacts);
+      expect(
+        db.prepare('SELECT release_id, asset_id, role, sort_order FROM release_assets WHERE release_id = ? ORDER BY sort_order ASC, asset_id ASC')
+          .all(Number(blockedId))
+      ).toEqual(blockedBeforeJunction);
+      expect(
+        db.prepare('SELECT * FROM assets WHERE id IN (SELECT asset_id FROM release_assets WHERE release_id = ?)')
+          .all(Number(blockedId))
+      ).toEqual(blockedBeforeAssets);
+      // Verify the release remains blocked by the same exact blocker keys
+      const blockedAfterDetail = await request(app).get(`/releases/${blockedId}`).expect(200);
+      const blockedAfterPanel = findReadinessPanel(blockedAfterDetail.text);
+      expect(blockedAfterPanel).not.toBeNull();
+      expect(blockedAfterPanel).toMatch(/<p class="readiness-badge readiness-blocked">Needs attention<\/p>/);
+      expect(blockedAfterPanel).toMatch(/<span class="check-label">\s*Assets selected\s*<\/span>/);
+      expect(blockedAfterPanel).toContain('0 selected');
+
+      const publishableResponse = await request(app)
+        .post(`/releases/${publishableId}/publish`)
+        .expect(302);
+      expect(publishableResponse.headers.location).toBe(`/releases/${publishableId}`);
     });
   });
 });

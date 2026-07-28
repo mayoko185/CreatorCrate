@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import slugify from '@sindresorhus/slugify';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { createReleaseService, ReleaseValidationError, ReleaseNotFoundError, ReleaseArchivedError, ReleaseParentArchivedError, AssetNotFoundError } from '../src/services/release-service.js';
+import { evaluateReleaseReadiness } from '../src/services/release-readiness-policy.js';
 import { createProjectRepository } from '../src/data/project-repository.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
 import { getLocalTodayIso } from '../src/util/date.js';
@@ -52,6 +53,21 @@ function sampleAsset(projectId, overrides = {}) {
   };
 }
 
+/**
+ * Create a ready release with a selected present asset so it passes the
+ * readiness policy. Returns { release, asset }.
+ */
+function createPublishableRelease(service, assetRepo, projectId, inputOverrides = {}) {
+  const release = service.createRelease(projectId, validInput({ status: 'ready', ...inputOverrides }));
+  const asset = assetRepo.upsert(projectId, 'pub-asset.txt', sampleAsset(projectId, { relativePath: 'pub-asset.txt' }));
+  service.selectAssets(release.id, [{ assetId: asset.id, role: 'primary', sortOrder: 0 }]);
+  return { release, asset };
+}
+
+function snapshotReleaseRow(db, releaseId) {
+  return db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+}
+
 describe('release service', () => {
   let tmpDir;
   let dbPath;
@@ -66,7 +82,7 @@ describe('release service', () => {
     dbPath = path.join(tmpDir, 'test.db');
     db = openDatabase(dbPath);
     runMigrations(db, MIGRATIONS_DIR);
-    service = createReleaseService(db);
+    service = createReleaseService({ db, evaluateReleaseReadiness });
     projectRepo = createProjectRepository(db);
     assetRepo = createAssetRepository(db);
     const project = projectRepo.create(sampleProject({ title: 'Parent Project' }));
@@ -223,8 +239,15 @@ describe('release service', () => {
   });
 
   describe('publishRelease', () => {
+    function selectAssetForRelease(releaseId) {
+      const asset = assetRepo.upsert(projectId, 'publish-test.txt', sampleAsset(projectId, { relativePath: 'publish-test.txt' }));
+      service.selectAssets(releaseId, [{ assetId: asset.id, role: 'primary', sortOrder: 0 }]);
+      return asset;
+    }
+
     it('publishes a release with default date (today)', () => {
       const created = service.createRelease(projectId, validInput({ status: 'ready' }));
+      selectAssetForRelease(created.id);
       const published = service.publishRelease(created.id);
       expect(published.status).toBe('published');
       expect(published.published_date).toBeTruthy();
@@ -232,6 +255,7 @@ describe('release service', () => {
 
     it('publishes a release with specified date', () => {
       const created = service.createRelease(projectId, validInput({ status: 'ready' }));
+      selectAssetForRelease(created.id);
       const published = service.publishRelease(created.id, '2025-06-15');
       expect(published.status).toBe('published');
       expect(published.published_date).toBe('2025-06-15');
@@ -245,10 +269,13 @@ describe('release service', () => {
 
     it('throws if release is already published', () => {
       const created = service.createRelease(projectId, validInput({ status: 'ready' }));
+      selectAssetForRelease(created.id);
       service.publishRelease(created.id);
+      const before = snapshotReleaseRow(db, created.id);
       expect(() => {
         service.publishRelease(created.id);
       }).toThrow(ReleaseValidationError);
+      expect(snapshotReleaseRow(db, created.id)).toEqual(before);
     });
 
     it('throws if release is cancelled', () => {
@@ -268,6 +295,7 @@ describe('release service', () => {
 
     it('throws for invalid published date', () => {
       const created = service.createRelease(projectId, validInput({ status: 'ready' }));
+      selectAssetForRelease(created.id);
       expect(() => {
         service.publishRelease(created.id, 'invalid');
       }).toThrow(ReleaseValidationError);
@@ -279,11 +307,257 @@ describe('release service', () => {
     it('throws if release is not ready', () => {
       const statuses = ['idea', 'planned', 'drafting', 'cancelled'];
       for (const status of statuses) {
-        const created = service.createRelease(projectId, validInput({ status }));
+        const created = service.createRelease(projectId, validInput({
+          title: `Non-Ready ${status} Release`,
+          description: `Description before ${status} rejection`,
+          notes: `Notes before ${status} rejection`,
+          status,
+          plannedDate: '2025-06-15',
+          patreonUrl: 'https://patreon.com/creator',
+        }));
+        const before = snapshotReleaseRow(db, created.id);
+
         expect(() => {
           service.publishRelease(created.id);
         }).toThrow(ReleaseValidationError);
+
+        expect(snapshotReleaseRow(db, created.id)).toEqual(before);
       }
+    });
+
+    // ─── Phase 7C-1: Readiness enforcement ────────────────────────────────
+
+    it('rejects publish when no assets are selected (zero assets) without changing the complete release row', () => {
+      const created = service.createRelease(projectId, validInput({
+        title: 'Zero Asset Release',
+        description: 'Description before rejection',
+        notes: 'Notes before rejection',
+        status: 'ready',
+        plannedDate: '2025-06-15',
+        patreonUrl: 'https://patreon.com/creator',
+      }));
+      const before = snapshotReleaseRow(db, created.id);
+
+      expect(() => {
+        service.publishRelease(created.id);
+      }).toThrow(ReleaseValidationError);
+
+      expect(snapshotReleaseRow(db, created.id)).toEqual(before);
+    });
+
+    it('rejects publish when a selected asset is missing without changing the complete release row', () => {
+      const { release } = createPublishableRelease(service, assetRepo, projectId, {
+        title: 'Missing Asset Release',
+        description: 'Description before missing asset rejection',
+        notes: 'Notes before missing asset rejection',
+        plannedDate: '2025-06-15',
+        patreonUrl: 'https://patreon.com/creator',
+      });
+      // Mark the selected asset as missing
+      assetRepo.markMissingByProjectIdAndPathNotIn(projectId, []);
+      const before = snapshotReleaseRow(db, release.id);
+
+      expect(() => {
+        service.publishRelease(release.id);
+      }).toThrow(ReleaseValidationError);
+
+      expect(snapshotReleaseRow(db, release.id)).toEqual(before);
+    });
+
+    it('rejects publish when release is archived (readiness scope_mutable) without changing the complete release row', () => {
+      const { release } = createPublishableRelease(service, assetRepo, projectId, {
+        title: 'Archived Release',
+        description: 'Description before archived rejection',
+        notes: 'Notes before archived rejection',
+        plannedDate: '2025-06-15',
+        patreonUrl: 'https://patreon.com/creator',
+      });
+      service.archiveRelease(release.id);
+      const before = snapshotReleaseRow(db, release.id);
+
+      expect(() => {
+        service.publishRelease(release.id);
+      }).toThrow(ReleaseValidationError);
+
+      expect(snapshotReleaseRow(db, release.id)).toEqual(before);
+    });
+
+    it('rejects publish when parent project is archived (readiness scope_mutable) without changing the complete release row', () => {
+      const { release } = createPublishableRelease(service, assetRepo, projectId, {
+        title: 'Archived Parent Release',
+        description: 'Description before archived parent rejection',
+        notes: 'Notes before archived parent rejection',
+        plannedDate: '2025-06-15',
+        patreonUrl: 'https://patreon.com/creator',
+      });
+      projectRepo.archive(projectId);
+      const before = snapshotReleaseRow(db, release.id);
+
+      expect(() => {
+        service.publishRelease(release.id);
+      }).toThrow(ReleaseParentArchivedError);
+
+      expect(snapshotReleaseRow(db, release.id)).toEqual(before);
+    });
+
+    it('rejects publish for a non-ready release without changing the complete release row', () => {
+      const created = service.createRelease(projectId, validInput({
+        title: 'Non-Ready Release',
+        description: 'Description before non-ready rejection',
+        notes: 'Notes before non-ready rejection',
+        status: 'planned',
+        plannedDate: '2025-06-15',
+        patreonUrl: 'https://patreon.com/creator',
+      }));
+      selectAssetForRelease(created.id);
+      const before = snapshotReleaseRow(db, created.id);
+
+      expect(() => {
+        service.publishRelease(created.id);
+      }).toThrow(ReleaseValidationError);
+
+      expect(snapshotReleaseRow(db, created.id)).toEqual(before);
+    });
+
+    it('rejects publish with multiple readiness blockers without changing the complete release row', () => {
+      const created = service.createRelease(projectId, validInput({
+        title: 'Multiple Blockers Release',
+        description: 'Description before multiple-blocker rejection',
+        notes: 'Notes before multiple-blocker rejection',
+        status: 'ready',
+        plannedDate: '2025-06-15',
+        patreonUrl: 'https://patreon.com/creator',
+      }));
+      service.archiveRelease(created.id);
+      const before = snapshotReleaseRow(db, created.id);
+
+      const facts = service.repository.findReadinessFactsById(created.id);
+      const policyResult = evaluateReleaseReadiness(facts);
+      expect(policyResult.checks.filter((check) => !check.passed).map((check) => check.key)).toEqual([
+        'assets_selected',
+        'scope_mutable',
+      ]);
+
+      expect(() => {
+        service.publishRelease(created.id);
+      }).toThrow(ReleaseValidationError);
+
+      expect(snapshotReleaseRow(db, created.id)).toEqual(before);
+    });
+
+    it('reports readiness blockers when publish is rejected', () => {
+      // Create a ready release with no assets — readiness check runs and
+      // reports the assets_selected blocker.
+      const created = service.createRelease(projectId, validInput({ status: 'ready' }));
+      const before = snapshotReleaseRow(db, created.id);
+      try {
+        service.publishRelease(created.id);
+        expect.fail('Should have thrown');
+      } catch (err) {
+        expect(err).toBeInstanceOf(ReleaseValidationError);
+        expect(err.errors.readiness).toBeDefined();
+        // Should have the assets_selected blocker
+        expect(err.errors.readiness.assets_selected).toBeDefined();
+        expect(err.errors.readiness.assets_selected.selectedAssetCount).toBe(0);
+      }
+      expect(snapshotReleaseRow(db, created.id)).toEqual(before);
+    });
+
+    it('does not change the complete release row when readiness check fails', () => {
+      const created = service.createRelease(projectId, validInput({
+        title: 'Readiness Failure Release',
+        description: 'Description before readiness failure',
+        notes: 'Notes before readiness failure',
+        status: 'ready',
+        plannedDate: '2025-06-15',
+        patreonUrl: 'https://patreon.com/creator',
+      }));
+      const before = snapshotReleaseRow(db, created.id);
+
+      expect(() => {
+        service.publishRelease(created.id);
+      }).toThrow(ReleaseValidationError);
+
+      expect(snapshotReleaseRow(db, created.id)).toEqual(before);
+    });
+
+    it('calls the shared readiness policy exactly once for successful publication', () => {
+      const { release } = createPublishableRelease(service, assetRepo, projectId, {
+        title: 'Spy Successful Release',
+      });
+      const expectedFacts = service.repository.findReadinessFactsById(release.id);
+      expect(expectedFacts).toEqual({
+        release_id: release.id,
+        project_id: projectId,
+        release_status: 'ready',
+        release_archived_at: null,
+        project_archived_at: null,
+        selected_asset_count: 1,
+        present_selected_asset_count: 1,
+        missing_selected_asset_count: 0,
+        primary_role_count: 1,
+        preview_role_count: 0,
+        attachment_role_count: 0,
+        source_role_count: 0,
+      });
+      const evaluateReleaseReadinessSpy = vi.fn().mockReturnValue({
+        publishable: true,
+        checks: [],
+        facts: expectedFacts,
+      });
+      const publishingService = createReleaseService({
+        db,
+        evaluateReleaseReadiness: evaluateReleaseReadinessSpy,
+      });
+
+      const published = publishingService.publishRelease(release.id, '2025-06-15');
+
+      expect(published.status).toBe('published');
+      expect(evaluateReleaseReadinessSpy).toHaveBeenCalledTimes(1);
+      expect(evaluateReleaseReadinessSpy).toHaveBeenCalledWith(expectedFacts);
+    });
+
+    it('calls the shared readiness policy exactly once for blocked publication', () => {
+      const created = service.createRelease(projectId, validInput({
+        title: 'Spy Blocked Release',
+        status: 'ready',
+      }));
+      const expectedFacts = service.repository.findReadinessFactsById(created.id);
+      expect(expectedFacts).toEqual({
+        release_id: created.id,
+        project_id: projectId,
+        release_status: 'ready',
+        release_archived_at: null,
+        project_archived_at: null,
+        selected_asset_count: 0,
+        present_selected_asset_count: 0,
+        missing_selected_asset_count: 0,
+        primary_role_count: 0,
+        preview_role_count: 0,
+        attachment_role_count: 0,
+        source_role_count: 0,
+      });
+      const evaluateReleaseReadinessSpy = vi.fn().mockReturnValue({
+        publishable: false,
+        checks: [{
+          key: 'assets_selected',
+          passed: false,
+          severity: 'blocker',
+          details: { selectedAssetCount: expectedFacts.selected_asset_count },
+        }],
+        facts: expectedFacts,
+      });
+      const publishingService = createReleaseService({
+        db,
+        evaluateReleaseReadiness: evaluateReleaseReadinessSpy,
+      });
+
+      expect(() => {
+        publishingService.publishRelease(created.id);
+      }).toThrow(ReleaseValidationError);
+
+      expect(evaluateReleaseReadinessSpy).toHaveBeenCalledTimes(1);
+      expect(evaluateReleaseReadinessSpy).toHaveBeenCalledWith(expectedFacts);
     });
   });
 
@@ -589,14 +863,37 @@ describe('release service', () => {
   });
 
   describe('removeAssetFromRelease', () => {
-    it('removes an asset from a release', () => {
+    it('removes a selected asset from a release', () => {
       const release = service.createRelease(projectId, validInput());
       const asset = assetRepo.upsert(projectId, 'file.txt', sampleAsset(projectId));
 
       service.addAssetToRelease(release.id, asset.id);
+      assetRepo.markMissingByProjectIdAndPathNotIn(projectId, []);
       const removed = service.removeAssetFromRelease(release.id, asset.id);
       expect(removed).toBe(true);
       expect(service.listReleaseAssets(release.id)).toHaveLength(0);
+    });
+
+    it('removes only the requested row, leaving other selections unchanged', () => {
+      const release = service.createRelease(projectId, validInput());
+      const asset1 = assetRepo.upsert(projectId, 'a.txt', sampleAsset(projectId, { relativePath: 'a.txt' }));
+      const asset2 = assetRepo.upsert(projectId, 'b.txt', sampleAsset(projectId, { relativePath: 'b.txt' }));
+
+      service.selectAssets(release.id, [
+        { assetId: asset1.id, role: 'primary', sortOrder: 0 },
+        { assetId: asset2.id, role: 'attachment', sortOrder: 1 },
+      ]);
+
+      assetRepo.markMissingByProjectIdAndPathNotIn(projectId, ['b.txt']);
+
+      const removed = service.removeAssetFromRelease(release.id, asset1.id);
+      expect(removed).toBe(true);
+
+      const remaining = service.listReleaseAssets(release.id);
+      expect(remaining).toHaveLength(1);
+      expect(remaining.map(({ asset_id, role, sort_order }) => ({ asset_id, role, sort_order }))).toEqual([
+        { asset_id: asset2.id, role: 'attachment', sort_order: 1 },
+      ]);
     });
 
     it('throws ReleaseNotFoundError for non-existent release', () => {
@@ -605,10 +902,100 @@ describe('release service', () => {
       }).toThrow(ReleaseNotFoundError);
     });
 
-    it('returns false when selection does not exist', () => {
+    it('throws AssetNotFoundError for non-existent asset', () => {
       const release = service.createRelease(projectId, validInput());
-      const removed = service.removeAssetFromRelease(release.id, 99999);
-      expect(removed).toBe(false);
+      expect(() => {
+        service.removeAssetFromRelease(release.id, 99999);
+      }).toThrow(AssetNotFoundError);
+    });
+
+    it('throws ReleaseValidationError when asset is not selected for the release', () => {
+      const release = service.createRelease(projectId, validInput());
+      const asset = assetRepo.upsert(projectId, 'file.txt', sampleAsset(projectId));
+
+      expect(() => {
+        service.removeAssetFromRelease(release.id, asset.id);
+      }).toThrow(ReleaseValidationError);
+    });
+
+    it('throws ReleaseValidationError for cross-project asset', () => {
+      const release = service.createRelease(projectId, validInput());
+      const otherProject = projectRepo.create(sampleProject({ title: 'Other' }));
+      const otherAsset = assetRepo.upsert(otherProject.id, 'other.txt', sampleAsset(otherProject.id));
+
+      expect(() => {
+        service.removeAssetFromRelease(release.id, otherAsset.id);
+      }).toThrow(ReleaseValidationError);
+    });
+
+    it('throws ReleaseArchivedError for archived release', () => {
+      const release = service.createRelease(projectId, validInput());
+      const asset = assetRepo.upsert(projectId, 'file.txt', sampleAsset(projectId));
+      service.addAssetToRelease(release.id, asset.id);
+      service.archiveRelease(release.id);
+
+      expect(() => {
+        service.removeAssetFromRelease(release.id, asset.id);
+      }).toThrow(ReleaseArchivedError);
+    });
+
+    it('throws ReleaseParentArchivedError when parent project is archived', () => {
+      const release = service.createRelease(projectId, validInput());
+      const asset = assetRepo.upsert(projectId, 'file.txt', sampleAsset(projectId));
+      service.addAssetToRelease(release.id, asset.id);
+      projectRepo.archive(projectId);
+
+      expect(() => {
+        service.removeAssetFromRelease(release.id, asset.id);
+      }).toThrow(ReleaseParentArchivedError);
+    });
+
+    it('exact junction-table rows after successful removal', () => {
+      const release = service.createRelease(projectId, validInput());
+      const asset1 = assetRepo.upsert(projectId, 'a.txt', sampleAsset(projectId, { relativePath: 'a.txt' }));
+      const asset2 = assetRepo.upsert(projectId, 'b.txt', sampleAsset(projectId, { relativePath: 'b.txt' }));
+
+      service.selectAssets(release.id, [
+        { assetId: asset1.id, role: 'primary', sortOrder: 0 },
+        { assetId: asset2.id, role: 'attachment', sortOrder: 1 },
+      ]);
+
+      assetRepo.markMissingByProjectIdAndPathNotIn(projectId, ['b.txt']);
+
+      service.removeAssetFromRelease(release.id, asset1.id);
+
+      const rows = db.prepare('SELECT asset_id, role, sort_order FROM release_assets WHERE release_id = ? ORDER BY sort_order ASC').all(release.id);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toEqual({ asset_id: asset2.id, role: 'attachment', sort_order: 1 });
+    });
+
+    it('rejects removal of a selected present asset without changing the selection', () => {
+      const release = service.createRelease(projectId, validInput());
+      const asset = assetRepo.upsert(projectId, 'file.txt', sampleAsset(projectId));
+      service.addAssetToRelease(release.id, asset.id);
+
+      const beforeRows = service.listReleaseAssets(release.id);
+      const beforeAsset = assetRepo.findById(asset.id);
+
+      expect(() => {
+        service.removeAssetFromRelease(release.id, asset.id);
+      }).toThrow(ReleaseValidationError);
+
+      expect(service.listReleaseAssets(release.id)).toEqual(beforeRows);
+      expect(assetRepo.findById(asset.id)).toEqual(beforeAsset);
+    });
+
+    it('exact junction-table rows unchanged after rejection (unselected asset)', () => {
+      const release = service.createRelease(projectId, validInput());
+      const asset = assetRepo.upsert(projectId, 'file.txt', sampleAsset(projectId));
+
+      // No selection exists — rejection must not mutate the table
+      expect(() => {
+        service.removeAssetFromRelease(release.id, asset.id);
+      }).toThrow(ReleaseValidationError);
+
+      const rows = db.prepare('SELECT COUNT(*) AS c FROM release_assets WHERE release_id = ?').get(release.id);
+      expect(rows.c).toBe(0);
     });
   });
 
@@ -835,7 +1222,7 @@ describe('release service', () => {
     });
 
     it('publishRelease throws ReleaseParentArchivedError when parent project is archived', () => {
-      const release = service.createRelease(projectId, validInput({ status: 'ready' }));
+      const { release } = createPublishableRelease(service, assetRepo, projectId);
       archiveProject();
 
       expect(() => {
@@ -1043,7 +1430,7 @@ describe('release service', () => {
     });
 
     it('updateRelease rejects transition from published to any other status', () => {
-      const created = service.createRelease(projectId, validInput({ status: 'ready' }));
+      const { release: created } = createPublishableRelease(service, assetRepo, projectId);
       service.publishRelease(created.id);
       // Try to move from published back to ready
       expect(() => {
@@ -1117,7 +1504,7 @@ describe('release service', () => {
 
   describe('terminal release metadata', () => {
     it('allows updating the title of a published release', () => {
-      const created = service.createRelease(projectId, validInput({ status: 'ready' }));
+      const { release: created } = createPublishableRelease(service, assetRepo, projectId);
       const published = service.publishRelease(created.id, '2025-06-15');
 
       const updated = service.updateRelease(published.id, validInput({
@@ -1131,7 +1518,7 @@ describe('release service', () => {
     });
 
     it('allows updating the description of a published release', () => {
-      const created = service.createRelease(projectId, validInput({ status: 'ready' }));
+      const { release: created } = createPublishableRelease(service, assetRepo, projectId);
       const published = service.publishRelease(created.id, '2025-06-15');
 
       const updated = service.updateRelease(published.id, validInput({
@@ -1155,7 +1542,7 @@ describe('release service', () => {
     });
 
     it('archiving a published release preserves its published status and date', () => {
-      const created = service.createRelease(projectId, validInput({ status: 'ready' }));
+      const { release: created } = createPublishableRelease(service, assetRepo, projectId);
       const published = service.publishRelease(created.id, '2025-06-15');
 
       const archived = service.archiveRelease(published.id);
@@ -1173,7 +1560,7 @@ describe('release service', () => {
     });
 
     it('rejects status change for a published release even when other fields change', () => {
-      const created = service.createRelease(projectId, validInput({ status: 'ready' }));
+      const { release: created } = createPublishableRelease(service, assetRepo, projectId);
       const published = service.publishRelease(created.id);
 
       // Any change to status away from 'published' must be rejected, even
@@ -1211,16 +1598,13 @@ describe('release service', () => {
 
   describe('publishRelease date handling', () => {
     it('uses the explicit date when one is provided', () => {
-      const created = service.createRelease(projectId, validInput({ status: 'ready' }));
+      const { release: created } = createPublishableRelease(service, assetRepo, projectId);
       const published = service.publishRelease(created.id, '2025-12-15');
       expect(published.published_date).toBe('2025-12-15');
     });
 
     it('overrides a previously-set published_date with the explicit publish date', () => {
-      // The user sets a date via update (e.g. from the edit form) and then
-      // publishes. The publish action must use the date passed in, even if
-      // it differs from the previously stored value.
-      const created = service.createRelease(projectId, validInput({ status: 'ready' }));
+      const { release: created } = createPublishableRelease(service, assetRepo, projectId);
       service.updateRelease(created.id, validInput({
         status: 'ready',
         publishedDate: '2025-08-20',
@@ -1231,19 +1615,13 @@ describe('release service', () => {
     });
 
     it('falls back to the application-local today when no date is provided', () => {
-      // The publish fallback must use the application-local date helper, not
-      // UTC, so a release published near local midnight does not pick up
-      // the wrong day. Pin the expected value to the helper's output.
-      const created = service.createRelease(projectId, validInput({ status: 'ready' }));
+      const { release: created } = createPublishableRelease(service, assetRepo, projectId);
       const published = service.publishRelease(created.id);
       expect(published.published_date).toBe(getLocalTodayIso());
     });
 
     it('rejects an empty string and falls back to local today', () => {
-      // The service treats empty string the same as null — falling back to
-      // the application-local today. The route is responsible for converting
-      // empty form input to null before passing it to the service.
-      const created = service.createRelease(projectId, validInput({ status: 'ready' }));
+      const { release: created } = createPublishableRelease(service, assetRepo, projectId);
       const published = service.publishRelease(created.id, '');
       expect(published.published_date).toBe(getLocalTodayIso());
     });

@@ -1,6 +1,9 @@
 import express from 'express';
 import {
+  AssetNotFoundError,
   createReleaseService,
+  ReleaseArchivedError,
+  ReleaseParentArchivedError,
   ReleaseValidationError,
   ReleaseNotFoundError,
   RELEASE_STATUSES,
@@ -265,7 +268,7 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
       if (err instanceof ReleaseNotFoundError) {
         return next(createNotFound());
       }
-      if (err instanceof ReleaseValidationError) {
+      if (err instanceof ReleaseValidationError || err instanceof ReleaseParentArchivedError) {
         const release = releaseService.findRelease(id);
         if (!release) {
           return next(createNotFound());
@@ -280,7 +283,7 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
           releaseAssets,
           assetCount: releaseAssets.length,
           statuses: RELEASE_STATUSES,
-          errors: err.errors,
+          errors: err.errors || { general: err.message },
           readiness,
         });
         return;
@@ -437,6 +440,52 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
           statuses: RELEASE_STATUSES,
           roles: ['primary', 'preview', 'attachment', 'source'],
           errors: err.errors,
+        });
+        return;
+      }
+      next(err);
+    }
+  });
+
+  // POST /releases/:id/assets/:assetId/remove — Remove a single selected asset from a release
+  // This is a corrective mutation for missing assets that block readiness.
+  // Only selected assets that are currently missing can be removed through this route.
+  router.post('/:id/assets/:assetId/remove', (req, res, next) => {
+    const id = parseId(req.params.id);
+    if (id === null) {
+      return next(createNotFound());
+    }
+
+    const assetId = parseId(req.params.assetId);
+    if (assetId === null) {
+      return next(createNotFound());
+    }
+
+    const release = releaseService.findRelease(id);
+    if (!release) {
+      return next(createNotFound());
+    }
+
+    try {
+      releaseService.removeAssetFromRelease(id, assetId);
+      res.redirect(`/releases/${id}`);
+    } catch (err) {
+      if (err instanceof ReleaseNotFoundError || err instanceof AssetNotFoundError) {
+        return next(createNotFound());
+      }
+      if (err instanceof ReleaseArchivedError || err instanceof ReleaseParentArchivedError || err instanceof ReleaseValidationError) {
+        const project = projectService.findById(release.project_id);
+        const releaseAssets = releaseService.listReleaseAssets(id);
+        const readiness = workflowQueryService.getReleaseReadiness(id);
+        res.status(422).render('releases/detail.njk', {
+          appName,
+          release,
+          project,
+          releaseAssets,
+          assetCount: releaseAssets.length,
+          statuses: RELEASE_STATUSES,
+          errors: err.errors || { general: err.message },
+          readiness,
         });
         return;
       }

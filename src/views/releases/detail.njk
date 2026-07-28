@@ -26,6 +26,29 @@
     </div>
   {% endif %}
 
+  {% if errors.readiness %}
+    <div class="error-summary" role="alert">
+      <p>Cannot publish due to the following blockers:</p>
+      <ul>
+        {% for key, details in errors.readiness %}
+          <li>
+            {% if key == 'status_ready' %}
+              Status is "{{ details.status }}", must be "ready".
+            {% elif key == 'assets_selected' %}
+              No assets selected ({{ details.selectedAssetCount }} selected).
+            {% elif key == 'selected_assets_present' %}
+              {{ details.missingSelectedAssetCount }} selected asset(s) are missing.
+            {% elif key == 'scope_mutable' %}
+              {% if details.releaseArchived %}Release is archived.{% elif details.projectArchived %}Parent project is archived.{% endif %}
+            {% else %}
+              {{ key }}: {{ details | dump }}
+            {% endif %}
+          </li>
+        {% endfor %}
+      </ul>
+    </div>
+  {% endif %}
+
   <dl class="detail-list">
     {% if project %}
       <dt>Project</dt>
@@ -95,6 +118,10 @@
             <th>Filename</th>
             <th>Role</th>
             <th>Path</th>
+            <th>Status</th>
+            {% if not projectArchived and not release.archived_at %}
+              <th>Actions</th>
+            {% endif %}
           </tr>
         </thead>
         <tbody>
@@ -103,6 +130,22 @@
               <td class="asset-filename">{{ ra.filename }}</td>
               <td>{{ ra.role | title }}</td>
               <td class="asset-path"><code>{{ ra.relative_path }}</code></td>
+              <td>
+                {% if ra.is_present == 1 %}
+                  <span class="asset-present">Present</span>
+                {% else %}
+                  <span class="asset-missing-label">Missing</span>
+                {% endif %}
+              </td>
+              {% if not projectArchived and not release.archived_at %}
+                <td>
+                  {% if ra.is_present == 0 %}
+                    <form method="post" action="/releases/{{ release.id }}/assets/{{ ra.asset_id }}/remove" class="inline-form">
+                      <button class="button button-danger button-small" type="submit" onclick="return confirm('Remove this missing asset from the release?')">Remove</button>
+                    </form>
+                  {% endif %}
+                </td>
+              {% endif %}
             </tr>
           {% endfor %}
         </tbody>
@@ -180,7 +223,7 @@
     </section>
   {% endif %}
 
-  {% if not projectArchived %}
+  {% if readiness.publishable %}
     <div class="form-actions" style="margin-top: 2rem;">
       <form method="post" action="/releases/{{ release.id }}/publish" class="inline-form">
         {% if release.published_date %}

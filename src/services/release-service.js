@@ -142,7 +142,7 @@ function isValidPatreonUrl(value) {
   }
 }
 
-export function createReleaseService(db) {
+export function createReleaseService({ db, evaluateReleaseReadiness }) {
   const repository = createReleaseRepository(db);
   const projectRepository = createProjectRepository(db);
   const assetRepository = createAssetRepository(db);
@@ -297,6 +297,7 @@ export function createReleaseService(db) {
     /**
      * Publish a release. Sets published_date to today if not provided.
      * Only ready releases can be published.
+     * Enforces the shared readiness policy before publishing.
      * @param {number} id
      * @param {string} [publishedDate] - ISO date string YYYY-MM-DD, defaults to today
      * @returns {ReleaseRecord}
@@ -321,6 +322,26 @@ export function createReleaseService(db) {
 
       if (release.status !== 'ready') {
         throw new ReleaseValidationError({ general: 'Only releases with status "ready" can be published.' });
+      }
+
+      // ── Phase 7C-1: Enforce release readiness ──────────────────────────
+      // Load readiness facts through the repository and evaluate them
+      // through the shared readiness policy. No policy logic is duplicated
+      // here — publishRelease only interprets the result.
+      const facts = repository.findReadinessFactsById(id);
+      if (!facts) {
+        throw new ReleaseNotFoundError(id);
+      }
+
+      const readiness = evaluateReleaseReadiness(facts);
+      if (!readiness.publishable) {
+        const errors = {};
+        for (const check of readiness.checks) {
+          if (!check.passed) {
+            errors[check.key] = check.details;
+          }
+        }
+        throw new ReleaseValidationError({ readiness: errors });
       }
 
       const date = publishedDate || getLocalTodayIso();
@@ -615,6 +636,8 @@ export function createReleaseService(db) {
 
     /**
      * Remove a single asset from a release.
+     * Verifies the release exists, the asset belongs to the release's project,
+     * and the selection exists. Rejects archived release/project scope.
      * @param {number} releaseId
      * @param {number} assetId
      * @returns {boolean}
@@ -627,6 +650,32 @@ export function createReleaseService(db) {
       guardReleaseNotArchived(release);
       // Reject mutations when the parent project has been archived.
       guardParentProjectNotArchived(release.project_id);
+
+      // Verify the asset exists and belongs to the release's project
+      const asset = assetRepository.findById(assetId);
+      if (!asset) {
+        throw new AssetNotFoundError(assetId);
+      }
+      if (asset.project_id !== release.project_id) {
+        throw new ReleaseValidationError({
+          assets: `Asset ${assetId} does not belong to the release's project.`,
+        });
+      }
+
+      // Verify the selection actually exists
+      const existing = repository.listReleaseAssets(releaseId);
+      if (!existing.some((a) => a.asset_id === assetId)) {
+        throw new ReleaseValidationError({
+          assets: `Asset ${assetId} is not selected for this release.`,
+        });
+      }
+
+      if (asset.is_present !== 0) {
+        throw new ReleaseValidationError({
+          assets: `Asset ${assetId} is currently present and cannot be removed.`,
+        });
+      }
+
       return repository.removeReleaseAsset(releaseId, assetId);
     },
 

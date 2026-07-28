@@ -2936,7 +2936,11 @@ describe('workflow query service', () => {
       // This test uses the release service directly to prove the publication
       // path is unchanged.
       const { createReleaseService } = await import('../src/services/release-service.js');
-      const releaseService = createReleaseService(db);
+      const { evaluateReleaseReadiness } = await import('../src/services/release-readiness-policy.js');
+      const releaseService = createReleaseService({ db, evaluateReleaseReadiness });
+      // Select an asset so readiness passes
+      const asset = insertAsset(db, { projectId: project.id, relativePath: 'pub-test.txt', filename: 'pub-test.txt', isPresent: 1 });
+      releaseService.selectAssets(release.id, [{ assetId: asset.id, role: 'primary', sortOrder: 0 }]);
       const published = releaseService.publishRelease(release.id, '2025-06-15');
       expect(published.status).toBe('published');
       expect(published.published_date).toBe('2025-06-15');
@@ -3175,7 +3179,11 @@ describe('workflow query service', () => {
 
       // But publish still works (does not consult readiness)
       const { createReleaseService } = await import('../src/services/release-service.js');
-      const releaseService = createReleaseService(db);
+      const { evaluateReleaseReadiness } = await import('../src/services/release-readiness-policy.js');
+      const releaseService = createReleaseService({ db, evaluateReleaseReadiness });
+      // Select an asset so readiness passes
+      const asset = insertAsset(db, { projectId: project.id, relativePath: 'pub-test2.txt', filename: 'pub-test2.txt', isPresent: 1 });
+      releaseService.selectAssets(release.id, [{ assetId: asset.id, role: 'primary', sortOrder: 0 }]);
       const published = releaseService.publishRelease(release.id, '2025-06-15');
       expect(published.status).toBe('published');
     });
