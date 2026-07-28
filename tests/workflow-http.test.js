@@ -1261,7 +1261,8 @@ describe('Phase 6B HTTP workflow', () => {
       expect(prevUrl.searchParams.get('status')).toBe('idea');
       expect(prevUrl.searchParams.get('includeArchived')).toBe('1');
       expect(prevUrl.searchParams.get('pageSize')).toBe('10');
-      expect(prevUrl.searchParams.get('page')).toBe('1');
+      // Page=1 is the default so it's omitted from generated URLs
+      expect(prevUrl.searchParams.get('page')).toBeNull();
     });
 
     it('pagination URLs preserve view, project, status, schedule, includeArchived, pageSize on a single URL', async () => {
@@ -1378,36 +1379,495 @@ describe('Phase 6B HTTP workflow', () => {
       expect(listUrl.searchParams.get('pageSize')).toBe('10');
     });
 
-    it('view switch handles `page` param according to the intended behavior', async () => {
-      // Intended behavior: view switch preserves the `page` parameter
-      // (buildPageUrl clones the existing query and overrides only the
-      // keys in overrides). The test pins this behavior so a future
-      // refactor cannot accidentally carry a stale page number into the
-      // wrong view.
+    it('view switch clears page state when switching between list and board', async () => {
+      // Intended behavior: view switch clears the `page` parameter because
+      // pagination is view-specific — list and board have different page counts.
       const projectId = await createProject(app, { title: 'View Switch Page Project' });
       for (let i = 0; i < 60; i++) {
         await createRelease(app, { projectId, title: `ViewSwitch Release ${i}`, status: 'idea' });
       }
 
-      // Page 2 in list view → switch to board → page=2 must be preserved.
+      // Page 2 in list view → switch to board → page must be cleared.
       const listRes = await request(app)
         .get(`/releases?view=list&project=${projectId}&status=idea&pageSize=10&page=2`)
         .expect(200);
       const boardHref = extractViewSwitchHref(listRes.text, 'Board');
       const boardUrl = new URL(boardHref, 'http://localhost');
       expect(boardUrl.searchParams.get('view')).toBe('board');
-      expect(boardUrl.searchParams.get('page')).toBe('2');
-      // Also confirm the new list anchor (back to list) preserves page=2.
-      // (In the rendered list view, the List label is a span — not a
-      // switch anchor. To check the inverse, render board view and
-      // verify the List anchor carries page=2 too.)
+      expect(boardUrl.searchParams.get('page')).toBeNull();
+      // Also confirm the new list anchor (back to list) has no page.
       const boardRes = await request(app)
         .get(`/releases?view=board&project=${projectId}&status=idea&pageSize=10&page=2`)
         .expect(200);
       const listHref = extractViewSwitchHref(boardRes.text, 'List');
       const listUrl = new URL(listHref, 'http://localhost');
       expect(listUrl.searchParams.get('view')).toBe('list');
-      expect(listUrl.searchParams.get('page')).toBe('2');
+      expect(listUrl.searchParams.get('page')).toBeNull();
+    });
+  });
+
+  describe('release list — readiness filters', () => {
+    function extractHrefByLabel(html, label) {
+      const re = new RegExp(`<a\\b[^>]*\\bhref="([^"]+)"[^>]*>${label}<\\/a>`, 'i');
+      const m = html.match(re);
+      if (!m) return null;
+      return decodeHtmlEntities(m[1]);
+    }
+
+    function extractListReleaseIds(html) {
+      const body = html.match(/<tbody>[\s\S]*?<\/tbody>/);
+      if (!body) return [];
+      const matches = body[0].match(/<a href="\/releases\/(\d+)">/g) || [];
+      return matches.map((m) => Number(m.match(/<a href="\/releases\/(\d+)">/)[1]));
+    }
+
+    function extractBoardReleaseIds(html) {
+      const matches = html.match(/<div class="board-card"[^>]*>[\s\S]*?<a href="\/releases\/(\d+)">/g) || [];
+      return matches.map((m) => Number(m.match(/<a href="\/releases\/(\d+)">/)[1]));
+    }
+
+    async function makeReadyRelease(projectId, title, { present = true, missing = false } = {}) {
+      const releaseId = await createRelease(app, {
+        projectId,
+        title,
+        status: 'ready',
+        plannedDate: '2099-01-01',
+      });
+      if (present) {
+        attachPresentAssetToRelease(db, Number(projectId), Number(releaseId), {
+          name: `${title}.txt`,
+          present: true,
+        });
+      } else if (missing) {
+        const assetRepo = createAssetRepository(db);
+        const asset = assetRepo.upsert(Number(projectId), `${title}-missing.txt`, {
+          filename: `${title}-missing.txt`,
+          extension: 'txt',
+          mimeType: 'text/plain',
+          sizeBytes: 0,
+          modifiedAt: null,
+        });
+        db.prepare(`UPDATE assets SET is_present = 0, missing_since = datetime('now') WHERE id = ?`).run(asset.id);
+        db.prepare(`
+          INSERT INTO release_assets (release_id, asset_id, role, sort_order)
+          VALUES (?, ?, 'attachment', 0)
+        `).run(Number(releaseId), asset.id);
+      }
+      return releaseId;
+    }
+
+    it('defaults to all readiness (no restriction) and selects the All option', async () => {
+      const projectId = await createProject(app, { title: 'Readiness Default Project' });
+      await createRelease(app, { projectId, title: 'Default Idea', status: 'idea' });
+      await createRelease(app, { projectId, title: 'Default Ready', status: 'ready' });
+
+      const res = await request(app).get('/releases').expect(200);
+      expect(res.text).toContain('Default Idea');
+      expect(res.text).toContain('Default Ready');
+      expect(res.text).toMatch(/<option value="all"[^>]*selected/);
+    });
+
+    it('publishable filter shows only ready releases with present selected assets', async () => {
+      const projectId = await createProject(app, { title: 'HTTP Publishable Project' });
+      const publishable = await makeReadyRelease(projectId, 'HTTP Publishable');
+      await makeReadyRelease(projectId, 'HTTP Blocked Zero', { present: false });
+      await makeReadyRelease(projectId, 'HTTP Blocked Missing', { present: false, missing: true });
+      await createRelease(app, { projectId, title: 'HTTP Planned', status: 'planned' });
+
+      const res = await request(app).get('/releases?readiness=publishable').expect(200);
+      const ids = extractListReleaseIds(res.text);
+      expect(ids).toContain(Number(publishable));
+      expect(ids).not.toContain(Number(0)); // sanity: only one result
+      expect(res.text).toContain('HTTP Publishable');
+      expect(res.text).not.toContain('HTTP Blocked Zero');
+      expect(res.text).not.toContain('HTTP Planned');
+    });
+
+    it('blocked-ready filter shows zero-asset and missing-asset ready releases', async () => {
+      const projectId = await createProject(app, { title: 'HTTP Blocked Project' });
+      await makeReadyRelease(projectId, 'HTTP Publishable');
+      const zero = await makeReadyRelease(projectId, 'HTTP Blocked Zero', { present: false });
+      const missing = await makeReadyRelease(projectId, 'HTTP Blocked Missing', { present: false, missing: true });
+
+      const res = await request(app).get('/releases?readiness=blocked-ready').expect(200);
+      const ids = extractListReleaseIds(res.text);
+      expect(ids.map((id) => String(id)).sort()).toEqual([zero, missing].map((id) => String(id)).sort());
+    });
+
+    it('non-ready releases are excluded from readiness-specific filters', async () => {
+      const projectId = await createProject(app, { title: 'HTTP Non Ready Filter' });
+      await createRelease(app, { projectId, title: 'Idea NR', status: 'idea' });
+      await createRelease(app, { projectId, title: 'Planned NR', status: 'planned' });
+
+      const pubRes = await request(app).get('/releases?readiness=publishable').expect(200);
+      expect(pubRes.text).not.toContain('Idea NR');
+      expect(pubRes.text).not.toContain('Planned NR');
+
+      const blockedRes = await request(app).get('/releases?readiness=blocked-ready').expect(200);
+      expect(blockedRes.text).not.toContain('Idea NR');
+      expect(blockedRes.text).not.toContain('Planned NR');
+    });
+
+    it('archived ready releases are excluded from readiness filters', async () => {
+      const projectId = await createProject(app, { title: 'Archived Ready Exclusion' });
+      const archived = await makeReadyRelease(projectId, 'Archived Ready Release');
+      await request(app).post(`/releases/${archived}/archive`).expect(302);
+      const publishable = await makeReadyRelease(projectId, 'Still Publishable');
+
+      const res = await request(app).get('/releases?readiness=publishable').expect(200);
+      expect(res.text).toContain('Still Publishable');
+      expect(res.text).not.toContain('Archived Ready Release');
+    });
+
+    it('releases under archived parent projects are excluded from readiness filters', async () => {
+      const project = await createProject(app, { title: 'HTTP Archived Parent Filter' });
+      await makeReadyRelease(project, 'HTTP Hidden Ready');
+      db.prepare(`UPDATE projects SET archived_at = datetime('now') WHERE id = ?`).run(Number(project));
+
+      const pubRes = await request(app).get('/releases?readiness=publishable').expect(200);
+      const blockedRes = await request(app).get('/releases?readiness=blocked-ready').expect(200);
+      expect(pubRes.text).not.toContain('HTTP Hidden Ready');
+      expect(blockedRes.text).not.toContain('HTTP Hidden Ready');
+    });
+
+    it('invalid readiness value falls back to all', async () => {
+      const projectId = await createProject(app, { title: 'HTTP Invalid Readiness' });
+      await createRelease(app, { projectId, title: 'Invalid Idea', status: 'idea' });
+
+      const res = await request(app).get('/releases?readiness=junk').expect(200);
+      expect(res.text).toContain('Invalid Idea');
+      expect(res.text).toMatch(/<option value="all"[^>]*selected/);
+      expect(res.text).not.toMatch(/<option value="junk"[^>]*selected/);
+    });
+
+    it('count and page parity for readiness filters', async () => {
+      const projectId = await createProject(app, { title: 'HTTP Count Parity' });
+      await makeReadyRelease(projectId, 'Parity Publishable');
+      await makeReadyRelease(projectId, 'Parity Blocked', { present: false });
+
+      const pubRes = await request(app).get('/releases?readiness=publishable').expect(200);
+      expect(pubRes.text).toContain('1 release found');
+      const blockedRes = await request(app).get('/releases?readiness=blocked-ready').expect(200);
+      expect(blockedRes.text).toContain('1 release found');
+    });
+
+    it('pagination links preserve readiness and pageSize', async () => {
+      const projectId = await createProject(app, { title: 'HTTP Readiness Pagination' });
+      for (let i = 0; i < 35; i++) {
+        await makeReadyRelease(projectId, `Readiness Page ${i}`);
+      }
+
+      const res = await request(app)
+        .get(`/releases?readiness=publishable&pageSize=10`)
+        .expect(200);
+      const nextHref = extractPaginationHref(res.text, 'Next');
+      const nextUrl = new URL(nextHref, 'http://localhost');
+      expect(nextUrl.pathname).toBe('/releases');
+      expect(nextUrl.searchParams.get('readiness')).toBe('publishable');
+      expect(nextUrl.searchParams.get('pageSize')).toBe('10');
+      expect(nextUrl.searchParams.get('page')).toBe('2');
+    });
+
+    it('list-to-board view switch preserves readiness', async () => {
+      const projectId = await createProject(app, { title: 'HTTP Readiness Switch LB' });
+      await makeReadyRelease(projectId, 'Switch LB');
+
+      const listRes = await request(app).get('/releases?readiness=publishable').expect(200);
+      const boardHref = extractHrefByLabel(listRes.text, 'Board');
+      const boardUrl = new URL(boardHref, 'http://localhost');
+      expect(boardUrl.searchParams.get('view')).toBe('board');
+      expect(boardUrl.searchParams.get('readiness')).toBe('publishable');
+    });
+
+    it('board-to-list view switch preserves readiness', async () => {
+      const projectId = await createProject(app, { title: 'HTTP Readiness Switch BL' });
+      await makeReadyRelease(projectId, 'Switch BL');
+
+      const boardRes = await request(app).get('/releases?view=board&readiness=publishable').expect(200);
+      const listHref = extractHrefByLabel(boardRes.text, 'List');
+      const listUrl = new URL(listHref, 'http://localhost');
+      expect(listUrl.searchParams.get('view')).toBe('list');
+      expect(listUrl.searchParams.get('readiness')).toBe('publishable');
+    });
+
+    it('list and board views agree on filtered release set', async () => {
+      const projectId = await createProject(app, { title: 'HTTP Readiness Consistency' });
+      const pub = await makeReadyRelease(projectId, 'Consistency Publishable');
+      const blocked = await makeReadyRelease(projectId, 'Consistency Blocked', { present: false });
+      await createRelease(app, { projectId, title: 'Consistency Idea', status: 'idea' });
+
+      const listPub = await request(app).get('/releases?readiness=publishable').expect(200);
+      const boardPub = await request(app).get('/releases?view=board&readiness=publishable').expect(200);
+      expect(extractListReleaseIds(listPub.text)).toEqual([Number(pub)]);
+      expect(extractBoardReleaseIds(boardPub.text)).toEqual([Number(pub)]);
+
+      const listBlocked = await request(app).get('/releases?readiness=blocked-ready').expect(200);
+      const boardBlocked = await request(app).get('/releases?view=board&readiness=blocked-ready').expect(200);
+      expect(extractListReleaseIds(listBlocked.text)).toEqual([Number(blocked)]);
+      expect(extractBoardReleaseIds(boardBlocked.text)).toEqual([Number(blocked)]);
+    });
+
+    it('calendar view does not render a readiness filter', async () => {
+      const res = await request(app).get('/releases/calendar').expect(200);
+      expect(res.text).not.toContain('id="readiness"');
+    });
+  });
+
+  // ─── Phase 7D-2: Readiness Blocker Discovery ──────────────────────────────
+
+  describe('release list — blocker presentation', () => {
+    async function makeReadyRelease(projectId, title, { present = true, missing = false } = {}) {
+      const releaseId = await createRelease(app, {
+        projectId,
+        title,
+        status: 'ready',
+        plannedDate: '2099-01-01',
+      });
+      if (present) {
+        attachPresentAssetToRelease(db, Number(projectId), Number(releaseId), {
+          name: `${title}.txt`,
+          present: true,
+        });
+      } else if (missing) {
+        const assetRepo = createAssetRepository(db);
+        const asset = assetRepo.upsert(Number(projectId), `${title}-missing.txt`, {
+          filename: `${title}-missing.txt`,
+          extension: 'txt',
+          mimeType: 'text/plain',
+          sizeBytes: 0,
+          modifiedAt: null,
+        });
+        db.prepare(`UPDATE assets SET is_present = 0, missing_since = datetime('now') WHERE id = ?`).run(asset.id);
+        db.prepare(`
+          INSERT INTO release_assets (release_id, asset_id, role, sort_order)
+          VALUES (?, ?, 'attachment', 0)
+        `).run(Number(releaseId), asset.id);
+      }
+      return releaseId;
+    }
+
+    function findListRow(html, releaseId) {
+      const match = html.match(new RegExp(
+        `<tr[^>]*>[\\s\\S]*?<a href="/releases/${releaseId}">[^<]+<\\/a>[\\s\\S]*?<\\/tr>`,
+      ));
+      return match ? match[0] : null;
+    }
+
+    function findBoardCard(html, releaseId) {
+      const cards = html.match(/<div class="board-card[^"]*"[^>]*>[\s\S]*?<\/div>\s*<\/div>/g) || [];
+      return cards.find((card) => card.includes(`href="/releases/${releaseId}"`)) || null;
+    }
+
+    function findCalendarEntry(html, releaseId) {
+      const entries = html.match(/<div class="calendar-release[^"]*"[^>]*>[\s\S]*?<\/div>/g) || [];
+      return entries.find((entry) => entry.includes(`href="/releases/${releaseId}"`)) || null;
+    }
+
+    it('no-assets blocker shows correct wording on list row', async () => {
+      const projectId = await createProject(app, { title: 'Blocker No Assets Project' });
+      const releaseId = await makeReadyRelease(projectId, 'Blocker No Assets', { present: false });
+
+      const res = await request(app).get('/releases').expect(200);
+      const row = findListRow(res.text, Number(releaseId));
+      expect(row).not.toBeNull();
+      expect(row).toContain('No assets selected');
+      expect(row).not.toContain('Blocked');
+      expect(row).not.toContain('Missing selected assets');
+    });
+
+    it('no-assets blocker shows correct wording on board card', async () => {
+      const projectId = await createProject(app, { title: 'Blocker No Assets Board' });
+      const releaseId = await makeReadyRelease(projectId, 'Blocker No Assets Board', { present: false });
+
+      const res = await request(app).get('/releases?view=board').expect(200);
+      const card = findBoardCard(res.text, Number(releaseId));
+      expect(card).not.toBeNull();
+      expect(card).toContain('No assets selected');
+      expect(card).not.toContain('Blocked');
+    });
+
+    it('missing-assets blocker shows correct wording on list row', async () => {
+      const projectId = await createProject(app, { title: 'Blocker Missing Assets' });
+      const releaseId = await makeReadyRelease(projectId, 'Blocker Missing Assets', { present: false, missing: true });
+
+      const res = await request(app).get('/releases').expect(200);
+      const row = findListRow(res.text, Number(releaseId));
+      expect(row).not.toBeNull();
+      expect(row).toContain('Missing selected assets');
+      expect(row).not.toContain('No assets selected');
+    });
+
+    it('missing-assets blocker shows correct wording on board card', async () => {
+      const projectId = await createProject(app, { title: 'Blocker Missing Assets Board' });
+      const releaseId = await makeReadyRelease(projectId, 'Blocker Missing Assets Board', { present: false, missing: true });
+
+      const res = await request(app).get('/releases?view=board').expect(200);
+      const card = findBoardCard(res.text, Number(releaseId));
+      expect(card).not.toBeNull();
+      expect(card).toContain('Missing selected assets');
+    });
+
+    it('multiple blockers show all labels separated by semicolon on list row', async () => {
+      const projectId = await createProject(app, { title: 'Blocker Multiple' });
+      const releaseId = await createRelease(app, {
+        projectId,
+        title: 'Blocker Multiple',
+        status: 'ready',
+        plannedDate: '2099-01-01',
+      });
+      // Archive the release to trigger scope_mutable blocker
+      await request(app).post(`/releases/${releaseId}/archive`).expect(302);
+
+      const res = await request(app).get('/releases?includeArchived=1').expect(200);
+      const row = findListRow(res.text, Number(releaseId));
+      expect(row).not.toBeNull();
+      expect(row).toContain('No assets selected');
+      expect(row).toContain('Archived scope');
+    });
+
+    it('publishable release has no blocker text', async () => {
+      const projectId = await createProject(app, { title: 'Blocker Publishable' });
+      const releaseId = await makeReadyRelease(projectId, 'Blocker Publishable');
+
+      const res = await request(app).get('/releases').expect(200);
+      const row = findListRow(res.text, Number(releaseId));
+      expect(row).not.toBeNull();
+      expect(row).toContain('Publishable');
+      expect(row).not.toContain('No assets selected');
+      expect(row).not.toContain('Missing selected assets');
+      expect(row).not.toContain('Archived scope');
+    });
+
+    it('non-ready release has no readiness blocker claim', async () => {
+      const projectId = await createProject(app, { title: 'Blocker Non Ready' });
+      const releaseId = await createRelease(app, {
+        projectId,
+        title: 'Blocker Non Ready',
+        status: 'idea',
+      });
+
+      const res = await request(app).get('/releases').expect(200);
+      const row = findListRow(res.text, Number(releaseId));
+      expect(row).not.toBeNull();
+      expect(row).not.toContain('Publishable');
+      expect(row).not.toContain('No assets selected');
+      expect(row).not.toContain('Missing selected assets');
+      expect(row).not.toContain('Archived scope');
+      // Should show the dash for non-ready
+      expect(row).toContain('readiness-none');
+    });
+
+    it('archived scope shows correct wording on list row', async () => {
+      const projectId = await createProject(app, { title: 'Blocker Archived Scope' });
+      const releaseId = await makeReadyRelease(projectId, 'Blocker Archived Scope', { present: false });
+      await request(app).post(`/releases/${releaseId}/archive`).expect(302);
+
+      const res = await request(app).get('/releases?includeArchived=1').expect(200);
+      const row = findListRow(res.text, Number(releaseId));
+      expect(row).not.toBeNull();
+      expect(row).toContain('Archived scope');
+    });
+
+    it('archived scope has no corrective mutation links', async () => {
+      const projectId = await createProject(app, { title: 'Blocker Archived No Links' });
+      const releaseId = await makeReadyRelease(projectId, 'Blocker Archived No Links', { present: false });
+      await request(app).post(`/releases/${releaseId}/archive`).expect(302);
+
+      const res = await request(app).get('/releases?includeArchived=1').expect(200);
+      const row = findListRow(res.text, Number(releaseId));
+      expect(row).not.toBeNull();
+      expect(row).toContain('Archived scope');
+      // No corrective links for archived scope
+      expect(row).not.toContain('Manage assets');
+      expect(row).not.toContain('Asset browser');
+    });
+
+    it('corrective links target the correct release for no-assets blocker', async () => {
+      const projectId = await createProject(app, { title: 'Blocker Corrective Links' });
+      const releaseId = await makeReadyRelease(projectId, 'Blocker Corrective Links', { present: false });
+
+      const res = await request(app).get('/releases').expect(200);
+      const row = findListRow(res.text, Number(releaseId));
+      expect(row).not.toBeNull();
+      expect(row).toContain(`href="/releases/${releaseId}/assets"`);
+      expect(row).toContain('Manage assets');
+    });
+
+    it('corrective links target asset browser for missing-assets blocker', async () => {
+      const projectId = await createProject(app, { title: 'Blocker Corrective Missing' });
+      const releaseId = await makeReadyRelease(projectId, 'Blocker Corrective Missing', { present: false, missing: true });
+
+      const res = await request(app).get('/releases').expect(200);
+      const row = findListRow(res.text, Number(releaseId));
+      expect(row).not.toBeNull();
+      expect(row).toContain(`href="/projects/${projectId}/assets"`);
+      expect(row).toContain('Asset browser');
+    });
+
+    it('no mutation controls added to list or board', async () => {
+      const projectId = await createProject(app, { title: 'Blocker No Mutations' });
+      const releaseId = await makeReadyRelease(projectId, 'Blocker No Mutations', { present: false });
+
+      const listRes = await request(app).get('/releases').expect(200);
+      const listRow = findListRow(listRes.text, Number(releaseId));
+      expect(listRow).not.toBeNull();
+      // List row should not contain POST forms or delete/archive buttons
+      expect(listRow).not.toContain('method="post"');
+      expect(listRow).not.toContain('button-danger');
+
+      const boardRes = await request(app).get('/releases?view=board').expect(200);
+      const boardCard = findBoardCard(boardRes.text, Number(releaseId));
+      expect(boardCard).not.toBeNull();
+      expect(boardCard).not.toContain('method="post"');
+    });
+
+    it('list and board remain consistent on blocker labels', async () => {
+      const projectId = await createProject(app, { title: 'Blocker Consistency' });
+      const noAssetsId = await makeReadyRelease(projectId, 'Blocker Consistency No Assets', { present: false });
+      const missingId = await makeReadyRelease(projectId, 'Blocker Consistency Missing', { present: false, missing: true });
+
+      const listRes = await request(app).get('/releases').expect(200);
+      const boardRes = await request(app).get('/releases?view=board').expect(200);
+
+      // No-assets release: both views show the same label
+      const listNoAssets = findListRow(listRes.text, Number(noAssetsId));
+      const boardNoAssets = findBoardCard(boardRes.text, Number(noAssetsId));
+      expect(listNoAssets).toContain('No assets selected');
+      expect(boardNoAssets).toContain('No assets selected');
+
+      // Missing-assets release: both views show the same label
+      const listMissing = findListRow(listRes.text, Number(missingId));
+      const boardMissing = findBoardCard(boardRes.text, Number(missingId));
+      expect(listMissing).toContain('Missing selected assets');
+      expect(boardMissing).toContain('Missing selected assets');
+    });
+
+    it('calendar remains compact with no full blocker descriptions', async () => {
+      const projectId = await createProject(app, { title: 'Blocker Calendar Compact' });
+      const releaseId = await makeReadyRelease(projectId, 'Blocker Calendar Compact', { present: false, missing: true });
+
+      const res = await request(app).get('/releases/calendar?month=2099-01').expect(200);
+      const entry = findCalendarEntry(res.text, Number(releaseId));
+      expect(entry).not.toBeNull();
+      // Calendar should show "Blocked" not the full labels
+      expect(entry).toContain('readiness-blocked');
+      expect(entry).not.toContain('No assets selected');
+      expect(entry).not.toContain('Missing selected assets');
+      expect(entry).not.toContain('Archived scope');
+    });
+
+    it('no false positives from static filter labels', async () => {
+      const projectId = await createProject(app, { title: 'Blocker False Positives' });
+      // Create a publishable release — its row should NOT contain blocker labels
+      const pubId = await makeReadyRelease(projectId, 'Blocker FP Pub');
+
+      const res = await request(app).get('/releases').expect(200);
+      const row = findListRow(res.text, Number(pubId));
+      expect(row).not.toBeNull();
+      expect(row).toContain('Publishable');
+      // The filter dropdown contains "Blocked (ready)" as a label — ensure
+      // the release row itself does not contain "Blocked" text
+      expect(row).not.toMatch(/Blocked/);
     });
   });
 
@@ -1964,14 +2424,27 @@ describe('Phase 6B HTTP workflow', () => {
       expect(nextUrl.searchParams.get('month')).toBe(expectedNext);
     });
 
-    it('previous month link is present', async () => {
-      const res = await request(app).get('/releases/calendar?month=2025-06').expect(200);
-      expect(res.text).toContain('2025-05');
-    });
+    it('calendar nav strips all list/board filters, page state, and unknown params', async () => {
+      const noisyQuery = 'month=2025-06&readiness=publishable&status=ready&project=1&schedule=overdue&page=3&pageSize=10&sort=title&order=asc&includeArchived=1&junk=x';
+      const res = await request(app).get(`/releases/calendar?${noisyQuery}`).expect(200);
 
-    it('next month link is present', async () => {
-      const res = await request(app).get('/releases/calendar?month=2025-06').expect(200);
-      expect(res.text).toContain('2025-07');
+      const prevHref = extractCalendarNavHref(res.text, '← Previous');
+      const nextHref = extractCalendarNavHref(res.text, 'Next →');
+      expect(prevHref).not.toBeNull();
+      expect(nextHref).not.toBeNull();
+
+      const prevUrl = new URL(prevHref, 'http://localhost');
+      const nextUrl = new URL(nextHref, 'http://localhost');
+
+      // Previous link: pathname, exactly one key (month), exact value
+      expect(prevUrl.pathname).toBe('/releases/calendar');
+      expect([...prevUrl.searchParams.keys()]).toEqual(['month']);
+      expect(prevUrl.searchParams.get('month')).toBe('2025-05');
+
+      // Next link: pathname, exactly one key (month), exact value
+      expect(nextUrl.pathname).toBe('/releases/calendar');
+      expect([...nextUrl.searchParams.keys()]).toEqual(['month']);
+      expect(nextUrl.searchParams.get('month')).toBe('2025-07');
     });
 
     it('calendar excludes archived parent releases', async () => {
@@ -2535,7 +3008,8 @@ describe('Phase 6B HTTP workflow', () => {
       expect(publishableRow).not.toBeNull();
       expect(publishableRow).toMatch(/<span class="readiness-publishable">Publishable<\/span>/);
       expect(blockedRow).not.toBeNull();
-      expect(blockedRow).toMatch(/<span class="readiness-blocked">\s*Blocked(?:\s*\(\d+\))?\s*<\/span>/);
+      expect(blockedRow).toContain('No assets selected');
+      expect(blockedRow).not.toContain('Publishable');
 
       const board = await request(app).get('/releases?view=board').expect(200);
       const publishableCard = findBoardCard(board.text, publishableId);
@@ -2543,7 +3017,8 @@ describe('Phase 6B HTTP workflow', () => {
       expect(publishableCard).not.toBeNull();
       expect(publishableCard).toMatch(/<span class="readiness-publishable">Publishable<\/span>/);
       expect(blockedCard).not.toBeNull();
-      expect(blockedCard).toMatch(/<span class="readiness-blocked">Blocked<\/span>/);
+      expect(blockedCard).toContain('No assets selected');
+      expect(blockedCard).not.toContain('Publishable');
 
       const calendar = await request(app).get('/releases/calendar?month=2025-06').expect(200);
       expect(calendar.text).toMatch(/<div class="calendar-nav"[^>]*>[\s\S]*?<h2>2025-06<\/h2>/);

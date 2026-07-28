@@ -38,17 +38,17 @@
 
     {% if project.planned_date %}
       <dt>Planned date</dt>
-      <dd>{{ project.planned_date }}</dd>
+      <dd>{{ project.planned_date }} <small>(project target)</small></dd>
     {% endif %}
 
     {% if project.published_date %}
       <dt>Published date</dt>
-      <dd>{{ project.published_date }}</dd>
+      <dd>{{ project.published_date }} <small>(project published)</small></dd>
     {% endif %}
 
     {% if project.patreon_url %}
       <dt>Patreon URL</dt>
-      <dd><a href="{{ project.patreon_url }}" target="_blank" rel="noopener">{{ project.patreon_url }}</a></dd>
+      <dd><a href="{{ project.patreon_url }}" target="_blank" rel="noopener">{{ project.patreon_url }}</a> <small>(project page)</small></dd>
     {% endif %}
 
     <dt>Created</dt>

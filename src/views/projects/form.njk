@@ -58,12 +58,14 @@
       <div class="field {% if errors.plannedDate %}field-error{% endif %}">
         <label for="plannedDate">Planned date</label>
         <input type="date" id="plannedDate" name="plannedDate" value="{{ values.plannedDate or '' }}">
+        <span class="help-text">Target date for the creative project</span>
         {% if errors.plannedDate %}<span class="field-error-message">{{ errors.plannedDate }}</span>{% endif %}
       </div>
 
       <div class="field {% if errors.publishedDate %}field-error{% endif %}">
         <label for="publishedDate">Published date</label>
         <input type="date" id="publishedDate" name="publishedDate" value="{{ values.publishedDate or '' }}">
+        <span class="help-text">When the project was published</span>
         {% if errors.publishedDate %}<span class="field-error-message">{{ errors.publishedDate }}</span>{% endif %}
       </div>
     </div>
@@ -71,6 +73,7 @@
     <div class="field {% if errors.patreonUrl %}field-error{% endif %}">
       <label for="patreonUrl">Patreon URL</label>
       <input type="url" id="patreonUrl" name="patreonUrl" value="{{ values.patreonUrl or '' }}">
+      <span class="help-text">Link to the project's Patreon page</span>
       {% if errors.patreonUrl %}<span class="field-error-message">{{ errors.patreonUrl }}</span>{% endif %}
     </div>
 

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -1018,6 +1018,151 @@ describe('release repository', () => {
       expect(rows.map((r) => r.id)).not.toContain(overdue.id);
       // Sanity: release row is still in DB
       expect(db.prepare(`SELECT id FROM releases WHERE id = ?`).get(overdue.id)).toBeTruthy();
+    });
+  });
+
+  // ─── Phase 7D-1: Release Planning Views — readiness filters ──────────────
+
+  describe('findPage — readiness filters', () => {
+    const FIXED_TODAY = '2025-06-15';
+
+    function makeReadyWithAssets(title, { present = true, missing = false } = {}) {
+      const release = releaseRepo.create({
+        projectId, ...sampleRelease({ title, status: 'ready', plannedDate: FIXED_TODAY }),
+      });
+      if (present) {
+        const asset = assetRepo.upsert(projectId, `${title}.txt`, sampleAsset(projectId, { relativePath: `${title}.txt` }));
+        releaseRepo.addReleaseAsset(release.id, asset.id, 'primary', 0);
+      }
+      if (missing) {
+        const missingAsset = assetRepo.upsert(projectId, `${title}-missing.txt`, sampleAsset(projectId, { relativePath: `${title}-missing.txt` }));
+        db.prepare(`UPDATE assets SET is_present = 0, missing_since = datetime('now') WHERE id = ?`).run(missingAsset.id);
+        releaseRepo.addReleaseAsset(release.id, missingAsset.id, 'attachment', 1);
+      }
+      return release;
+    }
+
+    it('publishable filter includes only ready releases with selected present assets', () => {
+      const publishable = makeReadyWithAssets('Publishable');
+      makeReadyWithAssets('Blocked Zero', { present: false });
+      makeReadyWithAssets('Blocked Missing', { present: false, missing: true });
+      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Planned', status: 'planned' }) });
+
+      const rows = releaseRepo.findPage({ readiness: 'publishable', today: FIXED_TODAY });
+      expect(rows.map((r) => r.title)).toEqual(['Publishable']);
+      expect(rows[0].status).toBe('ready');
+    });
+
+    it('blocked-ready filter includes only ready releases that are blocked', () => {
+      const publishable = makeReadyWithAssets('Publishable');
+      const zero = makeReadyWithAssets('Blocked Zero', { present: false });
+      const missing = makeReadyWithAssets('Blocked Missing', { present: false, missing: true });
+      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Planned', status: 'planned' }) });
+
+      const rows = releaseRepo.findPage({ readiness: 'blocked-ready', today: FIXED_TODAY });
+      expect(rows.map((r) => r.id).sort()).toEqual([zero.id, missing.id].sort());
+      expect(rows.map((r) => r.id)).not.toContain(publishable.id);
+    });
+
+    it('readiness filters exclude non-ready releases', () => {
+      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Idea', status: 'idea' }) });
+      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Planned', status: 'planned' }) });
+      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Published', status: 'published' }) });
+
+      expect(releaseRepo.findPage({ readiness: 'publishable', today: FIXED_TODAY })).toHaveLength(0);
+      expect(releaseRepo.findPage({ readiness: 'blocked-ready', today: FIXED_TODAY })).toHaveLength(0);
+    });
+
+    it('readiness filters exclude archived ready releases', () => {
+      const archived = makeReadyWithAssets('Archived Ready');
+      releaseRepo.archive(archived.id);
+      const publishable = makeReadyWithAssets('Publishable');
+
+      const publishableRows = releaseRepo.findPage({ readiness: 'publishable', today: FIXED_TODAY });
+      const blockedRows = releaseRepo.findPage({ readiness: 'blocked-ready', today: FIXED_TODAY });
+
+      expect(publishableRows.map((r) => r.id)).toEqual([publishable.id]);
+      expect(blockedRows.map((r) => r.id)).toEqual([]);
+    });
+
+    it('readiness filters exclude releases under archived parent projects', () => {
+      const other = projectRepo.create(sampleProject({ title: 'Archived Parent' }));
+      const release = releaseRepo.create({
+        projectId: other.id, ...sampleRelease({ title: 'Ready Under Archived', status: 'ready' }),
+      });
+      const asset = assetRepo.upsert(other.id, 'a.txt', sampleAsset(other.id, { relativePath: 'a.txt' }));
+      releaseRepo.addReleaseAsset(release.id, asset.id, 'primary', 0);
+      db.prepare(`UPDATE projects SET archived_at = datetime('now') WHERE id = ?`).run(other.id);
+
+      expect(releaseRepo.findPage({ readiness: 'publishable', today: FIXED_TODAY })).toHaveLength(0);
+      expect(releaseRepo.findPage({ readiness: 'blocked-ready', today: FIXED_TODAY })).toHaveLength(0);
+    });
+
+    it('unknown readiness value falls back to no readiness restriction', () => {
+      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Idea', status: 'idea' }) });
+      makeReadyWithAssets('Ready');
+
+      expect(releaseRepo.findPage({ readiness: 'invalid', today: FIXED_TODAY })).toHaveLength(2);
+    });
+
+    it('does not call per-release readiness facts for filtering (no N+1)', () => {
+      const spy = vi.spyOn(releaseRepo, 'findReadinessFactsById');
+      makeReadyWithAssets('One');
+      makeReadyWithAssets('Two');
+
+      releaseRepo.findPage({ readiness: 'publishable', today: FIXED_TODAY });
+
+      expect(spy).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('countFiltered — readiness filters', () => {
+    const FIXED_TODAY = '2025-06-15';
+
+    it('count matches findPage for publishable filter', () => {
+      const release = releaseRepo.create({
+        projectId, ...sampleRelease({ title: 'Ready', status: 'ready', plannedDate: FIXED_TODAY }),
+      });
+      const asset = assetRepo.upsert(projectId, 'a.txt', sampleAsset(projectId, { relativePath: 'a.txt' }));
+      releaseRepo.addReleaseAsset(release.id, asset.id, 'primary', 0);
+      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Blocked', status: 'ready', plannedDate: FIXED_TODAY }) });
+      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Idea', status: 'idea' }) });
+
+      expect(releaseRepo.countFiltered({ readiness: 'publishable', today: FIXED_TODAY })).toBe(1);
+      expect(releaseRepo.countFiltered({ readiness: 'blocked-ready', today: FIXED_TODAY })).toBe(1);
+    });
+  });
+
+  describe('findBoard — readiness filters', () => {
+    const FIXED_TODAY = '2025-06-15';
+
+    it('publishable filter leaves only publishable ready releases in ready column', () => {
+      const publishable = releaseRepo.create({
+        projectId, ...sampleRelease({ title: 'Publishable', status: 'ready', plannedDate: FIXED_TODAY }),
+      });
+      const asset = assetRepo.upsert(projectId, 'a.txt', sampleAsset(projectId, { relativePath: 'a.txt' }));
+      releaseRepo.addReleaseAsset(publishable.id, asset.id, 'primary', 0);
+      releaseRepo.create({
+        projectId, ...sampleRelease({ title: 'Blocked', status: 'ready', plannedDate: FIXED_TODAY }),
+      });
+      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Idea', status: 'idea' }) });
+
+      const rows = releaseRepo.findBoard({ readiness: 'publishable', today: FIXED_TODAY });
+      expect(rows.map((r) => r.title)).toEqual(['Publishable']);
+    });
+
+    it('blocked-ready filter leaves only blocked ready releases in ready column', () => {
+      const publishable = releaseRepo.create({
+        projectId, ...sampleRelease({ title: 'Publishable', status: 'ready', plannedDate: FIXED_TODAY }),
+      });
+      const asset = assetRepo.upsert(projectId, 'a.txt', sampleAsset(projectId, { relativePath: 'a.txt' }));
+      releaseRepo.addReleaseAsset(publishable.id, asset.id, 'primary', 0);
+      const blocked = releaseRepo.create({
+        projectId, ...sampleRelease({ title: 'Blocked', status: 'ready', plannedDate: FIXED_TODAY }),
+      });
+
+      const rows = releaseRepo.findBoard({ readiness: 'blocked-ready', today: FIXED_TODAY });
+      expect(rows.map((r) => r.id)).toEqual([blocked.id]);
     });
   });
 

@@ -60,17 +60,17 @@
 
     {% if release.planned_date %}
       <dt>Planned date</dt>
-      <dd>{{ release.planned_date }}</dd>
+      <dd>{{ release.planned_date }} <small>(release target)</small></dd>
     {% endif %}
 
     {% if release.published_date %}
       <dt>Published date</dt>
-      <dd>{{ release.published_date }}</dd>
+      <dd>{{ release.published_date }} <small>(release published)</small></dd>
     {% endif %}
 
     {% if release.patreon_url %}
       <dt>Patreon URL</dt>
-      <dd><a href="{{ release.patreon_url }}" target="_blank" rel="noopener">{{ release.patreon_url }}</a></dd>
+      <dd><a href="{{ release.patreon_url }}" target="_blank" rel="noopener">{{ release.patreon_url }}</a> <small>(release link)</small></dd>
     {% endif %}
 
     <dt>Created</dt>

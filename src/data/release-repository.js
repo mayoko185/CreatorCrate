@@ -77,6 +77,32 @@ const ACTIVE_PARENT_PROJECT_R = `EXISTS (
  */
 const DASHBOARD_ACTIVE = `${ACTIVE_UNARCHIVED} AND ${ACTIVE_PARENT_PROJECT}`;
 
+// ─── Phase 7D-1: Readiness classification projection ────────────────────
+//
+// The shared readiness policy (`evaluateReleaseReadiness`) is the single
+// source of truth for what "publishable" means. The conditions below are a
+// narrow, repository-only SQL projection of that policy so list/board
+// pagination can filter in the database instead of loading every release.
+//
+// Keep the projection in sync with the policy's material blockers:
+//   - status must be 'ready'
+//   - release must not be archived
+//   - parent project must not be archived (enforced by activeScheduleFilter)
+//   - at least one selected asset must exist
+//   - no selected asset may be missing
+//
+// UI indicators still come from `_attachReadiness` calling the policy.
+
+const READINESS_VALUES = Object.freeze(['all', 'publishable', 'blocked-ready']);
+
+function selectedAssetCountSubquery(table = 'releases') {
+  return `(SELECT COUNT(DISTINCT a.id) FROM release_assets ra JOIN assets a ON a.id = ra.asset_id AND a.project_id = ${table}.project_id WHERE ra.release_id = ${table}.id)`;
+}
+
+function missingAssetCountSubquery(table = 'releases') {
+  return `(SELECT COUNT(DISTINCT a.id) FROM release_assets ra JOIN assets a ON a.id = ra.asset_id AND a.project_id = ${table}.project_id WHERE ra.release_id = ${table}.id AND a.is_present = 0)`;
+}
+
 /**
  * @typedef {object} ReleaseRecord
  * @property {number} id
@@ -871,6 +897,36 @@ export function createReleaseRepository(db) {
     // ─── Phase 6C: Release Planning Views ─────────────────────────────────
 
     /**
+     * Apply a narrow SQL readiness classification to an existing set of
+     * WHERE conditions. This is the repository-side projection of the
+     * shared readiness policy used only for list/board filtering; the JS
+     * policy remains authoritative for publishing and UI indicators.
+     *
+     * Unknown readiness values are ignored (treated as 'all').
+     *
+     * @param {string[]} conditions
+     * @param {Object} filters
+     * @param {string} [filters.readiness] - 'all'|'publishable'|'blocked-ready'
+     */
+    _applyReadinessFilter(conditions, filters) {
+      if (!['publishable', 'blocked-ready'].includes(filters.readiness)) return;
+
+      const selected = selectedAssetCountSubquery('releases');
+      const missing = missingAssetCountSubquery('releases');
+
+      conditions.push("releases.status = 'ready'");
+      conditions.push('releases.archived_at IS NULL');
+      conditions.push(ACTIVE_PARENT_PROJECT);
+
+      if (filters.readiness === 'publishable') {
+        conditions.push(`${selected} > 0`);
+        conditions.push(`${missing} = 0`);
+      } else {
+        conditions.push(`(${selected} = 0 OR ${missing} > 0)`);
+      }
+    },
+
+    /**
      * Build the WHERE conditions and params for release list queries.
      * Returns { conditions: string[], params: any[] }.
      * @param {Object} filters
@@ -878,7 +934,7 @@ export function createReleaseRepository(db) {
      * @param {string|null} filters.status
      * @param {string|null} filters.schedule - 'overdue'|'today'|'upcoming'|'unscheduled'
      * @param {boolean} filters.includeArchived
-     * @param {string} filters.today - ISO date YYYY-MM-DD for schedule classification
+     * @param {string} filters.today - ISO date string YYYY-MM-DD for schedule classification
      * @param {boolean} filters.activeScheduleFilter - when true, exclude archived parents
      */
     _buildFilterConditions(filters) {
@@ -949,6 +1005,7 @@ export function createReleaseRepository(db) {
      * @param {boolean} filters.includeArchived
      * @param {string} filters.today
      * @param {boolean} filters.activeScheduleFilter
+     * @param {'all'|'publishable'|'blocked-ready'} [filters.readiness]
      * @param {string} [filters.sortBy='updated']
      * @param {string} [filters.order='desc']
      * @param {number} [filters.limit=25]
@@ -972,6 +1029,7 @@ export function createReleaseRepository(db) {
       const { conditions, params } = this._buildFilterConditions({
         projectId, status, schedule, includeArchived, today, activeScheduleFilter,
       });
+      this._applyReadinessFilter(conditions, filters);
 
       const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
       const orderClause = buildOrderClauseWithTable('releases', sortBy, order);
@@ -1002,6 +1060,7 @@ export function createReleaseRepository(db) {
      * Count of matching releases for pagination metadata.
      * Uses the same filter conditions as findPage but without LIMIT/OFFSET.
      * @param {Object} filters - same shape as findPage (without limit/offset/sort)
+     * @param {'all'|'publishable'|'blocked-ready'} [filters.readiness]
      * @returns {number}
      */
     countFiltered(filters) {
@@ -1017,6 +1076,7 @@ export function createReleaseRepository(db) {
       const { conditions, params } = this._buildFilterConditions({
         projectId, status, schedule, includeArchived, today, activeScheduleFilter,
       });
+      this._applyReadinessFilter(conditions, filters);
 
       const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
       const sql = `SELECT COUNT(*) AS c FROM releases JOIN projects ON projects.id = releases.project_id ${where}`;
@@ -1034,6 +1094,7 @@ export function createReleaseRepository(db) {
      * @param {boolean} filters.includeArchived
      * @param {string} filters.today
      * @param {boolean} filters.activeScheduleFilter
+     * @param {'all'|'publishable'|'blocked-ready'} [filters.readiness]
      * @returns {Array<ReleaseRecord & {project_title: string, selected_asset_count: number, missing_asset_count: number}>}
      */
     findBoard(filters) {
@@ -1049,6 +1110,7 @@ export function createReleaseRepository(db) {
       const { conditions, params } = this._buildFilterConditions({
         projectId, status, schedule, includeArchived, today, activeScheduleFilter,
       });
+      this._applyReadinessFilter(conditions, filters);
 
       const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
 

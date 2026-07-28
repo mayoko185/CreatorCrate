@@ -335,7 +335,10 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
     let pageSize = pageSizeRaw !== null ? pageSizeRaw : 25;
     if (pageSize > 100) pageSize = 100;
 
-    return { projectId, status, schedule, includeArchived, sortBy, order, page, pageSize };
+    const readinessValues = ['all', 'publishable', 'blocked-ready'];
+    const readiness = readinessValues.includes(raw.readiness) ? raw.readiness : 'all';
+
+    return { projectId, status, schedule, includeArchived, sortBy, order, page, pageSize, readiness };
   }
 
   /**
@@ -657,6 +660,17 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
   // ─── Phase 7B-3: Batch Readiness Attachment ────────────────────────────
 
   /**
+   * Stable mapping from policy blocker key to concise human-readable label
+   * for list/board/calendar presentation. No scores, percentages, subjective
+   * requirements, or raw policy objects are included.
+   */
+  const BLOCKER_LABELS = {
+    assets_selected: 'No assets selected',
+    selected_assets_present: 'Missing selected assets',
+    scope_mutable: 'Archived scope',
+  };
+
+  /**
    * Batch-attach compact readiness indicators to an array of releases.
    *
    * For status=ready releases, evaluates readiness via the shared policy
@@ -664,6 +678,12 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
    *   - publishable: boolean
    *   - blockerCount: number (only when not publishable)
    *   - blockerKeys: string[]  (only when not publishable)
+   *   - blockerLabels: string[] (only when not publishable) — concise
+   *     human-readable labels derived from stable policy keys, suitable
+   *     for list/board/calendar presentation
+   *   - correctiveLinks: Array<{ href: string, label: string }> (only
+   *     when not publishable and scope is mutable) — links to resolve
+   *     asset-related blockers; omitted for archived-scope releases
    *
    * For non-ready releases, no `_readiness` property is attached so
    * templates can distinguish "no claim" from "blocked".
@@ -704,6 +724,23 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
         const blockers = result.checks.filter((c) => !c.passed);
         indicator.blockerCount = blockers.length;
         indicator.blockerKeys = blockers.map((c) => c.key);
+        indicator.blockerLabels = blockers.map((c) => BLOCKER_LABELS[c.key] || c.key);
+
+        // Corrective links for asset-related blockers on mutable scope
+        const scopeMutable = !facts.release_archived_at && !facts.project_archived_at;
+        if (scopeMutable) {
+          const links = [];
+          for (const check of blockers) {
+            if (check.key === 'assets_selected') {
+              links.push({ href: `/releases/${facts.release_id}/assets`, label: 'Manage assets' });
+            } else if (check.key === 'selected_assets_present') {
+              links.push({ href: `/projects/${facts.project_id}/assets`, label: 'Asset browser' });
+            }
+          }
+          if (links.length > 0) {
+            indicator.correctiveLinks = links;
+          }
+        }
       }
       readinessByReleaseId.set(facts.release_id, indicator);
     }
@@ -767,6 +804,7 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
     getReleaseCalendar,
     getProjectAssetBrowser,
     getReleaseReadiness,
+    normalizeListFilters,
     // Exposed for tests
     parseMonth,
     prevMonth,

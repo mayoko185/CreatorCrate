@@ -1803,6 +1803,167 @@ describe('workflow query service', () => {
     });
   });
 
+  // ─── Phase 7D-1: Release Planning Views — readiness filter normalization
+
+  describe('normalizeListFilters — readiness', () => {
+    it('defaults readiness to all', () => {
+      const result = service.normalizeListFilters({});
+      expect(result.readiness).toBe('all');
+    });
+
+    it('accepts publishable and blocked-ready', () => {
+      expect(service.normalizeListFilters({ readiness: 'publishable' }).readiness).toBe('publishable');
+      expect(service.normalizeListFilters({ readiness: 'blocked-ready' }).readiness).toBe('blocked-ready');
+    });
+
+    it('falls back invalid readiness values to all', () => {
+      expect(service.normalizeListFilters({ readiness: 'invalid' }).readiness).toBe('all');
+      expect(service.normalizeListFilters({ readiness: '' }).readiness).toBe('all');
+      expect(service.normalizeListFilters({ readiness: null }).readiness).toBe('all');
+    });
+  });
+
+  describe('getReleaseList — readiness filters', () => {
+    const FIXED_TODAY = '2025-06-15';
+
+    function makeReadyWithAssets(title, { present = true, missing = false } = {}) {
+      const release = insertRelease(db, {
+        projectId: project.id, title, status: 'ready', plannedDate: FIXED_TODAY,
+      });
+      if (present) {
+        const asset = insertAsset(db, {
+          projectId: project.id, relativePath: `${title}.txt`, filename: `${title}.txt`, isPresent: 1,
+        });
+        linkAssetToRelease(db, { releaseId: release.id, assetId: asset.id });
+      }
+      if (missing) {
+        const missingAsset = insertAsset(db, {
+          projectId: project.id, relativePath: `${title}-missing.txt`, filename: `${title}-missing.txt`, isPresent: 0,
+        });
+        linkAssetToRelease(db, { releaseId: release.id, assetId: missingAsset.id });
+      }
+      return release;
+    }
+
+    let project;
+
+    beforeEach(() => {
+      project = insertProject(db, { title: 'Readiness Filter Project' });
+    });
+
+    it('publishable filter returns only ready releases with present selected assets', () => {
+      const publishable = makeReadyWithAssets('Publishable');
+      makeReadyWithAssets('Blocked Zero', { present: false });
+      makeReadyWithAssets('Blocked Missing', { present: false, missing: true });
+      insertRelease(db, { projectId: project.id, title: 'Planned', status: 'planned' });
+
+      const result = service.getReleaseList({ readiness: 'publishable' }, { today: FIXED_TODAY });
+      expect(result.total).toBe(1);
+      expect(result.releases.map((r) => r.id)).toEqual([publishable.id]);
+      expect(result.releases[0]._readiness.publishable).toBe(true);
+    });
+
+    it('blocked-ready filter returns only blocked ready releases', () => {
+      makeReadyWithAssets('Publishable');
+      const zero = makeReadyWithAssets('Blocked Zero', { present: false });
+      const missing = makeReadyWithAssets('Blocked Missing', { present: false, missing: true });
+
+      const result = service.getReleaseList({ readiness: 'blocked-ready' }, { today: FIXED_TODAY });
+      expect(result.total).toBe(2);
+      expect(result.releases.map((r) => r.id).sort()).toEqual([zero.id, missing.id].sort());
+      expect(result.releases.every((r) => r._readiness && !r._readiness.publishable)).toBe(true);
+    });
+
+    it('all readiness returns every release (no restriction)', () => {
+      const ready = makeReadyWithAssets('Ready');
+      const planned = insertRelease(db, { projectId: project.id, title: 'Planned', status: 'planned' });
+
+      const result = service.getReleaseList({ readiness: 'all' }, { today: FIXED_TODAY });
+      expect(result.total).toBe(2);
+      expect(result.releases.map((r) => r.id).sort()).toEqual([ready.id, planned.id].sort());
+    });
+
+    it('non-ready releases are excluded from readiness-specific filters', () => {
+      insertRelease(db, { projectId: project.id, title: 'Idea', status: 'idea' });
+      insertRelease(db, { projectId: project.id, title: 'Planned', status: 'planned' });
+      insertRelease(db, { projectId: project.id, title: 'Published', status: 'published' });
+
+      expect(service.getReleaseList({ readiness: 'publishable' }, { today: FIXED_TODAY }).total).toBe(0);
+      expect(service.getReleaseList({ readiness: 'blocked-ready' }, { today: FIXED_TODAY }).total).toBe(0);
+    });
+
+    it('archived ready releases are excluded from both readiness filters', () => {
+      const archived = makeReadyWithAssets('Archived Ready');
+      const publishable = makeReadyWithAssets('Publishable');
+      db.prepare(`UPDATE releases SET archived_at = datetime('now') WHERE id = ?`).run(archived.id);
+
+      const publishableResult = service.getReleaseList({ readiness: 'publishable' }, { today: FIXED_TODAY });
+      const blockedResult = service.getReleaseList({ readiness: 'blocked-ready' }, { today: FIXED_TODAY });
+
+      expect(publishableResult.total).toBe(1);
+      expect(publishableResult.releases.map((r) => r.id)).toEqual([publishable.id]);
+      expect(blockedResult.total).toBe(0);
+    });
+
+    it('page and count parity is maintained across readiness filters', () => {
+      makeReadyWithAssets('One');
+      makeReadyWithAssets('Two');
+      makeReadyWithAssets('Three', { present: false });
+
+      const publishable = service.getReleaseList({ readiness: 'publishable' }, { today: FIXED_TODAY });
+      expect(publishable.total).toBe(publishable.releases.length);
+
+      const blocked = service.getReleaseList({ readiness: 'blocked-ready' }, { today: FIXED_TODAY });
+      expect(blocked.total).toBe(blocked.releases.length);
+    });
+  });
+
+  describe('getReleaseBoard — readiness filters', () => {
+    const FIXED_TODAY = '2025-06-15';
+
+    it('publishable filter shows only publishable releases in ready column', () => {
+      const project = insertProject(db, { title: 'Board Readiness Project' });
+      const publishable = insertRelease(db, {
+        projectId: project.id, title: 'Publishable', status: 'ready', plannedDate: FIXED_TODAY,
+      });
+      const asset = insertAsset(db, {
+        projectId: project.id, relativePath: 'a.txt', filename: 'a.txt', isPresent: 1,
+      });
+      linkAssetToRelease(db, { releaseId: publishable.id, assetId: asset.id });
+      insertRelease(db, { projectId: project.id, title: 'Blocked', status: 'ready', plannedDate: FIXED_TODAY });
+      insertRelease(db, { projectId: project.id, title: 'Idea', status: 'idea' });
+
+      const { columns } = service.getReleaseBoard({ readiness: 'publishable' }, { today: FIXED_TODAY });
+      expect(columns.ready).toHaveLength(1);
+      expect(columns.ready[0].id).toBe(publishable.id);
+      expect(columns.idea).toHaveLength(0);
+    });
+
+    it('blocked-ready filter shows only blocked releases in ready column', () => {
+      const project = insertProject(db, { title: 'Board Blocked Project' });
+      const publishable = insertRelease(db, { projectId: project.id, title: 'Publishable', status: 'ready', plannedDate: FIXED_TODAY });
+      const asset = insertAsset(db, {
+        projectId: project.id, relativePath: 'a.txt', filename: 'a.txt', isPresent: 1,
+      });
+      linkAssetToRelease(db, { releaseId: publishable.id, assetId: asset.id });
+      const blocked = insertRelease(db, { projectId: project.id, title: 'Blocked', status: 'ready', plannedDate: FIXED_TODAY });
+
+      const { columns } = service.getReleaseBoard({ readiness: 'blocked-ready' }, { today: FIXED_TODAY });
+      expect(columns.ready).toHaveLength(1);
+      expect(columns.ready[0].id).toBe(blocked.id);
+    });
+
+    it('all readiness leaves non-ready columns intact', () => {
+      const project = insertProject(db, { title: 'Board All Project' });
+      insertRelease(db, { projectId: project.id, title: 'Idea', status: 'idea' });
+      insertRelease(db, { projectId: project.id, title: 'Ready', status: 'ready', plannedDate: FIXED_TODAY });
+
+      const { columns } = service.getReleaseBoard({ readiness: 'all' }, { today: FIXED_TODAY });
+      expect(columns.idea).toHaveLength(1);
+      expect(columns.ready).toHaveLength(1);
+    });
+  });
+
   // ─── Phase 6C: Release Planning Views — getReleaseBoard ─────────────────────
 
   describe('getReleaseBoard', () => {
@@ -3186,6 +3347,76 @@ describe('workflow query service', () => {
       releaseService.selectAssets(release.id, [{ assetId: asset.id, role: 'primary', sortOrder: 0 }]);
       const published = releaseService.publishRelease(release.id, '2025-06-15');
       expect(published.status).toBe('published');
+    });
+  });
+
+  // ─── Phase 7D-3: Query methods remain bounded ──────────────────────────────
+  //
+  // All dashboard and list queries must use LIMIT to prevent unbounded
+  // result sets. Verify that every query method returns at most the
+  // requested limit.
+
+  describe('query methods remain bounded', () => {
+    let project;
+
+    beforeEach(() => {
+      project = insertProject(db, { title: 'Bounded Query Project' });
+      // Insert more releases than any default limit
+      for (let i = 0; i < 20; i++) {
+        insertRelease(db, {
+          projectId: project.id,
+          title: `Bounded Release ${i}`,
+          status: 'ready',
+          plannedDate: '2099-01-01',
+        });
+      }
+    });
+
+    it('getDashboardData returns at most the configured limits', () => {
+      const data = service.getDashboardData({ today: '2099-01-01' });
+      expect(data.releasesNeedingAttention.readyToPublish.length).toBeLessThanOrEqual(5);
+      expect(data.releasesNeedingAttention.readyButBlocked.length).toBeLessThanOrEqual(5);
+      expect(data.releasesNeedingAttention.overdue.length).toBeLessThanOrEqual(5);
+      expect(data.releasesNeedingAttention.missingPlannedDate.length).toBeLessThanOrEqual(5);
+      expect(data.releasesNeedingAttention.missingSelectedAssets.length).toBeLessThanOrEqual(5);
+      expect(data.releasesNeedingAttention.releasesWithoutAssets.length).toBeLessThanOrEqual(5);
+      expect(data.upcomingReleases.reduce((sum, g) => sum + g.releases.length, 0)).toBeLessThanOrEqual(10);
+    });
+
+    it('getReleaseList returns at most pageSize releases', () => {
+      const result = service.getReleaseList({ pageSize: '5' }, { today: '2099-01-01' });
+      expect(result.releases.length).toBeLessThanOrEqual(5);
+    });
+
+    it('getReleaseBoard returns all releases (no pagination) but bounded by data volume', () => {
+      // Board has no pagination, but the data volume is naturally bounded
+      // by the number of active releases in the system
+      const { columns } = service.getReleaseBoard({}, { today: '2099-01-01' });
+      const total = Object.values(columns).reduce((sum, col) => sum + col.length, 0);
+      expect(total).toBeGreaterThanOrEqual(20);
+    });
+  });
+
+  // ─── Phase 7D-3: Readiness filter persistence ─────────────────────────────
+  //
+  // Readiness filter values must persist across list/board view switches
+  // and pagination. The normalizeListFilters function must preserve the
+  // readiness value through the pageUrl builder.
+
+  describe('readiness filter persistence', () => {
+    it('normalizeListFilters preserves readiness value', () => {
+      const filters = service.normalizeListFilters({ readiness: 'publishable' });
+      expect(filters.readiness).toBe('publishable');
+    });
+
+    it('normalizeListFilters defaults to all', () => {
+      const filters = service.normalizeListFilters({});
+      expect(filters.readiness).toBe('all');
+    });
+
+    it('normalizeListFilters rejects invalid readiness values', () => {
+      const filters = service.normalizeListFilters({ readiness: 'invalid' });
+      expect(filters.readiness).toBe('all');
     });
   });
 });

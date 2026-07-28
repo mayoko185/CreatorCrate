@@ -47,6 +47,15 @@
           </select>
         </div>
 
+        <div class="field">
+          <label for="readiness">Readiness</label>
+          <select id="readiness" name="readiness">
+            <option value="all" {% if query.readiness == 'all' or not query.readiness %}selected{% endif %}>All</option>
+            <option value="publishable" {% if query.readiness == 'publishable' %}selected{% endif %}>Publishable</option>
+            <option value="blocked-ready" {% if query.readiness == 'blocked-ready' %}selected{% endif %}>Blocked (ready)</option>
+          </select>
+        </div>
+
         <div class="field" style="flex-direction: row; align-items: center; gap: 0.5rem;">
           <input type="checkbox" id="includeArchived" name="includeArchived" value="1" {% if query.includeArchived == '1' %}checked{% endif %}>
           <label for="includeArchived" style="min-width: auto;">Include archived releases</label>
@@ -85,7 +94,11 @@
                         {%- if release._readiness.publishable -%}
                           <span class="readiness-publishable">Publishable</span>
                         {%- else -%}
-                          <span class="readiness-blocked">Blocked</span>
+                          <span class="readiness-blocked">
+                            {%- for label in release._readiness.blockerLabels -%}
+                              {{ label }}{% if not loop.last %}; {% endif %}
+                            {%- endfor -%}
+                          </span>
                         {%- endif -%}
                       </span>
                     {% endif %}
@@ -126,6 +139,15 @@
           <option value="today" {% if query.schedule == 'today' %}selected{% endif %}>Today</option>
           <option value="upcoming" {% if query.schedule == 'upcoming' %}selected{% endif %}>Upcoming</option>
           <option value="unscheduled" {% if query.schedule == 'unscheduled' %}selected{% endif %}>Unscheduled</option>
+        </select>
+      </div>
+
+      <div class="field">
+        <label for="readiness">Readiness</label>
+        <select id="readiness" name="readiness">
+          <option value="all" {% if query.readiness == 'all' or not query.readiness %}selected{% endif %}>All</option>
+          <option value="publishable" {% if query.readiness == 'publishable' %}selected{% endif %}>Publishable</option>
+          <option value="blocked-ready" {% if query.readiness == 'blocked-ready' %}selected{% endif %}>Blocked (ready)</option>
         </select>
       </div>
 
@@ -179,9 +201,17 @@
                     <span class="readiness-publishable">Publishable</span>
                   {% else %}
                     <span class="readiness-blocked">
-                      Blocked
-                      {%- if release._readiness.blockerCount %} ({{ release._readiness.blockerCount }}){% endif -%}
+                      {%- for label in release._readiness.blockerLabels -%}
+                        {{ label }}{% if not loop.last %}; {% endif %}
+                      {%- endfor -%}
                     </span>
+                    {% if release._readiness.correctiveLinks %}
+                      <span class="readiness-links">
+                        {% for link in release._readiness.correctiveLinks %}
+                          <a href="{{ link.href }}" class="readiness-link">{{ link.label }}</a>{% if not loop.last %} {% endif %}
+                        {% endfor %}
+                      </span>
+                    {% endif %}
                   {% endif %}
                 {% else %}
                   <span class="readiness-none">—</span>
@@ -351,6 +381,18 @@
     .readiness-none {
       color: var(--muted);
       font-size: 0.7rem;
+    }
+    .readiness-links {
+      display: block;
+      font-size: 0.7rem;
+      margin-top: 0.125rem;
+    }
+    .readiness-link {
+      color: var(--accent);
+      text-decoration: none;
+    }
+    .readiness-link:hover {
+      text-decoration: underline;
     }
   </style>
 {% endblock %}

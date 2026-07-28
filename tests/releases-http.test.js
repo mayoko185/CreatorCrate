@@ -8,7 +8,9 @@ import { createApp } from '../src/app.js';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { STATUS_DIR_MAP } from '../src/storage/project-storage.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
+import { createReleaseRepository } from '../src/data/release-repository.js';
 import { getLocalTodayIso } from '../src/util/date.js';
+import { evaluateReleaseReadiness } from '../src/services/release-readiness-policy.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 
@@ -71,6 +73,7 @@ describe('release HTTP workflow', () => {
   let app;
   let tmpDir;
   let projectsRoot;
+  let releaseRepository;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-http-'));
@@ -82,12 +85,354 @@ describe('release HTTP workflow', () => {
     const dbPath = path.join(tmpDir, 'test.db');
     db = openDatabase(dbPath);
     runMigrations(db, MIGRATIONS_DIR);
+    releaseRepository = createReleaseRepository(db);
     app = createApp({ appName: 'CreatorCrate', db, projectsRoot });
   });
 
   afterEach(() => {
     closeDatabase(db);
     fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  // ─── Phase 7D-3: Release planning field wording ──────────────────────
+  //
+  // Release planning fields (planned_date, published_date, patreon_url)
+  // describe an individual publication event. Help text must clarify this
+  // distinction from project-level planning fields.
+
+  describe('release form planning field wording', () => {
+    /**
+     * Extract the HTML of the .field container that contains an input with the
+     * given id. Returns null if not found.
+     */
+    function getFieldContainer(html, inputId) {
+      const inputRe = new RegExp(`<input[^>]*id="${inputId}"[^>]*>`);
+      const inputMatch = inputRe.exec(html);
+      if (!inputMatch) return null;
+      const inputPos = inputMatch.index;
+      const beforeInput = html.slice(0, inputPos);
+      const fieldStart = beforeInput.lastIndexOf('<div class="field');
+      if (fieldStart === -1) return null;
+      const fromField = html.slice(fieldStart);
+      let depth = 0;
+      let endPos = 0;
+      for (let i = 0; i < fromField.length; i++) {
+        if (fromField.slice(i, i + 4) === '<div') { depth++; i += 3; }
+        else if (fromField.slice(i, i + 5) === '</div') { depth--; i += 4; }
+        if (depth === 0) { endPos = i + 6; break; }
+      }
+      return fromField.slice(0, endPos);
+    }
+
+    it('release form shows help text for planned date in the correct field container', async () => {
+      const projRes = await request(app)
+        .post('/projects')
+        .send('title=Release+Wording+Project')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectId = projRes.headers.location.replace('/projects/', '');
+
+      const res = await request(app).get(`/releases/new?projectId=${projectId}`).expect(200);
+      const container = getFieldContainer(res.text, 'plannedDate');
+      expect(container).not.toBeNull();
+      expect(container).toContain('Target publication date for this release');
+      expect(container).toMatch(/<input[^>]*id="plannedDate"[^>]*>/);
+    });
+
+    it('release form shows help text for published date in the correct field container', async () => {
+      const projRes = await request(app)
+        .post('/projects')
+        .send('title=Release+Wording+Pub')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectId = projRes.headers.location.replace('/projects/', '');
+
+      const res = await request(app).get(`/releases/new?projectId=${projectId}`).expect(200);
+      const container = getFieldContainer(res.text, 'publishedDate');
+      expect(container).not.toBeNull();
+      expect(container).toContain('When this release was published');
+      expect(container).toMatch(/<input[^>]*id="publishedDate"[^>]*>/);
+    });
+
+    it('release form shows help text for Patreon URL in the correct field container', async () => {
+      const projRes = await request(app)
+        .post('/projects')
+        .send('title=Release+Wording+URL')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectId = projRes.headers.location.replace('/projects/', '');
+
+      const res = await request(app).get(`/releases/new?projectId=${projectId}`).expect(200);
+      const container = getFieldContainer(res.text, 'patreonUrl');
+      expect(container).not.toBeNull();
+      expect(container).toContain('Link to this release on Patreon');
+      expect(container).toMatch(/<input[^>]*id="patreonUrl"[^>]*>/);
+    });
+
+    it('release detail shows context labels in the correct dt/dd pairs', async () => {
+      const projRes = await request(app)
+        .post('/projects')
+        .send('title=Release+Detail+Wording')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectId = projRes.headers.location.replace('/projects/', '');
+
+      const createRes = await request(app)
+        .post('/releases')
+        .send(`projectId=${projectId}`)
+        .send('title=Detail+Wording+Release')
+        .send('status=idea')
+        .send('plannedDate=2025-12-01')
+        .send('publishedDate=2025-12-15')
+        .send('patreonUrl=https://patreon.com/release')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const releaseLocation = createRes.headers.location;
+
+      const res = await request(app).get(releaseLocation).expect(200);
+
+      // Planned date: <dt>Planned date</dt> ... <small>(release target)</small>
+      const plannedDt = res.text.match(/<dt>Planned date<\/dt>\s*<dd>[^<]*(?:<small>\(release target\)<\/small>)[^<]*<\/dd>/);
+      expect(plannedDt).not.toBeNull();
+
+      // Published date: <dt>Published date</dt> ... <small>(release published)</small>
+      const publishedDt = res.text.match(/<dt>Published date<\/dt>\s*<dd>[^<]*(?:<small>\(release published\)<\/small>)[^<]*<\/dd>/);
+      expect(publishedDt).not.toBeNull();
+
+      // Patreon URL: <dt>Patreon URL</dt> ... <small>(release link)</small>
+      // Bounded pattern: cannot cross </dd>, <dt>, or opening <dd>
+      const patreonDt = res.text.match(/<dt>Patreon URL<\/dt>\s*<dd>(?:(?!<\/dd>)(?!<dt>)(?!<dd>).)*<small>\(release link\)<\/small>(?:(?!<\/dd>)(?!<dt>)(?!<dd>).)*<\/dd>/);
+      expect(patreonDt).not.toBeNull();
+    });
+  });
+
+  // ─── Phase 7D-3: No readiness impact from legacy project planning values
+  //
+  // Project-level planning fields (planned_date, published_date, patreon_url)
+  // must not affect release readiness evaluation. Readiness is determined
+  // solely by release-level fields and asset selection.
+
+  describe('legacy project planning values do not affect readiness', () => {
+    /**
+     * Create a project and a publishable release (with assets selected).
+     * Returns { projectId, releaseId, releaseLocation, assetId }.
+     */
+    async function setupPublishableForLegacyTest() {
+      const projRes = await request(app)
+        .post('/projects')
+        .send('title=Legacy+Readiness+Project')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectId = projRes.headers.location.replace('/projects/', '');
+
+      const slug = 'legacy-readiness-project';
+      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
+      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
+      const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
+      fs.writeFileSync(path.join(projectDir, 'asset.png'), 'png');
+      await request(app).post(`/projects/${projectId}/scan`).expect(302);
+
+      const assetRepo = createAssetRepository(db);
+      const assets = assetRepo.findByProjectId(Number(projectId));
+      const assetId = String(assets[0].id);
+
+      const createRes = await request(app)
+        .post('/releases')
+        .send(`projectId=${projectId}`)
+        .send('title=Legacy+Readiness+Release')
+        .send('status=ready')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const releaseLocation = createRes.headers.location;
+      const releaseId = Number(releaseLocation.replace('/releases/', ''));
+
+      // Select the asset
+      await request(app)
+        .post(releaseLocation + '/assets')
+        .send(`selectedAssetIds[]=${assetId}`)
+        .send('roles[]=primary')
+        .send('sortOrder[]=0')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      return { projectId: Number(projectId), releaseId, releaseLocation, assetId: Number(assetId) };
+    }
+
+    /**
+     * Load readiness facts through the production repository projection and
+     * evaluate the policy. Returns { facts, result }.
+     */
+    function getReadinessFactsAndResult(releaseId) {
+      const facts = releaseRepository.findReadinessFactsById(releaseId);
+      if (!facts) return null;
+      const result = evaluateReleaseReadiness(facts);
+      return { facts, result };
+    }
+
+    it('project planned_date does not affect release readiness', async () => {
+      const { projectId, releaseId, releaseLocation } = await setupPublishableForLegacyTest();
+
+      // Capture readiness facts and policy result before setting the field
+      const before = getReadinessFactsAndResult(releaseId);
+      expect(before).not.toBeNull();
+      expect(before.result.publishable).toBe(true);
+
+      // Set the project planned_date
+      await request(app)
+        .post(`/projects/${projectId}`)
+        .send('title=Legacy+Readiness+Project')
+        .send('status=tbd')
+        .send('priority=normal')
+        .send('plannedDate=2020-01-01')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      // Reload readiness facts and re-evaluate
+      const after = getReadinessFactsAndResult(releaseId);
+      expect(after).not.toBeNull();
+
+      // Assert exact equality — no change to readiness
+      expect(after.result.publishable).toBe(before.result.publishable);
+      expect(after.result.checks).toEqual(before.result.checks);
+      expect(after.result.facts).toEqual(before.result.facts);
+
+      // HTTP assertion: release detail remains correct
+      const detail = await request(app).get(releaseLocation).expect(200);
+      expect(detail.text).toContain('Publishable');
+    });
+
+    it('project published_date does not affect release readiness', async () => {
+      const { projectId, releaseId, releaseLocation } = await setupPublishableForLegacyTest();
+
+      const before = getReadinessFactsAndResult(releaseId);
+      expect(before).not.toBeNull();
+      expect(before.result.publishable).toBe(true);
+
+      await request(app)
+        .post(`/projects/${projectId}`)
+        .send('title=Legacy+Readiness+Project')
+        .send('status=tbd')
+        .send('priority=normal')
+        .send('publishedDate=2020-06-15')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      const after = getReadinessFactsAndResult(releaseId);
+      expect(after).not.toBeNull();
+
+      expect(after.result.publishable).toBe(before.result.publishable);
+      expect(after.result.checks).toEqual(before.result.checks);
+      expect(after.result.facts).toEqual(before.result.facts);
+
+      const detail = await request(app).get(releaseLocation).expect(200);
+      expect(detail.text).toContain('Publishable');
+    });
+
+    it('project patreon_url does not affect release readiness', async () => {
+      const { projectId, releaseId, releaseLocation } = await setupPublishableForLegacyTest();
+
+      const before = getReadinessFactsAndResult(releaseId);
+      expect(before).not.toBeNull();
+      expect(before.result.publishable).toBe(true);
+
+      await request(app)
+        .post(`/projects/${projectId}`)
+        .send('title=Legacy+Readiness+Project')
+        .send('status=tbd')
+        .send('priority=normal')
+        .send('patreonUrl=https://patreon.com/creator')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      const after = getReadinessFactsAndResult(releaseId);
+      expect(after).not.toBeNull();
+
+      expect(after.result.publishable).toBe(before.result.publishable);
+      expect(after.result.checks).toEqual(before.result.checks);
+      expect(after.result.facts).toEqual(before.result.facts);
+
+      const detail = await request(app).get(releaseLocation).expect(200);
+      expect(detail.text).toContain('Publishable');
+    });
+
+    it('cross-project junction rows are excluded from readiness facts', async () => {
+      // Create two projects and a release on project A with an asset from
+      // project B in the junction table. The production projection's
+      // LEFT JOIN assets ON a.id = ra.asset_id AND a.project_id = r.project_id
+      // must exclude the cross-project row from all counts.
+      const projARes = await request(app)
+        .post('/projects')
+        .send('title=Cross+Project+A')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectAId = Number(projARes.headers.location.replace('/projects/', ''));
+
+      const projBRes = await request(app)
+        .post('/projects')
+        .send('title=Cross+Project+B')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectBId = Number(projBRes.headers.location.replace('/projects/', ''));
+
+      // Scan an asset into project B
+      const slugB = 'cross-project-b';
+      const entriesB = fs.readdirSync(path.join(projectsRoot, 'tbd'));
+      const matchingB = entriesB.filter((e) => e.endsWith(`-${slugB}`));
+      const projectBDir = path.join(projectsRoot, 'tbd', matchingB[0]);
+      fs.writeFileSync(path.join(projectBDir, 'asset-b.png'), 'png');
+      await request(app).post(`/projects/${projectBId}/scan`).expect(302);
+
+      const assetRepo = createAssetRepository(db);
+      const assetsB = assetRepo.findByProjectId(projectBId);
+      const assetBId = assetsB[0].id;
+
+      // Create a release on project A
+      const createRes = await request(app)
+        .post('/releases')
+        .send(`projectId=${projectAId}`)
+        .send('title=Cross+Project+Release')
+        .send('status=ready')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const releaseLocation = createRes.headers.location;
+      const releaseId = Number(releaseLocation.replace('/releases/', ''));
+
+      // Insert a malformed cross-project junction row directly
+      db.prepare('INSERT INTO release_assets (release_id, asset_id, role, sort_order) VALUES (?, ?, ?, ?)')
+        .run(releaseId, assetBId, 'primary', 0);
+
+      // Load facts through the production repository projection
+      const facts = releaseRepository.findReadinessFactsById(releaseId);
+      expect(facts).not.toBeNull();
+
+      // The cross-project asset must be excluded from every count
+      expect(facts.selected_asset_count).toBe(0);
+      expect(facts.present_selected_asset_count).toBe(0);
+      expect(facts.missing_selected_asset_count).toBe(0);
+      expect(facts.primary_role_count).toBe(0);
+      expect(facts.preview_role_count).toBe(0);
+      expect(facts.attachment_role_count).toBe(0);
+      expect(facts.source_role_count).toBe(0);
+
+      // The policy must see zero selected assets → not publishable
+      const result = evaluateReleaseReadiness(facts);
+      expect(result.publishable).toBe(false);
+      expect(result.checks.find((c) => c.key === 'assets_selected').passed).toBe(false);
+    });
   });
 
   // ─── Release list ─────────────────────────────────────────────────────────
@@ -3346,6 +3691,427 @@ describe('release HTTP workflow', () => {
       await request(app)
         .get('/releases/1/assets/1/remove')
         .expect(404);
+    });
+  });
+
+  // ─── Phase 7D-1: Release URLs built from normalized allow-listed filters ──
+  //
+  // Generated release URLs must not retain unknown parameters, invalid values,
+  // or malformed inputs from req.query. Only normalized, allow-listed filter
+  // values may appear in pagination, view-switching, and page-size links.
+
+  describe('release URL construction from normalized filters', () => {
+    /**
+     * Parse query parameters from a URL string (handles HTML-escaped &amp;).
+     */
+    function parseQuery(url) {
+      const qIdx = url.indexOf('?');
+      if (qIdx === -1) return {};
+      // Unescape HTML entities before parsing
+      const search = url.slice(qIdx + 1).replace(/&amp;/g, '&');
+      const params = new URLSearchParams(search);
+      const obj = {};
+      for (const [k, v] of params) {
+        obj[k] = v;
+      }
+      return obj;
+    }
+
+    it('unknown query parameters are stripped from generated links', async () => {
+      const projRes = await request(app)
+        .post('/projects')
+        .send('title=URL+Strip+Test')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectId = projRes.headers.location.replace('/projects/', '');
+
+      await request(app)
+        .post('/releases')
+        .send(`projectId=${projectId}`)
+        .send('title=URL+Strip+Release')
+        .send('status=idea')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      const res = await request(app)
+        .get('/releases?view=list&junk=x&status=bogus&project=1junk&pageSize=bad')
+        .expect(200);
+
+      // Locate the "Board" link (view switcher) and parse its URL
+      const boardMatch = res.text.match(/<a\s[^>]*href="(\/releases\?[^"]*)"[^>]*>Board<\/a>/);
+      expect(boardMatch).not.toBeNull();
+      const boardQuery = parseQuery(boardMatch[1]);
+      // Valid normalized filters are preserved
+      expect(boardQuery.view).toBe('board');
+      // Invalid and unknown parameters are absent
+      expect(boardQuery.junk).toBeUndefined();
+      expect(boardQuery.status).toBeUndefined();
+      expect(boardQuery.project).toBeUndefined();
+      expect(boardQuery.pageSize).toBeUndefined();
+    });
+
+    it('invalid status is not preserved in pagination links', async () => {
+      const projRes = await request(app)
+        .post('/projects')
+        .send('title=URL+Status+Test')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectId = projRes.headers.location.replace('/projects/', '');
+
+      // Create enough releases to trigger pagination
+      for (let i = 0; i < 30; i++) {
+        await request(app)
+          .post('/releases')
+          .send(`projectId=${projectId}`)
+          .send(`title=URL+Status+Release+${i}`)
+          .send('status=idea')
+          .set('Content-Type', 'application/x-www-form-urlencoded')
+          .expect(302);
+      }
+
+      const res = await request(app)
+        .get('/releases?status=bogus&page=2')
+        .expect(200);
+
+      // Locate the "Previous" pagination link
+      const prevMatch = res.text.match(/<a\s[^>]*href="(\/releases\?[^"]*)"[^>]*>Previous<\/a>/);
+      expect(prevMatch).not.toBeNull();
+      const prevQuery = parseQuery(prevMatch[1]);
+      // Invalid status must not appear
+      expect(prevQuery.status).toBeUndefined();
+      // Page=1 is the default so it's omitted from generated URLs
+      expect(prevQuery.page).toBeUndefined();
+    });
+
+    it('invalid project ID is not preserved in list-to-board switch', async () => {
+      const res = await request(app)
+        .get('/releases?project=1junk&view=list')
+        .expect(200);
+
+      const boardMatch = res.text.match(/<a\s[^>]*href="(\/releases\?[^"]*)"[^>]*>Board<\/a>/);
+      expect(boardMatch).not.toBeNull();
+      const boardQuery = parseQuery(boardMatch[1]);
+      // Invalid project must not appear
+      expect(boardQuery.project).toBeUndefined();
+      // View must be board
+      expect(boardQuery.view).toBe('board');
+    });
+
+    it('invalid pageSize is not preserved in generated links', async () => {
+      const projRes = await request(app)
+        .post('/projects')
+        .send('title=URL+PageSize+Test')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectId = projRes.headers.location.replace('/projects/', '');
+
+      for (let i = 0; i < 30; i++) {
+        await request(app)
+          .post('/releases')
+          .send(`projectId=${projectId}`)
+          .send(`title=URL+PageSize+Release+${i}`)
+          .send('status=idea')
+          .set('Content-Type', 'application/x-www-form-urlencoded')
+          .expect(302);
+      }
+
+      const res = await request(app)
+        .get('/releases?pageSize=bad&page=2')
+        .expect(200);
+
+      // Pagination link must not contain the invalid pageSize
+      const prevMatch = res.text.match(/<a\s[^>]*href="(\/releases\?[^"]*)"[^>]*>Previous<\/a>/);
+      expect(prevMatch).not.toBeNull();
+      const prevQuery = parseQuery(prevMatch[1]);
+      expect(prevQuery.pageSize).toBeUndefined();
+      // Page=1 is the default so it's omitted from generated URLs
+      expect(prevQuery.page).toBeUndefined();
+    });
+
+    it('valid filters are preserved through list/board switching', async () => {
+      const projRes = await request(app)
+        .post('/projects')
+        .send('title=URL+Preserve+Test')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectId = projRes.headers.location.replace('/projects/', '');
+
+      await request(app)
+        .post('/releases')
+        .send(`projectId=${projectId}`)
+        .send('title=URL+Preserve+Release')
+        .send('status=idea')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      const res = await request(app)
+        .get('/releases?status=idea&view=list')
+        .expect(200);
+
+      // Board link must preserve the status filter
+      const boardMatch = res.text.match(/<a\s[^>]*href="(\/releases\?[^"]*)"[^>]*>Board<\/a>/);
+      expect(boardMatch).not.toBeNull();
+      const boardQuery = parseQuery(boardMatch[1]);
+      expect(boardQuery.status).toBe('idea');
+      expect(boardQuery.view).toBe('board');
+    });
+
+    it('default readiness=all is omitted from generated links', async () => {
+      const res = await request(app)
+        .get('/releases?readiness=all')
+        .expect(200);
+
+      // Board link must not contain readiness=all
+      const boardMatch = res.text.match(/<a\s[^>]*href="(\/releases\?[^"]*)"[^>]*>Board<\/a>/);
+      expect(boardMatch).not.toBeNull();
+      const boardQuery = parseQuery(boardMatch[1]);
+      expect(boardQuery.readiness).toBeUndefined();
+    });
+
+    it('valid readiness filter is preserved in generated links', async () => {
+      const res = await request(app)
+        .get('/releases?readiness=publishable')
+        .expect(200);
+
+      const boardMatch = res.text.match(/<a\s[^>]*href="(\/releases\?[^"]*)"[^>]*>Board<\/a>/);
+      expect(boardMatch).not.toBeNull();
+      const boardQuery = parseQuery(boardMatch[1]);
+      expect(boardQuery.readiness).toBe('publishable');
+    });
+
+    it('invalid readiness is not preserved in generated links', async () => {
+      const res = await request(app)
+        .get('/releases?readiness=bogus')
+        .expect(200);
+
+      const boardMatch = res.text.match(/<a\s[^>]*href="(\/releases\?[^"]*)"[^>]*>Board<\/a>/);
+      expect(boardMatch).not.toBeNull();
+      const boardQuery = parseQuery(boardMatch[1]);
+      expect(boardQuery.readiness).toBeUndefined();
+    });
+
+    // ─── Phase 7D-4: Canonical page state in generated URLs ──────────────
+
+    it('page=2 Previous link omits page and retains pageSize', async () => {
+      const projRes = await request(app)
+        .post('/projects')
+        .send('title=Page+Canon+Test')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectId = projRes.headers.location.replace('/projects/', '');
+
+      for (let i = 0; i < 30; i++) {
+        await request(app)
+          .post('/releases')
+          .send(`projectId=${projectId}`)
+          .send(`title=Page+Canon+Release+${i}`)
+          .send('status=idea')
+          .set('Content-Type', 'application/x-www-form-urlencoded')
+          .expect(302);
+      }
+
+      const res = await request(app)
+        .get('/releases?pageSize=10&page=2')
+        .expect(200);
+
+      // Previous URL must omit page (page=1 is the default)
+      const prevMatch = res.text.match(/<a\s[^>]*href="(\/releases\?[^"]*)"[^>]*>Previous<\/a>/);
+      expect(prevMatch).not.toBeNull();
+      const prevQuery = parseQuery(prevMatch[1]);
+      expect(prevQuery.page).toBeUndefined();
+      // pageSize=10 must be retained
+      expect(prevQuery.pageSize).toBe('10');
+    });
+
+    it('list page 2 → Board link has no page', async () => {
+      const projRes = await request(app)
+        .post('/projects')
+        .send('title=Page+Board+Test')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectId = projRes.headers.location.replace('/projects/', '');
+
+      for (let i = 0; i < 30; i++) {
+        await request(app)
+          .post('/releases')
+          .send(`projectId=${projectId}`)
+          .send(`title=Page+Board+Release+${i}`)
+          .send('status=idea')
+          .set('Content-Type', 'application/x-www-form-urlencoded')
+          .expect(302);
+      }
+
+      const res = await request(app)
+        .get('/releases?page=2')
+        .expect(200);
+
+      // Board link must not contain page
+      const boardMatch = res.text.match(/<a\s[^>]*href="(\/releases\?[^"]*)"[^>]*>Board<\/a>/);
+      expect(boardMatch).not.toBeNull();
+      const boardQuery = parseQuery(boardMatch[1]);
+      expect(boardQuery.page).toBeUndefined();
+      expect(boardQuery.view).toBe('board');
+    });
+
+    it('Board → List link has no stale page', async () => {
+      const res = await request(app)
+        .get('/releases?view=board')
+        .expect(200);
+
+      // List link must not contain page
+      const listMatch = res.text.match(/<a\s[^>]*href="(\/releases\?[^"]*)"[^>]*>List<\/a>/);
+      expect(listMatch).not.toBeNull();
+      const listQuery = parseQuery(listMatch[1]);
+      expect(listQuery.page).toBeUndefined();
+      expect(listQuery.view).toBe('list');
+    });
+
+    it('list page 3 → Previous link contains page=2', async () => {
+      const projRes = await request(app)
+        .post('/projects')
+        .send('title=Page+Prev+Test')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectId = projRes.headers.location.replace('/projects/', '');
+
+      for (let i = 0; i < 60; i++) {
+        await request(app)
+          .post('/releases')
+          .send(`projectId=${projectId}`)
+          .send(`title=Page+Prev+Release+${i}`)
+          .send('status=idea')
+          .set('Content-Type', 'application/x-www-form-urlencoded')
+          .expect(302);
+      }
+
+      const res = await request(app)
+        .get('/releases?page=3')
+        .expect(200);
+
+      const prevMatch = res.text.match(/<a\s[^>]*href="(\/releases\?[^"]*)"[^>]*>Previous<\/a>/);
+      expect(prevMatch).not.toBeNull();
+      const prevQuery = parseQuery(prevMatch[1]);
+      expect(prevQuery.page).toBe('2');
+    });
+
+    it('Next-page URL contains the correct page number', async () => {
+      const projRes = await request(app)
+        .post('/projects')
+        .send('title=Page+Next+Test')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectId = projRes.headers.location.replace('/projects/', '');
+
+      for (let i = 0; i < 30; i++) {
+        await request(app)
+          .post('/releases')
+          .send(`projectId=${projectId}`)
+          .send(`title=Page+Next+Release+${i}`)
+          .send('status=idea')
+          .set('Content-Type', 'application/x-www-form-urlencoded')
+          .expect(302);
+      }
+
+      const res = await request(app)
+        .get('/releases')
+        .expect(200);
+
+      const nextMatch = res.text.match(/<a\s[^>]*href="(\/releases\?[^"]*)"[^>]*>Next<\/a>/);
+      expect(nextMatch).not.toBeNull();
+      const nextQuery = parseQuery(nextMatch[1]);
+      expect(nextQuery.page).toBe('2');
+    });
+
+    it('valid filters remain preserved while page is canonicalized', async () => {
+      const projRes = await request(app)
+        .post('/projects')
+        .send('title=Page+Filter+Test')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectId = projRes.headers.location.replace('/projects/', '');
+
+      for (let i = 0; i < 30; i++) {
+        await request(app)
+          .post('/releases')
+          .send(`projectId=${projectId}`)
+          .send(`title=Page+Filter+Release+${i}`)
+          .send('status=idea')
+          .set('Content-Type', 'application/x-www-form-urlencoded')
+          .expect(302);
+      }
+
+      const res = await request(app)
+        .get('/releases?status=idea&page=2')
+        .expect(200);
+
+      // Previous link must retain status=idea and omit page
+      const prevMatch = res.text.match(/<a\s[^>]*href="(\/releases\?[^"]*)"[^>]*>Previous<\/a>/);
+      expect(prevMatch).not.toBeNull();
+      const prevQuery = parseQuery(prevMatch[1]);
+      expect(prevQuery.status).toBe('idea');
+      expect(prevQuery.page).toBeUndefined();
+    });
+
+    it('calendar navigation does not inherit unsupported readiness state', async () => {
+      const res = await request(app)
+        .get('/releases/calendar?readiness=publishable')
+        .expect(200);
+
+      // Calendar nav links must not contain readiness
+      const prevMatch = res.text.match(/<a\s[^>]*href="(\/releases\/calendar\?[^"]*)"[^>]*>← Previous<\/a>/);
+      expect(prevMatch).not.toBeNull();
+      const prevQuery = parseQuery(prevMatch[1]);
+      expect(prevQuery.readiness).toBeUndefined();
+      // Calendar nav must not contain list/board filters
+      expect(prevQuery.view).toBeUndefined();
+      expect(prevQuery.status).toBeUndefined();
+      expect(prevQuery.project).toBeUndefined();
+      expect(prevQuery.schedule).toBeUndefined();
+      expect(prevQuery.includeArchived).toBeUndefined();
+      expect(prevQuery.sort).toBeUndefined();
+      expect(prevQuery.order).toBeUndefined();
+      expect(prevQuery.pageSize).toBeUndefined();
+      expect(prevQuery.readiness).toBeUndefined();
+      // Calendar nav must not contain page state
+      expect(prevQuery.page).toBeUndefined();
+      // Only month should be present
+      expect(prevQuery.month).toBeDefined();
+      expect(Object.keys(prevQuery).length).toBe(1);
+
+      // Next link must have the same properties
+      const nextMatch = res.text.match(/<a\s[^>]*href="(\/releases\/calendar\?[^"]*)"[^>]*>Next →<\/a>/);
+      expect(nextMatch).not.toBeNull();
+      const nextQuery = parseQuery(nextMatch[1]);
+      expect(nextQuery.readiness).toBeUndefined();
+      expect(nextQuery.view).toBeUndefined();
+      expect(nextQuery.status).toBeUndefined();
+      expect(nextQuery.project).toBeUndefined();
+      expect(nextQuery.schedule).toBeUndefined();
+      expect(nextQuery.includeArchived).toBeUndefined();
+      expect(nextQuery.sort).toBeUndefined();
+      expect(nextQuery.order).toBeUndefined();
+      expect(nextQuery.pageSize).toBeUndefined();
+      expect(nextQuery.page).toBeUndefined();
+      expect(nextQuery.month).toBeDefined();
+      expect(Object.keys(nextQuery).length).toBe(1);
     });
   });
 });

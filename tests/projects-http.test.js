@@ -1058,6 +1058,179 @@ describe('project HTTP workflow', () => {
     });
   });
 
+  // ─── Phase 7D-3: Project planning field wording ──────────────────────
+  //
+  // Project planning fields (planned_date, published_date, patreon_url)
+  // describe the broader creative project, not an individual release.
+  // Help text must clarify this distinction.
+
+  describe('project form planning field wording', () => {
+    /**
+     * Extract the HTML of the .field container that contains an input with the
+     * given id. Returns null if not found.
+     */
+    function getFieldContainer(html, inputId) {
+      // Find the input with the given id, then walk backward to find the .field ancestor
+      const inputRe = new RegExp(`<input[^>]*id="${inputId}"[^>]*>`);
+      const inputMatch = inputRe.exec(html);
+      if (!inputMatch) return null;
+      const inputPos = inputMatch.index;
+      // Walk backward from the input to find the opening <div class="field ...">
+      const beforeInput = html.slice(0, inputPos);
+      const fieldStart = beforeInput.lastIndexOf('<div class="field');
+      if (fieldStart === -1) return null;
+      // Find the matching closing </div> — count nesting
+      const fromField = html.slice(fieldStart);
+      let depth = 0;
+      let endPos = 0;
+      for (let i = 0; i < fromField.length; i++) {
+        if (fromField.slice(i, i + 4) === '<div') { depth++; i += 3; }
+        else if (fromField.slice(i, i + 5) === '</div') { depth--; i += 4; }
+        if (depth === 0) { endPos = i + 6; break; }
+      }
+      return fromField.slice(0, endPos);
+    }
+
+    it('project form shows help text for planned date in the correct field container', async () => {
+      const res = await request(app).get('/projects/new').expect(200);
+      const container = getFieldContainer(res.text, 'plannedDate');
+      expect(container).not.toBeNull();
+      expect(container).toContain('Target date for the creative project');
+      // Verify the input is inside the same container
+      expect(container).toMatch(/<input[^>]*id="plannedDate"[^>]*>/);
+    });
+
+    it('project form shows help text for published date in the correct field container', async () => {
+      const res = await request(app).get('/projects/new').expect(200);
+      const container = getFieldContainer(res.text, 'publishedDate');
+      expect(container).not.toBeNull();
+      expect(container).toContain('When the project was published');
+      expect(container).toMatch(/<input[^>]*id="publishedDate"[^>]*>/);
+    });
+
+    it('project form shows help text for Patreon URL in the correct field container', async () => {
+      const res = await request(app).get('/projects/new').expect(200);
+      const container = getFieldContainer(res.text, 'patreonUrl');
+      expect(container).not.toBeNull();
+      expect(container).toContain("Link to the project's Patreon page");
+      expect(container).toMatch(/<input[^>]*id="patreonUrl"[^>]*>/);
+    });
+
+    it('project detail shows context labels in the correct dt/dd pairs', async () => {
+      const createRes = await request(app)
+        .post('/projects')
+        .send('title=Wording+Test')
+        .send('status=tbd')
+        .send('priority=normal')
+        .send('plannedDate=2025-12-01')
+        .send('publishedDate=2025-12-15')
+        .send('patreonUrl=https://patreon.com/test')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const id = createRes.headers.location.replace('/projects/', '');
+
+      const res = await request(app).get(`/projects/${id}`).expect(200);
+
+      // Planned date: <dt>Planned date</dt> ... <small>(project target)</small>
+      const plannedDt = res.text.match(/<dt>Planned date<\/dt>\s*<dd>[^<]*(?:<small>\(project target\)<\/small>)[^<]*<\/dd>/);
+      expect(plannedDt).not.toBeNull();
+
+      // Published date: <dt>Published date</dt> ... <small>(project published)</small>
+      const publishedDt = res.text.match(/<dt>Published date<\/dt>\s*<dd>[^<]*(?:<small>\(project published\)<\/small>)[^<]*<\/dd>/);
+      expect(publishedDt).not.toBeNull();
+
+      // Patreon URL: <dt>Patreon URL</dt> ... <small>(project page)</small>
+      // Bounded pattern: cannot cross </dd>, <dt>, or opening <dd>
+      const patreonDt = res.text.match(/<dt>Patreon URL<\/dt>\s*<dd>(?:(?!<\/dd>)(?!<dt>)(?!<dd>).)*<small>\(project page\)<\/small>(?:(?!<\/dd>)(?!<dt>)(?!<dd>).)*<\/dd>/);
+      expect(patreonDt).not.toBeNull();
+    });
+  });
+
+  // ─── Phase 7D-3: Project status preserves filesystem behavior ──────
+  //
+  // Project status governs filesystem directory placement. Changing a
+  // project's status must move its directory to the corresponding status
+  // directory. This is independent of release planning fields.
+
+  describe('project status filesystem behavior', () => {
+    function parseSlug(title) {
+      return title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+    }
+
+    function getProjectDir(title, status = 'tbd') {
+      const slug = parseSlug(title);
+      const statusDir = STATUS_DIR_MAP[status];
+      const entries = fs.readdirSync(path.join(projectsRoot, statusDir));
+      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
+      if (matching.length === 0) return null;
+      return path.join(projectsRoot, statusDir, matching[0]);
+    }
+
+    it('changing project status moves the directory', async () => {
+      const createRes = await request(app)
+        .post('/projects')
+        .send('title=FS+Status+Test')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const id = createRes.headers.location.replace('/projects/', '');
+
+      // Capture the persisted project row
+      const beforeRow = db.prepare('SELECT * FROM projects WHERE id = ?').get(Number(id));
+      expect(beforeRow).not.toBeNull();
+      expect(beforeRow.status).toBe('tbd');
+
+      // Resolve the original path directly from beforeRow.project_dir
+      expect(beforeRow.project_dir).toBeTruthy();
+      const originalRelPath = beforeRow.project_dir;
+      const originalDir = path.resolve(projectsRoot, originalRelPath);
+
+      // Assert the exact canonical original relative path
+      expect(originalRelPath).toMatch(/^tbd[/\\]000001-fs-status-test$/);
+
+      // Assert the resolved directory exists under PROJECTS_ROOT
+      expect(originalDir.startsWith(path.resolve(projectsRoot))).toBe(true);
+      expect(fs.existsSync(originalDir)).toBe(true);
+      expect(fs.statSync(originalDir).isDirectory()).toBe(true);
+
+      // Place a distinctive file inside it
+      const userFile = path.join(originalDir, 'status-move.txt');
+      fs.writeFileSync(userFile, 'moved content');
+
+      // Change status from tbd to planned
+      await request(app)
+        .post(`/projects/${id}`)
+        .send('title=FS+Status+Test')
+        .send('status=planned')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      // Derive the exact expected relative path using the application's directory convention
+      const dirName = path.basename(originalRelPath);
+      const expectedRelPath = path.join('planned', dirName);
+
+      const afterRow = db.prepare('SELECT * FROM projects WHERE id = ?').get(Number(id));
+      expect(afterRow.project_dir).toBe(expectedRelPath);
+
+      // Original path no longer exists
+      expect(fs.existsSync(originalDir)).toBe(false);
+
+      // Exact new path exists
+      const newDir = path.resolve(projectsRoot, expectedRelPath);
+      expect(fs.existsSync(newDir)).toBe(true);
+      expect(fs.statSync(newDir).isDirectory()).toBe(true);
+
+      // New path remains inside PROJECTS_ROOT
+      expect(newDir.startsWith(path.resolve(projectsRoot))).toBe(true);
+
+      // Distinctive file exists at the new path with unchanged contents
+      expect(fs.existsSync(path.join(newDir, 'status-move.txt'))).toBe(true);
+      expect(fs.readFileSync(path.join(newDir, 'status-move.txt'), 'utf8')).toBe('moved content');
+    });
+  });
+
   // ─── Phase 6B regression: archived project edit route guard ─────────
   //
   // Archived projects are immutable. The edit form must not be reachable

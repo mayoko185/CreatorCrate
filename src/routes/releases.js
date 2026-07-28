@@ -20,16 +20,29 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
   router.get('/', (req, res, next) => {
     try {
       const view = req.query.view === 'board' ? 'board' : 'list';
+      const normalizedFilters = workflowQueryService.normalizeListFilters(req.query);
+      // Build query from normalized filters only — no raw req.query values
+      const query = {};
+      query.view = view;
+      if (normalizedFilters.projectId !== null) query.project = String(normalizedFilters.projectId);
+      if (normalizedFilters.status !== null) query.status = normalizedFilters.status;
+      if (normalizedFilters.schedule !== null) query.schedule = normalizedFilters.schedule;
+      if (normalizedFilters.includeArchived) query.includeArchived = '1';
+      if (normalizedFilters.sortBy !== 'updated') query.sort = normalizedFilters.sortBy;
+      if (normalizedFilters.order !== 'desc') query.order = normalizedFilters.order;
+      if (normalizedFilters.page > 1) query.page = String(normalizedFilters.page);
+      if (normalizedFilters.pageSize !== 25) query.pageSize = String(normalizedFilters.pageSize);
+      if (normalizedFilters.readiness !== 'all') query.readiness = normalizedFilters.readiness;
+      const pageUrl = buildPageUrl(req, query);
 
       if (view === 'board') {
         const { columns, today } = workflowQueryService.getReleaseBoard(req.query);
-        const pageUrl = buildPageUrl(req);
         return res.render('releases/index.njk', {
           appName,
           view: 'board',
           columns,
           today,
-          query: req.query,
+          query,
           statuses: RELEASE_STATUSES,
           pageUrl,
         });
@@ -37,7 +50,6 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
 
       // List view
       const { releases, total, page, pageSize, pageCount, today } = workflowQueryService.getReleaseList(req.query);
-      const pageUrl = buildPageUrl(req);
 
       res.render('releases/index.njk', {
         appName,
@@ -49,7 +61,7 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
         pageCount,
         today,
         pageUrl,
-        query: req.query,
+        query,
         statuses: RELEASE_STATUSES,
         sortOptions: SORT_OPTIONS,
       });
@@ -63,7 +75,10 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
     try {
       const month = req.query.month || null;
       const { month: validatedMonth, days, firstDayWeekday, prevMonth, nextMonth, today } = workflowQueryService.getReleaseCalendar(month);
-      const pageUrl = buildPageUrl(req);
+      // Calendar uses only the month parameter — no raw req.query
+      const query = {};
+      if (validatedMonth) query.month = validatedMonth;
+      const pageUrl = buildPageUrl(req, query);
 
       res.render('releases/calendar.njk', {
         appName,
@@ -73,7 +88,7 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
         prevMonth,
         nextMonth,
         today,
-        query: req.query,
+        query,
         pageUrl,
       });
     } catch (err) {
@@ -680,16 +695,22 @@ function createNotFound() {
   return err;
 }
 
-function buildPageUrl(req) {
+function buildPageUrl(req, baseQuery = req.query) {
   // Use req.baseUrl + req.path to get the full path for pagination URLs
   // req.path is relative to the router mount point (/), so we need baseUrl (/releases)
   // When req.path is '/', we get a trailing slash which we strip
   const basePath = req.baseUrl + req.path;
   const cleanPath = basePath === '/releases/' ? '/releases' : basePath;
   return function pageUrl(overrides) {
-    const query = { ...req.query };
+    const query = { ...baseQuery };
+
+    // When switching views, clear page state — pagination is view-specific
+    if (overrides.view !== undefined) {
+      delete query.page;
+    }
+
     for (const [key, value] of Object.entries(overrides)) {
-      if (value === undefined || value === null || value === '') {
+      if (value === undefined || value === null || value === '' || (key === 'page' && value == 1)) {
         delete query[key];
       } else {
         query[key] = String(value);
