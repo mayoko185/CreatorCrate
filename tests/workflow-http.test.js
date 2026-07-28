@@ -2773,7 +2773,7 @@ describe('Phase 6B HTTP workflow', () => {
     // ─── Fix 4: Archived release asset-selection UI read-only ─────────
 
     describe('archived release asset-selection UI read-only', () => {
-      it('archived release under active project has disabled checkboxes and no Save Selection', async () => {
+      it('archived release under active project has no checkboxes and no Save Selection', async () => {
         const projectId = await createProjectWithFile({ title: 'Archived Release UI' });
         const { releaseId } = await createReleaseWithLinkedAsset(projectId, 'Archived UI Release');
 
@@ -2781,13 +2781,12 @@ describe('Phase 6B HTTP workflow', () => {
         await request(app).post(`/releases/${releaseId}/archive`).expect(302);
 
         const res = await request(app).get(`/releases/${releaseId}/assets`).expect(200);
-        // Checkboxes must be disabled
-        expect(res.text).toContain('type="checkbox"');
-        expect(res.text).toContain('disabled');
-        // Role selects must be disabled
-        expect(res.text).toContain('disabled class="asset-role"');
-        // Sort order inputs must be disabled
-        expect(res.text).toContain('disabled class="asset-sort-order"');
+        // No bulk-selection checkboxes (form is structurally omitted for read-only)
+        expect(res.text).not.toContain('type="checkbox"');
+        // No role selects from the legacy form
+        expect(res.text).not.toContain('class="asset-role"');
+        // No sort-order inputs from the legacy form
+        expect(res.text).not.toContain('class="asset-sort-order"');
         // Should show the archived notice
         expect(res.text).toContain('This release is archived');
         // Save Selection must be absent
@@ -2818,7 +2817,7 @@ describe('Phase 6B HTTP workflow', () => {
         expect(res.text).toMatch(/<button class="button button-primary" type="submit">Save Selection<\/button>/);
       });
 
-      it('archived parent project has disabled checkboxes and no Save Selection', async () => {
+      it('archived parent project has no checkboxes and no Save Selection', async () => {
         const projectId = await createProjectWithFile({ title: 'Archived Parent UI' });
         const { releaseId } = await createReleaseWithLinkedAsset(projectId, 'Archived Parent Release');
 
@@ -2826,9 +2825,8 @@ describe('Phase 6B HTTP workflow', () => {
         await request(app).post(`/projects/${projectId}/archive`).expect(302);
 
         const res = await request(app).get(`/releases/${releaseId}/assets`).expect(200);
-        // Checkboxes must be disabled
-        expect(res.text).toContain('type="checkbox"');
-        expect(res.text).toContain('disabled');
+        // No bulk-selection checkboxes (form is structurally omitted for read-only)
+        expect(res.text).not.toContain('type="checkbox"');
         // Should show the parent-archived notice
         expect(res.text).toContain('parent project is archived');
         // Save Selection must be absent

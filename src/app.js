@@ -15,7 +15,7 @@ import { evaluateReleaseReadiness } from './services/release-readiness-policy.js
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-export function createApp({ appName, db, projectsRoot }) {
+export function createApp({ appName, db, projectsRoot }, opts = {}) {
   const app = express();
 
   const env = nunjucks.configure(path.join(__dirname, 'views'), {
@@ -30,7 +30,7 @@ export function createApp({ appName, db, projectsRoot }) {
 
   const projectService = createProjectService(db, projectsRoot);
   const assetScanner = createAssetScanner(db, projectsRoot, { projectService });
-  const releaseService = createReleaseService({ db, evaluateReleaseReadiness });
+  const releaseService = opts.releaseService || createReleaseService({ db, evaluateReleaseReadiness });
   const workflowQueryService = createWorkflowQueryService({ db, evaluateReleaseReadiness });
 
   app.use('/', createIndexRouter({ appName, workflowQueryService }));

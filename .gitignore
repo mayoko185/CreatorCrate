@@ -4,6 +4,9 @@ node_modules/
 .DS_Store
 coverage/
 dist/
+.lean-ctx.toml
+LEAN-CTX.md
+AGENTS.md
 
 # Application data must not be committed; it lives on bind-mounted host directories.
 /data/

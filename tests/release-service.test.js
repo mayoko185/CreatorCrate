@@ -8,6 +8,7 @@ import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { createReleaseService, ReleaseValidationError, ReleaseNotFoundError, ReleaseArchivedError, ReleaseParentArchivedError, ReleasePublishedError, AssetNotFoundError } from '../src/services/release-service.js';
 import { evaluateReleaseReadiness } from '../src/services/release-readiness-policy.js';
 import { createProjectRepository } from '../src/data/project-repository.js';
+import { createReleaseRepository } from '../src/data/release-repository.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
 import { getLocalTodayIso } from '../src/util/date.js';
 
@@ -1740,6 +1741,1234 @@ describe('release service', () => {
       const { release: created } = createPublishableRelease(service, assetRepo, projectId);
       const published = service.publishRelease(created.id, '');
       expect(published.published_date).toBe(getLocalTodayIso());
+    });
+  });
+
+  // ─── Phase 9-2: Explicit Release Asset Curation Mutations ─────────────
+
+  describe('addCandidateAsset', () => {
+    it('adds a candidate asset with default role attachment and appended contiguous order', () => {
+      const release = service.createRelease(projectId, validInput());
+      const asset1 = assetRepo.upsert(projectId, 'a.txt', sampleAsset(projectId, { relativePath: 'a.txt' }));
+      const asset2 = assetRepo.upsert(projectId, 'b.txt', sampleAsset(projectId, { relativePath: 'b.txt' }));
+
+      // Add first asset
+      const result1 = service.addCandidateAsset(release.id, asset1.id);
+      expect(result1.asset_id).toBe(asset1.id);
+      expect(result1.role).toBe('attachment');
+      expect(result1.sort_order).toBe(0);
+
+      // Add second asset — appended after first
+      const result2 = service.addCandidateAsset(release.id, asset2.id);
+      expect(result2.asset_id).toBe(asset2.id);
+      expect(result2.role).toBe('attachment');
+      expect(result2.sort_order).toBe(1);
+
+      // Verify both in deterministic order
+      const all = service.listReleaseAssets(release.id);
+      expect(all).toHaveLength(2);
+      expect(all[0].asset_id).toBe(asset1.id);
+      expect(all[0].sort_order).toBe(0);
+      expect(all[1].asset_id).toBe(asset2.id);
+      expect(all[1].sort_order).toBe(1);
+    });
+
+    it('rejects missing asset', () => {
+      const release = service.createRelease(projectId, validInput());
+      expect(() => {
+        service.addCandidateAsset(release.id, 99999);
+      }).toThrow(AssetNotFoundError);
+    });
+
+    it('rejects already-selected asset', () => {
+      const release = service.createRelease(projectId, validInput());
+      const asset = assetRepo.upsert(projectId, 'dup.txt', sampleAsset(projectId));
+      service.addCandidateAsset(release.id, asset.id);
+      expect(() => {
+        service.addCandidateAsset(release.id, asset.id);
+      }).toThrow(ReleaseValidationError);
+    });
+
+    it('rejects cross-project asset', () => {
+      const release = service.createRelease(projectId, validInput());
+      const otherProject = projectRepo.create(sampleProject({ title: 'Other' }));
+      const otherAsset = assetRepo.upsert(otherProject.id, 'other.txt', sampleAsset(otherProject.id));
+
+      expect(() => {
+        service.addCandidateAsset(release.id, otherAsset.id);
+      }).toThrow(ReleaseValidationError);
+    });
+
+    it('rejects missing (is_present=0) asset', () => {
+      const release = service.createRelease(projectId, validInput());
+      const asset = assetRepo.upsert(projectId, 'missing.txt', sampleAsset(projectId));
+      assetRepo.markMissingByProjectIdAndPathNotIn(projectId, []);
+
+      expect(() => {
+        service.addCandidateAsset(release.id, asset.id);
+      }).toThrow(ReleaseValidationError);
+    });
+
+    it('throws ReleaseNotFoundError for non-existent release', () => {
+      expect(() => {
+        service.addCandidateAsset(99999, 1);
+      }).toThrow(ReleaseNotFoundError);
+    });
+
+    it('throws ReleaseArchivedError for archived release', () => {
+      const release = service.createRelease(projectId, validInput());
+      const asset = assetRepo.upsert(projectId, 'arch.txt', sampleAsset(projectId));
+      service.archiveRelease(release.id);
+      expect(() => {
+        service.addCandidateAsset(release.id, asset.id);
+      }).toThrow(ReleaseArchivedError);
+    });
+
+    it('throws ReleaseParentArchivedError when parent project is archived', () => {
+      const release = service.createRelease(projectId, validInput());
+      const asset = assetRepo.upsert(projectId, 'parent-arch.txt', sampleAsset(projectId));
+      projectRepo.archive(projectId);
+      expect(() => {
+        service.addCandidateAsset(release.id, asset.id);
+      }).toThrow(ReleaseParentArchivedError);
+    });
+
+    it('throws ReleasePublishedError for published release', () => {
+      const { release } = createPublishableRelease(service, assetRepo, projectId);
+      const published = service.publishRelease(release.id, '2025-06-15');
+      const newAsset = assetRepo.upsert(projectId, 'new.txt', sampleAsset(projectId, { relativePath: 'new.txt' }));
+      expect(() => {
+        service.addCandidateAsset(published.id, newAsset.id);
+      }).toThrow(ReleasePublishedError);
+    });
+  });
+
+  describe('removeSelectedAsset', () => {
+    it('removes exactly one selected asset and closes order gaps', () => {
+      const release = service.createRelease(projectId, validInput());
+      const asset1 = assetRepo.upsert(projectId, 'a.txt', sampleAsset(projectId, { relativePath: 'a.txt' }));
+      const asset2 = assetRepo.upsert(projectId, 'b.txt', sampleAsset(projectId, { relativePath: 'b.txt' }));
+      const asset3 = assetRepo.upsert(projectId, 'c.txt', sampleAsset(projectId, { relativePath: 'c.txt' }));
+
+      service.selectAssets(release.id, [
+        { assetId: asset1.id, role: 'primary', sortOrder: 0 },
+        { assetId: asset2.id, role: 'attachment', sortOrder: 1 },
+        { assetId: asset3.id, role: 'source', sortOrder: 2 },
+      ]);
+
+      const removed = service.removeSelectedAsset(release.id, asset2.id);
+      expect(removed).toBe(true);
+
+      const remaining = service.listReleaseAssets(release.id);
+      expect(remaining).toHaveLength(2);
+      // Order must be contiguous 0, 1
+      expect(remaining[0].asset_id).toBe(asset1.id);
+      expect(remaining[0].sort_order).toBe(0);
+      expect(remaining[1].asset_id).toBe(asset3.id);
+      expect(remaining[1].sort_order).toBe(1);
+    });
+
+    it('rejects unselected asset', () => {
+      const release = service.createRelease(projectId, validInput());
+      const asset = assetRepo.upsert(projectId, 'unsel.txt', sampleAsset(projectId));
+      expect(() => {
+        service.removeSelectedAsset(release.id, asset.id);
+      }).toThrow(ReleaseValidationError);
+    });
+
+    it('rejects cross-project asset', () => {
+      const release = service.createRelease(projectId, validInput());
+      const otherProject = projectRepo.create(sampleProject({ title: 'Other' }));
+      const otherAsset = assetRepo.upsert(otherProject.id, 'other.txt', sampleAsset(otherProject.id));
+      expect(() => {
+        service.removeSelectedAsset(release.id, otherAsset.id);
+      }).toThrow(ReleaseValidationError);
+    });
+
+    it('leaves asset record and filesystem untouched', () => {
+      const release = service.createRelease(projectId, validInput());
+      const asset = assetRepo.upsert(projectId, 'keep.txt', sampleAsset(projectId));
+      service.addCandidateAsset(release.id, asset.id);
+
+      const beforeAsset = assetRepo.findById(asset.id);
+      service.removeSelectedAsset(release.id, asset.id);
+
+      const afterAsset = assetRepo.findById(asset.id);
+      expect(afterAsset).toEqual(beforeAsset);
+    });
+
+    it('throws ReleaseArchivedError for archived release', () => {
+      const release = service.createRelease(projectId, validInput());
+      const asset = assetRepo.upsert(projectId, 'arch-rem.txt', sampleAsset(projectId));
+      service.addCandidateAsset(release.id, asset.id);
+      service.archiveRelease(release.id);
+      expect(() => {
+        service.removeSelectedAsset(release.id, asset.id);
+      }).toThrow(ReleaseArchivedError);
+    });
+
+    it('throws ReleaseParentArchivedError when parent project is archived', () => {
+      const release = service.createRelease(projectId, validInput());
+      const asset = assetRepo.upsert(projectId, 'parent-arch-rem.txt', sampleAsset(projectId));
+      service.addCandidateAsset(release.id, asset.id);
+      projectRepo.archive(projectId);
+      expect(() => {
+        service.removeSelectedAsset(release.id, asset.id);
+      }).toThrow(ReleaseParentArchivedError);
+    });
+
+    it('throws ReleasePublishedError for published release', () => {
+      const { release, asset } = createPublishableRelease(service, assetRepo, projectId);
+      const published = service.publishRelease(release.id, '2025-06-15');
+      expect(() => {
+        service.removeSelectedAsset(published.id, asset.id);
+      }).toThrow(ReleasePublishedError);
+    });
+  });
+
+  describe('updateAssetRole', () => {
+    it('updates role to primary', () => {
+      const release = service.createRelease(projectId, validInput());
+      const asset = assetRepo.upsert(projectId, 'role.txt', sampleAsset(projectId));
+      service.addCandidateAsset(release.id, asset.id);
+
+      const updated = service.updateAssetRole(release.id, asset.id, 'primary');
+      expect(updated).toBe(true);
+
+      const rows = service.listReleaseAssets(release.id);
+      expect(rows[0].role).toBe('primary');
+    });
+
+    it('updates role to preview', () => {
+      const release = service.createRelease(projectId, validInput());
+      const asset = assetRepo.upsert(projectId, 'role-prev.txt', sampleAsset(projectId));
+      service.addCandidateAsset(release.id, asset.id);
+
+      service.updateAssetRole(release.id, asset.id, 'preview');
+      const rows = service.listReleaseAssets(release.id);
+      expect(rows[0].role).toBe('preview');
+    });
+
+    it('updates role to source', () => {
+      const release = service.createRelease(projectId, validInput());
+      const asset = assetRepo.upsert(projectId, 'role-src.txt', sampleAsset(projectId));
+      service.addCandidateAsset(release.id, asset.id);
+
+      service.updateAssetRole(release.id, asset.id, 'source');
+      const rows = service.listReleaseAssets(release.id);
+      expect(rows[0].role).toBe('source');
+    });
+
+    it('rejects invalid role', () => {
+      const release = service.createRelease(projectId, validInput());
+      const asset = assetRepo.upsert(projectId, 'bad-role.txt', sampleAsset(projectId));
+      service.addCandidateAsset(release.id, asset.id);
+
+      expect(() => {
+        service.updateAssetRole(release.id, asset.id, 'invalid-role');
+      }).toThrow(ReleaseValidationError);
+    });
+
+    it('only target row changes, other rows unchanged', () => {
+      const release = service.createRelease(projectId, validInput());
+      const asset1 = assetRepo.upsert(projectId, 'a.txt', sampleAsset(projectId, { relativePath: 'a.txt' }));
+      const asset2 = assetRepo.upsert(projectId, 'b.txt', sampleAsset(projectId, { relativePath: 'b.txt' }));
+
+      service.selectAssets(release.id, [
+        { assetId: asset1.id, role: 'primary', sortOrder: 0 },
+        { assetId: asset2.id, role: 'attachment', sortOrder: 1 },
+      ]);
+
+      service.updateAssetRole(release.id, asset1.id, 'source');
+
+      const rows = service.listReleaseAssets(release.id);
+      expect(rows).toHaveLength(2);
+      expect(rows[0].asset_id).toBe(asset1.id);
+      expect(rows[0].role).toBe('source');
+      expect(rows[0].sort_order).toBe(0);
+      expect(rows[1].asset_id).toBe(asset2.id);
+      expect(rows[1].role).toBe('attachment');
+      expect(rows[1].sort_order).toBe(1);
+    });
+
+    it('order remains unchanged after role update', () => {
+      const release = service.createRelease(projectId, validInput());
+      const asset1 = assetRepo.upsert(projectId, 'a.txt', sampleAsset(projectId, { relativePath: 'a.txt' }));
+      const asset2 = assetRepo.upsert(projectId, 'b.txt', sampleAsset(projectId, { relativePath: 'b.txt' }));
+
+      service.selectAssets(release.id, [
+        { assetId: asset1.id, role: 'primary', sortOrder: 0 },
+        { assetId: asset2.id, role: 'attachment', sortOrder: 5 },
+      ]);
+
+      service.updateAssetRole(release.id, asset1.id, 'source');
+
+      const rows = service.listReleaseAssets(release.id);
+      expect(rows[0].sort_order).toBe(0);
+      expect(rows[1].sort_order).toBe(5);
+    });
+
+    it('throws ReleasePublishedError for published release', () => {
+      const { release, asset } = createPublishableRelease(service, assetRepo, projectId);
+      const published = service.publishRelease(release.id, '2025-06-15');
+      expect(() => {
+        service.updateAssetRole(published.id, asset.id, 'attachment');
+      }).toThrow(ReleasePublishedError);
+    });
+  });
+
+  describe('moveAssetUp', () => {
+    it('moves middle asset up', () => {
+      const release = service.createRelease(projectId, validInput());
+      const asset1 = assetRepo.upsert(projectId, 'a.txt', sampleAsset(projectId, { relativePath: 'a.txt' }));
+      const asset2 = assetRepo.upsert(projectId, 'b.txt', sampleAsset(projectId, { relativePath: 'b.txt' }));
+      const asset3 = assetRepo.upsert(projectId, 'c.txt', sampleAsset(projectId, { relativePath: 'c.txt' }));
+
+      service.selectAssets(release.id, [
+        { assetId: asset1.id, role: 'primary', sortOrder: 0 },
+        { assetId: asset2.id, role: 'attachment', sortOrder: 1 },
+        { assetId: asset3.id, role: 'source', sortOrder: 2 },
+      ]);
+
+      const moved = service.moveAssetUp(release.id, asset2.id);
+      expect(moved).toBe(true);
+
+      const rows = service.listReleaseAssets(release.id);
+      expect(rows).toHaveLength(3);
+      // asset2 should now be first (sort_order 0)
+      expect(rows[0].asset_id).toBe(asset2.id);
+      expect(rows[0].sort_order).toBe(0);
+      expect(rows[1].asset_id).toBe(asset1.id);
+      expect(rows[1].sort_order).toBe(1);
+      expect(rows[2].asset_id).toBe(asset3.id);
+      expect(rows[2].sort_order).toBe(2);
+    });
+
+    it('first-item move up is a no-op', () => {
+      const release = service.createRelease(projectId, validInput());
+      const asset1 = assetRepo.upsert(projectId, 'a.txt', sampleAsset(projectId, { relativePath: 'a.txt' }));
+      const asset2 = assetRepo.upsert(projectId, 'b.txt', sampleAsset(projectId, { relativePath: 'b.txt' }));
+
+      service.selectAssets(release.id, [
+        { assetId: asset1.id, role: 'primary', sortOrder: 0 },
+        { assetId: asset2.id, role: 'attachment', sortOrder: 1 },
+      ]);
+
+      const moved = service.moveAssetUp(release.id, asset1.id);
+      expect(moved).toBe(false);
+
+      const rows = service.listReleaseAssets(release.id);
+      expect(rows).toHaveLength(2);
+      expect(rows[0].asset_id).toBe(asset1.id);
+      expect(rows[1].asset_id).toBe(asset2.id);
+    });
+
+    it('handles equal legacy orders deterministically', () => {
+      const release = service.createRelease(projectId, validInput());
+      const asset1 = assetRepo.upsert(projectId, 'a.txt', sampleAsset(projectId, { relativePath: 'a.txt' }));
+      const asset2 = assetRepo.upsert(projectId, 'b.txt', sampleAsset(projectId, { relativePath: 'b.txt' }));
+
+      // Insert with equal sort_order — deterministic tie-break is asset_id ASC
+      service.selectAssets(release.id, [
+        { assetId: asset1.id, role: 'primary', sortOrder: 0 },
+        { assetId: asset2.id, role: 'attachment', sortOrder: 0 },
+      ]);
+
+      // asset2 has higher asset_id, so it comes second in sort_order ASC, asset_id ASC
+      // Moving asset2 up should swap with asset1
+      const moved = service.moveAssetUp(release.id, asset2.id);
+      expect(moved).toBe(true);
+
+      const rows = service.listReleaseAssets(release.id);
+      expect(rows).toHaveLength(2);
+      // After reindex: contiguous 0, 1
+      expect(rows[0].sort_order).toBe(0);
+      expect(rows[1].sort_order).toBe(1);
+    });
+
+    it('throws ReleasePublishedError for published release', () => {
+      const { release, asset } = createPublishableRelease(service, assetRepo, projectId);
+      const published = service.publishRelease(release.id, '2025-06-15');
+      expect(() => {
+        service.moveAssetUp(published.id, asset.id);
+      }).toThrow(ReleasePublishedError);
+    });
+  });
+
+  describe('moveAssetDown', () => {
+    it('moves middle asset down', () => {
+      const release = service.createRelease(projectId, validInput());
+      const asset1 = assetRepo.upsert(projectId, 'a.txt', sampleAsset(projectId, { relativePath: 'a.txt' }));
+      const asset2 = assetRepo.upsert(projectId, 'b.txt', sampleAsset(projectId, { relativePath: 'b.txt' }));
+      const asset3 = assetRepo.upsert(projectId, 'c.txt', sampleAsset(projectId, { relativePath: 'c.txt' }));
+
+      service.selectAssets(release.id, [
+        { assetId: asset1.id, role: 'primary', sortOrder: 0 },
+        { assetId: asset2.id, role: 'attachment', sortOrder: 1 },
+        { assetId: asset3.id, role: 'source', sortOrder: 2 },
+      ]);
+
+      const moved = service.moveAssetDown(release.id, asset2.id);
+      expect(moved).toBe(true);
+
+      const rows = service.listReleaseAssets(release.id);
+      expect(rows).toHaveLength(3);
+      // asset2 should now be last (sort_order 2)
+      expect(rows[0].asset_id).toBe(asset1.id);
+      expect(rows[0].sort_order).toBe(0);
+      expect(rows[1].asset_id).toBe(asset3.id);
+      expect(rows[1].sort_order).toBe(1);
+      expect(rows[2].asset_id).toBe(asset2.id);
+      expect(rows[2].sort_order).toBe(2);
+    });
+
+    it('last-item move down is a no-op', () => {
+      const release = service.createRelease(projectId, validInput());
+      const asset1 = assetRepo.upsert(projectId, 'a.txt', sampleAsset(projectId, { relativePath: 'a.txt' }));
+      const asset2 = assetRepo.upsert(projectId, 'b.txt', sampleAsset(projectId, { relativePath: 'b.txt' }));
+
+      service.selectAssets(release.id, [
+        { assetId: asset1.id, role: 'primary', sortOrder: 0 },
+        { assetId: asset2.id, role: 'attachment', sortOrder: 1 },
+      ]);
+
+      const moved = service.moveAssetDown(release.id, asset2.id);
+      expect(moved).toBe(false);
+
+      const rows = service.listReleaseAssets(release.id);
+      expect(rows).toHaveLength(2);
+      expect(rows[0].asset_id).toBe(asset1.id);
+      expect(rows[1].asset_id).toBe(asset2.id);
+    });
+
+    it('order persisted contiguously after move', () => {
+      const release = service.createRelease(projectId, validInput());
+      const asset1 = assetRepo.upsert(projectId, 'a.txt', sampleAsset(projectId, { relativePath: 'a.txt' }));
+      const asset2 = assetRepo.upsert(projectId, 'b.txt', sampleAsset(projectId, { relativePath: 'b.txt' }));
+      const asset3 = assetRepo.upsert(projectId, 'c.txt', sampleAsset(projectId, { relativePath: 'c.txt' }));
+
+      service.selectAssets(release.id, [
+        { assetId: asset1.id, role: 'primary', sortOrder: 0 },
+        { assetId: asset2.id, role: 'attachment', sortOrder: 1 },
+        { assetId: asset3.id, role: 'source', sortOrder: 2 },
+      ]);
+
+      service.moveAssetDown(release.id, asset1.id);
+
+      const rows = service.listReleaseAssets(release.id);
+      expect(rows[0].sort_order).toBe(0);
+      expect(rows[1].sort_order).toBe(1);
+      expect(rows[2].sort_order).toBe(2);
+    });
+
+    it('throws ReleasePublishedError for published release', () => {
+      const { release, asset } = createPublishableRelease(service, assetRepo, projectId);
+      const published = service.publishRelease(release.id, '2025-06-15');
+      expect(() => {
+        service.moveAssetDown(published.id, asset.id);
+      }).toThrow(ReleasePublishedError);
+    });
+  });
+
+  // ─── Phase 9-2: Lifecycle guard coverage for all new mutations ──────
+
+  describe('Phase 9-2 lifecycle guards', () => {
+    function snapshotReleaseAssets(releaseId) {
+      return db.prepare('SELECT release_id, asset_id, role, sort_order, created_at FROM release_assets WHERE release_id = ? ORDER BY sort_order ASC, asset_id ASC').all(releaseId);
+    }
+
+    function createPublishedRelease() {
+      const release = service.createRelease(projectId, validInput({ status: 'ready' }));
+      const asset = assetRepo.upsert(projectId, 'pub-lifecycle.txt', sampleAsset(projectId, { relativePath: 'pub-lifecycle.txt' }));
+      service.selectAssets(release.id, [{ assetId: asset.id, role: 'primary', sortOrder: 0 }]);
+      const published = service.publishRelease(release.id, '2025-06-15');
+      return { release: published, asset };
+    }
+
+    it('addCandidateAsset rejects published release and leaves rows unchanged', () => {
+      const { release } = createPublishedRelease();
+      const newAsset = assetRepo.upsert(projectId, 'new-pub.txt', sampleAsset(projectId, { relativePath: 'new-pub.txt' }));
+      const before = snapshotReleaseAssets(release.id);
+
+      expect(() => {
+        service.addCandidateAsset(release.id, newAsset.id);
+      }).toThrow(ReleasePublishedError);
+
+      expect(snapshotReleaseAssets(release.id)).toEqual(before);
+    });
+
+    it('addCandidateAsset rejects archived release and leaves rows unchanged', () => {
+      const release = service.createRelease(projectId, validInput());
+      const asset = assetRepo.upsert(projectId, 'arch-add.txt', sampleAsset(projectId));
+      service.addCandidateAsset(release.id, asset.id);
+      service.archiveRelease(release.id);
+      const before = snapshotReleaseAssets(release.id);
+
+      const newAsset = assetRepo.upsert(projectId, 'new-arch.txt', sampleAsset(projectId, { relativePath: 'new-arch.txt' }));
+      expect(() => {
+        service.addCandidateAsset(release.id, newAsset.id);
+      }).toThrow(ReleaseArchivedError);
+
+      expect(snapshotReleaseAssets(release.id)).toEqual(before);
+    });
+
+    it('addCandidateAsset rejects archived parent and leaves rows unchanged', () => {
+      const release = service.createRelease(projectId, validInput());
+      const asset = assetRepo.upsert(projectId, 'parent-arch-add.txt', sampleAsset(projectId));
+      service.addCandidateAsset(release.id, asset.id);
+      projectRepo.archive(projectId);
+      const before = snapshotReleaseAssets(release.id);
+
+      const newAsset = assetRepo.upsert(projectId, 'new-parent-arch.txt', sampleAsset(projectId, { relativePath: 'new-parent-arch.txt' }));
+      expect(() => {
+        service.addCandidateAsset(release.id, newAsset.id);
+      }).toThrow(ReleaseParentArchivedError);
+
+      expect(snapshotReleaseAssets(release.id)).toEqual(before);
+    });
+
+    it('removeSelectedAsset rejects published release and leaves rows unchanged', () => {
+      const { release, asset } = createPublishedRelease();
+      const before = snapshotReleaseAssets(release.id);
+
+      expect(() => {
+        service.removeSelectedAsset(release.id, asset.id);
+      }).toThrow(ReleasePublishedError);
+
+      expect(snapshotReleaseAssets(release.id)).toEqual(before);
+    });
+
+    it('removeSelectedAsset rejects archived release and leaves rows unchanged', () => {
+      const release = service.createRelease(projectId, validInput());
+      const asset = assetRepo.upsert(projectId, 'arch-rem2.txt', sampleAsset(projectId));
+      service.addCandidateAsset(release.id, asset.id);
+      service.archiveRelease(release.id);
+      const before = snapshotReleaseAssets(release.id);
+
+      expect(() => {
+        service.removeSelectedAsset(release.id, asset.id);
+      }).toThrow(ReleaseArchivedError);
+
+      expect(snapshotReleaseAssets(release.id)).toEqual(before);
+    });
+
+    it('removeSelectedAsset rejects archived parent and leaves rows unchanged', () => {
+      const release = service.createRelease(projectId, validInput());
+      const asset = assetRepo.upsert(projectId, 'parent-arch-rem2.txt', sampleAsset(projectId));
+      service.addCandidateAsset(release.id, asset.id);
+      projectRepo.archive(projectId);
+      const before = snapshotReleaseAssets(release.id);
+
+      expect(() => {
+        service.removeSelectedAsset(release.id, asset.id);
+      }).toThrow(ReleaseParentArchivedError);
+
+      expect(snapshotReleaseAssets(release.id)).toEqual(before);
+    });
+
+    it('updateAssetRole rejects published release and leaves rows unchanged', () => {
+      const { release, asset } = createPublishedRelease();
+      const before = snapshotReleaseAssets(release.id);
+
+      expect(() => {
+        service.updateAssetRole(release.id, asset.id, 'attachment');
+      }).toThrow(ReleasePublishedError);
+
+      expect(snapshotReleaseAssets(release.id)).toEqual(before);
+    });
+
+    it('updateAssetRole rejects archived release and leaves rows unchanged', () => {
+      const release = service.createRelease(projectId, validInput());
+      const asset = assetRepo.upsert(projectId, 'arch-role.txt', sampleAsset(projectId));
+      service.addCandidateAsset(release.id, asset.id);
+      service.archiveRelease(release.id);
+      const before = snapshotReleaseAssets(release.id);
+
+      expect(() => {
+        service.updateAssetRole(release.id, asset.id, 'preview');
+      }).toThrow(ReleaseArchivedError);
+
+      expect(snapshotReleaseAssets(release.id)).toEqual(before);
+    });
+
+    it('updateAssetRole rejects archived parent and leaves rows unchanged', () => {
+      const release = service.createRelease(projectId, validInput());
+      const asset = assetRepo.upsert(projectId, 'parent-arch-role.txt', sampleAsset(projectId));
+      service.addCandidateAsset(release.id, asset.id);
+      projectRepo.archive(projectId);
+      const before = snapshotReleaseAssets(release.id);
+
+      expect(() => {
+        service.updateAssetRole(release.id, asset.id, 'preview');
+      }).toThrow(ReleaseParentArchivedError);
+
+      expect(snapshotReleaseAssets(release.id)).toEqual(before);
+    });
+
+    it('moveAssetUp rejects published release and leaves rows unchanged', () => {
+      const { release, asset } = createPublishedRelease();
+      const before = snapshotReleaseAssets(release.id);
+
+      expect(() => {
+        service.moveAssetUp(release.id, asset.id);
+      }).toThrow(ReleasePublishedError);
+
+      expect(snapshotReleaseAssets(release.id)).toEqual(before);
+    });
+
+    it('moveAssetDown rejects published release and leaves rows unchanged', () => {
+      const { release, asset } = createPublishedRelease();
+      const before = snapshotReleaseAssets(release.id);
+
+      expect(() => {
+        service.moveAssetDown(release.id, asset.id);
+      }).toThrow(ReleasePublishedError);
+
+      expect(snapshotReleaseAssets(release.id)).toEqual(before);
+    });
+
+    it('addCandidateAsset rejects archived parent and leaves rows unchanged', () => {
+      const release = service.createRelease(projectId, validInput());
+      const asset = assetRepo.upsert(projectId, 'parent-arch-add.txt', sampleAsset(projectId));
+      service.addCandidateAsset(release.id, asset.id);
+      projectRepo.archive(projectId);
+      const before = snapshotReleaseAssets(release.id);
+
+      const newAsset = assetRepo.upsert(projectId, 'new-parent-arch.txt', sampleAsset(projectId, { relativePath: 'new-parent-arch.txt' }));
+      expect(() => {
+        service.addCandidateAsset(release.id, newAsset.id);
+      }).toThrow(ReleaseParentArchivedError);
+
+      expect(snapshotReleaseAssets(release.id)).toEqual(before);
+    });
+
+    it('removeSelectedAsset rejects archived parent and leaves rows unchanged', () => {
+      const release = service.createRelease(projectId, validInput());
+      const asset = assetRepo.upsert(projectId, 'parent-arch-rem2.txt', sampleAsset(projectId));
+      service.addCandidateAsset(release.id, asset.id);
+      projectRepo.archive(projectId);
+      const before = snapshotReleaseAssets(release.id);
+
+      expect(() => {
+        service.removeSelectedAsset(release.id, asset.id);
+      }).toThrow(ReleaseParentArchivedError);
+
+      expect(snapshotReleaseAssets(release.id)).toEqual(before);
+    });
+
+    it('updateAssetRole rejects archived parent and leaves rows unchanged', () => {
+      const release = service.createRelease(projectId, validInput());
+      const asset = assetRepo.upsert(projectId, 'parent-arch-role.txt', sampleAsset(projectId));
+      service.addCandidateAsset(release.id, asset.id);
+      projectRepo.archive(projectId);
+      const before = snapshotReleaseAssets(release.id);
+
+      expect(() => {
+        service.updateAssetRole(release.id, asset.id, 'preview');
+      }).toThrow(ReleaseParentArchivedError);
+
+      expect(snapshotReleaseAssets(release.id)).toEqual(before);
+    });
+
+    it('moveAssetUp rejects archived parent and leaves rows unchanged', () => {
+      const release = service.createRelease(projectId, validInput());
+      const asset1 = assetRepo.upsert(projectId, 'a.txt', sampleAsset(projectId, { relativePath: 'a.txt' }));
+      const asset2 = assetRepo.upsert(projectId, 'b.txt', sampleAsset(projectId, { relativePath: 'b.txt' }));
+      service.addCandidateAsset(release.id, asset1.id);
+      service.addCandidateAsset(release.id, asset2.id);
+      projectRepo.archive(projectId);
+      const before = snapshotReleaseAssets(release.id);
+
+      expect(() => {
+        service.moveAssetUp(release.id, asset2.id);
+      }).toThrow(ReleaseParentArchivedError);
+
+      expect(snapshotReleaseAssets(release.id)).toEqual(before);
+    });
+
+    it('moveAssetDown rejects archived parent and leaves rows unchanged', () => {
+      const release = service.createRelease(projectId, validInput());
+      const asset1 = assetRepo.upsert(projectId, 'a.txt', sampleAsset(projectId, { relativePath: 'a.txt' }));
+      const asset2 = assetRepo.upsert(projectId, 'b.txt', sampleAsset(projectId, { relativePath: 'b.txt' }));
+      service.addCandidateAsset(release.id, asset1.id);
+      service.addCandidateAsset(release.id, asset2.id);
+      projectRepo.archive(projectId);
+      const before = snapshotReleaseAssets(release.id);
+
+      expect(() => {
+        service.moveAssetDown(release.id, asset1.id);
+      }).toThrow(ReleaseParentArchivedError);
+
+      expect(snapshotReleaseAssets(release.id)).toEqual(before);
+    });
+  });
+
+  // ─── Phase 9-3: Cross-project write rejection ─────────────────────────
+
+  describe('cross-project write rejection', () => {
+    let otherProjectId;
+    let otherAsset;
+
+    beforeEach(() => {
+      const otherProject = projectRepo.create(sampleProject({ title: 'Other Project' }));
+      otherProjectId = otherProject.id;
+      otherAsset = assetRepo.upsert(otherProjectId, 'other.txt', sampleAsset(otherProjectId, { relativePath: 'other.txt' }));
+    });
+
+    it('addCandidateAsset rejects cross-project asset', () => {
+      const release = service.createRelease(projectId, validInput());
+      expect(() => {
+        service.addCandidateAsset(release.id, otherAsset.id);
+      }).toThrow(ReleaseValidationError);
+    });
+
+    it('removeSelectedAsset rejects cross-project asset', () => {
+      const release = service.createRelease(projectId, validInput());
+      expect(() => {
+        service.removeSelectedAsset(release.id, otherAsset.id);
+      }).toThrow(ReleaseValidationError);
+    });
+
+    it('updateAssetRole rejects cross-project asset', () => {
+      const release = service.createRelease(projectId, validInput());
+      expect(() => {
+        service.updateAssetRole(release.id, otherAsset.id, 'preview');
+      }).toThrow(ReleaseValidationError);
+    });
+
+    it('moveAssetUp rejects cross-project asset', () => {
+      const release = service.createRelease(projectId, validInput());
+      expect(() => {
+        service.moveAssetUp(release.id, otherAsset.id);
+      }).toThrow(ReleaseValidationError);
+    });
+
+    it('moveAssetDown rejects cross-project asset', () => {
+      const release = service.createRelease(projectId, validInput());
+      expect(() => {
+        service.moveAssetDown(release.id, otherAsset.id);
+      }).toThrow(ReleaseValidationError);
+    });
+  });
+
+  // ─── Phase 9-3: Scan-presence regression ──────────────────────────────
+
+  describe('scan-presence regression', () => {
+    it('scanning can change asset presence without changing selections', () => {
+      const release = service.createRelease(projectId, validInput());
+      const asset = assetRepo.upsert(projectId, 'scan-test.txt', sampleAsset(projectId, { relativePath: 'scan-test.txt' }));
+      service.addCandidateAsset(release.id, asset.id);
+
+      // Mark as missing (simulating scan removal)
+      assetRepo.markMissingByProjectIdAndPathNotIn(projectId, []);
+      let selections = service.listReleaseAssets(release.id);
+      expect(selections).toHaveLength(1);
+      expect(selections[0].is_present).toBe(0);
+
+      // Restore (simulating scan re-discovery)
+      assetRepo.restorePresent(projectId, ['scan-test.txt']);
+      selections = service.listReleaseAssets(release.id);
+      expect(selections).toHaveLength(1);
+      expect(selections[0].is_present).toBe(1);
+    });
+  });
+
+  // ─── Phase 9: Mutation-Transaction Atomicity ──────────────────────────
+
+  describe('Phase 9 mutation-transaction atomicity', () => {
+    function snapshotReleaseAssets(releaseId) {
+      return db.prepare(
+        'SELECT release_id, asset_id, role, sort_order, created_at FROM release_assets WHERE release_id = ? ORDER BY sort_order ASC, asset_id ASC'
+      ).all(releaseId);
+    }
+
+    it('remove + reindex succeeds atomically', () => {
+      const release = service.createRelease(projectId, validInput());
+      const asset1 = assetRepo.upsert(projectId, 'a.txt', sampleAsset(projectId, { relativePath: 'a.txt' }));
+      const asset2 = assetRepo.upsert(projectId, 'b.txt', sampleAsset(projectId, { relativePath: 'b.txt' }));
+      const asset3 = assetRepo.upsert(projectId, 'c.txt', sampleAsset(projectId, { relativePath: 'c.txt' }));
+
+      service.selectAssets(release.id, [
+        { assetId: asset1.id, role: 'primary', sortOrder: 0 },
+        { assetId: asset2.id, role: 'attachment', sortOrder: 1 },
+        { assetId: asset3.id, role: 'source', sortOrder: 2 },
+      ]);
+
+      const removed = service.removeSelectedAsset(release.id, asset2.id);
+      expect(removed).toBe(true);
+
+      const remaining = snapshotReleaseAssets(release.id);
+      expect(remaining).toHaveLength(2);
+      expect(remaining[0].asset_id).toBe(asset1.id);
+      expect(remaining[0].sort_order).toBe(0);
+      expect(remaining[1].asset_id).toBe(asset3.id);
+      expect(remaining[1].sort_order).toBe(1);
+    });
+
+    it('successful remove reindexes atomically through the repository API', () => {
+      const release = service.createRelease(projectId, validInput());
+      const asset1 = assetRepo.upsert(projectId, 'a.txt', sampleAsset(projectId, { relativePath: 'a.txt' }));
+      const asset2 = assetRepo.upsert(projectId, 'b.txt', sampleAsset(projectId, { relativePath: 'b.txt' }));
+      service.selectAssets(release.id, [
+        { assetId: asset1.id, role: 'primary', sortOrder: 0 },
+        { assetId: asset2.id, role: 'attachment', sortOrder: 1 },
+      ]);
+
+      const repo = createReleaseRepository(db);
+      expect(typeof repo.removeAndReindexReleaseAsset).toBe('function');
+      expect(typeof repo.reorderReleaseAssets).toBe('function');
+
+      const result = repo.removeAndReindexReleaseAsset(release.id, asset1.id);
+      expect(result).toBe(true);
+
+      const after = snapshotReleaseAssets(release.id);
+      expect(after).toHaveLength(1);
+      expect(after[0].asset_id).toBe(asset2.id);
+      expect(after[0].sort_order).toBe(0);
+    });
+
+    it('Move Up succeeds with equal legacy sort_order values', () => {
+      const release = service.createRelease(projectId, validInput());
+      const asset1 = assetRepo.upsert(projectId, 'a.txt', sampleAsset(projectId, { relativePath: 'a.txt' }));
+      const asset2 = assetRepo.upsert(projectId, 'b.txt', sampleAsset(projectId, { relativePath: 'b.txt' }));
+      const asset3 = assetRepo.upsert(projectId, 'c.txt', sampleAsset(projectId, { relativePath: 'c.txt' }));
+
+      // All three with equal sort_order — tie-break is asset_id ASC
+      service.selectAssets(release.id, [
+        { assetId: asset1.id, role: 'primary', sortOrder: 0 },
+        { assetId: asset2.id, role: 'attachment', sortOrder: 0 },
+        { assetId: asset3.id, role: 'source', sortOrder: 0 },
+      ]);
+
+      // Order is asset1, asset2, asset3 (asset_id ASC tie-break)
+      // Move asset3 up — should become second
+      const moved = service.moveAssetUp(release.id, asset3.id);
+      expect(moved).toBe(true);
+
+      const rows = snapshotReleaseAssets(release.id);
+      expect(rows).toHaveLength(3);
+      // After reindex: asset1(0), asset3(1), asset2(2)
+      expect(rows[0].asset_id).toBe(asset1.id);
+      expect(rows[0].sort_order).toBe(0);
+      expect(rows[1].asset_id).toBe(asset3.id);
+      expect(rows[1].sort_order).toBe(1);
+      expect(rows[2].asset_id).toBe(asset2.id);
+      expect(rows[2].sort_order).toBe(2);
+    });
+
+    it('Move Down succeeds with equal legacy sort_order values', () => {
+      const release = service.createRelease(projectId, validInput());
+      const asset1 = assetRepo.upsert(projectId, 'a.txt', sampleAsset(projectId, { relativePath: 'a.txt' }));
+      const asset2 = assetRepo.upsert(projectId, 'b.txt', sampleAsset(projectId, { relativePath: 'b.txt' }));
+      const asset3 = assetRepo.upsert(projectId, 'c.txt', sampleAsset(projectId, { relativePath: 'c.txt' }));
+
+      // All three with equal sort_order — tie-break is asset_id ASC
+      service.selectAssets(release.id, [
+        { assetId: asset1.id, role: 'primary', sortOrder: 0 },
+        { assetId: asset2.id, role: 'attachment', sortOrder: 0 },
+        { assetId: asset3.id, role: 'source', sortOrder: 0 },
+      ]);
+
+      // Order is asset1, asset2, asset3 (asset_id ASC tie-break)
+      // Move asset1 down — should become second
+      const moved = service.moveAssetDown(release.id, asset1.id);
+      expect(moved).toBe(true);
+
+      const rows = snapshotReleaseAssets(release.id);
+      expect(rows).toHaveLength(3);
+      // After reindex: asset2(0), asset1(1), asset3(2)
+      expect(rows[0].asset_id).toBe(asset2.id);
+      expect(rows[0].sort_order).toBe(0);
+      expect(rows[1].asset_id).toBe(asset1.id);
+      expect(rows[1].sort_order).toBe(1);
+      expect(rows[2].asset_id).toBe(asset3.id);
+      expect(rows[2].sort_order).toBe(2);
+    });
+
+    it('requested asset actually changes position on move up', () => {
+      const release = service.createRelease(projectId, validInput());
+      const asset1 = assetRepo.upsert(projectId, 'a.txt', sampleAsset(projectId, { relativePath: 'a.txt' }));
+      const asset2 = assetRepo.upsert(projectId, 'b.txt', sampleAsset(projectId, { relativePath: 'b.txt' }));
+      const asset3 = assetRepo.upsert(projectId, 'c.txt', sampleAsset(projectId, { relativePath: 'c.txt' }));
+
+      service.selectAssets(release.id, [
+        { assetId: asset1.id, role: 'primary', sortOrder: 0 },
+        { assetId: asset2.id, role: 'attachment', sortOrder: 1 },
+        { assetId: asset3.id, role: 'source', sortOrder: 2 },
+      ]);
+
+      service.moveAssetUp(release.id, asset3.id);
+
+      const rows = snapshotReleaseAssets(release.id);
+      // asset3 moved from position 2 to position 1
+      expect(rows[1].asset_id).toBe(asset3.id);
+    });
+
+    it('requested asset actually changes position on move down', () => {
+      const release = service.createRelease(projectId, validInput());
+      const asset1 = assetRepo.upsert(projectId, 'a.txt', sampleAsset(projectId, { relativePath: 'a.txt' }));
+      const asset2 = assetRepo.upsert(projectId, 'b.txt', sampleAsset(projectId, { relativePath: 'b.txt' }));
+      const asset3 = assetRepo.upsert(projectId, 'c.txt', sampleAsset(projectId, { relativePath: 'c.txt' }));
+
+      service.selectAssets(release.id, [
+        { assetId: asset1.id, role: 'primary', sortOrder: 0 },
+        { assetId: asset2.id, role: 'attachment', sortOrder: 1 },
+        { assetId: asset3.id, role: 'source', sortOrder: 2 },
+      ]);
+
+      service.moveAssetDown(release.id, asset1.id);
+
+      const rows = snapshotReleaseAssets(release.id);
+      // asset1 moved from position 0 to position 1
+      expect(rows[1].asset_id).toBe(asset1.id);
+    });
+
+    it('final ordering is contiguous after remove', () => {
+      const release = service.createRelease(projectId, validInput());
+      const asset1 = assetRepo.upsert(projectId, 'a.txt', sampleAsset(projectId, { relativePath: 'a.txt' }));
+      const asset2 = assetRepo.upsert(projectId, 'b.txt', sampleAsset(projectId, { relativePath: 'b.txt' }));
+      const asset3 = assetRepo.upsert(projectId, 'c.txt', sampleAsset(projectId, { relativePath: 'c.txt' }));
+
+      service.selectAssets(release.id, [
+        { assetId: asset1.id, role: 'primary', sortOrder: 0 },
+        { assetId: asset2.id, role: 'attachment', sortOrder: 5 },
+        { assetId: asset3.id, role: 'source', sortOrder: 9 },
+      ]);
+
+      service.removeSelectedAsset(release.id, asset2.id);
+
+      const rows = snapshotReleaseAssets(release.id);
+      expect(rows).toHaveLength(2);
+      expect(rows[0].sort_order).toBe(0);
+      expect(rows[1].sort_order).toBe(1);
+    });
+
+    it('final ordering is contiguous after move', () => {
+      const release = service.createRelease(projectId, validInput());
+      const asset1 = assetRepo.upsert(projectId, 'a.txt', sampleAsset(projectId, { relativePath: 'a.txt' }));
+      const asset2 = assetRepo.upsert(projectId, 'b.txt', sampleAsset(projectId, { relativePath: 'b.txt' }));
+      const asset3 = assetRepo.upsert(projectId, 'c.txt', sampleAsset(projectId, { relativePath: 'c.txt' }));
+
+      service.selectAssets(release.id, [
+        { assetId: asset1.id, role: 'primary', sortOrder: 0 },
+        { assetId: asset2.id, role: 'attachment', sortOrder: 5 },
+        { assetId: asset3.id, role: 'source', sortOrder: 9 },
+      ]);
+
+      service.moveAssetUp(release.id, asset3.id);
+
+      const rows = snapshotReleaseAssets(release.id);
+      expect(rows.map((r) => r.sort_order)).toEqual([0, 1, 2]);
+    });
+
+    it('successful reorder persists the complete desired order', () => {
+      const release = service.createRelease(projectId, validInput());
+      const asset1 = assetRepo.upsert(projectId, 'a.txt', sampleAsset(projectId, { relativePath: 'a.txt' }));
+      const asset2 = assetRepo.upsert(projectId, 'b.txt', sampleAsset(projectId, { relativePath: 'b.txt' }));
+      const asset3 = assetRepo.upsert(projectId, 'c.txt', sampleAsset(projectId, { relativePath: 'c.txt' }));
+
+      service.selectAssets(release.id, [
+        { assetId: asset1.id, role: 'primary', sortOrder: 0 },
+        { assetId: asset2.id, role: 'attachment', sortOrder: 1 },
+        { assetId: asset3.id, role: 'source', sortOrder: 2 },
+      ]);
+
+      const repo = createReleaseRepository(db);
+      expect(typeof repo.reorderReleaseAssets).toBe('function');
+
+      repo.reorderReleaseAssets(release.id, [asset3.id, asset2.id, asset1.id]);
+
+      const after = snapshotReleaseAssets(release.id);
+      expect(after).toHaveLength(3);
+      expect(after[0].asset_id).toBe(asset3.id);
+      expect(after[0].sort_order).toBe(0);
+      expect(after[1].asset_id).toBe(asset2.id);
+      expect(after[1].sort_order).toBe(1);
+      expect(after[2].asset_id).toBe(asset1.id);
+      expect(after[2].sort_order).toBe(2);
+    });
+
+    it('boundary no-op preserves complete junction rows', () => {
+      const release = service.createRelease(projectId, validInput());
+      const asset1 = assetRepo.upsert(projectId, 'a.txt', sampleAsset(projectId, { relativePath: 'a.txt' }));
+      const asset2 = assetRepo.upsert(projectId, 'b.txt', sampleAsset(projectId, { relativePath: 'b.txt' }));
+
+      service.selectAssets(release.id, [
+        { assetId: asset1.id, role: 'primary', sortOrder: 0 },
+        { assetId: asset2.id, role: 'attachment', sortOrder: 1 },
+      ]);
+
+      const before = snapshotReleaseAssets(release.id);
+
+      // First-item Move Up — no-op
+      const upResult = service.moveAssetUp(release.id, asset1.id);
+      expect(upResult).toBe(false);
+      expect(snapshotReleaseAssets(release.id)).toEqual(before);
+
+      // Last-item Move Down — no-op
+      const downResult = service.moveAssetDown(release.id, asset2.id);
+      expect(downResult).toBe(false);
+      expect(snapshotReleaseAssets(release.id)).toEqual(before);
+    });
+
+    it('existing created_at values remain unchanged during reorder', () => {
+      const release = service.createRelease(projectId, validInput());
+      const asset1 = assetRepo.upsert(projectId, 'a.txt', sampleAsset(projectId, { relativePath: 'a.txt' }));
+      const asset2 = assetRepo.upsert(projectId, 'b.txt', sampleAsset(projectId, { relativePath: 'b.txt' }));
+      const asset3 = assetRepo.upsert(projectId, 'c.txt', sampleAsset(projectId, { relativePath: 'c.txt' }));
+
+      service.selectAssets(release.id, [
+        { assetId: asset1.id, role: 'primary', sortOrder: 0 },
+        { assetId: asset2.id, role: 'attachment', sortOrder: 1 },
+        { assetId: asset3.id, role: 'source', sortOrder: 2 },
+      ]);
+
+      const before = snapshotReleaseAssets(release.id);
+
+      // Move asset3 up — triggers reorder
+      service.moveAssetUp(release.id, asset3.id);
+
+      const after = snapshotReleaseAssets(release.id);
+      // created_at must be preserved for every row
+      for (const row of after) {
+        const original = before.find((b) => b.asset_id === row.asset_id);
+        expect(row.created_at).toBe(original.created_at);
+      }
+    });
+
+    it('existing created_at values remain unchanged during remove and reindex', () => {
+      const release = service.createRelease(projectId, validInput());
+      const asset1 = assetRepo.upsert(projectId, 'a.txt', sampleAsset(projectId, { relativePath: 'a.txt' }));
+      const asset2 = assetRepo.upsert(projectId, 'b.txt', sampleAsset(projectId, { relativePath: 'b.txt' }));
+      const asset3 = assetRepo.upsert(projectId, 'c.txt', sampleAsset(projectId, { relativePath: 'c.txt' }));
+
+      service.selectAssets(release.id, [
+        { assetId: asset1.id, role: 'primary', sortOrder: 0 },
+        { assetId: asset2.id, role: 'attachment', sortOrder: 1 },
+        { assetId: asset3.id, role: 'source', sortOrder: 2 },
+      ]);
+
+      const before = snapshotReleaseAssets(release.id);
+
+      service.removeSelectedAsset(release.id, asset2.id);
+
+      const after = snapshotReleaseAssets(release.id);
+      // created_at must be preserved for remaining rows
+      for (const row of after) {
+        const original = before.find((b) => b.asset_id === row.asset_id);
+        expect(row.created_at).toBe(original.created_at);
+      }
+    });
+
+    it('service contains no direct SQL for these operations', () => {
+      const serviceSource = fs.readFileSync(
+        new URL('../src/services/release-service.js', import.meta.url),
+        'utf-8'
+      );
+      // The service must not contain db.prepare(...) calls
+      expect(serviceSource).not.toMatch(/db\.prepare\s*\(/);
+    });
+  });
+
+  // ─── Phase 9-5: N+1 query instrumentation ────────────────────────────
+  //
+  // The service calls db.prepare at construction time. To count every
+  // statement execution — not just preparations — we patch db.prepare
+  // BEFORE creating the service so that every .all() / .get() / .run()
+  // on every prepared statement (including the repository's internal
+  // pre-prepared statements) is counted.
+  // The counter resets between measurements. Data setup is done with
+  // raw repositories (created before instrumentation) so that the
+  // service itself is the only measured component.
+
+  describe('Phase 9-5 N+1 query instrumentation', () => {
+    /**
+     * Patch db.prepare so every returned Statement counts
+     * .all(), .get(), and .run() invocations on a shared counter.
+     * Returns a getter function that returns the current count.
+     */
+    function instrumentExecutionCount(tmpDb) {
+      let count = 0;
+      const origPrepare = tmpDb.prepare.bind(tmpDb);
+      tmpDb.prepare = function (sql) {
+        const stmt = origPrepare(sql);
+        const origAll = stmt.all.bind(stmt);
+        const origGet = stmt.get.bind(stmt);
+        const origRun = stmt.run.bind(stmt);
+        stmt.all = function (...args) { count++; return origAll(...args); };
+        stmt.get = function (...args) { count++; return origGet(...args); };
+        stmt.run = function (...args) { count++; return origRun(...args); };
+        return stmt;
+      };
+      return () => count;
+    }
+
+    it('query execution count is bounded as candidate count grows', () => {
+      // Create repositories BEFORE instrumenting for data setup
+      const localProjectRepo = createProjectRepository(db);
+      const localAssetRepo = createAssetRepository(db);
+      const localRelRepo = createReleaseRepository(db);
+
+      const project = localProjectRepo.create(sampleProject({ title: 'N+1 Bound Test' }));
+      const release = localRelRepo.create({ projectId: project.id, ...validInput({ title: 'N+1 Bound Release' }) });
+
+      // Insert 3 present, unselected assets
+      for (let i = 0; i < 3; i++) {
+        localAssetRepo.upsert(project.id, `asset${i}.txt`,
+          sampleAsset(project.id, { relativePath: `asset${i}.txt` })
+        );
+      }
+
+      // Instrument BEFORE creating the service so every statement
+      // prepared by the repositories inside the service is counted.
+      const getCount = instrumentExecutionCount(db);
+      const localService = createReleaseService({ db, evaluateReleaseReadiness });
+
+      // First measurement: 3 candidates
+      const countWith3 = getCount();
+      localService.getReleaseAssetManagementPage(release.id, {});
+      const execWith3 = getCount() - countWith3;
+
+      // Add 2 more candidates using raw repo (NOT the instrumented service)
+      for (let i = 3; i < 5; i++) {
+        localAssetRepo.upsert(project.id, `asset${i}.txt`,
+          sampleAsset(project.id, { relativePath: `asset${i}.txt` })
+        );
+      }
+
+      // Second measurement: 5 candidates (same number of queries)
+      const countWith5 = getCount();
+      localService.getReleaseAssetManagementPage(release.id, {});
+      const execWith5 = getCount() - countWith5;
+
+      // The execution count must be identical regardless of candidate count
+      expect(execWith5).toBe(execWith3);
+
+      // Document the baseline — a fixed small number of executions
+      // (release lookup + project lookup + list selected + count candidates +
+      //  page query + extensions query ≈ 6-10 executions)
+      expect(execWith3).toBeGreaterThan(0);
+      expect(execWith3).toBeLessThanOrEqual(12);
+    });
+
+    it('execution count does not grow per-candidate for ownership checks', () => {
+      const localProjectRepo = createProjectRepository(db);
+      const localAssetRepo = createAssetRepository(db);
+      const localRelRepo = createReleaseRepository(db);
+
+      const project = localProjectRepo.create(sampleProject({ title: 'N+1 Own Check' }));
+      const release = localRelRepo.create({ projectId: project.id, ...validInput({ title: 'N+1 Own Release' }) });
+
+      // Add 3 present, unselected assets
+      for (let i = 0; i < 3; i++) {
+        localAssetRepo.upsert(project.id, `own${i}.txt`,
+          sampleAsset(project.id, { relativePath: `own${i}.txt` })
+        );
+      }
+
+      const getCount = instrumentExecutionCount(db);
+      const localService = createReleaseService({ db, evaluateReleaseReadiness });
+
+      const before = getCount();
+      localService.getReleaseAssetManagementPage(release.id, {});
+      const initialRun = getCount() - before;
+
+      // Add 3 more candidates
+      for (let i = 3; i < 6; i++) {
+        localAssetRepo.upsert(project.id, `own${i}.txt`,
+          sampleAsset(project.id, { relativePath: `own${i}.txt` })
+        );
+      }
+
+      const before2 = getCount();
+      localService.getReleaseAssetManagementPage(release.id, {});
+      const secondRun = getCount() - before2;
+
+      // Execution count must be the same — no per-candidate N+1 queries
+      expect(secondRun).toBe(initialRun);
+    });
+  });
+
+  // ─── Phase 9-5: Cancelled-release policy contract ────────────────────
+
+  describe('Phase 9-5 cancelled-release policy contract', () => {
+    it('cancelled release remains asset-curatable (no ReadOnly guard)', () => {
+      // cancelled releases are NOT in the locked-lifecycle group.
+      // The guards (guardReleaseNotPublished, guardReleaseNotArchived,
+      // guardParentProjectNotArchived) only prevent mutations on
+      // published/archived states. A cancelled release is still editable
+      // — its status is terminal for transitions but not for asset curation.
+      const release = service.createRelease(projectId, validInput({ status: 'cancelled' }));
+      expect(release.status).toBe('cancelled');
+
+      // Verify asset operations still work on a cancelled release
+      const asset = assetRepo.upsert(projectId, 'cancelled-add.txt',
+        sampleAsset(projectId, { relativePath: 'cancelled-add.txt' })
+      );
+
+      // addCandidateAsset should succeed on a cancelled release
+      const added = service.addCandidateAsset(release.id, asset.id);
+      expect(added.asset_id).toBe(asset.id);
+      expect(added.role).toBe('attachment');
+    });
+
+    it('cancelled release can have assets removed', () => {
+      const release = service.createRelease(projectId, validInput());
+      const asset1 = assetRepo.upsert(projectId, 'cancel-rem-a.txt',
+        sampleAsset(projectId, { relativePath: 'cancel-rem-a.txt' })
+      );
+      const asset2 = assetRepo.upsert(projectId, 'cancel-rem-b.txt',
+        sampleAsset(projectId, { relativePath: 'cancel-rem-b.txt' })
+      );
+      service.addCandidateAsset(release.id, asset1.id);
+      service.addCandidateAsset(release.id, asset2.id);
+
+      // Transition to cancelled
+      service.updateRelease(release.id, validInput({ status: 'cancelled' }));
+
+      // Remove one asset should succeed
+      const removed = service.removeSelectedAsset(release.id, asset1.id);
+      expect(removed).toBe(true);
+      const remaining = service.listReleaseAssets(release.id);
+      expect(remaining).toHaveLength(1);
+      expect(remaining[0].asset_id).toBe(asset2.id);
+    });
+
+    it('cancelled release asset roles can be updated', () => {
+      const release = service.createRelease(projectId, validInput());
+      const asset = assetRepo.upsert(projectId, 'cancel-role.txt',
+        sampleAsset(projectId, { relativePath: 'cancel-role.txt' })
+      );
+      service.addCandidateAsset(release.id, asset.id);
+
+      service.updateRelease(release.id, validInput({ status: 'cancelled' }));
+
+      // Role update should succeed
+      const updated = service.updateAssetRole(release.id, asset.id, 'preview');
+      expect(updated).toBe(true);
+      const rows = service.listReleaseAssets(release.id);
+      expect(rows[0].role).toBe('preview');
+    });
+
+    it('cancelled release asset ordering can be changed', () => {
+      const release = service.createRelease(projectId, validInput());
+      const asset1 = assetRepo.upsert(projectId, 'cancel-ord-a.txt',
+        sampleAsset(projectId, { relativePath: 'cancel-ord-a.txt' })
+      );
+      const asset2 = assetRepo.upsert(projectId, 'cancel-ord-b.txt',
+        sampleAsset(projectId, { relativePath: 'cancel-ord-b.txt' })
+      );
+      service.addCandidateAsset(release.id, asset1.id);
+      service.addCandidateAsset(release.id, asset2.id);
+
+      service.updateRelease(release.id, validInput({ status: 'cancelled' }));
+
+      // Move-down should succeed on a cancelled release
+      const moved = service.moveAssetDown(release.id, asset1.id);
+      expect(moved).toBe(true);
+      const rows = service.listReleaseAssets(release.id);
+      expect(rows[0].asset_id).toBe(asset2.id);
+      expect(rows[1].asset_id).toBe(asset1.id);
     });
   });
 });

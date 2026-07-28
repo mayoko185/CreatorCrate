@@ -146,6 +146,21 @@ function isValidDate(value) {
   return day <= daysInMonth[month - 1];
 }
 
+/**
+ * Strict positive-integer validator. Rejects malformed strings like "1junk",
+ * "2.5", "1e2", "+2", "-2", or "0". Returns null for invalid values.
+ * @param {unknown} value
+ * @returns {number|null}
+ */
+function parseStrictPositiveInt(value) {
+  if (value == null) return null;
+  const str = String(value);
+  if (!/^[1-9]\d*$/.test(str)) return null;
+  const num = Number(str);
+  if (!Number.isInteger(num) || num < 1) return null;
+  return num;
+}
+
 function isValidPatreonUrl(value) {
   if (!value) return true;
   try {
@@ -608,7 +623,14 @@ export function createReleaseService({ db, evaluateReleaseReadiness }) {
       }
 
       const finalSelections = [...cleaned, ...preservedSelections];
-      repository.replaceReleaseAssets(releaseId, finalSelections);
+      try {
+        repository.replaceReleaseAssets(releaseId, finalSelections);
+      } catch (err) {
+        if (err.code === 'CROSS_PROJECT_ASSET') {
+          throw new ReleaseValidationError({ assets: err.message });
+        }
+        throw err;
+      }
       return repository.listReleaseAssets(releaseId);
     },
 
@@ -721,6 +743,276 @@ export function createReleaseService({ db, evaluateReleaseReadiness }) {
       return repository.removeReleaseAsset(releaseId, assetId);
     },
 
+    // ─── Phase 9-2: Explicit Release Asset Curation Mutations ────────────
+
+    /**
+     * Add one candidate asset to a release.
+     *
+     * Validates:
+     *   - release exists and is mutable (not published, not archived, parent not archived)
+     *   - asset exists and belongs to the same project
+     *   - asset is present (is_present = 1)
+     *   - asset is not already selected
+     *
+     * Assigns default role 'attachment' and appends after the current last
+     * selection with contiguous sort_order. Does NOT accept client-submitted
+     * sort order.
+     *
+     * @param {number} releaseId
+     * @param {number} assetId
+     * @returns {ReleaseAssetRecord}
+     */
+    addCandidateAsset(releaseId, assetId) {
+      const release = repository.findById(releaseId);
+      if (!release) {
+        throw new ReleaseNotFoundError(releaseId);
+      }
+      guardReleaseNotArchived(release);
+      guardParentProjectNotArchived(release.project_id);
+      guardReleaseNotPublished(release);
+
+      // Validate asset ownership and presence
+      const asset = assetRepository.findById(assetId);
+      if (!asset) {
+        throw new AssetNotFoundError(assetId);
+      }
+      if (asset.project_id !== release.project_id) {
+        throw new ReleaseValidationError({
+          assets: `Asset ${assetId} does not belong to the release's project.`,
+        });
+      }
+      if (asset.is_present === 0) {
+        throw new ReleaseValidationError({
+          assets: `Asset ${assetId} is currently missing and cannot be selected.`,
+        });
+      }
+
+      // Reject if already selected
+      const existing = repository.listReleaseAssets(releaseId);
+      if (existing.some((a) => a.asset_id === assetId)) {
+        throw new ReleaseValidationError({
+          assets: `Asset ${assetId} is already selected for this release.`,
+        });
+      }
+
+      // Compute next sort_order: max existing + 1, or 0 if none
+      const nextOrder = existing.length > 0
+        ? Math.max(...existing.map((a) => a.sort_order)) + 1
+        : 0;
+
+      return repository.insertReleaseAsset(releaseId, assetId, 'attachment', nextOrder);
+    },
+
+    /**
+     * Remove one selected mutable asset from a release.
+     *
+     * Unlike removeAssetFromRelease (which is a corrective route for missing
+     * assets only), this operation allows removing ANY selected asset from a
+     * mutable release. After removal, remaining selections are reindexed to
+     * contiguous sort_order 0..n-1.
+     *
+     * Asset records and filesystem are untouched.
+     *
+     * @param {number} releaseId
+     * @param {number} assetId
+     * @returns {boolean}
+     */
+    removeSelectedAsset(releaseId, assetId) {
+      const release = repository.findById(releaseId);
+      if (!release) {
+        throw new ReleaseNotFoundError(releaseId);
+      }
+      guardReleaseNotArchived(release);
+      guardParentProjectNotArchived(release.project_id);
+      guardReleaseNotPublished(release);
+
+      // Verify the asset belongs to the release's project
+      const asset = assetRepository.findById(assetId);
+      if (!asset) {
+        throw new AssetNotFoundError(assetId);
+      }
+      if (asset.project_id !== release.project_id) {
+        throw new ReleaseValidationError({
+          assets: `Asset ${assetId} does not belong to the release's project.`,
+        });
+      }
+
+      // Verify the selection exists
+      const existing = repository.listReleaseAssets(releaseId);
+      if (!existing.some((a) => a.asset_id === assetId)) {
+        throw new ReleaseValidationError({
+          assets: `Asset ${assetId} is not selected for this release.`,
+        });
+      }
+
+      return repository.removeAndReindexReleaseAsset(releaseId, assetId);
+    },
+
+    /**
+     * Update the role of one selected asset.
+     *
+     * Allowed roles: primary, preview, attachment, source.
+     * Only the requested row is updated — asset identity and relative
+     * sequence are preserved. No role cardinality rules are enforced.
+     *
+     * @param {number} releaseId
+     * @param {number} assetId
+     * @param {string} role
+     * @returns {boolean}
+     */
+    updateAssetRole(releaseId, assetId, role) {
+      const release = repository.findById(releaseId);
+      if (!release) {
+        throw new ReleaseNotFoundError(releaseId);
+      }
+      guardReleaseNotArchived(release);
+      guardParentProjectNotArchived(release.project_id);
+      guardReleaseNotPublished(release);
+
+      // Validate role
+      const normalizedRole = typeof role === 'string' ? role.trim().toLowerCase() : '';
+      if (!RELEASE_ASSET_ROLES.includes(normalizedRole)) {
+        throw new ReleaseValidationError({
+          role: `Role must be one of: ${RELEASE_ASSET_ROLES.join(', ')}.`,
+        });
+      }
+
+      // Verify the asset belongs to the release's project
+      const asset = assetRepository.findById(assetId);
+      if (!asset) {
+        throw new AssetNotFoundError(assetId);
+      }
+      if (asset.project_id !== release.project_id) {
+        throw new ReleaseValidationError({
+          assets: `Asset ${assetId} does not belong to the release's project.`,
+        });
+      }
+
+      // Verify the selection exists
+      const existing = repository.listReleaseAssets(releaseId);
+      if (!existing.some((a) => a.asset_id === assetId)) {
+        throw new ReleaseValidationError({
+          assets: `Asset ${assetId} is not selected for this release.`,
+        });
+      }
+
+      return repository.updateReleaseAssetRole(releaseId, assetId, normalizedRole);
+    },
+
+    /**
+     * Move one selected asset up in the ordering.
+     *
+     * Selected rows are interpreted in persisted sort_order ASC, asset_id ASC.
+     * The target swaps sort_order with the immediately preceding row.
+     * First-item Move Up is a controlled no-op (returns false).
+     * After the mutation, persisted mutable ordering is reindexed to
+     * contiguous 0..n-1.
+     *
+     * @param {number} releaseId
+     * @param {number} assetId
+     * @returns {boolean} true if a swap occurred
+     */
+    moveAssetUp(releaseId, assetId) {
+      const release = repository.findById(releaseId);
+      if (!release) {
+        throw new ReleaseNotFoundError(releaseId);
+      }
+      guardReleaseNotArchived(release);
+      guardParentProjectNotArchived(release.project_id);
+      guardReleaseNotPublished(release);
+
+      // Verify the asset belongs to the release's project
+      const asset = assetRepository.findById(assetId);
+      if (!asset) {
+        throw new AssetNotFoundError(assetId);
+      }
+      if (asset.project_id !== release.project_id) {
+        throw new ReleaseValidationError({
+          assets: `Asset ${assetId} does not belong to the release's project.`,
+        });
+      }
+
+      // Load all rows in deterministic order
+      const rows = repository.listReleaseAssets(releaseId);
+      const idx = rows.findIndex((a) => a.asset_id === assetId);
+      if (idx === -1) {
+        throw new ReleaseValidationError({
+          assets: `Asset ${assetId} is not selected for this release.`,
+        });
+      }
+
+      // First item — no-op
+      if (idx === 0) return false;
+
+      // Compute the desired asset_id sequence in memory: swap target with predecessor
+      const assetIds = rows.map((r) => r.asset_id);
+      // Swap positions idx and idx - 1
+      const tmp = assetIds[idx];
+      assetIds[idx] = assetIds[idx - 1];
+      assetIds[idx - 1] = tmp;
+
+      // Rewrite sort_order atomically to contiguous 0..n-1
+      repository.reorderReleaseAssets(releaseId, assetIds);
+      return true;
+    },
+
+    /**
+     * Move one selected asset down in the ordering.
+     *
+     * Selected rows are interpreted in persisted sort_order ASC, asset_id ASC.
+     * The target swaps sort_order with the immediately following row.
+     * Last-item Move Down is a controlled no-op (returns false).
+     * After the mutation, persisted mutable ordering is reindexed to
+     * contiguous 0..n-1.
+     *
+     * @param {number} releaseId
+     * @param {number} assetId
+     * @returns {boolean} true if a swap occurred
+     */
+    moveAssetDown(releaseId, assetId) {
+      const release = repository.findById(releaseId);
+      if (!release) {
+        throw new ReleaseNotFoundError(releaseId);
+      }
+      guardReleaseNotArchived(release);
+      guardParentProjectNotArchived(release.project_id);
+      guardReleaseNotPublished(release);
+
+      // Verify the asset belongs to the release's project
+      const asset = assetRepository.findById(assetId);
+      if (!asset) {
+        throw new AssetNotFoundError(assetId);
+      }
+      if (asset.project_id !== release.project_id) {
+        throw new ReleaseValidationError({
+          assets: `Asset ${assetId} does not belong to the release's project.`,
+        });
+      }
+
+      // Load all rows in deterministic order
+      const rows = repository.listReleaseAssets(releaseId);
+      const idx = rows.findIndex((a) => a.asset_id === assetId);
+      if (idx === -1) {
+        throw new ReleaseValidationError({
+          assets: `Asset ${assetId} is not selected for this release.`,
+        });
+      }
+
+      // Last item — no-op
+      if (idx === rows.length - 1) return false;
+
+      // Compute the desired asset_id sequence in memory: swap target with successor
+      const assetIds = rows.map((r) => r.asset_id);
+      // Swap positions idx and idx + 1
+      const tmp = assetIds[idx];
+      assetIds[idx] = assetIds[idx + 1];
+      assetIds[idx + 1] = tmp;
+
+      // Rewrite sort_order atomically to contiguous 0..n-1
+      repository.reorderReleaseAssets(releaseId, assetIds);
+      return true;
+    },
+
     /**
      * Find releases that use a given asset.
      * @param {number} assetId
@@ -737,6 +1029,133 @@ export function createReleaseService({ db, evaluateReleaseReadiness }) {
      */
     findProjectAssets(projectId) {
       return assetRepository.findByProjectId(projectId, { sortBy: 'filename', order: 'asc' });
+    },
+
+    // ─── Phase 9-1: Release Asset Candidate Discovery ─────────────────────
+
+    /**
+     * Normalize and validate release candidate query parameters.
+     *
+     * @param {Object} raw - raw query parameters
+     * @returns {{ search: string|null, extension: string|null, page: number, pageSize: number }}
+     */
+    normalizeCandidateQuery(raw) {
+      const search = typeof raw.search === 'string' && raw.search.trim() !== ''
+        ? raw.search.trim()
+        : null;
+
+      // Extension: allow-list via simple safe check — only alphanumeric and dots
+      let extension = null;
+      if (typeof raw.extension === 'string' && raw.extension.trim() !== '') {
+        const trimmed = raw.extension.trim().toLowerCase();
+        // Allow only safe characters: letters, digits, dots, hyphens, underscores
+        if (/^[a-z0-9._-]+$/.test(trimmed)) {
+          extension = trimmed;
+        }
+      }
+
+      const pageRaw = parseStrictPositiveInt(raw.page);
+      const page = pageRaw !== null ? pageRaw : 1;
+
+      const pageSizeRaw = parseStrictPositiveInt(raw.pageSize);
+      let pageSize = pageSizeRaw !== null ? pageSizeRaw : 25;
+      if (pageSize > 100) pageSize = 100;
+
+      return { search, extension, page, pageSize };
+    },
+
+    /**
+     * Compose the release asset-management page view-model.
+     *
+     * Returns:
+     *   - release
+     *   - project
+     *   - releaseAssets — complete selected assets (unpaginated, includes missing)
+     *   - candidates — current bounded candidate page
+     *   - candidateTotal — total matching candidates
+     *   - candidatePage — current page number
+     *   - candidatePageSize — page size
+     *   - candidatePageCount — total pages
+     *   - candidateFilters — normalized filter values
+     *   - candidateExtensions — available extension values for filter dropdown
+     *   - pageUrl — URL builder for pagination
+     *
+     * @param {number} releaseId
+     * @param {Object} rawQuery - raw query parameters for candidate filters
+     * @returns {{
+     *   release: object,
+     *   project: object,
+     *   releaseAssets: Array,
+     *   candidates: Array,
+     *   candidateTotal: number,
+     *   candidatePage: number,
+     *   candidatePageSize: number,
+     *   candidatePageCount: number,
+     *   candidateFilters: { search: string|null, extension: string|null },
+     *   candidateExtensions: string[],
+     *   pageUrl: Function,
+     * }}
+     */
+    getReleaseAssetManagementPage(releaseId, rawQuery = {}) {
+      const release = repository.findById(releaseId);
+      if (!release) {
+        throw new ReleaseNotFoundError(releaseId);
+      }
+
+      const project = projectRepository.findById(release.project_id);
+      if (!project) {
+        const err = new Error(`Project ${release.project_id} not found`);
+        err.status = 404;
+        throw err;
+      }
+
+      // Complete selected assets (unpaginated, includes missing)
+      const releaseAssets = repository.listReleaseAssets(releaseId);
+
+      // Normalize candidate filters
+      const candidateFilters = this.normalizeCandidateQuery(rawQuery);
+
+      // Count matching candidates
+      const candidateTotal = repository.countReleaseCandidates(
+        releaseId,
+        release.project_id,
+        { search: candidateFilters.search, extension: candidateFilters.extension }
+      );
+
+      // Pagination metadata
+      const candidatePageCount = Math.max(1, Math.ceil(candidateTotal / candidateFilters.pageSize));
+      const candidatePage = Math.min(candidateFilters.page, candidatePageCount);
+
+      // Fetch candidate page
+      const candidates = repository.findReleaseCandidatePage(
+        releaseId,
+        release.project_id,
+        {
+          search: candidateFilters.search,
+          extension: candidateFilters.extension,
+          page: candidatePage,
+          pageSize: candidateFilters.pageSize,
+        }
+      );
+
+      // Available extensions for filter dropdown
+      const candidateExtensions = repository.getReleaseCandidateExtensions(releaseId, release.project_id);
+
+      return {
+        release,
+        project,
+        releaseAssets,
+        candidates,
+        candidateTotal,
+        candidatePage,
+        candidatePageSize: candidateFilters.pageSize,
+        candidatePageCount,
+        candidateFilters: {
+          search: candidateFilters.search,
+          extension: candidateFilters.extension,
+        },
+        candidateExtensions,
+      };
     },
 
     /**

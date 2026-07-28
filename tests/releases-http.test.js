@@ -9,6 +9,7 @@ import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { STATUS_DIR_MAP } from '../src/storage/project-storage.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
 import { createReleaseRepository } from '../src/data/release-repository.js';
+import { createReleaseService } from '../src/services/release-service.js';
 import { getLocalTodayIso } from '../src/util/date.js';
 import { evaluateReleaseReadiness } from '../src/services/release-readiness-policy.js';
 
@@ -2358,19 +2359,18 @@ describe('release HTTP workflow', () => {
     const afterRows = getReleaseAssets(db, releaseId);
     expect(afterRows).toEqual(beforeRows);
 
-    // GET the assets page — checkboxes must be disabled, no Save Selection
+    // GET the assets page — no bulk-selection checkboxes, no Save Selection
     const assetsPage = await request(app)
       .get(`${createRes.headers.location}/assets`)
       .expect(200);
-    // Extract exact checkbox elements — each must contain disabled
+    // The entire bulk-selection form must be absent in read-only scope
     const checkboxRegex = /<input type="checkbox" name="selectedAssetIds\[\]" value="(\d+)"[^>]*class="asset-checkbox"[^>]*>/g;
     let match;
     let checkboxCount = 0;
     while ((match = checkboxRegex.exec(assetsPage.text)) !== null) {
       checkboxCount++;
-      expect(match[0]).toContain('disabled');
     }
-    expect(checkboxCount).toBeGreaterThan(0);
+    expect(checkboxCount).toBe(0);
     // Save Selection button must not be present
     expect(assetsPage.text).not.toMatch(/type="submit"[^>]*>Save Selection/);
   });
@@ -2442,19 +2442,18 @@ describe('release HTTP workflow', () => {
     const afterRows = getReleaseAssets(db, releaseId);
     expect(afterRows).toEqual(beforeRows);
 
-    // GET the assets page — checkboxes must be disabled, no Save Selection
+    // GET the assets page — no bulk-selection checkboxes, no Save Selection
     const assetsPage = await request(app)
       .get(`${createRes.headers.location}/assets`)
       .expect(200);
-    // Extract exact checkbox elements — each must contain disabled
+    // The entire bulk-selection form must be absent in read-only scope
     const checkboxRegex = /<input type="checkbox" name="selectedAssetIds\[\]" value="(\d+)"[^>]*class="asset-checkbox"[^>]*>/g;
     let match;
     let checkboxCount = 0;
     while ((match = checkboxRegex.exec(assetsPage.text)) !== null) {
       checkboxCount++;
-      expect(match[0]).toContain('disabled');
     }
-    expect(checkboxCount).toBeGreaterThan(0);
+    expect(checkboxCount).toBe(0);
     // Save Selection button must not be present
     expect(assetsPage.text).not.toMatch(/type="submit"[^>]*>Save Selection/);
   });
@@ -2781,15 +2780,14 @@ describe('release HTTP workflow', () => {
       expect(assets.text).toMatch(/read-only/i);
       // Save Selection button must not be rendered.
       expect(assets.text).not.toMatch(/type="submit"[^>]*>Save Selection/);
-      // Each checkbox element must contain disabled.
+      // No bulk-selection checkboxes in read-only scope
       const checkboxRe = /<input type="checkbox" name="selectedAssetIds\[\]" value="(\d+)"[^>]*class="asset-checkbox"[^>]*>/g;
       let match;
       let count = 0;
       while ((match = checkboxRe.exec(assets.text)) !== null) {
         count++;
-        expect(match[0]).toContain('disabled');
       }
-      expect(count).toBeGreaterThan(0);
+      expect(count).toBe(0);
     });
 
     it('active project asset selection page has enabled checkboxes and Save button (regression)', async () => {
@@ -5791,6 +5789,2549 @@ describe('release HTTP workflow', () => {
         expect(presenceMatch).not.toBeNull();
         expect(presenceMatch[1]).toMatch(/Present|Missing/);
       }
+    });
+  });
+
+  // ─── Phase 9-1: Release Asset Candidate Discovery (HTTP) ──────────────
+
+  describe('release asset candidate discovery (Phase 9-1)', () => {
+    /**
+     * Create a project, scan assets, create a release, and select one asset.
+     * Returns { projectId, releaseLocation, releaseId, assetRepo, allAssets }.
+     */
+    async function setupReleaseWithAssets() {
+      const projRes = await request(app)
+        .post('/projects')
+        .send('title=Candidate+Discovery+Test')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectId = projRes.headers.location.replace('/projects/', '');
+
+      const slug = 'candidate-discovery-test';
+      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
+      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
+      const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
+
+      // Create multiple files
+      fs.writeFileSync(path.join(projectDir, 'alpha.txt'), 'alpha content');
+      fs.writeFileSync(path.join(projectDir, 'beta.png'), 'beta content');
+      fs.writeFileSync(path.join(projectDir, 'gamma.txt'), 'gamma content');
+      fs.writeFileSync(path.join(projectDir, 'delta.txt'), 'delta content');
+      await request(app).post(`/projects/${projectId}/scan`).expect(302);
+
+      const assetRepo = createAssetRepository(db);
+      const allAssets = assetRepo.findByProjectId(Number(projectId));
+
+      const createRes = await request(app)
+        .post('/releases')
+        .send(`projectId=${projectId}`)
+        .send('title=Candidate+Discovery+Release')
+        .send('status=ready')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const releaseLocation = createRes.headers.location;
+      const releaseId = Number(releaseLocation.replace('/releases/', ''));
+
+      // Select one asset (alpha.txt)
+      const alphaAsset = allAssets.find((a) => a.filename === 'alpha.txt');
+      await request(app)
+        .post(releaseLocation + '/assets')
+        .send(`selectedAssetIds[]=${alphaAsset.id}`)
+        .send('roles[]=primary')
+        .send('sortOrder[]=0')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      return { projectId, releaseLocation, releaseId, assetRepo, allAssets };
+    }
+
+    it('selected and available sections are distinct on the page', async () => {
+      const { releaseLocation } = await setupReleaseWithAssets();
+      const res = await request(app).get(`${releaseLocation}/assets`).expect(200);
+
+      // Both sections must be present
+      expect(res.text).toContain('Selected Assets');
+      expect(res.text).toContain('Available Assets');
+    });
+
+    it('selected section shows the complete selected asset', async () => {
+      const { releaseLocation } = await setupReleaseWithAssets();
+      const res = await request(app).get(`${releaseLocation}/assets`).expect(200);
+
+      // The selected asset (alpha.txt) must appear in the selected section
+      const selectedSection = res.text.match(/<h2>Selected Assets<\/h2>[\s\S]*?<\/section>/);
+      expect(selectedSection).not.toBeNull();
+      expect(selectedSection[0]).toContain('alpha.txt');
+    });
+
+    it('selected section is complete across candidate pages', async () => {
+      const { releaseLocation } = await setupReleaseWithAssets();
+      // Request a small candidate page size — selected section must still show all
+      const res = await request(app).get(`${releaseLocation}/assets?pageSize=1`).expect(200);
+
+      // Selected section must still contain alpha.txt
+      const selectedSection = res.text.match(/<h2>Selected Assets<\/h2>[\s\S]*?<\/section>/);
+      expect(selectedSection).not.toBeNull();
+      expect(selectedSection[0]).toContain('alpha.txt');
+    });
+
+    it('candidate page is bounded by page size', async () => {
+      const { releaseLocation } = await setupReleaseWithAssets();
+      const res = await request(app).get(`${releaseLocation}/assets?pageSize=1`).expect(200);
+
+      // The candidate table should show only 1 row (pageSize=1)
+      // The pagination info should show "Page 1 of 3"
+      expect(res.text).toContain('Page 1 of 3');
+    });
+
+    it('pagination preserves search and extension filters', async () => {
+      const { releaseLocation } = await setupReleaseWithAssets();
+      const res = await request(app).get(`${releaseLocation}/assets?search=beta&pageSize=1`).expect(200);
+
+      // The filter form must retain the search value
+      expect(res.text).toContain('value="beta"');
+    });
+
+    it('invalid page falls back to 1', async () => {
+      const { releaseLocation } = await setupReleaseWithAssets();
+      const res = await request(app).get(`${releaseLocation}/assets?page=invalid`).expect(200);
+      // Page should render without error
+      expect(res.status).toBe(200);
+    });
+
+    it('invalid page size falls back to default', async () => {
+      const { releaseLocation } = await setupReleaseWithAssets();
+      const res = await request(app).get(`${releaseLocation}/assets?pageSize=invalid`).expect(200);
+      expect(res.status).toBe(200);
+    });
+
+    it('unknown query parameters are stripped from generated URLs', async () => {
+      const { releaseLocation } = await setupReleaseWithAssets();
+      const res = await request(app).get(`${releaseLocation}/assets?unknown=param&junk=value`).expect(200);
+
+      // The page should render without error
+      expect(res.status).toBe(200);
+    });
+
+    it('published release asset page remains read-only', async () => {
+      const { releaseLocation, projectId } = await setupReleaseWithAssets();
+      const releaseId = Number(releaseLocation.replace('/releases/', ''));
+
+      // Publish the release
+      await request(app)
+        .post(`${releaseLocation}/publish`)
+        .send('publishedDate=2025-06-15')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      const res = await request(app).get(`${releaseLocation}/assets`).expect(200);
+      // Must show locked notice
+      expect(res.text).toContain('locked and read-only');
+      // Save Selection button must not be present
+      expect(res.text).not.toMatch(/type="submit"[^>]*>Save Selection/);
+    });
+
+    it('archived release asset page remains read-only', async () => {
+      const { releaseLocation } = await setupReleaseWithAssets();
+
+      // Archive the release
+      await request(app)
+        .post(`${releaseLocation}/archive`)
+        .expect(302);
+
+      const res = await request(app).get(`${releaseLocation}/assets`).expect(200);
+      // Must show archived notice
+      expect(res.text).toContain('archived');
+      // Save Selection button must not be present
+      expect(res.text).not.toMatch(/type="submit"[^>]*>Save Selection/);
+    });
+
+    it('archived parent project asset page remains read-only', async () => {
+      const { releaseLocation, projectId } = await setupReleaseWithAssets();
+
+      // Archive the parent project
+      await request(app)
+        .post(`/projects/${projectId}/archive`)
+        .expect(302);
+
+      const res = await request(app).get(`${releaseLocation}/assets`).expect(200);
+      // Must show archived notice
+      expect(res.text).toContain('archived');
+      // Save Selection button must not be present
+      expect(res.text).not.toMatch(/type="submit"[^>]*>Save Selection/);
+    });
+
+    it('no N+1 candidate query path — single page load is fast', async () => {
+      const { releaseLocation } = await setupReleaseWithAssets();
+      const res = await request(app).get(`${releaseLocation}/assets`).expect(200);
+      // The page renders both sections without error
+      expect(res.text).toContain('Selected Assets');
+      expect(res.text).toContain('Available Assets');
+      // The candidate count should be correct (3 unselected present assets)
+      expect(res.text).toContain('3 candidates available');
+    });
+  });
+
+  // ─── Phase 9-3: Role guidance and accessibility ───────────────────────
+
+  describe('role guidance and accessibility (Phase 9-3)', () => {
+    async function setupBasicRelease() {
+      const projRes = await request(app)
+        .post('/projects')
+        .send('title=Role+Guidance+Test')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectId = projRes.headers.location.replace('/projects/', '');
+
+      const slug = 'role-guidance-test';
+      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
+      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
+      const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
+      fs.writeFileSync(path.join(projectDir, 'asset.png'), 'png');
+      fs.writeFileSync(path.join(projectDir, 'asset2.png'), 'png2');
+      await request(app).post(`/projects/${projectId}/scan`).expect(302);
+
+      const createRes = await request(app)
+        .post('/releases')
+        .send(`projectId=${projectId}`)
+        .send('title=Role+Guidance+Release')
+        .send('status=idea')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const releaseLocation = createRes.headers.location;
+      return { projectId, releaseLocation };
+    }
+
+    it('role guidance section is present with all four roles', async () => {
+      const { releaseLocation } = await setupBasicRelease();
+      const res = await request(app).get(`${releaseLocation}/assets`).expect(200);
+
+      expect(res.text).toContain('Asset Roles');
+      expect(res.text).toContain('Primary');
+      expect(res.text).toContain('Preview');
+      expect(res.text).toContain('Attachment');
+      expect(res.text).toContain('Source');
+    });
+
+    it('role guidance describes organizational intent without cardinality rules', async () => {
+      const { releaseLocation } = await setupBasicRelease();
+      const res = await request(app).get(`${releaseLocation}/assets`).expect(200);
+
+      // Primary description
+      expect(res.text).toContain('main asset for this release');
+      // Preview description
+      expect(res.text).toContain('preview or teaser');
+      // Attachment description
+      expect(res.text).toContain('supporting asset');
+      // Source description
+      expect(res.text).toContain('editable or original source');
+    });
+
+    it('search input has accessible name', async () => {
+      const { releaseLocation } = await setupBasicRelease();
+      const res = await request(app).get(`${releaseLocation}/assets`).expect(200);
+      expect(res.text).toContain('aria-label="Search available assets by filename"');
+    });
+
+    it('extension filter has accessible name', async () => {
+      const { releaseLocation } = await setupBasicRelease();
+      const res = await request(app).get(`${releaseLocation}/assets`).expect(200);
+      expect(res.text).toContain('aria-label="Filter by file extension"');
+    });
+
+    it('page-size control has accessible name', async () => {
+      const { releaseLocation } = await setupBasicRelease();
+      const res = await request(app).get(`${releaseLocation}/assets`).expect(200);
+      expect(res.text).toContain('aria-label="Number of candidates per page"');
+    });
+
+    it('Add button has accessible name', async () => {
+      const { releaseLocation } = await setupBasicRelease();
+      const res = await request(app).get(`${releaseLocation}/assets`).expect(200);
+      expect(res.text).toContain('aria-label="Add ');
+    });
+
+    it('Remove button has accessible name', async () => {
+      const { releaseLocation, projectId } = await setupBasicRelease();
+      // Add an asset so Remove button appears in selected section
+      const assetRepo = createAssetRepository(db);
+      const assets = assetRepo.findByProjectId(Number(projectId));
+      for (const asset of assets) {
+        await request(app)
+          .post(`${releaseLocation}/assets/add`)
+          .send(`assetId=${asset.id}`)
+          .set('Content-Type', 'application/x-www-form-urlencoded')
+          .expect(302);
+      }
+
+      const res = await request(app).get(`${releaseLocation}/assets`).expect(200);
+      expect(res.text).toContain('aria-label="Remove ');
+    });
+
+    it('Move Up button has accessible name', async () => {
+      const { releaseLocation, projectId } = await setupBasicRelease();
+      // Add two assets so the second item has an enabled Move Up button
+      const assetRepo = createAssetRepository(db);
+      const assets = assetRepo.findByProjectId(Number(projectId));
+      for (const asset of assets) {
+        await request(app)
+          .post(`${releaseLocation}/assets/add`)
+          .send(`assetId=${asset.id}`)
+          .set('Content-Type', 'application/x-www-form-urlencoded')
+          .expect(302);
+      }
+
+      const res = await request(app).get(`${releaseLocation}/assets`).expect(200);
+      expect(res.text).toContain('aria-label="Move ');
+      expect(res.text).toContain(' up"');
+    });
+
+    it('Move Down button has accessible name', async () => {
+      const { releaseLocation, projectId } = await setupBasicRelease();
+      // Add two assets so Move Down button appears
+      const assetRepo = createAssetRepository(db);
+      const assets = assetRepo.findByProjectId(Number(projectId));
+      for (const asset of assets) {
+        await request(app)
+          .post(`${releaseLocation}/assets/add`)
+          .send(`assetId=${asset.id}`)
+          .set('Content-Type', 'application/x-www-form-urlencoded')
+          .expect(302);
+      }
+
+      const res = await request(app).get(`${releaseLocation}/assets`).expect(200);
+      expect(res.text).toContain('aria-label="Move ');
+      expect(res.text).toContain(' down"');
+    });
+
+    it('disabled boundary controls remain understandable', async () => {
+      const { releaseLocation, projectId } = await setupBasicRelease();
+      // Add two assets so we have a first and last item
+      const assetRepo = createAssetRepository(db);
+      const assets = assetRepo.findByProjectId(Number(projectId));
+      for (const asset of assets) {
+        await request(app)
+          .post(`${releaseLocation}/assets/add`)
+          .send(`assetId=${asset.id}`)
+          .set('Content-Type', 'application/x-www-form-urlencoded')
+          .expect(302);
+      }
+
+      const res = await request(app).get(`${releaseLocation}/assets`).expect(200);
+
+      // First item's Move Up should be disabled with descriptive title
+      expect(res.text).toContain('disabled');
+      expect(res.text).toContain('already first');
+    });
+
+    it('role select and noscript submit exist for mutable scope', async () => {
+      const { releaseLocation, projectId } = await setupBasicRelease();
+      // Add an asset so role select appears
+      const assetRepo = createAssetRepository(db);
+      const assets = assetRepo.findByProjectId(Number(projectId));
+      for (const asset of assets) {
+        await request(app)
+          .post(`${releaseLocation}/assets/add`)
+          .send(`assetId=${asset.id}`)
+          .set('Content-Type', 'application/x-www-form-urlencoded')
+          .expect(302);
+      }
+
+      const res = await request(app).get(`${releaseLocation}/assets`).expect(200);
+
+      // Role select exists for mutable scope in the new per-row form
+      const roleSelectMatch = res.text.match(/<label for="role-\d+"[^>]*>Role for/);
+      expect(roleSelectMatch).not.toBeNull();
+
+      // noscript submit button exists — usable without JavaScript
+      const noscriptSubmitMatch = res.text.match(/<noscript><button[^>]*>Set<\/button><\/noscript>/);
+      expect(noscriptSubmitMatch).not.toBeNull();
+
+      // The noscript submit is INSIDE a form
+      const roleFormMatch = res.text.match(/action="\/releases\/\d+\/assets\/\d+\/role"/g);
+      expect(roleFormMatch).not.toBeNull();
+    });
+  });
+
+  // ─── Phase 9-3: Lifecycle regression ─────────────────────────────────
+
+  describe('Phase 9-3 lifecycle regression', () => {
+    async function setupReleaseWithTwoAssets() {
+      const projRes = await request(app)
+        .post('/projects')
+        .send('title=Lifecycle+Regression+Test')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectId = projRes.headers.location.replace('/projects/', '');
+
+      const slug = 'lifecycle-regression-test';
+      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
+      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
+      const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
+      fs.writeFileSync(path.join(projectDir, 'a.png'), 'png');
+      fs.writeFileSync(path.join(projectDir, 'b.png'), 'png');
+      await request(app).post(`/projects/${projectId}/scan`).expect(302);
+
+      const assetRepo = createAssetRepository(db);
+      const allAssets = assetRepo.findByProjectId(Number(projectId));
+
+      const createRes = await request(app)
+        .post('/releases')
+        .send(`projectId=${projectId}`)
+        .send('title=Lifecycle+Regression+Release')
+        .send('status=ready')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const releaseLocation = createRes.headers.location;
+      const releaseId = Number(releaseLocation.replace('/releases/', ''));
+
+      // Select both assets
+      await request(app)
+        .post(releaseLocation + '/assets')
+        .send(`selectedAssetIds[]=${allAssets[0].id}`)
+        .send(`selectedAssetIds[]=${allAssets[1].id}`)
+        .send('roles[]=primary')
+        .send('roles[]=attachment')
+        .send('sortOrder[]=0')
+        .send('sortOrder[]=1')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      return { projectId, releaseLocation, releaseId, assetRepo, allAssets };
+    }
+
+    it('published release summary remains unchanged after mutation attempt', async () => {
+      const { releaseLocation } = await setupReleaseWithTwoAssets();
+
+      // Publish
+      await request(app)
+        .post(`${releaseLocation}/publish`)
+        .send('publishedDate=2025-06-15')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      const beforeDetail = await request(app).get(releaseLocation).expect(200);
+      expect(beforeDetail.text).toContain('Publication Summary');
+
+      // Attempt mutation via Phase 9-2 route
+      await request(app)
+        .post(`${releaseLocation}/assets/add`)
+        .send('assetId=99999')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(422);
+
+      const afterDetail = await request(app).get(releaseLocation).expect(200);
+      expect(afterDetail.text).toContain('Publication Summary');
+    });
+
+    it('archived release preserves complete release and junction rows', async () => {
+      const { releaseLocation, releaseId } = await setupReleaseWithTwoAssets();
+
+      const beforeRows = getReleaseAssets(db, releaseId);
+      expect(beforeRows).toHaveLength(2);
+
+      // Archive
+      await request(app)
+        .post(`${releaseLocation}/archive`)
+        .expect(302);
+
+      const afterRows = getReleaseAssets(db, releaseId);
+      expect(afterRows).toEqual(beforeRows);
+
+      // Detail page shows archived notice
+      const detail = await request(app).get(releaseLocation).expect(200);
+      expect(detail.text).toContain('archived');
+    });
+
+    it('archived parent preserves complete release and junction rows', async () => {
+      const { releaseLocation, releaseId, projectId } = await setupReleaseWithTwoAssets();
+
+      const beforeRows = getReleaseAssets(db, releaseId);
+
+      // Archive parent project
+      await request(app)
+        .post(`/projects/${projectId}/archive`)
+        .expect(302);
+
+      const afterRows = getReleaseAssets(db, releaseId);
+      expect(afterRows).toEqual(beforeRows);
+    });
+
+    it('stale readiness protection still works after Phase 9-2 mutations', async () => {
+      const { releaseLocation, releaseId, projectId, assetRepo, allAssets } = await setupReleaseWithTwoAssets();
+
+      // Publish
+      await request(app)
+        .post(`${releaseLocation}/publish`)
+        .send('publishedDate=2025-06-15')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      // Verify readiness is not shown (published)
+      const detail = await request(app).get(releaseLocation).expect(200);
+      expect(detail.text).not.toContain('Publishable');
+      expect(detail.text).toContain('Publication Summary');
+    });
+
+    it('missing selected assets remain historically visible', async () => {
+      const { releaseLocation, releaseId, projectId, assetRepo, allAssets } = await setupReleaseWithTwoAssets();
+
+      // Mark one asset as missing
+      const assetToRemove = allAssets[0];
+      db.prepare('UPDATE assets SET is_present = 0, missing_since = datetime(\'now\') WHERE id = ?').run(assetToRemove.id);
+
+      // Detail page must still show the missing asset
+      const detail = await request(app).get(releaseLocation).expect(200);
+      expect(detail.text).toContain(assetToRemove.filename);
+      expect(detail.text).toContain('Missing');
+    });
+  });
+
+  // ─── Phase 9-3: Cross-view ordering consistency ───────────────────────
+
+  describe('cross-view ordering consistency (Phase 9-3)', () => {
+    async function setupOrderedRelease() {
+      const projRes = await request(app)
+        .post('/projects')
+        .send('title=Ordering+Test')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectId = projRes.headers.location.replace('/projects/', '');
+
+      const slug = 'ordering-test';
+      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
+      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
+      const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
+      fs.writeFileSync(path.join(projectDir, 'c.txt'), 'c');
+      fs.writeFileSync(path.join(projectDir, 'a.txt'), 'a');
+      fs.writeFileSync(path.join(projectDir, 'b.txt'), 'b');
+      await request(app).post(`/projects/${projectId}/scan`).expect(302);
+
+      const assetRepo = createAssetRepository(db);
+      const allAssets = assetRepo.findByProjectId(Number(projectId));
+      const assetC = allAssets.find((a) => a.filename === 'c.txt');
+      const assetA = allAssets.find((a) => a.filename === 'a.txt');
+      const assetB = allAssets.find((a) => a.filename === 'b.txt');
+
+      const createRes = await request(app)
+        .post('/releases')
+        .send(`projectId=${projectId}`)
+        .send('title=Ordering+Release')
+        .send('status=ready')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const releaseLocation = createRes.headers.location;
+      const releaseId = Number(releaseLocation.replace('/releases/', ''));
+
+      // Add assets via Phase 9-2 add route in non-alphabetical order
+      await request(app)
+        .post(`${releaseLocation}/assets/add`)
+        .send(`assetId=${assetC.id}`)
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      await request(app)
+        .post(`${releaseLocation}/assets/add`)
+        .send(`assetId=${assetA.id}`)
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      await request(app)
+        .post(`${releaseLocation}/assets/add`)
+        .send(`assetId=${assetB.id}`)
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      return { projectId, releaseLocation, releaseId, assetRepo, allAssets, assetA, assetB, assetC };
+    }
+
+    it('curation page shows assets in sort_order ASC order', async () => {
+      const { releaseLocation } = await setupOrderedRelease();
+      const res = await request(app).get(`${releaseLocation}/assets`).expect(200);
+
+      // The selected section should show assets in order: c, a, b
+      const selectedSection = res.text.match(/<h2>Selected Assets<\/h2>[\s\S]*?<\/section>/);
+      expect(selectedSection).not.toBeNull();
+      const cPos = selectedSection[0].indexOf('c.txt');
+      const aPos = selectedSection[0].indexOf('a.txt');
+      const bPos = selectedSection[0].indexOf('b.txt');
+      expect(cPos).toBeLessThan(aPos);
+      expect(aPos).toBeLessThan(bPos);
+    });
+
+    it('release detail shows assets in same order as curation page', async () => {
+      const { releaseLocation } = await setupOrderedRelease();
+      const res = await request(app).get(releaseLocation).expect(200);
+
+      const cPos = res.text.indexOf('c.txt');
+      const aPos = res.text.indexOf('a.txt');
+      const bPos = res.text.indexOf('b.txt');
+      expect(cPos).toBeLessThan(aPos);
+      expect(aPos).toBeLessThan(bPos);
+    });
+
+    it('publication review shows assets in same order as curation page', async () => {
+      const { releaseLocation } = await setupOrderedRelease();
+      const res = await request(app).get(`${releaseLocation}/publish`).expect(200);
+
+      const cPos = res.text.indexOf('c.txt');
+      const aPos = res.text.indexOf('a.txt');
+      const bPos = res.text.indexOf('b.txt');
+      expect(cPos).toBeLessThan(aPos);
+      expect(aPos).toBeLessThan(bPos);
+    });
+
+    it('published summary shows assets in same order as curation page', async () => {
+      const { releaseLocation } = await setupOrderedRelease();
+
+      // Publish
+      await request(app)
+        .post(`${releaseLocation}/publish`)
+        .send('publishedDate=2025-06-15')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      const res = await request(app).get(releaseLocation).expect(200);
+
+      const cPos = res.text.indexOf('c.txt');
+      const aPos = res.text.indexOf('a.txt');
+      const bPos = res.text.indexOf('b.txt');
+      expect(cPos).toBeLessThan(aPos);
+      expect(aPos).toBeLessThan(bPos);
+    });
+  });
+
+  // ─── Phase 9-3: Count/page parity after mutations ─────────────────────
+
+  describe('count/page parity after mutations (Phase 9-3)', () => {
+    it('candidate count decreases after adding an asset', async () => {
+      const projRes = await request(app)
+        .post('/projects')
+        .send('title=Count+Parity+Test')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectId = projRes.headers.location.replace('/projects/', '');
+
+      const slug = 'count-parity-test';
+      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
+      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
+      const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
+      fs.writeFileSync(path.join(projectDir, 'a.txt'), 'a');
+      fs.writeFileSync(path.join(projectDir, 'b.txt'), 'b');
+      await request(app).post(`/projects/${projectId}/scan`).expect(302);
+
+      const assetRepo = createAssetRepository(db);
+      const allAssets = assetRepo.findByProjectId(Number(projectId));
+
+      const createRes = await request(app)
+        .post('/releases')
+        .send(`projectId=${projectId}`)
+        .send('title=Count+Parity+Release')
+        .send('status=idea')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const releaseLocation = createRes.headers.location;
+
+      // Before add: 2 candidates
+      let res = await request(app).get(`${releaseLocation}/assets`).expect(200);
+      expect(res.text).toContain('2 candidates available');
+
+      // Add one asset
+      await request(app)
+        .post(`${releaseLocation}/assets/add`)
+        .send(`assetId=${allAssets[0].id}`)
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      // After add: 1 candidate
+      res = await request(app).get(`${releaseLocation}/assets`).expect(200);
+      expect(res.text).toContain('1 candidate available');
+    });
+
+    it('candidate count increases after removing an asset', async () => {
+      const projRes = await request(app)
+        .post('/projects')
+        .send('title=Count+Parity+Remove+Test')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectId = projRes.headers.location.replace('/projects/', '');
+
+      const slug = 'count-parity-remove-test';
+      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
+      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
+      const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
+      fs.writeFileSync(path.join(projectDir, 'a.txt'), 'a');
+      fs.writeFileSync(path.join(projectDir, 'b.txt'), 'b');
+      await request(app).post(`/projects/${projectId}/scan`).expect(302);
+
+      const assetRepo = createAssetRepository(db);
+      const allAssets = assetRepo.findByProjectId(Number(projectId));
+
+      const createRes = await request(app)
+        .post('/releases')
+        .send(`projectId=${projectId}`)
+        .send('title=Count+Parity+Remove+Release')
+        .send('status=idea')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const releaseLocation = createRes.headers.location;
+
+      // Add both assets
+      await request(app)
+        .post(`${releaseLocation}/assets/add`)
+        .send(`assetId=${allAssets[0].id}`)
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      await request(app)
+        .post(`${releaseLocation}/assets/add`)
+        .send(`assetId=${allAssets[1].id}`)
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      // Before remove: 0 candidates
+      let res = await request(app).get(`${releaseLocation}/assets`).expect(200);
+      expect(res.text).toContain('0 candidates available');
+
+      // Remove one asset
+      await request(app)
+        .post(`${releaseLocation}/assets/${allAssets[0].id}/remove-selected`)
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      // After remove: 1 candidate
+      res = await request(app).get(`${releaseLocation}/assets`).expect(200);
+      expect(res.text).toContain('1 candidate available');
+    });
+  });
+
+  // ─── Phase 9-4: Mutation route HTTP tests ────────────────────────────
+
+  describe('Phase 9-4 mutation route HTTP tests', () => {
+    async function setupPhase94Release() {
+      const projRes = await request(app)
+        .post('/projects')
+        .send('title=Phase+9-4+Test')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectId = projRes.headers.location.replace('/projects/', '');
+
+      const slug = 'phase-9-4-test';
+      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
+      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
+      const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
+      fs.writeFileSync(path.join(projectDir, 'alpha.txt'), 'alpha');
+      fs.writeFileSync(path.join(projectDir, 'beta.txt'), 'beta');
+      fs.writeFileSync(path.join(projectDir, 'gamma.txt'), 'gamma');
+      await request(app).post(`/projects/${projectId}/scan`).expect(302);
+
+      const assetRepo = createAssetRepository(db);
+      const allAssets = assetRepo.findByProjectId(Number(projectId));
+
+      const createRes = await request(app)
+        .post('/releases')
+        .send(`projectId=${projectId}`)
+        .send('title=Phase+9-4+Release')
+        .send('status=idea')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const releaseLocation = createRes.headers.location;
+      const releaseId = Number(releaseLocation.replace('/releases/', ''));
+
+      return { projectId, releaseLocation, releaseId, assetRepo, allAssets };
+    }
+
+    async function setupPhase94MoveRelease() {
+      const fixture = await setupPhase94Release();
+      const { project_id: projectId } = db.prepare('SELECT project_id FROM releases WHERE id = ?').get(fixture.releaseId);
+      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
+      const matching = entries.filter((entry) => entry.endsWith('-phase-9-4-test'));
+      const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
+
+      fs.writeFileSync(path.join(projectDir, 'delta.txt'), 'delta');
+      fs.writeFileSync(path.join(projectDir, 'epsilon.txt'), 'epsilon');
+      await request(app).post(`/projects/${projectId}/scan`).expect(302);
+
+      return fixture;
+    }
+
+    async function setupPhase94SelectedRelease(assetCount) {
+      const fixture = await setupPhase94Release();
+      for (let index = 0; index < assetCount; index++) {
+        await request(app)
+          .post(`${fixture.releaseLocation}/assets/add`)
+          .send(`assetId=${fixture.allAssets[index].id}`)
+          .set('Content-Type', 'application/x-www-form-urlencoded')
+          .expect(302);
+      }
+      return fixture;
+    }
+
+    // ── 1. Unexpected-error forwarding ─────────────────────────────────
+
+    it('add route forwards unexpected errors to global handler (500)', async () => {
+      const { releaseLocation, releaseId } = await setupPhase94Release();
+      const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+      const beforeJunction = getReleaseAssets(db, releaseId);
+
+      // Create a stubbed releaseService that throws a plain Error on addCandidateAsset
+      const realService = createReleaseService({ db, evaluateReleaseReadiness });
+      const stubbedService = Object.create(realService, {
+        addCandidateAsset: {
+          value() { throw new Error('Unexpected internal failure'); },
+          writable: true,
+        },
+      });
+
+      // Re-create app with the stubbed service
+      const stubbedApp = createApp({ appName: 'CreatorCrate', db, projectsRoot }, { releaseService: stubbedService });
+
+      const res = await request(stubbedApp)
+        .post(`${releaseLocation}/assets/add`)
+        .send('assetId=1')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(500);
+
+      // Must render the error page, not a generic fallthrough
+      expect(res.text).toContain('Something went wrong');
+      expect(res.text).not.toContain('Invalid asset ID');
+
+      // No junction mutation occurred
+      const afterRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+      const afterJunction = getReleaseAssets(db, releaseId);
+      expect(afterRelease).toEqual(beforeRelease);
+      expect(afterJunction).toEqual(beforeJunction);
+    });
+
+    // ── Successful mutation tests ─────────────────────────────────────
+
+    it('add route succeeds and redirects to asset page', async () => {
+      const { releaseLocation, releaseId, allAssets } = await setupPhase94Release();
+      const beforeRows = getReleaseAssets(db, releaseId);
+      expect(beforeRows).toHaveLength(0);
+
+      const res = await request(app)
+        .post(`${releaseLocation}/assets/add`)
+        .send(`assetId=${allAssets[0].id}`)
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      expect(res.headers.location).toBe(`/releases/${releaseId}/assets`);
+
+      const afterRows = getReleaseAssets(db, releaseId);
+      expect(afterRows).toHaveLength(1);
+      expect(afterRows[0].asset_id).toBe(allAssets[0].id);
+      expect(afterRows[0].role).toBe('attachment');
+    });
+
+    it('add route preserves candidate filters in redirect', async () => {
+      const { releaseLocation, releaseId, allAssets } = await setupPhase94Release();
+      const res = await request(app)
+        .post(`${releaseLocation}/assets/add?search=alpha&pageSize=50`)
+        .send(`assetId=${allAssets[0].id}`)
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      // Must preserve search and pageSize, omit page=1
+      expect(res.headers.location).toBe(`/releases/${releaseId}/assets?search=alpha&pageSize=50`);
+    });
+
+    it('add route strips unknown parameters from redirect', async () => {
+      const { releaseLocation, releaseId, allAssets } = await setupPhase94Release();
+      const res = await request(app)
+        .post(`${releaseLocation}/assets/add?unknown=param&junk=value`)
+        .send(`assetId=${allAssets[0].id}`)
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      expect(res.headers.location).toBe(`/releases/${releaseId}/assets`);
+    });
+
+    it('remove-selected route succeeds and redirects', async () => {
+      const { releaseLocation, releaseId, allAssets } = await setupPhase94Release();
+      // Add two assets first
+      await request(app)
+        .post(`${releaseLocation}/assets/add`)
+        .send(`assetId=${allAssets[0].id}`)
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      await request(app)
+        .post(`${releaseLocation}/assets/add`)
+        .send(`assetId=${allAssets[1].id}`)
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      const beforeRows = getReleaseAssets(db, releaseId);
+      expect(beforeRows).toHaveLength(2);
+
+      const res = await request(app)
+        .post(`${releaseLocation}/assets/${allAssets[0].id}/remove-selected`)
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      expect(res.headers.location).toBe(`/releases/${releaseId}/assets`);
+
+      const afterRows = getReleaseAssets(db, releaseId);
+      expect(afterRows).toHaveLength(1);
+      expect(afterRows[0].asset_id).toBe(allAssets[1].id);
+    });
+
+    it('remove-selected route preserves candidate filters in redirect', async () => {
+      const { releaseLocation, releaseId, allAssets } = await setupPhase94Release();
+      await request(app)
+        .post(`${releaseLocation}/assets/add`)
+        .send(`assetId=${allAssets[0].id}`)
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      const res = await request(app)
+        .post(`${releaseLocation}/assets/${allAssets[0].id}/remove-selected?search=beta&extension=txt`)
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      expect(res.headers.location).toBe(`/releases/${releaseId}/assets?search=beta&extension=txt`);
+    });
+
+    it('role route succeeds and redirects', async () => {
+      const { releaseLocation, releaseId, allAssets } = await setupPhase94Release();
+      // Add one asset
+      await request(app)
+        .post(`${releaseLocation}/assets/add`)
+        .send(`assetId=${allAssets[0].id}`)
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      const res = await request(app)
+        .post(`${releaseLocation}/assets/${allAssets[0].id}/role`)
+        .send('role=primary')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      expect(res.headers.location).toBe(`/releases/${releaseId}/assets`);
+
+      const afterRows = getReleaseAssets(db, releaseId);
+      expect(afterRows).toHaveLength(1);
+      expect(afterRows[0].role).toBe('primary');
+    });
+
+    it('role route preserves candidate filters in redirect', async () => {
+      const { releaseLocation, releaseId, allAssets } = await setupPhase94Release();
+      await request(app)
+        .post(`${releaseLocation}/assets/add`)
+        .send(`assetId=${allAssets[0].id}`)
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      const res = await request(app)
+        .post(`${releaseLocation}/assets/${allAssets[0].id}/role?search=gamma&pageSize=100`)
+        .send('role=preview')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      expect(res.headers.location).toBe(`/releases/${releaseId}/assets?search=gamma&pageSize=100`);
+    });
+
+    it('move-up route succeeds and preserves query state in redirect', async () => {
+      const { releaseLocation, releaseId, allAssets } = await setupPhase94MoveRelease();
+      // Add two assets
+      await request(app)
+        .post(`${releaseLocation}/assets/add`)
+        .send(`assetId=${allAssets[0].id}`)
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      await request(app)
+        .post(`${releaseLocation}/assets/add`)
+        .send(`assetId=${allAssets[1].id}`)
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      const beforeRows = getReleaseAssets(db, releaseId);
+      expect(beforeRows[0].asset_id).toBe(allAssets[0].id);
+      expect(beforeRows[1].asset_id).toBe(allAssets[1].id);
+
+      // Move the second asset up
+      const res = await request(app)
+        .post(`${releaseLocation}/assets/${allAssets[1].id}/move-up`)
+        .query({
+          search: '  txt  ',
+          extension: ' TXT ',
+          page: '2',
+          pageSize: '2',
+          unknown: 'discard-me',
+        })
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      const redirectUrl = new URL(res.headers.location, 'http://localhost');
+      expect(redirectUrl.pathname).toBe(`/releases/${releaseId}/assets`);
+      expect([...redirectUrl.searchParams.keys()].sort()).toEqual(['extension', 'page', 'pageSize', 'search']);
+      expect(redirectUrl.searchParams.get('search')).toBe('txt');
+      expect(redirectUrl.searchParams.get('extension')).toBe('txt');
+      expect(redirectUrl.searchParams.get('page')).toBe('2');
+      expect(redirectUrl.searchParams.get('pageSize')).toBe('2');
+      expect(redirectUrl.searchParams.has('unknown')).toBe(false);
+
+      const afterRows = getReleaseAssets(db, releaseId);
+      expect(afterRows[0].asset_id).toBe(allAssets[1].id);
+      expect(afterRows[1].asset_id).toBe(allAssets[0].id);
+    });
+
+    it('move-down route succeeds and omits page=1 from redirect', async () => {
+      const { releaseLocation, releaseId, allAssets } = await setupPhase94MoveRelease();
+      // Add two assets
+      await request(app)
+        .post(`${releaseLocation}/assets/add`)
+        .send(`assetId=${allAssets[0].id}`)
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      await request(app)
+        .post(`${releaseLocation}/assets/add`)
+        .send(`assetId=${allAssets[1].id}`)
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      // Move the first asset down
+      const res = await request(app)
+        .post(`${releaseLocation}/assets/${allAssets[0].id}/move-down`)
+        .query({
+          search: '  txt  ',
+          extension: ' TXT ',
+          page: '1',
+          pageSize: '2',
+          unknown: 'discard-me',
+        })
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      const redirectUrl = new URL(res.headers.location, 'http://localhost');
+      expect(redirectUrl.pathname).toBe(`/releases/${releaseId}/assets`);
+      expect([...redirectUrl.searchParams.keys()].sort()).toEqual(['extension', 'pageSize', 'search']);
+      expect(redirectUrl.searchParams.get('search')).toBe('txt');
+      expect(redirectUrl.searchParams.get('extension')).toBe('txt');
+      expect(redirectUrl.searchParams.get('pageSize')).toBe('2');
+      expect(redirectUrl.searchParams.has('page')).toBe(false);
+      expect(redirectUrl.searchParams.has('unknown')).toBe(false);
+
+      const afterRows = getReleaseAssets(db, releaseId);
+      expect(afterRows[0].asset_id).toBe(allAssets[1].id);
+      expect(afterRows[1].asset_id).toBe(allAssets[0].id);
+    });
+
+    // ── Validation/error tests ────────────────────────────────────────
+
+    it('rejects malformed release ID with 404', async () => {
+      await request(app)
+        .post('/releases/abc/assets/add')
+        .send('assetId=1')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(404);
+    });
+
+    const malformedReleaseIds = ['abc', '0', '-1', '1abc'];
+    const malformedReleaseRouteCases = [
+      {
+        name: 'remove-selected',
+        assetCount: 1,
+        assetIndex: 0,
+        path: (releaseId, assetId) => `/releases/${releaseId}/assets/${assetId}/remove-selected`,
+        body: null,
+      },
+      {
+        name: 'role',
+        assetCount: 1,
+        assetIndex: 0,
+        path: (releaseId, assetId) => `/releases/${releaseId}/assets/${assetId}/role`,
+        body: 'role=primary',
+      },
+      {
+        name: 'move-up',
+        assetCount: 2,
+        assetIndex: 1,
+        path: (releaseId, assetId) => `/releases/${releaseId}/assets/${assetId}/move-up`,
+        body: null,
+      },
+      {
+        name: 'move-down',
+        assetCount: 2,
+        assetIndex: 0,
+        path: (releaseId, assetId) => `/releases/${releaseId}/assets/${assetId}/move-down`,
+        body: null,
+      },
+    ];
+
+    for (const routeCase of malformedReleaseRouteCases) {
+      for (const malformedReleaseId of malformedReleaseIds) {
+        it(`rejects malformed release ID ${malformedReleaseId} in ${routeCase.name} with 404`, async () => {
+          const { releaseId, allAssets } = await setupPhase94SelectedRelease(routeCase.assetCount);
+          const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+          const beforeJunction = getReleaseAssets(db, releaseId);
+
+          let req = request(app)
+            .post(routeCase.path(malformedReleaseId, allAssets[routeCase.assetIndex].id))
+            .set('Content-Type', 'application/x-www-form-urlencoded');
+          if (routeCase.body) {
+            req = req.send(routeCase.body);
+          }
+
+          const res = await req.expect(404);
+          expect(res.text).not.toContain('Something went wrong');
+          expect(db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId)).toEqual(beforeRelease);
+          expect(getReleaseAssets(db, releaseId)).toEqual(beforeJunction);
+        });
+      }
+    }
+
+    it('rejects malformed asset ID in add with 422', async () => {
+      const { releaseLocation } = await setupPhase94Release();
+      const res = await request(app)
+        .post(`${releaseLocation}/assets/add`)
+        .send('assetId=abc')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(422);
+      expect(res.text).toContain('Invalid asset ID');
+    });
+
+    it('rejects malformed asset ID in remove-selected with 404', async () => {
+      const { releaseLocation } = await setupPhase94Release();
+      await request(app)
+        .post(`${releaseLocation}/assets/abc/remove-selected`)
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(404);
+    });
+
+    it('rejects malformed asset ID in role with 404', async () => {
+      const { releaseLocation, releaseId } = await setupPhase94Release();
+      const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+      const beforeJunction = getReleaseAssets(db, releaseId);
+
+      const res = await request(app)
+        .post(`${releaseLocation}/assets/abc/role`)
+        .send('role=primary')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(404);
+      expect(res.text).not.toContain('Something went wrong');
+
+      const afterRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+      const afterJunction = getReleaseAssets(db, releaseId);
+      expect(afterRelease).toEqual(beforeRelease);
+      expect(afterJunction).toEqual(beforeJunction);
+    });
+
+    it('rejects zero asset ID in role with 404', async () => {
+      const { releaseLocation, releaseId } = await setupPhase94Release();
+      const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+      const beforeJunction = getReleaseAssets(db, releaseId);
+
+      const res = await request(app)
+        .post(`${releaseLocation}/assets/0/role`)
+        .send('role=primary')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(404);
+      expect(res.text).not.toContain('Something went wrong');
+
+      const afterRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+      const afterJunction = getReleaseAssets(db, releaseId);
+      expect(afterRelease).toEqual(beforeRelease);
+      expect(afterJunction).toEqual(beforeJunction);
+    });
+
+    it('rejects negative asset ID in role with 404', async () => {
+      const { releaseLocation, releaseId } = await setupPhase94Release();
+      const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+      const beforeJunction = getReleaseAssets(db, releaseId);
+
+      const res = await request(app)
+        .post(`${releaseLocation}/assets/-1/role`)
+        .send('role=primary')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(404);
+      expect(res.text).not.toContain('Something went wrong');
+
+      const afterRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+      const afterJunction = getReleaseAssets(db, releaseId);
+      expect(afterRelease).toEqual(beforeRelease);
+      expect(afterJunction).toEqual(beforeJunction);
+    });
+
+    it('rejects trailing-text asset ID in role with 404', async () => {
+      const { releaseLocation, releaseId } = await setupPhase94Release();
+      const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+      const beforeJunction = getReleaseAssets(db, releaseId);
+
+      const res = await request(app)
+        .post(`${releaseLocation}/assets/1abc/role`)
+        .send('role=primary')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(404);
+      expect(res.text).not.toContain('Something went wrong');
+
+      const afterRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+      const afterJunction = getReleaseAssets(db, releaseId);
+      expect(afterRelease).toEqual(beforeRelease);
+      expect(afterJunction).toEqual(beforeJunction);
+    });
+
+    it('rejects malformed asset ID in move-up with 404', async () => {
+      const { releaseLocation, releaseId } = await setupPhase94Release();
+      const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+      const beforeJunction = getReleaseAssets(db, releaseId);
+
+      const res = await request(app)
+        .post(`${releaseLocation}/assets/abc/move-up`)
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(404);
+      expect(res.text).not.toContain('Something went wrong');
+
+      const afterRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+      const afterJunction = getReleaseAssets(db, releaseId);
+      expect(afterRelease).toEqual(beforeRelease);
+      expect(afterJunction).toEqual(beforeJunction);
+    });
+
+    it('rejects zero asset ID in move-up with 404', async () => {
+      const { releaseLocation, releaseId } = await setupPhase94Release();
+      const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+      const beforeJunction = getReleaseAssets(db, releaseId);
+
+      const res = await request(app)
+        .post(`${releaseLocation}/assets/0/move-up`)
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(404);
+      expect(res.text).not.toContain('Something went wrong');
+
+      const afterRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+      const afterJunction = getReleaseAssets(db, releaseId);
+      expect(afterRelease).toEqual(beforeRelease);
+      expect(afterJunction).toEqual(beforeJunction);
+    });
+
+    it('rejects negative asset ID in move-up with 404', async () => {
+      const { releaseLocation, releaseId } = await setupPhase94Release();
+      const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+      const beforeJunction = getReleaseAssets(db, releaseId);
+
+      const res = await request(app)
+        .post(`${releaseLocation}/assets/-1/move-up`)
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(404);
+      expect(res.text).not.toContain('Something went wrong');
+
+      const afterRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+      const afterJunction = getReleaseAssets(db, releaseId);
+      expect(afterRelease).toEqual(beforeRelease);
+      expect(afterJunction).toEqual(beforeJunction);
+    });
+
+    it('rejects trailing-text asset ID in move-up with 404', async () => {
+      const { releaseLocation, releaseId } = await setupPhase94Release();
+      const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+      const beforeJunction = getReleaseAssets(db, releaseId);
+
+      const res = await request(app)
+        .post(`${releaseLocation}/assets/1abc/move-up`)
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(404);
+      expect(res.text).not.toContain('Something went wrong');
+
+      const afterRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+      const afterJunction = getReleaseAssets(db, releaseId);
+      expect(afterRelease).toEqual(beforeRelease);
+      expect(afterJunction).toEqual(beforeJunction);
+    });
+
+    it('rejects malformed asset ID in move-down with 404', async () => {
+      const { releaseLocation, releaseId } = await setupPhase94Release();
+      const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+      const beforeJunction = getReleaseAssets(db, releaseId);
+
+      const res = await request(app)
+        .post(`${releaseLocation}/assets/abc/move-down`)
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(404);
+      expect(res.text).not.toContain('Something went wrong');
+
+      const afterRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+      const afterJunction = getReleaseAssets(db, releaseId);
+      expect(afterRelease).toEqual(beforeRelease);
+      expect(afterJunction).toEqual(beforeJunction);
+    });
+
+    it('rejects zero asset ID in move-down with 404', async () => {
+      const { releaseLocation, releaseId } = await setupPhase94Release();
+      const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+      const beforeJunction = getReleaseAssets(db, releaseId);
+
+      const res = await request(app)
+        .post(`${releaseLocation}/assets/0/move-down`)
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(404);
+      expect(res.text).not.toContain('Something went wrong');
+
+      const afterRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+      const afterJunction = getReleaseAssets(db, releaseId);
+      expect(afterRelease).toEqual(beforeRelease);
+      expect(afterJunction).toEqual(beforeJunction);
+    });
+
+    it('rejects negative asset ID in move-down with 404', async () => {
+      const { releaseLocation, releaseId } = await setupPhase94Release();
+      const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+      const beforeJunction = getReleaseAssets(db, releaseId);
+
+      const res = await request(app)
+        .post(`${releaseLocation}/assets/-1/move-down`)
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(404);
+      expect(res.text).not.toContain('Something went wrong');
+
+      const afterRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+      const afterJunction = getReleaseAssets(db, releaseId);
+      expect(afterRelease).toEqual(beforeRelease);
+      expect(afterJunction).toEqual(beforeJunction);
+    });
+
+    it('rejects trailing-text asset ID in move-down with 404', async () => {
+      const { releaseLocation, releaseId } = await setupPhase94Release();
+      const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+      const beforeJunction = getReleaseAssets(db, releaseId);
+
+      const res = await request(app)
+        .post(`${releaseLocation}/assets/1abc/move-down`)
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(404);
+      expect(res.text).not.toContain('Something went wrong');
+
+      const afterRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+      const afterJunction = getReleaseAssets(db, releaseId);
+      expect(afterRelease).toEqual(beforeRelease);
+      expect(afterJunction).toEqual(beforeJunction);
+    });
+
+    it('rejects invalid role with 422', async () => {
+      const { releaseLocation, allAssets } = await setupPhase94Release();
+      // Add an asset first
+      await request(app)
+        .post(`${releaseLocation}/assets/add`)
+        .send(`assetId=${allAssets[0].id}`)
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      const res = await request(app)
+        .post(`${releaseLocation}/assets/${allAssets[0].id}/role`)
+        .send('role=invalid_role')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(422);
+      expect(res.text).toContain('primary');
+    });
+
+    it('rejects unselected target in remove-selected with 422', async () => {
+      const { releaseLocation, allAssets } = await setupPhase94Release();
+      const res = await request(app)
+        .post(`${releaseLocation}/assets/${allAssets[0].id}/remove-selected`)
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(422);
+      expect(res.text).toContain('not selected');
+    });
+
+    it('rejects cross-project target with 422', async () => {
+      const { releaseLocation } = await setupPhase94Release();
+      // Create another project with an asset
+      const projRes2 = await request(app)
+        .post('/projects')
+        .send('title=Cross+Project')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectId2 = projRes2.headers.location.replace('/projects/', '');
+      const slug2 = 'cross-project';
+      const entries2 = fs.readdirSync(path.join(projectsRoot, 'tbd'));
+      const matching2 = entries2.filter((e) => e.endsWith(`-${slug2}`));
+      const projectDir2 = path.join(projectsRoot, 'tbd', matching2[0]);
+      fs.writeFileSync(path.join(projectDir2, 'cross.txt'), 'cross');
+      await request(app).post(`/projects/${projectId2}/scan`).expect(302);
+      const assetRepo2 = createAssetRepository(db);
+      const otherAssets = assetRepo2.findByProjectId(Number(projectId2));
+
+      const res = await request(app)
+        .post(`${releaseLocation}/assets/add`)
+        .send(`assetId=${otherAssets[0].id}`)
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(422);
+      expect(res.text).toContain('does not belong');
+    });
+
+    it('rejects missing candidate with 404', async () => {
+      const { releaseLocation } = await setupPhase94Release();
+      const res = await request(app)
+        .post(`${releaseLocation}/assets/add`)
+        .send('assetId=99999')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(404);
+    });
+
+    it('rejects already-selected candidate with 422', async () => {
+      const { releaseLocation, allAssets } = await setupPhase94Release();
+      // Add the asset once
+      await request(app)
+        .post(`${releaseLocation}/assets/add`)
+        .send(`assetId=${allAssets[0].id}`)
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      // Try to add again
+      const res = await request(app)
+        .post(`${releaseLocation}/assets/add`)
+        .send(`assetId=${allAssets[0].id}`)
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(422);
+      expect(res.text).toContain('already selected');
+    });
+
+    it('boundary move-up on first item is a no-op', async () => {
+      const { releaseLocation, releaseId, allAssets } = await setupPhase94Release();
+      // Add two assets
+      await request(app)
+        .post(`${releaseLocation}/assets/add`)
+        .send(`assetId=${allAssets[0].id}`)
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      await request(app)
+        .post(`${releaseLocation}/assets/add`)
+        .send(`assetId=${allAssets[1].id}`)
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      const beforeRows = getReleaseAssets(db, releaseId);
+
+      // Move first item up — should be a no-op
+      await request(app)
+        .post(`${releaseLocation}/assets/${allAssets[0].id}/move-up`)
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      const afterRows = getReleaseAssets(db, releaseId);
+      expect(afterRows).toEqual(beforeRows);
+    });
+
+    it('boundary move-down on last item is a no-op', async () => {
+      const { releaseLocation, releaseId, allAssets } = await setupPhase94Release();
+      // Add two assets
+      await request(app)
+        .post(`${releaseLocation}/assets/add`)
+        .send(`assetId=${allAssets[0].id}`)
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      await request(app)
+        .post(`${releaseLocation}/assets/add`)
+        .send(`assetId=${allAssets[1].id}`)
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      const beforeRows = getReleaseAssets(db, releaseId);
+
+      // Move last item down — should be a no-op
+      await request(app)
+        .post(`${releaseLocation}/assets/${allAssets[1].id}/move-down`)
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      const afterRows = getReleaseAssets(db, releaseId);
+      expect(afterRows).toEqual(beforeRows);
+    });
+
+    // ── Lifecycle HTTP matrix ─────────────────────────────────────────
+
+    async function setupReleaseWithTwoAssets() {
+      const projRes = await request(app)
+        .post('/projects')
+        .send('title=Lifecycle+Matrix+Test')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectId = projRes.headers.location.replace('/projects/', '');
+
+      const slug = 'lifecycle-matrix-test';
+      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
+      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
+      const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
+      fs.writeFileSync(path.join(projectDir, 'a.txt'), 'a');
+      fs.writeFileSync(path.join(projectDir, 'b.txt'), 'b');
+      await request(app).post(`/projects/${projectId}/scan`).expect(302);
+
+      const assetRepo = createAssetRepository(db);
+      const allAssets = assetRepo.findByProjectId(Number(projectId));
+
+      const createRes = await request(app)
+        .post('/releases')
+        .send(`projectId=${projectId}`)
+        .send('title=Lifecycle+Matrix+Release')
+        .send('status=ready')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const releaseLocation = createRes.headers.location;
+      const releaseId = Number(releaseLocation.replace('/releases/', ''));
+
+      // Select both assets
+      await request(app)
+        .post(releaseLocation + '/assets')
+        .send(`selectedAssetIds[]=${allAssets[0].id}`)
+        .send(`selectedAssetIds[]=${allAssets[1].id}`)
+        .send('roles[]=primary')
+        .send('roles[]=attachment')
+        .send('sortOrder[]=0')
+        .send('sortOrder[]=1')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      return { projectId, releaseLocation, releaseId, assetRepo, allAssets };
+    }
+
+    describe('lifecycle matrix — published release', () => {
+      async function setupPublishedRelease() {
+        const ctx = await setupReleaseWithTwoAssets();
+        await request(app)
+          .post(`${ctx.releaseLocation}/publish`)
+          .send('publishedDate=2025-06-15')
+          .set('Content-Type', 'application/x-www-form-urlencoded')
+          .expect(302);
+        return ctx;
+      }
+
+      it('add returns 422 and preserves release and junction rows', async () => {
+        const { releaseLocation, releaseId, allAssets } = await setupPublishedRelease();
+        const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+        const beforeJunction = getReleaseAssets(db, releaseId);
+
+        const res = await request(app)
+          .post(`${releaseLocation}/assets/add`)
+          .send(`assetId=${allAssets[0].id}`)
+          .set('Content-Type', 'application/x-www-form-urlencoded')
+          .expect(422);
+
+        expect(res.text).not.toContain('Something went wrong');
+        const afterRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+        const afterJunction = getReleaseAssets(db, releaseId);
+        expect(afterRelease).toEqual(beforeRelease);
+        expect(afterJunction).toEqual(beforeJunction);
+      });
+
+      it('remove-selected returns 422 and preserves release and junction rows', async () => {
+        const { releaseLocation, releaseId, allAssets } = await setupPublishedRelease();
+        const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+        const beforeJunction = getReleaseAssets(db, releaseId);
+
+        const res = await request(app)
+          .post(`${releaseLocation}/assets/${allAssets[0].id}/remove-selected`)
+          .set('Content-Type', 'application/x-www-form-urlencoded')
+          .expect(422);
+
+        expect(res.text).not.toContain('Something went wrong');
+        const afterRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+        const afterJunction = getReleaseAssets(db, releaseId);
+        expect(afterRelease).toEqual(beforeRelease);
+        expect(afterJunction).toEqual(beforeJunction);
+      });
+
+      it('role returns 422 and preserves release and junction rows', async () => {
+        const { releaseLocation, releaseId, allAssets } = await setupPublishedRelease();
+        const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+        const beforeJunction = getReleaseAssets(db, releaseId);
+
+        const res = await request(app)
+          .post(`${releaseLocation}/assets/${allAssets[0].id}/role`)
+          .send('role=preview')
+          .set('Content-Type', 'application/x-www-form-urlencoded')
+          .expect(422);
+
+        expect(res.text).not.toContain('Something went wrong');
+        const afterRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+        const afterJunction = getReleaseAssets(db, releaseId);
+        expect(afterRelease).toEqual(beforeRelease);
+        expect(afterJunction).toEqual(beforeJunction);
+      });
+
+      it('move-up returns 422 and preserves release and junction rows', async () => {
+        const { releaseLocation, releaseId, allAssets } = await setupPublishedRelease();
+        const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+        const beforeJunction = getReleaseAssets(db, releaseId);
+
+        const res = await request(app)
+          .post(`${releaseLocation}/assets/${allAssets[0].id}/move-up`)
+          .set('Content-Type', 'application/x-www-form-urlencoded')
+          .expect(422);
+
+        expect(res.text).not.toContain('Something went wrong');
+        const afterRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+        const afterJunction = getReleaseAssets(db, releaseId);
+        expect(afterRelease).toEqual(beforeRelease);
+        expect(afterJunction).toEqual(beforeJunction);
+      });
+
+      it('move-down returns 422 and preserves release and junction rows', async () => {
+        const { releaseLocation, releaseId, allAssets } = await setupPublishedRelease();
+        const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+        const beforeJunction = getReleaseAssets(db, releaseId);
+
+        const res = await request(app)
+          .post(`${releaseLocation}/assets/${allAssets[0].id}/move-down`)
+          .set('Content-Type', 'application/x-www-form-urlencoded')
+          .expect(422);
+
+        expect(res.text).not.toContain('Something went wrong');
+        const afterRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+        const afterJunction = getReleaseAssets(db, releaseId);
+        expect(afterRelease).toEqual(beforeRelease);
+        expect(afterJunction).toEqual(beforeJunction);
+      });
+    });
+
+    describe('lifecycle matrix — archived release', () => {
+      async function setupArchivedRelease() {
+        const ctx = await setupReleaseWithTwoAssets();
+        await request(app)
+          .post(`${ctx.releaseLocation}/archive`)
+          .expect(302);
+        return ctx;
+      }
+
+      it('add returns 422 and preserves release and junction rows', async () => {
+        const { releaseLocation, releaseId, allAssets } = await setupArchivedRelease();
+        const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+        const beforeJunction = getReleaseAssets(db, releaseId);
+
+        const res = await request(app)
+          .post(`${releaseLocation}/assets/add`)
+          .send(`assetId=${allAssets[0].id}`)
+          .set('Content-Type', 'application/x-www-form-urlencoded')
+          .expect(422);
+
+        expect(res.text).not.toContain('Something went wrong');
+        const afterRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+        const afterJunction = getReleaseAssets(db, releaseId);
+        expect(afterRelease).toEqual(beforeRelease);
+        expect(afterJunction).toEqual(beforeJunction);
+      });
+
+      it('remove-selected returns 422 and preserves release and junction rows', async () => {
+        const { releaseLocation, releaseId, allAssets } = await setupArchivedRelease();
+        const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+        const beforeJunction = getReleaseAssets(db, releaseId);
+
+        const res = await request(app)
+          .post(`${releaseLocation}/assets/${allAssets[0].id}/remove-selected`)
+          .set('Content-Type', 'application/x-www-form-urlencoded')
+          .expect(422);
+
+        expect(res.text).not.toContain('Something went wrong');
+        const afterRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+        const afterJunction = getReleaseAssets(db, releaseId);
+        expect(afterRelease).toEqual(beforeRelease);
+        expect(afterJunction).toEqual(beforeJunction);
+      });
+
+      it('role returns 422 and preserves release and junction rows', async () => {
+        const { releaseLocation, releaseId, allAssets } = await setupArchivedRelease();
+        const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+        const beforeJunction = getReleaseAssets(db, releaseId);
+
+        const res = await request(app)
+          .post(`${releaseLocation}/assets/${allAssets[0].id}/role`)
+          .send('role=preview')
+          .set('Content-Type', 'application/x-www-form-urlencoded')
+          .expect(422);
+
+        expect(res.text).not.toContain('Something went wrong');
+        const afterRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+        const afterJunction = getReleaseAssets(db, releaseId);
+        expect(afterRelease).toEqual(beforeRelease);
+        expect(afterJunction).toEqual(beforeJunction);
+      });
+
+      it('move-up returns 422 and preserves release and junction rows', async () => {
+        const { releaseLocation, releaseId, allAssets } = await setupArchivedRelease();
+        const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+        const beforeJunction = getReleaseAssets(db, releaseId);
+
+        const res = await request(app)
+          .post(`${releaseLocation}/assets/${allAssets[0].id}/move-up`)
+          .set('Content-Type', 'application/x-www-form-urlencoded')
+          .expect(422);
+
+        expect(res.text).not.toContain('Something went wrong');
+        const afterRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+        const afterJunction = getReleaseAssets(db, releaseId);
+        expect(afterRelease).toEqual(beforeRelease);
+        expect(afterJunction).toEqual(beforeJunction);
+      });
+
+      it('move-down returns 422 and preserves release and junction rows', async () => {
+        const { releaseLocation, releaseId, allAssets } = await setupArchivedRelease();
+        const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+        const beforeJunction = getReleaseAssets(db, releaseId);
+
+        const res = await request(app)
+          .post(`${releaseLocation}/assets/${allAssets[0].id}/move-down`)
+          .set('Content-Type', 'application/x-www-form-urlencoded')
+          .expect(422);
+
+        expect(res.text).not.toContain('Something went wrong');
+        const afterRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+        const afterJunction = getReleaseAssets(db, releaseId);
+        expect(afterRelease).toEqual(beforeRelease);
+        expect(afterJunction).toEqual(beforeJunction);
+      });
+    });
+
+    describe('lifecycle matrix — archived parent', () => {
+      async function setupArchivedParentRelease() {
+        const ctx = await setupReleaseWithTwoAssets();
+        await request(app)
+          .post(`/projects/${ctx.projectId}/archive`)
+          .expect(302);
+        return ctx;
+      }
+
+      it('add returns 422 and preserves release and junction rows', async () => {
+        const { releaseLocation, releaseId, allAssets } = await setupArchivedParentRelease();
+        const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+        const beforeJunction = getReleaseAssets(db, releaseId);
+
+        const res = await request(app)
+          .post(`${releaseLocation}/assets/add`)
+          .send(`assetId=${allAssets[0].id}`)
+          .set('Content-Type', 'application/x-www-form-urlencoded')
+          .expect(422);
+
+        expect(res.text).not.toContain('Something went wrong');
+        const afterRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+        const afterJunction = getReleaseAssets(db, releaseId);
+        expect(afterRelease).toEqual(beforeRelease);
+        expect(afterJunction).toEqual(beforeJunction);
+      });
+
+      it('remove-selected returns 422 and preserves release and junction rows', async () => {
+        const { releaseLocation, releaseId, allAssets } = await setupArchivedParentRelease();
+        const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+        const beforeJunction = getReleaseAssets(db, releaseId);
+
+        const res = await request(app)
+          .post(`${releaseLocation}/assets/${allAssets[0].id}/remove-selected`)
+          .set('Content-Type', 'application/x-www-form-urlencoded')
+          .expect(422);
+
+        expect(res.text).not.toContain('Something went wrong');
+        const afterRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+        const afterJunction = getReleaseAssets(db, releaseId);
+        expect(afterRelease).toEqual(beforeRelease);
+        expect(afterJunction).toEqual(beforeJunction);
+      });
+
+      it('role returns 422 and preserves release and junction rows', async () => {
+        const { releaseLocation, releaseId, allAssets } = await setupArchivedParentRelease();
+        const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+        const beforeJunction = getReleaseAssets(db, releaseId);
+
+        const res = await request(app)
+          .post(`${releaseLocation}/assets/${allAssets[0].id}/role`)
+          .send('role=preview')
+          .set('Content-Type', 'application/x-www-form-urlencoded')
+          .expect(422);
+
+        expect(res.text).not.toContain('Something went wrong');
+        const afterRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+        const afterJunction = getReleaseAssets(db, releaseId);
+        expect(afterRelease).toEqual(beforeRelease);
+        expect(afterJunction).toEqual(beforeJunction);
+      });
+
+      it('move-up returns 422 and preserves release and junction rows', async () => {
+        const { releaseLocation, releaseId, allAssets } = await setupArchivedParentRelease();
+        const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+        const beforeJunction = getReleaseAssets(db, releaseId);
+
+        const res = await request(app)
+          .post(`${releaseLocation}/assets/${allAssets[0].id}/move-up`)
+          .set('Content-Type', 'application/x-www-form-urlencoded')
+          .expect(422);
+
+        expect(res.text).not.toContain('Something went wrong');
+        const afterRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+        const afterJunction = getReleaseAssets(db, releaseId);
+        expect(afterRelease).toEqual(beforeRelease);
+        expect(afterJunction).toEqual(beforeJunction);
+      });
+
+      it('move-down returns 422 and preserves release and junction rows', async () => {
+        const { releaseLocation, releaseId, allAssets } = await setupArchivedParentRelease();
+        const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+        const beforeJunction = getReleaseAssets(db, releaseId);
+
+        const res = await request(app)
+          .post(`${releaseLocation}/assets/${allAssets[0].id}/move-down`)
+          .set('Content-Type', 'application/x-www-form-urlencoded')
+          .expect(422);
+
+        expect(res.text).not.toContain('Something went wrong');
+        const afterRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+        const afterJunction = getReleaseAssets(db, releaseId);
+        expect(afterRelease).toEqual(beforeRelease);
+        expect(afterJunction).toEqual(beforeJunction);
+      });
+    });
+
+    // ── Candidate URL tests ───────────────────────────────────────────
+
+    describe('candidate URL tests', () => {
+      async function setupReleaseWithAssets() {
+        const projRes = await request(app)
+          .post('/projects')
+          .send('title=Candidate+URL+Test')
+          .send('status=tbd')
+          .send('priority=normal')
+          .set('Content-Type', 'application/x-www-form-urlencoded')
+          .expect(302);
+        const projectId = projRes.headers.location.replace('/projects/', '');
+
+        const slug = 'candidate-url-test';
+        const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
+        const matching = entries.filter((e) => e.endsWith(`-${slug}`));
+        const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
+        fs.writeFileSync(path.join(projectDir, 'alpha.txt'), 'alpha');
+        fs.writeFileSync(path.join(projectDir, 'beta.txt'), 'beta');
+        fs.writeFileSync(path.join(projectDir, 'gamma.txt'), 'gamma');
+        fs.writeFileSync(path.join(projectDir, 'delta.txt'), 'delta');
+        await request(app).post(`/projects/${projectId}/scan`).expect(302);
+
+        const assetRepo = createAssetRepository(db);
+        const allAssets = assetRepo.findByProjectId(Number(projectId));
+
+        const createRes = await request(app)
+          .post('/releases')
+          .send(`projectId=${projectId}`)
+          .send('title=Candidate+URL+Release')
+          .send('status=idea')
+          .set('Content-Type', 'application/x-www-form-urlencoded')
+          .expect(302);
+        const releaseLocation = createRes.headers.location;
+        const releaseId = Number(releaseLocation.replace('/releases/', ''));
+
+        return { projectId, releaseLocation, releaseId, assetRepo, allAssets };
+      }
+
+      /**
+       * Parse an anchor href by its text content from HTML.
+       * Unescapes HTML entities (&amp; → &) so URL parsing works.
+       * Returns a URL object or null.
+       */
+      function parseLinkByText(html, linkText) {
+        const re = new RegExp(`href="([^"]*)"[^>]*>${linkText}<`);
+        const m = html.match(re);
+        if (!m) return null;
+        try {
+          const decoded = m[1].replace(/&amp;/g, '&');
+          return new URL(decoded, 'http://localhost');
+        } catch {
+          return null;
+        }
+      }
+
+      it('Next link pathname and query on page 1', async () => {
+        const { releaseLocation, releaseId } = await setupReleaseWithAssets();
+        const res = await request(app).get(`${releaseLocation}/assets?pageSize=1`).expect(200);
+
+        const url = parseLinkByText(res.text, 'Next');
+        expect(url).not.toBeNull();
+        expect(url.pathname).toBe(`/releases/${releaseId}/assets`);
+        expect(url.searchParams.get('page')).toBe('2');
+        expect(url.searchParams.get('pageSize')).toBe('1');
+        expect([...url.searchParams.keys()].sort()).toEqual(['page', 'pageSize']);
+      });
+
+      it('Previous link on page 2 omits page=1', async () => {
+        const { releaseLocation, releaseId } = await setupReleaseWithAssets();
+        const res = await request(app).get(`${releaseLocation}/assets?pageSize=1&page=2`).expect(200);
+
+        const url = parseLinkByText(res.text, 'Previous');
+        expect(url).not.toBeNull();
+        expect(url.pathname).toBe(`/releases/${releaseId}/assets`);
+        expect(url.searchParams.get('pageSize')).toBe('1');
+        // page=1 is omitted
+        expect(url.searchParams.has('page')).toBe(false);
+        expect([...url.searchParams.keys()].sort()).toEqual(['pageSize']);
+      });
+
+      it('Next link on page 2 preserves page=2', async () => {
+        const { releaseLocation, releaseId } = await setupReleaseWithAssets();
+        const res = await request(app).get(`${releaseLocation}/assets?pageSize=1&page=2`).expect(200);
+
+        const url = parseLinkByText(res.text, 'Next');
+        expect(url).not.toBeNull();
+        expect(url.pathname).toBe(`/releases/${releaseId}/assets`);
+        expect(url.searchParams.get('page')).toBe('3');
+        expect(url.searchParams.get('pageSize')).toBe('1');
+        expect([...url.searchParams.keys()].sort()).toEqual(['page', 'pageSize']);
+      });
+
+      it('page 1 is omitted from pagination URLs', async () => {
+        const { releaseLocation, releaseId } = await setupReleaseWithAssets();
+        const res = await request(app).get(`${releaseLocation}/assets?pageSize=1`).expect(200);
+
+        const url = parseLinkByText(res.text, 'Next');
+        expect(url).not.toBeNull();
+        expect(url.pathname).toBe(`/releases/${releaseId}/assets`);
+        expect(url.searchParams.get('page')).toBe('2');
+        expect(url.searchParams.has('pageSize')).toBe(true);
+        // No page=1 anywhere
+        expect(url.searchParams.get('page')).not.toBe('1');
+      });
+
+      it('search and extension filters are preserved in pagination URLs', async () => {
+        const { releaseLocation, releaseId } = await setupReleaseWithAssets();
+        // extension=txt matches 3 files (alpha, beta, gamma), pageSize=1 → 3 pages
+        const res = await request(app).get(`${releaseLocation}/assets?extension=txt&pageSize=1`).expect(200);
+
+        const url = parseLinkByText(res.text, 'Next');
+        expect(url).not.toBeNull();
+        expect(url.pathname).toBe(`/releases/${releaseId}/assets`);
+        expect(url.searchParams.get('extension')).toBe('txt');
+        expect(url.searchParams.get('page')).toBe('2');
+        expect(url.searchParams.get('pageSize')).toBe('1');
+        expect([...url.searchParams.keys()].sort()).toEqual(['extension', 'page', 'pageSize']);
+      });
+
+      it('unknown parameters are stripped from generated URLs', async () => {
+        const { releaseLocation, releaseId } = await setupReleaseWithAssets();
+        const res = await request(app).get(`${releaseLocation}/assets?unknown=param&junk=value&pageSize=1`).expect(200);
+
+        const url = parseLinkByText(res.text, 'Next');
+        expect(url).not.toBeNull();
+        expect(url.pathname).toBe(`/releases/${releaseId}/assets`);
+        // Must not contain unknown or junk
+        expect(url.searchParams.has('unknown')).toBe(false);
+        expect(url.searchParams.has('junk')).toBe(false);
+        // Must still have pageSize and page
+        expect(url.searchParams.get('pageSize')).toBe('1');
+        expect(url.searchParams.get('page')).toBe('2');
+        expect([...url.searchParams.keys()].sort()).toEqual(['page', 'pageSize']);
+      });
+
+      it('page beyond final page clamps and renders canonical links', async () => {
+        const { releaseLocation, releaseId } = await setupReleaseWithAssets();
+        // 4 files, pageSize=1 → 4 pages. Request page=999 → clamped to page 4.
+        const res = await request(app).get(`${releaseLocation}/assets?pageSize=1&page=999`).expect(200);
+
+        // Displayed page is the clamped page
+        expect(res.text).toContain('Page 4 of 4');
+
+        // Previous link should point to page 3 (clamped from 999)
+        const prevUrl = parseLinkByText(res.text, 'Previous');
+        expect(prevUrl).not.toBeNull();
+        expect(prevUrl.pathname).toBe(`/releases/${releaseId}/assets`);
+        expect(prevUrl.searchParams.get('page')).toBe('3');
+        expect(prevUrl.searchParams.get('pageSize')).toBe('1');
+        expect([...prevUrl.searchParams.keys()].sort()).toEqual(['page', 'pageSize']);
+
+        // No Next link on the final page
+        const nextUrl = parseLinkByText(res.text, 'Next');
+        expect(nextUrl).toBeNull();
+
+        // No link carries the unbounded requested page
+        expect(res.text).not.toContain('page=999');
+      });
+    });
+  });
+
+  // Shared helper: isolate the Available Assets <section> content
+  function getCandidateSection(html) {
+    const afterH2 = html.split('<h2>Available Assets</h2>')[1];
+    if (!afterH2) return '';
+    return afterH2.split('</section>')[0];
+  }
+
+  // ─── Phase 9-5: Exact rendered candidate rows ────────────────────────
+
+  describe('Phase 9-5 exact rendered candidate rows', () => {
+    async function setupVariedAssets() {
+      const projRes = await request(app)
+        .post('/projects')
+        .send('title=Exact+Candidate+Rows')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectId = projRes.headers.location.replace('/projects/', '');
+
+      const slug = 'exact-candidate-rows';
+      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
+      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
+      const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
+
+      // Write files in non-sorted order to test sorting
+      fs.writeFileSync(path.join(projectDir, 'gamma.txt'), 'gamma');
+      fs.writeFileSync(path.join(projectDir, 'alpha.png'), 'alpha');
+      fs.writeFileSync(path.join(projectDir, 'BETA.png'), 'beta');
+      fs.writeFileSync(path.join(projectDir, 'gamma.png'), 'gamma');
+      fs.writeFileSync(path.join(projectDir, 'alpha.txt'), 'alpha');
+      fs.writeFileSync(path.join(projectDir, 'beta.txt'), 'beta');
+      fs.writeFileSync(path.join(projectDir, 'selected.txt'), 'selected');
+      fs.writeFileSync(path.join(projectDir, 'missing.txt'), 'missing');
+      await request(app).post(`/projects/${projectId}/scan`).expect(302);
+
+      const assetRepo = createAssetRepository(db);
+      const allAssets = assetRepo.findByProjectId(Number(projectId));
+      const byFilename = (name) => allAssets.find((a) => a.filename === name);
+
+      const createRes = await request(app)
+        .post('/releases')
+        .send(`projectId=${projectId}`)
+        .send('title=Exact+Candidate+Release')
+        .send('status=idea')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const releaseLocation = createRes.headers.location;
+      const releaseId = Number(releaseLocation.replace('/releases/', ''));
+
+      // Select one asset
+      await request(app)
+        .post(`${releaseLocation}/assets`)
+        .send(`selectedAssetIds[]=${byFilename('selected.txt').id}`)
+        .send('roles[]=primary')
+        .send('sortOrder[]=0')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      // Mark missing.txt as missing
+      assetRepo.markMissingByProjectIdAndPathNotIn(Number(projectId), [
+        'gamma.txt', 'alpha.png', 'BETA.png', 'gamma.png', 'alpha.txt', 'beta.txt', 'selected.txt'
+      ]);
+
+      return { releaseLocation, releaseId, byFilename, allAssets, projectId, assetRepo };
+    }
+
+    it('renders exact candidate asset IDs and sequence', async () => {
+      const { releaseLocation, byFilename } = await setupVariedAssets();
+      const res = await request(app).get(`${releaseLocation}/assets`).expect(200);
+
+      const candidateSection = getCandidateSection(res.text);
+
+      // Extract candidate filenames from asset-filename cells in the Available Assets table
+      const filenameRe = /<td class="asset-filename">([^<]+)<\/td>/g;
+      const filenames = [];
+      let m;
+      while ((m = filenameRe.exec(candidateSection)) !== null) {
+        filenames.push(m[1]);
+      }
+
+      // Extract candidate asset IDs from hidden inputs (only in candidate section)
+      const idRe = /<input type="hidden" name="assetId" value="(\d+)">/g;
+      const ids = [];
+      while ((m = idRe.exec(candidateSection)) !== null) {
+        ids.push(Number(m[1]));
+      }
+
+      // Expected order: filename COLLATE NOCASE, extension, asset ID
+      // alpha.png, alpha.txt, BETA.png, beta.txt, gamma.png, gamma.txt
+      expect(filenames).toEqual(['alpha.png', 'alpha.txt', 'BETA.png', 'beta.txt', 'gamma.png', 'gamma.txt']);
+
+      // Verify each rendered ID matches the corresponding asset
+      expect(ids[0]).toBe(byFilename('alpha.png').id);
+      expect(ids[1]).toBe(byFilename('alpha.txt').id);
+      expect(ids[2]).toBe(byFilename('BETA.png').id);
+      expect(ids[3]).toBe(byFilename('beta.txt').id);
+      expect(ids[4]).toBe(byFilename('gamma.png').id);
+      expect(ids[5]).toBe(byFilename('gamma.txt').id);
+    });
+
+    it('asset ID is the tie-breaker when filename and extension are identical', async () => {
+      const { releaseLocation, projectId } = await setupVariedAssets();
+
+      // Insert two assets with the same case-folded filename and same extension
+      // so that only asset ID determines their relative order.
+      // Direct DB insert is needed because on Windows, 'dup.txt' and 'DUP.txt'
+      // cannot coexist in the same directory.
+      const insertAsset = (filename) => db.prepare(`
+        INSERT INTO assets (project_id, relative_path, filename, extension,
+                            mime_type, size_bytes, modified_at,
+                            is_present, last_seen_at, missing_since)
+        VALUES (?, ?, ?, 'txt', 'text/plain', 100, NULL, 1, datetime('now'), NULL)
+        RETURNING id
+      `).get(projectId, `subdir/${filename}`, filename);
+
+      // Insert them one at a time — the second will have a higher id.
+      const lowerId = insertAsset('dup.txt').id;
+      const higherId = insertAsset('DUP.txt').id;
+      expect(higherId).toBeGreaterThan(lowerId);
+
+      const res = await request(app).get(`${releaseLocation}/assets`).expect(200);
+      const candidateSection = getCandidateSection(res.text);
+
+      // Extract filenames and IDs
+      const filenameRe = /<td class="asset-filename">([^<]+)<\/td>/g;
+      const filenames = [];
+      let m;
+      while ((m = filenameRe.exec(candidateSection)) !== null) {
+        filenames.push(m[1]);
+      }
+
+      const idRe = /<input type="hidden" name="assetId" value="(\d+)">/g;
+      const ids = [];
+      while ((m = idRe.exec(candidateSection)) !== null) {
+        ids.push(Number(m[1]));
+      }
+
+      // Find the positions of our tie-break test assets
+      const lowerIdx = ids.indexOf(lowerId);
+      const higherIdx = ids.indexOf(higherId);
+      expect(lowerIdx).toBeGreaterThanOrEqual(0);
+      expect(higherIdx).toBeGreaterThanOrEqual(0);
+
+      // dup.txt (lower id) must come before DUP.txt (higher id) because
+      // COLLATE NOCASE makes "dup" == "DUP", extension is same ("txt"),
+      // and THEN a.id ASC determines the order
+      expect(lowerIdx).toBeLessThan(higherIdx);
+
+      // Verify the filenames are in the right positions
+      expect(filenames[lowerIdx]).toBe('dup.txt');
+      expect(filenames[higherIdx]).toBe('DUP.txt');
+
+      // Also assert: if we swap the assertion (higher before lower), it must fail
+      // as a self-check that the order is intentional
+      expect(ids.indexOf(higherId)).toBeGreaterThan(ids.indexOf(lowerId));
+    });
+
+    it('selected asset is absent from candidates', async () => {
+      const { releaseLocation, byFilename } = await setupVariedAssets();
+      const res = await request(app).get(`${releaseLocation}/assets`).expect(200);
+
+      const candidateSection = getCandidateSection(res.text);
+      expect(candidateSection).not.toContain(byFilename('selected.txt').filename);
+    });
+
+    it('missing unselected asset is absent from candidates', async () => {
+      const { releaseLocation, byFilename } = await setupVariedAssets();
+      const res = await request(app).get(`${releaseLocation}/assets`).expect(200);
+
+      const candidateSection = getCandidateSection(res.text);
+      expect(candidateSection).not.toContain(byFilename('missing.txt').filename);
+    });
+
+    it('same-project present unselected assets appear in candidates', async () => {
+      const { releaseLocation, byFilename } = await setupVariedAssets();
+      const res = await request(app).get(`${releaseLocation}/assets`).expect(200);
+
+      const candidateSection = getCandidateSection(res.text);
+      expect(candidateSection).toContain(byFilename('alpha.png').filename);
+      expect(candidateSection).toContain(byFilename('gamma.txt').filename);
+    });
+
+    it('candidate total matches rendered count', async () => {
+      const { releaseLocation } = await setupVariedAssets();
+      const res = await request(app).get(`${releaseLocation}/assets`).expect(200);
+
+      const candidateSection = getCandidateSection(res.text);
+
+      // Count data rows = number of asset-filename cells in candidate section
+      const filenameRe = /<td class="asset-filename">([^<]+)<\/td>/g;
+      let count = 0;
+      while (filenameRe.exec(candidateSection) !== null) count++;
+
+      expect(count).toBe(6);
+      const totalMatch = res.text.match(/(\d+) candidate[s]? available/);
+      expect(totalMatch).not.toBeNull();
+      expect(Number(totalMatch[1])).toBe(6);
+    });
+  });
+
+  // ─── Phase 9-5: Rendered count/page parity ──────────────────────────
+
+  describe('Phase 9-5 rendered count and page parity', () => {
+    async function setupCountTestAssets() {
+      const projRes = await request(app)
+        .post('/projects')
+        .send('title=Count+Parity+Test')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectId = projRes.headers.location.replace('/projects/', '');
+
+      const slug = 'count-parity-test';
+      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
+      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
+      const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
+
+      // Create 10 files with varied names and extensions
+      const files = [
+        'alpha.png', 'alpha.txt', 'beta.png', 'beta.txt',
+        'gamma.png', 'gamma.txt', 'delta.docx', 'epsilon.pdf',
+        'zeta.jpg', 'eta.svg'
+      ];
+      for (const f of files) {
+        fs.writeFileSync(path.join(projectDir, f), f);
+      }
+      await request(app).post(`/projects/${projectId}/scan`).expect(302);
+
+      const assetRepo = createAssetRepository(db);
+      const allAssets = assetRepo.findByProjectId(Number(projectId));
+
+      const createRes = await request(app)
+        .post('/releases')
+        .send(`projectId=${projectId}`)
+        .send('title=Count+Parity+Release')
+        .send('status=idea')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const releaseLocation = createRes.headers.location;
+      const releaseId = Number(releaseLocation.replace('/releases/', ''));
+
+      return { projectId, releaseLocation, releaseId, allAssets };
+    }
+
+    it('no filter — rendered row count equals page size', async () => {
+      const { releaseLocation } = await setupCountTestAssets();
+      // pageSize=4 should show 4 rows, total=10, pageCount=3
+      const res = await request(app).get(`${releaseLocation}/assets?pageSize=4`).expect(200);
+
+      const candidateSection = getCandidateSection(res.text);
+
+      // Count table rows in candidate section = number of <tr> minus the header row
+      const trRe = /<tr>/g;
+      const rowCount = (candidateSection.match(trRe) || []).length - 1;
+      expect(rowCount).toBe(4);
+
+      expect(res.text).toContain('10 candidates available');
+      expect(res.text).toContain('Page 1 of 3');
+    });
+
+    it('filename search — correct count and single page', async () => {
+      const { releaseLocation } = await setupCountTestAssets();
+      const res = await request(app).get(`${releaseLocation}/assets?search=alpha`).expect(200);
+
+      const candidateSection = getCandidateSection(res.text);
+      const trRe = /<tr>/g;
+      const rowCount = (candidateSection.match(trRe) || []).length - 1;
+
+      // alpha.png and alpha.txt
+      expect(rowCount).toBe(2);
+      expect(res.text).toContain('2 candidates available');
+    });
+
+    it('extension filter — correct count and page count', async () => {
+      const { releaseLocation } = await setupCountTestAssets();
+      const res = await request(app).get(`${releaseLocation}/assets?extension=txt&pageSize=2`).expect(200);
+
+      const candidateSection = getCandidateSection(res.text);
+      const trRe = /<tr>/g;
+      const rowCount = (candidateSection.match(trRe) || []).length - 1;
+
+      // alpha.txt, beta.txt, gamma.txt — 3 total, pageSize=2 → page 1 shows 2, pageCount=2
+      expect(rowCount).toBe(2);
+      expect(res.text).toContain('3 candidates available');
+      expect(res.text).toContain('Page 1 of 2');
+    });
+
+    it('combined search + extension — correct counts', async () => {
+      const { releaseLocation } = await setupCountTestAssets();
+      const res = await request(app).get(`${releaseLocation}/assets?search=alpha&extension=png`).expect(200);
+
+      const candidateSection = getCandidateSection(res.text);
+      const trRe = /<tr>/g;
+      const rowCount = (candidateSection.match(trRe) || []).length - 1;
+
+      // alpha.png only
+      expect(rowCount).toBe(1);
+      expect(res.text).toContain('1 candidate available');
+    });
+
+    it('page beyond final page falls back to last page', async () => {
+      const { releaseLocation, releaseId } = await setupCountTestAssets();
+      const res = await request(app).get(`${releaseLocation}/assets?pageSize=4&page=999`).expect(200);
+
+      expect(res.text).toContain('Page 3 of 3');
+
+      // Parse Previous link — should point to page 2 (clamped from 999)
+      const prevMatch = res.text.match(/href="([^"]*)"[^>]*>Previous</);
+      expect(prevMatch).not.toBeNull();
+      const prevUrl = new URL(prevMatch[1].replace(/&amp;/g, '&'), 'http://localhost');
+      expect(prevUrl.pathname).toBe(`/releases/${releaseId}/assets`);
+      expect(prevUrl.searchParams.get('page')).toBe('2');
+      expect(prevUrl.searchParams.get('pageSize')).toBe('4');
+      expect([...prevUrl.searchParams.keys()].sort()).toEqual(['page', 'pageSize']);
+
+      // No Next link on the final page
+      const nextMatch = res.text.match(/href="([^"]*)"[^>]*>Next</);
+      expect(nextMatch).toBeNull();
+
+      // No link carries the unbounded requested page
+      expect(res.text).not.toContain('page=999');
+    });
+  });
+
+  // ─── Phase 9-5: Malformed cross-project HTTP fixture ────────────────
+
+  describe('Phase 9-5 malformed cross-project HTTP fixture', () => {
+    it('malformed junction row does not hide valid candidates', async () => {
+      // Create project A with assets
+      const projARes = await request(app)
+        .post('/projects')
+        .send('title=Malformed+A')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectAId = projARes.headers.location.replace('/projects/', '');
+      const slugA = 'malformed-a';
+      const entriesA = fs.readdirSync(path.join(projectsRoot, 'tbd'));
+      const matchingA = entriesA.filter((e) => e.endsWith(`-${slugA}`));
+      const projectDirA = path.join(projectsRoot, 'tbd', matchingA[0]);
+      fs.writeFileSync(path.join(projectDirA, 'alpha.png'), 'alpha');
+      fs.writeFileSync(path.join(projectDirA, 'beta.png'), 'beta');
+      await request(app).post(`/projects/${projectAId}/scan`).expect(302);
+
+      // Create project B with an asset
+      const projBRes = await request(app)
+        .post('/projects')
+        .send('title=Malformed+B')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectBId = projBRes.headers.location.replace('/projects/', '');
+      const slugB = 'malformed-b';
+      const entriesB = fs.readdirSync(path.join(projectsRoot, 'tbd'));
+      const matchingB = entriesB.filter((e) => e.endsWith(`-${slugB}`));
+      const projectDirB = path.join(projectsRoot, 'tbd', matchingB[0]);
+      fs.writeFileSync(path.join(projectDirB, 'cross.txt'), 'cross');
+      await request(app).post(`/projects/${projectBId}/scan`).expect(302);
+
+      const assetRepo = createAssetRepository(db);
+      const assetsA = assetRepo.findByProjectId(Number(projectAId));
+      const assetsB = assetRepo.findByProjectId(Number(projectBId));
+
+      // Create release in project A
+      const createRes = await request(app)
+        .post('/releases')
+        .send(`projectId=${projectAId}`)
+        .send('title=Malformed+Release')
+        .send('status=idea')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const releaseLocation = createRes.headers.location;
+      const releaseId = Number(releaseLocation.replace('/releases/', ''));
+
+      // Select one valid asset from project A
+      await request(app)
+        .post(`${releaseLocation}/assets`)
+        .send(`selectedAssetIds[]=${assetsA[0].id}`)
+        .send('roles[]=primary')
+        .send('sortOrder[]=0')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      // Directly insert a malformed junction row (project B asset on project A release)
+      db.prepare(
+        'INSERT INTO release_assets (release_id, asset_id, role, sort_order) VALUES (?, ?, ?, ?)'
+      ).run(releaseId, assetsB[0].id, 'attachment', 99);
+
+      // Fetch candidate page
+      const res = await request(app).get(`${releaseLocation}/assets`).expect(200);
+
+      const candidateSection = getCandidateSection(res.text);
+
+      // The malformed row should not hide the valid candidate (beta.png from project A)
+      expect(candidateSection).toContain('beta.png');
+    });
+
+    it('selected and available sections remain consistent with ownership', async () => {
+      // Create a clean project and release
+      const projRes = await request(app)
+        .post('/projects')
+        .send('title=Consistency+Check')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectId = projRes.headers.location.replace('/projects/', '');
+      const slug = 'consistency-check';
+      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
+      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
+      const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
+      fs.writeFileSync(path.join(projectDir, 'valid1.txt'), 'v1');
+      fs.writeFileSync(path.join(projectDir, 'valid2.txt'), 'v2');
+      await request(app).post(`/projects/${projectId}/scan`).expect(302);
+
+      const assetRepo = createAssetRepository(db);
+      const assets = assetRepo.findByProjectId(Number(projectId));
+
+      const createRes = await request(app)
+        .post('/releases')
+        .send(`projectId=${projectId}`)
+        .send('title=Consistency+Release')
+        .send('status=idea')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const releaseLocation = createRes.headers.location;
+      const releaseId = Number(releaseLocation.replace('/releases/', ''));
+
+      // Select valid2.txt
+      await request(app)
+        .post(`${releaseLocation}/assets`)
+        .send(`selectedAssetIds[]=${assets[1].id}`)
+        .send('roles[]=preview')
+        .send('sortOrder[]=0')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      const res = await request(app).get(`${releaseLocation}/assets`).expect(200);
+
+      // Selected section should show the selected asset
+      const selectedSection = res.text.split('<h2>Selected Assets</h2>')[1];
+      const selectedBeforeNext = selectedSection.split('</section>')[0];
+      expect(selectedBeforeNext).toContain('valid2.txt');
+
+      // Available section should show the unselected asset
+      const candidateSection = getCandidateSection(res.text);
+      expect(candidateSection).toContain('valid1.txt');
+
+      // Selected asset should NOT appear in available
+      expect(candidateSection).not.toContain('valid2.txt');
+    });
+  });
+
+  // ─── Phase 9-5: Read-only control visibility ────────────────────────
+
+  describe('Phase 9-5 read-only control visibility', () => {
+    async function setupReadOnlyRelease(status, archiveAction = null) {
+      const projRes = await request(app)
+        .post('/projects')
+        .send('title=Read+Only+Test')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectId = projRes.headers.location.replace('/projects/', '');
+
+      const slug = 'read-only-test';
+      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
+      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
+      const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
+      fs.writeFileSync(path.join(projectDir, 'asset.png'), 'png');
+      await request(app).post(`/projects/${projectId}/scan`).expect(302);
+
+      const assetRepo = createAssetRepository(db);
+      const assets = assetRepo.findByProjectId(Number(projectId));
+
+      const createRes = await request(app)
+        .post('/releases')
+        .send(`projectId=${projectId}`)
+        .send('title=Read+Only+Release')
+        .send(`status=${status === 'published' ? 'ready' : status === 'cancelled' ? 'idea' : 'idea'}`)
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(status === 'published' ? 302 : 302);
+      const releaseLocation = createRes.headers.location;
+      const releaseId = Number(releaseLocation.replace('/releases/', ''));
+
+      // Select the asset
+      await request(app)
+        .post(`${releaseLocation}/assets`)
+        .send(`selectedAssetIds[]=${assets[0].id}`)
+        .send('roles[]=primary')
+        .send('sortOrder[]=0')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      if (status === 'published') {
+        await request(app)
+          .post(`${releaseLocation}/publish`)
+          .send('publishedDate=2025-06-15')
+          .set('Content-Type', 'application/x-www-form-urlencoded')
+          .expect(302);
+      } else if (status === 'archived-release') {
+        await request(app)
+          .post(`${releaseLocation}/archive`)
+          .expect(302);
+      } else if (status === 'archived-parent') {
+        await request(app)
+          .post(`/projects/${projectId}/archive`)
+          .expect(302);
+      }
+
+      return { releaseLocation, releaseId, asset: assets[0] };
+    }
+
+    async function assertNoMutationControls(releaseLocation) {
+      const res = await request(app).get(`${releaseLocation}/assets`).expect(200);
+
+      // No Add forms
+      const addForms = res.text.match(/action="[^"]*\/assets\/add"/g);
+      expect(addForms).toBeNull();
+
+      // No Remove Selected forms
+      const removeForms = res.text.match(/action="[^"]*\/remove-selected"/g);
+      expect(removeForms).toBeNull();
+
+      // No role-update forms/selects
+      const roleForms = res.text.match(/action="[^"]*\/role"/g);
+      expect(roleForms).toBeNull();
+
+      // No Move Up forms/buttons
+      const moveUpForms = res.text.match(/action="[^"]*\/move-up"/g);
+      expect(moveUpForms).toBeNull();
+
+      // No Move Down forms/buttons
+      const moveDownForms = res.text.match(/action="[^"]*\/move-down"/g);
+      expect(moveDownForms).toBeNull();
+
+      // The legacy Save Selection button must also be absent
+      expect(res.text).not.toContain('Save Selection');
+
+      // No bulk-selection form (POST to /releases/:id/assets)
+      const bulkFormAction = res.text.match(/method="post"[^>]*action="\/releases\/\d+\/assets"/g);
+      expect(bulkFormAction).toBeNull();
+
+      // No bulk-selection checkboxes
+      expect(res.text).not.toContain('class="asset-checkbox"');
+
+      // No role selects in the bulk form
+      expect(res.text).not.toContain('class="asset-role"');
+
+      // No sort-order inputs in the bulk form
+      expect(res.text).not.toContain('class="asset-sort-order"');
+
+      // No checkbox-toggle script (the <script> block after the form)
+      expect(res.text).not.toContain('asset-checkbox');
+
+      return res;
+    }
+
+    it('published release has no mutation controls', async () => {
+      const { releaseLocation } = await setupReadOnlyRelease('published');
+      await assertNoMutationControls(releaseLocation);
+    });
+
+    it('archived release has no mutation controls', async () => {
+      const { releaseLocation } = await setupReadOnlyRelease('archived-release');
+      await assertNoMutationControls(releaseLocation);
+    });
+
+    it('archived parent has no mutation controls', async () => {
+      const { releaseLocation } = await setupReadOnlyRelease('archived-parent');
+      await assertNoMutationControls(releaseLocation);
     });
   });
 });

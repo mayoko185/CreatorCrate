@@ -172,11 +172,14 @@ export function createReleaseRepository(db) {
     FROM release_assets ra
     JOIN assets a ON a.id = ra.asset_id
     WHERE ra.release_id = ?
+      AND a.project_id = (SELECT project_id FROM releases WHERE id = ?)
     ORDER BY ra.sort_order ASC, ra.asset_id ASC
   `);
 
   const raCountByRelease = db.prepare(`
-    SELECT COUNT(*) AS c FROM release_assets WHERE release_id = ?
+    SELECT COUNT(*) AS c FROM release_assets ra
+    JOIN assets a ON a.id = ra.asset_id AND a.project_id = (SELECT project_id FROM releases WHERE id = ?)
+    WHERE ra.release_id = ?
   `);
 
   const readinessFactsById = db.prepare(`
@@ -207,6 +210,25 @@ export function createReleaseRepository(db) {
     WHERE ra.asset_id = ?
   `);
 
+  /**
+   * Ownership-aware insert: only inserts a release_assets row when the asset
+   * belongs to the same project as the release. This is a repository-level
+   * guard that prevents malformed cross-project junction rows even if the
+   * service layer's validation is bypassed.
+   *
+   * Returns the inserted row on success, undefined on project mismatch.
+   * Does NOT throw — the caller (service layer) is responsible for domain
+   * validation and error messages.
+   *
+   * @type {import('better-sqlite3').Statement}
+   */
+  const raInsertOwnershipGuarded = db.prepare(`
+    INSERT INTO release_assets (release_id, asset_id, role, sort_order)
+    SELECT ?, ?, ?, ?
+    WHERE (SELECT project_id FROM releases WHERE id = ?) = (SELECT project_id FROM assets WHERE id = ?)
+    RETURNING release_id, asset_id, role, sort_order, created_at
+  `);
+
   const raInsert = db.prepare(`
     INSERT INTO release_assets (release_id, asset_id, role, sort_order)
     VALUES (?, ?, ?, ?)
@@ -221,10 +243,141 @@ export function createReleaseRepository(db) {
     DELETE FROM release_assets WHERE release_id = ?
   `);
 
+  const raUpdateRole = db.prepare(`
+    UPDATE release_assets SET role = ? WHERE release_id = ? AND asset_id = ?
+  `);
+
+  const raUpdateSortOrder = db.prepare(`
+    UPDATE release_assets SET sort_order = ? WHERE release_id = ? AND asset_id = ?
+  `);
+
   const replaceReleaseAssetsTx = db.transaction((releaseId, selections) => {
     raDeleteByRelease.run(releaseId);
     for (const sel of selections) {
-      raInsert.run(releaseId, sel.assetId, sel.role, sel.sortOrder);
+      const row = raInsertOwnershipGuarded.get(releaseId, sel.assetId, sel.role, sel.sortOrder, releaseId, sel.assetId);
+      // Ownership-guarded insert returns undefined when the asset does not
+      // belong to the same project. This must throw so the transaction rolls
+      // back — the caller is responsible for mapping this to a domain error.
+      if (!row) {
+        const err = new Error(`Asset ${sel.assetId} does not belong to the same project as release ${releaseId}`);
+        err.code = 'CROSS_PROJECT_ASSET';
+        throw err;
+      }
+    }
+  });
+
+  /**
+   * Transactional reindex: read all rows for a release in deterministic order
+   * (sort_order ASC, asset_id ASC) and assign contiguous sort_order values
+   * 0..n-1. This normalizes legacy gaps or duplicates after any curation
+   * mutation.
+   */
+  const reindexReleaseAssetsTx = db.transaction((releaseId) => {
+    const rows = db.prepare(`
+      SELECT asset_id FROM release_assets
+      WHERE release_id = ?
+      ORDER BY sort_order ASC, asset_id ASC
+    `).all(releaseId);
+    for (let i = 0; i < rows.length; i++) {
+      raUpdateSortOrder.run(i, releaseId, rows[i].asset_id);
+    }
+  });
+
+  /**
+   * Transactional remove-and-reindex: deletes exactly one (release_id, asset_id)
+   * junction row, reads the remaining rows in deterministic order
+   * (sort_order ASC, asset_id ASC), and reindexes them to contiguous 0..n-1.
+   *
+   * Every step commits or rolls back together.
+   *
+   * @type {import('better-sqlite3').Transaction}
+   */
+  const removeAndReindexReleaseAssetTx = db.transaction((releaseId, assetId) => {
+    const result = raDeleteOne.run(releaseId, assetId);
+    if (result.changes === 0) return false;
+
+    const rows = db.prepare(`
+      SELECT asset_id FROM release_assets
+      WHERE release_id = ?
+      ORDER BY sort_order ASC, asset_id ASC
+    `).all(releaseId);
+
+    for (let i = 0; i < rows.length; i++) {
+      raUpdateSortOrder.run(i, releaseId, rows[i].asset_id);
+    }
+    return true;
+  });
+
+  /**
+   * Transactional reorder: given a release ID and an array of asset_ids in the
+   * desired order, rewrites sort_order to contiguous 0..n-1.
+   *
+   * Before writing, loads the current selected asset IDs in deterministic order
+   * and validates the supplied sequence is a complete, exact match:
+   *   - same length
+   *   - no duplicates
+   *   - no missing IDs
+   *   - no extra IDs
+   *   - no foreign-release IDs
+   *   - no nonexistent IDs
+   *
+   * Every UPDATE asserts result.changes === 1. Any validation or update failure
+   * rolls back the complete transaction.
+   *
+   * @type {import('better-sqlite3').Transaction}
+   */
+  const reorderReleaseAssetsTx = db.transaction((releaseId, assetIds) => {
+    const currentRows = db.prepare(`
+      SELECT asset_id FROM release_assets
+      WHERE release_id = ?
+      ORDER BY sort_order ASC, asset_id ASC
+    `).all(releaseId);
+
+    const currentIds = currentRows.map((r) => r.asset_id);
+
+    if (assetIds.length !== currentIds.length) {
+      const err = new Error(
+        `Sequence length ${assetIds.length} does not match current selection length ${currentIds.length}`
+      );
+      err.code = 'INVALID_SEQUENCE_LENGTH';
+      throw err;
+    }
+
+    const seen = new Set();
+    for (let i = 0; i < assetIds.length; i++) {
+      const id = assetIds[i];
+      if (!Number.isInteger(id) || id < 1) {
+        const err = new Error(`Invalid asset ID at position ${i}: ${id}`);
+        err.code = 'INVALID_ASSET_ID';
+        throw err;
+      }
+      if (seen.has(id)) {
+        const err = new Error(`Duplicate asset ID at position ${i}: ${id}`);
+        err.code = 'DUPLICATE_ASSET_ID';
+        throw err;
+      }
+      seen.add(id);
+    }
+
+    // Check that every supplied ID exists in the current set (no extra, no foreign)
+    const currentSet = new Set(currentIds);
+    for (const id of assetIds) {
+      if (!currentSet.has(id)) {
+        const err = new Error(`Asset ID ${id} is not in the current selection`);
+        err.code = 'FOREIGN_ASSET_ID';
+        throw err;
+      }
+    }
+
+    for (let i = 0; i < assetIds.length; i++) {
+      const result = raUpdateSortOrder.run(i, releaseId, assetIds[i]);
+      if (result.changes !== 1) {
+        const err = new Error(
+          `Sort-order update for asset ${assetIds[i]} at position ${i} affected ${result.changes} rows, expected 1`
+        );
+        err.code = 'UPDATE_CHANGES_MISMATCH';
+        throw err;
+      }
     }
   });
 
@@ -585,7 +738,7 @@ export function createReleaseRepository(db) {
                COUNT(a.id) AS missing_asset_count
         FROM releases r
         JOIN release_assets ra ON ra.release_id = r.id
-        JOIN assets a ON a.id = ra.asset_id
+        JOIN assets a ON a.id = ra.asset_id AND a.project_id = r.project_id
         WHERE r.archived_at IS NULL
           AND r.status IN ('idea', 'planned', 'drafting', 'ready')
           AND a.is_present = 0
@@ -612,7 +765,9 @@ export function createReleaseRepository(db) {
         ${SELECT_ALL}
         WHERE ${DASHBOARD_ACTIVE}
           AND NOT EXISTS (
-            SELECT 1 FROM release_assets ra WHERE ra.release_id = id
+            SELECT 1 FROM release_assets ra
+            JOIN assets a ON a.id = ra.asset_id AND a.project_id = releases.project_id
+            WHERE ra.release_id = releases.id
           )
         ORDER BY (planned_date IS NULL), planned_date ASC, updated_at DESC
         LIMIT ?
@@ -684,7 +839,7 @@ export function createReleaseRepository(db) {
       const row = db.prepare(`
         SELECT COUNT(DISTINCT a.id) AS c
         FROM release_assets ra
-        JOIN assets a ON a.id = ra.asset_id
+        JOIN assets a ON a.id = ra.asset_id AND a.project_id = (SELECT project_id FROM releases WHERE id = ra.release_id)
         JOIN releases r ON r.id = ra.release_id
         WHERE a.is_present = 0
           AND r.archived_at IS NULL
@@ -703,12 +858,11 @@ export function createReleaseRepository(db) {
       const row = db.prepare(`
         SELECT COUNT(DISTINCT a.id) AS c
         FROM release_assets ra
-        JOIN assets a ON a.id = ra.asset_id
-        JOIN releases r ON r.id = ra.release_id
+        JOIN assets a ON a.id = ra.asset_id AND a.project_id = ?
+        JOIN releases r ON r.id = ra.release_id AND r.project_id = ?
         WHERE a.is_present = 0
           AND r.archived_at IS NULL
-          AND a.project_id = ?
-      `).get(projectId);
+      `).get(projectId, projectId);
       return row.c;
     },
 
@@ -721,7 +875,7 @@ export function createReleaseRepository(db) {
      * @returns {Array<{release_id: number, asset_id: number, role: string, sort_order: number, created_at: string, project_id: number, relative_path: string, filename: string, extension: string, mime_type: string, size_bytes: number, modified_at: string|null, is_present: number, last_seen_at: string|null, missing_since: string|null, asset_created_at: string, asset_updated_at: string}>}
      */
     listReleaseAssets(releaseId) {
-      return raFindByRelease.all(releaseId);
+      return raFindByRelease.all(releaseId, releaseId);
     },
 
     /**
@@ -730,7 +884,7 @@ export function createReleaseRepository(db) {
      * @returns {number}
      */
     countReleaseAssets(releaseId) {
-      const row = raCountByRelease.get(releaseId);
+      const row = raCountByRelease.get(releaseId, releaseId);
       return row.c;
     },
 
@@ -852,15 +1006,21 @@ export function createReleaseRepository(db) {
 
     /**
      * Add an asset selection to a release.
+     *
+     * Uses an ownership-guarded insert that only succeeds when the asset
+     * belongs to the same project as the release. Returns undefined when
+     * the project IDs do not match — the caller (service layer) is
+     * responsible for domain validation and error messages.
+     *
      * @param {number} releaseId
      * @param {number} assetId
      * @param {string} role
      * @param {number} sortOrder
-     * @returns {ReleaseAssetRecord}
-     * @throws {Error} on duplicate
+     * @returns {ReleaseAssetRecord|undefined}
+     * @throws {Error} on duplicate (same release_id + asset_id)
      */
     addReleaseAsset(releaseId, assetId, role, sortOrder) {
-      return raInsert.get(releaseId, assetId, role, sortOrder);
+      return raInsertOwnershipGuarded.get(releaseId, assetId, role, sortOrder, releaseId, assetId);
     },
 
     /**
@@ -893,6 +1053,82 @@ export function createReleaseRepository(db) {
     replaceReleaseAssets(releaseId, selections) {
       replaceReleaseAssetsTx(releaseId, selections);
     },
+
+    /**
+     * Insert a single asset selection.
+     *
+     * Uses an ownership-guarded insert that only succeeds when the asset
+     * belongs to the same project as the release. Returns undefined when
+     * the project IDs do not match — the caller (service layer) is
+     * responsible for domain validation and error messages.
+     *
+     * @param {number} releaseId
+     * @param {number} assetId
+     * @param {string} role
+     * @param {number} sortOrder
+     * @returns {ReleaseAssetRecord|undefined}
+     */
+    insertReleaseAsset(releaseId, assetId, role, sortOrder) {
+      return raInsertOwnershipGuarded.get(releaseId, assetId, role, sortOrder, releaseId, assetId);
+    },
+
+    /**
+     * Delete a single asset selection.
+     * @param {number} releaseId
+     * @param {number} assetId
+     * @returns {boolean} true if a row was deleted
+     */
+    deleteReleaseAsset(releaseId, assetId) {
+      const result = raDeleteOne.run(releaseId, assetId);
+      return result.changes > 0;
+    },
+
+    /**
+     * Update the role of a single selected asset.
+     * @param {number} releaseId
+     * @param {number} assetId
+     * @param {string} role
+     * @returns {boolean} true if a row was updated
+     */
+    updateReleaseAssetRole(releaseId, assetId, role) {
+      const result = raUpdateRole.run(role, releaseId, assetId);
+      return result.changes > 0;
+    },
+
+    /**
+     * Reindex all rows for a release to contiguous sort_order 0..n-1.
+     * Uses the deterministic order sort_order ASC, asset_id ASC.
+     * This normalizes legacy gaps or duplicates after curation mutations.
+     * @param {number} releaseId
+     */
+    reindexReleaseAssets(releaseId) {
+      reindexReleaseAssetsTx(releaseId);
+    },
+
+    /**
+     * Transactional remove-and-reindex: deletes exactly one (release_id, asset_id)
+     * junction row, reads the remaining rows in deterministic order
+     * (sort_order ASC, asset_id ASC), and reindexes them to contiguous 0..n-1.
+     *
+     * Every step commits or rolls back together.
+     *
+     * @param {number} releaseId
+     * @param {number} assetId
+     * @returns {boolean} true if a row was deleted and reindexed
+     */
+    removeAndReindexReleaseAsset: removeAndReindexReleaseAssetTx,
+
+    /**
+     * Transactional reorder: given a release ID and an array of asset_ids in the
+     * desired order, rewrites sort_order to contiguous 0..n-1.
+     *
+     * The caller (service layer) is responsible for computing the desired sequence.
+     * This method only writes — it does not read, validate, or compute ordering.
+     *
+     * @param {number} releaseId
+     * @param {number[]} assetIds - asset IDs in the desired order
+     */
+    reorderReleaseAssets: reorderReleaseAssetsTx,
 
     // ─── Phase 6C: Release Planning Views ─────────────────────────────────
 
@@ -1035,8 +1271,10 @@ export function createReleaseRepository(db) {
       const orderClause = buildOrderClauseWithTable('releases', sortBy, order);
 
       // Subqueries for asset counts — correlated aggregates avoid duplicate rows
-      const selectedCountSubquery = `(SELECT COUNT(*) FROM release_assets WHERE release_id = releases.id)`;
-      const missingCountSubquery = `(SELECT COUNT(*) FROM release_assets ra JOIN assets a ON a.id = ra.asset_id WHERE ra.release_id = releases.id AND a.is_present = 0)`;
+      // Both subqueries include a project guard (a.project_id = releases.project_id)
+      // to prevent malformed cross-project junction rows from affecting counts.
+      const selectedCountSubquery = `(SELECT COUNT(DISTINCT a.id) FROM release_assets ra JOIN assets a ON a.id = ra.asset_id AND a.project_id = releases.project_id WHERE ra.release_id = releases.id)`;
+      const missingCountSubquery = `(SELECT COUNT(DISTINCT a.id) FROM release_assets ra JOIN assets a ON a.id = ra.asset_id AND a.project_id = releases.project_id WHERE ra.release_id = releases.id AND a.is_present = 0)`;
 
       const sql = `
         SELECT releases.id, releases.project_id, projects.title AS project_title,
@@ -1114,8 +1352,8 @@ export function createReleaseRepository(db) {
 
       const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
 
-      const selectedCountSubquery = `(SELECT COUNT(*) FROM release_assets WHERE release_id = releases.id)`;
-      const missingCountSubquery = `(SELECT COUNT(*) FROM release_assets ra JOIN assets a ON a.id = ra.asset_id WHERE ra.release_id = releases.id AND a.is_present = 0)`;
+      const selectedCountSubquery = `(SELECT COUNT(DISTINCT a.id) FROM release_assets ra JOIN assets a ON a.id = ra.asset_id AND a.project_id = releases.project_id WHERE ra.release_id = releases.id)`;
+      const missingCountSubquery = `(SELECT COUNT(DISTINCT a.id) FROM release_assets ra JOIN assets a ON a.id = ra.asset_id AND a.project_id = releases.project_id WHERE ra.release_id = releases.id AND a.is_present = 0)`;
 
       // Board: sort by planned_date ascending (NULLs last), then updated_at desc,
       // then releases.id DESC as the final deterministic tie-breaker.
@@ -1179,8 +1417,8 @@ export function createReleaseRepository(db) {
 
       const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
 
-      const selectedCountSubquery = `(SELECT COUNT(*) FROM release_assets WHERE release_id = releases.id)`;
-      const missingCountSubquery = `(SELECT COUNT(*) FROM release_assets ra JOIN assets a ON a.id = ra.asset_id WHERE ra.release_id = releases.id AND a.is_present = 0)`;
+      const selectedCountSubquery = `(SELECT COUNT(DISTINCT a.id) FROM release_assets ra JOIN assets a ON a.id = ra.asset_id AND a.project_id = releases.project_id WHERE ra.release_id = releases.id)`;
+      const missingCountSubquery = `(SELECT COUNT(DISTINCT a.id) FROM release_assets ra JOIN assets a ON a.id = ra.asset_id AND a.project_id = releases.project_id WHERE ra.release_id = releases.id AND a.is_present = 0)`;
 
       const sql = `
         SELECT releases.id, releases.project_id, projects.title AS project_title,
@@ -1214,6 +1452,177 @@ export function createReleaseRepository(db) {
      * @param {number[]} assetIds - array of asset IDs (empty array returns [])
      * @returns {Array<{asset_id: number, release_id: number, title: string, status: string, release_archived_at: string|null, project_archived_at: string|null}>}
      */
+    // ─── Phase 9-1: Release Asset Candidate Discovery ──────────────────────
+
+    /**
+     * Build WHERE conditions and params for release candidate queries.
+     * Shared by both findReleaseCandidatePage and countReleaseCandidates so
+     * they always use identical filter predicates.
+     *
+     * A candidate is an asset that:
+     *   - belongs to the same project as the release
+     *   - is currently present (is_present = 1)
+     *   - is NOT already selected by the release
+     *
+     * @param {number} releaseId
+     * @param {number} projectId
+     * @param {object} filters
+     * @param {string} [filters.search] - filename search term (LIKE)
+     * @param {string} [filters.extension] - exact extension filter
+     * @returns {{ conditions: string[], params: any[] }}
+     */
+    _buildCandidateConditions(releaseId, projectId, filters) {
+      const conditions = [];
+      const params = [];
+
+      // Same-project ownership
+      conditions.push('a.project_id = ?');
+      params.push(projectId);
+
+      // Currently present
+      conditions.push('a.is_present = 1');
+
+      // Not already selected by this release
+      conditions.push('NOT EXISTS (SELECT 1 FROM release_assets ra WHERE ra.release_id = ? AND ra.asset_id = a.id)');
+      params.push(releaseId);
+
+      if (filters.search && filters.search.trim()) {
+        const escaped = filters.search.trim().replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
+        conditions.push('a.filename LIKE ? ESCAPE \'\\\'');
+        params.push(`%${escaped}%`);
+      }
+
+      if (filters.extension) {
+        conditions.push('a.extension = ?');
+        params.push(filters.extension);
+      }
+
+      return { conditions, params };
+    },
+
+    /**
+     * Paginated release candidate page.
+     *
+     * Ordering contract (deterministic):
+     *   1. filename COLLATE NOCASE ASC  — case-insensitive filename comparison
+     *   2. extension ASC                — exact extension tie-break
+     *   3. a.id ASC                     — asset ID as final tie-breaker
+     *
+     * @param {number} releaseId
+     * @param {number} projectId
+     * @param {object} [filters]
+     * @param {string} [filters.search] - filename search term
+     * @param {string} [filters.extension] - exact extension filter
+     * @param {number} [filters.page=1]
+     * @param {number} [filters.pageSize=25]
+     * @returns {Array<{id: number, project_id: number, relative_path: string, filename: string, extension: string, mime_type: string, size_bytes: number, is_present: number}>}
+     */
+    findReleaseCandidatePage(releaseId, projectId, filters = {}) {
+      const { page = 1, pageSize = 25 } = filters;
+      const { conditions, params } = this._buildCandidateConditions(releaseId, projectId, filters);
+
+      const offset = (Math.max(1, page) - 1) * Math.max(1, pageSize);
+
+      const sql = `
+        SELECT a.id, a.project_id, a.relative_path, a.filename, a.extension,
+               a.mime_type, a.size_bytes, a.is_present
+        FROM assets a
+        WHERE ${conditions.join(' AND ')}
+        ORDER BY a.filename COLLATE NOCASE ASC, a.extension ASC, a.id ASC
+        LIMIT ? OFFSET ?
+      `;
+
+      return db.prepare(sql).all(...params, pageSize, offset);
+    },
+
+    /**
+     * Count of matching release candidates.
+     * Uses identical filter predicates as findReleaseCandidatePage.
+     *
+     * @param {number} releaseId
+     * @param {number} projectId
+     * @param {object} [filters]
+     * @param {string} [filters.search] - filename search term
+     * @param {string} [filters.extension] - exact extension filter
+     * @returns {number}
+     */
+    countReleaseCandidates(releaseId, projectId, filters = {}) {
+      const { conditions, params } = this._buildCandidateConditions(releaseId, projectId, filters);
+
+      const sql = `SELECT COUNT(*) AS c FROM assets a WHERE ${conditions.join(' AND ')}`;
+      const row = db.prepare(sql).get(...params);
+      return row.c;
+    },
+
+    /**
+     * Get distinct extension values for available candidates.
+     * Returns extensions that exist on present, unselected assets
+     * belonging to the release's project.
+     *
+     * @param {number} releaseId
+     * @param {number} projectId
+     * @returns {string[]}
+     */
+    getReleaseCandidateExtensions(releaseId, projectId) {
+      const sql = `
+        SELECT DISTINCT a.extension
+        FROM assets a
+        WHERE a.project_id = ?
+          AND a.is_present = 1
+          AND NOT EXISTS (SELECT 1 FROM release_assets ra WHERE ra.release_id = ? AND ra.asset_id = a.id)
+        ORDER BY a.extension
+      `;
+      return db.prepare(sql).pluck().all(projectId, releaseId);
+    },
+
+    // ─── Phase 9-3: Integrity Diagnostics ────────────────────────────────
+
+    /**
+     * Detect malformed cross-project release-asset junction rows.
+     *
+     * A malformed row is a release_assets entry where the asset's project_id
+     * does not match the release's project_id. Such rows can arise from
+     * direct database manipulation, legacy data, or bugs in earlier versions.
+     *
+     * Uses LEFT JOIN so that malformed rows are reported even when a parent
+     * row (release or asset) is missing — e.g. FK-disabled corruption.
+     *
+     * This method is READ-ONLY — it performs no mutation, no deletion, and
+     * no schema changes. It returns deterministic output suitable for
+     * diagnostics, monitoring, or manual remediation.
+     *
+     * Returns an array of objects, each describing one malformed row:
+     *   { release_id, asset_id, release_project_id, asset_project_id, reason }
+     *
+     * Returns an empty array when no malformed rows exist.
+     *
+     * @returns {Array<{release_id: number, asset_id: number, release_project_id: number|null, asset_project_id: number|null, reason: string}>}
+     */
+    findCrossProjectReleaseAssets() {
+      const sql = `
+        SELECT
+          ra.release_id,
+          ra.asset_id,
+          r.project_id AS release_project_id,
+          a.project_id AS asset_project_id,
+          CASE
+            WHEN r.id IS NULL AND a.id IS NULL THEN 'both parents missing'
+            WHEN r.id IS NULL THEN 'missing release'
+            WHEN a.id IS NULL THEN 'missing asset'
+            WHEN r.project_id != a.project_id THEN 'cross-project'
+            ELSE 'unknown'
+          END AS reason
+        FROM release_assets ra
+        LEFT JOIN releases r ON r.id = ra.release_id
+        LEFT JOIN assets a ON a.id = ra.asset_id
+        WHERE r.id IS NULL
+           OR a.id IS NULL
+           OR r.project_id != a.project_id
+        ORDER BY ra.release_id ASC, ra.asset_id ASC
+      `;
+      return db.prepare(sql).all();
+    },
+
     findReleaseUsageForAssetIds(projectId, assetIds) {
       if (!Array.isArray(assetIds) || assetIds.length === 0) {
         return [];

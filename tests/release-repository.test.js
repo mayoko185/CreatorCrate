@@ -1975,4 +1975,1055 @@ describe('release repository', () => {
       expect(results).toEqual([]);
     });
   });
+
+  // ─── Phase 9-1: Release Asset Candidate Discovery ──────────────────────
+
+  describe('findReleaseCandidatePage', () => {
+    function insertAsset({ projectId, relativePath, filename, extension = 'txt', isPresent = 1 }) {
+      return db.prepare(`
+        INSERT INTO assets (project_id, relative_path, filename, extension,
+                            mime_type, size_bytes, modified_at,
+                            is_present, last_seen_at, missing_since)
+        VALUES (?, ?, ?, ?, 'text/plain', 100, NULL, ?, datetime('now'),
+                ${isPresent === 0 ? "datetime('now')" : 'NULL'})
+        RETURNING id
+      `).get(projectId, relativePath, filename, extension, isPresent);
+    }
+
+    function linkAssetToRelease({ releaseId, assetId, role = 'attachment', sortOrder = 0 }) {
+      db.prepare(`
+        INSERT INTO release_assets (release_id, asset_id, role, sort_order)
+        VALUES (?, ?, ?, ?)
+      `).run(releaseId, assetId, role, sortOrder);
+    }
+
+    it('returns only same-project candidates', () => {
+      const otherProject = projectRepo.create(sampleProject({ title: 'Other' }));
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'R' }) });
+      const ourAsset = insertAsset({ projectId, relativePath: 'ours.txt', filename: 'ours.txt' });
+      insertAsset({ projectId: otherProject.id, relativePath: 'theirs.txt', filename: 'theirs.txt' });
+
+      const candidates = releaseRepo.findReleaseCandidatePage(release.id, projectId);
+      expect(candidates).toHaveLength(1);
+      expect(candidates[0].id).toBe(ourAsset.id);
+    });
+
+    it('excludes selected assets', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'R' }) });
+      const selected = insertAsset({ projectId, relativePath: 'selected.txt', filename: 'selected.txt' });
+      const available = insertAsset({ projectId, relativePath: 'available.txt', filename: 'available.txt' });
+      linkAssetToRelease({ releaseId: release.id, assetId: selected.id });
+
+      const candidates = releaseRepo.findReleaseCandidatePage(release.id, projectId);
+      expect(candidates.map((c) => c.id)).not.toContain(selected.id);
+      expect(candidates).toHaveLength(1);
+      expect(candidates[0].id).toBe(available.id);
+    });
+
+    it('excludes missing unselected assets', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'R' }) });
+      const present = insertAsset({ projectId, relativePath: 'present.txt', filename: 'present.txt' });
+      insertAsset({ projectId, relativePath: 'missing.txt', filename: 'missing.txt', isPresent: 0 });
+
+      const candidates = releaseRepo.findReleaseCandidatePage(release.id, projectId);
+      expect(candidates).toHaveLength(1);
+      expect(candidates[0].id).toBe(present.id);
+    });
+
+    it('missing selected assets remain in selected result but not in candidates', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'R' }) });
+      const missingSelected = insertAsset({ projectId, relativePath: 'gone.txt', filename: 'gone.txt', isPresent: 0 });
+      linkAssetToRelease({ releaseId: release.id, assetId: missingSelected.id });
+      const present = insertAsset({ projectId, relativePath: 'present.txt', filename: 'present.txt' });
+
+      // Selected assets still include the missing one
+      const selected = releaseRepo.listReleaseAssets(release.id);
+      expect(selected.map((s) => s.asset_id)).toContain(missingSelected.id);
+
+      // Candidates exclude the missing selected asset
+      const candidates = releaseRepo.findReleaseCandidatePage(release.id, projectId);
+      expect(candidates.map((c) => c.id)).not.toContain(missingSelected.id);
+      expect(candidates.map((c) => c.id)).toContain(present.id);
+    });
+
+    it('filters by filename search', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'R' }) });
+      insertAsset({ projectId, relativePath: 'alpha.txt', filename: 'alpha.txt' });
+      insertAsset({ projectId, relativePath: 'beta.txt', filename: 'beta.txt' });
+      insertAsset({ projectId, relativePath: 'alphabet.txt', filename: 'alphabet.txt' });
+
+      const candidates = releaseRepo.findReleaseCandidatePage(release.id, projectId, { search: 'alpha' });
+      expect(candidates).toHaveLength(2);
+      expect(candidates.map((c) => c.filename).sort()).toEqual(['alpha.txt', 'alphabet.txt']);
+    });
+
+    it('filters by exact extension', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'R' }) });
+      insertAsset({ projectId, relativePath: 'a.txt', filename: 'a.txt', extension: 'txt' });
+      insertAsset({ projectId, relativePath: 'b.png', filename: 'b.png', extension: 'png' });
+      insertAsset({ projectId, relativePath: 'c.txt', filename: 'c.txt', extension: 'txt' });
+
+      const candidates = releaseRepo.findReleaseCandidatePage(release.id, projectId, { extension: 'png' });
+      expect(candidates).toHaveLength(1);
+      expect(candidates[0].filename).toBe('b.png');
+    });
+
+    it('combines search and extension filters', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'R' }) });
+      insertAsset({ projectId, relativePath: 'data.txt', filename: 'data.txt', extension: 'txt' });
+      insertAsset({ projectId, relativePath: 'data.png', filename: 'data.png', extension: 'png' });
+      insertAsset({ projectId, relativePath: 'other.txt', filename: 'other.txt', extension: 'txt' });
+
+      const candidates = releaseRepo.findReleaseCandidatePage(release.id, projectId, { search: 'data', extension: 'txt' });
+      expect(candidates).toHaveLength(1);
+      expect(candidates[0].filename).toBe('data.txt');
+    });
+
+    it('orders by filename case-insensitive, then extension, then asset ID', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'R' }) });
+      // Insert in non-deterministic order
+      const a1 = insertAsset({ projectId, relativePath: 'ALPHA.txt', filename: 'ALPHA.txt', extension: 'txt' });
+      const a2 = insertAsset({ projectId, relativePath: 'alpha.png', filename: 'alpha.png', extension: 'png' });
+      const a3 = insertAsset({ projectId, relativePath: 'alpha.txt', filename: 'alpha.txt', extension: 'txt' });
+      const a4 = insertAsset({ projectId, relativePath: 'beta.txt', filename: 'beta.txt', extension: 'txt' });
+
+      const candidates = releaseRepo.findReleaseCandidatePage(release.id, projectId);
+      // Expected: alpha.png (filename=alpha, ext=png), ALPHA.txt (filename=alpha, ext=txt, lower id),
+      // alpha.txt (filename=alpha, ext=txt, higher id), beta.txt
+      expect(candidates[0].filename).toBe('alpha.png');
+      expect(candidates[1].filename).toBe('ALPHA.txt');
+      expect(candidates[2].filename).toBe('alpha.txt');
+      expect(candidates[3].filename).toBe('beta.txt');
+      // ID tie-break: ALPHA.txt before alpha.txt
+      expect(candidates[1].id).toBeLessThan(candidates[2].id);
+    });
+
+    it('respects page size with a maximum of 100', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'R' }) });
+      for (let i = 0; i < 10; i++) {
+        insertAsset({ projectId, relativePath: `file${i}.txt`, filename: `file${i}.txt` });
+      }
+
+      const page = releaseRepo.findReleaseCandidatePage(release.id, projectId, { page: 1, pageSize: 3 });
+      expect(page).toHaveLength(3);
+    });
+
+    it('returns empty array for empty result', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'R' }) });
+      const candidates = releaseRepo.findReleaseCandidatePage(release.id, projectId);
+      expect(candidates).toEqual([]);
+    });
+
+    it('returns empty array for page beyond final page', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'R' }) });
+      insertAsset({ projectId, relativePath: 'only.txt', filename: 'only.txt' });
+
+      const candidates = releaseRepo.findReleaseCandidatePage(release.id, projectId, { page: 5, pageSize: 10 });
+      expect(candidates).toEqual([]);
+    });
+
+    it('corrupt cross-project junction rows do not hide valid candidates', () => {
+      const otherProject = projectRepo.create(sampleProject({ title: 'Other' }));
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'R' }) });
+      const ourAsset = insertAsset({ projectId, relativePath: 'ours.txt', filename: 'ours.txt' });
+      const otherAsset = insertAsset({ projectId: otherProject.id, relativePath: 'theirs.txt', filename: 'theirs.txt' });
+
+      // Corrupt junction: other project's asset linked to our release
+      db.prepare(`
+        INSERT INTO release_assets (release_id, asset_id, role, sort_order)
+        VALUES (?, ?, 'attachment', 0)
+      `).run(release.id, otherAsset.id);
+
+      // Our asset must still appear as a candidate (it is not selected)
+      const candidates = releaseRepo.findReleaseCandidatePage(release.id, projectId);
+      expect(candidates.map((c) => c.id)).toContain(ourAsset.id);
+      // The corrupt cross-project asset must not appear (different project)
+      expect(candidates.map((c) => c.id)).not.toContain(otherAsset.id);
+    });
+  });
+
+  describe('countReleaseCandidates', () => {
+    function insertAsset({ projectId, relativePath, filename, extension = 'txt', isPresent = 1 }) {
+      return db.prepare(`
+        INSERT INTO assets (project_id, relative_path, filename, extension,
+                            mime_type, size_bytes, modified_at,
+                            is_present, last_seen_at, missing_since)
+        VALUES (?, ?, ?, ?, 'text/plain', 100, NULL, ?, datetime('now'),
+                ${isPresent === 0 ? "datetime('now')" : 'NULL'})
+        RETURNING id
+      `).get(projectId, relativePath, filename, extension, isPresent);
+    }
+
+    function linkAssetToRelease({ releaseId, assetId, role = 'attachment', sortOrder = 0 }) {
+      db.prepare(`
+        INSERT INTO release_assets (release_id, asset_id, role, sort_order)
+        VALUES (?, ?, ?, ?)
+      `).run(releaseId, assetId, role, sortOrder);
+    }
+
+    it('count matches findCandidatePage for same filters', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'R' }) });
+      insertAsset({ projectId, relativePath: 'a.txt', filename: 'a.txt' });
+      insertAsset({ projectId, relativePath: 'b.txt', filename: 'b.txt' });
+      insertAsset({ projectId, relativePath: 'c.txt', filename: 'c.txt' });
+
+      const count = releaseRepo.countReleaseCandidates(release.id, projectId);
+      const page = releaseRepo.findReleaseCandidatePage(release.id, projectId);
+      expect(count).toBe(page.length);
+    });
+
+    it('count matches with search filter', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'R' }) });
+      insertAsset({ projectId, relativePath: 'alpha.txt', filename: 'alpha.txt' });
+      insertAsset({ projectId, relativePath: 'beta.txt', filename: 'beta.txt' });
+      insertAsset({ projectId, relativePath: 'alphabet.txt', filename: 'alphabet.txt' });
+
+      const count = releaseRepo.countReleaseCandidates(release.id, projectId, { search: 'alpha' });
+      const page = releaseRepo.findReleaseCandidatePage(release.id, projectId, { search: 'alpha' });
+      expect(count).toBe(page.length);
+    });
+
+    it('count matches with extension filter', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'R' }) });
+      insertAsset({ projectId, relativePath: 'a.txt', filename: 'a.txt', extension: 'txt' });
+      insertAsset({ projectId, relativePath: 'b.png', filename: 'b.png', extension: 'png' });
+
+      const count = releaseRepo.countReleaseCandidates(release.id, projectId, { extension: 'png' });
+      const page = releaseRepo.findReleaseCandidatePage(release.id, projectId, { extension: 'png' });
+      expect(count).toBe(page.length);
+    });
+
+    it('count matches with combined filters', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'R' }) });
+      insertAsset({ projectId, relativePath: 'data.txt', filename: 'data.txt', extension: 'txt' });
+      insertAsset({ projectId, relativePath: 'data.png', filename: 'data.png', extension: 'png' });
+      insertAsset({ projectId, relativePath: 'other.txt', filename: 'other.txt', extension: 'txt' });
+
+      const count = releaseRepo.countReleaseCandidates(release.id, projectId, { search: 'data', extension: 'txt' });
+      const page = releaseRepo.findReleaseCandidatePage(release.id, projectId, { search: 'data', extension: 'txt' });
+      expect(count).toBe(page.length);
+    });
+
+    it('returns zero for empty result', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'R' }) });
+      expect(releaseRepo.countReleaseCandidates(release.id, projectId)).toBe(0);
+    });
+
+    it('excludes selected assets from count', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'R' }) });
+      const a1 = insertAsset({ projectId, relativePath: 'a.txt', filename: 'a.txt' });
+      insertAsset({ projectId, relativePath: 'b.txt', filename: 'b.txt' });
+      linkAssetToRelease({ releaseId: release.id, assetId: a1.id });
+
+      expect(releaseRepo.countReleaseCandidates(release.id, projectId)).toBe(1);
+    });
+  });
+
+  describe('getReleaseCandidateExtensions', () => {
+    function insertAsset({ projectId, relativePath, filename, extension = 'txt', isPresent = 1 }) {
+      return db.prepare(`
+        INSERT INTO assets (project_id, relative_path, filename, extension,
+                            mime_type, size_bytes, modified_at,
+                            is_present, last_seen_at, missing_since)
+        VALUES (?, ?, ?, ?, 'text/plain', 100, NULL, ?, datetime('now'),
+                ${isPresent === 0 ? "datetime('now')" : 'NULL'})
+        RETURNING id
+      `).get(projectId, relativePath, filename, extension, isPresent);
+    }
+
+    it('returns distinct extensions for available candidates', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'R' }) });
+      insertAsset({ projectId, relativePath: 'a.txt', filename: 'a.txt', extension: 'txt' });
+      insertAsset({ projectId, relativePath: 'b.png', filename: 'b.png', extension: 'png' });
+      insertAsset({ projectId, relativePath: 'c.txt', filename: 'c.txt', extension: 'txt' });
+
+      const exts = releaseRepo.getReleaseCandidateExtensions(release.id, projectId);
+      expect(exts).toEqual(['png', 'txt']);
+    });
+
+    it('excludes extensions of selected assets', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'R' }) });
+      const selected = insertAsset({ projectId, relativePath: 'a.txt', filename: 'a.txt', extension: 'txt' });
+      insertAsset({ projectId, relativePath: 'b.png', filename: 'b.png', extension: 'png' });
+      db.prepare(`
+        INSERT INTO release_assets (release_id, asset_id, role, sort_order)
+        VALUES (?, ?, 'attachment', 0)
+      `).run(release.id, selected.id);
+
+      const exts = releaseRepo.getReleaseCandidateExtensions(release.id, projectId);
+      expect(exts).toEqual(['png']);
+    });
+
+    it('excludes extensions of missing assets', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'R' }) });
+      insertAsset({ projectId, relativePath: 'a.txt', filename: 'a.txt', extension: 'txt', isPresent: 0 });
+      insertAsset({ projectId, relativePath: 'b.png', filename: 'b.png', extension: 'png' });
+
+      const exts = releaseRepo.getReleaseCandidateExtensions(release.id, projectId);
+      expect(exts).toEqual(['png']);
+    });
+
+    it('returns empty array when no candidates exist', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'R' }) });
+      const exts = releaseRepo.getReleaseCandidateExtensions(release.id, projectId);
+      expect(exts).toEqual([]);
+    });
+  });
+
+  // ─── Phase 9-3: Defensive same-project read guards ─────────────────────
+
+  describe('cross-project junction row isolation', () => {
+    let otherProjectId;
+    let otherAssetId;
+
+    beforeEach(() => {
+      const otherProject = projectRepo.create(sampleProject({ title: 'Other Project' }));
+      otherProjectId = otherProject.id;
+      const otherAsset = assetRepo.upsert(otherProjectId, 'other.txt', sampleAsset(otherProjectId, { relativePath: 'other.txt' }));
+      otherAssetId = otherAsset.id;
+    });
+
+    it('listReleaseAssets excludes cross-project junction rows', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'R' }) });
+      const ownAsset = assetRepo.upsert(projectId, 'own.txt', sampleAsset(projectId, { relativePath: 'own.txt' }));
+      releaseRepo.addReleaseAsset(release.id, ownAsset.id, 'primary', 0);
+      // Insert a malformed cross-project row directly
+      db.prepare('INSERT INTO release_assets (release_id, asset_id, role, sort_order) VALUES (?, ?, ?, ?)')
+        .run(release.id, otherAssetId, 'attachment', 1);
+
+      const selections = releaseRepo.listReleaseAssets(release.id);
+      expect(selections).toHaveLength(1);
+      expect(selections[0].asset_id).toBe(ownAsset.id);
+    });
+
+    it('countReleaseAssets excludes cross-project junction rows', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'R' }) });
+      const ownAsset = assetRepo.upsert(projectId, 'own.txt', sampleAsset(projectId, { relativePath: 'own.txt' }));
+      releaseRepo.addReleaseAsset(release.id, ownAsset.id, 'primary', 0);
+      db.prepare('INSERT INTO release_assets (release_id, asset_id, role, sort_order) VALUES (?, ?, ?, ?)')
+        .run(release.id, otherAssetId, 'attachment', 1);
+
+      expect(releaseRepo.countReleaseAssets(release.id)).toBe(1);
+    });
+
+    it('findPage selected_asset_count excludes cross-project rows', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'R' }) });
+      const ownAsset = assetRepo.upsert(projectId, 'own.txt', sampleAsset(projectId, { relativePath: 'own.txt' }));
+      releaseRepo.addReleaseAsset(release.id, ownAsset.id, 'primary', 0);
+      db.prepare('INSERT INTO release_assets (release_id, asset_id, role, sort_order) VALUES (?, ?, ?, ?)')
+        .run(release.id, otherAssetId, 'attachment', 1);
+
+      const rows = releaseRepo.findPage({ today: '2025-06-15' });
+      const row = rows.find((r) => r.id === release.id);
+      expect(row.selected_asset_count).toBe(1);
+    });
+
+    it('findPage missing_asset_count excludes cross-project rows', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'R' }) });
+      const ownAsset = assetRepo.upsert(projectId, 'own.txt', sampleAsset(projectId, { relativePath: 'own.txt' }));
+      releaseRepo.addReleaseAsset(release.id, ownAsset.id, 'primary', 0);
+      // Mark own asset as missing
+      db.prepare('UPDATE assets SET is_present = 0, missing_since = datetime(\'now\') WHERE id = ?').run(ownAsset.id);
+      // Insert a cross-project row with a present asset
+      db.prepare('INSERT INTO release_assets (release_id, asset_id, role, sort_order) VALUES (?, ?, ?, ?)')
+        .run(release.id, otherAssetId, 'attachment', 1);
+
+      const rows = releaseRepo.findPage({ today: '2025-06-15' });
+      const row = rows.find((r) => r.id === release.id);
+      expect(row.missing_asset_count).toBe(1);
+    });
+
+    it('findReleasesWithMissingSelectedAssets excludes cross-project rows', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'R' }) });
+      const ownAsset = assetRepo.upsert(projectId, 'own.txt', sampleAsset(projectId, { relativePath: 'own.txt' }));
+      releaseRepo.addReleaseAsset(release.id, ownAsset.id, 'primary', 0);
+      db.prepare('UPDATE assets SET is_present = 0, missing_since = datetime(\'now\') WHERE id = ?').run(ownAsset.id);
+      // Cross-project row with a present asset should not affect the missing count
+      db.prepare('INSERT INTO release_assets (release_id, asset_id, role, sort_order) VALUES (?, ?, ?, ?)')
+        .run(release.id, otherAssetId, 'attachment', 1);
+
+      const rows = releaseRepo.findReleasesWithMissingSelectedAssets(10);
+      const row = rows.find((r) => r.id === release.id);
+      expect(row).toBeDefined();
+      expect(row.missing_asset_count).toBe(1);
+    });
+
+    it('countMissingAssetsReferenced excludes cross-project rows', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'R' }) });
+      const ownAsset = assetRepo.upsert(projectId, 'own.txt', sampleAsset(projectId, { relativePath: 'own.txt' }));
+      releaseRepo.addReleaseAsset(release.id, ownAsset.id, 'primary', 0);
+      db.prepare('UPDATE assets SET is_present = 0, missing_since = datetime(\'now\') WHERE id = ?').run(ownAsset.id);
+      // Cross-project row should not be counted
+      db.prepare('INSERT INTO release_assets (release_id, asset_id, role, sort_order) VALUES (?, ?, ?, ?)')
+        .run(release.id, otherAssetId, 'attachment', 1);
+
+      expect(releaseRepo.countMissingAssetsReferenced()).toBe(1);
+    });
+
+    it('countMissingAssetsReferencedByProjectId excludes cross-project rows', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'R' }) });
+      const ownAsset = assetRepo.upsert(projectId, 'own.txt', sampleAsset(projectId, { relativePath: 'own.txt' }));
+      releaseRepo.addReleaseAsset(release.id, ownAsset.id, 'primary', 0);
+      db.prepare('UPDATE assets SET is_present = 0, missing_since = datetime(\'now\') WHERE id = ?').run(ownAsset.id);
+      db.prepare('INSERT INTO release_assets (release_id, asset_id, role, sort_order) VALUES (?, ?, ?, ?)')
+        .run(release.id, otherAssetId, 'attachment', 1);
+
+      expect(releaseRepo.countMissingAssetsReferencedByProjectId(projectId)).toBe(1);
+    });
+  });
+
+  // ─── Phase 9-3: Repository write integrity ────────────────────────────
+
+  describe('ownership-guarded insert', () => {
+    it('addReleaseAsset returns undefined for cross-project asset', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'R' }) });
+      const otherProject = projectRepo.create(sampleProject({ title: 'Other' }));
+      const otherAsset = assetRepo.upsert(otherProject.id, 'other.txt', sampleAsset(otherProject.id, { relativePath: 'other.txt' }));
+
+      const result = releaseRepo.addReleaseAsset(release.id, otherAsset.id, 'attachment', 0);
+      expect(result).toBeUndefined();
+    });
+
+    it('insertReleaseAsset returns undefined for cross-project asset', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'R' }) });
+      const otherProject = projectRepo.create(sampleProject({ title: 'Other' }));
+      const otherAsset = assetRepo.upsert(otherProject.id, 'other.txt', sampleAsset(otherProject.id, { relativePath: 'other.txt' }));
+
+      const result = releaseRepo.insertReleaseAsset(release.id, otherAsset.id, 'attachment', 0);
+      expect(result).toBeUndefined();
+    });
+
+    it('replaceReleaseAssets throws for cross-project assets', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'R' }) });
+      const ownAsset = assetRepo.upsert(projectId, 'own.txt', sampleAsset(projectId, { relativePath: 'own.txt' }));
+      const otherProject = projectRepo.create(sampleProject({ title: 'Other' }));
+      const otherAsset = assetRepo.upsert(otherProject.id, 'other.txt', sampleAsset(otherProject.id, { relativePath: 'other.txt' }));
+
+      // Must throw — ownership mismatch must roll back the entire transaction
+      expect(() => {
+        releaseRepo.replaceReleaseAssets(release.id, [
+          { assetId: ownAsset.id, role: 'primary', sortOrder: 0 },
+          { assetId: otherAsset.id, role: 'attachment', sortOrder: 1 },
+        ]);
+      }).toThrow();
+
+      // Original junction rows must remain exactly unchanged (transaction rolled back)
+      const selections = releaseRepo.listReleaseAssets(release.id);
+      expect(selections).toHaveLength(0);
+    });
+  });
+
+  // ─── Phase 9-3: Diagnostic query ──────────────────────────────────────
+
+  describe('findCrossProjectReleaseAssets', () => {
+    it('returns empty array when no malformed rows exist', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'R' }) });
+      const ownAsset = assetRepo.upsert(projectId, 'own.txt', sampleAsset(projectId, { relativePath: 'own.txt' }));
+      releaseRepo.addReleaseAsset(release.id, ownAsset.id, 'primary', 0);
+
+      const result = releaseRepo.findCrossProjectReleaseAssets();
+      expect(result).toEqual([]);
+    });
+
+    it('detects malformed cross-project rows', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'R' }) });
+      const otherProject = projectRepo.create(sampleProject({ title: 'Other' }));
+      const otherAsset = assetRepo.upsert(otherProject.id, 'other.txt', sampleAsset(otherProject.id, { relativePath: 'other.txt' }));
+
+      // Insert a malformed cross-project row directly
+      db.prepare('INSERT INTO release_assets (release_id, asset_id, role, sort_order) VALUES (?, ?, ?, ?)')
+        .run(release.id, otherAsset.id, 'attachment', 0);
+
+      const result = releaseRepo.findCrossProjectReleaseAssets();
+      expect(result).toHaveLength(1);
+      expect(result[0]).toMatchObject({
+        release_id: release.id,
+        asset_id: otherAsset.id,
+        release_project_id: projectId,
+        asset_project_id: otherProject.id,
+      });
+    });
+
+    it('performs no mutation', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'R' }) });
+      const otherProject = projectRepo.create(sampleProject({ title: 'Other' }));
+      const otherAsset = assetRepo.upsert(otherProject.id, 'other.txt', sampleAsset(otherProject.id, { relativePath: 'other.txt' }));
+      db.prepare('INSERT INTO release_assets (release_id, asset_id, role, sort_order) VALUES (?, ?, ?, ?)')
+        .run(release.id, otherAsset.id, 'attachment', 0);
+
+      const beforeRows = db.prepare('SELECT COUNT(*) AS c FROM release_assets').get().c;
+      releaseRepo.findCrossProjectReleaseAssets();
+      const afterRows = db.prepare('SELECT COUNT(*) AS c FROM release_assets').get().c;
+
+      expect(afterRows).toBe(beforeRows);
+    });
+
+    it('returns deterministic output ordered by release_id, asset_id', () => {
+      const release1 = releaseRepo.create({ projectId, ...sampleRelease({ title: 'R1' }) });
+      const release2 = releaseRepo.create({ projectId, ...sampleRelease({ title: 'R2' }) });
+      const otherProject = projectRepo.create(sampleProject({ title: 'Other' }));
+      const otherAsset1 = assetRepo.upsert(otherProject.id, 'a.txt', sampleAsset(otherProject.id, { relativePath: 'a.txt' }));
+      const otherAsset2 = assetRepo.upsert(otherProject.id, 'b.txt', sampleAsset(otherProject.id, { relativePath: 'b.txt' }));
+
+      db.prepare('INSERT INTO release_assets (release_id, asset_id, role, sort_order) VALUES (?, ?, ?, ?)')
+        .run(release2.id, otherAsset2.id, 'attachment', 0);
+      db.prepare('INSERT INTO release_assets (release_id, asset_id, role, sort_order) VALUES (?, ?, ?, ?)')
+        .run(release1.id, otherAsset1.id, 'attachment', 0);
+
+      const result = releaseRepo.findCrossProjectReleaseAssets();
+      expect(result).toHaveLength(2);
+      expect(result[0].release_id).toBeLessThanOrEqual(result[1].release_id);
+    });
+
+    it('includes reason column for cross-project rows', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'R' }) });
+      const otherProject = projectRepo.create(sampleProject({ title: 'Other' }));
+      const otherAsset = assetRepo.upsert(otherProject.id, 'other.txt', sampleAsset(otherProject.id, { relativePath: 'other.txt' }));
+      db.prepare('INSERT INTO release_assets (release_id, asset_id, role, sort_order) VALUES (?, ?, ?, ?)')
+        .run(release.id, otherAsset.id, 'attachment', 0);
+
+      const result = releaseRepo.findCrossProjectReleaseAssets();
+      expect(result).toHaveLength(1);
+      expect(result[0]).toHaveProperty('reason');
+      expect(result[0].reason).toBe('cross-project');
+    });
+
+    it('detects missing release with LEFT JOIN', () => {
+      const otherProject = projectRepo.create(sampleProject({ title: 'Other' }));
+      const otherAsset = assetRepo.upsert(otherProject.id, 'orphan.txt', sampleAsset(otherProject.id, { relativePath: 'orphan.txt' }));
+      // Disable FK temporarily to insert an orphaned row
+      db.pragma('foreign_keys = OFF');
+      db.prepare('INSERT INTO release_assets (release_id, asset_id, role, sort_order) VALUES (?, ?, ?, ?)')
+        .run(99999, otherAsset.id, 'attachment', 0);
+      db.pragma('foreign_keys = ON');
+
+      const result = releaseRepo.findCrossProjectReleaseAssets();
+      expect(result).toHaveLength(1);
+      expect(result[0].release_id).toBe(99999);
+      expect(result[0].asset_id).toBe(otherAsset.id);
+      expect(result[0].release_project_id).toBeNull();
+      expect(result[0].reason).toBe('missing release');
+    });
+
+    it('detects missing asset with LEFT JOIN', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'R' }) });
+      // Disable FK temporarily to insert an orphaned row
+      db.pragma('foreign_keys = OFF');
+      db.prepare('INSERT INTO release_assets (release_id, asset_id, role, sort_order) VALUES (?, ?, ?, ?)')
+        .run(release.id, 99999, 'attachment', 0);
+      db.pragma('foreign_keys = ON');
+
+      const result = releaseRepo.findCrossProjectReleaseAssets();
+      expect(result).toHaveLength(1);
+      expect(result[0].release_id).toBe(release.id);
+      expect(result[0].asset_id).toBe(99999);
+      expect(result[0].asset_project_id).toBeNull();
+      expect(result[0].reason).toBe('missing asset');
+    });
+
+    it('detects both parents missing with FK-disabled corruption', () => {
+      // Disable foreign keys temporarily to insert orphaned rows
+      db.pragma('foreign_keys = OFF');
+      db.prepare('INSERT INTO release_assets (release_id, asset_id, role, sort_order) VALUES (?, ?, ?, ?)')
+        .run(88888, 77777, 'attachment', 0);
+      db.pragma('foreign_keys = ON');
+
+      const result = releaseRepo.findCrossProjectReleaseAssets();
+      expect(result).toHaveLength(1);
+      expect(result[0].release_id).toBe(88888);
+      expect(result[0].asset_id).toBe(77777);
+      expect(result[0].release_project_id).toBeNull();
+      expect(result[0].asset_project_id).toBeNull();
+      expect(result[0].reason).toBe('both parents missing');
+    });
+  });
+
+  // ─── Phase 9-4: Bulk replacement rollback tests ─────────────────────────
+
+  describe('replaceReleaseAssets rollback behavior', () => {
+    it('rolls back entire transaction when one valid + one cross-project selection is submitted', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'R' }) });
+      const ownBefore = assetRepo.upsert(projectId, 'before.txt', sampleAsset(projectId, { relativePath: 'before.txt' }));
+      releaseRepo.addReleaseAsset(release.id, ownBefore.id, 'primary', 0);
+      const beforeSelections = releaseRepo.listReleaseAssets(release.id);
+      expect(beforeSelections).toHaveLength(1);
+
+      const otherProject = projectRepo.create(sampleProject({ title: 'Other' }));
+      const otherAsset = assetRepo.upsert(otherProject.id, 'other.txt', sampleAsset(otherProject.id, { relativePath: 'other.txt' }));
+
+      expect(() => {
+        releaseRepo.replaceReleaseAssets(release.id, [
+          { assetId: ownBefore.id, role: 'primary', sortOrder: 0 },
+          { assetId: otherAsset.id, role: 'attachment', sortOrder: 1 },
+        ]);
+      }).toThrow();
+
+      // Original rows preserved exactly
+      const afterSelections = releaseRepo.listReleaseAssets(release.id);
+      expect(afterSelections).toEqual(beforeSelections);
+    });
+
+    it('rolls back when mismatch is at first position', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'R' }) });
+      const ownAsset = assetRepo.upsert(projectId, 'own.txt', sampleAsset(projectId, { relativePath: 'own.txt' }));
+      releaseRepo.addReleaseAsset(release.id, ownAsset.id, 'primary', 0);
+      const before = releaseRepo.listReleaseAssets(release.id);
+
+      const otherProject = projectRepo.create(sampleProject({ title: 'Other' }));
+      const otherAsset = assetRepo.upsert(otherProject.id, 'other.txt', sampleAsset(otherProject.id, { relativePath: 'other.txt' }));
+      const ownAsset2 = assetRepo.upsert(projectId, 'own2.txt', sampleAsset(projectId, { relativePath: 'own2.txt' }));
+
+      expect(() => {
+        releaseRepo.replaceReleaseAssets(release.id, [
+          { assetId: otherAsset.id, role: 'attachment', sortOrder: 0 },
+          { assetId: ownAsset2.id, role: 'attachment', sortOrder: 1 },
+        ]);
+      }).toThrow();
+
+      expect(releaseRepo.listReleaseAssets(release.id)).toEqual(before);
+    });
+
+    it('rolls back when mismatch is at middle position', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'R' }) });
+      const ownAsset = assetRepo.upsert(projectId, 'own.txt', sampleAsset(projectId, { relativePath: 'own.txt' }));
+      releaseRepo.addReleaseAsset(release.id, ownAsset.id, 'primary', 0);
+      const before = releaseRepo.listReleaseAssets(release.id);
+
+      const otherProject = projectRepo.create(sampleProject({ title: 'Other' }));
+      const otherAsset = assetRepo.upsert(otherProject.id, 'other.txt', sampleAsset(otherProject.id, { relativePath: 'other.txt' }));
+      const ownAsset2 = assetRepo.upsert(projectId, 'own2.txt', sampleAsset(projectId, { relativePath: 'own2.txt' }));
+      const ownAsset3 = assetRepo.upsert(projectId, 'own3.txt', sampleAsset(projectId, { relativePath: 'own3.txt' }));
+
+      expect(() => {
+        releaseRepo.replaceReleaseAssets(release.id, [
+          { assetId: ownAsset2.id, role: 'attachment', sortOrder: 0 },
+          { assetId: otherAsset.id, role: 'attachment', sortOrder: 1 },
+          { assetId: ownAsset3.id, role: 'attachment', sortOrder: 2 },
+        ]);
+      }).toThrow();
+
+      expect(releaseRepo.listReleaseAssets(release.id)).toEqual(before);
+    });
+
+    it('rolls back when mismatch is at last position', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'R' }) });
+      const ownAsset = assetRepo.upsert(projectId, 'own.txt', sampleAsset(projectId, { relativePath: 'own.txt' }));
+      releaseRepo.addReleaseAsset(release.id, ownAsset.id, 'primary', 0);
+      const before = releaseRepo.listReleaseAssets(release.id);
+
+      const otherProject = projectRepo.create(sampleProject({ title: 'Other' }));
+      const otherAsset = assetRepo.upsert(otherProject.id, 'other.txt', sampleAsset(otherProject.id, { relativePath: 'other.txt' }));
+      const ownAsset2 = assetRepo.upsert(projectId, 'own2.txt', sampleAsset(projectId, { relativePath: 'own2.txt' }));
+
+      expect(() => {
+        releaseRepo.replaceReleaseAssets(release.id, [
+          { assetId: ownAsset2.id, role: 'attachment', sortOrder: 0 },
+          { assetId: otherAsset.id, role: 'attachment', sortOrder: 1 },
+        ]);
+      }).toThrow();
+
+      expect(releaseRepo.listReleaseAssets(release.id)).toEqual(before);
+    });
+
+    it('no empty replacement when all selections mismatch', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'R' }) });
+      const ownBefore = assetRepo.upsert(projectId, 'before.txt', sampleAsset(projectId, { relativePath: 'before.txt' }));
+      releaseRepo.addReleaseAsset(release.id, ownBefore.id, 'primary', 0);
+      const before = releaseRepo.listReleaseAssets(release.id);
+
+      const otherProject = projectRepo.create(sampleProject({ title: 'Other' }));
+      const otherAsset = assetRepo.upsert(otherProject.id, 'other.txt', sampleAsset(otherProject.id, { relativePath: 'other.txt' }));
+      const otherAsset2 = assetRepo.upsert(otherProject.id, 'other2.txt', sampleAsset(otherProject.id, { relativePath: 'other2.txt' }));
+
+      expect(() => {
+        releaseRepo.replaceReleaseAssets(release.id, [
+          { assetId: otherAsset.id, role: 'attachment', sortOrder: 0 },
+          { assetId: otherAsset2.id, role: 'attachment', sortOrder: 1 },
+        ]);
+      }).toThrow();
+
+      // Original rows preserved exactly — no partial or empty replacement
+      expect(releaseRepo.listReleaseAssets(release.id)).toEqual(before);
+    });
+  });
+
+  // ─── Phase 9-4: findReleasesWithoutSelectedAssets ownership fix ────────
+
+  describe('findReleasesWithoutSelectedAssets ownership', () => {
+    let otherProjectId;
+    let otherAssetId;
+
+    beforeEach(() => {
+      const otherProject = projectRepo.create(sampleProject({ title: 'Other' }));
+      otherProjectId = otherProject.id;
+      const otherAsset = assetRepo.upsert(otherProjectId, 'other.txt', sampleAsset(otherProjectId, { relativePath: 'other.txt' }));
+      otherAssetId = otherAsset.id;
+    });
+
+    it('shows release with no junction rows as having no selected assets', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'No Jxn', status: 'planned', plannedDate: '2099-01-01' }) });
+      const result = releaseRepo.findReleasesWithoutSelectedAssets(10);
+      const ids = result.map((r) => r.id);
+      expect(ids).toContain(release.id);
+    });
+
+    it('does NOT show release with valid same-project selection', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Has Own Asset', status: 'planned', plannedDate: '2099-01-01' }) });
+      const ownAsset = assetRepo.upsert(projectId, 'own.txt', sampleAsset(projectId, { relativePath: 'own.txt' }));
+      releaseRepo.addReleaseAsset(release.id, ownAsset.id, 'attachment', 0);
+
+      const result = releaseRepo.findReleasesWithoutSelectedAssets(10);
+      const ids = result.map((r) => r.id);
+      expect(ids).not.toContain(release.id);
+    });
+
+    it('shows release with only cross-project selection as having no selected assets', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Only Cross', status: 'planned', plannedDate: '2099-01-01' }) });
+      // Direct insert of cross-project row
+      db.prepare('INSERT INTO release_assets (release_id, asset_id, role, sort_order) VALUES (?, ?, ?, ?)')
+        .run(release.id, otherAssetId, 'attachment', 0);
+
+      const result = releaseRepo.findReleasesWithoutSelectedAssets(10);
+      const ids = result.map((r) => r.id);
+      expect(ids).toContain(release.id);
+    });
+
+    it('shows release with mixed valid + cross-project as having selected assets', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Mixed', status: 'planned', plannedDate: '2099-01-01' }) });
+      const ownAsset = assetRepo.upsert(projectId, 'own.txt', sampleAsset(projectId, { relativePath: 'own.txt' }));
+      releaseRepo.addReleaseAsset(release.id, ownAsset.id, 'primary', 0);
+      db.prepare('INSERT INTO release_assets (release_id, asset_id, role, sort_order) VALUES (?, ?, ?, ?)')
+        .run(release.id, otherAssetId, 'attachment', 1);
+
+      // Has at least one valid same-project selection — not in "no selected assets"
+      const result = releaseRepo.findReleasesWithoutSelectedAssets(10);
+      const ids = result.map((r) => r.id);
+      expect(ids).not.toContain(release.id);
+    });
+  });
+
+  // ─── Phase 9-4: countMissingAssetsReferencedByProjectId ownership parity ──
+
+  describe('countMissingAssetsReferencedByProjectId ownership parity', () => {
+    it('counts only missing assets from releases of the same project', () => {
+      const otherProject = projectRepo.create(sampleProject({ title: 'Other' }));
+      const otherRelease = releaseRepo.create({ projectId: otherProject.id, ...sampleRelease({ title: 'Other Release', status: 'idea', plannedDate: null }) });
+      const otherAsset = assetRepo.upsert(otherProject.id, 'other.txt', sampleAsset(otherProject.id, { relativePath: 'other.txt' }));
+      releaseRepo.addReleaseAsset(otherRelease.id, otherAsset.id, 'primary', 0);
+      db.prepare('UPDATE assets SET is_present = 0, missing_since = datetime(\'now\') WHERE id = ?').run(otherAsset.id);
+
+      // Project A should NOT see project B's missing asset
+      expect(releaseRepo.countMissingAssetsReferencedByProjectId(projectId)).toBe(0);
+
+      // Add a same-project missing asset
+      const ownRelease = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Own Release', status: 'idea', plannedDate: null }) });
+      const ownMissing = assetRepo.upsert(projectId, 'missing.txt', sampleAsset(projectId, { relativePath: 'missing.txt' }));
+      releaseRepo.addReleaseAsset(ownRelease.id, ownMissing.id, 'primary', 0);
+      db.prepare('UPDATE assets SET is_present = 0, missing_since = datetime(\'now\') WHERE id = ?').run(ownMissing.id);
+
+      expect(releaseRepo.countMissingAssetsReferencedByProjectId(projectId)).toBe(1);
+    });
+
+    it('cross-project release from project B referencing project A missing asset does not inflate project A count', () => {
+      // Create a missing asset in project A
+      const ownRelease = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Own Release', status: 'idea' }) });
+      const aMissing = assetRepo.upsert(projectId, 'a_missing.txt', sampleAsset(projectId, { relativePath: 'a_missing.txt' }));
+      releaseRepo.addReleaseAsset(ownRelease.id, aMissing.id, 'primary', 0);
+      db.prepare('UPDATE assets SET is_present = 0, missing_since = datetime(\'now\') WHERE id = ?').run(aMissing.id);
+      const directCount = releaseRepo.countMissingAssetsReferencedByProjectId(projectId);
+      expect(directCount).toBe(1);
+
+      // Now create a malformed junction: a release from project B referencing
+      // the same missing asset from project A via direct insert
+      const otherProject = projectRepo.create(sampleProject({ title: 'B' }));
+      const bRelease = releaseRepo.create({ projectId: otherProject.id, ...sampleRelease({ title: 'B Release', status: 'idea' }) });
+      db.prepare('INSERT INTO release_assets (release_id, asset_id, role, sort_order) VALUES (?, ?, ?, ?)')
+        .run(bRelease.id, aMissing.id, 'attachment', 0);
+
+      // Must still count exactly 1 (only the own-release reference counts)
+      expect(releaseRepo.countMissingAssetsReferencedByProjectId(projectId)).toBe(1);
+    });
+  });
+
+  // ─── Phase 9-4: Cross-query parity with one malformed fixture ──────────
+
+  describe('cross-query parity with malformed fixture', () => {
+    let otherProjectId;
+    let otherAssetId;
+    let releaseId;
+
+    beforeEach(() => {
+      const otherProject = projectRepo.create(sampleProject({ title: 'Other For Parity' }));
+      otherProjectId = otherProject.id;
+      const otherAsset = assetRepo.upsert(otherProjectId, 'cross.txt', sampleAsset(otherProjectId, { relativePath: 'cross.txt' }));
+      otherAssetId = otherAsset.id;
+
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Parity Release', status: 'idea' }) });
+      releaseId = release.id;
+
+      // Valid same-project selection
+      const ownAsset = assetRepo.upsert(projectId, 'own.txt', sampleAsset(projectId, { relativePath: 'own.txt' }));
+      releaseRepo.addReleaseAsset(release.id, ownAsset.id, 'primary', 0);
+
+      // Malformed cross-project selection (direct insert)
+      db.prepare('INSERT INTO release_assets (release_id, asset_id, role, sort_order) VALUES (?, ?, ?, ?)')
+        .run(release.id, otherAssetId, 'attachment', 1);
+    });
+
+    it('selected-assets listing: listReleaseAssets excludes cross-project row', () => {
+      const assets = releaseRepo.listReleaseAssets(releaseId);
+      expect(assets).toHaveLength(1);
+      expect(assets[0].asset_id).not.toBe(otherAssetId);
+    });
+
+    it('no-selected-assets discovery: findReleasesWithoutSelectedAssets excludes this release', () => {
+      const result = releaseRepo.findReleasesWithoutSelectedAssets(10);
+      const ids = result.map((r) => r.id);
+      expect(ids).not.toContain(releaseId);
+    });
+
+    it('missing-reference counts: countMissingAssetsReferenced is 0 (own asset present)', () => {
+      // Neither asset is missing
+      expect(releaseRepo.countMissingAssetsReferenced()).toBe(0);
+    });
+
+    it('readiness facts: findReadinessFactsById ignores cross-project row', () => {
+      const facts = releaseRepo.findReadinessFactsById(releaseId);
+      expect(facts.selected_asset_count).toBe(1);
+      expect(facts.present_selected_asset_count).toBe(1);
+      expect(facts.missing_selected_asset_count).toBe(0);
+    });
+
+    it('candidate exclusion: findReleaseCandidatePage works', () => {
+      const candidates = releaseRepo.findReleaseCandidatePage(releaseId, projectId, { page: 1, pageSize: 25 });
+      // Candidates should still be queryable — cross-project row doesn't affect candidate queries
+      expect(Array.isArray(candidates)).toBe(true);
+    });
+
+    it('diagnostic output: findCrossProjectReleaseAssets detects the malformed row', () => {
+      const malformed = releaseRepo.findCrossProjectReleaseAssets();
+      const match = malformed.find((r) => r.release_id === releaseId && r.asset_id === otherAssetId);
+      expect(match).toBeDefined();
+      expect(match.release_project_id).toBe(projectId);
+      expect(match.asset_project_id).toBe(otherProjectId);
+      expect(match.reason).toBe('cross-project');
+    });
+  });
+
+  // ─── Phase 9: Transaction rollback tests ────────────────────────────────
+
+  describe('removeAndReindexReleaseAsset rollback', () => {
+    /**
+     * Snapshot the five junction columns for a release in deterministic order.
+     */
+    function snapshotJunction(releaseId) {
+      return db.prepare(`
+        SELECT release_id, asset_id, role, sort_order, created_at
+        FROM release_assets
+        WHERE release_id = ?
+        ORDER BY sort_order ASC, asset_id ASC
+      `).all(releaseId);
+    }
+
+    it('rolls back when reindex UPDATE fails after DELETE succeeds', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Rollback Remove' }) });
+      const asset1 = assetRepo.upsert(projectId, 'a.txt', sampleAsset(projectId, { relativePath: 'a.txt' }));
+      const asset2 = assetRepo.upsert(projectId, 'b.txt', sampleAsset(projectId, { relativePath: 'b.txt' }));
+      releaseRepo.addReleaseAsset(release.id, asset1.id, 'primary', 0);
+      releaseRepo.addReleaseAsset(release.id, asset2.id, 'attachment', 1);
+
+      const before = snapshotJunction(release.id);
+      expect(before).toHaveLength(2);
+
+      // Create a SQLite trigger that fires on UPDATE of release_assets.sort_order
+      // and raises an exception — this simulates a reindex failure after the DELETE.
+      db.exec(`
+        CREATE TEMP TRIGGER IF NOT EXISTS fail_reindex_sort_order
+        AFTER UPDATE OF sort_order ON release_assets
+        WHEN (SELECT COUNT(*) FROM release_assets WHERE release_id = NEW.release_id) >= 0
+        BEGIN
+          SELECT RAISE(ABORT, 'simulated reindex failure');
+        END
+      `);
+
+      try {
+        expect(() => {
+          releaseRepo.removeAndReindexReleaseAsset(release.id, asset1.id);
+        }).toThrow();
+
+        // The trigger fires on the first UPDATE attempt inside the reindex loop.
+        // The DELETE already succeeded but the transaction rolled back.
+        const after = snapshotJunction(release.id);
+        expect(after).toEqual(before);
+      } finally {
+        db.exec('DROP TRIGGER IF EXISTS fail_reindex_sort_order');
+      }
+    });
+  });
+
+  describe('reorderReleaseAssets rollback', () => {
+    /**
+     * Snapshot the five junction columns for a release in deterministic order.
+     */
+    function snapshotJunction(releaseId) {
+      return db.prepare(`
+        SELECT release_id, asset_id, role, sort_order, created_at
+        FROM release_assets
+        WHERE release_id = ?
+        ORDER BY sort_order ASC, asset_id ASC
+      `).all(releaseId);
+    }
+
+    it('rolls back when a later sort_order UPDATE fails after an earlier one succeeded', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Rollback Reorder' }) });
+      const asset1 = assetRepo.upsert(projectId, 'a.txt', sampleAsset(projectId, { relativePath: 'a.txt' }));
+      const asset2 = assetRepo.upsert(projectId, 'b.txt', sampleAsset(projectId, { relativePath: 'b.txt' }));
+      const asset3 = assetRepo.upsert(projectId, 'c.txt', sampleAsset(projectId, { relativePath: 'c.txt' }));
+      releaseRepo.addReleaseAsset(release.id, asset1.id, 'primary', 0);
+      releaseRepo.addReleaseAsset(release.id, asset2.id, 'attachment', 1);
+      releaseRepo.addReleaseAsset(release.id, asset3.id, 'preview', 2);
+
+      const before = snapshotJunction(release.id);
+      expect(before).toHaveLength(3);
+
+      // Create a trigger that fires AFTER the first UPDATE of sort_order.
+      // The first UPDATE (asset3 -> sort_order=0) succeeds (changes=1), then
+      // the trigger fires and aborts — proving rollback after at least one
+      // successful sort_order write.
+      db.exec(`
+        CREATE TEMP TRIGGER IF NOT EXISTS fail_reorder_after_first_update
+        AFTER UPDATE OF sort_order ON release_assets
+        BEGIN
+          SELECT RAISE(ABORT, 'simulated reorder failure');
+        END
+      `);
+
+      try {
+        expect(() => {
+          // Reverse order: [asset3, asset2, asset1]
+          releaseRepo.reorderReleaseAssets(release.id, [asset3.id, asset2.id, asset1.id]);
+        }).toThrow();
+
+        // Every row must be exactly as before — no partial sort_order rewrite
+        const after = snapshotJunction(release.id);
+        expect(after).toEqual(before);
+      } finally {
+        db.exec('DROP TRIGGER IF EXISTS fail_reorder_after_first_update');
+      }
+    });
+  });
+
+  // ─── Phase 9: reorderReleaseAssets sequence validation ─────────────────
+
+  describe('reorderReleaseAssets sequence validation', () => {
+    /**
+     * Snapshot the five junction columns for a release in deterministic order.
+     */
+    function snapshotJunction(releaseId) {
+      return db.prepare(`
+        SELECT release_id, asset_id, role, sort_order, created_at
+        FROM release_assets
+        WHERE release_id = ?
+        ORDER BY sort_order ASC, asset_id ASC
+      `).all(releaseId);
+    }
+
+    it('rejects duplicate ID', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Dup' }) });
+      const a1 = assetRepo.upsert(projectId, 'a.txt', sampleAsset(projectId, { relativePath: 'a.txt' }));
+      const a2 = assetRepo.upsert(projectId, 'b.txt', sampleAsset(projectId, { relativePath: 'b.txt' }));
+      releaseRepo.addReleaseAsset(release.id, a1.id, 'primary', 0);
+      releaseRepo.addReleaseAsset(release.id, a2.id, 'attachment', 1);
+
+      const before = snapshotJunction(release.id);
+      expect(() => releaseRepo.reorderReleaseAssets(release.id, [a1.id, a1.id])).toThrow();
+      expect(snapshotJunction(release.id)).toEqual(before);
+    });
+
+    it('rejects missing selected ID (omitted from sequence)', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Missing' }) });
+      const a1 = assetRepo.upsert(projectId, 'a.txt', sampleAsset(projectId, { relativePath: 'a.txt' }));
+      const a2 = assetRepo.upsert(projectId, 'b.txt', sampleAsset(projectId, { relativePath: 'b.txt' }));
+      releaseRepo.addReleaseAsset(release.id, a1.id, 'primary', 0);
+      releaseRepo.addReleaseAsset(release.id, a2.id, 'attachment', 1);
+
+      const before = snapshotJunction(release.id);
+      expect(() => releaseRepo.reorderReleaseAssets(release.id, [a1.id])).toThrow();
+      expect(snapshotJunction(release.id)).toEqual(before);
+    });
+
+    it('rejects incomplete sequence (too few IDs)', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Incomplete' }) });
+      const a1 = assetRepo.upsert(projectId, 'a.txt', sampleAsset(projectId, { relativePath: 'a.txt' }));
+      const a2 = assetRepo.upsert(projectId, 'b.txt', sampleAsset(projectId, { relativePath: 'b.txt' }));
+      const a3 = assetRepo.upsert(projectId, 'c.txt', sampleAsset(projectId, { relativePath: 'c.txt' }));
+      releaseRepo.addReleaseAsset(release.id, a1.id, 'primary', 0);
+      releaseRepo.addReleaseAsset(release.id, a2.id, 'attachment', 1);
+      releaseRepo.addReleaseAsset(release.id, a3.id, 'preview', 2);
+
+      const before = snapshotJunction(release.id);
+      expect(() => releaseRepo.reorderReleaseAssets(release.id, [a1.id, a2.id])).toThrow();
+      expect(snapshotJunction(release.id)).toEqual(before);
+    });
+
+    it('rejects extra foreign ID (not in current selection)', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Extra' }) });
+      const a1 = assetRepo.upsert(projectId, 'a.txt', sampleAsset(projectId, { relativePath: 'a.txt' }));
+      const a2 = assetRepo.upsert(projectId, 'b.txt', sampleAsset(projectId, { relativePath: 'b.txt' }));
+      const a3 = assetRepo.upsert(projectId, 'c.txt', sampleAsset(projectId, { relativePath: 'c.txt' }));
+      releaseRepo.addReleaseAsset(release.id, a1.id, 'primary', 0);
+      releaseRepo.addReleaseAsset(release.id, a2.id, 'attachment', 1);
+
+      const before = snapshotJunction(release.id);
+      expect(() => releaseRepo.reorderReleaseAssets(release.id, [a1.id, a3.id])).toThrow();
+      expect(snapshotJunction(release.id)).toEqual(before);
+    });
+
+    it('rejects nonexistent ID', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Nonexist' }) });
+      const a1 = assetRepo.upsert(projectId, 'a.txt', sampleAsset(projectId, { relativePath: 'a.txt' }));
+      releaseRepo.addReleaseAsset(release.id, a1.id, 'primary', 0);
+
+      const before = snapshotJunction(release.id);
+      expect(() => releaseRepo.reorderReleaseAssets(release.id, [99999])).toThrow();
+      expect(snapshotJunction(release.id)).toEqual(before);
+    });
+
+    it('rejects empty sequence when rows exist', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Empty When Rows' }) });
+      const a1 = assetRepo.upsert(projectId, 'a.txt', sampleAsset(projectId, { relativePath: 'a.txt' }));
+      releaseRepo.addReleaseAsset(release.id, a1.id, 'primary', 0);
+
+      const before = snapshotJunction(release.id);
+      expect(() => releaseRepo.reorderReleaseAssets(release.id, [])).toThrow();
+      expect(snapshotJunction(release.id)).toEqual(before);
+    });
+
+    it('accepts valid empty sequence when no rows exist', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Empty No Rows' }) });
+      expect(() => releaseRepo.reorderReleaseAssets(release.id, [])).not.toThrow();
+    });
+
+    it('accepts valid complete reordered sequence', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Valid Reorder' }) });
+      const a1 = assetRepo.upsert(projectId, 'a.txt', sampleAsset(projectId, { relativePath: 'a.txt' }));
+      const a2 = assetRepo.upsert(projectId, 'b.txt', sampleAsset(projectId, { relativePath: 'b.txt' }));
+      const a3 = assetRepo.upsert(projectId, 'c.txt', sampleAsset(projectId, { relativePath: 'c.txt' }));
+      releaseRepo.addReleaseAsset(release.id, a1.id, 'primary', 0);
+      releaseRepo.addReleaseAsset(release.id, a2.id, 'attachment', 1);
+      releaseRepo.addReleaseAsset(release.id, a3.id, 'preview', 2);
+
+      // Reverse order
+      releaseRepo.reorderReleaseAssets(release.id, [a3.id, a2.id, a1.id]);
+
+      const after = snapshotJunction(release.id);
+      expect(after).toHaveLength(3);
+      expect(after[0].asset_id).toBe(a3.id);
+      expect(after[0].sort_order).toBe(0);
+      expect(after[1].asset_id).toBe(a2.id);
+      expect(after[1].sort_order).toBe(1);
+      expect(after[2].asset_id).toBe(a1.id);
+      expect(after[2].sort_order).toBe(2);
+    });
+  });
 });
