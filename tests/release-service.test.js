@@ -431,6 +431,104 @@ describe('release service', () => {
       const result = service.listReleaseAssets(release.id);
       expect(result).toHaveLength(0);
     });
+
+    it('rejects duplicate asset IDs with ReleaseValidationError', () => {
+      const release = service.createRelease(projectId, validInput());
+      const asset = assetRepo.upsert(projectId, 'file.txt', sampleAsset(projectId));
+
+      expect(() => {
+        service.selectAssets(release.id, [
+          { assetId: asset.id, role: 'primary', sortOrder: 0 },
+          { assetId: asset.id, role: 'attachment', sortOrder: 1 },
+        ]);
+      }).toThrow(ReleaseValidationError);
+
+      // No junction rows must remain after rejection
+      const rows = service.listReleaseAssets(release.id);
+      expect(rows).toHaveLength(0);
+    });
+
+    it('rejects duplicate numeric IDs after normalization', () => {
+      const release = service.createRelease(projectId, validInput());
+      const asset = assetRepo.upsert(projectId, 'file.txt', sampleAsset(projectId));
+
+      expect(() => {
+        service.selectAssets(release.id, [
+          { assetId: asset.id, role: 'attachment', sortOrder: 0 },
+          { assetId: asset.id, role: 'attachment', sortOrder: 1 },
+        ]);
+      }).toThrow(ReleaseValidationError);
+    });
+
+    it('rejects selections with non-integer assetId', () => {
+      const release = service.createRelease(projectId, validInput());
+
+      expect(() => {
+        service.selectAssets(release.id, [
+          { assetId: 1.5, role: 'attachment' },
+        ]);
+      }).toThrow(ReleaseValidationError);
+    });
+
+    it('rejects selections with zero assetId', () => {
+      const release = service.createRelease(projectId, validInput());
+
+      expect(() => {
+        service.selectAssets(release.id, [
+          { assetId: 0, role: 'attachment' },
+        ]);
+      }).toThrow(ReleaseValidationError);
+    });
+
+    it('rejects selections with negative assetId', () => {
+      const release = service.createRelease(projectId, validInput());
+
+      expect(() => {
+        service.selectAssets(release.id, [
+          { assetId: -1, role: 'attachment' },
+        ]);
+      }).toThrow(ReleaseValidationError);
+    });
+
+    it('rejects selections with non-array input', () => {
+      const release = service.createRelease(projectId, validInput());
+
+      expect(() => {
+        service.selectAssets(release.id, 'not-an-array');
+      }).toThrow(ReleaseValidationError);
+    });
+
+    it('rejects selections with object entries', () => {
+      const release = service.createRelease(projectId, validInput());
+
+      expect(() => {
+        service.selectAssets(release.id, [{ assetId: {}, role: 'attachment' }]);
+      }).toThrow(ReleaseValidationError);
+    });
+
+    it('rejects selections with nested arrays', () => {
+      const release = service.createRelease(projectId, validInput());
+
+      expect(() => {
+        service.selectAssets(release.id, [{ assetId: [1], role: 'attachment' }]);
+      }).toThrow(ReleaseValidationError);
+    });
+
+    it('rejects selections with blank/null assetId', () => {
+      const release = service.createRelease(projectId, validInput());
+
+      expect(() => {
+        service.selectAssets(release.id, [{ assetId: null, role: 'attachment' }]);
+      }).toThrow(ReleaseValidationError);
+    });
+
+    it('rejects selections with undefined assetId', () => {
+      const release = service.createRelease(projectId, validInput());
+
+      expect(() => {
+        service.selectAssets(release.id, [{ role: 'attachment' }]);
+      }).toThrow(ReleaseValidationError);
+    });
   });
 
   describe('addAssetToRelease', () => {

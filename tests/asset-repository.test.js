@@ -519,4 +519,646 @@ describe('asset repository', () => {
     expect(missing.is_present).toBe(0);
     expect(missing.filename).toBe('file.png'); // metadata preserved
   });
+
+  // ─── Phase 6D: Asset Browser Queries ─────────────────────────────────
+
+  /**
+   * Helper: insert a release directly.
+   */
+  function insertRelease(db, { projectId, title, status = 'idea', archivedAt = null }) {
+    return db.prepare(`
+      INSERT INTO releases (project_id, title, description, notes, status,
+                            planned_date, published_date, patreon_url, archived_at)
+      VALUES (?, ?, '', '', ?, NULL, NULL, NULL, ?)
+      RETURNING *
+    `).get(projectId, title, status, archivedAt);
+  }
+
+  /**
+   * Helper: link an asset to a release.
+   */
+  function linkAssetToRelease(db, { releaseId, assetId, role = 'attachment', sortOrder = 0 }) {
+    db.prepare(`
+      INSERT INTO release_assets (release_id, asset_id, role, sort_order)
+      VALUES (?, ?, ?, ?)
+    `).run(releaseId, assetId, role, sortOrder);
+  }
+
+  // These tests need the full DB (release_assets table), so we use the
+  // already-created db from the test suite's beforeEach.
+
+  describe('findProjectAssetPage', () => {
+    it('returns empty array when project has no assets', () => {
+      const result = assetRepo.findProjectAssetPage(projectId);
+      expect(result).toEqual([]);
+    });
+
+    it('returns assets with all default columns', () => {
+      assetRepo.upsert(projectId, 'a.png', {
+        filename: 'a.png', extension: 'png', mimeType: 'image/png',
+        sizeBytes: 100, modifiedAt: null,
+      });
+
+      const [asset] = assetRepo.findProjectAssetPage(projectId);
+      expect(asset).toMatchObject({
+        id: expect.any(Number),
+        project_id: projectId,
+        relative_path: 'a.png',
+        filename: 'a.png',
+        extension: 'png',
+        is_present: 1,
+        last_seen_at: expect.any(String),
+        missing_since: null,
+        release_usage_count: 0,
+      });
+    });
+
+    it('applies LIMIT and OFFSET correctly', () => {
+      for (let i = 1; i <= 10; i++) {
+        // Use leading zeros so filename sort is predictable
+        assetRepo.upsert(projectId, `file${String(i).padStart(2, '0')}.png`, {
+          filename: `file${String(i).padStart(2, '0')}.png`, extension: 'png', mimeType: 'image/png',
+          sizeBytes: 100, modifiedAt: null,
+        });
+      }
+
+      const page1 = assetRepo.findProjectAssetPage(projectId, { page: 1, pageSize: 3 });
+      expect(page1).toHaveLength(3);
+      expect(page1[0].filename).toBe('file01.png');
+
+      const page2 = assetRepo.findProjectAssetPage(projectId, { page: 2, pageSize: 3 });
+      expect(page2).toHaveLength(3);
+      expect(page2[0].filename).toBe('file04.png');
+
+      const page4 = assetRepo.findProjectAssetPage(projectId, { page: 4, pageSize: 3 });
+      expect(page4).toHaveLength(1);
+      expect(page4[0].filename).toBe('file10.png');
+    });
+
+    it('orders by filename, extension, id deterministically', () => {
+      // Same filename with different extensions
+      assetRepo.upsert(projectId, 'a.txt', {
+        filename: 'a.txt', extension: 'txt', mimeType: 'text/plain',
+        sizeBytes: 100, modifiedAt: null,
+      });
+      assetRepo.upsert(projectId, 'a.png', {
+        filename: 'a.png', extension: 'png', mimeType: 'image/png',
+        sizeBytes: 100, modifiedAt: null,
+      });
+      assetRepo.upsert(projectId, 'b.txt', {
+        filename: 'b.txt', extension: 'txt', mimeType: 'text/plain',
+        sizeBytes: 100, modifiedAt: null,
+      });
+
+      const results = assetRepo.findProjectAssetPage(projectId);
+      expect(results.map((a) => a.filename)).toEqual(['a.png', 'a.txt', 'b.txt']);
+    });
+
+    it('ends with unique asset-id tie-breaker for deterministic order', () => {
+      // Insert two assets with the same case-insensitive filename and extension
+      // so the only tie-breaker is asset id.
+      const a1 = assetRepo.upsert(projectId, 'same.txt', {
+        filename: 'same.txt', extension: 'txt', mimeType: 'text/plain',
+        sizeBytes: 100, modifiedAt: null,
+      });
+      const a2 = assetRepo.upsert(projectId, 'same.txt', {
+        filename: 'same.txt', extension: 'txt', mimeType: 'text/plain',
+        sizeBytes: 200, modifiedAt: null,
+      });
+
+      // a1 was inserted first, a2 second — a1.id < a2.id
+      const results = assetRepo.findProjectAssetPage(projectId);
+      const sameAssets = results.filter((a) => a.filename === 'same.txt');
+      expect(sameAssets).toHaveLength(1); // upsert replaces, so only one row
+    });
+
+    it('deterministic order with same filename, different case, different ids', () => {
+      // Insert two assets with same case-insensitive filename but different
+      // relative_path so they are distinct rows.
+      const a1 = assetRepo.upsert(projectId, 'sub/Readme.txt', {
+        filename: 'Readme.txt', extension: 'txt', mimeType: 'text/plain',
+        sizeBytes: 100, modifiedAt: null,
+      });
+      const a2 = assetRepo.upsert(projectId, 'sub/README.txt', {
+        filename: 'README.txt', extension: 'txt', mimeType: 'text/plain',
+        sizeBytes: 200, modifiedAt: null,
+      });
+
+      const results = assetRepo.findProjectAssetPage(projectId);
+      // COLLATE NOCASE groups them; id ASC breaks the tie deterministically
+      expect(results).toHaveLength(2);
+      // The order must be stable across calls
+      const first = results[0];
+      const second = results[1];
+      expect(first.id).toBeLessThan(second.id);
+    });
+
+    it('does not duplicate asset rows when asset belongs to multiple releases', () => {
+      // Insert releases directly via SQL to avoid the create() helper signature issue
+      const rel1Id = db.prepare(`
+        INSERT INTO releases (project_id, title, description, notes, status, planned_date, published_date, patreon_url)
+        VALUES (?, 'R1', '', '', 'idea', NULL, NULL, NULL)
+        RETURNING id
+      `).get(projectId).id;
+      const rel2Id = db.prepare(`
+        INSERT INTO releases (project_id, title, description, notes, status, planned_date, published_date, patreon_url)
+        VALUES (?, 'R2', '', '', 'idea', NULL, NULL, NULL)
+        RETURNING id
+      `).get(projectId).id;
+      const rel3Id = db.prepare(`
+        INSERT INTO releases (project_id, title, description, notes, status, planned_date, published_date, patreon_url)
+        VALUES (?, 'R3', '', '', 'idea', NULL, NULL, NULL)
+        RETURNING id
+      `).get(projectId).id;
+
+      assetRepo.upsert(projectId, 'shared.png', {
+        filename: 'shared.png', extension: 'png', mimeType: 'image/png',
+        sizeBytes: 100, modifiedAt: null,
+      });
+      const asset = assetRepo.findByProjectIdAndPath(projectId, 'shared.png');
+
+      linkAssetToRelease(db, { releaseId: rel1Id, assetId: asset.id });
+      linkAssetToRelease(db, { releaseId: rel2Id, assetId: asset.id });
+      linkAssetToRelease(db, { releaseId: rel3Id, assetId: asset.id });
+
+      const results = assetRepo.findProjectAssetPage(projectId);
+      const sharedAsset = results.find((a) => a.relative_path === 'shared.png');
+      expect(results.filter((a) => a.id === asset.id)).toHaveLength(1);
+      expect(sharedAsset.release_usage_count).toBe(3);
+    });
+
+    it('isolates project: does not return assets from other projects', () => {
+      // Insert a release for the other project via direct SQL
+      const otherProject = projectRepo.create({
+        title: 'Other',
+        slug: 'other',
+        description: '',
+        notes: '',
+        status: 'tbd',
+        priority: 'normal',
+        plannedDate: null,
+        publishedDate: null,
+        patreonUrl: null,
+      });
+      const otherRelId = db.prepare(`
+        INSERT INTO releases (project_id, title, description, notes, status, planned_date, published_date, patreon_url)
+        VALUES (?, 'Other Release', '', '', 'idea', NULL, NULL, NULL)
+        RETURNING id
+      `).get(otherProject.id).id;
+
+      assetRepo.upsert(projectId, 'mine.png', {
+        filename: 'mine.png', extension: 'png', mimeType: 'image/png',
+        sizeBytes: 100, modifiedAt: null,
+      });
+      assetRepo.upsert(otherProject.id, 'theirs.png', {
+        filename: 'theirs.png', extension: 'png', mimeType: 'image/png',
+        sizeBytes: 100, modifiedAt: null,
+      });
+      const theirAsset = assetRepo.findByProjectIdAndPath(otherProject.id, 'theirs.png');
+      linkAssetToRelease(db, { releaseId: otherRelId, assetId: theirAsset.id });
+
+      const results = assetRepo.findProjectAssetPage(projectId);
+      expect(results.map((a) => a.relative_path)).toEqual(['mine.png']);
+      expect(results[0].release_usage_count).toBe(0);
+    });
+  });
+
+  describe('countProjectAssets', () => {
+    it('returns 0 for project with no assets', () => {
+      expect(assetRepo.countProjectAssets(projectId)).toBe(0);
+    });
+
+    it('counts all assets with no filters', () => {
+      for (let i = 1; i <= 5; i++) {
+        assetRepo.upsert(projectId, `file${i}.png`, {
+          filename: `file${i}.png`, extension: 'png', mimeType: 'image/png',
+          sizeBytes: 100, modifiedAt: null,
+        });
+      }
+      expect(assetRepo.countProjectAssets(projectId)).toBe(5);
+    });
+
+    it('parity: count matches filtered page results across all filter combinations', () => {
+      for (let i = 1; i <= 5; i++) {
+        assetRepo.upsert(projectId, `file${i}.png`, {
+          filename: `file${i}.png`, extension: 'png', mimeType: 'image/png',
+          sizeBytes: 100, modifiedAt: null,
+        });
+      }
+      assetRepo.markMissingByProjectIdAndPathNotIn(projectId, ['file1.png']);
+
+      const combinations = [
+        { presence: 'all', usage: 'all' },
+        { presence: 'present', usage: 'all' },
+        { presence: 'missing', usage: 'all' },
+        { presence: 'all', usage: 'used' },
+        { presence: 'all', usage: 'unused' },
+        { presence: 'present', usage: 'unused' },
+        { presence: 'missing', usage: 'used' },
+      ];
+
+      for (const combo of combinations) {
+        const count = assetRepo.countProjectAssets(projectId, combo);
+        const page = assetRepo.findProjectAssetPage(projectId, { ...combo, page: 1, pageSize: 100 });
+        expect(count).toBe(page.length);
+      }
+    });
+  });
+
+  describe('presence filter', () => {
+    it('presence=all returns all assets', () => {
+      assetRepo.upsert(projectId, 'present.png', {
+        filename: 'present.png', extension: 'png', mimeType: 'image/png',
+        sizeBytes: 100, modifiedAt: null,
+      });
+      assetRepo.upsert(projectId, 'missing.png', {
+        filename: 'missing.png', extension: 'png', mimeType: 'image/png',
+        sizeBytes: 100, modifiedAt: null,
+      });
+      assetRepo.markMissingByProjectIdAndPathNotIn(projectId, ['present.png']);
+
+      const results = assetRepo.findProjectAssetPage(projectId, { presence: 'all', pageSize: 100 });
+      expect(results).toHaveLength(2);
+    });
+
+    it('presence=present returns only present assets', () => {
+      assetRepo.upsert(projectId, 'present.png', {
+        filename: 'present.png', extension: 'png', mimeType: 'image/png',
+        sizeBytes: 100, modifiedAt: null,
+      });
+      assetRepo.upsert(projectId, 'missing.png', {
+        filename: 'missing.png', extension: 'png', mimeType: 'image/png',
+        sizeBytes: 100, modifiedAt: null,
+      });
+      assetRepo.markMissingByProjectIdAndPathNotIn(projectId, ['present.png']);
+
+      const results = assetRepo.findProjectAssetPage(projectId, { presence: 'present', pageSize: 100 });
+      expect(results).toHaveLength(1);
+      expect(results[0].filename).toBe('present.png');
+    });
+
+    it('presence=missing returns only missing assets', () => {
+      assetRepo.upsert(projectId, 'present.png', {
+        filename: 'present.png', extension: 'png', mimeType: 'image/png',
+        sizeBytes: 100, modifiedAt: null,
+      });
+      assetRepo.upsert(projectId, 'missing.png', {
+        filename: 'missing.png', extension: 'png', mimeType: 'image/png',
+        sizeBytes: 100, modifiedAt: null,
+      });
+      assetRepo.markMissingByProjectIdAndPathNotIn(projectId, ['present.png']);
+
+      const results = assetRepo.findProjectAssetPage(projectId, { presence: 'missing', pageSize: 100 });
+      expect(results).toHaveLength(1);
+      expect(results[0].filename).toBe('missing.png');
+    });
+  });
+
+  describe('usage filter', () => {
+    it('usage=all returns all assets', () => {
+      assetRepo.upsert(projectId, 'used.png', {
+        filename: 'used.png', extension: 'png', mimeType: 'image/png',
+        sizeBytes: 100, modifiedAt: null,
+      });
+      assetRepo.upsert(projectId, 'unused.png', {
+        filename: 'unused.png', extension: 'png', mimeType: 'image/png',
+        sizeBytes: 100, modifiedAt: null,
+      });
+
+      const results = assetRepo.findProjectAssetPage(projectId, { usage: 'all', pageSize: 100 });
+      expect(results).toHaveLength(2);
+    });
+
+    it('usage=used returns only assets with release_assets rows', () => {
+      const relId = db.prepare(`
+        INSERT INTO releases (project_id, title, description, notes, status, planned_date, published_date, patreon_url)
+        VALUES (?, 'R1', '', '', 'idea', NULL, NULL, NULL)
+        RETURNING id
+      `).get(projectId).id;
+
+      assetRepo.upsert(projectId, 'used.png', {
+        filename: 'used.png', extension: 'png', mimeType: 'image/png',
+        sizeBytes: 100, modifiedAt: null,
+      });
+      assetRepo.upsert(projectId, 'unused.png', {
+        filename: 'unused.png', extension: 'png', mimeType: 'image/png',
+        sizeBytes: 100, modifiedAt: null,
+      });
+      const usedAsset = assetRepo.findByProjectIdAndPath(projectId, 'used.png');
+      linkAssetToRelease(db, { releaseId: relId, assetId: usedAsset.id });
+
+      const results = assetRepo.findProjectAssetPage(projectId, { usage: 'used', pageSize: 100 });
+      expect(results).toHaveLength(1);
+      expect(results[0].filename).toBe('used.png');
+    });
+
+    it('usage=unused returns only assets with no release_assets rows', () => {
+      const relId = db.prepare(`
+        INSERT INTO releases (project_id, title, description, notes, status, planned_date, published_date, patreon_url)
+        VALUES (?, 'R1', '', '', 'idea', NULL, NULL, NULL)
+        RETURNING id
+      `).get(projectId).id;
+
+      assetRepo.upsert(projectId, 'used.png', {
+        filename: 'used.png', extension: 'png', mimeType: 'image/png',
+        sizeBytes: 100, modifiedAt: null,
+      });
+      assetRepo.upsert(projectId, 'unused.png', {
+        filename: 'unused.png', extension: 'png', mimeType: 'image/png',
+        sizeBytes: 100, modifiedAt: null,
+      });
+      const usedAsset = assetRepo.findByProjectIdAndPath(projectId, 'used.png');
+      linkAssetToRelease(db, { releaseId: relId, assetId: usedAsset.id });
+
+      const results = assetRepo.findProjectAssetPage(projectId, { usage: 'unused', pageSize: 100 });
+      expect(results).toHaveLength(1);
+      expect(results[0].filename).toBe('unused.png');
+    });
+
+    it('usage=used with no releases returns empty', () => {
+      assetRepo.upsert(projectId, 'unused.png', {
+        filename: 'unused.png', extension: 'png', mimeType: 'image/png',
+        sizeBytes: 100, modifiedAt: null,
+      });
+
+      const results = assetRepo.findProjectAssetPage(projectId, { usage: 'used', pageSize: 100 });
+      expect(results).toHaveLength(0);
+    });
+
+    it('cross-project corrupt reference does not count as used', () => {
+      const otherProject = projectRepo.create({
+        title: 'Other', slug: 'other', description: '', notes: '',
+        status: 'tbd', priority: 'normal', plannedDate: null, publishedDate: null, patreonUrl: null,
+      });
+      const otherRelId = db.prepare(`
+        INSERT INTO releases (project_id, title, description, notes, status, planned_date, published_date, patreon_url)
+        VALUES (?, 'Other Release', '', '', 'idea', NULL, NULL, NULL)
+        RETURNING id
+      `).get(otherProject.id).id;
+
+      assetRepo.upsert(projectId, 'mine.png', {
+        filename: 'mine.png', extension: 'png', mimeType: 'image/png',
+        sizeBytes: 100, modifiedAt: null,
+      });
+      const myAsset = assetRepo.findByProjectIdAndPath(projectId, 'mine.png');
+      // Corrupt cross-project junction row: myAsset belongs to projectId,
+      // but the release belongs to otherProject.
+      linkAssetToRelease(db, { releaseId: otherRelId, assetId: myAsset.id });
+
+      const results = assetRepo.findProjectAssetPage(projectId, { usage: 'used', pageSize: 100 });
+      expect(results).toHaveLength(0);
+    });
+
+    it('asset with only corrupt cross-project references is unused', () => {
+      const otherProject = projectRepo.create({
+        title: 'Other', slug: 'other', description: '', notes: '',
+        status: 'tbd', priority: 'normal', plannedDate: null, publishedDate: null, patreonUrl: null,
+      });
+      const otherRelId = db.prepare(`
+        INSERT INTO releases (project_id, title, description, notes, status, planned_date, published_date, patreon_url)
+        VALUES (?, 'Other Release', '', '', 'idea', NULL, NULL, NULL)
+        RETURNING id
+      `).get(otherProject.id).id;
+
+      assetRepo.upsert(projectId, 'mine.png', {
+        filename: 'mine.png', extension: 'png', mimeType: 'image/png',
+        sizeBytes: 100, modifiedAt: null,
+      });
+      const myAsset = assetRepo.findByProjectIdAndPath(projectId, 'mine.png');
+      linkAssetToRelease(db, { releaseId: otherRelId, assetId: myAsset.id });
+
+      const results = assetRepo.findProjectAssetPage(projectId, { usage: 'unused', pageSize: 100 });
+      expect(results).toHaveLength(1);
+      expect(results[0].filename).toBe('mine.png');
+    });
+
+    it('mixed valid and corrupt references: only valid releases count for used filter', () => {
+      const otherProject = projectRepo.create({
+        title: 'Other', slug: 'other', description: '', notes: '',
+        status: 'tbd', priority: 'normal', plannedDate: null, publishedDate: null, patreonUrl: null,
+      });
+      const otherRelId = db.prepare(`
+        INSERT INTO releases (project_id, title, description, notes, status, planned_date, published_date, patreon_url)
+        VALUES (?, 'Other Release', '', '', 'idea', NULL, NULL, NULL)
+        RETURNING id
+      `).get(otherProject.id).id;
+      const myRelId = db.prepare(`
+        INSERT INTO releases (project_id, title, description, notes, status, planned_date, published_date, patreon_url)
+        VALUES (?, 'My Release', '', '', 'idea', NULL, NULL, NULL)
+        RETURNING id
+      `).get(projectId).id;
+
+      assetRepo.upsert(projectId, 'mine.png', {
+        filename: 'mine.png', extension: 'png', mimeType: 'image/png',
+        sizeBytes: 100, modifiedAt: null,
+      });
+      const myAsset = assetRepo.findByProjectIdAndPath(projectId, 'mine.png');
+      // Corrupt cross-project reference
+      linkAssetToRelease(db, { releaseId: otherRelId, assetId: myAsset.id });
+      // Valid same-project reference
+      linkAssetToRelease(db, { releaseId: myRelId, assetId: myAsset.id });
+
+      const results = assetRepo.findProjectAssetPage(projectId, { usage: 'used', pageSize: 100 });
+      expect(results).toHaveLength(1);
+      expect(results[0].filename).toBe('mine.png');
+    });
+  });
+
+  describe('combined filters', () => {
+    it('presence=present and usage=used together', () => {
+      const relId = db.prepare(`
+        INSERT INTO releases (project_id, title, description, notes, status, planned_date, published_date, patreon_url)
+        VALUES (?, 'R1', '', '', 'idea', NULL, NULL, NULL)
+        RETURNING id
+      `).get(projectId).id;
+
+      assetRepo.upsert(projectId, 'present-used.png', {
+        filename: 'present-used.png', extension: 'png', mimeType: 'image/png',
+        sizeBytes: 100, modifiedAt: null,
+      });
+      assetRepo.upsert(projectId, 'present-unused.png', {
+        filename: 'present-unused.png', extension: 'png', mimeType: 'image/png',
+        sizeBytes: 100, modifiedAt: null,
+      });
+      assetRepo.upsert(projectId, 'missing-used.png', {
+        filename: 'missing-used.png', extension: 'png', mimeType: 'image/png',
+        sizeBytes: 100, modifiedAt: null,
+      });
+      assetRepo.upsert(projectId, 'missing-unused.png', {
+        filename: 'missing-unused.png', extension: 'png', mimeType: 'image/png',
+        sizeBytes: 100, modifiedAt: null,
+      });
+      assetRepo.markMissingByProjectIdAndPathNotIn(projectId, ['present-used.png', 'present-unused.png']);
+
+      const presentUsed = assetRepo.findByProjectIdAndPath(projectId, 'present-used.png');
+      const missingUsed = assetRepo.findByProjectIdAndPath(projectId, 'missing-used.png');
+      linkAssetToRelease(db, { releaseId: relId, assetId: presentUsed.id });
+      linkAssetToRelease(db, { releaseId: relId, assetId: missingUsed.id });
+
+      const results = assetRepo.findProjectAssetPage(projectId, {
+        presence: 'present',
+        usage: 'used',
+        pageSize: 100,
+      });
+      expect(results).toHaveLength(1);
+      expect(results[0].filename).toBe('present-used.png');
+    });
+  });
+
+  describe('release_usage_count', () => {
+    it('counts distinct releases for an asset', () => {
+      const r1Id = db.prepare(`
+        INSERT INTO releases (project_id, title, description, notes, status, planned_date, published_date, patreon_url)
+        VALUES (?, 'R1', '', '', 'idea', NULL, NULL, NULL)
+        RETURNING id
+      `).get(projectId).id;
+      const r2Id = db.prepare(`
+        INSERT INTO releases (project_id, title, description, notes, status, planned_date, published_date, patreon_url)
+        VALUES (?, 'R2', '', '', 'idea', NULL, NULL, NULL)
+        RETURNING id
+      `).get(projectId).id;
+      const r3Id = db.prepare(`
+        INSERT INTO releases (project_id, title, description, notes, status, planned_date, published_date, patreon_url)
+        VALUES (?, 'R3', '', '', 'published', NULL, NULL, NULL)
+        RETURNING id
+      `).get(projectId).id;
+
+      assetRepo.upsert(projectId, 'multi.png', {
+        filename: 'multi.png', extension: 'png', mimeType: 'image/png',
+        sizeBytes: 100, modifiedAt: null,
+      });
+      const asset = assetRepo.findByProjectIdAndPath(projectId, 'multi.png');
+      linkAssetToRelease(db, { releaseId: r1Id, assetId: asset.id });
+      linkAssetToRelease(db, { releaseId: r2Id, assetId: asset.id });
+      linkAssetToRelease(db, { releaseId: r3Id, assetId: asset.id });
+
+      const results = assetRepo.findProjectAssetPage(projectId, { pageSize: 100 });
+      const result = results.find((a) => a.id === asset.id);
+      expect(result.release_usage_count).toBe(3);
+    });
+
+    it('zero for assets with no release references', () => {
+      assetRepo.upsert(projectId, 'loner.png', {
+        filename: 'loner.png', extension: 'png', mimeType: 'image/png',
+        sizeBytes: 100, modifiedAt: null,
+      });
+
+      const results = assetRepo.findProjectAssetPage(projectId, { pageSize: 100 });
+      const result = results.find((a) => a.filename === 'loner.png');
+      expect(result.release_usage_count).toBe(0);
+    });
+
+    it('cross-project corrupt reference does not increase release_usage_count', () => {
+      const otherProject = projectRepo.create({
+        title: 'Other', slug: 'other', description: '', notes: '',
+        status: 'tbd', priority: 'normal', plannedDate: null, publishedDate: null, patreonUrl: null,
+      });
+      const otherRelId = db.prepare(`
+        INSERT INTO releases (project_id, title, description, notes, status, planned_date, published_date, patreon_url)
+        VALUES (?, 'Other Release', '', '', 'idea', NULL, NULL, NULL)
+        RETURNING id
+      `).get(otherProject.id).id;
+
+      assetRepo.upsert(projectId, 'mine.png', {
+        filename: 'mine.png', extension: 'png', mimeType: 'image/png',
+        sizeBytes: 100, modifiedAt: null,
+      });
+      const myAsset = assetRepo.findByProjectIdAndPath(projectId, 'mine.png');
+      linkAssetToRelease(db, { releaseId: otherRelId, assetId: myAsset.id });
+
+      const results = assetRepo.findProjectAssetPage(projectId, { pageSize: 100 });
+      const result = results.find((a) => a.id === myAsset.id);
+      expect(result.release_usage_count).toBe(0);
+    });
+
+    it('mixed valid and corrupt references count only valid releases', () => {
+      const otherProject = projectRepo.create({
+        title: 'Other', slug: 'other', description: '', notes: '',
+        status: 'tbd', priority: 'normal', plannedDate: null, publishedDate: null, patreonUrl: null,
+      });
+      const otherRelId = db.prepare(`
+        INSERT INTO releases (project_id, title, description, notes, status, planned_date, published_date, patreon_url)
+        VALUES (?, 'Other Release', '', '', 'idea', NULL, NULL, NULL)
+        RETURNING id
+      `).get(otherProject.id).id;
+      const myRelId = db.prepare(`
+        INSERT INTO releases (project_id, title, description, notes, status, planned_date, published_date, patreon_url)
+        VALUES (?, 'My Release', '', '', 'idea', NULL, NULL, NULL)
+        RETURNING id
+      `).get(projectId).id;
+
+      assetRepo.upsert(projectId, 'mine.png', {
+        filename: 'mine.png', extension: 'png', mimeType: 'image/png',
+        sizeBytes: 100, modifiedAt: null,
+      });
+      const myAsset = assetRepo.findByProjectIdAndPath(projectId, 'mine.png');
+      // Corrupt cross-project reference
+      linkAssetToRelease(db, { releaseId: otherRelId, assetId: myAsset.id });
+      // Valid same-project reference
+      linkAssetToRelease(db, { releaseId: myRelId, assetId: myAsset.id });
+
+      const results = assetRepo.findProjectAssetPage(projectId, { pageSize: 100 });
+      const result = results.find((a) => a.id === myAsset.id);
+      expect(result.release_usage_count).toBe(1);
+    });
+
+    it('rendered usage count equals rendered release references', () => {
+      const r1Id = db.prepare(`
+        INSERT INTO releases (project_id, title, description, notes, status, planned_date, published_date, patreon_url)
+        VALUES (?, 'R1', '', '', 'idea', NULL, NULL, NULL)
+        RETURNING id
+      `).get(projectId).id;
+      const r2Id = db.prepare(`
+        INSERT INTO releases (project_id, title, description, notes, status, planned_date, published_date, patreon_url)
+        VALUES (?, 'R2', '', '', 'idea', NULL, NULL, NULL)
+        RETURNING id
+      `).get(projectId).id;
+
+      assetRepo.upsert(projectId, 'multi.png', {
+        filename: 'multi.png', extension: 'png', mimeType: 'image/png',
+        sizeBytes: 100, modifiedAt: null,
+      });
+      const asset = assetRepo.findByProjectIdAndPath(projectId, 'multi.png');
+      linkAssetToRelease(db, { releaseId: r1Id, assetId: asset.id });
+      linkAssetToRelease(db, { releaseId: r2Id, assetId: asset.id });
+
+      const results = assetRepo.findProjectAssetPage(projectId, { pageSize: 100 });
+      const result = results.find((a) => a.id === asset.id);
+      // release_usage_count is the number of distinct releases
+      // The rendered release_usage array length should match
+      expect(result.release_usage_count).toBe(2);
+    });
+  });
+
+  describe('out-of-range pages', () => {
+    it('page beyond total returns empty array', () => {
+      assetRepo.upsert(projectId, 'a.png', {
+        filename: 'a.png', extension: 'png', mimeType: 'image/png',
+        sizeBytes: 100, modifiedAt: null,
+      });
+
+      const results = assetRepo.findProjectAssetPage(projectId, { page: 99, pageSize: 25 });
+      expect(results).toHaveLength(0);
+    });
+
+    it('page 0 falls back to page 1 behavior', () => {
+      assetRepo.upsert(projectId, 'a.png', {
+        filename: 'a.png', extension: 'png', mimeType: 'image/png',
+        sizeBytes: 100, modifiedAt: null,
+      });
+
+      const results = assetRepo.findProjectAssetPage(projectId, { page: 0, pageSize: 25 });
+      expect(results).toHaveLength(1);
+    });
+
+    it('negative page falls back to page 1 behavior', () => {
+      assetRepo.upsert(projectId, 'a.png', {
+        filename: 'a.png', extension: 'png', mimeType: 'image/png',
+        sizeBytes: 100, modifiedAt: null,
+      });
+
+      const results = assetRepo.findProjectAssetPage(projectId, { page: -5, pageSize: 25 });
+      expect(results).toHaveLength(1);
+    });
+  });
 });

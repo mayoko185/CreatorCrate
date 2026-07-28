@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { createApp } from '../src/app.js';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { MANIFEST_FILENAME, readManifestSync } from '../src/storage/manifest.js';
+import { createAssetRepository } from '../src/data/asset-repository.js';
 import {
   STATUS_DIR_MAP,
   formatProjectDirName,
@@ -948,6 +949,112 @@ describe('project HTTP workflow', () => {
       await request(app)
         .post('/projects/99999/archive')
         .expect(404);
+    });
+
+    it('archived scan rejection causes no asset changes (full row snapshot)', async () => {
+      const title = 'Archived Scan Reject';
+      const createRes = await request(app)
+        .post('/projects')
+        .send('title=' + encodeURIComponent(title))
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const id = createRes.headers.location.replace('/projects/', '');
+
+      const getProjectDirForTitle = () => {
+        const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+        const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
+        const matching = entries.filter((e) => e.endsWith(`-${slug}`));
+        return path.join(projectsRoot, 'tbd', matching[0]);
+      };
+      const projectDir = getProjectDirForTitle();
+
+      // 1. Create at least two baseline files
+      const baselineFile1 = 'baseline-a.txt';
+      const baselineFile2 = 'baseline-b.txt';
+      const newFile = 'will-be-new.txt';
+
+      fs.writeFileSync(path.join(projectDir, baselineFile1), 'baseline a');
+      fs.writeFileSync(path.join(projectDir, baselineFile2), 'baseline b');
+
+      // 2. Run a successful scan so both have persisted asset rows
+      await request(app).post(`/projects/${id}/scan`).expect(302);
+
+      // 3. Modify the first baseline file
+      fs.writeFileSync(path.join(projectDir, baselineFile1), 'modified content');
+
+      // 4. Delete the second baseline file
+      fs.unlinkSync(path.join(projectDir, baselineFile2));
+
+      // 5. Add a new file
+      fs.writeFileSync(path.join(projectDir, newFile), 'brand new');
+
+      // 6. Snapshot all persisted asset rows before the rejected scan
+      const assetRepo = createAssetRepository(db);
+      const beforeAssets = assetRepo.findByProjectId(Number(id));
+      expect(beforeAssets.length).toBe(2);
+
+      const beforeSnapshot = beforeAssets.map((a) => ({ ...a }));
+
+      // 7. Archive the project
+      await request(app)
+        .post(`/projects/${id}/archive`)
+        .expect(302);
+
+      // 8. POST the scan route — must be rejected
+      const scanRes = await request(app)
+        .post(`/projects/${id}/scan`);
+      expect(scanRes.status).toBe(302);
+      expect(scanRes.headers.location).toContain('scan_error=archived');
+
+      // 9. Assert the archived-scan rejection
+      // 10. Query all project assets again
+      const afterAssets = assetRepo.findByProjectId(Number(id));
+      expect(afterAssets.length).toBe(2);
+
+      // complete before/after asset rows are deeply equal
+      for (let i = 0; i < beforeSnapshot.length; i++) {
+        const before = beforeSnapshot[i];
+        const after = afterAssets.find((a) => a.id === before.id);
+        expect(after).toBeDefined();
+        expect(after.id).toBe(before.id);
+        expect(after.project_id).toBe(before.project_id);
+        expect(after.relative_path).toBe(before.relative_path);
+        expect(after.filename).toBe(before.filename);
+        expect(after.extension).toBe(before.extension);
+        expect(after.mime_type).toBe(before.mime_type);
+        expect(after.size_bytes).toBe(before.size_bytes);
+        expect(after.modified_at).toBe(before.modified_at);
+        expect(after.is_present).toBe(before.is_present);
+        expect(after.last_seen_at).toBe(before.last_seen_at);
+        expect(after.missing_since).toBe(before.missing_since);
+        expect(after.created_at).toBe(before.created_at);
+        expect(after.updated_at).toBe(before.updated_at);
+      }
+
+      // the new file was not inserted
+      const newAsset = afterAssets.find((a) => a.relative_path === newFile);
+      expect(newAsset).toBeUndefined();
+
+      // the modified file's metadata was not updated
+      const modifiedAsset = afterAssets.find((a) => a.relative_path === baselineFile1);
+      expect(modifiedAsset).toBeDefined();
+      const beforeModified = beforeSnapshot.find((a) => a.relative_path === baselineFile1);
+      expect(modifiedAsset.size_bytes).toBe(beforeModified.size_bytes);
+      expect(modifiedAsset.modified_at).toBe(beforeModified.modified_at);
+
+      // the deleted file's persisted row still exists
+      const deletedAsset = afterAssets.find((a) => a.relative_path === baselineFile2);
+      expect(deletedAsset).toBeDefined();
+      // the deleted file still has is_present = 1
+      expect(deletedAsset.is_present).toBe(1);
+      // missing_since remains unchanged
+      expect(deletedAsset.missing_since).toBeNull();
+      // no scanner-maintained timestamp changed
+      const beforeDeleted = beforeSnapshot.find((a) => a.relative_path === baselineFile2);
+      expect(deletedAsset.last_seen_at).toBe(beforeDeleted.last_seen_at);
+      expect(deletedAsset.updated_at).toBe(beforeDeleted.updated_at);
     });
   });
 

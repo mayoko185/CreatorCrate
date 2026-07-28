@@ -4,9 +4,11 @@
   <div class="page-header">
     <h1>Assets — {{ project.title }}</h1>
     <div class="actions">
-      <form method="post" action="/projects/{{ project.id }}/scan" class="inline-form">
-        <button class="button button-primary" type="submit">Scan Now</button>
-      </form>
+      {% if not project.archived_at %}
+        <form method="post" action="/projects/{{ project.id }}/scan" class="inline-form">
+          <button class="button button-primary" type="submit">Scan Now</button>
+        </form>
+      {% endif %}
       <a class="button" href="/projects/{{ project.id }}">Back to Project</a>
     </div>
   </div>
@@ -17,52 +19,56 @@
         {% if query.scan_result == 'no_changes' %}
           Scan complete: no changes. {{ query.total or '?' }} total assets.
         {% else %}
-          Scan complete: {{ query.scan_result | replace('_', ' ') }}. {{ query.total or '?' }} total assets.
+          Scan complete: {{ query.scan_result | replace('+', ', ') }}. {{ query.total or '?' }} total assets.
         {% endif %}
       </p>
     </div>
   {% endif %}
 
-  {% if query.scan_error %}
+  {% if error %}
     <div class="scan-error">
       <p>Scan failed. The project directory may be missing or inaccessible.</p>
     </div>
   {% endif %}
 
-  <p class="results-meta">{{ total }} asset{% if total != 1 %}s{% endif %} found</p>
+  {% if archivedError %}
+    <div class="scan-error">
+      <p>Scanning is not available for archived projects.</p>
+    </div>
+  {% endif %}
 
+  <p class="results-meta">
+    {{ total }} asset{% if total != 1 %}s{% endif %} found
+    {% if filters.presence != 'all' or filters.usage != 'all' %}
+      (filtered)
+    {% endif %}
+  </p>
+
+  <p class="scan-freshness">
+    Asset state reflects the last completed scan — files are not checked live.
+    Failed or incomplete scans do not update this information.
+  </p>
   <form class="filters" method="get" action="/projects/{{ project.id }}/assets">
     <div class="field">
-      <label for="search">Search filename</label>
-      <input type="search" id="search" name="search" value="{{ query.search or '' }}">
-    </div>
-
-    <div class="field">
-      <label for="extension">Type</label>
-      <select id="extension" name="extension">
-        <option value="" {% if not query.extension %}selected{% endif %}>All types</option>
-        {% for ext in extensions %}
-          {% set typeLabel = ext if ext else 'unknown' %}
-          <option value="{{ ext }}" {% if query.extension == ext %}selected{% endif %}>{{ typeLabel }}</option>
-        {% endfor %}
+      <label for="presence">Show</label>
+      <select id="presence" name="presence">
+        <option value="all" {% if filters.presence == 'all' %}selected{% endif %}>All assets</option>
+        <option value="present" {% if filters.presence == 'present' %}selected{% endif %}>Present at last scan</option>
+        <option value="missing" {% if filters.presence == 'missing' %}selected{% endif %}>Missing at last scan</option>
       </select>
     </div>
 
     <div class="field">
-      <label for="sort">Sort</label>
-      <select id="sort" name="sort">
-        {% for opt in sortOptions %}
-          <option value="{{ opt }}" {% if query.sort == opt or (not query.sort and opt == 'filename') %}selected{% endif %}>{{ opt | title }}</option>
-        {% endfor %}
-      </select>
-      <select name="order">
-        <option value="asc" {% if query.order != 'desc' %}selected{% endif %}>Asc</option>
-        <option value="desc" {% if query.order == 'desc' %}selected{% endif %}>Desc</option>
+      <label for="usage">Usage</label>
+      <select id="usage" name="usage">
+        <option value="all" {% if filters.usage == 'all' %}selected{% endif %}>All assets</option>
+        <option value="used" {% if filters.usage == 'used' %}selected{% endif %}>Used by a release</option>
+        <option value="unused" {% if filters.usage == 'unused' %}selected{% endif %}>Not used by a release</option>
       </select>
     </div>
 
     <button class="button" type="submit">Filter</button>
-    <a class="button button-secondary" href="/projects/{{ project.id }}/assets">Clear</a>
+    <a class="button button-secondary" href="/projects/{{ project.id }}/assets">Reset</a>
   </form>
 
   {% if assets.length > 0 %}
@@ -70,43 +76,104 @@
       <thead>
         <tr>
           <th>Filename</th>
-          <th>Path</th>
           <th>Type</th>
-          <th>Extension</th>
-          <th>Size</th>
-          <th>Modified</th>
+          <th>State</th>
+          <th>Last Seen</th>
+          <th>Missing Since</th>
+          <th>Release Usage</th>
         </tr>
       </thead>
       <tbody>
         {% for asset in assets %}
           <tr>
-            <td class="asset-filename">{{ asset.filename }}</td>
-            <td class="asset-path"><code>{{ asset.relative_path }}</code></td>
+            <td class="asset-filename">
+              <code>{{ asset.filename }}</code>
+              <br><small class="asset-path">{{ asset.relative_path }}</small>
+            </td>
+            <td><code>{{ asset.extension or '—' }}</code></td>
             <td>
-              {% if asset.extension in ['png','webp','jpg','jpeg','gif'] %}
-                image
-              {% elif asset.extension in ['kra','krz'] %}
-                krita
+              {% if asset.is_present %}
+                <span class="asset-present">Present at last scan</span>
               {% else %}
-                unknown
+                <span class="asset-missing">Missing at last scan</span>
               {% endif %}
             </td>
-            <td><code>{{ asset.extension }}</code></td>
-            <td class="asset-size">
-              {% if asset.size_bytes >= 1048576 %}
-                {{ (asset.size_bytes / 1048576) | round(1) }} MB
-              {% elif asset.size_bytes >= 1024 %}
-                {{ (asset.size_bytes / 1024) | round(1) }} KB
+            <td class="asset-date">
+              {% if asset.last_seen_at %}
+                {{ asset.last_seen_at }}
               {% else %}
-                {{ asset.size_bytes }} B
+                —
               {% endif %}
             </td>
-            <td class="asset-date">{{ asset.modified_at or '—' }}</td>
+            <td class="asset-date">
+              {% if asset.missing_since %}
+                {{ asset.missing_since }}
+              {% else %}
+                —
+              {% endif %}
+            </td>
+            <td>
+              {% if asset.release_usage_count > 0 %}
+                <a href="/releases?project={{ project.id }}" class="release-usage-link">
+                  Used by {{ asset.release_usage_count }} release{% if asset.release_usage_count != 1 %}s{% endif %}
+                </a>
+                {% if asset.release_usage.length > 0 %}
+                  <ul class="release-detail-list">
+                    {% for usage in asset.release_usage %}
+                      <li>
+                        <a href="/releases/{{ usage.release_id }}">{{ usage.title }}</a>
+                        <span class="release-status">({{ usage.status }})</span>
+                      </li>
+                    {% endfor %}
+                  </ul>
+                {% endif %}
+              {% else %}
+                <span class="asset-unused">Not used by a release</span>
+              {% endif %}
+            </td>
           </tr>
         {% endfor %}
       </tbody>
     </table>
-  {% else %}
-    <p class="placeholder">No assets found. Click <strong>Scan Now</strong> to discover files in the project directory.</p>
+
+    {# Pagination #}
+    {% if pageCount > 1 %}
+      <nav class="pagination" aria-label="Asset list pages">
+        {% if page > 1 %}
+          <a href="{{ pageUrl({ page: page - 1 }) }}" class="pagination-prev">← Prev</a>
+        {% endif %}
+
+        <span class="pagination-info">Page {{ page }} of {{ pageCount }}</span>
+
+        {% if page < pageCount %}
+          <a href="{{ pageUrl({ page: page + 1 }) }}" class="pagination-next">Next →</a>
+        {% endif %}
+      </nav>
+
+      <form class="page-size-form" method="get" action="/projects/{{ project.id }}/assets">
+        <label for="pageSize">Assets per page:</label>
+        <select id="pageSize" name="pageSize" onchange="this.form.submit()">
+          <option value="10" {% if pageSize == 10 %}selected{% endif %}>10</option>
+          <option value="25" {% if pageSize == 25 %}selected{% endif %}>25</option>
+          <option value="50" {% if pageSize == 50 %}selected{% endif %}>50</option>
+          <option value="100" {% if pageSize == 100 %}selected{% endif %}>100</option>
+        </select>
+        {# Preserve current filters in pageSize form #}
+        <input type="hidden" name="presence" value="{{ filters.presence }}">
+        <input type="hidden" name="usage" value="{{ filters.usage }}">
+      </form>
+    {% endif %}
+
+  {% elseif total == 0 and (filters.presence != 'all' or filters.usage != 'all') %}
+    <p class="placeholder">
+      No assets match the current filters.
+      <a href="/projects/{{ project.id }}/assets">Clear filters</a> to see all assets.
+    </p>
+  {% elseif total == 0 %}
+    {% if project.archived_at %}
+      <p class="placeholder">No assets found for this archived project.</p>
+    {% else %}
+      <p class="placeholder">No assets found. Click <strong>Scan Now</strong> to discover files in the project directory.</p>
+    {% endif %}
   {% endif %}
 {% endblock %}

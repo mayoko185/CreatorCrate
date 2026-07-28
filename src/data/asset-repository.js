@@ -351,6 +351,109 @@ export function createAssetRepository(db) {
       `;
       return db.prepare(sql).pluck().all(projectId);
     },
+
+    // ─── Phase 6D: Asset Browser Queries ──────────────────────────────────
+
+    /**
+     * Build WHERE conditions and params for asset browser queries.
+     * Shared by both findProjectAssetPage and countProjectAssets so they
+     * always use identical filter predicates.
+     *
+     * @param {number} projectId
+     * @param {object} filters
+     * @param {'all'|'present'|'missing'} [filters.presence]
+     * @param {'all'|'used'|'unused'} [filters.usage]
+     * @returns {{ conditions: string[], params: any[] }}
+     */
+    _buildAssetBrowserConditions(projectId, filters) {
+      const conditions = ['project_id = ?'];
+      const params = [projectId];
+
+      if (filters.presence === 'present') {
+        conditions.push('is_present = 1');
+      } else if (filters.presence === 'missing') {
+        conditions.push('is_present = 0');
+      }
+      // 'all' = no presence restriction
+
+      if (filters.usage === 'used') {
+        conditions.push('EXISTS (SELECT 1 FROM release_assets ra JOIN releases r ON r.id = ra.release_id WHERE ra.asset_id = a.id AND r.project_id = a.project_id)');
+      } else if (filters.usage === 'unused') {
+        conditions.push('NOT EXISTS (SELECT 1 FROM release_assets ra JOIN releases r ON r.id = ra.release_id WHERE ra.asset_id = a.id AND r.project_id = a.project_id)');
+      }
+      // 'all' = no usage restriction
+
+      return { conditions, params };
+    },
+
+    /**
+     * Paginated asset list for the asset browser.
+     * Each asset includes a distinct count of releases that reference it.
+     * Uses SQL LIMIT/OFFSET for efficient pagination.
+     *
+     * @param {number} projectId
+     * @param {object} [filters]
+     * @param {'all'|'present'|'missing'} [filters.presence='all']
+     * @param {'all'|'used'|'unused'} [filters.usage='all']
+     * @param {number} [filters.page=1]
+     * @param {number} [filters.pageSize=25]
+     * @returns {Array<{id: number, project_id: number, relative_path: string, filename: string, extension: string, is_present: number, last_seen_at: string|null, missing_since: string|null, release_usage_count: number}>}
+     */
+    findProjectAssetPage(projectId, filters = {}) {
+      const { presence = 'all', usage = 'all', page = 1, pageSize = 25 } = filters;
+
+      const { conditions, params } = this._buildAssetBrowserConditions(projectId, {
+        presence,
+        usage,
+      });
+
+      const offset = (Math.max(1, page) - 1) * Math.max(1, pageSize);
+
+      // Deterministic ordering: filename (case-insensitive), extension, id.
+      // Asset ID as final tie-breaker ensures stable order even when
+      // filenames and extensions are identical across different files.
+      const sql = `
+        SELECT
+          a.id,
+          a.project_id,
+          a.relative_path,
+          a.filename,
+          a.extension,
+          a.is_present,
+          a.last_seen_at,
+          a.missing_since,
+          (SELECT COUNT(DISTINCT ra.release_id) FROM release_assets ra JOIN releases r ON r.id = ra.release_id WHERE ra.asset_id = a.id AND r.project_id = a.project_id) AS release_usage_count
+        FROM assets a
+        WHERE ${conditions.join(' AND ')}
+        ORDER BY a.filename COLLATE NOCASE ASC, a.extension ASC, a.id ASC
+        LIMIT ? OFFSET ?
+      `;
+
+      return db.prepare(sql).all(...params, pageSize, offset);
+    },
+
+    /**
+     * Count of matching assets for the asset browser.
+     * Uses identical filter predicates as findProjectAssetPage.
+     *
+     * @param {number} projectId
+     * @param {object} [filters]
+     * @param {'all'|'present'|'missing'} [filters.presence='all']
+     * @param {'all'|'used'|'unused'} [filters.usage='all']
+     * @returns {number}
+     */
+    countProjectAssets(projectId, filters = {}) {
+      const { presence = 'all', usage = 'all' } = filters;
+
+      const { conditions, params } = this._buildAssetBrowserConditions(projectId, {
+        presence,
+        usage,
+      });
+
+      const sql = `SELECT COUNT(*) AS c FROM assets a WHERE ${conditions.join(' AND ')}`;
+      const row = db.prepare(sql).get(...params);
+      return row.c;
+    },
   };
 }
 

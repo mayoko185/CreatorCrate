@@ -375,15 +375,22 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
       // submission for a newly-checked row), default to safe values rather than
       // rejecting the submission. The browser will not submit disabled controls, so
       // server must treat them as "use default".
-      const selections = [];
-      const rawAssetIds = Array.isArray(req.body.selectedAssetIds) ? req.body.selectedAssetIds : [];
+      // Normalize to array: handle both single-value (selectedAssetIds=5) and
+      // array (selectedAssetIds[]=5&selectedAssetIds[]=6) form submissions.
+      const normalized = normalizeSelectedAssetIds(req.body.selectedAssetIds);
+
+      // Reject malformed input shapes — never treat them as an intentional clear.
+      if (!normalized.valid) {
+        throw new ReleaseValidationError({ general: 'Invalid asset selection format.' });
+      }
 
       // Express parses roles[1]=primary as { '0': 'primary' } (0-indexed to match array position)
       const roles = req.body.roles || {};
       const sortOrders = req.body.sortOrder || {};
 
-      for (let i = 0; i < rawAssetIds.length; i++) {
-        const rawAssetId = rawAssetIds[i];
+      const selections = [];
+      for (let i = 0; i < normalized.ids.length; i++) {
+        const rawAssetId = normalized.ids[i];
 
         // Validate asset ID
         const assetId = parseStrictInt(rawAssetId);
@@ -516,6 +523,62 @@ function parseNonNegativeInt(value) {
 }
 
 /**
+ * Normalize a form's selectedAssetIds value to a structured result.
+ *
+ * Express urlencoded parsing produces:
+ *   - `selectedAssetIds=5`          → string "5"
+ *   - `selectedAssetIds[]=5`        → ["5"]
+ *   - `selectedAssetIds[]=5&selectedAssetIds[]=6` → ["5", "6"]
+ *   - `selectedAssetIds[0]=5`       → { "0": "5" }
+ *   - missing                       → undefined
+ *
+ * Returns `{ valid, ids }` so the caller can distinguish:
+ *   - field absent (`undefined`) or intentionally empty (`''`) → `{ valid: true, ids: [] }`
+ *   - malformed shape (including `null`)                      → `{ valid: false, ids: [] }`
+ *
+ * Accepted shapes:
+ *   - absent (undefined) — intentional clear
+ *   - empty string '' — intentional clear
+ *   - one scalar string ID
+ *   - a flat array of scalar string/number IDs
+ *   - a flat object with numeric keys whose values are scalar string/number IDs
+ *
+ * Rejected shapes:
+ *   - null, nested arrays, nested objects, objects with non-numeric keys,
+ *     mixed nested/scalar values, booleans, arbitrary object shapes
+ *
+ * @param {*} raw - the raw req.body.selectedAssetIds value
+ * @returns {{ valid: boolean, ids: string[] }}
+ */
+function normalizeSelectedAssetIds(raw) {
+  if (raw === undefined) return { valid: true, ids: [] };
+  if (raw === null) return { valid: false, ids: [] };
+  if (typeof raw === 'string') {
+    if (raw === '') return { valid: true, ids: [] };
+    return { valid: true, ids: [raw] };
+  }
+  if (Array.isArray(raw)) {
+    for (const v of raw) {
+      if (typeof v !== 'string' && typeof v !== 'number') return { valid: false, ids: [] };
+    }
+    return { valid: true, ids: raw.map(String) };
+  }
+  // Object-shaped (numeric keys from extended parsing) — flatten values
+  if (typeof raw === 'object' && raw !== null) {
+    const keys = Object.keys(raw);
+    for (const key of keys) {
+      if (!/^\d+$/.test(key)) return { valid: false, ids: [] };
+    }
+    const values = Object.values(raw);
+    for (const v of values) {
+      if (typeof v !== 'string' && typeof v !== 'number') return { valid: false, ids: [] };
+    }
+    return { valid: true, ids: values.map(String) };
+  }
+  return { valid: false, ids: [] };
+}
+
+/**
  * Build a releaseAssets-shaped array from the raw form body.
  * Used on validation failure so the form can re-render the user's actual input
  * rather than the persisted selections from the database.
@@ -524,13 +587,16 @@ function parseNonNegativeInt(value) {
  * Invalid asset IDs are skipped (the route will have already errored on them).
  */
 function buildSubmittedReleaseAssets(req) {
-  const selectedIds = Array.isArray(req.body.selectedAssetIds) ? req.body.selectedAssetIds : [];
+  const normalized = normalizeSelectedAssetIds(req.body.selectedAssetIds);
+  // If malformed, return empty — the route will have already thrown 422
+  // before reaching this function, but guard defensively.
+  if (!normalized.valid) return [];
   const roles = req.body.roles || {};
   const sortOrders = req.body.sortOrder || {};
 
   const submitted = [];
-  for (let i = 0; i < selectedIds.length; i++) {
-    const assetId = parseStrictInt(selectedIds[i]);
+  for (let i = 0; i < normalized.ids.length; i++) {
+    const assetId = parseStrictInt(normalized.ids[i]);
     if (assetId === null) continue;
     const role = typeof roles[i] === 'string' && roles[i].trim() !== ''
       ? roles[i].trim().toLowerCase()

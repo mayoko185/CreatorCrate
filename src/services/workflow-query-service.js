@@ -488,12 +488,128 @@ export function createWorkflowQueryService({ db }) {
     };
   }
 
+  // ─── Phase 6D: Asset Browser ───────────────────────────────────────────
+
+  /**
+   * Strict positive-integer validator for pagination parameters.
+   * Rejects malformed strings like "1junk", "2.5", "1e2", "+2", "-2", or "0".
+   * @param {unknown} value
+   * @returns {number|null}
+   */
+  function parseStrictPositiveInt(value) {
+    if (value == null) return null;
+    const str = String(value);
+    if (!/^[1-9]\d*$/.test(str)) return null;
+    const num = Number(str);
+    if (!Number.isInteger(num) || num < 1) return null;
+    return num;
+  }
+
+  /**
+   * Normalize and validate asset browser query parameters.
+   * @param {Object} raw
+   * @returns {{ presence: 'all'|'present'|'missing', usage: 'all'|'used'|'unused', page: number, pageSize: number }}
+   */
+  function normalizeAssetBrowserQuery(raw) {
+    const presenceValues = ['all', 'present', 'missing'];
+    const usageValues = ['all', 'used', 'unused'];
+
+    const presence = presenceValues.includes(raw.presence) ? raw.presence : 'all';
+    const usage = usageValues.includes(raw.usage) ? raw.usage : 'all';
+
+    const pageRaw = parseStrictPositiveInt(raw.page);
+    const page = pageRaw !== null ? pageRaw : 1;
+
+    const pageSizeRaw = parseStrictPositiveInt(raw.pageSize);
+    let pageSize = pageSizeRaw !== null ? pageSizeRaw : 25;
+    if (pageSize > 100) pageSize = 100;
+
+    return { presence, usage, page, pageSize };
+  }
+
+  /**
+   * Asset browser view-model for a project.
+   * Returns paginated assets with release usage details attached.
+   * Read-only — does not trigger scanning or any mutation.
+   *
+   * @param {number} projectId
+   * @param {Object} [rawQuery] - raw query parameters
+   * @param {string} [rawQuery.presence] - 'all'|'present'|'missing'
+   * @param {string} [rawQuery.usage] - 'all'|'used'|'unused'
+   * @param {string|number} [rawQuery.page]
+   * @param {string|number} [rawQuery.pageSize]
+   * @returns {null | {
+   *   assets: Array,
+   *   total: number,
+   *   page: number,
+   *   pageSize: number,
+   *   pageCount: number,
+   *   filters: { presence: string, usage: string },
+   * }}
+   */
+  function getProjectAssetBrowser(projectId, rawQuery = {}) {
+    const project = projectRepository.findById(projectId);
+    if (!project) return null;
+
+    const filters = normalizeAssetBrowserQuery(rawQuery);
+    const total = assetRepository.countProjectAssets(projectId, filters);
+
+    const pageCount = Math.max(1, Math.ceil(total / filters.pageSize));
+    const page = Math.min(filters.page, pageCount);
+    const offset = (page - 1) * filters.pageSize;
+
+    const pageResult = assetRepository.findProjectAssetPage(projectId, {
+      ...filters,
+      page,
+      pageSize: filters.pageSize,
+    });
+
+    // Attach release usage details for assets on the current page
+    const assetIds = pageResult.map((a) => a.id);
+    const usageDetails = releaseRepository.findReleaseUsageForAssetIds(projectId, assetIds);
+
+    // Index usage details by asset_id for O(1) lookup during attachment
+    const usageByAssetId = new Map();
+    for (const detail of usageDetails) {
+      if (!usageByAssetId.has(detail.asset_id)) {
+        usageByAssetId.set(detail.asset_id, []);
+      }
+      usageByAssetId.get(detail.asset_id).push(detail);
+    }
+
+    const assets = pageResult.map((asset) => ({
+      id: asset.id,
+      project_id: asset.project_id,
+      relative_path: asset.relative_path,
+      filename: asset.filename,
+      extension: asset.extension,
+      is_present: asset.is_present,
+      last_seen_at: asset.last_seen_at,
+      missing_since: asset.missing_since,
+      release_usage_count: asset.release_usage_count,
+      release_usage: usageByAssetId.get(asset.id) || [],
+    }));
+
+    return {
+      assets,
+      total,
+      page,
+      pageSize: filters.pageSize,
+      pageCount,
+      filters: {
+        presence: filters.presence,
+        usage: filters.usage,
+      },
+    };
+  }
+
   return {
     getDashboardData,
     getProjectWorkspace,
     getReleaseList,
     getReleaseBoard,
     getReleaseCalendar,
+    getProjectAssetBrowser,
     // Exposed for tests
     parseMonth,
     prevMonth,

@@ -943,6 +943,48 @@ export function createReleaseRepository(db) {
 
       return db.prepare(sql).all(...params);
     },
+
+    // ─── Phase 6D: Asset Browser Queries ─────────────────────────────────
+
+    /**
+     * Release usage details for a batch of asset IDs, scoped to a project.
+     * Returns one row per (asset, release) pair, enriched with release title,
+     * status, archive state, and parent project archive state for display policy.
+     * Both the asset and the release must belong to the given projectId to
+     * prevent corrupt cross-project junction rows from leaking data.
+     * Historical and archived releases are included — the browser shows what
+     * releases reference which assets, regardless of lifecycle state.
+     *
+     * @param {number} projectId - scope: both asset and release must belong here
+     * @param {number[]} assetIds - array of asset IDs (empty array returns [])
+     * @returns {Array<{asset_id: number, release_id: number, title: string, status: string, release_archived_at: string|null, project_archived_at: string|null}>}
+     */
+    findReleaseUsageForAssetIds(projectId, assetIds) {
+      if (!Array.isArray(assetIds) || assetIds.length === 0) {
+        return [];
+      }
+
+      const placeholders = assetIds.map(() => '?').join(',');
+      const sql = `
+        SELECT
+          ra.asset_id,
+          r.id AS release_id,
+          r.title,
+          r.status,
+          r.archived_at AS release_archived_at,
+          p.archived_at AS project_archived_at
+        FROM release_assets ra
+        JOIN releases r ON r.id = ra.release_id
+        JOIN projects p ON p.id = r.project_id
+        JOIN assets a ON a.id = ra.asset_id
+        WHERE ra.asset_id IN (${placeholders})
+          AND a.project_id = ?
+          AND r.project_id = ?
+        ORDER BY ra.asset_id ASC, r.title COLLATE NOCASE ASC, r.id ASC
+      `;
+
+      return db.prepare(sql).all(...assetIds, projectId, projectId);
+    },
   };
 }
 

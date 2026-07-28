@@ -86,9 +86,10 @@ function attachPresentAssetToRelease(db, projectId, releaseId, { name, present =
  */
 function extractPaginationHref(html, label) {
   // The pagination nav is <nav class="pagination" …> <a class="button" href="…">Next</a> </nav>
+  // Some templates include an arrow character (→) after the label text.
   const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const re = new RegExp(
-    `<nav class="pagination"[^>]*>[\\s\\S]*?<a\\b[^>]*\\bhref="([^"]+)"[^>]*>${escaped}<\\/a>`,
+    `<nav class="pagination"[^>]*>[\\s\\S]*?<a\\b[^>]*\\bhref="([^"]+)"[^>]*>[^<]*${escaped}[^<]*<\\/a>`,
     'i',
   );
   const m = html.match(re);
@@ -2081,6 +2082,285 @@ describe('Phase 6B HTTP workflow', () => {
       // 4. Query the database — archived_at must still be NULL.
       const row = db.prepare('SELECT archived_at FROM releases WHERE id = ?').get(releaseId);
       expect(row.archived_at).toBeNull();
+    });
+  });
+
+  // ─── Phase 6D: Archive-policy and usage-link defects ─────────────────────
+
+  describe('Phase 6D archive-policy and usage-link defects', () => {
+    /**
+     * Create a project directory with a file so scanning produces assets.
+     */
+    async function createProjectWithFile({ title, status = 'tbd' }) {
+      const projectId = await createProject(app, { title, status });
+      const projectDir = getProjectDir(projectsRoot, title, status);
+      expect(projectDir).not.toBeNull();
+      fs.writeFileSync(path.join(projectDir, 'asset.txt'), 'content');
+      return projectId;
+    }
+
+    /**
+     * Create a release and link an asset to it.
+     */
+    async function createReleaseWithLinkedAsset(projectId, title) {
+      const releaseId = await createRelease(app, { projectId, title, status: 'idea' });
+      // Scan to create the asset record
+      await request(app).post(`/projects/${projectId}/scan`).expect(302);
+      const assetRepo = createAssetRepository(db);
+      const assets = assetRepo.findByProjectId(projectId);
+      expect(assets.length).toBeGreaterThan(0);
+      const asset = assets[0];
+      // Link via POST
+      await request(app)
+        .post(`/releases/${releaseId}/assets`)
+        .send(`selectedAssetIds=${asset.id}`)
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      return { releaseId, assetId: asset.id };
+    }
+
+    // ─── Fix 1: Block scanning for archived projects ─────────────────
+
+    describe('block scanning for archived projects', () => {
+      it('archived project asset page contains no scan form or submit button', async () => {
+        const projectId = await createProjectWithFile({ title: 'Archived Scan Hide' });
+        // Archive the project
+        await request(app).post(`/projects/${projectId}/archive`).expect(302);
+
+        const res = await request(app).get(`/projects/${projectId}/assets`).expect(200);
+        // The scan form must not be rendered — assert the form markup is absent
+        expect(res.text).not.toContain(`action="/projects/${projectId}/scan"`);
+        expect(res.text).not.toMatch(/<button[^>]*>\s*Scan Now\s*<\/button>/);
+        // The empty-state "Scan Now" text (inside a <strong>) must not be confused
+        // with the button — the button is absent, but the placeholder text may still
+        // contain "Scan Now" for non-archived projects. For archived projects the
+        // placeholder says "No assets found for this archived project."
+        expect(res.text).not.toContain('Click <strong>Scan Now</strong>');
+      });
+
+      it('active project contains the actual scan form and submit button', async () => {
+        const projectId = await createProjectWithFile({ title: 'Active Scan Show' });
+
+        const res = await request(app).get(`/projects/${projectId}/assets`).expect(200);
+        // Assert the form element with the correct action
+        expect(res.text).toContain(`<form method="post" action="/projects/${projectId}/scan" class="inline-form">`);
+        // Assert the submit button inside the form
+        expect(res.text).toMatch(/<button class="button button-primary" type="submit">Scan Now<\/button>/);
+        // The empty-state placeholder also contains "Scan Now" — ensure the button
+        // assertion is about the form button, not the placeholder text
+        expect(res.text).toContain('Click <strong>Scan Now</strong>');
+      });
+
+      it('POST scan for archived project is rejected', async () => {
+        const projectId = await createProjectWithFile({ title: 'Archived Scan Reject' });
+        // Archive the project
+        await request(app).post(`/projects/${projectId}/archive`).expect(302);
+
+        await request(app)
+          .post(`/projects/${projectId}/scan`)
+          .expect(302)
+          .expect('Location', `/projects/${projectId}/assets?scan_error=archived`);
+      });
+
+      it('archived scan rejection causes no asset changes (full row snapshot)', async () => {
+        const projectId = await createProjectWithFile({ title: 'Archived Scan Snapshot' });
+        const projectDir = getProjectDir(projectsRoot, 'Archived Scan Snapshot');
+        expect(projectDir).not.toBeNull();
+
+        // Establish baseline: scan the initial file
+        await request(app).post(`/projects/${projectId}/scan`).expect(302);
+
+        // Create filesystem conditions that would cause each scanner action:
+        //   1. Insert — a new file on disk not yet in the DB
+        //   2. Update — an existing file with changed content (different size)
+        //   3. Mark missing — a file in the DB that no longer exists on disk
+        const assetRepo = createAssetRepository(db);
+
+        // Add a second file (would trigger insert on scan)
+        fs.writeFileSync(path.join(projectDir, 'new-file.txt'), 'new content');
+
+        // Modify the original file (would trigger update on scan — different size)
+        fs.writeFileSync(path.join(projectDir, 'asset.txt'), 'modified content that is longer');
+
+        // Snapshot complete asset rows before archiving
+        const beforeRows = db.prepare(`
+          SELECT id, project_id, relative_path, filename, extension, mime_type,
+                 size_bytes, modified_at, is_present, last_seen_at, missing_since,
+                 created_at, updated_at
+          FROM assets
+          WHERE project_id = ?
+          ORDER BY id
+        `).all(projectId);
+        expect(beforeRows.length).toBeGreaterThanOrEqual(1);
+
+        // Archive the project
+        await request(app).post(`/projects/${projectId}/archive`).expect(302);
+
+        // Attempt scan — must be rejected
+        await request(app)
+          .post(`/projects/${projectId}/scan`)
+          .expect(302)
+          .expect('Location', `/projects/${projectId}/assets?scan_error=archived`);
+
+        // Snapshot asset rows after the rejected scan
+        const afterRows = db.prepare(`
+          SELECT id, project_id, relative_path, filename, extension, mime_type,
+                 size_bytes, modified_at, is_present, last_seen_at, missing_since,
+                 created_at, updated_at
+          FROM assets
+          WHERE project_id = ?
+          ORDER BY id
+        `).all(projectId);
+
+        // Complete rows must deep-equal — no insert, no update, no missing marking
+        expect(afterRows).toEqual(beforeRows);
+
+        // Explicit count assertions for clarity
+        expect(afterRows.length).toBe(beforeRows.length);
+        expect(afterRows.length).toBeGreaterThanOrEqual(1);
+
+        // Every row's metadata must be identical
+        for (let i = 0; i < beforeRows.length; i++) {
+          expect(afterRows[i].is_present).toBe(beforeRows[i].is_present);
+          expect(afterRows[i].size_bytes).toBe(beforeRows[i].size_bytes);
+          expect(afterRows[i].last_seen_at).toBe(beforeRows[i].last_seen_at);
+          expect(afterRows[i].missing_since).toBe(beforeRows[i].missing_since);
+          expect(afterRows[i].updated_at).toBe(beforeRows[i].updated_at);
+        }
+      });
+    });
+
+    // ─── Fix 3: Link usage details to read-only release detail ────────
+
+    describe('usage links point to release detail', () => {
+      it('usage link URL is /releases/:id not /releases/:id/assets', async () => {
+        const projectId = await createProjectWithFile({ title: 'Usage Link Test' });
+        const { releaseId } = await createReleaseWithLinkedAsset(projectId, 'Usage Link Release');
+
+        const res = await request(app).get(`/projects/${projectId}/assets`).expect(200);
+        // The usage link should point to the release detail, not the asset-selection page
+        const expectedHref = `/releases/${releaseId}`;
+        expect(res.text).toContain(`href="${expectedHref}"`);
+        expect(res.text).not.toContain(`href="${expectedHref}/assets"`);
+      });
+    });
+
+    // ─── Fix 4: Archived release asset-selection UI read-only ─────────
+
+    describe('archived release asset-selection UI read-only', () => {
+      it('archived release under active project has disabled checkboxes and no Save Selection', async () => {
+        const projectId = await createProjectWithFile({ title: 'Archived Release UI' });
+        const { releaseId } = await createReleaseWithLinkedAsset(projectId, 'Archived UI Release');
+
+        // Archive the release
+        await request(app).post(`/releases/${releaseId}/archive`).expect(302);
+
+        const res = await request(app).get(`/releases/${releaseId}/assets`).expect(200);
+        // Checkboxes must be disabled
+        expect(res.text).toContain('type="checkbox"');
+        expect(res.text).toContain('disabled');
+        // Role selects must be disabled
+        expect(res.text).toContain('disabled class="asset-role"');
+        // Sort order inputs must be disabled
+        expect(res.text).toContain('disabled class="asset-sort-order"');
+        // Should show the archived notice
+        expect(res.text).toContain('This release is archived');
+        // Save Selection must be absent
+        expect(res.text).not.toContain('Save Selection');
+      });
+
+      it('archived release under active project has no Save Selection', async () => {
+        const projectId = await createProjectWithFile({ title: 'Archived No Save' });
+        const { releaseId } = await createReleaseWithLinkedAsset(projectId, 'Archived No Save Release');
+
+        // Archive the release
+        await request(app).post(`/releases/${releaseId}/archive`).expect(302);
+
+        const res = await request(app).get(`/releases/${releaseId}/assets`).expect(200);
+        expect(res.text).not.toContain('Save Selection');
+      });
+
+      it('active release under active project has enabled checkboxes and Save Selection', async () => {
+        const projectId = await createProjectWithFile({ title: 'Active Release Editable' });
+        const { releaseId } = await createReleaseWithLinkedAsset(projectId, 'Active Editable Release');
+
+        const res = await request(app).get(`/releases/${releaseId}/assets`).expect(200);
+        // Checkboxes present and not disabled
+        expect(res.text).toContain('type="checkbox"');
+        expect(res.text).not.toMatch(/type="checkbox"[^>]*disabled/);
+        // Save Selection button present and enabled
+        expect(res.text).toContain('Save Selection');
+        expect(res.text).toMatch(/<button class="button button-primary" type="submit">Save Selection<\/button>/);
+      });
+
+      it('archived parent project has disabled checkboxes and no Save Selection', async () => {
+        const projectId = await createProjectWithFile({ title: 'Archived Parent UI' });
+        const { releaseId } = await createReleaseWithLinkedAsset(projectId, 'Archived Parent Release');
+
+        // Archive the PARENT project (not the release)
+        await request(app).post(`/projects/${projectId}/archive`).expect(302);
+
+        const res = await request(app).get(`/releases/${releaseId}/assets`).expect(200);
+        // Checkboxes must be disabled
+        expect(res.text).toContain('type="checkbox"');
+        expect(res.text).toContain('disabled');
+        // Should show the parent-archived notice
+        expect(res.text).toContain('parent project is archived');
+        // Save Selection must be absent
+        expect(res.text).not.toContain('Save Selection');
+      });
+
+      it('direct POST for archived release remains rejected', async () => {
+        const projectId = await createProjectWithFile({ title: 'Archived POST Reject' });
+        const { releaseId } = await createReleaseWithLinkedAsset(projectId, 'Archived POST Reject Release');
+
+        // Archive the release
+        await request(app).post(`/releases/${releaseId}/archive`).expect(302);
+
+        // Attempt to POST asset selection
+        await request(app)
+          .post(`/releases/${releaseId}/assets`)
+          .send('selectedAssetIds=99999')
+          .set('Content-Type', 'application/x-www-form-urlencoded')
+          .expect(422);
+      });
+    });
+
+    // ─── Fix 5: Asset-browser pagination whitelist ────────────────────
+
+    describe('asset-browser pagination whitelist', () => {
+      it('pagination URLs contain only presence, usage, pageSize, page — no junk', async () => {
+        // Create enough assets for multiple pages
+        const projectId = await createProjectWithFile({ title: 'Pagination Whitelist' });
+        const projectDir = getProjectDir(projectsRoot, 'Pagination Whitelist');
+        for (let i = 0; i < 15; i++) {
+          fs.writeFileSync(path.join(projectDir, `page_${i}.txt`), 'content');
+        }
+        await request(app).post(`/projects/${projectId}/scan`).expect(302);
+
+        // Request with valid filters plus junk=x
+        const res = await request(app)
+          .get(`/projects/${projectId}/assets?presence=present&usage=all&pageSize=10&junk=x`)
+          .expect(200);
+
+        // Extract the Next link
+        const nextHref = extractPaginationHref(res.text, 'Next');
+        expect(nextHref).not.toBeNull();
+        const nextUrl = new URL(nextHref, 'http://localhost');
+
+        // Pathname must be correct
+        expect(nextUrl.pathname).toBe(`/projects/${projectId}/assets`);
+
+        // Only the four allowed params must be present
+        expect(nextUrl.searchParams.get('presence')).toBe('present');
+        expect(nextUrl.searchParams.get('usage')).toBe('all');
+        expect(nextUrl.searchParams.get('pageSize')).toBe('10');
+        expect(nextUrl.searchParams.get('page')).toBe('2');
+
+        // Exactly 4 search params — no junk
+        expect(nextUrl.searchParams.size).toBe(4);
+        expect(nextUrl.searchParams.has('junk')).toBe(false);
+      });
     });
   });
 });

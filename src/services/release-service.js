@@ -472,6 +472,12 @@ export function createReleaseService(db) {
         cleaned.push({ assetId: sel.assetId, role, sortOrder });
       }
 
+      // Reject duplicate asset IDs — they would cause a composite PK violation
+      // in the junction table and produce HTTP 500 instead of a clean 422.
+      if (assetIds.length !== new Set(assetIds).size) {
+        errors.assets = 'Duplicate asset IDs are not allowed.';
+      }
+
       if (Object.keys(errors).length > 0) {
         throw new ReleaseValidationError(errors);
       }

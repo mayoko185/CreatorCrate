@@ -12,6 +12,14 @@ import { getLocalTodayIso } from '../src/util/date.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 
+/**
+ * Query release_assets junction table directly for a release.
+ * Returns rows with asset_id, role, sort_order.
+ */
+function getReleaseAssets(db, releaseId) {
+  return db.prepare('SELECT asset_id, role, sort_order FROM release_assets WHERE release_id = ? ORDER BY sort_order ASC, asset_id ASC').all(releaseId);
+}
+
 describe('release HTTP workflow', () => {
   let db;
   let app;
@@ -498,6 +506,8 @@ describe('release HTTP workflow', () => {
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
+    const releaseId = Number(createRes.headers.location.replace('/releases/', ''));
+
     // Submit asset selection using the new explicit format
     const submitRes = await request(app)
       .post(createRes.headers.location + '/assets')
@@ -509,6 +519,11 @@ describe('release HTTP workflow', () => {
 
     // Verify redirect back to assets page
     expect(submitRes.headers.location).toContain('/assets');
+
+    // Verify exact junction-table rows
+    const rows = getReleaseAssets(db, releaseId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toEqual({ asset_id: Number(firstAssetId), role: 'primary', sort_order: 0 });
   });
 
   it('rejects malformed asset IDs with 422', async () => {
@@ -521,6 +536,21 @@ describe('release HTTP workflow', () => {
       .expect(302);
     const projectId = projRes.headers.location.replace('/projects/', '');
 
+    const getProjectDir = () => {
+      const slug = 'malformed-asset-id-test';
+      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
+      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
+      return path.join(projectsRoot, 'tbd', matching[0]);
+    };
+    const projectDir = getProjectDir();
+    fs.writeFileSync(path.join(projectDir, 'mid.png'), 'png');
+    await request(app).post(`/projects/${projectId}/scan`).expect(302);
+
+    const assetRepo = createAssetRepository(db);
+    const assets = assetRepo.findByProjectId(Number(projectId));
+    expect(assets.length).toBeGreaterThan(0);
+    const assetId = String(assets[0].id);
+
     const createRes = await request(app)
       .post('/releases')
       .send(`projectId=${projectId}`)
@@ -528,6 +558,20 @@ describe('release HTTP workflow', () => {
       .send('status=idea')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
+
+    const releaseId = Number(createRes.headers.location.replace('/releases/', ''));
+
+    // Persist a selection first
+    await request(app)
+      .post(createRes.headers.location + '/assets')
+      .send(`selectedAssetIds[]=${assetId}`)
+      .send('roles[]=primary')
+      .send('sortOrder[]=0')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+
+    const beforeRows = getReleaseAssets(db, releaseId);
+    expect(beforeRows).toHaveLength(1);
 
     // Submit with malformed asset ID (e.g., "1x")
     const res = await request(app)
@@ -539,6 +583,10 @@ describe('release HTTP workflow', () => {
       .expect(422);
 
     expect(res.text).toContain('Invalid');
+
+    // Original rows must remain unchanged
+    const afterRows = getReleaseAssets(db, releaseId);
+    expect(afterRows).toEqual(beforeRows);
   });
 
   it('publish only works for ready status releases', async () => {
@@ -632,6 +680,8 @@ describe('release HTTP workflow', () => {
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
+    const releaseId = Number(createRes.headers.location.replace('/releases/', ''));
+
     // Submission with ONLY selectedAssetIds — no roles[], no sortOrder[].
     // The browser renumbers arrays after excluding disabled controls, so the
     // server receives an array of asset ids and no role/sortOrder values.
@@ -646,8 +696,12 @@ describe('release HTTP workflow', () => {
 
     // Both assets should be selected with the default role (attachment) and
     // default sort order (0). The route must not have thrown.
-    const detail = await request(app).get(createRes.headers.location).expect(200);
-    expect(detail.text).toContain('2 assets selected');
+    const rows = getReleaseAssets(db, releaseId);
+    expect(rows).toHaveLength(2);
+    expect(rows[0].role).toBe('attachment');
+    expect(rows[0].sort_order).toBe(0);
+    expect(rows[1].role).toBe('attachment');
+    expect(rows[1].sort_order).toBe(0);
   });
 
   it('asset selection form accepts a partial-JS submission (selectedAssetIds plus one role)', async () => {
@@ -687,6 +741,8 @@ describe('release HTTP workflow', () => {
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
+    const releaseId = Number(createRes.headers.location.replace('/releases/', ''));
+
     // Two selected, but only one role / sortOrder pair. The second selected
     // asset will fall back to defaults. This mirrors what the browser sends
     // when the second row's role/sortOrder are disabled.
@@ -699,8 +755,11 @@ describe('release HTTP workflow', () => {
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
-    const detail = await request(app).get(createRes.headers.location).expect(200);
-    expect(detail.text).toContain('2 assets selected');
+    const rows = getReleaseAssets(db, releaseId);
+    expect(rows).toHaveLength(2);
+    // Ordered by sort_order ASC, asset_id ASC — second asset has sort_order 0 so it comes first
+    expect(rows[0]).toEqual({ asset_id: Number(secondAssetId), role: 'attachment', sort_order: 0 });
+    expect(rows[1]).toEqual({ asset_id: Number(firstAssetId), role: 'primary', sort_order: 7 });
   });
 
   it('asset validation failure preserves submitted selections in the re-rendered form', async () => {
@@ -762,6 +821,8 @@ describe('release HTTP workflow', () => {
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
+    const releaseId = Number(createRes.headers.location.replace('/releases/', ''));
+
     // Persist a baseline selection: asset A as primary, sort order 0.
     // This is what the user sees if the route falls back to the DB on
     // validation failure — the regression we are guarding against.
@@ -772,6 +833,10 @@ describe('release HTTP workflow', () => {
       .send('sortOrder[]=0')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
+
+    const beforeRows = getReleaseAssets(db, releaseId);
+    expect(beforeRows).toHaveLength(1);
+    expect(beforeRows[0]).toEqual({ asset_id: mainAssetId, role: 'primary', sort_order: 0 });
 
     // Now submit a DIFFERENT selection: change the role to "preview" and
     // add a cross-project asset. This must produce a 422 from the service.
@@ -801,6 +866,1302 @@ describe('release HTTP workflow', () => {
 
     // The submitted main asset must be checked.
     expect(res.text).toContain(`value="${mainAssetId}" checked`);
+
+    // Persisted rows must remain unchanged
+    const afterRows = getReleaseAssets(db, releaseId);
+    expect(afterRows).toEqual(beforeRows);
+  });
+
+  // ─── Phase 6D: duplicate rejection, form-state preservation, DB assertions ──
+
+  it('rejects duplicate asset IDs with 422 and no junction rows', async () => {
+    const projRes = await request(app)
+      .post('/projects')
+      .send('title=Duplicate+Asset+Test')
+      .send('status=tbd')
+      .send('priority=normal')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+    const projectId = projRes.headers.location.replace('/projects/', '');
+
+    const getProjectDir = () => {
+      const slug = 'duplicate-asset-test';
+      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
+      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
+      return path.join(projectsRoot, 'tbd', matching[0]);
+    };
+    const projectDir = getProjectDir();
+    fs.writeFileSync(path.join(projectDir, 'dup.png'), 'png');
+    await request(app).post(`/projects/${projectId}/scan`).expect(302);
+
+    const assetRepo = createAssetRepository(db);
+    const assets = assetRepo.findByProjectId(Number(projectId));
+    expect(assets.length).toBeGreaterThan(0);
+    const assetId = String(assets[0].id);
+
+    const createRes = await request(app)
+      .post('/releases')
+      .send(`projectId=${projectId}`)
+      .send('title=Duplicate+Asset+Release')
+      .send('status=idea')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+
+    const releaseId = Number(createRes.headers.location.replace('/releases/', ''));
+
+    // Submit the same asset ID twice
+    const res = await request(app)
+      .post(createRes.headers.location + '/assets')
+      .send(`selectedAssetIds[]=${assetId}`)
+      .send(`selectedAssetIds[]=${assetId}`)
+      .send('roles[]=primary')
+      .send('roles[]=attachment')
+      .send('sortOrder[]=0')
+      .send('sortOrder[]=1')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(422);
+
+    expect(res.text).toMatch(/duplicate/i);
+
+    // No junction rows must remain after rejection
+    const rows = getReleaseAssets(db, releaseId);
+    expect(rows).toHaveLength(0);
+  });
+
+  it('rejects duplicate string IDs with 422', async () => {
+    const projRes = await request(app)
+      .post('/projects')
+      .send('title=Dup+String+Test')
+      .send('status=tbd')
+      .send('priority=normal')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+    const projectId = projRes.headers.location.replace('/projects/', '');
+
+    const getProjectDir = () => {
+      const slug = 'dup-string-test';
+      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
+      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
+      return path.join(projectsRoot, 'tbd', matching[0]);
+    };
+    const projectDir = getProjectDir();
+    fs.writeFileSync(path.join(projectDir, 'dupstr.png'), 'png');
+    await request(app).post(`/projects/${projectId}/scan`).expect(302);
+
+    const assetRepo = createAssetRepository(db);
+    const assets = assetRepo.findByProjectId(Number(projectId));
+    expect(assets.length).toBeGreaterThan(0);
+    const assetId = String(assets[0].id);
+
+    const createRes = await request(app)
+      .post('/releases')
+      .send(`projectId=${projectId}`)
+      .send('title=Dup+String+Release')
+      .send('status=idea')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+
+    const releaseId = Number(createRes.headers.location.replace('/releases/', ''));
+
+    // Submit same ID twice as string values
+    const res = await request(app)
+      .post(createRes.headers.location + '/assets')
+      .send(`selectedAssetIds[]=${assetId}`)
+      .send(`selectedAssetIds[]=${assetId}`)
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(422);
+
+    expect(res.text).toMatch(/duplicate/i);
+
+    // No junction rows were written
+    const rows = getReleaseAssets(db, releaseId);
+    expect(rows).toHaveLength(0);
+  });
+
+  it('rejects nested array selectedAssetIds safely', async () => {
+    const projRes = await request(app)
+      .post('/projects')
+      .send('title=Nested+Array+Test')
+      .send('status=tbd')
+      .send('priority=normal')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+    const projectId = projRes.headers.location.replace('/projects/', '');
+
+    const getProjectDir = () => {
+      const slug = 'nested-array-test';
+      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
+      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
+      return path.join(projectsRoot, 'tbd', matching[0]);
+    };
+    const projectDir = getProjectDir();
+    fs.writeFileSync(path.join(projectDir, 'nested.png'), 'png');
+    await request(app).post(`/projects/${projectId}/scan`).expect(302);
+
+    const assetRepo = createAssetRepository(db);
+    const assets = assetRepo.findByProjectId(Number(projectId));
+    expect(assets.length).toBeGreaterThan(0);
+    const assetId = String(assets[0].id);
+
+    const createRes = await request(app)
+      .post('/releases')
+      .send(`projectId=${projectId}`)
+      .send('title=Nested+Array+Release')
+      .send('status=idea')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+
+    const releaseId = Number(createRes.headers.location.replace('/releases/', ''));
+
+    // Persist a selection first
+    await request(app)
+      .post(createRes.headers.location + '/assets')
+      .send(`selectedAssetIds[]=${assetId}`)
+      .send('roles[]=primary')
+      .send('sortOrder[]=0')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+
+    const beforeRows = getReleaseAssets(db, releaseId);
+    expect(beforeRows).toHaveLength(1);
+
+    // Submit with a nested array value (malformed)
+    const res = await request(app)
+      .post(createRes.headers.location + '/assets')
+      // Express extended parsing: selectedAssetIds[0][]=1 produces nested array
+      .send('selectedAssetIds[0][]=1')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(422);
+
+    expect(res.text).toMatch(/invalid/i);
+
+    // Original rows must remain unchanged
+    const afterRows = getReleaseAssets(db, releaseId);
+    expect(afterRows).toEqual(beforeRows);
+  });
+
+  it('rejects object selectedAssetIds safely', async () => {
+    const projRes = await request(app)
+      .post('/projects')
+      .send('title=Object+Asset+Test')
+      .send('status=tbd')
+      .send('priority=normal')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+    const projectId = projRes.headers.location.replace('/projects/', '');
+
+    const getProjectDir = () => {
+      const slug = 'object-asset-test';
+      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
+      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
+      return path.join(projectsRoot, 'tbd', matching[0]);
+    };
+    const projectDir = getProjectDir();
+    fs.writeFileSync(path.join(projectDir, 'obj.png'), 'png');
+    await request(app).post(`/projects/${projectId}/scan`).expect(302);
+
+    const assetRepo = createAssetRepository(db);
+    const assets = assetRepo.findByProjectId(Number(projectId));
+    expect(assets.length).toBeGreaterThan(0);
+    const assetId = String(assets[0].id);
+
+    const createRes = await request(app)
+      .post('/releases')
+      .send(`projectId=${projectId}`)
+      .send('title=Object+Asset+Release')
+      .send('status=idea')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+
+    const releaseId = Number(createRes.headers.location.replace('/releases/', ''));
+
+    // Submit with an object value (numeric keys, valid shape) — the route
+    // normalizes it to an array and then the duplicate detection catches it.
+    const res = await request(app)
+      .post(createRes.headers.location + '/assets')
+      .send(`selectedAssetIds[0]=${assetId}`)
+      .send(`selectedAssetIds[1]=${assetId}`)
+      .send('roles[0]=primary')
+      .send('roles[1]=attachment')
+      .send('sortOrder[0]=0')
+      .send('sortOrder[1]=1')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(422);
+
+    expect(res.text).toMatch(/duplicate/i);
+
+    // No junction rows were written
+    const rows = getReleaseAssets(db, releaseId);
+    expect(rows).toHaveLength(0);
+  });
+
+  it('rejects blank selectedAssetIds safely', async () => {
+    const projRes = await request(app)
+      .post('/projects')
+      .send('title=Blank+Asset+Test')
+      .send('status=tbd')
+      .send('priority=normal')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+    const projectId = projRes.headers.location.replace('/projects/', '');
+
+    const getProjectDir = () => {
+      const slug = 'blank-asset-test';
+      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
+      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
+      return path.join(projectsRoot, 'tbd', matching[0]);
+    };
+    const projectDir = getProjectDir();
+    fs.writeFileSync(path.join(projectDir, 'blank.png'), 'png');
+    await request(app).post(`/projects/${projectId}/scan`).expect(302);
+
+    const assetRepo = createAssetRepository(db);
+    const assets = assetRepo.findByProjectId(Number(projectId));
+    expect(assets.length).toBeGreaterThan(0);
+    const assetId = String(assets[0].id);
+
+    const createRes = await request(app)
+      .post('/releases')
+      .send(`projectId=${projectId}`)
+      .send('title=Blank+Asset+Release')
+      .send('status=idea')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+
+    const releaseId = Number(createRes.headers.location.replace('/releases/', ''));
+
+    // Persist a selection first
+    await request(app)
+      .post(createRes.headers.location + '/assets')
+      .send(`selectedAssetIds[]=${assetId}`)
+      .send('roles[]=primary')
+      .send('sortOrder[]=0')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+
+    const beforeRows = getReleaseAssets(db, releaseId);
+    expect(beforeRows).toHaveLength(1);
+
+    // Submit with blank asset ID
+    const res = await request(app)
+      .post(createRes.headers.location + '/assets')
+      .send('selectedAssetIds[]=')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(422);
+
+    expect(res.text).toMatch(/invalid/i);
+
+    // Original rows must remain unchanged
+    const afterRows = getReleaseAssets(db, releaseId);
+    expect(afterRows).toEqual(beforeRows);
+  });
+
+  it('rejects non-integer asset IDs safely', async () => {
+    const projRes = await request(app)
+      .post('/projects')
+      .send('title=NonInt+Asset+Test')
+      .send('status=tbd')
+      .send('priority=normal')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+    const projectId = projRes.headers.location.replace('/projects/', '');
+
+    const getProjectDir = () => {
+      const slug = 'non-int-asset-test';
+      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
+      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
+      return path.join(projectsRoot, 'tbd', matching[0]);
+    };
+    const projectDir = getProjectDir();
+    fs.writeFileSync(path.join(projectDir, 'ni.png'), 'png');
+    await request(app).post(`/projects/${projectId}/scan`).expect(302);
+
+    const assetRepo = createAssetRepository(db);
+    const assets = assetRepo.findByProjectId(Number(projectId));
+    expect(assets.length).toBeGreaterThan(0);
+    const assetId = String(assets[0].id);
+
+    const createRes = await request(app)
+      .post('/releases')
+      .send(`projectId=${projectId}`)
+      .send('title=NonInt+Asset+Release')
+      .send('status=idea')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+
+    const releaseId = Number(createRes.headers.location.replace('/releases/', ''));
+
+    // Persist a selection first
+    await request(app)
+      .post(createRes.headers.location + '/assets')
+      .send(`selectedAssetIds[]=${assetId}`)
+      .send('roles[]=primary')
+      .send('sortOrder[]=0')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+
+    const beforeRows = getReleaseAssets(db, releaseId);
+    expect(beforeRows).toHaveLength(1);
+
+    // Submit with float string
+    const res = await request(app)
+      .post(createRes.headers.location + '/assets')
+      .send('selectedAssetIds[]=1.5')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(422);
+
+    expect(res.text).toMatch(/invalid/i);
+
+    // Original rows must remain unchanged
+    const afterRows = getReleaseAssets(db, releaseId);
+    expect(afterRows).toEqual(beforeRows);
+  });
+
+  it('rejects negative asset IDs safely', async () => {
+    const projRes = await request(app)
+      .post('/projects')
+      .send('title=Neg+Asset+Test')
+      .send('status=tbd')
+      .send('priority=normal')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+    const projectId = projRes.headers.location.replace('/projects/', '');
+
+    const getProjectDir = () => {
+      const slug = 'neg-asset-test';
+      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
+      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
+      return path.join(projectsRoot, 'tbd', matching[0]);
+    };
+    const projectDir = getProjectDir();
+    fs.writeFileSync(path.join(projectDir, 'neg.png'), 'png');
+    await request(app).post(`/projects/${projectId}/scan`).expect(302);
+
+    const assetRepo = createAssetRepository(db);
+    const assets = assetRepo.findByProjectId(Number(projectId));
+    expect(assets.length).toBeGreaterThan(0);
+    const assetId = String(assets[0].id);
+
+    const createRes = await request(app)
+      .post('/releases')
+      .send(`projectId=${projectId}`)
+      .send('title=Neg+Asset+Release')
+      .send('status=idea')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+
+    const releaseId = Number(createRes.headers.location.replace('/releases/', ''));
+
+    // Persist a selection first
+    await request(app)
+      .post(createRes.headers.location + '/assets')
+      .send(`selectedAssetIds[]=${assetId}`)
+      .send('roles[]=primary')
+      .send('sortOrder[]=0')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+
+    const beforeRows = getReleaseAssets(db, releaseId);
+    expect(beforeRows).toHaveLength(1);
+
+    const res = await request(app)
+      .post(createRes.headers.location + '/assets')
+      .send('selectedAssetIds[]=-1')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(422);
+
+    expect(res.text).toMatch(/invalid/i);
+
+    // Original rows must remain unchanged
+    const afterRows = getReleaseAssets(db, releaseId);
+    expect(afterRows).toEqual(beforeRows);
+  });
+
+  it('rejects zero asset IDs safely', async () => {
+    const projRes = await request(app)
+      .post('/projects')
+      .send('title=Zero+Asset+Test')
+      .send('status=tbd')
+      .send('priority=normal')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+    const projectId = projRes.headers.location.replace('/projects/', '');
+
+    const getProjectDir = () => {
+      const slug = 'zero-asset-test';
+      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
+      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
+      return path.join(projectsRoot, 'tbd', matching[0]);
+    };
+    const projectDir = getProjectDir();
+    fs.writeFileSync(path.join(projectDir, 'zero.png'), 'png');
+    await request(app).post(`/projects/${projectId}/scan`).expect(302);
+
+    const assetRepo = createAssetRepository(db);
+    const assets = assetRepo.findByProjectId(Number(projectId));
+    expect(assets.length).toBeGreaterThan(0);
+    const assetId = String(assets[0].id);
+
+    const createRes = await request(app)
+      .post('/releases')
+      .send(`projectId=${projectId}`)
+      .send('title=Zero+Asset+Release')
+      .send('status=idea')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+
+    const releaseId = Number(createRes.headers.location.replace('/releases/', ''));
+
+    // Persist a selection first
+    await request(app)
+      .post(createRes.headers.location + '/assets')
+      .send(`selectedAssetIds[]=${assetId}`)
+      .send('roles[]=primary')
+      .send('sortOrder[]=0')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+
+    const beforeRows = getReleaseAssets(db, releaseId);
+    expect(beforeRows).toHaveLength(1);
+
+    const res = await request(app)
+      .post(createRes.headers.location + '/assets')
+      .send('selectedAssetIds[]=0')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(422);
+
+    expect(res.text).toMatch(/invalid/i);
+
+    // Original rows must remain unchanged
+    const afterRows = getReleaseAssets(db, releaseId);
+    expect(afterRows).toEqual(beforeRows);
+  });
+
+  it('single selected asset + invalid role → 422 and checkbox remains selected', async () => {
+    const projRes = await request(app)
+      .post('/projects')
+      .send('title=Single+Asset+Role+Test')
+      .send('status=tbd')
+      .send('priority=normal')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+    const projectId = projRes.headers.location.replace('/projects/', '');
+
+    const getProjectDir = () => {
+      const slug = 'single-asset-role-test';
+      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
+      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
+      return path.join(projectsRoot, 'tbd', matching[0]);
+    };
+    const projectDir = getProjectDir();
+    fs.writeFileSync(path.join(projectDir, 'single.png'), 'png');
+    await request(app).post(`/projects/${projectId}/scan`).expect(302);
+
+    const assetRepo = createAssetRepository(db);
+    const assets = assetRepo.findByProjectId(Number(projectId));
+    expect(assets.length).toBeGreaterThan(0);
+    const assetId = String(assets[0].id);
+
+    const createRes = await request(app)
+      .post('/releases')
+      .send(`projectId=${projectId}`)
+      .send('title=Single+Asset+Role+Release')
+      .send('status=idea')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+
+    const releaseId = Number(createRes.headers.location.replace('/releases/', ''));
+
+    // Persist a baseline selection
+    await request(app)
+      .post(createRes.headers.location + '/assets')
+      .send(`selectedAssetIds=${assetId}`)
+      .send('roles[0]=primary')
+      .send('sortOrder[0]=0')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+
+    const beforeRows = getReleaseAssets(db, releaseId);
+    expect(beforeRows).toHaveLength(1);
+
+    // Submit one valid asset with an invalid role — triggers 422
+    const res = await request(app)
+      .post(createRes.headers.location + '/assets')
+      .send(`selectedAssetIds=${assetId}`)
+      .send('roles[0]=invalid-role')
+      .send('sortOrder[0]=0')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(422);
+
+    // The checkbox for the submitted asset must remain checked
+    expect(res.text).toContain(`value="${assetId}" checked`);
+
+    // Persisted rows must remain unchanged
+    const afterRows = getReleaseAssets(db, releaseId);
+    expect(afterRows).toEqual(beforeRows);
+  });
+
+  it('multiple selected assets + one validation error → all valid selections remain checked', async () => {
+    const projRes = await request(app)
+      .post('/projects')
+      .send('title=Multi+Asset+Preserve+Test')
+      .send('status=tbd')
+      .send('priority=normal')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+    const projectId = projRes.headers.location.replace('/projects/', '');
+
+    const getProjectDir = () => {
+      const slug = 'multi-asset-preserve-test';
+      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
+      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
+      return path.join(projectsRoot, 'tbd', matching[0]);
+    };
+    const projectDir = getProjectDir();
+    fs.writeFileSync(path.join(projectDir, 'a.png'), 'png');
+    fs.writeFileSync(path.join(projectDir, 'b.png'), 'png');
+    await request(app).post(`/projects/${projectId}/scan`).expect(302);
+
+    const assetRepo = createAssetRepository(db);
+    const assets = assetRepo.findByProjectId(Number(projectId));
+    expect(assets.length).toBeGreaterThanOrEqual(2);
+    const assetId1 = String(assets[0].id);
+    const assetId2 = String(assets[1].id);
+
+    const createRes = await request(app)
+      .post('/releases')
+      .send(`projectId=${projectId}`)
+      .send('title=Multi+Asset+Preserve+Release')
+      .send('status=idea')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+
+    const releaseId = Number(createRes.headers.location.replace('/releases/', ''));
+
+    // Persist a baseline selection
+    await request(app)
+      .post(createRes.headers.location + '/assets')
+      .send(`selectedAssetIds[]=${assetId1}`)
+      .send(`selectedAssetIds[]=${assetId2}`)
+      .send('roles[]=primary')
+      .send('roles[]=attachment')
+      .send('sortOrder[]=0')
+      .send('sortOrder[]=1')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+
+    const beforeRows = getReleaseAssets(db, releaseId);
+    expect(beforeRows).toHaveLength(2);
+
+    // Submit two valid assets with an invalid role on the second — triggers 422
+    const res = await request(app)
+      .post(createRes.headers.location + '/assets')
+      .send(`selectedAssetIds[]=${assetId1}`)
+      .send(`selectedAssetIds[]=${assetId2}`)
+      .send('roles[]=primary')
+      .send('roles[]=invalid-role')
+      .send('sortOrder[]=0')
+      .send('sortOrder[]=1')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(422);
+
+    // Both submitted checkboxes must remain checked
+    expect(res.text).toContain(`value="${assetId1}" checked`);
+    expect(res.text).toContain(`value="${assetId2}" checked`);
+
+    // Persisted rows must remain unchanged
+    const afterRows = getReleaseAssets(db, releaseId);
+    expect(afterRows).toEqual(beforeRows);
+  });
+
+  it('intentional clear (no selectedAssetIds) succeeds and removes all rows', async () => {
+    const projRes = await request(app)
+      .post('/projects')
+      .send('title=Empty+Selection+Test')
+      .send('status=tbd')
+      .send('priority=normal')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+    const projectId = projRes.headers.location.replace('/projects/', '');
+
+    const getProjectDir = () => {
+      const slug = 'empty-selection-test';
+      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
+      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
+      return path.join(projectsRoot, 'tbd', matching[0]);
+    };
+    const projectDir = getProjectDir();
+    fs.writeFileSync(path.join(projectDir, 'clear.png'), 'png');
+    await request(app).post(`/projects/${projectId}/scan`).expect(302);
+
+    const assetRepo = createAssetRepository(db);
+    const assets = assetRepo.findByProjectId(Number(projectId));
+    expect(assets.length).toBeGreaterThan(0);
+    const assetId = String(assets[0].id);
+
+    const createRes = await request(app)
+      .post('/releases')
+      .send(`projectId=${projectId}`)
+      .send('title=Empty+Selection+Release')
+      .send('status=idea')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+
+    const releaseId = Number(createRes.headers.location.replace('/releases/', ''));
+
+    // Persist a selection first
+    await request(app)
+      .post(createRes.headers.location + '/assets')
+      .send(`selectedAssetIds[]=${assetId}`)
+      .send('roles[]=primary')
+      .send('sortOrder[]=0')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+
+    expect(getReleaseAssets(db, releaseId)).toHaveLength(1);
+
+    // Submit with no selectedAssetIds at all — should succeed (empty = clear)
+    const res = await request(app)
+      .post(createRes.headers.location + '/assets')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+
+    expect(res.headers.location).toContain('/assets');
+
+    // All junction rows must be removed
+    const rows = getReleaseAssets(db, releaseId);
+    expect(rows).toHaveLength(0);
+  });
+
+  it('empty scalar selectedAssetIds= clears all selections', async () => {
+    // Regression: selectedAssetIds= as an empty scalar string must be treated
+    // as an intentional clear, not a malformed submission.
+    const projRes = await request(app)
+      .post('/projects')
+      .send('title=Empty+Scalar+Clear+Test')
+      .send('status=tbd')
+      .send('priority=normal')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+    const projectId = projRes.headers.location.replace('/projects/', '');
+
+    const getProjectDir = () => {
+      const slug = 'empty-scalar-clear-test';
+      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
+      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
+      return path.join(projectsRoot, 'tbd', matching[0]);
+    };
+    const projectDir = getProjectDir();
+    fs.writeFileSync(path.join(projectDir, 'esc.png'), 'png');
+    await request(app).post(`/projects/${projectId}/scan`).expect(302);
+
+    const assetRepo = createAssetRepository(db);
+    const assets = assetRepo.findByProjectId(Number(projectId));
+    expect(assets.length).toBeGreaterThan(0);
+    const assetId = String(assets[0].id);
+
+    const createRes = await request(app)
+      .post('/releases')
+      .send(`projectId=${projectId}`)
+      .send('title=Empty+Scalar+Clear+Release')
+      .send('status=idea')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+
+    const releaseId = Number(createRes.headers.location.replace('/releases/', ''));
+
+    // Persist a selection first
+    await request(app)
+      .post(createRes.headers.location + '/assets')
+      .send(`selectedAssetIds[]=${assetId}`)
+      .send('roles[]=primary')
+      .send('sortOrder[]=0')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+
+    expect(getReleaseAssets(db, releaseId)).toHaveLength(1);
+
+    // Submit with selectedAssetIds= (empty scalar) — must succeed and clear
+    const res = await request(app)
+      .post(createRes.headers.location + '/assets')
+      .send('selectedAssetIds=')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+
+    expect(res.headers.location).toContain('/assets');
+
+    // All junction rows must be removed
+    const rows = getReleaseAssets(db, releaseId);
+    expect(rows).toHaveLength(0);
+  });
+
+  it('rejects null selectedAssetIds with 422 and preserves rows', async () => {
+    // Regression: null must be treated as malformed, not as an intentional clear.
+    const projRes = await request(app)
+      .post('/projects')
+      .send('title=Null+Asset+Reject+Test')
+      .send('status=tbd')
+      .send('priority=normal')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+    const projectId = projRes.headers.location.replace('/projects/', '');
+
+    const getProjectDir = () => {
+      const slug = 'null-asset-reject-test';
+      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
+      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
+      return path.join(projectsRoot, 'tbd', matching[0]);
+    };
+    const projectDir = getProjectDir();
+    fs.writeFileSync(path.join(projectDir, 'null.png'), 'png');
+    await request(app).post(`/projects/${projectId}/scan`).expect(302);
+
+    const assetRepo = createAssetRepository(db);
+    const assets = assetRepo.findByProjectId(Number(projectId));
+    expect(assets.length).toBeGreaterThan(0);
+    const assetId = String(assets[0].id);
+
+    const createRes = await request(app)
+      .post('/releases')
+      .send(`projectId=${projectId}`)
+      .send('title=Null+Asset+Reject+Release')
+      .send('status=idea')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+
+    const releaseId = Number(createRes.headers.location.replace('/releases/', ''));
+
+    // Persist a selection first
+    await request(app)
+      .post(createRes.headers.location + '/assets')
+      .send(`selectedAssetIds[]=${assetId}`)
+      .send('roles[]=primary')
+      .send('sortOrder[]=0')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+
+    const beforeRows = getReleaseAssets(db, releaseId);
+    expect(beforeRows).toHaveLength(1);
+
+    // Submit with null via JSON body
+    const res = await request(app)
+      .post(createRes.headers.location + '/assets')
+      .send({ selectedAssetIds: null })
+      .set('Content-Type', 'application/json')
+      .expect(422);
+
+    expect(res.text).toMatch(/invalid/i);
+
+    // Original rows must remain unchanged
+    const afterRows = getReleaseAssets(db, releaseId);
+    expect(afterRows).toEqual(beforeRows);
+  });
+
+  it('malformed object/nested values are rejected safely', async () => {
+    const projRes = await request(app)
+      .post('/projects')
+      .send('title=Malformed+Object+Test')
+      .send('status=tbd')
+      .send('priority=normal')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+    const projectId = projRes.headers.location.replace('/projects/', '');
+
+    const getProjectDir = (slug) => {
+      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
+      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
+      return path.join(projectsRoot, 'tbd', matching[0]);
+    };
+    const projectDir = getProjectDir('malformed-object-test');
+    fs.writeFileSync(path.join(projectDir, 'm1.png'), 'png');
+    fs.writeFileSync(path.join(projectDir, 'm2.png'), 'png');
+    await request(app).post(`/projects/${projectId}/scan`).expect(302);
+
+    const assetRepo = createAssetRepository(db);
+    const assets = assetRepo.findByProjectId(Number(projectId));
+    expect(assets.length).toBeGreaterThanOrEqual(2);
+    const assetId1 = String(assets[0].id);
+    const assetId2 = String(assets[1].id);
+
+    const createRes = await request(app)
+      .post('/releases')
+      .send(`projectId=${projectId}`)
+      .send('title=Malformed+Object+Release')
+      .send('status=idea')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+
+    const releaseId = Number(createRes.headers.location.replace('/releases/', ''));
+
+    // Persist a selection first
+    await request(app)
+      .post(createRes.headers.location + '/assets')
+      .send(`selectedAssetIds[]=${assetId1}`)
+      .send('roles[]=primary')
+      .send('sortOrder[]=0')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+
+    const beforeRows = getReleaseAssets(db, releaseId);
+    expect(beforeRows).toHaveLength(1);
+    expect(beforeRows[0].asset_id).toBe(Number(assetId1));
+
+    // Submit with selectedAssetIds as an object with numeric keys (extended
+    // parsing quirk: selectedAssetIds[0]=1 → { '0': '1' }). The route
+    // normalizes this to an array via normalizeSelectedAssetIds.
+    // Use a cross-project asset to trigger a validation error (422).
+    const proj2Res = await request(app)
+      .post('/projects')
+      .send('title=Other+Malformed+Project')
+      .send('status=tbd')
+      .send('priority=normal')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+    const otherProjectId = proj2Res.headers.location.replace('/projects/', '');
+    const otherProjectDir = getProjectDir('other-malformed-project');
+    fs.writeFileSync(path.join(otherProjectDir, 'other.png'), 'png');
+    await request(app).post(`/projects/${otherProjectId}/scan`).expect(302);
+
+    const otherAssets = assetRepo.findByProjectId(Number(otherProjectId));
+    expect(otherAssets.length).toBeGreaterThan(0);
+    const otherAssetId = String(otherAssets[0].id);
+
+    const res = await request(app)
+      .post(createRes.headers.location + '/assets')
+      .send(`selectedAssetIds[0]=${assetId1}`)
+      .send(`selectedAssetIds[1]=${otherAssetId}`)
+      .send('roles[0]=primary')
+      .send('roles[1]=attachment')
+      .send('sortOrder[0]=0')
+      .send('sortOrder[1]=1')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(422);
+
+    // The object shape is normalized to an array, then the cross-project
+    // asset triggers a validation error. The key point is 422, not 500.
+    expect(res.text).toMatch(/does not belong/i);
+
+    // Original rows must remain unchanged
+    const afterRows = getReleaseAssets(db, releaseId);
+    expect(afterRows).toEqual(beforeRows);
+  });
+
+  it('rejects selectedAssetIds[foo][bar]=1 (nested object with non-numeric keys) and preserves rows', async () => {
+    const projRes = await request(app)
+      .post('/projects')
+      .send('title=Nested+Obj+Key+Test')
+      .send('status=tbd')
+      .send('priority=normal')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+    const projectId = projRes.headers.location.replace('/projects/', '');
+
+    const getProjectDir = () => {
+      const slug = 'nested-obj-key-test';
+      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
+      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
+      return path.join(projectsRoot, 'tbd', matching[0]);
+    };
+    const projectDir = getProjectDir();
+    fs.writeFileSync(path.join(projectDir, 'nok.png'), 'png');
+    await request(app).post(`/projects/${projectId}/scan`).expect(302);
+
+    const assetRepo = createAssetRepository(db);
+    const assets = assetRepo.findByProjectId(Number(projectId));
+    expect(assets.length).toBeGreaterThan(0);
+    const assetId = String(assets[0].id);
+
+    const createRes = await request(app)
+      .post('/releases')
+      .send(`projectId=${projectId}`)
+      .send('title=Nested+Obj+Key+Release')
+      .send('status=idea')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+
+    const releaseId = Number(createRes.headers.location.replace('/releases/', ''));
+
+    // Persist a selection first
+    await request(app)
+      .post(createRes.headers.location + '/assets')
+      .send(`selectedAssetIds[]=${assetId}`)
+      .send('roles[]=primary')
+      .send('sortOrder[]=0')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+
+    const beforeRows = getReleaseAssets(db, releaseId);
+    expect(beforeRows).toHaveLength(1);
+
+    // Submit with selectedAssetIds[foo][bar]=1 — nested object with non-numeric keys
+    const res = await request(app)
+      .post(createRes.headers.location + '/assets')
+      .send('selectedAssetIds[foo][bar]=1')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(422);
+
+    expect(res.text).toMatch(/invalid/i);
+
+    // Original rows must remain unchanged
+    const afterRows = getReleaseAssets(db, releaseId);
+    expect(afterRows).toEqual(beforeRows);
+  });
+
+  it('rejects selectedAssetIds[foo]=1 (non-numeric key) and preserves rows', async () => {
+    const projRes = await request(app)
+      .post('/projects')
+      .send('title=NonNumeric+Key+Test')
+      .send('status=tbd')
+      .send('priority=normal')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+    const projectId = projRes.headers.location.replace('/projects/', '');
+
+    const getProjectDir = () => {
+      const slug = 'non-numeric-key-test';
+      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
+      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
+      return path.join(projectsRoot, 'tbd', matching[0]);
+    };
+    const projectDir = getProjectDir();
+    fs.writeFileSync(path.join(projectDir, 'nnk.png'), 'png');
+    await request(app).post(`/projects/${projectId}/scan`).expect(302);
+
+    const assetRepo = createAssetRepository(db);
+    const assets = assetRepo.findByProjectId(Number(projectId));
+    expect(assets.length).toBeGreaterThan(0);
+    const assetId = String(assets[0].id);
+
+    const createRes = await request(app)
+      .post('/releases')
+      .send(`projectId=${projectId}`)
+      .send('title=NonNumeric+Key+Release')
+      .send('status=idea')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+
+    const releaseId = Number(createRes.headers.location.replace('/releases/', ''));
+
+    // Persist a selection first
+    await request(app)
+      .post(createRes.headers.location + '/assets')
+      .send(`selectedAssetIds[]=${assetId}`)
+      .send('roles[]=primary')
+      .send('sortOrder[]=0')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+
+    const beforeRows = getReleaseAssets(db, releaseId);
+    expect(beforeRows).toHaveLength(1);
+
+    // Submit with selectedAssetIds[foo]=1 — non-numeric key
+    const res = await request(app)
+      .post(createRes.headers.location + '/assets')
+      .send('selectedAssetIds[foo]=1')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(422);
+
+    expect(res.text).toMatch(/invalid/i);
+
+    // Original rows must remain unchanged
+    const afterRows = getReleaseAssets(db, releaseId);
+    expect(afterRows).toEqual(beforeRows);
+  });
+
+  it('rejects mixed flat and nested values and preserves rows', async () => {
+    const projRes = await request(app)
+      .post('/projects')
+      .send('title=Mixed+Nested+Test')
+      .send('status=tbd')
+      .send('priority=normal')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+    const projectId = projRes.headers.location.replace('/projects/', '');
+
+    const getProjectDir = () => {
+      const slug = 'mixed-nested-test';
+      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
+      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
+      return path.join(projectsRoot, 'tbd', matching[0]);
+    };
+    const projectDir = getProjectDir();
+    fs.writeFileSync(path.join(projectDir, 'mn.png'), 'png');
+    await request(app).post(`/projects/${projectId}/scan`).expect(302);
+
+    const assetRepo = createAssetRepository(db);
+    const assets = assetRepo.findByProjectId(Number(projectId));
+    expect(assets.length).toBeGreaterThan(0);
+    const assetId = String(assets[0].id);
+
+    const createRes = await request(app)
+      .post('/releases')
+      .send(`projectId=${projectId}`)
+      .send('title=Mixed+Nested+Release')
+      .send('status=idea')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+
+    const releaseId = Number(createRes.headers.location.replace('/releases/', ''));
+
+    // Persist a selection first
+    await request(app)
+      .post(createRes.headers.location + '/assets')
+      .send(`selectedAssetIds[]=${assetId}`)
+      .send('roles[]=primary')
+      .send('sortOrder[]=0')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+
+    const beforeRows = getReleaseAssets(db, releaseId);
+    expect(beforeRows).toHaveLength(1);
+
+    // Submit with mixed flat and nested values — one valid scalar and one nested
+    const res = await request(app)
+      .post(createRes.headers.location + '/assets')
+      .send(`selectedAssetIds[]=${assetId}`)
+      .send('selectedAssetIds[0][]=1')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(422);
+
+    expect(res.text).toMatch(/invalid/i);
+
+    // Original rows must remain unchanged
+    const afterRows = getReleaseAssets(db, releaseId);
+    expect(afterRows).toEqual(beforeRows);
+  });
+
+  it('archived release rejection preserves persisted rows', async () => {
+    const projRes = await request(app)
+      .post('/projects')
+      .send('title=Archived+Preserve+Test')
+      .send('status=tbd')
+      .send('priority=normal')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+    const projectId = projRes.headers.location.replace('/projects/', '');
+
+    const getProjectDir = () => {
+      const slug = 'archived-preserve-test';
+      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
+      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
+      return path.join(projectsRoot, 'tbd', matching[0]);
+    };
+    const projectDir = getProjectDir();
+    fs.writeFileSync(path.join(projectDir, 'ap.png'), 'png');
+    await request(app).post(`/projects/${projectId}/scan`).expect(302);
+
+    const assetRepo = createAssetRepository(db);
+    const assets = assetRepo.findByProjectId(Number(projectId));
+    expect(assets.length).toBeGreaterThan(0);
+    const assetId = String(assets[0].id);
+
+    const createRes = await request(app)
+      .post('/releases')
+      .send(`projectId=${projectId}`)
+      .send('title=Archived+Preserve+Release')
+      .send('status=idea')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+
+    const releaseId = Number(createRes.headers.location.replace('/releases/', ''));
+
+    // Persist a selection
+    await request(app)
+      .post(createRes.headers.location + '/assets')
+      .send(`selectedAssetIds[]=${assetId}`)
+      .send('roles[]=primary')
+      .send('sortOrder[]=0')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+
+    const beforeRows = getReleaseAssets(db, releaseId);
+    expect(beforeRows).toHaveLength(1);
+
+    // Archive the release
+    await request(app)
+      .post(`${createRes.headers.location}/archive`)
+      .expect(302);
+
+    // Attempt to modify assets on the archived release
+    const res = await request(app)
+      .post(createRes.headers.location + '/assets')
+      .send(`selectedAssetIds[]=${assetId}`)
+      .send('roles[]=preview')
+      .send('sortOrder[]=5')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(422);
+
+    expect(res.text).toMatch(/archived/i);
+
+    // Original rows must remain unchanged
+    const afterRows = getReleaseAssets(db, releaseId);
+    expect(afterRows).toEqual(beforeRows);
+
+    // GET the assets page — checkboxes must be disabled, no Save Selection
+    const assetsPage = await request(app)
+      .get(`${createRes.headers.location}/assets`)
+      .expect(200);
+    // Extract exact checkbox elements — each must contain disabled
+    const checkboxRegex = /<input type="checkbox" name="selectedAssetIds\[\]" value="(\d+)"[^>]*class="asset-checkbox"[^>]*>/g;
+    let match;
+    let checkboxCount = 0;
+    while ((match = checkboxRegex.exec(assetsPage.text)) !== null) {
+      checkboxCount++;
+      expect(match[0]).toContain('disabled');
+    }
+    expect(checkboxCount).toBeGreaterThan(0);
+    // Save Selection button must not be present
+    expect(assetsPage.text).not.toMatch(/type="submit"[^>]*>Save Selection/);
+  });
+
+  it('archived parent rejection preserves persisted rows', async () => {
+    const projRes = await request(app)
+      .post('/projects')
+      .send('title=Archived+Parent+Preserve')
+      .send('status=tbd')
+      .send('priority=normal')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+    const projectId = projRes.headers.location.replace('/projects/', '');
+
+    const getProjectDir = () => {
+      const slug = 'archived-parent-preserve';
+      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
+      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
+      return path.join(projectsRoot, 'tbd', matching[0]);
+    };
+    const projectDir = getProjectDir();
+    fs.writeFileSync(path.join(projectDir, 'app.png'), 'png');
+    await request(app).post(`/projects/${projectId}/scan`).expect(302);
+
+    const assetRepo = createAssetRepository(db);
+    const assets = assetRepo.findByProjectId(Number(projectId));
+    expect(assets.length).toBeGreaterThan(0);
+    const assetId = String(assets[0].id);
+
+    const createRes = await request(app)
+      .post('/releases')
+      .send(`projectId=${projectId}`)
+      .send('title=Archived+Parent+Preserve+Release')
+      .send('status=idea')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+
+    const releaseId = Number(createRes.headers.location.replace('/releases/', ''));
+
+    // Persist a selection
+    await request(app)
+      .post(createRes.headers.location + '/assets')
+      .send(`selectedAssetIds[]=${assetId}`)
+      .send('roles[]=primary')
+      .send('sortOrder[]=0')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+
+    const beforeRows = getReleaseAssets(db, releaseId);
+    expect(beforeRows).toHaveLength(1);
+
+    // Archive the parent project
+    await request(app)
+      .post(`/projects/${projectId}/archive`)
+      .expect(302);
+
+    // Attempt to modify assets — parent is archived
+    const res = await request(app)
+      .post(createRes.headers.location + '/assets')
+      .send(`selectedAssetIds[]=${assetId}`)
+      .send('roles[]=preview')
+      .send('sortOrder[]=5')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(422);
+
+    expect(res.text).toMatch(/archived/i);
+
+    // Original rows must remain unchanged
+    const afterRows = getReleaseAssets(db, releaseId);
+    expect(afterRows).toEqual(beforeRows);
+
+    // GET the assets page — checkboxes must be disabled, no Save Selection
+    const assetsPage = await request(app)
+      .get(`${createRes.headers.location}/assets`)
+      .expect(200);
+    // Extract exact checkbox elements — each must contain disabled
+    const checkboxRegex = /<input type="checkbox" name="selectedAssetIds\[\]" value="(\d+)"[^>]*class="asset-checkbox"[^>]*>/g;
+    let match;
+    let checkboxCount = 0;
+    while ((match = checkboxRegex.exec(assetsPage.text)) !== null) {
+      checkboxCount++;
+      expect(match[0]).toContain('disabled');
+    }
+    expect(checkboxCount).toBeGreaterThan(0);
+    // Save Selection button must not be present
+    expect(assetsPage.text).not.toMatch(/type="submit"[^>]*>Save Selection/);
+  });
+
+  it('replacement removes only intentionally deselected rows', async () => {
+    const projRes = await request(app)
+      .post('/projects')
+      .send('title=Replacement+Test')
+      .send('status=tbd')
+      .send('priority=normal')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+    const projectId = projRes.headers.location.replace('/projects/', '');
+
+    const getProjectDir = () => {
+      const slug = 'replacement-test';
+      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
+      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
+      return path.join(projectsRoot, 'tbd', matching[0]);
+    };
+    const projectDir = getProjectDir();
+    fs.writeFileSync(path.join(projectDir, 'keep.png'), 'png');
+    fs.writeFileSync(path.join(projectDir, 'remove.png'), 'png');
+    await request(app).post(`/projects/${projectId}/scan`).expect(302);
+
+    const assetRepo = createAssetRepository(db);
+    const assets = assetRepo.findByProjectId(Number(projectId));
+    expect(assets.length).toBeGreaterThanOrEqual(2);
+    const keepAssetId = String(assets[0].id);
+    const removeAssetId = String(assets[1].id);
+
+    const createRes = await request(app)
+      .post('/releases')
+      .send(`projectId=${projectId}`)
+      .send('title=Replacement+Release')
+      .send('status=idea')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+
+    const releaseId = Number(createRes.headers.location.replace('/releases/', ''));
+
+    // Persist two selections
+    await request(app)
+      .post(createRes.headers.location + '/assets')
+      .send(`selectedAssetIds[]=${keepAssetId}`)
+      .send(`selectedAssetIds[]=${removeAssetId}`)
+      .send('roles[]=primary')
+      .send('roles[]=attachment')
+      .send('sortOrder[]=0')
+      .send('sortOrder[]=1')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+
+    const beforeRows = getReleaseAssets(db, releaseId);
+    expect(beforeRows).toHaveLength(2);
+
+    // Submit with only the first asset — the second should be removed
+    await request(app)
+      .post(createRes.headers.location + '/assets')
+      .send(`selectedAssetIds[]=${keepAssetId}`)
+      .send('roles[]=preview')
+      .send('sortOrder[]=5')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+
+    const afterRows = getReleaseAssets(db, releaseId);
+    expect(afterRows).toHaveLength(1);
+    expect(afterRows[0]).toEqual({ asset_id: Number(keepAssetId), role: 'preview', sort_order: 5 });
   });
 
   it('publish preserves an explicit publishedDate submitted with the publish form', async () => {
@@ -1009,8 +2370,62 @@ describe('release HTTP workflow', () => {
       expect(assets.text).toMatch(/read-only/i);
       // Save Selection button must not be rendered.
       expect(assets.text).not.toMatch(/type="submit"[^>]*>Save Selection/);
-      // Checkboxes/role/sortOrder must be disabled.
-      expect(assets.text).toMatch(/class="asset-checkbox"[\s\S]*?disabled/);
+      // Each checkbox element must contain disabled.
+      const checkboxRe = /<input type="checkbox" name="selectedAssetIds\[\]" value="(\d+)"[^>]*class="asset-checkbox"[^>]*>/g;
+      let match;
+      let count = 0;
+      while ((match = checkboxRe.exec(assets.text)) !== null) {
+        count++;
+        expect(match[0]).toContain('disabled');
+      }
+      expect(count).toBeGreaterThan(0);
+    });
+
+    it('active project asset selection page has enabled checkboxes and Save button (regression)', async () => {
+      const projRes = await request(app)
+        .post('/projects')
+        .send('title=Active+Assets+Project')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectId = projRes.headers.location.replace('/projects/', '');
+
+      const getProjectDir = () => {
+        const slug = 'active-assets-project';
+        const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
+        const matching = entries.filter((e) => e.endsWith(`-${slug}`));
+        return path.join(projectsRoot, 'tbd', matching[0]);
+      };
+      const projectDir = getProjectDir();
+      fs.writeFileSync(path.join(projectDir, 'active.png'), 'png');
+      await request(app).post(`/projects/${projectId}/scan`).expect(302);
+
+      const createRes = await request(app)
+        .post('/releases')
+        .send(`projectId=${projectId}`)
+        .send('title=Active+Asset+Release')
+        .send('status=idea')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const releaseLocation = createRes.headers.location;
+
+      const assets = await request(app)
+        .get(`${releaseLocation}/assets`)
+        .expect(200);
+      // Each checkbox element must NOT contain disabled.
+      const checkboxRe = /<input type="checkbox" name="selectedAssetIds\[\]" value="(\d+)"[^>]*class="asset-checkbox"[^>]*>/g;
+      let match;
+      let count = 0;
+      while ((match = checkboxRe.exec(assets.text)) !== null) {
+        count++;
+        expect(match[0]).not.toContain('disabled');
+      }
+      expect(count).toBeGreaterThan(0);
+      // Save Selection button must exist and not be disabled.
+      const saveMatch = assets.text.match(/<button[^>]*type="submit"[^>]*>Save Selection<\/button>/);
+      expect(saveMatch).not.toBeNull();
+      expect(saveMatch[0]).not.toContain('disabled');
     });
 
     it('POST /releases/:id update returns 422 when parent project is archived', async () => {

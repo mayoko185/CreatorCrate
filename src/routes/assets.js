@@ -1,8 +1,6 @@
 import express from 'express';
 import { ProjectNotFoundError } from '../services/project-service.js';
 
-const SORT_OPTIONS = ['filename', 'size', 'modified'];
-
 /**
  * Create an assets router mounted at /projects.
  *
@@ -14,8 +12,9 @@ const SORT_OPTIONS = ['filename', 'size', 'modified'];
  * @param {string} deps.appName
  * @param {import('../services/project-service.js').ProjectService} deps.projectService
  * @param {import('../services/asset-scanner.js').AssetScanner} deps.assetScanner
+ * @param {import('../services/workflow-query-service.js').WorkflowQueryService} deps.workflowQueryService
  */
-export function createAssetsRouter({ appName, projectService, assetScanner }) {
+export function createAssetsRouter({ appName, projectService, assetScanner, workflowQueryService }) {
   const router = express.Router({ mergeParams: true });
 
   // GET /projects/:id/assets — Asset listing page
@@ -31,26 +30,42 @@ export function createAssetsRouter({ appName, projectService, assetScanner }) {
         return next(createNotFound());
       }
 
-      const { extension, search, sort, order } = parseAssetQuery(req.query);
+      const data = workflowQueryService.getProjectAssetBrowser(id, req.query);
 
-      const assets = assetScanner.listProjectAssets(id, {
-        extension: extension || undefined,
-        search: search || undefined,
-        sortBy: sort,
-        order,
-      });
-
-      const extensions = assetScanner.getExtensionList(id);
-      const counts = assetScanner.getAssetCounts(id);
+      // Pass scan result params to template only if they are valid scan outputs.
+      const query = {};
+      const sr = req.query.scan_result;
+      if (sr === 'no_changes' ||
+          /^added=\d{1,5}$/.test(sr) ||
+          /^added=\d{1,5} updated=\d{1,5}$/.test(sr) ||
+          /^added=\d{1,5} updated=\d{1,5} removed=\d{1,5}$/.test(sr)) {
+        query.scan_result = sr;
+        if (req.query.total) query.total = req.query.total;
+      }
+      // Pass scan_error flag only when actually set by the scan catch block.
+      // Use scan_error=filesystem or scan_error=archived so it can be
+      // distinguished from spoofed values.
+      const error = req.query.scan_error === 'filesystem' ? true : null;
+      const archivedError = req.query.scan_error === 'archived' ? true : null;
 
       res.render('projects/assets.njk', {
         appName,
         project,
-        assets,
-        total: counts.total,
-        extensions,
-        query: { extension, search, sort, order },
-        sortOptions: SORT_OPTIONS,
+        assets: data.assets,
+        total: data.total,
+        page: data.page,
+        pageSize: data.pageSize,
+        pageCount: data.pageCount,
+        filters: data.filters,
+        query,
+        error,
+        archivedError,
+        pageUrl: buildPageUrl(req, {
+          presence: data.filters.presence,
+          usage: data.filters.usage,
+          page: data.page,
+          pageSize: data.pageSize,
+        }),
       });
     } catch (err) {
       next(err);
@@ -63,6 +78,17 @@ export function createAssetsRouter({ appName, projectService, assetScanner }) {
       const id = parseId(req.params.id);
       if (id === null) {
         return next(createNotFound());
+      }
+
+      // Reject scans for archived projects. Archived projects remain readable
+      // but must not permit manual scans. This server-side guard prevents
+      // bypassing the template-level gating.
+      const project = projectService.findById(id);
+      if (!project) {
+        return next(createNotFound());
+      }
+      if (project.archived_at) {
+        return res.redirect(`/projects/${id}/assets?scan_error=archived`);
       }
 
       const result = assetScanner.scanProjectAssets(id);
@@ -80,10 +106,11 @@ export function createAssetsRouter({ appName, projectService, assetScanner }) {
       if (err instanceof ProjectNotFoundError) {
         return next(createNotFound());
       }
-      // Catch filesystem errors and redirect with a safe message
+      // Catch filesystem errors and redirect with an error flag.
+      // Use scan_error=filesystem so it can be distinguished from spoofed values.
       const id = parseId(req.params.id);
       const targetId = id !== null ? id : '';
-      res.redirect(`/projects/${targetId}/assets?scan_error=1`);
+      res.redirect(`/projects/${targetId}/assets?scan_error=filesystem`);
     }
   });
 
@@ -98,12 +125,20 @@ function parseId(value) {
   return id;
 }
 
-function parseAssetQuery(query) {
-  const extension = typeof query.extension === 'string' ? query.extension.trim() : '';
-  const search = typeof query.search === 'string' ? query.search.trim() : '';
-  const sort = SORT_OPTIONS.includes(query.sort) ? query.sort : 'filename';
-  const order = query.order === 'asc' ? 'asc' : 'desc';
-  return { extension, search, sort, order };
+function buildPageUrl(req, allowedParams) {
+  return function pageUrl(overrides) {
+    const query = { ...allowedParams };
+    for (const [key, value] of Object.entries(overrides)) {
+      if (value === undefined || value === null || value === '') {
+        delete query[key];
+      } else {
+        query[key] = String(value);
+      }
+    }
+    const search = new URLSearchParams(query).toString();
+    const basePath = req.baseUrl + req.path;
+    return search ? `${basePath}?${search}` : basePath;
+  };
 }
 
 function createNotFound() {

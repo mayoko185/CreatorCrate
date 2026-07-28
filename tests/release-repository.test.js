@@ -1144,4 +1144,228 @@ describe('release repository', () => {
       expect(rows.map((r) => r.id)).toEqual([r3.id, r2.id, r1.id]);
     });
   });
+
+  // ─── Phase 6D: Asset Browser Queries ─────────────────────────────────
+
+  describe('findReleaseUsageForAssetIds', () => {
+    /**
+     * Helper: insert an asset directly.
+     */
+    function insertAsset({ projectId, relativePath, filename, isPresent = 1 }) {
+      return db.prepare(`
+        INSERT INTO assets (project_id, relative_path, filename, extension,
+                            mime_type, size_bytes, modified_at,
+                            is_present, last_seen_at, missing_since)
+        VALUES (?, ?, ?, 'txt', 'text/plain', 0, NULL, ?, datetime('now'),
+                ${isPresent === 0 ? "datetime('now')" : 'NULL'})
+        RETURNING *
+      `).get(projectId, relativePath, filename, isPresent);
+    }
+
+    /**
+     * Helper: link an asset to a release.
+     */
+    function linkAssetToRelease({ releaseId, assetId, role = 'attachment', sortOrder = 0 }) {
+      db.prepare(`
+        INSERT INTO release_assets (release_id, asset_id, role, sort_order)
+        VALUES (?, ?, ?, ?)
+      `).run(releaseId, assetId, role, sortOrder);
+    }
+
+    it('returns empty array for empty input', () => {
+      const results = releaseRepo.findReleaseUsageForAssetIds(projectId, []);
+      expect(results).toEqual([]);
+    });
+
+    it('returns empty array when given IDs that have no release references', () => {
+      const a = insertAsset({ projectId, relativePath: 'a.txt', filename: 'a.txt' });
+      const results = releaseRepo.findReleaseUsageForAssetIds(projectId, [a.id]);
+      expect(results).toEqual([]);
+    });
+
+    it('returns release usage details for a single asset', () => {
+      const a = insertAsset({ projectId, relativePath: 'a.txt', filename: 'a.txt' });
+      const rel = releaseRepo.create({ projectId, title: 'Release One', status: 'idea', description: '', notes: '' });
+      linkAssetToRelease({ releaseId: rel.id, assetId: a.id });
+
+      const results = releaseRepo.findReleaseUsageForAssetIds(projectId, [a.id]);
+      expect(results).toHaveLength(1);
+      expect(results[0]).toMatchObject({
+        asset_id: a.id,
+        release_id: rel.id,
+        title: 'Release One',
+        status: 'idea',
+        release_archived_at: null,
+        project_archived_at: null,
+      });
+    });
+
+    it('returns multiple release references for a single asset', () => {
+      const a = insertAsset({ projectId, relativePath: 'a.txt', filename: 'a.txt' });
+      const r1 = releaseRepo.create({ projectId, title: 'R1', status: 'idea', description: '', notes: '' });
+      const r2 = releaseRepo.create({ projectId, title: 'R2', status: 'planned', description: '', notes: '' });
+      const r3 = releaseRepo.create({ projectId, title: 'R3', status: 'published', description: '', notes: '' });
+      linkAssetToRelease({ releaseId: r1.id, assetId: a.id });
+      linkAssetToRelease({ releaseId: r2.id, assetId: a.id });
+      linkAssetToRelease({ releaseId: r3.id, assetId: a.id });
+
+      const results = releaseRepo.findReleaseUsageForAssetIds(projectId, [a.id]);
+      expect(results).toHaveLength(3);
+      expect(results.map((r) => r.release_id).sort()).toEqual([r1.id, r2.id, r3.id].sort());
+    });
+
+    it('returns usage across multiple assets in one call', () => {
+      const a1 = insertAsset({ projectId, relativePath: 'a1.txt', filename: 'a1.txt' });
+      const a2 = insertAsset({ projectId, relativePath: 'a2.txt', filename: 'a2.txt' });
+      const a3 = insertAsset({ projectId, relativePath: 'a3.txt', filename: 'a3.txt' });
+      const r1 = releaseRepo.create({ projectId, title: 'R1', status: 'idea', description: '', notes: '' });
+      const r2 = releaseRepo.create({ projectId, title: 'R2', status: 'planned', description: '', notes: '' });
+      linkAssetToRelease({ releaseId: r1.id, assetId: a1.id });
+      linkAssetToRelease({ releaseId: r1.id, assetId: a2.id });
+      linkAssetToRelease({ releaseId: r2.id, assetId: a2.id });
+      linkAssetToRelease({ releaseId: r2.id, assetId: a3.id });
+
+      const results = releaseRepo.findReleaseUsageForAssetIds(projectId, [a1.id, a2.id, a3.id]);
+      expect(results).toHaveLength(4);
+
+      // Index by asset_id for focused assertions
+      const byAsset = {};
+      for (const row of results) {
+        if (!byAsset[row.asset_id]) byAsset[row.asset_id] = [];
+        byAsset[row.asset_id].push(row);
+      }
+      expect(byAsset[a1.id]).toHaveLength(1);
+      expect(byAsset[a1.id][0].release_id).toBe(r1.id);
+      expect(byAsset[a2.id]).toHaveLength(2);
+      expect(byAsset[a3.id]).toHaveLength(1);
+      expect(byAsset[a3.id][0].release_id).toBe(r2.id);
+    });
+
+    it('includes release_archived_at and project_archived_at', () => {
+      const a = insertAsset({ projectId, relativePath: 'a.txt', filename: 'a.txt' });
+      // Use direct SQL to set archived_at since create() doesn't support it
+      const archivedRelId = db.prepare(`
+        INSERT INTO releases (project_id, title, description, notes, status, planned_date, published_date, patreon_url, archived_at)
+        VALUES (?, 'Archived Release', '', '', 'idea', NULL, NULL, NULL, '2024-01-01 00:00:00')
+        RETURNING id
+      `).get(projectId).id;
+
+      linkAssetToRelease({ releaseId: archivedRelId, assetId: a.id });
+
+      // Archive the parent project
+      db.prepare(`UPDATE projects SET archived_at = datetime('now') WHERE id = ?`).run(projectId);
+
+      const results = releaseRepo.findReleaseUsageForAssetIds(projectId, [a.id]);
+      expect(results).toHaveLength(1);
+      expect(results[0].release_archived_at).toBeTruthy();
+      expect(results[0].project_archived_at).toBeTruthy();
+    });
+
+    it('orders results by asset_id, release title, then release id', () => {
+      const a1 = insertAsset({ projectId, relativePath: 'a1.txt', filename: 'a1.txt' });
+      const a2 = insertAsset({ projectId, relativePath: 'a2.txt', filename: 'a2.txt' });
+      const r1 = releaseRepo.create({ projectId, title: 'Alpha', status: 'idea', description: '', notes: '' });
+      const r2 = releaseRepo.create({ projectId, title: 'Beta', status: 'idea', description: '', notes: '' });
+      linkAssetToRelease({ releaseId: r1.id, assetId: a1.id });
+      linkAssetToRelease({ releaseId: r1.id, assetId: a2.id });
+      linkAssetToRelease({ releaseId: r2.id, assetId: a2.id });
+
+      const results = releaseRepo.findReleaseUsageForAssetIds(projectId, [a1.id, a2.id]);
+      // First row: a1's only release (r1)
+      // Then a2's releases ordered by title then id (r1 before r2 alphabetically)
+      expect(results[0]).toMatchObject({ asset_id: a1.id, release_id: r1.id });
+      expect(results[1]).toMatchObject({ asset_id: a2.id, release_id: r1.id });
+      expect(results[2]).toMatchObject({ asset_id: a2.id, release_id: r2.id });
+    });
+
+    it('safe with duplicate IDs in input', () => {
+      const a = insertAsset({ projectId, relativePath: 'a.txt', filename: 'a.txt' });
+      const rel = releaseRepo.create({ projectId, title: 'R', status: 'idea', description: '', notes: '' });
+      linkAssetToRelease({ releaseId: rel.id, assetId: a.id });
+
+      // SQLite IN clause with duplicate placeholders returns each matching row once,
+      // but the query is written to use assetIds directly without deduplication.
+      // The safe behavior is that duplicates in input produce the same result as
+      // singletons (each asset's usages appear once).
+      const results = releaseRepo.findReleaseUsageForAssetIds(projectId, [a.id, a.id, a.id]);
+      expect(results).toHaveLength(1);
+    });
+
+    it('historical and archived releases remain visible', () => {
+      const a = insertAsset({ projectId, relativePath: 'a.txt', filename: 'a.txt' });
+      const publishedId = db.prepare(`
+        INSERT INTO releases (project_id, title, description, notes, status, planned_date, published_date, patreon_url)
+        VALUES (?, 'Published Release', '', '', 'published', NULL, '2020-01-01', NULL)
+        RETURNING id
+      `).get(projectId).id;
+      const cancelledId = db.prepare(`
+        INSERT INTO releases (project_id, title, description, notes, status, planned_date, published_date, patreon_url)
+        VALUES (?, 'Cancelled Release', '', '', 'cancelled', NULL, NULL, NULL)
+        RETURNING id
+      `).get(projectId).id;
+      const archivedId = db.prepare(`
+        INSERT INTO releases (project_id, title, description, notes, status, planned_date, published_date, patreon_url, archived_at)
+        VALUES (?, 'Archived Release', '', '', 'idea', NULL, NULL, NULL, '2024-01-01')
+        RETURNING id
+      `).get(projectId).id;
+      linkAssetToRelease({ releaseId: publishedId, assetId: a.id });
+      linkAssetToRelease({ releaseId: cancelledId, assetId: a.id });
+      linkAssetToRelease({ releaseId: archivedId, assetId: a.id });
+
+      const results = releaseRepo.findReleaseUsageForAssetIds(projectId, [a.id]);
+      expect(results).toHaveLength(3);
+      const statuses = results.map((r) => r.status);
+      expect(statuses).toContain('published');
+      expect(statuses).toContain('cancelled');
+      expect(results.find((r) => r.status === 'idea').release_archived_at).toBeTruthy();
+    });
+
+    // ─── Phase 6D: Project-scoped release usage ──────────────────────
+
+    it('excludes cross-project junction rows (corrupt data)', () => {
+      const otherProject = projectRepo.create(sampleProject({ title: 'Other Project' }));
+      const a = insertAsset({ projectId, relativePath: 'a.txt', filename: 'a.txt' });
+      const rel = releaseRepo.create({ projectId, title: 'Same Project Release', status: 'idea', description: '', notes: '' });
+      linkAssetToRelease({ releaseId: rel.id, assetId: a.id });
+
+      // Create a corrupt cross-project junction: asset from projectId linked
+      // to a release from otherProject.
+      const otherAsset = insertAsset({ projectId: otherProject.id, relativePath: 'other.txt', filename: 'other.txt' });
+      const otherRel = releaseRepo.create({ projectId: otherProject.id, title: 'Other Release', status: 'idea', description: '', notes: '' });
+      // Corrupt junction: otherProject's asset linked to projectId's release
+      db.prepare(`
+        INSERT INTO release_assets (release_id, asset_id, role, sort_order)
+        VALUES (?, ?, 'attachment', 0)
+      `).run(rel.id, otherAsset.id);
+      // Corrupt junction: projectId's asset linked to otherProject's release
+      db.prepare(`
+        INSERT INTO release_assets (release_id, asset_id, role, sort_order)
+        VALUES (?, ?, 'attachment', 0)
+      `).run(otherRel.id, a.id);
+
+      // Query scoped to projectId — should only see the legitimate link
+      const results = releaseRepo.findReleaseUsageForAssetIds(projectId, [a.id, otherAsset.id]);
+      expect(results).toHaveLength(1);
+      expect(results[0].release_id).toBe(rel.id);
+      expect(results[0].title).toBe('Same Project Release');
+    });
+
+    it('project isolation holds with overlapping asset/release IDs', () => {
+      const otherProject = projectRepo.create(sampleProject({ title: 'Other Project' }));
+      // Create same-named asset in both projects
+      const a1 = insertAsset({ projectId, relativePath: 'shared.txt', filename: 'shared.txt' });
+      const a2 = insertAsset({ projectId: otherProject.id, relativePath: 'shared.txt', filename: 'shared.txt' });
+      // Create releases with same title in both projects
+      const r1 = releaseRepo.create({ projectId, title: 'Shared Title', status: 'idea', description: '', notes: '' });
+      const r2 = releaseRepo.create({ projectId: otherProject.id, title: 'Shared Title', status: 'idea', description: '', notes: '' });
+      linkAssetToRelease({ releaseId: r1.id, assetId: a1.id });
+      linkAssetToRelease({ releaseId: r2.id, assetId: a2.id });
+
+      // Query scoped to projectId — should only see projectId's link
+      const results = releaseRepo.findReleaseUsageForAssetIds(projectId, [a1.id, a2.id]);
+      expect(results).toHaveLength(1);
+      expect(results[0].asset_id).toBe(a1.id);
+      expect(results[0].release_id).toBe(r1.id);
+    });
+  });
 });
