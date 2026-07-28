@@ -1368,4 +1368,243 @@ describe('release repository', () => {
       expect(results[0].release_id).toBe(r1.id);
     });
   });
+
+  // ─── Phase 7A-1: Release Readiness Facts ──────────────────────────────
+
+  describe('findReadinessFactsById', () => {
+    it('returns undefined for non-existent release ID', () => {
+      const facts = releaseRepo.findReadinessFactsById(99999);
+      expect(facts).toBeUndefined();
+    });
+
+    it('returns zero counts for release with no selected assets', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'No Assets' }) });
+      const facts = releaseRepo.findReadinessFactsById(release.id);
+      expect(facts.release_id).toBe(release.id);
+      expect(facts.project_id).toBe(projectId);
+      expect(facts.selected_asset_count).toBe(0);
+      expect(facts.present_selected_asset_count).toBe(0);
+      expect(facts.missing_selected_asset_count).toBe(0);
+      expect(facts.primary_role_count).toBe(0);
+      expect(facts.preview_role_count).toBe(0);
+      expect(facts.attachment_role_count).toBe(0);
+      expect(facts.source_role_count).toBe(0);
+    });
+
+    it('returns correct facts for one present asset', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'One Present' }) });
+      const asset = assetRepo.upsert(projectId, 'present.txt', sampleAsset(projectId, { relativePath: 'present.txt' }));
+      releaseRepo.addReleaseAsset(release.id, asset.id, 'primary', 0);
+
+      const facts = releaseRepo.findReadinessFactsById(release.id);
+      expect(facts.selected_asset_count).toBe(1);
+      expect(facts.present_selected_asset_count).toBe(1);
+      expect(facts.missing_selected_asset_count).toBe(0);
+      expect(facts.primary_role_count).toBe(1);
+    });
+
+    it('returns correct facts for multiple present assets', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Multi Present' }) });
+      const a1 = assetRepo.upsert(projectId, 'a1.txt', sampleAsset(projectId, { relativePath: 'a1.txt' }));
+      const a2 = assetRepo.upsert(projectId, 'a2.txt', sampleAsset(projectId, { relativePath: 'a2.txt' }));
+      releaseRepo.addReleaseAsset(release.id, a1.id, 'primary', 0);
+      releaseRepo.addReleaseAsset(release.id, a2.id, 'attachment', 1);
+
+      const facts = releaseRepo.findReadinessFactsById(release.id);
+      expect(facts.selected_asset_count).toBe(2);
+      expect(facts.present_selected_asset_count).toBe(2);
+      expect(facts.missing_selected_asset_count).toBe(0);
+    });
+
+    it('returns correct facts for one missing asset', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'One Missing' }) });
+      const asset = assetRepo.upsert(projectId, 'gone.txt', sampleAsset(projectId, { relativePath: 'gone.txt' }));
+      releaseRepo.addReleaseAsset(release.id, asset.id, 'preview', 0);
+      db.prepare(`UPDATE assets SET is_present = 0, missing_since = datetime('now') WHERE id = ?`).run(asset.id);
+
+      const facts = releaseRepo.findReadinessFactsById(release.id);
+      expect(facts.selected_asset_count).toBe(1);
+      expect(facts.present_selected_asset_count).toBe(0);
+      expect(facts.missing_selected_asset_count).toBe(1);
+      expect(facts.preview_role_count).toBe(1);
+    });
+
+    it('returns correct facts for multiple missing assets', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Multi Missing' }) });
+      const a1 = assetRepo.upsert(projectId, 'g1.txt', sampleAsset(projectId, { relativePath: 'g1.txt' }));
+      const a2 = assetRepo.upsert(projectId, 'g2.txt', sampleAsset(projectId, { relativePath: 'g2.txt' }));
+      releaseRepo.addReleaseAsset(release.id, a1.id, 'attachment', 0);
+      releaseRepo.addReleaseAsset(release.id, a2.id, 'source', 1);
+      db.prepare(`UPDATE assets SET is_present = 0, missing_since = datetime('now') WHERE id IN (?, ?)`).run(a1.id, a2.id);
+
+      const facts = releaseRepo.findReadinessFactsById(release.id);
+      expect(facts.selected_asset_count).toBe(2);
+      expect(facts.present_selected_asset_count).toBe(0);
+      expect(facts.missing_selected_asset_count).toBe(2);
+    });
+
+    it('returns correct facts for mixed present and missing assets', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Mixed' }) });
+      const present = assetRepo.upsert(projectId, 'present.txt', sampleAsset(projectId, { relativePath: 'present.txt' }));
+      const missing = assetRepo.upsert(projectId, 'missing.txt', sampleAsset(projectId, { relativePath: 'missing.txt' }));
+      releaseRepo.addReleaseAsset(release.id, present.id, 'primary', 0);
+      releaseRepo.addReleaseAsset(release.id, missing.id, 'attachment', 1);
+      db.prepare(`UPDATE assets SET is_present = 0, missing_since = datetime('now') WHERE id = ?`).run(missing.id);
+
+      const facts = releaseRepo.findReadinessFactsById(release.id);
+      expect(facts.selected_asset_count).toBe(2);
+      expect(facts.present_selected_asset_count).toBe(1);
+      expect(facts.missing_selected_asset_count).toBe(1);
+    });
+
+    it('returns correct role counts for every role', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'All Roles' }) });
+      const primary = assetRepo.upsert(projectId, 'primary.txt', sampleAsset(projectId, { relativePath: 'primary.txt' }));
+      const preview = assetRepo.upsert(projectId, 'preview.txt', sampleAsset(projectId, { relativePath: 'preview.txt' }));
+      const attachment = assetRepo.upsert(projectId, 'attachment.txt', sampleAsset(projectId, { relativePath: 'attachment.txt' }));
+      const source = assetRepo.upsert(projectId, 'source.txt', sampleAsset(projectId, { relativePath: 'source.txt' }));
+      releaseRepo.addReleaseAsset(release.id, primary.id, 'primary', 0);
+      releaseRepo.addReleaseAsset(release.id, preview.id, 'preview', 1);
+      releaseRepo.addReleaseAsset(release.id, attachment.id, 'attachment', 2);
+      releaseRepo.addReleaseAsset(release.id, source.id, 'source', 3);
+
+      const facts = releaseRepo.findReadinessFactsById(release.id);
+      expect(facts.primary_role_count).toBe(1);
+      expect(facts.preview_role_count).toBe(1);
+      expect(facts.attachment_role_count).toBe(1);
+      expect(facts.source_role_count).toBe(1);
+      expect(facts.selected_asset_count).toBe(4);
+    });
+
+    it('returns release_archived_at for archived release', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Archived Release' }) });
+      releaseRepo.archive(release.id);
+
+      const facts = releaseRepo.findReadinessFactsById(release.id);
+      expect(facts.release_archived_at).toBeTruthy();
+      expect(facts.release_status).toBe('idea');
+    });
+
+    it('returns project_archived_at for archived parent project', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Archived Parent' }) });
+      db.prepare(`UPDATE projects SET archived_at = datetime('now') WHERE id = ?`).run(projectId);
+
+      const facts = releaseRepo.findReadinessFactsById(release.id);
+      expect(facts.project_archived_at).toBeTruthy();
+    });
+
+    it('ignores corrupt cross-project junction rows', () => {
+      const otherProject = projectRepo.create(sampleProject({ title: 'Other' }));
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Cross Project' }) });
+      const ourAsset = assetRepo.upsert(projectId, 'ours.txt', sampleAsset(projectId, { relativePath: 'ours.txt' }));
+      const otherAsset = assetRepo.upsert(otherProject.id, 'theirs.txt', sampleAsset(otherProject.id, { relativePath: 'theirs.txt' }));
+
+      // Legitimate link
+      releaseRepo.addReleaseAsset(release.id, ourAsset.id, 'primary', 0);
+      // Corrupt cross-project link: other project's asset linked to our release
+      db.prepare(`
+        INSERT INTO release_assets (release_id, asset_id, role, sort_order)
+        VALUES (?, ?, 'attachment', 1)
+      `).run(release.id, otherAsset.id);
+
+      const facts = releaseRepo.findReadinessFactsById(release.id);
+      // Only ourAsset should be counted — otherAsset is filtered out by the
+      // a.project_id = r.project_id guard in the LEFT JOIN.
+      expect(facts.selected_asset_count).toBe(1);
+      expect(facts.primary_role_count).toBe(1);
+      expect(facts.attachment_role_count).toBe(0);
+    });
+
+    it('does not duplicate counts when same asset is linked multiple times', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'No Duplicates' }) });
+      const asset = assetRepo.upsert(projectId, 'unique.txt', sampleAsset(projectId, { relativePath: 'unique.txt' }));
+      releaseRepo.addReleaseAsset(release.id, asset.id, 'primary', 0);
+
+      // Attempt duplicate link (should fail due to PK constraint)
+      expect(() => {
+        releaseRepo.addReleaseAsset(release.id, asset.id, 'preview', 1);
+      }).toThrow();
+
+      const facts = releaseRepo.findReadinessFactsById(release.id);
+      expect(facts.selected_asset_count).toBe(1);
+      expect(facts.primary_role_count).toBe(1);
+      expect(facts.preview_role_count).toBe(0);
+    });
+
+    // ─── Phase 7A regression: malformed duplicate junction rows ──────
+    //
+    // A database with duplicate (release_id, asset_id) rows in
+    // release_assets must not inflate readiness counts. The normal
+    // composite PK prevents this, but a malformed database (e.g. from
+    // a manual edit, a bug in a past migration, or a partial restore)
+    // could have duplicates. The aggregates use COUNT(DISTINCT a.id) to
+    // remain correct regardless.
+
+    it('handles malformed duplicate release_assets rows without inflating counts', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Dup Test' }) });
+      const asset = assetRepo.upsert(projectId, 'unique.txt', sampleAsset(projectId, { relativePath: 'unique.txt' }));
+
+      // Bypass the composite PK constraint by creating a table without it
+      db.exec(`
+        CREATE TEMP TABLE release_assets_dup (
+          release_id INTEGER NOT NULL,
+          asset_id INTEGER NOT NULL,
+          role TEXT NOT NULL DEFAULT 'attachment',
+          sort_order INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+      `);
+      // Insert the same asset twice with the same role
+      db.exec(`INSERT INTO release_assets_dup (release_id, asset_id, role, sort_order) VALUES (${release.id}, ${asset.id}, 'primary', 0)`);
+      db.exec(`INSERT INTO release_assets_dup (release_id, asset_id, role, sort_order) VALUES (${release.id}, ${asset.id}, 'primary', 0)`);
+      // Swap tables
+      db.exec(`DROP TABLE release_assets`);
+      db.exec(`ALTER TABLE release_assets_dup RENAME TO release_assets`);
+
+      const facts = releaseRepo.findReadinessFactsById(release.id);
+      expect(facts.selected_asset_count).toBe(1);
+      expect(facts.present_selected_asset_count).toBe(1);
+      expect(facts.missing_selected_asset_count).toBe(0);
+      expect(facts.primary_role_count).toBe(1);
+      expect(facts.preview_role_count).toBe(0);
+      expect(facts.attachment_role_count).toBe(0);
+      expect(facts.source_role_count).toBe(0);
+    });
+
+    it('genuinely distinct assets still count separately alongside duplicate guard', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Distinct Control' }) });
+      const a1 = assetRepo.upsert(projectId, 'a1.txt', sampleAsset(projectId, { relativePath: 'a1.txt' }));
+      const a2 = assetRepo.upsert(projectId, 'a2.txt', sampleAsset(projectId, { relativePath: 'a2.txt' }));
+      const a3 = assetRepo.upsert(projectId, 'a3.txt', sampleAsset(projectId, { relativePath: 'a3.txt' }));
+
+      // Bypass PK to create one duplicate and two distinct rows
+      db.exec(`
+        CREATE TEMP TABLE release_assets_dup (
+          release_id INTEGER NOT NULL,
+          asset_id INTEGER NOT NULL,
+          role TEXT NOT NULL DEFAULT 'attachment',
+          sort_order INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+      `);
+      // a1 duplicated, a2 and a3 distinct
+      db.exec(`INSERT INTO release_assets_dup (release_id, asset_id, role, sort_order) VALUES (${release.id}, ${a1.id}, 'primary', 0)`);
+      db.exec(`INSERT INTO release_assets_dup (release_id, asset_id, role, sort_order) VALUES (${release.id}, ${a1.id}, 'primary', 0)`);
+      db.exec(`INSERT INTO release_assets_dup (release_id, asset_id, role, sort_order) VALUES (${release.id}, ${a2.id}, 'attachment', 1)`);
+      db.exec(`INSERT INTO release_assets_dup (release_id, asset_id, role, sort_order) VALUES (${release.id}, ${a3.id}, 'source', 2)`);
+      db.exec(`DROP TABLE release_assets`);
+      db.exec(`ALTER TABLE release_assets_dup RENAME TO release_assets`);
+
+      const facts = releaseRepo.findReadinessFactsById(release.id);
+      // 3 distinct assets despite 4 rows
+      expect(facts.selected_asset_count).toBe(3);
+      expect(facts.present_selected_asset_count).toBe(3);
+      expect(facts.missing_selected_asset_count).toBe(0);
+      // Role counts: primary=1 (a1), attachment=1 (a2), source=1 (a3)
+      expect(facts.primary_role_count).toBe(1);
+      expect(facts.preview_role_count).toBe(0);
+      expect(facts.attachment_role_count).toBe(1);
+      expect(facts.source_role_count).toBe(1);
+    });
+  });
 });

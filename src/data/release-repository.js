@@ -153,6 +153,28 @@ export function createReleaseRepository(db) {
     SELECT COUNT(*) AS c FROM release_assets WHERE release_id = ?
   `);
 
+  const readinessFactsById = db.prepare(`
+    SELECT
+      r.id AS release_id,
+      r.project_id,
+      r.status AS release_status,
+      r.archived_at AS release_archived_at,
+      p.archived_at AS project_archived_at,
+      COUNT(DISTINCT CASE WHEN a.id IS NOT NULL THEN a.id END) AS selected_asset_count,
+      COUNT(DISTINCT CASE WHEN a.is_present = 1 THEN a.id END) AS present_selected_asset_count,
+      COUNT(DISTINCT CASE WHEN a.is_present = 0 THEN a.id END) AS missing_selected_asset_count,
+      COUNT(DISTINCT CASE WHEN a.id IS NOT NULL AND ra.role = 'primary' THEN a.id END) AS primary_role_count,
+      COUNT(DISTINCT CASE WHEN a.id IS NOT NULL AND ra.role = 'preview' THEN a.id END) AS preview_role_count,
+      COUNT(DISTINCT CASE WHEN a.id IS NOT NULL AND ra.role = 'attachment' THEN a.id END) AS attachment_role_count,
+      COUNT(DISTINCT CASE WHEN a.id IS NOT NULL AND ra.role = 'source' THEN a.id END) AS source_role_count
+    FROM releases r
+    JOIN projects p ON p.id = r.project_id
+    LEFT JOIN release_assets ra ON ra.release_id = r.id
+    LEFT JOIN assets a ON a.id = ra.asset_id AND a.project_id = r.project_id
+    WHERE r.id = ?
+    GROUP BY r.id
+  `);
+
   const raFindByAsset = db.prepare(`
     SELECT ra.release_id, ra.asset_id, ra.role, ra.sort_order, ra.created_at
     FROM release_assets ra
@@ -620,6 +642,31 @@ export function createReleaseRepository(db) {
     countReleaseAssets(releaseId) {
       const row = raCountByRelease.get(releaseId);
       return row.c;
+    },
+
+    /**
+     * Repository-level readiness facts for a release. Returns factual data
+     * only — no policy decisions, labels, scores, or UI text. Returns
+     * undefined when the release does not exist.
+     *
+     * @param {number} releaseId
+     * @returns {{
+     *   release_id: number,
+     *   project_id: number,
+     *   release_status: string,
+     *   release_archived_at: string|null,
+     *   project_archived_at: string|null,
+     *   selected_asset_count: number,
+     *   present_selected_asset_count: number,
+     *   missing_selected_asset_count: number,
+     *   primary_role_count: number,
+     *   preview_role_count: number,
+     *   attachment_role_count: number,
+     *   source_role_count: number,
+     * }|undefined}
+     */
+    findReadinessFactsById(releaseId) {
+      return readinessFactsById.get(releaseId);
     },
 
     /**

@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { createWorkflowQueryService } from '../src/services/workflow-query-service.js';
+import { evaluateReleaseReadiness } from '../src/services/release-readiness-policy.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
 import { createReleaseRepository } from '../src/data/release-repository.js';
 import { getLocalTodayIso } from '../src/util/date.js';
@@ -77,7 +78,7 @@ describe('workflow query service', () => {
     const dbPath = path.join(tmpDir, 'test.db');
     db = openDatabase(dbPath);
     runMigrations(db, MIGRATIONS_DIR);
-    service = createWorkflowQueryService({ db });
+    service = createWorkflowQueryService({ db, evaluateReleaseReadiness });
     today = getLocalTodayIso();
   });
 
@@ -2403,6 +2404,362 @@ describe('workflow query service', () => {
 
       expect(result).not.toBeNull();
       expect(result.assets).toHaveLength(1);
+    });
+  });
+
+  // ─── Phase 7A: Release Readiness — getReleaseReadiness ──────────────────
+  //
+  // getReleaseReadiness composes the release repository's readiness facts
+  // with the shared pure readiness policy. It is a read-only composition:
+  // no mutations, no scanner calls, no filesystem access, no independent
+  // readiness calculation.
+
+  describe('getReleaseReadiness', () => {
+    it('returns publishable=true for a fully ready release', () => {
+      const project = insertProject(db, { title: 'Ready Project' });
+      const release = insertRelease(db, {
+        projectId: project.id,
+        title: 'Ready Release',
+        status: 'ready',
+      });
+      const asset = insertAsset(db, {
+        projectId: project.id,
+        relativePath: 'a.txt',
+        filename: 'a.txt',
+        isPresent: 1,
+      });
+      linkAssetToRelease(db, { releaseId: release.id, assetId: asset.id });
+
+      const result = service.getReleaseReadiness(release.id);
+
+      expect(result.publishable).toBe(true);
+      expect(result.checks.every((c) => c.passed)).toBe(true);
+    });
+
+    it('returns publishable=false for a non-ready release', () => {
+      const project = insertProject(db, { title: 'Non Ready Project' });
+      const release = insertRelease(db, {
+        projectId: project.id,
+        title: 'Drafting Release',
+        status: 'drafting',
+      });
+      const asset = insertAsset(db, {
+        projectId: project.id,
+        relativePath: 'a.txt',
+        filename: 'a.txt',
+        isPresent: 1,
+      });
+      linkAssetToRelease(db, { releaseId: release.id, assetId: asset.id });
+
+      const result = service.getReleaseReadiness(release.id);
+
+      expect(result.publishable).toBe(false);
+      const statusCheck = result.checks.find((c) => c.key === 'status_ready');
+      expect(statusCheck.passed).toBe(false);
+    });
+
+    it('returns publishable=false when zero assets are selected', () => {
+      const project = insertProject(db, { title: 'No Assets Project' });
+      const release = insertRelease(db, {
+        projectId: project.id,
+        title: 'No Assets Release',
+        status: 'ready',
+      });
+      // Deliberately do NOT link any asset.
+
+      const result = service.getReleaseReadiness(release.id);
+
+      expect(result.publishable).toBe(false);
+      const assetsSelected = result.checks.find((c) => c.key === 'assets_selected');
+      expect(assetsSelected.passed).toBe(false);
+      // selected_assets_present passes (zero assets → nothing missing)
+      const assetsPresent = result.checks.find((c) => c.key === 'selected_assets_present');
+      expect(assetsPresent.passed).toBe(true);
+    });
+
+    it('returns publishable=false when a selected asset is missing', () => {
+      const project = insertProject(db, { title: 'Missing Asset Project' });
+      const release = insertRelease(db, {
+        projectId: project.id,
+        title: 'Missing Asset Release',
+        status: 'ready',
+      });
+      const missingAsset = insertAsset(db, {
+        projectId: project.id,
+        relativePath: 'gone.txt',
+        filename: 'gone.txt',
+        isPresent: 0,
+      });
+      linkAssetToRelease(db, { releaseId: release.id, assetId: missingAsset.id });
+
+      const result = service.getReleaseReadiness(release.id);
+
+      expect(result.publishable).toBe(false);
+      const check = result.checks.find((c) => c.key === 'selected_assets_present');
+      expect(check.passed).toBe(false);
+      expect(check.details.missingSelectedAssetCount).toBe(1);
+    });
+
+    it('returns publishable=false for an archived release', () => {
+      const project = insertProject(db, { title: 'Archived Release Project' });
+      const release = insertRelease(db, {
+        projectId: project.id,
+        title: 'Archived Release',
+        status: 'ready',
+        archivedAt: '2025-06-15 10:00:00',
+      });
+      const asset = insertAsset(db, {
+        projectId: project.id,
+        relativePath: 'a.txt',
+        filename: 'a.txt',
+        isPresent: 1,
+      });
+      linkAssetToRelease(db, { releaseId: release.id, assetId: asset.id });
+
+      const result = service.getReleaseReadiness(release.id);
+
+      expect(result.publishable).toBe(false);
+      const check = result.checks.find((c) => c.key === 'scope_mutable');
+      expect(check.passed).toBe(false);
+      expect(check.details.releaseArchived).toBe(true);
+    });
+
+    it('returns publishable=false when parent project is archived', () => {
+      const project = insertProject(db, { title: 'Archived Parent Project' });
+      const release = insertRelease(db, {
+        projectId: project.id,
+        title: 'Release In Archived Project',
+        status: 'ready',
+      });
+      const asset = insertAsset(db, {
+        projectId: project.id,
+        relativePath: 'a.txt',
+        filename: 'a.txt',
+        isPresent: 1,
+      });
+      linkAssetToRelease(db, { releaseId: release.id, assetId: asset.id });
+      db.prepare(`UPDATE projects SET archived_at = datetime('now') WHERE id = ?`).run(project.id);
+
+      const result = service.getReleaseReadiness(release.id);
+
+      expect(result.publishable).toBe(false);
+      const check = result.checks.find((c) => c.key === 'scope_mutable');
+      expect(check.passed).toBe(false);
+      expect(check.details.projectArchived).toBe(true);
+    });
+
+    it('reports multiple blockers simultaneously', () => {
+      const project = insertProject(db, { title: 'Multi Blocker Project' });
+      const release = insertRelease(db, {
+        projectId: project.id,
+        title: 'Multi Blocker Release',
+        status: 'drafting',
+        archivedAt: '2025-06-15 10:00:00',
+      });
+      // No assets selected.
+
+      const result = service.getReleaseReadiness(release.id);
+
+      expect(result.publishable).toBe(false);
+      const failedChecks = result.checks.filter((c) => !c.passed);
+      // status_ready, assets_selected, scope_mutable all fail
+      expect(failedChecks.length).toBeGreaterThanOrEqual(3);
+      const keys = failedChecks.map((c) => c.key);
+      expect(keys).toContain('status_ready');
+      expect(keys).toContain('assets_selected');
+      expect(keys).toContain('scope_mutable');
+    });
+
+    it('returns exact policy check keys in order', () => {
+      const project = insertProject(db, { title: 'Check Keys Project' });
+      const release = insertRelease(db, {
+        projectId: project.id,
+        title: 'Check Keys Release',
+        status: 'ready',
+      });
+      const asset = insertAsset(db, {
+        projectId: project.id,
+        relativePath: 'a.txt',
+        filename: 'a.txt',
+        isPresent: 1,
+      });
+      linkAssetToRelease(db, { releaseId: release.id, assetId: asset.id });
+
+      const result = service.getReleaseReadiness(release.id);
+
+      const keys = result.checks.map((c) => c.key);
+      expect(keys).toEqual([
+        'status_ready',
+        'assets_selected',
+        'selected_assets_present',
+        'scope_mutable',
+      ]);
+    });
+
+    it('throws 404 for a non-existent release', () => {
+      expect(() => service.getReleaseReadiness(99999)).toThrow(/not found/);
+      try {
+        service.getReleaseReadiness(99999);
+      } catch (err) {
+        expect(err.status).toBe(404);
+      }
+    });
+
+    it('throws 404 for an invalid release ID (string)', () => {
+      expect(() => service.getReleaseReadiness('abc')).toThrow(/not found/);
+      try {
+        service.getReleaseReadiness('abc');
+      } catch (err) {
+        expect(err.status).toBe(404);
+      }
+    });
+
+    it('throws 404 for a null release ID', () => {
+      expect(() => service.getReleaseReadiness(null)).toThrow(/not found/);
+      try {
+        service.getReleaseReadiness(null);
+      } catch (err) {
+        expect(err.status).toBe(404);
+      }
+    });
+
+    it('throws 404 for a negative release ID', () => {
+      expect(() => service.getReleaseReadiness(-1)).toThrow(/not found/);
+      try {
+        service.getReleaseReadiness(-1);
+      } catch (err) {
+        expect(err.status).toBe(404);
+      }
+    });
+
+    it('passes repository facts to the policy spy unchanged and returns the sentinel result', () => {
+      const SENTINEL = { publishable: true, checks: [], facts: null };
+      const policySpy = vi.fn().mockReturnValue(SENTINEL);
+
+      const spyService = createWorkflowQueryService({ db, evaluateReleaseReadiness: policySpy });
+
+      const project = insertProject(db, { title: 'Spy Project' });
+      const release = insertRelease(db, {
+        projectId: project.id,
+        title: 'Spy Release',
+        status: 'ready',
+      });
+      const asset = insertAsset(db, {
+        projectId: project.id,
+        relativePath: 'a.txt',
+        filename: 'a.txt',
+        isPresent: 1,
+      });
+      linkAssetToRelease(db, { releaseId: release.id, assetId: asset.id });
+
+      const releaseRepo = createReleaseRepository(db);
+      const expectedFacts = releaseRepo.findReadinessFactsById(release.id);
+
+      const result = spyService.getReleaseReadiness(release.id);
+
+      // Policy was called exactly once
+      expect(policySpy).toHaveBeenCalledTimes(1);
+
+      // The argument is the exact repository fact object (deep equal)
+      expect(policySpy).toHaveBeenCalledWith(expectedFacts);
+
+      // The service returns the exact sentinel object by identity
+      expect(result).toBe(SENTINEL);
+    });
+
+    it('does not mutate any table when called', () => {
+      const project = insertProject(db, { title: 'Read Only Readiness' });
+      const release = insertRelease(db, {
+        projectId: project.id,
+        title: 'Read Only Release',
+        status: 'ready',
+      });
+      const asset = insertAsset(db, {
+        projectId: project.id,
+        relativePath: 'a.txt',
+        filename: 'a.txt',
+        isPresent: 1,
+      });
+      linkAssetToRelease(db, { releaseId: release.id, assetId: asset.id });
+
+      // Snapshot complete ordered rows from every table
+      const snapshot = (tables) => {
+        const result = {};
+        for (const { name, orderBy } of tables) {
+          result[name] = db.prepare(`SELECT * FROM ${name} ORDER BY ${orderBy}`).all();
+        }
+        return result;
+      };
+
+      const before = snapshot([
+        { name: 'projects', orderBy: 'id' },
+        { name: 'releases', orderBy: 'id' },
+        { name: 'assets', orderBy: 'id' },
+        { name: 'release_assets', orderBy: 'release_id, asset_id' },
+      ]);
+
+      service.getReleaseReadiness(release.id);
+
+      const after = snapshot([
+        { name: 'projects', orderBy: 'id' },
+        { name: 'releases', orderBy: 'id' },
+        { name: 'assets', orderBy: 'id' },
+        { name: 'release_assets', orderBy: 'release_id, asset_id' },
+      ]);
+
+      // Complete row objects must be identical — not just counts
+      expect(after).toEqual(before);
+    });
+
+    it('returns deterministic results for the same release', () => {
+      const project = insertProject(db, { title: 'Deterministic Project' });
+      const release = insertRelease(db, {
+        projectId: project.id,
+        title: 'Deterministic Release',
+        status: 'ready',
+      });
+      const asset = insertAsset(db, {
+        projectId: project.id,
+        relativePath: 'a.txt',
+        filename: 'a.txt',
+        isPresent: 1,
+      });
+      linkAssetToRelease(db, { releaseId: release.id, assetId: asset.id });
+
+      const result1 = service.getReleaseReadiness(release.id);
+      const result2 = service.getReleaseReadiness(release.id);
+
+      expect(result1).toEqual(result2);
+    });
+
+    // ─── Phase 7A regression: ready release with zero selected assets ──
+    //
+    // Phase 7A does NOT yet block publishing a ready release without assets.
+    // The readiness policy reports assets_selected=false, but the publication
+    // service (publishRelease) does not call getReleaseReadiness. This test
+    // proves the read-service composition is independent of publication.
+
+    it('regression: Phase 7A does not block publishing a ready release without assets', async () => {
+      const project = insertProject(db, { title: 'Phase 7A Regression' });
+      const release = insertRelease(db, {
+        projectId: project.id,
+        title: 'No Assets But Ready',
+        status: 'ready',
+      });
+      // No assets selected — readiness says not publishable.
+
+      const readiness = service.getReleaseReadiness(release.id);
+      expect(readiness.publishable).toBe(false);
+      expect(readiness.checks.find((c) => c.key === 'assets_selected').passed).toBe(false);
+
+      // But publishRelease still works (it does not consult getReleaseReadiness).
+      // This test uses the release service directly to prove the publication
+      // path is unchanged.
+      const { createReleaseService } = await import('../src/services/release-service.js');
+      const releaseService = createReleaseService(db);
+      const published = releaseService.publishRelease(release.id, '2025-06-15');
+      expect(published.status).toBe('published');
+      expect(published.published_date).toBe('2025-06-15');
     });
   });
 });

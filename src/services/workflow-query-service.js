@@ -91,8 +91,11 @@ function groupByDate(releases) {
 /**
  * @param {object} deps
  * @param {import('better-sqlite3').Database} deps.db
+ * @param {Function} [deps.evaluateReleaseReadiness] — pure readiness policy
+ *   function injected for Phase 7A read-service composition. When omitted,
+ *   the service still works but getReleaseReadiness will throw a clear error.
  */
-export function createWorkflowQueryService({ db }) {
+export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
   const projectRepository = createProjectRepository(db);
   const releaseRepository = createReleaseRepository(db);
   const assetRepository = createAssetRepository(db);
@@ -603,6 +606,49 @@ export function createWorkflowQueryService({ db }) {
     };
   }
 
+  // ─── Phase 7A: Release Readiness ──────────────────────────────────────
+
+  /**
+   * Evaluate whether a release is ready to be published.
+   *
+   * Strictly validates the release ID, loads readiness facts from the
+   * release repository, and passes them to the shared pure readiness
+   * policy. Returns the policy result unchanged.
+   *
+   * This is a read-only composition — it does not mutate releases, call
+   * publishRelease, call the scanner, access the filesystem, or calculate
+   * readiness independently.
+   *
+   * @param {unknown} releaseId — validated as a strict positive integer
+   * @returns {import('./release-readiness-policy.js').ReadinessResult}
+   * @throws {Error} with status 404 when the release is not found
+   * @throws {Error} when evaluateReleaseReadiness is not wired
+   */
+  function getReleaseReadiness(releaseId) {
+    if (typeof evaluateReleaseReadiness !== 'function') {
+      throw new Error(
+        'getReleaseReadiness requires evaluateReleaseReadiness to be wired. ' +
+        'Pass it as { evaluateReleaseReadiness } to createWorkflowQueryService.'
+      );
+    }
+
+    const id = parseStrictPositiveInt(releaseId);
+    if (id === null) {
+      const err = new Error(`Release ${JSON.stringify(releaseId)} not found`);
+      err.status = 404;
+      throw err;
+    }
+
+    const facts = releaseRepository.findReadinessFactsById(id);
+    if (!facts) {
+      const err = new Error(`Release ${id} not found`);
+      err.status = 404;
+      throw err;
+    }
+
+    return evaluateReleaseReadiness(facts);
+  }
+
   return {
     getDashboardData,
     getProjectWorkspace,
@@ -610,6 +656,7 @@ export function createWorkflowQueryService({ db }) {
     getReleaseBoard,
     getReleaseCalendar,
     getProjectAssetBrowser,
+    getReleaseReadiness,
     // Exposed for tests
     parseMonth,
     prevMonth,
