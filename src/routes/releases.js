@@ -1,9 +1,11 @@
 import express from 'express';
+import { getLocalTodayIso } from '../util/date.js';
 import {
   AssetNotFoundError,
   createReleaseService,
   ReleaseArchivedError,
   ReleaseParentArchivedError,
+  ReleasePublishedError,
   ReleaseValidationError,
   ReleaseNotFoundError,
   RELEASE_STATUSES,
@@ -179,7 +181,12 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
     const project = projectService.findById(release.project_id);
     const releaseAssets = releaseService.listReleaseAssets(id);
     const assetCount = releaseAssets.length;
-    const readiness = workflowQueryService.getReleaseReadiness(id);
+
+    // Published releases show a publication summary instead of readiness.
+    // Archived releases (or archived-parent) also skip readiness.
+    const isPublished = release.status === 'published';
+    const isArchived = release.archived_at || (project && project.archived_at);
+    const readiness = isPublished || isArchived ? null : workflowQueryService.getReleaseReadiness(id);
 
     res.render('releases/detail.njk', {
       appName,
@@ -204,7 +211,13 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
       return next(createNotFound());
     }
 
+    // Archived releases and releases in archived projects are read-only.
+    // Redirect to detail view instead of showing the edit form.
     const project = projectService.findById(release.project_id);
+    if (release.archived_at || (project && project.archived_at)) {
+      return res.redirect(`/releases/${id}`);
+    }
+
     const { rows: projects } = projectService.list({ includeArchived: false, limit: 100 });
 
     res.render('releases/form.njk', {
@@ -246,7 +259,7 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
           appName,
           release: existing || { id },
           values: req.body,
-          errors: err.errors,
+          errors: err.errors || { general: err.message },
           statuses: RELEASE_STATUSES,
           activeStatuses: ACTIVE_RELEASE_STATUSES,
           projects,
@@ -256,8 +269,70 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
         });
         return;
       }
+      if (err instanceof ReleaseArchivedError || err instanceof ReleaseParentArchivedError) {
+        const existing = releaseService.findRelease(id);
+        if (!existing) {
+          return next(createNotFound());
+        }
+        const project = projectService.findById(existing.project_id);
+        const releaseAssets = releaseService.listReleaseAssets(id);
+        res.status(422).render('releases/detail.njk', {
+          appName,
+          release: existing,
+          project,
+          releaseAssets,
+          assetCount: releaseAssets.length,
+          statuses: RELEASE_STATUSES,
+          readiness: null,
+          errors: { general: err.message },
+        });
+        return;
+      }
       next(err);
     }
+  });
+
+  // GET /releases/:id/publish — Publication review page (Phase 8-3)
+  router.get('/:id/publish', (req, res, next) => {
+    const id = parseId(req.params.id);
+    if (id === null) {
+      return next(createNotFound());
+    }
+
+    const release = releaseService.findRelease(id);
+    if (!release) {
+      return next(createNotFound());
+    }
+
+    const project = projectService.findById(release.project_id);
+
+    // Redirect non-ready lifecycle states to release detail
+    if (release.archived_at || (project && project.archived_at)) {
+      return res.redirect(`/releases/${id}`);
+    }
+    if (['idea', 'planned', 'drafting', 'published', 'cancelled'].includes(release.status)) {
+      return res.redirect(`/releases/${id}`);
+    }
+
+    // status is ready — render review page (publishable or blocked-ready)
+    const releaseAssets = releaseService.listReleaseAssets(id);
+    const readiness = workflowQueryService.getReleaseReadiness(id);
+
+    // Resolve publication date for prefill: persisted date, otherwise local today
+    const today = getLocalTodayIso();
+    const prefillDate = release.published_date || today;
+
+    res.render('releases/publish.njk', {
+      appName,
+      release,
+      project,
+      releaseAssets,
+      assetCount: releaseAssets.length,
+      statuses: RELEASE_STATUSES,
+      readiness,
+      prefillDate,
+      errors: {},
+    });
   });
 
   // POST /releases/:id/publish — Publish a release
@@ -283,7 +358,7 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
       if (err instanceof ReleaseNotFoundError) {
         return next(createNotFound());
       }
-      if (err instanceof ReleaseValidationError || err instanceof ReleaseParentArchivedError) {
+      if (err instanceof ReleaseValidationError) {
         const release = releaseService.findRelease(id);
         if (!release) {
           return next(createNotFound());
@@ -291,6 +366,31 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
         const project = projectService.findById(release.project_id);
         const releaseAssets = releaseService.listReleaseAssets(id);
         const readiness = workflowQueryService.getReleaseReadiness(id);
+
+        // Resolve prefill date: submitted value (even if invalid), then persisted, then today
+        const today = getLocalTodayIso();
+        const prefillDate = submittedDate || release.published_date || today;
+
+        res.status(422).render('releases/publish.njk', {
+          appName,
+          release,
+          project,
+          releaseAssets,
+          assetCount: releaseAssets.length,
+          statuses: RELEASE_STATUSES,
+          readiness,
+          prefillDate,
+          errors: err.errors || { general: err.message },
+        });
+        return;
+      }
+      if (err instanceof ReleaseArchivedError || err instanceof ReleaseParentArchivedError) {
+        const release = releaseService.findRelease(id);
+        if (!release) {
+          return next(createNotFound());
+        }
+        const project = projectService.findById(release.project_id);
+        const releaseAssets = releaseService.listReleaseAssets(id);
         res.status(422).render('releases/detail.njk', {
           appName,
           release,
@@ -298,8 +398,8 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
           releaseAssets,
           assetCount: releaseAssets.length,
           statuses: RELEASE_STATUSES,
-          errors: err.errors || { general: err.message },
-          readiness,
+          readiness: null,
+          errors: { general: err.message },
         });
         return;
       }
@@ -338,6 +438,25 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
           statuses: RELEASE_STATUSES,
           errors: err.errors,
           readiness,
+        });
+        return;
+      }
+      if (err instanceof ReleaseArchivedError || err instanceof ReleaseParentArchivedError) {
+        const release = releaseService.findRelease(id);
+        if (!release) {
+          return next(createNotFound());
+        }
+        const project = projectService.findById(release.project_id);
+        const releaseAssets = releaseService.listReleaseAssets(id);
+        res.status(422).render('releases/detail.njk', {
+          appName,
+          release,
+          project,
+          releaseAssets,
+          assetCount: releaseAssets.length,
+          statuses: RELEASE_STATUSES,
+          readiness: null,
+          errors: { general: err.message },
         });
         return;
       }
@@ -439,7 +558,7 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
       if (err instanceof ReleaseNotFoundError) {
         return next(createNotFound());
       }
-      if (err instanceof ReleaseValidationError) {
+      if (err instanceof ReleaseValidationError || err instanceof ReleasePublishedError) {
         const project = projectService.findById(release.project_id);
         const assets = releaseService.findProjectAssets(release.project_id);
         // Render the SUBMITTED selections so the user does not lose input.
@@ -454,7 +573,23 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
           releaseAssets,
           statuses: RELEASE_STATUSES,
           roles: ['primary', 'preview', 'attachment', 'source'],
-          errors: err.errors,
+          errors: err.errors || { general: err.message },
+        });
+        return;
+      }
+      if (err instanceof ReleaseArchivedError || err instanceof ReleaseParentArchivedError) {
+        const project = projectService.findById(release.project_id);
+        const assets = releaseService.findProjectAssets(release.project_id);
+        const releaseAssets = releaseService.listReleaseAssets(id);
+        res.status(422).render('releases/assets.njk', {
+          appName,
+          release,
+          project,
+          assets,
+          releaseAssets,
+          statuses: RELEASE_STATUSES,
+          roles: ['primary', 'preview', 'attachment', 'source'],
+          errors: { general: err.message },
         });
         return;
       }
@@ -488,7 +623,22 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
       if (err instanceof ReleaseNotFoundError || err instanceof AssetNotFoundError) {
         return next(createNotFound());
       }
-      if (err instanceof ReleaseArchivedError || err instanceof ReleaseParentArchivedError || err instanceof ReleaseValidationError) {
+      if (err instanceof ReleaseArchivedError || err instanceof ReleaseParentArchivedError) {
+        const project = projectService.findById(release.project_id);
+        const releaseAssets = releaseService.listReleaseAssets(id);
+        res.status(422).render('releases/detail.njk', {
+          appName,
+          release,
+          project,
+          releaseAssets,
+          assetCount: releaseAssets.length,
+          statuses: RELEASE_STATUSES,
+          errors: { general: err.message },
+          readiness: null,
+        });
+        return;
+      }
+      if (err instanceof ReleasePublishedError || err instanceof ReleaseValidationError) {
         const project = projectService.findById(release.project_id);
         const releaseAssets = releaseService.listReleaseAssets(id);
         const readiness = workflowQueryService.getReleaseReadiness(id);

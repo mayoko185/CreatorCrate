@@ -1,0 +1,188 @@
+{% extends "layout.njk" %}
+
+{% block content %}
+  <div class="page-header">
+    <h1>Review &amp; Publish</h1>
+    <a class="button" href="/releases/{{ release.id }}">Back to release</a>
+  </div>
+
+  {% if errors.general %}
+    <div class="error-summary" role="alert">
+      <p>{{ errors.general }}</p>
+    </div>
+  {% endif %}
+
+  {% if errors.readiness %}
+    <div class="error-summary" role="alert">
+      <p>Cannot publish due to the following blockers:</p>
+      <ul>
+        {% for key, details in errors.readiness %}
+          <li>
+            {% if key == 'status_ready' %}
+              Status is "{{ details.status }}", must be "ready".
+            {% elif key == 'assets_selected' %}
+              No assets selected ({{ details.selectedAssetCount }} selected).
+            {% elif key == 'selected_assets_present' %}
+              {{ details.missingSelectedAssetCount }} selected asset(s) are missing.
+            {% elif key == 'scope_mutable' %}
+              {% if details.releaseArchived %}Release is archived.{% elif details.projectArchived %}Parent project is archived.{% endif %}
+            {% else %}
+              {{ key }}: {{ details | dump }}
+            {% endif %}
+          </li>
+        {% endfor %}
+      </ul>
+    </div>
+  {% endif %}
+
+  {% if errors.publishedDate %}
+    <div class="error-summary" role="alert">
+      <p>{{ errors.publishedDate }}</p>
+    </div>
+  {% endif %}
+
+  <!-- Project identity -->
+  <section>
+    <h2>Project</h2>
+    <dl class="detail-list">
+      <dt>Project</dt>
+      <dd><a href="/projects/{{ project.id }}">{{ project.title }}</a></dd>
+    </dl>
+  </section>
+
+  <!-- Release identity -->
+  <section>
+    <h2>Release</h2>
+    <dl class="detail-list">
+      <dt>Title</dt>
+      <dd>{{ release.title }}</dd>
+      <dt>Status</dt>
+      <dd>{{ release.status | replace('-', ' ') | title }}</dd>
+      {% if release.planned_date %}
+        <dt>Planned date</dt>
+        <dd>{{ release.planned_date }}</dd>
+      {% endif %}
+    </dl>
+  </section>
+
+  <!-- Readiness result and blockers -->
+  <section class="readiness-panel">
+    <h2>Readiness</h2>
+
+    {% if readiness.publishable %}
+      <p class="readiness-badge readiness-publishable">Publishable</p>
+    {% else %}
+      <p class="readiness-badge readiness-blocked">Needs attention</p>
+    {% endif %}
+
+    <ul class="readiness-checks">
+      {% for check in readiness.checks %}
+        <li class="readiness-check {% if check.passed %}check-passed{% else %}check-blocked{% endif %}">
+          <span class="check-icon">{% if check.passed %}&#10003;{% else %}&#10007;{% endif %}</span>
+          <span class="check-label">
+            {% if check.key == 'status_ready' %}Status is ready
+            {% elif check.key == 'assets_selected' %}Assets selected
+            {% elif check.key == 'selected_assets_present' %}Selected assets present
+            {% elif check.key == 'scope_mutable' %}Scope is mutable
+            {% else %}{{ check.key }}
+            {% endif %}
+          </span>
+          <span class="check-detail">
+            {% if check.key == 'status_ready' %}
+              Status: {{ check.details.status }}
+            {% elif check.key == 'assets_selected' %}
+              {{ check.details.selectedAssetCount }} selected
+            {% elif check.key == 'selected_assets_present' %}
+              {% if check.details.missingSelectedAssetCount > 0 %}
+                {{ check.details.missingSelectedAssetCount }} missing
+              {% else %}
+                All present
+              {% endif %}
+            {% elif check.key == 'scope_mutable' %}
+              {% if check.details.releaseArchived %}
+                Release is archived
+              {% elif check.details.projectArchived %}
+                Project is archived
+              {% else %}
+                Mutable
+              {% endif %}
+            {% endif %}
+          </span>
+        </li>
+      {% endfor %}
+    </ul>
+
+    <p class="readiness-note">
+      Asset presence reflects the last completed scan. This page is not performing a live filesystem check.
+    </p>
+  </section>
+
+  <!-- Selected assets ordered by sort_order ASC, asset_id ASC -->
+  <section>
+    <h2>Selected Assets</h2>
+    {% if releaseAssets.length > 0 %}
+      <table class="asset-table">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Filename</th>
+            <th>Role</th>
+            <th>Order</th>
+            <th>Status</th>
+            <th>Last seen</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for ra in releaseAssets %}
+            <tr>
+              <td>{{ loop.index }}</td>
+              <td class="asset-filename">{{ ra.filename }}</td>
+              <td>{{ ra.role | title }}</td>
+              <td>{{ ra.sort_order }}</td>
+              <td>
+                {% if ra.is_present == 1 %}
+                  <span class="asset-present">Present</span>
+                {% else %}
+                  <span class="asset-missing-label">Missing</span>
+                {% endif %}
+              </td>
+              <td class="asset-date">
+                {% if ra.last_seen_at %}
+                  {{ ra.last_seen_at }}
+                {% else %}
+                  &mdash;
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="meta">No assets selected.</p>
+    {% endif %}
+  </section>
+
+  <!-- Publication date form -->
+  <section>
+    <h2>Publication Date</h2>
+    <form method="post" action="/releases/{{ release.id }}/publish">
+      <div class="field {% if errors.publishedDate %}field-error{% endif %}">
+        <label for="publishedDate">Publication date <span class="required">*</span></label>
+        <input type="date" id="publishedDate" name="publishedDate"
+               value="{{ prefillDate }}" required>
+        {% if errors.publishedDate %}
+          <span class="field-error-message">{{ errors.publishedDate }}</span>
+        {% endif %}
+        <span class="help-text">The date this release was published. Must be a valid date (YYYY-MM-DD).</span>
+      </div>
+
+      <div class="form-actions">
+        <button class="button button-primary" type="submit"
+          {% if not readiness.publishable %}disabled{% endif %}>
+          Publish
+        </button>
+        <a class="button" href="/releases/{{ release.id }}">Cancel</a>
+      </div>
+    </form>
+  </section>
+{% endblock %}

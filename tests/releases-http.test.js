@@ -19,7 +19,7 @@ const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
  * Returns rows with asset_id, role, sort_order.
  */
 function getReleaseAssets(db, releaseId) {
-  return db.prepare('SELECT asset_id, role, sort_order FROM release_assets WHERE release_id = ? ORDER BY sort_order ASC, asset_id ASC').all(releaseId);
+  return db.prepare('SELECT release_id, asset_id, role, sort_order, created_at FROM release_assets WHERE release_id = ? ORDER BY sort_order ASC, asset_id ASC').all(releaseId);
 }
 
 /**
@@ -761,7 +761,7 @@ describe('release HTTP workflow', () => {
     const res = await request(app)
       .post(`${createRes.headers.location}/archive`)
       .expect(422);
-    expect(res.text).toContain('already archived');
+    expect(res.text).toMatch(/archived and cannot be modified/);
   });
 
   // ─── Asset selection ──────────────────────────────────────────────────────
@@ -884,7 +884,7 @@ describe('release HTTP workflow', () => {
     // Verify exact junction-table rows
     const rows = getReleaseAssets(db, releaseId);
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toEqual({ asset_id: Number(firstAssetId), role: 'primary', sort_order: 0 });
+    expect(rows[0]).toMatchObject({ asset_id: Number(firstAssetId), role: 'primary', sort_order: 0 });
   });
 
   it('rejects malformed asset IDs with 422', async () => {
@@ -1119,8 +1119,8 @@ describe('release HTTP workflow', () => {
     const rows = getReleaseAssets(db, releaseId);
     expect(rows).toHaveLength(2);
     // Ordered by sort_order ASC, asset_id ASC — second asset has sort_order 0 so it comes first
-    expect(rows[0]).toEqual({ asset_id: Number(secondAssetId), role: 'attachment', sort_order: 0 });
-    expect(rows[1]).toEqual({ asset_id: Number(firstAssetId), role: 'primary', sort_order: 7 });
+    expect(rows[0]).toMatchObject({ asset_id: Number(secondAssetId), role: 'attachment', sort_order: 0 });
+    expect(rows[1]).toMatchObject({ asset_id: Number(firstAssetId), role: 'primary', sort_order: 7 });
   });
 
   it('asset validation failure preserves submitted selections in the re-rendered form', async () => {
@@ -1197,7 +1197,7 @@ describe('release HTTP workflow', () => {
 
     const beforeRows = getReleaseAssets(db, releaseId);
     expect(beforeRows).toHaveLength(1);
-    expect(beforeRows[0]).toEqual({ asset_id: mainAssetId, role: 'primary', sort_order: 0 });
+    expect(beforeRows[0]).toMatchObject({ asset_id: mainAssetId, role: 'primary', sort_order: 0 });
 
     // Now submit a DIFFERENT selection: change the role to "preview" and
     // add a cross-project asset. This must produce a 422 from the service.
@@ -2522,7 +2522,7 @@ describe('release HTTP workflow', () => {
 
     const afterRows = getReleaseAssets(db, releaseId);
     expect(afterRows).toHaveLength(1);
-    expect(afterRows[0]).toEqual({ asset_id: Number(keepAssetId), role: 'preview', sort_order: 5 });
+    expect(afterRows[0]).toMatchObject({ asset_id: Number(keepAssetId), role: 'preview', sort_order: 5 });
   });
 
   it('publish preserves an explicit publishedDate submitted with the publish form', async () => {
@@ -2725,7 +2725,7 @@ describe('release HTTP workflow', () => {
       // Mutation controls must be hidden.
       expect(detail.text).not.toMatch(/href="\/releases\/\d+\/edit"/);
       expect(detail.text).not.toMatch(/action="\/releases\/\d+\/archive"/);
-      expect(detail.text).not.toMatch(/action="\/releases\/\d+\/publish"/);
+      expect(detail.text).not.toMatch(/href="\/releases\/\d+\/publish"/);
       expect(detail.text).not.toMatch(/href="\/releases\/\d+\/assets"/);
     });
 
@@ -2736,7 +2736,7 @@ describe('release HTTP workflow', () => {
       // Mutation controls are visible.
       expect(detail.text).toMatch(/href="\/releases\/\d+\/edit"/);
       expect(detail.text).toMatch(/action="\/releases\/\d+\/archive"/);
-      expect(detail.text).toMatch(/action="\/releases\/\d+\/publish"/);
+      expect(detail.text).toMatch(/href="\/releases\/\d+\/publish"/);
       expect(detail.text).toMatch(/href="\/releases\/\d+\/assets"/);
     });
 
@@ -2884,12 +2884,13 @@ describe('release HTTP workflow', () => {
       expect(res.text).toContain('Readiness Test Release');
       expect(res.text).toContain('Readiness Test Project');
       expect(res.text).toContain('asset.png');
-      expect(res.text).toContain('class="readiness-panel"');
-      expect(res.text).toContain('Project is archived');
-      expect(res.text).toMatch(/Project \d+ is archived and cannot be modified\./);
+      // Archived parent renders read-only detail — no readiness panel, no error-box
+      expect(res.text).not.toContain('class="readiness-panel"');
       expect(res.text).not.toContain('class="error-box"');
+      expect(res.text).toContain('parent project is archived');
+      expect(res.text).toMatch(/Project \d+ is archived and cannot be modified\./);
       expect(db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId)).toEqual(beforeRelease);
-      expect(getReleaseAssets(db, releaseId)).toEqual([
+      expect(getReleaseAssets(db, releaseId)).toMatchObject([
         { asset_id: Number(assetId), role: 'primary', sort_order: 0 },
       ]);
     });
@@ -3051,8 +3052,9 @@ describe('release HTTP workflow', () => {
         .expect(302);
 
       const res = await request(app).get(releaseLocation).expect(200);
-      expect(res.text).toContain('Needs attention');
-      expect(res.text).toContain('Release is archived');
+      // Archived releases show the archived notice instead of readiness panel
+      expect(res.text).toContain('archived and read-only');
+      expect(res.text).not.toContain('Needs attention');
     });
 
     it('archived parent project shows scope blocked', async () => {
@@ -3064,8 +3066,9 @@ describe('release HTTP workflow', () => {
         .expect(302);
 
       const res = await request(app).get(releaseLocation).expect(200);
-      expect(res.text).toContain('Needs attention');
-      expect(res.text).toContain('Project is archived');
+      // Archived parent shows the parent archived notice instead of readiness panel
+      expect(res.text).toContain('parent project is archived');
+      expect(res.text).not.toContain('Needs attention');
     });
 
     it('multiple blockers render simultaneously', async () => {
@@ -3171,13 +3174,10 @@ describe('release HTTP workflow', () => {
         .expect(302);
 
       const res = await request(app).get(releaseLocation).expect(200);
-      // The readiness panel must not contain corrective links for archived release
-      // Extract the readiness panel section and check within it
-      const panelMatch = res.text.match(/<section class="readiness-panel">[\s\S]*?<\/section>/);
-      expect(panelMatch).not.toBeNull();
-      const panelHtml = panelMatch[0];
-      expect(panelHtml).not.toMatch(/href="\/releases\/\d+\/edit"/);
-      expect(panelHtml).not.toMatch(/href="\/releases\/\d+\/assets"/);
+      // Archived releases have no readiness panel at all
+      expect(res.text).not.toMatch(/<section class="readiness-panel">/);
+      expect(res.text).not.toMatch(/href="\/releases\/\d+\/edit"/);
+      expect(res.text).not.toMatch(/href="\/releases\/\d+\/assets"/);
     });
 
     it('corrective links hidden for archived parent project', async () => {
@@ -3188,12 +3188,10 @@ describe('release HTTP workflow', () => {
         .expect(302);
 
       const res = await request(app).get(releaseLocation).expect(200);
-      // The readiness panel must not contain corrective links for archived parent
-      const panelMatch = res.text.match(/<section class="readiness-panel">[\s\S]*?<\/section>/);
-      expect(panelMatch).not.toBeNull();
-      const panelHtml = panelMatch[0];
-      expect(panelHtml).not.toMatch(/href="\/releases\/\d+\/edit"/);
-      expect(panelHtml).not.toMatch(/href="\/releases\/\d+\/assets"/);
+      // Archived parent releases have no readiness panel at all
+      expect(res.text).not.toMatch(/<section class="readiness-panel">/);
+      expect(res.text).not.toMatch(/href="\/releases\/\d+\/edit"/);
+      expect(res.text).not.toMatch(/href="\/releases\/\d+\/assets"/);
     });
 
     it('missing release remains 404', async () => {
@@ -3283,7 +3281,7 @@ describe('release HTTP workflow', () => {
       // Readiness panel shows blocked
       expect(detail.text).toContain('Needs attention');
       // Publish button must NOT be present
-      expect(detail.text).not.toMatch(/action="\/releases\/\d+\/publish"/);
+      expect(detail.text).not.toMatch(/href="\/releases\/\d+\/publish"/);
     });
 
     it('publishable release has Publish button', async () => {
@@ -3293,7 +3291,7 @@ describe('release HTTP workflow', () => {
       // Readiness panel shows publishable
       expect(detail.text).toContain('Publishable');
       // Publish button must be present
-      expect(detail.text).toMatch(/action="\/releases\/\d+\/publish"/);
+      expect(detail.text).toMatch(/href="\/releases\/\d+\/publish"/);
     });
 
     it('forged blocked POST still returns 422', async () => {
@@ -3344,7 +3342,7 @@ describe('release HTTP workflow', () => {
       // Must show blocked
       expect(detail.text).toContain('Needs attention');
       // No Publish button
-      expect(detail.text).not.toMatch(/action="\/releases\/\d+\/publish"/);
+      expect(detail.text).not.toMatch(/href="\/releases\/\d+\/publish"/);
     });
 
     it('all blockers resolved makes release publishable', async () => {
@@ -3352,7 +3350,7 @@ describe('release HTTP workflow', () => {
 
       const detail = await request(app).get(releaseLocation).expect(200);
       expect(detail.text).toContain('Publishable');
-      expect(detail.text).toMatch(/action="\/releases\/\d+\/publish"/);
+      expect(detail.text).toMatch(/href="\/releases\/\d+\/publish"/);
     });
 
     it('publication date and status behavior remain correct', async () => {
@@ -3369,7 +3367,7 @@ describe('release HTTP workflow', () => {
       expect(detail.text).toContain('Published');
       expect(detail.text).toContain('2025-11-01');
       // Publish button must be gone after publication
-      expect(detail.text).not.toMatch(/action="\/releases\/\d+\/publish"/);
+      expect(detail.text).not.toMatch(/href="\/releases\/\d+\/publish"/);
     });
 
     it('archive guards remain correct — archived release has no Publish button', async () => {
@@ -3381,10 +3379,10 @@ describe('release HTTP workflow', () => {
         .expect(302);
 
       const detail = await request(app).get(releaseLocation).expect(200);
-      // Readiness panel shows scope blocked
-      expect(detail.text).toContain('Release is archived');
+      // Archived release notice shown
+      expect(detail.text).toContain('archived and read-only');
       // No Publish button
-      expect(detail.text).not.toMatch(/action="\/releases\/\d+\/publish"/);
+      expect(detail.text).not.toMatch(/href="\/releases\/\d+\/publish"/);
     });
 
     it('archived parent project hides Publish button', async () => {
@@ -3396,10 +3394,10 @@ describe('release HTTP workflow', () => {
         .expect(302);
 
       const detail = await request(app).get(releaseLocation).expect(200);
-      // Readiness panel shows scope blocked
-      expect(detail.text).toContain('Project is archived');
+      // Archived parent notice shown
+      expect(detail.text).toContain('parent project is archived');
       // No Publish button
-      expect(detail.text).not.toMatch(/action="\/releases\/\d+\/publish"/);
+      expect(detail.text).not.toMatch(/href="\/releases\/\d+\/publish"/);
     });
 
     it('published release has no Publish button', async () => {
@@ -3411,7 +3409,7 @@ describe('release HTTP workflow', () => {
 
       const detail = await request(app).get(releaseLocation).expect(200);
       expect(detail.text).toContain('Published');
-      expect(detail.text).not.toMatch(/action="\/releases\/\d+\/publish"/);
+      expect(detail.text).not.toMatch(/href="\/releases\/\d+\/publish"/);
     });
 
     it('cancelled release has no Publish button', async () => {
@@ -3436,7 +3434,7 @@ describe('release HTTP workflow', () => {
       // Readiness panel shows blocked (status_ready fails)
       expect(detail.text).toContain('Needs attention');
       // No Publish button
-      expect(detail.text).not.toMatch(/action="\/releases\/\d+\/publish"/);
+      expect(detail.text).not.toMatch(/href="\/releases\/\d+\/publish"/);
     });
   });
 
@@ -3614,9 +3612,8 @@ describe('release HTTP workflow', () => {
         .expect(302);
 
       const afterRows = getReleaseAssets(db, Number(releaseLocation.replace('/releases/', '')));
-      expect(afterRows).toEqual([
-        { asset_id: secondAsset.id, role: 'attachment', sort_order: 1 },
-      ]);
+      expect(afterRows).toHaveLength(1);
+      expect(afterRows[0]).toMatchObject({ asset_id: secondAsset.id, role: 'attachment', sort_order: 1 });
     });
 
     it('readiness changes from blocked to publishable when last missing asset is removed', async () => {
@@ -4112,6 +4109,1688 @@ describe('release HTTP workflow', () => {
       expect(nextQuery.page).toBeUndefined();
       expect(nextQuery.month).toBeDefined();
       expect(Object.keys(nextQuery).length).toBe(1);
+    });
+  });
+
+  // ─── Phase 8-1: Published release asset-selection lock (HTTP) ──────
+  //
+  // Forged direct POSTs to the asset-selection and removal routes must
+  // return controlled 422 and leave the junction rows unchanged.
+
+  describe('published release HTTP asset-selection lock', () => {
+    async function setupPublishedRelease(app, db, projectsRoot) {
+      const { projectId, releaseLocation, assetId } = await setupPublishableRelease(app, projectsRoot, db);
+      // Publish the release
+      await request(app)
+        .post(releaseLocation + '/publish')
+        .send('publishedDate=2025-06-15')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      return { projectId, releaseLocation, assetId };
+    }
+
+    it('rejects bulk asset POST with controlled 422 for a published release', async () => {
+      const { releaseLocation, assetId } = await setupPublishedRelease(app, db, projectsRoot);
+      const before = getReleaseAssets(db, Number(releaseLocation.replace('/releases/', '')));
+
+      const res = await request(app)
+        .post(releaseLocation + '/assets')
+        .send(`selectedAssetIds[]=${assetId}`)
+        .send('roles[]=attachment')
+        .send('sortOrder[]=0')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(422);
+
+      expect(res.text).toMatch(/locked/i);
+      const after = getReleaseAssets(db, Number(releaseLocation.replace('/releases/', '')));
+      expect(after).toEqual(before);
+    });
+
+    it('rejects single removal POST with controlled 422 for a published release', async () => {
+      const { releaseLocation, assetId } = await setupPublishedRelease(app, db, projectsRoot);
+      const releaseId = Number(releaseLocation.replace('/releases/', ''));
+      const before = getReleaseAssets(db, releaseId);
+
+      const res = await request(app)
+        .post(`${releaseLocation}/assets/${assetId}/remove`)
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(422);
+
+      expect(res.text).toMatch(/locked/i);
+      const after = getReleaseAssets(db, releaseId);
+      expect(after).toEqual(before);
+    });
+
+    it('rejects missing-asset corrective removal with 422 for a published release', async () => {
+      const { projectId, releaseLocation, assetId } = await setupPublishableRelease(app, projectsRoot, db);
+      const releaseId = Number(releaseLocation.replace('/releases/', ''));
+
+      // Publish the release
+      await request(app)
+        .post(releaseLocation + '/publish')
+        .send('publishedDate=2025-06-15')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      // Delete the asset file from disk
+      const slug = 'readiness-test-project';
+      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
+      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
+      const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
+      fs.unlinkSync(path.join(projectDir, 'asset.png'));
+
+      // Run the real project scan so the asset becomes is_present = 0
+      await request(app)
+        .post(`/projects/${projectId}/scan`)
+        .expect(302);
+
+      // Snapshot the complete ordered release_assets rows
+      const beforeJunction = getReleaseAssets(db, releaseId);
+      // Snapshot the asset record
+      const assetRepo = createAssetRepository(db);
+      const beforeAsset = assetRepo.findById(Number(assetId));
+
+      // POST the corrective removal route
+      const res = await request(app)
+        .post(`${releaseLocation}/assets/${assetId}/remove`)
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(422);
+
+      // Assert: ReleasePublishedError or its controlled message renders
+      expect(res.text).toMatch(/locked/i);
+
+      // Assert: the selected missing asset remains selected
+      const afterJunction = getReleaseAssets(db, releaseId);
+      expect(afterJunction).toEqual(beforeJunction);
+
+      // Assert: asset presence remains missing
+      const afterAsset = assetRepo.findById(Number(assetId));
+      expect(afterAsset.is_present).toBe(0);
+
+      // Assert: no asset record is deleted
+      expect(afterAsset).toEqual(beforeAsset);
+    });
+  });
+
+  // ─── Phase 8-1: Scan regression — published release asset metadata ──
+  //
+  // A later scan may update assets.is_present or other live asset metadata
+  // without changing release_id, asset_id, role, or sort_order in the
+  // release_assets junction table.
+
+  describe('published release scan regression', () => {
+    it('scan updates asset presence without changing junction rows for a published release', async () => {
+      const { projectId, releaseLocation, assetId } = await setupPublishableRelease(app, projectsRoot, db);
+      const releaseId = Number(releaseLocation.replace('/releases/', ''));
+
+      // Publish the release
+      await request(app)
+        .post(releaseLocation + '/publish')
+        .send('publishedDate=2025-06-15')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      // Snapshot junction rows before scan
+      const beforeJunction = getReleaseAssets(db, releaseId);
+
+      // Remove the asset file from disk to trigger a scan change
+      const slug = 'readiness-test-project';
+      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
+      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
+      const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
+      fs.unlinkSync(path.join(projectDir, 'asset.png'));
+
+      // Scan — should succeed and detect the removal
+      await request(app)
+        .post(`/projects/${projectId}/scan`)
+        .expect(302);
+
+      // Junction rows must be exactly unchanged
+      const afterJunction = getReleaseAssets(db, releaseId);
+      expect(afterJunction).toEqual(beforeJunction);
+
+      // Asset presence must have been updated by the scan
+      const assetRepo = createAssetRepository(db);
+      const asset = assetRepo.findById(Number(assetId));
+      expect(asset.is_present).toBe(0);
+    });
+  });
+
+  // ─── Phase 8-2: Published and Archived Release Lifecycle Presentation ──
+  //
+  // Published releases show a publication summary, locked-selection wording,
+  // and no asset mutation controls. Archived releases (or releases in archived
+  // projects) are read-only: edit redirects, POST returns 422, and mutation
+  // controls are hidden.
+
+  describe('published release detail presentation', () => {
+    async function setupPublishedRelease() {
+      const { projectId, releaseLocation, assetId } = await setupPublishableRelease(app, projectsRoot, db);
+      await request(app)
+        .post(releaseLocation + '/publish')
+        .send('publishedDate=2025-06-15')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      return { projectId, releaseLocation, assetId };
+    }
+
+    it('shows publication summary instead of Needs attention', async () => {
+      const { releaseLocation } = await setupPublishedRelease();
+      const res = await request(app).get(releaseLocation).expect(200);
+      expect(res.text).toMatch(/Publication Summary/);
+      expect(res.text).not.toMatch(/Needs attention/);
+    });
+
+    it('shows published date in the publication summary', async () => {
+      const { releaseLocation } = await setupPublishedRelease();
+      const res = await request(app).get(releaseLocation).expect(200);
+      expect(res.text).toMatch(/Published date/);
+      expect(res.text).toMatch(/2025-06-15/);
+    });
+
+    it('shows selected assets table once (not duplicated)', async () => {
+      const { releaseLocation } = await setupPublishedRelease();
+      const res = await request(app).get(releaseLocation).expect(200);
+      // Count occurrences of "Selected Assets" heading
+      const matches = res.text.match(/Selected Assets/g);
+      expect(matches).not.toBeNull();
+      expect(matches.length).toBe(1);
+    });
+
+    it('shows selected assets in sort_order ASC, asset_id ASC order', async () => {
+      const { releaseLocation, projectId } = await setupPublishedRelease();
+      const releaseId = Number(releaseLocation.replace('/releases/', ''));
+      const rows = getReleaseAssets(db, releaseId);
+      // Verify the database order
+      for (let i = 1; i < rows.length; i++) {
+        if (rows[i].sort_order === rows[i - 1].sort_order) {
+          expect(rows[i].asset_id).toBeGreaterThan(rows[i - 1].asset_id);
+        } else {
+          expect(rows[i].sort_order).toBeGreaterThanOrEqual(rows[i - 1].sort_order);
+        }
+      }
+    });
+
+    it('shows locked-selection wording', async () => {
+      const { releaseLocation } = await setupPublishedRelease();
+      const res = await request(app).get(releaseLocation).expect(200);
+      expect(res.text).toMatch(/asset selection is locked/i);
+    });
+
+    it('shows present/missing state and scan caveat', async () => {
+      const { releaseLocation } = await setupPublishedRelease();
+      const res = await request(app).get(releaseLocation).expect(200);
+      expect(res.text).toMatch(/Present/);
+      expect(res.text).toMatch(/not performing a live filesystem check/);
+    });
+
+    it('published metadata edit succeeds (title, description, notes, dates, patreon)', async () => {
+      const { releaseLocation } = await setupPublishedRelease();
+      const res = await request(app)
+        .post(releaseLocation)
+        .send('title=Updated+Published+Title')
+        .send('description=Updated+description')
+        .send('notes=Updated+notes')
+        .send('status=published')
+        .send('plannedDate=2025-07-01')
+        .send('publishedDate=2025-06-20')
+        .send('patreonUrl=https://patreon.com/updated')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      expect(res.headers.location).toBe(releaseLocation);
+
+      const detail = await request(app).get(releaseLocation).expect(200);
+      expect(detail.text).toContain('Updated Published Title');
+      expect(detail.text).toContain('Updated description');
+      expect(detail.text).toContain('Updated notes');
+      expect(detail.text).toContain('2025-07-01');
+      expect(detail.text).toContain('2025-06-20');
+      expect(detail.text).toContain('patreon.com/updated');
+    });
+
+    it('published status remains unchanged after metadata edit', async () => {
+      const { releaseLocation } = await setupPublishedRelease();
+      await request(app)
+        .post(releaseLocation)
+        .send('title=Status+Check')
+        .send('status=published')
+        .send('publishedDate=2025-06-15')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      const detail = await request(app).get(releaseLocation).expect(200);
+      expect(detail.text).toMatch(/Published/);
+    });
+
+    it('attempted status change from published fails', async () => {
+      const { releaseLocation } = await setupPublishedRelease();
+      const res = await request(app)
+        .post(releaseLocation)
+        .send('title=Status+Change+Attempt')
+        .send('status=ready')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(422);
+      expect(res.text).toMatch(/Cannot change status from.*published.*to.*ready/);
+    });
+
+    it('published asset page is read-only (no Save Selection button)', async () => {
+      const { releaseLocation } = await setupPublishedRelease();
+      const res = await request(app).get(releaseLocation + '/assets').expect(200);
+      expect(res.text).not.toMatch(/Save Selection/);
+      expect(res.text).toMatch(/locked and read-only/);
+    });
+
+    it('published detail hides Publish button', async () => {
+      const { releaseLocation } = await setupPublishedRelease();
+      const res = await request(app).get(releaseLocation).expect(200);
+      expect(res.text).not.toMatch(/\/publish/);
+    });
+
+    it('published detail keeps Edit and Archive buttons', async () => {
+      const { releaseLocation } = await setupPublishedRelease();
+      const res = await request(app).get(releaseLocation).expect(200);
+      expect(res.text).toMatch(/\/releases\/\d+\/edit/);
+      expect(res.text).toMatch(/\/archive/);
+    });
+
+    it('published detail hides Manage Assets link', async () => {
+      const { releaseLocation } = await setupPublishedRelease();
+      const res = await request(app).get(releaseLocation).expect(200);
+      expect(res.text).not.toMatch(/Manage Assets/);
+    });
+  });
+
+  // ─── Phase 8 archived published detail hides published-only notices ──
+  //
+  // When a published release is archived (or its parent is archived), the
+  // archived scope takes precedence. Published-only notices, Publication
+  // Summary, and "asset selection locked" wording must not appear.
+
+  describe('archived published release detail hides published-only notices', () => {
+    async function setupArchivedPublishedRelease() {
+      const { projectId, releaseLocation, assetId } = await setupPublishableRelease(app, projectsRoot, db);
+      const releaseId = Number(releaseLocation.replace('/releases/', ''));
+      // Publish
+      await request(app)
+        .post(releaseLocation + '/publish')
+        .send('publishedDate=2025-06-15')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      // Archive the release
+      await request(app)
+        .post(releaseLocation + '/archive')
+        .expect(302);
+      return { projectId, releaseLocation, releaseId, assetId };
+    }
+
+    async function setupArchivedParentPublishedRelease() {
+      const { projectId, releaseLocation, assetId } = await setupPublishableRelease(app, projectsRoot, db);
+      const releaseId = Number(releaseLocation.replace('/releases/', ''));
+      // Publish
+      await request(app)
+        .post(releaseLocation + '/publish')
+        .send('publishedDate=2025-06-15')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      // Archive the parent project
+      await request(app)
+        .post(`/projects/${projectId}/archive`)
+        .expect(302);
+      return { projectId, releaseLocation, releaseId, assetId };
+    }
+
+    it('archived published detail hides Publication Summary', async () => {
+      const { releaseLocation } = await setupArchivedPublishedRelease();
+      const res = await request(app).get(releaseLocation).expect(200);
+      // Archived notice appears
+      expect(res.text).toMatch(/archived and read-only/);
+      // Published-only notices must NOT appear
+      expect(res.text).not.toMatch(/Publication Summary/);
+      expect(res.text).not.toMatch(/asset selection is locked/);
+      expect(res.text).not.toMatch(/Needs attention/);
+      // Historical status/date preserved
+      expect(res.text).toMatch(/published/);
+      expect(res.text).toMatch(/2025-06-15/);
+    });
+
+    it('archived-parent published detail hides Publication Summary', async () => {
+      const { releaseLocation } = await setupArchivedParentPublishedRelease();
+      const res = await request(app).get(releaseLocation).expect(200);
+      // Archived notice appears
+      expect(res.text).toMatch(/parent project is archived/);
+      // Published-only notices must NOT appear
+      expect(res.text).not.toMatch(/Publication Summary/);
+      expect(res.text).not.toMatch(/asset selection is locked/);
+      expect(res.text).not.toMatch(/Needs attention/);
+      // Historical status/date preserved
+      expect(res.text).toMatch(/published/);
+      expect(res.text).toMatch(/2025-06-15/);
+    });
+
+    it('archived published asset page hides published-only notice', async () => {
+      const { releaseLocation } = await setupArchivedPublishedRelease();
+      const res = await request(app).get(releaseLocation + '/assets').expect(200);
+      // Archived notice appears
+      expect(res.text).toMatch(/archived/);
+      // Published-only notice must NOT appear
+      expect(res.text).not.toMatch(/locked and read-only/);
+    });
+
+    it('archived-parent published asset page hides published-only notice', async () => {
+      const { releaseLocation } = await setupArchivedParentPublishedRelease();
+      const res = await request(app).get(releaseLocation + '/assets').expect(200);
+      // Archived notice appears
+      expect(res.text).toMatch(/archived/);
+      // Published-only notice must NOT appear
+      expect(res.text).not.toMatch(/locked and read-only/);
+    });
+  });
+
+  describe('archived release lifecycle', () => {
+    async function setupArchivedRelease() {
+      const projRes = await request(app)
+        .post('/projects')
+        .send('title=Archived+Lifecycle+Project')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectId = projRes.headers.location.replace('/projects/', '');
+
+      const createRes = await request(app)
+        .post('/releases')
+        .send(`projectId=${projectId}`)
+        .send('title=Archived+Lifecycle+Release')
+        .send('status=ready')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const releaseLocation = createRes.headers.location;
+      const releaseId = Number(releaseLocation.replace('/releases/', ''));
+
+      await request(app)
+        .post(releaseLocation + '/archive')
+        .expect(302);
+
+      return { projectId, releaseLocation, releaseId };
+    }
+
+    it('archived detail exposes no mutation controls', async () => {
+      const { releaseLocation } = await setupArchivedRelease();
+      const res = await request(app).get(releaseLocation).expect(200);
+      expect(res.text).not.toMatch(/\/releases\/\d+\/edit/);
+      expect(res.text).not.toMatch(/\/archive/);
+      expect(res.text).not.toMatch(/Manage Assets/);
+      expect(res.text).not.toMatch(/\/publish/);
+      expect(res.text).not.toMatch(/Remove/);
+    });
+
+    it('archived GET edit redirects to detail', async () => {
+      const { releaseLocation } = await setupArchivedRelease();
+      const res = await request(app).get(releaseLocation + '/edit').expect(302);
+      expect(res.headers.location).toBe(releaseLocation);
+    });
+
+    it('archived release metadata POST returns 422 and preserves row', async () => {
+      const { releaseLocation, releaseId } = await setupArchivedRelease();
+      const before = releaseRepository.findById(releaseId);
+
+      const res = await request(app)
+        .post(releaseLocation)
+        .send('title=Should+Not+Change')
+        .send('status=ready')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(422);
+
+      expect(res.text).toMatch(/archived/);
+      const after = releaseRepository.findById(releaseId);
+      expect(after.title).toBe(before.title);
+    });
+
+    it('archived asset POST preserves junction rows', async () => {
+      const { releaseLocation, releaseId } = await setupArchivedRelease();
+      const before = getReleaseAssets(db, releaseId);
+
+      const res = await request(app)
+        .post(releaseLocation + '/assets')
+        .send('selectedAssetIds[]=99999')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(422);
+
+      const after = getReleaseAssets(db, releaseId);
+      expect(after).toEqual(before);
+    });
+
+    it('archive POST on archived release returns 422 with readiness null', async () => {
+      const { releaseLocation } = await setupArchivedRelease();
+      const res = await request(app)
+        .post(releaseLocation + '/archive')
+        .expect(422);
+      expect(res.text).toMatch(/archived and cannot be modified/);
+      // Must render detail.njk, not publish.njk
+      expect(res.text).not.toMatch(/Review &amp; Publish/);
+      expect(res.text).not.toMatch(/Publishable/);
+      // No readiness panel
+      expect(res.text).not.toMatch(/Needs attention/);
+      expect(res.text).not.toMatch(/Publication Summary/);
+      // No Publish form
+      expect(res.text).not.toMatch(/\/publish/);
+    });
+
+    it('publish POST on archived release returns 422 with readiness null', async () => {
+      const { releaseLocation } = await setupArchivedRelease();
+      const res = await request(app)
+        .post(releaseLocation + '/publish')
+        .expect(422);
+      expect(res.text).toMatch(/archived/);
+      // Must render detail.njk, not publish.njk
+      expect(res.text).not.toMatch(/Review &amp; Publish/);
+      expect(res.text).not.toMatch(/Publishable/);
+      // No readiness panel
+      expect(res.text).not.toMatch(/Needs attention/);
+      expect(res.text).not.toMatch(/Publication Summary/);
+      // No Publish form
+      expect(res.text).not.toMatch(/\/publish/);
+    });
+  });
+
+  describe('archived-parent release lifecycle', () => {
+    async function setupArchivedParentRelease() {
+      const projRes = await request(app)
+        .post('/projects')
+        .send('title=Archived+Parent+Project')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectId = projRes.headers.location.replace('/projects/', '');
+
+      const createRes = await request(app)
+        .post('/releases')
+        .send(`projectId=${projectId}`)
+        .send('title=Archived+Parent+Release')
+        .send('status=ready')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const releaseLocation = createRes.headers.location;
+      const releaseId = Number(releaseLocation.replace('/releases/', ''));
+
+      // Archive the parent project using the dedicated archive route
+      await request(app)
+        .post(`/projects/${projectId}/archive`)
+        .expect(302);
+
+      return { projectId, releaseLocation, releaseId };
+    }
+
+    it('archived-parent GET edit redirects to detail', async () => {
+      const { releaseLocation } = await setupArchivedParentRelease();
+      const res = await request(app).get(releaseLocation + '/edit').expect(302);
+      expect(res.headers.location).toBe(releaseLocation);
+    });
+
+    it('archived-parent metadata POST returns 422 and preserves row', async () => {
+      const { releaseLocation, releaseId } = await setupArchivedParentRelease();
+      const before = releaseRepository.findById(releaseId);
+
+      const res = await request(app)
+        .post(releaseLocation)
+        .send('title=Should+Not+Change')
+        .send('status=ready')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(422);
+
+      expect(res.text).toMatch(/archived/);
+      const after = releaseRepository.findById(releaseId);
+      expect(after.title).toBe(before.title);
+    });
+
+    it('archived-parent asset POST preserves junction rows', async () => {
+      const { releaseLocation, releaseId } = await setupArchivedParentRelease();
+      const before = getReleaseAssets(db, releaseId);
+
+      const res = await request(app)
+        .post(releaseLocation + '/assets')
+        .send('selectedAssetIds[]=99999')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(422);
+
+      const after = getReleaseAssets(db, releaseId);
+      expect(after).toEqual(before);
+    });
+
+    it('archived-parent archive POST returns 422 with readiness null', async () => {
+      const { releaseLocation } = await setupArchivedParentRelease();
+      const res = await request(app)
+        .post(releaseLocation + '/archive')
+        .expect(422);
+      expect(res.text).toMatch(/archived/);
+      // Must render detail.njk, not publish.njk
+      expect(res.text).not.toMatch(/Review &amp; Publish/);
+      expect(res.text).not.toMatch(/Publishable/);
+      // No readiness panel
+      expect(res.text).not.toMatch(/Needs attention/);
+      expect(res.text).not.toMatch(/Publication Summary/);
+      // No Publish form
+      expect(res.text).not.toMatch(/\/publish/);
+    });
+
+    it('archived-parent publish POST returns 422 with readiness null', async () => {
+      const { releaseLocation } = await setupArchivedParentRelease();
+      const res = await request(app)
+        .post(releaseLocation + '/publish')
+        .expect(422);
+      expect(res.text).toMatch(/archived/);
+      // Must render detail.njk, not publish.njk
+      expect(res.text).not.toMatch(/Review &amp; Publish/);
+      expect(res.text).not.toMatch(/Publishable/);
+      // No readiness panel
+      expect(res.text).not.toMatch(/Needs attention/);
+      expect(res.text).not.toMatch(/Publication Summary/);
+      // No Publish form
+      expect(res.text).not.toMatch(/\/publish/);
+    });
+  });
+
+  describe('cancelled release behavior remains unchanged', () => {
+    it('cancelled release detail still shows readiness', async () => {
+      const projRes = await request(app)
+        .post('/projects')
+        .send('title=Cancelled+Readiness+Project')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectId = projRes.headers.location.replace('/projects/', '');
+
+      const createRes = await request(app)
+        .post('/releases')
+        .send(`projectId=${projectId}`)
+        .send('title=Cancelled+Readiness+Release')
+        .send('status=cancelled')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const releaseLocation = createRes.headers.location;
+
+      const res = await request(app).get(releaseLocation).expect(200);
+      // Cancelled releases still show readiness panel (not published summary)
+      expect(res.text).toMatch(/Readiness/);
+      expect(res.text).not.toMatch(/Publication Summary/);
+    });
+  });
+
+  // ─── Phase 8-3: Publication Review and Finalization Submission ──────────
+  //
+  // The direct Publish action is replaced with a server-rendered review flow.
+  // GET /releases/:id/publish renders the review page; POST performs the
+  // authoritative publish. The service remains the single source of truth.
+
+  describe('publication review page (Phase 8-3)', () => {
+    it('publishable ready GET returns 200', async () => {
+      const { releaseLocation } = await setupPublishableRelease(app, projectsRoot, db);
+      const res = await request(app)
+        .get(`${releaseLocation}/publish`)
+        .expect(200);
+      expect(res.text).toContain('Review &amp; Publish');
+      expect(res.text).toContain('Publishable');
+    });
+
+    it('blocked-ready GET returns 200', async () => {
+      const projRes = await request(app)
+        .post('/projects')
+        .send('title=Blocked+Ready+Review+Test')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectId = projRes.headers.location.replace('/projects/', '');
+
+      const createRes = await request(app)
+        .post('/releases')
+        .send(`projectId=${projectId}`)
+        .send('title=Blocked+Ready+Review')
+        .send('status=ready')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      const res = await request(app)
+        .get(`${createRes.headers.location}/publish`)
+        .expect(200);
+      expect(res.text).toContain('Review &amp; Publish');
+      expect(res.text).toContain('Needs attention');
+    });
+
+    it('GET performs no database or junction mutation', async () => {
+      const { releaseLocation, projectId, assetId } = await setupPublishableRelease(app, projectsRoot, db);
+      const releaseId = Number(releaseLocation.replace('/releases/', ''));
+      const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+      const beforeJunction = getReleaseAssets(db, releaseId);
+
+      await request(app)
+        .get(`${releaseLocation}/publish`)
+        .expect(200);
+
+      const afterRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+      const afterJunction = getReleaseAssets(db, releaseId);
+      expect(afterRelease).toEqual(beforeRelease);
+      expect(afterJunction).toEqual(beforeJunction);
+    });
+
+    it('ordered assets, roles, order, presence, and caveat render', async () => {
+      const { releaseLocation } = await setupPublishableRelease(app, projectsRoot, db);
+      const res = await request(app)
+        .get(`${releaseLocation}/publish`)
+        .expect(200);
+
+      // Role renders
+      expect(res.text).toContain('Primary');
+      // Numeric order renders
+      expect(res.text).toContain('0');
+      // Presence renders
+      expect(res.text).toContain('Present');
+      // Caveat renders
+      expect(res.text).toContain('not performing a live filesystem check');
+    });
+
+    describe('lifecycle eligibility redirects', () => {
+      const NON_READY_STATUSES = [
+        { status: 'idea', label: 'idea' },
+        { status: 'planned', label: 'planned' },
+        { status: 'drafting', label: 'drafting' },
+        { status: 'published', label: 'published' },
+        { status: 'cancelled', label: 'cancelled' },
+      ];
+
+      for (const { status, label } of NON_READY_STATUSES) {
+        it(`GET redirects for ${label} status`, async () => {
+          const projRes = await request(app)
+            .post('/projects')
+            .send('title=Lifecycle+Redirect+Test')
+            .send('status=tbd')
+            .send('priority=normal')
+            .set('Content-Type', 'application/x-www-form-urlencoded')
+            .expect(302);
+          const projectId = projRes.headers.location.replace('/projects/', '');
+
+          let releaseLocation;
+          let releaseId;
+
+          if (status === 'published') {
+            // published can only be reached via publishRelease, not direct create
+            const createRes = await request(app)
+              .post('/releases')
+              .send(`projectId=${projectId}`)
+              .send('title=Lifecycle+Redirect+published')
+              .send('status=ready')
+              .set('Content-Type', 'application/x-www-form-urlencoded')
+              .expect(302);
+            releaseLocation = createRes.headers.location;
+            releaseId = Number(releaseLocation.replace('/releases/', ''));
+
+            // Need a publishable release: create asset, select it, then publish
+            const slug = 'lifecycle-redirect-test';
+            const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
+            const matching = entries.filter((e) => e.endsWith(`-${slug}`));
+            const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
+            fs.writeFileSync(path.join(projectDir, 'pub-asset.txt'), 'content');
+            await request(app).post(`/projects/${projectId}/scan`).expect(302);
+
+            const assetRepo = createAssetRepository(db);
+            const assets = assetRepo.findByProjectId(Number(projectId));
+            await request(app)
+              .post(releaseLocation + '/assets')
+              .send(`selectedAssetIds[]=${assets[0].id}`)
+              .send('roles[]=primary')
+              .send('sortOrder[]=0')
+              .set('Content-Type', 'application/x-www-form-urlencoded')
+              .expect(302);
+
+            await request(app)
+              .post(`${releaseLocation}/publish`)
+              .set('Content-Type', 'application/x-www-form-urlencoded')
+              .expect(302);
+          } else {
+            const createRes = await request(app)
+              .post('/releases')
+              .send(`projectId=${projectId}`)
+              .send(`title=Lifecycle+Redirect+${label}`)
+              .send(`status=${status}`)
+              .set('Content-Type', 'application/x-www-form-urlencoded')
+              .expect(302);
+            releaseLocation = createRes.headers.location;
+            releaseId = Number(releaseLocation.replace('/releases/', ''));
+          }
+
+          const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+
+          const res = await request(app)
+            .get(`${releaseLocation}/publish`)
+            .expect(302);
+
+          // Exact Location header
+          expect(res.headers.location).toBe(releaseLocation);
+          // No mutation
+          const afterRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+          expect(afterRelease).toEqual(beforeRelease);
+        });
+      }
+
+      it('GET redirects for archived release', async () => {
+        const { releaseLocation } = await setupPublishableRelease(app, projectsRoot, db);
+        const releaseId = Number(releaseLocation.replace('/releases/', ''));
+
+        await request(app)
+          .post(`${releaseLocation}/archive`)
+          .expect(302);
+
+        const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+
+        const res = await request(app)
+          .get(`${releaseLocation}/publish`)
+          .expect(302);
+
+        expect(res.headers.location).toBe(releaseLocation);
+        const afterRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+        expect(afterRelease).toEqual(beforeRelease);
+      });
+
+      it('GET redirects for archived parent project', async () => {
+        const { releaseLocation, projectId } = await setupPublishableRelease(app, projectsRoot, db);
+        const releaseId = Number(releaseLocation.replace('/releases/', ''));
+
+        await request(app)
+          .post(`/projects/${projectId}/archive`)
+          .expect(302);
+
+        const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+
+        const res = await request(app)
+          .get(`${releaseLocation}/publish`)
+          .expect(302);
+
+        expect(res.headers.location).toBe(releaseLocation);
+        const afterRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+        expect(afterRelease).toEqual(beforeRelease);
+      });
+    });
+
+    it('malformed/unknown IDs return 404', async () => {
+      await request(app)
+        .get('/releases/abc/publish')
+        .expect(404);
+
+      await request(app)
+        .get('/releases/99999/publish')
+        .expect(404);
+    });
+
+    describe('route-neighbor coverage', () => {
+      it('GET /releases/:id still renders detail', async () => {
+        const { releaseLocation } = await setupPublishableRelease(app, projectsRoot, db);
+        const res = await request(app)
+          .get(releaseLocation)
+          .expect(200);
+        expect(res.text).toContain('Readiness Test Release');
+      });
+
+      it('GET /releases/:id/edit still renders edit form', async () => {
+        const { releaseLocation } = await setupPublishableRelease(app, projectsRoot, db);
+        const res = await request(app)
+          .get(`${releaseLocation}/edit`)
+          .expect(200);
+        expect(res.text).toContain('Edit Release');
+      });
+
+      it('GET /releases/:id/assets still renders asset selection', async () => {
+        const { releaseLocation } = await setupPublishableRelease(app, projectsRoot, db);
+        const res = await request(app)
+          .get(`${releaseLocation}/assets`)
+          .expect(200);
+        expect(res.text).toContain('Assets —');
+        expect(res.text).toContain('asset-table');
+      });
+
+      it('POST /releases/:id/publish still publishes', async () => {
+        const { releaseLocation } = await setupPublishableRelease(app, projectsRoot, db);
+        const res = await request(app)
+          .post(`${releaseLocation}/publish`)
+          .set('Content-Type', 'application/x-www-form-urlencoded')
+          .expect(302);
+        expect(res.headers.location).toBe(releaseLocation);
+      });
+
+      it('GET and POST /releases/:id/publish coexist correctly', async () => {
+        const { releaseLocation } = await setupPublishableRelease(app, projectsRoot, db);
+
+        // GET returns 200
+        const getRes = await request(app)
+          .get(`${releaseLocation}/publish`)
+          .expect(200);
+        expect(getRes.text).toContain('Review &amp; Publish');
+
+        // POST returns 302
+        const postRes = await request(app)
+          .post(`${releaseLocation}/publish`)
+          .set('Content-Type', 'application/x-www-form-urlencoded')
+          .expect(302);
+        expect(postRes.headers.location).toBe(releaseLocation);
+      });
+    });
+
+    it('persisted date prefills', async () => {
+      const { releaseLocation } = await setupPublishableRelease(app, projectsRoot, db);
+      // Set a persisted published_date
+      const releaseId = Number(releaseLocation.replace('/releases/', ''));
+      db.prepare("UPDATE releases SET published_date = '2025-12-01' WHERE id = ?").run(releaseId);
+
+      const res = await request(app)
+        .get(`${releaseLocation}/publish`)
+        .expect(200);
+      expect(res.text).toContain('value="2025-12-01"');
+    });
+
+    it('local-today fallback prefills', async () => {
+      const { releaseLocation } = await setupPublishableRelease(app, projectsRoot, db);
+      const res = await request(app)
+        .get(`${releaseLocation}/publish`)
+        .expect(200);
+
+      const today = getLocalTodayIso();
+      expect(res.text).toContain(`value="${today}"`);
+    });
+
+    it('valid submitted date persists exactly', async () => {
+      const { releaseLocation } = await setupPublishableRelease(app, projectsRoot, db);
+      const releaseId = Number(releaseLocation.replace('/releases/', ''));
+
+      await request(app)
+        .post(`${releaseLocation}/publish`)
+        .send('publishedDate=2025-11-01')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      const release = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+      expect(release.published_date).toBe('2025-11-01');
+      expect(release.status).toBe('published');
+    });
+
+    it('missing direct-POST date preserves fallback behavior', async () => {
+      const { releaseLocation } = await setupPublishableRelease(app, projectsRoot, db);
+      const releaseId = Number(releaseLocation.replace('/releases/', ''));
+
+      await request(app)
+        .post(`${releaseLocation}/publish`)
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      const release = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+      expect(release.status).toBe('published');
+      const today = getLocalTodayIso();
+      expect(release.published_date).toBe(today);
+    });
+
+    describe('invalid published-date input', () => {
+      const INVALID_DATES = [
+        { label: 'impossible calendar date', value: '2025-02-30' },
+        { label: 'non-date string', value: 'not-a-date' },
+      ];
+
+      for (const { label, value } of INVALID_DATES) {
+        it(`returns 422 for ${label}: "${value}"`, async () => {
+          const { releaseLocation } = await setupPublishableRelease(app, projectsRoot, db);
+          const releaseId = Number(releaseLocation.replace('/releases/', ''));
+          const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+          const beforeJunction = getReleaseAssets(db, releaseId);
+
+          const res = await request(app)
+            .post(`${releaseLocation}/publish`)
+            .send(`publishedDate=${value}`)
+            .set('Content-Type', 'application/x-www-form-urlencoded')
+            .expect(422);
+
+          // Exact submitted value preserved in the form
+          expect(res.text).toContain(`value="${value}"`);
+          // Field-specific error renders
+          expect(res.text).toContain('Published date must be a valid date');
+          // Complete release row unchanged
+          const afterRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+          expect(afterRelease).toEqual(beforeRelease);
+          // Complete junction rows unchanged
+          const afterJunction = getReleaseAssets(db, releaseId);
+          expect(afterJunction).toEqual(beforeJunction);
+        });
+      }
+
+      it('whitespace-only input is treated as no date (falls through to today)', async () => {
+        const { releaseLocation } = await setupPublishableRelease(app, projectsRoot, db);
+        const releaseId = Number(releaseLocation.replace('/releases/', ''));
+
+        await request(app)
+          .post(`${releaseLocation}/publish`)
+          .send('publishedDate=   ')
+          .set('Content-Type', 'application/x-www-form-urlencoded')
+          .expect(302);
+
+        const release = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+        expect(release.status).toBe('published');
+        const today = getLocalTodayIso();
+        expect(release.published_date).toBe(today);
+      });
+
+      it('leading/trailing whitespace on a valid date is trimmed and accepted', async () => {
+        const { releaseLocation } = await setupPublishableRelease(app, projectsRoot, db);
+        const releaseId = Number(releaseLocation.replace('/releases/', ''));
+
+        await request(app)
+          .post(`${releaseLocation}/publish`)
+          .send('publishedDate=  2025-06-15  ')
+          .set('Content-Type', 'application/x-www-form-urlencoded')
+          .expect(302);
+
+        const release = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+        expect(release.status).toBe('published');
+        expect(release.published_date).toBe('2025-06-15');
+      });
+    });
+
+    it('readiness changes after GET cause POST rejection', async () => {
+      const { releaseLocation, projectId } = await setupPublishableRelease(app, projectsRoot, db);
+
+      // Load the review page (GET)
+      await request(app)
+        .get(`${releaseLocation}/publish`)
+        .expect(200);
+
+      // Change readiness: remove the asset file and scan
+      const slug = 'readiness-test-project';
+      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
+      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
+      const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
+      fs.unlinkSync(path.join(projectDir, 'asset.png'));
+      await request(app)
+        .post(`/projects/${projectId}/scan`)
+        .expect(302);
+
+      // POST should now be rejected
+      const res = await request(app)
+        .post(`${releaseLocation}/publish`)
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(422);
+      expect(res.text).toContain('Cannot publish');
+    });
+
+    it('stale POST leaves row and junctions unchanged', async () => {
+      const { releaseLocation, projectId, assetId } = await setupPublishableRelease(app, projectsRoot, db);
+      const releaseId = Number(releaseLocation.replace('/releases/', ''));
+      const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+      const beforeJunction = getReleaseAssets(db, releaseId);
+
+      // Remove the asset file and scan to make it missing
+      const slug = 'readiness-test-project';
+      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
+      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
+      const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
+      fs.unlinkSync(path.join(projectDir, 'asset.png'));
+      await request(app)
+        .post(`/projects/${projectId}/scan`)
+        .expect(302);
+
+      // POST publish — should be rejected
+      await request(app)
+        .post(`${releaseLocation}/publish`)
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(422);
+
+      const afterRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+      const afterJunction = getReleaseAssets(db, releaseId);
+      expect(afterRelease).toEqual(beforeRelease);
+      expect(afterJunction).toEqual(beforeJunction);
+    });
+
+    it('direct forged POST still cannot bypass readiness', async () => {
+      const projRes = await request(app)
+        .post('/projects')
+        .send('title=Forged+Review+POST+Test')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectId = projRes.headers.location.replace('/projects/', '');
+
+      const createRes = await request(app)
+        .post('/releases')
+        .send(`projectId=${projectId}`)
+        .send('title=Forged+Review+POST')
+        .send('status=ready')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      // Direct POST with no assets — server must reject
+      const res = await request(app)
+        .post(`${createRes.headers.location}/publish`)
+        .expect(422);
+      expect(res.text).toContain('Cannot publish');
+    });
+
+    it('successful publication redirects to published summary', async () => {
+      const { releaseLocation } = await setupPublishableRelease(app, projectsRoot, db);
+
+      const res = await request(app)
+        .post(`${releaseLocation}/publish`)
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      // Should redirect to release detail
+      expect(res.headers.location).toBe(releaseLocation);
+
+      // Detail should show published summary
+      const detail = await request(app).get(releaseLocation).expect(200);
+      expect(detail.text).toContain('Publication Summary');
+    });
+
+    it('newly published selection is already locked', async () => {
+      const { releaseLocation, assetId } = await setupPublishableRelease(app, projectsRoot, db);
+      const releaseId = Number(releaseLocation.replace('/releases/', ''));
+
+      // Publish
+      await request(app)
+        .post(`${releaseLocation}/publish`)
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      // Attempt to change asset selection — must be rejected
+      const res = await request(app)
+        .post(releaseLocation + '/assets')
+        .send(`selectedAssetIds[]=${assetId}`)
+        .send('roles[]=attachment')
+        .send('sortOrder[]=0')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(422);
+
+      expect(res.text).toMatch(/locked/);
+    });
+
+    it('no JavaScript confirmation is required', async () => {
+      const { releaseLocation } = await setupPublishableRelease(app, projectsRoot, db);
+      const res = await request(app)
+        .get(`${releaseLocation}/publish`)
+        .expect(200);
+
+      // The publish form must not have an onclick confirm handler
+      expect(res.text).not.toMatch(/onclick/);
+    });
+
+    it('renders assets in sort_order ASC, asset_id ASC order', async () => {
+      const { releaseLocation, projectId } = await setupPublishableRelease(app, projectsRoot, db);
+      const releaseId = Number(releaseLocation.replace('/releases/', ''));
+      const assetRepo = createAssetRepository(db);
+
+      // Create additional assets with deliberately unordered insertion
+      const slug = 'readiness-test-project';
+      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
+      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
+      const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
+
+      // Write distinct files
+      fs.writeFileSync(path.join(projectDir, 'delta.txt'), 'delta');
+      fs.writeFileSync(path.join(projectDir, 'alpha.txt'), 'alpha');
+      fs.writeFileSync(path.join(projectDir, 'charlie.txt'), 'charlie');
+      fs.writeFileSync(path.join(projectDir, 'bravo.txt'), 'bravo');
+      await request(app).post(`/projects/${projectId}/scan`).expect(302);
+
+      const allAssets = assetRepo.findByProjectId(Number(projectId));
+      const assetMap = {};
+      for (const a of allAssets) {
+        assetMap[a.filename] = a;
+      }
+
+      // Deliberately unordered insertion with distinct sort_order and roles
+      // Expected order: sort_order ASC, asset_id ASC
+      // sort_order 0: alpha (asset_id lower) then bravo (asset_id higher) — tie
+      // sort_order 1: charlie
+      // sort_order 5: delta
+      await request(app)
+        .post(releaseLocation + '/assets')
+        .send(`selectedAssetIds[]=${assetMap['delta.txt'].id}`)
+        .send(`selectedAssetIds[]=${assetMap['bravo.txt'].id}`)
+        .send(`selectedAssetIds[]=${assetMap['alpha.txt'].id}`)
+        .send(`selectedAssetIds[]=${assetMap['charlie.txt'].id}`)
+        .send('roles[]=source')
+        .send('roles[]=preview')
+        .send('roles[]=primary')
+        .send('roles[]=attachment')
+        .send('sortOrder[]=5')
+        .send('sortOrder[]=0')
+        .send('sortOrder[]=0')
+        .send('sortOrder[]=1')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      // Fetch the review page
+      const res = await request(app)
+        .get(`${releaseLocation}/publish`)
+        .expect(200);
+
+      // Extract the asset table rows from the review page
+      const tableSection = res.text.match(/<table class="asset-table">[\s\S]*?<\/table>/);
+      expect(tableSection).not.toBeNull();
+      const tableHtml = tableSection[0];
+
+      // Parse rows from tbody
+      const tbodyMatch = tableHtml.match(/<tbody>[\s\S]*?<\/tbody>/);
+      expect(tbodyMatch).not.toBeNull();
+      const rowRegex = /<tr>[\s\S]*?<\/tr>/g;
+      const htmlRows = tbodyMatch[0].match(rowRegex);
+      expect(htmlRows).not.toBeNull();
+
+      // Expected order from DB: sort_order ASC, asset_id ASC
+      const dbRows = db.prepare(
+        `SELECT ra.sort_order, ra.asset_id, a.filename, ra.role
+         FROM release_assets ra
+         JOIN assets a ON a.id = ra.asset_id
+         WHERE ra.release_id = ?
+         ORDER BY ra.sort_order ASC, ra.asset_id ASC`
+      ).all(releaseId);
+
+      expect(htmlRows.length).toBe(dbRows.length);
+
+      for (let i = 0; i < htmlRows.length; i++) {
+        const rowHtml = htmlRows[i];
+        const dbRow = dbRows[i];
+
+        // Assert filename
+        const filenameMatch = rowHtml.match(/<td class="asset-filename">([^<]+)<\/td>/);
+        expect(filenameMatch).not.toBeNull();
+        expect(filenameMatch[1]).toBe(dbRow.filename);
+
+        // Assert role
+        const roleMatch = rowHtml.match(/<td class="asset-filename">[^<]*<\/td>\s*<td>([^<]+)<\/td>/);
+        expect(roleMatch).not.toBeNull();
+        expect(roleMatch[1].toLowerCase().trim()).toBe(dbRow.role);
+
+        // Assert sort order is visible
+        expect(rowHtml).toContain(String(dbRow.sort_order));
+
+        // Assert presence state
+        expect(rowHtml).toContain('Present');
+      }
+    });
+  });
+
+  // ─── Phase 8 archived-lifecycle complete state tests ──────────────────────
+  //
+  // Every rejected POST must leave the complete release row and junction rows
+  // unchanged. Release snapshots include all columns; junction snapshots
+  // include release_id, asset_id, role, sort_order, created_at.
+
+  describe('archived-lifecycle complete state preservation', () => {
+    /**
+     * Snapshot the complete release row (all columns).
+     */
+    function snapshotRelease(releaseId) {
+      return db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+    }
+
+    /**
+     * Snapshot the complete junction rows (all columns, deterministic order).
+     */
+    function snapshotJunction(releaseId) {
+      return db.prepare(
+        'SELECT release_id, asset_id, role, sort_order, created_at FROM release_assets WHERE release_id = ? ORDER BY sort_order ASC, asset_id ASC'
+      ).all(releaseId);
+    }
+
+    async function setupArchivedReleaseWithAsset() {
+      const projRes = await request(app)
+        .post('/projects')
+        .send('title=Complete+State+Archived+Project')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectId = projRes.headers.location.replace('/projects/', '');
+
+      const slug = 'complete-state-archived-project';
+      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
+      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
+      const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
+      fs.writeFileSync(path.join(projectDir, 'asset.png'), 'png');
+      await request(app).post(`/projects/${projectId}/scan`).expect(302);
+
+      const assetRepo = createAssetRepository(db);
+      const assets = assetRepo.findByProjectId(Number(projectId));
+      const assetId = String(assets[0].id);
+
+      const createRes = await request(app)
+        .post('/releases')
+        .send(`projectId=${projectId}`)
+        .send('title=Complete+State+Archived+Release')
+        .send('status=ready')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const releaseLocation = createRes.headers.location;
+      const releaseId = Number(releaseLocation.replace('/releases/', ''));
+
+      // Select the asset
+      await request(app)
+        .post(releaseLocation + '/assets')
+        .send(`selectedAssetIds[]=${assetId}`)
+        .send('roles[]=primary')
+        .send('sortOrder[]=0')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      // Archive the release
+      await request(app)
+        .post(releaseLocation + '/archive')
+        .expect(302);
+
+      return { projectId, releaseLocation, releaseId, assetId: Number(assetId) };
+    }
+
+    async function setupArchivedParentReleaseWithAsset() {
+      const projRes = await request(app)
+        .post('/projects')
+        .send('title=Complete+State+Archived+Parent')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectId = projRes.headers.location.replace('/projects/', '');
+
+      const slug = 'complete-state-archived-parent';
+      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
+      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
+      const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
+      fs.writeFileSync(path.join(projectDir, 'asset.png'), 'png');
+      await request(app).post(`/projects/${projectId}/scan`).expect(302);
+
+      const assetRepo = createAssetRepository(db);
+      const assets = assetRepo.findByProjectId(Number(projectId));
+      const assetId = String(assets[0].id);
+
+      const createRes = await request(app)
+        .post('/releases')
+        .send(`projectId=${projectId}`)
+        .send('title=Complete+State+Archived+Parent+Release')
+        .send('status=ready')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const releaseLocation = createRes.headers.location;
+      const releaseId = Number(releaseLocation.replace('/releases/', ''));
+
+      // Select the asset
+      await request(app)
+        .post(releaseLocation + '/assets')
+        .send(`selectedAssetIds[]=${assetId}`)
+        .send('roles[]=primary')
+        .send('sortOrder[]=0')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      // Archive the parent project
+      await request(app)
+        .post(`/projects/${projectId}/archive`)
+        .expect(302);
+
+      return { projectId, releaseLocation, releaseId, assetId: Number(assetId) };
+    }
+
+    // ── Archived release ──────────────────────────────────────────────────
+
+    it('archived metadata POST preserves complete release and junction state', async () => {
+      const { releaseLocation, releaseId } = await setupArchivedReleaseWithAsset();
+      const beforeRelease = snapshotRelease(releaseId);
+      const beforeJunction = snapshotJunction(releaseId);
+
+      const res = await request(app)
+        .post(releaseLocation)
+        .send('title=Should+Not+Change')
+        .send('status=ready')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(422);
+
+      expect(res.text).toMatch(/archived/);
+      expect(snapshotRelease(releaseId)).toEqual(beforeRelease);
+      expect(snapshotJunction(releaseId)).toEqual(beforeJunction);
+    });
+
+    it('archived-parent metadata POST preserves complete release and junction state', async () => {
+      const { releaseLocation, releaseId } = await setupArchivedParentReleaseWithAsset();
+      const beforeRelease = snapshotRelease(releaseId);
+      const beforeJunction = snapshotJunction(releaseId);
+
+      const res = await request(app)
+        .post(releaseLocation)
+        .send('title=Should+Not+Change')
+        .send('status=ready')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(422);
+
+      expect(res.text).toMatch(/archived/);
+      expect(snapshotRelease(releaseId)).toEqual(beforeRelease);
+      expect(snapshotJunction(releaseId)).toEqual(beforeJunction);
+    });
+
+    it('archived asset POST preserves complete release and junction state', async () => {
+      const { releaseLocation, releaseId } = await setupArchivedReleaseWithAsset();
+      const beforeRelease = snapshotRelease(releaseId);
+      const beforeJunction = snapshotJunction(releaseId);
+
+      const res = await request(app)
+        .post(releaseLocation + '/assets')
+        .send('selectedAssetIds[]=99999')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(422);
+
+      expect(res.text).toMatch(/archived/);
+      expect(snapshotRelease(releaseId)).toEqual(beforeRelease);
+      expect(snapshotJunction(releaseId)).toEqual(beforeJunction);
+    });
+
+    it('archived-parent asset POST preserves complete release and junction state', async () => {
+      const { releaseLocation, releaseId } = await setupArchivedParentReleaseWithAsset();
+      const beforeRelease = snapshotRelease(releaseId);
+      const beforeJunction = snapshotJunction(releaseId);
+
+      const res = await request(app)
+        .post(releaseLocation + '/assets')
+        .send('selectedAssetIds[]=99999')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(422);
+
+      expect(res.text).toMatch(/archived/);
+      expect(snapshotRelease(releaseId)).toEqual(beforeRelease);
+      expect(snapshotJunction(releaseId)).toEqual(beforeJunction);
+    });
+
+    it('archived archive POST preserves complete release and junction state', async () => {
+      const { releaseLocation, releaseId } = await setupArchivedReleaseWithAsset();
+      const beforeRelease = snapshotRelease(releaseId);
+      const beforeJunction = snapshotJunction(releaseId);
+
+      const res = await request(app)
+        .post(releaseLocation + '/archive')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(422);
+
+      expect(res.text).toMatch(/archived and cannot be modified/);
+      expect(snapshotRelease(releaseId)).toEqual(beforeRelease);
+      expect(snapshotJunction(releaseId)).toEqual(beforeJunction);
+    });
+
+    it('archived-parent archive POST preserves complete release and junction state', async () => {
+      const { releaseLocation, releaseId } = await setupArchivedParentReleaseWithAsset();
+      const beforeRelease = snapshotRelease(releaseId);
+      const beforeJunction = snapshotJunction(releaseId);
+
+      const res = await request(app)
+        .post(releaseLocation + '/archive')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(422);
+
+      expect(res.text).toMatch(/archived/);
+      expect(snapshotRelease(releaseId)).toEqual(beforeRelease);
+      expect(snapshotJunction(releaseId)).toEqual(beforeJunction);
+    });
+
+    it('archived publish POST preserves complete release and junction state', async () => {
+      const { releaseLocation, releaseId } = await setupArchivedReleaseWithAsset();
+      const beforeRelease = snapshotRelease(releaseId);
+      const beforeJunction = snapshotJunction(releaseId);
+
+      const res = await request(app)
+        .post(releaseLocation + '/publish')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(422);
+
+      expect(res.text).toMatch(/archived/);
+      expect(snapshotRelease(releaseId)).toEqual(beforeRelease);
+      expect(snapshotJunction(releaseId)).toEqual(beforeJunction);
+    });
+
+    it('archived-parent publish POST preserves complete release and junction state', async () => {
+      const { releaseLocation, releaseId } = await setupArchivedParentReleaseWithAsset();
+      const beforeRelease = snapshotRelease(releaseId);
+      const beforeJunction = snapshotJunction(releaseId);
+
+      const res = await request(app)
+        .post(releaseLocation + '/publish')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(422);
+
+      expect(res.text).toMatch(/archived/);
+      expect(snapshotRelease(releaseId)).toEqual(beforeRelease);
+      expect(snapshotJunction(releaseId)).toEqual(beforeJunction);
+    });
+
+    it('archived corrective removal POST preserves complete release and junction state', async () => {
+      const { releaseLocation, releaseId, assetId } = await setupArchivedReleaseWithAsset();
+      const beforeRelease = snapshotRelease(releaseId);
+      const beforeJunction = snapshotJunction(releaseId);
+
+      const res = await request(app)
+        .post(`${releaseLocation}/assets/${assetId}/remove`)
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(422);
+
+      expect(res.text).toMatch(/archived/);
+      expect(snapshotRelease(releaseId)).toEqual(beforeRelease);
+      expect(snapshotJunction(releaseId)).toEqual(beforeJunction);
+    });
+
+    it('archived-parent corrective removal POST preserves complete state and shows archived notice', async () => {
+      const { releaseLocation, releaseId, assetId } = await setupArchivedParentReleaseWithAsset();
+      const beforeRelease = snapshotRelease(releaseId);
+      const beforeJunction = snapshotJunction(releaseId);
+
+      // Snapshot the complete asset row
+      const assetRepo = createAssetRepository(db);
+      const beforeAsset = assetRepo.findById(assetId);
+
+      const res = await request(app)
+        .post(`${releaseLocation}/assets/${assetId}/remove`)
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(422);
+
+      // Archived-parent notice appears
+      expect(res.text).toMatch(/parent project is archived/);
+      // No Remove form
+      expect(res.text).not.toMatch(/Remove/);
+      // No Publish form
+      expect(res.text).not.toMatch(/\/publish/);
+      // No readiness panel
+      expect(res.text).not.toMatch(/Needs attention/);
+      expect(res.text).not.toMatch(/Publication Summary/);
+      // Complete state unchanged
+      expect(snapshotRelease(releaseId)).toEqual(beforeRelease);
+      expect(snapshotJunction(releaseId)).toEqual(beforeJunction);
+      const afterAsset = assetRepo.findById(assetId);
+      expect(afterAsset).toEqual(beforeAsset);
+    });
+
+    // ── Successful published metadata edit ───────────────────────────────
+
+    it('published metadata edit changes only intended fields and preserves status and junction rows', async () => {
+      const { releaseLocation, projectId } = await setupPublishableRelease(app, projectsRoot, db);
+      const releaseId = Number(releaseLocation.replace('/releases/', ''));
+
+      // Publish the release
+      await request(app)
+        .post(releaseLocation + '/publish')
+        .send('publishedDate=2025-06-15')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      const beforeRelease = snapshotRelease(releaseId);
+      const beforeJunction = snapshotJunction(releaseId);
+
+      // Edit metadata: title, description, notes, plannedDate, publishedDate, patreonUrl
+      await request(app)
+        .post(releaseLocation)
+        .send('title=Updated+Published+Title')
+        .send('description=Updated+description')
+        .send('notes=Updated+notes')
+        .send('status=published')
+        .send('plannedDate=2025-07-01')
+        .send('publishedDate=2025-06-20')
+        .send('patreonUrl=https://patreon.com/updated')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      const afterRelease = snapshotRelease(releaseId);
+      const afterJunction = snapshotJunction(releaseId);
+
+      // Status must remain published
+      expect(afterRelease.status).toBe('published');
+
+      // Metadata fields changed
+      expect(afterRelease.title).toBe('Updated Published Title');
+      expect(afterRelease.description).toBe('Updated description');
+      expect(afterRelease.notes).toBe('Updated notes');
+      expect(afterRelease.planned_date).toBe('2025-07-01');
+      expect(afterRelease.published_date).toBe('2025-06-20');
+      expect(afterRelease.patreon_url).toBe('https://patreon.com/updated');
+
+      // Junction rows must be exactly unchanged
+      expect(afterJunction).toEqual(beforeJunction);
+
+      // Non-mutable fields must be preserved
+      expect(afterRelease.id).toBe(beforeRelease.id);
+      expect(afterRelease.project_id).toBe(beforeRelease.project_id);
+      expect(afterRelease.created_at).toBe(beforeRelease.created_at);
+    });
+  });
+
+  // ─── Phase 8 structural published asset-table assertions ──────────────────
+  //
+  // Parse the exact selected-assets section on published detail and assert
+  // structural properties: exactly one table.asset-table, multiple assets in
+  // sort_order ASC, asset_id ASC order, correct roles and presence values.
+
+  describe('published detail structural asset-table assertions', () => {
+    async function setupPublishedRelease() {
+      const { projectId, releaseLocation, assetId } = await setupPublishableRelease(app, projectsRoot, db);
+      const releaseId = Number(releaseLocation.replace('/releases/', ''));
+
+      // Add a second asset with a different role and sort order
+      const slug = 'readiness-test-project';
+      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
+      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
+      const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
+      fs.writeFileSync(path.join(projectDir, 'second-asset.txt'), 'second content');
+      await request(app).post(`/projects/${projectId}/scan`).expect(302);
+
+      const assetRepo = createAssetRepository(db);
+      const allAssets = assetRepo.findByProjectId(Number(projectId));
+      const secondAsset = allAssets.find((a) => a.id !== Number(assetId));
+
+      // Select both assets with distinctive roles and sort orders
+      await request(app)
+        .post(releaseLocation + '/assets')
+        .send(`selectedAssetIds[]=${assetId}`)
+        .send(`selectedAssetIds[]=${secondAsset.id}`)
+        .send('roles[]=primary')
+        .send('roles[]=preview')
+        .send('sortOrder[]=0')
+        .send('sortOrder[]=10')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      // Publish
+      await request(app)
+        .post(releaseLocation + '/publish')
+        .send('publishedDate=2025-06-15')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      return { projectId, releaseLocation, releaseId, assetId: Number(assetId), secondAssetId: secondAsset.id };
+    }
+
+    it('exactly one table.asset-table appears in the selected-assets section', async () => {
+      const { releaseLocation } = await setupPublishedRelease();
+      const res = await request(app).get(releaseLocation).expect(200);
+
+      // Extract the Selected Assets section
+      const sectionMatch = res.text.match(/<h2>Selected Assets<\/h2>[\s\S]*?<\/section>/);
+      expect(sectionMatch).not.toBeNull();
+      const sectionHtml = sectionMatch[0];
+
+      // Count table.asset-table occurrences within that section
+      const tableMatches = sectionHtml.match(/<table class="asset-table">/g);
+      expect(tableMatches).not.toBeNull();
+      expect(tableMatches.length).toBe(1);
+    });
+
+    it('multiple assets render in sort_order ASC, asset_id ASC order', async () => {
+      const { releaseLocation, releaseId } = await setupPublishedRelease();
+      const res = await request(app).get(releaseLocation).expect(200);
+
+      // Extract the Selected Assets section
+      const sectionMatch = res.text.match(/<h2>Selected Assets<\/h2>[\s\S]*?<\/section>/);
+      expect(sectionMatch).not.toBeNull();
+      const sectionHtml = sectionMatch[0];
+
+      // Extract asset rows in order from the table body
+      const rowRegex = /<tr>[\s\S]*?<td class="asset-filename">([^<]+)<\/td>[\s\S]*?<td>([^<]+)<\/td>[\s\S]*?<td class="asset-path">[\s\S]*?<\/td>[\s\S]*?<td>[\s\S]*?(Present|Missing)[\s\S]*?<\/td>[\s\S]*?<\/tr>/g;
+      const rows = [];
+      let rowMatch;
+      while ((rowMatch = rowRegex.exec(sectionHtml)) !== null) {
+        rows.push({ filename: rowMatch[1], role: rowMatch[2], presence: rowMatch[3] });
+      }
+
+      // Verify the order matches the database order
+      const dbRows = db.prepare(
+        'SELECT ra.sort_order, ra.asset_id, a.filename, ra.role FROM release_assets ra JOIN assets a ON a.id = ra.asset_id WHERE ra.release_id = ? ORDER BY ra.sort_order ASC, ra.asset_id ASC'
+      ).all(releaseId);
+
+      expect(rows.length).toBe(dbRows.length);
+      for (let i = 0; i < rows.length; i++) {
+        expect(rows[i].filename).toBe(dbRows[i].filename);
+        expect(rows[i].role.toLowerCase()).toBe(dbRows[i].role);
+      }
+    });
+
+    it('roles and presence values correspond to the correct rows', async () => {
+      const { releaseLocation, releaseId, assetId, secondAssetId } = await setupPublishedRelease();
+      const res = await request(app).get(releaseLocation).expect(200);
+
+      // Extract the Selected Assets section
+      const sectionMatch = res.text.match(/<h2>Selected Assets<\/h2>[\s\S]*?<\/section>/);
+      expect(sectionMatch).not.toBeNull();
+      const sectionHtml = sectionMatch[0];
+
+      // Get the database rows for reference
+      const dbRows = db.prepare(
+        'SELECT ra.asset_id, a.filename, ra.role, ra.sort_order FROM release_assets ra JOIN assets a ON a.id = ra.asset_id WHERE ra.release_id = ? ORDER BY ra.sort_order ASC, ra.asset_id ASC'
+      ).all(releaseId);
+
+      // Extract individual table rows from the tbody
+      const tbodyMatch = sectionHtml.match(/<tbody>[\s\S]*?<\/tbody>/);
+      expect(tbodyMatch).not.toBeNull();
+      const rowRegex = /<tr>[\s\S]*?<\/tr>/g;
+      const htmlRows = tbodyMatch[0].match(rowRegex);
+      expect(htmlRows).not.toBeNull();
+      expect(htmlRows.length).toBe(dbRows.length);
+
+      for (let i = 0; i < htmlRows.length; i++) {
+        const rowHtml = htmlRows[i];
+        const dbRow = dbRows[i];
+
+        // Extract filename
+        const filenameMatch = rowHtml.match(/<td class="asset-filename">([^<]+)<\/td>/);
+        expect(filenameMatch).not.toBeNull();
+        expect(filenameMatch[1]).toBe(dbRow.filename);
+
+        // Extract role — it's the first <td> after the filename that contains text
+        const roleMatch = rowHtml.match(/<td class="asset-filename">[^<]*<\/td>\s*<td>([^<]+)<\/td>/);
+        expect(roleMatch).not.toBeNull();
+        expect(roleMatch[1].toLowerCase().trim()).toBe(dbRow.role);
+
+        // Extract presence — it's the <td> after the path <td>
+        const presenceMatch = rowHtml.match(/<td class="asset-path">[\s\S]*?<\/td>\s*<td>[\s\S]*?(Present|Missing)[\s\S]*?<\/td>/);
+        expect(presenceMatch).not.toBeNull();
+        expect(presenceMatch[1]).toMatch(/Present|Missing/);
+      }
     });
   });
 });

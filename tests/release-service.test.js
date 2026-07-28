@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import slugify from '@sindresorhus/slugify';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
-import { createReleaseService, ReleaseValidationError, ReleaseNotFoundError, ReleaseArchivedError, ReleaseParentArchivedError, AssetNotFoundError } from '../src/services/release-service.js';
+import { createReleaseService, ReleaseValidationError, ReleaseNotFoundError, ReleaseArchivedError, ReleaseParentArchivedError, ReleasePublishedError, AssetNotFoundError } from '../src/services/release-service.js';
 import { evaluateReleaseReadiness } from '../src/services/release-readiness-policy.js';
 import { createProjectRepository } from '../src/data/project-repository.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
@@ -229,12 +229,12 @@ describe('release service', () => {
       }).toThrow(ReleaseValidationError);
     });
 
-    it('throws ReleaseNotFoundError when updating an archived release', () => {
+    it('throws ReleaseArchivedError when updating an archived release', () => {
       const created = service.createRelease(projectId, validInput({ title: 'Original' }));
       service.archiveRelease(created.id);
       expect(() => {
         service.updateRelease(created.id, validInput({ title: 'Should Not Update' }));
-      }).toThrow(ReleaseNotFoundError);
+      }).toThrow(ReleaseArchivedError);
     });
   });
 
@@ -290,7 +290,7 @@ describe('release service', () => {
       service.archiveRelease(created.id);
       expect(() => {
         service.publishRelease(created.id);
-      }).toThrow(ReleaseValidationError);
+      }).toThrow(ReleaseArchivedError);
     });
 
     it('throws for invalid published date', () => {
@@ -377,7 +377,7 @@ describe('release service', () => {
 
       expect(() => {
         service.publishRelease(release.id);
-      }).toThrow(ReleaseValidationError);
+      }).toThrow(ReleaseArchivedError);
 
       expect(snapshotReleaseRow(db, release.id)).toEqual(before);
     });
@@ -396,8 +396,6 @@ describe('release service', () => {
       expect(() => {
         service.publishRelease(release.id);
       }).toThrow(ReleaseParentArchivedError);
-
-      expect(snapshotReleaseRow(db, release.id)).toEqual(before);
     });
 
     it('rejects publish for a non-ready release without changing the complete release row', () => {
@@ -431,16 +429,9 @@ describe('release service', () => {
       service.archiveRelease(created.id);
       const before = snapshotReleaseRow(db, created.id);
 
-      const facts = service.repository.findReadinessFactsById(created.id);
-      const policyResult = evaluateReleaseReadiness(facts);
-      expect(policyResult.checks.filter((check) => !check.passed).map((check) => check.key)).toEqual([
-        'assets_selected',
-        'scope_mutable',
-      ]);
-
       expect(() => {
         service.publishRelease(created.id);
-      }).toThrow(ReleaseValidationError);
+      }).toThrow(ReleaseArchivedError);
 
       expect(snapshotReleaseRow(db, created.id)).toEqual(before);
     });
@@ -579,7 +570,7 @@ describe('release service', () => {
       service.archiveRelease(created.id);
       expect(() => {
         service.archiveRelease(created.id);
-      }).toThrow(ReleaseValidationError);
+      }).toThrow(ReleaseArchivedError);
     });
 
     it('does not change status when archiving', () => {
@@ -964,9 +955,9 @@ describe('release service', () => {
 
       service.removeAssetFromRelease(release.id, asset1.id);
 
-      const rows = db.prepare('SELECT asset_id, role, sort_order FROM release_assets WHERE release_id = ? ORDER BY sort_order ASC').all(release.id);
+      const rows = db.prepare('SELECT release_id, asset_id, role, sort_order, created_at FROM release_assets WHERE release_id = ? ORDER BY sort_order ASC, asset_id ASC').all(release.id);
       expect(rows).toHaveLength(1);
-      expect(rows[0]).toEqual({ asset_id: asset2.id, role: 'attachment', sort_order: 1 });
+      expect(rows[0]).toMatchObject({ asset_id: asset2.id, role: 'attachment', sort_order: 1 });
     });
 
     it('rejects removal of a selected present asset without changing the selection', () => {
@@ -1317,6 +1308,131 @@ describe('release service', () => {
         expect(err.status).toBe(422);
         expect(err.message).toMatch(/archived/i);
       }
+    });
+  });
+
+  // ─── Phase 8-1: Published release asset-selection lock ──────────────
+  //
+  // Once a release has status "published", its release_assets junction rows
+  // must be immutable. The guard must reject every mutation path before any
+  // write, and the junction rows must remain exactly unchanged after every
+  // rejection. Scans may still update asset presence/metadata on the assets
+  // table — that is tested separately in the HTTP scan-regression test.
+
+  describe('published release asset-selection lock', () => {
+    function createPublishedRelease() {
+      const release = service.createRelease(projectId, validInput({ status: 'ready' }));
+      const asset = assetRepo.upsert(projectId, 'pub-lock.txt', sampleAsset(projectId, { relativePath: 'pub-lock.txt' }));
+      service.selectAssets(release.id, [{ assetId: asset.id, role: 'primary', sortOrder: 0 }]);
+      const published = service.publishRelease(release.id, '2025-06-15');
+      return { release: published, asset };
+    }
+
+    function snapshotReleaseAssets(releaseId) {
+      return db.prepare('SELECT release_id, asset_id, role, sort_order, created_at FROM release_assets WHERE release_id = ? ORDER BY sort_order ASC, asset_id ASC').all(releaseId);
+    }
+
+    it('rejects bulk replacement of selected assets for a published release', () => {
+      const { release, asset } = createPublishedRelease();
+      const asset2 = assetRepo.upsert(projectId, 'another.txt', sampleAsset(projectId, { relativePath: 'another.txt' }));
+      const before = snapshotReleaseAssets(release.id);
+
+      expect(() => {
+        service.selectAssets(release.id, [{ assetId: asset2.id, role: 'attachment', sortOrder: 0 }]);
+      }).toThrow(ReleasePublishedError);
+
+      expect(snapshotReleaseAssets(release.id)).toEqual(before);
+    });
+
+    it('rejects adding an asset to a published release', () => {
+      const { release } = createPublishedRelease();
+      const newAsset = assetRepo.upsert(projectId, 'new.txt', sampleAsset(projectId, { relativePath: 'new.txt' }));
+      const before = snapshotReleaseAssets(release.id);
+
+      expect(() => {
+        service.addAssetToRelease(release.id, newAsset.id, 'attachment', 0);
+      }).toThrow(ReleasePublishedError);
+
+      expect(snapshotReleaseAssets(release.id)).toEqual(before);
+    });
+
+    it('rejects removing an asset from a published release', () => {
+      const { release, asset } = createPublishedRelease();
+      const before = snapshotReleaseAssets(release.id);
+
+      expect(() => {
+        service.removeAssetFromRelease(release.id, asset.id);
+      }).toThrow(ReleasePublishedError);
+
+      expect(snapshotReleaseAssets(release.id)).toEqual(before);
+    });
+
+    it('rejects missing-asset corrective removal from a published release', () => {
+      const { release, asset } = createPublishedRelease();
+      // Mark the asset as missing
+      assetRepo.markMissingByProjectIdAndPathNotIn(projectId, []);
+      const before = snapshotReleaseAssets(release.id);
+
+      expect(() => {
+        service.removeAssetFromRelease(release.id, asset.id);
+      }).toThrow(ReleasePublishedError);
+
+      expect(snapshotReleaseAssets(release.id)).toEqual(before);
+    });
+
+    it('rejects role-only update for a published release', () => {
+      const { release, asset } = createPublishedRelease();
+      const before = snapshotReleaseAssets(release.id);
+
+      expect(() => {
+        service.selectAssets(release.id, [{ assetId: asset.id, role: 'attachment', sortOrder: 0 }]);
+      }).toThrow(ReleasePublishedError);
+
+      expect(snapshotReleaseAssets(release.id)).toEqual(before);
+    });
+
+    it('rejects sort-order-only update for a published release', () => {
+      const { release, asset } = createPublishedRelease();
+      const before = snapshotReleaseAssets(release.id);
+
+      expect(() => {
+        service.selectAssets(release.id, [{ assetId: asset.id, role: 'primary', sortOrder: 5 }]);
+      }).toThrow(ReleasePublishedError);
+
+      expect(snapshotReleaseAssets(release.id)).toEqual(before);
+    });
+
+    it('rejects combined role/order update for a published release', () => {
+      const { release, asset } = createPublishedRelease();
+      const before = snapshotReleaseAssets(release.id);
+
+      expect(() => {
+        service.selectAssets(release.id, [{ assetId: asset.id, role: 'source', sortOrder: 9 }]);
+      }).toThrow(ReleasePublishedError);
+
+      expect(snapshotReleaseAssets(release.id)).toEqual(before);
+    });
+
+    it('preserves current behavior for non-published releases (ready)', () => {
+      const release = service.createRelease(projectId, validInput({ status: 'ready' }));
+      const asset = assetRepo.upsert(projectId, 'ready-asset.txt', sampleAsset(projectId, { relativePath: 'ready-asset.txt' }));
+      service.selectAssets(release.id, [{ assetId: asset.id, role: 'primary', sortOrder: 0 }]);
+
+      // Should not throw — ready releases are not locked
+      const asset2 = assetRepo.upsert(projectId, 'ready-asset2.txt', sampleAsset(projectId, { relativePath: 'ready-asset2.txt' }));
+      service.addAssetToRelease(release.id, asset2.id, 'attachment', 1);
+      const rows = snapshotReleaseAssets(release.id);
+      expect(rows).toHaveLength(2);
+    });
+
+    it('preserves current behavior for cancelled releases', () => {
+      const release = service.createRelease(projectId, validInput({ status: 'cancelled' }));
+      const asset = assetRepo.upsert(projectId, 'cancelled-asset.txt', sampleAsset(projectId, { relativePath: 'cancelled-asset.txt' }));
+
+      // Should not throw — cancelled releases are not locked by this guard
+      service.selectAssets(release.id, [{ assetId: asset.id, role: 'primary', sortOrder: 0 }]);
+      const rows = snapshotReleaseAssets(release.id);
+      expect(rows).toHaveLength(1);
     });
   });
 

@@ -48,11 +48,16 @@
     <div class="field-row">
       <div class="field {% if errors.status %}field-error{% endif %}">
         <label for="status">Status <span class="required" aria-label="required">*</span></label>
-        <select id="status" name="status" required>
-          {% for s in statuses %}
-            <option value="{{ s }}" {% if values.status == s %}selected{% endif %}>{{ s | replace('-', ' ') | title }}</option>
-          {% endfor %}
-        </select>
+        {% if release and release.status == 'published' %}
+          <input type="hidden" name="status" value="published">
+          <p class="field-static-value">Published</p>
+        {% else %}
+          <select id="status" name="status" required>
+            {% for s in statuses %}
+              <option value="{{ s }}" {% if values.status == s %}selected{% endif %}>{{ s | replace('-', ' ') | title }}</option>
+            {% endfor %}
+          </select>
+        {% endif %}
         {% if errors.status %}<span class="field-error-message">{{ errors.status }}</span>{% endif %}
       </div>
     </div>

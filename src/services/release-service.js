@@ -43,6 +43,20 @@ export class ReleaseParentArchivedError extends Error {
   }
 }
 
+/**
+ * Thrown when a release-asset mutation is attempted on a published release.
+ * Published releases have locked asset selections — no additions, removals,
+ * role changes, or sort-order changes are permitted. Scans may still update
+ * asset presence and metadata.
+ */
+export class ReleasePublishedError extends Error {
+  constructor(id) {
+    super(`Release ${id} is published and its asset selection is locked.`);
+    this.name = 'ReleasePublishedError';
+    this.status = 422;
+  }
+}
+
 export class AssetNotFoundError extends Error {
   constructor(id) {
     super(`Asset ${id} not found`);
@@ -247,6 +261,25 @@ export function createReleaseService({ db, evaluateReleaseReadiness }) {
     }
   }
 
+  /**
+   * Shared guard: reject a release-asset mutation when the release has status
+   * "published". Published releases have locked asset selections — the junction
+   * table rows (asset_id, role, sort_order) are immutable. Scans may still
+   * update asset presence and metadata on the assets table, but the
+   * release_assets rows themselves must not change.
+   *
+   * This guard runs before any junction-table mutation in every public
+   * release-asset mutation method.
+   *
+   * @param {ReleaseRecord} release
+   * @throws {ReleasePublishedError}
+   */
+  function guardReleaseNotPublished(release) {
+    if (release.status === 'published') {
+      throw new ReleasePublishedError(release.id);
+    }
+  }
+
   return {
     RELEASE_STATUSES,
     ACTIVE_RELEASE_STATUSES,
@@ -281,6 +314,9 @@ export function createReleaseService({ db, evaluateReleaseReadiness }) {
       // projects are immutable — releases inside them are read-only.
       guardParentProjectNotArchived(release.project_id);
 
+      // Reject mutations when the release itself is archived.
+      guardReleaseNotArchived(release);
+
       // Validate project still exists and is not archived
       validateProjectExists(release.project_id);
 
@@ -313,7 +349,7 @@ export function createReleaseService({ db, evaluateReleaseReadiness }) {
       guardParentProjectNotArchived(release.project_id);
 
       if (release.archived_at) {
-        throw new ReleaseValidationError({ general: 'Cannot publish an archived release.' });
+        throw new ReleaseArchivedError(id);
       }
 
       if (release.status === 'published') {
@@ -374,7 +410,7 @@ export function createReleaseService({ db, evaluateReleaseReadiness }) {
       guardParentProjectNotArchived(release.project_id);
 
       if (release.archived_at) {
-        throw new ReleaseValidationError({ general: 'Release is already archived.' });
+        throw new ReleaseArchivedError(id);
       }
 
       const archived = repository.archive(id);
@@ -523,6 +559,8 @@ export function createReleaseService({ db, evaluateReleaseReadiness }) {
       guardReleaseNotArchived(release);
       // Reject mutations when the parent project has been archived.
       guardParentProjectNotArchived(release.project_id);
+      // Reject mutations when the release is published — asset selection is locked.
+      guardReleaseNotPublished(release);
 
       const { assetIds, cleaned } = this.validateSelections(selections, releaseId);
 
@@ -590,6 +628,8 @@ export function createReleaseService({ db, evaluateReleaseReadiness }) {
       guardReleaseNotArchived(release);
       // Reject mutations when the parent project has been archived.
       guardParentProjectNotArchived(release.project_id);
+      // Reject mutations when the release is published — asset selection is locked.
+      guardReleaseNotPublished(release);
 
       // Validate role
       if (!RELEASE_ASSET_ROLES.includes(role)) {
@@ -650,6 +690,8 @@ export function createReleaseService({ db, evaluateReleaseReadiness }) {
       guardReleaseNotArchived(release);
       // Reject mutations when the parent project has been archived.
       guardParentProjectNotArchived(release.project_id);
+      // Reject mutations when the release is published — asset selection is locked.
+      guardReleaseNotPublished(release);
 
       // Verify the asset exists and belongs to the release's project
       const asset = assetRepository.findById(assetId);

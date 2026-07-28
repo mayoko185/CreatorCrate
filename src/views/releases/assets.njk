@@ -3,7 +3,9 @@
 {% block content %}
   {% set projectArchived = project and project.archived_at %}
   {% set releaseArchived = release and release.archived_at %}
+  {% set isPublished = release and release.status == 'published' %}
   {% set isArchived = projectArchived or releaseArchived %}
+  {% set readOnly = isArchived or isPublished %}
   <div class="page-header">
     <h1>Assets — {{ release.title }}</h1>
     <div class="actions">
@@ -14,6 +16,12 @@
   {% if isArchived %}
     <div class="notice" role="status">
       <p>{% if releaseArchived %}This release is archived.{% else %}The parent project is archived.{% endif %} Asset selections are read-only.</p>
+    </div>
+  {% endif %}
+
+  {% if isPublished and not isArchived %}
+    <div class="notice" role="status">
+      <p>This release is published. Asset selections are locked and read-only.</p>
     </div>
   {% endif %}
 
@@ -52,7 +60,7 @@
           <tr class="{% if asset.is_present == 0 %}asset-missing{% endif %}" data-asset-id="{{ asset.id }}">
             <td>
               {% if asset.is_present == 1 %}
-                <input type="checkbox" name="selectedAssetIds[]" value="{{ asset.id }}" {% if isSelected %}checked{% endif %} {% if isArchived %}disabled{% endif %} class="asset-checkbox">
+                <input type="checkbox" name="selectedAssetIds[]" value="{{ asset.id }}" {% if isSelected %}checked{% endif %} {% if readOnly %}disabled{% endif %} class="asset-checkbox">
               {% else %}
                 <span class="missing-indicator" title="Asset is missing from disk">✗</span>
               {% endif %}
@@ -68,7 +76,7 @@
             </td>
             <td>
               {% if asset.is_present == 1 %}
-                <select name="roles[]" {% if not isSelected or isArchived %}disabled{% endif %} class="asset-role">
+                <select name="roles[]" {% if not isSelected or readOnly %}disabled{% endif %} class="asset-role">
                   {% for role in roles %}
                     <option value="{{ role }}" {% if currentRole == role %}selected{% endif %}>{{ role | title }}</option>
                   {% endfor %}
@@ -79,7 +87,7 @@
             </td>
             <td>
               {% if asset.is_present == 1 %}
-                <input type="number" name="sortOrder[]" value="{{ currentSortOrder }}" min="0" style="width: 4rem;" {% if not isSelected or isArchived %}disabled{% endif %} class="asset-sort-order">
+                <input type="number" name="sortOrder[]" value="{{ currentSortOrder }}" min="0" style="width: 4rem;" {% if not isSelected or readOnly %}disabled{% endif %} class="asset-sort-order">
               {% else %}
                 —
               {% endif %}
@@ -90,7 +98,7 @@
     </table>
 
     <div class="form-actions">
-      {% if not isArchived %}
+      {% if not readOnly %}
         <button class="button button-primary" type="submit">Save Selection</button>
       {% endif %}
       <a class="button button-secondary" href="/releases/{{ release.id }}">Back</a>

@@ -2,9 +2,12 @@
 
 {% block content %}
   {% set projectArchived = project and project.archived_at %}
+  {% set releaseArchived = release and release.archived_at %}
+  {% set isPublished = release and release.status == 'published' %}
+  {% set isArchived = projectArchived or releaseArchived %}
   <div class="page-header">
     <h1>{{ release.title }}</h1>
-    {% if not projectArchived %}
+    {% if not projectArchived and not releaseArchived %}
       <div class="actions">
         <a class="button" href="/releases/{{ release.id }}/edit">Edit</a>
         <form method="post" action="/releases/{{ release.id }}/archive" class="inline-form">
@@ -17,6 +20,18 @@
   {% if projectArchived %}
     <div class="notice" role="status">
       <p>The parent project is archived. This release is read-only.</p>
+    </div>
+  {% endif %}
+
+  {% if releaseArchived %}
+    <div class="notice" role="status">
+      <p>This release is archived and read-only.</p>
+    </div>
+  {% endif %}
+
+  {% if isPublished and not isArchived %}
+    <div class="notice" role="status">
+      <p>This release is published. The asset selection is locked and reflects the state at the time of publication. Asset presence is based on the last completed scan — this is not a live filesystem check.</p>
     </div>
   {% endif %}
 
@@ -88,7 +103,7 @@
   <section>
     <h2>Assets</h2>
     <p>
-      {% if not projectArchived %}
+      {% if not projectArchived and not releaseArchived and not isPublished %}
         <a class="button" href="/releases/{{ release.id }}/assets">Manage Assets</a>
       {% endif %}
       <span class="meta">{{ assetCount }} asset{% if assetCount != 1 %}s{% endif %} selected</span>
@@ -119,7 +134,7 @@
             <th>Role</th>
             <th>Path</th>
             <th>Status</th>
-            {% if not projectArchived and not release.archived_at %}
+            {% if not projectArchived and not releaseArchived and not isPublished %}
               <th>Actions</th>
             {% endif %}
           </tr>
@@ -137,7 +152,7 @@
                   <span class="asset-missing-label">Missing</span>
                 {% endif %}
               </td>
-              {% if not projectArchived and not release.archived_at %}
+              {% if not projectArchived and not releaseArchived and not isPublished %}
                 <td>
                   {% if ra.is_present == 0 %}
                     <form method="post" action="/releases/{{ release.id }}/assets/{{ ra.asset_id }}/remove" class="inline-form">
@@ -150,6 +165,28 @@
           {% endfor %}
         </tbody>
       </table>
+    </section>
+  {% endif %}
+
+  {% if isPublished and not isArchived %}
+    <section class="readiness-panel">
+      <h2>Publication Summary</h2>
+      <p class="readiness-badge readiness-publishable">Published</p>
+      <ul class="readiness-checks">
+        <li class="readiness-check check-passed">
+          <span class="check-icon">&#10003;</span>
+          <span class="check-label">Asset selection locked</span>
+          <span class="check-detail">The selected assets, roles, and order are final</span>
+        </li>
+        <li class="readiness-check check-passed">
+          <span class="check-icon">&#10003;</span>
+          <span class="check-label">Published date</span>
+          <span class="check-detail">{{ release.published_date }}</span>
+        </li>
+      </ul>
+      <p class="readiness-note">
+        Asset presence reflects the last completed scan. This page is not performing a live filesystem check.
+      </p>
     </section>
   {% endif %}
 
@@ -223,14 +260,9 @@
     </section>
   {% endif %}
 
-  {% if readiness.publishable %}
+  {% if readiness and readiness.publishable %}
     <div class="form-actions" style="margin-top: 2rem;">
-      <form method="post" action="/releases/{{ release.id }}/publish" class="inline-form">
-        {% if release.published_date %}
-          <input type="hidden" name="publishedDate" value="{{ release.published_date }}">
-        {% endif %}
-        <button class="button button-primary" type="submit" onclick="return confirm('Publish this release?')">Publish</button>
-      </form>
+      <a class="button button-primary" href="/releases/{{ release.id }}/publish">Publish</a>
     </div>
   {% endif %}
 {% endblock %}
