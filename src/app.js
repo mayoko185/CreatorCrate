@@ -7,15 +7,18 @@ import { createHealthRouter } from './routes/health.js';
 import { createProjectsRouter } from './routes/projects.js';
 import { createAssetsRouter } from './routes/assets.js';
 import { createReleasesRouter } from './routes/releases.js';
+import { createMediaRouter } from './routes/media.js';
 import { createProjectService } from './services/project-service.js';
 import { createAssetScanner } from './services/asset-scanner.js';
 import { createReleaseService } from './services/release-service.js';
 import { createWorkflowQueryService } from './services/workflow-query-service.js';
 import { evaluateReleaseReadiness } from './services/release-readiness-policy.js';
+import { createPreviewService } from './services/preview-service.js';
+import { createMediaService } from './services/media-service.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-export function createApp({ appName, db, projectsRoot }, opts = {}) {
+export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {}) {
   const app = express();
 
   const env = nunjucks.configure(path.join(__dirname, 'views'), {
@@ -33,10 +36,45 @@ export function createApp({ appName, db, projectsRoot }, opts = {}) {
   const releaseService = opts.releaseService || createReleaseService({ db, evaluateReleaseReadiness });
   const workflowQueryService = createWorkflowQueryService({ db, evaluateReleaseReadiness });
 
+  // Phase 10.1A: preview root is passed explicitly so later services can
+  // resolve preview paths without reading the environment or globals.
+  app.locals.previewRoot = previewRoot;
+
+  // Phase 10.1C: construct the preview + media services per createApp call
+  // (no hidden singleton). Tests may inject stubs via opts.previewService /
+  // opts.mediaService to keep createApp testable with temporary roots and
+  // stubbed services. Production construction uses the configured
+  // PROJECTS_ROOT, configured preview root, project repository, asset
+  // repository, storage helper (openAssetFile), and Sharp media processor
+  // (via the preview service).
+  const previewService =
+    opts.previewService ||
+    (previewRoot
+      ? createPreviewService({ db, projectsRoot, previewRoot })
+      : null);
+
+  const mediaService =
+    opts.mediaService ||
+    (previewService && previewRoot && projectsRoot
+      ? createMediaService({ previewService, projectsRoot, previewRoot })
+      : null);
+
+  app.locals.previewService = previewService;
+  app.locals.mediaService = mediaService;
+
   app.use('/', createIndexRouter({ appName, workflowQueryService }));
   app.use('/health', createHealthRouter({ db }));
   app.use('/projects', createProjectsRouter({ appName, projectService, workflowQueryService }));
   app.use('/projects', createAssetsRouter({ appName, projectService, assetScanner, workflowQueryService }));
+
+  // Media routes are mounted BEFORE the releases router and before any
+  // future /projects/:projectId/assets/:assetId detail route. The three
+  // media routes have four path segments under /projects, while the
+  // planned detail route has three, so there is no route conflict.
+  if (mediaService) {
+    app.use('/projects', createMediaRouter({ mediaService }));
+  }
+
   app.use('/releases', createReleasesRouter({ appName, releaseService, projectService, workflowQueryService }));
 
   app.use((_req, _res, next) => {
@@ -45,9 +83,26 @@ export function createApp({ appName, db, projectsRoot }, opts = {}) {
     next(err);
   });
 
-  app.use((err, req, res, _next) => {
+  app.use((err, req, res, next) => {
+    if (res.headersSent) {
+      return next(err);
+    }
+
     const status = err.status || err.statusCode || 500;
     const isClientError = status >= 400 && status < 500;
+
+    // Unexpected server errors (5xx) may contain sensitive error-state
+    // pages or stack traces. Prevent caching so stale error pages never
+    // pollute a client's cache. Controlled domain statuses (4xx) are left
+    // untouched — their cache policy is set by the route that handled them.
+    if (status >= 500) {
+      res.setHeader('Cache-Control', 'no-store');
+      res.removeHeader('Content-Type');
+      res.removeHeader('Content-Length');
+      res.removeHeader('Content-Disposition');
+      res.removeHeader('ETag');
+      res.removeHeader('X-Content-Type-Options');
+    }
 
     res.status(status);
 

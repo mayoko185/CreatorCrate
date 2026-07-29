@@ -4,7 +4,7 @@ import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { createConfig, ConfigError } from './config.js';
 import { validateMounts, FilesystemError } from './filesystem.js';
-import { ensureStatusDirs, StorageError } from './storage/path-manager.js';
+import { ensureStatusDirs, ensurePreviewRoot, StorageError } from './storage/path-manager.js';
 import { openDatabase, runMigrations, closeDatabase, DatabaseError } from './db.js';
 import { createProjectService } from './services/project-service.js';
 import { createApp } from './app.js';
@@ -41,6 +41,17 @@ async function main() {
     throw err;
   }
 
+  // Phase 10.1A: ensure the derived preview root exists before serving.
+  try {
+    ensurePreviewRoot(config.previewRoot);
+  } catch (err) {
+    if (err instanceof StorageError) {
+      console.error(`Storage error: ${err.message}`);
+      process.exit(1);
+    }
+    throw err;
+  }
+
   const db = openDatabase(config.databasePath);
 
   try {
@@ -64,7 +75,12 @@ async function main() {
     );
   }
 
-  const app = createApp({ appName: config.appName, db, projectsRoot: config.projectsRoot });
+  const app = createApp({
+    appName: config.appName,
+    db,
+    projectsRoot: config.projectsRoot,
+    previewRoot: config.previewRoot,
+  });
 
   const server = app.listen(config.port, () => {
     console.log(`${config.appName} listening on port ${config.port} in ${config.nodeEnv} mode`);

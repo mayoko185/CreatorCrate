@@ -77,4 +77,46 @@ describe('createConfig', () => {
     );
     expect(config.databasePath).toBe(path.resolve('/tmp/app/sub/creatorcrate.db'));
   });
+
+  // ─── Preview root (Phase 10.1A) ───────────────────────────────────────
+
+  it('derives previewRoot as APP_DATA_ROOT/previews by default', () => {
+    const config = createConfig(
+      env({ APP_DATA_ROOT: '/tmp/app', DATABASE_PATH: '/tmp/app/creatorcrate.db' })
+    );
+    expect(config.previewRoot).toBe(path.resolve('/tmp/app', 'previews'));
+  });
+
+  it('derives previewRoot from a custom APP_DATA_ROOT', () => {
+    const config = createConfig(
+      env({
+        APP_DATA_ROOT: '/var/creatorcrate/data',
+        DATABASE_PATH: '/var/creatorcrate/data/creatorcrate.db',
+      })
+    );
+    expect(config.previewRoot).toBe(path.resolve('/var/creatorcrate/data', 'previews'));
+  });
+
+  it('previewRoot is always nested under appDataRoot, not directly configurable', () => {
+    // Even when PROJECTS_ROOT points elsewhere, previewRoot stays under
+    // APP_DATA_ROOT — it is a derived, owned directory.
+    const config = createConfig(
+      env({
+        APP_DATA_ROOT: '/tmp/app',
+        PROJECTS_ROOT: '/tmp/elsewhere',
+        DATABASE_PATH: '/tmp/app/creatorcrate.db',
+      })
+    );
+    expect(config.previewRoot).toBe(path.join(config.appDataRoot, 'previews'));
+    expect(config.previewRoot).not.toBe(config.projectsRoot);
+  });
+
+  it('config object is frozen and previewRoot is a string', () => {
+    const config = createConfig(
+      env({ APP_DATA_ROOT: '/tmp/app', DATABASE_PATH: '/tmp/app/creatorcrate.db' })
+    );
+    expect(Object.isFrozen(config)).toBe(true);
+    expect(typeof config.previewRoot).toBe('string');
+    expect(config.previewRoot.length).toBeGreaterThan(0);
+  });
 });

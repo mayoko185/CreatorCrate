@@ -415,6 +415,44 @@ docker compose build       # rebuild image
 
 These will be added in subsequent phases.
 
+## Public media access (Phase 10.1C)
+
+CreatorCrate has no authentication. Anyone who can reach the web application
+can request its media routes:
+
+```text
+GET /projects/:projectId/assets/:assetId/thumbnail
+GET /projects/:projectId/assets/:assetId/preview
+GET /projects/:projectId/assets/:assetId/original
+```
+
+Path containment (the safe resolver under `PROJECTS_ROOT`) prevents
+filesystem escape but is NOT authentication. It does not restrict which
+users may view which assets — every reachable project and asset is
+readable through these routes. Original files are served inline only when
+both the stored extension and recorded MIME match an allowlisted image pair:
+`png` + `image/png`, `jpg`/`jpeg` + `image/jpeg`, `webp` + `image/webp`,
+or `gif` + `image/gif`. Krita, unknown extensions, missing MIME,
+`application/octet-stream`, and extension/MIME mismatches are rejected with
+`415`. The raw database filename is never trusted: the filename in
+`Content-Disposition` is sanitized with an ASCII-only `filename=` fallback
+(transliterated via NFD decomposition, no non-ASCII code points, no path
+separators, no control characters, no header delimiters, bounded to 128
+characters with safe extension retention) and a bounded UTF-8 RFC 5987
+`filename*=` value that percent-encodes disallowed bytes with uppercase
+hexadecimal digits.
+
+Preview freshness is best-effort and is based on metadata from the last
+completed asset scan. Thumbnail and preview cache freshness uses the scanned
+source size, modification time, relative path, and derivative version; same-size
+content changes with preserved modification time may not be detected until a
+later scanned filesystem change or cache rebuild. The browser revision token is
+for cache selection only; it is not a content hash or authorization mechanism.
+
+Deployment access controls (network ACLs, reverse-proxy auth, VPN,
+firewall) remain the operator's responsibility. Authentication is
+deferred to a later phase and is not added in this pass.
+
 ## Verification
 
 Run the focused verification order used during development:

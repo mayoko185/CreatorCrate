@@ -34,6 +34,10 @@ RUN chown -R creatorcrate:creatorcrate /app
 
 USER creatorcrate
 
+# Phase 10.1A: verify the Sharp native dependency loads under the
+# non-root runtime user before declaring the image ready.
+RUN node -e "import('sharp').then(m => { const v = m.default.versions; if (!v.sharp || !v.vips) { process.exit(1); } console.log('sharp ' + v.sharp + ' vips ' + v.vips); })"
+
 EXPOSE 3000
 
 CMD ["node", "src/server.js"]
