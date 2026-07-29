@@ -55,6 +55,7 @@ export function createAssetsRouter({ appName, projectService, assetScanner, work
         appName,
         project,
         assets: data.assets,
+        cards: data.cards,
         total: data.total,
         page: data.page,
         pageSize: data.pageSize,

@@ -74,6 +74,34 @@ function totalFromCounts(counts) {
 }
 
 /**
+ * Format a byte count into a human-readable string using binary units.
+ * @param {number} bytes
+ * @returns {string}
+ */
+function formatFileSize(bytes) {
+  if (!Number.isFinite(bytes) || bytes < 0) return '\u2014';
+  if (bytes === 0) return '0 B';
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let value = bytes / 1024;
+  let i = 0;
+  while (value >= 1024 && i < units.length - 1) {
+    value /= 1024;
+    i++;
+  }
+  const decimals = value < 10 ? 1 : 0;
+  return `${value.toFixed(decimals)} ${units[i]}`;
+}
+
+function buildPreviewAltText(asset) {
+  const filename = typeof asset.filename === 'string' ? asset.filename.trim() : '';
+  const identifier = filename || (
+    Number.isInteger(asset.id) && asset.id > 0 ? `Asset ${asset.id}` : 'Unnamed asset'
+  );
+  return `Preview of ${identifier}`;
+}
+
+/**
  * Group an ordered list of releases by their planned_date. Returns an array
  * of `{ plannedDate, releases }` objects, preserving the order in which each
  * date first appears. Releases without a planned_date are dropped (this
@@ -731,6 +759,7 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
       project_id: asset.project_id,
       relative_path: asset.relative_path,
       filename: asset.filename,
+      previewAltText: buildPreviewAltText(asset),
       extension: asset.extension,
       mime_type: asset.mime_type,
       size_bytes: asset.size_bytes,
@@ -754,6 +783,68 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
       thumbnail_url: preview.urls.thumbnail,
       preview_url: preview.urls.preview,
       original_url: buildOriginalUrl(asset),
+    };
+  }
+
+  /**
+   * Convert one browser asset row into a render-ready card model.
+   * Does NOT generate previews — it only reads data already attached to the
+   * browser row. Safe to call for present, missing, and unsupported assets.
+   *
+   * @param {object} asset - browser asset row (has `.preview` attached)
+   * @returns {{
+   *   id: number,
+   *   filename: string,
+   *   extension: string,
+   *   compactTypeLabel: string|null,
+   *   formattedSize: string,
+   *   modifiedAt: string,
+   *   presenceState: string,
+   *   isPresent: boolean,
+   *   releaseUsageCount: number,
+   *   previewCapability: string,
+   *   isPreviewable: boolean,
+   *   hasThumbnail: boolean,
+   *   thumbnailUrl: string|null,
+   *   viewerUrl: string,
+   *   originalEligible: boolean,
+   *   statusText: string,
+   * }}
+   */
+  function buildAssetCardModel(asset) {
+    const preview = asset.preview || buildAssetPreviewModel(asset);
+    const isPresent = Boolean(asset.is_present);
+    const thumbnailUrl = preview.urls ? preview.urls.thumbnail : null;
+
+    let statusText;
+    if (!isPresent) {
+      statusText = 'Missing at last scan';
+    } else if (preview.state === 'unsupported') {
+      statusText = 'Unsupported preview';
+    } else if (!thumbnailUrl) {
+      statusText = 'Preview unavailable';
+    } else {
+      statusText = 'Present at last scan';
+    }
+
+    return {
+      id: asset.id,
+      filename: asset.filename,
+      previewAltText: buildPreviewAltText(asset),
+      extension: asset.extension,
+      compactTypeLabel: asset.extension ? asset.extension.toUpperCase() : null,
+      formattedSize: formatFileSize(asset.size_bytes),
+      modifiedAt: asset.modified_at,
+      presenceState: asset.presence_state || (isPresent ? 'present' : 'missing'),
+      isPresent,
+      releaseUsageCount: asset.release_usage_count || 0,
+      previewCapability: preview.state,
+      isPreviewable: preview.previewable,
+      hasThumbnail: Boolean(thumbnailUrl),
+      thumbnailUrl,
+      viewerUrl: `/projects/${asset.project_id}/assets/${asset.id}`,
+      originalEligible: preview.previewable,
+      statusText,
     };
   }
 
@@ -837,8 +928,11 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
       preview_url: asset.preview.urls.preview,
     }));
 
+    const cards = assets.map(buildAssetCardModel);
+
     return {
       assets,
+      cards,
       total,
       page,
       pageSize: filters.pageSize,

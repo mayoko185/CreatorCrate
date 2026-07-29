@@ -154,6 +154,12 @@ describe('asset browser HTTP workflow', () => {
     expect(Array.from(url.searchParams.keys())).toEqual(keys);
   }
 
+  function renderedStyle(html) {
+    const match = html.match(/<style>([\s\S]*?)<\/style>/);
+    if (!match) throw new Error('Rendered page did not include its stylesheet.');
+    return match[1];
+  }
+
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-asset-browser-'));
     projectsRoot = path.join(tmpDir, 'projects');
@@ -615,7 +621,8 @@ describe('asset browser HTTP workflow', () => {
     expect(nextUrl.searchParams.get('page')).toBe('2');
     expect(nextUrl.searchParams.has('unknown')).toBe(false);
     expect(nextUrl.searchParams.has('scan_result')).toBe(false);
-    expect(res2.text).not.toContain('/thumbnail');
+    // Grid view renders versioned thumbnail URLs for previewable assets,
+    // but never preview-sized media.
     expect(res2.text).not.toContain('/preview');
   });
 
@@ -750,7 +757,7 @@ describe('asset browser HTTP workflow', () => {
       .get(`/projects/${id}/assets?presence=missing`)
       .expect(200);
     expect(res2.text).toContain('No assets match the current filters');
-    expect(res2.text).toContain('Clear filters');
+    expect(res2.text).toContain('Reset Filters');
   });
 
   it('shows empty state for project with no assets', async () => {
@@ -1082,7 +1089,7 @@ describe('asset browser HTTP workflow', () => {
     expectAnchorHref(res2.text, 'asset-viewer-project', `/projects/${id}`);
     expectAnchorHref(res2.text, 'asset-viewer-back', `/projects/${id}/assets`);
     expect(res2.text).toContain(
-      `<img class="asset-preview-image" src="/projects/${id}/assets/${asset.id}/preview?v=${revision}" alt="Preview of hero.png">`
+      `<img class="asset-preview-image" src="/projects/${id}/assets/${asset.id}/preview?v=${revision}" alt="Preview of hero.png" data-preview-image>`
     );
     expectAnchorHref(res2.text, 'asset-viewer-original', `/projects/${id}/assets/${asset.id}/original`);
     expect(res2.text).toContain('<code>gallery/hero.png</code>');
@@ -1400,5 +1407,825 @@ describe('asset browser HTTP workflow', () => {
     expect(backIndex).toBeLessThan(previousIndex);
     expect(previousIndex).toBeLessThan(nextIndex);
     expect(nextIndex).toBeLessThan(originalIndex);
+  });
+
+  it('renders long viewer filenames, paths, MIME types, and release usage without truncation', async () => {
+    const res = await createProject('Viewer Long Content');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('Viewer Long Content');
+    if (!projectDir) throw new Error('projectDir not found for Viewer Long Content');
+    const filename = 'this-is-a-very-long-viewer-filename-that-must-wrap-without-expanding-the-viewport.txt';
+    const relativePath = `deeply/nested/source/${filename}`;
+    const asset = writeIndexedAsset(id, projectDir, relativePath, 'long content', {
+      mimeType: 'application/vnd.example.extremely-long-mime-type',
+    });
+    await createReleaseUsingAsset(id, asset.id, 'Long Viewer Release');
+
+    const res2 = await request(app)
+      .get(`/projects/${id}/assets/${asset.id}`)
+      .expect(200);
+
+    expect(res2.text).toContain(`<title>${filename} — CreatorCrate</title>`);
+    expect(res2.text).toContain(`<h1>${filename}</h1>`);
+    expect(res2.text).toContain(`<code>${relativePath}</code>`);
+    expect(res2.text).toContain('<code>application/vnd.example.extremely-long-mime-type</code>');
+    expect(res2.text).toContain('Long Viewer Release');
+  });
+
+  // ─── Phase 10.3A: Server-rendered asset grid ─────────────────────
+
+  function extractCard(html, assetId) {
+    const re = new RegExp(
+      `<article class="asset-card" data-asset-id="${assetId}">([\\s\\S]*?)</article>`
+    );
+    const match = html.match(re);
+    return match ? match[0] : null;
+  }
+
+  it('grid preserves default list rendering when view is omitted', async () => {
+    const res = await createProject('Grid Default List');
+    const id = res.headers.location.replace('/projects/', '');
+    const projectDir = getProjectDir('Grid Default List');
+    fs.writeFileSync(path.join(projectDir, 'alpha.png'), 'png');
+    await request(app).post(`/projects/${id}/scan`).expect(302);
+
+    const res2 = await request(app).get(`/projects/${id}/assets`).expect(200);
+    expect(res2.text).toContain('<table class="asset-table">');
+    expect(res2.text).not.toContain('<ul class="asset-grid">');
+  });
+
+  it('renders grid markup when view=grid', async () => {
+    const res = await createProject('Grid Renders');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('Grid Renders');
+    const asset = writeIndexedAsset(id, projectDir, 'alpha.png', await makePng());
+
+    const res2 = await request(app)
+      .get(`/projects/${id}/assets?view=grid`)
+      .expect(200);
+    expect(res2.text).toContain('<ul class="asset-grid">');
+    expect(res2.text).not.toContain('<table class="asset-table">');
+    expect(res2.text).toContain(`<article class="asset-card" data-asset-id="${asset.id}">`);
+  });
+
+  it('grid card count matches browser rows', async () => {
+    const res = await createProject('Grid Count');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('Grid Count');
+    const png = await makePng();
+    writeIndexedAsset(id, projectDir, 'one.png', png);
+    writeIndexedAsset(id, projectDir, 'two.png', png);
+    writeIndexedAsset(id, projectDir, 'three.png', png);
+
+    const res2 = await request(app)
+      .get(`/projects/${id}/assets?view=grid`)
+      .expect(200);
+    const cardCount = (res2.text.match(/<article class="asset-card"/g) || []).length;
+    expect(cardCount).toBe(3);
+  });
+
+  it('renders exact viewer link in grid card', async () => {
+    const res = await createProject('Grid Viewer Link');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('Grid Viewer Link');
+    const asset = writeIndexedAsset(id, projectDir, 'hero.png', await makePng());
+
+    const res2 = await request(app)
+      .get(`/projects/${id}/assets?view=grid`)
+      .expect(200);
+    expectAnchorHref(res2.text, 'asset-card-link', `/projects/${id}/assets/${asset.id}`);
+  });
+
+  it('renders exact versioned thumbnail URL in grid card', async () => {
+    const res = await createProject('Grid Thumbnail URL');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('Grid Thumbnail URL');
+    const asset = writeIndexedAsset(id, projectDir, 'shot.png', await makePng());
+    const revision = buildAssetRevisionToken(asset);
+
+    const res2 = await request(app)
+      .get(`/projects/${id}/assets?view=grid`)
+      .expect(200);
+    expect(res2.text).toContain(
+      `src="/projects/${id}/assets/${asset.id}/thumbnail?v=${revision}"`
+    );
+  });
+
+  it('thumbnail has lazy-loading and async decoding attributes', async () => {
+    const res = await createProject('Grid Lazy Attrs');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('Grid Lazy Attrs');
+    writeIndexedAsset(id, projectDir, 'pic.png', await makePng());
+
+    const res2 = await request(app)
+      .get(`/projects/${id}/assets?view=grid`)
+      .expect(200);
+    expect(res2.text).toContain('loading="lazy"');
+    expect(res2.text).toContain('decoding="async"');
+    expect(res2.text).toContain('width="256"');
+    expect(res2.text).toContain('height="256"');
+  });
+
+  it('renders placeholder for unsupported assets in grid', async () => {
+    const res = await createProject('Grid Unsupported');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('Grid Unsupported');
+    const asset = writeIndexedAsset(id, projectDir, 'source.kra', 'kra bytes', {
+      extension: 'kra',
+      mimeType: 'application/x-krita',
+    });
+
+    const res2 = await request(app)
+      .get(`/projects/${id}/assets?view=grid`)
+      .expect(200);
+    const card = extractCard(res2.text, asset.id);
+    expect(card).not.toBeNull();
+    expect(card).toContain('asset-card-placeholder');
+    expect(card).toContain('Unsupported preview');
+    expect(card).not.toContain('<img');
+  });
+
+  it('renders placeholder for missing assets in grid', async () => {
+    const res = await createProject('Grid Missing');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('Grid Missing');
+    const asset = writeIndexedAsset(id, projectDir, 'gone.png', await makePng());
+    assetRepo.markMissingByProjectIdAndPathNotIn(id, []);
+
+    const res2 = await request(app)
+      .get(`/projects/${id}/assets?view=grid`)
+      .expect(200);
+    const card = extractCard(res2.text, asset.id);
+    expect(card).not.toBeNull();
+    expect(card).toContain('asset-card-placeholder-missing');
+    expect(card).toContain('Missing at last scan');
+    expect(card).not.toContain('<img');
+  });
+
+  it('renders placeholder for invalid source metadata in grid', async () => {
+    const res = await createProject('Grid Invalid Meta');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('Grid Invalid Meta');
+    const asset = writeIndexedAsset(id, projectDir, 'badmeta.png', await makePng(), {
+      modifiedAt: 'invalid',
+    });
+
+    const res2 = await request(app)
+      .get(`/projects/${id}/assets?view=grid`)
+      .expect(200);
+    const card = extractCard(res2.text, asset.id);
+    expect(card).not.toBeNull();
+    expect(card).toContain('asset-card-placeholder');
+    expect(card).toContain('Preview unavailable');
+    expect(card).not.toContain('<img');
+  });
+
+  it('does not request media URL for non-previewable grid rows', async () => {
+    const res = await createProject('Grid No Media');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('Grid No Media');
+    writeIndexedAsset(id, projectDir, 'doc.kra', 'kra', {
+      extension: 'kra',
+      mimeType: 'application/x-krita',
+    });
+
+    const res2 = await request(app)
+      .get(`/projects/${id}/assets?view=grid`)
+      .expect(200);
+    expect(res2.text).not.toContain('/thumbnail');
+    expect(res2.text).not.toContain('/preview');
+  });
+
+  it('list-to-grid switch URL preserves filters', async () => {
+    const res = await createProject('Grid Switch LG');
+    const id = res.headers.location.replace('/projects/', '');
+    const projectDir = getProjectDir('Grid Switch LG');
+    fs.writeFileSync(path.join(projectDir, 'pic.png'), 'png');
+    await request(app).post(`/projects/${id}/scan`).expect(302);
+
+    const res2 = await request(app)
+      .get(`/projects/${id}/assets?presence=present&pageSize=10`)
+      .expect(200);
+    const gridHref = anchorHref(res2.text, 'view-switcher-grid');
+    expect(gridHref).not.toBeNull();
+    const url = new URL(gridHref, 'http://localhost');
+    expect(url.searchParams.get('view')).toBe('grid');
+    expect(url.searchParams.get('presence')).toBe('present');
+    expect(url.searchParams.get('pageSize')).toBe('10');
+  });
+
+  it('grid-to-list switch URL omits default view and preserves filters', async () => {
+    const res = await createProject('Grid Switch GL');
+    const id = res.headers.location.replace('/projects/', '');
+    const projectDir = getProjectDir('Grid Switch GL');
+    fs.writeFileSync(path.join(projectDir, 'pic.png'), 'png');
+    await request(app).post(`/projects/${id}/scan`).expect(302);
+
+    const res2 = await request(app)
+      .get(`/projects/${id}/assets?view=grid&presence=present&pageSize=10`)
+      .expect(200);
+    const listHref = anchorHref(res2.text, 'view-switcher-list');
+    expect(listHref).not.toBeNull();
+    const url = new URL(listHref, 'http://localhost');
+    expect(url.searchParams.has('view')).toBe(false);
+    expect(url.searchParams.get('presence')).toBe('present');
+    expect(url.searchParams.get('pageSize')).toBe('10');
+  });
+
+  it('view switch preserves search, extension, presence, and usage', async () => {
+    const res = await createProject('Grid Filter Preserve');
+    const id = res.headers.location.replace('/projects/', '');
+    const projectDir = getProjectDir('Grid Filter Preserve');
+    fs.writeFileSync(path.join(projectDir, 'hero-one.png'), 'png');
+    fs.writeFileSync(path.join(projectDir, 'hero-two.png'), 'png');
+    await request(app).post(`/projects/${id}/scan`).expect(302);
+
+    const res2 = await request(app)
+      .get(`/projects/${id}/assets?search=hero&extension=.png&presence=present&usage=unused`)
+      .expect(200);
+    const gridHref = anchorHref(res2.text, 'view-switcher-grid');
+    expect(gridHref).not.toBeNull();
+    const url = new URL(gridHref, 'http://localhost');
+    expect(url.searchParams.get('view')).toBe('grid');
+    expect(url.searchParams.get('search')).toBe('hero');
+    expect(url.searchParams.get('extension')).toBe('png');
+    expect(url.searchParams.get('presence')).toBe('present');
+    expect(url.searchParams.get('usage')).toBe('unused');
+  });
+
+  it('view switch preserves pageSize', async () => {
+    const res = await createProject('Grid PageSize Preserve');
+    const id = res.headers.location.replace('/projects/', '');
+    const projectDir = getProjectDir('Grid PageSize Preserve');
+    fs.writeFileSync(path.join(projectDir, 'pic.png'), 'png');
+    await request(app).post(`/projects/${id}/scan`).expect(302);
+
+    const res2 = await request(app)
+      .get(`/projects/${id}/assets?pageSize=50`)
+      .expect(200);
+    const gridHref = anchorHref(res2.text, 'view-switcher-grid');
+    expect(gridHref).not.toBeNull();
+    const url = new URL(gridHref, 'http://localhost');
+    expect(url.searchParams.get('pageSize')).toBe('50');
+  });
+
+  it('grid pagination preserves view=grid', async () => {
+    const res = await createProject('Grid Pagination View');
+    const id = res.headers.location.replace('/projects/', '');
+    const projectDir = getProjectDir('Grid Pagination View');
+    for (let i = 0; i < 12; i++) {
+      fs.writeFileSync(path.join(projectDir, `file${String(i).padStart(2, '0')}.png`), `c${i}`);
+    }
+    await request(app).post(`/projects/${id}/scan`).expect(302);
+
+    const res2 = await request(app)
+      .get(`/projects/${id}/assets?view=grid&pageSize=10`)
+      .expect(200);
+    const nextMatch = res2.text.match(/<a href="([^"]+)" class="pagination-next">Next/);
+    expect(nextMatch).not.toBeNull();
+    const href = nextMatch[1].replace(/&amp;/g, '&');
+    const url = new URL(href, 'http://localhost');
+    expect(url.searchParams.get('view')).toBe('grid');
+    expect(url.searchParams.get('page')).toBe('2');
+    expect(url.searchParams.get('pageSize')).toBe('10');
+  });
+
+  it('active view is indicated with aria-current', async () => {
+    const res = await createProject('Grid Aria Current');
+    const id = res.headers.location.replace('/projects/', '');
+    const projectDir = getProjectDir('Grid Aria Current');
+    fs.writeFileSync(path.join(projectDir, 'pic.png'), 'png');
+    await request(app).post(`/projects/${id}/scan`).expect(302);
+
+    const gridRes = await request(app)
+      .get(`/projects/${id}/assets?view=grid`)
+      .expect(200);
+    expect(gridRes.text).toContain('aria-current="page">Grid');
+    expect(gridRes.text).not.toContain('aria-current="page">List');
+
+    const listRes = await request(app)
+      .get(`/projects/${id}/assets`)
+      .expect(200);
+    expect(listRes.text).toContain('aria-current="page">List');
+    expect(listRes.text).not.toContain('aria-current="page">Grid');
+  });
+
+  it('Reset Filters link preserves view in grid empty state', async () => {
+    const res = await createProject('Grid Reset Filters');
+    const id = res.headers.location.replace('/projects/', '');
+    const projectDir = getProjectDir('Grid Reset Filters');
+    fs.writeFileSync(path.join(projectDir, 'pic.png'), 'png');
+    await request(app).post(`/projects/${id}/scan`).expect(302);
+
+    const res2 = await request(app)
+      .get(`/projects/${id}/assets?view=grid&presence=missing`)
+      .expect(200);
+    expect(res2.text).toContain('No assets match the current filters');
+    expect(res2.text).toContain('Reset Filters');
+    expect(res2.text).toContain(`href="/projects/${id}/assets?view=grid"`);
+  });
+
+  it('filter form Reset button preserves view in grid mode', async () => {
+    const res = await createProject('Grid Reset Button');
+    const id = res.headers.location.replace('/projects/', '');
+    const projectDir = getProjectDir('Grid Reset Button');
+    fs.writeFileSync(path.join(projectDir, 'pic.png'), 'png');
+    await request(app).post(`/projects/${id}/scan`).expect(302);
+
+    const res2 = await request(app)
+      .get(`/projects/${id}/assets?view=grid&presence=present`)
+      .expect(200);
+    expect(res2.text).toContain(`href="/projects/${id}/assets?view=grid"`);
+  });
+
+  it('renders grid for archived projects', async () => {
+    const res = await createProject('Grid Archived');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('Grid Archived');
+    writeIndexedAsset(id, projectDir, 'archived.png', await makePng());
+    await request(app).post(`/projects/${id}/archive`).expect(302);
+
+    const res2 = await request(app)
+      .get(`/projects/${id}/assets?view=grid`)
+      .expect(200);
+    expect(res2.text).toContain('<ul class="asset-grid">');
+    expect(res2.text).toContain('archived.png');
+    expect(res2.text).not.toContain('Scan Now');
+  });
+
+  it('grid does not render absolute filesystem paths', async () => {
+    const res = await createProject('Grid No Paths');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('Grid No Paths');
+    writeIndexedAsset(id, projectDir, 'secret.png', await makePng());
+
+    const res2 = await request(app)
+      .get(`/projects/${id}/assets?view=grid`)
+      .expect(200);
+    expect(res2.text).not.toMatch(/[A-Z]:\\/);
+    expect(res2.text).not.toMatch(/\/home\//);
+    expect(res2.text).not.toMatch(/\/Users\//);
+    expect(res2.text).not.toContain(tmpDir);
+    expect(res2.text).not.toContain(projectsRoot);
+  });
+
+  it('grid does not embed original file bytes', async () => {
+    const res = await createProject('Grid No Bytes');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('Grid No Bytes');
+    const secret = 'GRID_SECRET_BYTES_MUST_NOT_RENDER';
+    writeIndexedAsset(id, projectDir, 'data.bin', secret, {
+      extension: 'bin',
+      mimeType: 'application/octet-stream',
+    });
+
+    const res2 = await request(app)
+      .get(`/projects/${id}/assets?view=grid`)
+      .expect(200);
+    expect(res2.text).toContain('data.bin');
+    expect(res2.text).not.toContain(secret);
+  });
+
+  it('grid semantic list structure wraps each card in li with single anchor', async () => {
+    const res = await createProject('Grid Semantic');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('Grid Semantic');
+    writeIndexedAsset(id, projectDir, 'one.png', await makePng());
+    writeIndexedAsset(id, projectDir, 'two.png', await makePng());
+
+    const res2 = await request(app)
+      .get(`/projects/${id}/assets?view=grid`)
+      .expect(200);
+    const itemCount = (res2.text.match(/<li class="asset-grid-item">/g) || []).length;
+    expect(itemCount).toBe(2);
+    expect(res2.text).toContain('<article class="asset-card"');
+    // Verify no nested anchors: each article has exactly one <a>
+    const cardArticle = res2.text.match(/<article class="asset-card"[\s\S]*?<\/article>/);
+    expect(cardArticle).not.toBeNull();
+    const anchorCount = (cardArticle[0].match(/<a\b/g) || []).length;
+    expect(anchorCount).toBe(1);
+  });
+
+  it('grid card shows release usage count as text', async () => {
+    const res = await createProject('Grid Usage');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('Grid Usage');
+    const asset = writeIndexedAsset(id, projectDir, 'used.png', await makePng());
+    await createReleaseUsingAsset(id, asset.id, 'Grid Release', 'planned');
+
+    const res2 = await request(app)
+      .get(`/projects/${id}/assets?view=grid`)
+      .expect(200);
+    const card = extractCard(res2.text, asset.id);
+    expect(card).not.toBeNull();
+    expect(card).toContain('Used by 1 release');
+  });
+
+  it('grid card shows formatted size and compact type label', async () => {
+    const res = await createProject('Grid Meta Display');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('Grid Meta Display');
+    const asset = writeIndexedAsset(id, projectDir, 'meta.png', await makePng(), {
+      sizeBytes: 1536,
+    });
+
+    const res2 = await request(app)
+      .get(`/projects/${id}/assets?view=grid`)
+      .expect(200);
+    const card = extractCard(res2.text, asset.id);
+    expect(card).not.toBeNull();
+    expect(card).toContain('1.5 KB');
+    expect(card).toContain('PNG');
+  });
+
+  it('grid card alt text is meaningful', async () => {
+    const res = await createProject('Grid Alt Text');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('Grid Alt Text');
+    const first = writeIndexedAsset(id, projectDir, 'preview.png', await makePng());
+    const second = writeIndexedAsset(id, projectDir, 'art & final.png', await makePng());
+
+    const res2 = await request(app)
+      .get(`/projects/${id}/assets?view=grid`)
+      .expect(200);
+    expect(extractCard(res2.text, first.id)).toContain('alt="Preview of preview.png"');
+    expect(extractCard(res2.text, second.id)).toContain('alt="Preview of art &amp; final.png"');
+    expect(res2.text).not.toContain('alt="Thumbnail preview"');
+  });
+
+  it('uses a stable asset identifier when a filename is empty', async () => {
+    const res = await createProject('Grid Alt Fallback');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('Grid Alt Fallback');
+    const relPath = 'unnamed.png';
+    const png = await makePng();
+    fs.writeFileSync(path.join(projectDir, relPath), png);
+    const asset = assetRepo.upsert(id, relPath, {
+      filename: '',
+      extension: 'png',
+      mimeType: 'image/png',
+      sizeBytes: png.length,
+      modifiedAt: '2026-07-28 10:00:00',
+    });
+
+    const res2 = await request(app)
+      .get(`/projects/${id}/assets?view=grid`)
+      .expect(200);
+    expect(extractCard(res2.text, asset.id)).toContain(`alt="Preview of Asset ${asset.id}"`);
+  });
+
+  // ─── Phase 10.3C: Minimal preview enhancement ───────────────────
+
+  it('includes the static client enhancement module exactly once', async () => {
+    const res = await createProject('PhaseC Script');
+    const id = res.headers.location.replace('/projects/', '');
+
+    const res2 = await request(app).get(`/projects/${id}/assets`).expect(200);
+    const scriptCount = (res2.text.match(/<script type="module" src="\/creatorcrate\.js"><\/script>/g) || []).length;
+
+    expect(scriptCount).toBe(1);
+  });
+
+  it('serves the dependency-free static client module', async () => {
+    const res = await request(app).get('/creatorcrate.js').expect(200);
+
+    expect(res.headers['content-type']).toMatch(/javascript/);
+    expect(res.text).toContain('enhancePreviewMedia');
+  });
+
+  it('renders grid thumbnail loading hooks and pre-rendered failure fallback', async () => {
+    const res = await createProject('PhaseC Grid Hooks');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('PhaseC Grid Hooks');
+    const asset = writeIndexedAsset(id, projectDir, 'hooked.png', await makePng());
+
+    const res2 = await request(app)
+      .get(`/projects/${id}/assets?view=grid`)
+      .expect(200);
+    const card = extractCard(res2.text, asset.id);
+
+    expect(card).not.toBeNull();
+    expect(card).toContain('class="asset-card-media" data-preview-enhancement data-preview-state="loading"');
+    expect(card).toContain('data-preview-image');
+    expect(card).toContain('class="asset-card-placeholder asset-card-fallback" data-preview-fallback hidden>Preview unavailable</span>');
+    expect((card.match(/data-preview-image/g) || []).length).toBe(1);
+    expect((card.match(/data-preview-fallback/g) || []).length).toBe(1);
+  });
+
+  it('does not add image-loading behavior to no-preview grid cards', async () => {
+    const res = await createProject('PhaseC No Preview Hooks');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('PhaseC No Preview Hooks');
+    const asset = writeIndexedAsset(id, projectDir, 'source.kra', 'kra bytes', {
+      extension: 'kra',
+      mimeType: 'application/x-krita',
+    });
+
+    const res2 = await request(app)
+      .get(`/projects/${id}/assets?view=grid`)
+      .expect(200);
+    const card = extractCard(res2.text, asset.id);
+
+    expect(card).not.toBeNull();
+    expect(card).toContain('asset-card-placeholder-no-preview');
+    expect(card).not.toContain('data-preview-enhancement');
+    expect(card).not.toContain('data-preview-image');
+    expect(card).not.toContain('data-preview-fallback');
+  });
+
+  it('renders viewer preview hooks, fallback, and original link independently', async () => {
+    const res = await createProject('PhaseC Viewer Hooks');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('PhaseC Viewer Hooks');
+    const asset = writeIndexedAsset(id, projectDir, 'viewer.png', await makePng());
+
+    const res2 = await request(app)
+      .get(`/projects/${id}/assets/${asset.id}`)
+      .expect(200);
+
+    expect(res2.text).toContain('class="asset-preview-frame" data-preview-enhancement data-preview-state="loading"');
+    expect(res2.text).toContain('data-preview-image');
+    expect(res2.text).toContain('class="asset-preview-placeholder asset-preview-fallback" data-preview-fallback hidden>Preview unavailable</p>');
+    expectAnchorHref(res2.text, 'asset-viewer-original', `/projects/${id}/assets/${asset.id}/original`);
+  });
+
+  it('renders a no-JavaScript viewer fallback without replacing the preview or original link', async () => {
+    const res = await createProject('PhaseC Viewer No JavaScript');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('PhaseC Viewer No JavaScript');
+    const asset = writeIndexedAsset(id, projectDir, 'viewer-fallback.png', await makePng());
+
+    const res2 = await request(app)
+      .get(`/projects/${id}/assets/${asset.id}`)
+      .expect(200);
+
+    expect(res2.text).toContain('<noscript>');
+    expect(res2.text).toContain('JavaScript is disabled. If the preview does not load, use View Original to open the asset.');
+    expect(res2.text).toContain('data-preview-fallback hidden>Preview unavailable</p>');
+    expect(res2.text).toContain('alt="Preview of viewer-fallback.png"');
+    expectAnchorHref(res2.text, 'asset-viewer-original', `/projects/${id}/assets/${asset.id}/original`);
+    expect(res2.text).not.toContain('aria-live');
+  });
+
+  it('renders reduced-motion coverage for preview image transitions', async () => {
+    const res = await createProject('PhaseC Reduced Motion');
+    const id = res.headers.location.replace('/projects/', '');
+    const res2 = await request(app).get(`/projects/${id}/assets`).expect(200);
+
+    expect(res2.text).toMatch(
+      /@media \(prefers-reduced-motion: reduce\) \{[\s\S]*\.asset-card-thumb[\s\S]*\.asset-preview-image[\s\S]*transition: none !important;/
+    );
+  });
+
+  // ─── Phase 10.3B: Visual hierarchy and responsive styling ─────────
+
+  it('renders design tokens for surfaces, borders, focus, spacing, radius, shadow, and transition', async () => {
+    const res = await createProject('PhaseB Tokens');
+    const id = res.headers.location.replace('/projects/', '');
+    const res2 = await request(app).get(`/projects/${id}/assets`).expect(200);
+    expect(res2.text).toContain('--surface-card');
+    expect(res2.text).toContain('--border:');
+    expect(res2.text).toContain('--border-strong');
+    expect(res2.text).toContain('--focus-ring');
+    expect(res2.text).toContain('--space-sm');
+    expect(res2.text).toContain('--radius-lg');
+    expect(res2.text).toContain('--shadow-md');
+    expect(res2.text).toContain('--transition-base');
+  });
+
+  it('renders responsive grid CSS with auto-fill minmax', async () => {
+    const res = await createProject('PhaseB Grid CSS');
+    const id = res.headers.location.replace('/projects/', '');
+    const res2 = await request(app).get(`/projects/${id}/assets`).expect(200);
+    expect(res2.text).toContain('grid-template-columns: repeat(auto-fill, minmax(');
+  });
+
+  it('renders aspect-ratio rule on the thumbnail frame', async () => {
+    const res = await createProject('PhaseB Aspect');
+    const id = res.headers.location.replace('/projects/', '');
+    const res2 = await request(app).get(`/projects/${id}/assets`).expect(200);
+    expect(res2.text).toMatch(/\.asset-card-media\s*\{[^}]*aspect-ratio/);
+  });
+
+  it('renders object-fit contain for grid thumbnail images', async () => {
+    const res = await createProject('PhaseB Thumb Fit');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('PhaseB Thumb Fit');
+    writeIndexedAsset(id, projectDir, 'pic.png', await makePng());
+    const res2 = await request(app)
+      .get(`/projects/${id}/assets?view=grid`)
+      .expect(200);
+    expect(res2.text).toMatch(/\.asset-card-thumb\s*\{[^}]*object-fit:\s*contain/);
+  });
+
+  it('renders object-fit contain for viewer preview images', async () => {
+    const res = await createProject('PhaseB Viewer Fit');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('PhaseB Viewer Fit');
+    const asset = writeIndexedAsset(id, projectDir, 'hero.png', await makePng());
+    const res2 = await request(app)
+      .get(`/projects/${id}/assets/${asset.id}`)
+      .expect(200);
+    expect(res2.text).toMatch(/\.asset-preview-image\s*\{[^}]*object-fit:\s*contain/);
+  });
+
+  it('makes the native hidden attribute authoritative over preview display rules', async () => {
+    const res = await createProject('PhaseB Hidden CSS');
+    const id = res.headers.location.replace('/projects/', '');
+    const res2 = await request(app).get(`/projects/${id}/assets`).expect(200);
+    const hiddenRule = '[hidden] { display: none !important; }';
+
+    expect(res2.text).toContain(hiddenRule);
+    expect(res2.text).toMatch(/\.asset-card-thumb\s*\{[^}]*display:\s*block/);
+    expect(res2.text).toMatch(/\.asset-preview-image\s*\{[^}]*display:\s*block/);
+  });
+
+  it('renders placeholder color classes for missing and unsupported assets', async () => {
+    const res = await createProject('PhaseB Placeholder CSS');
+    const id = res.headers.location.replace('/projects/', '');
+    const res2 = await request(app).get(`/projects/${id}/assets`).expect(200);
+    expect(res2.text).toContain('.asset-card-placeholder-missing');
+    expect(res2.text).toContain('.asset-card-placeholder-no-preview');
+  });
+
+  it('renders active view CSS using aria-current attribute selector', async () => {
+    const res = await createProject('PhaseB Active CSS');
+    const id = res.headers.location.replace('/projects/', '');
+    const res2 = await request(app).get(`/projects/${id}/assets`).expect(200);
+    expect(res2.text).toContain('[aria-current="page"]');
+  });
+
+  it('renders prefers-reduced-motion media query', async () => {
+    const res = await createProject('PhaseB Reduced Motion');
+    const id = res.headers.location.replace('/projects/', '');
+    const res2 = await request(app).get(`/projects/${id}/assets`).expect(200);
+    expect(res2.text).toContain('@media (prefers-reduced-motion: reduce)');
+  });
+
+  it('renders focus-visible and focus-within CSS for asset cards', async () => {
+    const res = await createProject('PhaseB Focus CSS');
+    const id = res.headers.location.replace('/projects/', '');
+    const res2 = await request(app).get(`/projects/${id}/assets`).expect(200);
+    expect(res2.text).toMatch(/\.asset-card-link:focus-visible/);
+    expect(res2.text).toMatch(/\.asset-card:focus-within/);
+  });
+
+  it('renders wider content CSS for asset browser and viewer pages', async () => {
+    const res = await createProject('PhaseB Wide CSS');
+    const id = res.headers.location.replace('/projects/', '');
+    const res2 = await request(app).get(`/projects/${id}/assets`).expect(200);
+    expect(res2.text).toContain('body.asset-browser-page main');
+    expect(res2.text).toContain('body.asset-viewer-page main');
+  });
+
+  it('grid card filename has title attribute with full filename', async () => {
+    const res = await createProject('PhaseB Title Attr');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('PhaseB Title Attr');
+    const longName = 'a-really-long-filename-that-exceeds-typical-card-width.png';
+    const asset = writeIndexedAsset(id, projectDir, longName, await makePng());
+    const res2 = await request(app)
+      .get(`/projects/${id}/assets?view=grid`)
+      .expect(200);
+    const card = extractCard(res2.text, asset.id);
+    expect(card).not.toBeNull();
+    expect(card).toContain(`title="${longName}"`);
+  });
+
+  it('grid cards have no inline style attributes', async () => {
+    const res = await createProject('PhaseB No Inline');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('PhaseB No Inline');
+    writeIndexedAsset(id, projectDir, 'one.png', await makePng());
+    writeIndexedAsset(id, projectDir, 'two.png', await makePng());
+    const res2 = await request(app)
+      .get(`/projects/${id}/assets?view=grid`)
+      .expect(200);
+    const cardRegex = /<article class="asset-card"[\s\S]*?<\/article>/g;
+    const cards = res2.text.match(cardRegex) || [];
+    expect(cards.length).toBeGreaterThan(0);
+    for (const card of cards) {
+      expect(card).not.toContain('style=');
+    }
+  });
+
+  it('grid cards contain no nested interactive elements beyond the single anchor', async () => {
+    const res = await createProject('PhaseB No Nested');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('PhaseB No Nested');
+    writeIndexedAsset(id, projectDir, 'one.png', await makePng());
+    const res2 = await request(app)
+      .get(`/projects/${id}/assets?view=grid`)
+      .expect(200);
+    const cardArticle = res2.text.match(/<article class="asset-card"[\s\S]*?<\/article>/);
+    expect(cardArticle).not.toBeNull();
+    const card = cardArticle[0];
+    expect((card.match(/<a\b/g) || []).length).toBe(1);
+    expect(card).not.toContain('<button');
+    expect(card).not.toContain('<input');
+    expect(card).not.toContain('<select');
+    expect(card).not.toContain('<textarea');
+  });
+
+  it('asset toolbar wrapper groups view switcher and filter form', async () => {
+    const res = await createProject('PhaseB Toolbar');
+    const id = res.headers.location.replace('/projects/', '');
+    const res2 = await request(app).get(`/projects/${id}/assets`).expect(200);
+    const toolbarStart = res2.text.indexOf('class="asset-toolbar"');
+    expect(toolbarStart).toBeGreaterThan(-1);
+    const switcherPos = res2.text.indexOf('class="view-switcher"', toolbarStart);
+    const filtersPos = res2.text.indexOf('class="filters"', toolbarStart);
+    expect(switcherPos).toBeGreaterThan(toolbarStart);
+    expect(filtersPos).toBeGreaterThan(toolbarStart);
+  });
+
+  it('renders pagination focus-visible CSS for keyboard accessibility', async () => {
+    const res = await createProject('PhaseB Pagination CSS');
+    const id = res.headers.location.replace('/projects/', '');
+    const res2 = await request(app).get(`/projects/${id}/assets`).expect(200);
+    expect(res2.text).toMatch(/\.pagination-prev:focus-visible/);
+    expect(res2.text).toMatch(/\.pagination-next:focus-visible/);
+  });
+
+  it('renders body class asset-browser-page on the assets listing', async () => {
+    const res = await createProject('PhaseB Body Class');
+    const id = res.headers.location.replace('/projects/', '');
+    const res2 = await request(app).get(`/projects/${id}/assets`).expect(200);
+    expect(res2.text).toContain('<body class="asset-browser-page">');
+  });
+
+  it('renders body class asset-viewer-page on the asset viewer', async () => {
+    const res = await createProject('PhaseB Viewer Body');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('PhaseB Viewer Body');
+    const asset = writeIndexedAsset(id, projectDir, 'view.png', await makePng());
+    const res2 = await request(app)
+      .get(`/projects/${id}/assets/${asset.id}`)
+      .expect(200);
+    expect(res2.text).toContain('<body class="asset-viewer-page">');
+  });
+
+  it('renders thumbnail media wrapper with asset-card-media class in grid', async () => {
+    const res = await createProject('PhaseB Media Wrapper');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('PhaseB Media Wrapper');
+    writeIndexedAsset(id, projectDir, 'pic.png', await makePng());
+    const res2 = await request(app)
+      .get(`/projects/${id}/assets?view=grid`)
+      .expect(200);
+    expect(res2.text).toContain('class="asset-card-media"');
+  });
+
+  it('renders viewer preview frame with contained image and responsive max-height', async () => {
+    const res = await createProject('PhaseB Viewer Frame');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('PhaseB Viewer Frame');
+    const asset = writeIndexedAsset(id, projectDir, 'hero.png', await makePng());
+    const res2 = await request(app)
+      .get(`/projects/${id}/assets/${asset.id}`)
+      .expect(200);
+    expect(res2.text).toMatch(/\.asset-preview-image\s*\{[^}]*max-height/);
+    expect(res2.text).toMatch(/\.asset-preview-image\s*\{[^}]*object-fit:\s*contain/);
+  });
+
+  it('renders a valid non-recursive success token and no undefined custom properties', async () => {
+    const res = await createProject('PhaseB Token Validation');
+    const id = res.headers.location.replace('/projects/', '');
+    const res2 = await request(app).get(`/projects/${id}/assets`).expect(200);
+    const style = renderedStyle(res2.text);
+    const declared = new Set(
+      [...style.matchAll(/--([A-Za-z0-9_-]+)\s*:/g)].map((match) => match[1])
+    );
+    const used = [...style.matchAll(/var\(--([A-Za-z0-9_-]+)/g)].map((match) => match[1]);
+
+    expect(style).toMatch(/--success\s*:\s*#[0-9a-f]{6}\s*;/i);
+    expect(style).not.toMatch(/--success\s*:\s*var\(--success\)/);
+    for (const token of used) {
+      expect(declared.has(token)).toBe(true);
+    }
+  });
+
+  it('renders wrapping and containment rules for viewer and grid intrinsic-width content', async () => {
+    const res = await createProject('PhaseB Mobile Containment');
+    const id = res.headers.location.replace('/projects/', '');
+    const res2 = await request(app).get(`/projects/${id}/assets`).expect(200);
+    const style = renderedStyle(res2.text);
+
+    expect(style).toMatch(/\.page-header\s*\{[^}]*min-width:\s*0/);
+    expect(style).toMatch(/\.page-header > h1\s*\{[^}]*min-width:\s*0[^}]*overflow-wrap:\s*anywhere[^}]*word-break:\s*break-word/);
+    expect(style).not.toMatch(/\.page-header > h1\s*\{[^}]*word-break:\s*break-all/);
+    expect(style).toMatch(/\.actions \.button\s*\{[^}]*min-width:\s*0[^}]*max-width:\s*100%[^}]*overflow-wrap:\s*anywhere/);
+    expect(style).toMatch(/\.asset-viewer-breadcrumb\s*\{[^}]*min-width:\s*0[^}]*max-width:\s*100%/);
+    expect(style).toMatch(/\.asset-viewer-breadcrumb a\s*\{[^}]*overflow-wrap:\s*anywhere[^}]*word-break:\s*break-word/);
+    expect(style).toMatch(/\.detail-list\s*\{[^}]*grid-template-columns:\s*minmax\(0, 8rem\) minmax\(0, 1fr\)[^}]*min-width:\s*0/);
+    expect(style).toMatch(/\.detail-list code\s*\{[^}]*overflow-wrap:\s*anywhere[^}]*word-break:\s*break-word/);
+    expect(style).toMatch(/\.asset-preview-frame\s*\{[^}]*min-width:\s*0[^}]*max-width:\s*100%/);
+    expect(style).toMatch(/\.asset-preview-image\s*\{[^}]*max-width:\s*100%[^}]*min-width:\s*0/);
+    expect(style).toMatch(/\.asset-release-usage-section,[\s\S]*?\.release-status\s*\{[^}]*overflow-wrap:\s*anywhere/);
+    expect(style).toMatch(/\.asset-grid\s*\{[^}]*min-width:\s*0[^}]*max-width:\s*100%[^}]*grid-template-columns:\s*repeat\(auto-fill, minmax\(min\(220px, 100%\), 1fr\)/);
+    expect(style).toMatch(/\.asset-grid-item\s*\{[^}]*min-width:\s*0/);
+    expect(style).toMatch(/\.asset-card\s*\{[^}]*min-width:\s*0[^}]*max-width:\s*100%/);
+    expect(style).toMatch(/\.asset-card-body\s*\{[^}]*min-width:\s*0[^}]*max-width:\s*100%/);
+    expect(style).toMatch(/@media \(max-width: 540px\)[\s\S]*?\.asset-metadata\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\)/);
   });
 });

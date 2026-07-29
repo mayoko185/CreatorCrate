@@ -1,5 +1,7 @@
 {% extends "layout.njk" %}
 
+{% block body_class %}asset-browser-page{% endblock %}
+
 {% block content %}
   <div class="page-header">
     <h1>Assets — {{ project.title }}</h1>
@@ -48,7 +50,18 @@
     Asset state reflects the last completed scan — files are not checked live.
     Failed or incomplete scans do not update this information.
   </p>
-  <form class="filters" method="get" action="/projects/{{ project.id }}/assets">
+
+  <div class="asset-toolbar">
+    <nav class="view-switcher" aria-label="Asset display">
+      <a href="{{ pageUrl({ view: 'list' }) }}"
+         class="view-switcher-option view-switcher-list"
+         {% if filters.view != 'grid' %}aria-current="page"{% endif %}>List</a>
+      <a href="{{ pageUrl({ view: 'grid' }) }}"
+         class="view-switcher-option view-switcher-grid"
+         {% if filters.view == 'grid' %}aria-current="page"{% endif %}>Grid</a>
+    </nav>
+
+    <form class="filters" method="get" action="/projects/{{ project.id }}/assets">
     {% if filters.view != 'list' %}
       <input type="hidden" name="view" value="{{ filters.view }}">
     {% endif %}
@@ -87,10 +100,48 @@
     </div>
 
     <button class="button" type="submit">Filter</button>
-    <a class="button button-secondary" href="/projects/{{ project.id }}/assets">Reset</a>
+    <a class="button button-secondary" href="{{ pageUrl({ search: '', extension: '', presence: 'all', usage: 'all', page: 1, pageSize: 25 }) }}">Reset</a>
   </form>
+  </div>
 
   {% if assets.length > 0 %}
+    {% if filters.view == 'grid' %}
+      <ul class="asset-grid">
+        {% for card in cards %}
+          <li class="asset-grid-item">
+            <article class="asset-card" data-asset-id="{{ card.id }}">
+              <a class="asset-card-link" href="{{ card.viewerUrl }}">
+                <div class="asset-card-media"{% if card.thumbnailUrl %} data-preview-enhancement data-preview-state="loading"{% endif %}>
+                  {% if card.thumbnailUrl %}
+                    <img class="asset-card-thumb"
+                         src="{{ card.thumbnailUrl }}"
+                         alt="{{ card.previewAltText }}"
+                         loading="lazy"
+                         decoding="async"
+                         width="256"
+                         height="256"
+                         data-preview-image>
+                    <span class="asset-card-placeholder asset-card-fallback" data-preview-fallback hidden>Preview unavailable</span>
+                  {% elseif not card.isPresent %}
+                    <span class="asset-card-placeholder asset-card-placeholder-missing">Missing at last scan</span>
+                  {% else %}
+                    <span class="asset-card-placeholder asset-card-placeholder-no-preview">{{ card.statusText }}</span>
+                  {% endif %}
+                </div>
+                <div class="asset-card-body">
+                  <span class="asset-card-filename" title="{{ card.filename }}">{{ card.filename }}</span>
+                  <span class="asset-card-meta">{{ card.formattedSize }}{% if card.compactTypeLabel %} · {{ card.compactTypeLabel }}{% endif %}</span>
+                  <span class="asset-card-status">{{ card.statusText }}</span>
+                  {% if card.releaseUsageCount > 0 %}
+                    <span class="asset-card-usage">Used by {{ card.releaseUsageCount }} release{% if card.releaseUsageCount != 1 %}s{% endif %}</span>
+                  {% endif %}
+                </div>
+              </a>
+            </article>
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
     <table class="asset-table">
       <thead>
         <tr>
@@ -154,6 +205,7 @@
         {% endfor %}
       </tbody>
     </table>
+    {% endif %}
 
     {# Pagination #}
     {% if pageCount > 1 %}
@@ -199,7 +251,7 @@
   {% elseif total == 0 and (filters.search or filters.extension or filters.presence != 'all' or filters.usage != 'all') %}
     <p class="placeholder">
       No assets match the current filters.
-      <a href="/projects/{{ project.id }}/assets">Clear filters</a> to see all assets.
+      <a href="{{ pageUrl({ search: '', extension: '', presence: 'all', usage: 'all', page: 1, pageSize: 25 }) }}">Reset Filters</a> to see all assets.
     </p>
   {% elseif total == 0 %}
     {% if project.archived_at %}

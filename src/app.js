@@ -30,6 +30,9 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
 
   app.use(express.json());
   app.use(express.urlencoded({ extended: true }));
+  app.use(express.static(path.join(__dirname, 'static'), {
+    index: false,
+  }));
 
   const projectService = createProjectService(db, projectsRoot);
   const assetScanner = createAssetScanner(db, projectsRoot, { projectService });

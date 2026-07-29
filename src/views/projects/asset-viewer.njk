@@ -1,5 +1,7 @@
 {% extends "layout.njk" %}
 
+{% block body_class %}asset-viewer-page{% endblock %}
+
 {% block title %}{{ asset.filename }} — {{ appName }}{% endblock %}
 
 {% block content %}
@@ -32,9 +34,15 @@
   <section class="asset-preview-section" aria-labelledby="asset-preview-heading">
     <h2 id="asset-preview-heading">Preview</h2>
     {% if asset.preview.previewable and asset.preview_url %}
-      <figure class="asset-preview-frame">
-        <img class="asset-preview-image" src="{{ asset.preview_url }}" alt="Preview of {{ asset.filename }}">
+      <figure class="asset-preview-frame" data-preview-enhancement data-preview-state="loading">
+        <img class="asset-preview-image" src="{{ asset.preview_url }}" alt="{{ asset.previewAltText }}" data-preview-image>
+        <p class="asset-preview-placeholder asset-preview-fallback" data-preview-fallback hidden>Preview unavailable</p>
       </figure>
+      <noscript>
+        <p class="notice asset-preview-noscript">
+          JavaScript is disabled. If the preview does not load, {% if asset.original_url %}use View Original to open the asset{% else %}the asset cannot be opened as an original{% endif %}.
+        </p>
+      </noscript>
     {% elseif asset.missing %}
       <p class="notice asset-missing-notice">Missing at last scan. Preview and original viewing are unavailable.</p>
       <p class="asset-preview-placeholder">Preview unavailable for missing assets.</p>
