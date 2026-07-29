@@ -1,4 +1,5 @@
 {% extends "layout.njk" %}
+{% import "partials/page-heading.njk" as pageHeading %}
 
 {% block content %}
   {% set projectArchived = project and project.archived_at %}
@@ -6,23 +7,21 @@
   {% set isPublished = release and release.status == 'published' %}
   {% set isArchived = projectArchived or releaseArchived %}
   {% set readOnly = isArchived or isPublished %}
-  <div class="page-header">
-    <h1>Assets — {{ release.title }}</h1>
-    <div class="actions">
-      <a class="button" href="/releases/{{ release.id }}">Back to Release</a>
-    </div>
-  </div>
+  {% set assetsHeading = "Assets — " + release.title %}
+  {% call pageHeading.render(assetsHeading) %}
+    <a class="button button-secondary" href="/releases/{{ release.id }}">Back to Release</a>
+  {% endcall %}
 
   {% if isArchived %}
-    <div class="notice" role="status">
-      <p>{% if releaseArchived %}This release is archived.{% else %}The parent project is archived.{% endif %} Asset selections are read-only.</p>
-    </div>
+    {% set noticeVariant = "warning" %}
+    {% set noticeText = "This release is archived. Asset selections are read-only." if releaseArchived else "The parent project is archived. Asset selections are read-only." %}
+    {% include "partials/notice.njk" %}
   {% endif %}
 
   {% if isPublished and not isArchived %}
-    <div class="notice" role="status">
-      <p>This release is published. Asset selections are locked and read-only.</p>
-    </div>
+    {% set noticeVariant = "warning" %}
+    {% set noticeText = "This release is published. Asset selections are locked and read-only." %}
+    {% include "partials/notice.njk" %}
   {% endif %}
 
   {% if errors.general or errors.assets %}
@@ -38,7 +37,7 @@
   {% endif %}
 
   {# ── Role Guidance ────────────────────────────────────────────────── #}
-  <section class="role-guidance" aria-label="Asset role descriptions">
+  <section class="role-guidance panel panel--info" aria-label="Asset role descriptions">
     <h2>Asset Roles</h2>
     <dl class="role-descriptions">
       <div class="role-entry">
@@ -64,74 +63,81 @@
   <section>
     <h2>Selected Assets</h2>
     {% if releaseAssets.length > 0 %}
-      <table class="asset-table">
-        <thead>
-          <tr>
-            <th>Filename</th>
-            <th>Role</th>
-            <th>Path</th>
-            <th>Status</th>
-            <th>Order</th>
-            {% if not readOnly %}
-              <th>Actions</th>
-            {% endif %}
-          </tr>
-        </thead>
-        <tbody>
-          {% for ra in releaseAssets %}
+      <div class="table-scroll" tabindex="0" aria-label="Selected release assets">
+        <table class="data-table">
+          <thead>
             <tr>
-              <td class="asset-filename">{{ ra.filename }}</td>
-              <td>
-                {% if not readOnly %}
-                  <form method="post" action="/releases/{{ release.id }}/assets/{{ ra.asset_id }}/role" class="inline-form">
-                    <label for="role-{{ ra.asset_id }}" class="sr-only">Role for {{ ra.filename }}</label>
-                    <select id="role-{{ ra.asset_id }}" name="role" onchange="this.form.submit()">
-                      {% for role in roles %}
-                        <option value="{{ role }}" {% if ra.role == role %}selected{% endif %}>{{ role | title }}</option>
-                      {% endfor %}
-                    </select>
-                    <noscript><button class="button button-small" type="submit">Set</button></noscript>
-                  </form>
-                {% else %}
-                  {{ ra.role | title }}
-                {% endif %}
-              </td>
-              <td class="asset-path"><code>{{ ra.relative_path }}</code></td>
-              <td>
-                {% if ra.is_present == 1 %}
-                  <span class="asset-present">Present</span>
-                {% else %}
-                  <span class="asset-missing-label">Missing</span>
-                {% endif %}
-              </td>
-              <td>{{ ra.sort_order }}</td>
+              <th>Filename</th>
+              <th>Role</th>
+              <th>Path</th>
+              <th>Status</th>
+              <th class="num">Order</th>
               {% if not readOnly %}
-                <td class="asset-actions">
-                  <form method="post" action="/releases/{{ release.id }}/assets/{{ ra.asset_id }}/remove-selected" class="inline-form">
-                    <button class="button button-small button-danger" type="submit" aria-label="Remove {{ ra.filename }}">Remove</button>
-                  </form>
-                  <form method="post" action="/releases/{{ release.id }}/assets/{{ ra.asset_id }}/move-up" class="inline-form">
-                    {% if loop.first %}
-                      <button class="button button-small" type="submit" disabled aria-label="Move {{ ra.filename }} up (disabled — already first)" title="This asset is already first in the list">Up</button>
-                    {% else %}
-                      <button class="button button-small" type="submit" aria-label="Move {{ ra.filename }} up">Up</button>
-                    {% endif %}
-                  </form>
-                  <form method="post" action="/releases/{{ release.id }}/assets/{{ ra.asset_id }}/move-down" class="inline-form">
-                    {% if loop.last %}
-                      <button class="button button-small" type="submit" disabled aria-label="Move {{ ra.filename }} down (disabled — already last)" title="This asset is already last in the list">Down</button>
-                    {% else %}
-                      <button class="button button-small" type="submit" aria-label="Move {{ ra.filename }} down">Down</button>
-                    {% endif %}
-                  </form>
-                </td>
+                <th>Actions</th>
               {% endif %}
             </tr>
-          {% endfor %}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {% for ra in releaseAssets %}
+              <tr>
+                <td class="asset-filename">{{ ra.filename }}</td>
+                <td>
+                  {% if not readOnly %}
+                    <form method="post" action="/releases/{{ release.id }}/assets/{{ ra.asset_id }}/role" class="inline-form">
+                      <label for="role-{{ ra.asset_id }}" class="sr-only">Role for {{ ra.filename }}</label>
+                      <select id="role-{{ ra.asset_id }}" name="role" onchange="this.form.submit()">
+                        {% for role in roles %}
+                          <option value="{{ role }}" {% if ra.role == role %}selected{% endif %}>{{ role | title }}</option>
+                        {% endfor %}
+                      </select>
+                      <noscript><button class="button button-small" type="submit">Set</button></noscript>
+                    </form>
+                  {% else %}
+                    {{ ra.role | title }}
+                  {% endif %}
+                </td>
+                <td class="asset-path"><code>{{ ra.relative_path }}</code></td>
+                <td>
+                  {% if ra.is_present == 1 %}
+                    {% set status = 'present' %}{% include "partials/status-badge.njk" %}
+                  {% else %}
+                    {% set status = 'missing' %}{% include "partials/status-badge.njk" %}
+                  {% endif %}
+                </td>
+                <td class="num">{{ ra.sort_order }}</td>
+                {% if not readOnly %}
+                  <td>
+                    <div class="row-actions release-asset-actions">
+                      <form method="post" action="/releases/{{ release.id }}/assets/{{ ra.asset_id }}/remove-selected" class="inline-form">
+                        <button class="button button-small button-danger" type="submit" aria-label="Remove {{ ra.filename }}">Remove</button>
+                      </form>
+                      <form method="post" action="/releases/{{ release.id }}/assets/{{ ra.asset_id }}/move-up" class="inline-form">
+                        {% if loop.first %}
+                          <button class="button button-small" type="submit" disabled aria-label="Move {{ ra.filename }} up (disabled — already first)" title="This asset is already first in the list">Up</button>
+                        {% else %}
+                          <button class="button button-small" type="submit" aria-label="Move {{ ra.filename }} up">Up</button>
+                        {% endif %}
+                      </form>
+                      <form method="post" action="/releases/{{ release.id }}/assets/{{ ra.asset_id }}/move-down" class="inline-form">
+                        {% if loop.last %}
+                          <button class="button button-small" type="submit" disabled aria-label="Move {{ ra.filename }} down (disabled — already last)" title="This asset is already last in the list">Down</button>
+                        {% else %}
+                          <button class="button button-small" type="submit" aria-label="Move {{ ra.filename }} down">Down</button>
+                        {% endif %}
+                      </form>
+                    </div>
+                  </td>
+                {% endif %}
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
     {% else %}
-      <p class="placeholder">No assets selected for this release.</p>
+      {% set emptyHeading = "No assets selected" %}
+      {% set emptyDescription = "Add assets from the available assets below." %}
+      {% set emptyHeadingLevel = "h3" %}
+      {% include "partials/empty-state.njk" %}
     {% endif %}
   </section>
 
@@ -140,76 +146,74 @@
     <h2>Available Assets</h2>
 
     {# Filter form #}
-    <form method="get" action="/releases/{{ release.id }}/assets" class="candidate-filters">
-      <div class="field-group">
-        <div class="field">
-          <label for="candidate-search">Search</label>
-          <input type="text" id="candidate-search" name="search" value="{{ candidateFilters.search or '' }}" placeholder="Filter by filename…" aria-label="Search available assets by filename">
-        </div>
-        <div class="field">
-          <label for="candidate-extension">Extension</label>
-          <select id="candidate-extension" name="extension" aria-label="Filter by file extension">
-            <option value="">All extensions</option>
-            {% for ext in candidateExtensions %}
-              <option value="{{ ext }}" {% if candidateFilters.extension == ext %}selected{% endif %}>{{ ext }}</option>
-            {% endfor %}
-          </select>
-        </div>
-        <div class="field">
-          <label for="candidate-page-size">Page size</label>
-          <select id="candidate-page-size" name="pageSize" aria-label="Number of candidates per page">
-            <option value="25" {% if candidatePageSize == 25 %}selected{% endif %}>25</option>
-            <option value="50" {% if candidatePageSize == 50 %}selected{% endif %}>50</option>
-            <option value="100" {% if candidatePageSize == 100 %}selected{% endif %}>100</option>
-          </select>
-        </div>
-        <div class="field">
-          <label>&nbsp;</label>
-          <button class="button" type="submit">Filter</button>
-        </div>
-        {% if candidateFilters.search or candidateFilters.extension %}
-          <div class="field">
-            <label>&nbsp;</label>
-            <a class="button button-secondary" href="/releases/{{ release.id }}/assets">Clear</a>
-          </div>
-        {% endif %}
+    <form method="get" action="/releases/{{ release.id }}/assets" class="filters">
+      <div class="field">
+          <label for="candidate-search">Search available assets</label>
+          <input type="text" id="candidate-search" name="search" value="{{ candidateFilters.search or '' }}" placeholder="Filter by filename…">
       </div>
+      <div class="field">
+        <label for="candidate-extension">Extension</label>
+          <select id="candidate-extension" name="extension">
+          <option value="">All extensions</option>
+          {% for ext in candidateExtensions %}
+            <option value="{{ ext }}" {% if candidateFilters.extension == ext %}selected{% endif %}>{{ ext }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="field">
+        <label for="candidate-page-size">Page size</label>
+          <select id="candidate-page-size" name="pageSize">
+          <option value="25" {% if candidatePageSize == 25 %}selected{% endif %}>25</option>
+          <option value="50" {% if candidatePageSize == 50 %}selected{% endif %}>50</option>
+          <option value="100" {% if candidatePageSize == 100 %}selected{% endif %}>100</option>
+        </select>
+      </div>
+      <div class="field">
+        <button class="button" type="submit">Filter</button>
+      </div>
+      {% if candidateFilters.search or candidateFilters.extension %}
+        <div class="field">
+          <a class="button button-secondary" href="/releases/{{ release.id }}/assets">Clear</a>
+        </div>
+      {% endif %}
     </form>
 
     <p class="results-meta">{{ candidateTotal }} candidate{% if candidateTotal != 1 %}s{% endif %} available</p>
 
     {% if candidates.length > 0 %}
-      <table class="asset-table">
-        <thead>
-          <tr>
-            <th>Filename</th>
-            <th>Extension</th>
-            <th>Path</th>
-            <th>Size</th>
-            {% if not readOnly %}
-              <th>Add</th>
-            {% endif %}
-          </tr>
-        </thead>
-        <tbody>
-          {% for asset in candidates %}
+      <div class="table-scroll" tabindex="0" aria-label="Available release assets">
+        <table class="data-table">
+          <thead>
             <tr>
-              <td class="asset-filename">{{ asset.filename }}</td>
-              <td>{{ asset.extension }}</td>
-              <td class="asset-path"><code>{{ asset.relative_path }}</code></td>
-              <td>{{ asset.size_bytes }}</td>
+              <th>Filename</th>
+              <th>Extension</th>
+              <th>Path</th>
+              <th class="num">Size</th>
               {% if not readOnly %}
-                <td>
-                  <form method="post" action="/releases/{{ release.id }}/assets/add" class="inline-form">
-                    <input type="hidden" name="assetId" value="{{ asset.id }}">
-                    <button class="button button-small" type="submit" aria-label="Add {{ asset.filename }}">Add</button>
-                  </form>
-                </td>
+                <th>Add</th>
               {% endif %}
             </tr>
-          {% endfor %}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {% for asset in candidates %}
+              <tr>
+                <td class="asset-filename">{{ asset.filename }}</td>
+                <td>{{ asset.extension }}</td>
+                <td class="asset-path"><code>{{ asset.relative_path }}</code></td>
+                <td class="num">{{ asset.size_bytes }}</td>
+                {% if not readOnly %}
+                  <td>
+                    <form method="post" action="/releases/{{ release.id }}/assets/add" class="inline-form">
+                      <input type="hidden" name="assetId" value="{{ asset.id }}">
+                      <button class="button button-small" type="submit" aria-label="Add {{ asset.filename }}">Add</button>
+                    </form>
+                  </td>
+                {% endif %}
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
 
       {# Pagination #}
       {% if candidatePageCount > 1 %}
@@ -224,87 +228,102 @@
         </nav>
       {% endif %}
     {% else %}
-      <p class="placeholder">No available assets match the current filters.</p>
+      {% set emptyHeading = "No matching assets" %}
+      {% set emptyDescription = "No available assets match the current filters." %}
+      {% set emptyHeadingLevel = "h3" %}
+      {% include "partials/empty-state.njk" %}
     {% endif %}
   </section>
 
   {% if not readOnly %}
   {# ── Existing bulk-selection form (kept for backward compatibility) ─ #}
-  <p class="results-meta">{{ assets.length }} asset{% if assets.length != 1 %}s{% endif %} in project</p>
+  <section>
+    <h2>Bulk Selection</h2>
+    <p class="results-meta">{{ assets.length }} asset{% if assets.length != 1 %}s{% endif %} in project</p>
 
-  <form method="post" action="/releases/{{ release.id }}/assets" class="release-assets-form">
-    <table class="asset-table">
-      <thead>
-        <tr>
-          <th>Select</th>
-          <th>Filename</th>
-          <th>Path</th>
-          <th>Status</th>
-          <th>Role</th>
-          <th>Order</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for asset in assets %}
-          {% set isSelected = false %}
-          {% set currentRole = 'attachment' %}
-          {% set currentSortOrder = 0 %}
-          {% for ra in releaseAssets %}
-            {% if ra.asset_id == asset.id %}
-              {% set isSelected = true %}
-              {% set currentRole = ra.role %}
-              {% set currentSortOrder = ra.sort_order %}
-            {% endif %}
-          {% endfor %}
-          <tr class="{% if asset.is_present == 0 %}asset-missing{% endif %}" data-asset-id="{{ asset.id }}">
-            <td>
-              {% if asset.is_present == 1 %}
-                <input type="checkbox" name="selectedAssetIds[]" value="{{ asset.id }}" {% if isSelected %}checked{% endif %} class="asset-checkbox">
-              {% else %}
-                <span class="missing-indicator" title="Asset is missing from disk">✗</span>
-              {% endif %}
-            </td>
-            <td class="asset-filename">{{ asset.filename }}</td>
-            <td class="asset-path"><code>{{ asset.relative_path }}</code></td>
-            <td>
-              {% if asset.is_present == 1 %}
-                <span class="asset-present">Present</span>
-              {% else %}
-                <span class="asset-missing-label">Missing</span>
-              {% endif %}
-            </td>
-            <td>
-              {% if asset.is_present == 1 %}
-                <select name="roles[]" {% if not isSelected %}disabled{% endif %} class="asset-role">
-                  {% for role in roles %}
-                    <option value="{{ role }}" {% if currentRole == role %}selected{% endif %}>{{ role | title }}</option>
-                  {% endfor %}
-                </select>
-              {% else %}
-                <span class="asset-missing-label">—</span>
-              {% endif %}
-            </td>
-            <td>
-              {% if asset.is_present == 1 %}
-                <input type="number" name="sortOrder[]" value="{{ currentSortOrder }}" min="0" style="width: 4rem;" {% if not isSelected %}disabled{% endif %} class="asset-sort-order">
-              {% else %}
-                —
-              {% endif %}
-            </td>
-          </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+    <form method="post" action="/releases/{{ release.id }}/assets" class="release-assets-form">
+      <p id="bulk-selection-help" class="help-text">Select assets, then adjust each selected asset's role and order before saving.</p>
+      <div class="table-scroll" tabindex="0" aria-label="Bulk asset selection">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Select</th>
+              <th>Filename</th>
+              <th>Path</th>
+              <th>Status</th>
+              <th>Role</th>
+              <th class="num">Order</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for asset in assets %}
+              {% set isSelected = false %}
+              {% set currentRole = 'attachment' %}
+              {% set currentSortOrder = 0 %}
+              {% for ra in releaseAssets %}
+                {% if ra.asset_id == asset.id %}
+                  {% set isSelected = true %}
+                  {% set currentRole = ra.role %}
+                  {% set currentSortOrder = ra.sort_order %}
+                {% endif %}
+              {% endfor %}
+              <tr class="{% if asset.is_present == 0 %}is-missing{% endif %}" data-asset-id="{{ asset.id }}">
+                <td>
+                  {% if asset.is_present == 1 %}
+                    <label for="bulk-select-{{ asset.id }}" class="sr-only">Select {{ asset.filename }}</label>
+                    <input type="checkbox" id="bulk-select-{{ asset.id }}" name="selectedAssetIds[]" value="{{ asset.id }}" {% if isSelected %}checked{% endif %} class="asset-checkbox" aria-describedby="bulk-selection-help">
+                  {% else %}
+                    <span class="missing-indicator" title="Asset is missing from disk">✗</span>
+                  {% endif %}
+                </td>
+                <td class="asset-filename">{{ asset.filename }}</td>
+                <td class="asset-path"><code>{{ asset.relative_path }}</code></td>
+                <td>
+                  {% if asset.is_present == 1 %}
+                    {% set status = 'present' %}{% include "partials/status-badge.njk" %}
+                  {% else %}
+                    {% set status = 'missing' %}{% include "partials/status-badge.njk" %}
+                  {% endif %}
+                </td>
+                <td>
+                  {% if asset.is_present == 1 %}
+                    <label for="bulk-role-{{ asset.id }}" class="sr-only">Role for {{ asset.filename }}</label>
+                    <select id="bulk-role-{{ asset.id }}" name="roles[]" {% if not isSelected %}disabled{% endif %} class="asset-role" aria-describedby="bulk-selection-help">
+                      {% for role in roles %}
+                        <option value="{{ role }}" {% if currentRole == role %}selected{% endif %}>{{ role | title }}</option>
+                      {% endfor %}
+                    </select>
+                  {% else %}
+                    <span class="meta">-</span>
+                  {% endif %}
+                </td>
+                <td class="num">
+                  {% if asset.is_present == 1 %}
+                    <label for="bulk-sort-order-{{ asset.id }}" class="sr-only">Order for {{ asset.filename }}</label>
+                    <input type="number" id="bulk-sort-order-{{ asset.id }}" name="sortOrder[]" value="{{ currentSortOrder }}" min="0" {% if not isSelected %}disabled{% endif %} class="asset-sort-order numeric-input-compact" aria-describedby="bulk-selection-help">
+                  {% else %}
+                    —
+                  {% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
 
-    <div class="form-actions">
-      <button class="button button-primary" type="submit">Save Selection</button>
-      <a class="button button-secondary" href="/releases/{{ release.id }}">Back</a>
-    </div>
-  </form>
+      <div class="form-actions">
+        <button class="button button-primary" type="submit">Save Selection</button>
+        <a class="button button-secondary" href="/releases/{{ release.id }}">Back</a>
+      </div>
+    </form>
+  </section>
 
   {% else %}
     {% if assets.length == 0 %}
-      <p class="placeholder">No assets found in this project. Scan the project to discover files.</p>
+      {% set emptyHeading = "No project assets" %}
+      {% set emptyDescription = "No assets found in this project. Scan the project to discover files." %}
+      {% set emptyHeadingLevel = "h3" %}
+      {% include "partials/empty-state.njk" %}
     {% endif %}
   {% endif %}
 {% endblock %}

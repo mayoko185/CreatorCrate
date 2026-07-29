@@ -1223,8 +1223,8 @@ describe('release HTTP workflow', () => {
 
     // The submitted sort order (5) must be present, and the persisted one
     // (0) must not — the input for asset A must show the new value.
-    expect(res.text).toMatch(/value="5"[^>]*class="asset-sort-order"/);
-    expect(res.text).not.toMatch(/value="0"[^>]*class="asset-sort-order"/);
+    expect(res.text).toMatch(/value="5"[^>]*class="[^"]*asset-sort-order[^"]*"/);
+    expect(res.text).not.toMatch(/value="0"[^>]*class="[^"]*asset-sort-order[^"]*"/);
 
     // The submitted main asset must be checked.
     expect(res.text).toContain(`value="${mainAssetId}" checked`);
@@ -2608,7 +2608,7 @@ describe('release HTTP workflow', () => {
       .expect(422);
 
     // Must render the detail page with readiness panel and blocker feedback
-    expect(res.text).toContain('readiness-panel');
+    expect(res.text).toContain('panel--readiness');
     expect(res.text).toContain('Cannot publish');
     expect(res.text).toContain('No assets selected');
   });
@@ -2781,7 +2781,7 @@ describe('release HTTP workflow', () => {
       // Save Selection button must not be rendered.
       expect(assets.text).not.toMatch(/type="submit"[^>]*>Save Selection/);
       // No bulk-selection checkboxes in read-only scope
-      const checkboxRe = /<input type="checkbox" name="selectedAssetIds\[\]" value="(\d+)"[^>]*class="asset-checkbox"[^>]*>/g;
+      const checkboxRe = /<input[^>]*type="checkbox"[^>]*name="selectedAssetIds\[\]"[^>]*value="(\d+)"[^>]*class="[^"]*asset-checkbox[^"]*"[^>]*>/g;
       let match;
       let count = 0;
       while ((match = checkboxRe.exec(assets.text)) !== null) {
@@ -2823,7 +2823,7 @@ describe('release HTTP workflow', () => {
         .get(`${releaseLocation}/assets`)
         .expect(200);
       // Each checkbox element must NOT contain disabled.
-      const checkboxRe = /<input type="checkbox" name="selectedAssetIds\[\]" value="(\d+)"[^>]*class="asset-checkbox"[^>]*>/g;
+      const checkboxRe = /<input[^>]*type="checkbox"[^>]*name="selectedAssetIds\[\]"[^>]*value="(\d+)"[^>]*class="[^"]*asset-checkbox[^"]*"[^>]*>/g;
       let match;
       let count = 0;
       while ((match = checkboxRe.exec(assets.text)) !== null) {
@@ -3154,7 +3154,7 @@ describe('release HTTP workflow', () => {
 
       const res = await request(app).get(createRes.headers.location).expect(200);
       // Check within the readiness panel section
-      const panelMatch = res.text.match(/<section class="readiness-panel">[\s\S]*?<\/section>/);
+      const panelMatch = res.text.match(/<section class="panel panel--readiness">[\s\S]*?<\/section>/);
       expect(panelMatch).not.toBeNull();
       const panelHtml = panelMatch[0];
       // Non-ready status → Edit release link
@@ -3173,7 +3173,7 @@ describe('release HTTP workflow', () => {
 
       const res = await request(app).get(releaseLocation).expect(200);
       // Archived releases have no readiness panel at all
-      expect(res.text).not.toMatch(/<section class="readiness-panel">/);
+      expect(res.text).not.toMatch(/<section class="panel panel--readiness">/);
       expect(res.text).not.toMatch(/href="\/releases\/\d+\/edit"/);
       expect(res.text).not.toMatch(/href="\/releases\/\d+\/assets"/);
     });
@@ -3187,7 +3187,7 @@ describe('release HTTP workflow', () => {
 
       const res = await request(app).get(releaseLocation).expect(200);
       // Archived parent releases have no readiness panel at all
-      expect(res.text).not.toMatch(/<section class="readiness-panel">/);
+      expect(res.text).not.toMatch(/<section class="panel panel--readiness">/);
       expect(res.text).not.toMatch(/href="\/releases\/\d+\/edit"/);
       expect(res.text).not.toMatch(/href="\/releases\/\d+\/assets"/);
     });
@@ -4384,11 +4384,12 @@ describe('release HTTP workflow', () => {
       expect(res.text).not.toMatch(/\/publish/);
     });
 
-    it('published detail keeps Edit and Archive buttons', async () => {
+    it('published detail keeps Edit but not Archive (Danger Zone excludes published)', async () => {
       const { releaseLocation } = await setupPublishedRelease();
       const res = await request(app).get(releaseLocation).expect(200);
       expect(res.text).toMatch(/\/releases\/\d+\/edit/);
-      expect(res.text).toMatch(/\/archive/);
+      // Archive is only in the Danger Zone, which excludes published releases.
+      expect(res.text).not.toMatch(/action="\/releases\/\d+\/archive"/);
     });
 
     it('published detail hides Manage Assets link', async () => {
@@ -4944,7 +4945,8 @@ describe('release HTTP workflow', () => {
           .get(`${releaseLocation}/assets`)
           .expect(200);
         expect(res.text).toContain('Assets —');
-        expect(res.text).toContain('asset-table');
+        // Phase 10.5C: asset tables use shared data-table class
+        expect(res.text).toContain('data-table');
       });
 
       it('POST /releases/:id/publish still publishes', async () => {
@@ -5269,7 +5271,8 @@ describe('release HTTP workflow', () => {
         .expect(200);
 
       // Extract the asset table rows from the review page
-      const tableSection = res.text.match(/<table class="asset-table">[\s\S]*?<\/table>/);
+      // Phase 10.5C: publish page uses shared data-table class
+      const tableSection = res.text.match(/<table class="data-table">[\s\S]*?<\/table>/);
       expect(tableSection).not.toBeNull();
       const tableHtml = tableSection[0];
 
@@ -5659,13 +5662,13 @@ describe('release HTTP workflow', () => {
     });
   });
 
-  // ─── Phase 8 structural published asset-table assertions ──────────────────
+  // ─── Phase 8 structural published selected-assets table assertions ────────
   //
   // Parse the exact selected-assets section on published detail and assert
-  // structural properties: exactly one table.asset-table, multiple assets in
+  // structural properties: exactly one shared data-table, multiple assets in
   // sort_order ASC, asset_id ASC order, correct roles and presence values.
 
-  describe('published detail structural asset-table assertions', () => {
+  describe('published detail structural selected-assets table assertions', () => {
     async function setupPublishedRelease() {
       const { projectId, releaseLocation, assetId } = await setupPublishableRelease(app, projectsRoot, db);
       const releaseId = Number(releaseLocation.replace('/releases/', ''));
@@ -5704,7 +5707,7 @@ describe('release HTTP workflow', () => {
       return { projectId, releaseLocation, releaseId, assetId: Number(assetId), secondAssetId: secondAsset.id };
     }
 
-    it('exactly one table.asset-table appears in the selected-assets section', async () => {
+    it('exactly one shared data-table appears in the selected-assets section', async () => {
       const { releaseLocation } = await setupPublishedRelease();
       const res = await request(app).get(releaseLocation).expect(200);
 
@@ -5713,8 +5716,8 @@ describe('release HTTP workflow', () => {
       expect(sectionMatch).not.toBeNull();
       const sectionHtml = sectionMatch[0];
 
-      // Count table.asset-table occurrences within that section
-      const tableMatches = sectionHtml.match(/<table class="asset-table">/g);
+      // Phase 10.5C: detail and publish pages use shared data-table class
+      const tableMatches = sectionHtml.match(/<table class="data-table">/g);
       expect(tableMatches).not.toBeNull();
       expect(tableMatches.length).toBe(1);
     });
@@ -6031,22 +6034,22 @@ describe('release HTTP workflow', () => {
       expect(res.text).toContain('editable or original source');
     });
 
-    it('search input has accessible name', async () => {
+    it('search input has visible label', async () => {
       const { releaseLocation } = await setupBasicRelease();
       const res = await request(app).get(`${releaseLocation}/assets`).expect(200);
-      expect(res.text).toContain('aria-label="Search available assets by filename"');
+      expect(res.text).toContain('<label for="candidate-search">Search available assets</label>');
     });
 
-    it('extension filter has accessible name', async () => {
+    it('extension filter has visible label', async () => {
       const { releaseLocation } = await setupBasicRelease();
       const res = await request(app).get(`${releaseLocation}/assets`).expect(200);
-      expect(res.text).toContain('aria-label="Filter by file extension"');
+      expect(res.text).toContain('<label for="candidate-extension">Extension</label>');
     });
 
-    it('page-size control has accessible name', async () => {
+    it('page-size control has visible label', async () => {
       const { releaseLocation } = await setupBasicRelease();
       const res = await request(app).get(`${releaseLocation}/assets`).expect(200);
-      expect(res.text).toContain('aria-label="Number of candidates per page"');
+      expect(res.text).toContain('<label for="candidate-page-size">Page size</label>');
     });
 
     it('Add button has accessible name', async () => {
@@ -8332,6 +8335,270 @@ describe('release HTTP workflow', () => {
     it('archived parent has no mutation controls', async () => {
       const { releaseLocation } = await setupReadOnlyRelease('archived-parent');
       await assertNoMutationControls(releaseLocation);
+    });
+  });
+
+  // ─── Phase 10.5: Remaining defect corrections ──────────────────────────
+
+  describe('release detail archive action deduplication', () => {
+    async function createEligibleRelease() {
+      const projRes = await request(app)
+        .post('/projects')
+        .send('title=Dedup+Archive+Project')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectId = projRes.headers.location.replace('/projects/', '');
+
+      const createRes = await request(app)
+        .post('/releases')
+        .send(`projectId=${projectId}`)
+        .send('title=Dedup+Archive+Release')
+        .send('status=idea')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      return { projectId, releaseLocation: createRes.headers.location };
+    }
+
+    it('renders exactly one archive form for an eligible release', async () => {
+      const { releaseLocation } = await createEligibleRelease();
+      const res = await request(app).get(releaseLocation).expect(200);
+
+      const archiveForms = res.text.match(/action="\/releases\/\d+\/archive"/g);
+      expect(archiveForms).toHaveLength(1);
+    });
+
+    it('remaining archive action is inside the destructive section', async () => {
+      const { releaseLocation } = await createEligibleRelease();
+      const res = await request(app).get(releaseLocation).expect(200);
+
+      expect(res.text).toContain('destructive-section');
+      expect(res.text).toContain('Danger zone');
+      expect(res.text).toContain('Archive release');
+    });
+
+    it('heading-level area does not contain a second archive form', async () => {
+      const { releaseLocation } = await createEligibleRelease();
+      const res = await request(app).get(releaseLocation).expect(200);
+
+      // The page-heading header must only have the Edit link, not an Archive form.
+      const headingMatch = res.text.match(/<header class="page-heading">[\s\S]*?<\/header>/);
+      expect(headingMatch).not.toBeNull();
+      expect(headingMatch[0]).not.toContain('/archive');
+      expect(headingMatch[0]).toContain('/edit');
+    });
+
+    it('published release has no archive form', async () => {
+      const { releaseLocation } = await setupPublishableRelease(app, projectsRoot, db);
+      // Publish the release
+      await request(app)
+        .post(`${releaseLocation}/publish`)
+        .expect(302);
+
+      const res = await request(app).get(releaseLocation).expect(200);
+      const archiveForms = res.text.match(/action="\/releases\/\d+\/archive"/g);
+      expect(archiveForms).toBeNull();
+    });
+
+    it('cancelled release has no archive form', async () => {
+      const projRes = await request(app)
+        .post('/projects')
+        .send('title=Cancel+Archive+Project')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectId = projRes.headers.location.replace('/projects/', '');
+
+      const createRes = await request(app)
+        .post('/releases')
+        .send(`projectId=${projectId}`)
+        .send('title=Cancel+Archive+Release')
+        .send('status=cancelled')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      const res = await request(app).get(createRes.headers.location).expect(200);
+      const archiveForms = res.text.match(/action="\/releases\/\d+\/archive"/g);
+      expect(archiveForms).toBeNull();
+    });
+
+    it('already archived release has no archive form', async () => {
+      const { releaseLocation } = await createEligibleRelease();
+      await request(app).post(`${releaseLocation}/archive`).expect(302);
+
+      const res = await request(app).get(releaseLocation).expect(200);
+      const archiveForms = res.text.match(/action="\/releases\/\d+\/archive"/g);
+      expect(archiveForms).toBeNull();
+    });
+
+    it('project-archived release has no archive form', async () => {
+      const { projectId, releaseLocation } = await createEligibleRelease();
+      await request(app).post(`/projects/${projectId}/archive`).expect(302);
+
+      const res = await request(app).get(releaseLocation).expect(200);
+      const archiveForms = res.text.match(/action="\/releases\/\d+\/archive"/g);
+      expect(archiveForms).toBeNull();
+    });
+  });
+
+  describe('calendar switcher self-link', () => {
+    it('calendar switcher anchor has a valid href with normalized month', async () => {
+      const res = await request(app).get('/releases/calendar').expect(200);
+      // The calendar route normalizes to the current month, so the canonical
+      // self-link always carries the month parameter.
+      expect(res.text).toMatch(/<a class="view-switcher-option" href="\/releases\/calendar\?month=\d{4}-\d{2}"[^>]*aria-current="page"[^>]*>Calendar<\/a>/);
+    });
+
+    it('calendar switcher preserves explicit month in href', async () => {
+      const res = await request(app).get('/releases/calendar?month=2026-07').expect(200);
+      expect(res.text).toMatch(/<a class="view-switcher-option" href="\/releases\/calendar\?month=2026-07"[^>]*aria-current="page"[^>]*>Calendar<\/a>/);
+    });
+
+    it('all three switcher items are real anchors with valid hrefs', async () => {
+      const res = await request(app).get('/releases/calendar?month=2026-07').expect(200);
+      // List
+      expect(res.text).toMatch(/<a class="view-switcher-option" href="\/releases"[^>]*>List<\/a>/);
+      // Board
+      expect(res.text).toMatch(/<a class="view-switcher-option" href="\/releases\?view=board"[^>]*>Board<\/a>/);
+      // Calendar — must have a real href, not just be a bare anchor
+      const calMatch = res.text.match(/<a class="view-switcher-option" href="([^"]+)"[^>]*aria-current="page"[^>]*>Calendar<\/a>/);
+      expect(calMatch).not.toBeNull();
+      expect(calMatch[1]).toMatch(/^\/releases\/calendar/);
+    });
+
+    it('exactly one switcher item is current within the view-switcher nav', async () => {
+      const res = await request(app).get('/releases/calendar?month=2026-07').expect(200);
+      // Extract the view-switcher nav to scope the count (the sidebar nav also
+      // carries aria-current="page" for the Releases section).
+      const switcherMatch = res.text.match(/<nav class="view-switcher"[^>]*>([\s\S]*?)<\/nav>/);
+      expect(switcherMatch).not.toBeNull();
+      const currentCount = (switcherMatch[1].match(/aria-current="page"/g) || []).length;
+      expect(currentCount).toBe(1);
+    });
+  });
+
+  describe('release list empty-state detection', () => {
+    async function createReleaseWithTitle(title, status = 'idea') {
+      const projRes = await request(app)
+        .post('/projects')
+        .send(`title=${encodeURIComponent(title + ' Project')}`)
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectId = projRes.headers.location.replace('/projects/', '');
+
+      const createRes = await request(app)
+        .post('/releases')
+        .send(`projectId=${projectId}`)
+        .send(`title=${encodeURIComponent(title)}`)
+        .send(`status=${status}`)
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      return createRes.headers.location;
+    }
+
+    /**
+     * Extract the empty-state block from rendered HTML by counting div nesting.
+     * Returns the raw HTML from <div class="empty-state"> through its matching
+     * closing </div>, or null if not found.
+     */
+    function extractEmptyState(html) {
+      const startMarker = '<div class="empty-state">';
+      const startIdx = html.indexOf(startMarker);
+      if (startIdx === -1) return null;
+      let pos = startIdx + startMarker.length;
+      let depth = 1;
+      while (depth > 0 && pos < html.length) {
+        const openIdx = html.indexOf('<div', pos);
+        const closeIdx = html.indexOf('</div>', pos);
+        if (closeIdx === -1) return null;
+        if (openIdx !== -1 && openIdx < closeIdx) {
+          depth++;
+          pos = openIdx + 4;
+        } else {
+          depth--;
+          pos = closeIdx + 6;
+        }
+      }
+      return html.slice(startIdx, pos);
+    }
+
+    it('zero releases with no filters shows "No releases yet" and New Release action', async () => {
+      const res = await request(app).get('/releases').expect(200);
+      const emptyBlock = extractEmptyState(res.text);
+      expect(emptyBlock).not.toBeNull();
+      expect(emptyBlock).toContain('No releases yet');
+      expect(emptyBlock).toContain('href="/releases/new"');
+      expect(emptyBlock).toContain('New Release');
+    });
+
+    it('zero releases with only sort/order params shows "No releases yet" (not filtered)', async () => {
+      const res = await request(app).get('/releases?sort=created&order=asc').expect(200);
+      const emptyBlock = extractEmptyState(res.text);
+      expect(emptyBlock).not.toBeNull();
+      expect(emptyBlock).toContain('No releases yet');
+      // New Release is the primary remedy, not Reset Filters
+      expect(emptyBlock).toContain('href="/releases/new"');
+      expect(emptyBlock).not.toContain('Reset Filters');
+    });
+
+    it('releases exist but status filter returns none shows "No releases match" and Reset Filters', async () => {
+      await createReleaseWithTitle('Visible Release', 'idea');
+
+      const res = await request(app).get('/releases?status=published').expect(200);
+      const emptyBlock = extractEmptyState(res.text);
+      expect(emptyBlock).not.toBeNull();
+      expect(emptyBlock).toContain('No releases match');
+      expect(emptyBlock).toContain('Reset Filters');
+      // Reset Filters URL is the canonical release list path
+      expect(emptyBlock).toContain('href="/releases"');
+    });
+
+    it('releases exist but project filter returns none shows filtered-empty state', async () => {
+      await createReleaseWithTitle('Existing Release', 'idea');
+
+      // Project ID 999 does not exist
+      const res = await request(app).get('/releases?project=999').expect(200);
+      const emptyBlock = extractEmptyState(res.text);
+      expect(emptyBlock).not.toBeNull();
+      expect(emptyBlock).toContain('No releases match');
+      expect(emptyBlock).toContain('Reset Filters');
+      expect(emptyBlock).toContain('href="/releases"');
+    });
+
+    it('Reset Filters URL has the exact canonical path and no query keys', async () => {
+      await createReleaseWithTitle('Reset URL Release', 'idea');
+
+      const res = await request(app).get('/releases?status=published').expect(200);
+      const emptyBlock = extractEmptyState(res.text);
+      expect(emptyBlock).not.toBeNull();
+      // The reset link must be exactly /releases with no query string
+      const resetMatch = emptyBlock.match(/href="(\/releases(?:\?[^"]*)?)"/);
+      expect(resetMatch).not.toBeNull();
+      expect(resetMatch[1]).toBe('/releases');
+    });
+
+    it('New Release does not appear in the filtered-empty state', async () => {
+      await createReleaseWithTitle('Filter Test Release', 'idea');
+
+      const res = await request(app).get('/releases?status=published').expect(200);
+      const emptyBlock = extractEmptyState(res.text);
+      expect(emptyBlock).not.toBeNull();
+      expect(emptyBlock).not.toContain('href="/releases/new"');
+      expect(emptyBlock).not.toContain('New Release');
+    });
+
+    it('releases exist and are visible shows the table, not an empty state', async () => {
+      await createReleaseWithTitle('Shown Release', 'idea');
+
+      const res = await request(app).get('/releases').expect(200);
+      expect(res.text).toContain('table-scroll');
+      expect(res.text).toContain('Shown Release');
+      // No empty-state block in the rendered content
+      expect(extractEmptyState(res.text)).toBeNull();
     });
   });
 });

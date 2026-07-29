@@ -1,10 +1,10 @@
 {% extends "layout.njk" %}
+{% import "partials/page-heading.njk" as pageHeading %}
 
 {% block content %}
-  <div class="page-header">
-    <h1>Review &amp; Publish</h1>
-    <a class="button" href="/releases/{{ release.id }}">Back to release</a>
-  </div>
+  {% call pageHeading.render("Review & Publish") %}
+    <a class="button" href="/releases/{{ release.id }}">Cancel</a>
+  {% endcall %}
 
   {% if errors.general %}
     <div class="error-summary" role="alert">
@@ -41,7 +41,7 @@
     </div>
   {% endif %}
 
-  <!-- Project identity -->
+  {# ─── Project identity ─── #}
   <section>
     <h2>Project</h2>
     <dl class="detail-list">
@@ -50,14 +50,14 @@
     </dl>
   </section>
 
-  <!-- Release identity -->
+  {# ─── Release identity ─── #}
   <section>
     <h2>Release</h2>
     <dl class="detail-list">
       <dt>Title</dt>
       <dd>{{ release.title }}</dd>
       <dt>Status</dt>
-      <dd>{{ release.status | replace('-', ' ') | title }}</dd>
+      <dd>{% set status = release.status %}{% include "partials/status-badge.njk" %}</dd>
       {% if release.planned_date %}
         <dt>Planned date</dt>
         <dd>{{ release.planned_date }}</dd>
@@ -65,8 +65,8 @@
     </dl>
   </section>
 
-  <!-- Readiness result and blockers -->
-  <section class="readiness-panel">
+  {# ─── Readiness result and blockers ─── #}
+  <section class="panel panel--readiness">
     <h2>Readiness</h2>
 
     {% if readiness.publishable %}
@@ -117,63 +117,68 @@
     </p>
   </section>
 
-  <!-- Selected assets ordered by sort_order ASC, asset_id ASC -->
+  {# ─── Selected assets ─── #}
   <section>
     <h2>Selected Assets</h2>
     {% if releaseAssets.length > 0 %}
-      <table class="asset-table">
-        <thead>
-          <tr>
-            <th>#</th>
-            <th>Filename</th>
-            <th>Role</th>
-            <th>Order</th>
-            <th>Status</th>
-            <th>Last seen</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for ra in releaseAssets %}
+      <div class="table-scroll" tabindex="0" aria-label="Selected release assets for publication">
+        <table class="data-table">
+          <thead>
             <tr>
-              <td>{{ loop.index }}</td>
-              <td class="asset-filename">{{ ra.filename }}</td>
-              <td>{{ ra.role | title }}</td>
-              <td>{{ ra.sort_order }}</td>
-              <td>
-                {% if ra.is_present == 1 %}
-                  <span class="asset-present">Present</span>
-                {% else %}
-                  <span class="asset-missing-label">Missing</span>
-                {% endif %}
-              </td>
-              <td class="asset-date">
-                {% if ra.last_seen_at %}
-                  {{ ra.last_seen_at }}
-                {% else %}
-                  &mdash;
-                {% endif %}
-              </td>
+              <th class="num">#</th>
+              <th>Filename</th>
+              <th>Role</th>
+              <th class="num">Order</th>
+              <th>Status</th>
+              <th>Last seen</th>
             </tr>
-          {% endfor %}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {% for ra in releaseAssets %}
+              <tr>
+                <td class="num">{{ loop.index }}</td>
+                <td class="asset-filename">{{ ra.filename }}</td>
+                <td>{{ ra.role | title }}</td>
+                <td class="num">{{ ra.sort_order }}</td>
+                <td>
+                  {% if ra.is_present == 1 %}
+                    {% set status = 'present' %}{% include "partials/status-badge.njk" %}
+                  {% else %}
+                    {% set status = 'missing' %}{% include "partials/status-badge.njk" %}
+                  {% endif %}
+                </td>
+                <td class="asset-date">
+                  {% if ra.last_seen_at %}
+                    {{ ra.last_seen_at }}
+                  {% else %}
+                    &mdash;
+                  {% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
     {% else %}
-      <p class="meta">No assets selected.</p>
+      {% set emptyHeading = "No assets selected" %}
+      {% set emptyDescription = "Select assets before publishing this release." %}
+      {% set emptyHeadingLevel = "h3" %}
+      {% include "partials/empty-state.njk" %}
     {% endif %}
   </section>
 
-  <!-- Publication date form -->
+  {# ─── Publication date form ─── #}
   <section>
     <h2>Publication Date</h2>
     <form method="post" action="/releases/{{ release.id }}/publish">
       <div class="field {% if errors.publishedDate %}field-error{% endif %}">
-        <label for="publishedDate">Publication date <span class="required">*</span></label>
+        <label for="publishedDate">Publication date <span class="required" aria-label="required">*</span></label>
         <input type="date" id="publishedDate" name="publishedDate"
-               value="{{ prefillDate }}" required>
+               value="{{ prefillDate }}" required aria-describedby="publishedDate-help{% if errors.publishedDate %} publishedDate-error{% endif %}"{% if errors.publishedDate %} aria-invalid="true"{% endif %}>
         {% if errors.publishedDate %}
-          <span class="field-error-message">{{ errors.publishedDate }}</span>
+          <span class="field-error-message" id="publishedDate-error">{{ errors.publishedDate }}</span>
         {% endif %}
-        <span class="help-text">The date this release was published. Must be a valid date (YYYY-MM-DD).</span>
+        <span class="help-text" id="publishedDate-help">The date this release was published. Must be a valid date (YYYY-MM-DD).</span>
       </div>
 
       <div class="form-actions">
@@ -181,7 +186,7 @@
           {% if not readiness.publishable %}disabled{% endif %}>
           Publish
         </button>
-        <a class="button" href="/releases/{{ release.id }}">Cancel</a>
+        <a class="button button-secondary" href="/releases/{{ release.id }}">Cancel</a>
       </div>
     </form>
   </section>

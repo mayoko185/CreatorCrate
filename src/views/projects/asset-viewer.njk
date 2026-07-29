@@ -1,34 +1,45 @@
 {% extends "layout.njk" %}
+{% import "partials/page-heading.njk" as pageHeading %}
 
 {% block body_class %}asset-viewer-page{% endblock %}
 
 {% block title %}{{ asset.filename }} — {{ appName }}{% endblock %}
 
 {% block content %}
+  {% if asset.missing %}
+    {% set viewerBadgeStatus = "missing" %}
+    {% set viewerBadgeText = "Missing" %}
+  {% elseif asset.preview_state == 'unsupported' %}
+    {% set viewerBadgeStatus = "unsupported" %}
+    {% set viewerBadgeText = "Unsupported" %}
+  {% elseif asset.preview.previewable and asset.preview_url %}
+    {% set viewerBadgeStatus = "present" %}
+    {% set viewerBadgeText = "Present" %}
+  {% else %}
+    {% set viewerBadgeStatus = "unavailable" %}
+    {% set viewerBadgeText = "Unavailable" %}
+  {% endif %}
   <nav class="asset-viewer-breadcrumb" aria-label="Asset viewer context">
     <a class="asset-viewer-project" href="/projects/{{ project.id }}">Project: {{ project.title }}</a>
     <a class="asset-viewer-back" href="{{ backToAssetsLink.href }}">Back to Assets</a>
   </nav>
 
-  <div class="page-header">
-    <h1>{{ asset.filename }}</h1>
-    <div class="actions" aria-label="Asset actions">
-      {% if previousAssetLink %}
-        <a class="button asset-viewer-prev" href="{{ previousAssetLink.href }}" rel="prev">Previous asset</a>
-      {% endif %}
-      {% if nextAssetLink %}
-        <a class="button asset-viewer-next" href="{{ nextAssetLink.href }}" rel="next">Next asset</a>
-      {% endif %}
-      {% if asset.original_url %}
-        <a class="button asset-viewer-original" href="{{ asset.original_url }}">View Original</a>
-      {% endif %}
-    </div>
-  </div>
+  {% call pageHeading.render(asset.filename, "Asset preview, metadata, and release usage.", viewerBadgeStatus, viewerBadgeText) %}
+    {% if previousAssetLink %}
+      <a class="button asset-viewer-prev" href="{{ previousAssetLink.href }}" rel="prev">Previous asset</a>
+    {% endif %}
+    {% if nextAssetLink %}
+      <a class="button asset-viewer-next" href="{{ nextAssetLink.href }}" rel="next">Next asset</a>
+    {% endif %}
+    {% if asset.original_url %}
+      <a class="button asset-viewer-original" href="{{ asset.original_url }}">View Original</a>
+    {% endif %}
+  {% endcall %}
 
   {% if filteredOut %}
-    <p class="notice asset-filtered-out-notice">
-      This asset is outside the current asset-browser filters. Previous and Next links are unavailable for this filter context.
-    </p>
+    {% set noticeVariant = "warning" %}
+    {% set noticeText = "This asset is outside the current asset-browser filters. Previous and Next links are unavailable for this filter context." %}
+    {% include "partials/notice.njk" %}
   {% endif %}
 
   <section class="asset-preview-section" aria-labelledby="asset-preview-heading">
@@ -44,13 +55,19 @@
         </p>
       </noscript>
     {% elseif asset.missing %}
-      <p class="notice asset-missing-notice">Missing at last scan. Preview and original viewing are unavailable.</p>
+      {% set noticeVariant = "danger" %}
+      {% set noticeText = "Missing at last scan. Preview and original viewing are unavailable." %}
+      {% include "partials/notice.njk" %}
       <p class="asset-preview-placeholder">Preview unavailable for missing assets.</p>
     {% elseif asset.preview_state == 'unsupported' %}
-      <p class="notice asset-unsupported-notice">Unsupported asset preview. This asset type or recorded MIME cannot be previewed inline.</p>
+      {% set noticeVariant = "warning" %}
+      {% set noticeText = "Unsupported asset preview. This asset type or recorded MIME cannot be previewed inline." %}
+      {% include "partials/notice.njk" %}
       <p class="asset-preview-placeholder">Preview unavailable for unsupported assets.</p>
     {% else %}
-      <p class="notice asset-preview-unavailable-notice">Preview unavailable because recorded source metadata is incomplete.</p>
+      {% set noticeVariant = "neutral" %}
+      {% set noticeText = "Preview unavailable because recorded source metadata is incomplete." %}
+      {% include "partials/notice.njk" %}
       <p class="asset-preview-placeholder">No preview link is available.</p>
     {% endif %}
   </section>
@@ -85,9 +102,9 @@
       <dt>Presence</dt>
       <dd>
         {% if asset.is_present %}
-          Present at last scan
+          {% set status = 'present-at-last-scan' %}{% include "partials/status-badge.njk" %}
         {% else %}
-          Missing at last scan
+          {% set status = 'missing-at-last-scan' %}{% include "partials/status-badge.njk" %}
         {% endif %}
       </dd>
     </dl>

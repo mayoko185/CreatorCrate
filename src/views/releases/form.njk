@@ -1,11 +1,10 @@
 {% extends "layout.njk" %}
+{% import "partials/page-heading.njk" as pageHeading %}
 
 {% set title = action ~ ' Release' %}
 
 {% block content %}
-  <div class="page-header">
-    <h1>{{ title }}</h1>
-  </div>
+  {{ pageHeading.render(title) }}
 
   {% if errors.general %}
     <div class="error-summary" role="alert">
@@ -15,74 +14,89 @@
 
   <form method="post" action="{{ submitUrl }}" class="project-form" novalidate>
     {% if not release %}
-      <div class="field {% if errors.projectId %}field-error{% endif %}">
-        <label for="projectId">Project <span class="required" aria-label="required">*</span></label>
-        <select id="projectId" name="projectId" required>
-          <option value="">Select a project</option>
-          {% for project in projects %}
-            <option value="{{ project.id }}" {% if selectedProjectId == project.id %}selected{% endif %}>{{ project.title }}</option>
-          {% endfor %}
-        </select>
-        {% if errors.projectId %}<span class="field-error-message">{{ errors.projectId }}</span>{% endif %}
+      <div class="form-section">
+        <h2>Project</h2>
+        <div class="field {% if errors.projectId %}field-error{% endif %}">
+          <label for="projectId">Project <span class="required" aria-label="required">*</span></label>
+          <select id="projectId" name="projectId" required{% if errors.projectId %} aria-describedby="projectId-error" aria-invalid="true"{% endif %}>
+            <option value="">Select a project</option>
+            {% for project in projects %}
+              <option value="{{ project.id }}" {% if selectedProjectId == project.id %}selected{% endif %}>{{ project.title }}</option>
+            {% endfor %}
+          </select>
+          {% if errors.projectId %}<span class="field-error-message" id="projectId-error">{{ errors.projectId }}</span>{% endif %}
+        </div>
       </div>
     {% endif %}
 
-    <div class="field {% if errors.title %}field-error{% endif %}">
-      <label for="title">Title <span class="required" aria-label="required">*</span></label>
-      <input type="text" id="title" name="title" value="{{ values.title or '' }}" maxlength="200" required>
-      {% if errors.title %}<span class="field-error-message">{{ errors.title }}</span>{% endif %}
-    </div>
+    <div class="form-section">
+      <h2>Basic information</h2>
 
-    <div class="field {% if errors.description %}field-error{% endif %}">
-      <label for="description">Description</label>
-      <textarea id="description" name="description" rows="4" maxlength="4000">{{ values.description or '' }}</textarea>
-      {% if errors.description %}<span class="field-error-message">{{ errors.description }}</span>{% endif %}
-    </div>
+      <div class="field {% if errors.title %}field-error{% endif %}">
+        <label for="title">Title <span class="required" aria-label="required">*</span></label>
+        <input type="text" id="title" name="title" value="{{ values.title or '' }}" maxlength="200" required{% if errors.title %} aria-describedby="title-error" aria-invalid="true"{% endif %}>
+        {% if errors.title %}<span class="field-error-message" id="title-error">{{ errors.title }}</span>{% endif %}
+      </div>
 
-    <div class="field {% if errors.notes %}field-error{% endif %}">
-      <label for="notes">Notes</label>
-      <textarea id="notes" name="notes" rows="6" maxlength="10000">{{ values.notes or '' }}</textarea>
-      {% if errors.notes %}<span class="field-error-message">{{ errors.notes }}</span>{% endif %}
-    </div>
+      <div class="field {% if errors.description %}field-error{% endif %}">
+        <label for="description">Description</label>
+        <textarea id="description" name="description" rows="4" maxlength="4000"{% if errors.description %} aria-describedby="description-error" aria-invalid="true"{% endif %}>{{ values.description or '' }}</textarea>
+        {% if errors.description %}<span class="field-error-message" id="description-error">{{ errors.description }}</span>{% endif %}
+      </div>
 
-    <div class="field-row">
-      <div class="field {% if errors.status %}field-error{% endif %}">
-        <label for="status">Status <span class="required" aria-label="required">*</span></label>
-        {% if release and release.status == 'published' %}
-          <input type="hidden" name="status" value="published">
-          <p class="field-static-value">Published</p>
-        {% else %}
-          <select id="status" name="status" required>
-            {% for s in statuses %}
-              <option value="{{ s }}" {% if values.status == s %}selected{% endif %}>{{ s | replace('-', ' ') | title }}</option>
-            {% endfor %}
-          </select>
-        {% endif %}
-        {% if errors.status %}<span class="field-error-message">{{ errors.status }}</span>{% endif %}
+      <div class="field {% if errors.notes %}field-error{% endif %}">
+        <label for="notes">Notes</label>
+        <textarea id="notes" name="notes" rows="6" maxlength="10000"{% if errors.notes %} aria-describedby="notes-error" aria-invalid="true"{% endif %}>{{ values.notes or '' }}</textarea>
+        {% if errors.notes %}<span class="field-error-message" id="notes-error">{{ errors.notes }}</span>{% endif %}
       </div>
     </div>
 
-    <div class="field-row">
-      <div class="field {% if errors.plannedDate %}field-error{% endif %}">
-        <label for="plannedDate">Planned date</label>
-        <input type="date" id="plannedDate" name="plannedDate" value="{{ values.plannedDate or '' }}">
-        <span class="help-text">Target publication date for this release</span>
-        {% if errors.plannedDate %}<span class="field-error-message">{{ errors.plannedDate }}</span>{% endif %}
+    <div class="form-section">
+      <h2>Status and scheduling</h2>
+
+      <div class="field-row">
+        <div class="field {% if errors.status %}field-error{% endif %}">
+          <label for="status">Status <span class="required" aria-label="required">*</span></label>
+          {% if release and release.status == 'published' %}
+            <input type="hidden" name="status" value="published">
+            <p class="field-static-value">Published</p>
+          {% else %}
+            <select id="status" name="status" required{% if errors.status %} aria-describedby="status-error" aria-invalid="true"{% endif %}>
+              {% for s in statuses %}
+                <option value="{{ s }}" {% if values.status == s %}selected{% endif %}>{{ s | replace('-', ' ') | title }}</option>
+              {% endfor %}
+            </select>
+          {% endif %}
+          {% if errors.status %}<span class="field-error-message" id="status-error">{{ errors.status }}</span>{% endif %}
+        </div>
       </div>
 
-      <div class="field {% if errors.publishedDate %}field-error{% endif %}">
-        <label for="publishedDate">Published date</label>
-        <input type="date" id="publishedDate" name="publishedDate" value="{{ values.publishedDate or '' }}">
-        <span class="help-text">When this release was published</span>
-        {% if errors.publishedDate %}<span class="field-error-message">{{ errors.publishedDate }}</span>{% endif %}
+      <div class="field-row">
+        <div class="field {% if errors.plannedDate %}field-error{% endif %}">
+          <label for="plannedDate">Planned date</label>
+          <input type="date" id="plannedDate" name="plannedDate" value="{{ values.plannedDate or '' }}" aria-describedby="plannedDate-help{% if errors.plannedDate %} plannedDate-error{% endif %}"{% if errors.plannedDate %} aria-invalid="true"{% endif %}>
+          <span class="help-text" id="plannedDate-help">Target publication date for this release</span>
+          {% if errors.plannedDate %}<span class="field-error-message" id="plannedDate-error">{{ errors.plannedDate }}</span>{% endif %}
+        </div>
+
+        <div class="field {% if errors.publishedDate %}field-error{% endif %}">
+          <label for="publishedDate">Published date</label>
+          <input type="date" id="publishedDate" name="publishedDate" value="{{ values.publishedDate or '' }}" aria-describedby="publishedDate-help{% if errors.publishedDate %} publishedDate-error{% endif %}"{% if errors.publishedDate %} aria-invalid="true"{% endif %}>
+          <span class="help-text" id="publishedDate-help">When this release was published</span>
+          {% if errors.publishedDate %}<span class="field-error-message" id="publishedDate-error">{{ errors.publishedDate }}</span>{% endif %}
+        </div>
       </div>
     </div>
 
-    <div class="field {% if errors.patreonUrl %}field-error{% endif %}">
-      <label for="patreonUrl">Patreon URL</label>
-      <input type="url" id="patreonUrl" name="patreonUrl" value="{{ values.patreonUrl or '' }}">
-      <span class="help-text">Link to this release on Patreon</span>
-      {% if errors.patreonUrl %}<span class="field-error-message">{{ errors.patreonUrl }}</span>{% endif %}
+    <div class="form-section">
+      <h2>Links</h2>
+
+      <div class="field {% if errors.patreonUrl %}field-error{% endif %}">
+        <label for="patreonUrl">Patreon URL</label>
+        <input type="url" id="patreonUrl" name="patreonUrl" value="{{ values.patreonUrl or '' }}" aria-describedby="patreonUrl-help{% if errors.patreonUrl %} patreonUrl-error{% endif %}"{% if errors.patreonUrl %} aria-invalid="true"{% endif %}>
+        <span class="help-text" id="patreonUrl-help">Link to this release on Patreon</span>
+        {% if errors.patreonUrl %}<span class="field-error-message" id="patreonUrl-error">{{ errors.patreonUrl }}</span>{% endif %}
+      </div>
     </div>
 
     <div class="form-actions">

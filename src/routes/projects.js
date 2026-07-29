@@ -17,21 +17,31 @@ export function createProjectsRouter({ appName, projectService, workflowQuerySer
     try {
       const parsedQuery = parseListQuery(req.query);
       const { total } = projectService.list({ ...parsedQuery, limit: 0 });
+      const { total: totalProjects } = projectService.list({ includeArchived: true, limit: 0 });
       const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
       const currentPage = Math.min(parsedQuery.page, pageCount);
       const offset = (currentPage - 1) * PAGE_SIZE;
       const { rows } = projectService.list({ ...parsedQuery, offset, limit: PAGE_SIZE });
       const pageUrl = buildPageUrl(req);
+      const filtersActive = Boolean(parsedQuery.search || parsedQuery.status);
 
       res.render('projects/index.njk', {
         appName,
         projects: rows,
         total,
+        hasAnyProjects: totalProjects > 0,
+        filtersActive,
+        resetFiltersUrl: '/projects',
         page: currentPage,
         pageSize: PAGE_SIZE,
         pageCount,
         pageUrl,
-        query: req.query,
+        query: {
+          search: parsedQuery.search,
+          status: parsedQuery.status,
+          sort: parsedQuery.sortBy,
+          order: parsedQuery.order,
+        },
         statuses: STATUSES,
         priorities: PRIORITIES,
         sortOptions: SORT_OPTIONS,

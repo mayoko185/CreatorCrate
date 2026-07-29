@@ -1,38 +1,35 @@
 {% extends "layout.njk" %}
+{% import "partials/page-heading.njk" as pageHeading %}
 
 {% block content %}
   {% set projectArchived = project and project.archived_at %}
   {% set releaseArchived = release and release.archived_at %}
   {% set isPublished = release and release.status == 'published' %}
   {% set isArchived = projectArchived or releaseArchived %}
-  <div class="page-header">
-    <h1>{{ release.title }}</h1>
-    {% if not projectArchived and not releaseArchived %}
-      <div class="actions">
-        <a class="button" href="/releases/{{ release.id }}/edit">Edit</a>
-        <form method="post" action="/releases/{{ release.id }}/archive" class="inline-form">
-          <button class="button button-danger" type="submit" onclick="return confirm('Archive this release?')">Archive</button>
-        </form>
-      </div>
-    {% endif %}
-  </div>
+  {% if not projectArchived and not releaseArchived %}
+    {% call pageHeading.render(release.title) %}
+      <a class="button" href="/releases/{{ release.id }}/edit">Edit</a>
+    {% endcall %}
+  {% else %}
+    {{ pageHeading.render(release.title, "", "archived", "Archived") }}
+  {% endif %}
 
   {% if projectArchived %}
-    <div class="notice" role="status">
-      <p>The parent project is archived. This release is read-only.</p>
-    </div>
+    {% set noticeVariant = "warning" %}
+    {% set noticeText = "The parent project is archived. This release is read-only." %}
+    {% include "partials/notice.njk" %}
   {% endif %}
 
   {% if releaseArchived %}
-    <div class="notice" role="status">
-      <p>This release is archived and read-only.</p>
-    </div>
+    {% set noticeVariant = "warning" %}
+    {% set noticeText = "This release is archived and read-only." %}
+    {% include "partials/notice.njk" %}
   {% endif %}
 
   {% if isPublished and not isArchived %}
-    <div class="notice" role="status">
-      <p>This release is published. The asset selection is locked and reflects the state at the time of publication. Asset presence is based on the last completed scan — this is not a live filesystem check.</p>
-    </div>
+    {% set noticeVariant = "success" %}
+    {% set noticeText = "This release is published. The asset selection is locked and reflects the state at the time of publication. Asset presence is based on the last completed scan — this is not a live filesystem check." %}
+    {% include "partials/notice.njk" %}
   {% endif %}
 
   {% if errors.general %}
@@ -64,42 +61,46 @@
     </div>
   {% endif %}
 
-  <dl class="detail-list">
-    {% if project %}
-      <dt>Project</dt>
-      <dd><a href="/projects/{{ project.id }}">{{ project.title }}</a></dd>
-    {% endif %}
+  {# ─── Release identity ───────────────────────────────────────────── #}
+  <section>
+    <dl class="detail-list">
+      {% if project %}
+        <dt>Project</dt>
+        <dd><a href="/projects/{{ project.id }}">{{ project.title }}</a></dd>
+      {% endif %}
 
-    <dt>Status</dt>
-    <dd>{{ release.status | replace('-', ' ') | title }}</dd>
+      <dt>Status</dt>
+      <dd>{% set status = release.status %}{% include "partials/status-badge.njk" %}</dd>
 
-    {% if release.planned_date %}
-      <dt>Planned date</dt>
-      <dd>{{ release.planned_date }} <small>(release target)</small></dd>
-    {% endif %}
+      {% if release.planned_date %}
+        <dt>Planned date</dt>
+        <dd>{{ release.planned_date }} <small>(release target)</small></dd>
+      {% endif %}
 
-    {% if release.published_date %}
-      <dt>Published date</dt>
-      <dd>{{ release.published_date }} <small>(release published)</small></dd>
-    {% endif %}
+      {% if release.published_date %}
+        <dt>Published date</dt>
+        <dd>{{ release.published_date }} <small>(release published)</small></dd>
+      {% endif %}
 
-    {% if release.patreon_url %}
-      <dt>Patreon URL</dt>
-      <dd><a href="{{ release.patreon_url }}" target="_blank" rel="noopener">{{ release.patreon_url }}</a> <small>(release link)</small></dd>
-    {% endif %}
+      {% if release.patreon_url %}
+        <dt>Patreon URL</dt>
+        <dd><a href="{{ release.patreon_url }}" target="_blank" rel="noopener">{{ release.patreon_url }}</a> <small>(release link)</small></dd>
+      {% endif %}
 
-    <dt>Created</dt>
-    <dd>{{ release.created_at }}</dd>
+      <dt>Created</dt>
+      <dd>{{ release.created_at }}</dd>
 
-    <dt>Updated</dt>
-    <dd>{{ release.updated_at }}</dd>
+      <dt>Updated</dt>
+      <dd>{{ release.updated_at }}</dd>
 
-    {% if release.archived_at %}
-      <dt>Archived</dt>
-      <dd>{{ release.archived_at }}</dd>
-    {% endif %}
-  </dl>
+      {% if release.archived_at %}
+        <dt>Archived</dt>
+        <dd>{{ release.archived_at }}</dd>
+      {% endif %}
+    </dl>
+  </section>
 
+  {# ─── Assets ──────────────────────────────────────────────────────── #}
   <section>
     <h2>Assets</h2>
     <p>
@@ -127,49 +128,52 @@
   {% if releaseAssets.length > 0 %}
     <section>
       <h2>Selected Assets</h2>
-      <table class="asset-table">
-        <thead>
-          <tr>
-            <th>Filename</th>
-            <th>Role</th>
-            <th>Path</th>
-            <th>Status</th>
-            {% if not projectArchived and not releaseArchived and not isPublished %}
-              <th>Actions</th>
-            {% endif %}
-          </tr>
-        </thead>
-        <tbody>
-          {% for ra in releaseAssets %}
+      <div class="table-scroll" tabindex="0" aria-label="Selected release assets">
+        <table class="data-table">
+          <thead>
             <tr>
-              <td class="asset-filename">{{ ra.filename }}</td>
-              <td>{{ ra.role | title }}</td>
-              <td class="asset-path"><code>{{ ra.relative_path }}</code></td>
-              <td>
-                {% if ra.is_present == 1 %}
-                  <span class="asset-present">Present</span>
-                {% else %}
-                  <span class="asset-missing-label">Missing</span>
-                {% endif %}
-              </td>
+              <th>Filename</th>
+              <th>Role</th>
+              <th>Path</th>
+              <th>Status</th>
               {% if not projectArchived and not releaseArchived and not isPublished %}
-                <td>
-                  {% if ra.is_present == 0 %}
-                    <form method="post" action="/releases/{{ release.id }}/assets/{{ ra.asset_id }}/remove" class="inline-form">
-                      <button class="button button-danger button-small" type="submit" onclick="return confirm('Remove this missing asset from the release?')">Remove</button>
-                    </form>
-                  {% endif %}
-                </td>
+                <th>Actions</th>
               {% endif %}
             </tr>
-          {% endfor %}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {% for ra in releaseAssets %}
+              <tr>
+                <td class="asset-filename">{{ ra.filename }}</td>
+                <td>{{ ra.role | title }}</td>
+                <td class="asset-path"><code>{{ ra.relative_path }}</code></td>
+                <td>
+                  {% if ra.is_present == 1 %}
+                    {% set status = 'present' %}{% include "partials/status-badge.njk" %}
+                  {% else %}
+                    {% set status = 'missing' %}{% include "partials/status-badge.njk" %}
+                  {% endif %}
+                </td>
+                {% if not projectArchived and not releaseArchived and not isPublished %}
+                  <td class="row-actions">
+                    {% if ra.is_present == 0 %}
+                      <form method="post" action="/releases/{{ release.id }}/assets/{{ ra.asset_id }}/remove" class="inline-form">
+                        <button class="button button-danger button-small" type="submit" onclick="return confirm('Remove this missing asset from the release?')">Remove</button>
+                      </form>
+                    {% endif %}
+                  </td>
+                {% endif %}
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
     </section>
   {% endif %}
 
+  {# ─── Published summary ──────────────────────────────────────────── #}
   {% if isPublished and not isArchived %}
-    <section class="readiness-panel">
+    <section class="panel panel--summary">
       <h2>Publication Summary</h2>
       <p class="readiness-badge readiness-publishable">Published</p>
       <ul class="readiness-checks">
@@ -190,8 +194,9 @@
     </section>
   {% endif %}
 
+  {# ─── Readiness ───────────────────────────────────────────────────── #}
   {% if readiness %}
-    <section class="readiness-panel">
+    <section class="panel panel--readiness">
       <h2>Readiness</h2>
 
       {% if readiness.publishable %}
@@ -261,8 +266,19 @@
   {% endif %}
 
   {% if readiness and readiness.publishable %}
-    <div class="form-actions" style="margin-top: 2rem;">
+    <div class="form-actions form-actions--spaced">
       <a class="button button-primary" href="/releases/{{ release.id }}/publish">Publish</a>
     </div>
+  {% endif %}
+
+  {# ─── Destructive action separated from primary actions ──────────── #}
+  {% if not projectArchived and not releaseArchived and not isPublished and release.status !== 'cancelled' %}
+    <section class="destructive-section">
+      <h3>Danger zone</h3>
+      <p>Archiving a release makes it read-only. This cannot be undone.</p>
+      <form method="post" action="/releases/{{ release.id }}/archive" class="inline-form">
+        <button class="button button-danger" type="submit" onclick="return confirm('Archive this release? This cannot be undone.')">Archive release</button>
+      </form>
+    </section>
   {% endif %}
 {% endblock %}

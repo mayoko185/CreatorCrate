@@ -1,19 +1,31 @@
 {% extends "layout.njk" %}
+{% import "partials/page-heading.njk" as pageHeading %}
 
 {% block body_class %}asset-browser-page{% endblock %}
 
 {% block content %}
-  <div class="page-header">
-    <h1>Assets — {{ project.title }}</h1>
-    <div class="actions">
-      {% if not project.archived_at %}
-        <form method="post" action="/projects/{{ project.id }}/scan" class="inline-form">
-          <button class="button button-primary" type="submit">Scan Now</button>
-        </form>
-      {% endif %}
+  {% set assetsHeading = "Assets — " + project.title %}
+  {% set assetsHeadingDescription = "Browse scanned files, asset presence, and release usage." %}
+  {% if project.archived_at %}
+    {% call pageHeading.render(assetsHeading, assetsHeadingDescription, "archived") %}
       <a class="button" href="/projects/{{ project.id }}">Back to Project</a>
-    </div>
-  </div>
+    {% endcall %}
+  {% else %}
+    {% call pageHeading.render(assetsHeading, assetsHeadingDescription) %}
+    {% if not project.archived_at %}
+      <form method="post" action="/projects/{{ project.id }}/scan" class="inline-form">
+        <button class="button button-primary" type="submit">Scan Now</button>
+      </form>
+    {% endif %}
+    <a class="button" href="/projects/{{ project.id }}">Back to Project</a>
+    {% endcall %}
+  {% endif %}
+
+  {% if project.archived_at %}
+    {% set noticeVariant = "warning" %}
+    {% set noticeText = "This project is archived. Asset browsing is read-only and scanning is not available." %}
+    {% include "partials/notice.njk" %}
+  {% endif %}
 
   {% if query.scan_result %}
     <div class="scan-success">
@@ -28,15 +40,15 @@
   {% endif %}
 
   {% if error %}
-    <div class="scan-error">
-      <p>Scan failed. The project directory may be missing or inaccessible.</p>
-    </div>
+    {% set noticeVariant = "danger" %}
+    {% set noticeText = "Scan failed. The project directory may be missing or inaccessible." %}
+    {% include "partials/notice.njk" %}
   {% endif %}
 
   {% if archivedError %}
-    <div class="scan-error">
-      <p>Scanning is not available for archived projects.</p>
-    </div>
+    {% set noticeVariant = "warning" %}
+    {% set noticeText = "Scanning is not available for archived projects." %}
+    {% include "partials/notice.njk" %}
   {% endif %}
 
   <p class="results-meta">
@@ -131,7 +143,7 @@
                 <div class="asset-card-body">
                   <span class="asset-card-filename" title="{{ card.filename }}">{{ card.filename }}</span>
                   <span class="asset-card-meta">{{ card.formattedSize }}{% if card.compactTypeLabel %} · {{ card.compactTypeLabel }}{% endif %}</span>
-                  <span class="asset-card-status">{{ card.statusText }}</span>
+                  <span class="asset-card-status">{% set status = card.statusBadgeStatus %}{% include "partials/status-badge.njk" %}</span>
                   {% if card.releaseUsageCount > 0 %}
                     <span class="asset-card-usage">Used by {{ card.releaseUsageCount }} release{% if card.releaseUsageCount != 1 %}s{% endif %}</span>
                   {% endif %}
@@ -142,7 +154,8 @@
         {% endfor %}
       </ul>
     {% else %}
-    <table class="asset-table">
+    <div class="table-scroll" tabindex="0" aria-label="Project assets">
+    <table class="data-table">
       <thead>
         <tr>
           <th>Filename</th>
@@ -150,7 +163,7 @@
           <th>State</th>
           <th>Last Seen</th>
           <th>Missing Since</th>
-          <th>Release Usage</th>
+          <th class="num">Release Usage</th>
         </tr>
       </thead>
       <tbody>
@@ -163,9 +176,9 @@
             <td><code>{{ asset.extension or '—' }}</code></td>
             <td>
               {% if asset.is_present %}
-                <span class="asset-present">Present at last scan</span>
+                {% set status = 'present-at-last-scan' %}{% include "partials/status-badge.njk" %}
               {% else %}
-                <span class="asset-missing">Missing at last scan</span>
+                {% set status = 'missing-at-last-scan' %}{% include "partials/status-badge.njk" %}
               {% endif %}
             </td>
             <td class="asset-date">
@@ -182,7 +195,7 @@
                 —
               {% endif %}
             </td>
-            <td>
+            <td class="num">
               {% if asset.release_usage_count > 0 %}
                 <a href="/releases?project={{ project.id }}" class="release-usage-link">
                   Used by {{ asset.release_usage_count }} release{% if asset.release_usage_count != 1 %}s{% endif %}
@@ -205,6 +218,7 @@
         {% endfor %}
       </tbody>
     </table>
+    </div>
     {% endif %}
 
     {# Pagination #}
@@ -245,19 +259,29 @@
         {% if filters.usage != 'all' %}
           <input type="hidden" name="usage" value="{{ filters.usage }}">
         {% endif %}
+        <button class="button button-small" type="submit">Apply</button>
       </form>
     {% endif %}
 
   {% elseif total == 0 and (filters.search or filters.extension or filters.presence != 'all' or filters.usage != 'all') %}
-    <p class="placeholder">
-      No assets match the current filters.
-      <a href="{{ pageUrl({ search: '', extension: '', presence: 'all', usage: 'all', page: 1, pageSize: 25 }) }}">Reset Filters</a> to see all assets.
-    </p>
+    {% set emptyHeading = "No assets match the current filters" %}
+    {% set emptyDescription = "Adjust or clear the filters to see all assets." %}
+    {% set emptyActionUrl = pageUrl({ search: '', extension: '', presence: 'all', usage: 'all', page: 1, pageSize: 25 }) %}
+    {% set emptyActionLabel = "Reset Filters" %}
+    {% set emptyHeadingLevel = "h2" %}
+    {% include "partials/empty-state.njk" %}
   {% elseif total == 0 %}
     {% if project.archived_at %}
-      <p class="placeholder">No assets found for this archived project.</p>
+      {% set emptyHeading = "No assets found" %}
+      {% set emptyDescription = "This archived project has no assets on record." %}
+      {% set emptyHeadingLevel = "h2" %}
     {% else %}
-      <p class="placeholder">No assets found. Click <strong>Scan Now</strong> to discover files in the project directory.</p>
+      {% set emptyHeading = "No assets found" %}
+      {% set emptyDescription = "Scan the project directory to discover asset files." %}
+      {% set emptyActionUrl = "/projects/" + project.id + "/assets" %}
+      {% set emptyActionLabel = "Scan Now" %}
+      {% set emptyHeadingLevel = "h2" %}
     {% endif %}
+    {% include "partials/empty-state.njk" %}
   {% endif %}
 {% endblock %}

@@ -550,15 +550,15 @@ describe('asset browser HTTP workflow', () => {
     const presentRowRe = /<tr>(?:(?!<\/tr>)[\s\S])*present-file\.txt(?:(?!<\/tr>)[\s\S])*<\/tr>/;
     const presentRow = res2.text.match(presentRowRe);
     expect(presentRow).not.toBeNull();
-    expect(presentRow[0]).toContain('<span class="asset-present">Present at last scan</span>');
-    expect(presentRow[0]).not.toContain('asset-missing');
+    expect(presentRow[0]).toContain('<span class="status-badge status-badge--success">Present at last scan</span>');
+    expect(presentRow[0]).not.toContain('status-badge--error');
 
     // Locate the missing-file row and assert its presence element
     const missingRowRe = /<tr>(?:(?!<\/tr>)[\s\S])*missing-file\.txt(?:(?!<\/tr>)[\s\S])*<\/tr>/;
     const missingRow = res2.text.match(missingRowRe);
     expect(missingRow).not.toBeNull();
-    expect(missingRow[0]).toContain('<span class="asset-missing">Missing at last scan</span>');
-    expect(missingRow[0]).not.toContain('asset-present');
+    expect(missingRow[0]).toContain('<span class="status-badge status-badge--error">Missing at last scan</span>');
+    expect(missingRow[0]).not.toContain('status-badge--success');
   });
 
   // ─── Pagination ──────────────────────────────────────────────────
@@ -1032,6 +1032,51 @@ describe('asset browser HTTP workflow', () => {
     expect(res2.text).toContain('<input type="hidden" name="presence" value="present">');
   });
 
+  it('pageSize form has a no-JavaScript GET submit that preserves normalized filters', async () => {
+    const res = await createProject('No JS Page Size');
+    const id = res.headers.location.replace('/projects/', '');
+    const projectDir = getProjectDir('No JS Page Size');
+    if (!projectDir) throw new Error('projectDir not found for No JS Page Size');
+
+    for (let i = 0; i < 35; i++) {
+      fs.writeFileSync(path.join(projectDir, `Filtered & ${String(i).padStart(2, '0')}.png`), `c${i}`);
+    }
+    await request(app).post(`/projects/${id}/scan`).expect(302);
+
+    const initial = await request(app)
+      .get(`/projects/${id}/assets?view=grid&search=${encodeURIComponent('Filtered &')}&extension=.PNG&presence=present&usage=unused&page=2&pageSize=10&junk=drop`)
+      .expect(200);
+
+    const formMatch = initial.text.match(/<form class="page-size-form" method="get" action="\/projects\/\d+\/assets">[\s\S]*?<\/form>/);
+    expect(formMatch).not.toBeNull();
+    const form = formMatch[0];
+    expect(form).toContain('<label for="pageSize">Assets per page:</label>');
+    expect(form).toContain('<select id="pageSize" name="pageSize" onchange="this.form.submit()">');
+    expect(form).toContain('<button class="button button-small" type="submit">Apply</button>');
+    expect(form).toContain('<input type="hidden" name="view" value="grid">');
+    expect(form).toContain('<input type="hidden" name="search" value="Filtered &amp;">');
+    expect(form).toContain('<input type="hidden" name="extension" value="png">');
+    expect(form).toContain('<input type="hidden" name="presence" value="present">');
+    expect(form).toContain('<input type="hidden" name="usage" value="unused">');
+    expect(form).not.toContain('name="page"');
+    expect(form).not.toContain('junk');
+
+    const submittedHref = `/projects/${id}/assets?view=grid&search=Filtered+%26&extension=png&presence=present&usage=unused&pageSize=25`;
+    const submitted = await request(app).get(submittedHref).expect(200);
+    expect(submitted.text).toContain('value="25" selected');
+    expect(submitted.text).toContain('35 assets found');
+
+    const submittedUrl = new URL(submittedHref, 'http://localhost');
+    expect(submittedUrl.pathname).toBe(`/projects/${id}/assets`);
+    expect(Array.from(submittedUrl.searchParams.keys())).toEqual([
+      'view', 'search', 'extension', 'presence', 'usage', 'pageSize',
+    ]);
+    expect(submittedUrl.searchParams.get('search')).toBe('Filtered &');
+    expect(submittedUrl.searchParams.get('extension')).toBe('png');
+    expect(submittedUrl.searchParams.get('pageSize')).toBe('25');
+    expect(submittedUrl.searchParams.has('page')).toBe(false);
+  });
+
   // ─── Last seen and missing-since dates ─────────────────────────
 
   it('shows last_seen_at for present assets', async () => {
@@ -1453,7 +1498,9 @@ describe('asset browser HTTP workflow', () => {
     await request(app).post(`/projects/${id}/scan`).expect(302);
 
     const res2 = await request(app).get(`/projects/${id}/assets`).expect(200);
-    expect(res2.text).toContain('<table class="asset-table">');
+    expect(res2.text).toContain('data-table');
+    expect(res2.text).not.toContain('asset-table');
+    expect(res2.text).toContain('data-table');
     expect(res2.text).not.toContain('<ul class="asset-grid">');
   });
 
@@ -1467,7 +1514,7 @@ describe('asset browser HTTP workflow', () => {
       .get(`/projects/${id}/assets?view=grid`)
       .expect(200);
     expect(res2.text).toContain('<ul class="asset-grid">');
-    expect(res2.text).not.toContain('<table class="asset-table">');
+    expect(res2.text).not.toContain('asset-table');
     expect(res2.text).toContain(`<article class="asset-card" data-asset-id="${asset.id}">`);
   });
 
@@ -1545,6 +1592,7 @@ describe('asset browser HTTP workflow', () => {
     expect(card).not.toBeNull();
     expect(card).toContain('asset-card-placeholder');
     expect(card).toContain('Unsupported preview');
+    expect(card).toContain('<span class="status-badge status-badge--warning">Unsupported</span>');
     expect(card).not.toContain('<img');
   });
 
@@ -1562,6 +1610,7 @@ describe('asset browser HTTP workflow', () => {
     expect(card).not.toBeNull();
     expect(card).toContain('asset-card-placeholder-missing');
     expect(card).toContain('Missing at last scan');
+    expect(card).toContain('<span class="status-badge status-badge--error">Missing at last scan</span>');
     expect(card).not.toContain('<img');
   });
 
@@ -1580,7 +1629,22 @@ describe('asset browser HTTP workflow', () => {
     expect(card).not.toBeNull();
     expect(card).toContain('asset-card-placeholder');
     expect(card).toContain('Preview unavailable');
+    expect(card).toContain('<span class="status-badge status-badge--warning">Unavailable</span>');
     expect(card).not.toContain('<img');
+  });
+
+  it('renders shared status badges for present grid assets', async () => {
+    const res = await createProject('Grid Present Badge');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('Grid Present Badge');
+    const asset = writeIndexedAsset(id, projectDir, 'present.png', await makePng());
+
+    const res2 = await request(app)
+      .get(`/projects/${id}/assets?view=grid`)
+      .expect(200);
+    const card = extractCard(res2.text, asset.id);
+    expect(card).not.toBeNull();
+    expect(card).toContain('<span class="status-badge status-badge--success">Present at last scan</span>');
   });
 
   it('does not request media URL for non-previewable grid rows', async () => {
@@ -2214,10 +2278,10 @@ describe('asset browser HTTP workflow', () => {
     const res2 = await request(app).get(`/projects/${id}/assets`).expect(200);
     const style = renderedStyle(res2.text);
 
-    expect(style).toMatch(/\.page-header\s*\{[^}]*min-width:\s*0/);
-    expect(style).toMatch(/\.page-header > h1\s*\{[^}]*min-width:\s*0[^}]*overflow-wrap:\s*anywhere[^}]*word-break:\s*break-word/);
-    expect(style).not.toMatch(/\.page-header > h1\s*\{[^}]*word-break:\s*break-all/);
-    expect(style).toMatch(/\.actions \.button\s*\{[^}]*min-width:\s*0[^}]*max-width:\s*100%[^}]*overflow-wrap:\s*anywhere/);
+    expect(style).toMatch(/\.page-heading\s*\{[^}]*min-width:\s*0/);
+    expect(style).toMatch(/\.page-heading-copy h1\s*\{[^}]*overflow-wrap:\s*anywhere[^}]*word-break:\s*break-word/);
+    expect(style).not.toMatch(/\.page-heading-copy h1\s*\{[^}]*word-break:\s*break-all/);
+    expect(style).toMatch(/\.page-heading-actions\s*\{[^}]*min-width:\s*0[^}]*max-width:\s*100%/);
     expect(style).toMatch(/\.asset-viewer-breadcrumb\s*\{[^}]*min-width:\s*0[^}]*max-width:\s*100%/);
     expect(style).toMatch(/\.asset-viewer-breadcrumb a\s*\{[^}]*overflow-wrap:\s*anywhere[^}]*word-break:\s*break-word/);
     expect(style).toMatch(/\.detail-list\s*\{[^}]*grid-template-columns:\s*minmax\(0, 8rem\) minmax\(0, 1fr\)[^}]*min-width:\s*0/);

@@ -1,0 +1,48 @@
+{#
+  Shared page heading macro.
+
+  Usage without actions:
+    {% import "partials/page-heading.njk" as pageHeading %}
+    {{ pageHeading.render("Page title", "Optional description") }}
+
+  Usage with actions:
+    {% call pageHeading.render("Page title") %}
+      <a class="button button-primary" href="/new">Create</a>
+    {% endcall %}
+
+  Text parameters are escaped by Nunjucks autoescaping. Action markup is only
+  accepted through the Nunjucks caller block; do not pass arbitrary HTML strings.
+#}
+{% macro render(title, description='', badgeStatus='', badgeText='') %}
+<header class="page-heading">
+  <div class="page-heading-copy">
+    <h1>{{ title }}</h1>
+    {% if badgeStatus or badgeText %}
+      {% if badgeText %}
+        {% set headingBadgeStatus = badgeStatus or 'neutral' %}
+        {% set headingBadgeText = badgeText %}
+        {% if headingBadgeStatus == 'success' or headingBadgeStatus == 'present' or headingBadgeStatus == 'ready' %}
+          <span class="status-badge status-badge--success">{{ headingBadgeText }}</span>
+        {% elif headingBadgeStatus == 'warning' or headingBadgeStatus == 'unsupported' or headingBadgeStatus == 'unavailable' %}
+          <span class="status-badge status-badge--warning">{{ headingBadgeText }}</span>
+        {% elif headingBadgeStatus == 'error' or headingBadgeStatus == 'danger' or headingBadgeStatus == 'missing' %}
+          <span class="status-badge status-badge--error">{{ headingBadgeText }}</span>
+        {% else %}
+          <span class="status-badge status-badge--neutral">{{ headingBadgeText }}</span>
+        {% endif %}
+      {% else %}
+        {% set status = badgeStatus %}
+        {% include "partials/status-badge.njk" %}
+      {% endif %}
+    {% endif %}
+    {% if description %}
+      <p class="page-heading-description">{{ description }}</p>
+    {% endif %}
+  </div>
+  {% if caller is defined %}
+    <div class="page-heading-actions">
+      {{ caller() }}
+    </div>
+  {% endif %}
+</header>
+{% endmacro %}

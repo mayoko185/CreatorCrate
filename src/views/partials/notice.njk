@@ -1,0 +1,24 @@
+{#
+  Notice partial.
+  Usage:
+    {% set noticeVariant = "warning" %}
+    {% set noticeText = "This project is archived and read-only." %}
+    {% include "partials/notice.njk" %}
+
+  Variants: info (default), success, warning, error. danger is accepted as
+  a legacy alias for error.
+  The variant controls the left-border color and background tint.
+  The text is always readable regardless of variant.
+#}
+{% if noticeVariant == 'success' %}
+  {% set noticeClass = 'notice notice--success' %}
+{% elif noticeVariant == 'warning' %}
+  {% set noticeClass = 'notice notice--warning' %}
+{% elif noticeVariant == 'error' or noticeVariant == 'danger' %}
+  {% set noticeClass = 'notice notice--error' %}
+{% else %}
+  {% set noticeClass = 'notice notice--info' %}
+{% endif %}
+<div class="{{ noticeClass }}" role="status">
+  <p>{{ noticeText }}</p>
+</div>

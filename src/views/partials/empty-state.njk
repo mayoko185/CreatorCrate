@@ -1,0 +1,32 @@
+{#
+  Empty state partial.
+  Usage:
+    {% set emptyHeading = "No projects found" %}
+    {% set emptyDescription = "Create a project to get started." %}
+    {% set emptyActionUrl = "/projects/new" %}
+    {% set emptyActionLabel = "New Project" %}
+    {% include "partials/empty-state.njk" %}
+
+  All parameters are optional except emptyHeading.
+  - emptyDescription: supporting explanation
+  - emptyActionUrl: URL for the primary next action
+  - emptyActionLabel: visible text for the action link
+  - emptyHeadingLevel: h2, h3, or h4; defaults to h2
+#}
+<div class="empty-state">
+  {% if emptyHeadingLevel == 'h3' %}
+    <h3 class="empty-state-heading">{{ emptyHeading }}</h3>
+  {% elif emptyHeadingLevel == 'h4' %}
+    <h4 class="empty-state-heading">{{ emptyHeading }}</h4>
+  {% else %}
+    <h2 class="empty-state-heading">{{ emptyHeading }}</h2>
+  {% endif %}
+  {% if emptyDescription %}
+    <p>{{ emptyDescription }}</p>
+  {% endif %}
+  {% if emptyActionUrl and emptyActionLabel %}
+    <div class="empty-state-actions">
+      <a class="button button-primary" href="{{ emptyActionUrl }}">{{ emptyActionLabel }}</a>
+    </div>
+  {% endif %}
+</div>

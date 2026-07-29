@@ -66,7 +66,7 @@ describe('project HTTP workflow', () => {
   it('project list renders', async () => {
     const res = await request(app).get('/projects').expect(200);
     expect(res.text).toContain('Projects');
-    expect(res.text).toContain('No projects match');
+    expect(res.text).toContain('No projects yet');
   });
 
   it('new-project form renders', async () => {
@@ -92,14 +92,26 @@ describe('project HTTP workflow', () => {
   it('invalid create request rerenders with values and errors', async () => {
     const res = await request(app)
       .post('/projects')
-      .send('title=')
+      .send('title=Create+Preserves')
       .send('description=A')
-      .send('status=invalid')
-      .send('priority=normal')
+      .send('notes=Create+notes')
+      .send('status=ready')
+      .send('priority=high')
+      .send('plannedDate=2026-08-01')
+      .send('publishedDate=2026-08-15')
+      .send('patreonUrl=http://example.com/not-patreon')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(422);
-    expect(res.text).toContain('Title is required');
+    expect(res.text).toContain('Patreon URL must be a valid https://patreon.com link.');
+    expect(res.text).toContain('value="Create Preserves"');
     expect(res.text).toContain('A');
+    expect(res.text).toContain('Create notes');
+    expect(res.text).toContain('<option value="ready" selected>Ready</option>');
+    expect(res.text).toContain('<option value="high" selected>High</option>');
+    expect(res.text).toContain('value="2026-08-01"');
+    expect(res.text).toContain('value="2026-08-15"');
+    expect(res.text).toContain('value="http://example.com/not-patreon"');
+    expect(res.text).toContain('href="/projects"');
   });
 
   it('rejects archived status on create', async () => {
@@ -175,6 +187,40 @@ describe('project HTTP workflow', () => {
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(422);
     expect(res.text).toContain('Status must be one of');
+  });
+
+  it('invalid edit request rerenders with submitted values and errors', async () => {
+    const createRes = await request(app)
+      .post('/projects')
+      .send('title=Edit+Preserves+Initial')
+      .send('status=tbd')
+      .send('priority=normal')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+
+    const res = await request(app)
+      .post(createRes.headers.location)
+      .send('title=Edit+Preserves+Submitted')
+      .send('description=Submitted+description')
+      .send('notes=Submitted+notes')
+      .send('status=in-progress')
+      .send('priority=low')
+      .send('plannedDate=2026-10-01')
+      .send('publishedDate=2026-10-15')
+      .send('patreonUrl=http://example.com/not-patreon')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(422);
+
+    expect(res.text).toContain('Patreon URL must be a valid https://patreon.com link.');
+    expect(res.text).toContain('value="Edit Preserves Submitted"');
+    expect(res.text).toContain('Submitted description');
+    expect(res.text).toContain('Submitted notes');
+    expect(res.text).toContain('<option value="in-progress" selected>In Progress</option>');
+    expect(res.text).toContain('<option value="low" selected>Low</option>');
+    expect(res.text).toContain('value="2026-10-01"');
+    expect(res.text).toContain('value="2026-10-15"');
+    expect(res.text).toContain('value="http://example.com/not-patreon"');
+    expect(res.text).toContain(`href="${createRes.headers.location}"`);
   });
 
   it('missing project returns 404', async () => {
@@ -256,6 +302,22 @@ describe('project HTTP workflow', () => {
     const status = await request(app).get('/projects?status=ready').expect(200);
     expect(status.text).toContain('Beta One');
     expect(status.text).not.toContain('Searchable Alpha');
+  });
+
+  it('valid status filter with no matches shows filtered-empty state and reset action', async () => {
+    await request(app)
+      .post('/projects')
+      .send('title=Only+Planned')
+      .send('status=planned')
+      .send('priority=normal')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+
+    const res = await request(app).get('/projects?status=ready').expect(200);
+    expect(res.text).toContain('No projects found');
+    expect(res.text).toContain('Reset Filters');
+    expect(res.text).toContain('href="/projects"');
+    expect(res.text).not.toContain('Create your first project to get started.');
   });
 
   it('pagination is bounded', async () => {

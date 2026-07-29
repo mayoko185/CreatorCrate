@@ -1,0 +1,52 @@
+{#
+  Status badge partial.
+  Usage:
+    {% set status = project.status %}
+    {% include "partials/status-badge.njk" %}
+
+  The badge always includes readable text — color is never the only indicator.
+  Allowed status values map to semantic CSS variants. Unknown statuses fall
+  back to neutral styling.
+
+  Parameters (set before including):
+    - status: required, the status string (e.g. "in-progress", "published")
+#}
+{% if status %}
+  {% if status == "tbd" %}
+    <span class="status-badge status-badge--neutral">Tbd</span>
+  {% elif status == "planned" %}
+    <span class="status-badge status-badge--neutral">Planned</span>
+  {% elif status == "in-progress" %}
+    <span class="status-badge status-badge--draft">In Progress</span>
+  {% elif status == "idea" %}
+    <span class="status-badge status-badge--neutral">Idea</span>
+  {% elif status == "drafting" %}
+    <span class="status-badge status-badge--draft">Drafting</span>
+  {% elif status == "ready" %}
+    <span class="status-badge status-badge--active">Ready</span>
+  {% elif status == "published" %}
+    <span class="status-badge status-badge--published">Published</span>
+  {% elif status == "cancelled" %}
+    <span class="status-badge status-badge--error">Cancelled</span>
+  {% elif status == "archived" %}
+    <span class="status-badge status-badge--archived">Archived</span>
+  {% elif status == "overdue" %}
+    <span class="status-badge status-badge--error">Overdue</span>
+  {% elif status == "present" %}
+    <span class="status-badge status-badge--success">Present</span>
+  {% elif status == "present-at-last-scan" %}
+    <span class="status-badge status-badge--success">Present at last scan</span>
+  {% elif status == "missing" %}
+    <span class="status-badge status-badge--error">Missing</span>
+  {% elif status == "missing-at-last-scan" %}
+    <span class="status-badge status-badge--error">Missing at last scan</span>
+  {% elif status == "unsupported" %}
+    <span class="status-badge status-badge--warning">Unsupported</span>
+  {% elif status == "unavailable" %}
+    <span class="status-badge status-badge--warning">Unavailable</span>
+  {% elif status == "blocked" %}
+    <span class="status-badge status-badge--warning">Blocked</span>
+  {% else %}
+    <span class="status-badge status-badge--neutral">{{ status | replace("-", " ") | title }}</span>
+  {% endif %}
+{% endif %}

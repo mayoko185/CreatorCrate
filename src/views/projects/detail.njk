@@ -1,19 +1,22 @@
 {% extends "layout.njk" %}
+{% import "partials/page-heading.njk" as pageHeading %}
 
 {% block content %}
-  <div class="page-header">
-    <h1>{{ project.title }}</h1>
-    {% if not project.archived_at %}
-      <div class="actions">
-        <a class="button" href="/projects/{{ project.id }}/edit">Edit</a>
-        <form method="post" action="/projects/{{ project.id }}/archive" class="inline-form">
-          <button class="button button-danger" type="submit" onclick="return confirm('Archive this project?')">Archive</button>
-        </form>
-      </div>
-    {% endif %}
-  </div>
+  {% if not project.archived_at %}
+    {% call pageHeading.render(project.title, "Project workspace, release activity, and asset health.", project.status) %}
+      <a class="button" href="/projects/{{ project.id }}/edit">Edit</a>
+    {% endcall %}
+  {% else %}
+    {{ pageHeading.render(project.title, "This project is archived and read-only.", "archived") }}
+  {% endif %}
 
-  {# ─── Workflow actions ───────────────────────────────────────────── #}
+  {% if project.archived_at %}
+    {% set noticeVariant = "warning" %}
+    {% set noticeText = "This project is archived and read-only. Editing, releases, and asset scanning are restricted." %}
+    {% include "partials/notice.njk" %}
+  {% endif %}
+
+  {# ─── Primary actions ────────────────────────────────────────────── #}
   <section class="workflow-actions">
     {% if not project.archived_at %}
       <a class="button button-primary" href="/releases/new?projectId={{ project.id }}">Create release</a>
@@ -21,64 +24,79 @@
     <a class="button" href="/projects/{{ project.id }}/assets">View Assets</a>
   </section>
 
-  <dl class="detail-list">
-    {% if project.project_dir %}
-      <dt>Project directory</dt>
-      <dd><code>{{ project.project_dir }}</code> <small>(relative to projects share)</small></dd>
+  {# ─── Project summary ────────────────────────────────────────────── #}
+  <section class="project-summary">
+    <dl class="detail-list">
+      {% if project.project_dir %}
+        <dt>Project directory</dt>
+        <dd><code>{{ project.project_dir }}</code> <small>(relative to projects share)</small></dd>
+      {% endif %}
+
+      <dt>Slug</dt>
+      <dd><code>{{ project.slug }}</code></dd>
+
+      <dt>Status</dt>
+      <dd>{% set status = project.status %}{% include "partials/status-badge.njk" %}</dd>
+
+      <dt>Priority</dt>
+      <dd>{{ project.priority | title }}</dd>
+
+      {% if project.planned_date %}
+        <dt>Planned date</dt>
+        <dd>{{ project.planned_date }} <small>(project target)</small></dd>
+      {% endif %}
+
+      {% if project.published_date %}
+        <dt>Published date</dt>
+        <dd>{{ project.published_date }} <small>(project published)</small></dd>
+      {% endif %}
+
+      {% if project.patreon_url %}
+        <dt>Patreon URL</dt>
+        <dd><a href="{{ project.patreon_url }}" target="_blank" rel="noopener">{{ project.patreon_url }}</a> <small>(project page)</small></dd>
+      {% endif %}
+
+      <dt>Created</dt>
+      <dd>{{ project.created_at }}</dd>
+
+      <dt>Updated</dt>
+      <dd>{{ project.updated_at }}</dd>
+
+      {% if project.archived_at %}
+        <dt>Archived</dt>
+        <dd>{{ project.archived_at }}</dd>
+      {% endif %}
+    </dl>
+
+    {% if project.description %}
+      <h2>Description</h2>
+      <p class="description">{{ project.description }}</p>
     {% endif %}
 
-    <dt>Slug</dt>
-    <dd><code>{{ project.slug }}</code></dd>
-
-    <dt>Status</dt>
-    <dd>{{ project.status | replace('-', ' ') | title }}</dd>
-
-    <dt>Priority</dt>
-    <dd>{{ project.priority | title }}</dd>
-
-    {% if project.planned_date %}
-      <dt>Planned date</dt>
-      <dd>{{ project.planned_date }} <small>(project target)</small></dd>
+    {% if project.notes %}
+      <h2>Notes</h2>
+      <p class="notes">{{ project.notes }}</p>
     {% endif %}
-
-    {% if project.published_date %}
-      <dt>Published date</dt>
-      <dd>{{ project.published_date }} <small>(project published)</small></dd>
-    {% endif %}
-
-    {% if project.patreon_url %}
-      <dt>Patreon URL</dt>
-      <dd><a href="{{ project.patreon_url }}" target="_blank" rel="noopener">{{ project.patreon_url }}</a> <small>(project page)</small></dd>
-    {% endif %}
-
-    <dt>Created</dt>
-    <dd>{{ project.created_at }}</dd>
-
-    <dt>Updated</dt>
-    <dd>{{ project.updated_at }}</dd>
-
-    {% if project.archived_at %}
-      <dt>Archived</dt>
-      <dd>{{ project.archived_at }}</dd>
-    {% endif %}
-  </dl>
+  </section>
 
   {# ─── Release summary ────────────────────────────────────────────── #}
   <section class="release-summary">
     <h2>Releases</h2>
 
-    <h3>Status</h3>
-    <div class="count-grid">
-      <div class="count-card"><span class="count">{{ releaseSummary.statusCounts.idea or 0 }}</span> Idea</div>
-      <div class="count-card"><span class="count">{{ releaseSummary.statusCounts.planned or 0 }}</span> Planned</div>
-      <div class="count-card"><span class="count">{{ releaseSummary.statusCounts.drafting or 0 }}</span> Drafting</div>
-      <div class="count-card"><span class="count">{{ releaseSummary.statusCounts.ready or 0 }}</span> Ready</div>
-      <div class="count-card"><span class="count">{{ releaseSummary.statusCounts.published or 0 }}</span> Published</div>
-      <div class="count-card"><span class="count">{{ releaseSummary.statusCounts.cancelled or 0 }}</span> Cancelled</div>
-    </div>
+    {% if releaseSummary.hasAnyReleases %}
+      <h3>Status</h3>
+      <div class="count-grid">
+        <div class="count-card"><span class="count">{{ releaseSummary.statusCounts.idea or 0 }}</span> Idea</div>
+        <div class="count-card"><span class="count">{{ releaseSummary.statusCounts.planned or 0 }}</span> Planned</div>
+        <div class="count-card"><span class="count">{{ releaseSummary.statusCounts.drafting or 0 }}</span> Drafting</div>
+        <div class="count-card"><span class="count">{{ releaseSummary.statusCounts.ready or 0 }}</span> Ready</div>
+        <div class="count-card"><span class="count">{{ releaseSummary.statusCounts.published or 0 }}</span> Published</div>
+        <div class="count-card"><span class="count">{{ releaseSummary.statusCounts.cancelled or 0 }}</span> Cancelled</div>
+      </div>
+    {% endif %}
 
-    <h3>Active releases</h3>
-    {% if releaseSummary.active.length > 0 %}
+    {% if not project.archived_at and releaseSummary.active.length > 0 %}
+      <h3>Active releases</h3>
       <ul class="release-list">
         {% for r in releaseSummary.active %}
           <li>
@@ -89,12 +107,10 @@
           </li>
         {% endfor %}
       </ul>
-    {% else %}
-      <p class="placeholder">No active releases.</p>
     {% endif %}
 
-    <h3>Recent releases</h3>
     {% if releaseSummary.recent.length > 0 %}
+      <h3>Recent releases</h3>
       <ul class="release-list">
         {% for r in releaseSummary.recent %}
           <li>
@@ -107,7 +123,16 @@
         {% endfor %}
       </ul>
     {% else %}
-      <p class="placeholder">No releases yet.</p>
+      {% if not releaseSummary.hasAnyReleases %}
+        {% set emptyHeading = "No releases yet" %}
+        {% set emptyDescription = "Create a release to start tracking this project's workflow." %}
+        {% set emptyHeadingLevel = "h3" %}
+        {% if not project.archived_at %}
+          {% set emptyActionUrl = "/releases/new?projectId=" + project.id %}
+          {% set emptyActionLabel = "Create release" %}
+        {% endif %}
+        {% include "partials/empty-state.njk" %}
+      {% endif %}
     {% endif %}
   </section>
 
@@ -131,17 +156,13 @@
     </dl>
   </section>
 
-  {% if project.description %}
-    <section>
-      <h2>Description</h2>
-      <p class="description">{{ project.description }}</p>
-    </section>
-  {% endif %}
-
-  {% if project.notes %}
-    <section>
-      <h2>Notes</h2>
-      <p class="notes">{{ project.notes }}</p>
+  {% if not project.archived_at %}
+    <section class="destructive-section">
+      <h3>Danger zone</h3>
+      <p>Archiving a project makes it read-only. This cannot be undone.</p>
+      <form method="post" action="/projects/{{ project.id }}/archive" class="inline-form">
+        <button class="button button-danger" type="submit" onclick="return confirm('Archive this project? This cannot be undone.')">Archive project</button>
+      </form>
     </section>
   {% endif %}
 {% endblock %}

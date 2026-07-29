@@ -51,7 +51,7 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
       }
 
       // List view
-      const { releases, total, page, pageSize, pageCount, today } = workflowQueryService.getReleaseList(req.query);
+      const { releases, total, page, pageSize, pageCount, today, hasAnyReleases } = workflowQueryService.getReleaseList(req.query);
 
       res.render('releases/index.njk', {
         appName,
@@ -62,6 +62,7 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
         pageSize,
         pageCount,
         today,
+        hasAnyReleases,
         pageUrl,
         query,
         statuses: RELEASE_STATUSES,

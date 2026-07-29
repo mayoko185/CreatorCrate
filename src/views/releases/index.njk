@@ -1,22 +1,15 @@
 {% extends "layout.njk" %}
+{% import "partials/page-heading.njk" as pageHeading %}
 
 {% block content %}
-  <div class="page-header">
-    <h1>Releases</h1>
-    <div class="header-actions">
-      <div class="view-switcher">
-        {% if view === 'board' %}
-          <a class="button" href="{{ pageUrl({ view: 'list' }) }}">List</a>
-          <span class="button button-primary">Board</span>
-        {% else %}
-          <span class="button button-primary">List</span>
-          <a class="button" href="{{ pageUrl({ view: 'board' }) }}">Board</a>
-        {% endif %}
-        <a class="button" href="/releases/calendar{% if query.month %}?month={{ query.month }}{% endif %}">Calendar</a>
-      </div>
-      <a class="button button-primary" href="/releases/new">New Release</a>
-    </div>
-  </div>
+  {% call pageHeading.render("Releases") %}
+    <nav class="view-switcher" aria-label="View">
+      <a class="view-switcher-option" href="{{ pageUrl({ view: 'list' }) }}"{% if view !== 'board' %} aria-current="page"{% endif %}>List</a>
+      <a class="view-switcher-option" href="{{ pageUrl({ view: 'board' }) }}"{% if view === 'board' %} aria-current="page"{% endif %}>Board</a>
+      <a class="view-switcher-option" href="/releases/calendar{% if query.month %}?month={{ query.month }}{% endif %}">Calendar</a>
+    </nav>
+    <a class="button button-primary" href="/releases/new">New Release</a>
+  {% endcall %}
 
   {% if view === 'board' %}
     {# ─── Board View ─── #}
@@ -24,12 +17,12 @@
       <form method="get" action="/releases">
         <input type="hidden" name="view" value="board">
         <div class="field">
-          <label for="project">Project</label>
-          <input type="text" id="project" name="project" value="{{ query.project or '' }}" placeholder="Project ID">
+          <label for="board-project">Project</label>
+          <input type="text" id="board-project" name="project" value="{{ query.project or '' }}" placeholder="Project ID">
         </div>
         <div class="field">
-          <label for="status">Status</label>
-          <select id="status" name="status">
+          <label for="board-status">Status</label>
+          <select id="board-status" name="status">
             <option value="">All</option>
             {% for s in statuses %}
               <option value="{{ s }}" {% if query.status == s %}selected{% endif %}>{{ s | replace('-', ' ') | title }}</option>
@@ -37,8 +30,8 @@
           </select>
         </div>
         <div class="field">
-          <label for="schedule">Schedule</label>
-          <select id="schedule" name="schedule">
+          <label for="board-schedule">Schedule</label>
+          <select id="board-schedule" name="schedule">
             <option value="">All</option>
             <option value="overdue" {% if query.schedule == 'overdue' %}selected{% endif %}>Overdue</option>
             <option value="today" {% if query.schedule == 'today' %}selected{% endif %}>Today</option>
@@ -48,17 +41,17 @@
         </div>
 
         <div class="field">
-          <label for="readiness">Readiness</label>
-          <select id="readiness" name="readiness">
+          <label for="board-readiness">Readiness</label>
+          <select id="board-readiness" name="readiness">
             <option value="all" {% if query.readiness == 'all' or not query.readiness %}selected{% endif %}>All</option>
             <option value="publishable" {% if query.readiness == 'publishable' %}selected{% endif %}>Publishable</option>
             <option value="blocked-ready" {% if query.readiness == 'blocked-ready' %}selected{% endif %}>Blocked (ready)</option>
           </select>
         </div>
 
-        <div class="field" style="flex-direction: row; align-items: center; gap: 0.5rem;">
-          <input type="checkbox" id="includeArchived" name="includeArchived" value="1" {% if query.includeArchived == '1' %}checked{% endif %}>
-          <label for="includeArchived" style="min-width: auto;">Include archived releases</label>
+        <div class="field field--checkbox">
+          <input type="checkbox" id="board-includeArchived" name="includeArchived" value="1" {% if query.includeArchived == '1' %}checked{% endif %}>
+          <label for="board-includeArchived">Include archived releases</label>
         </div>
 
         <button class="button" type="submit">Filter</button>
@@ -66,64 +59,69 @@
       </form>
     </div>
 
-    <div class="board-container">
-      {% for status in ['idea', 'planned', 'drafting', 'ready', 'published', 'cancelled'] %}
-        {% set column = columns[status] %}
-        <div class="board-column">
-          <h3 class="board-column-header status-{{ status }}">{{ status | replace('-', ' ') | title }} <span class="count">({{ column.length }})</span></h3>
-          <div class="board-column-content">
-            {% if column.length > 0 %}
-              {% for release in column %}
-                <div class="board-card{% if release.archived_at %} archived{% endif %}">
-                  <div class="card-title"><a href="/releases/{{ release.id }}">{{ release.title }}</a></div>
-                  <div class="card-project">{{ release.project_title }}</div>
-                  <div class="card-meta">
-                    {% if release.planned_date %}
-                      <span class="card-date">{{ release.planned_date }}</span>
-                    {% else %}
-                      <span class="card-date unspecified">No date</span>
-                    {% endif %}
-                    <span class="card-assets">
-                      {{ release.selected_asset_count }} asset{% if release.selected_asset_count != 1 %}s{% endif %}
-                      {% if release.missing_asset_count > 0 %}
-                        <span class="missing-indicator" title="{{ release.missing_asset_count }} missing">⚠ {{ release.missing_asset_count }}</span>
+    <div class="board-scroll" tabindex="0" aria-label="Release board columns">
+      <div class="board-container">
+        {% for status in ['idea', 'planned', 'drafting', 'ready', 'published', 'cancelled'] %}
+          {% set column = columns[status] %}
+          <div class="board-column">
+            <h3 class="board-column-header">{% include "partials/status-badge.njk" %} <span class="count">({{ column.length }})</span></h3>
+            <div class="board-column-content">
+              {% if column.length > 0 %}
+                {% for release in column %}
+                  <div class="board-card{% if release.archived_at %} archived{% endif %}">
+                    <div class="card-title"><a href="/releases/{{ release.id }}">{{ release.title }}</a></div>
+                    <div class="card-project">{{ release.project_title }}</div>
+                    <div class="card-meta">
+                      {% if release.planned_date %}
+                        <span class="card-date">{{ release.planned_date }}</span>
+                      {% else %}
+                        <span class="card-date unspecified">No date</span>
                       {% endif %}
-                    </span>
-                    {% if release._readiness %}
-                      <span class="card-readiness">
-                        {%- if release._readiness.publishable -%}
-                          <span class="readiness-publishable">Publishable</span>
-                        {%- else -%}
-                          <span class="readiness-blocked">
-                            {%- for label in release._readiness.blockerLabels -%}
-                              {{ label }}{% if not loop.last %}; {% endif %}
-                            {%- endfor -%}
-                          </span>
-                        {%- endif -%}
+                      <span class="card-assets">
+                        {{ release.selected_asset_count }} asset{% if release.selected_asset_count != 1 %}s{% endif %}
+                        {% if release.missing_asset_count > 0 %}
+                          <span class="missing-indicator" title="{{ release.missing_asset_count }} missing">⚠ {{ release.missing_asset_count }}</span>
+                        {% endif %}
                       </span>
-                    {% endif %}
+                      {% if release._readiness %}
+                        <span class="card-readiness">
+                          {%- if release._readiness.publishable -%}
+                            <span class="readiness-publishable">Publishable</span>
+                          {%- else -%}
+                            <span class="readiness-blocked">
+                              {%- for label in release._readiness.blockerLabels -%}
+                                {{ label }}{% if not loop.last %}; {% endif %}
+                              {%- endfor -%}
+                            </span>
+                          {%- endif -%}
+                        </span>
+                      {% endif %}
+                    </div>
                   </div>
-                </div>
-              {% endfor %}
-            {% else %}
-              <p class="board-empty">No releases</p>
-            {% endif %}
+                {% endfor %}
+              {% else %}
+                {% set emptyHeading = "No releases" %}
+                {% set emptyDescription = "" %}
+                {% set emptyHeadingLevel = "h4" %}
+                {% include "partials/empty-state.njk" %}
+              {% endif %}
+            </div>
           </div>
-        </div>
-      {% endfor %}
+        {% endfor %}
+      </div>
     </div>
 
   {% else %}
     {# ─── List View ─── #}
     <form class="filters" method="get" action="/releases">
       <div class="field">
-        <label for="project">Project</label>
-        <input type="text" id="project" name="project" value="{{ query.project or '' }}" placeholder="Project ID">
+        <label for="list-project">Project</label>
+        <input type="text" id="list-project" name="project" value="{{ query.project or '' }}" placeholder="Project ID">
       </div>
 
       <div class="field">
-        <label for="status">Status</label>
-        <select id="status" name="status">
+        <label for="list-status">Status</label>
+        <select id="list-status" name="status">
           <option value="">All</option>
           {% for s in statuses %}
             <option value="{{ s }}" {% if query.status == s %}selected{% endif %}>{{ s | replace('-', ' ') | title }}</option>
@@ -132,8 +130,8 @@
       </div>
 
       <div class="field">
-        <label for="schedule">Schedule</label>
-        <select id="schedule" name="schedule">
+        <label for="list-schedule">Schedule</label>
+        <select id="list-schedule" name="schedule">
           <option value="">All</option>
           <option value="overdue" {% if query.schedule == 'overdue' %}selected{% endif %}>Overdue</option>
           <option value="today" {% if query.schedule == 'today' %}selected{% endif %}>Today</option>
@@ -143,8 +141,8 @@
       </div>
 
       <div class="field">
-        <label for="readiness">Readiness</label>
-        <select id="readiness" name="readiness">
+        <label for="list-readiness">Readiness</label>
+        <select id="list-readiness" name="readiness">
           <option value="all" {% if query.readiness == 'all' or not query.readiness %}selected{% endif %}>All</option>
           <option value="publishable" {% if query.readiness == 'publishable' %}selected{% endif %}>Publishable</option>
           <option value="blocked-ready" {% if query.readiness == 'blocked-ready' %}selected{% endif %}>Blocked (ready)</option>
@@ -152,21 +150,22 @@
       </div>
 
       <div class="field">
-        <label for="sort">Sort</label>
-        <select id="sort" name="sort">
+        <label for="list-sort">Sort</label>
+        <select id="list-sort" name="sort">
           {% for opt in sortOptions %}
             <option value="{{ opt }}" {% if query.sort == opt or (not query.sort and opt == 'updated') %}selected{% endif %}>{{ opt | replace('-', ' ') | title }}</option>
           {% endfor %}
         </select>
-        <select name="order">
+        <label for="list-order">Sort order</label>
+        <select id="list-order" name="order">
           <option value="desc" {% if query.order != 'asc' %}selected{% endif %}>Desc</option>
           <option value="asc" {% if query.order == 'asc' %}selected{% endif %}>Asc</option>
         </select>
       </div>
 
-      <div class="field" style="flex-direction: row; align-items: center; gap: 0.5rem;">
-        <input type="checkbox" id="includeArchived" name="includeArchived" value="1" {% if query.includeArchived == '1' %}checked{% endif %}>
-        <label for="includeArchived" style="min-width: auto;">Include archived releases</label>
+      <div class="field field--checkbox">
+        <input type="checkbox" id="list-includeArchived" name="includeArchived" value="1" {% if query.includeArchived == '1' %}checked{% endif %}>
+        <label for="list-includeArchived">Include archived releases</label>
       </div>
 
       <button class="button" type="submit">Filter</button>
@@ -176,7 +175,8 @@
     <p class="results-meta">{{ total }} release{% if total != 1 %}s{% endif %} found</p>
 
     {% if releases.length > 0 %}
-      <table class="project-table">
+      <div class="table-scroll" tabindex="0" aria-label="Release list">
+        <table class="data-table">
         <thead>
           <tr>
             <th>Title</th>
@@ -185,7 +185,7 @@
             <th>Readiness</th>
             <th>Planned</th>
             <th>Published</th>
-            <th>Assets</th>
+            <th class="num">Assets</th>
             <th></th>
           </tr>
         </thead>
@@ -194,8 +194,8 @@
             <tr{% if release.archived_at %} class="archived-row"{% endif %}>
               <td><a href="/releases/{{ release.id }}">{{ release.title }}</a></td>
               <td>{{ release.project_title }}</td>
-              <td>{{ release.status | replace('-', ' ') | title }}</td>
-              <td>
+              <td>{% set status = release.status %}{% include "partials/status-badge.njk" %}</td>
+              <td class="num">
                 {% if release._readiness %}
                   {% if release._readiness.publishable %}
                     <span class="readiness-publishable">Publishable</span>
@@ -227,13 +227,14 @@
               </td>
               <td>
                 {% if release.archived_at %}
-                  <span class="archived-badge">Archived</span>
+                  {% set status = 'archived' %}{% include "partials/status-badge.njk" %}
                 {% endif %}
               </td>
             </tr>
           {% endfor %}
         </tbody>
       </table>
+      </div>
 
       <nav class="pagination" aria-label="Release list pages">
         {% if page > 1 %}
@@ -247,152 +248,20 @@
         {% endif %}
       </nav>
     {% else %}
-      <p class="placeholder">No releases match the current filters.</p>
+      {% set releaseFiltersActive = query.project or query.status or query.schedule or query.includeArchived == '1' or (query.readiness and query.readiness != 'all') %}
+      {% if releaseFiltersActive and hasAnyReleases %}
+        {% set emptyHeading = "No releases match the current filters" %}
+        {% set emptyDescription = "Reset the filters to return to the full release list." %}
+        {% set emptyActionUrl = "/releases" %}
+        {% set emptyActionLabel = "Reset Filters" %}
+      {% else %}
+        {% set emptyHeading = "No releases yet" %}
+        {% set emptyDescription = "Create a release to start tracking publication workflow." %}
+        {% set emptyActionUrl = "/releases/new" %}
+        {% set emptyActionLabel = "New Release" %}
+      {% endif %}
+      {% set emptyHeadingLevel = "h2" %}
+      {% include "partials/empty-state.njk" %}
     {% endif %}
   {% endif %}
-
-  <style>
-    .header-actions {
-      display: flex;
-      gap: 1rem;
-      align-items: center;
-    }
-    .view-switcher {
-      display: flex;
-      gap: 0.25rem;
-    }
-    .board-filters {
-      margin-bottom: 1rem;
-      padding: 1rem;
-      background: var(--surface);
-      border-radius: 0.5rem;
-    }
-    .board-filters form {
-      display: flex;
-      gap: 1rem;
-      align-items: flex-end;
-      flex-wrap: wrap;
-    }
-    .board-container {
-      display: grid;
-      grid-template-columns: repeat(6, 1fr);
-      gap: 1rem;
-      overflow-x: auto;
-      min-width: 0;
-    }
-    .board-column {
-      background: var(--surface);
-      border-radius: 0.5rem;
-      padding: 0.75rem;
-      min-width: 12rem;
-    }
-    .board-column-header {
-      margin: 0 0 0.75rem 0;
-      padding: 0.25rem 0.5rem;
-      border-radius: 0.25rem;
-      font-size: 0.875rem;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-    }
-    .board-column-header .count {
-      color: var(--muted);
-      font-weight: normal;
-    }
-    .board-column-header.status-idea { background: rgba(136,136,136,0.2); }
-    .board-column-header.status-planned { background: rgba(74,158,255,0.2); }
-    .board-column-header.status-drafting { background: rgba(245,166,35,0.2); }
-    .board-column-header.status-ready { background: rgba(70,180,100,0.2); }
-    .board-column-header.status-published { background: rgba(70,180,100,0.3); }
-    .board-column-header.status-cancelled { background: rgba(229,72,77,0.2); }
-    .board-column-content {
-      display: flex;
-      flex-direction: column;
-      gap: 0.5rem;
-    }
-    .board-card {
-      background: var(--bg);
-      border-radius: 0.375rem;
-      padding: 0.5rem;
-      font-size: 0.8rem;
-    }
-    .board-card.archived {
-      opacity: 0.5;
-    }
-    .card-title {
-      font-weight: 600;
-      margin-bottom: 0.25rem;
-    }
-    .card-title a {
-      color: var(--text);
-      text-decoration: none;
-    }
-    .card-title a:hover {
-      text-decoration: underline;
-    }
-    .card-project {
-      color: var(--muted);
-      font-size: 0.7rem;
-      margin-bottom: 0.25rem;
-    }
-    .card-meta {
-      display: flex;
-      flex-direction: column;
-      gap: 0.125rem;
-      color: var(--muted);
-      font-size: 0.7rem;
-    }
-    .card-date.unspecified {
-      font-style: italic;
-      opacity: 0.7;
-    }
-    .card-assets {
-      display: flex;
-      gap: 0.25rem;
-      align-items: center;
-    }
-    .board-empty {
-      color: var(--muted);
-      font-size: 0.8rem;
-      text-align: center;
-      padding: 1rem;
-    }
-    .archived-row {
-      opacity: 0.6;
-    }
-    .archived-badge {
-      font-size: 0.7rem;
-      background: rgba(136,136,136,0.3);
-      padding: 0.125rem 0.375rem;
-      border-radius: 0.25rem;
-    }
-    .card-readiness {
-      margin-top: 0.125rem;
-    }
-    .readiness-publishable {
-      color: #46b464;
-      font-size: 0.7rem;
-      font-weight: 600;
-    }
-    .readiness-blocked {
-      color: #e5484d;
-      font-size: 0.7rem;
-      font-weight: 600;
-    }
-    .readiness-none {
-      color: var(--muted);
-      font-size: 0.7rem;
-    }
-    .readiness-links {
-      display: block;
-      font-size: 0.7rem;
-      margin-top: 0.125rem;
-    }
-    .readiness-link {
-      color: var(--accent);
-      text-decoration: none;
-    }
-    .readiness-link:hover {
-      text-decoration: underline;
-    }
-  </style>
 {% endblock %}

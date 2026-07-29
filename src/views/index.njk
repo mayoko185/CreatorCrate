@@ -1,21 +1,62 @@
 {% extends "layout.njk" %}
+{% import "partials/page-heading.njk" as pageHeading %}
 
 {% block content %}
-  <h1>{{ appName }}</h1>
-  <p>Organize your Patreon art projects in one self-hosted place.</p>
-
-  <div class="actions">
+  {% call pageHeading.render(appName, "Organize your Patreon art projects in one self-hosted place.") %}
     <a class="button button-primary" href="/projects/new">New Project</a>
     <a class="button" href="/projects">View All Projects</a>
     <a class="button" href="/releases">View All Releases</a>
-  </div>
+  {% endcall %}
+
+  {# ─── Summary cards ─────────────────────────────────────────────── #}
+  <section class="summary-cards" aria-label="Overview">
+    <a class="summary-card" href="/projects">
+      <span class="summary-card-value">{{ summary.totalProjects }}</span>
+      <span class="summary-card-label">Projects</span>
+      <span class="summary-card-context">Projects currently tracked</span>
+    </a>
+    <div class="summary-card">
+      <span class="summary-card-value">{{ summary.totalAssets }}</span>
+      <span class="summary-card-label">Assets</span>
+      <span class="summary-card-context">Across all projects</span>
+    </div>
+    {% if attention.totalCount > 0 %}
+      <a class="summary-card summary-card--attention" href="#needs-attention">
+        <span class="summary-card-value">{{ attention.totalCount }}</span>
+        <span class="summary-card-label">Need attention</span>
+        <span class="summary-card-context">Releases requiring review</span>
+      </a>
+    {% else %}
+      <div class="summary-card">
+        <span class="summary-card-value">0</span>
+        <span class="summary-card-label">Need attention</span>
+        <span class="summary-card-context">Releases requiring review</span>
+      </div>
+    {% endif %}
+    {% if summary.missingAssetSummary.total > 0 %}
+      <div class="summary-card summary-card--warning">
+        <span class="summary-card-value">{{ summary.missingAssetSummary.total }}</span>
+        <span class="summary-card-label">Missing assets</span>
+        <span class="summary-card-context">Files missing at the last scan{% if summary.missingAssetSummary.referencedByReleases > 0 %}; {{ summary.missingAssetSummary.referencedByReleases }} referenced{% endif %}</span>
+      </div>
+    {% else %}
+      <div class="summary-card">
+        <span class="summary-card-value">{{ summary.missingAssetSummary.total }}</span>
+        <span class="summary-card-label">Missing assets</span>
+        <span class="summary-card-context">Files missing at the last scan</span>
+      </div>
+    {% endif %}
+  </section>
 
   {# ─── Releases needing attention ──────────────────────────────────── #}
-  <section class="needs-attention">
+  <section class="needs-attention" id="needs-attention">
     <h2>Releases needing attention</h2>
 
     {% if attention.totalCount == 0 %}
-      <p class="placeholder">All releases are in good shape. Nothing needs attention right now.</p>
+      {% set emptyHeading = "All releases are in good shape" %}
+      {% set emptyDescription = "Nothing needs attention right now." %}
+      {% set emptyHeadingLevel = "h3" %}
+      {% include "partials/empty-state.njk" %}
     {% else %}
       {% if attention.overdue.length > 0 %}
         <div class="attention-group attention-overdue">
@@ -141,31 +182,16 @@
         {% endfor %}
       </div>
     {% else %}
-      <p class="placeholder">No upcoming releases scheduled.</p>
+      {% set emptyHeading = "No upcoming releases scheduled" %}
+      {% set emptyDescription = "Add planned dates to active releases to see them here." %}
+      {% set emptyHeadingLevel = "h3" %}
+      {% include "partials/empty-state.njk" %}
     {% endif %}
   </section>
 
-  {# ─── Workflow summary (primary) ─────────────────────────────────── #}
+  {# ─── Workflow summary ──────────────────────────────────────────── #}
   <section class="workflow-summary">
-    <h2>Workflow summary</h2>
-
-    <dl class="summary-list">
-      <dt>Total projects</dt>
-      <dd>{{ summary.totalProjects }}</dd>
-
-      <dt>Total assets</dt>
-      <dd>{{ summary.totalAssets }}</dd>
-
-      <dt>Missing assets</dt>
-      <dd>
-        {{ summary.missingAssetSummary.total }}
-        {% if summary.missingAssetSummary.referencedByReleases > 0 %}
-          <small>({{ summary.missingAssetSummary.referencedByReleases }} referenced by releases)</small>
-        {% endif %}
-      </dd>
-    </dl>
-
-    <h3>Release status</h3>
+    <h2>Release status</h2>
     <div class="count-grid">
       <div class="count-card"><span class="count">{{ summary.releaseStatusCounts.idea or 0 }}</span> Idea</div>
       <div class="count-card"><span class="count">{{ summary.releaseStatusCounts.planned or 0 }}</span> Planned</div>
@@ -174,11 +200,8 @@
       <div class="count-card"><span class="count">{{ summary.releaseStatusCounts.published or 0 }}</span> Published</div>
       <div class="count-card"><span class="count">{{ summary.releaseStatusCounts.cancelled or 0 }}</span> Cancelled</div>
     </div>
-  </section>
 
-  {# ─── Project counts (secondary, demoted) ────────────────────────── #}
-  <section class="project-counts-secondary">
-    <details>
+    <details class="project-counts-details">
       <summary>Project counts</summary>
       <div class="count-grid">
         <div class="count-card"><span class="count">{{ projectCounts.tbd }}</span> TBD</div>
@@ -191,7 +214,7 @@
     </details>
   </section>
 
-  {# ─── Recently updated (context) ─────────────────────────────────── #}
+  {# ─── Recently updated ──────────────────────────────────────────── #}
   <section class="recent-projects">
     <h2>Recently updated projects</h2>
     {% if recentlyUpdated.length > 0 %}
@@ -199,12 +222,21 @@
         {% for project in recentlyUpdated %}
           <li>
             <a href="/projects/{{ project.id }}">{{ project.title }}</a>
-            <span class="meta">{{ project.status }} · {{ project.priority }} · updated {{ project.updated_at }}</span>
+            {% set status = project.status %}
+            <span class="meta">
+              {% include "partials/status-badge.njk" %}
+              · {{ project.priority | title }} · updated {{ project.updated_at }}
+            </span>
           </li>
         {% endfor %}
       </ul>
     {% else %}
-      <p class="placeholder">No projects yet. Create one to get started.</p>
+      {% set emptyHeading = "No projects are currently tracked" %}
+      {% set emptyDescription = "Create a project to start organizing releases and assets." %}
+      {% set emptyActionUrl = "/projects/new" %}
+      {% set emptyActionLabel = "New Project" %}
+      {% set emptyHeadingLevel = "h3" %}
+      {% include "partials/empty-state.njk" %}
     {% endif %}
   </section>
 {% endblock %}

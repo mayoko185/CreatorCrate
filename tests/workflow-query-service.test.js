@@ -12,8 +12,16 @@ import { getLocalTodayIso } from '../src/util/date.js';
 import { buildRevisionToken } from '../src/storage/preview-cache.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
+const DASHBOARD_FIXED_STATEMENT_EXECUTIONS = 14;
 const ASSET_BROWSER_FIXED_STATEMENT_EXECUTIONS = 5;
 const ASSET_VIEWER_FIXED_STATEMENT_EXECUTIONS = 4;
+// getReleaseList composes: countFiltered (filtered total),
+// countFiltered({ includeArchived: true }) (hasAnyReleases existence), findPage
+// (page rows), and one batch readiness-facts query when the page holds at least
+// one status=ready release. That readiness batch is the single query that
+// prevents N+1 readiness evaluation. The count is fixed at 4 for a page with a
+// ready release and 3 (constant - 1) for an empty / no-ready-release page.
+const RELEASE_LIST_FIXED_STATEMENT_EXECUTIONS = 4;
 
 /**
  * Helper to insert a project directly without filesystem operations.
@@ -640,6 +648,56 @@ describe('workflow query service', () => {
 
       const data = service.getDashboardData({ limits: { recentlyUpdatedProjects: 5 } });
       expect(data.recentlyUpdated).toHaveLength(5);
+    });
+
+    it('dashboard composition executes a fixed number of statements as dataset size grows', () => {
+      const smallProject = insertProject(db, { title: 'Dashboard Query Small', status: 'planned' });
+      const smallRelease = insertRelease(db, {
+        projectId: smallProject.id,
+        title: 'Small Upcoming',
+        status: 'planned',
+        plannedDate: '2099-01-01',
+      });
+      const smallAsset = insertAsset(db, {
+        projectId: smallProject.id,
+        relativePath: 'small.txt',
+        filename: 'small.txt',
+        isPresent: 1,
+      });
+      linkAssetToRelease(db, { releaseId: smallRelease.id, assetId: smallAsset.id });
+
+      const counter = instrumentStatementExecution(db);
+      const instrumentedService = createWorkflowQueryService({ db, evaluateReleaseReadiness });
+
+      counter.reset();
+      const smallData = instrumentedService.getDashboardData({ today: '2026-07-29' });
+      const smallCount = counter.count();
+
+      for (let i = 1; i <= 60; i++) {
+        const project = insertProject(db, { title: `Dashboard Query Large ${i}`, status: i % 2 === 0 ? 'ready' : 'planned' });
+        const release = insertRelease(db, {
+          projectId: project.id,
+          title: `Large Release ${i}`,
+          status: i % 3 === 0 ? 'ready' : 'planned',
+          plannedDate: `2099-02-${String((i % 20) + 1).padStart(2, '0')}`,
+        });
+        const asset = insertAsset(db, {
+          projectId: project.id,
+          relativePath: `large-${i}.txt`,
+          filename: `large-${i}.txt`,
+          isPresent: 1,
+        });
+        linkAssetToRelease(db, { releaseId: release.id, assetId: asset.id });
+      }
+
+      counter.reset();
+      const largeData = instrumentedService.getDashboardData({ today: '2026-07-29' });
+      const largeCount = counter.count();
+
+      expect(smallData.workflowSummary.totalProjects).toBe(1);
+      expect(largeData.workflowSummary.totalProjects).toBeGreaterThan(smallData.workflowSummary.totalProjects);
+      expect(smallCount).toBe(DASHBOARD_FIXED_STATEMENT_EXECUTIONS);
+      expect(largeCount).toBe(DASHBOARD_FIXED_STATEMENT_EXECUTIONS);
     });
   });
 
@@ -1953,6 +2011,206 @@ describe('workflow query service', () => {
 
       const blocked = service.getReleaseList({ readiness: 'blocked-ready' }, { today: FIXED_TODAY });
       expect(blocked.total).toBe(blocked.releases.length);
+    });
+  });
+
+  // ─── getReleaseList: fixed statement-execution count ─────────────────────
+  //
+  // Pins the exact statement-execution count so any future per-row project
+  // lookup, per-row status/asset query, extra existence query, or other
+  // dataset-dependent growth fails immediately. The count must not change as
+  // the release/project dataset grows.
+
+  describe('getReleaseList — fixed statement execution count', () => {
+    const TODAY = '2025-06-15';
+
+    it('executes a fixed number of statements as the dataset grows (page with ready releases)', () => {
+      // Small dataset: one project with a ready release and a present asset.
+      const project = insertProject(db, { title: 'List Query Small', status: 'ready' });
+      const smallReady = insertRelease(db, {
+        projectId: project.id,
+        title: 'Small Ready',
+        status: 'ready',
+        plannedDate: TODAY,
+      });
+      const smallAsset = insertAsset(db, {
+        projectId: project.id,
+        relativePath: 'small.txt',
+        filename: 'small.txt',
+        isPresent: 1,
+      });
+      linkAssetToRelease(db, { releaseId: smallReady.id, assetId: smallAsset.id });
+
+      const counter = instrumentStatementExecution(db);
+      const instrumentedService = createWorkflowQueryService({ db, evaluateReleaseReadiness });
+
+      counter.reset();
+      const smallResult = instrumentedService.getReleaseList({}, { today: TODAY });
+      const smallCount = counter.count();
+
+      // Grow the dataset substantially: many projects, many releases
+      // (including ready releases with present assets so the readiness
+      // batch path is exercised), and asset links.
+      for (let i = 1; i <= 60; i++) {
+        const p = insertProject(db, {
+          title: `List Query Large ${i}`,
+          status: i % 2 === 0 ? 'ready' : 'planned',
+        });
+        const r = insertRelease(db, {
+          projectId: p.id,
+          title: `Large Release ${i}`,
+          status: i % 2 === 0 ? 'ready' : 'planned',
+          plannedDate: `2099-02-${String((i % 20) + 1).padStart(2, '0')}`,
+        });
+        const a = insertAsset(db, {
+          projectId: p.id,
+          relativePath: `large-${i}.txt`,
+          filename: `large-${i}.txt`,
+          isPresent: 1,
+        });
+        linkAssetToRelease(db, { releaseId: r.id, assetId: a.id });
+      }
+
+      counter.reset();
+      const largeResult = instrumentedService.getReleaseList({}, { today: TODAY });
+      const largeCount = counter.count();
+
+      // Semantic: the dataset really did grow and ready releases exist.
+      expect(smallResult.hasAnyReleases).toBe(true);
+      expect(largeResult.hasAnyReleases).toBe(true);
+      expect(largeResult.total).toBeGreaterThan(smallResult.total);
+      expect(largeResult.releases.length).toBeGreaterThan(0);
+      // At least one ready release is on the large page → readiness ran.
+      expect(largeResult.releases.some((r) => r.status === 'ready')).toBe(true);
+
+      // Fixed count: identical regardless of dataset size.
+      expect(smallCount).toBe(RELEASE_LIST_FIXED_STATEMENT_EXECUTIONS);
+      expect(largeCount).toBe(RELEASE_LIST_FIXED_STATEMENT_EXECUTIONS);
+    });
+
+    it('filter that returns matches keeps the same fixed count', () => {
+      const project = insertProject(db, { title: 'Filter Match Project', status: 'ready' });
+      for (let i = 0; i < 5; i++) {
+        const r = insertRelease(db, {
+          projectId: project.id,
+          title: `Ready ${i}`,
+          status: 'ready',
+          plannedDate: TODAY,
+        });
+        const a = insertAsset(db, {
+          projectId: project.id,
+          relativePath: `m${i}.txt`,
+          filename: `m${i}.txt`,
+          isPresent: 1,
+        });
+        linkAssetToRelease(db, { releaseId: r.id, assetId: a.id });
+      }
+
+      const counter = instrumentStatementExecution(db);
+      const instrumentedService = createWorkflowQueryService({ db, evaluateReleaseReadiness });
+
+      counter.reset();
+      const result = instrumentedService.getReleaseList({ status: 'ready' }, { today: TODAY });
+      const count = counter.count();
+
+      expect(result.total).toBe(5);
+      expect(result.hasAnyReleases).toBe(true);
+      expect(result.releases).toHaveLength(5);
+      expect(count).toBe(RELEASE_LIST_FIXED_STATEMENT_EXECUTIONS);
+    });
+
+    it('includeArchived does not change the fixed count', () => {
+      const project = insertProject(db, { title: 'Archived Inclusive', status: 'ready' });
+      const active = insertRelease(db, {
+        projectId: project.id, title: 'Active Ready', status: 'ready', plannedDate: TODAY,
+      });
+      const aActive = insertAsset(db, {
+        projectId: project.id, relativePath: 'aa.txt', filename: 'aa.txt', isPresent: 1,
+      });
+      linkAssetToRelease(db, { releaseId: active.id, assetId: aActive.id });
+
+      const archived = insertRelease(db, {
+        projectId: project.id, title: 'Archived Release', status: 'ready',
+        plannedDate: TODAY, archivedAt: '2024-01-01 00:00:00',
+      });
+
+      const counter = instrumentStatementExecution(db);
+      const instrumentedService = createWorkflowQueryService({ db, evaluateReleaseReadiness });
+
+      counter.reset();
+      const result = instrumentedService.getReleaseList({ includeArchived: '1' }, { today: TODAY });
+      const count = counter.count();
+
+      // includeArchived surfaces the archived release but adds no statement
+      // — same composition, broader WHERE clause.
+      expect(result.total).toBe(2);
+      expect(result.hasAnyReleases).toBe(true);
+      expect(result.releases.map((r) => r.id).sort()).toEqual([active.id, archived.id].sort());
+      expect(count).toBe(RELEASE_LIST_FIXED_STATEMENT_EXECUTIONS);
+    });
+
+    it('empty repository: hasAnyReleases is false; count is fixed (no ready release on the page)', () => {
+      const counter = instrumentStatementExecution(db);
+      const instrumentedService = createWorkflowQueryService({ db, evaluateReleaseReadiness });
+
+      counter.reset();
+      const result = instrumentedService.getReleaseList({}, { today: TODAY });
+      const count = counter.count();
+
+      expect(result.total).toBe(0);
+      expect(result.hasAnyReleases).toBe(false);
+      expect(result.releases).toEqual([]);
+      // Empty page → no ready release → the readiness batch is skipped.
+      // Three fixed queries remain: filtered total, hasAnyReleases, findPage.
+      expect(count).toBe(RELEASE_LIST_FIXED_STATEMENT_EXECUTIONS - 1);
+    });
+
+    it('releases exist but filters return zero rows: hasAnyReleases true, total zero, count fixed', () => {
+      const project = insertProject(db, { title: 'Zero Match Project', status: 'ready' });
+      const r = insertRelease(db, {
+        projectId: project.id, title: 'Ready Exists', status: 'ready', plannedDate: TODAY,
+      });
+      const a = insertAsset(db, {
+        projectId: project.id, relativePath: 'z.txt', filename: 'z.txt', isPresent: 1,
+      });
+      linkAssetToRelease(db, { releaseId: r.id, assetId: a.id });
+
+      const counter = instrumentStatementExecution(db);
+      const instrumentedService = createWorkflowQueryService({ db, evaluateReleaseReadiness });
+
+      // Filter for a status with no matches — releases still exist, so
+      // hasAnyReleases must be true while the filtered total is zero.
+      counter.reset();
+      const result = instrumentedService.getReleaseList({ status: 'published' }, { today: TODAY });
+      const count = counter.count();
+
+      expect(result.total).toBe(0);
+      expect(result.hasAnyReleases).toBe(true);
+      expect(result.releases).toEqual([]);
+      // Zero-row page → readiness batch skipped. Same three fixed queries.
+      expect(count).toBe(RELEASE_LIST_FIXED_STATEMENT_EXECUTIONS - 1);
+    });
+
+    it('only archived releases exist: hasAnyReleases true via the includeArchived existence count', () => {
+      const project = insertProject(db, { title: 'Only Archived Project' });
+      insertRelease(db, {
+        projectId: project.id, title: 'Archived Only', status: 'planned',
+        plannedDate: TODAY, archivedAt: '2024-01-01 00:00:00',
+      });
+
+      const counter = instrumentStatementExecution(db);
+      const instrumentedService = createWorkflowQueryService({ db, evaluateReleaseReadiness });
+
+      counter.reset();
+      const result = instrumentedService.getReleaseList({}, { today: TODAY });
+      const count = counter.count();
+
+      // Default list excludes archived → filtered total is zero, but the
+      // includeArchived existence count finds the archived release.
+      expect(result.total).toBe(0);
+      expect(result.hasAnyReleases).toBe(true);
+      expect(result.releases).toEqual([]);
+      expect(count).toBe(RELEASE_LIST_FIXED_STATEMENT_EXECUTIONS - 1);
     });
   });
 

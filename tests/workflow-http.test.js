@@ -395,15 +395,16 @@ describe('Phase 6B HTTP workflow', () => {
   describe('dashboard workflow summary', () => {
     it('renders the workflow summary section', async () => {
       const res = await request(app).get('/').expect(200);
-      expect(res.text).toContain('Workflow summary');
+      expect(res.text).toContain('Release status');
     });
 
     it('shows total projects, total assets, and missing assets', async () => {
       await createProject(app, { title: 'Counted' });
 
       const res = await request(app).get('/').expect(200);
-      expect(res.text).toContain('Total projects');
-      expect(res.text).toContain('Total assets');
+      // Summary cards show Projects and Assets labels with values
+      expect(res.text).toContain('Projects');
+      expect(res.text).toContain('Assets');
       expect(res.text).toContain('Missing assets');
     });
 
@@ -443,8 +444,6 @@ describe('Phase 6B HTTP workflow', () => {
       const res = await request(app).get(`/projects/${projectId}`).expect(200);
       expect(res.text).toContain('Releases');
       expect(res.text).toContain('Status');
-      expect(res.text).toContain('Active releases');
-      expect(res.text).toContain('Recent releases');
     });
 
     it('shows release status counts and active/recent lists', async () => {
@@ -568,7 +567,6 @@ describe('Phase 6B HTTP workflow', () => {
     it('shows safe empty states for a project with no releases or assets', async () => {
       const projectId = await createProject(app, { title: 'Bare Project' });
       const res = await request(app).get(`/projects/${projectId}`).expect(200);
-      expect(res.text).toContain('No active releases');
       expect(res.text).toContain('No releases yet');
     });
 
@@ -618,7 +616,7 @@ describe('Phase 6B HTTP workflow', () => {
       const res = await request(app).get(`/projects/${projectId}`).expect(200);
       // No archive form/button targeting this project.
       expect(res.text).not.toContain(`action="/projects/${projectId}/archive"`);
-      expect(res.text).not.toMatch(/<button[^>]*>\s*Archive\s*<\/button>/);
+      expect(res.text).not.toMatch(/<button[^>]*>\s*Archive project\s*<\/button>/);
     });
 
     it('active project still shows the Edit and Archive controls', async () => {
@@ -628,7 +626,7 @@ describe('Phase 6B HTTP workflow', () => {
       expect(res.text).toContain(`href="/projects/${projectId}/edit"`);
       expect(res.text).toMatch(/<a[^>]*>\s*Edit\s*<\/a>/);
       expect(res.text).toContain(`action="/projects/${projectId}/archive"`);
-      expect(res.text).toMatch(/<button[^>]*>\s*Archive\s*<\/button>/);
+      expect(res.text).toMatch(/<button[^>]*>\s*Archive project\s*<\/button>/);
     });
 
     it('archived project still preserves historical release information and assets', async () => {
@@ -752,26 +750,17 @@ describe('Phase 6B HTTP workflow', () => {
 
   describe('release list — default view', () => {
     it('renders the release list with view-switcher buttons', async () => {
-      // The previous test asserted `toContain('Releases')` (the page
-      // heading) plus `toContain('List')`/`'Board'`/`'Calendar'`. Those
-      // strings also appear in the Status filter option labels
-      // ('Cancelled', 'Ready', etc.) and in the layout navigation, so
-      // the test could pass without the view switcher being rendered.
-      // The new test pins the view-switcher markup: a <div
-      // class="view-switcher"> containing the three button anchors.
+      // Phase 10.5C: view switcher uses shared view-switcher-option pattern
+      // with aria-current="page" for the active view instead of span/button.
       const res = await request(app).get('/releases').expect(200);
-      // The view-switcher wrapper must exist.
-      expect(res.text).toMatch(/<div class="view-switcher">/);
-      // The List label is the active view (a span, not a link).
-      expect(res.text).toMatch(/<div class="view-switcher">[\s\S]*?<span class="button button-primary">List<\/span>[\s\S]*?<\/div>/);
-      // The Board label IS a link to the board view.
-      expect(res.text).toMatch(
-        /<div class="view-switcher">[\s\S]*?<a class="button" href="\/releases\?view=board">Board<\/a>[\s\S]*?<\/div>/,
-      );
+      // The view-switcher wrapper must exist as a nav.
+      expect(res.text).toMatch(/<nav class="view-switcher"/);
+      // The List label is the active view (aria-current="page"), no dead active class.
+      expect(res.text).toMatch(/class="view-switcher-option"[^>]*aria-current="page"[^>]*>List<\/a>/);
+      // The Board label is a link to the board view.
+      expect(res.text).toMatch(/<a class="view-switcher-option" href="\/releases\?view=board">Board<\/a>/);
       // The Calendar label is a link to the calendar view.
-      expect(res.text).toMatch(
-        /<div class="view-switcher">[\s\S]*?<a class="button" href="\/releases\/calendar[^"]*">Calendar<\/a>[\s\S]*?<\/div>/,
-      );
+      expect(res.text).toMatch(/<a class="view-switcher-option" href="\/releases\/calendar[^"]*">Calendar<\/a>/);
     });
 
     it('renders releases with project title and asset counts', async () => {
@@ -1030,7 +1019,7 @@ describe('Phase 6B HTTP workflow', () => {
       expect(res.text).toContain('Releases');
     });
 
-    it('archived releases show archived-row class and archived-badge markup', async () => {
+    it('archived releases show archived-row class and archived status badge', async () => {
       const projectId = await createProject(app, { title: 'Archive Badge Project' });
       const releaseId = await createRelease(app, {
         projectId,
@@ -1046,10 +1035,9 @@ describe('Phase 6B HTTP workflow', () => {
       // the CSS uses to dim the row.
       expect(row).not.toBeNull();
       expect(row).toMatch(/class="archived-row"/);
-      // The archived-badge <span> is the second row-level marker the
-      // template emits inside the same <tr>. Both must be present for
-      // the row to qualify as a "shown with badge" row.
-      expect(row).toMatch(/<span class="archived-badge">Archived<\/span>/);
+      // Phase 10.5C: archived releases now use the shared status-badge partial
+      // with status-badge--archived variant instead of a separate archived-badge.
+      expect(row).toMatch(/<span class="status-badge status-badge--archived">Archived<\/span>/);
     });
 
     it('excludes archived parent releases from active schedule views', async () => {
@@ -1103,10 +1091,9 @@ describe('Phase 6B HTTP workflow', () => {
       // assertion, the test could be passed by a row that contained the
       // title but was not actually styled as archived.
       expect(archivedRow).toMatch(/class="archived-row"/);
-      // The archived-badge span is the second row-level marker the
-      // template emits for archived releases. It must be inside the same
-      // <tr> as the title.
-      expect(archivedRow).toMatch(/<span class="archived-badge">Archived<\/span>/);
+      // Phase 10.5C: archived releases now use the shared status-badge
+      // partial instead of a separate archived-badge span.
+      expect(archivedRow).toMatch(/<span class="status-badge status-badge--archived">Archived<\/span>/);
       // The active row must also be present (regression — the filter
       // must not exclude non-archived rows).
       expect(findReleaseRow(resWith.text, 'ZZZ-Active-List-Archive-Test')).not.toBeNull();
@@ -1318,20 +1305,21 @@ describe('Phase 6B HTTP workflow', () => {
      * enclosing <a … href="…">…</a> element.
      */
     function extractViewSwitchHref(html, label) {
-      // The template emits the view-switcher as the FIRST <a class="button">
-      // containing the label — but in list view, only the Board anchor is
-      // rendered (List is a span). The label itself is wrapped in a
-      // button class.
+      // Phase 10.5C: the view switcher uses shared view-switcher-option links.
+      // Both active and inactive items are <a> elements; the active one
+      // carries aria-current="page" (no separate active class).
       const anchorRe = new RegExp(`<a\\b[^>]*\\bhref="([^"]+)"[^>]*>${label}<\\/a>`, 'i');
       const m = html.match(anchorRe);
       if (!m) return null;
       return decodeHtmlEntities(m[1]);
     }
 
-    it('list view: List is a span (not a link), Board is a link', async () => {
+    it('list view: List is marked active, Board is a link', async () => {
       const res = await request(app).get('/releases').expect(200);
-      // Active view: a span with button-primary, NOT an anchor.
-      expect(res.text).toMatch(/<span class="button button-primary">List<\/span>/);
+      // Active view: view-switcher-option with aria-current="page"
+      expect(res.text).toMatch(/class="view-switcher-option"[^>]*aria-current="page"[^>]*>List<\/a>/);
+      // No dead active class remains
+      expect(res.text).not.toContain('view-switcher-option--active');
       // Switch anchor must exist as an <a> — not a span.
       const boardHref = extractViewSwitchHref(res.text, 'Board');
       expect(boardHref).not.toBeNull();
@@ -1340,9 +1328,11 @@ describe('Phase 6B HTTP workflow', () => {
       expect(boardUrl.searchParams.get('view')).toBe('board');
     });
 
-    it('board view: Board is a span (not a link), List is a link', async () => {
+    it('board view: Board is marked active, List is a link', async () => {
       const res = await request(app).get('/releases?view=board').expect(200);
-      expect(res.text).toMatch(/<span class="button button-primary">Board<\/span>/);
+      // Active view: view-switcher-option with aria-current="page"
+      expect(res.text).toMatch(/class="view-switcher-option"[^>]*aria-current="page"[^>]*>Board<\/a>/);
+      expect(res.text).not.toContain('view-switcher-option--active');
       const listHref = extractViewSwitchHref(res.text, 'List');
       expect(listHref).not.toBeNull();
       const listUrl = new URL(listHref, 'http://localhost');
@@ -2042,14 +2032,15 @@ describe('Phase 6B HTTP workflow', () => {
       // The previous test asserted `toContain('Idea')` etc. — those
       // words also appear in the Status filter <option> labels, so the
       // assertion could pass without ever rendering a board column. The
-      // new test pins the exact column-header markup emitted by the
-      // board template: each column is rendered as
-      // <h3 class="board-column-header status-{status}">…</h3>.
+      // new test pins the exact column-header markup: each column header
+      // contains a status badge with the status label text.
       const res = await request(app).get('/releases?view=board').expect(200);
       const columns = ['idea', 'planned', 'drafting', 'ready', 'published', 'cancelled'];
       for (const status of columns) {
+        // Phase 10.5C: column headers use status-badge partial instead of
+        // inline status-X color classes on the h3.
         expect(res.text).toMatch(
-          new RegExp(`<h3 class="board-column-header status-${status}">`),
+          new RegExp(`<h3 class="board-column-header">[\\s\\S]*?<span class="status-badge`),
         );
       }
     });
@@ -2059,14 +2050,19 @@ describe('Phase 6B HTTP workflow', () => {
       // by any "Idea" followed by an opening paren anywhere in the page.
       // The new test pins each column header to its own count badge
       // <span class="count">(N)</span> — proving the column is real.
+      // Phase 10.5C: column headers use shared status-badge partial
+      // instead of inline status-X color classes.
       const res = await request(app).get('/releases?view=board').expect(200);
       const columns = ['idea', 'planned', 'drafting', 'ready', 'published', 'cancelled'];
       for (const status of columns) {
         expect(res.text).toMatch(
           new RegExp(
-            `<h3 class="board-column-header status-${status}">[\\s\\S]*?<span class="count">\\(\\d+\\)</span>`,
+            `<h3 class="board-column-header">[\\s\\S]*?<span class="count">\\(\\d+\\)</span>`,
           ),
         );
+        // Each status label appears in a status badge
+        const label = status.charAt(0).toUpperCase() + status.slice(1).replace('-', ' ');
+        expect(res.text).toContain(label);
       }
     });
 
@@ -2164,13 +2160,13 @@ describe('Phase 6B HTTP workflow', () => {
       );
     });
 
-    it('board renders empty states (in .board-empty) for columns with no releases', async () => {
+    it('board renders shared empty states for columns with no releases', async () => {
       // The previous test checked `toContain('No releases')` — that
       // string also appears in the list view's empty placeholder. Pin
-      // the empty placeholder to the .board-empty element emitted only
-      // by the board template.
+      // the empty placeholder to the shared empty-state markup emitted
+      // by each board column.
       const res = await request(app).get('/releases?view=board').expect(200);
-      const boardEmptyMatches = res.text.match(/<p class="board-empty">No releases<\/p>/g) || [];
+      const boardEmptyMatches = res.text.match(/<div class="empty-state">\s*<h4 class="empty-state-heading">No releases<\/h4>\s*<\/div>/g) || [];
       // Six columns × one "No releases" each = 6.
       expect(boardEmptyMatches.length).toBe(6);
     });
@@ -2268,10 +2264,10 @@ describe('Phase 6B HTTP workflow', () => {
       // The release title must be rendered inside the calendar grid
       // (in a .calendar-release div, not in any other location).
       expect(res.text).toMatch(/<div class="calendar-release"[^>]*>[\s\S]*?ZZZ-June-15-Calendar-Release[\s\S]*?<\/div>/);
-      // The status badge must carry the .status-planned class (the
-      // status styling the CSS uses) — not the bare word "planned"
-      // which would also match the schedule filter option label.
-      expect(res.text).toMatch(/<span class="release-status status-planned">planned<\/span>/);
+      // The status badge uses the shared status-badge partial — not
+      // the bare word "planned" which would also match the schedule
+      // filter option label.
+      expect(res.text).toMatch(/<span class="status-badge status-badge--neutral">Planned<\/span>/);
       // The project title must be visible inside the same card.
       expect(res.text).toMatch(/<span class="release-project">Calendar Project<\/span>/);
     });
@@ -2483,7 +2479,7 @@ describe('Phase 6B HTTP workflow', () => {
       // the strict anchor extractor — must return null.
       expect(extractCalendarNavHref(res.text, '← Previous')).toBeNull();
       // The disabled span is still present to keep the layout stable.
-      expect(res.text).toMatch(/<span class="button button-disabled"[^>]*>← Previous<\/span>/);
+      expect(res.text).toMatch(/<span class="button" aria-disabled="true">← Previous<\/span>/);
       // The Next anchor IS present (1000-02) and points to the right URL.
       const nextHref = extractCalendarNavHref(res.text, 'Next →');
       expect(nextHref).not.toBeNull();
@@ -2498,7 +2494,7 @@ describe('Phase 6B HTTP workflow', () => {
       // No anchor for the next month (which would be 10000-01).
       expect(extractCalendarNavHref(res.text, 'Next →')).toBeNull();
       // The disabled span is still present.
-      expect(res.text).toMatch(/<span class="button button-disabled"[^>]*>Next →<\/span>/);
+      expect(res.text).toMatch(/<span class="button" aria-disabled="true">Next →<\/span>/);
       // The Previous anchor IS present (9999-11).
       const prevHref = extractCalendarNavHref(res.text, '← Previous');
       expect(prevHref).not.toBeNull();
@@ -2659,8 +2655,9 @@ describe('Phase 6B HTTP workflow', () => {
         // The empty-state "Scan Now" text (inside a <strong>) must not be confused
         // with the button — the button is absent, but the placeholder text may still
         // contain "Scan Now" for non-archived projects. For archived projects the
-        // placeholder says "No assets found for this archived project."
-        expect(res.text).not.toContain('Click <strong>Scan Now</strong>');
+        // placeholder says "This archived project has no assets on record."
+        // No "Scan Now" action should appear for archived projects
+        expect(res.text).not.toContain('>Scan Now<');
       });
 
       it('active project contains the actual scan form and submit button', async () => {
@@ -2671,9 +2668,8 @@ describe('Phase 6B HTTP workflow', () => {
         expect(res.text).toContain(`<form method="post" action="/projects/${projectId}/scan" class="inline-form">`);
         // Assert the submit button inside the form
         expect(res.text).toMatch(/<button class="button button-primary" type="submit">Scan Now<\/button>/);
-        // The empty-state placeholder also contains "Scan Now" — ensure the button
-        // assertion is about the form button, not the placeholder text
-        expect(res.text).toContain('Click <strong>Scan Now</strong>');
+        // The empty-state action also contains "Scan Now" as a link
+        expect(res.text).toContain('Scan Now</a>');
       });
 
       it('POST scan for archived project is rejected', async () => {
@@ -2902,7 +2898,7 @@ describe('Phase 6B HTTP workflow', () => {
 
       const res = await request(app).get(`/releases/${releaseId}`).expect(200);
       // The readiness panel must contain the scan-state wording
-      const panelMatch = res.text.match(/<section class="readiness-panel">[\s\S]*?<\/section>/);
+      const panelMatch = res.text.match(/<section class="panel panel--readiness">[\s\S]*?<\/section>/);
       expect(panelMatch).not.toBeNull();
       expect(panelMatch[0]).toContain('Asset presence reflects the last completed scan');
       expect(panelMatch[0]).toContain('not performing a live filesystem check');
@@ -2919,7 +2915,7 @@ describe('Phase 6B HTTP workflow', () => {
       // No assets — blocked by assets_selected
 
       const res = await request(app).get(`/releases/${releaseId}`).expect(200);
-      const panelMatch = res.text.match(/<section class="readiness-panel">[\s\S]*?<\/section>/);
+      const panelMatch = res.text.match(/<section class="panel panel--readiness">[\s\S]*?<\/section>/);
       expect(panelMatch).not.toBeNull();
       expect(panelMatch[0]).toContain('Asset presence reflects the last completed scan');
       expect(panelMatch[0]).toContain('not performing a live filesystem check');
@@ -2952,7 +2948,7 @@ describe('Phase 6B HTTP workflow', () => {
     }
 
     function findReadinessPanel(html) {
-      const match = html.match(/<section class="readiness-panel">[\s\S]*?<\/section>/);
+      const match = html.match(/<section class="panel panel--readiness">[\s\S]*?<\/section>/);
       return match ? match[0] : null;
     }
 

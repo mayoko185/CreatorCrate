@@ -1,10 +1,10 @@
 {% extends "layout.njk" %}
+{% import "partials/page-heading.njk" as pageHeading %}
 
 {% block content %}
-  <div class="page-header">
-    <h1>Projects</h1>
+  {% call pageHeading.render("Projects", "Browse active and archived project records.") %}
     <a class="button button-primary" href="/projects/new">New Project</a>
-  </div>
+  {% endcall %}
 
   <form class="filters" method="get" action="/projects">
     <div class="field">
@@ -29,43 +29,49 @@
           <option value="{{ opt }}" {% if query.sort == opt or (not query.sort and opt == 'updated') %}selected{% endif %}>{{ opt | replace('-', ' ') | title }}</option>
         {% endfor %}
       </select>
-      <select name="order">
+    </div>
+
+    <div class="field">
+      <label for="order">Sort order</label>
+      <select id="order" name="order">
         <option value="desc" {% if query.order != 'asc' %}selected{% endif %}>Desc</option>
         <option value="asc" {% if query.order == 'asc' %}selected{% endif %}>Asc</option>
       </select>
     </div>
 
     <button class="button" type="submit">Filter</button>
-    <a class="button button-secondary" href="/projects">Clear</a>
+    <a class="button button-secondary" href="{{ resetFiltersUrl }}">Reset Filters</a>
   </form>
 
   <p class="results-meta">{{ total }} project{% if total != 1 %}s{% endif %} found</p>
 
   {% if projects.length > 0 %}
-    <table class="project-table">
-      <thead>
-        <tr>
-          <th>Title</th>
-          <th>Status</th>
-          <th>Priority</th>
-          <th>Updated</th>
-          <th>Planned</th>
-          <th>Published</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for project in projects %}
+    <div class="table-scroll">
+      <table class="data-table">
+        <thead>
           <tr>
-            <td><a href="/projects/{{ project.id }}">{{ project.title }}</a></td>
-            <td>{{ project.status | replace('-', ' ') | title }}</td>
-            <td>{{ project.priority | title }}</td>
-            <td>{{ project.updated_at }}</td>
-            <td>{{ project.planned_date or '—' }}</td>
-            <td>{{ project.published_date or '—' }}</td>
+            <th>Title</th>
+            <th>Status</th>
+            <th>Priority</th>
+            <th>Updated</th>
+            <th>Planned</th>
+            <th>Published</th>
           </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {% for project in projects %}
+            <tr{% if project.archived_at %} class="archived-row"{% endif %}>
+              <td><a href="/projects/{{ project.id }}">{{ project.title }}</a></td>
+              <td>{% set status = project.status %}{% include "partials/status-badge.njk" %}</td>
+              <td>{{ project.priority | title }}</td>
+              <td>{{ project.updated_at }}</td>
+              <td>{{ project.planned_date or '—' }}</td>
+              <td>{{ project.published_date or '—' }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
 
     {% if pageCount > 1 %}
       <nav class="pagination" aria-label="Project list pages">
@@ -81,6 +87,19 @@
       </nav>
     {% endif %}
   {% else %}
-    <p class="placeholder">No projects match the current filters.</p>
+    {% if filtersActive and hasAnyProjects %}
+      {% set emptyHeading = "No projects found" %}
+      {% set emptyDescription = "No projects match the current filters." %}
+      {% set emptyActionUrl = resetFiltersUrl %}
+      {% set emptyActionLabel = "Reset Filters" %}
+      {% set emptyHeadingLevel = "h2" %}
+    {% else %}
+      {% set emptyHeading = "No projects yet" %}
+      {% set emptyDescription = "Create your first project to get started." %}
+      {% set emptyActionUrl = "/projects/new" %}
+      {% set emptyActionLabel = "New Project" %}
+      {% set emptyHeadingLevel = "h2" %}
+    {% endif %}
+    {% include "partials/empty-state.njk" %}
   {% endif %}
 {% endblock %}

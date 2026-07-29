@@ -398,6 +398,13 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
       activeScheduleFilter,
     });
 
+    // Existence check independent of filters: counts every release (including
+    // archived ones) so the list view can distinguish "no releases exist at
+    // all" from "releases exist but the current filters return zero".
+    // One fixed COUNT(*) query — does not vary with pagination or per-row work.
+    // Mirrors the project list's hasAnyProjects pattern.
+    const hasAnyReleases = releaseRepository.countFiltered({ includeArchived: true }) > 0;
+
     const pageCount = Math.max(1, Math.ceil(total / filters.pageSize));
     const page = Math.min(filters.page, pageCount);
     const offset = (page - 1) * filters.pageSize;
@@ -415,7 +422,7 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
     // page — no N+1 readiness queries per release.
     const enhanced = _attachReadiness(releases);
 
-    return { releases: enhanced, total, page, pageSize: filters.pageSize, pageCount, today };
+    return { releases: enhanced, total, page, pageSize: filters.pageSize, pageCount, today, hasAnyReleases };
   }
 
   /**
@@ -817,14 +824,19 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
     const thumbnailUrl = preview.urls ? preview.urls.thumbnail : null;
 
     let statusText;
+    let statusBadgeStatus;
     if (!isPresent) {
       statusText = 'Missing at last scan';
+      statusBadgeStatus = 'missing-at-last-scan';
     } else if (preview.state === 'unsupported') {
       statusText = 'Unsupported preview';
+      statusBadgeStatus = 'unsupported';
     } else if (!thumbnailUrl) {
       statusText = 'Preview unavailable';
+      statusBadgeStatus = 'unavailable';
     } else {
       statusText = 'Present at last scan';
+      statusBadgeStatus = 'present-at-last-scan';
     }
 
     return {
@@ -845,6 +857,7 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
       viewerUrl: `/projects/${asset.project_id}/assets/${asset.id}`,
       originalEligible: preview.previewable,
       statusText,
+      statusBadgeStatus,
     };
   }
 
