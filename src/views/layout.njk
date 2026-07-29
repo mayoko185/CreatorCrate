@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>{% block title %}{{ appName }}{% endblock %}</title>
+    <title>{% block title %}{{ shell.pageTitle or appName }}{% endblock %}</title>
     <style>
       :root {
         /* ── Surfaces: muted navy ── */
@@ -49,6 +49,26 @@
         /* ── Transitions ── */
         --transition-fast: 120ms ease;
         --transition-base: 200ms ease;
+
+        /* ═─ Phase 10.4B: Desktop application shell ── */
+        /* Collapsed icon rail — reserved column width. */
+        --shell-sidebar-collapsed: 64px;
+        /* Expanded width, reached on hover / keyboard focus-within. */
+        --shell-sidebar-expanded: 240px;
+        /* Compact shell header height (also the sidebar brand row height). */
+        --shell-header-height: 56px;
+        /* Shell surface + divider tokens. */
+        --shell-sidebar-bg: var(--surface);
+        --shell-sidebar-border: var(--border);
+        /* Per-nav-item hit area + icon glyph size. */
+        --shell-nav-item-height: 44px;
+        --shell-nav-icon: 24px;
+        /* Expansion / label timing (disabled under reduced motion). */
+        --shell-transition: var(--transition-base);
+        /* Stacking: sidebar sits above content; skip link above the sidebar. */
+        --shell-z-sidebar: 20;
+        --shell-z-header: 15;
+        --shell-z-skip: 30;
       }
       * { box-sizing: border-box; }
       [hidden] { display: none !important; }
@@ -59,35 +79,208 @@
         color: var(--text);
         line-height: 1.6;
       }
-      .shell {
+      /* ═══ Phase 10.4B: Desktop application shell ═══
+         Layout contract: the sidebar is a fixed icon rail reserving a
+         narrow column; on :hover or :focus-within it grows to its expanded
+         width as an OVERLAY (it is position:fixed, so the growth never enters
+         the document flow and never widens scrollWidth). The content column
+         reserves only the collapsed width, so page content never reflows or
+         jumps when the rail expands. No JavaScript drives any of this. */
+
+      /* ── Skip link (visible only on focus) ── */
+      .skip-link {
+        position: fixed;
+        top: 0;
+        left: var(--shell-sidebar-collapsed);
+        z-index: var(--shell-z-skip);
+        transform: translateY(-150%);
+        padding: var(--space-sm) var(--space-lg);
+        background: var(--accent);
+        color: var(--bg);
+        font-weight: 600;
+        text-decoration: none;
+        border-radius: 0 0 var(--radius-md) var(--radius-md);
+        transition: transform var(--shell-transition);
+      }
+      .skip-link:focus {
+        transform: translateY(0);
+      }
+
+      .app-shell {
+        min-height: 100vh;
+      }
+
+      /* ── Sidebar: persistent icon rail ── */
+      .app-sidebar {
+        position: fixed;
+        top: 0;
+        right: auto;
+        bottom: 0;
+        left: 0;
+        width: var(--shell-sidebar-collapsed);
+        background: var(--shell-sidebar-bg);
+        border-right: 1px solid var(--shell-sidebar-border);
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        z-index: var(--shell-z-sidebar);
+        transition: width var(--shell-transition);
+      }
+      /* Expansion triggers: pointer hover and keyboard focus-within. */
+      .app-sidebar:hover,
+      .app-sidebar:focus-within {
+        width: var(--shell-sidebar-expanded);
+        box-shadow: var(--shadow-lg);
+      }
+
+      /* Brand mark — aligned to the header height so the rail top reads as a
+         single bar with the header to its right. */
+      .app-sidebar-mark {
+        display: flex;
+        align-items: center;
+        gap: var(--space-sm);
+        height: var(--shell-header-height);
+        padding: 0 var(--space-md);
+        border-bottom: 1px solid var(--shell-sidebar-border);
+        flex: none;
+      }
+      .app-sidebar-mark svg {
+        width: var(--shell-nav-icon);
+        height: var(--shell-nav-icon);
+        color: var(--accent);
+        flex: none;
+      }
+      .app-sidebar-brand {
+        font-weight: 700;
+        font-size: 1rem;
+        white-space: nowrap;
+        opacity: 0;
+        width: 0;
+        overflow: hidden;
+        transition: opacity var(--shell-transition);
+      }
+      .app-sidebar:hover .app-sidebar-brand,
+      .app-sidebar:focus-within .app-sidebar-brand {
+        opacity: 1;
+        width: auto;
+      }
+
+      /* ── Primary navigation ── */
+      .app-nav {
+        flex: 1 1 auto;
+        overflow-x: hidden;
+        overflow-y: auto;
+        padding: var(--space-sm) 0;
+      }
+      .app-nav-list {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+      .app-nav-item { margin: 0; padding: 0; }
+      .app-nav-link {
+        display: flex;
+        align-items: center;
+        gap: var(--space-md);
+        height: var(--shell-nav-item-height);
+        padding: 0 var(--space-md);
+        color: var(--muted);
+        text-decoration: none;
+        white-space: nowrap;
+        position: relative;
+        transition: background var(--transition-fast), color var(--transition-fast);
+      }
+      .app-nav-link svg {
+        width: var(--shell-nav-icon);
+        height: var(--shell-nav-icon);
+        flex: none;
+      }
+      /* Accessible-name strategy: labels are always in the DOM and never
+         display:none / visibility:hidden / aria-hidden, so each link keeps
+         its text-derived accessible name in the collapsed state. They are
+         merely clipped (width:0, opacity:0, overflow:hidden) until the rail
+         expands, when they become visible again. */
+      .app-nav-label {
+        opacity: 0;
+        width: 0;
+        overflow: hidden;
+        transition: opacity var(--shell-transition);
+      }
+      .app-sidebar:hover .app-nav-label,
+      .app-sidebar:focus-within .app-nav-label {
+        opacity: 1;
+        width: auto;
+      }
+      .app-nav-link:hover {
+        background: var(--surface-hover);
+        color: var(--text);
+      }
+      .app-nav-link:focus-visible {
+        outline: 2px solid var(--focus-ring);
+        outline-offset: -2px;
+        color: var(--text);
+      }
+      /* Active item: distinguished by STRUCTURE, not color alone —
+         an accent bar (::before) plus a filled background plus full-weight
+         text. aria-current="page" is the attribute carrying this state. */
+      .app-nav-link[aria-current="page"] {
+        color: var(--text);
+        background: var(--surface-hover);
+        font-weight: 600;
+      }
+      .app-nav-link[aria-current="page"]::before {
+        content: "";
+        position: absolute;
+        left: 0;
+        top: 0;
+        bottom: 0;
+        width: 3px;
+        background: var(--accent);
+        border-radius: 0 2px 2px 0;
+      }
+
+      /* ── Main column reserves only the collapsed rail ── */
+      .app-main {
+        margin-left: var(--shell-sidebar-collapsed);
         min-height: 100vh;
         display: flex;
         flex-direction: column;
+        min-width: 0;
       }
-      header {
-        padding: 1rem 1.5rem;
-        background: var(--surface);
-        border-bottom: 1px solid var(--border);
-      }
-      .brand {
+      .app-header {
+        height: var(--shell-header-height);
         display: flex;
         align-items: center;
-        gap: 0.75rem;
-        font-weight: 700;
-        font-size: 1.25rem;
+        gap: var(--space-md);
+        padding: 0 var(--space-xl);
+        background: var(--surface);
+        border-bottom: 1px solid var(--border);
+        position: sticky;
+        top: 0;
+        z-index: var(--shell-z-header);
+        flex: none;
       }
-      .brand svg {
-        width: 1.75rem;
-        height: 1.75rem;
-        color: var(--accent);
+      .app-section-title {
+        margin: 0;
+        font-size: 1rem;
+        font-weight: 600;
+        color: var(--text);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        min-width: 0;
       }
-      main {
+      .app-main main {
         flex: 1;
         max-width: 720px;
         width: 100%;
         min-width: 0;
         margin: 0 auto;
         padding: 2rem 1.5rem;
+        outline: none;
       }
       h1 { margin-top: 0; }
       .placeholder {
@@ -563,7 +756,14 @@
         .pagination-prev,
         .pagination-next,
         .asset-viewer-breadcrumb a,
-        .asset-preview-image {
+        .asset-preview-image,
+        .app-sidebar,
+        .app-sidebar-brand,
+        .app-nav-link,
+        .app-nav-label,
+        .mobile-nav-summary,
+        .mobile-nav-link,
+        .skip-link {
           transition: none !important;
         }
       }
@@ -724,25 +924,212 @@
           margin: 0;
         }
       }
+
+      /* ═══ Phase 10.4C: Mobile application shell ═══
+         At narrow widths the desktop icon-rail is removed from layout and
+         accessibility (display:none), and a server-rendered <details>
+         disclosure provides primary navigation. No JavaScript drives
+         open/close — the native <details>/<summary> toggle handles it.
+         Both navs consume the same centralized shell.navigation model
+         (Phase 10.4A); destinations and active-state rules are never
+         duplicated.
+
+         Breakpoint contract (CSS media queries, no UA detection):
+           max-width: 1023px → mobile shell (sidebar hidden, <details> shown)
+           min-width: 1024px → desktop shell (sidebar shown, <details> hidden)
+         The two <nav aria-label="Primary"> landmarks are never simultaneously
+         exposed because display:none removes an element from both layout and
+         the accessibility tree. */
+
+      /* Default state (desktop ≥1024px): mobile disclosure is hidden. */
+      .mobile-nav { display: none; }
+
+      /* ── Summary bar (compact mobile header) ── */
+      .mobile-nav-summary {
+        display: flex;
+        align-items: center;
+        gap: var(--space-md);
+        height: var(--shell-header-height);
+        padding: 0 var(--space-lg);
+        background: var(--surface);
+        border-bottom: 1px solid var(--border);
+        cursor: pointer;
+        list-style: none;
+        transition: background var(--transition-fast);
+      }
+      /* Suppress the native disclosure triangle for a consistent indicator. */
+      .mobile-nav-summary::-webkit-details-marker { display: none; }
+      .mobile-nav-summary::marker { content: ""; }
+      .mobile-nav-summary:focus-visible {
+        outline: 2px solid var(--focus-ring);
+        outline-offset: -2px;
+      }
+
+      .mobile-nav-brand {
+        flex: none;
+        font-weight: 700;
+        font-size: 1rem;
+        white-space: nowrap;
+      }
+      /* Section title: flexible, truncates rather than overflowing. */
+      .mobile-nav-section {
+        flex: 1 1 auto;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 0.9375rem;
+        color: var(--muted);
+        text-align: right;
+      }
+      /* Menu toggle — the text "Menu" carries the accessible name; the
+         ::after glyph is purely visual and swaps on [open]. */
+      .mobile-nav-toggle {
+        flex: none;
+        font-size: 0.875rem;
+        font-weight: 600;
+        color: var(--text);
+        display: inline-flex;
+        align-items: center;
+        gap: var(--space-xs);
+        white-space: nowrap;
+      }
+      .mobile-nav-toggle::after {
+        content: "☰";
+        font-size: 1rem;
+        line-height: 1;
+      }
+      .mobile-nav[open] .mobile-nav-toggle::after { content: "✕"; }
+
+      /* ── Open panel ── */
+      .mobile-nav-primary {
+        background: var(--surface);
+        border-bottom: 1px solid var(--border);
+        box-shadow: var(--shadow-md);
+        overflow: hidden;
+      }
+      .mobile-nav-list {
+        list-style: none;
+        margin: 0;
+        padding: var(--space-sm) 0;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+      .mobile-nav-item { margin: 0; padding: 0; }
+
+      /* Touch-sized link: min-height 44px (WCAG 2.5.5 target size). */
+      .mobile-nav-link {
+        display: flex;
+        align-items: center;
+        min-height: var(--shell-nav-item-height);
+        padding: var(--space-sm) var(--space-lg);
+        color: var(--muted);
+        text-decoration: none;
+        white-space: nowrap;
+        transition: background var(--transition-fast), color var(--transition-fast);
+      }
+      .mobile-nav-link:hover {
+        background: var(--surface-hover);
+        color: var(--text);
+      }
+      .mobile-nav-link:focus-visible {
+        outline: 2px solid var(--focus-ring);
+        outline-offset: -2px;
+        color: var(--text);
+      }
+      /* Active item — structural cue matching the desktop rail: accent bar
+         (::before) plus filled background plus bold text. */
+      .mobile-nav-link[aria-current="page"] {
+        color: var(--text);
+        background: var(--surface-hover);
+        font-weight: 600;
+        position: relative;
+      }
+      .mobile-nav-link[aria-current="page"]::before {
+        content: "";
+        position: absolute;
+        left: 0;
+        top: 0;
+        bottom: 0;
+        width: 3px;
+        background: var(--accent);
+      }
+
+      /* ── Mobile shell activation (<1024px) ── */
+      @media (max-width: 1023px) {
+        /* Hide the desktop sidebar from layout + accessibility tree. */
+        .app-sidebar { display: none !important; }
+        /* Content uses the full width — no reserved rail column. */
+        .app-main { margin-left: 0; }
+        /* Desktop header is superseded by the mobile summary bar. */
+        .app-header { display: none; }
+        /* Skip-link is flush with the viewport edge (no rail to clear). */
+        .skip-link { left: 0; }
+        /* Reveal the mobile disclosure. */
+        .mobile-nav { display: block; }
+      }
     </style>
     <script type="module" src="/creatorcrate.js"></script>
   </head>
   <body class="{% block body_class %}{% endblock %}">
-    <div class="shell">
-      <header>
-        <div class="brand">
+    {% import "partials/icons.njk" as icons %}
+    <a class="skip-link" href="#main-content">Skip to content</a>
+    <div class="app-shell">
+      <aside class="app-sidebar">
+        <div class="app-sidebar-mark">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
             <circle cx="8.5" cy="8.5" r="1.5"></circle>
             <polyline points="21 15 16 10 5 21"></polyline>
           </svg>
-          {{ appName }}
+          <span class="app-sidebar-brand">{{ shell.appName or appName }}</span>
         </div>
-      </header>
-      <main>
-        {% block content %}{% endblock %}
-      </main>
-      <footer>CreatorCrate — self-hosted Patreon project organizer</footer>
+        {% if shell %}
+        <nav class="app-nav" aria-label="Primary">
+          <ul class="app-nav-list">
+            {% for item in shell.navigation %}
+              <li class="app-nav-item">
+                <a href="{{ item.href }}" class="app-nav-link" data-nav-key="{{ item.key }}"{% if item.active %} aria-current="page"{% endif %}>
+                  {{ icons.icon(item.icon) }}<span class="app-nav-label">{{ item.label }}</span>
+                </a>
+              </li>
+            {% endfor %}
+          </ul>
+        </nav>
+        {% endif %}
+      </aside>
+
+      {% if shell %}
+      <details class="mobile-nav">
+        <summary class="mobile-nav-summary">
+          <span class="mobile-nav-brand">{{ shell.appName or appName }}</span>
+          <span class="mobile-nav-section">{{ shell.activeSection or shell.appName or appName }}</span>
+          <span class="mobile-nav-toggle">Menu</span>
+        </summary>
+        <nav class="mobile-nav-primary" aria-label="Primary">
+          <ul class="mobile-nav-list">
+            {% for item in shell.navigation %}
+              <li class="mobile-nav-item">
+                <a href="{{ item.href }}" class="mobile-nav-link" data-nav-key="{{ item.key }}"{% if item.active %} aria-current="page"{% endif %}>{{ item.label }}</a>
+              </li>
+            {% endfor %}
+          </ul>
+        </nav>
+      </details>
+      {% endif %}
+
+      <div class="app-main">
+        <header class="app-header">
+          <p class="app-section-title">{{ shell.activeSection or shell.appName or appName }}</p>
+        </header>
+
+        <main id="main-content" tabindex="-1">
+          {% block content %}{% endblock %}
+        </main>
+
+        <footer>CreatorCrate — self-hosted Patreon project organizer</footer>
+      </div>
     </div>
   </body>
 </html>

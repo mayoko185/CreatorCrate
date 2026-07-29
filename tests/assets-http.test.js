@@ -1395,7 +1395,10 @@ describe('asset browser HTTP workflow', () => {
     expect(res.text).toContain('Present at last scan');
     expect(res.text).toContain('<dl class="detail-list asset-metadata">');
     expect(anchorText(res.text, 'asset-viewer-back')).toBe('Back to Assets');
-    expect(res.text).not.toContain('tabindex=');
+    // The shell <main> carries tabindex="-1" so the skip link can move focus
+    // into the content region (WCAG technique G1). The viewer baseline instead
+    // guarantees its own navigation links never reorder focus with tabindex.
+    expect(res.text).not.toMatch(/<a\b[^>]*\btabindex=/);
 
     const projectIndex = res.text.indexOf('asset-viewer-project');
     const backIndex = res.text.indexOf('asset-viewer-back');

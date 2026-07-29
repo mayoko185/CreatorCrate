@@ -15,6 +15,7 @@ import { createWorkflowQueryService } from './services/workflow-query-service.js
 import { evaluateReleaseReadiness } from './services/release-readiness-policy.js';
 import { createPreviewService } from './services/preview-service.js';
 import { createMediaService } from './services/media-service.js';
+import { buildShellModel } from './shell/navigation.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -65,6 +66,15 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   app.locals.previewService = previewService;
   app.locals.mediaService = mediaService;
 
+  // Phase 10.4A: shared application-shell context. Computed once per request
+  // from req.path so every rendered page — and the centralized error handler
+  // — receives one navigation model with correct active states. Individual
+  // routes never assemble the navigation array themselves.
+  app.use((req, res, next) => {
+    res.locals.shell = buildShellModel({ appName, path: req.path });
+    next();
+  });
+
   app.use('/', createIndexRouter({ appName, workflowQueryService }));
   app.use('/health', createHealthRouter({ db }));
   app.use('/projects', createProjectsRouter({ appName, projectService, workflowQueryService }));
@@ -111,9 +121,12 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     res.status(status);
 
     if (req.accepts('html')) {
+      // Controlled error / not-found pages render with no active nav item so
+      // a missing record never highlights a section the request never reached.
       res.render('error.njk', {
         status,
         message: isClientError ? err.message : 'Something went wrong.',
+        shell: buildShellModel({ appName, path: req.path, noActive: true }),
       });
       return;
     }

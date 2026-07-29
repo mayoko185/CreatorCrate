@@ -1,0 +1,25 @@
+{#
+  Icon contract (Phase 10.4A).
+
+  Inline SVG keyed by a fixed name. The `name` argument is compared to
+  literals only — it is never interpolated into the markup — so no
+  user-controlled value can ever enter the SVG. Unknown names match no
+  branch and render nothing (safe fallback).
+
+  Every icon is decorative: each SVG carries aria-hidden="true" and
+  focusable="false". The visible label always travels with the icon, so the
+  icon needs no accessible name of its own.
+
+  No external CDN, no remote font. These are local static inline SVGs.
+  Styling is intentionally minimal here; full icon/sidebar styling arrives
+  in a later phase.
+#}
+{% macro icon(name) -%}
+{%- if name == 'dashboard' -%}
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+{%- elif name == 'projects' -%}
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+{%- elif name == 'releases' -%}
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 9h18M8 2v4M16 2v4"/></svg>
+{%- endif -%}
+{%- endmacro %}
