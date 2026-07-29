@@ -29,14 +29,17 @@ import { createApp } from '../src/app.js';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { STATUS_DIR_MAP } from '../src/storage/project-storage.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
+import { authenticate, AUTH_CONFIG } from './helpers/auth.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 const APP_NAME = 'CreatorCrate';
+const STYLESHEET_PATH = fileURLToPath(new URL('../src/static/creatorcrate.css', import.meta.url));
+const SERVED_CSS = fs.readFileSync(STYLESHEET_PATH, 'utf8');
 
-/** Extract the contents of the first served <style>...</style> block. */
+/** Return the served local stylesheet linked by the rendered page. */
 function extractStyle(html) {
-  const m = html.match(/<style>([\s\S]*?)<\/style>/);
-  return m ? m[1] : '';
+  expect(html).toContain('<link rel="stylesheet" href="/creatorcrate.css">');
+  return SERVED_CSS;
 }
 
 /** Match a positive tabindex value (1, 2, 3, ...). Excludes 0 and -1. */
@@ -80,6 +83,8 @@ function anchorSequence(html) {
 describe('Phase 10.6A: keyboard and focus-state hardening', () => {
   let db;
   let app;
+  let agent;
+  let csrfToken;
   let tmpDir;
   let projectsRoot;
   let projectId;
@@ -96,14 +101,16 @@ describe('Phase 10.6A: keyboard and focus-state hardening', () => {
     const dbPath = path.join(tmpDir, 'test.db');
     db = openDatabase(dbPath);
     runMigrations(db, MIGRATIONS_DIR);
-    app = createApp({ appName: APP_NAME, db, projectsRoot });
+    app = createApp({ appName: APP_NAME, db, projectsRoot }, { authConfig: AUTH_CONFIG });
 
-    const projRes = await request(app)
+    const auth = await authenticate(app);
+    agent = auth.agent;
+    csrfToken = auth.csrfToken;
+
+    const projRes = await agent
       .post('/projects')
-      .send('title=Keyboard+Test+Project')
-      .send('status=tbd')
-      .send('priority=normal')
-      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .type('form')
+      .send({ title: 'Keyboard Test Project', status: 'tbd', priority: 'normal', _csrf: csrfToken })
       .expect(302);
     projectId = projRes.headers.location.replace('/projects/', '');
 
@@ -114,18 +121,16 @@ describe('Phase 10.6A: keyboard and focus-state hardening', () => {
     const projectDir = path.join(projectsRoot, 'tbd', dirName);
     fs.writeFileSync(path.join(projectDir, 'alpha.png'), Buffer.from('png'));
     fs.writeFileSync(path.join(projectDir, 'beta.png'), Buffer.from('png2'));
-    await request(app).post(`/projects/${projectId}/scan`).expect(302);
+    await agent.post(`/projects/${projectId}/scan`).type('form').send({ _csrf: csrfToken }).expect(302);
     const assetRepo = createAssetRepository(db);
     assetIds = assetRepo
       .findByProjectId(Number(projectId))
       .map((a) => String(a.id));
 
-    const relRes = await request(app)
+    const relRes = await agent
       .post('/releases')
-      .send(`projectId=${projectId}`)
-      .send('title=Keyboard+Test+Release')
-      .send('status=idea')
-      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .type('form')
+      .send({ projectId, title: 'Keyboard Test Release', status: 'idea', _csrf: csrfToken })
       .expect(302);
     releaseLocation = relRes.headers.location;
   });
@@ -155,14 +160,14 @@ describe('Phase 10.6A: keyboard and focus-state hardening', () => {
         `${releaseLocation}/publish`,
       ];
       for (const url of pages) {
-        const res = await request(app).get(url);
+        const res = await agent.get(url);
         const offenders = positiveTabindexMatches(res.text);
         expect(offenders, `${url}: ${offenders.join(', ')}`).toEqual([]);
       }
     });
 
     it('scrollable regions carry tabindex="0" and a name (not positive)', async () => {
-      const res = await request(app).get('/releases').expect(200);
+      const res = await agent.get('/releases').expect(200);
       // The release list table is an intrinsically wide scroll region.
       expect(res.text).toMatch(
         /<div class="table-scroll" tabindex="0" aria-label="Release list">/,
@@ -181,7 +186,7 @@ describe('Phase 10.6A: keyboard and focus-state hardening', () => {
         `/projects/${projectId}/assets/${assetIds[0]}`,
       ];
       for (const url of pages) {
-        const res = await request(app).get(url).expect(200);
+        const res = await agent.get(url).expect(200);
         const offenders = hiddenFocusableOffenders(res.text);
         expect(offenders, `${url}: ${offenders.join(' | ')}`).toEqual([]);
       }
@@ -191,12 +196,12 @@ describe('Phase 10.6A: keyboard and focus-state hardening', () => {
   // ── §3: Skip-link target and main focus contract ────────────────────
   describe('skip-link and main target', () => {
     it('main carries tabindex="-1" (programmatic focus target)', async () => {
-      const res = await request(app).get('/').expect(200);
+      const res = await agent.get('/').expect(200);
       expect(res.text).toContain('<main id="main-content" tabindex="-1">');
     });
 
     it('the skip link is the first anchor in the document', async () => {
-      const res = await request(app).get('/').expect(200);
+      const res = await agent.get('/').expect(200);
       const links = anchorSequence(res.text);
       expect(links.length).toBeGreaterThan(0);
       expect(links[0].cls).toContain('skip-link');
@@ -204,7 +209,7 @@ describe('Phase 10.6A: keyboard and focus-state hardening', () => {
     });
 
     it('there is exactly one element with id main-content', async () => {
-      const res = await request(app).get('/').expect(200);
+      const res = await agent.get('/').expect(200);
       const count = (res.text.match(/id="main-content"/g) || []).length;
       expect(count).toBe(1);
     });
@@ -215,7 +220,7 @@ describe('Phase 10.6A: keyboard and focus-state hardening', () => {
     let css;
 
     beforeEach(async () => {
-      css = extractStyle((await request(app).get('/').expect(200)).text);
+      css = extractStyle((await agent.get('/').expect(200)).text);
     });
 
     // Selectors that MUST carry a :focus-visible rule somewhere in the CSS.
@@ -254,7 +259,7 @@ describe('Phase 10.6A: keyboard and focus-state hardening', () => {
     let css;
 
     beforeEach(async () => {
-      css = extractStyle((await request(app).get('/').expect(200)).text);
+      css = extractStyle((await agent.get('/').expect(200)).text);
     });
 
     const wrappers = ['.table-scroll', '.board-scroll', '.calendar-scroll'];
@@ -279,7 +284,7 @@ describe('Phase 10.6A: keyboard and focus-state hardening', () => {
     let reduced;
 
     beforeEach(async () => {
-      const css = extractStyle((await request(app).get('/').expect(200)).text);
+      const css = extractStyle((await agent.get('/').expect(200)).text);
       const m = css.match(
         /@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{([\s\S]*?)\n\s*\}/,
       );
@@ -314,12 +319,10 @@ describe('Phase 10.6A: keyboard and focus-state hardening', () => {
   // ── §6: Form label/error associations ───────────────────────────────
   describe('form label and error associations', () => {
     it('invalid fields get aria-invalid and aria-describedby on re-render', async () => {
-      const res = await request(app)
+      const res = await agent
         .post('/projects')
-        .send('title=')
-        .send('status=invalid')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .type('form')
+        .send({ title: '', status: 'invalid', priority: 'normal', _csrf: csrfToken })
         .expect(422);
 
       const html = res.text;
@@ -332,12 +335,10 @@ describe('Phase 10.6A: keyboard and focus-state hardening', () => {
     });
 
     it('submitted values are preserved on validation failure', async () => {
-      const res = await request(app)
+      const res = await agent
         .post('/projects')
-        .send('title=Preserved+Title')
-        .send('status=invalid')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .type('form')
+        .send({ title: 'Preserved Title', status: 'invalid', priority: 'normal', _csrf: csrfToken })
         .expect(422);
 
       // The title the user typed must survive the round-trip.
@@ -347,7 +348,7 @@ describe('Phase 10.6A: keyboard and focus-state hardening', () => {
     });
 
     it('every visible label has a matching control id', async () => {
-      const res = await request(app).get('/projects/new').expect(200);
+      const res = await agent.get('/projects/new').expect(200);
       const labels = res.text.match(/<label[^>]*for="([^"]+)"[^>]*>/g) || [];
       expect(labels.length).toBeGreaterThan(0);
       for (const label of labels) {
@@ -361,8 +362,7 @@ describe('Phase 10.6A: keyboard and focus-state hardening', () => {
   describe('asset viewer focus order', () => {
     it('breadcrumb links precede heading-action links in DOM order', async () => {
       // Visit the second asset so a "Previous" action is present.
-      const res = await request(app)
-        .get(`/projects/${projectId}/assets/${assetIds[1]}`)
+      const res = await agent.get(`/projects/${projectId}/assets/${assetIds[1]}`)
         .expect(200);
 
       const seq = anchorSequence(res.text);
@@ -379,8 +379,7 @@ describe('Phase 10.6A: keyboard and focus-state hardening', () => {
     });
 
     it('breadcrumb project link precedes the back link', async () => {
-      const res = await request(app)
-        .get(`/projects/${projectId}/assets/${assetIds[0]}`)
+      const res = await agent.get(`/projects/${projectId}/assets/${assetIds[0]}`)
         .expect(200);
 
       const seq = anchorSequence(res.text);
@@ -397,8 +396,7 @@ describe('Phase 10.6A: keyboard and focus-state hardening', () => {
 
     it('unavailable viewer actions are absent (not fake-disabled links)', async () => {
       // The first asset has no Previous; the link must be omitted entirely.
-      const res = await request(app)
-        .get(`/projects/${projectId}/assets/${assetIds[0]}`)
+      const res = await agent.get(`/projects/${projectId}/assets/${assetIds[0]}`)
         .expect(200);
       expect(res.text).not.toMatch(/class="[^"]*asset-viewer-prev"/);
     });
@@ -407,7 +405,7 @@ describe('Phase 10.6A: keyboard and focus-state hardening', () => {
   // ── §4/§5: Sidebar and mobile-nav keyboard behavior (CSS contracts) ─
   describe('sidebar keyboard expansion', () => {
     it('sidebar expands on :focus-within with an accessible focus ring', async () => {
-      const css = extractStyle((await request(app).get('/').expect(200)).text);
+      const css = extractStyle((await agent.get('/').expect(200)).text);
       expect(css).toMatch(
         /\.app-sidebar:focus-within[\s\S]*?width:\s*var\(--shell-sidebar-expanded\)/,
       );
@@ -415,7 +413,7 @@ describe('Phase 10.6A: keyboard and focus-state hardening', () => {
     });
 
     it('no inline keyboard/focus handlers drive sidebar expansion', async () => {
-      const res = await request(app).get('/').expect(200);
+      const res = await agent.get('/').expect(200);
       const aside = res.text.match(
         /<aside class="app-sidebar"[\s\S]*?<\/aside>/,
       );

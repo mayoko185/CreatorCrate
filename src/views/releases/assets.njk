@@ -84,8 +84,9 @@
                 <td>
                   {% if not readOnly %}
                     <form method="post" action="/releases/{{ release.id }}/assets/{{ ra.asset_id }}/role" class="inline-form">
+                      <input type="hidden" name="_csrf" value="{{ _csrf }}">
                       <label for="role-{{ ra.asset_id }}" class="sr-only">Role for {{ ra.filename }}</label>
-                      <select id="role-{{ ra.asset_id }}" name="role" onchange="this.form.submit()">
+                      <select id="role-{{ ra.asset_id }}" name="role" data-autosubmit>
                         {% for role in roles %}
                           <option value="{{ role }}" {% if ra.role == role %}selected{% endif %}>{{ role | title }}</option>
                         {% endfor %}
@@ -109,9 +110,11 @@
                   <td>
                     <div class="row-actions release-asset-actions">
                       <form method="post" action="/releases/{{ release.id }}/assets/{{ ra.asset_id }}/remove-selected" class="inline-form">
+                        <input type="hidden" name="_csrf" value="{{ _csrf }}">
                         <button class="button button-small button-danger" type="submit" aria-label="Remove {{ ra.filename }}">Remove</button>
                       </form>
                       <form method="post" action="/releases/{{ release.id }}/assets/{{ ra.asset_id }}/move-up" class="inline-form">
+                        <input type="hidden" name="_csrf" value="{{ _csrf }}">
                         {% if loop.first %}
                           <button class="button button-small" type="submit" disabled aria-label="Move {{ ra.filename }} up (disabled — already first)" title="This asset is already first in the list">Up</button>
                         {% else %}
@@ -119,6 +122,7 @@
                         {% endif %}
                       </form>
                       <form method="post" action="/releases/{{ release.id }}/assets/{{ ra.asset_id }}/move-down" class="inline-form">
+                        <input type="hidden" name="_csrf" value="{{ _csrf }}">
                         {% if loop.last %}
                           <button class="button button-small" type="submit" disabled aria-label="Move {{ ra.filename }} down (disabled — already last)" title="This asset is already last in the list">Down</button>
                         {% else %}
@@ -204,6 +208,7 @@
                 {% if not readOnly %}
                   <td>
                     <form method="post" action="/releases/{{ release.id }}/assets/add" class="inline-form">
+                      <input type="hidden" name="_csrf" value="{{ _csrf }}">
                       <input type="hidden" name="assetId" value="{{ asset.id }}">
                       <button class="button button-small" type="submit" aria-label="Add {{ asset.filename }}">Add</button>
                     </form>
@@ -242,6 +247,7 @@
     <p class="results-meta">{{ assets.length }} asset{% if assets.length != 1 %}s{% endif %} in project</p>
 
     <form method="post" action="/releases/{{ release.id }}/assets" class="release-assets-form">
+      <input type="hidden" name="_csrf" value="{{ _csrf }}">
       <p id="bulk-selection-help" class="help-text">Select assets, then adjust each selected asset's role and order before saving.</p>
       <div class="table-scroll" tabindex="0" aria-label="Bulk asset selection">
         <table class="data-table">

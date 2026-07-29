@@ -31,14 +31,17 @@ import { createApp } from '../src/app.js';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { STATUS_DIR_MAP } from '../src/storage/project-storage.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
+import { authenticate, AUTH_CONFIG } from './helpers/auth.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 const APP_NAME = 'CreatorCrate';
+const STYLESHEET_PATH = fileURLToPath(new URL('../src/static/creatorcrate.css', import.meta.url));
+const SERVED_CSS = fs.readFileSync(STYLESHEET_PATH, 'utf8');
 
-/** Extract the contents of the first served <style>...</style> block. */
+/** Return the served local stylesheet linked by the rendered page. */
 function extractStyle(html) {
-  const m = html.match(/<style>([\s\S]*?)<\/style>/);
-  return m ? m[1] : '';
+  expect(html).toContain('<link rel="stylesheet" href="/creatorcrate.css">');
+  return SERVED_CSS;
 }
 
 /** hrefs of every mobile nav link, in document order. */
@@ -81,6 +84,8 @@ function countH1(html) {
 describe('application shell (Phase 10.4C) — mobile navigation', () => {
   let db;
   let app;
+  let agent;
+  let csrfToken;
   let tmpDir;
   let projectsRoot;
   let projectId;
@@ -97,14 +102,16 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
     const dbPath = path.join(tmpDir, 'test.db');
     db = openDatabase(dbPath);
     runMigrations(db, MIGRATIONS_DIR);
-    app = createApp({ appName: APP_NAME, db, projectsRoot });
+    app = createApp({ appName: APP_NAME, db, projectsRoot }, { authConfig: AUTH_CONFIG });
 
-    const projRes = await request(app)
+    const auth = await authenticate(app);
+    agent = auth.agent;
+    csrfToken = auth.csrfToken;
+
+    const projRes = await agent
       .post('/projects')
-      .send('title=Mobile+Shell+Project')
-      .send('status=tbd')
-      .send('priority=normal')
-      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .type('form')
+      .send({ title: 'Mobile Shell Project', status: 'tbd', priority: 'normal', _csrf: csrfToken })
       .expect(302);
     projectId = projRes.headers.location.replace('/projects/', '');
 
@@ -115,16 +122,14 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
       path.join(projectsRoot, 'tbd', dirName, 'cover.png'),
       Buffer.from('png'),
     );
-    await request(app).post(`/projects/${projectId}/scan`).expect(302);
+    await agent.post(`/projects/${projectId}/scan`).type('form').send({ _csrf: csrfToken }).expect(302);
     const assetRepo = createAssetRepository(db);
     assetId = String(assetRepo.findByProjectId(Number(projectId))[0].id);
 
-    const relRes = await request(app)
+    const relRes = await agent
       .post('/releases')
-      .send(`projectId=${projectId}`)
-      .send('title=Mobile+Shell+Release')
-      .send('status=idea')
-      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .type('form')
+      .send({ projectId, title: 'Mobile Shell Release', status: 'idea', _csrf: csrfToken })
       .expect(302);
     releaseLocation = relRes.headers.location;
   });
@@ -137,17 +142,17 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
   // ── §1: Mobile navigation structure ───────────────────────────────
   describe('<details>/<summary> structure', () => {
     it('renders a <details class="mobile-nav"> disclosure', async () => {
-      const res = await request(app).get('/').expect(200);
+      const res = await agent.get('/').expect(200);
       expect(res.text).toContain('<details class="mobile-nav">');
     });
 
     it('renders a <summary class="mobile-nav-summary">', async () => {
-      const res = await request(app).get('/').expect(200);
+      const res = await agent.get('/').expect(200);
       expect(res.text).toContain('<summary class="mobile-nav-summary">');
     });
 
     it('the summary has a clear accessible name (contains "Menu")', async () => {
-      const res = await request(app).get('/').expect(200);
+      const res = await agent.get('/').expect(200);
       const summaryBlock = res.text.match(
         /<summary class="mobile-nav-summary">([\s\S]*?)<\/summary>/,
       );
@@ -156,7 +161,7 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
     });
 
     it('the summary exposes the app name as a text mark', async () => {
-      const res = await request(app).get('/').expect(200);
+      const res = await agent.get('/').expect(200);
       const summaryBlock = res.text.match(
         /<summary class="mobile-nav-summary">([\s\S]*?)<\/summary>/,
       );
@@ -164,7 +169,7 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
     });
 
     it('the summary exposes the current section title', async () => {
-      const res = await request(app).get('/projects').expect(200);
+      const res = await agent.get('/projects').expect(200);
       const summaryBlock = res.text.match(
         /<summary class="mobile-nav-summary">([\s\S]*?)<\/summary>/,
       );
@@ -172,7 +177,7 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
     });
 
     it('the summary falls back to the app name when no section is active', async () => {
-      const res = await request(app).get('/projects/999999').expect(404);
+      const res = await agent.get('/projects/999999').expect(404);
       const summaryBlock = res.text.match(
         /<summary class="mobile-nav-summary">([\s\S]*?)<\/summary>/,
       );
@@ -182,19 +187,19 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
     });
 
     it('the summary is not an <h1> (no duplicate page heading)', async () => {
-      const res = await request(app).get('/').expect(200);
+      const res = await agent.get('/').expect(200);
       expect(countH1(res.text)).toBe(1);
     });
 
     it('wraps a <nav aria-label="Primary"> landmark inside the details', async () => {
-      const res = await request(app).get('/').expect(200);
+      const res = await agent.get('/').expect(200);
       expect(res.text).toContain(
         '<nav class="mobile-nav-primary" aria-label="Primary">',
       );
     });
 
     it('does not build a fake ARIA menu (no role=menu anywhere)', async () => {
-      const res = await request(app).get('/').expect(200);
+      const res = await agent.get('/').expect(200);
       expect(res.text).not.toMatch(/role="menu"/);
       expect(res.text).not.toMatch(/role="menuitem"/);
     });
@@ -203,18 +208,18 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
   // ── §1: Centralized navigation reused ─────────────────────────────
   describe('centralized navigation reused', () => {
     it('mobile nav renders the same destinations as desktop', async () => {
-      const res = await request(app).get('/').expect(200);
+      const res = await agent.get('/').expect(200);
       expect(mobileNavHrefs(res.text)).toEqual(['/', '/projects', '/releases', '/settings']);
       expect(desktopNavHrefs(res.text)).toEqual(['/', '/projects', '/releases', '/settings']);
     });
 
     it('mobile and desktop link hrefs are identical', async () => {
-      const res = await request(app).get('/').expect(200);
+      const res = await agent.get('/').expect(200);
       expect(mobileNavHrefs(res.text)).toEqual(desktopNavHrefs(res.text));
     });
 
     it('exactly four items in each nav (no duplicated routes)', async () => {
-      const res = await request(app).get('/').expect(200);
+      const res = await agent.get('/').expect(200);
       expect(mobileNavHrefs(res.text)).toHaveLength(4);
       expect(desktopNavHrefs(res.text)).toHaveLength(4);
     });
@@ -223,52 +228,50 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
   // ── §4: Active-state behavior ─────────────────────────────────────
   describe('mobile active state', () => {
     it('marks Dashboard active on /', async () => {
-      const res = await request(app).get('/').expect(200);
+      const res = await agent.get('/').expect(200);
       expect(mobileActiveKeys(res.text)).toEqual(['dashboard']);
     });
 
     it('marks Projects active on the project list', async () => {
-      const res = await request(app).get('/projects').expect(200);
+      const res = await agent.get('/projects').expect(200);
       expect(mobileActiveKeys(res.text)).toEqual(['projects']);
     });
 
     it('marks Projects active on project detail', async () => {
-      const res = await request(app).get(`/projects/${projectId}`).expect(200);
+      const res = await agent.get(`/projects/${projectId}`).expect(200);
       expect(mobileActiveKeys(res.text)).toEqual(['projects']);
     });
 
     it('marks Projects active on the asset browser', async () => {
-      const res = await request(app)
-        .get(`/projects/${projectId}/assets`)
+      const res = await agent.get(`/projects/${projectId}/assets`)
         .expect(200);
       expect(mobileActiveKeys(res.text)).toEqual(['projects']);
     });
 
     it('marks Projects active on the asset viewer', async () => {
-      const res = await request(app)
-        .get(`/projects/${projectId}/assets/${assetId}`)
+      const res = await agent.get(`/projects/${projectId}/assets/${assetId}`)
         .expect(200);
       expect(mobileActiveKeys(res.text)).toEqual(['projects']);
     });
 
     it('marks Releases active on the release list', async () => {
-      const res = await request(app).get('/releases').expect(200);
+      const res = await agent.get('/releases').expect(200);
       expect(mobileActiveKeys(res.text)).toEqual(['releases']);
     });
 
     it('marks Releases active on release detail', async () => {
-      const res = await request(app).get(releaseLocation).expect(200);
+      const res = await agent.get(releaseLocation).expect(200);
       expect(mobileActiveKeys(res.text)).toEqual(['releases']);
     });
 
     it('marks no item active on a controlled not-found', async () => {
-      const res = await request(app).get('/projects/999999').expect(404);
+      const res = await agent.get('/projects/999999').expect(404);
       expect(mobileActiveKeys(res.text)).toEqual([]);
     });
 
     it('exactly one mobile item is active on representative pages', async () => {
       for (const url of ['/', '/projects', '/releases']) {
-        const res = await request(app).get(url).expect(200);
+        const res = await agent.get(url).expect(200);
         expect(mobileActiveKeys(res.text)).toHaveLength(1);
       }
     });
@@ -276,12 +279,12 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
     it('active state is preserved under Back/Forward (server-rendered)', async () => {
       // The active state is computed server-side from req.path on every
       // request, so a Back/Forward navigation re-renders the correct item.
-      const dash = await request(app).get('/').expect(200);
+      const dash = await agent.get('/').expect(200);
       expect(mobileActiveKeys(dash.text)).toEqual(['dashboard']);
-      const proj = await request(app).get('/projects').expect(200);
+      const proj = await agent.get('/projects').expect(200);
       expect(mobileActiveKeys(proj.text)).toEqual(['projects']);
       // Re-requesting "/" (simulating Back) still marks Dashboard.
-      const dash2 = await request(app).get('/').expect(200);
+      const dash2 = await agent.get('/').expect(200);
       expect(mobileActiveKeys(dash2.text)).toEqual(['dashboard']);
     });
   });
@@ -289,39 +292,39 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
   // ── §2: Responsive shell contract — CSS visibility ────────────────
   describe('responsive CSS — breakpoint and visibility', () => {
     it('uses an exact max-width:1023px breakpoint for mobile activation', async () => {
-      const css = extractStyle((await request(app).get('/').expect(200)).text);
+      const css = extractStyle((await agent.get('/').expect(200)).text);
       expect(css).toMatch(/@media\s*\(max-width:\s*1023px\)/);
     });
 
     it('hides the mobile disclosure by default (desktop base rule)', async () => {
-      const css = extractStyle((await request(app).get('/').expect(200)).text);
+      const css = extractStyle((await agent.get('/').expect(200)).text);
       // Base rule (outside any media query) sets .mobile-nav to display:none.
       expect(css).toMatch(/\.mobile-nav\s*\{\s*display:\s*none/);
     });
 
     it('hides the desktop sidebar inside the mobile breakpoint', async () => {
-      const css = extractStyle((await request(app).get('/').expect(200)).text);
+      const css = extractStyle((await agent.get('/').expect(200)).text);
       expect(css).toMatch(
         /@media\s*\(max-width:\s*1023px\)\s*\{[\s\S]*?\.app-sidebar\s*\{[\s\S]*?display:\s*none/,
       );
     });
 
     it('removes the reserved sidebar margin inside the mobile breakpoint', async () => {
-      const css = extractStyle((await request(app).get('/').expect(200)).text);
+      const css = extractStyle((await agent.get('/').expect(200)).text);
       expect(css).toMatch(
         /@media\s*\(max-width:\s*1023px\)\s*\{[\s\S]*?\.app-main\s*\{[\s\S]*?margin-left:\s*0/,
       );
     });
 
     it('reveals the mobile disclosure inside the mobile breakpoint', async () => {
-      const css = extractStyle((await request(app).get('/').expect(200)).text);
+      const css = extractStyle((await agent.get('/').expect(200)).text);
       expect(css).toMatch(
         /@media\s*\(max-width:\s*1023px\)\s*\{[\s\S]*?\.mobile-nav\s*\{[\s\S]*?display:\s*block/,
       );
     });
 
     it('does not rely on user-agent or feature detection', async () => {
-      const css = extractStyle((await request(app).get('/').expect(200)).text);
+      const css = extractStyle((await agent.get('/').expect(200)).text);
       expect(css).not.toMatch(/user-agent/i);
     });
   });
@@ -329,7 +332,7 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
   // ── §2: Landmark exposure per breakpoint ──────────────────────────
   describe('landmark exposure per breakpoint', () => {
     it('both primary navs exist in the DOM (toggled by CSS)', async () => {
-      const res = await request(app).get('/').expect(200);
+      const res = await agent.get('/').expect(200);
       expect(res.text).toContain('<nav class="app-nav" aria-label="Primary">');
       expect(res.text).toContain(
         '<nav class="mobile-nav-primary" aria-label="Primary">',
@@ -337,7 +340,7 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
     });
 
     it('desktop sidebar uses display:none !important inside the breakpoint', async () => {
-      const css = extractStyle((await request(app).get('/').expect(200)).text);
+      const css = extractStyle((await agent.get('/').expect(200)).text);
       // !important guarantees the fixed sidebar never leaks into the mobile
       // layout or accessibility tree even if specificity rules change.
       expect(css).toMatch(
@@ -346,7 +349,7 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
     });
 
     it('mobile nav is display:none outside the breakpoint', async () => {
-      const css = extractStyle((await request(app).get('/').expect(200)).text);
+      const css = extractStyle((await agent.get('/').expect(200)).text);
       expect(css).toMatch(/\.mobile-nav\s*\{\s*display:\s*none/);
     });
   });
@@ -354,7 +357,7 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
   // ── §5: No-JavaScript navigation ──────────────────────────────────
   describe('no-JavaScript navigation', () => {
     it('the disclosure has no inline event handlers', async () => {
-      const res = await request(app).get('/').expect(200);
+      const res = await agent.get('/').expect(200);
       const detailsBlock = res.text.match(
         /<details class="mobile-nav">[\s\S]*?<\/details>/,
       );
@@ -365,7 +368,7 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
     });
 
     it('no <script> tag targets the mobile navigation', async () => {
-      const res = await request(app).get('/').expect(200);
+      const res = await agent.get('/').expect(200);
       const scripts = res.text.match(/<script[^>]*>/g) || [];
       // The only script is the asset-preview enhancer — no nav script.
       expect(scripts).toHaveLength(1);
@@ -373,21 +376,23 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
     });
 
     it('the open state uses the native [open] attribute selector', async () => {
-      const css = extractStyle((await request(app).get('/').expect(200)).text);
+      const css = extractStyle((await agent.get('/').expect(200)).text);
       expect(css).toMatch(/\.mobile-nav\[open\]/);
     });
 
     it('no hidden checkboxes drive the toggle state', async () => {
-      const res = await request(app).get('/').expect(200);
+      const res = await agent.get('/').expect(200);
       const detailsBlock = res.text.match(
         /<details class="mobile-nav">[\s\S]*?<\/details>/,
       );
       expect(detailsBlock[0]).not.toMatch(/<input[^>]*type="checkbox"/i);
-      expect(detailsBlock[0]).not.toMatch(/<input[^>]*type="hidden"/i);
+      // Hidden inputs are allowed for CSRF tokens in forms (name="_csrf").
+      // Only non-form hidden inputs would be suspicious toggle state.
+      expect(detailsBlock[0]).not.toMatch(/<input[^>]*type="hidden"(?![^>]*name="_csrf")[^>]*>/i);
     });
 
     it('mobile nav links are real <a href> anchors (native navigation)', async () => {
-      const res = await request(app).get('/').expect(200);
+      const res = await agent.get('/').expect(200);
       const hrefs = mobileNavHrefs(res.text);
       expect(hrefs.length).toBeGreaterThan(0);
       for (const href of hrefs) {
@@ -399,7 +404,7 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
   // ── §6: Responsive page containment (no-overflow contract) ────────
   describe('no-overflow contract', () => {
     it('the mobile section title can shrink (min-width:0 + overflow)', async () => {
-      const css = extractStyle((await request(app).get('/').expect(200)).text);
+      const css = extractStyle((await agent.get('/').expect(200)).text);
       const sectionRule = css.match(/\.mobile-nav-section\s*\{[\s\S]*?\}/);
       expect(sectionRule).not.toBeNull();
       expect(sectionRule[0]).toMatch(/min-width:\s*0/);
@@ -408,7 +413,7 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
     });
 
     it('the mobile breakpoint does not reserve the sidebar column', async () => {
-      const css = extractStyle((await request(app).get('/').expect(200)).text);
+      const css = extractStyle((await agent.get('/').expect(200)).text);
       // margin-left:0 on .app-main inside the breakpoint means the content
       // column uses the full viewport at 320/360/390/768 widths.
       expect(css).toMatch(
@@ -417,13 +422,13 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
     });
 
     it('the desktop sidebar margin still applies outside the breakpoint', async () => {
-      const css = extractStyle((await request(app).get('/').expect(200)).text);
+      const css = extractStyle((await agent.get('/').expect(200)).text);
       const mainRule = css.match(/\.app-main\s*\{[\s\S]*?\}/);
       expect(mainRule[0]).toMatch(/margin-left:\s*var\(--shell-sidebar-collapsed\)/);
     });
 
     it('the mobile summary has no fixed width exceeding the smallest viewport', async () => {
-      const css = extractStyle((await request(app).get('/').expect(200)).text);
+      const css = extractStyle((await agent.get('/').expect(200)).text);
       const summaryRule = css.match(/\.mobile-nav-summary\s*\{[\s\S]*?\}/);
       expect(summaryRule).not.toBeNull();
       // No explicit width on the summary — it fills the viewport by default.
@@ -439,13 +444,13 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
         `/projects/${projectId}/assets/${assetId}`,
         '/releases',
       ]) {
-        const res = await request(app).get(url);
+        const res = await agent.get(url);
         expect(countMain(res.text)).toBe(1);
       }
     });
 
     it('no horizontal scrollbar: no element wider than 320px in the shell', async () => {
-      const res = await request(app).get('/').expect(200);
+      const res = await agent.get('/').expect(200);
       // The mobile summary, section, and links use flex with min-width:0 or
       // nowrap + truncation, so nothing forces a width beyond the viewport.
       // Assert the CSS has no fixed width >= 320px on mobile shell elements.
@@ -472,26 +477,26 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
   // ── §7: Desktop regression ────────────────────────────────────────
   describe('desktop regression', () => {
     it('desktop sidebar CSS is still present', async () => {
-      const css = extractStyle((await request(app).get('/').expect(200)).text);
+      const css = extractStyle((await agent.get('/').expect(200)).text);
       expect(css).toMatch(/\.app-sidebar\s*\{[\s\S]*?position:\s*fixed/);
     });
 
     it('desktop hover expansion is unchanged', async () => {
-      const css = extractStyle((await request(app).get('/').expect(200)).text);
+      const css = extractStyle((await agent.get('/').expect(200)).text);
       expect(css).toMatch(
         /\.app-sidebar:hover[\s\S]*?width:\s*var\(--shell-sidebar-expanded\)/,
       );
     });
 
     it('desktop focus-within expansion is unchanged', async () => {
-      const css = extractStyle((await request(app).get('/').expect(200)).text);
+      const css = extractStyle((await agent.get('/').expect(200)).text);
       expect(css).toMatch(
         /\.app-sidebar:focus-within[\s\S]*?width:\s*var\(--shell-sidebar-expanded\)/,
       );
     });
 
     it('desktop active state still works', async () => {
-      const res = await request(app).get('/projects').expect(200);
+      const res = await agent.get('/projects').expect(200);
       const re = /class="app-nav-link" data-nav-key="([^"]+)" aria-current="page"/g;
       const keys = [];
       let m;
@@ -500,7 +505,7 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
     });
 
     it('the mobile nav does not affect desktop active count', async () => {
-      const res = await request(app).get('/').expect(200);
+      const res = await agent.get('/').expect(200);
       // Exactly one desktop active item, regardless of the mobile nav.
       const desktopActive = (
         res.text.match(/class="app-nav-link" data-nav-key="[^"]+" aria-current="page"/g) || []
@@ -509,7 +514,7 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
     });
 
     it('reduced-motion rules still cover the desktop shell', async () => {
-      const css = extractStyle((await request(app).get('/').expect(200)).text);
+      const css = extractStyle((await agent.get('/').expect(200)).text);
       const reduced = css.match(
         /@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{([\s\S]*?)\n\s*\}/,
       );
@@ -522,22 +527,22 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
   // ── §4: <details> visual states ───────────────────────────────────
   describe('<details> visual states', () => {
     it('defines a closed-state summary style', async () => {
-      const css = extractStyle((await request(app).get('/').expect(200)).text);
+      const css = extractStyle((await agent.get('/').expect(200)).text);
       expect(css).toMatch(/\.mobile-nav-summary\s*\{/);
     });
 
     it('defines an open-state selector via .mobile-nav[open]', async () => {
-      const css = extractStyle((await request(app).get('/').expect(200)).text);
+      const css = extractStyle((await agent.get('/').expect(200)).text);
       expect(css).toMatch(/\.mobile-nav\[open\]\s+\.mobile-nav-toggle::after/);
     });
 
     it('summary has a focus-visible indicator', async () => {
-      const css = extractStyle((await request(app).get('/').expect(200)).text);
+      const css = extractStyle((await agent.get('/').expect(200)).text);
       expect(css).toMatch(/\.mobile-nav-summary:focus-visible[\s\S]*?outline/);
     });
 
     it('active mobile link uses a structural accent bar, not color alone', async () => {
-      const css = extractStyle((await request(app).get('/').expect(200)).text);
+      const css = extractStyle((await agent.get('/').expect(200)).text);
       expect(css).toMatch(
         /\.mobile-nav-link\[aria-current="page"\]::before/,
       );
@@ -550,7 +555,7 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
     });
 
     it('links are touch-sized (min-height >= 44px)', async () => {
-      const css = extractStyle((await request(app).get('/').expect(200)).text);
+      const css = extractStyle((await agent.get('/').expect(200)).text);
       const linkRule = css.match(/\.mobile-nav-link\s*\{[\s\S]*?\}/);
       expect(linkRule).not.toBeNull();
       expect(linkRule[0]).toMatch(/min-height:\s*var\(--shell-nav-item-height\)/);
@@ -560,7 +565,7 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
     });
 
     it('the open panel has clear separation from page content', async () => {
-      const css = extractStyle((await request(app).get('/').expect(200)).text);
+      const css = extractStyle((await agent.get('/').expect(200)).text);
       const panelRule = css.match(/\.mobile-nav-primary\s*\{[\s\S]*?\}/);
       expect(panelRule).not.toBeNull();
       expect(panelRule[0]).toMatch(/border-bottom/);
@@ -571,7 +576,7 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
   // ── §8: Accessibility ─────────────────────────────────────────────
   describe('accessibility', () => {
     it('mobile nav links are a standard list of links (no menu roles)', async () => {
-      const res = await request(app).get('/').expect(200);
+      const res = await agent.get('/').expect(200);
       const navBlock = res.text.match(
         /<nav class="mobile-nav-primary"[\s\S]*?<\/nav>/,
       );
@@ -582,14 +587,14 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
     });
 
     it('the active link carries aria-current="page"', async () => {
-      const res = await request(app).get('/projects').expect(200);
+      const res = await agent.get('/projects').expect(200);
       expect(res.text).toMatch(
         /class="mobile-nav-link" data-nav-key="projects" aria-current="page"/,
       );
     });
 
     it('no icon-only unexplained control in the summary', async () => {
-      const res = await request(app).get('/').expect(200);
+      const res = await agent.get('/').expect(200);
       const summaryBlock = res.text.match(
         /<summary class="mobile-nav-summary">([\s\S]*?)<\/summary>/,
       );
@@ -598,7 +603,7 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
     });
 
     it('reduced-motion rules cover the mobile shell transitions', async () => {
-      const css = extractStyle((await request(app).get('/').expect(200)).text);
+      const css = extractStyle((await agent.get('/').expect(200)).text);
       const reduced = css.match(
         /@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{([\s\S]*?)\n\s*\}/,
       );
@@ -608,7 +613,7 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
     });
 
     it('the skip link is still present and targets #main-content', async () => {
-      const res = await request(app).get('/').expect(200);
+      const res = await agent.get('/').expect(200);
       expect(res.text).toContain('class="skip-link" href="#main-content"');
     });
   });

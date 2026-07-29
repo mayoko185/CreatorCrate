@@ -17,6 +17,7 @@ import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { createBackupService, BackupError } from '../src/services/backup-service.js';
 import { resolveBackupDir } from '../src/storage/backup-storage.js';
 import { STATUS_DIR_MAP } from '../src/storage/project-storage.js';
+import { authenticate, AUTH_CONFIG, extractCsrfToken } from './helpers/auth.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 const APP_NAME = 'CreatorCrate';
@@ -65,8 +66,10 @@ describe('settings — backup management HTTP', () => {
   let backupService;
   let maintenanceState;
   let app;
+  let agent;
+  let csrfToken;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-bkp-http-'));
     appDataRoot = path.join(tmpDir, 'app');
     fs.mkdirSync(appDataRoot, { recursive: true });
@@ -82,8 +85,12 @@ describe('settings — backup management HTTP', () => {
     maintenanceState = { active: false };
     app = createApp(
       { appName: APP_NAME, db, projectsRoot },
-      { backupService, maintenanceState, appDataRoot, databasePath, migrationsDir: MIGRATIONS_DIR }
+      { backupService, maintenanceState, appDataRoot, databasePath, migrationsDir: MIGRATIONS_DIR, authConfig: AUTH_CONFIG },
     );
+
+    const auth = await authenticate(app);
+    agent = auth.agent;
+    csrfToken = auth.csrfToken;
   });
 
   afterEach(() => {
@@ -96,18 +103,17 @@ describe('settings — backup management HTTP', () => {
 
   describe('route reachability', () => {
     it('GET /settings renders 200', async () => {
-      const res = await request(app).get('/settings').expect(200);
+      const res = await agent.get('/settings').expect(200);
       expect(res.text).toContain('Settings');
     });
 
     it('GET /settings/backups renders 200', async () => {
-      const res = await request(app).get('/settings/backups').expect(200);
+      const res = await agent.get('/settings/backups').expect(200);
       expect(res.text).toContain('Backups');
     });
 
     it('GET /settings/backups/:filename/restore returns 404 for an unknown backup', async () => {
-      await request(app)
-        .get('/settings/backups/creatorcrate-2026-01-01T000000Z.sqlite/restore')
+      await agent.get('/settings/backups/creatorcrate-2026-01-01T000000Z.sqlite/restore')
         .expect(404);
     });
   });
@@ -116,36 +122,35 @@ describe('settings — backup management HTTP', () => {
 
   describe('navigation active state', () => {
     it('Settings nav item is active on /settings', async () => {
-      const res = await request(app).get('/settings').expect(200);
+      const res = await agent.get('/settings').expect(200);
       expect(activeNavKeys(res.text)).toContain('settings');
     });
 
     it('Settings nav item is active on /settings/backups', async () => {
-      const res = await request(app).get('/settings/backups').expect(200);
+      const res = await agent.get('/settings/backups').expect(200);
       expect(activeNavKeys(res.text)).toContain('settings');
     });
 
     it('Settings nav item is active on the restore confirmation page', async () => {
       const result = await backupService.createBackup(db);
-      const res = await request(app)
-        .get(`/settings/backups/${result.filename}/restore`)
+      const res = await agent.get(`/settings/backups/${result.filename}/restore`)
         .expect(200);
       expect(activeNavKeys(res.text)).toContain('settings');
     });
 
     it('Projects and Releases are not active on settings pages', async () => {
-      const res = await request(app).get('/settings/backups').expect(200);
+      const res = await agent.get('/settings/backups').expect(200);
       expect(activeNavKeys(res.text)).not.toContain('projects');
       expect(activeNavKeys(res.text)).not.toContain('releases');
     });
 
     it('exactly one nav item is active on settings pages', async () => {
-      const res = await request(app).get('/settings/backups').expect(200);
+      const res = await agent.get('/settings/backups').expect(200);
       expect(activeNavKeys(res.text)).toHaveLength(1);
     });
 
     it('settings nav renders in the shell alongside other destinations', async () => {
-      const res = await request(app).get('/settings').expect(200);
+      const res = await agent.get('/settings').expect(200);
       expect(navHrefs(res.text)).toContain('/settings');
       expect(navHrefs(res.text)).toContain('/projects');
       expect(navHrefs(res.text)).toContain('/releases');
@@ -156,19 +161,18 @@ describe('settings — backup management HTTP', () => {
 
   describe('accessibility — single <h1>', () => {
     it('GET /settings has exactly one <h1>', async () => {
-      const res = await request(app).get('/settings').expect(200);
+      const res = await agent.get('/settings').expect(200);
       expect(countH1(res.text)).toBe(1);
     });
 
     it('GET /settings/backups has exactly one <h1>', async () => {
-      const res = await request(app).get('/settings/backups').expect(200);
+      const res = await agent.get('/settings/backups').expect(200);
       expect(countH1(res.text)).toBe(1);
     });
 
     it('restore confirmation page has exactly one <h1>', async () => {
       const result = await backupService.createBackup(db);
-      const res = await request(app)
-        .get(`/settings/backups/${result.filename}/restore`)
+      const res = await agent.get(`/settings/backups/${result.filename}/restore`)
         .expect(200);
       expect(countH1(res.text)).toBe(1);
     });
@@ -178,19 +182,19 @@ describe('settings — backup management HTTP', () => {
 
   describe('backup list', () => {
     it('shows empty state when no backups exist', async () => {
-      const res = await request(app).get('/settings/backups').expect(200);
+      const res = await agent.get('/settings/backups').expect(200);
       expect(res.text).toContain('No backups');
     });
 
     it('shows the backup filename after creation', async () => {
       const result = await backupService.createBackup(db);
-      const res = await request(app).get('/settings/backups').expect(200);
+      const res = await agent.get('/settings/backups').expect(200);
       expect(res.text).toContain(result.filename);
     });
 
     it('does not render absolute filesystem paths', async () => {
       await backupService.createBackup(db);
-      const res = await request(app).get('/settings/backups').expect(200);
+      const res = await agent.get('/settings/backups').expect(200);
       expect(res.text).not.toContain(appDataRoot);
       expect(res.text).not.toContain(databasePath);
       // No drive-letter absolute path either
@@ -198,12 +202,12 @@ describe('settings — backup management HTTP', () => {
     });
 
     it('explains that backups cover SQLite application data', async () => {
-      const res = await request(app).get('/settings/backups').expect(200);
+      const res = await agent.get('/settings/backups').expect(200);
       expect(res.text).toContain('SQLite');
     });
 
     it('states that project files are not included', async () => {
-      const res = await request(app).get('/settings/backups').expect(200);
+      const res = await agent.get('/settings/backups').expect(200);
       expect(res.text).toContain('project files');
     });
   });
@@ -212,7 +216,7 @@ describe('settings — backup management HTTP', () => {
 
   describe('POST /settings/backups — create backup', () => {
     it('creates a backup file and redirects with success notice', async () => {
-      const res = await request(app).post('/settings/backups').expect(302);
+      const res = await agent.post('/settings/backups').type('form').send({ _csrf: csrfToken }).expect(302);
       expect(res.headers.location).toBe('/settings/backups?notice=backup_created');
 
       const backupDir = resolveBackupDir(appDataRoot);
@@ -222,9 +226,8 @@ describe('settings — backup management HTTP', () => {
     });
 
     it('shows success notice on the list page after creation', async () => {
-      await request(app).post('/settings/backups').expect(302);
-      const res = await request(app)
-        .get('/settings/backups?notice=backup_created')
+      await agent.post('/settings/backups').type('form').send({ _csrf: csrfToken }).expect(302);
+      const res = await agent.get('/settings/backups?notice=backup_created')
         .expect(200);
       expect(res.text).toContain('Backup created successfully');
     });
@@ -237,9 +240,10 @@ describe('settings — backup management HTTP', () => {
       };
       const appWithStub = createApp(
         { appName: APP_NAME, db, projectsRoot },
-        { backupService: stubbedService, maintenanceState, appDataRoot, databasePath }
+        { backupService: stubbedService, maintenanceState, appDataRoot, databasePath, authConfig: AUTH_CONFIG }
       );
-      const res = await request(appWithStub).post('/settings/backups').expect(302);
+      const { agent: stubAgent, csrfToken: stubCsrf } = await authenticate(appWithStub);
+      const res = await stubAgent.post('/settings/backups').type('form').send({ _csrf: stubCsrf }).expect(302);
       expect(res.headers.location).toBe('/settings/backups?notice=backup_failed');
     });
 
@@ -251,10 +255,11 @@ describe('settings — backup management HTTP', () => {
       };
       const appWithStub = createApp(
         { appName: APP_NAME, db, projectsRoot },
-        { backupService: stubbedService, maintenanceState, appDataRoot, databasePath }
+        { backupService: stubbedService, maintenanceState, appDataRoot, databasePath, authConfig: AUTH_CONFIG }
       );
-      await request(appWithStub).post('/settings/backups').expect(302);
-      const res = await request(appWithStub)
+      const { agent: stubAgent, csrfToken: stubCsrf } = await authenticate(appWithStub);
+      await stubAgent.post('/settings/backups').type('form').send({ _csrf: stubCsrf }).expect(302);
+      const res = await stubAgent
         .get('/settings/backups?notice=backup_failed')
         .expect(200);
       expect(res.text).not.toContain('SECRET_INTERNAL_ERROR_XYZ');
@@ -269,8 +274,7 @@ describe('settings — backup management HTTP', () => {
       const backupDir = resolveBackupDir(appDataRoot);
       const before = fs.readdirSync(backupDir).sort();
 
-      await request(app)
-        .get(`/settings/backups/${result.filename}/restore`)
+      await agent.get(`/settings/backups/${result.filename}/restore`)
         .expect(200);
 
       const after = fs.readdirSync(backupDir).sort();
@@ -279,16 +283,14 @@ describe('settings — backup management HTTP', () => {
 
     it('restore confirmation shows the backup filename and metadata', async () => {
       const result = await backupService.createBackup(db);
-      const res = await request(app)
-        .get(`/settings/backups/${result.filename}/restore`)
+      const res = await agent.get(`/settings/backups/${result.filename}/restore`)
         .expect(200);
       expect(res.text).toContain(result.filename);
     });
 
     it('restore confirmation page contains a POST form and a Cancel link', async () => {
       const result = await backupService.createBackup(db);
-      const res = await request(app)
-        .get(`/settings/backups/${result.filename}/restore`)
+      const res = await agent.get(`/settings/backups/${result.filename}/restore`)
         .expect(200);
       expect(res.text).toContain('method="post"');
       expect(res.text).toContain('href="/settings/backups"');
@@ -299,8 +301,8 @@ describe('settings — backup management HTTP', () => {
 
   describe('restore POST — filename rejection', () => {
     it('redirects with failure notice for a non-existent managed filename', async () => {
-      const res = await request(app)
-        .post('/settings/backups/creatorcrate-2026-01-01T000000Z.sqlite/restore')
+      const res = await agent.post('/settings/backups/creatorcrate-2026-01-01T000000Z.sqlite/restore')
+        .type('form').send({ _csrf: csrfToken })
         .expect(302);
       expect(res.headers.location).toBe('/settings/backups?notice=restore_failed');
     });
@@ -308,8 +310,8 @@ describe('settings — backup management HTTP', () => {
     it('redirects with failure notice for an unmanaged filename pattern', async () => {
       // Express decodes %2F; the service's resolveBackupFile will reject a
       // filename that doesn't match the naming contract.
-      const res = await request(app)
-        .post('/settings/backups/definitely-not-managed.db/restore')
+      const res = await agent.post('/settings/backups/definitely-not-managed.db/restore')
+        .type('form').send({ _csrf: csrfToken })
         .expect(302);
       expect(res.headers.location).toBe('/settings/backups?notice=restore_failed');
     });
@@ -330,11 +332,14 @@ describe('settings — backup management HTTP', () => {
           appDataRoot,
           databasePath,
           onDatabaseReplaced: (newDb) => { replacedDb = newDb; },
+          authConfig: AUTH_CONFIG,
         }
       );
 
-      const res = await request(appWithReplace)
+      const { agent: replaceAgent, csrfToken: replaceCsrf } = await authenticate(appWithReplace);
+      const res = await replaceAgent
         .post(`/settings/backups/${result.filename}/restore`)
+        .type('form').send({ _csrf: replaceCsrf })
         .expect(302);
       expect(res.headers.location).toBe('/settings/backups?notice=restore_success');
       expect(replacedDb).not.toBeNull();
@@ -356,6 +361,11 @@ describe('settings — backup management HTTP', () => {
         }
       );
 
+      // Real (non-stubbed) restore swaps the live database handle; this
+      // ad hoc app instance has no app-rebuild hook to carry an
+      // authenticated session across that swap (production does this via
+      // app-context.js), so this request stays unauthenticated like the
+      // sibling restore tests below that also exercise a real restore.
       await request(appWithReplace)
         .post(`/settings/backups/${result.filename}/restore`)
         .expect(302);
@@ -378,11 +388,14 @@ describe('settings — backup management HTTP', () => {
           appDataRoot,
           databasePath,
           onDatabaseReplaced: (newDb) => { try { newDb.close(); } catch {} },
+          authConfig: AUTH_CONFIG,
         }
       );
 
-      await request(appWithClose)
+      const { agent: closeAgent, csrfToken: closeCsrf } = await authenticate(appWithClose);
+      await closeAgent
         .post(`/settings/backups/${result.filename}/restore`)
+        .type('form').send({ _csrf: closeCsrf })
         .expect(302);
 
       expect(maintenanceState.active).toBe(false);
@@ -413,11 +426,14 @@ describe('settings — backup management HTTP', () => {
           appDataRoot,
           databasePath,
           onDatabaseReplaced: (newDb) => { replacedDb = newDb; },
+          authConfig: AUTH_CONFIG,
         }
       );
 
-      const res = await request(appWithStub)
+      const { agent: stubAgent, csrfToken: stubCsrf } = await authenticate(appWithStub);
+      const res = await stubAgent
         .post(`/settings/backups/${result.filename}/restore`)
+        .type('form').send({ _csrf: stubCsrf })
         .expect(302);
       expect(res.headers.location).toBe('/settings/backups?notice=restore_failed');
       expect(replacedDb).toBe(fakeNewDb);
@@ -435,11 +451,13 @@ describe('settings — backup management HTTP', () => {
 
       const appWithStub = createApp(
         { appName: APP_NAME, db, projectsRoot },
-        { backupService: stubbedService, maintenanceState: stubbedState, appDataRoot, databasePath }
+        { backupService: stubbedService, maintenanceState: stubbedState, appDataRoot, databasePath, authConfig: AUTH_CONFIG }
       );
 
-      await request(appWithStub)
+      const { agent: stubAgent2, csrfToken: stubCsrf2 } = await authenticate(appWithStub);
+      await stubAgent2
         .post(`/settings/backups/${result.filename}/restore`)
+        .type('form').send({ _csrf: stubCsrf2 })
         .expect(302);
 
       expect(stubbedState.active).toBe(false);
@@ -457,11 +475,13 @@ describe('settings — backup management HTTP', () => {
       };
       const appWithStub = createApp(
         { appName: APP_NAME, db, projectsRoot },
-        { backupService: stubbedService, maintenanceState: { active: false }, appDataRoot, databasePath }
+        { backupService: stubbedService, maintenanceState: { active: false }, appDataRoot, databasePath, authConfig: AUTH_CONFIG }
       );
 
-      const res = await request(appWithStub)
+      const { agent: stubAgent3, csrfToken: stubCsrf3 } = await authenticate(appWithStub);
+      const res = await stubAgent3
         .post(`/settings/backups/${result.filename}/restore`)
+        .type('form').send({ _csrf: stubCsrf3 })
         .expect(302);
       expect(res.headers.location).toBe('/settings/backups?notice=restore_conflict');
     });
@@ -473,14 +493,20 @@ describe('settings — backup management HTTP', () => {
       // that the handler would produce. This is correct: the operator knows not to
       // submit a second restore when the app is already in maintenance mode.
       const result = await backupService.createBackup(db);
-      const activeState = { active: true };
+      const activeState = { active: false };
       const appWithActive = createApp(
         { appName: APP_NAME, db, projectsRoot },
-        { backupService, maintenanceState: activeState, appDataRoot, databasePath }
+        { backupService, maintenanceState: activeState, appDataRoot, databasePath, authConfig: AUTH_CONFIG }
       );
 
-      await request(appWithActive)
+      // Authenticate before maintenance goes active: the maintenance gate
+      // intercepts every non-health, non-static request (including /login),
+      // so an operator's session must already exist before the flag flips.
+      const { agent: activeAgent, csrfToken: activeCsrf } = await authenticate(appWithActive);
+      activeState.active = true;
+      await activeAgent
         .post(`/settings/backups/${result.filename}/restore`)
+        .type('form').send({ _csrf: activeCsrf })
         .expect(503);
     });
   });
@@ -493,8 +519,7 @@ describe('settings — backup management HTTP', () => {
       const backupDir = resolveBackupDir(appDataRoot);
       const before = fs.readdirSync(backupDir).sort();
 
-      await request(app)
-        .get(`/settings/backups/${result.filename}/delete`)
+      await agent.get(`/settings/backups/${result.filename}/delete`)
         .expect(200);
 
       const after = fs.readdirSync(backupDir).sort();
@@ -503,24 +528,21 @@ describe('settings — backup management HTTP', () => {
 
     it('delete confirmation shows the backup filename', async () => {
       const result = await backupService.createBackup(db);
-      const res = await request(app)
-        .get(`/settings/backups/${result.filename}/delete`)
+      const res = await agent.get(`/settings/backups/${result.filename}/delete`)
         .expect(200);
       expect(res.text).toContain(result.filename);
     });
 
     it('delete confirmation page contains a POST form and a Cancel link', async () => {
       const result = await backupService.createBackup(db);
-      const res = await request(app)
-        .get(`/settings/backups/${result.filename}/delete`)
+      const res = await agent.get(`/settings/backups/${result.filename}/delete`)
         .expect(200);
       expect(res.text).toContain('method="post"');
       expect(res.text).toContain('href="/settings/backups"');
     });
 
     it('returns 404 for an unknown backup', async () => {
-      await request(app)
-        .get('/settings/backups/creatorcrate-2026-01-01T000000Z.sqlite/delete')
+      await agent.get('/settings/backups/creatorcrate-2026-01-01T000000Z.sqlite/delete')
         .expect(404);
     });
   });
@@ -532,8 +554,8 @@ describe('settings — backup management HTTP', () => {
       const result = await backupService.createBackup(db);
       const backupDir = resolveBackupDir(appDataRoot);
 
-      const res = await request(app)
-        .post(`/settings/backups/${result.filename}/delete`)
+      const res = await agent.post(`/settings/backups/${result.filename}/delete`)
+        .type('form').send({ _csrf: csrfToken })
         .expect(302);
       expect(res.headers.location).toBe('/settings/backups?notice=backup_deleted');
       expect(fs.readdirSync(backupDir)).toEqual([]);
@@ -541,16 +563,15 @@ describe('settings — backup management HTTP', () => {
 
     it('shows success notice on the list page after deletion', async () => {
       const result = await backupService.createBackup(db);
-      await request(app).post(`/settings/backups/${result.filename}/delete`).expect(302);
-      const res = await request(app)
-        .get('/settings/backups?notice=backup_deleted')
+      await agent.post(`/settings/backups/${result.filename}/delete`).type('form').send({ _csrf: csrfToken }).expect(302);
+      const res = await agent.get('/settings/backups?notice=backup_deleted')
         .expect(200);
       expect(res.text).toContain('Backup deleted');
     });
 
     it('redirects with failure notice for a non-existent managed filename', async () => {
-      const res = await request(app)
-        .post('/settings/backups/creatorcrate-2026-01-01T000000Z.sqlite/delete')
+      const res = await agent.post('/settings/backups/creatorcrate-2026-01-01T000000Z.sqlite/delete')
+        .type('form').send({ _csrf: csrfToken })
         .expect(302);
       expect(res.headers.location).toBe('/settings/backups?notice=delete_failed');
     });
@@ -559,8 +580,8 @@ describe('settings — backup management HTTP', () => {
       const result = await backupService.createBackup(db);
       const backupDir = resolveBackupDir(appDataRoot);
 
-      const res = await request(app)
-        .post('/settings/backups/..%2F..%2Fetc%2Fpasswd/delete')
+      const res = await agent.post('/settings/backups/..%2F..%2Fetc%2Fpasswd/delete')
+        .type('form').send({ _csrf: csrfToken })
         .expect(302);
       expect(res.headers.location).toBe('/settings/backups?notice=delete_failed');
       expect(fs.readdirSync(backupDir)).toEqual([result.filename]);
@@ -571,8 +592,8 @@ describe('settings — backup management HTTP', () => {
       const stagingName = 'creatorcrate-2026-07-29T192447Z.sqlite.staging';
       fs.writeFileSync(path.join(backupDir, stagingName), 'x');
 
-      const res = await request(app)
-        .post(`/settings/backups/${stagingName}/delete`)
+      const res = await agent.post(`/settings/backups/${stagingName}/delete`)
+        .type('form').send({ _csrf: csrfToken })
         .expect(302);
       expect(res.headers.location).toBe('/settings/backups?notice=delete_failed');
       expect(fs.existsSync(path.join(backupDir, stagingName))).toBe(true);
@@ -585,12 +606,14 @@ describe('settings — backup management HTTP', () => {
       };
       const appWithStub = createApp(
         { appName: APP_NAME, db, projectsRoot },
-        { backupService: stubbedService, maintenanceState, appDataRoot, databasePath }
+        { backupService: stubbedService, maintenanceState, appDataRoot, databasePath, authConfig: AUTH_CONFIG }
       );
-      await request(appWithStub)
+      const { agent: stubAgent, csrfToken: stubCsrf } = await authenticate(appWithStub);
+      await stubAgent
         .post('/settings/backups/creatorcrate-2026-01-01T000000Z.sqlite/delete')
+        .type('form').send({ _csrf: stubCsrf })
         .expect(302);
-      const res = await request(appWithStub)
+      const res = await stubAgent
         .get('/settings/backups?notice=delete_failed')
         .expect(200);
       expect(res.text).not.toContain('SECRET_INTERNAL_ERROR_XYZ');
@@ -602,7 +625,7 @@ describe('settings — backup management HTTP', () => {
   describe('backup list delete action', () => {
     it('shows a Delete action for each listed backup', async () => {
       const result = await backupService.createBackup(db);
-      const res = await request(app).get('/settings/backups').expect(200);
+      const res = await agent.get('/settings/backups').expect(200);
       expect(res.text).toContain(`/settings/backups/${result.filename}/delete`);
     });
   });
@@ -612,19 +635,18 @@ describe('settings — backup management HTTP', () => {
   describe('maintenance 503 behavior', () => {
     it('returns 503 HTML for ordinary page requests while in maintenance', async () => {
       maintenanceState.active = true;
-      const res = await request(app).get('/projects').expect(503);
+      const res = await agent.get('/projects').expect(503);
       expect(res.text).toContain('temporarily unavailable');
     });
 
     it('returns 503 for the dashboard while in maintenance', async () => {
       maintenanceState.active = true;
-      await request(app).get('/').expect(503);
+      await agent.get('/').expect(503);
     });
 
     it('accepts non-HTML requests with 503 JSON while in maintenance', async () => {
       maintenanceState.active = true;
-      const res = await request(app)
-        .get('/projects')
+      const res = await agent.get('/projects')
         .set('Accept', 'application/json')
         .expect(503);
       expect(res.body.status).toBe('error');
@@ -636,13 +658,13 @@ describe('settings — backup management HTTP', () => {
   describe('health during maintenance', () => {
     it('reports maintenance state as 503 JSON', async () => {
       maintenanceState.active = true;
-      const res = await request(app).get('/health').expect(503);
+      const res = await agent.get('/health').expect(503);
       expect(res.body.status).toBe('maintenance');
       expect(res.body.database).toBe('unavailable');
     });
 
     it('reports ok when not in maintenance', async () => {
-      const res = await request(app).get('/health').expect(200);
+      const res = await agent.get('/health').expect(200);
       expect(res.body.status).toBe('ok');
     });
   });
@@ -664,7 +686,7 @@ describe('settings — backup management HTTP', () => {
 
   describe('no-JavaScript forms', () => {
     it('Create Backup uses a plain HTML POST form with no onclick attributes', async () => {
-      const res = await request(app).get('/settings/backups').expect(200);
+      const res = await agent.get('/settings/backups').expect(200);
       expect(res.text).toContain('method="post"');
       expect(res.text).toContain('action="/settings/backups"');
       expect(res.text).not.toContain('onclick=');
@@ -672,8 +694,7 @@ describe('settings — backup management HTTP', () => {
 
     it('Restore form uses a plain HTML POST form with no onclick attributes', async () => {
       const result = await backupService.createBackup(db);
-      const res = await request(app)
-        .get(`/settings/backups/${result.filename}/restore`)
+      const res = await agent.get(`/settings/backups/${result.filename}/restore`)
         .expect(200);
       expect(res.text).toContain('method="post"');
       expect(res.text).not.toContain('onclick=');

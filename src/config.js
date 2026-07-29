@@ -1,5 +1,7 @@
 import path from 'node:path';
 import process from 'node:process';
+import { isValidPasswordHash } from './auth/password-hash.js';
+import { credentialFilePathForRoot, validateUsername } from './auth/credential-provider.js';
 
 const DEFAULTS = {
   NODE_ENV: 'development',
@@ -11,7 +13,22 @@ const DEFAULTS = {
   // Phase 11.3: keep the 10 most recent managed backups after each
   // successful backup; set to "0" to disable automatic pruning entirely.
   BACKUP_RETENTION_COUNT: '10',
+  // Phase 12.1: fixed (non-rolling) session lifetime and default to
+  // non-HTTPS-only cookies so a bare `pnpm start` behind plain HTTP still
+  // works out of the box; operators terminating HTTPS at a reverse proxy
+  // must opt into COOKIE_SECURE=true explicitly (see docs).
+  SESSION_TTL_HOURS: '24',
+  COOKIE_SECURE: 'false',
+  TRUST_PROXY: 'false',
+  HSTS_ENABLED: 'false',
 };
+
+// Minimum entropy proxy for SESSION_SECRET: a plain byte-length floor on the
+// configured string. Not a substitute for actually generating it randomly
+// (documented as `openssl rand -hex 32` or equivalent), but it rejects
+// obviously weak/placeholder values at startup.
+const MIN_SESSION_SECRET_LENGTH = 32;
+const MAX_SESSION_TTL_HOURS = 720; // 30 days
 
 export class ConfigError extends Error {
   constructor(message) {
@@ -72,6 +89,71 @@ export function createConfig(rawEnv = process.env) {
     );
   }
 
+  // ─── Phase 12.1: single-operator authentication configuration ──────────
+  // Never accepts a plaintext password. Missing or invalid configuration
+  // fails startup — there is no documented development-only bypass.
+
+  const usernameRaw = getEnv(rawEnv, 'CREATORCRATE_USERNAME');
+  if (!usernameRaw) {
+    throw new ConfigError('CREATORCRATE_USERNAME is required.');
+  }
+  const username = usernameRaw.trim().toLowerCase();
+  if (!validateUsername(username)) {
+    throw new ConfigError(
+      'CREATORCRATE_USERNAME must be 3-64 characters of lowercase letters, digits, "_", "." or "-", ' +
+      'and must not start or end with a separator.'
+    );
+  }
+
+  const passwordHash = getEnv(rawEnv, 'CREATORCRATE_PASSWORD_HASH');
+  if (!passwordHash) {
+    throw new ConfigError('CREATORCRATE_PASSWORD_HASH is required. Generate one with "pnpm auth:hash".');
+  }
+  if (!isValidPasswordHash(passwordHash)) {
+    throw new ConfigError(
+      'CREATORCRATE_PASSWORD_HASH is not a recognized password hash. Generate one with "pnpm auth:hash".'
+    );
+  }
+
+  const sessionSecret = getEnv(rawEnv, 'SESSION_SECRET');
+  if (!sessionSecret) {
+    throw new ConfigError('SESSION_SECRET is required.');
+  }
+  if (sessionSecret.length < MIN_SESSION_SECRET_LENGTH) {
+    throw new ConfigError(`SESSION_SECRET must be at least ${MIN_SESSION_SECRET_LENGTH} characters.`);
+  }
+
+  const sessionTtlRaw = getEnv(rawEnv, 'SESSION_TTL_HOURS');
+  const sessionTtlHours = Number(sessionTtlRaw);
+  if (!Number.isInteger(sessionTtlHours) || sessionTtlHours < 1 || sessionTtlHours > MAX_SESSION_TTL_HOURS) {
+    throw new ConfigError(
+      `Invalid SESSION_TTL_HOURS "${sessionTtlRaw}". Expected an integer between 1 and ${MAX_SESSION_TTL_HOURS}.`
+    );
+  }
+
+  const cookieSecureRaw = getEnv(rawEnv, 'COOKIE_SECURE').trim().toLowerCase();
+  if (cookieSecureRaw !== 'true' && cookieSecureRaw !== 'false') {
+    throw new ConfigError(`Invalid COOKIE_SECURE "${cookieSecureRaw}". Expected "true" or "false".`);
+  }
+  // Deployments terminating HTTPS at a reverse proxy must set this to
+  // "true" explicitly; it is never inferred from forwarding headers, which
+  // are untrusted unless proxy trust is separately configured.
+  const cookieSecure = cookieSecureRaw === 'true';
+
+  const trustProxyRaw = getEnv(rawEnv, 'TRUST_PROXY').trim().toLowerCase();
+  if (trustProxyRaw !== 'true' && trustProxyRaw !== 'false') {
+    throw new ConfigError(`Invalid TRUST_PROXY "${trustProxyRaw}". Expected "true" or "false".`);
+  }
+  const trustProxy = trustProxyRaw === 'true';
+
+  const hstsEnabledRaw = getEnv(rawEnv, 'HSTS_ENABLED').trim().toLowerCase();
+  if (hstsEnabledRaw !== 'true' && hstsEnabledRaw !== 'false') {
+    throw new ConfigError(`Invalid HSTS_ENABLED "${hstsEnabledRaw}". Expected "true" or "false".`);
+  }
+  const hstsEnabled = hstsEnabledRaw === 'true';
+
+  const managedCredentialPath = credentialFilePathForRoot(appDataRoot);
+
   return Object.freeze({
     nodeEnv,
     port,
@@ -82,5 +164,15 @@ export function createConfig(rawEnv = process.env) {
     previewRoot,
     backupDir,
     backupRetentionCount,
+    auth: Object.freeze({
+      username,
+      passwordHash,
+      sessionSecret,
+      sessionTtlHours,
+      cookieSecure,
+      trustProxy,
+      hstsEnabled,
+      managedCredentialPath,
+    }),
   });
 }

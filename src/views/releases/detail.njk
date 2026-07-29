@@ -158,7 +158,8 @@
                   <td class="row-actions">
                     {% if ra.is_present == 0 %}
                       <form method="post" action="/releases/{{ release.id }}/assets/{{ ra.asset_id }}/remove" class="inline-form">
-                        <button class="button button-danger button-small" type="submit" onclick="return confirm('Remove this missing asset from the release?')">Remove</button>
+                        <input type="hidden" name="_csrf" value="{{ _csrf }}">
+                        <button class="button button-danger button-small" type="submit" data-confirm="Remove this missing asset from the release?">Remove</button>
                       </form>
                     {% endif %}
                   </td>
@@ -277,7 +278,8 @@
       <h3>Danger zone</h3>
       <p>Archiving a release makes it read-only. This cannot be undone.</p>
       <form method="post" action="/releases/{{ release.id }}/archive" class="inline-form">
-        <button class="button button-danger" type="submit" onclick="return confirm('Archive this release? This cannot be undone.')">Archive release</button>
+        <input type="hidden" name="_csrf" value="{{ _csrf }}">
+        <button class="button button-danger" type="submit" data-confirm="Archive this release? This cannot be undone.">Archive release</button>
       </form>
     </section>
   {% endif %}

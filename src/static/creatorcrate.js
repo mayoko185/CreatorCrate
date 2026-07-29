@@ -77,8 +77,41 @@ export function enhancePreviewMedia(scope = globalThis.document) {
   return roots.length;
 }
 
+export function enhanceAutoSubmit(scope = globalThis.document) {
+  if (!scope || typeof scope.querySelectorAll !== 'function') return 0;
+  const controls = scope.querySelectorAll('[data-autosubmit]');
+  controls.forEach((control) => {
+    control.addEventListener('change', () => {
+      if (control.form && typeof control.form.requestSubmit === 'function') {
+        control.form.requestSubmit();
+      } else if (control.form) {
+        control.form.submit();
+      }
+    });
+  });
+  return controls.length;
+}
+
+export function enhanceConfirmations(scope = globalThis.document) {
+  if (!scope || typeof scope.querySelectorAll !== 'function') return 0;
+  const controls = scope.querySelectorAll('[data-confirm]');
+  controls.forEach((control) => {
+    control.addEventListener('click', (event) => {
+      const message = control.getAttribute('data-confirm');
+      if (message && !globalThis.confirm(message)) {
+        event.preventDefault();
+      }
+    });
+  });
+  return controls.length;
+}
+
 if (typeof document !== 'undefined') {
-  const run = () => enhancePreviewMedia(document);
+  const run = () => {
+    enhancePreviewMedia(document);
+    enhanceAutoSubmit(document);
+    enhanceConfirmations(document);
+  };
 
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', run, { once: true });

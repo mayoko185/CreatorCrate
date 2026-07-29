@@ -12,7 +12,9 @@
     "dev": "node --watch src/server.js",
     "test": "vitest run",
     "test:watch": "vitest",
-    "check": "pnpm test"
+    "check": "pnpm test",
+    "auth:hash": "node scripts/hash-password.js",
+    "auth:reset-managed": "node scripts/reset-managed-credential.js"
   },
   "dependencies": {
     "@sindresorhus/slugify": "^2.2.1",

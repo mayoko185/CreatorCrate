@@ -29,16 +29,18 @@ import { STATUS_DIR_MAP } from '../src/storage/project-storage.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 const VIEWS_DIR = fileURLToPath(new URL('../src/views', import.meta.url));
+const STYLESHEET_PATH = fileURLToPath(new URL('../src/static/creatorcrate.css', import.meta.url));
+const SERVED_CSS = fs.readFileSync(STYLESHEET_PATH, 'utf8');
 
 function renderPartial(templateName, context = {}) {
   const env = nunjucks.configure(VIEWS_DIR, { autoescape: true, noCache: true });
   return env.render(templateName, context);
 }
 
-/** Extract the contents of the first served <style>...</style> block. */
+/** Return the served local stylesheet linked by the rendered page. */
 function extractStyle(html) {
-  const m = html.match(/<style>([\s\S]*?)<\/style>/);
-  return m ? m[1] : '';
+  expect(html).toContain('<link rel="stylesheet" href="/creatorcrate.css">');
+  return SERVED_CSS;
 }
 
 function listProductionTemplates(dir = VIEWS_DIR) {
@@ -296,6 +298,10 @@ describe('Phase 10.5A: Shared page-level components', () => {
 
   describe('table responsiveness', () => {
     it('project list table uses data-table and table-scroll', async () => {
+      db.prepare(
+        `INSERT INTO projects (title, slug, description, notes, status, priority, planned_date, published_date, patreon_url)
+         VALUES (?, ?, '', '', 'tbd', 'normal', NULL, NULL, NULL)`
+      ).run('Table Test', 'table-test');
       const res = await request(app).get('/projects').expect(200);
       expect(res.text).toContain('data-table');
       expect(res.text).toContain('table-scroll');

@@ -1,0 +1,33 @@
+{% extends "layout.njk" %}
+
+{% block title %}Log in — {{ appName }}{% endblock %}
+
+{% block content %}
+  <h1>Log in</h1>
+
+  {% if notice %}
+    {% set noticeVariant = notice.variant %}
+    {% set noticeText = notice.text %}
+    {% include "partials/notice.njk" %}
+  {% endif %}
+
+  {% if error %}
+    <div class="notice notice--danger"><p>{{ error }}</p></div>
+  {% endif %}
+
+  <form method="post" action="/login" class="project-form">
+    <input type="hidden" name="_csrf" value="{{ _csrf }}">
+    {% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}
+    <div class="field">
+      <label for="username">Username</label>
+      <input type="text" id="username" name="username" autocomplete="username" required{% if retainedUsername %} value="{{ retainedUsername }}"{% endif %}{% if not error %} autofocus{% endif %}>
+    </div>
+    <div class="field">
+      <label for="password">Password</label>
+      <input type="password" id="password" name="password" autocomplete="current-password" required{% if error %} autofocus{% endif %}>
+    </div>
+    <div class="form-actions">
+      <button type="submit" class="button button-primary">Log in</button>
+    </div>
+  </form>
+{% endblock %}

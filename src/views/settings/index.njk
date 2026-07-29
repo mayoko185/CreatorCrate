@@ -11,5 +11,11 @@
       <span class="summary-card-label">Backups</span>
       <span class="summary-card-context">Create and restore SQLite database backups.</span>
     </a>
+    {% if auth and auth.enabled %}
+      <a class="summary-card" href="/settings/security">
+        <span class="summary-card-label">Security</span>
+        <span class="summary-card-context">Rotate the operator password and revoke sessions.</span>
+      </a>
+    {% endif %}
   </nav>
 {% endblock %}

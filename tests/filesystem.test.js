@@ -4,6 +4,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { createConfig } from '../src/config.js';
 import { validateMounts, FilesystemError } from '../src/filesystem.js';
+import { hashPassword } from '../src/auth/password-hash.js';
+
+const TEST_PASSWORD_HASH = hashPassword('CorrectHorseBatteryStaple');
 
 function makeConfig(tmpDir, overrides = {}) {
   const appRoot = path.join(tmpDir, 'app');
@@ -13,6 +16,9 @@ function makeConfig(tmpDir, overrides = {}) {
     APP_DATA_ROOT: appRoot,
     PROJECTS_ROOT: projectsRoot,
     DATABASE_PATH: path.join(dbDir, 'creatorcrate.db'),
+    CREATORCRATE_USERNAME: 'admin',
+    CREATORCRATE_PASSWORD_HASH: TEST_PASSWORD_HASH,
+    SESSION_SECRET: 'a'.repeat(32),
     ...overrides,
   });
 }

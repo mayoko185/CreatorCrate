@@ -10,6 +10,7 @@ import { openDatabase, runMigrations, closeDatabase, DatabaseError } from './db.
 import { createProjectService } from './services/project-service.js';
 import { createBackupService } from './services/backup-service.js';
 import { createApplicationContext } from './app-context.js';
+import { createManagedCredentialProvider, CredentialError } from './auth/credential-provider.js';
 
 async function main() {
   let config;
@@ -93,6 +94,22 @@ async function main() {
     retentionCount: config.backupRetentionCount,
   });
 
+  let credentialProvider;
+  try {
+    credentialProvider = createManagedCredentialProvider({
+      appDataRoot: config.appDataRoot,
+      bootstrapUsername: config.auth.username,
+      bootstrapPasswordHash: config.auth.passwordHash,
+    });
+  } catch (err) {
+    if (err instanceof CredentialError) {
+      closeDatabase(db);
+      console.error(`Credential error: ${err.message}`);
+      process.exit(1);
+    }
+    throw err;
+  }
+
   // Phase 11.2 (fixed): the application context owns the currently active
   // `db` and the Express app built from it. A live restore rebuilds every
   // db-bound repository/service/route against the restored connection and
@@ -108,6 +125,8 @@ async function main() {
       migrationsDir,
       backupService,
       maintenanceState,
+      authConfig: { ...config.auth, credentialProvider },
+      credentialProvider,
     },
   }, db);
 

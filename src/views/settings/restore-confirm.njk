@@ -34,6 +34,7 @@
     <p>Media files and project files stored under <code>PROJECTS_ROOT</code> will <strong>not</strong> be changed.</p>
     <p>During the restore, the application will be briefly unavailable to other requests. This action cannot be undone.</p>
     <form method="post" action="/settings/backups/{{ backup.filename }}/restore">
+      <input type="hidden" name="_csrf" value="{{ _csrf }}">
       <div class="form-actions">
         <button type="submit" class="button button-danger">Restore Database</button>
         <a class="button button-secondary" href="/settings/backups">Cancel</a>

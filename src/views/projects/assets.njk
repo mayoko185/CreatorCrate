@@ -14,6 +14,7 @@
     {% call pageHeading.render(assetsHeading, assetsHeadingDescription) %}
     {% if not project.archived_at %}
       <form method="post" action="/projects/{{ project.id }}/scan" class="inline-form">
+        <input type="hidden" name="_csrf" value="{{ _csrf }}">
         <button class="button button-primary" type="submit">Scan Now</button>
       </form>
     {% endif %}
@@ -237,7 +238,7 @@
 
       <form class="page-size-form" method="get" action="/projects/{{ project.id }}/assets">
         <label for="pageSize">Assets per page:</label>
-        <select id="pageSize" name="pageSize" onchange="this.form.submit()">
+        <select id="pageSize" name="pageSize" data-autosubmit>
           <option value="10" {% if pageSize == 10 %}selected{% endif %}>10</option>
           <option value="25" {% if pageSize == 25 %}selected{% endif %}>25</option>
           <option value="50" {% if pageSize == 50 %}selected{% endif %}>50</option>

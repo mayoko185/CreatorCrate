@@ -1,0 +1,47 @@
+const CSP = [
+  "default-src 'self'",
+  "img-src 'self' data:",
+  "style-src 'self'",
+  "script-src 'self'",
+  "object-src 'none'",
+  "base-uri 'self'",
+  "frame-ancestors 'none'",
+  "form-action 'self'",
+].join('; ');
+
+function isStaticAsset(req) {
+  return req.method === 'GET' && /\.[A-Za-z0-9]+$/.test(req.path);
+}
+
+function isNoStoreHtmlPath(req, authEnabled) {
+  if (req.path === '/login') return true;
+  if (req.path.startsWith('/settings')) return true;
+  if (authEnabled && !isStaticAsset(req) && req.accepts(['html', 'json']) === 'html') return true;
+  return false;
+}
+
+export function createSecurityHeadersMiddleware({ hstsEnabled = false } = {}) {
+  return (_req, res, next) => {
+    res.setHeader('Content-Security-Policy', CSP);
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Referrer-Policy', 'same-origin');
+    res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+    res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+    if (hstsEnabled) {
+      res.setHeader('Strict-Transport-Security', 'max-age=15552000; includeSubDomains');
+    }
+    next();
+  };
+}
+
+export function createCachePolicyMiddleware() {
+  return (req, res, next) => {
+    const authEnabled = !!res.locals.auth?.enabled;
+    if (isNoStoreHtmlPath(req, authEnabled)) {
+      res.setHeader('Cache-Control', 'private, no-store');
+    }
+    next();
+  };
+}
+
+export const SECURITY_CSP = CSP;

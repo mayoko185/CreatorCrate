@@ -411,7 +411,7 @@ describe('media routes — cache behavior', () => {
       .get(`/projects/${project.id}/assets/${asset.id}/thumbnail?v=${prime.revision}`)
       .expect(200);
 
-    expect(res.headers['cache-control']).toBe('public, max-age=31536000, immutable');
+    expect(res.headers['cache-control']).toBe('private, max-age=31536000, immutable');
     expect(res.headers['etag']).toBeDefined();
     expect(res.headers['etag']).toContain(prime.revision);
   });
@@ -425,7 +425,7 @@ describe('media routes — cache behavior', () => {
       .get(`/projects/${project.id}/assets/${asset.id}/thumbnail`)
       .expect(200);
 
-    expect(res.headers['cache-control']).toBe('public, max-age=0, must-revalidate');
+    expect(res.headers['cache-control']).toBe('private, max-age=0, must-revalidate');
     expect(res.headers['etag']).toBeUndefined();
   });
 
@@ -437,7 +437,7 @@ describe('media routes — cache behavior', () => {
       .get(`/projects/${project.id}/assets/${asset.id}/thumbnail?v=0000000000000000`)
       .expect(200);
 
-    expect(res.headers['cache-control']).toBe('public, max-age=0, must-revalidate');
+    expect(res.headers['cache-control']).toBe('private, max-age=0, must-revalidate');
     expect(res.headers['etag']).toBeUndefined();
   });
 
@@ -449,7 +449,7 @@ describe('media routes — cache behavior', () => {
       .get(`/projects/${project.id}/assets/${asset.id}/thumbnail?v=not-a-revision`)
       .expect(200);
 
-    expect(res.headers['cache-control']).toBe('public, max-age=0, must-revalidate');
+    expect(res.headers['cache-control']).toBe('private, max-age=0, must-revalidate');
   });
 
   it('cache hit returns the same bytes and a fresh state', async () => {
@@ -483,7 +483,7 @@ describe('media routes — cache behavior', () => {
 
     // Stale revision → must-revalidate (the service regenerated; the route
     // compares the stale requested revision to the new computed one).
-    expect(res.headers['cache-control']).toBe('public, max-age=0, must-revalidate');
+    expect(res.headers['cache-control']).toBe('private, max-age=0, must-revalidate');
   });
 
   it('unsupported preview returns 415 with no-store', async () => {
@@ -543,7 +543,7 @@ describe('media routes — revision-token normalization', () => {
         `?v=aabbccddeeff0011&v=0011223344556677`
       )
       .expect(200);
-    expect(res.headers['cache-control']).toBe('public, max-age=0, must-revalidate');
+    expect(res.headers['cache-control']).toBe('private, max-age=0, must-revalidate');
     expect(res.headers['etag']).toBeUndefined();
   });
 
@@ -552,7 +552,7 @@ describe('media routes — revision-token normalization', () => {
     const res = await request(h.app)
       .get(`/projects/${project.id}/assets/${asset.id}/thumbnail?v=`)
       .expect(200);
-    expect(res.headers['cache-control']).toBe('public, max-age=0, must-revalidate');
+    expect(res.headers['cache-control']).toBe('private, max-age=0, must-revalidate');
   });
 
   it('excessively long v normalizes to unversioned', async () => {
@@ -561,7 +561,7 @@ describe('media routes — revision-token normalization', () => {
     const res = await request(h.app)
       .get(`/projects/${project.id}/assets/${asset.id}/thumbnail?v=${longToken}`)
       .expect(200);
-    expect(res.headers['cache-control']).toBe('public, max-age=0, must-revalidate');
+    expect(res.headers['cache-control']).toBe('private, max-age=0, must-revalidate');
   });
 
   it('uppercase hex v normalizes to unversioned', async () => {
@@ -569,7 +569,7 @@ describe('media routes — revision-token normalization', () => {
     const res = await request(h.app)
       .get(`/projects/${project.id}/assets/${asset.id}/thumbnail?v=AABBCCDDEEFF0011`)
       .expect(200);
-    expect(res.headers['cache-control']).toBe('public, max-age=0, must-revalidate');
+    expect(res.headers['cache-control']).toBe('private, max-age=0, must-revalidate');
   });
 
   it('non-hex characters in v normalize to unversioned', async () => {
@@ -577,7 +577,7 @@ describe('media routes — revision-token normalization', () => {
     const res = await request(h.app)
       .get(`/projects/${project.id}/assets/${asset.id}/thumbnail?v=zzzzzzzzzzzzzzzz`)
       .expect(200);
-    expect(res.headers['cache-control']).toBe('public, max-age=0, must-revalidate');
+    expect(res.headers['cache-control']).toBe('private, max-age=0, must-revalidate');
   });
 
   it('traversal-like v normalizes to unversioned without error', async () => {
@@ -585,7 +585,7 @@ describe('media routes — revision-token normalization', () => {
     const res = await request(h.app)
       .get(`/projects/${project.id}/assets/${asset.id}/thumbnail?v=..%2F..%2Fetc`)
       .expect(200);
-    expect(res.headers['cache-control']).toBe('public, max-age=0, must-revalidate');
+    expect(res.headers['cache-control']).toBe('private, max-age=0, must-revalidate');
   });
 
   it('valid matching v gets immutable cache-control', async () => {
@@ -594,7 +594,7 @@ describe('media routes — revision-token normalization', () => {
     const res = await request(h.app)
       .get(`/projects/${project.id}/assets/${asset.id}/thumbnail?v=${desc.revision}`)
       .expect(200);
-    expect(res.headers['cache-control']).toBe('public, max-age=31536000, immutable');
+    expect(res.headers['cache-control']).toBe('private, max-age=31536000, immutable');
     expect(res.headers['etag']).toContain(desc.revision);
   });
 
@@ -618,7 +618,7 @@ describe('media routes — revision-token normalization', () => {
 
     // Every response is must-revalidate (invalid tokens → unversioned).
     for (const res of responses) {
-      expect(res.headers['cache-control']).toBe('public, max-age=0, must-revalidate');
+      expect(res.headers['cache-control']).toBe('private, max-age=0, must-revalidate');
     }
 
     // Only one cache directory was created (one asset, one generation).
@@ -1193,7 +1193,7 @@ describe('media routes — security', () => {
     const res = await request(h.app).get(`/projects/${project.id}/assets/${asset.id}/thumbnail`);
     if (res.status >= 200 && res.status < 300) {
       // Rejected responses must not carry immutable cache policy.
-      expect(res.headers['cache-control']).not.toBe('public, max-age=31536000, immutable');
+      expect(res.headers['cache-control']).not.toBe('private, max-age=31536000, immutable');
     }
   });
 
@@ -1960,7 +1960,7 @@ describe('media routes — HEAD requests', () => {
             'Content-Type': 'image/webp',
             'Content-Length': '4',
             'X-Content-Type-Options': 'nosniff',
-            'Cache-Control': 'public, max-age=0, must-revalidate',
+            'Cache-Control': 'private, max-age=0, must-revalidate',
           },
           stream,
           cleanup: () => {
@@ -1977,7 +1977,7 @@ describe('media routes — HEAD requests', () => {
             'Content-Length': '4',
             'Content-Disposition': 'inline; filename="head.png"',
             'X-Content-Type-Options': 'nosniff',
-            'Cache-Control': 'public, max-age=0, must-revalidate',
+            'Cache-Control': 'private, max-age=0, must-revalidate',
           },
           stream,
           cleanup: () => {
@@ -2225,7 +2225,7 @@ describe('media routes — original descriptor cleanup', () => {
             'Content-Length': String(size),
             'Content-Disposition': 'inline; filename="test.png"',
             'X-Content-Type-Options': 'nosniff',
-            'Cache-Control': 'public, max-age=0, must-revalidate',
+            'Cache-Control': 'private, max-age=0, must-revalidate',
             ETag: `W/"0123456789abcdef-${size}"`,
           },
           stream,

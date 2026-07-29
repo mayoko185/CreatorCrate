@@ -423,7 +423,7 @@ describe('Phase 6B HTTP workflow', () => {
       await createProject(app, { title: 'Demoted Counted' });
       const res = await request(app).get('/').expect(200);
       // Project counts are inside a <details> element
-      expect(res.text).toContain('<details>');
+      expect(res.text).toContain('<details class="project-counts-details">');
       expect(res.text).toContain('Project counts');
     });
   });

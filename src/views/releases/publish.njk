@@ -171,6 +171,7 @@
   <section>
     <h2>Publication Date</h2>
     <form method="post" action="/releases/{{ release.id }}/publish">
+      <input type="hidden" name="_csrf" value="{{ _csrf }}">
       <div class="field {% if errors.publishedDate %}field-error{% endif %}">
         <label for="publishedDate">Publication date <span class="required" aria-label="required">*</span></label>
         <input type="date" id="publishedDate" name="publishedDate"

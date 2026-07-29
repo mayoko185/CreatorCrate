@@ -25,6 +25,8 @@ import { STATUS_DIR_MAP } from '../src/storage/project-storage.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
+const STYLESHEET_PATH = fileURLToPath(new URL('../src/static/creatorcrate.css', import.meta.url));
+const SERVED_CSS = fs.readFileSync(STYLESHEET_PATH, 'utf8');
 
 function countTags(html, tag) {
   const re = new RegExp(`<${tag}[\\s>]`, 'g');
@@ -36,9 +38,10 @@ function hasClass(html, className) {
   return re.test(html);
 }
 
+/** Return the served local stylesheet linked by the rendered page. */
 function extractStyle(html) {
-  const m = html.match(/<style>([\s\S]*?)<\/style>/);
-  return m ? m[1] : '';
+  expect(html).toContain('<link rel="stylesheet" href="/creatorcrate.css">');
+  return SERVED_CSS;
 }
 
 function extractSectionByHeading(html, heading) {
@@ -377,9 +380,16 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
       expect(res.text).toContain('status-badge');
     });
 
-    it('calendar empty month uses shared empty-state partial', async () => {
+    it('calendar with no releases in the month still renders the navigable grid with empty day cells', async () => {
+      // The calendar grid always renders (so Previous/Next navigation stays
+      // available even for months with zero releases) — days without
+      // releases are marked individually via the "empty" day-cell class
+      // rather than swapping the whole page for the shared empty-state
+      // partial, which would strand the user without month navigation.
       const res = await request(app).get('/releases/calendar?month=2099-01').expect(200);
-      expect(res.text).toContain('empty-state');
+      expect(res.text).toContain('<table class="calendar-table">');
+      expect(res.text).toMatch(/<td class="calendar-day empty"[^>]*>/);
+      expect(res.text).not.toContain('<div class="calendar-release');
     });
   });
 

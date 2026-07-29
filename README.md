@@ -132,6 +132,78 @@ For Docker deployment:
    docker compose down
    ```
 
+## Phase 12 authentication and deployment security
+
+CreatorCrate uses one operator account. It intentionally does **not** implement registration, password reset email, OAuth, API tokens, multiple accounts, or remember-me cookies.
+
+### Initial credential setup
+
+Generate the password hash without putting the plaintext password in shell arguments:
+
+```bash
+pnpm auth:hash
+```
+
+Set these values in `.env`:
+
+```text
+CREATORCRATE_USERNAME=admin
+CREATORCRATE_PASSWORD_HASH=<output from pnpm auth:hash>
+SESSION_SECRET=<32+ random characters>
+```
+
+Generate `SESSION_SECRET` with a password manager or:
+
+```bash
+openssl rand -hex 32
+```
+
+On first startup, the environment username/hash bootstrap a managed credential file at `APP_DATA_ROOT/operator-credential.json`. After that file exists, it is authoritative; changing `CREATORCRATE_PASSWORD_HASH` alone will not replace the active password.
+
+### Password rotation and emergency reset
+
+- Use **Settings → Security** to rotate the operator password.
+- Successful rotation revokes every server-side session and redirects the current browser to login.
+- To replace the managed credential from the server console, stop the app and run:
+
+  ```bash
+  pnpm auth:reset-managed
+  ```
+
+  The command reads the new password interactively or from stdin, never from argv. Restart CreatorCrate afterward.
+
+### Sessions, cookies, proxy, and TLS
+
+| Setting | Contract |
+|---|---|
+| `SESSION_TTL_HOURS` | Fixed server-side session lifetime; defaults to 24 hours. |
+| `COOKIE_SECURE=true` | Required when serving only over HTTPS; leaves cookies non-secure for plain local HTTP when false. |
+| `TRUST_PROXY=true` | Trusts `X-Forwarded-For` for login throttling only behind a controlled reverse proxy. |
+| `HSTS_ENABLED=true` | Emits `Strict-Transport-Security`; enable only when HTTPS is correctly enforced for the hostname. |
+
+Use TLS for any network exposure. Do not expose CreatorCrate directly on a public or shared private network over plain HTTP.
+
+### Security headers, cache, and throttling
+
+- HTML responses use a strict same-origin CSP, `nosniff`, `Referrer-Policy: same-origin`, `frame-ancestors 'none'`, and a restrained `Permissions-Policy`.
+- HSTS is never emitted unless `HSTS_ENABLED=true`.
+- Login pages, login failures, settings/security pages, backup pages, and authenticated HTML use `Cache-Control: private, no-store`.
+- Static assets remain cacheable by Express static handling.
+- Authenticated media derivatives are private/revision-cacheable; originals are `private, no-store`.
+- Login throttling is in-memory, bounded, keyed by normalized username plus client address, and clears on process restart; this is acceptable for a single-user self-hosted deployment because it is abuse friction, not the credential authority.
+
+### Backup and restore effects
+
+Managed SQLite backups contain the SQLite database only. They include project/release/asset records and server-side session rows at backup time, but restore invalidates sessions before the restored database is adopted.
+
+Backups do **not** include:
+
+- media/project files under `PROJECTS_ROOT`;
+- generated preview files under `APP_DATA_ROOT/previews`;
+- the managed credential file `APP_DATA_ROOT/operator-credential.json`.
+
+A database restore therefore does not revert the operator password. Use `pnpm auth:reset-managed` when the managed credential itself must be replaced.
+
 ## Two-bind-mount design
 
 CreatorCrate stores all persistent data outside the container filesystem:

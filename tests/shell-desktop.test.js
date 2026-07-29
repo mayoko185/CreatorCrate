@@ -33,14 +33,17 @@ import { createApp } from '../src/app.js';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { STATUS_DIR_MAP } from '../src/storage/project-storage.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
+import { authenticate, AUTH_CONFIG, extractCsrfToken } from './helpers/auth.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 const APP_NAME = 'CreatorCrate';
+const STYLESHEET_PATH = fileURLToPath(new URL('../src/static/creatorcrate.css', import.meta.url));
+const SERVED_CSS = fs.readFileSync(STYLESHEET_PATH, 'utf8');
 
-/** Extract the contents of the first served <style>...</style> block. */
+/** Return the served local stylesheet linked by the rendered page. */
 function extractStyle(html) {
-  const m = html.match(/<style>([\s\S]*?)<\/style>/);
-  return m ? m[1] : '';
+  expect(html).toContain('<link rel="stylesheet" href="/creatorcrate.css">');
+  return SERVED_CSS;
 }
 
 /** Count active desktop nav links only (scoped to class="app-nav-link"). */
@@ -79,6 +82,8 @@ function countMain(html) {
 describe('application shell (Phase 10.4B) — landmarks & structure', () => {
   let db;
   let app;
+  let agent;
+  let csrfToken;
   let tmpDir;
   let projectsRoot;
   let projectId;
@@ -94,14 +99,16 @@ describe('application shell (Phase 10.4B) — landmarks & structure', () => {
     const dbPath = path.join(tmpDir, 'test.db');
     db = openDatabase(dbPath);
     runMigrations(db, MIGRATIONS_DIR);
-    app = createApp({ appName: APP_NAME, db, projectsRoot });
+    app = createApp({ appName: APP_NAME, db, projectsRoot }, { authConfig: AUTH_CONFIG });
 
-    const projRes = await request(app)
+    const auth = await authenticate(app);
+    agent = auth.agent;
+    csrfToken = auth.csrfToken;
+
+    const projRes = await agent
       .post('/projects')
-      .send('title=Desktop+Shell+Project')
-      .send('status=tbd')
-      .send('priority=normal')
-      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .type('form')
+      .send({ title: 'Desktop Shell Project', status: 'tbd', priority: 'normal', _csrf: csrfToken })
       .expect(302);
     projectId = projRes.headers.location.replace('/projects/', '');
 
@@ -112,7 +119,7 @@ describe('application shell (Phase 10.4B) — landmarks & structure', () => {
       path.join(projectsRoot, 'tbd', dirName, 'cover.png'),
       Buffer.from('png'),
     );
-    await request(app).post(`/projects/${projectId}/scan`).expect(302);
+    await agent.post(`/projects/${projectId}/scan`).type('form').send({ _csrf: csrfToken }).expect(302);
     const assetRepo = createAssetRepository(db);
     assetId = String(assetRepo.findByProjectId(Number(projectId))[0].id);
   });
@@ -124,41 +131,41 @@ describe('application shell (Phase 10.4B) — landmarks & structure', () => {
 
   describe('semantic shell regions', () => {
     it('renders the app-shell wrapper with sidebar + main columns', async () => {
-      const res = await request(app).get('/').expect(200);
+      const res = await agent.get('/').expect(200);
       expect(res.text).toContain('class="app-shell"');
       expect(res.text).toContain('<aside class="app-sidebar">');
       expect(res.text).toContain('class="app-main"');
     });
 
     it('renders exactly one <main> with id main-content', async () => {
-      const res = await request(app).get('/').expect(200);
+      const res = await agent.get('/').expect(200);
       expect(countMain(res.text)).toBe(1);
       expect(res.text).toContain('<main id="main-content" tabindex="-1">');
     });
 
     it('renders a compact shell header inside the main column', async () => {
-      const res = await request(app).get('/').expect(200);
+      const res = await agent.get('/').expect(200);
       expect(res.text).toContain('<header class="app-header">');
       expect(res.text).toContain('class="app-section-title"');
     });
 
     it('the header section title reflects the active section, not a duplicate h1', async () => {
-      const dash = await request(app).get('/').expect(200);
+      const dash = await agent.get('/').expect(200);
       // Dashboard active → section title is "Dashboard".
       expect(dash.text).toContain('class="app-section-title">Dashboard</p>');
-      const proj = await request(app).get('/projects').expect(200);
+      const proj = await agent.get('/projects').expect(200);
       expect(proj.text).toContain('class="app-section-title">Projects</p>');
     });
 
     it('the header falls back to the app name when no section is active', async () => {
       // A 404 renders the error page with noActive → header shows the app name.
-      const res = await request(app).get('/projects/999999').expect(404);
+      const res = await agent.get('/projects/999999').expect(404);
       expect(res.text).toContain(`class="app-section-title">${APP_NAME}</p>`);
     });
 
     it('does not wrap page content in nested <main> elements on any page', async () => {
       for (const url of ['/', '/projects', `/projects/${projectId}`, '/releases']) {
-        const res = await request(app).get(url);
+        const res = await agent.get(url);
         expect(countMain(res.text)).toBe(1);
       }
     });
@@ -166,12 +173,12 @@ describe('application shell (Phase 10.4B) — landmarks & structure', () => {
 
   describe('skip link', () => {
     it('renders a skip link targeting #main-content', async () => {
-      const res = await request(app).get('/').expect(200);
+      const res = await agent.get('/').expect(200);
       expect(res.text).toContain('class="skip-link" href="#main-content"');
     });
 
     it('the skip link precedes the sidebar (first focusable element)', async () => {
-      const res = await request(app).get('/').expect(200);
+      const res = await agent.get('/').expect(200);
       const skipPos = res.text.indexOf('class="skip-link"');
       const asidePos = res.text.indexOf('<aside class="app-sidebar">');
       expect(skipPos).toBeGreaterThan(-1);
@@ -181,24 +188,24 @@ describe('application shell (Phase 10.4B) — landmarks & structure', () => {
 
   describe('primary navigation label', () => {
     it('labels the nav landmark as Primary', async () => {
-      const res = await request(app).get('/').expect(200);
+      const res = await agent.get('/').expect(200);
       expect(res.text).toContain('<nav class="app-nav" aria-label="Primary">');
     });
   });
 
   describe('collapsed sidebar state', () => {
     it('renders the sidebar with the persistent rail class', async () => {
-      const res = await request(app).get('/').expect(200);
+      const res = await agent.get('/').expect(200);
       expect(res.text).toContain('<aside class="app-sidebar">');
     });
 
     it('renders all four destinations', async () => {
-      const res = await request(app).get('/').expect(200);
+      const res = await agent.get('/').expect(200);
       expect(navHrefs(res.text)).toEqual(['/', '/projects', '/releases', '/settings']);
     });
 
     it('renders a decorative icon + label span for every nav link', async () => {
-      const res = await request(app).get('/').expect(200);
+      const res = await agent.get('/').expect(200);
       // Each link carries an aria-hidden svg and a non-hidden label span.
       expect((res.text.match(/class="app-nav-label"/g) || []).length).toBe(4);
       expect((res.text.match(/class="app-nav-link" data-nav-key="[^"]+"/g) || []).length).toBe(4);
@@ -207,13 +214,13 @@ describe('application shell (Phase 10.4B) — landmarks & structure', () => {
 
   describe('hover expansion CSS', () => {
     it('defines :hover expansion to the expanded width', async () => {
-      const css = extractStyle((await request(app).get('/').expect(200)).text);
+      const css = extractStyle((await agent.get('/').expect(200)).text);
       expect(css).toMatch(/\.app-sidebar:hover\b/);
       expect(css).toMatch(/\.app-sidebar:hover[\s\S]*?width:\s*var\(--shell-sidebar-expanded\)/);
     });
 
     it('labels become visible on hover', async () => {
-      const css = extractStyle((await request(app).get('/').expect(200)).text);
+      const css = extractStyle((await agent.get('/').expect(200)).text);
       expect(css).toMatch(/\.app-sidebar:hover \.app-nav-label[\s\S]*?opacity:\s*1/);
       expect(css).toMatch(/\.app-sidebar:hover \.app-nav-label[\s\S]*?width:\s*auto/);
     });
@@ -221,19 +228,19 @@ describe('application shell (Phase 10.4B) — landmarks & structure', () => {
 
   describe(':focus-within keyboard expansion CSS', () => {
     it('defines :focus-within expansion to the expanded width', async () => {
-      const css = extractStyle((await request(app).get('/').expect(200)).text);
+      const css = extractStyle((await agent.get('/').expect(200)).text);
       expect(css).toMatch(/\.app-sidebar:focus-within\b/);
       expect(css).toMatch(/\.app-sidebar:focus-within[\s\S]*?width:\s*var\(--shell-sidebar-expanded\)/);
     });
 
     it('labels become visible on keyboard focus', async () => {
-      const css = extractStyle((await request(app).get('/').expect(200)).text);
+      const css = extractStyle((await agent.get('/').expect(200)).text);
       expect(css).toMatch(/\.app-sidebar:focus-within \.app-nav-label[\s\S]*?opacity:\s*1/);
       expect(css).toMatch(/\.app-sidebar:focus-within \.app-nav-label[\s\S]*?width:\s*auto/);
     });
 
     it('collapsed labels are clipped, not removed from the a11y tree', async () => {
-      const css = extractStyle((await request(app).get('/').expect(200)).text);
+      const css = extractStyle((await agent.get('/').expect(200)).text);
       const labelBlock = css.match(/\.app-nav-label\s*\{[^}]*\}/);
       expect(labelBlock).not.toBeNull();
       const rule = labelBlock[0];
@@ -246,13 +253,13 @@ describe('application shell (Phase 10.4B) — landmarks & structure', () => {
     });
 
     it('nav links expose strong focus-visible styling', async () => {
-      const css = extractStyle((await request(app).get('/').expect(200)).text);
+      const css = extractStyle((await agent.get('/').expect(200)).text);
       expect(css).toMatch(/\.app-nav-link:focus-visible/);
       expect(css).toMatch(/\.app-nav-link:focus-visible[\s\S]*?outline/);
     });
 
     it('the skip link becomes visible only on focus', async () => {
-      const css = extractStyle((await request(app).get('/').expect(200)).text);
+      const css = extractStyle((await agent.get('/').expect(200)).text);
       expect(css).toMatch(/\.skip-link\s*\{[\s\S]*?transform:\s*translateY\(/);
       expect(css).toMatch(/\.skip-link:focus[\s\S]*?translateY\(0\)/);
     });
@@ -260,7 +267,7 @@ describe('application shell (Phase 10.4B) — landmarks & structure', () => {
 
   describe('accessible link names when collapsed', () => {
     it('no nav link carries an aria-label (avoids duplicate accessible names)', async () => {
-      const res = await request(app).get('/').expect(200);
+      const res = await agent.get('/').expect(200);
       // Extract each nav anchor and assert it has no aria-label.
       const links = res.text.match(/<a href="[^"]+" class="app-nav-link"[^>]*>/g) || [];
       expect(links.length).toBe(4);
@@ -270,20 +277,20 @@ describe('application shell (Phase 10.4B) — landmarks & structure', () => {
     });
 
     it('label spans are never hidden from assistive tech via attributes', async () => {
-      const res = await request(app).get('/').expect(200);
+      const res = await agent.get('/').expect(200);
       expect(res.text).not.toMatch(/<span class="app-nav-label"[^>]*aria-hidden/);
       expect(res.text).not.toMatch(/<span class="app-nav-label"[^>]*hidden/);
     });
 
     it('each label span carries the destination text', async () => {
-      const res = await request(app).get('/').expect(200);
+      const res = await agent.get('/').expect(200);
       expect(res.text).toContain('class="app-nav-label">Dashboard</span>');
       expect(res.text).toContain('class="app-nav-label">Projects</span>');
       expect(res.text).toContain('class="app-nav-label">Releases</span>');
     });
 
     it('icons inside links are decorative (aria-hidden) so the name is the label', async () => {
-      const res = await request(app).get('/').expect(200);
+      const res = await agent.get('/').expect(200);
       // Every svg inside a nav link is aria-hidden="true".
       const navBlock = res.text.match(
         /<nav class="app-nav"[\s\S]*?<\/nav>/,
@@ -307,23 +314,23 @@ describe('application shell (Phase 10.4B) — landmarks & structure', () => {
         '/releases',
       ];
       for (const url of pages) {
-        const res = await request(app).get(url).expect(200);
+        const res = await agent.get(url).expect(200);
         expect(countActive(res.text)).toBe(1);
       }
     });
 
     it('the active item carries aria-current="page"', async () => {
-      const res = await request(app).get('/projects').expect(200);
+      const res = await agent.get('/projects').expect(200);
       expect(activeNavKeys(res.text)).toEqual(['projects']);
     });
 
     it('inactive items never carry aria-current', async () => {
-      const res = await request(app).get('/').expect(200);
+      const res = await agent.get('/').expect(200);
       expect(countActive(res.text)).toBe(1);
     });
 
     it('the active state is structural (accent bar), not color alone', async () => {
-      const css = extractStyle((await request(app).get('/').expect(200)).text);
+      const css = extractStyle((await agent.get('/').expect(200)).text);
       // A ::before pseudo-element on the active link provides a non-color cue.
       expect(css).toMatch(/\.app-nav-link\[aria-current="page"\]::before/);
       const beforeBlock = css.match(
@@ -345,7 +352,7 @@ describe('application shell (Phase 10.4B) — landmarks & structure', () => {
         `/projects/${projectId}/assets/${assetId}`,
         '/releases',
       ]) {
-        const res = await request(app).get(url);
+        const res = await agent.get(url);
         expect(countH1(res.text)).toBe(1);
       }
     });
@@ -353,7 +360,7 @@ describe('application shell (Phase 10.4B) — landmarks & structure', () => {
 
   describe('no-overflow layout guarantee', () => {
     it('the sidebar is position:fixed so its growth never enters the flow', async () => {
-      const css = extractStyle((await request(app).get('/').expect(200)).text);
+      const css = extractStyle((await agent.get('/').expect(200)).text);
       const sidebarRule = css.match(/\.app-sidebar\s*\{[\s\S]*?\}/);
       expect(sidebarRule).not.toBeNull();
       expect(sidebarRule[0]).toMatch(/position:\s*fixed/);
@@ -361,7 +368,7 @@ describe('application shell (Phase 10.4B) — landmarks & structure', () => {
     });
 
     it('the main column reserves only the collapsed width', async () => {
-      const css = extractStyle((await request(app).get('/').expect(200)).text);
+      const css = extractStyle((await agent.get('/').expect(200)).text);
       const mainRule = css.match(/\.app-main\s*\{[\s\S]*?\}/);
       expect(mainRule).not.toBeNull();
       expect(mainRule[0]).toMatch(/margin-left:\s*var\(--shell-sidebar-collapsed\)/);
@@ -369,7 +376,7 @@ describe('application shell (Phase 10.4B) — landmarks & structure', () => {
     });
 
     it('the expanded width is larger than the collapsed width', async () => {
-      const css = extractStyle((await request(app).get('/').expect(200)).text);
+      const css = extractStyle((await agent.get('/').expect(200)).text);
       expect(css).toMatch(/--shell-sidebar-collapsed:\s*(\d+)px/);
       expect(css).toMatch(/--shell-sidebar-expanded:\s*(\d+)px/);
       const collapsed = Number(css.match(/--shell-sidebar-collapsed:\s*(\d+)px/)[1]);
@@ -378,7 +385,7 @@ describe('application shell (Phase 10.4B) — landmarks & structure', () => {
     });
 
     it('the expanded sidebar overlays with a higher z-index than the header', async () => {
-      const css = extractStyle((await request(app).get('/').expect(200)).text);
+      const css = extractStyle((await agent.get('/').expect(200)).text);
       // Sidebar z-index must be >= header so the overlay sits on top.
       const sb = css.match(/\.app-sidebar\s*\{[\s\S]*?z-index:\s*var\((--shell-z-sidebar)\)/);
       const hd = css.match(/\.app-header\s*\{[\s\S]*?z-index:\s*var\((--shell-z-header)\)/);
@@ -392,7 +399,7 @@ describe('application shell (Phase 10.4B) — landmarks & structure', () => {
 
   describe('reduced motion', () => {
     it('reduced-motion rules cover the shell width/label transitions', async () => {
-      const css = extractStyle((await request(app).get('/').expect(200)).text);
+      const css = extractStyle((await agent.get('/').expect(200)).text);
       const reduced = css.match(/@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{([\s\S]*?)\n\s*\}/);
       expect(reduced).not.toBeNull();
       const block = reduced[1];
@@ -407,7 +414,7 @@ describe('application shell (Phase 10.4B) — landmarks & structure', () => {
 
   describe('no JavaScript required', () => {
     it('no inline event handlers are attached to shell nav elements', async () => {
-      const res = await request(app).get('/').expect(200);
+      const res = await agent.get('/').expect(200);
       const navBlock = res.text.match(/<aside class="app-sidebar"[\s\S]*?<\/aside>/);
       expect(navBlock).not.toBeNull();
       // No mouse/focus/keyboard inline handlers driving expansion.
@@ -415,7 +422,7 @@ describe('application shell (Phase 10.4B) — landmarks & structure', () => {
     });
 
     it('expansion is expressed purely through CSS pseudo-classes', async () => {
-      const css = extractStyle((await request(app).get('/').expect(200)).text);
+      const css = extractStyle((await agent.get('/').expect(200)).text);
       // The expansion triggers are :hover and :focus-within — not scripted.
       expect(css).toMatch(/\.app-sidebar:hover/);
       expect(css).toMatch(/\.app-sidebar:focus-within/);

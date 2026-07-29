@@ -19,6 +19,11 @@ import { createApplicationContext } from '../src/app-context.js';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { createBackupService } from '../src/services/backup-service.js';
 import { STATUS_DIR_MAP } from '../src/storage/project-storage.js';
+import { hashPassword } from '../src/auth/password-hash.js';
+import { generateSessionToken, hashSessionToken } from '../src/auth/session-token.js';
+import { createStaticCredentialProvider } from '../src/auth/credential-provider.js';
+import { createLoginThrottler } from '../src/auth/login-throttle.js';
+import { extractCsrfToken } from './helpers/auth.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 const APP_NAME = 'CreatorCrate';
@@ -223,5 +228,224 @@ describe('application context — reconstruction failure handling', () => {
     // The initial db was never closed by the context itself (ownership of
     // closing the previous connection belongs to the restore primitive).
     expect(initialDb.closed).toBe(false);
+  });
+});
+
+// ─── Phase 12.1: authentication + live restore ──────────────────────────
+
+describe('live restore — authentication interaction', () => {
+  let tmpDir;
+  let appDataRoot;
+  let projectsRoot;
+  let databasePath;
+  let db;
+  let backupService;
+  let maintenanceState;
+  let appContext;
+
+  const PASSWORD = 'CorrectHorseBatteryStaple';
+  const ROTATED_PASSWORD = 'NewCorrectHorseBattery';
+  const AUTH_CONFIG = {
+    username: 'admin',
+    passwordHash: hashPassword(PASSWORD),
+    sessionSecret: 'a'.repeat(32),
+    sessionTtlHours: 24,
+    cookieSecure: false,
+  };
+  let credentialProvider;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-auth-restore-'));
+    appDataRoot = path.join(tmpDir, 'app');
+    fs.mkdirSync(appDataRoot, { recursive: true });
+    projectsRoot = path.join(tmpDir, 'projects');
+    fs.mkdirSync(projectsRoot, { recursive: true });
+    for (const dir of Object.values(STATUS_DIR_MAP)) {
+      fs.mkdirSync(path.join(projectsRoot, dir), { recursive: true });
+    }
+    databasePath = path.join(appDataRoot, 'creatorcrate.db');
+    db = openDatabase(databasePath);
+    runMigrations(db, MIGRATIONS_DIR);
+    backupService = createBackupService({ appDataRoot, databasePath, migrationsDir: MIGRATIONS_DIR });
+    maintenanceState = { active: false };
+    credentialProvider = createStaticCredentialProvider({ username: 'admin', passwordHash: AUTH_CONFIG.passwordHash });
+
+    appContext = createApplicationContext(
+      {
+        appName: APP_NAME,
+        projectsRoot,
+        appOpts: {
+          appDataRoot,
+          databasePath,
+          migrationsDir: MIGRATIONS_DIR,
+          backupService,
+          maintenanceState,
+          authConfig: { ...AUTH_CONFIG, credentialProvider },
+          credentialProvider,
+          loginThrottler: createLoginThrottler({ baseDelayMs: 0, maxDelayMs: 0 }),
+        },
+      },
+      db
+    );
+  });
+
+  afterEach(() => {
+    maintenanceState.active = false;
+    try { closeDatabase(appContext.db); } catch { /* already closed by a test */ }
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  async function login(agent, { fetchAuthenticatedCsrf = true } = {}) {
+    const loginPage = await agent.get('/login').expect(200);
+    const loginCsrf = extractCsrfToken(loginPage.text);
+    await agent
+      .post('/login')
+      .type('form')
+      .send({ username: 'admin', password: PASSWORD, _csrf: loginCsrf })
+      .expect(302);
+    if (!fetchAuthenticatedCsrf) {
+      return { agent, csrfToken: null };
+    }
+    const authenticatedPage = await agent.get('/settings/backups').expect(200);
+    return { agent, csrfToken: extractCsrfToken(authenticatedPage.text) };
+  }
+
+  it('health stays unauthenticated across a restore', async () => {
+    await request(appContext.handleRequest).get('/health').expect(200);
+
+    const { agent, csrfToken } = await login(request.agent(appContext.handleRequest));
+    const backupRes = await agent.post('/settings/backups').type('form').send({ _csrf: csrfToken }).expect(302);
+    expect(backupRes.headers.location).toBe('/settings/backups?notice=backup_created');
+
+    await request(appContext.handleRequest).get('/health').expect(200);
+  });
+
+  it('a session created before a restore is rejected afterward (restore invalidates all sessions)', async () => {
+    const agent = request.agent(appContext.handleRequest);
+    const { csrfToken } = await login(agent);
+    await agent.get('/projects').expect(200);
+
+    await agent.post('/settings/backups').type('form').send({ _csrf: csrfToken }).expect(302);
+    const backupFilename = backupService.listBackups()[0].filename;
+
+    await agent.post(`/settings/backups/${backupFilename}/restore`).type('form').send({ _csrf: csrfToken }).expect(302);
+
+    // The same cookie must no longer authenticate against the rebuilt app —
+    // the restored database's session table was wiped.
+    await agent.get('/projects').expect(302);
+  });
+
+  it('a new login works immediately after a restore (auth service rebuilt against the new db)', async () => {
+    const { agent: setupAgent, csrfToken } = await login(request.agent(appContext.handleRequest));
+    await setupAgent.post('/settings/backups').type('form').send({ _csrf: csrfToken }).expect(302);
+    const backupFilename = backupService.listBackups()[0].filename;
+
+    await setupAgent
+      .post(`/settings/backups/${backupFilename}/restore`)
+      .type('form')
+      .send({ _csrf: csrfToken })
+      .expect(302);
+
+    const agent = request.agent(appContext.handleRequest);
+    await login(agent);
+    await agent.get('/projects').expect(200);
+  });
+
+  it('a restore rebuild keeps the live credential provider authority instead of reverting the environment hash', async () => {
+    const { agent: setupAgent, csrfToken } = await login(request.agent(appContext.handleRequest));
+    await setupAgent.post('/settings/backups').type('form').send({ _csrf: csrfToken }).expect(302);
+    const backupFilename = backupService.listBackups()[0].filename;
+
+    const rotatePage = await setupAgent.get('/settings/security').expect(200);
+    await setupAgent
+      .post('/settings/security/password')
+      .type('form')
+      .send({
+        _csrf: extractCsrfToken(rotatePage.text),
+        currentPassword: PASSWORD,
+        newPassword: ROTATED_PASSWORD,
+        confirmPassword: ROTATED_PASSWORD,
+      })
+      .expect(302);
+
+    const restoreAgent = request.agent(appContext.handleRequest);
+    const loginPage = await restoreAgent.get('/login').expect(200);
+    await restoreAgent
+      .post('/login')
+      .type('form')
+      .send({ username: 'admin', password: ROTATED_PASSWORD, _csrf: extractCsrfToken(loginPage.text) })
+      .expect(302);
+    const backupsPage = await restoreAgent.get('/settings/backups').expect(200);
+    await restoreAgent
+      .post(`/settings/backups/${backupFilename}/restore`)
+      .type('form')
+      .send({ _csrf: extractCsrfToken(backupsPage.text) })
+      .expect(302);
+
+    const oldAgent = request.agent(appContext.handleRequest);
+    const oldLogin = await oldAgent.get('/login').expect(200);
+    await oldAgent
+      .post('/login')
+      .type('form')
+      .send({ username: 'admin', password: PASSWORD, _csrf: extractCsrfToken(oldLogin.text) })
+      .expect(401);
+
+    const newAgent = request.agent(appContext.handleRequest);
+    const newLogin = await newAgent.get('/login').expect(200);
+    await newAgent
+      .post('/login')
+      .type('form')
+      .send({ username: 'admin', password: ROTATED_PASSWORD, _csrf: extractCsrfToken(newLogin.text) })
+      .expect(302);
+  });
+
+  it('mutating requests stay blocked without authentication after a restore', async () => {
+    const { agent: setupAgent, csrfToken } = await login(request.agent(appContext.handleRequest));
+    await setupAgent.post('/settings/backups').type('form').send({ _csrf: csrfToken }).expect(302);
+    const backupFilename = backupService.listBackups()[0].filename;
+    await setupAgent
+      .post(`/settings/backups/${backupFilename}/restore`)
+      .type('form')
+      .send({ _csrf: csrfToken })
+      .expect(302);
+
+    await request(appContext.handleRequest)
+      .post('/projects')
+      .type('form')
+      .send({ title: 'Should be blocked', status: 'tbd', priority: 'normal' })
+      .expect(401);
+  });
+
+  // Phase 12.1 cleanup addendum: the auth service (and its per-instance
+  // cleanup-cadence state) is rebuilt from scratch on every replaceDatabase
+  // call (see app-context.js's buildApp), so a restore must never leave the
+  // expired-session sweep bound to the closed pre-restore connection.
+  it('a restore rebuilds the cleanup guard against the new database, not the closed pre-restore connection', async () => {
+    const { agent: setupAgent, csrfToken } = await login(request.agent(appContext.handleRequest));
+    await setupAgent.post('/settings/backups').type('form').send({ _csrf: csrfToken }).expect(302);
+    const backupFilename = backupService.listBackups()[0].filename;
+    await setupAgent.post(`/settings/backups/${backupFilename}/restore`).type('form').send({ _csrf: csrfToken }).expect(302);
+
+    // Log in again against the rebuilt app to get a valid, live session.
+    const agent = request.agent(appContext.handleRequest);
+    await login(agent, { fetchAuthenticatedCsrf: false });
+
+    // Insert an already-expired session row directly against the *current*
+    // (post-restore) db handle — proof that whatever sweep runs must be
+    // reading/writing this new connection, not a stale closed one.
+    const staleToken = generateSessionToken();
+    const staleHash = hashSessionToken(staleToken, AUTH_CONFIG.sessionSecret);
+    appContext.db
+      .prepare('INSERT INTO sessions (id, username, created_at, expires_at) VALUES (?, ?, ?, ?)')
+      .run(staleHash, 'admin', new Date(Date.now() - 2000).toISOString(), new Date(Date.now() - 1000).toISOString());
+
+    // A fresh AuthService instance is due for its sweep immediately, so a
+    // single authenticated request through the rebuilt app removes the
+    // stale row via the production getSession trigger.
+    await agent.get('/projects').expect(200);
+
+    expect(
+      appContext.db.prepare('SELECT id FROM sessions WHERE id = ?').get(staleHash)
+    ).toBeUndefined();
   });
 });

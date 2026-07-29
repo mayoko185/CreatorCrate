@@ -32,6 +32,7 @@
     <h2>Permanently delete this backup?</h2>
     <p>This will permanently remove this backup file. It cannot be undone, and this snapshot will no longer be available for a future restore.</p>
     <form method="post" action="/settings/backups/{{ backup.filename }}/delete">
+      <input type="hidden" name="_csrf" value="{{ _csrf }}">
       <div class="form-actions">
         <button type="submit" class="button button-danger">Delete Backup</button>
         <a class="button button-secondary" href="/settings/backups">Cancel</a>

@@ -93,10 +93,10 @@ export class MediaUnavailableError extends MediaError {
 
 // ─── HTTP response helpers ───────────────────────────────────────────────
 
-const CACHE_IMMUTABLE = 'public, max-age=31536000, immutable';
-const CACHE_REVALIDATE = 'public, max-age=0, must-revalidate';
+const CACHE_IMMUTABLE = 'private, max-age=31536000, immutable';
+const CACHE_REVALIDATE = 'private, max-age=0, must-revalidate';
 const CACHE_NO_STORE = 'no-store';
-const CACHE_ORIGINAL = 'public, max-age=0, must-revalidate';
+const CACHE_ORIGINAL = 'private, no-store';
 
 function derivativeCacheControl(requestedRevision, currentRevision) {
   if (

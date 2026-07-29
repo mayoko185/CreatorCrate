@@ -16,6 +16,8 @@ import { buildAssetRevisionToken } from '../src/services/preview-service.js';
 import slugify from '@sindresorhus/slugify';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
+const STYLESHEET_PATH = fileURLToPath(new URL('../src/static/creatorcrate.css', import.meta.url));
+const SERVED_CSS = fs.readFileSync(STYLESHEET_PATH, 'utf8');
 
 describe('asset browser HTTP workflow', () => {
   let db;
@@ -154,10 +156,15 @@ describe('asset browser HTTP workflow', () => {
     expect(Array.from(url.searchParams.keys())).toEqual(keys);
   }
 
+  // Phase 12 CSP hardening moved styling out of an inline <style> block and
+  // into the served external stylesheet (linked via <link rel="stylesheet">)
+  // so no 'unsafe-inline' style-src is required. CSS assertions read the
+  // actual file served at that link rather than expecting inline markup.
   function renderedStyle(html) {
-    const match = html.match(/<style>([\s\S]*?)<\/style>/);
-    if (!match) throw new Error('Rendered page did not include its stylesheet.');
-    return match[1];
+    if (!html.includes('<link rel="stylesheet" href="/creatorcrate.css">')) {
+      throw new Error('Rendered page did not include its stylesheet.');
+    }
+    return SERVED_CSS;
   }
 
   beforeEach(() => {
@@ -1050,9 +1057,15 @@ describe('asset browser HTTP workflow', () => {
     const formMatch = initial.text.match(/<form class="page-size-form" method="get" action="\/projects\/\d+\/assets">[\s\S]*?<\/form>/);
     expect(formMatch).not.toBeNull();
     const form = formMatch[0];
+    // CSP hardening removed the inline onchange handler — the local
+    // creatorcrate.js script wires up autosubmit via data-autosubmit,
+    // while the server-rendered "Apply" button keeps the form fully
+    // functional as a plain GET submit with JavaScript disabled.
     expect(form).toContain('<label for="pageSize">Assets per page:</label>');
-    expect(form).toContain('<select id="pageSize" name="pageSize" onchange="this.form.submit()">');
+    expect(form).toContain('<select id="pageSize" name="pageSize" data-autosubmit>');
+    expect(form).not.toContain('onchange=');
     expect(form).toContain('<button class="button button-small" type="submit">Apply</button>');
+    expect(initial.text).toContain('<script type="module" src="/creatorcrate.js"></script>');
     expect(form).toContain('<input type="hidden" name="view" value="grid">');
     expect(form).toContain('<input type="hidden" name="search" value="Filtered &amp;">');
     expect(form).toContain('<input type="hidden" name="extension" value="png">');
@@ -2039,7 +2052,7 @@ describe('asset browser HTTP workflow', () => {
     const id = res.headers.location.replace('/projects/', '');
     const res2 = await request(app).get(`/projects/${id}/assets`).expect(200);
 
-    expect(res2.text).toMatch(
+    expect(renderedStyle(res2.text)).toMatch(
       /@media \(prefers-reduced-motion: reduce\) \{[\s\S]*\.asset-card-thumb[\s\S]*\.asset-preview-image[\s\S]*transition: none !important;/
     );
   });
@@ -2050,28 +2063,29 @@ describe('asset browser HTTP workflow', () => {
     const res = await createProject('PhaseB Tokens');
     const id = res.headers.location.replace('/projects/', '');
     const res2 = await request(app).get(`/projects/${id}/assets`).expect(200);
-    expect(res2.text).toContain('--surface-card');
-    expect(res2.text).toContain('--border:');
-    expect(res2.text).toContain('--border-strong');
-    expect(res2.text).toContain('--focus-ring');
-    expect(res2.text).toContain('--space-sm');
-    expect(res2.text).toContain('--radius-lg');
-    expect(res2.text).toContain('--shadow-md');
-    expect(res2.text).toContain('--transition-base');
+    const style = renderedStyle(res2.text);
+    expect(style).toContain('--surface-card');
+    expect(style).toContain('--border:');
+    expect(style).toContain('--border-strong');
+    expect(style).toContain('--focus-ring');
+    expect(style).toContain('--space-sm');
+    expect(style).toContain('--radius-lg');
+    expect(style).toContain('--shadow-md');
+    expect(style).toContain('--transition-base');
   });
 
   it('renders responsive grid CSS with auto-fill minmax', async () => {
     const res = await createProject('PhaseB Grid CSS');
     const id = res.headers.location.replace('/projects/', '');
     const res2 = await request(app).get(`/projects/${id}/assets`).expect(200);
-    expect(res2.text).toContain('grid-template-columns: repeat(auto-fill, minmax(');
+    expect(renderedStyle(res2.text)).toContain('grid-template-columns: repeat(auto-fill, minmax(');
   });
 
   it('renders aspect-ratio rule on the thumbnail frame', async () => {
     const res = await createProject('PhaseB Aspect');
     const id = res.headers.location.replace('/projects/', '');
     const res2 = await request(app).get(`/projects/${id}/assets`).expect(200);
-    expect(res2.text).toMatch(/\.asset-card-media\s*\{[^}]*aspect-ratio/);
+    expect(renderedStyle(res2.text)).toMatch(/\.asset-card-media\s*\{[^}]*aspect-ratio/);
   });
 
   it('renders object-fit contain for grid thumbnail images', async () => {
@@ -2082,7 +2096,7 @@ describe('asset browser HTTP workflow', () => {
     const res2 = await request(app)
       .get(`/projects/${id}/assets?view=grid`)
       .expect(200);
-    expect(res2.text).toMatch(/\.asset-card-thumb\s*\{[^}]*object-fit:\s*contain/);
+    expect(renderedStyle(res2.text)).toMatch(/\.asset-card-thumb\s*\{[^}]*object-fit:\s*contain/);
   });
 
   it('renders object-fit contain for viewer preview images', async () => {
@@ -2093,56 +2107,60 @@ describe('asset browser HTTP workflow', () => {
     const res2 = await request(app)
       .get(`/projects/${id}/assets/${asset.id}`)
       .expect(200);
-    expect(res2.text).toMatch(/\.asset-preview-image\s*\{[^}]*object-fit:\s*contain/);
+    expect(renderedStyle(res2.text)).toMatch(/\.asset-preview-image\s*\{[^}]*object-fit:\s*contain/);
   });
 
   it('makes the native hidden attribute authoritative over preview display rules', async () => {
     const res = await createProject('PhaseB Hidden CSS');
     const id = res.headers.location.replace('/projects/', '');
     const res2 = await request(app).get(`/projects/${id}/assets`).expect(200);
+    const style = renderedStyle(res2.text);
     const hiddenRule = '[hidden] { display: none !important; }';
 
-    expect(res2.text).toContain(hiddenRule);
-    expect(res2.text).toMatch(/\.asset-card-thumb\s*\{[^}]*display:\s*block/);
-    expect(res2.text).toMatch(/\.asset-preview-image\s*\{[^}]*display:\s*block/);
+    expect(style).toContain(hiddenRule);
+    expect(style).toMatch(/\.asset-card-thumb\s*\{[^}]*display:\s*block/);
+    expect(style).toMatch(/\.asset-preview-image\s*\{[^}]*display:\s*block/);
   });
 
   it('renders placeholder color classes for missing and unsupported assets', async () => {
     const res = await createProject('PhaseB Placeholder CSS');
     const id = res.headers.location.replace('/projects/', '');
     const res2 = await request(app).get(`/projects/${id}/assets`).expect(200);
-    expect(res2.text).toContain('.asset-card-placeholder-missing');
-    expect(res2.text).toContain('.asset-card-placeholder-no-preview');
+    const style = renderedStyle(res2.text);
+    expect(style).toContain('.asset-card-placeholder-missing');
+    expect(style).toContain('.asset-card-placeholder-no-preview');
   });
 
   it('renders active view CSS using aria-current attribute selector', async () => {
     const res = await createProject('PhaseB Active CSS');
     const id = res.headers.location.replace('/projects/', '');
     const res2 = await request(app).get(`/projects/${id}/assets`).expect(200);
-    expect(res2.text).toContain('[aria-current="page"]');
+    expect(renderedStyle(res2.text)).toContain('[aria-current="page"]');
   });
 
   it('renders prefers-reduced-motion media query', async () => {
     const res = await createProject('PhaseB Reduced Motion');
     const id = res.headers.location.replace('/projects/', '');
     const res2 = await request(app).get(`/projects/${id}/assets`).expect(200);
-    expect(res2.text).toContain('@media (prefers-reduced-motion: reduce)');
+    expect(renderedStyle(res2.text)).toContain('@media (prefers-reduced-motion: reduce)');
   });
 
   it('renders focus-visible and focus-within CSS for asset cards', async () => {
     const res = await createProject('PhaseB Focus CSS');
     const id = res.headers.location.replace('/projects/', '');
     const res2 = await request(app).get(`/projects/${id}/assets`).expect(200);
-    expect(res2.text).toMatch(/\.asset-card-link:focus-visible/);
-    expect(res2.text).toMatch(/\.asset-card:focus-within/);
+    const style = renderedStyle(res2.text);
+    expect(style).toMatch(/\.asset-card-link:focus-visible/);
+    expect(style).toMatch(/\.asset-card:focus-within/);
   });
 
   it('renders wider content CSS for asset browser and viewer pages', async () => {
     const res = await createProject('PhaseB Wide CSS');
     const id = res.headers.location.replace('/projects/', '');
     const res2 = await request(app).get(`/projects/${id}/assets`).expect(200);
-    expect(res2.text).toContain('body.asset-browser-page main');
-    expect(res2.text).toContain('body.asset-viewer-page main');
+    const style = renderedStyle(res2.text);
+    expect(style).toContain('body.asset-browser-page main');
+    expect(style).toContain('body.asset-viewer-page main');
   });
 
   it('grid card filename has title attribute with full filename', async () => {
@@ -2210,8 +2228,9 @@ describe('asset browser HTTP workflow', () => {
     const res = await createProject('PhaseB Pagination CSS');
     const id = res.headers.location.replace('/projects/', '');
     const res2 = await request(app).get(`/projects/${id}/assets`).expect(200);
-    expect(res2.text).toMatch(/\.pagination-prev:focus-visible/);
-    expect(res2.text).toMatch(/\.pagination-next:focus-visible/);
+    const style = renderedStyle(res2.text);
+    expect(style).toMatch(/\.pagination-prev:focus-visible/);
+    expect(style).toMatch(/\.pagination-next:focus-visible/);
   });
 
   it('renders body class asset-browser-page on the assets listing', async () => {
@@ -2251,8 +2270,9 @@ describe('asset browser HTTP workflow', () => {
     const res2 = await request(app)
       .get(`/projects/${id}/assets/${asset.id}`)
       .expect(200);
-    expect(res2.text).toMatch(/\.asset-preview-image\s*\{[^}]*max-height/);
-    expect(res2.text).toMatch(/\.asset-preview-image\s*\{[^}]*object-fit:\s*contain/);
+    const style = renderedStyle(res2.text);
+    expect(style).toMatch(/\.asset-preview-image\s*\{[^}]*max-height/);
+    expect(style).toMatch(/\.asset-preview-image\s*\{[^}]*object-fit:\s*contain/);
   });
 
   it('renders a valid non-recursive success token and no undefined custom properties', async () => {

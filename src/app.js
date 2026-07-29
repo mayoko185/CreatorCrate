@@ -17,12 +17,27 @@ import { evaluateReleaseReadiness } from './services/release-readiness-policy.js
 import { createPreviewService } from './services/preview-service.js';
 import { createMediaService } from './services/media-service.js';
 import { createBackupService } from './services/backup-service.js';
+import { createAuthService } from './services/auth-service.js';
+import { createAuthMiddleware } from './middleware/auth.js';
+import { createCsrfMiddleware } from './middleware/csrf.js';
+import { createSecurityHeadersMiddleware, createCachePolicyMiddleware } from './middleware/security-headers.js';
+import { createAuthRouter } from './routes/auth.js';
+import { createLoginThrottler } from './auth/login-throttle.js';
 import { buildShellModel } from './shell/navigation.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+const SESSION_COOKIE_NAME = 'cc_session';
+
 export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {}) {
   const app = express();
+  // Phase 12.1: forwarded via `opts` (like databasePath/backupService/etc.)
+  // rather than the first positional arg, so app-context.js's replaceDatabase
+  // rebuild path (which threads appOpts straight through) carries it too.
+  const authConfig = opts.authConfig;
+  if (authConfig && authConfig.trustProxy) {
+    app.set('trust proxy', true);
+  }
 
   const env = nunjucks.configure(path.join(__dirname, 'views'), {
     autoescape: true,
@@ -60,6 +75,8 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     }
     res.json({ status: 'error', message: 'Service temporarily unavailable for maintenance.' });
   });
+
+  app.use(createSecurityHeadersMiddleware({ hstsEnabled: authConfig ? authConfig.hstsEnabled : false }));
 
   app.use(express.json());
   app.use(express.urlencoded({ extended: true }));
@@ -109,6 +126,60 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     opts.backupService ||
     createBackupService({ appDataRoot, databasePath, migrationsDir, retentionCount: opts.backupRetentionCount });
 
+  // Phase 12.1: single-operator authentication foundation. Deliberately
+  // opt-in via `authConfig` — omitting it (as every pre-Phase-12.1 test and
+  // caller does) reproduces the exact prior behavior with no login wall and
+  // no cookies set, so this never changes project/release/asset/media/backup
+  // domain behavior on its own. Real startup (server.js) always supplies
+  // `authConfig` from validated env, where missing configuration already
+  // fails at createConfig() time.
+  const credentialProvider = opts.credentialProvider || authConfig?.credentialProvider;
+  const authService = opts.authService || (authConfig ? createAuthService({ db, ...authConfig, credentialProvider }) : null);
+  const loginThrottler = opts.loginThrottler || createLoginThrottler({ now: opts.now || Date.now });
+
+  const cookieOptions = {
+    name: SESSION_COOKIE_NAME,
+    path: '/',
+    secure: authConfig ? authConfig.cookieSecure : false,
+    maxAgeMs: authConfig ? authConfig.sessionTtlHours * 60 * 60 * 1000 : undefined,
+  };
+
+  let resolveSession = (_req, res, next) => {
+    res.locals.auth = { enabled: false, authenticated: false };
+    next();
+  };
+  let requireAuth = (_req, _res, next) => next();
+  let exposeCsrfToken = (_req, _res, next) => next();
+  let requireCsrf = (_req, _res, next) => next();
+
+  if (authService) {
+    const authMiddleware = createAuthMiddleware({ authService, cookieOptions });
+    resolveSession = authMiddleware.resolveSession;
+    requireAuth = authMiddleware.requireAuth;
+    const csrfMiddleware = createCsrfMiddleware({ authService, cookieOptions });
+    exposeCsrfToken = csrfMiddleware.exposeCsrfToken;
+    requireCsrf = csrfMiddleware.requireCsrf;
+  }
+
+  app.use(resolveSession);
+  app.use(createCachePolicyMiddleware());
+
+  // Phase 12.2: expose CSRF token for template rendering on every request.
+  // This must run after resolveSession (so auth.csrfSecret is available) but
+  // before any route handler that renders a form.
+  app.use(exposeCsrfToken);
+
+  // Phase 12.2: CSRF protection for all state-changing requests. This must
+  // run after resolveSession + exposeCsrfToken so authenticated-session
+  // context is available for token verification, but BEFORE the auth router
+  // so POST /logout is also CSRF-protected. Login POST is exempt (it verifies
+  // its own anonymous CSRF token). GET/HEAD/OPTIONS are always exempt.
+  app.use(requireCsrf);
+
+  if (authService) {
+    app.use(createAuthRouter({ appName, authService, cookieOptions, loginThrottler, trustProxy: !!authConfig?.trustProxy }));
+  }
+
   // Phase 10.4A: shared application-shell context. Computed once per request
   // from req.path so every rendered page — and the centralized error handler
   // — receives one navigation model with correct active states. Individual
@@ -117,6 +188,11 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     res.locals.shell = buildShellModel({ appName, path: req.path });
     next();
   });
+
+  // Protects everything mounted below. requireAuth internally exempts
+  // /health and /login|/logout regardless of mount order; static assets are
+  // already fully handled above and never reach this middleware.
+  app.use(requireAuth);
 
   app.use('/', createIndexRouter({ appName, workflowQueryService }));
   app.use('/health', createHealthRouter({ db, maintenanceState }));
@@ -139,6 +215,8 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     db,
     backupService,
     maintenanceState,
+    authService,
+    cookieOptions,
     onDatabaseReplaced: opts.onDatabaseReplaced,
   }));
 

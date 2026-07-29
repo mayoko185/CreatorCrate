@@ -13,6 +13,7 @@
   {% endif %}
 
   <form method="post" action="{{ submitUrl }}" class="project-form" novalidate>
+    <input type="hidden" name="_csrf" value="{{ _csrf }}">
     {% if not release %}
       <div class="form-section">
         <h2>Project</h2>

@@ -1,5 +1,7 @@
 import express from 'express';
 import { BackupError } from '../services/backup-service.js';
+import { invalidateAllSessionsForDb } from '../services/auth-service.js';
+import { clearSessionCookie } from '../middleware/auth.js';
 
 function createNotFound() {
   const err = new Error('Not found');
@@ -18,6 +20,7 @@ const NOTICES = {
   restore_conflict: { variant: 'warning', text: 'A restore is already in progress. Please wait for it to finish.' },
   backup_deleted: { variant: 'success', text: 'Backup deleted.' },
   delete_failed: { variant: 'error', text: 'Could not delete the backup. It may have already been removed.' },
+  password_rotated: { variant: 'success', text: 'Password changed. Sign in again with the new password.' },
   backup_created_prune_warning: {
     variant: 'warning',
     text: 'Backup created successfully, but one or more older backups could not be automatically pruned. Check the backup directory permissions.',
@@ -42,7 +45,7 @@ function resolveNotice(code) {
  *   re-pointing every other service/route at it — this module never touches
  *   any connection but the one it was given.
  */
-export function createSettingsRouter({ appName, db, backupService, maintenanceState, onDatabaseReplaced }) {
+export function createSettingsRouter({ appName, db, backupService, maintenanceState, authService, cookieOptions, onDatabaseReplaced }) {
   const router = express.Router();
   const replaceDatabase = typeof onDatabaseReplaced === 'function' ? onDatabaseReplaced : () => {};
 
@@ -59,6 +62,37 @@ export function createSettingsRouter({ appName, db, backupService, maintenanceSt
       notice: resolveNotice(req.query.notice),
     });
   });
+
+  if (authService) {
+    router.get('/security', (req, res) => {
+      res.render('settings/security.njk', {
+        appName,
+        notice: resolveNotice(req.query.notice),
+        errors: [],
+        currentPasswordError: null,
+      });
+    });
+
+    router.post('/security/password', (req, res) => {
+      const result = authService.rotatePassword({
+        currentPassword: req.body?.currentPassword,
+        newPassword: req.body?.newPassword,
+        confirmation: req.body?.confirmPassword,
+      });
+      if (!result.ok) {
+        res.status(400);
+        res.render('settings/security.njk', {
+          appName,
+          notice: null,
+          errors: result.errors || [],
+          currentPasswordError: result.currentPasswordError || null,
+        });
+        return;
+      }
+      clearSessionCookie(res, cookieOptions);
+      res.redirect('/login?notice=password_rotated');
+    });
+  }
 
   router.post('/backups', async (req, res) => {
     try {
@@ -100,6 +134,14 @@ export function createSettingsRouter({ appName, db, backupService, maintenanceSt
       // traversal, symlink, missing, staging/rollback, and invalid-schema
       // backups are all rejected there, never trusted from the URL alone.
       const result = await backupService.restoreBackup(req.params.filename, db);
+      // Phase 12.1: a restored database may carry session rows from whenever
+      // the backup was taken — potentially long-lived, no longer trustworthy
+      // sessions. Wipe them on the connection being adopted, before any
+      // request can resolve against it, rather than relying on whichever
+      // authService happens to be rebuilt around it. Best-effort: a real
+      // restored connection always supports this, but must never block
+      // adopting the connection if it somehow doesn't.
+      try { invalidateAllSessionsForDb(result.db); } catch { /* best-effort */ }
       replaceDatabase(result.db);
       res.redirect('/settings/backups?notice=restore_success');
     } catch (err) {
@@ -108,6 +150,7 @@ export function createSettingsRouter({ appName, db, backupService, maintenanceSt
       // sees the error — the caller must adopt it even though the restore
       // itself failed, or every other route is left holding a closed handle.
       if (err instanceof BackupError && err.db) {
+        try { invalidateAllSessionsForDb(err.db); } catch { /* best-effort */ }
         replaceDatabase(err.db);
       }
       res.redirect('/settings/backups?notice=restore_failed');
