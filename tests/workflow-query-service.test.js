@@ -9,8 +9,11 @@ import { evaluateReleaseReadiness } from '../src/services/release-readiness-poli
 import { createAssetRepository } from '../src/data/asset-repository.js';
 import { createReleaseRepository } from '../src/data/release-repository.js';
 import { getLocalTodayIso } from '../src/util/date.js';
+import { buildRevisionToken } from '../src/storage/preview-cache.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
+const ASSET_BROWSER_FIXED_STATEMENT_EXECUTIONS = 5;
+const ASSET_VIEWER_FIXED_STATEMENT_EXECUTIONS = 4;
 
 /**
  * Helper to insert a project directly without filesystem operations.
@@ -45,16 +48,51 @@ function insertRelease(db, {
  * Helper to insert an asset directly with the desired presence state.
  */
 function insertAsset(db, {
-  projectId, relativePath, filename, isPresent = 1,
+  projectId, relativePath, filename, extension = 'txt', mimeType = 'text/plain',
+  sizeBytes = 0, modifiedAt = null, isPresent = 1,
 }) {
   return db.prepare(`
     INSERT INTO assets (project_id, relative_path, filename, extension,
                         mime_type, size_bytes, modified_at,
                         is_present, last_seen_at, missing_since)
-    VALUES (?, ?, ?, 'txt', 'text/plain', 0, NULL, ?, datetime('now'),
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'),
             ${isPresent === 0 ? "datetime('now')" : 'NULL'})
     RETURNING *
-  `).get(projectId, relativePath, filename, isPresent);
+  `).get(projectId, relativePath, filename, extension, mimeType, sizeBytes, modifiedAt, isPresent);
+}
+
+function instrumentStatementExecution(db) {
+  const originalPrepare = db.prepare.bind(db);
+  let executions = 0;
+
+  function wrapStatement(statement) {
+    return new Proxy(statement, {
+      get(target, prop, receiver) {
+        if (prop === 'get' || prop === 'all' || prop === 'run') {
+          return (...args) => {
+            executions++;
+            return target[prop](...args);
+          };
+        }
+        if (prop === 'pluck') {
+          return (...args) => wrapStatement(target.pluck(...args));
+        }
+        const value = Reflect.get(target, prop, receiver);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+  }
+
+  db.prepare = (...args) => wrapStatement(originalPrepare(...args));
+
+  return {
+    reset() {
+      executions = 0;
+    },
+    count() {
+      return executions;
+    },
+  };
 }
 
 /**
@@ -2406,7 +2444,13 @@ describe('workflow query service', () => {
       expect(result.page).toBe(1);
       expect(result.pageSize).toBe(25);
       expect(result.pageCount).toBe(1);
-      expect(result.filters).toEqual({ presence: 'all', usage: 'all' });
+      expect(result.filters).toEqual({
+        view: 'list',
+        search: null,
+        extension: null,
+        presence: 'all',
+        usage: 'all',
+      });
     });
 
     it('uses default filters when none provided', () => {
@@ -2416,7 +2460,13 @@ describe('workflow query service', () => {
 
       const result = service.getProjectAssetBrowser(project.id);
 
-      expect(result.filters).toEqual({ presence: 'all', usage: 'all' });
+      expect(result.filters).toEqual({
+        view: 'list',
+        search: null,
+        extension: null,
+        presence: 'all',
+        usage: 'all',
+      });
       expect(result.total).toBe(2);
     });
 
@@ -2429,7 +2479,102 @@ describe('workflow query service', () => {
         usage: 'bad-usage',
       });
 
-      expect(result.filters).toEqual({ presence: 'all', usage: 'all' });
+      expect(result.filters).toEqual({
+        view: 'list',
+        search: null,
+        extension: null,
+        presence: 'all',
+        usage: 'all',
+      });
+    });
+
+    it('accepts grid view without changing the list page data contract', () => {
+      const project = insertProject(db, { title: 'Grid View' });
+      insertAsset(db, { projectId: project.id, relativePath: 'a.txt', filename: 'a.txt', isPresent: 1 });
+
+      const result = service.getProjectAssetBrowser(project.id, { view: 'grid' });
+
+      expect(result.filters.view).toBe('grid');
+      expect(result.assets).toHaveLength(1);
+      expect(result.page).toBe(1);
+    });
+
+    it('invalid view falls back to list', () => {
+      const project = insertProject(db, { title: 'Invalid View' });
+      insertAsset(db, { projectId: project.id, relativePath: 'a.txt', filename: 'a.txt', isPresent: 1 });
+
+      const result = service.getProjectAssetBrowser(project.id, { view: 'cards' });
+
+      expect(result.filters.view).toBe('list');
+    });
+
+    it('normalizes search by trimming empty input and bounding long values', () => {
+      const project = insertProject(db, { title: 'Search Normalize' });
+      insertAsset(db, { projectId: project.id, relativePath: 'needle.txt', filename: 'needle.txt', isPresent: 1 });
+
+      const empty = service.getProjectAssetBrowser(project.id, { search: '   ' });
+      expect(empty.filters.search).toBeNull();
+
+      const longSearch = `${'n'.repeat(128)}extra`;
+      const bounded = service.getProjectAssetBrowser(project.id, { search: `  ${longSearch}  ` });
+      expect(bounded.filters.search).toBe('n'.repeat(128));
+      expect(bounded.searchMaxLength).toBe(128);
+    });
+
+    it('filters by filename search case-insensitively', () => {
+      const project = insertProject(db, { title: 'Search Filter' });
+      insertAsset(db, { projectId: project.id, relativePath: 'Hero-Render.png', filename: 'Hero-Render.png', extension: 'png', mimeType: 'image/png', isPresent: 1 });
+      insertAsset(db, { projectId: project.id, relativePath: 'hero-source.kra', filename: 'hero-source.kra', extension: 'kra', mimeType: 'application/x-krita', isPresent: 1 });
+      insertAsset(db, { projectId: project.id, relativePath: 'other.txt', filename: 'other.txt', isPresent: 1 });
+
+      const result = service.getProjectAssetBrowser(project.id, { search: 'hero' });
+
+      expect(result.filters.search).toBe('hero');
+      expect(result.total).toBe(2);
+      expect(result.assets.map((a) => a.filename)).toEqual(['Hero-Render.png', 'hero-source.kra']);
+    });
+
+    it('normalizes extension case and leading dot before exact filtering', () => {
+      const project = insertProject(db, { title: 'Extension Normalize' });
+      insertAsset(db, { projectId: project.id, relativePath: 'render.png', filename: 'render.png', extension: 'png', mimeType: 'image/png', isPresent: 1 });
+      insertAsset(db, { projectId: project.id, relativePath: 'render.apng', filename: 'render.apng', extension: 'apng', mimeType: 'application/octet-stream', isPresent: 1 });
+
+      const result = service.getProjectAssetBrowser(project.id, { extension: '.PNG' });
+
+      expect(result.filters.extension).toBe('png');
+      expect(result.total).toBe(1);
+      expect(result.assets.map((a) => a.filename)).toEqual(['render.png']);
+    });
+
+    it('invalid or absent extension normalizes to no extension filter', () => {
+      const project = insertProject(db, { title: 'Invalid Extension' });
+      insertAsset(db, { projectId: project.id, relativePath: 'render.png', filename: 'render.png', extension: 'png', mimeType: 'image/png', isPresent: 1 });
+
+      const invalid = service.getProjectAssetBrowser(project.id, { extension: 'jpg' });
+      const empty = service.getProjectAssetBrowser(project.id, { extension: '.' });
+
+      expect(invalid.filters.extension).toBeNull();
+      expect(invalid.total).toBe(1);
+      expect(empty.filters.extension).toBeNull();
+    });
+
+    it('returns stable project-owned extension choices unaffected by active filters', () => {
+      const project = insertProject(db, { title: 'Stable Extensions' });
+      const other = insertProject(db, { title: 'Other Extensions' });
+      insertAsset(db, { projectId: project.id, relativePath: 'a.png', filename: 'a.png', extension: 'png', mimeType: 'image/png', isPresent: 1 });
+      insertAsset(db, { projectId: project.id, relativePath: 'b.jpg', filename: 'b.jpg', extension: 'jpg', mimeType: 'image/jpeg', isPresent: 0 });
+      insertAsset(db, { projectId: project.id, relativePath: 'c.kra', filename: 'c.kra', extension: 'kra', mimeType: 'application/x-krita', isPresent: 1 });
+      insertAsset(db, { projectId: other.id, relativePath: 'd.webp', filename: 'd.webp', extension: 'webp', mimeType: 'image/webp', isPresent: 1 });
+
+      const result = service.getProjectAssetBrowser(project.id, {
+        search: 'no-match',
+        presence: 'present',
+        usage: 'used',
+      });
+
+      expect(result.total).toBe(0);
+      expect(result.extensionChoices.map((c) => c.value)).toEqual(['jpg', 'kra', 'png']);
+      expect(result.extensionChoices.every((c) => c.selected === false)).toBe(true);
     });
 
     it('malformed page falls back to 1', () => {
@@ -2566,6 +2711,39 @@ describe('workflow query service', () => {
       expect(result.assets[0].filename).toBe('used-present.txt');
     });
 
+    it('combines search, extension, presence, and usage filters', () => {
+      const project = insertProject(db, { title: 'Combined Search Extension' });
+      const rel = insertRelease(db, { projectId: project.id, title: 'R1', status: 'idea' });
+      const target = insertAsset(db, {
+        projectId: project.id,
+        relativePath: 'renders/Hero-Final.png',
+        filename: 'Hero-Final.png',
+        extension: 'png',
+        mimeType: 'image/png',
+        isPresent: 1,
+      });
+      insertAsset(db, { projectId: project.id, relativePath: 'renders/Hero-Final.jpg', filename: 'Hero-Final.jpg', extension: 'jpg', mimeType: 'image/jpeg', isPresent: 1 });
+      insertAsset(db, { projectId: project.id, relativePath: 'renders/Hero-Draft.png', filename: 'Hero-Draft.png', extension: 'png', mimeType: 'image/png', isPresent: 0 });
+      insertAsset(db, { projectId: project.id, relativePath: 'renders/Other.png', filename: 'Other.png', extension: 'png', mimeType: 'image/png', isPresent: 1 });
+      linkAssetToRelease(db, { releaseId: rel.id, assetId: target.id });
+
+      const result = service.getProjectAssetBrowser(project.id, {
+        search: 'hero',
+        extension: '.png',
+        presence: 'present',
+        usage: 'used',
+      });
+
+      expect(result.total).toBe(1);
+      expect(result.assets.map((a) => a.id)).toEqual([target.id]);
+      expect(result.filters).toMatchObject({
+        search: 'hero',
+        extension: 'png',
+        presence: 'present',
+        usage: 'used',
+      });
+    });
+
     it('release_usage_count is attached to each asset', () => {
       const project = insertProject(db, { title: 'Usage Count' });
       insertAsset(db, { projectId: project.id, relativePath: 'zero.txt', filename: 'zero.txt', isPresent: 1 });
@@ -2579,6 +2757,139 @@ describe('workflow query service', () => {
       const one = result.assets.find((a) => a.filename === 'one.txt');
       expect(zero.release_usage_count).toBe(0);
       expect(one.release_usage_count).toBe(1);
+    });
+
+    it('returns required row metadata for future list and grid templates', () => {
+      const project = insertProject(db, { title: 'Row Metadata' });
+      const asset = insertAsset(db, {
+        projectId: project.id,
+        relativePath: 'renders/final.png',
+        filename: 'final.png',
+        extension: 'png',
+        mimeType: 'image/png',
+        sizeBytes: 2048,
+        modifiedAt: '2026-07-28T12:34:56.000Z',
+        isPresent: 1,
+      });
+
+      const result = service.getProjectAssetBrowser(project.id);
+      const row = result.assets.find((a) => a.id === asset.id);
+
+      expect(row).toMatchObject({
+        id: asset.id,
+        project_id: project.id,
+        filename: 'final.png',
+        extension: 'png',
+        mime_type: 'image/png',
+        relative_path: 'renders/final.png',
+        size_bytes: 2048,
+        modified_at: '2026-07-28T12:34:56.000Z',
+        is_present: 1,
+        presence_state: 'present',
+        last_seen_at: expect.any(String),
+        missing_since: null,
+        release_usage_count: 0,
+        release_usage: [],
+        preview_state: 'previewable',
+      });
+      expect(row.preview).toMatchObject({
+        state: 'previewable',
+        previewable: true,
+        sourceMetadataValid: true,
+      });
+    });
+
+    it('classifies previewable, unsupported, and missing assets without generating previews', () => {
+      const project = insertProject(db, { title: 'Preview States' });
+      insertAsset(db, {
+        projectId: project.id,
+        relativePath: 'present.png',
+        filename: 'present.png',
+        extension: 'png',
+        mimeType: 'image/png',
+        sizeBytes: 100,
+        modifiedAt: '2026-07-28T12:00:00.000Z',
+        isPresent: 1,
+      });
+      insertAsset(db, {
+        projectId: project.id,
+        relativePath: 'source.kra',
+        filename: 'source.kra',
+        extension: 'kra',
+        mimeType: 'application/x-krita',
+        sizeBytes: 100,
+        modifiedAt: '2026-07-28T12:00:00.000Z',
+        isPresent: 1,
+      });
+      insertAsset(db, {
+        projectId: project.id,
+        relativePath: 'missing.png',
+        filename: 'missing.png',
+        extension: 'png',
+        mimeType: 'image/png',
+        sizeBytes: 100,
+        modifiedAt: '2026-07-28T12:00:00.000Z',
+        isPresent: 0,
+      });
+
+      const result = service.getProjectAssetBrowser(project.id, { pageSize: 100 });
+      const byName = Object.fromEntries(result.assets.map((asset) => [asset.filename, asset]));
+
+      expect(byName['present.png'].preview_state).toBe('previewable');
+      expect(byName['source.kra'].preview_state).toBe('unsupported');
+      expect(byName['missing.png'].preview_state).toBe('missing');
+      expect(byName['source.kra'].preview_revision).toBeNull();
+      expect(byName['missing.png'].thumbnail_url).toBeNull();
+    });
+
+    it('returns the exact canonical preview revision and structured media URLs only for valid previewable assets', () => {
+      const project = insertProject(db, { title: 'Preview Revision' });
+      const asset = insertAsset(db, {
+        projectId: project.id,
+        relativePath: 'renders/final.png',
+        filename: 'final.png',
+        extension: 'png',
+        mimeType: 'image/png',
+        sizeBytes: 12345,
+        modifiedAt: '2026-07-28 12:00:00',
+        isPresent: 1,
+      });
+      insertAsset(db, {
+        projectId: project.id,
+        relativePath: 'renders/no-mtime.png',
+        filename: 'no-mtime.png',
+        extension: 'png',
+        mimeType: 'image/png',
+        sizeBytes: 100,
+        modifiedAt: null,
+        isPresent: 1,
+      });
+
+      const result = service.getProjectAssetBrowser(project.id, { pageSize: 100 });
+      const row = result.assets.find((a) => a.id === asset.id);
+      const noMtime = result.assets.find((a) => a.filename === 'no-mtime.png');
+      const expectedRevision = buildRevisionToken({
+        projectId: project.id,
+        assetId: asset.id,
+        relativePath: 'renders/final.png',
+        size: 12345,
+        mtime: '2026-07-28T12:00:00.000Z',
+      });
+
+      expect(row.preview_revision).toBe(expectedRevision);
+      expect(row.preview.revision).toBe(expectedRevision);
+      expect(row.thumbnail_url).toBe(`/projects/${project.id}/assets/${asset.id}/thumbnail?v=${expectedRevision}`);
+      expect(row.preview_url).toBe(`/projects/${project.id}/assets/${asset.id}/preview?v=${expectedRevision}`);
+      expect(row.preview.urls).toEqual({
+        thumbnail: row.thumbnail_url,
+        preview: row.preview_url,
+      });
+
+      expect(noMtime.preview_state).toBe('previewable');
+      expect(noMtime.preview.sourceMetadataValid).toBe(false);
+      expect(noMtime.preview_revision).toBeNull();
+      expect(noMtime.thumbnail_url).toBeNull();
+      expect(noMtime.preview_url).toBeNull();
     });
 
     it('release_usage details are attached to the correct assets', () => {
@@ -2732,6 +3043,143 @@ describe('workflow query service', () => {
       expect(result.assets[0].release_usage[0].project_archived_at).toBeTruthy();
     });
 
+    it('browser composition executes a fixed number of statements independent of total project size', () => {
+      const counter = instrumentStatementExecution(db);
+      const instrumentedService = createWorkflowQueryService({ db, evaluateReleaseReadiness });
+
+      const smallProject = insertProject(db, { title: 'Browser Query Small' });
+      const largeProject = insertProject(db, { title: 'Browser Query Large' });
+      for (const [project, total] of [[smallProject, 5], [largeProject, 80]]) {
+        for (let i = 1; i <= total; i++) {
+          insertAsset(db, {
+            projectId: project.id,
+            relativePath: `file${String(i).padStart(2, '0')}.png`,
+            filename: `file${String(i).padStart(2, '0')}.png`,
+            extension: 'png',
+            mimeType: 'image/png',
+            sizeBytes: i,
+            modifiedAt: '2026-07-28T12:00:00.000Z',
+            isPresent: 1,
+          });
+        }
+      }
+
+      counter.reset();
+      const smallProjectPage = instrumentedService.getProjectAssetBrowser(smallProject.id, { pageSize: 5 });
+      const smallProjectCount = counter.count();
+
+      counter.reset();
+      const largeProjectPage = instrumentedService.getProjectAssetBrowser(largeProject.id, { pageSize: 5 });
+      const largeProjectCount = counter.count();
+
+      expect(smallProjectPage.total).toBe(5);
+      expect(largeProjectPage.total).toBe(80);
+      expect(smallProjectPage.assets).toHaveLength(5);
+      expect(largeProjectPage.assets).toHaveLength(5);
+      expect(smallProjectCount).toBe(ASSET_BROWSER_FIXED_STATEMENT_EXECUTIONS);
+      expect(largeProjectCount).toBe(ASSET_BROWSER_FIXED_STATEMENT_EXECUTIONS);
+    });
+
+    it('browser composition executes a fixed number of statements independent of page size', () => {
+      const counter = instrumentStatementExecution(db);
+      const instrumentedService = createWorkflowQueryService({ db, evaluateReleaseReadiness });
+      const project = insertProject(db, { title: 'Browser Query Page Size' });
+      const release = insertRelease(db, { projectId: project.id, title: 'Usage Release', status: 'idea' });
+      for (let i = 1; i <= 30; i++) {
+        const asset = insertAsset(db, {
+          projectId: project.id,
+          relativePath: `file${String(i).padStart(2, '0')}.png`,
+          filename: `file${String(i).padStart(2, '0')}.png`,
+          extension: 'png',
+          mimeType: 'image/png',
+          sizeBytes: i,
+          modifiedAt: '2026-07-28T12:00:00.000Z',
+          isPresent: 1,
+        });
+        linkAssetToRelease(db, { releaseId: release.id, assetId: asset.id });
+      }
+
+      counter.reset();
+      const smallPage = instrumentedService.getProjectAssetBrowser(project.id, { pageSize: 1 });
+      const smallCount = counter.count();
+
+      counter.reset();
+      const largePage = instrumentedService.getProjectAssetBrowser(project.id, { pageSize: 20 });
+      const largeCount = counter.count();
+
+      expect(smallPage.assets).toHaveLength(1);
+      expect(largePage.assets).toHaveLength(20);
+      expect(smallCount).toBe(ASSET_BROWSER_FIXED_STATEMENT_EXECUTIONS);
+      expect(largeCount).toBe(ASSET_BROWSER_FIXED_STATEMENT_EXECUTIONS);
+    });
+
+    it('browser composition executes a fixed number of statements independent of release-usage multiplicity', () => {
+      const counter = instrumentStatementExecution(db);
+      const instrumentedService = createWorkflowQueryService({ db, evaluateReleaseReadiness });
+
+      const lowUsageProject = insertProject(db, { title: 'Browser Query Low Usage' });
+      const oneUsageRelease = insertRelease(db, { projectId: lowUsageProject.id, title: 'One Usage', status: 'idea' });
+      for (let i = 1; i <= 5; i++) {
+        const asset = insertAsset(db, {
+          projectId: lowUsageProject.id,
+          relativePath: `low${String(i).padStart(2, '0')}.png`,
+          filename: `low${String(i).padStart(2, '0')}.png`,
+          extension: 'png',
+          mimeType: 'image/png',
+          sizeBytes: i,
+          modifiedAt: '2026-07-28T12:00:00.000Z',
+          isPresent: 1,
+        });
+        if (i % 2 === 0) {
+          linkAssetToRelease(db, { releaseId: oneUsageRelease.id, assetId: asset.id });
+        }
+      }
+
+      const highUsageProject = insertProject(db, { title: 'Browser Query High Usage' });
+      const manyUsageReleases = [];
+      for (let i = 1; i <= 8; i++) {
+        manyUsageReleases.push(insertRelease(db, {
+          projectId: highUsageProject.id,
+          title: `Many Usage ${String(i).padStart(2, '0')}`,
+          status: 'idea',
+        }));
+      }
+      for (let i = 1; i <= 5; i++) {
+        const asset = insertAsset(db, {
+          projectId: highUsageProject.id,
+          relativePath: `high${String(i).padStart(2, '0')}.png`,
+          filename: `high${String(i).padStart(2, '0')}.png`,
+          extension: 'png',
+          mimeType: 'image/png',
+          sizeBytes: i,
+          modifiedAt: '2026-07-28T12:00:00.000Z',
+          isPresent: 1,
+        });
+        for (const release of manyUsageReleases) {
+          linkAssetToRelease(db, { releaseId: release.id, assetId: asset.id });
+        }
+      }
+
+      counter.reset();
+      const lowUsagePage = instrumentedService.getProjectAssetBrowser(lowUsageProject.id, { pageSize: 5 });
+      const lowUsageCount = counter.count();
+
+      counter.reset();
+      const highUsagePage = instrumentedService.getProjectAssetBrowser(highUsageProject.id, { pageSize: 5 });
+      const highUsageCount = counter.count();
+
+      const lowUsageRows = lowUsagePage.assets.reduce((sum, asset) => sum + asset.release_usage.length, 0);
+      const highUsageRows = highUsagePage.assets.reduce((sum, asset) => sum + asset.release_usage.length, 0);
+
+      expect(lowUsagePage.assets).toHaveLength(5);
+      expect(highUsagePage.assets).toHaveLength(5);
+      expect(lowUsageRows).toBe(2);
+      expect(highUsageRows).toBe(40);
+      expect(highUsageRows).toBeGreaterThan(lowUsageRows);
+      expect(lowUsageCount).toBe(ASSET_BROWSER_FIXED_STATEMENT_EXECUTIONS);
+      expect(highUsageCount).toBe(ASSET_BROWSER_FIXED_STATEMENT_EXECUTIONS);
+    });
+
     it('no scanner or mutation calls occur during read', () => {
       const project = insertProject(db, { title: 'Read Only' });
       insertAsset(db, { projectId: project.id, relativePath: 'a.txt', filename: 'a.txt', isPresent: 1 });
@@ -2745,6 +3193,305 @@ describe('workflow query service', () => {
 
       expect(result).not.toBeNull();
       expect(result.assets).toHaveLength(1);
+    });
+  });
+
+  describe('getProjectAssetViewer', () => {
+    function addViewerAsset(project, relativePath, overrides = {}) {
+      return insertAsset(db, {
+        projectId: project.id,
+        relativePath,
+        filename: overrides.filename ?? relativePath.split('/').pop(),
+        extension: overrides.extension ?? 'txt',
+        mimeType: overrides.mimeType ?? 'text/plain',
+        sizeBytes: overrides.sizeBytes ?? 100,
+        modifiedAt: overrides.modifiedAt ?? '2026-07-28T12:00:00.000Z',
+        isPresent: overrides.isPresent ?? 1,
+      });
+    }
+
+    function expectLocalUrl(href, pathname, expectedQuery = {}) {
+      const url = new URL(href, 'http://localhost');
+      expect(url.pathname).toBe(pathname);
+      expect(Array.from(url.searchParams.keys()).sort()).toEqual(Object.keys(expectedQuery).sort());
+      for (const [key, value] of Object.entries(expectedQuery)) {
+        expect(url.searchParams.get(key)).toBe(String(value));
+      }
+    }
+
+    it('returns project summary, asset metadata, release usage, media URLs, and middle navigation', () => {
+      const project = insertProject(db, { title: 'Viewer Model' });
+      const release = insertRelease(db, { projectId: project.id, title: 'Release A', status: 'planned' });
+      const first = addViewerAsset(project, '01-draft.png', { extension: 'png', mimeType: 'image/png' });
+      const current = addViewerAsset(project, '02-final.png', {
+        extension: 'png',
+        mimeType: 'image/png',
+        sizeBytes: 2048,
+        modifiedAt: '2026-07-28 12:00:00',
+      });
+      const last = addViewerAsset(project, '03-notes.txt');
+      linkAssetToRelease(db, { releaseId: release.id, assetId: current.id });
+
+      const result = service.getProjectAssetViewer(project.id, current.id, {
+        view: 'grid',
+        search: '0',
+        pageSize: '2',
+      });
+
+      expect(result.project).toEqual({
+        id: project.id,
+        title: 'Viewer Model',
+        slug: 'viewer-model',
+        status: 'tbd',
+        archived_at: null,
+      });
+      expect(result.project.project_dir).toBeUndefined();
+      expect(result.asset).toMatchObject({
+        id: current.id,
+        project_id: project.id,
+        filename: '02-final.png',
+        relative_path: '02-final.png',
+        extension: 'png',
+        mime_type: 'image/png',
+        size_bytes: 2048,
+        modified_at: '2026-07-28 12:00:00',
+        is_present: 1,
+        presence_state: 'present',
+        missing: false,
+        release_usage_count: 1,
+        preview_capability: 'previewable',
+        preview_state: 'previewable',
+      });
+      expect(result.asset.release_usage_summary.count).toBe(1);
+      expect(result.asset.release_usage_summary.releases[0].release_id).toBe(release.id);
+      expect(result.asset.revision_token).toMatch(/^[a-f0-9]{16}$/);
+      expect(result.asset.thumbnail_url).toBe(`/projects/${project.id}/assets/${current.id}/thumbnail?v=${result.asset.revision_token}`);
+      expect(result.asset.preview_url).toBe(`/projects/${project.id}/assets/${current.id}/preview?v=${result.asset.revision_token}`);
+      expect(result.asset.original_url).toBe(`/projects/${project.id}/assets/${current.id}/original`);
+
+      expect(result.context).toMatchObject({
+        view: 'grid',
+        search: '0',
+        extension: null,
+        presence: 'all',
+        usage: 'all',
+        page: 1,
+        pageSize: 2,
+      });
+      expect(result.filteredOut).toBe(false);
+      expect(result.filteredPosition).toBe(2);
+      expect(result.filteredTotal).toBe(3);
+      expect(result.currentPage).toBe(1);
+      expect(result.previousAssetLink.assetId).toBe(first.id);
+      expect(result.nextAssetLink.assetId).toBe(last.id);
+      expectLocalUrl(result.previousAssetLink.href, `/projects/${project.id}/assets/${first.id}`, {
+        view: 'grid', search: '0', pageSize: '2',
+      });
+      expectLocalUrl(result.nextAssetLink.href, `/projects/${project.id}/assets/${last.id}`, {
+        view: 'grid', search: '0', page: '2', pageSize: '2',
+      });
+      expectLocalUrl(result.backToAssetsLink.href, `/projects/${project.id}/assets`, {
+        view: 'grid', search: '0', pageSize: '2',
+      });
+    });
+
+    it('uses exact cross-page previous and next links when the viewer URL omits page', () => {
+      const project = insertProject(db, { title: 'Viewer Cross Page' });
+      const assets = [];
+      for (let i = 1; i <= 5; i++) {
+        assets.push(addViewerAsset(project, `file${String(i).padStart(2, '0')}.txt`));
+      }
+
+      const second = service.getProjectAssetViewer(project.id, assets[1].id, { pageSize: '2' });
+      const third = service.getProjectAssetViewer(project.id, assets[2].id, { pageSize: '2' });
+
+      expect(second.currentPage).toBe(1);
+      expect(second.previousAssetLink.assetId).toBe(assets[0].id);
+      expect(second.nextAssetLink.assetId).toBe(assets[2].id);
+      expectLocalUrl(second.nextAssetLink.href, `/projects/${project.id}/assets/${assets[2].id}`, {
+        page: '2', pageSize: '2',
+      });
+      expectLocalUrl(second.backToAssetsLink.href, `/projects/${project.id}/assets`, { pageSize: '2' });
+
+      expect(third.currentPage).toBe(2);
+      expect(third.previousAssetLink.assetId).toBe(assets[1].id);
+      expect(third.nextAssetLink.assetId).toBe(assets[3].id);
+      expectLocalUrl(third.previousAssetLink.href, `/projects/${project.id}/assets/${assets[1].id}`, {
+        pageSize: '2',
+      });
+      expectLocalUrl(third.backToAssetsLink.href, `/projects/${project.id}/assets`, {
+        page: '2', pageSize: '2',
+      });
+    });
+
+    it('uses the asset position, not an incorrect supplied page, for navigation URLs', () => {
+      const project = insertProject(db, { title: 'Viewer Wrong Page' });
+      const assets = [];
+      for (let i = 1; i <= 5; i++) {
+        assets.push(addViewerAsset(project, `file${String(i).padStart(2, '0')}.txt`));
+      }
+
+      const result = service.getProjectAssetViewer(project.id, assets[3].id, {
+        page: '99',
+        pageSize: '2',
+      });
+
+      expect(result.context.page).toBe(99);
+      expect(result.filteredPosition).toBe(4);
+      expect(result.currentPage).toBe(2);
+      expect(result.previousAssetLink.assetId).toBe(assets[2].id);
+      expect(result.nextAssetLink.assetId).toBe(assets[4].id);
+      expectLocalUrl(result.previousAssetLink.href, `/projects/${project.id}/assets/${assets[2].id}`, {
+        page: '2', pageSize: '2',
+      });
+      expectLocalUrl(result.nextAssetLink.href, `/projects/${project.id}/assets/${assets[4].id}`, {
+        page: '3', pageSize: '2',
+      });
+      expectLocalUrl(result.backToAssetsLink.href, `/projects/${project.id}/assets`, {
+        page: '2', pageSize: '2',
+      });
+    });
+
+    it('omits previous for the first asset, next for the last asset, and page 1 in default URLs', () => {
+      const project = insertProject(db, { title: 'Viewer Edges' });
+      const first = addViewerAsset(project, '01-first.txt');
+      const last = addViewerAsset(project, '02-last.txt');
+
+      const firstResult = service.getProjectAssetViewer(project.id, first.id);
+      const lastResult = service.getProjectAssetViewer(project.id, last.id);
+
+      expect(firstResult.previousAssetLink).toBeNull();
+      expect(firstResult.nextAssetLink.assetId).toBe(last.id);
+      expectLocalUrl(firstResult.nextAssetLink.href, `/projects/${project.id}/assets/${last.id}`);
+      expectLocalUrl(firstResult.backToAssetsLink.href, `/projects/${project.id}/assets`);
+
+      expect(lastResult.previousAssetLink.assetId).toBe(first.id);
+      expect(lastResult.nextAssetLink).toBeNull();
+      expectLocalUrl(lastResult.previousAssetLink.href, `/projects/${project.id}/assets/${first.id}`);
+      expectLocalUrl(lastResult.backToAssetsLink.href, `/projects/${project.id}/assets`);
+    });
+
+    it('shows assets excluded by search, extension, presence, and usage while clearing filtered adjacency', () => {
+      const searchProject = insertProject(db, { title: 'Viewer Excluded Search' });
+      addViewerAsset(searchProject, 'visible.txt');
+      const searchCurrent = addViewerAsset(searchProject, 'hidden.txt');
+
+      const extensionProject = insertProject(db, { title: 'Viewer Excluded Extension' });
+      addViewerAsset(extensionProject, 'visible.jpg', { extension: 'jpg', mimeType: 'image/jpeg' });
+      const extensionCurrent = addViewerAsset(extensionProject, 'hidden.png', { extension: 'png', mimeType: 'image/png' });
+
+      const presenceProject = insertProject(db, { title: 'Viewer Excluded Presence' });
+      addViewerAsset(presenceProject, 'visible.txt', { isPresent: 1 });
+      const presenceCurrent = addViewerAsset(presenceProject, 'hidden.txt', { isPresent: 0 });
+
+      const usageProject = insertProject(db, { title: 'Viewer Excluded Usage' });
+      const used = addViewerAsset(usageProject, 'visible.txt');
+      const usageCurrent = addViewerAsset(usageProject, 'hidden.txt');
+      const release = insertRelease(db, { projectId: usageProject.id, title: 'Usage Release', status: 'idea' });
+      linkAssetToRelease(db, { releaseId: release.id, assetId: used.id });
+
+      const cases = [
+        { project: searchProject, current: searchCurrent, raw: { search: 'visible' }, query: { search: 'visible' } },
+        { project: extensionProject, current: extensionCurrent, raw: { extension: '.jpg' }, query: { extension: 'jpg' } },
+        { project: presenceProject, current: presenceCurrent, raw: { presence: 'present' }, query: { presence: 'present' } },
+        { project: usageProject, current: usageCurrent, raw: { usage: 'used' }, query: { usage: 'used' } },
+      ];
+
+      for (const testCase of cases) {
+        const result = service.getProjectAssetViewer(testCase.project.id, testCase.current.id, {
+          ...testCase.raw,
+          page: '9',
+        });
+
+        expect(result.asset.id).toBe(testCase.current.id);
+        expect(result.filteredOut).toBe(true);
+        expect(result.filteredPosition).toBeNull();
+        expect(result.currentPage).toBeNull();
+        expect(result.previousAssetLink).toBeNull();
+        expect(result.nextAssetLink).toBeNull();
+        expectLocalUrl(result.backToAssetsLink.href, `/projects/${testCase.project.id}/assets`, testCase.query);
+      }
+    });
+
+    it('keeps archived projects readable in the viewer model', () => {
+      const project = insertProject(db, { title: 'Viewer Archived' });
+      const asset = addViewerAsset(project, 'asset.txt');
+      db.prepare(`UPDATE projects SET archived_at = datetime('now'), status = 'archived' WHERE id = ?`).run(project.id);
+
+      const result = service.getProjectAssetViewer(project.id, asset.id);
+
+      expect(result).not.toBeNull();
+      expect(result.project.status).toBe('archived');
+      expect(result.project.archived_at).toBeTruthy();
+      expect(result.asset.id).toBe(asset.id);
+    });
+
+    it('preserves missing and unsupported asset metadata while omitting invalid media URLs', () => {
+      const project = insertProject(db, { title: 'Viewer Media States' });
+      const missing = addViewerAsset(project, 'missing.png', { extension: 'png', mimeType: 'image/png', isPresent: 0 });
+      const unsupported = addViewerAsset(project, 'source.kra', { extension: 'kra', mimeType: 'application/x-krita' });
+      const supported = addViewerAsset(project, 'render.png', { extension: 'png', mimeType: 'image/png' });
+
+      const missingResult = service.getProjectAssetViewer(project.id, missing.id);
+      const unsupportedResult = service.getProjectAssetViewer(project.id, unsupported.id);
+      const supportedResult = service.getProjectAssetViewer(project.id, supported.id);
+
+      expect(missingResult.asset).toMatchObject({
+        id: missing.id,
+        is_present: 0,
+        missing: true,
+        preview_state: 'missing',
+        thumbnail_url: null,
+        preview_url: null,
+        original_url: null,
+      });
+      expect(unsupportedResult.asset).toMatchObject({
+        id: unsupported.id,
+        preview_state: 'unsupported',
+        thumbnail_url: null,
+        preview_url: null,
+        original_url: null,
+      });
+      expect(supportedResult.asset.preview_state).toBe('previewable');
+      expect(supportedResult.asset.original_url).toBe(`/projects/${project.id}/assets/${supported.id}/original`);
+    });
+
+    it('returns the same not-found convention for unknown and cross-project assets', () => {
+      const project = insertProject(db, { title: 'Viewer Owner' });
+      const other = insertProject(db, { title: 'Viewer Other Owner' });
+      const otherAsset = addViewerAsset(other, 'other.txt');
+
+      expect(service.getProjectAssetViewer(project.id, 999999)).toBeNull();
+      expect(service.getProjectAssetViewer(project.id, otherAsset.id)).toBeNull();
+    });
+
+    it('viewer composition executes a fixed number of statements as project size grows', () => {
+      const counter = instrumentStatementExecution(db);
+      const instrumentedService = createWorkflowQueryService({ db, evaluateReleaseReadiness });
+      const smallProject = insertProject(db, { title: 'Viewer Query Small' });
+      const smallCurrent = addViewerAsset(smallProject, 'file01.txt');
+      addViewerAsset(smallProject, 'file02.txt');
+      addViewerAsset(smallProject, 'file03.txt');
+
+      const largeProject = insertProject(db, { title: 'Viewer Query Large' });
+      let largeCurrent;
+      for (let i = 1; i <= 80; i++) {
+        const asset = addViewerAsset(largeProject, `file${String(i).padStart(2, '0')}.txt`);
+        if (i === 40) largeCurrent = asset;
+      }
+
+      counter.reset();
+      const small = instrumentedService.getProjectAssetViewer(smallProject.id, smallCurrent.id);
+      const smallCount = counter.count();
+
+      counter.reset();
+      const large = instrumentedService.getProjectAssetViewer(largeProject.id, largeCurrent.id);
+      const largeCount = counter.count();
+
+      expect(small.asset.id).toBe(smallCurrent.id);
+      expect(large.asset.id).toBe(largeCurrent.id);
+      expect(smallCount).toBe(ASSET_VIEWER_FIXED_STATEMENT_EXECUTIONS);
+      expect(largeCount).toBe(ASSET_VIEWER_FIXED_STATEMENT_EXECUTIONS);
     });
   });
 

@@ -341,6 +341,28 @@ describe('asset repository', () => {
     expect(extensions).toEqual(['jpg', 'png']);
   });
 
+  it('returns stable normalized browser extension choices for the owning project only', () => {
+    const other = createProject('Extension Other');
+    assetRepo.upsert(projectId, 'a.PNG', {
+      filename: 'a.PNG', extension: 'PNG', mimeType: 'image/png',
+      sizeBytes: 100, modifiedAt: null,
+    });
+    assetRepo.upsert(projectId, 'b.jpg', {
+      filename: 'b.jpg', extension: 'jpg', mimeType: 'image/jpeg',
+      sizeBytes: 100, modifiedAt: null,
+    });
+    assetRepo.upsert(projectId, 'README', {
+      filename: 'README', extension: '', mimeType: 'application/octet-stream',
+      sizeBytes: 100, modifiedAt: null,
+    });
+    assetRepo.upsert(other.id, 'c.kra', {
+      filename: 'c.kra', extension: 'kra', mimeType: 'application/x-krita',
+      sizeBytes: 100, modifiedAt: null,
+    });
+
+    expect(assetRepo.listProjectAssetExtensions(projectId)).toEqual(['jpg', 'png']);
+  });
+
   // ─── Presence tracking ─────────────────────────────────────────────
 
   it('upsert marks new assets as present', () => {
@@ -556,7 +578,7 @@ describe('asset repository', () => {
     it('returns assets with all default columns', () => {
       assetRepo.upsert(projectId, 'a.png', {
         filename: 'a.png', extension: 'png', mimeType: 'image/png',
-        sizeBytes: 100, modifiedAt: null,
+        sizeBytes: 100, modifiedAt: '2026-07-28T10:00:00.000Z',
       });
 
       const [asset] = assetRepo.findProjectAssetPage(projectId);
@@ -566,11 +588,56 @@ describe('asset repository', () => {
         relative_path: 'a.png',
         filename: 'a.png',
         extension: 'png',
+        mime_type: 'image/png',
+        size_bytes: 100,
+        modified_at: '2026-07-28T10:00:00.000Z',
         is_present: 1,
         last_seen_at: expect.any(String),
         missing_since: null,
         release_usage_count: 0,
       });
+    });
+
+    it('filters by case-insensitive filename search with LIKE wildcards treated literally', () => {
+      assetRepo.upsert(projectId, 'Sun_100%.png', {
+        filename: 'Sun_100%.png', extension: 'png', mimeType: 'image/png',
+        sizeBytes: 100, modifiedAt: null,
+      });
+      assetRepo.upsert(projectId, 'sunset.jpg', {
+        filename: 'sunset.jpg', extension: 'jpg', mimeType: 'image/jpeg',
+        sizeBytes: 100, modifiedAt: null,
+      });
+      assetRepo.upsert(projectId, 'plain.png', {
+        filename: 'plain.png', extension: 'png', mimeType: 'image/png',
+        sizeBytes: 100, modifiedAt: null,
+      });
+
+      const caseInsensitive = assetRepo.findProjectAssetPage(projectId, { search: 'sun', pageSize: 100 });
+      expect(caseInsensitive.map((a) => a.filename)).toEqual(['Sun_100%.png', 'sunset.jpg']);
+
+      const literalPercent = assetRepo.findProjectAssetPage(projectId, { search: '100%', pageSize: 100 });
+      expect(literalPercent.map((a) => a.filename)).toEqual(['Sun_100%.png']);
+
+      const literalUnderscore = assetRepo.findProjectAssetPage(projectId, { search: '_', pageSize: 100 });
+      expect(literalUnderscore.map((a) => a.filename)).toEqual(['Sun_100%.png']);
+    });
+
+    it('filters by exact normalized extension', () => {
+      assetRepo.upsert(projectId, 'a.png', {
+        filename: 'a.png', extension: 'png', mimeType: 'image/png',
+        sizeBytes: 100, modifiedAt: null,
+      });
+      assetRepo.upsert(projectId, 'b.apng', {
+        filename: 'b.apng', extension: 'apng', mimeType: 'application/octet-stream',
+        sizeBytes: 100, modifiedAt: null,
+      });
+      assetRepo.upsert(projectId, 'c.jpg', {
+        filename: 'c.jpg', extension: 'jpg', mimeType: 'image/jpeg',
+        sizeBytes: 100, modifiedAt: null,
+      });
+
+      const results = assetRepo.findProjectAssetPage(projectId, { extension: 'png', pageSize: 100 });
+      expect(results.map((a) => a.filename)).toEqual(['a.png']);
     });
 
     it('applies LIMIT and OFFSET correctly', () => {
@@ -745,6 +812,14 @@ describe('asset repository', () => {
           sizeBytes: 100, modifiedAt: null,
         });
       }
+      assetRepo.upsert(projectId, 'file6.jpg', {
+        filename: 'file6.jpg', extension: 'jpg', mimeType: 'image/jpeg',
+        sizeBytes: 100, modifiedAt: null,
+      });
+      assetRepo.upsert(projectId, 'other.txt', {
+        filename: 'other.txt', extension: 'txt', mimeType: 'text/plain',
+        sizeBytes: 100, modifiedAt: null,
+      });
       assetRepo.markMissingByProjectIdAndPathNotIn(projectId, ['file1.png']);
 
       const combinations = [
@@ -755,6 +830,10 @@ describe('asset repository', () => {
         { presence: 'all', usage: 'unused' },
         { presence: 'present', usage: 'unused' },
         { presence: 'missing', usage: 'used' },
+        { search: 'file', presence: 'all', usage: 'all' },
+        { search: 'FILE', extension: 'png', presence: 'all', usage: 'all' },
+        { search: 'other', extension: 'txt', presence: 'present', usage: 'unused' },
+        { search: 'missing', extension: 'png', presence: 'all', usage: 'all' },
       ];
 
       for (const combo of combinations) {
@@ -762,6 +841,113 @@ describe('asset repository', () => {
         const page = assetRepo.findProjectAssetPage(projectId, { ...combo, page: 1, pageSize: 100 });
         expect(count).toBe(page.length);
       }
+    });
+  });
+
+  describe('findProjectAssetViewerContext', () => {
+    function addViewerAsset(relativePath, overrides = {}) {
+      return assetRepo.upsert(projectId, relativePath, {
+        filename: overrides.filename ?? relativePath.split('/').pop(),
+        extension: overrides.extension ?? 'txt',
+        mimeType: overrides.mimeType ?? 'text/plain',
+        sizeBytes: overrides.sizeBytes ?? 100,
+        modifiedAt: overrides.modifiedAt ?? null,
+      });
+    }
+
+    it('returns exact adjacent IDs for first, middle, and last assets', () => {
+      const first = addViewerAsset('01-first.txt');
+      const middle = addViewerAsset('02-middle.txt');
+      const last = addViewerAsset('03-last.txt');
+
+      const firstContext = assetRepo.findProjectAssetViewerContext(projectId, first.id);
+      const middleContext = assetRepo.findProjectAssetViewerContext(projectId, middle.id);
+      const lastContext = assetRepo.findProjectAssetViewerContext(projectId, last.id);
+
+      expect(firstContext.filtered_position).toBe(1);
+      expect(firstContext.previous_asset_id).toBeNull();
+      expect(firstContext.next_asset_id).toBe(middle.id);
+      expect(firstContext.filtered_total).toBe(3);
+
+      expect(middleContext.filtered_position).toBe(2);
+      expect(middleContext.previous_asset_id).toBe(first.id);
+      expect(middleContext.next_asset_id).toBe(last.id);
+      expect(middleContext.filtered_total).toBe(3);
+
+      expect(lastContext.filtered_position).toBe(3);
+      expect(lastContext.previous_asset_id).toBe(middle.id);
+      expect(lastContext.next_asset_id).toBeNull();
+      expect(lastContext.filtered_total).toBe(3);
+    });
+
+    it('returns the current project asset with null adjacency when excluded by filters', () => {
+      const visible = addViewerAsset('visible.txt');
+      const current = addViewerAsset('hidden.txt');
+
+      const context = assetRepo.findProjectAssetViewerContext(projectId, current.id, { search: 'visible' });
+
+      expect(context.id).toBe(current.id);
+      expect(context.filtered_position).toBeNull();
+      expect(context.previous_asset_id).toBeNull();
+      expect(context.next_asset_id).toBeNull();
+      expect(context.filtered_total).toBe(1);
+      expect(visible.id).toBeGreaterThan(0);
+    });
+
+    it('returns undefined for unknown and cross-project assets', () => {
+      const otherProject = projectRepo.create({
+        title: 'Viewer Other', slug: 'viewer-other', description: '', notes: '',
+        status: 'tbd', priority: 'normal', plannedDate: null, publishedDate: null, patreonUrl: null,
+      });
+      const otherAsset = assetRepo.upsert(otherProject.id, 'other.txt', {
+        filename: 'other.txt', extension: 'txt', mimeType: 'text/plain',
+        sizeBytes: 100, modifiedAt: null,
+      });
+
+      expect(assetRepo.findProjectAssetViewerContext(projectId, 999999)).toBeUndefined();
+      expect(assetRepo.findProjectAssetViewerContext(projectId, otherAsset.id)).toBeUndefined();
+    });
+
+    it('uses asset ID to break deterministic case-insensitive filename ties', () => {
+      const lower = addViewerAsset('one/readme.txt', { filename: 'readme.txt' });
+      const upper = addViewerAsset('two/README.txt', { filename: 'README.txt' });
+
+      const lowerContext = assetRepo.findProjectAssetViewerContext(projectId, lower.id);
+      const upperContext = assetRepo.findProjectAssetViewerContext(projectId, upper.id);
+
+      expect(lower.id).toBeLessThan(upper.id);
+      expect(lowerContext.filtered_position).toBe(1);
+      expect(lowerContext.next_asset_id).toBe(upper.id);
+      expect(upperContext.filtered_position).toBe(2);
+      expect(upperContext.previous_asset_id).toBe(lower.id);
+    });
+
+    it('uses extension to break equal-filename ties before asset ID', () => {
+      const png = addViewerAsset('renders/png-file', { filename: 'asset', extension: 'png', mimeType: 'image/png' });
+      const jpg = addViewerAsset('renders/jpg-file', { filename: 'asset', extension: 'jpg', mimeType: 'image/jpeg' });
+
+      const jpgContext = assetRepo.findProjectAssetViewerContext(projectId, jpg.id);
+      const pngContext = assetRepo.findProjectAssetViewerContext(projectId, png.id);
+
+      expect(jpg.id).toBeGreaterThan(png.id);
+      expect(jpgContext.filtered_position).toBe(1);
+      expect(jpgContext.next_asset_id).toBe(png.id);
+      expect(pngContext.filtered_position).toBe(2);
+      expect(pngContext.previous_asset_id).toBe(jpg.id);
+    });
+
+    it('uses asset ID to break exact filename and extension ties', () => {
+      const first = addViewerAsset('one/duplicate', { filename: 'duplicate', extension: 'bin', mimeType: 'application/octet-stream' });
+      const second = addViewerAsset('two/duplicate', { filename: 'duplicate', extension: 'bin', mimeType: 'application/octet-stream' });
+
+      const firstContext = assetRepo.findProjectAssetViewerContext(projectId, first.id);
+      const secondContext = assetRepo.findProjectAssetViewerContext(projectId, second.id);
+
+      expect(first.id).toBeLessThan(second.id);
+      expect(firstContext.filtered_position).toBe(1);
+      expect(firstContext.next_asset_id).toBe(second.id);
+      expect(secondContext.filtered_position).toBe(2);
+      expect(secondContext.previous_asset_id).toBe(first.id);
     });
   });
 

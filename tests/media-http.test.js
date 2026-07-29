@@ -33,14 +33,16 @@ import {
   buildProjectRelPath,
 } from '../src/storage/project-storage.js';
 import { writeManifestSync } from '../src/storage/manifest.js';
-import { resolvePublishedDir, THUMBNAIL_FILENAME, PREVIEW_FILENAME } from '../src/storage/preview-cache.js';
+import { resolvePublishedDir, THUMBNAIL_FILENAME, PREVIEW_FILENAME, buildRevisionToken } from '../src/storage/preview-cache.js';
 import {
   createMediaService,
   sanitizeDispositionFilename,
   inlineMimeFor,
   CONTENT_DISPOSITION_HEADER_MAX,
 } from '../src/services/media-service.js';
-import { createPreviewService } from '../src/services/preview-service.js';
+import { createPreviewService, buildAssetRevisionToken } from '../src/services/preview-service.js';
+import { createWorkflowQueryService } from '../src/services/workflow-query-service.js';
+import { evaluateReleaseReadiness } from '../src/services/release-readiness-policy.js';
 import { Readable } from 'node:stream';
 import http from 'node:http';
 
@@ -631,6 +633,205 @@ describe('media routes — revision-token normalization', () => {
         expect(name).not.toContain(token);
       }
     }
+  });
+});
+
+// ─── Section 10c — Revision eligibility parity ────────────────────────────
+
+describe('media routes — revision eligibility parity', () => {
+  let h;
+
+  beforeEach(() => {
+    h = makeHarness();
+  });
+
+  afterEach(() => h.cleanup());
+
+  async function setupPreviewableAsset(label) {
+    const { project, absPath } = h.createProject(`Revision ${label}`);
+    const buf = await makePng(96, 64);
+    writeProjectFile(absPath, 'eligible.png', buf);
+    const asset = h.indexAsset(project, 'eligible.png', {
+      modifiedAt: '2026-07-28 12:00:00',
+    });
+    return { project, asset, size: buf.length };
+  }
+
+  function assetCacheRoot(projectId, assetId) {
+    return path.join(h.previewRoot, 'projects', String(projectId), String(assetId));
+  }
+
+  async function collectRevisionState(project, assetId) {
+    const workflow = createWorkflowQueryService({ db: h.db, evaluateReleaseReadiness });
+    const browser = workflow.getProjectAssetBrowser(project.id, { pageSize: 100 });
+    const browserAsset = browser.assets.find((asset) => asset.id === assetId);
+    const viewer = workflow.getProjectAssetViewer(project.id, assetId);
+    const descriptor = h.previewService.getOriginalDescriptor(project.id, assetId);
+
+    let mediaResult = null;
+    let mediaError = null;
+    try {
+      mediaResult = await h.mediaService.getDerivative('thumbnail', project.id, assetId);
+    } catch (err) {
+      mediaError = err;
+    }
+
+    return {
+      browserRevision: browserAsset?.preview_revision ?? null,
+      browserThumbnailUrl: browserAsset?.thumbnail_url ?? null,
+      browserPreviewUrl: browserAsset?.preview_url ?? null,
+      viewerRevision: viewer?.asset.revision_token ?? null,
+      viewerThumbnailUrl: viewer?.asset.thumbnail_url ?? null,
+      viewerPreviewUrl: viewer?.asset.preview_url ?? null,
+      descriptorRevision: descriptor.revision,
+      mediaRevision: mediaResult?.revision ?? null,
+      mediaError,
+    };
+  }
+
+  const metadataCases = [
+    {
+      name: 'valid metadata',
+      valid: true,
+      mutate: () => true,
+    },
+    {
+      name: 'null size',
+      valid: false,
+      directOverride: { size_bytes: null },
+      mutate: ({ asset }) => {
+        try {
+          h.db.prepare('UPDATE assets SET size_bytes = NULL WHERE id = ?').run(asset.id);
+          return true;
+        } catch {
+          return false;
+        }
+      },
+    },
+    {
+      name: 'negative size',
+      valid: false,
+      mutate: ({ asset }) => {
+        h.db.prepare('UPDATE assets SET size_bytes = -1 WHERE id = ?').run(asset.id);
+        return true;
+      },
+    },
+    {
+      name: 'non-finite size where constructible',
+      valid: false,
+      directOverride: { size_bytes: Number.POSITIVE_INFINITY },
+      mutate: ({ asset }) => {
+        try {
+          h.db.prepare('UPDATE assets SET size_bytes = ? WHERE id = ?').run(Number.POSITIVE_INFINITY, asset.id);
+        } catch {
+          return false;
+        }
+        const stored = h.assetRepo.findById(asset.id);
+        return typeof stored.size_bytes === 'number' && !Number.isFinite(stored.size_bytes);
+      },
+    },
+    {
+      name: 'missing modification time',
+      valid: false,
+      mutate: ({ asset }) => {
+        h.db.prepare('UPDATE assets SET modified_at = NULL WHERE id = ?').run(asset.id);
+        return true;
+      },
+    },
+    {
+      name: 'malformed modification time',
+      valid: false,
+      mutate: ({ asset }) => {
+        h.db.prepare('UPDATE assets SET modified_at = ? WHERE id = ?').run('not-a-time', asset.id);
+        return true;
+      },
+    },
+    {
+      name: 'empty relative path',
+      valid: false,
+      mutate: ({ asset }) => {
+        h.db.prepare('UPDATE assets SET relative_path = ? WHERE id = ?').run('', asset.id);
+        return true;
+      },
+    },
+  ];
+
+  for (const testCase of metadataCases) {
+    it(`keeps browser, viewer, and media revision eligibility aligned for ${testCase.name}`, async () => {
+      const fixture = await setupPreviewableAsset(testCase.name);
+      if (testCase.mutate(fixture) === false) {
+        expect(buildAssetRevisionToken({
+          project_id: fixture.project.id,
+          id: fixture.asset.id,
+          relative_path: 'eligible.png',
+          size_bytes: fixture.size,
+          modified_at: '2026-07-28T12:00:00.000Z',
+          ...(testCase.directOverride || {}),
+        })).toBeNull();
+        return;
+      }
+
+      const state = await collectRevisionState(fixture.project, fixture.asset.id);
+      const revisions = [
+        state.browserRevision,
+        state.viewerRevision,
+        state.descriptorRevision,
+        state.mediaRevision,
+      ];
+
+      if (testCase.valid) {
+        const expectedRevision = buildRevisionToken({
+          projectId: fixture.project.id,
+          assetId: fixture.asset.id,
+          relativePath: 'eligible.png',
+          size: fixture.size,
+          mtime: '2026-07-28T12:00:00.000Z',
+        });
+
+        expect(revisions).toEqual([
+          expectedRevision,
+          expectedRevision,
+          expectedRevision,
+          expectedRevision,
+        ]);
+        expect(state.browserThumbnailUrl).toBe(`/projects/${fixture.project.id}/assets/${fixture.asset.id}/thumbnail?v=${expectedRevision}`);
+        expect(state.browserPreviewUrl).toBe(`/projects/${fixture.project.id}/assets/${fixture.asset.id}/preview?v=${expectedRevision}`);
+        expect(state.viewerThumbnailUrl).toBe(`/projects/${fixture.project.id}/assets/${fixture.asset.id}/thumbnail?v=${expectedRevision}`);
+        expect(state.viewerPreviewUrl).toBe(`/projects/${fixture.project.id}/assets/${fixture.asset.id}/preview?v=${expectedRevision}`);
+        expect(fs.existsSync(assetCacheRoot(fixture.project.id, fixture.asset.id))).toBe(true);
+        return;
+      }
+
+      expect(revisions).toEqual([null, null, null, null]);
+      expect(state.browserThumbnailUrl).toBeNull();
+      expect(state.browserPreviewUrl).toBeNull();
+      expect(state.viewerThumbnailUrl).toBeNull();
+      expect(state.viewerPreviewUrl).toBeNull();
+      expect(state.mediaError?.status).toBe(404);
+
+      const res = await request(h.app)
+        .get(`/projects/${fixture.project.id}/assets/${fixture.asset.id}/thumbnail`)
+        .expect(404);
+      expect(res.headers['cache-control']).toBe('no-store');
+      expect(fs.existsSync(assetCacheRoot(fixture.project.id, fixture.asset.id))).toBe(false);
+    });
+  }
+
+  it('rejects invalid IDs in the shared revision-eligibility helper', () => {
+    const valid = {
+      project_id: 1,
+      id: 1,
+      relative_path: 'eligible.png',
+      size_bytes: 100,
+      modified_at: '2026-07-28T12:00:00.000Z',
+    };
+
+    expect(buildAssetRevisionToken(valid)).toMatch(/^[a-f0-9]{16}$/);
+    expect(buildAssetRevisionToken({ ...valid, project_id: 0 })).toBeNull();
+    expect(buildAssetRevisionToken({ ...valid, project_id: -1 })).toBeNull();
+    expect(buildAssetRevisionToken({ ...valid, id: 0 })).toBeNull();
+    expect(buildAssetRevisionToken({ ...valid, id: -1 })).toBeNull();
+    expect(buildAssetRevisionToken({ ...valid, size_bytes: Number.POSITIVE_INFINITY })).toBeNull();
   });
 });
 

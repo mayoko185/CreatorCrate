@@ -28,6 +28,7 @@
 import { createReleaseRepository, RELEASE_STATUSES } from '../data/release-repository.js';
 import { createProjectRepository } from '../data/project-repository.js';
 import { createAssetRepository } from '../data/asset-repository.js';
+import { classifyPreviewable, buildAssetRevisionToken } from './preview-service.js';
 import { getLocalTodayIso } from '../util/date.js';
 
 const DEFAULT_LIMITS = Object.freeze({
@@ -42,6 +43,12 @@ const DEFAULT_LIMITS = Object.freeze({
   activeReleases: 5,
   recentReleases: 5,
 });
+
+const ASSET_BROWSER_DEFAULT_PAGE_SIZE = 25;
+const ASSET_BROWSER_MAX_PAGE_SIZE = 100;
+const ASSET_BROWSER_SEARCH_MAX_LENGTH = 128;
+const ASSET_BROWSER_ORDERING = 'a.filename COLLATE NOCASE ASC, a.extension ASC, a.id ASC';
+const ASSET_BROWSER_CONTEXT_KEYS = ['view', 'search', 'extension', 'presence', 'usage', 'page', 'pageSize'];
 
 /**
  * The application-local calendar date used as the default dashboard
@@ -562,23 +569,192 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
   /**
    * Normalize and validate asset browser query parameters.
    * @param {Object} raw
-   * @returns {{ presence: 'all'|'present'|'missing', usage: 'all'|'used'|'unused', page: number, pageSize: number }}
+   * @param {string[]} extensionChoices - normalized extensions available in the project scope
+   * @returns {{ view: 'list'|'grid', search: string|null, extension: string|null, presence: 'all'|'present'|'missing', usage: 'all'|'used'|'unused', page: number, pageSize: number }}
    */
-  function normalizeAssetBrowserQuery(raw) {
+  function normalizeAssetBrowserQuery(raw = {}, extensionChoices = []) {
+    const viewValues = ['list', 'grid'];
     const presenceValues = ['all', 'present', 'missing'];
     const usageValues = ['all', 'used', 'unused'];
 
+    const view = viewValues.includes(raw.view) ? raw.view : 'list';
     const presence = presenceValues.includes(raw.presence) ? raw.presence : 'all';
     const usage = usageValues.includes(raw.usage) ? raw.usage : 'all';
+
+    const search = normalizeAssetBrowserSearch(raw.search);
+    const extension = normalizeAssetBrowserExtension(raw.extension, extensionChoices);
 
     const pageRaw = parseStrictPositiveInt(raw.page);
     const page = pageRaw !== null ? pageRaw : 1;
 
     const pageSizeRaw = parseStrictPositiveInt(raw.pageSize);
-    let pageSize = pageSizeRaw !== null ? pageSizeRaw : 25;
-    if (pageSize > 100) pageSize = 100;
+    let pageSize = pageSizeRaw !== null ? pageSizeRaw : ASSET_BROWSER_DEFAULT_PAGE_SIZE;
+    if (pageSize > ASSET_BROWSER_MAX_PAGE_SIZE) pageSize = ASSET_BROWSER_MAX_PAGE_SIZE;
 
-    return { presence, usage, page, pageSize };
+    return { view, search, extension, presence, usage, page, pageSize };
+  }
+
+  function normalizeAssetBrowserSearch(value) {
+    if (typeof value !== 'string') return null;
+    const trimmed = value.trim();
+    if (trimmed === '') return null;
+    return trimmed.slice(0, ASSET_BROWSER_SEARCH_MAX_LENGTH);
+  }
+
+  function normalizeAssetBrowserExtension(value, extensionChoices) {
+    if (typeof value !== 'string') return null;
+    const normalized = value.trim().replace(/^\./, '').toLowerCase();
+    if (normalized === '') return null;
+    return extensionChoices.includes(normalized) ? normalized : null;
+  }
+
+  function buildPreviewUrls(asset, revision) {
+    if (!revision) {
+      return { thumbnail: null, preview: null };
+    }
+
+    const query = new URLSearchParams({ v: revision }).toString();
+    return {
+      thumbnail: `/projects/${asset.project_id}/assets/${asset.id}/thumbnail?${query}`,
+      preview: `/projects/${asset.project_id}/assets/${asset.id}/preview?${query}`,
+    };
+  }
+
+  function buildAssetPreviewModel(asset) {
+    if (!asset.is_present) {
+      return {
+        state: 'missing',
+        previewable: false,
+        sourceMetadataValid: false,
+        revision: null,
+        urls: { thumbnail: null, preview: null },
+      };
+    }
+
+    const classification = classifyPreviewable(asset);
+    if (!classification.supported) {
+      return {
+        state: 'unsupported',
+        previewable: false,
+        sourceMetadataValid: false,
+        revision: null,
+        urls: { thumbnail: null, preview: null },
+      };
+    }
+
+    const revision = buildAssetRevisionToken(asset);
+    const urls = buildPreviewUrls(asset, revision);
+    return {
+      state: 'previewable',
+      previewable: true,
+      sourceMetadataValid: revision !== null,
+      revision,
+      urls,
+    };
+  }
+
+  function buildOriginalUrl(asset) {
+    if (!asset.is_present) return null;
+    const classification = classifyPreviewable(asset);
+    if (!classification.supported) return null;
+    return `/projects/${asset.project_id}/assets/${asset.id}/original`;
+  }
+
+  function appendCanonicalAssetBrowserParam(query, key, value) {
+    if (value === undefined || value === null || value === '') return;
+    const normalized = String(value);
+    if (key === 'view' && normalized === 'list') return;
+    if (key === 'presence' && normalized === 'all') return;
+    if (key === 'usage' && normalized === 'all') return;
+    if (key === 'page' && normalized === '1') return;
+    if (key === 'pageSize' && normalized === String(ASSET_BROWSER_DEFAULT_PAGE_SIZE)) return;
+    query[key] = normalized;
+  }
+
+  function buildAssetBrowserQuery(context, page) {
+    const query = {};
+    for (const key of ASSET_BROWSER_CONTEXT_KEYS) {
+      const value = key === 'page' ? page : context[key];
+      appendCanonicalAssetBrowserParam(query, key, value);
+    }
+    return query;
+  }
+
+  function appendQuery(basePath, query) {
+    const search = new URLSearchParams(query).toString();
+    return search ? `${basePath}?${search}` : basePath;
+  }
+
+  function buildProjectAssetsUrl(projectId, context, page) {
+    return appendQuery(
+      `/projects/${projectId}/assets`,
+      buildAssetBrowserQuery(context, page)
+    );
+  }
+
+  function buildProjectAssetViewerUrl(projectId, assetId, context, page) {
+    return appendQuery(
+      `/projects/${projectId}/assets/${assetId}`,
+      buildAssetBrowserQuery(context, page)
+    );
+  }
+
+  function pageForPosition(position, pageSize) {
+    if (!Number.isInteger(position) || position < 1) return null;
+    return Math.ceil(position / pageSize);
+  }
+
+  function buildAdjacentAssetLink(projectId, assetId, context, position) {
+    if (!assetId || !position) return null;
+    const page = pageForPosition(position, context.pageSize);
+    return {
+      assetId,
+      href: buildProjectAssetViewerUrl(projectId, assetId, context, page),
+      page,
+    };
+  }
+
+  function summarizeProject(project) {
+    return {
+      id: project.id,
+      title: project.title,
+      slug: project.slug,
+      status: project.status,
+      archived_at: project.archived_at,
+    };
+  }
+
+  function buildViewerAssetModel(asset, releaseUsage) {
+    const preview = buildAssetPreviewModel(asset);
+    return {
+      id: asset.id,
+      project_id: asset.project_id,
+      relative_path: asset.relative_path,
+      filename: asset.filename,
+      extension: asset.extension,
+      mime_type: asset.mime_type,
+      size_bytes: asset.size_bytes,
+      modified_at: asset.modified_at,
+      is_present: asset.is_present,
+      presence_state: asset.is_present ? 'present' : 'missing',
+      missing: !asset.is_present,
+      last_seen_at: asset.last_seen_at,
+      missing_since: asset.missing_since,
+      release_usage_count: asset.release_usage_count,
+      release_usage: releaseUsage,
+      release_usage_summary: {
+        count: asset.release_usage_count,
+        releases: releaseUsage,
+      },
+      preview,
+      preview_capability: preview.state,
+      preview_state: preview.state,
+      revision_token: preview.revision,
+      preview_revision: preview.revision,
+      thumbnail_url: preview.urls.thumbnail,
+      preview_url: preview.urls.preview,
+      original_url: buildOriginalUrl(asset),
+    };
   }
 
   /**
@@ -588,6 +764,9 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
    *
    * @param {number} projectId
    * @param {Object} [rawQuery] - raw query parameters
+   * @param {string} [rawQuery.view] - 'list'|'grid'
+   * @param {string} [rawQuery.search] - filename search term
+   * @param {string} [rawQuery.extension] - extension filter, with or without leading dot
    * @param {string} [rawQuery.presence] - 'all'|'present'|'missing'
    * @param {string} [rawQuery.usage] - 'all'|'used'|'unused'
    * @param {string|number} [rawQuery.page]
@@ -598,19 +777,22 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
    *   page: number,
    *   pageSize: number,
    *   pageCount: number,
-   *   filters: { presence: string, usage: string },
+   *   filters: { view: string, search: string|null, extension: string|null, presence: string, usage: string },
+   *   extensionChoices: Array<{ value: string, label: string, selected: boolean }>,
+   *   ordering: string,
+   *   searchMaxLength: number,
    * }}
    */
   function getProjectAssetBrowser(projectId, rawQuery = {}) {
     const project = projectRepository.findById(projectId);
     if (!project) return null;
 
-    const filters = normalizeAssetBrowserQuery(rawQuery);
+    const extensions = assetRepository.listProjectAssetExtensions(projectId);
+    const filters = normalizeAssetBrowserQuery(rawQuery, extensions);
     const total = assetRepository.countProjectAssets(projectId, filters);
 
     const pageCount = Math.max(1, Math.ceil(total / filters.pageSize));
     const page = Math.min(filters.page, pageCount);
-    const offset = (page - 1) * filters.pageSize;
 
     const pageResult = assetRepository.findProjectAssetPage(projectId, {
       ...filters,
@@ -637,11 +819,22 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
       relative_path: asset.relative_path,
       filename: asset.filename,
       extension: asset.extension,
+      mime_type: asset.mime_type,
+      size_bytes: asset.size_bytes,
+      modified_at: asset.modified_at,
       is_present: asset.is_present,
+      presence_state: asset.is_present ? 'present' : 'missing',
       last_seen_at: asset.last_seen_at,
       missing_since: asset.missing_since,
       release_usage_count: asset.release_usage_count,
       release_usage: usageByAssetId.get(asset.id) || [],
+      preview: buildAssetPreviewModel(asset),
+    })).map((asset) => ({
+      ...asset,
+      preview_state: asset.preview.state,
+      preview_revision: asset.preview.revision,
+      thumbnail_url: asset.preview.urls.thumbnail,
+      preview_url: asset.preview.urls.preview,
     }));
 
     return {
@@ -651,9 +844,102 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
       pageSize: filters.pageSize,
       pageCount,
       filters: {
+        view: filters.view,
+        search: filters.search,
+        extension: filters.extension,
         presence: filters.presence,
         usage: filters.usage,
       },
+      extensionChoices: extensions.map((extension) => ({
+        value: extension,
+        label: extension,
+        selected: extension === filters.extension,
+      })),
+      ordering: ASSET_BROWSER_ORDERING,
+      searchMaxLength: ASSET_BROWSER_SEARCH_MAX_LENGTH,
+    };
+  }
+
+  /**
+   * Asset viewer view-model for a single project-owned asset.
+   *
+   * The asset identity check is project-scoped so unknown and cross-project
+   * asset IDs both return null. Adjacent navigation is calculated from the
+   * complete normalized browser filter context, not from the supplied page.
+   * If the current asset is excluded by the active filters, the asset is still
+   * returned but filtered previous/next links are omitted.
+   *
+   * @param {number} projectId
+   * @param {number} assetId
+   * @param {Object} [rawQuery]
+   * @returns {null | {
+   *   project: object,
+   *   asset: object,
+   *   context: { view: string, search: string|null, extension: string|null, presence: string, usage: string, page: number, pageSize: number },
+   *   filters: { view: string, search: string|null, extension: string|null, presence: string, usage: string },
+   *   filteredOut: boolean,
+   *   filteredPosition: number|null,
+   *   filteredTotal: number,
+   *   currentPage: number|null,
+   *   previousAssetLink: { assetId: number, href: string, page: number }|null,
+   *   nextAssetLink: { assetId: number, href: string, page: number }|null,
+   *   backToAssetsLink: { href: string, page: number|null },
+   * }}
+   */
+  function getProjectAssetViewer(projectId, assetId, rawQuery = {}) {
+    const normalizedAssetId = parseStrictPositiveInt(assetId);
+    if (normalizedAssetId === null) return null;
+
+    const project = projectRepository.findById(projectId);
+    if (!project) return null;
+
+    const extensions = assetRepository.listProjectAssetExtensions(projectId);
+    const context = normalizeAssetBrowserQuery(rawQuery, extensions);
+    const asset = assetRepository.findProjectAssetViewerContext(projectId, normalizedAssetId, context);
+    if (!asset) return null;
+
+    const filteredPosition = asset.filtered_position ?? null;
+    const filteredTotal = asset.filtered_total ?? 0;
+    const filteredOut = filteredPosition === null;
+    const currentPage = pageForPosition(filteredPosition, context.pageSize);
+
+    const releaseUsage = releaseRepository.findReleaseUsageForAssetIds(projectId, [asset.id]);
+    const previousAssetLink = filteredOut
+      ? null
+      : buildAdjacentAssetLink(projectId, asset.previous_asset_id, context, filteredPosition - 1);
+    const nextAssetLink = filteredOut
+      ? null
+      : buildAdjacentAssetLink(projectId, asset.next_asset_id, context, filteredPosition + 1);
+    const backToAssetsLink = {
+      href: buildProjectAssetsUrl(projectId, context, currentPage),
+      page: currentPage,
+    };
+
+    return {
+      project: summarizeProject(project),
+      asset: buildViewerAssetModel(asset, releaseUsage),
+      context,
+      filters: {
+        view: context.view,
+        search: context.search,
+        extension: context.extension,
+        presence: context.presence,
+        usage: context.usage,
+      },
+      extensionChoices: extensions.map((extension) => ({
+        value: extension,
+        label: extension,
+        selected: extension === context.extension,
+      })),
+      ordering: ASSET_BROWSER_ORDERING,
+      searchMaxLength: ASSET_BROWSER_SEARCH_MAX_LENGTH,
+      filteredOut,
+      filteredPosition,
+      filteredTotal,
+      currentPage,
+      previousAssetLink,
+      nextAssetLink,
+      backToAssetsLink,
     };
   }
 
@@ -803,6 +1089,7 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
     getReleaseBoard,
     getReleaseCalendar,
     getProjectAssetBrowser,
+    getProjectAssetViewer,
     getReleaseReadiness,
     normalizeListFilters,
     // Exposed for tests

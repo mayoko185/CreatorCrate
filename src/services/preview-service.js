@@ -234,7 +234,7 @@ export function _lockCountForTests() {
  * the value stored in meta.json (also ISO 8601).
  *
  * @param {object} asset
- * @returns {{ projectId: number, assetId: number, relativePath: string, size: number, mtime: string }}
+ * @returns {{ projectId: number, assetId: number, relativePath: string, size: number, mtime: string, derivativeConfigVersion: number }}
  */
 function sourceContext(asset) {
   return {
@@ -243,7 +243,60 @@ function sourceContext(asset) {
     relativePath: asset.relative_path,
     size: asset.size_bytes,
     mtime: normalizeMtime(asset.modified_at),
+    derivativeConfigVersion: DERIVATIVE_CONFIG_VERSION,
   };
+}
+
+function isValidAssetRelativePath(value) {
+  if (typeof value !== 'string' || value.length === 0) return false;
+  if (value.includes('\0')) return false;
+  if (path.isAbsolute(value) || path.posix.isAbsolute(value) || path.win32.isAbsolute(value)) {
+    return false;
+  }
+
+  const normalized = path.normalize(value.replace(/[\\/]+/g, path.sep));
+  if (normalized === '' || normalized === '.') return false;
+  return normalized.split(path.sep)[0] !== '..';
+}
+
+function hasParseableMtime(value) {
+  return typeof value === 'string'
+    && value.length > 0
+    && Number.isFinite(Date.parse(value));
+}
+
+function hasUsableSourceContext(ctx) {
+  return Number.isInteger(ctx.projectId) && ctx.projectId > 0
+    && Number.isInteger(ctx.assetId) && ctx.assetId > 0
+    && isValidAssetRelativePath(ctx.relativePath)
+    && Number.isFinite(ctx.size) && ctx.size >= 0
+    && hasParseableMtime(ctx.mtime)
+    && Number.isInteger(ctx.derivativeConfigVersion)
+    && ctx.derivativeConfigVersion === DERIVATIVE_CONFIG_VERSION;
+}
+
+/**
+ * Build the canonical Phase 10.1 source revision descriptor for a scanned asset
+ * record when all metadata required by the freshness contract is valid.
+ * Returns null instead of inventing a revision from incomplete or invalid data.
+ *
+ * @param {object} asset
+ * @returns {{ context: object, revision: string }|null}
+ */
+export function buildAssetRevision(asset) {
+  const context = sourceContext(asset);
+  if (!hasUsableSourceContext(context)) return null;
+  return { context, revision: buildRevisionToken(context) };
+}
+
+/**
+ * Build the canonical Phase 10.1 source revision token for a scanned asset.
+ *
+ * @param {object} asset
+ * @returns {string|null}
+ */
+export function buildAssetRevisionToken(asset) {
+  return buildAssetRevision(asset)?.revision ?? null;
 }
 
 /**
@@ -351,12 +404,12 @@ export function createPreviewService({ db, projectsRoot, previewRoot, _hooks } =
    *
    * @param {number} projectId
    * @param {number} assetId
-   * @returns {{ status: 'ready'|'unsupported'|'missing', projectId: number, assetId: number, projectDir: string, relativePath: string, filename: string, extension: string, mimeType: string, size: number, mtime: string, revision: string, previewable: boolean }}
+   * @returns {{ status: 'ready'|'unsupported'|'missing', projectId: number, assetId: number, projectDir: string, relativePath: string, filename: string, extension: string, mimeType: string, size: number, mtime: string, revision: string|null, previewable: boolean }}
    */
   function getOriginalDescriptor(projectId, assetId) {
     const { project, asset } = loadProjectAndAsset(projectId, assetId);
     const ctx = sourceContext(asset);
-    const revision = buildRevisionToken(ctx);
+    const revision = buildAssetRevision(asset)?.revision ?? null;
     const { supported, mimeType } = classifyPreviewable(asset);
 
     return {
@@ -648,7 +701,7 @@ export function createPreviewService({ db, projectsRoot, previewRoot, _hooks } =
   function currentRevisionFor(assetId) {
     const fresh = assetRepo.findById(assetId);
     if (!fresh || !fresh.is_present) return null;
-    return buildRevisionToken(sourceContext(fresh));
+    return buildAssetRevisionToken(fresh);
   }
 
   /**
@@ -688,8 +741,12 @@ export function createPreviewService({ db, projectsRoot, previewRoot, _hooks } =
     for (let attempt = 0; attempt < 2; attempt++) {
       // Reload authoritative project + asset inside the lock for THIS attempt.
       const { project, asset } = loadProjectAndAsset(projectId, assetId);
-      const ctxNow = sourceContext(asset);
-      const revNow = buildRevisionToken(ctxNow);
+      const revisionNow = buildAssetRevision(asset);
+      if (!revisionNow) {
+        throw new PreviewNotFoundError('Asset source metadata is unavailable.');
+      }
+      const ctxNow = revisionNow.context;
+      const revNow = revisionNow.revision;
 
       const parentDir = ensureCacheDir(previewRoot, projectId, assetId);
       const staging = makeStagingDir(parentDir);
@@ -857,18 +914,23 @@ export function createPreviewService({ db, projectsRoot, previewRoot, _hooks } =
       // Reload the authoritative project + asset inside the lock.
       const { asset } = loadProjectAndAsset(projectId, assetId);
       const cls = classifyPreviewable(asset);
+      const currentRevision = buildAssetRevision(asset);
       if (!cls.supported) {
         return {
           status: 'unsupported',
           projectId: asset.project_id,
           assetId: asset.id,
-          revision: buildRevisionToken(sourceContext(asset)),
+          revision: currentRevision?.revision ?? null,
           cacheState: 'unsupported-format',
         };
       }
 
-      const ctx = sourceContext(asset);
-      const revision = buildRevisionToken(ctx);
+      if (!currentRevision) {
+        throw new PreviewNotFoundError('Asset source metadata is unavailable.');
+      }
+
+      const ctx = currentRevision.context;
+      const revision = currentRevision.revision;
 
       const probed = await probeCacheEntry(projectId, assetId, ctx, kind);
 

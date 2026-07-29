@@ -1,0 +1,108 @@
+{% extends "layout.njk" %}
+
+{% block title %}{{ asset.filename }} — {{ appName }}{% endblock %}
+
+{% block content %}
+  <nav class="asset-viewer-breadcrumb" aria-label="Asset viewer context">
+    <a class="asset-viewer-project" href="/projects/{{ project.id }}">Project: {{ project.title }}</a>
+    <a class="asset-viewer-back" href="{{ backToAssetsLink.href }}">Back to Assets</a>
+  </nav>
+
+  <div class="page-header">
+    <h1>{{ asset.filename }}</h1>
+    <div class="actions" aria-label="Asset actions">
+      {% if previousAssetLink %}
+        <a class="button asset-viewer-prev" href="{{ previousAssetLink.href }}" rel="prev">Previous asset</a>
+      {% endif %}
+      {% if nextAssetLink %}
+        <a class="button asset-viewer-next" href="{{ nextAssetLink.href }}" rel="next">Next asset</a>
+      {% endif %}
+      {% if asset.original_url %}
+        <a class="button asset-viewer-original" href="{{ asset.original_url }}">View Original</a>
+      {% endif %}
+    </div>
+  </div>
+
+  {% if filteredOut %}
+    <p class="notice asset-filtered-out-notice">
+      This asset is outside the current asset-browser filters. Previous and Next links are unavailable for this filter context.
+    </p>
+  {% endif %}
+
+  <section class="asset-preview-section" aria-labelledby="asset-preview-heading">
+    <h2 id="asset-preview-heading">Preview</h2>
+    {% if asset.preview.previewable and asset.preview_url %}
+      <figure class="asset-preview-frame">
+        <img class="asset-preview-image" src="{{ asset.preview_url }}" alt="Preview of {{ asset.filename }}">
+      </figure>
+    {% elseif asset.missing %}
+      <p class="notice asset-missing-notice">Missing at last scan. Preview and original viewing are unavailable.</p>
+      <p class="asset-preview-placeholder">Preview unavailable for missing assets.</p>
+    {% elseif asset.preview_state == 'unsupported' %}
+      <p class="notice asset-unsupported-notice">Unsupported asset preview. This asset type or recorded MIME cannot be previewed inline.</p>
+      <p class="asset-preview-placeholder">Preview unavailable for unsupported assets.</p>
+    {% else %}
+      <p class="notice asset-preview-unavailable-notice">Preview unavailable because recorded source metadata is incomplete.</p>
+      <p class="asset-preview-placeholder">No preview link is available.</p>
+    {% endif %}
+  </section>
+
+  <section class="asset-metadata-section" aria-labelledby="asset-metadata-heading">
+    <h2 id="asset-metadata-heading">Metadata</h2>
+    <dl class="detail-list asset-metadata">
+      <dt>Filename</dt>
+      <dd><code>{{ asset.filename }}</code></dd>
+
+      <dt>Relative path</dt>
+      <dd><code>{{ asset.relative_path }}</code></dd>
+
+      <dt>Extension</dt>
+      <dd><code>{{ asset.extension or '—' }}</code></dd>
+
+      <dt>Recorded MIME</dt>
+      <dd><code>{{ asset.mime_type or '—' }}</code></dd>
+
+      <dt>Size</dt>
+      <dd>
+        {% if asset.size_bytes == 0 or asset.size_bytes %}
+          {{ asset.size_bytes }} bytes
+        {% else %}
+          —
+        {% endif %}
+      </dd>
+
+      <dt>Recorded modified time</dt>
+      <dd>{{ asset.modified_at or '—' }}</dd>
+
+      <dt>Presence</dt>
+      <dd>
+        {% if asset.is_present %}
+          Present at last scan
+        {% else %}
+          Missing at last scan
+        {% endif %}
+      </dd>
+    </dl>
+  </section>
+
+  <section class="asset-release-usage-section" aria-labelledby="asset-release-usage-heading">
+    <h2 id="asset-release-usage-heading">Release usage</h2>
+    {% if asset.release_usage_summary.count > 0 %}
+      <p>
+        Used by {{ asset.release_usage_summary.count }} release{% if asset.release_usage_summary.count != 1 %}s{% endif %}.
+      </p>
+      {% if asset.release_usage.length > 0 %}
+        <ul class="release-detail-list">
+          {% for usage in asset.release_usage %}
+            <li>
+              <a href="/releases/{{ usage.release_id }}">{{ usage.title }}</a>
+              <span class="release-status">({{ usage.status }})</span>
+            </li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+    {% else %}
+      <p>Not used by a release.</p>
+    {% endif %}
+  </section>
+{% endblock %}

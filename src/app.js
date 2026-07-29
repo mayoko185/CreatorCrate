@@ -34,7 +34,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   const projectService = createProjectService(db, projectsRoot);
   const assetScanner = createAssetScanner(db, projectsRoot, { projectService });
   const releaseService = opts.releaseService || createReleaseService({ db, evaluateReleaseReadiness });
-  const workflowQueryService = createWorkflowQueryService({ db, evaluateReleaseReadiness });
+  const workflowQueryService = opts.workflowQueryService || createWorkflowQueryService({ db, evaluateReleaseReadiness });
 
   // Phase 10.1A: preview root is passed explicitly so later services can
   // resolve preview paths without reading the environment or globals.
@@ -65,15 +65,16 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   app.use('/', createIndexRouter({ appName, workflowQueryService }));
   app.use('/health', createHealthRouter({ db }));
   app.use('/projects', createProjectsRouter({ appName, projectService, workflowQueryService }));
-  app.use('/projects', createAssetsRouter({ appName, projectService, assetScanner, workflowQueryService }));
 
-  // Media routes are mounted BEFORE the releases router and before any
-  // future /projects/:projectId/assets/:assetId detail route. The three
-  // media routes have four path segments under /projects, while the
-  // planned detail route has three, so there is no route conflict.
+  // Media routes stay before the asset browser/viewer router. The media
+  // routes have four path segments under /projects; the viewer route has
+  // three, but this ordering protects the media contract from future route
+  // broadening.
   if (mediaService) {
     app.use('/projects', createMediaRouter({ mediaService }));
   }
+
+  app.use('/projects', createAssetsRouter({ appName, projectService, assetScanner, workflowQueryService }));
 
   app.use('/releases', createReleasesRouter({ appName, releaseService, projectService, workflowQueryService }));
 

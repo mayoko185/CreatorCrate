@@ -27,6 +27,8 @@ const ALLOWED_SORTS = {
   modified: { column: 'modified_at' },
 };
 
+const ASSET_BROWSER_ORDERING = 'a.filename COLLATE NOCASE ASC, a.extension ASC, a.id ASC';
+
 function buildOrderClause(sortBy, order) {
   const sort = ALLOWED_SORTS[sortBy] || ALLOWED_SORTS.filename;
   const direction = order === 'asc' ? 'ASC' : 'DESC';
@@ -344,12 +346,24 @@ export function createAssetRepository(db) {
      */
     getExtensions(projectId) {
       const sql = `
-        SELECT DISTINCT extension
+        SELECT DISTINCT LOWER(extension) AS extension
         FROM assets
-        WHERE project_id = ?
-        ORDER BY extension
+        WHERE project_id = ? AND extension <> ''
+        ORDER BY extension COLLATE NOCASE ASC
       `;
       return db.prepare(sql).pluck().all(projectId);
+    },
+
+    /**
+     * Stable extension choices for a project's asset browser.
+     * The list is project-owned only; search, presence, usage, and current
+     * extension filters do not affect it, so the filter menu does not collapse
+     * while another filter is active.
+     * @param {number} projectId
+     * @returns {string[]}
+     */
+    listProjectAssetExtensions(projectId) {
+      return this.getExtensions(projectId);
     },
 
     // ─── Phase 6D: Asset Browser Queries ──────────────────────────────────
@@ -361,18 +375,30 @@ export function createAssetRepository(db) {
      *
      * @param {number} projectId
      * @param {object} filters
+     * @param {string|null} [filters.search]
+     * @param {string|null} [filters.extension]
      * @param {'all'|'present'|'missing'} [filters.presence]
      * @param {'all'|'used'|'unused'} [filters.usage]
      * @returns {{ conditions: string[], params: any[] }}
      */
     _buildAssetBrowserConditions(projectId, filters) {
-      const conditions = ['project_id = ?'];
+      const conditions = ['a.project_id = ?'];
       const params = [projectId];
 
+      if (filters.search) {
+        conditions.push(`a.filename COLLATE NOCASE LIKE ? ESCAPE '\\'`);
+        params.push(`%${escapeLike(filters.search)}%`);
+      }
+
+      if (filters.extension) {
+        conditions.push('LOWER(a.extension) = ?');
+        params.push(filters.extension);
+      }
+
       if (filters.presence === 'present') {
-        conditions.push('is_present = 1');
+        conditions.push('a.is_present = 1');
       } else if (filters.presence === 'missing') {
-        conditions.push('is_present = 0');
+        conditions.push('a.is_present = 0');
       }
       // 'all' = no presence restriction
 
@@ -393,16 +419,20 @@ export function createAssetRepository(db) {
      *
      * @param {number} projectId
      * @param {object} [filters]
+     * @param {string|null} [filters.search=null]
+     * @param {string|null} [filters.extension=null]
      * @param {'all'|'present'|'missing'} [filters.presence='all']
      * @param {'all'|'used'|'unused'} [filters.usage='all']
      * @param {number} [filters.page=1]
      * @param {number} [filters.pageSize=25]
-     * @returns {Array<{id: number, project_id: number, relative_path: string, filename: string, extension: string, is_present: number, last_seen_at: string|null, missing_since: string|null, release_usage_count: number}>}
+     * @returns {Array<{id: number, project_id: number, relative_path: string, filename: string, extension: string, mime_type: string, size_bytes: number, modified_at: string|null, is_present: number, last_seen_at: string|null, missing_since: string|null, release_usage_count: number}>}
      */
     findProjectAssetPage(projectId, filters = {}) {
-      const { presence = 'all', usage = 'all', page = 1, pageSize = 25 } = filters;
+      const { search = null, extension = null, presence = 'all', usage = 'all', page = 1, pageSize = 25 } = filters;
 
       const { conditions, params } = this._buildAssetBrowserConditions(projectId, {
+        search,
+        extension,
         presence,
         usage,
       });
@@ -419,17 +449,91 @@ export function createAssetRepository(db) {
           a.relative_path,
           a.filename,
           a.extension,
+          a.mime_type,
+          a.size_bytes,
+          a.modified_at,
           a.is_present,
           a.last_seen_at,
           a.missing_since,
           (SELECT COUNT(DISTINCT ra.release_id) FROM release_assets ra JOIN releases r ON r.id = ra.release_id WHERE ra.asset_id = a.id AND r.project_id = a.project_id) AS release_usage_count
         FROM assets a
         WHERE ${conditions.join(' AND ')}
-        ORDER BY a.filename COLLATE NOCASE ASC, a.extension ASC, a.id ASC
+        ORDER BY ${ASSET_BROWSER_ORDERING}
         LIMIT ? OFFSET ?
       `;
 
       return db.prepare(sql).all(...params, pageSize, offset);
+    },
+
+    /**
+     * Project-scoped asset viewer context for one asset.
+     *
+     * The current asset is loaded by project+asset identity, while the
+     * adjacent IDs and filtered position are calculated from the complete
+     * filtered browser result using the same deterministic ordering as
+     * findProjectAssetPage. This keeps query count constant with project size
+     * and avoids materializing all matching asset IDs in application memory.
+     *
+     * If the asset belongs to the project but is excluded by the filters, the
+     * asset row is still returned with null position and adjacent IDs.
+     * Unknown assets and cross-project assets return undefined.
+     *
+     * @param {number} projectId
+     * @param {number} assetId
+     * @param {object} [filters]
+     * @param {string|null} [filters.search=null]
+     * @param {string|null} [filters.extension=null]
+     * @param {'all'|'present'|'missing'} [filters.presence='all']
+     * @param {'all'|'used'|'unused'} [filters.usage='all']
+     * @returns {undefined | {id: number, project_id: number, relative_path: string, filename: string, extension: string, mime_type: string, size_bytes: number, modified_at: string|null, is_present: number, last_seen_at: string|null, missing_since: string|null, release_usage_count: number, filtered_position: number|null, previous_asset_id: number|null, next_asset_id: number|null, filtered_total: number}}
+     */
+    findProjectAssetViewerContext(projectId, assetId, filters = {}) {
+      const { search = null, extension = null, presence = 'all', usage = 'all' } = filters;
+
+      const { conditions, params } = this._buildAssetBrowserConditions(projectId, {
+        search,
+        extension,
+        presence,
+        usage,
+      });
+
+      const sql = `
+        WITH filtered AS (
+          SELECT
+            a.id,
+            ROW_NUMBER() OVER (ORDER BY ${ASSET_BROWSER_ORDERING}) AS filtered_position,
+            LAG(a.id) OVER (ORDER BY ${ASSET_BROWSER_ORDERING}) AS previous_asset_id,
+            LEAD(a.id) OVER (ORDER BY ${ASSET_BROWSER_ORDERING}) AS next_asset_id
+          FROM assets a
+          WHERE ${conditions.join(' AND ')}
+        ),
+        filtered_total AS (
+          SELECT COUNT(*) AS total FROM filtered
+        )
+        SELECT
+          a.id,
+          a.project_id,
+          a.relative_path,
+          a.filename,
+          a.extension,
+          a.mime_type,
+          a.size_bytes,
+          a.modified_at,
+          a.is_present,
+          a.last_seen_at,
+          a.missing_since,
+          (SELECT COUNT(DISTINCT ra.release_id) FROM release_assets ra JOIN releases r ON r.id = ra.release_id WHERE ra.asset_id = a.id AND r.project_id = a.project_id) AS release_usage_count,
+          f.filtered_position,
+          f.previous_asset_id,
+          f.next_asset_id,
+          filtered_total.total AS filtered_total
+        FROM assets a
+        CROSS JOIN filtered_total
+        LEFT JOIN filtered f ON f.id = a.id
+        WHERE a.project_id = ? AND a.id = ?
+      `;
+
+      return db.prepare(sql).get(...params, projectId, assetId);
     },
 
     /**
@@ -438,14 +542,18 @@ export function createAssetRepository(db) {
      *
      * @param {number} projectId
      * @param {object} [filters]
+     * @param {string|null} [filters.search=null]
+     * @param {string|null} [filters.extension=null]
      * @param {'all'|'present'|'missing'} [filters.presence='all']
      * @param {'all'|'used'|'unused'} [filters.usage='all']
      * @returns {number}
      */
     countProjectAssets(projectId, filters = {}) {
-      const { presence = 'all', usage = 'all' } = filters;
+      const { search = null, extension = null, presence = 'all', usage = 'all' } = filters;
 
       const { conditions, params } = this._buildAssetBrowserConditions(projectId, {
+        search,
+        extension,
         presence,
         usage,
       });

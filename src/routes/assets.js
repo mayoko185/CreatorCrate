@@ -1,11 +1,14 @@
 import express from 'express';
 import { ProjectNotFoundError } from '../services/project-service.js';
 
+const ASSET_BROWSER_QUERY_KEYS = ['view', 'search', 'extension', 'presence', 'usage', 'page', 'pageSize'];
+
 /**
  * Create an assets router mounted at /projects.
  *
  * Routes:
  *   GET  /projects/:id/assets — Asset listing page
+ *   GET  /projects/:projectId/assets/:assetId — Asset viewer page
  *   POST /projects/:id/scan  — Trigger a manual scan
  *
  * @param {object} deps
@@ -57,15 +60,45 @@ export function createAssetsRouter({ appName, projectService, assetScanner, work
         pageSize: data.pageSize,
         pageCount: data.pageCount,
         filters: data.filters,
+        extensionChoices: data.extensionChoices,
+        searchMaxLength: data.searchMaxLength,
         query,
         error,
         archivedError,
-        pageUrl: buildPageUrl(req, {
-          presence: data.filters.presence,
-          usage: data.filters.usage,
-          page: data.page,
-          pageSize: data.pageSize,
-        }),
+        pageUrl: buildPageUrl(req, buildCanonicalBrowserQuery(data.filters, data.page, data.pageSize)),
+      });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // GET /projects/:projectId/assets/:assetId — Minimal asset viewer page
+  router.get('/:projectId/assets/:assetId', (req, res, next) => {
+    try {
+      const projectId = parseId(req.params.projectId);
+      const assetId = parseId(req.params.assetId);
+      if (projectId === null || assetId === null) {
+        return next(createNotFound());
+      }
+
+      const data = workflowQueryService.getProjectAssetViewer(projectId, assetId, req.query);
+      if (!data) {
+        return next(createNotFound());
+      }
+
+      res.render('projects/asset-viewer.njk', {
+        appName,
+        project: data.project,
+        asset: data.asset,
+        context: data.context,
+        filters: data.filters,
+        filteredOut: data.filteredOut,
+        filteredPosition: data.filteredPosition,
+        filteredTotal: data.filteredTotal,
+        currentPage: data.currentPage,
+        previousAssetLink: data.previousAssetLink,
+        nextAssetLink: data.nextAssetLink,
+        backToAssetsLink: data.backToAssetsLink,
       });
     } catch (err) {
       next(err);
@@ -127,18 +160,40 @@ function parseId(value) {
 
 function buildPageUrl(req, allowedParams) {
   return function pageUrl(overrides) {
-    const query = { ...allowedParams };
-    for (const [key, value] of Object.entries(overrides)) {
-      if (value === undefined || value === null || value === '') {
-        delete query[key];
-      } else {
-        query[key] = String(value);
-      }
+    const query = {};
+    for (const key of ASSET_BROWSER_QUERY_KEYS) {
+      const value = Object.prototype.hasOwnProperty.call(overrides, key)
+        ? overrides[key]
+        : allowedParams[key];
+      appendCanonicalParam(query, key, value);
     }
     const search = new URLSearchParams(query).toString();
     const basePath = req.baseUrl + req.path;
     return search ? `${basePath}?${search}` : basePath;
   };
+}
+
+function buildCanonicalBrowserQuery(filters, page, pageSize) {
+  const query = {};
+  appendCanonicalParam(query, 'view', filters.view);
+  appendCanonicalParam(query, 'search', filters.search);
+  appendCanonicalParam(query, 'extension', filters.extension);
+  appendCanonicalParam(query, 'presence', filters.presence);
+  appendCanonicalParam(query, 'usage', filters.usage);
+  appendCanonicalParam(query, 'page', page);
+  appendCanonicalParam(query, 'pageSize', pageSize);
+  return query;
+}
+
+function appendCanonicalParam(query, key, value) {
+  if (value === undefined || value === null || value === '') return;
+  const normalized = String(value);
+  if (key === 'view' && normalized === 'list') return;
+  if (key === 'presence' && normalized === 'all') return;
+  if (key === 'usage' && normalized === 'all') return;
+  if (key === 'page' && normalized === '1') return;
+  if (key === 'pageSize' && normalized === '25') return;
+  query[key] = normalized;
 }
 
 function createNotFound() {

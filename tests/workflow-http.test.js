@@ -2852,7 +2852,7 @@ describe('Phase 6B HTTP workflow', () => {
     // ─── Fix 5: Asset-browser pagination whitelist ────────────────────
 
     describe('asset-browser pagination whitelist', () => {
-      it('pagination URLs contain only presence, usage, pageSize, page — no junk', async () => {
+      it('pagination URLs contain only canonical browser params — no junk or defaults', async () => {
         // Create enough assets for multiple pages
         const projectId = await createProjectWithFile({ title: 'Pagination Whitelist' });
         const projectDir = getProjectDir(projectsRoot, 'Pagination Whitelist');
@@ -2874,14 +2874,14 @@ describe('Phase 6B HTTP workflow', () => {
         // Pathname must be correct
         expect(nextUrl.pathname).toBe(`/projects/${projectId}/assets`);
 
-        // Only the four allowed params must be present
+        // Only non-default canonical params must be present.
         expect(nextUrl.searchParams.get('presence')).toBe('present');
-        expect(nextUrl.searchParams.get('usage')).toBe('all');
+        expect(nextUrl.searchParams.has('usage')).toBe(false);
         expect(nextUrl.searchParams.get('pageSize')).toBe('10');
         expect(nextUrl.searchParams.get('page')).toBe('2');
 
-        // Exactly 4 search params — no junk
-        expect(nextUrl.searchParams.size).toBe(4);
+        // Exactly 3 search params — default usage=all and junk are both omitted.
+        expect(nextUrl.searchParams.size).toBe(3);
         expect(nextUrl.searchParams.has('junk')).toBe(false);
       });
     });

@@ -39,7 +39,7 @@
 
   <p class="results-meta">
     {{ total }} asset{% if total != 1 %}s{% endif %} found
-    {% if filters.presence != 'all' or filters.usage != 'all' %}
+    {% if filters.search or filters.extension or filters.presence != 'all' or filters.usage != 'all' %}
       (filtered)
     {% endif %}
   </p>
@@ -49,6 +49,25 @@
     Failed or incomplete scans do not update this information.
   </p>
   <form class="filters" method="get" action="/projects/{{ project.id }}/assets">
+    {% if filters.view != 'list' %}
+      <input type="hidden" name="view" value="{{ filters.view }}">
+    {% endif %}
+
+    <div class="field">
+      <label for="search">Search</label>
+      <input id="search" name="search" type="search" value="{{ filters.search or '' }}" maxlength="{{ searchMaxLength }}">
+    </div>
+
+    <div class="field">
+      <label for="extension">Extension</label>
+      <select id="extension" name="extension">
+        <option value="" {% if not filters.extension %}selected{% endif %}>All extensions</option>
+        {% for choice in extensionChoices %}
+          <option value="{{ choice.value }}" {% if choice.selected %}selected{% endif %}>.{{ choice.label }}</option>
+        {% endfor %}
+      </select>
+    </div>
+
     <div class="field">
       <label for="presence">Show</label>
       <select id="presence" name="presence">
@@ -159,12 +178,25 @@
           <option value="100" {% if pageSize == 100 %}selected{% endif %}>100</option>
         </select>
         {# Preserve current filters in pageSize form #}
-        <input type="hidden" name="presence" value="{{ filters.presence }}">
-        <input type="hidden" name="usage" value="{{ filters.usage }}">
+        {% if filters.view != 'list' %}
+          <input type="hidden" name="view" value="{{ filters.view }}">
+        {% endif %}
+        {% if filters.search %}
+          <input type="hidden" name="search" value="{{ filters.search }}">
+        {% endif %}
+        {% if filters.extension %}
+          <input type="hidden" name="extension" value="{{ filters.extension }}">
+        {% endif %}
+        {% if filters.presence != 'all' %}
+          <input type="hidden" name="presence" value="{{ filters.presence }}">
+        {% endif %}
+        {% if filters.usage != 'all' %}
+          <input type="hidden" name="usage" value="{{ filters.usage }}">
+        {% endif %}
       </form>
     {% endif %}
 
-  {% elseif total == 0 and (filters.presence != 'all' or filters.usage != 'all') %}
+  {% elseif total == 0 and (filters.search or filters.extension or filters.presence != 'all' or filters.usage != 'all') %}
     <p class="placeholder">
       No assets match the current filters.
       <a href="/projects/{{ project.id }}/assets">Clear filters</a> to see all assets.

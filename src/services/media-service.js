@@ -444,7 +444,7 @@ export function createMediaService({ previewService, projectsRoot, previewRoot }
    *
    * @param {number} projectId
    * @param {number} assetId
-   * @returns {{ filename: string, mimeType: string, size: number, revision: string, extension: string, openStream: () => { stream: fs.ReadStream, size: number } }}
+   * @returns {{ filename: string, mimeType: string, size: number, revision: string|null, extension: string, openStream: () => { stream: fs.ReadStream, size: number } }}
    * @throws {MediaNotFoundError} unknown project/asset, asset missing.
    * @throws {MediaUnsupportedError} extension not inline-serveable.
    * @throws {MediaError} storage failure, unreadable source, unsafe path.
@@ -547,16 +547,20 @@ export function createMediaService({ previewService, projectsRoot, previewRoot }
     const opened = desc.openStream();
     const { stream, size } = opened;
 
+    const headers = {
+      'Content-Type': desc.mimeType,
+      'Content-Length': String(size),
+      'Content-Disposition': disposition,
+      'X-Content-Type-Options': 'nosniff',
+      'Cache-Control': CACHE_ORIGINAL,
+    };
+    if (desc.revision) {
+      headers.ETag = `W/"${desc.revision}-${size}"`;
+    }
+
     return {
       status: 200,
-      headers: {
-        'Content-Type': desc.mimeType,
-        'Content-Length': String(size),
-        'Content-Disposition': disposition,
-        'X-Content-Type-Options': 'nosniff',
-        'Cache-Control': CACHE_ORIGINAL,
-        ETag: `W/"${desc.revision}-${size}"`,
-      },
+      headers,
       stream,
       cleanup: () => cleanupStream(stream),
     };
