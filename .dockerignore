@@ -8,6 +8,11 @@ data/
 *.db
 *.db-shm
 *.db-wal
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.staging
+*.rollback
 .git/
 .gitignore
 compose.yaml

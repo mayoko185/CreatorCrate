@@ -1,0 +1,43 @@
+{% extends "layout.njk" %}
+{% import "partials/page-heading.njk" as pageHeading %}
+
+{% block title %}Restore Database – {{ appName }}{% endblock %}
+
+{% block content %}
+  {% call pageHeading.render("Restore Database") %}
+    <a class="button button-secondary" href="/settings/backups">Cancel</a>
+  {% endcall %}
+
+  <div class="panel panel--warning">
+    <h2>Selected backup</h2>
+    <dl class="detail-list">
+      <dt>Filename</dt>
+      <dd><code>{{ backup.filename }}</code></dd>
+      <dt>Created</dt>
+      <dd>{{ backup.createdAt }}</dd>
+      <dt>Size</dt>
+      <dd>{{ (backup.sizeBytes / 1024) | round(1) }} KB</dd>
+      <dt>Validation</dt>
+      <dd>
+        {% if backup.valid %}
+          <span class="status-badge status-badge--success">Valid</span>
+        {% else %}
+          <span class="status-badge status-badge--error">Invalid</span>
+        {% endif %}
+      </dd>
+    </dl>
+  </div>
+
+  <div class="destructive-section">
+    <h2>Replace current database?</h2>
+    <p>This will permanently replace the current SQLite application database with the selected backup. All projects, releases, and asset records created or modified since this backup was taken will be lost.</p>
+    <p>Media files and project files stored under <code>PROJECTS_ROOT</code> will <strong>not</strong> be changed.</p>
+    <p>During the restore, the application will be briefly unavailable to other requests. This action cannot be undone.</p>
+    <form method="post" action="/settings/backups/{{ backup.filename }}/restore">
+      <div class="form-actions">
+        <button type="submit" class="button button-danger">Restore Database</button>
+        <a class="button button-secondary" href="/settings/backups">Cancel</a>
+      </div>
+    </form>
+  </div>
+{% endblock %}

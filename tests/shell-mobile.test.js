@@ -204,8 +204,8 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
   describe('centralized navigation reused', () => {
     it('mobile nav renders the same destinations as desktop', async () => {
       const res = await request(app).get('/').expect(200);
-      expect(mobileNavHrefs(res.text)).toEqual(['/', '/projects', '/releases']);
-      expect(desktopNavHrefs(res.text)).toEqual(['/', '/projects', '/releases']);
+      expect(mobileNavHrefs(res.text)).toEqual(['/', '/projects', '/releases', '/settings']);
+      expect(desktopNavHrefs(res.text)).toEqual(['/', '/projects', '/releases', '/settings']);
     });
 
     it('mobile and desktop link hrefs are identical', async () => {
@@ -213,10 +213,10 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
       expect(mobileNavHrefs(res.text)).toEqual(desktopNavHrefs(res.text));
     });
 
-    it('exactly three items in each nav (no duplicated routes)', async () => {
+    it('exactly four items in each nav (no duplicated routes)', async () => {
       const res = await request(app).get('/').expect(200);
-      expect(mobileNavHrefs(res.text)).toHaveLength(3);
-      expect(desktopNavHrefs(res.text)).toHaveLength(3);
+      expect(mobileNavHrefs(res.text)).toHaveLength(4);
+      expect(desktopNavHrefs(res.text)).toHaveLength(4);
     });
   });
 

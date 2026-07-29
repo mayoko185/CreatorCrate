@@ -119,4 +119,47 @@ describe('createConfig', () => {
     expect(typeof config.previewRoot).toBe('string');
     expect(config.previewRoot.length).toBeGreaterThan(0);
   });
+
+  // ─── Backup directory (Phase 11.1) ────────────────────────────────────
+
+  it('derives backupDir as APP_DATA_ROOT/backups by default', () => {
+    const config = createConfig(
+      env({ APP_DATA_ROOT: '/tmp/app', DATABASE_PATH: '/tmp/app/creatorcrate.db' })
+    );
+    expect(config.backupDir).toBe(path.resolve('/tmp/app', 'backups'));
+  });
+
+  it('backupDir is always nested under appDataRoot, not directly configurable', () => {
+    const config = createConfig(
+      env({
+        APP_DATA_ROOT: '/tmp/app',
+        PROJECTS_ROOT: '/tmp/elsewhere',
+        DATABASE_PATH: '/tmp/app/creatorcrate.db',
+      })
+    );
+    expect(config.backupDir).toBe(path.join(config.appDataRoot, 'backups'));
+    expect(config.backupDir).not.toBe(config.projectsRoot);
+    expect(config.backupDir).not.toBe(config.previewRoot);
+  });
+
+  // ─── Backup retention (Phase 11.3) ────────────────────────────────────
+
+  it('defaults backupRetentionCount to 10 when unset', () => {
+    const config = createConfig(env());
+    expect(config.backupRetentionCount).toBe(10);
+  });
+
+  it('applies a custom BACKUP_RETENTION_COUNT', () => {
+    const config = createConfig(env({ BACKUP_RETENTION_COUNT: '25' }));
+    expect(config.backupRetentionCount).toBe(25);
+  });
+
+  it('treats BACKUP_RETENTION_COUNT=0 as disabling automatic pruning, not an error', () => {
+    const config = createConfig(env({ BACKUP_RETENTION_COUNT: '0' }));
+    expect(config.backupRetentionCount).toBe(0);
+  });
+
+  it.each(['-1', '1.5', 'abc'])('rejects invalid BACKUP_RETENTION_COUNT %s', (value) => {
+    expect(() => createConfig(env({ BACKUP_RETENTION_COUNT: value }))).toThrow(ConfigError);
+  });
 });

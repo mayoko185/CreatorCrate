@@ -1,5 +1,6 @@
 import 'dotenv/config';
 
+import http from 'node:http';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { createConfig, ConfigError } from './config.js';
@@ -7,7 +8,8 @@ import { validateMounts, FilesystemError } from './filesystem.js';
 import { ensureStatusDirs, ensurePreviewRoot, StorageError } from './storage/path-manager.js';
 import { openDatabase, runMigrations, closeDatabase, DatabaseError } from './db.js';
 import { createProjectService } from './services/project-service.js';
-import { createApp } from './app.js';
+import { createBackupService } from './services/backup-service.js';
+import { createApplicationContext } from './app-context.js';
 
 async function main() {
   let config;
@@ -75,20 +77,50 @@ async function main() {
     );
   }
 
-  const app = createApp({
-    appName: config.appName,
-    db,
-    projectsRoot: config.projectsRoot,
-    previewRoot: config.previewRoot,
+  // Phase 11.2: shared maintenance boundary so the 503 middleware, health
+  // endpoint, and settings router all see the same flag.
+  const maintenanceState = { active: false };
+
+  const migrationsDir = fileURLToPath(new URL('../migrations', import.meta.url));
+
+  // Built once and reused across every restore: backupService holds no
+  // reference to a `db` connection (callers pass one to createBackup/
+  // restoreBackup per call), so there is nothing to rebuild here.
+  const backupService = createBackupService({
+    appDataRoot: config.appDataRoot,
+    databasePath: config.databasePath,
+    migrationsDir,
+    retentionCount: config.backupRetentionCount,
   });
 
-  const server = app.listen(config.port, () => {
+  // Phase 11.2 (fixed): the application context owns the currently active
+  // `db` and the Express app built from it. A live restore rebuilds every
+  // db-bound repository/service/route against the restored connection and
+  // atomically swaps the active app in-process — no supervisor restart.
+  // See app-context.js for the reconstruction/swap/ownership contract.
+  const appContext = createApplicationContext({
+    appName: config.appName,
+    projectsRoot: config.projectsRoot,
+    previewRoot: config.previewRoot,
+    appOpts: {
+      appDataRoot: config.appDataRoot,
+      databasePath: config.databasePath,
+      migrationsDir,
+      backupService,
+      maintenanceState,
+    },
+  }, db);
+
+  const server = http.createServer((req, res) => appContext.handleRequest(req, res));
+  server.listen(config.port, () => {
     console.log(`${config.appName} listening on port ${config.port} in ${config.nodeEnv} mode`);
   });
 
   function shutdown() {
     server.close(() => {
-      closeDatabase(db);
+      // Close whichever connection is currently active — a live restore may
+      // have replaced the startup handle with a new one by now.
+      closeDatabase(appContext.db);
       process.exit(0);
     });
   }

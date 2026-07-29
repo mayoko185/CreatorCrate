@@ -1,0 +1,15 @@
+{% extends "layout.njk" %}
+{% import "partials/page-heading.njk" as pageHeading %}
+
+{% block title %}Settings – {{ appName }}{% endblock %}
+
+{% block content %}
+  {{ pageHeading.render("Settings", "Application configuration and maintenance.") }}
+
+  <nav class="summary-cards" aria-label="Settings areas">
+    <a class="summary-card" href="/settings/backups">
+      <span class="summary-card-label">Backups</span>
+      <span class="summary-card-context">Create and restore SQLite database backups.</span>
+    </a>
+  </nav>
+{% endblock %}

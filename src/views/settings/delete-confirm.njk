@@ -1,0 +1,41 @@
+{% extends "layout.njk" %}
+{% import "partials/page-heading.njk" as pageHeading %}
+
+{% block title %}Delete Backup – {{ appName }}{% endblock %}
+
+{% block content %}
+  {% call pageHeading.render("Delete Backup") %}
+    <a class="button button-secondary" href="/settings/backups">Cancel</a>
+  {% endcall %}
+
+  <div class="panel panel--warning">
+    <h2>Selected backup</h2>
+    <dl class="detail-list">
+      <dt>Filename</dt>
+      <dd><code>{{ backup.filename }}</code></dd>
+      <dt>Created</dt>
+      <dd>{{ backup.createdAt }}</dd>
+      <dt>Size</dt>
+      <dd>{{ (backup.sizeBytes / 1024) | round(1) }} KB</dd>
+      <dt>Validation</dt>
+      <dd>
+        {% if backup.valid %}
+          <span class="status-badge status-badge--success">Valid</span>
+        {% else %}
+          <span class="status-badge status-badge--error">Invalid</span>
+        {% endif %}
+      </dd>
+    </dl>
+  </div>
+
+  <div class="destructive-section">
+    <h2>Permanently delete this backup?</h2>
+    <p>This will permanently remove this backup file. It cannot be undone, and this snapshot will no longer be available for a future restore.</p>
+    <form method="post" action="/settings/backups/{{ backup.filename }}/delete">
+      <div class="form-actions">
+        <button type="submit" class="button button-danger">Delete Backup</button>
+        <a class="button button-secondary" href="/settings/backups">Cancel</a>
+      </div>
+    </form>
+  </div>
+{% endblock %}

@@ -8,6 +8,9 @@ const DEFAULTS = {
   APP_DATA_ROOT: './data/app',
   PROJECTS_ROOT: './data/projects',
   DATABASE_PATH: './data/app/creatorcrate.db',
+  // Phase 11.3: keep the 10 most recent managed backups after each
+  // successful backup; set to "0" to disable automatic pruning entirely.
+  BACKUP_RETENTION_COUNT: '10',
 };
 
 export class ConfigError extends Error {
@@ -51,6 +54,24 @@ export function createConfig(rawEnv = process.env) {
   // Not directly configurable — it is a derived, owned directory of the app.
   const previewRoot = path.join(appDataRoot, 'previews');
 
+  // Phase 11.1: backup directory derives from APP_DATA_ROOT/backups.
+  // Not directly configurable — it is a derived, owned directory of the app.
+  // Contains SQLite application-data backups only; PROJECTS_ROOT media files
+  // are never included.
+  const backupDir = path.join(appDataRoot, 'backups');
+
+  // Phase 11.3: number of managed backups to retain after each successful
+  // backup. Must be a non-negative integer; 0 disables automatic pruning
+  // (all managed backups are kept indefinitely) rather than being treated
+  // as invalid, so operators have an explicit opt-out.
+  const retentionRaw = getEnv(rawEnv, 'BACKUP_RETENTION_COUNT');
+  const backupRetentionCount = Number(retentionRaw);
+  if (!Number.isInteger(backupRetentionCount) || backupRetentionCount < 0) {
+    throw new ConfigError(
+      `Invalid BACKUP_RETENTION_COUNT "${retentionRaw}". Expected a non-negative integer (0 disables automatic pruning).`
+    );
+  }
+
   return Object.freeze({
     nodeEnv,
     port,
@@ -59,5 +80,7 @@ export function createConfig(rawEnv = process.env) {
     projectsRoot,
     databasePath,
     previewRoot,
+    backupDir,
+    backupRetentionCount,
   });
 }

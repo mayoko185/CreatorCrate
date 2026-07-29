@@ -24,9 +24,8 @@ function activeKeys(path, opts = {}) {
 describe('navigation model — destinations', () => {
   it('exposes only destinations that resolve to real page routes', () => {
     const { navigation } = buildShellModel({ appName: APP_NAME, path: '/' });
-    // Dashboard, Projects, Releases. No Settings (no such route), no Health
-    // (JSON-only), no dead links.
-    expect(navigation.map((n) => n.href)).toEqual(['/', '/projects', '/releases']);
+    // Dashboard, Projects, Releases, Settings. No Health (JSON-only), no dead links.
+    expect(navigation.map((n) => n.href)).toEqual(['/', '/projects', '/releases', '/settings']);
   });
 
   it('every navigation item has a stable key, label, href, and icon', () => {
@@ -100,6 +99,24 @@ describe('navigation model — releases active state', () => {
   });
 });
 
+describe('navigation model — settings active state', () => {
+  it('is active on the settings landing', () => {
+    expect(activeKeys('/settings')).toEqual(['settings']);
+  });
+
+  it('is active on the backup list', () => {
+    expect(activeKeys('/settings/backups')).toEqual(['settings']);
+  });
+
+  it('is active on the restore confirmation route', () => {
+    expect(activeKeys('/settings/backups/creatorcrate-2026-01-01T000000Z.sqlite/restore')).toEqual(['settings']);
+  });
+
+  it('is not activated by /settings-old', () => {
+    expect(activeKeys('/settings-old')).toEqual([]);
+  });
+});
+
 describe('navigation model — prefix safety', () => {
   it('an unrelated sibling prefix does not activate projects', () => {
     // The classic naive-prefix bug: "/projects-old" must not match "/projects".
@@ -135,6 +152,9 @@ describe('navigation model — active-count invariants', () => {
       '/releases/3/edit',
       '/releases/3/publish',
       '/releases/3/assets',
+      '/settings',
+      '/settings/backups',
+      '/settings/backups/creatorcrate-2026-01-01T000000Z.sqlite/restore',
     ];
     for (const p of paths) {
       expect(activeKeys(p)).toHaveLength(1);
@@ -143,7 +163,7 @@ describe('navigation model — active-count invariants', () => {
 
   it('no item is active on an unrecognized top-level path', () => {
     expect(activeKeys('/nope')).toEqual([]);
-    expect(activeKeys('/settings')).toEqual([]);
+    expect(activeKeys('/settings-old')).toEqual([]);
   });
 
   it('no item is active on a controlled not-found path when noActive is set', () => {
@@ -161,7 +181,7 @@ describe('navigation model — active section (header source)', () => {
   });
 
   it('activeSection is null when no item is active', () => {
-    expect(buildShellModel({ appName: APP_NAME, path: '/settings' }).activeSection).toBeNull();
+    expect(buildShellModel({ appName: APP_NAME, path: '/settings-old' }).activeSection).toBeNull();
     expect(buildShellModel({ appName: APP_NAME, path: '/projects-old' }).activeSection).toBeNull();
   });
 

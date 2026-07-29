@@ -8,6 +8,7 @@ import { createProjectsRouter } from './routes/projects.js';
 import { createAssetsRouter } from './routes/assets.js';
 import { createReleasesRouter } from './routes/releases.js';
 import { createMediaRouter } from './routes/media.js';
+import { createSettingsRouter } from './routes/settings.js';
 import { createProjectService } from './services/project-service.js';
 import { createAssetScanner } from './services/asset-scanner.js';
 import { createReleaseService } from './services/release-service.js';
@@ -15,6 +16,7 @@ import { createWorkflowQueryService } from './services/workflow-query-service.js
 import { evaluateReleaseReadiness } from './services/release-readiness-policy.js';
 import { createPreviewService } from './services/preview-service.js';
 import { createMediaService } from './services/media-service.js';
+import { createBackupService } from './services/backup-service.js';
 import { buildShellModel } from './shell/navigation.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -28,6 +30,36 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     noCache: true,
   });
   app.set('view engine', 'njk');
+
+  // Phase 11.2: exclusive maintenance boundary. While a restore owns this
+  // flag, ordinary requests must not reach a route that could touch a
+  // closing/reopening database connection. Health reporting and static
+  // assets remain reachable; this is the very first middleware so no other
+  // work (body parsing, static lookup, routing) happens for a blocked
+  // request. The object is shared (by reference) with the settings router
+  // and, in production, across app rebuilds triggered by a live restore —
+  // it is never reassigned, only mutated.
+  const maintenanceState = opts.maintenanceState || { active: false };
+  app.use((req, res, next) => {
+    if (!maintenanceState.active) return next();
+    if (req.path === '/health') return next();
+    // Static assets have a file extension; application routes never do.
+    if (req.method === 'GET' && /\.[A-Za-z0-9]+$/.test(req.path)) return next();
+
+    res.status(503);
+    if (req.accepts('html')) {
+      res
+        .type('html')
+        .send(
+          '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Maintenance</title></head>' +
+          '<body><main><h1>Service temporarily unavailable</h1>' +
+          '<p>CreatorCrate is restoring the database from a backup. Please try again in a moment.</p>' +
+          '</main></body></html>'
+        );
+      return;
+    }
+    res.json({ status: 'error', message: 'Service temporarily unavailable for maintenance.' });
+  });
 
   app.use(express.json());
   app.use(express.urlencoded({ extended: true }));
@@ -66,6 +98,17 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   app.locals.previewService = previewService;
   app.locals.mediaService = mediaService;
 
+  // Phase 11.2: backup/restore. `databasePath`/`appDataRoot` default to the
+  // live connection's own file path (better-sqlite3 exposes it as `db.name`)
+  // so callers that already have an open `db` never need to repeat the path.
+  // migrationsDir defaults to the application's real migrations directory.
+  const databasePath = opts.databasePath || db.name;
+  const appDataRoot = opts.appDataRoot || path.dirname(databasePath);
+  const migrationsDir = opts.migrationsDir || path.join(__dirname, '..', 'migrations');
+  const backupService =
+    opts.backupService ||
+    createBackupService({ appDataRoot, databasePath, migrationsDir, retentionCount: opts.backupRetentionCount });
+
   // Phase 10.4A: shared application-shell context. Computed once per request
   // from req.path so every rendered page — and the centralized error handler
   // — receives one navigation model with correct active states. Individual
@@ -76,7 +119,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   });
 
   app.use('/', createIndexRouter({ appName, workflowQueryService }));
-  app.use('/health', createHealthRouter({ db }));
+  app.use('/health', createHealthRouter({ db, maintenanceState }));
   app.use('/projects', createProjectsRouter({ appName, projectService, workflowQueryService }));
 
   // Media routes stay before the asset browser/viewer router. The media
@@ -90,6 +133,14 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   app.use('/projects', createAssetsRouter({ appName, projectService, assetScanner, workflowQueryService }));
 
   app.use('/releases', createReleasesRouter({ appName, releaseService, projectService, workflowQueryService }));
+
+  app.use('/settings', createSettingsRouter({
+    appName,
+    db,
+    backupService,
+    maintenanceState,
+    onDatabaseReplaced: opts.onDatabaseReplaced,
+  }));
 
   app.use((_req, _res, next) => {
     const err = new Error('Not found');

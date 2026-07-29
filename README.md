@@ -281,6 +281,7 @@ The **SQLite database is the authoritative source of truth** for project metadat
 | `DATABASE_PATH` | `./data/app/creatorcrate.db` | SQLite database path |
 | `CREATORCRATE_APP_DATA_PATH` | (required in Docker) | Host bind-mount source for application data (Docker Compose only) |
 | `CREATORCRATE_PROJECTS_PATH` | (required in Docker) | Host bind-mount source for project files (Docker Compose only) |
+| `BACKUP_RETENTION_COUNT` | `10` | Managed database backups to keep after each new backup, newest first. `0` disables automatic pruning entirely — every backup is kept until manually deleted. |
 
 Inside Docker the defaults are set to `/data/app/creatorcrate.db` and the bind mounts provide `/data/app` and `/data/projects`. The two `CREATORCRATE_*_PATH` variables are required when using Docker Compose; an unset or empty value produces an actionable error.
 
@@ -401,17 +402,182 @@ docker compose down        # stop and remove container
 docker compose build       # rebuild image
 ```
 
+## Phase 11 — Database backup, restore, and retention
+
+CreatorCrate can create, list, restore, and delete backups of its **SQLite
+application database** from **Settings → Backups** (`/settings/backups`).
+
+### What a backup includes and excludes
+
+- **Included**: a complete, consistent snapshot of the SQLite application
+  database — every project, release, and asset *record* (metadata), plus
+  schema/migration state.
+- **Excluded**: everything under `PROJECTS_ROOT` — source files, exports,
+  thumbnails, and any other media on disk. A database backup is **not** a
+  substitute for backing up project files.
+
+A backup is never partial or inconsistent: it is written to a staging file
+first, validated (SQLite integrity check + CreatorCrate schema check), and
+only then atomically renamed into place. A failed or invalid backup is
+discarded and never appears in the list.
+
+### Storage location
+
+Backups are stored at `APP_DATA_ROOT/backups/`, a directory the application
+creates and owns. Filenames are application-generated
+(`creatorcrate-<UTC timestamp>.sqlite`) — the UI and routes never accept an
+arbitrary filename or path from a request.
+
+### Retention behavior
+
+After each new backup is successfully created and installed, CreatorCrate
+lists the managed backups newest-first and deletes any beyond
+`BACKUP_RETENTION_COUNT` (default `10`). Pruning:
+
+- only ever removes backups matching the managed filename contract — it
+  never touches staging files, rollback files, symlinks, or unrelated
+  files in the backup directory;
+- never deletes the backup that was just created;
+- runs only after a successful backup — a backup is never pruned away
+  before it exists, and a pruning failure never invalidates the backup
+  that triggered it (a warning is shown on the Backups page instead).
+
+Set `BACKUP_RETENTION_COUNT=0` to disable automatic pruning and keep every
+backup indefinitely. There is no automatic backup schedule — backups are
+created on demand from the Backups page; the application does not run a
+scheduler or cron job for this.
+
+Individual backups can also be deleted manually from the Backups page
+(dedicated confirmation, `POST`-only, restricted to managed backup
+filenames — the same safety checks as restore apply).
+
+### Restore consequences
+
+Restoring **replaces the entire live database** with the selected backup.
+Any project, release, or asset record created or changed after that backup
+was taken is permanently lost — there is no partial or selective restore.
+Project files under `PROJECTS_ROOT` are never touched by a restore.
+
+Because of this, always create a fresh backup before restoring an older
+one, and treat restore as a last resort, not a routine operation.
+
+### Maintenance-mode behavior during restore
+
+While a restore is running, the application enters a short maintenance
+window: `maintenanceState.active` is set, and every request except
+`/health` and static assets receives `503` until the restore finishes
+(success or failure). `/health` reports `{"status":"maintenance"}` during
+this window rather than querying a database that may be mid-swap. A second,
+concurrent restore attempt is rejected outright rather than queued.
+
+Restore is a fully hot, in-place operation: the same running process picks
+up the restored database immediately, with no container/process restart.
+Internally, the application holds a replaceable application context (the
+active database connection plus every repository/service/route built from
+it). A restore closes the old connection, reopens and verifies the restored
+one, rebuilds the entire service graph against it, and atomically swaps the
+active context in a single step — the swap is what ends the maintenance
+window, so no request ever reaches a route still bound to the previous
+connection. If reconstructing the new service graph fails, the previous
+context is left in place and the new connection is closed; this failure is
+independent of, and in addition to, the backup-level verification/rollback
+described above.
+
+### Docker volume ownership and permissions
+
+The container runs as a non-root `creatorcrate` user. `APP_DATA_ROOT` (which
+contains `backups/`) and `PROJECTS_ROOT` must both be readable and writable
+by that user's UID/GID on the host, or by a group it belongs to — otherwise
+startup validation fails with an actionable error, and the backup directory
+cannot be created or written to. See [File ownership and permissions](#file-ownership-and-permissions).
+
+### Recommended host-level backups
+
+**Application-managed database backups do not protect against host disk
+failure, container/volume deletion, or filesystem corruption** — they live
+on the same disk as the live database. For real disaster recovery, back up
+both bind-mounted directories at the host/infrastructure level, independent
+of the application:
+
+- `APP_DATA_ROOT` — the SQLite database, its managed backups, and previews.
+- `PROJECTS_ROOT` — all project source files and exports.
+
+Use your normal host backup tooling (snapshotting, `rsync`, a backup agent,
+etc.) on both paths, on a schedule, and **retain copies off-host** (a
+separate disk, server, or remote storage target reachable from the host —
+CreatorCrate itself has no cloud storage integration and does not manage
+off-host copies). A backup that lives only on the same disk as the data it
+protects does not survive a disk failure.
+
+### How to test a restore safely
+
+Before relying on a backup in production, verify it restores cleanly:
+
+1. Stand up a separate CreatorCrate instance (or a local `pnpm dev` run)
+   pointed at scratch `APP_DATA_ROOT`/`PROJECTS_ROOT` directories — never
+   test a restore against your only copy of production data.
+2. Copy the backup file you want to test into that instance's
+   `APP_DATA_ROOT/backups/` directory.
+3. Start the instance, open Settings → Backups, and restore that backup.
+4. Confirm `/health` returns `{"status":"ok"}` after the restore, and that
+   the dashboard/project list shows the data you expect for that backup's
+   point in time.
+5. Discard the scratch instance's data when done.
+
+### Disaster-recovery procedure
+
+If the live database is lost, corrupted, or needs to be rolled back:
+
+1. **Stop writes or enter maintenance.** Restoring already forces
+   maintenance mode automatically, but if you are intervening manually
+   first (e.g. inspecting files on disk), stop the container
+   (`docker compose down`) or otherwise ensure nothing is writing to
+   `APP_DATA_ROOT` while you work.
+2. **Back up the current mounted data before intervening.** Copy the
+   current `APP_DATA_ROOT` and `PROJECTS_ROOT` aside at the host level
+   *before* making any change — even a database presumed corrupt may hold
+   recoverable data, and this preserves your ability to undo a bad
+   decision.
+3. **Select and validate a CreatorCrate backup.** On the Backups page,
+   confirm the candidate backup shows a **Valid** status badge. Prefer the
+   most recent valid backup unless you specifically need to roll further
+   back.
+4. **Restore through the application workflow.** Use the Restore
+   confirmation page (`/settings/backups/:filename/restore`) rather than
+   copying files by hand — this path re-validates the backup, checkpoints
+   and closes the live connection, atomically swaps the database file, and
+   automatically rolls back to the prior database if verification after
+   restore fails (see [Restore consequences](#restore-consequences)).
+5. **Verify health.** Immediately after the restore completes — no restart
+   required — confirm `GET /health` returns `{"status":"ok","database":"ok"}`.
+6. **Verify representative project/release data.** Spot-check the
+   dashboard counts and a handful of known projects/releases against what
+   you expect from that backup's point in time.
+7. **Verify project files separately.** A database restore does not touch
+   `PROJECTS_ROOT`. Confirm project files referenced by the restored
+   records are still present and intact on disk — if `PROJECTS_ROOT` was
+   also affected by whatever caused the incident, it must be restored
+   independently from your host-level backups.
+8. **Retain the pre-restore database until satisfied.** Keep the copy you
+   made in step 2 until you've completed verification and are confident
+   the restore is correct; only then discard it.
+
+There is no manual (non-application) recovery procedure documented here:
+restoring by directly copying a `.sqlite` backup over the live database
+file bypasses the validation, WAL/journal handling, and rollback safety the
+application provides, and is not recommended.
+
 ## Features intentionally deferred
 
 - Filesystem watchers and automatic background scanning
 - File uploads, deletion, and rename through the web UI
 - Thumbnail generation and image processing
 - Duplicate detection
-- Cloud storage integration
+- Cloud storage integration (including for backups — backups are local to `APP_DATA_ROOT` only)
 - Authentication and authorization
 - Patreon API integration
 - Tags and file-type filtering beyond extension
-- Backup automation
+- Scheduled/automatic backup creation (no cron inside the application container)
 
 These will be added in subsequent phases.
 

@@ -66,6 +66,17 @@ const NAVIGATION_ITEMS = [
       '/releases/:id/assets',
     ],
   },
+  {
+    key: 'settings',
+    label: 'Settings',
+    href: '/settings',
+    icon: 'settings',
+    matches: [
+      '/settings',
+      '/settings/backups',
+      '/settings/backups/:filename/restore',
+    ],
+  },
 ];
 
 /**
