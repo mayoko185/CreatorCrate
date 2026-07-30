@@ -68,26 +68,13 @@
 
           {# Day cells #}
           {% for day in days %}
-            <div class="calendar-day{% if day.releases.length === 0 %} empty{% endif %}{% if day.date == today %} today{% endif %}" role="cell">
+            <div class="calendar-day{% if day.entries.length === 0 %} empty{% endif %}{% if day.date == today %} today{% endif %}" role="cell">
               <div class="day-header">{{ day.date.split('-')[2] }}</div>
               <div class="day-releases">
-                {% for release in day.releases %}
-                  <div class="calendar-release{% if release.archived_at %} archived{% endif %}">
-                    <a href="/releases/{{ release.id }}">{{ release.title }}</a>
-                    <span class="release-project">{{ release.project_title }}</span>
-                    {% set status = release.status %}{% include "partials/status-badge.njk" %}
-                    {% if release._readiness %}
-                      <span class="release-readiness">
-                        {%- if release._readiness.publishable -%}
-                          <span class="readiness-publishable">Publishable</span>
-                        {%- else -%}
-                          <span class="readiness-blocked">Blocked</span>
-                        {%- endif -%}
-                      </span>
-                    {% endif %}
-                    {% if release.missing_asset_count > 0 %}
-                      <span class="missing-indicator" title="{{ release.missing_asset_count }} missing asset(s)">⚠</span>
-                    {% endif %}
+                {% for entry in day.entries %}
+                  <div class="calendar-release">
+                    <a href="/projects/{{ entry.id }}">{{ entry.title }}</a>
+                    {% set status = entry.status %}{% include "partials/status-badge.njk" %}
                   </div>
                 {% endfor %}
               </div>
@@ -117,29 +104,16 @@
        at wider widths. Server-rendered, no JavaScript. #}
     <ul class="calendar-agenda" aria-label="Release calendar agenda">
       {% for day in days %}
-        <li class="agenda-day{% if day.releases.length === 0 %} agenda-day-empty{% endif %}{% if day.date == today %} today{% endif %}">
+        <li class="agenda-day{% if day.entries.length === 0 %} agenda-day-empty{% endif %}{% if day.date == today %} today{% endif %}">
           <div class="agenda-day-date">
             {{ day.date }}{% if day.date == today %} <span class="agenda-today-tag">Today</span>{% endif %}
           </div>
-          {% if day.releases.length > 0 %}
+          {% if day.entries.length > 0 %}
             <div class="agenda-day-releases">
-              {% for release in day.releases %}
-                <div class="agenda-release{% if release.archived_at %} archived{% endif %}">
-                  <a href="/releases/{{ release.id }}">{{ release.title }}</a>
-                  <span class="release-project">{{ release.project_title }}</span>
-                  {% set status = release.status %}{% include "partials/status-badge.njk" %}
-                  {% if release._readiness %}
-                    <span class="release-readiness">
-                      {%- if release._readiness.publishable -%}
-                        <span class="readiness-publishable">Publishable</span>
-                      {%- else -%}
-                        <span class="readiness-blocked">Blocked</span>
-                      {%- endif -%}
-                    </span>
-                  {% endif %}
-                  {% if release.missing_asset_count > 0 %}
-                    <span class="missing-indicator" title="{{ release.missing_asset_count }} missing asset(s)">⚠</span>
-                  {% endif %}
+              {% for entry in day.entries %}
+                <div class="agenda-release">
+                  <a href="/projects/{{ entry.id }}">{{ entry.title }}</a>
+                  {% set status = entry.status %}{% include "partials/status-badge.njk" %}
                 </div>
               {% endfor %}
             </div>
@@ -148,10 +122,10 @@
       {% endfor %}
     </ul>
   {% else %}
-    {% set emptyHeading = "No releases scheduled for " + month %}
-    {% set emptyDescription = "There are no releases scheduled for this month." %}
-    {% set emptyActionUrl = "/releases/new" %}
-    {% set emptyActionLabel = "New Release" %}
+    {% set emptyHeading = "No projects scheduled for " + month %}
+    {% set emptyDescription = "There are no projects scheduled for this month." %}
+    {% set emptyActionUrl = "/projects/new" %}
+    {% set emptyActionLabel = "New Project" %}
     {% set emptyHeadingLevel = "h2" %}
     {% include "partials/empty-state.njk" %}
   {% endif %}

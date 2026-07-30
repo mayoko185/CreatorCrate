@@ -327,18 +327,6 @@ describe('Phase 10.6B: Visual-polish hardening', () => {
       expect(css).toMatch(/\.card-meta\s*\{[^}]*font-size:\s*0\.75rem/);
     });
 
-    it('calendar release readiness text is at least 0.75rem', async () => {
-      const res = await request(app).get('/releases/calendar').expect(200);
-      const css = extractStyle(res.text);
-      expect(css).toMatch(/\.release-readiness\s*\{[^}]*font-size:\s*0\.75rem/);
-    });
-
-    it('calendar project text is at least 0.75rem', async () => {
-      const res = await request(app).get('/releases/calendar').expect(200);
-      const css = extractStyle(res.text);
-      expect(css).toMatch(/\.release-project\s*\{[^}]*font-size:\s*0\.75rem/);
-    });
-
     it('card-readiness text is at least 0.75rem', async () => {
       const res = await request(app).get('/releases?view=board').expect(200);
       const css = extractStyle(res.text);

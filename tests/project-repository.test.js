@@ -201,6 +201,77 @@ describe('project repository', () => {
       expect(repository.findByProjectDirNull()).toHaveLength(0);
     });
   });
+
+  describe('findCalendarRange', () => {
+    it('includes tbd/planned/in-progress/ready projects using planned_date', () => {
+      for (const status of ['tbd', 'planned', 'in-progress', 'ready']) {
+        repository.create(sampleProject({ title: `P-${status}`, status, plannedDate: '2025-06-10' }));
+      }
+      const rows = repository.findCalendarRange('2025-06-01', '2025-07-01');
+      expect(rows).toHaveLength(4);
+      for (const row of rows) {
+        expect(row.effective_date).toBe('2025-06-10');
+      }
+    });
+
+    it('published project uses published_date', () => {
+      repository.create(sampleProject({
+        title: 'Published',
+        status: 'published',
+        plannedDate: '2025-06-01',
+        publishedDate: '2025-06-20',
+      }));
+      const rows = repository.findCalendarRange('2025-06-01', '2025-07-01');
+      expect(rows).toHaveLength(1);
+      expect(rows[0].effective_date).toBe('2025-06-20');
+    });
+
+    it('published project without published_date falls back to planned_date', () => {
+      repository.create(sampleProject({
+        title: 'Published No Pub Date',
+        status: 'published',
+        plannedDate: '2025-06-15',
+        publishedDate: null,
+      }));
+      const rows = repository.findCalendarRange('2025-06-01', '2025-07-01');
+      expect(rows).toHaveLength(1);
+      expect(rows[0].effective_date).toBe('2025-06-15');
+    });
+
+    it('excludes archived projects (archived_at set)', () => {
+      const p = repository.create(sampleProject({ title: 'Archived', plannedDate: '2025-06-05' }));
+      repository.archive(p.id);
+      const rows = repository.findCalendarRange('2025-06-01', '2025-07-01');
+      expect(rows).toHaveLength(0);
+    });
+
+    it('excludes archived-status projects even when archived_at is null', () => {
+      // status can be 'archived' while archived_at is still null — e.g. a
+      // transient state between marking status and setting the timestamp.
+      // The calendar query must not rely on archived_at alone.
+      repository.create(sampleProject({
+        title: 'Archived Status Only', status: 'archived', plannedDate: '2025-06-05',
+      }));
+      const rows = repository.findCalendarRange('2025-06-01', '2025-07-01');
+      expect(rows).toHaveLength(0);
+    });
+
+    it('excludes projects with no applicable date', () => {
+      repository.create(sampleProject({ title: 'No Date', plannedDate: null, publishedDate: null }));
+      const rows = repository.findCalendarRange('2025-06-01', '2025-07-01');
+      expect(rows).toHaveLength(0);
+    });
+
+    it('respects month boundaries (inclusive start, exclusive end)', () => {
+      repository.create(sampleProject({ title: 'First Day', plannedDate: '2025-06-01' }));
+      repository.create(sampleProject({ title: 'Last Day', plannedDate: '2025-06-30' }));
+      repository.create(sampleProject({ title: 'Next Month', plannedDate: '2025-07-01' }));
+      repository.create(sampleProject({ title: 'Prev Month', plannedDate: '2025-05-31' }));
+      const rows = repository.findCalendarRange('2025-06-01', '2025-07-01');
+      const titles = rows.map((r) => r.title).sort();
+      expect(titles).toEqual(['First Day', 'Last Day']);
+    });
+  });
 });
 
 function sampleProject(overrides = {}) {

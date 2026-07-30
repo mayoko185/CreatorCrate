@@ -7,6 +7,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import request from 'supertest';
+import nunjucks from 'nunjucks';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -21,6 +22,12 @@ import { ensureAuthEnablement } from '../src/auth/auth-state.js';
 import { getDisabledModeCsrf } from './helpers/auth.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
+const VIEWS_DIR = fileURLToPath(new URL('../src/views', import.meta.url));
+
+function renderTemplate(templateName, context = {}) {
+  const env = nunjucks.configure(VIEWS_DIR, { autoescape: true, noCache: true });
+  return env.render(templateName, context);
+}
 
 function getProjectDir(projectsRoot, title, status = 'tbd') {
   const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-');
@@ -53,6 +60,22 @@ async function createRelease(app, { projectId, title, status = 'idea', plannedDa
     .set('Content-Type', 'application/x-www-form-urlencoded')
     .expect(302);
   return res.headers.location.replace('/releases/', '');
+}
+
+/**
+ * Edit an existing project's status and/or scheduling dates via the HTTP
+ * form endpoint. Used to place a project on the project-backed calendar.
+ */
+async function scheduleProject(app, projectId, { title, status, plannedDate = null, publishedDate = null }) {
+  const body = [`title=${encodeURIComponent(title)}`, `status=${status}`, 'priority=normal'];
+  if (plannedDate) body.push(`plannedDate=${plannedDate}`);
+  if (publishedDate) body.push(`publishedDate=${publishedDate}`);
+  body.push('_csrf=' + encodeURIComponent(app.testCsrfToken));
+  await app.testAgent
+    .post(`/projects/${projectId}`)
+    .send(body.join('&'))
+    .set('Content-Type', 'application/x-www-form-urlencoded')
+    .expect(302);
 }
 
 /**
@@ -1661,11 +1684,6 @@ describe('Phase 6B HTTP workflow', () => {
       return cards.find((card) => card.includes(`href="/releases/${releaseId}"`)) || null;
     }
 
-    function findCalendarEntry(html, releaseId) {
-      const entries = html.match(/<div class="calendar-release[^"]*"[^>]*>[\s\S]*?<\/div>/g) || [];
-      return entries.find((entry) => entry.includes(`href="/releases/${releaseId}"`)) || null;
-    }
-
     it('no-assets blocker shows correct wording on list row', async () => {
       const projectId = await createProject(app, { title: 'Blocker No Assets Project' });
       const releaseId = await makeReadyRelease(projectId, 'Blocker No Assets', { present: false });
@@ -1843,20 +1861,6 @@ describe('Phase 6B HTTP workflow', () => {
       const boardMissing = findBoardCard(boardRes.text, Number(missingId));
       expect(listMissing).toContain('Missing selected assets');
       expect(boardMissing).toContain('Missing selected assets');
-    });
-
-    it('calendar remains compact with no full blocker descriptions', async () => {
-      const projectId = await createProject(app, { title: 'Blocker Calendar Compact' });
-      const releaseId = await makeReadyRelease(projectId, 'Blocker Calendar Compact', { present: false, missing: true });
-
-      const res = await app.testAgent.get('/releases/calendar?month=2099-01').expect(200);
-      const entry = findCalendarEntry(res.text, Number(releaseId));
-      expect(entry).not.toBeNull();
-      // Calendar should show "Blocked" not the full labels
-      expect(entry).toContain('readiness-blocked');
-      expect(entry).not.toContain('No assets selected');
-      expect(entry).not.toContain('Missing selected assets');
-      expect(entry).not.toContain('Archived scope');
     });
 
     it('no false positives from static filter labels', async () => {
@@ -2265,25 +2269,24 @@ describe('Phase 6B HTTP workflow', () => {
       expect(extractCalendarHeaderMonth(res.text)).toBe('2025-06');
     });
 
-    it('renders releases on calendar days with status badge', async () => {
-      const projectId = await createProject(app, { title: 'Calendar Project' });
-      await createRelease(app, {
-        projectId,
-        title: 'ZZZ-June-15-Calendar-Release',
+    it('renders project entries on calendar days with status badge', async () => {
+      // Calendar entries are project records (Phase 1 correction) — the
+      // project itself carries the scheduling date, not a release.
+      const projectId = await createProject(app, { title: 'ZZZ-June-15-Calendar-Project' });
+      await scheduleProject(app, projectId, {
+        title: 'ZZZ-June-15-Calendar-Project',
         status: 'planned',
         plannedDate: '2025-06-15',
       });
 
       const res = await app.testAgent.get('/releases/calendar?month=2025-06').expect(200);
-      // The release title must be rendered inside the calendar grid
+      // The project title must be rendered inside the calendar grid
       // (in a .calendar-release div, not in any other location).
-      expect(res.text).toMatch(/<div class="calendar-release"[^>]*>[\s\S]*?ZZZ-June-15-Calendar-Release[\s\S]*?<\/div>/);
+      expect(res.text).toMatch(/<div class="calendar-release"[^>]*>[\s\S]*?ZZZ-June-15-Calendar-Project[\s\S]*?<\/div>/);
       // The status badge uses the shared status-badge partial — not
       // the bare word "planned" which would also match the schedule
       // filter option label.
       expect(res.text).toMatch(/<span class="status-badge status-badge--neutral">Planned<\/span>/);
-      // The project title must be visible inside the same card.
-      expect(res.text).toMatch(/<span class="release-project">Calendar Project<\/span>/);
     });
 
     it('shows empty days without releases (calendar grid has 30 day cells for June)', async () => {
@@ -2305,37 +2308,63 @@ describe('Phase 6B HTTP workflow', () => {
       expect(res.text).not.toMatch(/<div class="calendar-release"/);
     });
 
-    it('shows missing asset warning on calendar', async () => {
-      const projectId = await createProject(app, { title: 'Calendar Missing Project' });
-      const releaseId = await createRelease(app, {
-        projectId,
-        title: 'Missing Calendar Release',
-        status: 'planned',
-        plannedDate: '2025-06-15',
+    it('empty-state branch shows project-focused wording linking to /projects/new', () => {
+      // getProjectCalendar always returns one entry per calendar day (even
+      // when every day is entry-less), so `days.length > 0` never goes
+      // false through the live HTTP route — the empty-state branch only
+      // renders when `days` itself is empty. Render the template directly
+      // with that condition to verify the copy without inventing new
+      // reachability behavior (out of scope for this correction).
+      const html = renderTemplate('releases/calendar.njk', {
+        appName: 'CreatorCrate',
+        month: '2099-01',
+        days: [],
+        firstDayWeekday: 0,
+        prevMonthDaysCount: 31,
+        prevMonth: '2098-12',
+        nextMonth: '2099-02',
+        today: '2025-06-15',
+        isCurrentMonth: false,
+        query: {},
+        pageUrl: () => '/releases/calendar',
       });
-      const assetRepo = createAssetRepository(db);
-      const asset = assetRepo.upsert(Number(projectId), 'gone.txt', {
-        filename: 'gone.txt', extension: 'txt', mimeType: 'text/plain', sizeBytes: 0, modifiedAt: null,
-      });
-      db.prepare(`UPDATE assets SET is_present = 0, missing_since = datetime('now') WHERE id = ?`).run(asset.id);
-      db.prepare(`INSERT INTO release_assets (release_id, asset_id, role, sort_order) VALUES (?, ?, 'attachment', 0)`).run(Number(releaseId), asset.id);
 
-      const res = await app.testAgent.get('/releases/calendar?month=2025-06').expect(200);
-      expect(res.text).toContain('Missing Calendar Release');
-      expect(res.text).toContain('⚠');
+      expect(html).toContain('No projects scheduled for 2099-01');
+      expect(html).toContain('There are no projects scheduled for this month.');
+      expect(html).toMatch(/href="\/projects\/new"[^>]*>New Project<\/a>/);
+
+      // The obsolete release-focused wording and action must be absent.
+      expect(html).not.toContain('No releases scheduled');
+      expect(html).not.toContain('There are no releases scheduled for this month.');
+      expect(html).not.toMatch(/href="\/releases\/new"[^>]*>New Release<\/a>/);
     });
 
-    it('links releases to detail page', async () => {
+    it('does not show release readiness or asset fields on calendar entries', async () => {
+      // Phase 1 correction: calendar entries are project records and must
+      // not surface release readiness/asset indicators.
+      const projectId = await createProject(app, { title: 'Calendar No Readiness Project' });
+      await scheduleProject(app, projectId, {
+        title: 'Calendar No Readiness Project',
+        status: 'ready',
+        plannedDate: '2025-06-15',
+      });
+
+      const res = await app.testAgent.get('/releases/calendar?month=2025-06').expect(200);
+      expect(res.text).toContain('Calendar No Readiness Project');
+      expect(res.text).not.toContain('release-readiness');
+      expect(res.text).not.toContain('missing-indicator');
+    });
+
+    it('links project entries to the project workspace', async () => {
       const projectId = await createProject(app, { title: 'Calendar Link Project' });
-      const releaseId = await createRelease(app, {
-        projectId,
-        title: 'Linked Release',
+      await scheduleProject(app, projectId, {
+        title: 'Calendar Link Project',
         status: 'planned',
         plannedDate: '2025-06-15',
       });
 
       const res = await app.testAgent.get('/releases/calendar?month=2025-06').expect(200);
-      expect(res.text).toMatch(new RegExp(`href="/releases/${releaseId}"`));
+      expect(res.text).toMatch(new RegExp(`href="/projects/${projectId}"`));
     });
 
     // ─── Exact-fallback assertions for invalid months ──────────────────
@@ -2460,14 +2489,22 @@ describe('Phase 6B HTTP workflow', () => {
       expect(nextUrl.searchParams.get('month')).toBe('2025-07');
     });
 
-    it('calendar excludes archived parent releases', async () => {
-      const projectId = await createProject(app, { title: 'Calendar Archived Parent' });
-      await createRelease(app, {
-        projectId,
+    it('calendar excludes archived projects', async () => {
+      // The calendar is project-backed (Phase 1 correction): scheduling
+      // a release under the project does not exercise the query at all,
+      // since calendar entries come from projectRepository.findCalendarRange.
+      // Schedule the project itself, confirm it would otherwise appear this
+      // month, archive it through the normal route, then confirm it is gone.
+      const projectId = await createProject(app, { title: 'Hidden From Calendar' });
+      await scheduleProject(app, projectId, {
         title: 'Hidden From Calendar',
         status: 'planned',
         plannedDate: '2025-06-15',
       });
+
+      const before = await app.testAgent.get('/releases/calendar?month=2025-06').expect(200);
+      expect(before.text).toContain('Hidden From Calendar');
+
       await app.testAgent.post(`/projects/${projectId}/archive`).send({ _csrf: app.testCsrfToken }).expect(302);
 
       const res = await app.testAgent.get('/releases/calendar?month=2025-06').expect(200);
@@ -2964,11 +3001,6 @@ describe('Phase 6B HTTP workflow', () => {
       return cards.find((card) => card.includes(`href="/releases/${releaseId}"`)) || null;
     }
 
-    function findCalendarEntry(html, releaseId) {
-      const entries = html.match(/<div class="calendar-release[^"]*"[^>]*>[\s\S]*?<\/div>/g) || [];
-      return entries.find((entry) => entry.includes(`href="/releases/${releaseId}"`)) || null;
-    }
-
     function findReadinessPanel(html) {
       const match = html.match(/<section class="panel panel--readiness">[\s\S]*?<\/section>/);
       return match ? match[0] : null;
@@ -3036,14 +3068,13 @@ describe('Phase 6B HTTP workflow', () => {
       expect(blockedCard).toContain('No assets selected');
       expect(blockedCard).not.toContain('Publishable');
 
+      // The calendar is now project-backed (Phase 1 correction) and no
+      // longer surfaces per-release readiness — verified separately in
+      // the "project-backed calendar" and "release calendar" test groups.
+      // This view still must render normally alongside the other release
+      // views for the same project.
       const calendar = await app.testAgent.get('/releases/calendar?month=2025-06').expect(200);
       expect(calendar.text).toMatch(/<div class="calendar-nav"[^>]*>[\s\S]*?<h2>2025-06<\/h2>/);
-      const publishableCalendarEntry = findCalendarEntry(calendar.text, publishableId);
-      const blockedCalendarEntry = findCalendarEntry(calendar.text, blockedId);
-      expect(publishableCalendarEntry).not.toBeNull();
-      expect(publishableCalendarEntry).toMatch(/<span class="readiness-publishable">Publishable<\/span>/);
-      expect(blockedCalendarEntry).not.toBeNull();
-      expect(blockedCalendarEntry).toMatch(/<span class="readiness-blocked">Blocked<\/span>/);
 
       const blockedBefore = snapshotReleaseRow(db, Number(blockedId));
       const blockedBeforeFacts = findReadinessFacts(db, Number(blockedId));

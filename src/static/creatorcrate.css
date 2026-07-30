@@ -1536,15 +1536,6 @@
         flex-direction: column;
         gap: 0.125rem;
       }
-      .calendar-release:has(.readiness-publishable) {
-        border-left-color: var(--success);
-      }
-      .calendar-release:has(.readiness-blocked) {
-        border-left-color: var(--danger);
-      }
-      .calendar-release.archived {
-        opacity: 0.65;
-      }
       .calendar-release a {
         font-weight: 600;
         color: var(--text);
@@ -1555,15 +1546,6 @@
       .calendar-release a:hover {
         text-decoration: underline;
       }
-      .release-project {
-        color: var(--muted);
-        font-size: 0.75rem;
-      }
-      .release-readiness {
-        font-size: 0.75rem;
-        font-weight: 600;
-      }
-
       /* ── Mobile agenda: replaces reliance on horizontal scroll below the
          calendar-agenda breakpoint. Same day data as the grid above, just a
          different presentation — server-rendered, no JavaScript. ── */
@@ -1615,17 +1597,8 @@
         flex-direction: column;
         gap: 0.125rem;
       }
-      .agenda-release:has(.readiness-publishable) {
-        border-left-color: var(--success);
-      }
-      .agenda-release:has(.readiness-blocked) {
-        border-left-color: var(--danger);
-      }
       .agenda-day-releases .agenda-release:first-child {
         border-top: none;
-      }
-      .agenda-release.archived {
-        opacity: 0.65;
       }
       .agenda-release a {
         font-weight: 600;

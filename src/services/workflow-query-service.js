@@ -592,6 +592,90 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
     };
   }
 
+  /**
+   * Project-backed calendar view data for a given month.
+   *
+   * Calendar entries are project records, not release records: each
+   * project appears at most once regardless of how many releases it has.
+   * The effective date is planned_date for tbd/planned/in-progress/ready
+   * projects, and published_date (falling back to planned_date) for
+   * published projects. Archived projects and projects with no applicable
+   * date are excluded.
+   * @param {string} month - YYYY-MM month string
+   * @param {Object} [options]
+   * @param {string} [options.today] - ISO date YYYY-MM-DD override
+   * @returns {{ month: string, days: Array<{ date: string, entries: Array }>, firstDayWeekday: number, prevMonthDaysCount: number, prevMonth: string, nextMonth: string, today: string }}
+   */
+  function getProjectCalendar(month, options = {}) {
+    const today = options.today || defaultToday();
+    const validated = parseMonth(month);
+
+    // Fall back to current month if invalid
+    const { year, month: monthNum } = validated || parseMonth(today.slice(0, 7)) || { year: 2026, month: 7 };
+
+    // Calculate inclusive start (first day of month) and exclusive end (first day of next month).
+    // Year 9999 is the maximum supported year (see parseMonth), so December 9999 has no real
+    // "next month" expressible as a 4-digit-year ISO date — incrementing to 10000-01-01 would
+    // produce a 5-digit year that breaks lexicographic string comparison against effective_date
+    // (e.g. "10000-01-01" sorts BEFORE "9999-12-31"). For that month only, use month "13" as an
+    // exclusive upper bound: it keeps the 4-digit year and still sorts after every real date in
+    // December (string comparison decides on the month segment before the day segment).
+    const startDate = `${year}-${String(monthNum).padStart(2, '0')}-01`;
+    let endYear = year;
+    let endMonth = monthNum + 1;
+    if (endMonth > 12) {
+      if (year + 1 > 9999) {
+        endMonth = 13;
+      } else {
+        endMonth = 1;
+        endYear++;
+      }
+    }
+    const endDate = `${endYear}-${String(endMonth).padStart(2, '0')}-01`;
+
+    const projects = projectRepository.findCalendarRange(startDate, endDate);
+
+    // Group projects by their effective calendar date
+    const byDate = new Map();
+    for (const project of projects) {
+      const date = project.effective_date;
+      if (!byDate.has(date)) {
+        byDate.set(date, []);
+      }
+      byDate.get(date).push(project);
+    }
+
+    // Build days array for the month
+    const daysInMonth = [31, isLeapYear(year) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][monthNum - 1];
+    const days = [];
+    for (let d = 1; d <= daysInMonth; d++) {
+      const date = `${year}-${String(monthNum).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+      days.push({ date, entries: byDate.get(date) || [] });
+    }
+
+    // Compute first day of month weekday (Monday=0, Sunday=6) for calendar grid padding
+    const firstDay = new Date(year, monthNum - 1, 1);
+    const firstDayWeekday = (firstDay.getDay() + 6) % 7;
+
+    // Leading padding cells show the tail end of the previous month's dates
+    // (dimmed, non-interactive) rather than blank cells — needs that month's
+    // day count to compute the numbers.
+    const prevMonthNum = monthNum === 1 ? 12 : monthNum - 1;
+    const prevMonthYear = monthNum === 1 ? year - 1 : year;
+    const prevMonthDaysCount = [31, isLeapYear(prevMonthYear) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][prevMonthNum - 1];
+
+    const monthStr = `${year}-${String(monthNum).padStart(2, '0')}`;
+    return {
+      month: monthStr,
+      days,
+      firstDayWeekday,
+      prevMonthDaysCount,
+      prevMonth: prevMonth(monthStr),
+      nextMonth: nextMonth(monthStr),
+      today,
+    };
+  }
+
   // ─── Phase 6D: Asset Browser ───────────────────────────────────────────
 
   /**
@@ -1203,6 +1287,7 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
     getReleaseList,
     getReleaseBoard,
     getReleaseCalendar,
+    getProjectCalendar,
     getProjectAssetBrowser,
     getProjectAssetViewer,
     getReleaseReadiness,

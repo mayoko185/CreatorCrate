@@ -26,14 +26,16 @@ const RELEASE_LIST_FIXED_STATEMENT_EXECUTIONS = 4;
 /**
  * Helper to insert a project directly without filesystem operations.
  */
-function insertProject(db, { title, status = 'tbd' }) {
+function insertProject(db, {
+  title, status = 'tbd', plannedDate = null, publishedDate = null, archivedAt = null,
+}) {
   const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-');
   return db.prepare(`
     INSERT INTO projects (title, slug, description, notes, status, priority,
-                          planned_date, published_date, patreon_url)
-    VALUES (?, ?, '', '', ?, 'normal', NULL, NULL, NULL)
+                          planned_date, published_date, patreon_url, archived_at)
+    VALUES (?, ?, '', '', ?, 'normal', ?, ?, NULL, ?)
     RETURNING *
-  `).get(title, slug, status);
+  `).get(title, slug, status, plannedDate, publishedDate, archivedAt);
 }
 
 /**
@@ -2680,6 +2682,138 @@ describe('workflow query service', () => {
       const { prevMonth, nextMonth } = service;
       expect(prevMonth('2025-06')).toBe('2025-05');
       expect(nextMonth('2025-06')).toBe('2025-07');
+    });
+  });
+
+  // ─── Calendar/Releases correction Phase 1 — getProjectCalendar ────────
+  //
+  // The calendar now sources its entries from project records instead of
+  // release records: entries are keyed by each project's effective date
+  // (planned_date, or published_date-with-fallback for published projects).
+
+  describe('getProjectCalendar', () => {
+    it('tbd project with planned_date appears on that date', () => {
+      const project = insertProject(db, { title: 'Tbd Project', status: 'tbd', plannedDate: '2025-06-10' });
+      const result = service.getProjectCalendar('2025-06', { today: '2025-06-15' });
+      const day = result.days.find((d) => d.date === '2025-06-10');
+      expect(day.entries.map((e) => e.id)).toContain(project.id);
+    });
+
+    it('planned project with planned_date appears on that date', () => {
+      const project = insertProject(db, { title: 'Planned Project', status: 'planned', plannedDate: '2025-06-11' });
+      const result = service.getProjectCalendar('2025-06', { today: '2025-06-15' });
+      const day = result.days.find((d) => d.date === '2025-06-11');
+      expect(day.entries.map((e) => e.id)).toContain(project.id);
+    });
+
+    it('in-progress project with planned_date appears on that date', () => {
+      const project = insertProject(db, { title: 'In Progress Project', status: 'in-progress', plannedDate: '2025-06-12' });
+      const result = service.getProjectCalendar('2025-06', { today: '2025-06-15' });
+      const day = result.days.find((d) => d.date === '2025-06-12');
+      expect(day.entries.map((e) => e.id)).toContain(project.id);
+    });
+
+    it('ready project with planned_date appears on that date', () => {
+      const project = insertProject(db, { title: 'Ready Project', status: 'ready', plannedDate: '2025-06-13' });
+      const result = service.getProjectCalendar('2025-06', { today: '2025-06-15' });
+      const day = result.days.find((d) => d.date === '2025-06-13');
+      expect(day.entries.map((e) => e.id)).toContain(project.id);
+    });
+
+    it('published project uses published_date', () => {
+      const project = insertProject(db, {
+        title: 'Published Project', status: 'published', plannedDate: '2025-06-01', publishedDate: '2025-06-20',
+      });
+      const result = service.getProjectCalendar('2025-06', { today: '2025-06-15' });
+      const plannedDay = result.days.find((d) => d.date === '2025-06-01');
+      const publishedDay = result.days.find((d) => d.date === '2025-06-20');
+      expect(plannedDay.entries.map((e) => e.id)).not.toContain(project.id);
+      expect(publishedDay.entries.map((e) => e.id)).toContain(project.id);
+    });
+
+    it('published project without published_date falls back to planned_date', () => {
+      const project = insertProject(db, {
+        title: 'Published Fallback', status: 'published', plannedDate: '2025-06-14', publishedDate: null,
+      });
+      const result = service.getProjectCalendar('2025-06', { today: '2025-06-15' });
+      const day = result.days.find((d) => d.date === '2025-06-14');
+      expect(day.entries.map((e) => e.id)).toContain(project.id);
+    });
+
+    it('excludes archived projects', () => {
+      const project = insertProject(db, {
+        title: 'Archived Project', status: 'tbd', plannedDate: '2025-06-16', archivedAt: '2025-06-01 00:00:00',
+      });
+      const result = service.getProjectCalendar('2025-06', { today: '2025-06-15' });
+      const day = result.days.find((d) => d.date === '2025-06-16');
+      expect(day.entries.map((e) => e.id)).not.toContain(project.id);
+    });
+
+    it('excludes projects with no applicable date', () => {
+      insertProject(db, { title: 'No Date Project', status: 'tbd', plannedDate: null });
+      const result = service.getProjectCalendar('2025-06', { today: '2025-06-15' });
+      const total = result.days.reduce((sum, d) => sum + d.entries.length, 0);
+      expect(total).toBe(0);
+    });
+
+    it('excludes archived-status projects even when archived_at is null', () => {
+      const project = insertProject(db, {
+        title: 'Archived Status Only', status: 'archived', plannedDate: '2025-06-16',
+      });
+      const result = service.getProjectCalendar('2025-06', { today: '2025-06-15' });
+      const day = result.days.find((d) => d.date === '2025-06-16');
+      expect(day.entries.map((e) => e.id)).not.toContain(project.id);
+    });
+
+    it('includes a project dated 9999-12-31 exactly once in the December 9999 calendar', () => {
+      // Year 9999 is the maximum supported year (parseMonth), so this exercises
+      // the upper month boundary where a naive "first day of next month"
+      // calculation would overflow into a 5-digit year and silently exclude
+      // the last day of December.
+      const project = insertProject(db, {
+        title: 'End Of Time Project', status: 'tbd', plannedDate: '9999-12-31',
+      });
+      const result = service.getProjectCalendar('9999-12', { today: '2025-06-15' });
+      const day = result.days.find((d) => d.date === '9999-12-31');
+      expect(day).toBeDefined();
+      const matches = day.entries.filter((e) => e.id === project.id);
+      expect(matches).toHaveLength(1);
+    });
+
+    it('a project with multiple releases appears only once', () => {
+      const project = insertProject(db, { title: 'Multi Release Project', status: 'in-progress', plannedDate: '2025-06-17' });
+      insertRelease(db, { projectId: project.id, title: 'Release A', status: 'idea', plannedDate: '2025-06-17' });
+      insertRelease(db, { projectId: project.id, title: 'Release B', status: 'planned', plannedDate: '2025-06-18' });
+      insertRelease(db, { projectId: project.id, title: 'Release C', status: 'drafting', plannedDate: '2025-06-17' });
+
+      const result = service.getProjectCalendar('2025-06', { today: '2025-06-15' });
+      const total = result.days.reduce((sum, d) => sum + d.entries.filter((e) => e.id === project.id).length, 0);
+      expect(total).toBe(1);
+    });
+
+    it('respects month boundaries (inclusive start, exclusive end)', () => {
+      insertProject(db, { title: 'First Day', status: 'tbd', plannedDate: '2025-06-01' });
+      insertProject(db, { title: 'Last Day', status: 'tbd', plannedDate: '2025-06-30' });
+      insertProject(db, { title: 'Next Month', status: 'tbd', plannedDate: '2025-07-01' });
+      insertProject(db, { title: 'Prev Month', status: 'tbd', plannedDate: '2025-05-31' });
+
+      const result = service.getProjectCalendar('2025-06', { today: '2025-06-15' });
+      const titles = result.days.flatMap((d) => d.entries.map((e) => e.title)).sort();
+      expect(titles).toEqual(['First Day', 'Last Day']);
+    });
+
+    it('returns the correct number of days for the month', () => {
+      const result = service.getProjectCalendar('2025-06', { today: '2025-06-15' });
+      expect(result.days).toHaveLength(30);
+    });
+
+    it('entries expose id, title, and status for template rendering', () => {
+      const project = insertProject(db, { title: 'Render Check', status: 'ready', plannedDate: '2025-06-19' });
+      const result = service.getProjectCalendar('2025-06', { today: '2025-06-15' });
+      const day = result.days.find((d) => d.date === '2025-06-19');
+      const entry = day.entries.find((e) => e.id === project.id);
+      expect(entry.title).toBe('Render Check');
+      expect(entry.status).toBe('ready');
     });
   });
 

@@ -9018,6 +9018,81 @@ describe('release HTTP workflow', () => {
     });
   });
 
+  // ─── Calendar/Releases correction Phase 1: project-backed calendar ────
+  //
+  // /releases/calendar now sources entries from project records, not
+  // release records. These tests exercise the HTTP route end-to-end.
+
+  describe('project-backed calendar', () => {
+    async function createProjectWithDates(title, { status, plannedDate, publishedDate }) {
+      const createRes = await agent
+        .post('/projects')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .send(`title=${encodeURIComponent(title)}`)
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectId = createRes.headers.location.replace('/projects/', '');
+
+      const update = agent
+        .post(`/projects/${projectId}`)
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .send(`title=${encodeURIComponent(title)}`)
+        .send(`status=${status}`)
+        .send('priority=normal');
+      if (plannedDate) update.send(`plannedDate=${plannedDate}`);
+      if (publishedDate) update.send(`publishedDate=${publishedDate}`);
+      await update.set('Content-Type', 'application/x-www-form-urlencoded').expect(302);
+
+      return projectId;
+    }
+
+    it('renders a project entry linking to /projects/:id with its status badge', async () => {
+      const projectId = await createProjectWithDates('Calendar Project', {
+        status: 'in-progress',
+        plannedDate: '2026-07-14',
+      });
+
+      const res = await agent.get('/releases/calendar?month=2026-07').expect(200);
+
+      expect(res.text).toContain(`href="/projects/${projectId}"`);
+      expect(res.text).toMatch(new RegExp(`href="/projects/${projectId}">Calendar Project</a>`));
+      expect(res.text).toContain('In Progress');
+    });
+
+    it('does not link the entry to /releases/:id', async () => {
+      await createProjectWithDates('No Release Link Project', {
+        status: 'planned',
+        plannedDate: '2026-07-05',
+      });
+
+      const res = await agent.get('/releases/calendar?month=2026-07').expect(200);
+      expect(res.text).not.toMatch(/href="\/releases\/\d+">No Release Link Project<\/a>/);
+    });
+
+    it('a project appears on the calendar without any release record', async () => {
+      const projectId = await createProjectWithDates('Bare Project', {
+        status: 'ready',
+        plannedDate: '2026-07-08',
+      });
+
+      const res = await agent.get('/releases/calendar?month=2026-07').expect(200);
+      expect(res.text).toContain(`href="/projects/${projectId}"`);
+    });
+
+    it('published project appears at its published date, not planned date', async () => {
+      const projectId = await createProjectWithDates('Publish Move Project', {
+        status: 'published',
+        plannedDate: '2026-07-02',
+        publishedDate: '2026-07-22',
+      });
+
+      const julyRes = await agent.get('/releases/calendar?month=2026-07').expect(200);
+      expect(julyRes.text).toContain(`href="/projects/${projectId}"`);
+    });
+  });
+
   describe('release list empty-state detection', () => {
     async function createReleaseWithTitle(title, status = 'idea') {
       const projRes = await agent

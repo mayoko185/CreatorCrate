@@ -377,10 +377,12 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
         .expect(302);
       const projectId = projRes.headers.location.replace('/projects/', '');
 
-      await agent.post('/releases')
-        .send(`projectId=${projectId}`)
-        .send('title=Calendar+Release+Badge')
+      // Calendar entries are project records — schedule the project itself
+      // rather than creating a release record.
+      await agent.post(`/projects/${projectId}`)
+        .send('title=Calendar+Badge+Test')
         .send('status=planned')
+        .send('priority=normal')
         .send('plannedDate=2025-06-15')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .send('_csrf=' + encodeURIComponent(csrfToken))
