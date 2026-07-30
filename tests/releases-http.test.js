@@ -17,6 +17,16 @@ import { evaluateReleaseReadiness } from '../src/services/release-readiness-poli
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 
+function countTags(html, tag) {
+  const re = new RegExp(`<${tag}[\\s>]`, 'g');
+  return (html.match(re) || []).length;
+}
+
+function hasClass(html, className) {
+  const re = new RegExp(`class="[^"]*\\b${className}\\b[^"]*"`);
+  return re.test(html);
+}
+
 /**
  * Query release_assets junction table directly for a release.
  * Returns rows with asset_id, role, sort_order.
@@ -692,6 +702,137 @@ describe('release HTTP workflow', () => {
 
   it('invalid release id returns 404', async () => {
     await agent.get('/releases/abc').expect(404);
+  });
+
+  describe('publish page rendering contract', () => {
+    it('publish page uses page-heading with cancel action', async () => {
+      const projRes = await agent.post('/projects')
+        .send('title=Publish+Heading+Test')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .expect(302);
+      const projectId = projRes.headers.location.replace('/projects/', '');
+
+      const relRes = await agent.post('/releases')
+        .send(`projectId=${projectId}`)
+        .send('title=Publish+Heading+Release')
+        .send('status=ready')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .expect(302);
+
+      // Add an asset to make it publishable
+      const slug = 'publish-heading-test';
+      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
+      const matching = entries.filter(e => e.endsWith(`-${slug}`));
+      fs.writeFileSync(path.join(projectsRoot, 'tbd', matching[0], 'test.txt'), 'hello');
+      await agent.post(`/projects/${projectId}/scan`).send('_csrf=' + encodeURIComponent(csrfToken))
+        .expect(302);
+
+      const { createAssetRepository } = await import('../src/data/asset-repository.js');
+      const assetRepo = createAssetRepository(db);
+      const assets = assetRepo.findByProjectId(Number(projectId));
+      const assetId = String(assets[0].id);
+
+      await agent.post(`${relRes.headers.location}/assets`)
+        .send(`selectedAssetIds[]=${assetId}`)
+        .send('roles[]=primary')
+        .send('sortOrder[]=0')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .expect(302);
+
+      const res = await agent.get(`${relRes.headers.location}/publish`).expect(200);
+      expect(hasClass(res.text, 'page-heading')).toBe(true);
+      expect(res.text).toContain('Cancel');
+      expect(countTags(res.text, 'h1')).toBe(1);
+    });
+
+    it('publish page uses shared panel class for readiness section', async () => {
+      const projRes = await agent.post('/projects')
+        .send('title=Publish+Panel+Test')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .expect(302);
+      const projectId = projRes.headers.location.replace('/projects/', '');
+
+      const relRes = await agent.post('/releases')
+        .send(`projectId=${projectId}`)
+        .send('title=Publish+Panel+Release')
+        .send('status=ready')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .expect(302);
+
+      const slug = 'publish-panel-test';
+      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
+      const matching = entries.filter(e => e.endsWith(`-${slug}`));
+      fs.writeFileSync(path.join(projectsRoot, 'tbd', matching[0], 'test.txt'), 'hello');
+      await agent.post(`/projects/${projectId}/scan`).send('_csrf=' + encodeURIComponent(csrfToken))
+        .expect(302);
+
+      const { createAssetRepository } = await import('../src/data/asset-repository.js');
+      const assetRepo = createAssetRepository(db);
+      const assets = assetRepo.findByProjectId(Number(projectId));
+      const assetId = String(assets[0].id);
+
+      await agent.post(`${relRes.headers.location}/assets`)
+        .send(`selectedAssetIds[]=${assetId}`)
+        .send('roles[]=primary')
+        .send('sortOrder[]=0')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .expect(302);
+
+      const res = await agent.get(`${relRes.headers.location}/publish`).expect(200);
+      expect(res.text).toContain('class="panel panel--readiness"');
+    });
+
+    it('publish page uses status-badge for release status', async () => {
+      const projRes = await agent.post('/projects')
+        .send('title=Publish+Badge+Test')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .expect(302);
+      const projectId = projRes.headers.location.replace('/projects/', '');
+
+      const relRes = await agent.post('/releases')
+        .send(`projectId=${projectId}`)
+        .send('title=Publish+Badge+Release')
+        .send('status=ready')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .expect(302);
+
+      const slug = 'publish-badge-test';
+      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
+      const matching = entries.filter(e => e.endsWith(`-${slug}`));
+      fs.writeFileSync(path.join(projectsRoot, 'tbd', matching[0], 'test.txt'), 'hello');
+      await agent.post(`/projects/${projectId}/scan`).send('_csrf=' + encodeURIComponent(csrfToken))
+        .expect(302);
+
+      const { createAssetRepository } = await import('../src/data/asset-repository.js');
+      const assetRepo = createAssetRepository(db);
+      const assets = assetRepo.findByProjectId(Number(projectId));
+      const assetId = String(assets[0].id);
+
+      await agent.post(`${relRes.headers.location}/assets`)
+        .send(`selectedAssetIds[]=${assetId}`)
+        .send('roles[]=primary')
+        .send('sortOrder[]=0')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .expect(302);
+
+      const res = await agent.get(`${relRes.headers.location}/publish`).expect(200);
+      expect(res.text).toContain('status-badge');
+    });
   });
 
   // ─── Release form Cancel link (Phase 2D regression coverage) ──────────────

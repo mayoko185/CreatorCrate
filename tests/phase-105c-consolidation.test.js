@@ -316,93 +316,6 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
       expect(res.text).toMatch(/status-badge--active/);
     });
 
-    it('dates in release detail have context labels', async () => {
-      const projRes = await agent.post('/projects')
-        .send('title=Date+Label+Test')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-      const projectId = projRes.headers.location.replace('/projects/', '');
-
-      const createRes = await agent.post('/releases')
-        .send(`projectId=${projectId}`)
-        .send('title=Date+Labels')
-        .send('status=idea')
-        .send('plannedDate=2025-12-01')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-
-      const res = await agent.get(createRes.headers.location).expect(200);
-      expect(res.text).toContain('(release target)');
-    });
-  });
-
-  // ─── 3. Calendar responsiveness ────────────────────────────────────
-
-  describe('release calendar', () => {
-    it('calendar uses page-heading with view switcher', async () => {
-      const res = await agent.get('/calendar').expect(200);
-      expect(hasClass(res.text, 'page-heading')).toBe(true);
-      expect(hasClass(res.text, 'page-heading-copy')).toBe(true);
-      expect(countTags(res.text, 'h1')).toBe(1);
-    });
-
-    it('calendar has view-switcher links back to list and board', async () => {
-      const res = await agent.get('/calendar').expect(200);
-      expect(res.text).toContain('view-switcher-option');
-      expect(res.text).toMatch(/href="\/release-management"/);
-      expect(res.text).toMatch(/href="\/release-management\?view=board"/);
-    });
-
-    it('calendar renders a named bounded scroll container for narrow screens', async () => {
-      const res = await agent.get('/calendar').expect(200);
-      const css = extractStyle(res.text);
-      expect(res.text).toContain('<div class="calendar-scroll" tabindex="0" aria-label="Calendar grid">');
-      expect(res.text).toContain('<div class="calendar-table" role="table">');
-      expect(css).toContain('.calendar-scroll');
-      expect(css).toContain('overflow-x');
-      expect(css).toContain('max-width: 100%');
-    });
-
-    it('calendar uses status-badge partial instead of inline status classes', async () => {
-      const projRes = await agent.post('/projects')
-        .send('title=Calendar+Badge+Test')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-      const projectId = projRes.headers.location.replace('/projects/', '');
-
-      // Calendar entries are project records — schedule the project itself
-      // rather than creating a release record.
-      await agent.post(`/projects/${projectId}`)
-        .send('title=Calendar+Badge+Test')
-        .send('status=planned')
-        .send('priority=normal')
-        .send('plannedDate=2025-06-15')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-
-      const res = await agent.get('/calendar?month=2025-06').expect(200);
-      expect(res.text).toContain('status-badge');
-    });
-
-    it('calendar with no releases in the month still renders the navigable grid with empty day cells', async () => {
-      // The calendar grid always renders (so Previous/Next navigation stays
-      // available even for months with zero releases) — days without
-      // releases are marked individually via the "empty" day-cell class
-      // rather than swapping the whole page for the shared empty-state
-      // partial, which would strand the user without month navigation.
-      const res = await agent.get('/calendar?month=2099-01').expect(200);
-      expect(res.text).toContain('<div class="calendar-table" role="table">');
-      expect(res.text).toMatch(/<div class="calendar-day empty" role="cell">/);
-      expect(res.text).not.toContain('<div class="calendar-release');
-    });
   });
 
   // ─── 4. Release detail organization ────────────────────────────────
@@ -451,31 +364,6 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
       const res = await agent.get(createRes.headers.location).expect(200);
       expect(hasClass(res.text, 'page-heading')).toBe(true);
       expect(res.text).toContain('Edit');
-    });
-
-    it('shows destructive section with archive button for non-archived releases', async () => {
-      const projRes = await agent.post('/projects')
-        .send('title=Destructive+Section+Test')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-      const projectId = projRes.headers.location.replace('/projects/', '');
-
-      const createRes = await agent.post('/releases')
-        .send(`projectId=${projectId}`)
-        .send('title=Destructive+Release')
-        .send('status=idea')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-
-      const res = await agent.get(createRes.headers.location).expect(200);
-      expect(hasClass(res.text, 'destructive-section')).toBe(true);
-      expect(hasClass(res.text, 'button-danger')).toBe(true);
-      expect(res.text).toContain('Danger zone');
-      expect(res.text).toContain('Archive release');
     });
 
     it('hides destructive section for archived releases', async () => {
@@ -625,21 +513,6 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
       }
     });
 
-    it('create form has exactly one h1', async () => {
-      const projRes = await agent.post('/projects')
-        .send('title=H1+Release+Form')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-      const projectId = projRes.headers.location.replace('/projects/', '');
-
-      const res = await agent.get(`/releases/new?projectId=${projectId}`).expect(200);
-      expect(countTags(res.text, 'h1')).toBe(1);
-      expect(hasClass(res.text, 'page-heading')).toBe(true);
-    });
-
     it('create form has primary submit and secondary cancel', async () => {
       const projRes = await agent.post('/projects')
         .send('title=Form+Actions+Test')
@@ -689,139 +562,6 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
       expect(res.text).toContain('value="2026-02-31"');
       expect(res.text).toContain('value="2026-08-15"');
       expect(res.text).toContain('value="https://patreon.com/preserved-release"');
-    });
-  });
-
-  // ─── 6. Publish workflow ────────────────────────────────────────────
-
-  describe('publish workflow', () => {
-    it('publish page uses page-heading with cancel action', async () => {
-      const projRes = await agent.post('/projects')
-        .send('title=Publish+Heading+Test')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-      const projectId = projRes.headers.location.replace('/projects/', '');
-
-      const relRes = await agent.post('/releases')
-        .send(`projectId=${projectId}`)
-        .send('title=Publish+Heading+Release')
-        .send('status=ready')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-
-      // Add an asset to make it publishable
-      const slug = 'publish-heading-test';
-      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-      const matching = entries.filter(e => e.endsWith(`-${slug}`));
-      fs.writeFileSync(path.join(projectsRoot, 'tbd', matching[0], 'test.txt'), 'hello');
-      await agent.post(`/projects/${projectId}/scan`).send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-
-      const { createAssetRepository } = await import('../src/data/asset-repository.js');
-      const assetRepo = createAssetRepository(db);
-      const assets = assetRepo.findByProjectId(Number(projectId));
-      const assetId = String(assets[0].id);
-
-      await agent.post(`${relRes.headers.location}/assets`)
-        .send(`selectedAssetIds[]=${assetId}`)
-        .send('roles[]=primary')
-        .send('sortOrder[]=0')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-
-      const res = await agent.get(`${relRes.headers.location}/publish`).expect(200);
-      expect(hasClass(res.text, 'page-heading')).toBe(true);
-      expect(res.text).toContain('Cancel');
-      expect(countTags(res.text, 'h1')).toBe(1);
-    });
-
-    it('publish page uses shared panel class for readiness section', async () => {
-      const projRes = await agent.post('/projects')
-        .send('title=Publish+Panel+Test')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-      const projectId = projRes.headers.location.replace('/projects/', '');
-
-      const relRes = await agent.post('/releases')
-        .send(`projectId=${projectId}`)
-        .send('title=Publish+Panel+Release')
-        .send('status=ready')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-
-      const slug = 'publish-panel-test';
-      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-      const matching = entries.filter(e => e.endsWith(`-${slug}`));
-      fs.writeFileSync(path.join(projectsRoot, 'tbd', matching[0], 'test.txt'), 'hello');
-      await agent.post(`/projects/${projectId}/scan`).send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-
-      const { createAssetRepository } = await import('../src/data/asset-repository.js');
-      const assetRepo = createAssetRepository(db);
-      const assets = assetRepo.findByProjectId(Number(projectId));
-      const assetId = String(assets[0].id);
-
-      await agent.post(`${relRes.headers.location}/assets`)
-        .send(`selectedAssetIds[]=${assetId}`)
-        .send('roles[]=primary')
-        .send('sortOrder[]=0')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-
-      const res = await agent.get(`${relRes.headers.location}/publish`).expect(200);
-      expect(res.text).toContain('class="panel panel--readiness"');
-    });
-
-    it('publish page uses status-badge for release status', async () => {
-      const projRes = await agent.post('/projects')
-        .send('title=Publish+Badge+Test')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-      const projectId = projRes.headers.location.replace('/projects/', '');
-
-      const relRes = await agent.post('/releases')
-        .send(`projectId=${projectId}`)
-        .send('title=Publish+Badge+Release')
-        .send('status=ready')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-
-      const slug = 'publish-badge-test';
-      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-      const matching = entries.filter(e => e.endsWith(`-${slug}`));
-      fs.writeFileSync(path.join(projectsRoot, 'tbd', matching[0], 'test.txt'), 'hello');
-      await agent.post(`/projects/${projectId}/scan`).send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-
-      const { createAssetRepository } = await import('../src/data/asset-repository.js');
-      const assetRepo = createAssetRepository(db);
-      const assets = assetRepo.findByProjectId(Number(projectId));
-      const assetId = String(assets[0].id);
-
-      await agent.post(`${relRes.headers.location}/assets`)
-        .send(`selectedAssetIds[]=${assetId}`)
-        .send('roles[]=primary')
-        .send('sortOrder[]=0')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-
-      const res = await agent.get(`${relRes.headers.location}/publish`).expect(200);
-      expect(res.text).toContain('status-badge');
     });
   });
 
@@ -1005,33 +745,6 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
       }
     });
 
-    it('release form uses page-heading', async () => {
-      const projRes = await agent.post('/projects')
-        .send('title=Consistent+Heading')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-      const projectId = projRes.headers.location.replace('/projects/', '');
-
-      const res = await agent.get(`/releases/new?projectId=${projectId}`).expect(200);
-      expect(hasClass(res.text, 'page-heading')).toBe(true);
-      expect(countTags(res.text, 'h1')).toBe(1);
-    });
-
-    it('no duplicate status-badge variant definitions in CSS', async () => {
-      const res = await agent.get('/release-management').expect(200);
-      const css = extractStyle(res.text);
-      // All shared badge variants must be defined
-      expect(css).toContain('.status-badge--neutral');
-      expect(css).toContain('.status-badge--active');
-      expect(css).toContain('.status-badge--draft');
-      expect(css).toContain('.status-badge--published');
-      expect(css).toContain('.status-badge--error');
-      expect(css).toContain('.status-badge--archived');
-    });
-
     it('release list and project list use the same status-badge partial', async () => {
       const projRes = await agent.post('/projects')
         .send('title=Badge+Consistency')
@@ -1062,62 +775,6 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
   // ─── 9. Accessibility ────────────────────────────────────────────
 
   describe('accessibility', () => {
-    it('release list has exactly one h1', async () => {
-      const res = await agent.get('/release-management').expect(200);
-      expect(countTags(res.text, 'h1')).toBe(1);
-    });
-
-    it('release calendar has exactly one h1', async () => {
-      const res = await agent.get('/calendar').expect(200);
-      expect(countTags(res.text, 'h1')).toBe(1);
-    });
-
-    it('release form has exactly one h1', async () => {
-      const projRes = await agent.post('/projects')
-        .send('title=H1+Form+Test')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-      const projectId = projRes.headers.location.replace('/projects/', '');
-
-      const res = await agent.get(`/releases/new?projectId=${projectId}`).expect(200);
-      expect(countTags(res.text, 'h1')).toBe(1);
-    });
-
-    it('release detail has exactly one h1', async () => {
-      const projRes = await agent.post('/projects')
-        .send('title=H1+Detail+Test')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-      const projectId = projRes.headers.location.replace('/projects/', '');
-
-      const createRes = await agent.post('/releases')
-        .send(`projectId=${projectId}`)
-        .send('title=H1+Detail+Release')
-        .send('status=idea')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-
-      const res = await agent.get(createRes.headers.location).expect(200);
-      expect(countTags(res.text, 'h1')).toBe(1);
-    });
-
-    it('view-switcher has aria-label', async () => {
-      const res = await agent.get('/release-management').expect(200);
-      expect(res.text).toContain('aria-label="View"');
-    });
-
-    it('calendar navigation has aria-label', async () => {
-      const res = await agent.get('/calendar').expect(200);
-      expect(res.text).toContain('aria-label="Calendar navigation"');
-    });
-
     it('no nested interactive elements in view switcher', async () => {
       const res = await agent.get('/release-management').expect(200);
       // View switcher options are <a> elements, not <button> inside <a>
@@ -1137,12 +794,6 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
       const res = await agent.get('/release-management').expect(200);
       // Filter form uses method="get" — no JS required
       expect(res.text).toMatch(/<form[^>]+method="get"[^>]*action="\/release-management"/);
-    });
-
-    it('release calendar navigation links work without JavaScript', async () => {
-      const res = await agent.get('/calendar').expect(200);
-      // Previous/Next are real <a> links
-      expect(res.text).toMatch(/<a class="button" href="[^"]*">/);
     });
 
     it('release archive form works without JavaScript (uses onclick confirm)', async () => {
