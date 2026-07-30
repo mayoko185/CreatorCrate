@@ -1425,4 +1425,76 @@ describe('project HTTP workflow', () => {
       await agent.get('/projects/9999/edit').expect(404);
     });
   });
+
+  describe('project list rendering/status behavior', () => {
+    it('uses status badges for project status column', async () => {
+      await agent
+        .post('/projects')
+        .send('title=Status+Badge+List')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .expect(302);
+
+      const res = await agent.get('/projects').expect(200);
+      expect(res.text).toContain('status-badge');
+    });
+
+    it('has distinct empty state for no projects vs filtered results', async () => {
+      // No projects at all
+      const res1 = await agent.get('/projects').expect(200);
+      expect(res1.text).toContain('No projects yet');
+
+      await agent
+        .post('/projects')
+        .send('title=Search+Control')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .expect(302);
+
+      // Filtered empty (no match for search in a non-empty repository)
+      const res2 = await agent.get('/projects?search=nonexistent').expect(200);
+      expect(res2.text).toContain('No projects found');
+      expect(res2.text).toContain('Reset Filters');
+    });
+
+    it('treats every normalized project filter as active for empty results', async () => {
+      await agent
+        .post('/projects')
+        .send('title=Only+TBD')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .expect(302);
+
+      const res = await agent.get('/projects?status=ready').expect(200);
+      expect(res.text).toContain('No projects found');
+      expect(res.text).toContain('Reset Filters');
+      expect(res.text).not.toContain('Create your first project to get started.');
+    });
+  });
+
+  describe('project status badge rendering', () => {
+    const statuses = ['tbd', 'planned', 'in-progress', 'ready', 'published'];
+
+    for (const status of statuses) {
+      it(`renders "${status}" with status-badge`, async () => {
+        await agent
+          .post('/projects')
+          .send(`title=Status+${status}`)
+          .send(`status=${status}`)
+          .send('priority=normal')
+          .set('Content-Type', 'application/x-www-form-urlencoded')
+          .send('_csrf=' + encodeURIComponent(csrfToken))
+          .expect(302);
+
+        const res = await agent.get('/projects').expect(200);
+        expect(res.text).toContain('status-badge');
+      });
+    }
+  });
 });
