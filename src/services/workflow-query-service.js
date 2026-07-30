@@ -573,11 +573,19 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
     const firstDay = new Date(year, monthNum - 1, 1);
     const firstDayWeekday = (firstDay.getDay() + 6) % 7;
 
+    // Leading padding cells show the tail end of the previous month's dates
+    // (dimmed, non-interactive) rather than blank cells — needs that month's
+    // day count to compute the numbers.
+    const prevMonthNum = monthNum === 1 ? 12 : monthNum - 1;
+    const prevMonthYear = monthNum === 1 ? year - 1 : year;
+    const prevMonthDaysCount = [31, isLeapYear(prevMonthYear) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][prevMonthNum - 1];
+
     const monthStr = `${year}-${String(monthNum).padStart(2, '0')}`;
     return {
       month: monthStr,
       days,
       firstDayWeekday,
+      prevMonthDaysCount,
       prevMonth: prevMonth(monthStr),
       nextMonth: nextMonth(monthStr),
       today,

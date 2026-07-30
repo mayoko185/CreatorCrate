@@ -112,6 +112,18 @@ describe('navigation model — settings active state', () => {
     expect(activeKeys('/settings/backups/creatorcrate-2026-01-01T000000Z.sqlite/restore')).toEqual(['settings']);
   });
 
+  it('is active on the delete confirmation route', () => {
+    expect(activeKeys('/settings/backups/creatorcrate-2026-01-01T000000Z.sqlite/delete')).toEqual(['settings']);
+  });
+
+  it('is active on the security page', () => {
+    expect(activeKeys('/settings/security')).toEqual(['settings']);
+  });
+
+  it('is active on the disable-authentication confirmation route', () => {
+    expect(activeKeys('/settings/security/disable')).toEqual(['settings']);
+  });
+
   it('is not activated by /settings-old', () => {
     expect(activeKeys('/settings-old')).toEqual([]);
   });

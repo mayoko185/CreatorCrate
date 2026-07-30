@@ -2243,8 +2243,9 @@ describe('Phase 6B HTTP workflow', () => {
       // Calendar nav structure: a <div class="calendar-nav"> with the
       // month <h2> and prev/next buttons.
       expect(res.text).toMatch(/<div class="calendar-nav"[^>]*>[\s\S]*?<h2>\d{4}-\d{2}<\/h2>/);
-      // Calendar table structure: weekday header row.
-      expect(res.text).toMatch(/<th>Mon<\/th>[\s\S]*?<th>Sun<\/th>/);
+      // Calendar grid structure: weekday header row (a real CSS Grid div
+      // layout, not a <table> — see Phase 13.3 rewrite).
+      expect(res.text).toMatch(/<div class="calendar-th"[^>]*>Mon<\/div>[\s\S]*?<div class="calendar-th"[^>]*>Sun<\/div>/);
     });
 
     it('renders navigation anchors (not just text)', async () => {
@@ -2287,13 +2288,16 @@ describe('Phase 6B HTTP workflow', () => {
 
     it('shows empty days without releases (calendar grid has 30 day cells for June)', async () => {
       const res = await app.testAgent.get('/releases/calendar?month=2025-06').expect(200);
-      // The grid emits one <td class="calendar-day">…</td> per day
-      // plus leading and trailing empty cells (with the additional
+      // The grid emits one <div class="calendar-day" role="cell">…</div>
+      // per day plus leading and trailing empty cells (with the additional
       // "empty-day" modifier) to fill the week. The previous test
       // only checked `toContain('15')`, which could be satisfied by
       // any digit string in the page.
-      const allCellMatches = res.text.match(/<td class="calendar-day[^"]*">/g) || [];
-      const emptyDayPadding = res.text.match(/<td class="calendar-day empty-day">/g) || [];
+      const allCellMatches = res.text.match(/<div class="calendar-day[^"]*" role="cell">/g) || [];
+      // Padding cells carry the previous/next month's dimmed day number
+      // (Phase 13.3) rather than being blank, so they now also carry the
+      // "out-of-month" modifier.
+      const emptyDayPadding = res.text.match(/<div class="calendar-day empty-day out-of-month" role="cell">/g) || [];
       const actualDayCells = allCellMatches.length - emptyDayPadding.length;
       // June has 30 days. The padding cells fill the week grid.
       expect(actualDayCells).toBe(30);

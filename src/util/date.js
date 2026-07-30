@@ -38,3 +38,31 @@ export function formatLocalDate(date) {
 export function getLocalTodayIso() {
   return formatLocalDate(new Date());
 }
+
+/**
+ * Format an ISO timestamp as a short relative-time label ("2h ago") for
+ * compact display contexts (e.g. the Settings overview stat strip) where a
+ * full timestamp would wrap awkwardly. Falls back to a plain local date once
+ * the gap exceeds 30 days, since "47d ago" stops being more readable than a
+ * date. Pure function of its inputs — `now` is injectable for tests.
+ *
+ * @param {string} isoString
+ * @param {Date} [now]
+ * @returns {string}
+ */
+export function formatRelativeTime(isoString, now = new Date()) {
+  const then = new Date(isoString);
+  const diffMs = now.getTime() - then.getTime();
+  if (Number.isNaN(diffMs)) return isoString;
+  if (diffMs < 0) return formatLocalDate(then);
+
+  const minute = 60 * 1000;
+  const hour = 60 * minute;
+  const day = 24 * hour;
+
+  if (diffMs < minute) return 'just now';
+  if (diffMs < hour) return `${Math.floor(diffMs / minute)}m ago`;
+  if (diffMs < day) return `${Math.floor(diffMs / hour)}h ago`;
+  if (diffMs < 30 * day) return `${Math.floor(diffMs / day)}d ago`;
+  return formatLocalDate(then);
+}

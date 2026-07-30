@@ -3,6 +3,8 @@
 
 {% block title %}Restore Database – {{ appName }}{% endblock %}
 
+{% block body_class %}settings-page{% endblock %}
+
 {% block content %}
   {% call pageHeading.render("Restore Database") %}
     <a class="button button-secondary" href="/settings/backups">Cancel</a>

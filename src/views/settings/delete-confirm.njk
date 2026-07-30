@@ -3,6 +3,8 @@
 
 {% block title %}Delete Backup – {{ appName }}{% endblock %}
 
+{% block body_class %}settings-page{% endblock %}
+
 {% block content %}
   {% call pageHeading.render("Delete Backup") %}
     <a class="button button-secondary" href="/settings/backups">Cancel</a>

@@ -1,6 +1,8 @@
 {% extends "layout.njk" %}
 {% import "partials/page-heading.njk" as pageHeading %}
 
+{% block body_class %}calendar-page{% endblock %}
+
 {% block content %}
   {% call pageHeading.render("Release Calendar") %}
     <nav class="view-switcher" aria-label="Release view">
@@ -17,80 +19,134 @@
       <span class="button" aria-disabled="true">← Previous</span>
     {% endif %}
     <h2>{{ month }}</h2>
-    {% if nextMonth %}
-      <a class="button" href="{{ pageUrl({ month: nextMonth }) }}">Next →</a>
-    {% else %}
-      <span class="button" aria-disabled="true">Next →</span>
-    {% endif %}
+    <div class="calendar-nav-right">
+      {% if isCurrentMonth %}
+        <span class="button button-primary" aria-disabled="true" aria-current="page">Today</span>
+      {% else %}
+        <a class="button button-primary" href="{{ pageUrl({ month: null }) }}">Today</a>
+      {% endif %}
+      {% if nextMonth %}
+        <a class="button" href="{{ pageUrl({ month: nextMonth }) }}">Next →</a>
+      {% else %}
+        <span class="button" aria-disabled="true">Next →</span>
+      {% endif %}
+    </div>
   </div>
 
   {% if days.length > 0 %}
+    {# Desktop: dense grid workspace. Hidden below the agenda breakpoint
+       (see .calendar-scroll media query) — the agenda list below takes
+       over there instead of relying on horizontal scroll. #}
     <div class="calendar-scroll" tabindex="0" aria-label="Release calendar grid">
-      <table class="calendar-table">
-        <thead>
-          <tr>
-            <th>Mon</th>
-            <th>Tue</th>
-            <th>Wed</th>
-            <th>Thu</th>
-            <th>Fri</th>
-            <th>Sat</th>
-            <th>Sun</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            {# Leading padding cells #}
-            {% if firstDayWeekday > 0 %}
-              {% for i in range(0, firstDayWeekday) %}
-                <td class="calendar-day empty-day"></td>
-              {% endfor %}
-            {% endif %}
-
-            {# Day cells #}
-            {% for day in days %}
-              <td class="calendar-day{% if day.releases.length === 0 %} empty{% endif %}{% if day.date == today %} today{% endif %}">
-                <div class="day-header">{{ day.date.split('-')[2] }}</div>
-                <div class="day-releases">
-                  {% for release in day.releases %}
-                    <div class="calendar-release{% if release.archived_at %} archived{% endif %}">
-                      <a href="/releases/{{ release.id }}">{{ release.title }}</a>
-                      <span class="release-project">{{ release.project_title }}</span>
-                      {% set status = release.status %}{% include "partials/status-badge.njk" %}
-                      {% if release._readiness %}
-                        <span class="release-readiness">
-                          {%- if release._readiness.publishable -%}
-                            <span class="readiness-publishable">Publishable</span>
-                          {%- else -%}
-                            <span class="readiness-blocked">Blocked</span>
-                          {%- endif -%}
-                        </span>
-                      {% endif %}
-                      {% if release.missing_asset_count > 0 %}
-                        <span class="missing-indicator" title="{{ release.missing_asset_count }} missing asset(s)">⚠</span>
-                      {% endif %}
-                    </div>
-                  {% endfor %}
-                </div>
-              </td>
-
-              {% if (loop.index + firstDayWeekday) % 7 === 0 and not loop.last %}
-        </tr>
-        <tr>
-              {% endif %}
+      {# Phase 13.3 (rewrite): a real CSS Grid layout, not a <table> styled
+         to look like one — matches the approved Concept D structure.
+         Static ARIA table roles (table/row/columnheader/cell, not the
+         interactive grid/gridcell roles) preserve equivalent semantics
+         to the <table> this replaced, since there's no keyboard grid
+         navigation here — .calendar-row uses display:contents so its
+         children still participate in the grid's column tracks while
+         keeping each week grouped as its own accessible row. #}
+      <div class="calendar-table" role="table">
+        <div class="calendar-row calendar-row-header" role="row">
+          <div class="calendar-th" role="columnheader">Mon</div>
+          <div class="calendar-th" role="columnheader">Tue</div>
+          <div class="calendar-th" role="columnheader">Wed</div>
+          <div class="calendar-th" role="columnheader">Thu</div>
+          <div class="calendar-th" role="columnheader">Fri</div>
+          <div class="calendar-th" role="columnheader">Sat</div>
+          <div class="calendar-th" role="columnheader">Sun</div>
+        </div>
+        <div class="calendar-row" role="row">
+          {# Leading padding cells: tail end of the previous month, dimmed #}
+          {% if firstDayWeekday > 0 %}
+            {% for i in range(0, firstDayWeekday) %}
+              <div class="calendar-day empty-day out-of-month" role="cell">
+                <div class="day-header">{{ prevMonthDaysCount - firstDayWeekday + 1 + i }}</div>
+              </div>
             {% endfor %}
+          {% endif %}
 
-            {# Trailing padding cells #}
-            {% set lastDow = (days.length + firstDayWeekday) % 7 %}
-            {% if lastDow !== 0 %}
-              {% for i in range(0, 7 - lastDow) %}
-                <td class="calendar-day empty-day"></td>
-              {% endfor %}
+          {# Day cells #}
+          {% for day in days %}
+            <div class="calendar-day{% if day.releases.length === 0 %} empty{% endif %}{% if day.date == today %} today{% endif %}" role="cell">
+              <div class="day-header">{{ day.date.split('-')[2] }}</div>
+              <div class="day-releases">
+                {% for release in day.releases %}
+                  <div class="calendar-release{% if release.archived_at %} archived{% endif %}">
+                    <a href="/releases/{{ release.id }}">{{ release.title }}</a>
+                    <span class="release-project">{{ release.project_title }}</span>
+                    {% set status = release.status %}{% include "partials/status-badge.njk" %}
+                    {% if release._readiness %}
+                      <span class="release-readiness">
+                        {%- if release._readiness.publishable -%}
+                          <span class="readiness-publishable">Publishable</span>
+                        {%- else -%}
+                          <span class="readiness-blocked">Blocked</span>
+                        {%- endif -%}
+                      </span>
+                    {% endif %}
+                    {% if release.missing_asset_count > 0 %}
+                      <span class="missing-indicator" title="{{ release.missing_asset_count }} missing asset(s)">⚠</span>
+                    {% endif %}
+                  </div>
+                {% endfor %}
+              </div>
+            </div>
+
+            {% if (loop.index + firstDayWeekday) % 7 === 0 and not loop.last %}
+        </div>
+        <div class="calendar-row" role="row">
             {% endif %}
-          </tr>
-        </tbody>
-      </table>
+          {% endfor %}
+
+          {# Trailing padding cells: start of next month, dimmed #}
+          {% set lastDow = (days.length + firstDayWeekday) % 7 %}
+          {% if lastDow !== 0 %}
+            {% for i in range(0, 7 - lastDow) %}
+              <div class="calendar-day empty-day out-of-month" role="cell">
+                <div class="day-header">{{ i + 1 }}</div>
+              </div>
+            {% endfor %}
+          {% endif %}
+        </div>
+      </div>
     </div>
+
+    {# Mobile: agenda-first list — same day data, no horizontal scrolling.
+       Shown only below the agenda breakpoint; the grid above takes over
+       at wider widths. Server-rendered, no JavaScript. #}
+    <ul class="calendar-agenda" aria-label="Release calendar agenda">
+      {% for day in days %}
+        <li class="agenda-day{% if day.releases.length === 0 %} agenda-day-empty{% endif %}{% if day.date == today %} today{% endif %}">
+          <div class="agenda-day-date">
+            {{ day.date }}{% if day.date == today %} <span class="agenda-today-tag">Today</span>{% endif %}
+          </div>
+          {% if day.releases.length > 0 %}
+            <div class="agenda-day-releases">
+              {% for release in day.releases %}
+                <div class="agenda-release{% if release.archived_at %} archived{% endif %}">
+                  <a href="/releases/{{ release.id }}">{{ release.title }}</a>
+                  <span class="release-project">{{ release.project_title }}</span>
+                  {% set status = release.status %}{% include "partials/status-badge.njk" %}
+                  {% if release._readiness %}
+                    <span class="release-readiness">
+                      {%- if release._readiness.publishable -%}
+                        <span class="readiness-publishable">Publishable</span>
+                      {%- else -%}
+                        <span class="readiness-blocked">Blocked</span>
+                      {%- endif -%}
+                    </span>
+                  {% endif %}
+                  {% if release.missing_asset_count > 0 %}
+                    <span class="missing-indicator" title="{{ release.missing_asset_count }} missing asset(s)">⚠</span>
+                  {% endif %}
+                </div>
+              {% endfor %}
+            </div>
+          {% endif %}
+        </li>
+      {% endfor %}
+    </ul>
   {% else %}
     {% set emptyHeading = "No releases scheduled for " + month %}
     {% set emptyDescription = "There are no releases scheduled for this month." %}

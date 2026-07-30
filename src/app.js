@@ -253,6 +253,13 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     cookieOptions,
     onDatabaseReplaced: opts.onDatabaseReplaced,
     authTransitionService,
+    // Phase 13.4: read-only overview values — deployment-controlled, never
+    // user-editable from the Settings UI.
+    projectsRoot,
+    databasePath,
+    appDataRoot,
+    backupRetentionCount: opts.backupRetentionCount,
+    authSettings: opts.authSettings,
   }));
 
   app.use((_req, _res, next) => {

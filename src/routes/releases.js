@@ -77,20 +77,23 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
   router.get('/calendar', (req, res, next) => {
     try {
       const month = req.query.month || null;
-      const { month: validatedMonth, days, firstDayWeekday, prevMonth, nextMonth, today } = workflowQueryService.getReleaseCalendar(month);
+      const { month: validatedMonth, days, firstDayWeekday, prevMonthDaysCount, prevMonth, nextMonth, today } = workflowQueryService.getReleaseCalendar(month);
       // Calendar uses only the month parameter — no raw req.query
       const query = {};
       if (validatedMonth) query.month = validatedMonth;
       const pageUrl = buildPageUrl(req, query);
+      const isCurrentMonth = validatedMonth === today.slice(0, 7);
 
       res.render('releases/calendar.njk', {
         appName,
         month: validatedMonth,
         days,
         firstDayWeekday,
+        prevMonthDaysCount,
         prevMonth,
         nextMonth,
         today,
+        isCurrentMonth,
         query,
         pageUrl,
       });

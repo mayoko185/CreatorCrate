@@ -75,6 +75,9 @@ const NAVIGATION_ITEMS = [
       '/settings',
       '/settings/backups',
       '/settings/backups/:filename/restore',
+      '/settings/backups/:filename/delete',
+      '/settings/security',
+      '/settings/security/disable',
     ],
   },
 ];

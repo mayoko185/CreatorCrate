@@ -3,19 +3,70 @@
 
 {% block title %}Settings – {{ appName }}{% endblock %}
 
-{% block content %}
-  {{ pageHeading.render("Settings", "Application configuration and maintenance.") }}
+{% block body_class %}settings-page{% endblock %}
 
-  <nav class="summary-cards" aria-label="Settings areas">
-    <a class="summary-card" href="/settings/backups">
-      <span class="summary-card-label">Backups</span>
-      <span class="summary-card-context">Create and restore SQLite database backups.</span>
-    </a>
-    {% if auth and auth.enabled %}
-      <a class="summary-card" href="/settings/security">
-        <span class="summary-card-label">Security</span>
-        <span class="summary-card-context">Rotate the operator password and revoke sessions.</span>
-      </a>
-    {% endif %}
-  </nav>
+{% block content %}
+  {{ pageHeading.render("Settings", "Application control center") }}
+
+  <div class="settings-stats">
+    <div class="settings-stat{% if authEnabled %} ok{% else %} warn{% endif %}">
+      <span class="settings-stat-label">Authentication</span>
+      <span class="settings-stat-value">{% if authEnabled %}Enabled{% else %}Disabled{% endif %}</span>
+    </div>
+    <div class="settings-stat">
+      <span class="settings-stat-label">Latest backup</span>
+      <span class="settings-stat-value">{% if latestBackup %}{{ latestBackupRelative }}{% else %}None yet{% endif %}</span>
+    </div>
+    <div class="settings-stat">
+      <span class="settings-stat-label">Backups retained</span>
+      <span class="settings-stat-value">{{ backupCount }}{% if retentionCount > 0 %} / {{ retentionCount }}{% endif %}</span>
+    </div>
+    <div class="settings-stat{% if invalidBackupCount > 0 %} warn{% endif %}">
+      <span class="settings-stat-label">Backup validation</span>
+      <span class="settings-stat-value">{% if invalidBackupCount > 0 %}{{ invalidBackupCount }} invalid{% else %}All valid{% endif %}</span>
+    </div>
+  </div>
+
+  {% if not authEnabled %}
+    <div class="panel panel--warning">
+      <p><strong>Authentication is disabled.</strong> Anyone who can reach this server can access CreatorCrate. Visit Security to enable it.</p>
+    </div>
+  {% endif %}
+
+  <div class="settings-layout">
+    {% set activeSettingsSection = "overview" %}
+    {% include "partials/settings-nav.njk" %}
+
+    <div class="settings-content">
+      <div class="settings-section">
+        <h3>Security</h3>
+        {% if authEnabled %}
+          <div class="kv"><span class="kv-key">operator_account</span><span class="kv-value">{{ username }}</span></div>
+        {% else %}
+          <div class="kv"><span class="kv-key">operator_account</span><span class="kv-value">not configured</span></div>
+        {% endif %}
+        {% if session %}
+          <div class="kv"><span class="kv-key">session_ttl</span><span class="kv-value">{{ session.ttlHours }}h</span></div>
+          <div class="kv"><span class="kv-key">cookie_secure</span><span class="kv-value">{{ session.cookieSecure }}</span></div>
+        {% endif %}
+      </div>
+
+      <div class="settings-section">
+        <h3>Backups</h3>
+        <div class="kv"><span class="kv-key">retention_count</span><span class="kv-value">{{ retentionCount }}</span></div>
+        <div class="kv"><span class="kv-key">backup_dir</span><span class="kv-value"><code>{{ paths.appDataRoot }}/backups</code></span></div>
+      </div>
+
+      <div class="settings-section">
+        <h3>Deployment-controlled</h3>
+        <div class="kv"><span class="kv-key">projects_root</span><span class="kv-value"><code>{{ paths.projectsRoot }}</code></span></div>
+        <div class="kv"><span class="kv-key">database_path</span><span class="kv-value"><code>{{ paths.databasePath }}</code></span></div>
+        {% if session %}
+          <div class="kv"><span class="kv-key">trust_proxy</span><span class="kv-value">{{ session.trustProxy }}</span></div>
+          <div class="kv"><span class="kv-key">hsts_enabled</span><span class="kv-value">{{ session.hstsEnabled }}</span></div>
+        {% endif %}
+        <p class="help-text">These values are set by the deployment environment and cannot be changed from this page.</p>
+      </div>
+    </div>
+  </div>
 {% endblock %}

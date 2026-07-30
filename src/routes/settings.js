@@ -2,6 +2,7 @@ import express from 'express';
 import { BackupError } from '../services/backup-service.js';
 import { invalidateAllSessionsForDb } from '../services/auth-service.js';
 import { clearSessionCookie } from '../middleware/auth.js';
+import { formatRelativeTime } from '../util/date.js';
 
 function createNotFound() {
   const err = new Error('Not found');
@@ -66,12 +67,47 @@ function transitionFailureNotice(result) {
   return 'auth_transition_failed';
 }
 
-export function createSettingsRouter({ appName, db, backupService, maintenanceState, authService, cookieOptions, onDatabaseReplaced, authTransitionService }) {
+export function createSettingsRouter({
+  appName,
+  db,
+  backupService,
+  maintenanceState,
+  authService,
+  cookieOptions,
+  onDatabaseReplaced,
+  authTransitionService,
+  projectsRoot,
+  databasePath,
+  appDataRoot,
+  backupRetentionCount,
+  authSettings,
+}) {
   const router = express.Router();
   const replaceDatabase = typeof onDatabaseReplaced === 'function' ? onDatabaseReplaced : () => {};
 
-  router.get('/', (_req, res) => {
-    res.render('settings/index.njk', { appName });
+  // GET never mutates — the overview only reads backup listings and
+  // deployment-controlled configuration values, never edits them.
+  router.get('/', (req, res) => {
+    const backups = backupService.listBackups();
+    res.render('settings/index.njk', {
+      appName,
+      authEnabled: Boolean(authService),
+      username: res.locals.auth?.username || null,
+      latestBackup: backups[0] || null,
+      latestBackupRelative: backups[0] ? formatRelativeTime(backups[0].createdAt) : null,
+      backupCount: backups.length,
+      invalidBackupCount: backups.filter((b) => !b.valid).length,
+      retentionCount: backupRetentionCount,
+      paths: { projectsRoot, databasePath, appDataRoot },
+      session: authSettings
+        ? {
+            ttlHours: authSettings.sessionTtlHours,
+            cookieSecure: authSettings.cookieSecure,
+            trustProxy: authSettings.trustProxy,
+            hstsEnabled: authSettings.hstsEnabled,
+          }
+        : null,
+    });
   });
 
   // GET never mutates — listing only reads the managed backup directory.

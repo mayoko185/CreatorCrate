@@ -361,7 +361,7 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
       const res = await agent.get('/releases/calendar').expect(200);
       const css = extractStyle(res.text);
       expect(res.text).toContain('<div class="calendar-scroll" tabindex="0" aria-label="Release calendar grid">');
-      expect(res.text).toContain('<table class="calendar-table">');
+      expect(res.text).toContain('<div class="calendar-table" role="table">');
       expect(css).toContain('.calendar-scroll');
       expect(css).toContain('overflow-x');
       expect(css).toContain('max-width: 100%');
@@ -397,8 +397,8 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
       // rather than swapping the whole page for the shared empty-state
       // partial, which would strand the user without month navigation.
       const res = await agent.get('/releases/calendar?month=2099-01').expect(200);
-      expect(res.text).toContain('<table class="calendar-table">');
-      expect(res.text).toMatch(/<td class="calendar-day empty"[^>]*>/);
+      expect(res.text).toContain('<div class="calendar-table" role="table">');
+      expect(res.text).toMatch(/<div class="calendar-day empty" role="cell">/);
       expect(res.text).not.toContain('<div class="calendar-release');
     });
   });

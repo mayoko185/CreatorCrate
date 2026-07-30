@@ -1,28 +1,39 @@
 :root {
-        /* ── Surfaces: muted navy ── */
-        --bg: #0b0e16;
-        --surface: #141a28;
-        --surface-card: #1a2030;
-        --surface-hover: #222a3d;
+        /* ── Surfaces: graphite (Phase 13 — Concept D) ── */
+        --bg: #0d0f13;
+        --surface: #171b22;
+        --surface-card: #1d222b;
+        --surface-hover: #232a38;
 
         /* ── Borders ── */
-        --border: #2a3245;
-        --border-strong: #3d4860;
+        --border: #262c37;
+        --border-strong: #3a4353;
 
         /* ── Text ── */
-        --text: #e6edf3;
-        --muted: #8b95a7;
-        --link: #2dd4bf;
+        --text: #e8ecf1;
+        --muted: #8b93a3;
+        --link: #22d3ee;
+        /* Console/data typeface (Phase 13 — Concept D): day numbers, table
+           headers, filenames, and section labels use this, never headings
+           or body copy. */
+        --mono: Consolas, "SF Mono", "Cascadia Code", monospace;
 
-        /* ── Accent & status ── */
-        --accent: #2dd4bf;
+        /* ── Accent & status ──
+           Primary accent is a cyan→violet gradient (--accent / --accent-2);
+           solid --accent is used wherever a single color is required
+           (e.g. focus rings inherit --focus-ring, kept distinct from accent). */
+        --accent: #22d3ee;
+        --accent-2: #a78bfa;
+        --accent-gradient: linear-gradient(135deg, var(--accent), var(--accent-2));
         --focus-ring: #58a6ff;
-        --danger: #e85559;
-        --success: #46b464;
-        --warning: #d29922;
+        --danger: #fb7185;
+        --success: #34d399;
+        /* No yellow/gold/amber family accents anywhere (Phase 13 constraint) —
+           warning uses the violet accent rather than an amber tone. */
+        --warning: #a78bfa;
 
         /* ── Badge foreground tokens (brighter for contrast on tinted bg) ── */
-        --badge-danger-fg: #f16063;
+        --badge-danger-fg: #ff8a94;
         --badge-archived-fg: #9ca3af;
 
         /* ── Spacing scale ── */
@@ -34,10 +45,10 @@
         --space-2xl: 2rem;
 
         /* ── Radius scale ── */
-        --radius-sm: 0.25rem;
-        --radius-md: 0.375rem;
-        --radius-lg: 0.5rem;
-        --radius-xl: 0.75rem;
+        --radius-sm: 0.375rem;
+        --radius-md: 0.5rem;
+        --radius-lg: 0.75rem;
+        --radius-xl: 1rem;
 
         /* ── Shadows ── */
         --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
@@ -117,7 +128,6 @@
         left: 0;
         width: var(--shell-sidebar-collapsed);
         background: var(--shell-sidebar-bg);
-        border-right: 1px solid var(--shell-sidebar-border);
         display: flex;
         flex-direction: column;
         overflow: hidden;
@@ -139,13 +149,6 @@
         gap: var(--space-sm);
         height: var(--shell-header-height);
         padding: 0 var(--space-md);
-        border-bottom: 1px solid var(--shell-sidebar-border);
-        flex: none;
-      }
-      .app-sidebar-mark svg {
-        width: var(--shell-nav-icon);
-        height: var(--shell-nav-icon);
-        color: var(--accent);
         flex: none;
       }
       .app-sidebar-brand {
@@ -168,7 +171,7 @@
         flex: 1 1 auto;
         overflow-x: hidden;
         overflow-y: auto;
-        padding: var(--space-sm) 0;
+        padding: var(--space-sm) var(--space-sm);
       }
       .app-nav-list {
         list-style: none;
@@ -185,6 +188,7 @@
         gap: var(--space-md);
         height: var(--shell-nav-item-height);
         padding: 0 var(--space-md);
+        border-radius: 10px;
         color: var(--muted);
         text-decoration: none;
         white-space: nowrap;
@@ -221,23 +225,18 @@
         outline-offset: -2px;
         color: var(--text);
       }
-      /* Active item: distinguished by STRUCTURE, not color alone —
-         an accent bar (::before) plus a filled background plus full-weight
-         text. aria-current="page" is the attribute carrying this state. */
+      /* Active item: distinguished by STRUCTURE, not color alone — a filled
+         background plus full-weight text (the icon color change is a bonus,
+         not load-bearing). aria-current="page" is the attribute carrying
+         this state. Phase 13.2 dropped the earlier accent-bar (::before)
+         treatment to match Concept D's plain filled-pill active state. */
       .app-nav-link[aria-current="page"] {
         color: var(--text);
         background: var(--surface-hover);
         font-weight: 600;
       }
-      .app-nav-link[aria-current="page"]::before {
-        content: "";
-        position: absolute;
-        left: 0;
-        top: 0;
-        bottom: 0;
-        width: 3px;
-        background: var(--accent);
-        border-radius: 0 2px 2px 0;
+      .app-nav-link[aria-current="page"] svg {
+        color: var(--accent);
       }
 
       /* ── Main column reserves only the collapsed rail ── */
@@ -254,8 +253,10 @@
         align-items: center;
         gap: var(--space-md);
         padding: 0 var(--space-xl);
-        background: var(--surface);
-        border-bottom: 1px solid var(--border);
+        /* Open header (Phase 13): blends into the page instead of a boxed
+           panel — background matches --bg (not --surface) so it stays
+           opaque against scrolled content without reading as a bar. */
+        background: var(--bg);
         position: sticky;
         top: 0;
         z-index: var(--shell-z-header);
@@ -263,9 +264,11 @@
       }
       .app-section-title {
         margin: 0;
-        font-size: 1rem;
+        font-size: 0.8125rem;
         font-weight: 600;
-        color: var(--text);
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
@@ -314,8 +317,19 @@
         text-decoration: none;
         cursor: pointer;
         font-size: 1rem;
+        white-space: nowrap;
+        flex: none;
       }
-      .button-primary { border-color: var(--accent); color: var(--accent); }
+      .button-primary {
+        background: var(--accent-gradient);
+        border-color: transparent;
+        color: #06131a;
+        font-weight: 600;
+      }
+      .button-primary:hover:not(:disabled):not([aria-disabled="true"]) {
+        background: var(--accent-gradient);
+        filter: brightness(1.08);
+      }
       .button-danger { border-color: var(--danger); color: var(--danger); }
       .inline-form { display: inline; margin: 0; }
       .dashboard-counts { margin: 1.5rem 0; }
@@ -364,7 +378,7 @@
       .required { color: var(--danger); }
       .error-summary {
         padding: 1rem;
-        background: rgba(229, 72, 77, 0.18);
+        background: rgba(251, 113, 133, 0.18);
         border-left: 4px solid var(--danger);
         border-radius: 0 0.5rem 0.5rem 0;
         margin-bottom: 1rem;
@@ -408,11 +422,11 @@
         margin-bottom: 1rem;
       }
       .scan-error {
-        background: rgba(229, 72, 77, 0.18);
+        background: rgba(251, 113, 133, 0.18);
         border-left: 4px solid var(--danger);
       }
       .scan-success {
-        background: rgba(70, 180, 100, 0.18);
+        background: rgba(52, 211, 153, 0.18);
         border-left: 4px solid var(--success);
       }
       .is-missing td { opacity: 0.6; }
@@ -521,6 +535,19 @@
       body.asset-browser-page main,
       body.asset-viewer-page main {
         max-width: 1200px;
+      }
+
+      /* ── Wider content area for the calendar: a primary workspace, not a
+         720px-capped content column (Phase 13.3) ── */
+      body.calendar-page main {
+        max-width: 1400px;
+      }
+
+      /* ── Wider content area for Settings: the nav + content two-column
+         layout needs more room than the shared 720px column, or tables in
+         .settings-content get squeezed (Phase 13.4) ── */
+      body.settings-page main {
+        max-width: 1100px;
       }
 
       /* ── Scan freshness note ── */
@@ -917,11 +944,13 @@
       .page-heading {
         display: flex;
         justify-content: space-between;
-        align-items: center;
+        align-items: flex-end;
         gap: var(--space-lg);
         flex-wrap: wrap;
         min-width: 0;
         margin-bottom: var(--space-xl);
+        padding-bottom: var(--space-lg);
+        border-bottom: 1px solid var(--border);
       }
       .page-heading-copy {
         flex: 1 1 20rem;
@@ -930,6 +959,9 @@
       }
       .page-heading-copy h1 {
         margin: 0;
+        font-size: 2.2rem;
+        font-weight: 300;
+        letter-spacing: -0.01em;
         overflow-wrap: anywhere;
         word-break: break-word;
       }
@@ -958,11 +990,11 @@
         letter-spacing: 0.04em;
       }
       .status-badge--neutral { background: rgba(136, 136, 136, 0.2); color: #aaa; }
-      .status-badge--active, .status-badge--success { background: rgba(70, 180, 100, 0.2); color: var(--success); }
-      .status-badge--warning { background: rgba(210, 153, 34, 0.2); color: var(--warning); }
-      .status-badge--error, .status-badge--danger { background: rgba(229, 72, 77, 0.18); color: var(--badge-danger-fg); }
-      .status-badge--draft { background: rgba(45, 212, 191, 0.2); color: var(--accent); }
-      .status-badge--published { background: rgba(70, 180, 100, 0.25); color: var(--success); }
+      .status-badge--active, .status-badge--success { background: rgba(52, 211, 153, 0.18); color: var(--success); }
+      .status-badge--warning { background: rgba(167, 139, 250, 0.18); color: var(--warning); }
+      .status-badge--error, .status-badge--danger { background: rgba(251, 113, 133, 0.18); color: var(--badge-danger-fg); }
+      .status-badge--draft { background: rgba(34, 211, 238, 0.18); color: var(--accent); }
+      .status-badge--published { background: rgba(52, 211, 153, 0.22); color: var(--success); }
       .status-badge--archived { background: rgba(136, 136, 136, 0.25); color: var(--badge-archived-fg); }
 
       /* ── Action variants ── */
@@ -1003,11 +1035,11 @@
         margin-bottom: var(--space-md);
       }
       .readiness-publishable {
-        background: rgba(70, 180, 100, 0.18);
+        background: rgba(52, 211, 153, 0.18);
         color: var(--success);
       }
       .readiness-blocked {
-        background: rgba(229, 72, 77, 0.18);
+        background: rgba(251, 113, 133, 0.18);
         color: var(--badge-danger-fg);
       }
       .readiness-checks {
@@ -1077,7 +1109,7 @@
       }
       .panel--warning {
         border-left: 4px solid var(--warning);
-        background: rgba(210, 153, 34, 0.1);
+        background: rgba(167, 139, 250, 0.08);
       }
       .panel--info,
       .panel--metadata,
@@ -1089,7 +1121,7 @@
       }
       .panel--danger {
         border-left: 4px solid var(--danger);
-        background: rgba(229, 72, 77, 0.1);
+        background: rgba(251, 113, 133, 0.08);
       }
 
       /* ── Notice variants ── */
@@ -1105,15 +1137,15 @@
         border-left-color: var(--accent);
       }
       .notice--success {
-        background: rgba(70, 180, 100, 0.18);
+        background: rgba(52, 211, 153, 0.18);
         border-left-color: var(--success);
       }
       .notice--warning {
-        background: rgba(210, 153, 34, 0.18);
+        background: rgba(167, 139, 250, 0.14);
         border-left-color: var(--warning);
       }
       .notice--danger, .notice--error {
-        background: rgba(229, 72, 77, 0.18);
+        background: rgba(251, 113, 133, 0.18);
         border-left-color: var(--danger);
       }
       .notice p { margin: 0; }
@@ -1126,16 +1158,16 @@
         flex-wrap: wrap;
         gap: var(--space-md);
         padding: var(--space-md) var(--space-lg);
-        background: rgba(210, 153, 34, 0.18);
-        border-left: 4px solid var(--warning);
-        border-radius: 0 var(--radius-lg) var(--radius-lg) 0;
+        background: rgba(251, 113, 133, 0.1);
+        border: 1px solid rgba(251, 113, 133, 0.35);
+        border-radius: var(--radius-lg);
         margin: 0 var(--space-lg) var(--space-lg);
       }
       .auth-disabled-banner svg {
         width: 1.25rem;
         height: 1.25rem;
         flex-shrink: 0;
-        color: var(--warning);
+        color: var(--danger);
       }
       .auth-disabled-banner p {
         margin: 0;
@@ -1397,7 +1429,7 @@
         outline-offset: 2px;
       }
 
-      /* ═══ Phase 10.5C: Release calendar ═══ */
+      /* ═══ Phase 13.3: Release calendar — dense console grid (Concept D) ═══ */
       .calendar-nav {
         display: flex;
         justify-content: space-between;
@@ -1408,57 +1440,107 @@
       .calendar-nav h2 {
         margin: 0;
         text-align: center;
+        font-size: 1.75rem;
+        font-weight: 300;
+        letter-spacing: -0.01em;
       }
+      .calendar-nav-right {
+        display: flex;
+        gap: var(--space-sm);
+      }
+      /* A real CSS Grid, not a <table> styled to look like one (Phase 13.3
+         rewrite) — matches Concept D's actual structure. .calendar-row uses
+         display:contents so each week's wrapper (kept for ARIA row
+         grouping) doesn't break out of the 7-column track. */
       .calendar-table {
-        width: 100%;
-        border-collapse: collapse;
+        display: grid;
+        grid-template-columns: repeat(7, 1fr);
+        gap: 1px;
+        background: var(--border);
         margin-top: var(--space-lg);
-        table-layout: fixed;
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
+        overflow: hidden;
       }
-      .calendar-table th {
+      .calendar-row {
+        display: contents;
+      }
+      .calendar-th {
         padding: var(--space-sm);
         text-align: center;
         color: var(--muted);
-        font-size: 0.875rem;
+        font-size: 0.75rem;
+        font-family: var(--mono);
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        background: var(--surface);
       }
       .calendar-day {
-        width: 14.28%;
-        min-height: 6rem;
-        vertical-align: top;
-        padding: var(--space-xs);
-        border: 1px solid var(--border);
+        min-height: 9rem;
+        padding: var(--space-sm);
+        background: var(--surface);
         min-width: 0;
         overflow-wrap: anywhere;
         word-break: break-word;
       }
       .calendar-day.empty-day {
-        background: var(--surface);
+        background: var(--bg);
         opacity: 0.5;
+        padding: var(--space-sm);
+      }
+      .calendar-day.out-of-month .day-header {
+        color: var(--muted);
+        font-weight: 400;
+      }
+      /* Weekend shading: each week is its own .calendar-row, so the 6th
+         and 7th day cell within a row are always Saturday/Sunday — no
+         per-cell date data needed. (display:contents on .calendar-row
+         doesn't change DOM parentage, so :nth-child still counts correctly
+         scoped to each week.) */
+      .calendar-row .calendar-day:nth-child(6),
+      .calendar-row .calendar-day:nth-child(7) {
+        background: var(--bg);
+      }
+      .calendar-row .calendar-day:nth-child(6).today,
+      .calendar-row .calendar-day:nth-child(7).today {
+        background: radial-gradient(circle at top left, rgba(34, 211, 238, 0.12), transparent 70%);
+      }
+      .calendar-day.today {
+        background: radial-gradient(circle at top left, rgba(34, 211, 238, 0.12), transparent 70%);
+        box-shadow: inset 0 0 0 1px var(--accent);
       }
       .calendar-day.today .day-header {
-        background: var(--accent);
-        color: var(--bg);
-        border-radius: var(--radius-sm);
+        color: var(--accent);
+        font-weight: 700;
       }
       .day-header {
-        font-size: 0.875rem;
+        font-size: 0.8125rem;
+        font-family: var(--mono);
         font-weight: 600;
-        margin-bottom: 0.25rem;
-        padding: 0.125rem 0.25rem;
+        color: var(--muted);
+        margin-bottom: var(--space-xs);
+        padding: 0;
       }
       .day-releases {
         display: flex;
         flex-direction: column;
-        gap: 0.25rem;
+        gap: var(--space-xs);
       }
       .calendar-release {
         font-size: 0.75rem;
-        padding: 0.125rem 0.25rem;
-        background: var(--surface);
-        border-radius: var(--radius-sm);
+        padding: var(--space-xs) var(--space-sm);
+        background: var(--surface-card);
+        border-left: 2px solid var(--muted);
+        border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
         display: flex;
         flex-direction: column;
         gap: 0.125rem;
+      }
+      .calendar-release:has(.readiness-publishable) {
+        border-left-color: var(--success);
+      }
+      .calendar-release:has(.readiness-blocked) {
+        border-left-color: var(--danger);
       }
       .calendar-release.archived {
         opacity: 0.65;
@@ -1480,6 +1562,78 @@
       .release-readiness {
         font-size: 0.75rem;
         font-weight: 600;
+      }
+
+      /* ── Mobile agenda: replaces reliance on horizontal scroll below the
+         calendar-agenda breakpoint. Same day data as the grid above, just a
+         different presentation — server-rendered, no JavaScript. ── */
+      .calendar-agenda {
+        display: none;
+        list-style: none;
+        margin: var(--space-lg) 0 0;
+        padding: 0;
+        flex-direction: column;
+        gap: var(--space-sm);
+      }
+      .agenda-day {
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
+        overflow: hidden;
+        background: var(--surface);
+      }
+      .agenda-day.today {
+        box-shadow: inset 0 0 0 1px var(--accent);
+      }
+      .agenda-day-date {
+        padding: var(--space-sm) var(--space-md);
+        font-size: 0.8125rem;
+        font-family: var(--mono);
+        font-weight: 600;
+        color: var(--muted);
+        background: var(--surface-card);
+        border-bottom: 1px solid var(--border);
+      }
+      .agenda-day.today .agenda-day-date {
+        color: var(--accent);
+      }
+      .agenda-today-tag {
+        font-size: 0.6875rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--accent);
+      }
+      .agenda-day-releases {
+        display: flex;
+        flex-direction: column;
+      }
+      .agenda-release {
+        padding: var(--space-sm) var(--space-md);
+        border-top: 1px solid var(--border);
+        border-left: 3px solid var(--muted);
+        font-size: 0.875rem;
+        display: flex;
+        flex-direction: column;
+        gap: 0.125rem;
+      }
+      .agenda-release:has(.readiness-publishable) {
+        border-left-color: var(--success);
+      }
+      .agenda-release:has(.readiness-blocked) {
+        border-left-color: var(--danger);
+      }
+      .agenda-day-releases .agenda-release:first-child {
+        border-top: none;
+      }
+      .agenda-release.archived {
+        opacity: 0.65;
+      }
+      .agenda-release a {
+        font-weight: 600;
+        color: var(--text);
+        text-decoration: none;
+      }
+      .agenda-release a:hover {
+        text-decoration: underline;
       }
 
       /* ═══ Phase 10.5C: Release asset curation ═══ */
@@ -1518,12 +1672,14 @@
         min-height: 2.25rem;
       }
 
+      /* Agenda breakpoint: below this, the grid is replaced by the agenda
+         list entirely rather than relying on horizontal scroll. */
       @media (max-width: 767px) {
-        .calendar-table {
-          min-width: 42rem;
+        .calendar-scroll {
+          display: none;
         }
-        .calendar-day {
-          min-height: 4rem;
+        .calendar-agenda {
+          display: flex;
         }
         .calendar-nav {
           flex-wrap: wrap;
@@ -1549,47 +1705,8 @@
         .role-entry + .role-entry {
           margin-top: var(--space-sm);
         }
-        .calendar-day {
-          min-height: 3rem;
-          padding: 0.125rem;
-        }
-        .calendar-release {
-          font-size: 0.75rem;
-          padding: 0.0625rem 0.1875rem;
-        }
       }
 
-      /* ── Auth shell ── */
-      .app-sidebar-footer {
-        padding: var(--space-sm) var(--space-md);
-        border-top: 1px solid var(--border);
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: var(--space-sm);
-      }
-      .app-identity {
-        font-size: 0.8125rem;
-        color: var(--muted);
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-        min-width: 0;
-      }
-      .app-logout-form { margin: 0; display: inline; }
-      .app-logout-button {
-        font-size: 0.75rem;
-        min-height: 1.75rem;
-        padding: 0.125rem 0.5rem;
-      }
-      .mobile-nav-footer {
-        padding: var(--space-sm) var(--space-lg);
-        border-top: 1px solid var(--border);
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: var(--space-sm);
-      }
       /* Centered content when unauthenticated (login page). */
       .app-main--centered {
         margin-left: 0;
@@ -1608,7 +1725,7 @@
         padding: var(--space-lg);
         border: 1px solid var(--danger);
         border-radius: var(--radius-lg);
-        background: rgba(229, 72, 77, 0.1);
+        background: rgba(251, 113, 133, 0.1);
       }
       .destructive-section h2,
       .destructive-section h3 {
@@ -1693,6 +1810,155 @@
         color: var(--danger);
       }
 
+      /* ═══ Phase 13.4: Settings — application control center ═══ */
+
+      /* ── Overview stat strip: continuous bordered strip, not gapped
+         cards, to avoid another "card inside card" pattern ── */
+      .settings-stats {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 1px;
+        background: var(--border);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
+        overflow: hidden;
+        margin-bottom: var(--space-xl);
+      }
+      .settings-stat {
+        background: var(--surface);
+        padding: var(--space-lg);
+      }
+      .settings-stat-label {
+        display: block;
+        font-size: 0.75rem;
+        font-family: var(--mono);
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--muted);
+      }
+      .settings-stat-value {
+        display: block;
+        font-size: 1.375rem;
+        font-weight: 700;
+        color: var(--text);
+        margin-top: var(--space-xs);
+      }
+      .settings-stat.ok .settings-stat-value {
+        color: var(--success);
+      }
+      .settings-stat.warn .settings-stat-value {
+        color: var(--danger);
+      }
+
+      /* ── Section nav + content ── */
+      .settings-layout {
+        display: grid;
+        grid-template-columns: 13rem 1fr;
+        gap: var(--space-xl);
+        align-items: start;
+      }
+      .settings-nav {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
+        overflow: hidden;
+      }
+      .settings-nav a {
+        padding: var(--space-sm) var(--space-md);
+        color: var(--muted);
+        text-decoration: none;
+        font-size: 0.9375rem;
+        background: var(--surface);
+        transition: background var(--transition-fast), color var(--transition-fast);
+      }
+      .settings-nav a:hover {
+        background: var(--surface-hover);
+        color: var(--text);
+      }
+      .settings-nav a[aria-current="page"] {
+        background: var(--surface-card);
+        color: var(--text);
+        font-weight: 600;
+        box-shadow: inset 3px 0 0 var(--accent);
+      }
+      .settings-content {
+        min-width: 0;
+      }
+      .settings-section {
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
+        overflow: hidden;
+        margin-bottom: var(--space-lg);
+      }
+      .settings-section h3 {
+        margin: 0;
+        padding: var(--space-sm) var(--space-md);
+        font-size: 0.75rem;
+        font-family: var(--mono);
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--muted);
+        background: var(--surface-card);
+        border-bottom: 1px solid var(--border);
+      }
+      .settings-section .kv,
+      .settings-section .help-text {
+        padding-left: var(--space-md);
+        padding-right: var(--space-md);
+      }
+      .settings-section .help-text {
+        padding-bottom: var(--space-md);
+      }
+      .kv {
+        display: flex;
+        justify-content: space-between;
+        gap: var(--space-md);
+        padding-top: var(--space-sm);
+        padding-bottom: var(--space-sm);
+        border-bottom: 1px solid var(--border);
+        font-size: 0.9375rem;
+      }
+      .kv:last-of-type {
+        border-bottom: none;
+      }
+      .kv-key {
+        color: var(--muted);
+        font-family: var(--mono);
+        font-size: 0.8125rem;
+      }
+      .kv-value code {
+        background: var(--bg);
+        padding: 0.0625rem 0.4rem;
+        border-radius: var(--radius-sm);
+        font-size: 0.8125rem;
+      }
+      /* Backups table reads as console/data output, not prose. */
+      .settings-content .data-table th,
+      .settings-content .data-table td {
+        font-family: var(--mono);
+      }
+
+      @media (max-width: 767px) {
+        .settings-stats {
+          grid-template-columns: repeat(2, 1fr);
+        }
+        .settings-layout {
+          grid-template-columns: 1fr;
+        }
+        .settings-nav {
+          flex-direction: row;
+          overflow-x: auto;
+        }
+        .settings-nav a {
+          white-space: nowrap;
+        }
+        .settings-nav a[aria-current="page"] {
+          box-shadow: inset 0 -3px 0 var(--accent);
+        }
+      }
+
       /* ── Project summary on detail page ── */
       .project-summary {
         margin-bottom: var(--space-xl);
@@ -1750,6 +2016,14 @@
       @media (max-width: 540px) {
         .field-row {
           flex-direction: column;
+        }
+        /* flex-basis (20rem) on .page-heading-copy targets the cross axis
+           once .page-heading flips to flex-direction: column at this
+           breakpoint — reset it here (after the unconditional rule earlier
+           in the cascade) so short headings (e.g. the calendar's) don't get
+           forced to a 20rem-tall copy block. */
+        .page-heading-copy {
+          flex-basis: auto;
         }
       }
 
@@ -1992,7 +2266,12 @@
         word-break: break-word;
       }
 
-      /* ═══ Phase 12.2: Authenticated shell identity/logout ═══ */
+      /* ═══ Phase 12.2: Authenticated shell identity/logout ═══
+         Phase 13: the footer's contents were never actually clipped in the
+         collapsed rail (only a no-op hover rule existed — nothing set the
+         base state to hidden), so identity/logout overflowed and got
+         visually cropped mid-word by .app-sidebar's overflow:hidden.
+         Matches the .app-nav-label collapse/reveal contract now. */
       .app-sidebar-footer {
         padding: var(--space-sm) var(--space-md);
         border-top: 1px solid var(--border);
@@ -2000,6 +2279,12 @@
         align-items: center;
         justify-content: space-between;
         gap: var(--space-sm);
+        opacity: 0;
+        transition: opacity var(--shell-transition);
+      }
+      .app-sidebar:hover .app-sidebar-footer,
+      .app-sidebar:focus-within .app-sidebar-footer {
+        opacity: 1;
       }
       .app-identity {
         font-size: 0.8125rem;
@@ -2008,10 +2293,6 @@
         text-overflow: ellipsis;
         white-space: nowrap;
         min-width: 0;
-      }
-      .app-sidebar:hover .app-identity,
-      .app-sidebar:focus-within .app-identity {
-        opacity: 1;
       }
       .app-logout-form {
         display: inline;

@@ -3,6 +3,8 @@
 
 {% block title %}Disable Authentication – {{ appName }}{% endblock %}
 
+{% block body_class %}settings-page{% endblock %}
+
 {% block content %}
   {% call pageHeading.render("Disable Authentication") %}
     <a class="button button-secondary" href="/settings/security">Cancel</a>

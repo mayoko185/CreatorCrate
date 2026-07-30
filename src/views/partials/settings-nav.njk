@@ -1,0 +1,16 @@
+{#
+  Shared Settings sub-navigation (Phase 13.4).
+
+  Usage:
+    {% set activeSettingsSection = "overview" %}
+    {% include "partials/settings-nav.njk" %}
+
+  activeSettingsSection: "overview" | "security" | "backups"
+  Works on both desktop (vertical list) and mobile (horizontal scroll) via
+  CSS only — no JavaScript.
+#}
+<nav class="settings-nav" aria-label="Settings sections">
+  <a href="/settings"{% if activeSettingsSection == "overview" %} aria-current="page"{% endif %}>Overview</a>
+  <a href="/settings/security"{% if activeSettingsSection == "security" %} aria-current="page"{% endif %}>Security</a>
+  <a href="/settings/backups"{% if activeSettingsSection == "backups" %} aria-current="page"{% endif %}>Backups</a>
+</nav>

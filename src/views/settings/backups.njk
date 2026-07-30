@@ -3,6 +3,8 @@
 
 {% block title %}Backups – {{ appName }}{% endblock %}
 
+{% block body_class %}settings-page{% endblock %}
+
 {% block content %}
   {% call pageHeading.render("Backups") %}
     <form method="post" action="/settings/backups" class="inline-form">
@@ -17,53 +19,60 @@
     {% include "partials/notice.njk" %}
   {% endif %}
 
-  <div class="panel panel--info">
-    <p>Backups contain a complete snapshot of the SQLite application database, including all projects, releases, and asset records.</p>
-    <p>Media files and project files stored under <code>PROJECTS_ROOT</code> are <strong>not</strong> included in backups and are not affected by a restore.</p>
-    <p>After each new backup completes, older backups beyond the configured retention count are automatically deleted. See <code>BACKUP_RETENTION_COUNT</code> in the README for how to change or disable this.</p>
-  </div>
+  <div class="settings-layout">
+    {% set activeSettingsSection = "backups" %}
+    {% include "partials/settings-nav.njk" %}
 
-  {% if backups.length > 0 %}
-    <div class="table-scroll" tabindex="0" aria-label="Managed backups">
-      <table class="data-table">
-        <thead>
-          <tr>
-            <th>Filename</th>
-            <th>Created</th>
-            <th class="num">Size</th>
-            <th>Validation</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for backup in backups %}
-            <tr>
-              <td><code>{{ backup.filename }}</code></td>
-              <td>{{ backup.createdAt }}</td>
-              <td class="num">{{ (backup.sizeBytes / 1024) | round(1) }} KB</td>
-              <td>
-                {% if backup.valid %}
-                  <span class="status-badge status-badge--success">Valid</span>
-                {% else %}
-                  <span class="status-badge status-badge--error">Invalid</span>
-                {% endif %}
-              </td>
-              <td class="row-actions">
-                {% if backup.valid %}
-                  <a class="button button-small button-danger" href="/settings/backups/{{ backup.filename }}/restore">Restore</a>
-                {% else %}
-                  <span class="button button-small" aria-disabled="true">Restore</span>
-                {% endif %}
-                <a class="button button-small button-secondary" href="/settings/backups/{{ backup.filename }}/delete">Delete</a>
-              </td>
-            </tr>
-          {% endfor %}
-        </tbody>
-      </table>
+    <div class="settings-content">
+      <div class="panel panel--info">
+        <p>Backups contain a complete snapshot of the SQLite application database, including all projects, releases, and asset records.</p>
+        <p>Media files and project files stored under <code>PROJECTS_ROOT</code> are <strong>not</strong> included in backups and are not affected by a restore.</p>
+        <p>After each new backup completes, older backups beyond the configured retention count are automatically deleted. See <code>BACKUP_RETENTION_COUNT</code> in the README for how to change or disable this.</p>
+      </div>
+
+      {% if backups.length > 0 %}
+        <div class="table-scroll" tabindex="0" aria-label="Managed backups">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Filename</th>
+                <th>Created</th>
+                <th class="num">Size</th>
+                <th>Validation</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for backup in backups %}
+                <tr>
+                  <td><code>{{ backup.filename }}</code></td>
+                  <td>{{ backup.createdAt }}</td>
+                  <td class="num">{{ (backup.sizeBytes / 1024) | round(1) }} KB</td>
+                  <td>
+                    {% if backup.valid %}
+                      <span class="status-badge status-badge--success">Valid</span>
+                    {% else %}
+                      <span class="status-badge status-badge--error">Invalid</span>
+                    {% endif %}
+                  </td>
+                  <td class="row-actions">
+                    {% if backup.valid %}
+                      <a class="button button-small button-danger" href="/settings/backups/{{ backup.filename }}/restore">Restore</a>
+                    {% else %}
+                      <span class="button button-small" aria-disabled="true">Restore</span>
+                    {% endif %}
+                    <a class="button button-small button-secondary" href="/settings/backups/{{ backup.filename }}/delete">Delete</a>
+                  </td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% else %}
+        {% set emptyHeading = "No backups yet" %}
+        {% set emptyDescription = "Create a backup to save the current state of the application database." %}
+        {% include "partials/empty-state.njk" %}
+      {% endif %}
     </div>
-  {% else %}
-    {% set emptyHeading = "No backups yet" %}
-    {% set emptyDescription = "Create a backup to save the current state of the application database." %}
-    {% include "partials/empty-state.njk" %}
-  {% endif %}
+  </div>
 {% endblock %}

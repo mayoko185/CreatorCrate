@@ -145,6 +145,7 @@ async function main() {
       databasePath: config.databasePath,
       migrationsDir,
       backupService,
+      backupRetentionCount: config.backupRetentionCount,
       maintenanceState,
       authConfig,
       authSettings: config.auth,

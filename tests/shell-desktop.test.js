@@ -329,16 +329,18 @@ describe('application shell (Phase 10.4B) — landmarks & structure', () => {
       expect(countActive(res.text)).toBe(1);
     });
 
-    it('the active state is structural (accent bar), not color alone', async () => {
+    it('the active state is structural (filled background + bold text), not color alone', async () => {
       const css = extractStyle((await agent.get('/').expect(200)).text);
-      // A ::before pseudo-element on the active link provides a non-color cue.
-      expect(css).toMatch(/\.app-nav-link\[aria-current="page"\]::before/);
-      const beforeBlock = css.match(
-        /\.app-nav-link\[aria-current="page"\]::before\s*\{[\s\S]*?\}/,
+      // Phase 13.2 (Concept D): the active item is a filled background pill
+      // plus bold text — a shape/weight change, not just a color swap. The
+      // earlier ::before accent-bar treatment was dropped to match the
+      // approved design; icon recoloring is a bonus cue, not load-bearing.
+      const activeBlock = css.match(
+        /\.app-nav-link\[aria-current="page"\]\s*\{[\s\S]*?\}/,
       );
-      expect(beforeBlock).not.toBeNull();
-      expect(beforeBlock[0]).toMatch(/content:\s*""/);
-      expect(beforeBlock[0]).toMatch(/width:\s*[0-9]+px/);
+      expect(activeBlock).not.toBeNull();
+      expect(activeBlock[0]).toMatch(/background:\s*var\(--surface-hover\)/);
+      expect(activeBlock[0]).toMatch(/font-weight:\s*600/);
     });
   });
 

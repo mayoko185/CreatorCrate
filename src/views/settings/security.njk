@@ -3,6 +3,8 @@
 
 {% block title %}Security – {{ appName }}{% endblock %}
 
+{% block body_class %}settings-page{% endblock %}
+
 {% block content %}
   {{ pageHeading.render("Security", "Rotate the single operator password. Existing sessions are revoked after a successful change.") }}
 
@@ -12,42 +14,55 @@
     {% include "partials/notice.njk" %}
   {% endif %}
 
-  {% if errors.length > 0 %}
-    <div class="error-summary" role="alert" id="password-errors">
-      <p>Password change failed. Fix the fields below and try again.</p>
-      <ul>
-        {% for error in errors %}<li>{{ error }}</li>{% endfor %}
-      </ul>
-    </div>
-  {% endif %}
+  <div class="settings-layout">
+    {% set activeSettingsSection = "security" %}
+    {% include "partials/settings-nav.njk" %}
 
-  <form method="post" action="/settings/security/password" class="project-form" novalidate>
-    <input type="hidden" name="_csrf" value="{{ _csrf }}">
-    <div class="form-section">
-      <h2>Change password</h2>
-      <p class="help-text">Use at least 12 characters. Passwords are never displayed or stored in plaintext.</p>
+    <div class="settings-content">
+      {% if errors.length > 0 %}
+        <div class="error-summary" role="alert" id="password-errors">
+          <p>Password change failed. Fix the fields below and try again.</p>
+          <ul>
+            {% for error in errors %}<li>{{ error }}</li>{% endfor %}
+          </ul>
+        </div>
+      {% endif %}
 
-      <div class="field {% if currentPasswordError %}field-error{% endif %}">
-        <label for="currentPassword">Current password <span class="required" aria-label="required">*</span></label>
-        <input type="password" id="currentPassword" name="currentPassword" autocomplete="current-password" required{% if currentPasswordError %} aria-describedby="currentPassword-error" aria-invalid="true"{% endif %}>
-        {% if currentPasswordError %}<span class="field-error-message" id="currentPassword-error">{{ currentPasswordError }}</span>{% endif %}
+      <form method="post" action="/settings/security/password" class="project-form" novalidate>
+        <input type="hidden" name="_csrf" value="{{ _csrf }}">
+        <div class="form-section">
+          <h2>Change password</h2>
+          <p class="help-text">Use at least 12 characters. Passwords are never displayed or stored in plaintext.</p>
+
+          <div class="field {% if currentPasswordError %}field-error{% endif %}">
+            <label for="currentPassword">Current password <span class="required" aria-label="required">*</span></label>
+            <input type="password" id="currentPassword" name="currentPassword" autocomplete="current-password" required{% if currentPasswordError %} aria-describedby="currentPassword-error" aria-invalid="true"{% endif %}>
+            {% if currentPasswordError %}<span class="field-error-message" id="currentPassword-error">{{ currentPasswordError }}</span>{% endif %}
+          </div>
+
+          <div class="field {% if errors.length > 0 %}field-error{% endif %}">
+            <label for="newPassword">New password <span class="required" aria-label="required">*</span></label>
+            <input type="password" id="newPassword" name="newPassword" autocomplete="new-password" required aria-describedby="newPassword-help{% if errors.length > 0 %} password-errors{% endif %}"{% if errors.length > 0 %} aria-invalid="true"{% endif %}>
+            <span class="help-text" id="newPassword-help">Minimum 12 characters; do not use leading or trailing spaces.</span>
+          </div>
+
+          <div class="field {% if errors.length > 0 %}field-error{% endif %}">
+            <label for="confirmPassword">Confirm new password <span class="required" aria-label="required">*</span></label>
+            <input type="password" id="confirmPassword" name="confirmPassword" autocomplete="new-password" required{% if errors.length > 0 %} aria-describedby="password-errors" aria-invalid="true"{% endif %}>
+          </div>
+        </div>
+
+        <div class="form-actions">
+          <button type="submit" class="button button-primary">Save</button>
+          <a href="/settings" class="button button-secondary">Cancel</a>
+        </div>
+      </form>
+
+      <div class="destructive-section">
+        <h2>Disable authentication</h2>
+        <p>Anyone who can reach this server will be able to access CreatorCrate without signing in. All current sessions will be signed out immediately.</p>
+        <a href="/settings/security/disable" class="button button-danger">Disable Authentication</a>
       </div>
-
-      <div class="field {% if errors.length > 0 %}field-error{% endif %}">
-        <label for="newPassword">New password <span class="required" aria-label="required">*</span></label>
-        <input type="password" id="newPassword" name="newPassword" autocomplete="new-password" required aria-describedby="newPassword-help{% if errors.length > 0 %} password-errors{% endif %}"{% if errors.length > 0 %} aria-invalid="true"{% endif %}>
-        <span class="help-text" id="newPassword-help">Minimum 12 characters; do not use leading or trailing spaces.</span>
-      </div>
-
-      <div class="field {% if errors.length > 0 %}field-error{% endif %}">
-        <label for="confirmPassword">Confirm new password <span class="required" aria-label="required">*</span></label>
-        <input type="password" id="confirmPassword" name="confirmPassword" autocomplete="new-password" required{% if errors.length > 0 %} aria-describedby="password-errors" aria-invalid="true"{% endif %}>
-      </div>
     </div>
-
-    <div class="form-actions">
-      <button type="submit" class="button button-primary">Save</button>
-      <a href="/settings" class="button button-secondary">Cancel</a>
-    </div>
-  </form>
+  </div>
 {% endblock %}

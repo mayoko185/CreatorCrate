@@ -234,24 +234,24 @@ describe('Phase 10.6B: Visual-polish hardening', () => {
   // ─── 2. Contrast audit ──────────────────────────────────────────────────
 
   describe('contrast ratios meet WCAG AA', () => {
-    const BG = '#0b0e16';
-    const SURFACE = '#141a28';
-    const SURFACE_CARD = '#1a2030';
+    const BG = '#0d0f13';
+    const SURFACE = '#171b22';
+    const SURFACE_CARD = '#1d222b';
 
     it('--text on --bg meets 4.5:1', async () => {
-      expect(contrastRatio('#e6edf3', BG)).toBeGreaterThanOrEqual(4.5);
+      expect(contrastRatio('#e8ecf1', BG)).toBeGreaterThanOrEqual(4.5);
     });
 
     it('--text on --surface meets 4.5:1', async () => {
-      expect(contrastRatio('#e6edf3', SURFACE)).toBeGreaterThanOrEqual(4.5);
+      expect(contrastRatio('#e8ecf1', SURFACE)).toBeGreaterThanOrEqual(4.5);
     });
 
     it('--muted on --bg meets 4.5:1', async () => {
-      expect(contrastRatio('#8b95a7', BG)).toBeGreaterThanOrEqual(4.5);
+      expect(contrastRatio('#8b93a3', BG)).toBeGreaterThanOrEqual(4.5);
     });
 
     it('--muted on --surface meets 4.5:1', async () => {
-      expect(contrastRatio('#8b95a7', SURFACE)).toBeGreaterThanOrEqual(4.5);
+      expect(contrastRatio('#8b93a3', SURFACE)).toBeGreaterThanOrEqual(4.5);
     });
 
     it('--danger on --bg meets 4.5:1', async () => {
@@ -275,7 +275,7 @@ describe('Phase 10.6B: Visual-polish hardening', () => {
     });
 
     it('--accent on --bg meets 4.5:1', async () => {
-      expect(contrastRatio('#2dd4bf', BG)).toBeGreaterThanOrEqual(4.5);
+      expect(contrastRatio('#22d3ee', BG)).toBeGreaterThanOrEqual(4.5);
     });
 
     it('error badge foreground meets 4.5:1 on tinted background (page bg)', async () => {
@@ -283,8 +283,8 @@ describe('Phase 10.6B: Visual-polish hardening', () => {
       const css = extractStyle(res.text);
       const badgeDangerFg = css.match(/--badge-danger-fg:\s*(#[0-9a-fA-F]{6})/);
       expect(badgeDangerFg).not.toBeNull();
-      // Badge bg is rgba(229,72,77,0.18) over page bg
-      const ratio = contrastOnRgbaBg(badgeDangerFg[1], 229, 72, 77, 0.18, BG);
+      // Badge bg is rgba(251,113,133,0.18) over page bg
+      const ratio = contrastOnRgbaBg(badgeDangerFg[1], 251, 113, 133, 0.18, BG);
       expect(ratio).toBeGreaterThanOrEqual(4.5);
     });
 
@@ -293,7 +293,7 @@ describe('Phase 10.6B: Visual-polish hardening', () => {
       const css = extractStyle(res.text);
       const badgeDangerFg = css.match(/--badge-danger-fg:\s*(#[0-9a-fA-F]{6})/);
       expect(badgeDangerFg).not.toBeNull();
-      const ratio = contrastOnRgbaBg(badgeDangerFg[1], 229, 72, 77, 0.18, SURFACE);
+      const ratio = contrastOnRgbaBg(badgeDangerFg[1], 251, 113, 133, 0.18, SURFACE);
       expect(ratio).toBeGreaterThanOrEqual(4.5);
     });
 
@@ -309,11 +309,11 @@ describe('Phase 10.6B: Visual-polish hardening', () => {
 
     it('button disabled text meets 4.5:1 on its background', async () => {
       // Disabled: color --muted on bg --surface-card with inset border
-      expect(contrastRatio('#8b95a7', SURFACE_CARD)).toBeGreaterThanOrEqual(4.5);
+      expect(contrastRatio('#8b93a3', SURFACE_CARD)).toBeGreaterThanOrEqual(4.5);
     });
 
     it('data-table header (--muted) meets 4.5:1 on --bg', async () => {
-      expect(contrastRatio('#8b95a7', BG)).toBeGreaterThanOrEqual(4.5);
+      expect(contrastRatio('#8b93a3', BG)).toBeGreaterThanOrEqual(4.5);
     });
   });
 
@@ -503,11 +503,19 @@ describe('Phase 10.6B: Visual-polish hardening', () => {
       expect(css).toMatch(/\.calendar-scroll[^{]*\{[^}]*max-width:\s*100%/);
     });
 
-    it('calendar has min-width on narrow screens for horizontal scroll', async () => {
+    it('calendar replaces the grid with an agenda list on narrow screens instead of relying on horizontal scroll', async () => {
       const res = await request(app).get('/releases/calendar').expect(200);
       const css = extractStyle(res.text);
-      // 767px breakpoint sets min-width on calendar table
-      expect(css).toMatch(/@media\s*\(max-width:\s*767px\)[^}]*\.calendar-table\s*\{[^}]*min-width/);
+      // Phase 13.3: below 767px the grid is hidden and the agenda list
+      // takes over — narrow screens no longer rely on horizontal scroll.
+      const mediaIndex = css.indexOf('@media (max-width: 767px)');
+      expect(mediaIndex).toBeGreaterThan(-1);
+      const mediaBlockEnd = css.indexOf('\n      }', mediaIndex);
+      expect(mediaBlockEnd).toBeGreaterThan(mediaIndex);
+      const mediaBlock = css.substring(mediaIndex, mediaBlockEnd);
+      expect(mediaBlock).toMatch(/\.calendar-scroll\s*\{[^}]*display:\s*none/);
+      expect(mediaBlock).toMatch(/\.calendar-agenda\s*\{[^}]*display:\s*flex/);
+      expect(res.text).toContain('<ul class="calendar-agenda" aria-label="Release calendar agenda">');
     });
   });
 
@@ -672,23 +680,23 @@ describe('Phase 10.6B: Visual-polish hardening', () => {
       const res = await request(app).get('/').expect(200);
       const css = extractStyle(res.text);
       // Error badges, scan-error, error-summary, notices all use 0.18
-      expect(css).toMatch(/\.status-badge--error[^{]*\{[^}]*background:\s*rgba\(229,\s*72,\s*77,\s*0\.18\)/);
-      expect(css).toMatch(/\.scan-error\s*\{[^}]*background:\s*rgba\(229,\s*72,\s*77,\s*0\.18\)/);
-      expect(css).toMatch(/\.error-summary\s*\{[^}]*background:\s*rgba\(229,\s*72,\s*77,\s*0\.18\)/);
-      expect(css).toMatch(/\.notice--danger[^{]*\{[^}]*background:\s*rgba\(229,\s*72,\s*77,\s*0\.18\)/);
+      expect(css).toMatch(/\.status-badge--error[^{]*\{[^}]*background:\s*rgba\(251,\s*113,\s*133,\s*0\.18\)/);
+      expect(css).toMatch(/\.scan-error\s*\{[^}]*background:\s*rgba\(251,\s*113,\s*133,\s*0\.18\)/);
+      expect(css).toMatch(/\.error-summary\s*\{[^}]*background:\s*rgba\(251,\s*113,\s*133,\s*0\.18\)/);
+      expect(css).toMatch(/\.notice--danger[^{]*\{[^}]*background:\s*rgba\(251,\s*113,\s*133,\s*0\.18\)/);
     });
 
-    it('danger-tinted panels use 0.1 alpha (softer background)', async () => {
+    it('danger-tinted panels use a softer alpha background', async () => {
       const res = await request(app).get('/').expect(200);
       const css = extractStyle(res.text);
-      expect(css).toMatch(/\.panel--danger\s*\{[^}]*background:\s*rgba\(229,\s*72,\s*77,\s*0\.1\)/);
-      expect(css).toMatch(/\.destructive-section\s*\{[^}]*background:\s*rgba\(229,\s*72,\s*77,\s*0\.1\)/);
+      expect(css).toMatch(/\.panel--danger\s*\{[^}]*background:\s*rgba\(251,\s*113,\s*133,\s*0\.08\)/);
+      expect(css).toMatch(/\.destructive-section\s*\{[^}]*background:\s*rgba\(251,\s*113,\s*133,\s*0\.1\)/);
     });
 
     it('success-tinted backgrounds use 0.18 alpha for notices', async () => {
       const res = await request(app).get('/').expect(200);
       const css = extractStyle(res.text);
-      expect(css).toMatch(/\.notice--success\s*\{[^}]*background:\s*rgba\(70,\s*180,\s*100,\s*0\.18\)/);
+      expect(css).toMatch(/\.notice--success\s*\{[^}]*background:\s*rgba\(52,\s*211,\s*153,\s*0\.18\)/);
     });
   });
 
