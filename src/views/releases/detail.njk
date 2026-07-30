@@ -7,11 +7,11 @@
   {% set isPublished = release and release.status == 'published' %}
   {% set isArchived = projectArchived or releaseArchived %}
   {% if not projectArchived and not releaseArchived %}
-    {% call pageHeading.render(release.title) %}
+    {% call pageHeading.render(release.title, "Release record") %}
       <a class="button" href="/releases/{{ release.id }}/edit">Edit</a>
     {% endcall %}
   {% else %}
-    {{ pageHeading.render(release.title, "", "archived", "Archived") }}
+    {{ pageHeading.render(release.title, "Release record", "archived", "Archived") }}
   {% endif %}
 
   {% if projectArchived %}

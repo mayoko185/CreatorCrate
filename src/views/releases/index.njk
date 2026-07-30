@@ -6,7 +6,7 @@
     <nav class="view-switcher" aria-label="View">
       <a class="view-switcher-option" href="{{ pageUrl({ view: 'list' }) }}"{% if view !== 'board' %} aria-current="page"{% endif %}>List</a>
       <a class="view-switcher-option" href="{{ pageUrl({ view: 'board' }) }}"{% if view === 'board' %} aria-current="page"{% endif %}>Board</a>
-      <a class="view-switcher-option" href="/releases/calendar{% if query.month %}?month={{ query.month }}{% endif %}">Calendar</a>
+      <a class="view-switcher-option" href="/calendar{% if query.month %}?month={{ query.month }}{% endif %}">Calendar</a>
     </nav>
     <a class="button button-primary" href="/releases/new">New Release</a>
   {% endcall %}

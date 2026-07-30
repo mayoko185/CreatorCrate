@@ -102,7 +102,11 @@
 
     <div class="form-actions">
       <button class="button button-primary" type="submit">{{ action }}</button>
-      <a class="button button-secondary" href="{% if release %}/releases/{{ release.id }}{% elif selectedProjectId %}/projects/{{ selectedProjectId }}{% else %}/releases{% endif %}">Cancel</a>
+      {# Phase 2D: without project context, Cancel falls back to
+         /release-management (release-record tooling) rather than /releases,
+         which is now the Published Work page and has no relation to an
+         in-progress release-record form. #}
+      <a class="button button-secondary" href="{% if release %}/releases/{{ release.id }}{% elif selectedProjectId %}/projects/{{ selectedProjectId }}{% else %}/release-management{% endif %}">Cancel</a>
     </div>
   </form>
 {% endblock %}

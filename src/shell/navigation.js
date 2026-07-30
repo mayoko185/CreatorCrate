@@ -56,14 +56,20 @@ const NAVIGATION_ITEMS = [
     label: 'Releases',
     href: '/releases',
     icon: 'releases',
+    // Phase 2D: /releases is Published Work; /release-management (the
+    // release-record list/board) and /calendar (the project-backed
+    // calendar) have no separate sidebar item of their own, so they stay
+    // grouped under this item rather than leaving the primary nav
+    // misleadingly inactive.
     matches: [
       '/releases',
-      '/releases/calendar',
       '/releases/new',
       '/releases/:id',
       '/releases/:id/edit',
       '/releases/:id/publish',
       '/releases/:id/assets',
+      '/release-management',
+      '/calendar',
     ],
   },
   {

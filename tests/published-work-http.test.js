@@ -419,9 +419,15 @@ describe('Published Work HTTP route (Phase 2B)', () => {
   // ─── Neighboring routes remain unchanged ───────────────────────────────
 
   describe('unaffected release-record routes', () => {
-    it('/releases/calendar remains 200 and project-backed', async () => {
-      const res = await agent.get('/releases/calendar').expect(200);
+    it('/calendar remains 200 and project-backed', async () => {
+      const res = await agent.get('/calendar').expect(200);
       expect(res.text).toContain('calendar');
+    });
+
+    it('/releases/calendar redirects to the canonical /calendar route', async () => {
+      const res = await agent.get('/releases/calendar');
+      expect(res.status).toBe(302);
+      expect(res.headers.location).toBe('/calendar');
     });
 
     it('/releases/new remains the existing release-record creation page', async () => {

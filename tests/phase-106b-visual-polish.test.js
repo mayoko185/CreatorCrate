@@ -471,14 +471,14 @@ describe('Phase 10.6B: Visual-polish hardening', () => {
     });
 
     it('calendar day cells have overflow-wrap for long content', async () => {
-      const res = await request(app).get('/releases/calendar').expect(200);
+      const res = await request(app).get('/calendar').expect(200);
       const css = extractStyle(res.text);
       expect(css).toMatch(/\.calendar-day\s*\{[^}]*overflow-wrap/);
       expect(css).toMatch(/\.calendar-day\s*\{[^}]*word-break/);
     });
 
     it('calendar releases have overflow containment', async () => {
-      const res = await request(app).get('/releases/calendar').expect(200);
+      const res = await request(app).get('/calendar').expect(200);
       const css = extractStyle(res.text);
       expect(css).toMatch(/\.calendar-release\s*\{[^}]*overflow-wrap/);
     });
@@ -492,7 +492,7 @@ describe('Phase 10.6B: Visual-polish hardening', () => {
     });
 
     it('calendar replaces the grid with an agenda list on narrow screens instead of relying on horizontal scroll', async () => {
-      const res = await request(app).get('/releases/calendar').expect(200);
+      const res = await request(app).get('/calendar').expect(200);
       const css = extractStyle(res.text);
       // Phase 13.3: below 767px the grid is hidden and the agenda list
       // takes over — narrow screens no longer rely on horizontal scroll.
@@ -503,7 +503,7 @@ describe('Phase 10.6B: Visual-polish hardening', () => {
       const mediaBlock = css.substring(mediaIndex, mediaBlockEnd);
       expect(mediaBlock).toMatch(/\.calendar-scroll\s*\{[^}]*display:\s*none/);
       expect(mediaBlock).toMatch(/\.calendar-agenda\s*\{[^}]*display:\s*flex/);
-      expect(res.text).toContain('<ul class="calendar-agenda" aria-label="Release calendar agenda">');
+      expect(res.text).toContain('<ul class="calendar-agenda" aria-label="Calendar agenda">');
     });
   });
 
@@ -541,7 +541,7 @@ describe('Phase 10.6B: Visual-polish hardening', () => {
     });
 
     it('calendar release font-size on very narrow screens', async () => {
-      const res = await request(app).get('/releases/calendar').expect(200);
+      const res = await request(app).get('/calendar').expect(200);
       const css = extractStyle(res.text);
       // Check that the 540px media query exists and contains calendar adjustments
       const mediaIndex = css.indexOf('@media (max-width: 540px)');

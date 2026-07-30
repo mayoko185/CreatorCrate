@@ -344,23 +344,23 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
 
   describe('release calendar', () => {
     it('calendar uses page-heading with view switcher', async () => {
-      const res = await agent.get('/releases/calendar').expect(200);
+      const res = await agent.get('/calendar').expect(200);
       expect(hasClass(res.text, 'page-heading')).toBe(true);
       expect(hasClass(res.text, 'page-heading-copy')).toBe(true);
       expect(countTags(res.text, 'h1')).toBe(1);
     });
 
     it('calendar has view-switcher links back to list and board', async () => {
-      const res = await agent.get('/releases/calendar').expect(200);
+      const res = await agent.get('/calendar').expect(200);
       expect(res.text).toContain('view-switcher-option');
       expect(res.text).toMatch(/href="\/release-management"/);
       expect(res.text).toMatch(/href="\/release-management\?view=board"/);
     });
 
     it('calendar renders a named bounded scroll container for narrow screens', async () => {
-      const res = await agent.get('/releases/calendar').expect(200);
+      const res = await agent.get('/calendar').expect(200);
       const css = extractStyle(res.text);
-      expect(res.text).toContain('<div class="calendar-scroll" tabindex="0" aria-label="Release calendar grid">');
+      expect(res.text).toContain('<div class="calendar-scroll" tabindex="0" aria-label="Calendar grid">');
       expect(res.text).toContain('<div class="calendar-table" role="table">');
       expect(css).toContain('.calendar-scroll');
       expect(css).toContain('overflow-x');
@@ -388,7 +388,7 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
         .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
-      const res = await agent.get('/releases/calendar?month=2025-06').expect(200);
+      const res = await agent.get('/calendar?month=2025-06').expect(200);
       expect(res.text).toContain('status-badge');
     });
 
@@ -398,7 +398,7 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
       // releases are marked individually via the "empty" day-cell class
       // rather than swapping the whole page for the shared empty-state
       // partial, which would strand the user without month navigation.
-      const res = await agent.get('/releases/calendar?month=2099-01').expect(200);
+      const res = await agent.get('/calendar?month=2099-01').expect(200);
       expect(res.text).toContain('<div class="calendar-table" role="table">');
       expect(res.text).toMatch(/<div class="calendar-day empty" role="cell">/);
       expect(res.text).not.toContain('<div class="calendar-release');
@@ -996,7 +996,7 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
     it('release pages use page-heading consistently', async () => {
       const pages = [
         { name: 'release list', url: '/releases' },
-        { name: 'release calendar', url: '/releases/calendar' },
+        { name: 'release calendar', url: '/calendar' },
       ];
       for (const { name, url } of pages) {
         const res = await agent.get(url).expect(200);
@@ -1068,7 +1068,7 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
     });
 
     it('release calendar has exactly one h1', async () => {
-      const res = await agent.get('/releases/calendar').expect(200);
+      const res = await agent.get('/calendar').expect(200);
       expect(countTags(res.text, 'h1')).toBe(1);
     });
 
@@ -1114,7 +1114,7 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
     });
 
     it('calendar navigation has aria-label', async () => {
-      const res = await agent.get('/releases/calendar').expect(200);
+      const res = await agent.get('/calendar').expect(200);
       expect(res.text).toContain('aria-label="Calendar navigation"');
     });
 
@@ -1140,7 +1140,7 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
     });
 
     it('release calendar navigation links work without JavaScript', async () => {
-      const res = await agent.get('/releases/calendar').expect(200);
+      const res = await agent.get('/calendar').expect(200);
       // Previous/Next are real <a> links
       expect(res.text).toMatch(/<a class="button" href="[^"]*">/);
     });

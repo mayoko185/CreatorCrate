@@ -4,11 +4,12 @@
 {% block body_class %}calendar-page{% endblock %}
 
 {% block content %}
-  {% call pageHeading.render("Release Calendar") %}
-    <nav class="view-switcher" aria-label="Release view">
-      <a class="view-switcher-option" href="/release-management">List</a>
+  {% call pageHeading.render("Calendar", "Project scheduling across CreatorCrate.") %}
+    <nav class="view-switcher" aria-label="Workflow view">
+      <a class="view-switcher-option" href="/releases">Published Work</a>
+      <a class="view-switcher-option" href="/release-management">Release Records</a>
       <a class="view-switcher-option" href="/release-management?view=board">Board</a>
-      <a class="view-switcher-option" href="/releases/calendar{% if query.month %}?month={{ query.month }}{% endif %}" aria-current="page">Calendar</a>
+      <a class="view-switcher-option" href="/calendar{% if query.month %}?month={{ query.month }}{% endif %}" aria-current="page">Calendar</a>
     </nav>
   {% endcall %}
 
@@ -37,7 +38,7 @@
     {# Desktop: dense grid workspace. Hidden below the agenda breakpoint
        (see .calendar-scroll media query) — the agenda list below takes
        over there instead of relying on horizontal scroll. #}
-    <div class="calendar-scroll" tabindex="0" aria-label="Release calendar grid">
+    <div class="calendar-scroll" tabindex="0" aria-label="Calendar grid">
       {# Phase 13.3 (rewrite): a real CSS Grid layout, not a <table> styled
          to look like one — matches the approved Concept D structure.
          Static ARIA table roles (table/row/columnheader/cell, not the
@@ -102,7 +103,7 @@
     {# Mobile: agenda-first list — same day data, no horizontal scrolling.
        Shown only below the agenda breakpoint; the grid above takes over
        at wider widths. Server-rendered, no JavaScript. #}
-    <ul class="calendar-agenda" aria-label="Release calendar agenda">
+    <ul class="calendar-agenda" aria-label="Calendar agenda">
       {% for day in days %}
         <li class="agenda-day{% if day.entries.length === 0 %} agenda-day-empty{% endif %}{% if day.date == today %} today{% endif %}">
           <div class="agenda-day-date">

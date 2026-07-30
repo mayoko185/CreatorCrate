@@ -25,7 +25,7 @@ const RELEASE_MANAGEMENT_PARAMS = ['view', 'project', 'status', 'schedule', 'rea
 const PUBLISHED_SORT_OPTIONS = ['published', 'title', 'updated'];
 const PUBLISHED_PAGE_SIZE = 25;
 
-export { handleReleaseListOrBoard };
+export { handleReleaseListOrBoard, buildPageUrl };
 
 export function createReleasesRouter({ appName, releaseService, projectService, workflowQueryService }) {
   const router = express.Router();
@@ -44,33 +44,13 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
     handlePublishedWork(req, res, next, { appName, projectService });
   });
 
-  // GET /releases/calendar — Monthly calendar view
-  router.get('/calendar', (req, res, next) => {
-    try {
-      const month = req.query.month || null;
-      const { month: validatedMonth, days, firstDayWeekday, prevMonthDaysCount, prevMonth, nextMonth, today } = workflowQueryService.getProjectCalendar(month);
-      // Calendar uses only the month parameter — no raw req.query
-      const query = {};
-      if (validatedMonth) query.month = validatedMonth;
-      const pageUrl = buildPageUrl(req, query);
-      const isCurrentMonth = validatedMonth === today.slice(0, 7);
-
-      res.render('releases/calendar.njk', {
-        appName,
-        month: validatedMonth,
-        days,
-        firstDayWeekday,
-        prevMonthDaysCount,
-        prevMonth,
-        nextMonth,
-        today,
-        isCurrentMonth,
-        query,
-        pageUrl,
-      });
-    } catch (err) {
-      next(err);
-    }
+  // GET /releases/calendar — Phase 2D: compatibility redirect. The
+  // project-backed calendar now lives at the canonical /calendar route (see
+  // routes/calendar.js); this preserves the full query string (month and any
+  // other parameters) exactly, so bookmarked/linked URLs keep working.
+  router.get('/calendar', (req, res) => {
+    const queryString = req.url.includes('?') ? req.url.slice(req.url.indexOf('?')) : '';
+    res.redirect(`/calendar${queryString}`);
   });
 
   // GET /releases/new — Create form (requires project selection)

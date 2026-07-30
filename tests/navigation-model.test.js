@@ -89,13 +89,25 @@ describe('navigation model — releases active state', () => {
     expect(activeKeys('/releases')).toEqual(['releases']);
   });
 
-  it('is active on the calendar, new, detail, edit, publish, and asset routes', () => {
-    expect(activeKeys('/releases/calendar')).toEqual(['releases']);
+  it('is active on the new, detail, edit, publish, and asset routes', () => {
     expect(activeKeys('/releases/new')).toEqual(['releases']);
     expect(activeKeys('/releases/9')).toEqual(['releases']);
     expect(activeKeys('/releases/9/edit')).toEqual(['releases']);
     expect(activeKeys('/releases/9/publish')).toEqual(['releases']);
     expect(activeKeys('/releases/9/assets')).toEqual(['releases']);
+  });
+
+  // Phase 2D: /calendar is the canonical project-backed calendar route, and
+  // /release-management is the release-record list/board — neither has a
+  // separate sidebar item, so both stay grouped under Releases rather than
+  // leaving the primary nav misleadingly inactive.
+  it('is active on the canonical calendar route', () => {
+    expect(activeKeys('/calendar')).toEqual(['releases']);
+  });
+
+  it('is active on the release-management route', () => {
+    expect(activeKeys('/release-management')).toEqual(['releases']);
+    expect(activeKeys('/release-management?view=board')).toEqual(['releases']);
   });
 });
 
@@ -159,7 +171,9 @@ describe('navigation model — active-count invariants', () => {
       '/projects/1/assets',
       '/projects/1/assets/2',
       '/releases',
-      '/releases/calendar',
+      '/calendar',
+      '/release-management',
+      '/release-management?view=board',
       '/releases/3',
       '/releases/3/edit',
       '/releases/3/publish',

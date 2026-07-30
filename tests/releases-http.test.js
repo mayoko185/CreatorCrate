@@ -670,6 +670,93 @@ describe('release HTTP workflow', () => {
     await agent.get('/releases/abc').expect(404);
   });
 
+  // ─── Release form Cancel link (Phase 2D regression coverage) ──────────────
+  //
+  // Phase 2C changed release-form Cancel behavior but shipped without direct
+  // automated coverage. These tests pin the exact destinations for every
+  // Cancel scenario, and prove a malformed projectId cannot build an unsafe
+  // href on the create form.
+
+  describe('release form Cancel link', () => {
+    it('create form Cancel points to /projects/:id with a valid project context', async () => {
+      const projRes = await agent
+        .post('/projects')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .send('title=Cancel+With+Project')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectId = projRes.headers.location.replace('/projects/', '');
+
+      const res = await agent.get(`/releases/new?projectId=${projectId}`).expect(200);
+      expect(res.text).toContain(`<a class="button button-secondary" href="/projects/${projectId}">Cancel</a>`);
+    });
+
+    it('create form Cancel falls back to /release-management without project context', async () => {
+      // Phase 2D correction: /releases is now Published Work, not the
+      // release-record list — a bare "Cancel" from an in-progress
+      // release-record form must not land there.
+      await agent
+        .post('/projects')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .send('title=Cancel+No+Project')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      const res = await agent.get('/releases/new').expect(200);
+      expect(res.text).toContain('<a class="button button-secondary" href="/release-management">Cancel</a>');
+      expect(res.text).not.toContain('<a class="button button-secondary" href="/releases">Cancel</a>');
+    });
+
+    it('create form Cancel does not build an unsafe href from a malformed projectId', async () => {
+      await agent
+        .post('/projects')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .send('title=Cancel+Malformed+Project')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      const res = await agent
+        .get('/releases/new?projectId=' + encodeURIComponent('"><script>alert(1)</script>'))
+        .expect(200);
+
+      // Nunjucks autoescaping keeps the raw value inside the href attribute —
+      // it cannot break out into a new attribute or inject a script tag.
+      expect(res.text).not.toContain('<script>alert(1)</script>');
+      expect(res.text).toMatch(/href="\/projects\/[^"]*"[^>]*>Cancel<\/a>/);
+    });
+
+    it('edit form Cancel points to /releases/:releaseId', async () => {
+      const projRes = await agent
+        .post('/projects')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .send('title=Cancel+Edit+Project')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectId = projRes.headers.location.replace('/projects/', '');
+
+      const createRes = await agent
+        .post('/releases')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .send(`projectId=${projectId}`)
+        .send('title=Cancel+Edit+Release')
+        .send('status=idea')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const releaseLocation = createRes.headers.location;
+
+      const res = await agent.get(`${releaseLocation}/edit`).expect(200);
+      expect(res.text).toContain(`<a class="button button-secondary" href="${releaseLocation}">Cancel</a>`);
+    });
+  });
+
   // ─── Edit release ─────────────────────────────────────────────────────────
 
   it('edit form renders with existing values', async () => {
@@ -3996,11 +4083,11 @@ describe('release HTTP workflow', () => {
 
     it('calendar navigation does not inherit unsupported readiness state', async () => {
       const res = await agent
-        .get('/releases/calendar?readiness=publishable')
+        .get('/calendar?readiness=publishable')
         .expect(200);
 
       // Calendar nav links must not contain readiness
-      const prevMatch = res.text.match(/<a\s[^>]*href="(\/releases\/calendar\?[^"]*)"[^>]*>← Previous<\/a>/);
+      const prevMatch = res.text.match(/<a\s[^>]*href="(\/calendar\?[^"]*)"[^>]*>← Previous<\/a>/);
       expect(prevMatch).not.toBeNull();
       const prevQuery = parseQuery(prevMatch[1]);
       expect(prevQuery.readiness).toBeUndefined();
@@ -4021,7 +4108,7 @@ describe('release HTTP workflow', () => {
       expect(Object.keys(prevQuery).length).toBe(1);
 
       // Next link must have the same properties
-      const nextMatch = res.text.match(/<a\s[^>]*href="(\/releases\/calendar\?[^"]*)"[^>]*>Next →<\/a>/);
+      const nextMatch = res.text.match(/<a\s[^>]*href="(\/calendar\?[^"]*)"[^>]*>Next →<\/a>/);
       expect(nextMatch).not.toBeNull();
       const nextQuery = parseQuery(nextMatch[1]);
       expect(nextQuery.readiness).toBeUndefined();
@@ -8613,31 +8700,33 @@ describe('release HTTP workflow', () => {
 
   describe('calendar switcher self-link', () => {
     it('calendar switcher anchor has a valid href with normalized month', async () => {
-      const res = await agent.get('/releases/calendar').expect(200);
+      const res = await agent.get('/calendar').expect(200);
       // The calendar route normalizes to the current month, so the canonical
       // self-link always carries the month parameter.
-      expect(res.text).toMatch(/<a class="view-switcher-option" href="\/releases\/calendar\?month=\d{4}-\d{2}"[^>]*aria-current="page"[^>]*>Calendar<\/a>/);
+      expect(res.text).toMatch(/<a class="view-switcher-option" href="\/calendar\?month=\d{4}-\d{2}"[^>]*aria-current="page"[^>]*>Calendar<\/a>/);
     });
 
     it('calendar switcher preserves explicit month in href', async () => {
-      const res = await agent.get('/releases/calendar?month=2026-07').expect(200);
-      expect(res.text).toMatch(/<a class="view-switcher-option" href="\/releases\/calendar\?month=2026-07"[^>]*aria-current="page"[^>]*>Calendar<\/a>/);
+      const res = await agent.get('/calendar?month=2026-07').expect(200);
+      expect(res.text).toMatch(/<a class="view-switcher-option" href="\/calendar\?month=2026-07"[^>]*aria-current="page"[^>]*>Calendar<\/a>/);
     });
 
-    it('all three switcher items are real anchors with valid hrefs', async () => {
-      const res = await agent.get('/releases/calendar?month=2026-07').expect(200);
-      // List
-      expect(res.text).toMatch(/<a class="view-switcher-option" href="\/release-management"[^>]*>List<\/a>/);
+    it('all four switcher items are real anchors with valid hrefs', async () => {
+      const res = await agent.get('/calendar?month=2026-07').expect(200);
+      // Published Work
+      expect(res.text).toMatch(/<a class="view-switcher-option" href="\/releases"[^>]*>Published Work<\/a>/);
+      // Release Records
+      expect(res.text).toMatch(/<a class="view-switcher-option" href="\/release-management"[^>]*>Release Records<\/a>/);
       // Board
       expect(res.text).toMatch(/<a class="view-switcher-option" href="\/release-management\?view=board"[^>]*>Board<\/a>/);
       // Calendar — must have a real href, not just be a bare anchor
       const calMatch = res.text.match(/<a class="view-switcher-option" href="([^"]+)"[^>]*aria-current="page"[^>]*>Calendar<\/a>/);
       expect(calMatch).not.toBeNull();
-      expect(calMatch[1]).toMatch(/^\/releases\/calendar/);
+      expect(calMatch[1]).toMatch(/^\/calendar/);
     });
 
     it('exactly one switcher item is current within the view-switcher nav', async () => {
-      const res = await agent.get('/releases/calendar?month=2026-07').expect(200);
+      const res = await agent.get('/calendar?month=2026-07').expect(200);
       // Extract the view-switcher nav to scope the count (the sidebar nav also
       // carries aria-current="page" for the Releases section).
       const switcherMatch = res.text.match(/<nav class="view-switcher"[^>]*>([\s\S]*?)<\/nav>/);
@@ -8649,8 +8738,8 @@ describe('release HTTP workflow', () => {
 
   // ─── Calendar/Releases correction Phase 1: project-backed calendar ────
   //
-  // /releases/calendar now sources entries from project records, not
-  // release records. These tests exercise the HTTP route end-to-end.
+  // /calendar sources entries from project records, not release records.
+  // These tests exercise the HTTP route end-to-end.
 
   describe('project-backed calendar', () => {
     async function createProjectWithDates(title, { status, plannedDate, publishedDate }) {
@@ -8683,7 +8772,7 @@ describe('release HTTP workflow', () => {
         plannedDate: '2026-07-14',
       });
 
-      const res = await agent.get('/releases/calendar?month=2026-07').expect(200);
+      const res = await agent.get('/calendar?month=2026-07').expect(200);
 
       expect(res.text).toContain(`href="/projects/${projectId}"`);
       expect(res.text).toMatch(new RegExp(`href="/projects/${projectId}">Calendar Project</a>`));
@@ -8696,7 +8785,7 @@ describe('release HTTP workflow', () => {
         plannedDate: '2026-07-05',
       });
 
-      const res = await agent.get('/releases/calendar?month=2026-07').expect(200);
+      const res = await agent.get('/calendar?month=2026-07').expect(200);
       expect(res.text).not.toMatch(/href="\/releases\/\d+">No Release Link Project<\/a>/);
     });
 
@@ -8706,7 +8795,7 @@ describe('release HTTP workflow', () => {
         plannedDate: '2026-07-08',
       });
 
-      const res = await agent.get('/releases/calendar?month=2026-07').expect(200);
+      const res = await agent.get('/calendar?month=2026-07').expect(200);
       expect(res.text).toContain(`href="/projects/${projectId}"`);
     });
 
@@ -8717,7 +8806,7 @@ describe('release HTTP workflow', () => {
         publishedDate: '2026-07-22',
       });
 
-      const julyRes = await agent.get('/releases/calendar?month=2026-07').expect(200);
+      const julyRes = await agent.get('/calendar?month=2026-07').expect(200);
       expect(julyRes.text).toContain(`href="/projects/${projectId}"`);
     });
   });
