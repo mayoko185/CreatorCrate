@@ -242,6 +242,7 @@ describe('Phase 6B HTTP dashboard', () => {
     it('shows the "all good" placeholder when no attention is needed', async () => {
       const res = await app.testAgent.get('/').expect(200);
       expect(res.text).toContain('All releases are in good shape');
+      expect(res.text).toContain('empty-state');
     });
 
     it('hides archived releases from the attention lists', async () => {

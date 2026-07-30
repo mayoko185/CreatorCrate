@@ -208,6 +208,8 @@ describe('asset browser HTTP workflow', () => {
     expect(res2.text).toContain('Assets — Browser Title Test');
     expect(res2.text).toContain('Scan Now');
     expect(res2.text).toContain('Back to Project');
+    expect(res2.text).toContain('class="page-heading"');
+    expect((res2.text.match(/<h1\b/g) || []).length).toBe(1);
   });
 
   it('shows scan-freshness wording explaining data is not live', async () => {
@@ -830,6 +832,8 @@ describe('asset browser HTTP workflow', () => {
     const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
     expect(res2.text).toContain('archivable.png');
     expect(res2.text).toContain('Assets — Archivable Project');
+    expect(res2.text).toContain('archived');
+    expect(res2.text).toContain('read-only');
   });
 
   // ─── Manual scan still works ────────────────────────────────────
@@ -1166,7 +1170,9 @@ describe('asset browser HTTP workflow', () => {
 
     expect(res2.headers['content-type']).toMatch(/html/);
     expect(res2.text).toContain('<title>hero.png — CreatorCrate</title>');
+    expect(res2.text).toContain('class="page-heading"');
     expect(res2.text).toContain('<h1>hero.png</h1>');
+    expect(res2.text).toContain('Asset preview, metadata, and release usage.');
     expectAnchorHref(res2.text, 'asset-viewer-project', `/projects/${id}`);
     expectAnchorHref(res2.text, 'asset-viewer-back', `/projects/${id}/assets`);
     expect(res2.text).toContain(
