@@ -241,7 +241,10 @@ export function createReleaseService({ db, evaluateReleaseReadiness }) {
     if (!project) {
       throw new ReleaseValidationError({ projectId: 'Project not found.' });
     }
-    if (project.archived_at) {
+    // Both archive indicators must be checked — a row can disagree (e.g.
+    // status='archived' with a NULL archived_at), and either one means the
+    // project is not valid release-create context.
+    if (project.archived_at || project.status === 'archived') {
       throw new ReleaseValidationError({ projectId: 'Cannot create release for archived project.' });
     }
     return project;

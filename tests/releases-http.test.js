@@ -75,6 +75,30 @@ async function setupPublishableRelease(agent, projectsRoot, db, csrfToken) {
   return { projectId, releaseLocation, assetId };
 }
 
+/**
+ * Insert a project row directly via SQL, bypassing the service/repository
+ * layer so tests can construct rows the normal write paths cannot produce
+ * (e.g. status='archived' with a NULL archived_at) and can pin updated_at
+ * to a deterministic value for ordering-sensitive fixtures.
+ */
+function insertProjectDirect(db, overrides = {}) {
+  const {
+    title = 'Direct Project',
+    slug = `direct-project-${Math.random().toString(36).slice(2)}-${Date.now()}`,
+    status = 'tbd',
+    archivedAt = null,
+    updatedAt = null,
+  } = overrides;
+  const row = db
+    .prepare(
+      `INSERT INTO projects (title, slug, description, notes, status, priority, archived_at, updated_at)
+       VALUES (?, ?, '', '', ?, 'normal', ?, COALESCE(?, datetime('now')))
+       RETURNING id`
+    )
+    .get(title, slug, status, archivedAt, updatedAt);
+  return row.id;
+}
+
 describe('release HTTP workflow', () => {
   let db;
   let app;
@@ -711,6 +735,60 @@ describe('release HTTP workflow', () => {
       expect(res.text).not.toContain('<a class="button button-secondary" href="/releases">Cancel</a>');
     });
 
+    // ─── Phase 2F: projectId is validated and normalized before it ever
+    // reaches selectedProjectId or the Cancel href. Malformed, nonexistent,
+    // and archived values must all fall back to the no-context behavior —
+    // no project preselected, Cancel → /release-management.
+
+    describe.each([
+      ['non-numeric', 'abc'],
+      ['zero', '0'],
+      ['negative', '-1'],
+      ['trailing garbage', '1abc'],
+      ['float', '1.5'],
+      ['whitespace-only', '%20%20'],
+    ])('malformed projectId (%s: %s)', (_label, rawValue) => {
+      it('renders the form with no project preselected and Cancel to /release-management', async () => {
+        await agent
+          .post('/projects')
+          .send('_csrf=' + encodeURIComponent(csrfToken))
+          .send('title=Cancel+Malformed+Baseline')
+          .send('status=tbd')
+          .send('priority=normal')
+          .set('Content-Type', 'application/x-www-form-urlencoded')
+          .expect(302);
+
+        const res = await agent.get(`/releases/new?projectId=${rawValue}`).expect(200);
+
+        expect(res.text).not.toMatch(/href="\/projects\/[^"]*"[^>]*>Cancel<\/a>/);
+        expect(res.text).toContain('<a class="button button-secondary" href="/release-management">Cancel</a>');
+        expect(res.text).not.toMatch(/<option value="[^"]+" selected>/);
+        expect(res.text).not.toContain('Something went wrong');
+      });
+    });
+
+    it('repeated projectId query parameters are treated as absent context', async () => {
+      const projRes = await agent
+        .post('/projects')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .send('title=Cancel+Repeated+Project')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectId = projRes.headers.location.replace('/projects/', '');
+
+      // Express parses repeated query keys into an array (req.query.projectId
+      // becomes ['1', '2']), which must not be treated as a valid single id.
+      const res = await agent
+        .get(`/releases/new?projectId=${projectId}&projectId=999`)
+        .expect(200);
+
+      expect(res.text).not.toMatch(/href="\/projects\/[^"]*"[^>]*>Cancel<\/a>/);
+      expect(res.text).toContain('<a class="button button-secondary" href="/release-management">Cancel</a>');
+      expect(res.text).not.toMatch(/<option value="[^"]+" selected>/);
+    });
+
     it('create form Cancel does not build an unsafe href from a malformed projectId', async () => {
       await agent
         .post('/projects')
@@ -725,10 +803,91 @@ describe('release HTTP workflow', () => {
         .get('/releases/new?projectId=' + encodeURIComponent('"><script>alert(1)</script>'))
         .expect(200);
 
-      // Nunjucks autoescaping keeps the raw value inside the href attribute —
-      // it cannot break out into a new attribute or inject a script tag.
+      // A malformed (non-integer) projectId is normalized to absent context,
+      // so it never reaches the href at all — not merely escaped within it.
       expect(res.text).not.toContain('<script>alert(1)</script>');
-      expect(res.text).toMatch(/href="\/projects\/[^"]*"[^>]*>Cancel<\/a>/);
+      expect(res.text).not.toMatch(/href="\/projects\/[^"]*"[^>]*>Cancel<\/a>/);
+      expect(res.text).toContain('<a class="button button-secondary" href="/release-management">Cancel</a>');
+    });
+
+    it('nonexistent projectId is treated as absent context', async () => {
+      await agent
+        .post('/projects')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .send('title=Cancel+Nonexistent+Baseline')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      const res = await agent.get('/releases/new?projectId=999999').expect(200);
+
+      expect(res.text).not.toMatch(/href="\/projects\/[^"]*"[^>]*>Cancel<\/a>/);
+      expect(res.text).toContain('<a class="button button-secondary" href="/release-management">Cancel</a>');
+      expect(res.text).not.toMatch(/<option value="[^"]+" selected>/);
+    });
+
+    it('archived projectId is not accepted as active release-creation context', async () => {
+      // A baseline active project keeps the form reachable after the target
+      // project is archived (the route 422s when zero active projects exist).
+      await agent
+        .post('/projects')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .send('title=Cancel+Archived+Baseline')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      const projRes = await agent
+        .post('/projects')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .send('title=Cancel+Archived+Project')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectId = projRes.headers.location.replace('/projects/', '');
+
+      await agent
+        .post(`/projects/${projectId}/archive`)
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .expect(302);
+
+      const res = await agent.get(`/releases/new?projectId=${projectId}`).expect(200);
+
+      expect(res.text).not.toContain(`href="/projects/${projectId}"`);
+      expect(res.text).toContain('<a class="button button-secondary" href="/release-management">Cancel</a>');
+      expect(res.text).not.toContain(`value="${projectId}" selected`);
+      expect(res.text).not.toContain('Cancel Archived Project');
+    });
+
+    it('valid active projectId preselects the correct project and no other', async () => {
+      const projARes = await agent
+        .post('/projects')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .send('title=Select+Correct+Project+A')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectAId = projARes.headers.location.replace('/projects/', '');
+
+      const projBRes = await agent
+        .post('/projects')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .send('title=Select+Correct+Project+B')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectBId = projBRes.headers.location.replace('/projects/', '');
+
+      const res = await agent.get(`/releases/new?projectId=${projectAId}`).expect(200);
+
+      expect(res.text).toContain(`<option value="${projectAId}" selected>`);
+      expect(res.text).not.toContain(`<option value="${projectBId}" selected>`);
+      expect(res.text).toContain(`<a class="button button-secondary" href="/projects/${projectAId}">Cancel</a>`);
     });
 
     it('edit form Cancel points to /releases/:releaseId', async () => {
@@ -754,6 +913,336 @@ describe('release HTTP workflow', () => {
 
       const res = await agent.get(`${releaseLocation}/edit`).expect(200);
       expect(res.text).toContain(`<a class="button button-secondary" href="${releaseLocation}">Cancel</a>`);
+    });
+
+    // ─── Phase 2F review fix: inconsistent archive rows ──────────────────
+    //
+    // A project row can disagree between its two archive indicators
+    // (status='archived' with archived_at still NULL). Such a row is not
+    // excluded by projectService.list({ includeArchived: false }), which
+    // only filters on archived_at, so it must be filtered locally with
+    // isActiveProject before the selector is rendered — it must not appear
+    // as an option at all, selected or not.
+
+    it('inconsistent row (status=archived, archived_at=NULL) is not an option, not selected, and Cancel falls back', async () => {
+      // A baseline active project keeps the form reachable (the route 422s
+      // when zero active projects remain after local filtering).
+      await agent
+        .post('/projects')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .send('title=Inconsistent+Archived+Baseline')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      const inconsistentId = insertProjectDirect(db, {
+        title: 'Inconsistent Archived Row',
+        status: 'archived',
+        archivedAt: null,
+      });
+
+      const res = await agent.get(`/releases/new?projectId=${inconsistentId}`).expect(200);
+
+      expect(res.text).not.toContain(`value="${inconsistentId}"`);
+      expect(res.text).not.toContain('Inconsistent Archived Row');
+      expect(res.text).not.toMatch(/<option value="[^"]+" selected>/);
+      expect(res.text).not.toContain(`href="/projects/${inconsistentId}"`);
+      expect(res.text).toContain('<a class="button button-secondary" href="/release-management">Cancel</a>');
+    });
+
+    it('inconsistent row (status=archived, archived_at=NULL) is rejected by POST release creation', async () => {
+      const inconsistentId = insertProjectDirect(db, {
+        title: 'Inconsistent Archived POST Row',
+        status: 'archived',
+        archivedAt: null,
+      });
+
+      const res = await agent
+        .post('/releases')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .send(`projectId=${inconsistentId}`)
+        .send('title=Should+Not+Create')
+        .send('status=idea')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(422);
+
+      expect(res.text).toContain('Cannot create release for archived project.');
+    });
+
+    // ─── Phase 2F review fix: valid project beyond the 100-option page ───
+
+    it('valid active project outside the first 100 options is added to the selector and preselected', async () => {
+      const TOTAL = 101;
+      let targetId;
+      for (let i = 0; i < TOTAL; i++) {
+        // Strictly decreasing updated_at so ordering (DESC) is deterministic;
+        // the last-inserted row (i = TOTAL - 1) is the oldest and therefore
+        // ranked 101st — outside the LIMIT 100 page.
+        const updatedAt = `2024-01-01 00:00:${String(TOTAL - i).padStart(2, '0')}`;
+        const id = insertProjectDirect(db, {
+          title: `Beyond Limit Project ${i}`,
+          status: 'tbd',
+          updatedAt,
+        });
+        if (i === TOTAL - 1) targetId = id;
+      }
+
+      const res = await agent.get(`/releases/new?projectId=${targetId}`).expect(200);
+
+      const optionMatches = res.text.match(new RegExp(`<option value="${targetId}"[^>]*>`, 'g')) || [];
+      expect(optionMatches).toHaveLength(1);
+      expect(optionMatches[0]).toContain('selected');
+      expect(res.text).toContain(`<a class="button button-secondary" href="/projects/${targetId}">Cancel</a>`);
+
+      // At most 101 project options: 100 from the filtered page plus the one
+      // directly appended beyond-100 project. No duplicates, no overcount.
+      const allProjectOptions = res.text.match(/<option value="\d+"/g) || [];
+      expect(allProjectOptions.length).toBeLessThanOrEqual(101);
+    });
+
+    it('a full original page containing a locally-filtered archived-status row still finds and appends a valid active project beyond the page', async () => {
+      // 99 active rows ranked 1-99, one archived-status row (archived_at
+      // NULL) at rank 100 — still counted by the unfiltered DB query, so the
+      // original page is full (100 rows), even though local filtering drops
+      // it to 99 active options. The valid target sits at rank 101, outside
+      // the LIMIT 100 window, and must still be found via direct lookup.
+      for (let i = 0; i < 99; i++) {
+        const updatedAt = `2024-01-01 00:00:${String(99 - i).padStart(2, '0')}`;
+        insertProjectDirect(db, { title: `Full Page Active ${i}`, status: 'tbd', updatedAt });
+      }
+      insertProjectDirect(db, {
+        title: 'Full Page Inconsistent Archived',
+        status: 'archived',
+        archivedAt: null,
+        updatedAt: '2024-01-01 00:00:00',
+      });
+      const targetId = insertProjectDirect(db, {
+        title: 'Full Page Beyond Target',
+        status: 'tbd',
+        updatedAt: '2023-12-31 23:59:59',
+      });
+
+      const res = await agent.get(`/releases/new?projectId=${targetId}`).expect(200);
+
+      const optionMatches = res.text.match(new RegExp(`<option value="${targetId}"[^>]*>`, 'g')) || [];
+      expect(optionMatches).toHaveLength(1);
+      expect(optionMatches[0]).toContain('selected');
+      expect(res.text).not.toContain('Full Page Inconsistent Archived');
+      expect(res.text).toContain(`<a class="button button-secondary" href="/projects/${targetId}">Cancel</a>`);
+
+      const selectedOptions = res.text.match(/<option value="\d+"\s*selected>/g) || [];
+      expect(selectedOptions).toHaveLength(1);
+    });
+
+    it('an archived project outside the first 100 options is not appended to the selector', async () => {
+      for (let i = 0; i < 99; i++) {
+        const updatedAt = `2024-02-01 00:00:${String(99 - i).padStart(2, '0')}`;
+        insertProjectDirect(db, { title: `Archived Beyond Filler ${i}`, status: 'tbd', updatedAt });
+      }
+      insertProjectDirect(db, {
+        title: 'Archived Beyond Filler Full',
+        status: 'tbd',
+        updatedAt: '2024-02-01 00:00:00',
+      });
+      const archivedBeyondId = insertProjectDirect(db, {
+        title: 'Archived Beyond Target',
+        status: 'archived',
+        archivedAt: '2024-01-01 00:00:00',
+        updatedAt: '2024-01-31 23:59:59',
+      });
+
+      const res = await agent.get(`/releases/new?projectId=${archivedBeyondId}`).expect(200);
+
+      expect(res.text).not.toContain(`value="${archivedBeyondId}"`);
+      expect(res.text).not.toContain('Archived Beyond Target');
+      expect(res.text).not.toMatch(/<option value="[^"]+" selected>/);
+      expect(res.text).toContain('<a class="button button-secondary" href="/release-management">Cancel</a>');
+    });
+
+    it('a nonexistent project outside the first 100 options is not appended to the selector', async () => {
+      for (let i = 0; i < 100; i++) {
+        const updatedAt = `2024-03-01 00:00:${String(100 - i).padStart(2, '0')}`;
+        insertProjectDirect(db, { title: `Nonexistent Beyond Filler ${i}`, status: 'tbd', updatedAt });
+      }
+
+      const res = await agent.get('/releases/new?projectId=999999').expect(200);
+
+      expect(res.text).not.toMatch(/<option value="[^"]+" selected>/);
+      expect(res.text).toContain('<a class="button button-secondary" href="/release-management">Cancel</a>');
+    });
+
+    // ─── Phase 2F review fix: numerically unsafe projectId values ────────
+
+    describe.each([
+      ['just above MAX_SAFE_INTEGER', '9007199254740993'],
+      ['far larger digit string', '99999999999999999999999999'],
+    ])('numerically unsafe projectId (%s: %s)', (_label, rawValue) => {
+      it('renders the form with no project selected and Cancel to /release-management', async () => {
+        await agent
+          .post('/projects')
+          .send('_csrf=' + encodeURIComponent(csrfToken))
+          .send('title=Unsafe+Integer+Baseline')
+          .send('status=tbd')
+          .send('priority=normal')
+          .set('Content-Type', 'application/x-www-form-urlencoded')
+          .expect(302);
+
+        const res = await agent.get(`/releases/new?projectId=${rawValue}`).expect(200);
+
+        expect(res.text).not.toMatch(/<option value="[^"]+" selected>/);
+        expect(res.text).not.toContain(`/projects/${rawValue}`);
+        expect(res.text).toContain('<a class="button button-secondary" href="/release-management">Cancel</a>');
+        expect(res.text).not.toContain('Something went wrong');
+      });
+    });
+  });
+
+  // ─── Phase 2F: POST /releases validation-error re-render shares the same
+  // project-context resolution as GET /releases/new ─────────────────────────
+  //
+  // A 422 re-render must never be less safe than the GET form: options must
+  // exclude archived projects (by either indicator), selectedProjectId must
+  // be a validated active project id or null (never raw/malformed req.body),
+  // and Cancel must follow the same active/inactive rule.
+
+  describe('POST /releases validation-error re-render project context', () => {
+    it('malformed projectId: no malformed Cancel href, Cancel falls back, no option selected', async () => {
+      const res = await agent
+        .post('/releases')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .send('projectId=1abc')
+        .send('title=Malformed+Context+Release')
+        .send('status=idea')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(422);
+
+      expect(res.text).not.toMatch(/href="\/projects\/[^"]*"[^>]*>Cancel<\/a>/);
+      expect(res.text).toContain('<a class="button button-secondary" href="/release-management">Cancel</a>');
+      expect(res.text).not.toMatch(/<option value="\d+"[^>]*selected>/);
+    });
+
+    it('numerically unsafe projectId: 422, safe fallback, rounded value not rendered or selected', async () => {
+      const unsafeValue = '9007199254740993';
+      const res = await agent
+        .post('/releases')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .send(`projectId=${unsafeValue}`)
+        .send('title=Unsafe+Integer+Context+Release')
+        .send('status=idea')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(422);
+
+      expect(res.text).not.toMatch(/<option value="\d+"[^>]*selected>/);
+      expect(res.text).not.toContain(`/projects/${unsafeValue}`);
+      expect(res.text).toContain('<a class="button button-secondary" href="/release-management">Cancel</a>');
+    });
+
+    it('status=archived, archived_at=NULL project: not an option, Cancel falls back, archived message preserved', async () => {
+      const inconsistentId = insertProjectDirect(db, {
+        title: 'POST Inconsistent Archived Row',
+        status: 'archived',
+        archivedAt: null,
+      });
+
+      const res = await agent
+        .post('/releases')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .send(`projectId=${inconsistentId}`)
+        .send('title=Should+Not+Create')
+        .send('status=idea')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(422);
+
+      expect(res.text).toContain('Cannot create release for archived project.');
+      expect(res.text).not.toContain(`value="${inconsistentId}"`);
+      expect(res.text).not.toContain('POST Inconsistent Archived Row');
+      expect(res.text).toContain('<a class="button button-secondary" href="/release-management">Cancel</a>');
+    });
+
+    it('archived_at-set project: not an option, Cancel falls back', async () => {
+      const projRes = await agent
+        .post('/projects')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .send('title=POST+Archived+At+Project')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectId = projRes.headers.location.replace('/projects/', '');
+
+      await agent
+        .post(`/projects/${projectId}/archive`)
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .expect(302);
+
+      const res = await agent
+        .post('/releases')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .send(`projectId=${projectId}`)
+        .send('title=Should+Not+Create+Either')
+        .send('status=idea')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(422);
+
+      expect(res.text).not.toContain(`value="${projectId}"`);
+      expect(res.text).not.toContain('POST Archived At Project');
+      expect(res.text).toContain('<a class="button button-secondary" href="/release-management">Cancel</a>');
+    });
+
+    it('valid active project: preselected on re-render, Cancel to /projects/:id, other fields preserved', async () => {
+      const projRes = await agent
+        .post('/projects')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .send('title=POST+Valid+Active+Project')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectId = projRes.headers.location.replace('/projects/', '');
+
+      const res = await agent
+        .post('/releases')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .send(`projectId=${projectId}`)
+        .send('title=') // triggers an unrelated (title required) validation error
+        .send('description=Keep+This+Description')
+        .send('status=idea')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(422);
+
+      expect(res.text).toContain(`<option value="${projectId}" selected>`);
+      expect(res.text).toContain(`<a class="button button-secondary" href="/projects/${projectId}">Cancel</a>`);
+      expect(res.text).toContain('Keep This Description');
+      expect(res.text).toContain('Title is required');
+    });
+
+    it('valid active project outside the first 100 options: added exactly once and selected, Cancel to /projects/:id', async () => {
+      const TOTAL = 101;
+      let targetId;
+      for (let i = 0; i < TOTAL; i++) {
+        const updatedAt = `2024-04-01 00:00:${String(TOTAL - i).padStart(2, '0')}`;
+        const id = insertProjectDirect(db, {
+          title: `POST Beyond Limit Project ${i}`,
+          status: 'tbd',
+          updatedAt,
+        });
+        if (i === TOTAL - 1) targetId = id;
+      }
+
+      const res = await agent
+        .post('/releases')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .send(`projectId=${targetId}`)
+        .send('title=') // triggers an unrelated (title required) validation error
+        .send('status=idea')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(422);
+
+      const optionMatches = res.text.match(new RegExp(`<option value="${targetId}"[^>]*>`, 'g')) || [];
+      expect(optionMatches).toHaveLength(1);
+      expect(optionMatches[0]).toContain('selected');
+      expect(res.text).toContain(`<a class="button button-secondary" href="/projects/${targetId}">Cancel</a>`);
     });
   });
 
