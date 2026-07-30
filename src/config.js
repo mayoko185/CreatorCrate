@@ -1,7 +1,6 @@
 import path from 'node:path';
 import process from 'node:process';
-import { isValidPasswordHash } from './auth/password-hash.js';
-import { credentialFilePathForRoot, validateUsername } from './auth/credential-provider.js';
+import { credentialFilePathForRoot } from './auth/credential-provider.js';
 
 const DEFAULTS = {
   NODE_ENV: 'development',
@@ -23,11 +22,6 @@ const DEFAULTS = {
   HSTS_ENABLED: 'false',
 };
 
-// Minimum entropy proxy for SESSION_SECRET: a plain byte-length floor on the
-// configured string. Not a substitute for actually generating it randomly
-// (documented as `openssl rand -hex 32` or equivalent), but it rejects
-// obviously weak/placeholder values at startup.
-const MIN_SESSION_SECRET_LENGTH = 32;
 const MAX_SESSION_TTL_HOURS = 720; // 30 days
 
 export class ConfigError extends Error {
@@ -89,39 +83,12 @@ export function createConfig(rawEnv = process.env) {
     );
   }
 
-  // ─── Phase 12.1: single-operator authentication configuration ──────────
-  // Never accepts a plaintext password. Missing or invalid configuration
-  // fails startup — there is no documented development-only bypass.
-
-  const usernameRaw = getEnv(rawEnv, 'CREATORCRATE_USERNAME');
-  if (!usernameRaw) {
-    throw new ConfigError('CREATORCRATE_USERNAME is required.');
-  }
-  const username = usernameRaw.trim().toLowerCase();
-  if (!validateUsername(username)) {
-    throw new ConfigError(
-      'CREATORCRATE_USERNAME must be 3-64 characters of lowercase letters, digits, "_", "." or "-", ' +
-      'and must not start or end with a separator.'
-    );
-  }
-
-  const passwordHash = getEnv(rawEnv, 'CREATORCRATE_PASSWORD_HASH');
-  if (!passwordHash) {
-    throw new ConfigError('CREATORCRATE_PASSWORD_HASH is required. Generate one with "pnpm auth:hash".');
-  }
-  if (!isValidPasswordHash(passwordHash)) {
-    throw new ConfigError(
-      'CREATORCRATE_PASSWORD_HASH is not a recognized password hash. Generate one with "pnpm auth:hash".'
-    );
-  }
-
-  const sessionSecret = getEnv(rawEnv, 'SESSION_SECRET');
-  if (!sessionSecret) {
-    throw new ConfigError('SESSION_SECRET is required.');
-  }
-  if (sessionSecret.length < MIN_SESSION_SECRET_LENGTH) {
-    throw new ConfigError(`SESSION_SECRET must be at least ${MIN_SESSION_SECRET_LENGTH} characters.`);
-  }
+  // ─── Phase 13: authentication settings (identity is managed, not env) ──
+  // Authentication is optional and browser-managed (see src/auth/auth-state.js
+  // and src/auth/auth-transition-service.js) — username, password hash, and
+  // session secret are never read from the environment. Only genuinely
+  // deployment-level settings live here, and they apply regardless of
+  // whether authentication is currently enabled.
 
   const sessionTtlRaw = getEnv(rawEnv, 'SESSION_TTL_HOURS');
   const sessionTtlHours = Number(sessionTtlRaw);
@@ -165,9 +132,6 @@ export function createConfig(rawEnv = process.env) {
     backupDir,
     backupRetentionCount,
     auth: Object.freeze({
-      username,
-      passwordHash,
-      sessionSecret,
       sessionTtlHours,
       cookieSecure,
       trustProxy,

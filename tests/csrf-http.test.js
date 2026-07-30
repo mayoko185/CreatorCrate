@@ -15,6 +15,7 @@ import { createApp } from '../src/app.js';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { createBackupService } from '../src/services/backup-service.js';
 import { STATUS_DIR_MAP } from '../src/storage/project-storage.js';
+import { ensureAuthEnablement } from '../src/auth/auth-state.js';
 import { AUTH_CONFIG, TEST_PASSWORD, authenticate, extractCsrfToken, requestLoginPage, countTotalCsrfInputs } from './helpers/auth.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
@@ -250,5 +251,97 @@ describe('CSRF — every mutating form has exactly one token', () => {
   it('security settings page has one password form token plus logout tokens', async () => {
     const res = await agent.get('/settings/security').expect(200);
     expect(countTotalCsrfInputs(res.text)).toBe(3);
+  });
+});
+
+// ─── Phase 13: CSRF while authentication is disabled ───────────────────
+describe('CSRF protection — authentication disabled', () => {
+  let tmpDir;
+  let appDataRoot;
+  let db;
+  let app;
+  let csrfPepper;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-csrf-disabled-'));
+    appDataRoot = path.join(tmpDir, 'app');
+    fs.mkdirSync(appDataRoot, { recursive: true });
+    const projectsRoot = path.join(tmpDir, 'projects');
+    fs.mkdirSync(projectsRoot, { recursive: true });
+    for (const dir of Object.values(STATUS_DIR_MAP)) {
+      fs.mkdirSync(path.join(projectsRoot, dir), { recursive: true });
+    }
+    db = openDatabase(path.join(appDataRoot, 'test.db'));
+    runMigrations(db, MIGRATIONS_DIR);
+    csrfPepper = ensureAuthEnablement(appDataRoot).csrfPepper;
+    app = createApp({ appName: 'CreatorCrate', db, projectsRoot }, { authState: { csrfPepper }, appDataRoot });
+  });
+
+  afterEach(() => {
+    closeDatabase(db);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('rejects a mutating POST with no CSRF cookie/token at all', async () => {
+    await request(app).post('/projects').type('form').send({ title: 'No CSRF', status: 'tbd', priority: 'normal' }).expect(403);
+  });
+
+  it('rejects a mutating POST with a token but no matching cookie', async () => {
+    await request(app)
+      .post('/projects')
+      .type('form')
+      .send({ title: 'Bad CSRF', status: 'tbd', priority: 'normal', _csrf: 'forged-token' })
+      .expect(403);
+  });
+
+  it('accepts a mutating POST once a real cookie+token pair has been issued', async () => {
+    const agent = request.agent(app);
+    // /settings/security is the one page reliably rendering a form (the
+    // enable-authentication form) while auth is disabled.
+    const page = await agent.get('/settings/security').expect(200);
+    const csrfToken = extractCsrfToken(page.text);
+
+    await agent
+      .post('/projects')
+      .type('form')
+      .send({ title: 'Valid disabled-mode CSRF', status: 'tbd', priority: 'normal', _csrf: csrfToken })
+      .expect(302);
+  });
+
+  it('a visitor cannot forge a valid token by supplying their own cookie value', async () => {
+    const forgedSecret = 'attacker-chosen-secret-value';
+    await request(app)
+      .post('/projects')
+      .set('Cookie', `cc_csrf_anon=${forgedSecret}`)
+      .type('form')
+      // Naively re-deriving HMAC('csrf', forgedSecret) or reusing the raw
+      // secret as the token must not validate — the pepper is server-only.
+      .send({ title: 'Forged', status: 'tbd', priority: 'normal', _csrf: forgedSecret })
+      .expect(403);
+  });
+
+  it('the same token survives a fresh app instance built from the persisted pepper (restart-equivalent)', async () => {
+    const agent = request.agent(app);
+    // /settings/security is the one page reliably rendering a form (the
+    // enable-authentication form) while auth is disabled.
+    const page = await agent.get('/settings/security').expect(200);
+    const csrfToken = extractCsrfToken(page.text);
+    const cookieHeader = page.headers['set-cookie'].find((c) => c.startsWith('cc_csrf_anon='));
+
+    // Simulate a process restart: a brand-new createApp call re-reading the
+    // same persisted pepper from disk, rather than reusing the in-memory one.
+    const restartedPepper = ensureAuthEnablement(appDataRoot).csrfPepper;
+    expect(restartedPepper).toBe(csrfPepper);
+    const restartedApp = createApp(
+      { appName: 'CreatorCrate', db, projectsRoot: path.join(tmpDir, 'projects') },
+      { authState: { csrfPepper: restartedPepper }, appDataRoot }
+    );
+
+    await request(restartedApp)
+      .post('/projects')
+      .set('Cookie', cookieHeader.split(';')[0])
+      .type('form')
+      .send({ title: 'Post-restart CSRF', status: 'tbd', priority: 'normal', _csrf: csrfToken })
+      .expect(302);
   });
 });

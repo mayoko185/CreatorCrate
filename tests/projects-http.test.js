@@ -8,6 +8,8 @@ import { createApp } from '../src/app.js';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { MANIFEST_FILENAME, readManifestSync } from '../src/storage/manifest.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
+import { ensureAuthEnablement } from '../src/auth/auth-state.js';
+import { getDisabledModeCsrf } from './helpers/auth.js';
 import {
   STATUS_DIR_MAP,
   formatProjectDirName,
@@ -22,8 +24,10 @@ describe('project HTTP workflow', () => {
   let app;
   let tmpDir;
   let projectsRoot;
+  let agent;
+  let csrfToken;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-http-'));
     projectsRoot = path.join(tmpDir, 'projects');
     fs.mkdirSync(projectsRoot, { recursive: true });
@@ -33,7 +37,11 @@ describe('project HTTP workflow', () => {
     const dbPath = path.join(tmpDir, 'test.db');
     db = openDatabase(dbPath);
     runMigrations(db, MIGRATIONS_DIR);
-    app = createApp({ appName: 'CreatorCrate', db, projectsRoot });
+    const appDataRoot = path.join(tmpDir, 'app');
+    fs.mkdirSync(appDataRoot, { recursive: true });
+    const { csrfPepper } = ensureAuthEnablement(appDataRoot);
+    app = createApp({ appName: 'CreatorCrate', db, projectsRoot }, { appDataRoot, authState: { csrfPepper } });
+    ({ agent, csrfToken } = await getDisabledModeCsrf(app, appDataRoot));
   });
 
   afterEach(() => {
@@ -42,7 +50,7 @@ describe('project HTTP workflow', () => {
   });
 
   it('dashboard renders counts and a new project action', async () => {
-    const res = await request(app).get('/').expect(200);
+    const res = await agent.get('/').expect(200);
     expect(res.text).toContain('CreatorCrate');
     expect(res.text).toContain('New Project');
     expect(res.text).toContain('TBD');
@@ -50,34 +58,35 @@ describe('project HTTP workflow', () => {
   });
 
   it('dashboard archived count reflects archived projects', async () => {
-    const createRes = await request(app)
+    const createRes = await agent
       .post('/projects')
       .send('title=Archive+Count')
       .send('status=tbd')
       .send('priority=normal')
-      .set('Content-Type', 'application/x-www-form-urlencoded');
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken));
     const id = createRes.headers.location.replace('/projects/', '');
-    await request(app).post(`/projects/${id}/archive`);
+    await agent.post(`/projects/${id}/archive`).send('_csrf=' + encodeURIComponent(csrfToken));
 
-    const res = await request(app).get('/').expect(200);
+    const res = await agent.get('/').expect(200);
     expect(res.text).toContain('<span class="count">1</span> Archived');
   });
 
   it('project list renders', async () => {
-    const res = await request(app).get('/projects').expect(200);
+    const res = await agent.get('/projects').expect(200);
     expect(res.text).toContain('Projects');
     expect(res.text).toContain('No projects yet');
   });
 
   it('new-project form renders', async () => {
-    const res = await request(app).get('/projects/new').expect(200);
+    const res = await agent.get('/projects/new').expect(200);
     expect(res.text).toContain('Create Project');
     expect(res.text).toContain('Title');
     expect(res.text).not.toContain('value="archived"');
   });
 
   it('valid create request redirects to detail', async () => {
-    const res = await request(app)
+    const res = await agent
       .post('/projects')
       .send('title=Test+Project')
       .send('description=A+test')
@@ -85,12 +94,13 @@ describe('project HTTP workflow', () => {
       .send('status=tbd')
       .send('priority=normal')
       .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
       .expect(302);
     expect(res.headers.location).toMatch(/^\/projects\/\d+$/);
   });
 
   it('invalid create request rerenders with values and errors', async () => {
-    const res = await request(app)
+    const res = await agent
       .post('/projects')
       .send('title=Create+Preserves')
       .send('description=A')
@@ -101,6 +111,7 @@ describe('project HTTP workflow', () => {
       .send('publishedDate=2026-08-15')
       .send('patreonUrl=http://example.com/not-patreon')
       .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
       .expect(422);
     expect(res.text).toContain('Patreon URL must be a valid https://patreon.com link.');
     expect(res.text).toContain('value="Create Preserves"');
@@ -115,90 +126,98 @@ describe('project HTTP workflow', () => {
   });
 
   it('rejects archived status on create', async () => {
-    const res = await request(app)
+    const res = await agent
       .post('/projects')
       .send('title=Direct+Archive')
       .send('status=archived')
       .send('priority=normal')
       .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
       .expect(422);
     expect(res.text).toContain('Status must be one of');
     expect(res.text).toContain('Direct Archive');
   });
 
   it('project detail renders', async () => {
-    const createRes = await request(app)
+    const createRes = await agent
       .post('/projects')
       .send('title=Detail+Project')
       .send('status=tbd')
       .send('priority=normal')
-      .set('Content-Type', 'application/x-www-form-urlencoded');
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken));
     const location = createRes.headers.location;
-    const res = await request(app).get(location).expect(200);
+    const res = await agent.get(location).expect(200);
     expect(res.text).toContain('Detail Project');
     expect(res.text).toContain('Edit');
   });
 
   it('edit form renders', async () => {
-    const createRes = await request(app)
+    const createRes = await agent
       .post('/projects')
       .send('title=Editable+Project')
       .send('status=tbd')
       .send('priority=normal')
-      .set('Content-Type', 'application/x-www-form-urlencoded');
-    const res = await request(app).get(`${createRes.headers.location}/edit`).expect(200);
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken));
+    const res = await agent.get(`${createRes.headers.location}/edit`).expect(200);
     expect(res.text).toContain('Edit Project');
     expect(res.text).toContain('Editable Project');
     expect(res.text).not.toContain('value="archived"');
   });
 
   it('valid update redirects to detail', async () => {
-    const createRes = await request(app)
+    const createRes = await agent
       .post('/projects')
       .send('title=Old+Name')
       .send('status=tbd')
       .send('priority=normal')
-      .set('Content-Type', 'application/x-www-form-urlencoded');
-    const res = await request(app)
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken));
+    const res = await agent
       .post(createRes.headers.location)
       .send('title=New+Name')
       .send('status=planned')
       .send('priority=high')
       .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
       .expect(302);
     expect(res.headers.location).toBe(createRes.headers.location);
 
-    const detail = await request(app).get(createRes.headers.location).expect(200);
+    const detail = await agent.get(createRes.headers.location).expect(200);
     expect(detail.text).toContain('New Name');
   });
 
   it('rejects archived status on update', async () => {
-    const createRes = await request(app)
+    const createRes = await agent
       .post('/projects')
       .send('title=Update+Archive')
       .send('status=tbd')
       .send('priority=normal')
-      .set('Content-Type', 'application/x-www-form-urlencoded');
-    const res = await request(app)
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken));
+    const res = await agent
       .post(createRes.headers.location)
       .send('title=Update+Archive')
       .send('status=archived')
       .send('priority=normal')
       .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
       .expect(422);
     expect(res.text).toContain('Status must be one of');
   });
 
   it('invalid edit request rerenders with submitted values and errors', async () => {
-    const createRes = await request(app)
+    const createRes = await agent
       .post('/projects')
       .send('title=Edit+Preserves+Initial')
       .send('status=tbd')
       .send('priority=normal')
       .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
       .expect(302);
 
-    const res = await request(app)
+    const res = await agent
       .post(createRes.headers.location)
       .send('title=Edit+Preserves+Submitted')
       .send('description=Submitted+description')
@@ -209,6 +228,7 @@ describe('project HTTP workflow', () => {
       .send('publishedDate=2026-10-15')
       .send('patreonUrl=http://example.com/not-patreon')
       .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
       .expect(422);
 
     expect(res.text).toContain('Patreon URL must be a valid https://patreon.com link.');
@@ -224,96 +244,103 @@ describe('project HTTP workflow', () => {
   });
 
   it('missing project returns 404', async () => {
-    await request(app).get('/projects/9999').expect(404);
+    await agent.get('/projects/9999').expect(404);
   });
 
   it('invalid project id returns 404', async () => {
-    await request(app).get('/projects/abc').expect(404);
+    await agent.get('/projects/abc').expect(404);
   });
 
   it('archive action preserves the record and redirects', async () => {
-    const createRes = await request(app)
+    const createRes = await agent
       .post('/projects')
       .send('title=To+Archive')
       .send('status=tbd')
       .send('priority=normal')
-      .set('Content-Type', 'application/x-www-form-urlencoded');
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken));
     const id = createRes.headers.location.replace('/projects/', '');
 
-    const res = await request(app)
+    const res = await agent
       .post(`/projects/${id}/archive`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .expect(302);
     expect(res.headers.location).toBe('/projects');
 
-    const detail = await request(app).get(`/projects/${id}`).expect(200);
+    const detail = await agent.get(`/projects/${id}`).expect(200);
     expect(detail.text).toContain('Archived');
   });
 
   it('archived project is excluded from the default list', async () => {
-    const createRes = await request(app)
+    const createRes = await agent
       .post('/projects')
       .send('title=Hidden+Project')
       .send('status=tbd')
       .send('priority=normal')
-      .set('Content-Type', 'application/x-www-form-urlencoded');
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken));
     const id = createRes.headers.location.replace('/projects/', '');
-    await request(app).post(`/projects/${id}/archive`);
+    await agent.post(`/projects/${id}/archive`).send('_csrf=' + encodeURIComponent(csrfToken));
 
-    const list = await request(app).get('/projects').expect(200);
+    const list = await agent.get('/projects').expect(200);
     expect(list.text).not.toContain('Hidden Project');
   });
 
   it('archived project appears under archived filter and dashboard count', async () => {
-    const createRes = await request(app)
+    const createRes = await agent
       .post('/projects')
       .send('title=Filter+Archive')
       .send('status=tbd')
       .send('priority=normal')
-      .set('Content-Type', 'application/x-www-form-urlencoded');
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken));
     const id = createRes.headers.location.replace('/projects/', '');
-    await request(app).post(`/projects/${id}/archive`);
+    await agent.post(`/projects/${id}/archive`).send('_csrf=' + encodeURIComponent(csrfToken));
 
-    const archivedList = await request(app).get('/projects?status=archived').expect(200);
+    const archivedList = await agent.get('/projects?status=archived').expect(200);
     expect(archivedList.text).toContain('Filter Archive');
 
-    const dashboard = await request(app).get('/').expect(200);
+    const dashboard = await agent.get('/').expect(200);
     expect(dashboard.text).toContain('<span class="count">1</span> Archived');
   });
 
   it('search and status query parameters affect results', async () => {
-    await request(app)
+    await agent
       .post('/projects')
       .send('title=Searchable+Alpha')
       .send('description=find me')
       .send('status=planned')
       .send('priority=normal')
-      .set('Content-Type', 'application/x-www-form-urlencoded');
-    await request(app)
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken));
+    await agent
       .post('/projects')
       .send('title=Beta+One')
       .send('status=ready')
       .send('priority=normal')
-      .set('Content-Type', 'application/x-www-form-urlencoded');
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken));
 
-    const search = await request(app).get('/projects?search=alpha').expect(200);
+    const search = await agent.get('/projects?search=alpha').expect(200);
     expect(search.text).toContain('Searchable Alpha');
     expect(search.text).not.toContain('Beta One');
 
-    const status = await request(app).get('/projects?status=ready').expect(200);
+    const status = await agent.get('/projects?status=ready').expect(200);
     expect(status.text).toContain('Beta One');
     expect(status.text).not.toContain('Searchable Alpha');
   });
 
   it('valid status filter with no matches shows filtered-empty state and reset action', async () => {
-    await request(app)
+    await agent
       .post('/projects')
       .send('title=Only+Planned')
       .send('status=planned')
       .send('priority=normal')
       .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
       .expect(302);
 
-    const res = await request(app).get('/projects?status=ready').expect(200);
+    const res = await agent.get('/projects?status=ready').expect(200);
     expect(res.text).toContain('No projects found');
     expect(res.text).toContain('Reset Filters');
     expect(res.text).toContain('href="/projects"');
@@ -322,23 +349,24 @@ describe('project HTTP workflow', () => {
 
   it('pagination is bounded', async () => {
     for (let i = 1; i <= 30; i += 1) {
-      await request(app)
+      await agent
         .post('/projects')
         .send(`title=Page+${i}`)
         .send('status=tbd')
         .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded');
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken));
     }
 
-    const page1 = await request(app).get('/projects?page=1').expect(200);
+    const page1 = await agent.get('/projects?page=1').expect(200);
     expect(page1.text).toContain('Page 1 of 2');
 
-    const huge = await request(app).get('/projects?page=999').expect(200);
+    const huge = await agent.get('/projects?page=999').expect(200);
     expect(huge.text).toContain('Page 2 of 2');
   });
 
   it('unknown routes still return safe 404', async () => {
-    const res = await request(app).get('/not-a-real-route').expect(404);
+    const res = await agent.get('/not-a-real-route').expect(404);
     expect(res.text).toContain('Not found');
     expect(res.text).not.toContain('at ');
   });
@@ -360,12 +388,13 @@ describe('project HTTP workflow', () => {
     }
 
     it('creates the database record and project directory', async () => {
-      const res = await request(app)
+      const res = await agent
         .post('/projects')
         .send('title=HTTP+FS+Test')
         .send('status=tbd')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
       const location = res.headers.location;
@@ -379,12 +408,13 @@ describe('project HTTP workflow', () => {
     });
 
     it('uses correct status root directory', async () => {
-      await request(app)
+      await agent
         .post('/projects')
         .send('title=Status+Root+Check')
         .send('status=in-progress')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
       const projectDir = getProjectDir('Status Root Check', 'in-progress');
@@ -394,12 +424,13 @@ describe('project HTTP workflow', () => {
     });
 
     it('creates standard subdirectories', async () => {
-      await request(app)
+      await agent
         .post('/projects')
         .send('title=Subdirs+HTTP')
         .send('status=tbd')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
       const projectDir = getProjectDir('Subdirs HTTP', 'tbd');
@@ -415,13 +446,14 @@ describe('project HTTP workflow', () => {
     });
 
     it('writes a project manifest', async () => {
-      await request(app)
+      await agent
         .post('/projects')
         .send('title=Manifest+HTTP')
         .send('description=Test+description')
         .send('status=tbd')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
       const projectDir = getProjectDir('Manifest HTTP', 'tbd');
@@ -437,16 +469,17 @@ describe('project HTTP workflow', () => {
     });
 
     it('stores relative path in the database', async () => {
-      const res = await request(app)
+      const res = await agent
         .post('/projects')
         .send('title=Rel+Path+HTTP')
         .send('status=tbd')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
       const id = res.headers.location.replace('/projects/', '');
-      const detail = await request(app).get(`/projects/${id}`).expect(200);
+      const detail = await agent.get(`/projects/${id}`).expect(200);
       // Verify the detail page renders — the project was stored
       expect(detail.text).toContain('Rel Path HTTP');
     });
@@ -454,27 +487,36 @@ describe('project HTTP workflow', () => {
     it('HTTP creation error contains no absolute paths', async () => {
       // This requires a server restart with a broken projectsRoot to simulate failure
       // Instead, verify that invalid data produces errors without paths
-      const res = await request(app)
+      const res = await agent
         .post('/projects')
         .send('title=')
         .send('status=invalid')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(422);
       expect(res.text).not.toMatch(/[A-Z]:\\/);
-      expect(res.text).not.toMatch(/\/\w+[/\\]\w+/);
+      // The real intent here is "no filesystem path leak" — checked directly
+      // against the actual temp root/projectsRoot for this test, rather than
+      // a generic "/word/word" regex. That generic form now also matches
+      // ordinary in-app relative links (e.g. the disabled-auth warning
+      // banner's href="/settings/security", rendered on every page while
+      // authentication is disabled) with no path-leak significance at all.
+      expect(res.text).not.toContain(tmpDir);
+      expect(res.text).not.toContain(projectsRoot);
     });
 
     it('detail page shows relative project directory after creation', async () => {
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/projects')
         .send('title=Detail+Dir+Test')
         .send('status=tbd')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
-      const detail = await request(app).get(createRes.headers.location).expect(200);
+      const detail = await agent.get(createRes.headers.location).expect(200);
       expect(detail.text).toContain('Project directory');
       expect(detail.text).toMatch(/tbd(?:&#92;|\/)\d+-detail-dir-test/);
       expect(detail.text).not.toMatch(/[A-Z]:\\/);
@@ -487,13 +529,14 @@ describe('project HTTP workflow', () => {
       const conflictPath = path.join(projectsRoot, statusDir, `000001-${slug}`);
       fs.writeFileSync(conflictPath, 'blocker');
 
-      const res = await request(app)
+      const res = await agent
         .post('/projects')
         .send('title=Conflict+Create')
         .send('description=Value+kept')
         .send('status=tbd')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(500);
 
       expect(res.text).toContain('Project creation failed');
@@ -521,17 +564,18 @@ describe('project HTTP workflow', () => {
 
     it('valid metadata edit rewrites manifest and redirects', async () => {
       // Create a project
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/projects')
         .send('title=HTTP+Meta+Edit')
         .send('status=tbd')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
       const location = createRes.headers.location;
 
       // Edit metadata only (no slug/status change)
-      const res = await request(app)
+      const res = await agent
         .post(location)
         .send('title=HTTP+Meta+Edit')
         .send('description=Updated+desc')
@@ -539,6 +583,7 @@ describe('project HTTP workflow', () => {
         .send('status=tbd')
         .send('priority=high')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
       expect(res.headers.location).toBe(location);
 
@@ -552,13 +597,14 @@ describe('project HTTP workflow', () => {
     });
 
     it('title change renames the directory', async () => {
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/projects')
         .send('title=Old+HTTP+Name')
         .send('description=Before')
         .send('status=tbd')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
       const location = createRes.headers.location;
       const oldDir = getProjectDir('Old HTTP Name', 'tbd');
@@ -568,13 +614,14 @@ describe('project HTTP workflow', () => {
       fs.writeFileSync(path.join(oldDir, 'custom-file.txt'), 'survived');
 
       // Rename
-      await request(app)
+      await agent
         .post(location)
         .send('title=New+HTTP+Name')
         .send('description=After')
         .send('status=tbd')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
       // Old directory gone
@@ -590,19 +637,20 @@ describe('project HTTP workflow', () => {
       expect(fs.readFileSync(path.join(newDir, 'custom-file.txt'), 'utf8')).toBe('survived');
 
       // Detail page shows new name
-      const detail = await request(app).get(location).expect(200);
+      const detail = await agent.get(location).expect(200);
       expect(detail.text).toContain('New HTTP Name');
       expect(detail.text).not.toContain('Old HTTP Name');
     });
 
     it('status change moves the directory', async () => {
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/projects')
         .send('title=Status+Move+HTTP')
         .send('description=Moved')
         .send('status=tbd')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
       const location = createRes.headers.location;
       const oldDir = getProjectDir('Status Move HTTP', 'tbd');
@@ -612,13 +660,14 @@ describe('project HTTP workflow', () => {
       fs.writeFileSync(path.join(oldDir, 'move-test.txt'), 'moved');
 
       // Change status to in-progress (maps to 'active')
-      await request(app)
+      await agent
         .post(location)
         .send('title=Status+Move+HTTP')
         .send('description=Moved')
         .send('status=in-progress')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
       // Old directory gone
@@ -638,24 +687,26 @@ describe('project HTTP workflow', () => {
     });
 
     it('combined title/status change works correctly', async () => {
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/projects')
         .send('title=Combined+HTTP+Start')
         .send('status=planned')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
       const location = createRes.headers.location;
       const oldDir = getProjectDir('Combined HTTP Start', 'planned');
       expect(oldDir).not.toBeNull();
 
       // Change both title and status
-      await request(app)
+      await agent
         .post(location)
         .send('title=Combined+HTTP+Final')
         .send('status=published')
         .send('priority=high')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
       // Old directory gone
@@ -667,116 +718,125 @@ describe('project HTTP workflow', () => {
       expect(newDir).toContain(path.join(projectsRoot, 'published'));
 
       // Detail page shows everything
-      const detail = await request(app).get(location).expect(200);
+      const detail = await agent.get(location).expect(200);
       expect(detail.text).toContain('Combined HTTP Final');
       expect(detail.text).toContain('Published');
     });
 
     it('error responses contain no absolute filesystem paths on update failure', async () => {
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/projects')
         .send('title=No+Path+HTTP')
         .send('status=tbd')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
       // Trigger a validation error (non-filesystem) — should be path-safe
-      const res = await request(app)
+      const res = await agent
         .post(createRes.headers.location)
         .send('title=No+Path+HTTP')
         .send('status=archived')  // rejected by WORKFLOW_STATUSES validation
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(422);
       // Only check for absolute Windows paths (drive-letter paths)
       expect(res.text).not.toMatch(/[A-Z]:\\/);
     });
 
     it('archived status is still rejected from edit form', async () => {
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/projects')
         .send('title=No+Archive+In+Edit')
         .send('status=tbd')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
-      const res = await request(app)
+      const res = await agent
         .post(createRes.headers.location)
         .send('title=No+Archive+In+Edit')
         .send('status=archived')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(422);
       expect(res.text).toContain('Status must be one of');
     });
 
     it('title change updates the displayed relative path', async () => {
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/projects')
         .send('title=Old+Path+Name')
         .send('status=tbd')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
       // Before rename — detail shows old dir
-      let detail = await request(app).get(createRes.headers.location).expect(200);
+      let detail = await agent.get(createRes.headers.location).expect(200);
       expect(detail.text).toMatch(/tbd(?:&#92;|\/)\d+-old-path-name/);
 
       // Rename
-      await request(app)
+      await agent
         .post(createRes.headers.location)
         .send('title=New+Path+Name')
         .send('status=tbd')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
       // After rename — detail shows new dir
-      detail = await request(app).get(createRes.headers.location).expect(200);
+      detail = await agent.get(createRes.headers.location).expect(200);
       expect(detail.text).toMatch(/tbd(?:&#92;|\/)\d+-new-path-name/);
       expect(detail.text).not.toMatch(/old-path-name/);
       expect(detail.text).not.toMatch(/[A-Z]:\\/);
     });
 
     it('status change updates the displayed relative path', async () => {
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/projects')
         .send('title=Status+Path+Change')
         .send('status=planned')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
       // Before — under planned/
-      let detail = await request(app).get(createRes.headers.location).expect(200);
+      let detail = await agent.get(createRes.headers.location).expect(200);
       expect(detail.text).toMatch(/planned(?:&#92;|\/)\d+-status-path-change/);
 
       // Change status
-      await request(app)
+      await agent
         .post(createRes.headers.location)
         .send('title=Status+Path+Change')
         .send('status=in-progress')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
       // After — under active/
-      detail = await request(app).get(createRes.headers.location).expect(200);
+      detail = await agent.get(createRes.headers.location).expect(200);
       expect(detail.text).toMatch(/active(?:&#92;|\/)\d+-status-path-change/);
       expect(detail.text).not.toMatch(/planned/);
       expect(detail.text).not.toMatch(/[A-Z]:\\/);
     });
 
     it('filesystem failure during update renders safe error with preserved values', async () => {
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/projects')
         .send('title=Update+Fail+Safe')
         .send('status=tbd')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
       // Remove the project directory to trigger a filesystem error on update
@@ -784,13 +844,14 @@ describe('project HTTP workflow', () => {
       expect(projectDir).not.toBeNull();
       fs.rmSync(projectDir, { recursive: true, force: true });
 
-      const res = await request(app)
+      const res = await agent
         .post(createRes.headers.location)
         .send('title=Updated+Title')
         .send('description=Preserved+text')
         .send('status=tbd')
         .send('priority=high')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(500);
 
       expect(res.text).toContain('Project update failed');
@@ -825,20 +886,22 @@ describe('project HTTP workflow', () => {
     }
 
     it('archive moves the directory to archived/', async () => {
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/projects')
         .send('title=HTTP+Archive+Move')
         .send('status=tbd')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
       const id = createRes.headers.location.replace('/projects/', '');
       const oldDir = getProjectDir('HTTP Archive Move', 'tbd');
       expect(oldDir).not.toBeNull();
       expect(fs.existsSync(oldDir)).toBe(true);
 
-      await request(app)
+      await agent
         .post(`/projects/${id}/archive`)
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
       // Old directory gone
@@ -852,17 +915,19 @@ describe('project HTTP workflow', () => {
     });
 
     it('status becomes archived', async () => {
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/projects')
         .send('title=HTTP+Archive+Status')
         .send('status=tbd')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
       const id = createRes.headers.location.replace('/projects/', '');
 
-      await request(app)
+      await agent
         .post(`/projects/${id}/archive`)
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
       const row = db.prepare('SELECT status, archived_at FROM projects WHERE id = ?').get(Number(id));
@@ -871,17 +936,19 @@ describe('project HTTP workflow', () => {
     });
 
     it('relative path is updated', async () => {
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/projects')
         .send('title=HTTP+Archive+Path')
         .send('status=tbd')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
       const id = createRes.headers.location.replace('/projects/', '');
 
-      await request(app)
+      await agent
         .post(`/projects/${id}/archive`)
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
       const row = db.prepare('SELECT project_dir FROM projects WHERE id = ?').get(Number(id));
@@ -889,17 +956,19 @@ describe('project HTTP workflow', () => {
     });
 
     it('manifest reflects archived status', async () => {
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/projects')
         .send('title=HTTP+Archive+Manifest')
         .send('status=tbd')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
       const id = createRes.headers.location.replace('/projects/', '');
 
-      await request(app)
+      await agent
         .post(`/projects/${id}/archive`)
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
       const archiveDir = getArchiveDir('HTTP Archive Manifest');
@@ -910,12 +979,13 @@ describe('project HTTP workflow', () => {
     });
 
     it('existing files survive archive', async () => {
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/projects')
         .send('title=HTTP+Files+Survive')
         .send('status=tbd')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
       const id = createRes.headers.location.replace('/projects/', '');
       const oldDir = getProjectDir('HTTP Files Survive', 'tbd');
@@ -926,8 +996,9 @@ describe('project HTTP workflow', () => {
       fs.mkdirSync(path.join(oldDir, 'source'), { recursive: true });
       fs.writeFileSync(path.join(oldDir, 'source', 'render.png'), 'png data');
 
-      await request(app)
+      await agent
         .post(`/projects/${id}/archive`)
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
       // Files survived at new location
@@ -939,12 +1010,13 @@ describe('project HTTP workflow', () => {
     });
 
     it('error responses contain no absolute filesystem paths', async () => {
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/projects')
         .send('title=HTTP+No+Path+Archive')
         .send('status=tbd')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
       const id = createRes.headers.location.replace('/projects/', '');
 
@@ -953,74 +1025,81 @@ describe('project HTTP workflow', () => {
       expect(projectDir).not.toBeNull();
       fs.rmSync(projectDir, { recursive: true, force: true });
 
-      const res = await request(app)
+      const res = await agent
         .post(`/projects/${id}/archive`)
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(500);
       expect(res.text).not.toMatch(/[A-Z]:\\/);
     });
 
     it('archive changes the displayed relative path to archived/', async () => {
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/projects')
         .send('title=Archive+Path+Display')
         .send('status=tbd')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
       const id = createRes.headers.location.replace('/projects/', '');
 
       // Before archive — under tbd/
-      let detail = await request(app).get(`/projects/${id}`).expect(200);
+      let detail = await agent.get(`/projects/${id}`).expect(200);
       expect(detail.text).toMatch(/tbd(?:&#92;|\/)\d+-archive-path-display/);
 
       // Archive
-      await request(app)
+      await agent
         .post(`/projects/${id}/archive`)
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
       // After archive — under archived/
-      detail = await request(app).get(`/projects/${id}`).expect(200);
+      detail = await agent.get(`/projects/${id}`).expect(200);
       expect(detail.text).toMatch(/archived(?:&#92;|\/)\d+-archive-path-display/);
       expect(detail.text).not.toMatch(/tbd(?:&#92;|\/)/);
       expect(detail.text).not.toMatch(/[A-Z]:\\/);
     });
 
     it('archive remains POST-only', async () => {
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/projects')
         .send('title=HTTP+GET+Archive')
         .send('status=tbd')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
       const id = createRes.headers.location.replace('/projects/', '');
 
       // GET should not archive — 404 from route matching
-      await request(app)
+      await agent
         .get(`/projects/${id}/archive`)
         .expect(404);
     });
 
     it('invalid project id returns 404 on archive', async () => {
-      await request(app)
+      await agent
         .post('/projects/abc/archive')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(404);
     });
 
     it('missing project returns 404 on archive', async () => {
-      await request(app)
+      await agent
         .post('/projects/99999/archive')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(404);
     });
 
     it('archived scan rejection causes no asset changes (full row snapshot)', async () => {
       const title = 'Archived Scan Reject';
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/projects')
         .send('title=' + encodeURIComponent(title))
         .send('status=tbd')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
       const id = createRes.headers.location.replace('/projects/', '');
 
@@ -1041,7 +1120,7 @@ describe('project HTTP workflow', () => {
       fs.writeFileSync(path.join(projectDir, baselineFile2), 'baseline b');
 
       // 2. Run a successful scan so both have persisted asset rows
-      await request(app).post(`/projects/${id}/scan`).expect(302);
+      await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
       // 3. Modify the first baseline file
       fs.writeFileSync(path.join(projectDir, baselineFile1), 'modified content');
@@ -1060,13 +1139,15 @@ describe('project HTTP workflow', () => {
       const beforeSnapshot = beforeAssets.map((a) => ({ ...a }));
 
       // 7. Archive the project
-      await request(app)
+      await agent
         .post(`/projects/${id}/archive`)
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
       // 8. POST the scan route — must be rejected
-      const scanRes = await request(app)
-        .post(`/projects/${id}/scan`);
+      const scanRes = await agent
+        .post(`/projects/${id}/scan`)
+        .send('_csrf=' + encodeURIComponent(csrfToken));
       expect(scanRes.status).toBe(302);
       expect(scanRes.headers.location).toContain('scan_error=archived');
 
@@ -1154,7 +1235,7 @@ describe('project HTTP workflow', () => {
     }
 
     it('project form shows help text for planned date in the correct field container', async () => {
-      const res = await request(app).get('/projects/new').expect(200);
+      const res = await agent.get('/projects/new').expect(200);
       const container = getFieldContainer(res.text, 'plannedDate');
       expect(container).not.toBeNull();
       expect(container).toContain('Target date for the creative project');
@@ -1163,7 +1244,7 @@ describe('project HTTP workflow', () => {
     });
 
     it('project form shows help text for published date in the correct field container', async () => {
-      const res = await request(app).get('/projects/new').expect(200);
+      const res = await agent.get('/projects/new').expect(200);
       const container = getFieldContainer(res.text, 'publishedDate');
       expect(container).not.toBeNull();
       expect(container).toContain('When the project was published');
@@ -1171,7 +1252,7 @@ describe('project HTTP workflow', () => {
     });
 
     it('project form shows help text for Patreon URL in the correct field container', async () => {
-      const res = await request(app).get('/projects/new').expect(200);
+      const res = await agent.get('/projects/new').expect(200);
       const container = getFieldContainer(res.text, 'patreonUrl');
       expect(container).not.toBeNull();
       expect(container).toContain("Link to the project's Patreon page");
@@ -1179,7 +1260,7 @@ describe('project HTTP workflow', () => {
     });
 
     it('project detail shows context labels in the correct dt/dd pairs', async () => {
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/projects')
         .send('title=Wording+Test')
         .send('status=tbd')
@@ -1188,10 +1269,11 @@ describe('project HTTP workflow', () => {
         .send('publishedDate=2025-12-15')
         .send('patreonUrl=https://patreon.com/test')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
       const id = createRes.headers.location.replace('/projects/', '');
 
-      const res = await request(app).get(`/projects/${id}`).expect(200);
+      const res = await agent.get(`/projects/${id}`).expect(200);
 
       // Planned date: <dt>Planned date</dt> ... <small>(project target)</small>
       const plannedDt = res.text.match(/<dt>Planned date<\/dt>\s*<dd>[^<]*(?:<small>\(project target\)<\/small>)[^<]*<\/dd>/);
@@ -1229,12 +1311,13 @@ describe('project HTTP workflow', () => {
     }
 
     it('changing project status moves the directory', async () => {
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/projects')
         .send('title=FS+Status+Test')
         .send('status=tbd')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
       const id = createRes.headers.location.replace('/projects/', '');
 
@@ -1261,12 +1344,13 @@ describe('project HTTP workflow', () => {
       fs.writeFileSync(userFile, 'moved content');
 
       // Change status from tbd to planned
-      await request(app)
+      await agent
         .post(`/projects/${id}`)
         .send('title=FS+Status+Test')
         .send('status=planned')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
       // Derive the exact expected relative path using the application's directory convention
@@ -1301,42 +1385,44 @@ describe('project HTTP workflow', () => {
 
   describe('archived project edit guard', () => {
     it('GET /projects/:id/edit redirects to the detail page when the project is archived', async () => {
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/projects')
         .send('title=Edit+Redirect+Archived')
         .send('status=tbd')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
       const id = createRes.headers.location.replace('/projects/', '');
-      await request(app).post(`/projects/${id}/archive`).expect(302);
+      await agent.post(`/projects/${id}/archive`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
       // The edit form must not be reachable — the route must redirect to the
       // detail page (the read-only workspace) rather than rendering the
       // editable form.
-      const res = await request(app).get(`/projects/${id}/edit`);
+      const res = await agent.get(`/projects/${id}/edit`);
       expect(res.status).toBe(302);
       expect(res.headers.location).toBe(`/projects/${id}`);
     });
 
     it('GET /projects/:id/edit still renders for active projects (regression)', async () => {
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/projects')
         .send('title=Edit+Active+Allowed')
         .send('status=tbd')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
       const id = createRes.headers.location.replace('/projects/', '');
 
-      const res = await request(app).get(`/projects/${id}/edit`);
+      const res = await agent.get(`/projects/${id}/edit`);
       expect(res.status).toBe(200);
       expect(res.text).toContain('Edit Project');
     });
 
     it('GET /projects/:id/edit still 404s for non-existent projects (regression)', async () => {
       // The redirect must not hide the 404 path for missing projects.
-      await request(app).get('/projects/9999/edit').expect(404);
+      await agent.get('/projects/9999/edit').expect(404);
     });
   });
 });

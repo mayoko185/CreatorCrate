@@ -19,10 +19,11 @@ import { createMediaService } from './services/media-service.js';
 import { createBackupService } from './services/backup-service.js';
 import { createAuthService } from './services/auth-service.js';
 import { createAuthMiddleware } from './middleware/auth.js';
-import { createCsrfMiddleware } from './middleware/csrf.js';
+import { createCsrfMiddleware, createDisabledModeCsrfMiddleware } from './middleware/csrf.js';
 import { createSecurityHeadersMiddleware, createCachePolicyMiddleware } from './middleware/security-headers.js';
 import { createAuthRouter } from './routes/auth.js';
 import { createLoginThrottler } from './auth/login-throttle.js';
+import { createAuthTransitionService } from './auth/auth-transition-service.js';
 import { buildShellModel } from './shell/navigation.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -159,7 +160,34 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     const csrfMiddleware = createCsrfMiddleware({ authService, cookieOptions });
     exposeCsrfToken = csrfMiddleware.exposeCsrfToken;
     requireCsrf = csrfMiddleware.requireCsrf;
+  } else if (opts.authState?.csrfPepper) {
+    // Phase 13: CSRF still protects state-changing forms while authentication
+    // is disabled — see middleware/csrf.js for why this needs a persistent,
+    // server-only pepper rather than a plain double-submit cookie. Tests that
+    // build createApp with neither authConfig nor authState (the vast
+    // majority of pre-Phase-13 fixtures) keep today's no-op behavior, which
+    // is intentional — see createAuthTransitionService below for the one
+    // place production code always supplies a pepper.
+    const disabledCsrf = createDisabledModeCsrfMiddleware({
+      cookieSecure: authConfig ? authConfig.cookieSecure : false,
+      csrfPepper: opts.authState.csrfPepper,
+    });
+    exposeCsrfToken = disabledCsrf.exposeCsrfToken;
+    requireCsrf = disabledCsrf.requireCsrf;
   }
+
+  // Phase 13: coordinates every enable/disable transition (see
+  // auth-transition-service.js for the staged-write/rollback contract). Built
+  // fresh per createApp call so it always closes over the current `db` and
+  // the current `onAuthConfigReplaced` rebuild hook.
+  const authTransitionService = createAuthTransitionService({
+    appDataRoot,
+    db,
+    replaceAuthConfig: opts.onAuthConfigReplaced || (() => {}),
+    authSettings: opts.authSettings || {},
+    csrfPepper: opts.authState?.csrfPepper,
+    authService,
+  });
 
   app.use(resolveSession);
   app.use(createCachePolicyMiddleware());
@@ -178,6 +206,12 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
 
   if (authService) {
     app.use(createAuthRouter({ appName, authService, cookieOptions, loginThrottler, trustProxy: !!authConfig?.trustProxy }));
+  } else {
+    // Phase 13: authentication is disabled, so there is no session/CSRF
+    // machinery for a real login form. Point visitors at the one place they
+    // can actually do something: Settings > Security's enable-authentication
+    // workflow.
+    app.get('/login', (_req, res) => res.redirect('/settings/security'));
   }
 
   // Phase 10.4A: shared application-shell context. Computed once per request
@@ -218,6 +252,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     authService,
     cookieOptions,
     onDatabaseReplaced: opts.onDatabaseReplaced,
+    authTransitionService,
   }));
 
   app.use((_req, _res, next) => {

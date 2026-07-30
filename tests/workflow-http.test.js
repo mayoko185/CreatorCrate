@@ -17,6 +17,8 @@ import { STATUS_DIR_MAP } from '../src/storage/project-storage.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
 import { createReleaseRepository } from '../src/data/release-repository.js';
 import { getLocalTodayIso } from '../src/util/date.js';
+import { ensureAuthEnablement } from '../src/auth/auth-state.js';
+import { getDisabledModeCsrf } from './helpers/auth.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 
@@ -30,11 +32,12 @@ function getProjectDir(projectsRoot, title, status = 'tbd') {
 }
 
 async function createProject(app, { title, status = 'tbd' }) {
-  const res = await request(app)
+  const res = await app.testAgent
     .post('/projects')
     .send(`title=${encodeURIComponent(title)}`)
     .send(`status=${status}`)
     .send('priority=normal')
+    .send('_csrf=' + encodeURIComponent(app.testCsrfToken))
     .set('Content-Type', 'application/x-www-form-urlencoded')
     .expect(302);
   return res.headers.location.replace('/projects/', '');
@@ -43,7 +46,8 @@ async function createProject(app, { title, status = 'tbd' }) {
 async function createRelease(app, { projectId, title, status = 'idea', plannedDate = null }) {
   const body = [`projectId=${projectId}`, `title=${encodeURIComponent(title)}`, `status=${status}`];
   if (plannedDate) body.push(`plannedDate=${plannedDate}`);
-  const res = await request(app)
+  body.push('_csrf=' + encodeURIComponent(app.testCsrfToken));
+  const res = await app.testAgent
     .post('/releases')
     .send(body.join('&'))
     .set('Content-Type', 'application/x-www-form-urlencoded')
@@ -149,7 +153,7 @@ describe('Phase 6B HTTP workflow', () => {
   let tmpDir;
   let projectsRoot;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-6b-'));
     projectsRoot = path.join(tmpDir, 'projects');
     fs.mkdirSync(projectsRoot, { recursive: true });
@@ -159,7 +163,13 @@ describe('Phase 6B HTTP workflow', () => {
     const dbPath = path.join(tmpDir, 'test.db');
     db = openDatabase(dbPath);
     runMigrations(db, MIGRATIONS_DIR);
-    app = createApp({ appName: 'CreatorCrate', db, projectsRoot });
+    const appDataRoot = path.join(tmpDir, 'app');
+    fs.mkdirSync(appDataRoot, { recursive: true });
+    const { csrfPepper } = ensureAuthEnablement(appDataRoot);
+    app = createApp({ appName: 'CreatorCrate', db, projectsRoot }, { appDataRoot, authState: { csrfPepper } });
+    const { agent, csrfToken } = await getDisabledModeCsrf(app, appDataRoot);
+    app.testAgent = agent;
+    app.testCsrfToken = csrfToken;
   });
 
   afterEach(() => {
@@ -171,7 +181,7 @@ describe('Phase 6B HTTP workflow', () => {
 
   describe('dashboard actionable sections', () => {
     it('renders the "Releases needing attention" section heading', async () => {
-      const res = await request(app).get('/').expect(200);
+      const res = await app.testAgent.get('/').expect(200);
       expect(res.text).toContain('Releases needing attention');
     });
 
@@ -184,7 +194,7 @@ describe('Phase 6B HTTP workflow', () => {
         plannedDate: '2020-01-01',
       });
 
-      const res = await request(app).get('/').expect(200);
+      const res = await app.testAgent.get('/').expect(200);
       expect(res.text).toContain('Overdue (1)');
       expect(res.text).toContain('Way Overdue');
       // Link to the release detail page
@@ -200,7 +210,7 @@ describe('Phase 6B HTTP workflow', () => {
         plannedDate: '2099-01-01',
       });
 
-      const res = await request(app).get('/').expect(200);
+      const res = await app.testAgent.get('/').expect(200);
       // Without assets, this release is blocked — appears in "Ready but blocked"
       expect(res.text).toContain('Ready but blocked (1)');
       expect(res.text).toContain('Ready To Publish');
@@ -218,7 +228,7 @@ describe('Phase 6B HTTP workflow', () => {
       // Use the existing helper to create a present asset and link it
       attachPresentAssetToRelease(db, projectId, Number(releaseId), { name: 'asset.txt', present: true });
 
-      const res = await request(app).get('/').expect(200);
+      const res = await app.testAgent.get('/').expect(200);
       expect(res.text).toContain('Ready to publish (1)');
       expect(res.text).toContain('Publishable Release');
     });
@@ -232,7 +242,7 @@ describe('Phase 6B HTTP workflow', () => {
         plannedDate: null,
       });
 
-      const res = await request(app).get('/').expect(200);
+      const res = await app.testAgent.get('/').expect(200);
       expect(res.text).toContain('Active without planned date (1)');
       expect(res.text).toContain('Schedule Me');
     });
@@ -270,14 +280,14 @@ describe('Phase 6B HTTP workflow', () => {
         VALUES (?, ?, 'attachment', 0)
       `).run(Number(releaseId), asset.id);
 
-      const res = await request(app).get('/').expect(200);
+      const res = await app.testAgent.get('/').expect(200);
       expect(res.text).toContain('Missing selected assets (1)');
       expect(res.text).toContain('Has Missing Asset');
       expect(res.text).toContain('1 missing');
     });
 
     it('shows the "all good" placeholder when no attention is needed', async () => {
-      const res = await request(app).get('/').expect(200);
+      const res = await app.testAgent.get('/').expect(200);
       expect(res.text).toContain('All releases are in good shape');
     });
 
@@ -289,9 +299,9 @@ describe('Phase 6B HTTP workflow', () => {
         status: 'planned',
         plannedDate: '2020-01-01',
       });
-      await request(app).post(`/releases/${releaseId}/archive`).expect(302);
+      await app.testAgent.post(`/releases/${releaseId}/archive`).send({ _csrf: app.testCsrfToken }).expect(302);
 
-      const res = await request(app).get('/').expect(200);
+      const res = await app.testAgent.get('/').expect(200);
       expect(res.text).not.toContain('Archived Overdue');
     });
   });
@@ -300,12 +310,12 @@ describe('Phase 6B HTTP workflow', () => {
 
   describe('dashboard upcoming releases', () => {
     it('shows the upcoming releases section', async () => {
-      const res = await request(app).get('/').expect(200);
+      const res = await app.testAgent.get('/').expect(200);
       expect(res.text).toContain('Upcoming releases');
     });
 
     it('shows the empty-state placeholder when no upcoming releases exist', async () => {
-      const res = await request(app).get('/').expect(200);
+      const res = await app.testAgent.get('/').expect(200);
       expect(res.text).toContain('No upcoming releases scheduled');
     });
 
@@ -335,7 +345,7 @@ describe('Phase 6B HTTP workflow', () => {
       });
       attachPresentAssetToRelease(db, Number(projectId), Number(sameDayBId), { name: 'sameday-b.txt' });
 
-      const res = await request(app).get('/').expect(200);
+      const res = await app.testAgent.get('/').expect(200);
       expect(res.text).toContain('Tomorrow');
       expect(res.text).toContain('SameDay-A');
       expect(res.text).toContain('SameDay-B');
@@ -382,7 +392,7 @@ describe('Phase 6B HTTP workflow', () => {
         attachPresentAssetToRelease(db, Number(projectId), Number(releaseId), { name: `u${i}.txt` });
       }
 
-      const res = await request(app).get('/').expect(200);
+      const res = await app.testAgent.get('/').expect(200);
       // The default upcoming limit is 10, so we expect at most 10 release
       // links in the upcoming section.
       const upcomingMatches = res.text.match(/href="\/releases\/\d+"[^>]*>U\d+/g) || [];
@@ -394,14 +404,14 @@ describe('Phase 6B HTTP workflow', () => {
 
   describe('dashboard workflow summary', () => {
     it('renders the workflow summary section', async () => {
-      const res = await request(app).get('/').expect(200);
+      const res = await app.testAgent.get('/').expect(200);
       expect(res.text).toContain('Release status');
     });
 
     it('shows total projects, total assets, and missing assets', async () => {
       await createProject(app, { title: 'Counted' });
 
-      const res = await request(app).get('/').expect(200);
+      const res = await app.testAgent.get('/').expect(200);
       // Summary cards show Projects and Assets labels with values
       expect(res.text).toContain('Projects');
       expect(res.text).toContain('Assets');
@@ -409,7 +419,7 @@ describe('Phase 6B HTTP workflow', () => {
     });
 
     it('shows release status counts (idea, planned, drafting, ready, published, cancelled)', async () => {
-      const res = await request(app).get('/').expect(200);
+      const res = await app.testAgent.get('/').expect(200);
       // Check that each status appears in the dashboard
       expect(res.text).toMatch(/Idea/);
       expect(res.text).toMatch(/Planned/);
@@ -421,7 +431,7 @@ describe('Phase 6B HTTP workflow', () => {
 
     it('keeps project counts but demotes them inside a collapsible section', async () => {
       await createProject(app, { title: 'Demoted Counted' });
-      const res = await request(app).get('/').expect(200);
+      const res = await app.testAgent.get('/').expect(200);
       // Project counts are inside a <details> element
       expect(res.text).toContain('<details class="project-counts-details">');
       expect(res.text).toContain('Project counts');
@@ -433,7 +443,7 @@ describe('Phase 6B HTTP workflow', () => {
   describe('project workspace', () => {
     it('renders the workflow actions block with a "Create release" link', async () => {
       const projectId = await createProject(app, { title: 'Workspace Actions Project' });
-      const res = await request(app).get(`/projects/${projectId}`).expect(200);
+      const res = await app.testAgent.get(`/projects/${projectId}`).expect(200);
       expect(res.text).toContain('Create release');
       // The link should be scoped to this project
       expect(res.text).toContain(`/releases/new?projectId=${projectId}`);
@@ -441,7 +451,7 @@ describe('Phase 6B HTTP workflow', () => {
 
     it('renders the release summary section heading', async () => {
       const projectId = await createProject(app, { title: 'Release Summary Project' });
-      const res = await request(app).get(`/projects/${projectId}`).expect(200);
+      const res = await app.testAgent.get(`/projects/${projectId}`).expect(200);
       expect(res.text).toContain('Releases');
       expect(res.text).toContain('Status');
     });
@@ -462,20 +472,21 @@ describe('Phase 6B HTTP workflow', () => {
       });
       // Select an asset so readiness passes
       attachPresentAssetToRelease(db, Number(projectId), Number(oldReleaseId));
-      await request(app)
+      await app.testAgent
         .post(`/releases/${oldReleaseId}/publish`)
         .send('publishedDate=2024-01-01')
+        .send('_csrf=' + encodeURIComponent(app.testCsrfToken))
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
-      const res = await request(app).get(`/projects/${projectId}`).expect(200);
+      const res = await app.testAgent.get(`/projects/${projectId}`).expect(200);
       expect(res.text).toContain('Active Release');
       expect(res.text).toContain('Old Release');
     });
 
     it('shows asset health counts', async () => {
       const projectId = await createProject(app, { title: 'Health Project' });
-      const res = await request(app).get(`/projects/${projectId}`).expect(200);
+      const res = await app.testAgent.get(`/projects/${projectId}`).expect(200);
       expect(res.text).toContain('Asset health');
       expect(res.text).toContain('Total assets');
       expect(res.text).toContain('Present');
@@ -501,7 +512,7 @@ describe('Phase 6B HTTP workflow', () => {
       });
       db.prepare(`UPDATE assets SET is_present = 0, missing_since = datetime('now') WHERE id = ?`).run(missing.id);
 
-      const res = await request(app).get(`/projects/${projectId}`).expect(200);
+      const res = await app.testAgent.get(`/projects/${projectId}`).expect(200);
       // Counts should reflect 1 present and 1 missing
       expect(res.text).toContain('<dd>1</dd>');
     });
@@ -529,7 +540,7 @@ describe('Phase 6B HTTP workflow', () => {
         VALUES (?, ?, 'attachment', 0)
       `).run(Number(releaseId), missing.id);
 
-      const res = await request(app).get(`/projects/${projectId}`).expect(200);
+      const res = await app.testAgent.get(`/projects/${projectId}`).expect(200);
       // The label is wrapped in <small>, so look for the inner text directly
       expect(res.text).toContain('1 referenced by releases');
     });
@@ -545,17 +556,18 @@ describe('Phase 6B HTTP workflow', () => {
       });
       // Select an asset so readiness passes
       attachPresentAssetToRelease(db, Number(projectId), Number(releaseId));
-      await request(app)
+      await app.testAgent
         .post(`/releases/${releaseId}/publish`)
         .send('publishedDate=2020-01-15')
+        .send('_csrf=' + encodeURIComponent(app.testCsrfToken))
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
-      await request(app).post(`/projects/${projectId}/archive`).expect(302);
+      await app.testAgent.post(`/projects/${projectId}/archive`).send({ _csrf: app.testCsrfToken }).expect(302);
       // After the project is archived, release mutation routes reject the
       // call (the parent project is immutable). The historical release
       // information must still be available through the project workspace.
 
-      const res = await request(app).get(`/projects/${projectId}`).expect(200);
+      const res = await app.testAgent.get(`/projects/${projectId}`).expect(200);
       // Project archived notice is shown
       expect(res.text).toContain('Archived');
       // Historical release still shows in recent
@@ -566,16 +578,16 @@ describe('Phase 6B HTTP workflow', () => {
 
     it('shows safe empty states for a project with no releases or assets', async () => {
       const projectId = await createProject(app, { title: 'Bare Project' });
-      const res = await request(app).get(`/projects/${projectId}`).expect(200);
+      const res = await app.testAgent.get(`/projects/${projectId}`).expect(200);
       expect(res.text).toContain('No releases yet');
     });
 
     it('archived project does not show the "Create release" action', async () => {
       const projectId = await createProject(app, { title: 'No Create Action Project' });
       // Archive the project via the documented action.
-      await request(app).post(`/projects/${projectId}/archive`).expect(302);
+      await app.testAgent.post(`/projects/${projectId}/archive`).send({ _csrf: app.testCsrfToken }).expect(302);
 
-      const res = await request(app).get(`/projects/${projectId}`).expect(200);
+      const res = await app.testAgent.get(`/projects/${projectId}`).expect(200);
       // The Create release link targets /releases/new?projectId=…
       expect(res.text).not.toContain(`/releases/new?projectId=${projectId}`);
       expect(res.text).not.toMatch(/<a[^>]*>\s*Create release\s*<\/a>/);
@@ -585,7 +597,7 @@ describe('Phase 6B HTTP workflow', () => {
 
     it('active project keeps the "Create release" action', async () => {
       const projectId = await createProject(app, { title: 'Keep Create Action Project' });
-      const res = await request(app).get(`/projects/${projectId}`).expect(200);
+      const res = await app.testAgent.get(`/projects/${projectId}`).expect(200);
       expect(res.text).toContain(`href="/releases/new?projectId=${projectId}"`);
     });
   });
@@ -601,9 +613,9 @@ describe('Phase 6B HTTP workflow', () => {
   describe('project detail mutation controls', () => {
     it('archived project does not show the Edit action', async () => {
       const projectId = await createProject(app, { title: 'Archived No Edit' });
-      await request(app).post(`/projects/${projectId}/archive`).expect(302);
+      await app.testAgent.post(`/projects/${projectId}/archive`).send({ _csrf: app.testCsrfToken }).expect(302);
 
-      const res = await request(app).get(`/projects/${projectId}`).expect(200);
+      const res = await app.testAgent.get(`/projects/${projectId}`).expect(200);
       // No Edit link targeting this project's edit form.
       expect(res.text).not.toContain(`href="/projects/${projectId}/edit"`);
       expect(res.text).not.toMatch(/<a[^>]*href="\/projects\/\d+\/edit"[^>]*>\s*Edit\s*<\/a>/);
@@ -611,9 +623,9 @@ describe('Phase 6B HTTP workflow', () => {
 
     it('archived project does not show the Archive action', async () => {
       const projectId = await createProject(app, { title: 'Archived No Archive Button' });
-      await request(app).post(`/projects/${projectId}/archive`).expect(302);
+      await app.testAgent.post(`/projects/${projectId}/archive`).send({ _csrf: app.testCsrfToken }).expect(302);
 
-      const res = await request(app).get(`/projects/${projectId}`).expect(200);
+      const res = await app.testAgent.get(`/projects/${projectId}`).expect(200);
       // No archive form/button targeting this project.
       expect(res.text).not.toContain(`action="/projects/${projectId}/archive"`);
       expect(res.text).not.toMatch(/<button[^>]*>\s*Archive project\s*<\/button>/);
@@ -621,7 +633,7 @@ describe('Phase 6B HTTP workflow', () => {
 
     it('active project still shows the Edit and Archive controls', async () => {
       const projectId = await createProject(app, { title: 'Active Has Both Controls' });
-      const res = await request(app).get(`/projects/${projectId}`).expect(200);
+      const res = await app.testAgent.get(`/projects/${projectId}`).expect(200);
 
       expect(res.text).toContain(`href="/projects/${projectId}/edit"`);
       expect(res.text).toMatch(/<a[^>]*>\s*Edit\s*<\/a>/);
@@ -640,14 +652,15 @@ describe('Phase 6B HTTP workflow', () => {
       });
       // Select an asset so readiness passes
       attachPresentAssetToRelease(db, Number(projectId), Number(releaseId));
-      await request(app)
+      await app.testAgent
         .post(`/releases/${releaseId}/publish`)
         .send('publishedDate=2020-01-15')
+        .send('_csrf=' + encodeURIComponent(app.testCsrfToken))
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
-      await request(app).post(`/projects/${projectId}/archive`).expect(302);
+      await app.testAgent.post(`/projects/${projectId}/archive`).send({ _csrf: app.testCsrfToken }).expect(302);
 
-      const res = await request(app).get(`/projects/${projectId}`).expect(200);
+      const res = await app.testAgent.get(`/projects/${projectId}`).expect(200);
       // Archived badge is shown.
       expect(res.text).toContain('Archived');
       // Historical release still appears.
@@ -677,7 +690,7 @@ describe('Phase 6B HTTP workflow', () => {
         plannedDate: '2099-01-01',
       });
 
-      const res = await request(app).get('/').expect(200);
+      const res = await app.testAgent.get('/').expect(200);
       expect(res.text).toContain('Missing selection (1)');
       expect(res.text).toContain('No Selection At All');
       expect(res.text).toContain('no assets selected');
@@ -693,7 +706,7 @@ describe('Phase 6B HTTP workflow', () => {
       });
       attachPresentAssetToRelease(db, Number(projectId), Number(releaseId), { name: 'present.txt' });
 
-      const res = await request(app).get('/').expect(200);
+      const res = await app.testAgent.get('/').expect(200);
       expect(res.text).not.toContain('Missing selection (');
     });
   });
@@ -702,16 +715,16 @@ describe('Phase 6B HTTP workflow', () => {
 
   describe('safe 404 behavior', () => {
     it('returns 404 for a missing project detail', async () => {
-      const res = await request(app).get('/projects/9999').expect(404);
+      const res = await app.testAgent.get('/projects/9999').expect(404);
       expect(res.text).toContain('Not found');
     });
 
     it('returns 404 for a malformed project id', async () => {
-      await request(app).get('/projects/abc').expect(404);
+      await app.testAgent.get('/projects/abc').expect(404);
     });
 
     it('returns 404 for an unknown route', async () => {
-      const res = await request(app).get('/not-a-real-route').expect(404);
+      const res = await app.testAgent.get('/not-a-real-route').expect(404);
       expect(res.text).not.toContain('at ');
     });
   });
@@ -720,19 +733,19 @@ describe('Phase 6B HTTP workflow', () => {
 
   describe('existing project routes remain working', () => {
     it('project list still renders', async () => {
-      const res = await request(app).get('/projects').expect(200);
+      const res = await app.testAgent.get('/projects').expect(200);
       expect(res.text).toContain('Projects');
     });
 
     it('project edit form still renders', async () => {
       const projectId = await createProject(app, { title: 'Still Works Project' });
-      const res = await request(app).get(`/projects/${projectId}/edit`).expect(200);
+      const res = await app.testAgent.get(`/projects/${projectId}/edit`).expect(200);
       expect(res.text).toContain('Edit Project');
     });
 
     it('asset listing still works from project detail', async () => {
       const projectId = await createProject(app, { title: 'Asset List Project' });
-      const res = await request(app).get(`/projects/${projectId}/assets`).expect(200);
+      const res = await app.testAgent.get(`/projects/${projectId}/assets`).expect(200);
       expect(res.text).toContain('Assets');
     });
   });
@@ -741,7 +754,7 @@ describe('Phase 6B HTTP workflow', () => {
 
   describe('service wiring', () => {
     it('releases list still renders (regression check)', async () => {
-      const res = await request(app).get('/releases').expect(200);
+      const res = await app.testAgent.get('/releases').expect(200);
       expect(res.text).toContain('Releases');
     });
   });
@@ -752,7 +765,7 @@ describe('Phase 6B HTTP workflow', () => {
     it('renders the release list with view-switcher buttons', async () => {
       // Phase 10.5C: view switcher uses shared view-switcher-option pattern
       // with aria-current="page" for the active view instead of span/button.
-      const res = await request(app).get('/releases').expect(200);
+      const res = await app.testAgent.get('/releases').expect(200);
       // The view-switcher wrapper must exist as a nav.
       expect(res.text).toMatch(/<nav class="view-switcher"/);
       // The List label is the active view (aria-current="page"), no dead active class.
@@ -773,7 +786,7 @@ describe('Phase 6B HTTP workflow', () => {
       });
       const assetId = attachPresentAssetToRelease(db, Number(projectId), Number(releaseId), { name: 'test.txt' });
 
-      const res = await request(app).get('/releases').expect(200);
+      const res = await app.testAgent.get('/releases').expect(200);
       expect(res.text).toContain('Test Release');
       expect(res.text).toContain('List Project');
       expect(res.text).toMatch(/1 asset/);
@@ -795,7 +808,7 @@ describe('Phase 6B HTTP workflow', () => {
       db.prepare(`UPDATE assets SET is_present = 0, missing_since = datetime('now') WHERE id = ?`).run(asset.id);
       db.prepare(`INSERT INTO release_assets (release_id, asset_id, role, sort_order) VALUES (?, ?, 'attachment', 0)`).run(Number(releaseId), asset.id);
 
-      const res = await request(app).get('/releases').expect(200);
+      const res = await app.testAgent.get('/releases').expect(200);
       expect(res.text).toContain('Missing Release');
       expect(res.text).toContain('⚠');
     });
@@ -806,7 +819,7 @@ describe('Phase 6B HTTP workflow', () => {
       await createRelease(app, { projectId: p1, title: 'R1', status: 'idea' });
       await createRelease(app, { projectId: p2, title: 'R2', status: 'idea' });
 
-      const res = await request(app).get(`/releases?project=${p1}`).expect(200);
+      const res = await app.testAgent.get(`/releases?project=${p1}`).expect(200);
       expect(res.text).toContain('R1');
       expect(res.text).not.toContain('R2');
     });
@@ -816,7 +829,7 @@ describe('Phase 6B HTTP workflow', () => {
       await createRelease(app, { projectId, title: 'Idea R', status: 'idea' });
       await createRelease(app, { projectId, title: 'Planned R', status: 'planned' });
 
-      const res = await request(app).get('/releases?status=idea').expect(200);
+      const res = await app.testAgent.get('/releases?status=idea').expect(200);
       expect(res.text).toContain('Idea R');
       expect(res.text).not.toContain('Planned R');
     });
@@ -836,7 +849,7 @@ describe('Phase 6B HTTP workflow', () => {
         plannedDate: '2099-01-01',
       });
 
-      const res = await request(app).get('/releases?schedule=overdue').expect(200);
+      const res = await app.testAgent.get('/releases?schedule=overdue').expect(200);
       expect(res.text).toContain('Overdue');
       expect(res.text).not.toContain('Future');
     });
@@ -850,7 +863,7 @@ describe('Phase 6B HTTP workflow', () => {
         plannedDate: null,
       });
 
-      const res = await request(app).get('/releases?schedule=unscheduled').expect(200);
+      const res = await app.testAgent.get('/releases?schedule=unscheduled').expect(200);
       expect(res.text).toContain('No Date');
     });
 
@@ -931,7 +944,7 @@ describe('Phase 6B HTTP workflow', () => {
       attachPresentAssetToRelease(db, Number(projectId), Number(yesterdayId), { name: 'yesterday-tz.txt' });
       attachPresentAssetToRelease(db, Number(projectId), Number(tomorrowId), { name: 'tomorrow-tz.txt' });
 
-      const res = await request(app).get('/releases?schedule=today').expect(200);
+      const res = await app.testAgent.get('/releases?schedule=today').expect(200);
 
       // Row-level assertions — the today release's <tr> exists.
       const todayRow = findReleaseRow(res.text, 'Today TZ Release');
@@ -972,7 +985,7 @@ describe('Phase 6B HTTP workflow', () => {
       attachPresentAssetToRelease(db, Number(projectId), Number(yesterdayId), { name: 'yesterday-tz-u.txt' });
       attachPresentAssetToRelease(db, Number(projectId), Number(tomorrowId), { name: 'tomorrow-tz-u.txt' });
 
-      const res = await request(app).get('/releases?schedule=upcoming').expect(200);
+      const res = await app.testAgent.get('/releases?schedule=upcoming').expect(200);
 
       expect(findReleaseRow(res.text, 'Tomorrow TZ Release')).not.toBeNull();
       expect(findReleaseRow(res.text, 'Today TZ Release')).toBeNull();
@@ -1007,7 +1020,7 @@ describe('Phase 6B HTTP workflow', () => {
       attachPresentAssetToRelease(db, Number(projectId), Number(yesterdayId), { name: 'yesterday-tz-o.txt' });
       attachPresentAssetToRelease(db, Number(projectId), Number(tomorrowId), { name: 'tomorrow-tz-o.txt' });
 
-      const res = await request(app).get('/releases?schedule=overdue').expect(200);
+      const res = await app.testAgent.get('/releases?schedule=overdue').expect(200);
 
       expect(findReleaseRow(res.text, 'Yesterday TZ Release')).not.toBeNull();
       expect(findReleaseRow(res.text, 'Today TZ Release')).toBeNull();
@@ -1015,7 +1028,7 @@ describe('Phase 6B HTTP workflow', () => {
     });
 
     it('invalid status falls back gracefully', async () => {
-      const res = await request(app).get('/releases?status=invalid').expect(200);
+      const res = await app.testAgent.get('/releases?status=invalid').expect(200);
       expect(res.text).toContain('Releases');
     });
 
@@ -1026,10 +1039,10 @@ describe('Phase 6B HTTP workflow', () => {
         title: 'ZZZ-Archive-Badge-Markup',
         status: 'idea',
       });
-      await request(app).post(`/releases/${releaseId}/archive`).expect(302);
+      await app.testAgent.post(`/releases/${releaseId}/archive`).send({ _csrf: app.testCsrfToken }).expect(302);
 
       // Use includeArchived=1 so the row is actually rendered.
-      const res = await request(app).get('/releases?includeArchived=1').expect(200);
+      const res = await app.testAgent.get('/releases?includeArchived=1').expect(200);
       const row = findReleaseRow(res.text, 'ZZZ-Archive-Badge-Markup');
       // The <tr> must carry the archived-row class — the row-level marker
       // the CSS uses to dim the row.
@@ -1048,9 +1061,9 @@ describe('Phase 6B HTTP workflow', () => {
         status: 'planned',
         plannedDate: '2020-01-01',
       });
-      await request(app).post(`/projects/${projectId}/archive`).expect(302);
+      await app.testAgent.post(`/projects/${projectId}/archive`).send({ _csrf: app.testCsrfToken }).expect(302);
 
-      const res = await request(app).get('/releases?schedule=overdue').expect(200);
+      const res = await app.testAgent.get('/releases?schedule=overdue').expect(200);
       // Row-level negative: no <tr> for this release must exist.
       expect(findReleaseRow(res.text, 'Should Be Hidden')).toBeNull();
     });
@@ -1070,20 +1083,20 @@ describe('Phase 6B HTTP workflow', () => {
         title: 'ZZZ-Archived-List-Archive-Test',
         status: 'idea',
       });
-      await request(app).post(`/releases/${archivedId}/archive`).expect(302);
+      await app.testAgent.post(`/releases/${archivedId}/archive`).send({ _csrf: app.testCsrfToken }).expect(302);
 
       // Control: without includeArchived, the archived row's <tr> must NOT
       // be in the page. We check the row-level markup (class="archived-row")
       // so the assertion cannot be satisfied by an unrelated "Archived"
       // string elsewhere on the page.
-      const resWithout = await request(app).get('/releases').expect(200);
+      const resWithout = await app.testAgent.get('/releases').expect(200);
       expect(findReleaseRow(resWithout.text, 'ZZZ-Archived-List-Archive-Test')).toBeNull();
       // Sanity: the active row's <tr> IS present.
       expect(findReleaseRow(resWithout.text, 'ZZZ-Active-List-Archive-Test')).not.toBeNull();
 
       // With includeArchived=1, the archived row's <tr> AND the
       // archived-badge span must be present in the rendered page.
-      const resWith = await request(app).get('/releases?includeArchived=1').expect(200);
+      const resWith = await app.testAgent.get('/releases?includeArchived=1').expect(200);
       const archivedRow = findReleaseRow(resWith.text, 'ZZZ-Archived-List-Archive-Test');
       expect(archivedRow).not.toBeNull();
       // The row must carry the archived-row class — a row-level marker
@@ -1107,11 +1120,11 @@ describe('Phase 6B HTTP workflow', () => {
         title: 'ZZZ-Board-Archived-Card-Test',
         status: 'idea',
       });
-      await request(app).post(`/releases/${archivedId}/archive`).expect(302);
+      await app.testAgent.post(`/releases/${archivedId}/archive`).send({ _csrf: app.testCsrfToken }).expect(302);
 
       // Control: without includeArchived, the card must not be rendered.
       // The board template emits <div class="board-card ..."> per card.
-      const resWithout = await request(app).get('/releases?view=board').expect(200);
+      const resWithout = await app.testAgent.get('/releases?view=board').expect(200);
       expect(resWithout.text).not.toContain('ZZZ-Board-Archived-Card-Test');
       // Negative control: the rendered page must not carry a board-card
       // with the archived modifier class for this title.
@@ -1120,7 +1133,7 @@ describe('Phase 6B HTTP workflow', () => {
       // With includeArchived=1, the card must be rendered AND must carry
       // the `archived` modifier class — proving the visual badge is in
       // place, not just the title text.
-      const resWith = await request(app).get('/releases?view=board&includeArchived=1').expect(200);
+      const resWith = await app.testAgent.get('/releases?view=board&includeArchived=1').expect(200);
       expect(resWith.text).toContain('ZZZ-Board-Archived-Card-Test');
       expect(resWith.text).toMatch(/<div class="board-card archived">[\s\S]*?ZZZ-Board-Archived-Card-Test/);
     });
@@ -1139,10 +1152,10 @@ describe('Phase 6B HTTP workflow', () => {
         status: 'planned',
         plannedDate: '2020-01-01',
       });
-      await request(app).post(`/releases/${archivedId}/archive`).expect(302);
+      await app.testAgent.post(`/releases/${archivedId}/archive`).send({ _csrf: app.testCsrfToken }).expect(302);
 
       // Even with includeArchived=1, schedule=overdue should NOT show archived releases.
-      const res = await request(app).get('/releases?schedule=overdue&includeArchived=1').expect(200);
+      const res = await app.testAgent.get('/releases?schedule=overdue&includeArchived=1').expect(200);
       expect(findReleaseRow(res.text, 'ZZZ-Active-Schedule-Archive')).not.toBeNull();
       expect(findReleaseRow(res.text, 'ZZZ-Archived-Schedule-Archive')).toBeNull();
     });
@@ -1165,10 +1178,10 @@ describe('Phase 6B HTTP workflow', () => {
         status: 'planned',
         plannedDate: '2020-01-01',
       });
-      await request(app).post(`/projects/${archivedProjectId}/archive`).expect(302);
+      await app.testAgent.post(`/projects/${archivedProjectId}/archive`).send({ _csrf: app.testCsrfToken }).expect(302);
 
       // Verify archived-parent release is NOT in overdue filter even with includeArchived=1.
-      const res = await request(app).get('/releases?schedule=overdue&includeArchived=1').expect(200);
+      const res = await app.testAgent.get('/releases?schedule=overdue&includeArchived=1').expect(200);
       expect(findReleaseRow(res.text, 'ZZZ-Active-Under-Active-Parent')).not.toBeNull();
       expect(findReleaseRow(res.text, 'ZZZ-Hidden-Under-Archived-Parent')).toBeNull();
     });
@@ -1199,7 +1212,7 @@ describe('Phase 6B HTTP workflow', () => {
         await createRelease(app, { projectId, title: `Page Release ${i}`, status: 'idea' });
       }
 
-      const res = await request(app).get('/releases').expect(200);
+      const res = await app.testAgent.get('/releases').expect(200);
       // The pagination nav renders a `Page N of M` span.
       expect(res.text).toContain('Page 1 of 2');
       // Anchor for Next must exist on page 1.
@@ -1217,7 +1230,7 @@ describe('Phase 6B HTTP workflow', () => {
       }
 
       const baseUrl = `/releases?project=${projectId}&status=idea&includeArchived=1&pageSize=10`;
-      const res = await request(app).get(baseUrl).expect(200);
+      const res = await app.testAgent.get(baseUrl).expect(200);
 
       // Extract ONLY the Next anchor's href — not any href that happens
       // to share a query string fragment.
@@ -1239,7 +1252,7 @@ describe('Phase 6B HTTP workflow', () => {
       }
 
       const baseUrl = `/releases?project=${projectId}&status=idea&includeArchived=1&pageSize=10&page=2`;
-      const res = await request(app).get(baseUrl).expect(200);
+      const res = await app.testAgent.get(baseUrl).expect(200);
 
       const prevHref = extractPaginationHref(res.text, 'Previous');
       const prevUrl = new URL(prevHref, 'http://localhost');
@@ -1259,7 +1272,7 @@ describe('Phase 6B HTTP workflow', () => {
       }
 
       const baseUrl = `/releases?view=list&project=${projectId}&status=planned&schedule=upcoming&includeArchived=1&pageSize=5`;
-      const res = await request(app).get(baseUrl).expect(200);
+      const res = await app.testAgent.get(baseUrl).expect(200);
 
       const nextHref = extractPaginationHref(res.text, 'Next');
       const nextUrl = new URL(nextHref, 'http://localhost');
@@ -1280,7 +1293,7 @@ describe('Phase 6B HTTP workflow', () => {
         await createRelease(app, { projectId, title: `Board Page Release ${i}`, status: 'idea' });
       }
 
-      const res = await request(app).get(`/releases?view=board&project=${projectId}`).expect(200);
+      const res = await app.testAgent.get(`/releases?view=board&project=${projectId}`).expect(200);
       // No pagination anchors in board view — assertion must use the
       // specific anchor matcher, not page text.
       expect(extractPaginationHref(res.text, 'Next')).toBeNull();
@@ -1315,7 +1328,7 @@ describe('Phase 6B HTTP workflow', () => {
     }
 
     it('list view: List is marked active, Board is a link', async () => {
-      const res = await request(app).get('/releases').expect(200);
+      const res = await app.testAgent.get('/releases').expect(200);
       // Active view: view-switcher-option with aria-current="page"
       expect(res.text).toMatch(/class="view-switcher-option"[^>]*aria-current="page"[^>]*>List<\/a>/);
       // No dead active class remains
@@ -1329,7 +1342,7 @@ describe('Phase 6B HTTP workflow', () => {
     });
 
     it('board view: Board is marked active, List is a link', async () => {
-      const res = await request(app).get('/releases?view=board').expect(200);
+      const res = await app.testAgent.get('/releases?view=board').expect(200);
       // Active view: view-switcher-option with aria-current="page"
       expect(res.text).toMatch(/class="view-switcher-option"[^>]*aria-current="page"[^>]*>Board<\/a>/);
       expect(res.text).not.toContain('view-switcher-option--active');
@@ -1341,7 +1354,7 @@ describe('Phase 6B HTTP workflow', () => {
     });
 
     it('view switch (list → board) preserves all query params on a single URL', async () => {
-      const res = await request(app).get('/releases?project=5&status=planned&schedule=upcoming&includeArchived=1&pageSize=5').expect(200);
+      const res = await app.testAgent.get('/releases?project=5&status=planned&schedule=upcoming&includeArchived=1&pageSize=5').expect(200);
       const boardHref = extractViewSwitchHref(res.text, 'Board');
       expect(boardHref).not.toBeNull();
       const boardUrl = new URL(boardHref, 'http://localhost');
@@ -1356,7 +1369,7 @@ describe('Phase 6B HTTP workflow', () => {
     });
 
     it('view switch (board → list) preserves all query params on a single URL', async () => {
-      const res = await request(app).get('/releases?view=board&project=7&status=idea&schedule=today&includeArchived=1&pageSize=10').expect(200);
+      const res = await app.testAgent.get('/releases?view=board&project=7&status=idea&schedule=today&includeArchived=1&pageSize=10').expect(200);
       const listHref = extractViewSwitchHref(res.text, 'List');
       expect(listHref).not.toBeNull();
       const listUrl = new URL(listHref, 'http://localhost');
@@ -1378,7 +1391,7 @@ describe('Phase 6B HTTP workflow', () => {
       }
 
       // Page 2 in list view → switch to board → page must be cleared.
-      const listRes = await request(app)
+      const listRes = await app.testAgent
         .get(`/releases?view=list&project=${projectId}&status=idea&pageSize=10&page=2`)
         .expect(200);
       const boardHref = extractViewSwitchHref(listRes.text, 'Board');
@@ -1386,7 +1399,7 @@ describe('Phase 6B HTTP workflow', () => {
       expect(boardUrl.searchParams.get('view')).toBe('board');
       expect(boardUrl.searchParams.get('page')).toBeNull();
       // Also confirm the new list anchor (back to list) has no page.
-      const boardRes = await request(app)
+      const boardRes = await app.testAgent
         .get(`/releases?view=board&project=${projectId}&status=idea&pageSize=10&page=2`)
         .expect(200);
       const listHref = extractViewSwitchHref(boardRes.text, 'List');
@@ -1451,7 +1464,7 @@ describe('Phase 6B HTTP workflow', () => {
       await createRelease(app, { projectId, title: 'Default Idea', status: 'idea' });
       await createRelease(app, { projectId, title: 'Default Ready', status: 'ready' });
 
-      const res = await request(app).get('/releases').expect(200);
+      const res = await app.testAgent.get('/releases').expect(200);
       expect(res.text).toContain('Default Idea');
       expect(res.text).toContain('Default Ready');
       expect(res.text).toMatch(/<option value="all"[^>]*selected/);
@@ -1464,7 +1477,7 @@ describe('Phase 6B HTTP workflow', () => {
       await makeReadyRelease(projectId, 'HTTP Blocked Missing', { present: false, missing: true });
       await createRelease(app, { projectId, title: 'HTTP Planned', status: 'planned' });
 
-      const res = await request(app).get('/releases?readiness=publishable').expect(200);
+      const res = await app.testAgent.get('/releases?readiness=publishable').expect(200);
       const ids = extractListReleaseIds(res.text);
       expect(ids).toContain(Number(publishable));
       expect(ids).not.toContain(Number(0)); // sanity: only one result
@@ -1479,7 +1492,7 @@ describe('Phase 6B HTTP workflow', () => {
       const zero = await makeReadyRelease(projectId, 'HTTP Blocked Zero', { present: false });
       const missing = await makeReadyRelease(projectId, 'HTTP Blocked Missing', { present: false, missing: true });
 
-      const res = await request(app).get('/releases?readiness=blocked-ready').expect(200);
+      const res = await app.testAgent.get('/releases?readiness=blocked-ready').expect(200);
       const ids = extractListReleaseIds(res.text);
       expect(ids.map((id) => String(id)).sort()).toEqual([zero, missing].map((id) => String(id)).sort());
     });
@@ -1489,11 +1502,11 @@ describe('Phase 6B HTTP workflow', () => {
       await createRelease(app, { projectId, title: 'Idea NR', status: 'idea' });
       await createRelease(app, { projectId, title: 'Planned NR', status: 'planned' });
 
-      const pubRes = await request(app).get('/releases?readiness=publishable').expect(200);
+      const pubRes = await app.testAgent.get('/releases?readiness=publishable').expect(200);
       expect(pubRes.text).not.toContain('Idea NR');
       expect(pubRes.text).not.toContain('Planned NR');
 
-      const blockedRes = await request(app).get('/releases?readiness=blocked-ready').expect(200);
+      const blockedRes = await app.testAgent.get('/releases?readiness=blocked-ready').expect(200);
       expect(blockedRes.text).not.toContain('Idea NR');
       expect(blockedRes.text).not.toContain('Planned NR');
     });
@@ -1501,10 +1514,10 @@ describe('Phase 6B HTTP workflow', () => {
     it('archived ready releases are excluded from readiness filters', async () => {
       const projectId = await createProject(app, { title: 'Archived Ready Exclusion' });
       const archived = await makeReadyRelease(projectId, 'Archived Ready Release');
-      await request(app).post(`/releases/${archived}/archive`).expect(302);
+      await app.testAgent.post(`/releases/${archived}/archive`).send({ _csrf: app.testCsrfToken }).expect(302);
       const publishable = await makeReadyRelease(projectId, 'Still Publishable');
 
-      const res = await request(app).get('/releases?readiness=publishable').expect(200);
+      const res = await app.testAgent.get('/releases?readiness=publishable').expect(200);
       expect(res.text).toContain('Still Publishable');
       expect(res.text).not.toContain('Archived Ready Release');
     });
@@ -1514,8 +1527,8 @@ describe('Phase 6B HTTP workflow', () => {
       await makeReadyRelease(project, 'HTTP Hidden Ready');
       db.prepare(`UPDATE projects SET archived_at = datetime('now') WHERE id = ?`).run(Number(project));
 
-      const pubRes = await request(app).get('/releases?readiness=publishable').expect(200);
-      const blockedRes = await request(app).get('/releases?readiness=blocked-ready').expect(200);
+      const pubRes = await app.testAgent.get('/releases?readiness=publishable').expect(200);
+      const blockedRes = await app.testAgent.get('/releases?readiness=blocked-ready').expect(200);
       expect(pubRes.text).not.toContain('HTTP Hidden Ready');
       expect(blockedRes.text).not.toContain('HTTP Hidden Ready');
     });
@@ -1524,7 +1537,7 @@ describe('Phase 6B HTTP workflow', () => {
       const projectId = await createProject(app, { title: 'HTTP Invalid Readiness' });
       await createRelease(app, { projectId, title: 'Invalid Idea', status: 'idea' });
 
-      const res = await request(app).get('/releases?readiness=junk').expect(200);
+      const res = await app.testAgent.get('/releases?readiness=junk').expect(200);
       expect(res.text).toContain('Invalid Idea');
       expect(res.text).toMatch(/<option value="all"[^>]*selected/);
       expect(res.text).not.toMatch(/<option value="junk"[^>]*selected/);
@@ -1535,9 +1548,9 @@ describe('Phase 6B HTTP workflow', () => {
       await makeReadyRelease(projectId, 'Parity Publishable');
       await makeReadyRelease(projectId, 'Parity Blocked', { present: false });
 
-      const pubRes = await request(app).get('/releases?readiness=publishable').expect(200);
+      const pubRes = await app.testAgent.get('/releases?readiness=publishable').expect(200);
       expect(pubRes.text).toContain('1 release found');
-      const blockedRes = await request(app).get('/releases?readiness=blocked-ready').expect(200);
+      const blockedRes = await app.testAgent.get('/releases?readiness=blocked-ready').expect(200);
       expect(blockedRes.text).toContain('1 release found');
     });
 
@@ -1547,7 +1560,7 @@ describe('Phase 6B HTTP workflow', () => {
         await makeReadyRelease(projectId, `Readiness Page ${i}`);
       }
 
-      const res = await request(app)
+      const res = await app.testAgent
         .get(`/releases?readiness=publishable&pageSize=10`)
         .expect(200);
       const nextHref = extractPaginationHref(res.text, 'Next');
@@ -1562,7 +1575,7 @@ describe('Phase 6B HTTP workflow', () => {
       const projectId = await createProject(app, { title: 'HTTP Readiness Switch LB' });
       await makeReadyRelease(projectId, 'Switch LB');
 
-      const listRes = await request(app).get('/releases?readiness=publishable').expect(200);
+      const listRes = await app.testAgent.get('/releases?readiness=publishable').expect(200);
       const boardHref = extractHrefByLabel(listRes.text, 'Board');
       const boardUrl = new URL(boardHref, 'http://localhost');
       expect(boardUrl.searchParams.get('view')).toBe('board');
@@ -1573,7 +1586,7 @@ describe('Phase 6B HTTP workflow', () => {
       const projectId = await createProject(app, { title: 'HTTP Readiness Switch BL' });
       await makeReadyRelease(projectId, 'Switch BL');
 
-      const boardRes = await request(app).get('/releases?view=board&readiness=publishable').expect(200);
+      const boardRes = await app.testAgent.get('/releases?view=board&readiness=publishable').expect(200);
       const listHref = extractHrefByLabel(boardRes.text, 'List');
       const listUrl = new URL(listHref, 'http://localhost');
       expect(listUrl.searchParams.get('view')).toBe('list');
@@ -1586,19 +1599,19 @@ describe('Phase 6B HTTP workflow', () => {
       const blocked = await makeReadyRelease(projectId, 'Consistency Blocked', { present: false });
       await createRelease(app, { projectId, title: 'Consistency Idea', status: 'idea' });
 
-      const listPub = await request(app).get('/releases?readiness=publishable').expect(200);
-      const boardPub = await request(app).get('/releases?view=board&readiness=publishable').expect(200);
+      const listPub = await app.testAgent.get('/releases?readiness=publishable').expect(200);
+      const boardPub = await app.testAgent.get('/releases?view=board&readiness=publishable').expect(200);
       expect(extractListReleaseIds(listPub.text)).toEqual([Number(pub)]);
       expect(extractBoardReleaseIds(boardPub.text)).toEqual([Number(pub)]);
 
-      const listBlocked = await request(app).get('/releases?readiness=blocked-ready').expect(200);
-      const boardBlocked = await request(app).get('/releases?view=board&readiness=blocked-ready').expect(200);
+      const listBlocked = await app.testAgent.get('/releases?readiness=blocked-ready').expect(200);
+      const boardBlocked = await app.testAgent.get('/releases?view=board&readiness=blocked-ready').expect(200);
       expect(extractListReleaseIds(listBlocked.text)).toEqual([Number(blocked)]);
       expect(extractBoardReleaseIds(boardBlocked.text)).toEqual([Number(blocked)]);
     });
 
     it('calendar view does not render a readiness filter', async () => {
-      const res = await request(app).get('/releases/calendar').expect(200);
+      const res = await app.testAgent.get('/releases/calendar').expect(200);
       expect(res.text).not.toContain('id="readiness"');
     });
   });
@@ -1657,7 +1670,7 @@ describe('Phase 6B HTTP workflow', () => {
       const projectId = await createProject(app, { title: 'Blocker No Assets Project' });
       const releaseId = await makeReadyRelease(projectId, 'Blocker No Assets', { present: false });
 
-      const res = await request(app).get('/releases').expect(200);
+      const res = await app.testAgent.get('/releases').expect(200);
       const row = findListRow(res.text, Number(releaseId));
       expect(row).not.toBeNull();
       expect(row).toContain('No assets selected');
@@ -1669,7 +1682,7 @@ describe('Phase 6B HTTP workflow', () => {
       const projectId = await createProject(app, { title: 'Blocker No Assets Board' });
       const releaseId = await makeReadyRelease(projectId, 'Blocker No Assets Board', { present: false });
 
-      const res = await request(app).get('/releases?view=board').expect(200);
+      const res = await app.testAgent.get('/releases?view=board').expect(200);
       const card = findBoardCard(res.text, Number(releaseId));
       expect(card).not.toBeNull();
       expect(card).toContain('No assets selected');
@@ -1680,7 +1693,7 @@ describe('Phase 6B HTTP workflow', () => {
       const projectId = await createProject(app, { title: 'Blocker Missing Assets' });
       const releaseId = await makeReadyRelease(projectId, 'Blocker Missing Assets', { present: false, missing: true });
 
-      const res = await request(app).get('/releases').expect(200);
+      const res = await app.testAgent.get('/releases').expect(200);
       const row = findListRow(res.text, Number(releaseId));
       expect(row).not.toBeNull();
       expect(row).toContain('Missing selected assets');
@@ -1691,7 +1704,7 @@ describe('Phase 6B HTTP workflow', () => {
       const projectId = await createProject(app, { title: 'Blocker Missing Assets Board' });
       const releaseId = await makeReadyRelease(projectId, 'Blocker Missing Assets Board', { present: false, missing: true });
 
-      const res = await request(app).get('/releases?view=board').expect(200);
+      const res = await app.testAgent.get('/releases?view=board').expect(200);
       const card = findBoardCard(res.text, Number(releaseId));
       expect(card).not.toBeNull();
       expect(card).toContain('Missing selected assets');
@@ -1706,9 +1719,9 @@ describe('Phase 6B HTTP workflow', () => {
         plannedDate: '2099-01-01',
       });
       // Archive the release to trigger scope_mutable blocker
-      await request(app).post(`/releases/${releaseId}/archive`).expect(302);
+      await app.testAgent.post(`/releases/${releaseId}/archive`).send({ _csrf: app.testCsrfToken }).expect(302);
 
-      const res = await request(app).get('/releases?includeArchived=1').expect(200);
+      const res = await app.testAgent.get('/releases?includeArchived=1').expect(200);
       const row = findListRow(res.text, Number(releaseId));
       expect(row).not.toBeNull();
       expect(row).toContain('No assets selected');
@@ -1719,7 +1732,7 @@ describe('Phase 6B HTTP workflow', () => {
       const projectId = await createProject(app, { title: 'Blocker Publishable' });
       const releaseId = await makeReadyRelease(projectId, 'Blocker Publishable');
 
-      const res = await request(app).get('/releases').expect(200);
+      const res = await app.testAgent.get('/releases').expect(200);
       const row = findListRow(res.text, Number(releaseId));
       expect(row).not.toBeNull();
       expect(row).toContain('Publishable');
@@ -1736,7 +1749,7 @@ describe('Phase 6B HTTP workflow', () => {
         status: 'idea',
       });
 
-      const res = await request(app).get('/releases').expect(200);
+      const res = await app.testAgent.get('/releases').expect(200);
       const row = findListRow(res.text, Number(releaseId));
       expect(row).not.toBeNull();
       expect(row).not.toContain('Publishable');
@@ -1750,9 +1763,9 @@ describe('Phase 6B HTTP workflow', () => {
     it('archived scope shows correct wording on list row', async () => {
       const projectId = await createProject(app, { title: 'Blocker Archived Scope' });
       const releaseId = await makeReadyRelease(projectId, 'Blocker Archived Scope', { present: false });
-      await request(app).post(`/releases/${releaseId}/archive`).expect(302);
+      await app.testAgent.post(`/releases/${releaseId}/archive`).send({ _csrf: app.testCsrfToken }).expect(302);
 
-      const res = await request(app).get('/releases?includeArchived=1').expect(200);
+      const res = await app.testAgent.get('/releases?includeArchived=1').expect(200);
       const row = findListRow(res.text, Number(releaseId));
       expect(row).not.toBeNull();
       expect(row).toContain('Archived scope');
@@ -1761,9 +1774,9 @@ describe('Phase 6B HTTP workflow', () => {
     it('archived scope has no corrective mutation links', async () => {
       const projectId = await createProject(app, { title: 'Blocker Archived No Links' });
       const releaseId = await makeReadyRelease(projectId, 'Blocker Archived No Links', { present: false });
-      await request(app).post(`/releases/${releaseId}/archive`).expect(302);
+      await app.testAgent.post(`/releases/${releaseId}/archive`).send({ _csrf: app.testCsrfToken }).expect(302);
 
-      const res = await request(app).get('/releases?includeArchived=1').expect(200);
+      const res = await app.testAgent.get('/releases?includeArchived=1').expect(200);
       const row = findListRow(res.text, Number(releaseId));
       expect(row).not.toBeNull();
       expect(row).toContain('Archived scope');
@@ -1776,7 +1789,7 @@ describe('Phase 6B HTTP workflow', () => {
       const projectId = await createProject(app, { title: 'Blocker Corrective Links' });
       const releaseId = await makeReadyRelease(projectId, 'Blocker Corrective Links', { present: false });
 
-      const res = await request(app).get('/releases').expect(200);
+      const res = await app.testAgent.get('/releases').expect(200);
       const row = findListRow(res.text, Number(releaseId));
       expect(row).not.toBeNull();
       expect(row).toContain(`href="/releases/${releaseId}/assets"`);
@@ -1787,7 +1800,7 @@ describe('Phase 6B HTTP workflow', () => {
       const projectId = await createProject(app, { title: 'Blocker Corrective Missing' });
       const releaseId = await makeReadyRelease(projectId, 'Blocker Corrective Missing', { present: false, missing: true });
 
-      const res = await request(app).get('/releases').expect(200);
+      const res = await app.testAgent.get('/releases').expect(200);
       const row = findListRow(res.text, Number(releaseId));
       expect(row).not.toBeNull();
       expect(row).toContain(`href="/projects/${projectId}/assets"`);
@@ -1798,14 +1811,14 @@ describe('Phase 6B HTTP workflow', () => {
       const projectId = await createProject(app, { title: 'Blocker No Mutations' });
       const releaseId = await makeReadyRelease(projectId, 'Blocker No Mutations', { present: false });
 
-      const listRes = await request(app).get('/releases').expect(200);
+      const listRes = await app.testAgent.get('/releases').expect(200);
       const listRow = findListRow(listRes.text, Number(releaseId));
       expect(listRow).not.toBeNull();
       // List row should not contain POST forms or delete/archive buttons
       expect(listRow).not.toContain('method="post"');
       expect(listRow).not.toContain('button-danger');
 
-      const boardRes = await request(app).get('/releases?view=board').expect(200);
+      const boardRes = await app.testAgent.get('/releases?view=board').expect(200);
       const boardCard = findBoardCard(boardRes.text, Number(releaseId));
       expect(boardCard).not.toBeNull();
       expect(boardCard).not.toContain('method="post"');
@@ -1816,8 +1829,8 @@ describe('Phase 6B HTTP workflow', () => {
       const noAssetsId = await makeReadyRelease(projectId, 'Blocker Consistency No Assets', { present: false });
       const missingId = await makeReadyRelease(projectId, 'Blocker Consistency Missing', { present: false, missing: true });
 
-      const listRes = await request(app).get('/releases').expect(200);
-      const boardRes = await request(app).get('/releases?view=board').expect(200);
+      const listRes = await app.testAgent.get('/releases').expect(200);
+      const boardRes = await app.testAgent.get('/releases?view=board').expect(200);
 
       // No-assets release: both views show the same label
       const listNoAssets = findListRow(listRes.text, Number(noAssetsId));
@@ -1836,7 +1849,7 @@ describe('Phase 6B HTTP workflow', () => {
       const projectId = await createProject(app, { title: 'Blocker Calendar Compact' });
       const releaseId = await makeReadyRelease(projectId, 'Blocker Calendar Compact', { present: false, missing: true });
 
-      const res = await request(app).get('/releases/calendar?month=2099-01').expect(200);
+      const res = await app.testAgent.get('/releases/calendar?month=2099-01').expect(200);
       const entry = findCalendarEntry(res.text, Number(releaseId));
       expect(entry).not.toBeNull();
       // Calendar should show "Blocked" not the full labels
@@ -1851,7 +1864,7 @@ describe('Phase 6B HTTP workflow', () => {
       // Create a publishable release — its row should NOT contain blocker labels
       const pubId = await makeReadyRelease(projectId, 'Blocker FP Pub');
 
-      const res = await request(app).get('/releases').expect(200);
+      const res = await app.testAgent.get('/releases').expect(200);
       const row = findListRow(res.text, Number(pubId));
       expect(row).not.toBeNull();
       expect(row).toContain('Publishable');
@@ -1868,7 +1881,7 @@ describe('Phase 6B HTTP workflow', () => {
       await createRelease(app, { projectId: p1, title: 'Alpha-HTTP-Malformed-Release', status: 'idea' });
       await createRelease(app, { projectId: p2, title: 'Beta-HTTP-Malformed-Release', status: 'idea' });
 
-      const res = await request(app).get('/releases?project=1junk').expect(200);
+      const res = await app.testAgent.get('/releases?project=1junk').expect(200);
       // project filter is null → both projects' releases are returned.
       expect(res.text).toContain('Alpha-HTTP-Malformed-Release');
       expect(res.text).toContain('Beta-HTTP-Malformed-Release');
@@ -1877,7 +1890,7 @@ describe('Phase 6B HTTP workflow', () => {
     it('invalid page uses safe default (1) and renders correctly', async () => {
       const projectId = await createProject(app, { title: 'Page Default Project' });
       await createRelease(app, { projectId, title: 'Valid Release', status: 'idea' });
-      const res = await request(app).get('/releases?page=1junk').expect(200);
+      const res = await app.testAgent.get('/releases?page=1junk').expect(200);
       // Should render with page 1 (the only page)
       expect(res.text).toContain('Page 1');
       expect(res.text).toContain('Valid Release');
@@ -1888,7 +1901,7 @@ describe('Phase 6B HTTP workflow', () => {
       for (let i = 0; i < 30; i++) {
         await createRelease(app, { projectId, title: `Size Default ${i}`, status: 'idea' });
       }
-      const res = await request(app).get('/releases?pageSize=1junk').expect(200);
+      const res = await app.testAgent.get('/releases?pageSize=1junk').expect(200);
       // pageSize falls back to the default of 25. With 30 releases, page 1
       // shows 25 releases (newest-first by updated DESC), page 2 shows 5.
       expect(res.text).toContain('Page 1');
@@ -1903,7 +1916,7 @@ describe('Phase 6B HTTP workflow', () => {
         await createRelease(app, { projectId, title: `Large Release ${i}`, status: 'idea' });
       }
 
-      const res = await request(app).get('/releases?pageSize=200').expect(200);
+      const res = await app.testAgent.get('/releases?pageSize=200').expect(200);
       // pageSize should be capped at 100, so page 1 shows newest releases first (by updated DESC)
       // With 150 releases and pageSize=100, page 1 shows releases 50-149 (newest first)
       expect(res.text).toContain('Large Release 149');
@@ -1912,7 +1925,7 @@ describe('Phase 6B HTTP workflow', () => {
     it('rejects non-integer page values and uses safe default', async () => {
       const projectId = await createProject(app, { title: 'NonInteger Page Project' });
       await createRelease(app, { projectId, title: 'NonInt Release', status: 'idea' });
-      const res = await request(app).get('/releases?page=2.5').expect(200);
+      const res = await app.testAgent.get('/releases?page=2.5').expect(200);
       expect(res.text).toContain('Page 1');
       expect(res.text).toContain('NonInt Release');
     });
@@ -1920,7 +1933,7 @@ describe('Phase 6B HTTP workflow', () => {
     it('rejects negative page values and uses safe default', async () => {
       const projectId = await createProject(app, { title: 'Negative Page Project' });
       await createRelease(app, { projectId, title: 'Neg Release', status: 'idea' });
-      const res = await request(app).get('/releases?page=-1').expect(200);
+      const res = await app.testAgent.get('/releases?page=-1').expect(200);
       expect(res.text).toContain('Page 1');
       expect(res.text).toContain('Neg Release');
     });
@@ -1928,7 +1941,7 @@ describe('Phase 6B HTTP workflow', () => {
     it('rejects zero page value and uses safe default', async () => {
       const projectId = await createProject(app, { title: 'Zero Page Project' });
       await createRelease(app, { projectId, title: 'Zero Release', status: 'idea' });
-      const res = await request(app).get('/releases?page=0').expect(200);
+      const res = await app.testAgent.get('/releases?page=0').expect(200);
       expect(res.text).toContain('Page 1');
       expect(res.text).toContain('Zero Release');
     });
@@ -1936,7 +1949,7 @@ describe('Phase 6B HTTP workflow', () => {
     it('rejects scientific notation page values and uses safe default', async () => {
       const projectId = await createProject(app, { title: 'Sci Notation Page Project' });
       await createRelease(app, { projectId, title: 'Sci Release', status: 'idea' });
-      const res = await request(app).get('/releases?page=1e2').expect(200);
+      const res = await app.testAgent.get('/releases?page=1e2').expect(200);
       expect(res.text).toContain('Page 1');
       expect(res.text).toContain('Sci Release');
     });
@@ -1944,7 +1957,7 @@ describe('Phase 6B HTTP workflow', () => {
     it('rejects leading plus page values and uses safe default', async () => {
       const projectId = await createProject(app, { title: 'Plus Page Project' });
       await createRelease(app, { projectId, title: 'Plus Release', status: 'idea' });
-      const res = await request(app).get('/releases?page=+2').expect(200);
+      const res = await app.testAgent.get('/releases?page=+2').expect(200);
       expect(res.text).toContain('Page 1');
       expect(res.text).toContain('Plus Release');
     });
@@ -1957,7 +1970,7 @@ describe('Phase 6B HTTP workflow', () => {
       const projectId = await createProject(app, { title: 'Url Decoded Plus Project' });
       await createRelease(app, { projectId, title: 'First', status: 'idea' });
       await createRelease(app, { projectId, title: 'Second', status: 'idea' });
-      const res = await request(app).get('/releases?page=+2&pageSize=1').expect(200);
+      const res = await app.testAgent.get('/releases?page=+2&pageSize=1').expect(200);
       expect(res.text).toContain('Page 1');
     });
 
@@ -1965,7 +1978,7 @@ describe('Phase 6B HTTP workflow', () => {
       const projectId = await createProject(app, { title: 'Leading Space Project' });
       await createRelease(app, { projectId, title: 'Leading Space Release', status: 'idea' });
       // Express URL-decodes "%20" to a literal space; test via percent-encoded form.
-      const res = await request(app).get('/releases?page=%202').expect(200);
+      const res = await app.testAgent.get('/releases?page=%202').expect(200);
       expect(res.text).toContain('Page 1');
       expect(res.text).toContain('Leading Space Release');
     });
@@ -1973,7 +1986,7 @@ describe('Phase 6B HTTP workflow', () => {
     it('rejects trailing-whitespace page values', async () => {
       const projectId = await createProject(app, { title: 'Trailing Space Project' });
       await createRelease(app, { projectId, title: 'Trailing Space Release', status: 'idea' });
-      const res = await request(app).get('/releases?page=2%20').expect(200);
+      const res = await app.testAgent.get('/releases?page=2%20').expect(200);
       expect(res.text).toContain('Page 1');
       expect(res.text).toContain('Trailing Space Release');
     });
@@ -1981,7 +1994,7 @@ describe('Phase 6B HTTP workflow', () => {
     it('rejects "1junk" page values', async () => {
       const projectId = await createProject(app, { title: '1Junk Page Project' });
       await createRelease(app, { projectId, title: '1Junk Release', status: 'idea' });
-      const res = await request(app).get('/releases?page=1junk').expect(200);
+      const res = await app.testAgent.get('/releases?page=1junk').expect(200);
       expect(res.text).toContain('Page 1');
       expect(res.text).toContain('1Junk Release');
     });
@@ -1989,7 +2002,7 @@ describe('Phase 6B HTTP workflow', () => {
     it('rejects "2.5" page values', async () => {
       const projectId = await createProject(app, { title: '2.5 Page Project' });
       await createRelease(app, { projectId, title: '2.5 Release', status: 'idea' });
-      const res = await request(app).get('/releases?page=2.5').expect(200);
+      const res = await app.testAgent.get('/releases?page=2.5').expect(200);
       expect(res.text).toContain('Page 1');
       expect(res.text).toContain('2.5 Release');
     });
@@ -1997,7 +2010,7 @@ describe('Phase 6B HTTP workflow', () => {
     it('rejects "1e2" page values', async () => {
       const projectId = await createProject(app, { title: '1e2 Page Project' });
       await createRelease(app, { projectId, title: '1e2 Release', status: 'idea' });
-      const res = await request(app).get('/releases?page=1e2').expect(200);
+      const res = await app.testAgent.get('/releases?page=1e2').expect(200);
       expect(res.text).toContain('Page 1');
       expect(res.text).toContain('1e2 Release');
     });
@@ -2005,7 +2018,7 @@ describe('Phase 6B HTTP workflow', () => {
     it('rejects "-2" page values', async () => {
       const projectId = await createProject(app, { title: 'Neg2 Page Project' });
       await createRelease(app, { projectId, title: 'Neg2 Release', status: 'idea' });
-      const res = await request(app).get('/releases?page=-2').expect(200);
+      const res = await app.testAgent.get('/releases?page=-2').expect(200);
       expect(res.text).toContain('Page 1');
       expect(res.text).toContain('Neg2 Release');
     });
@@ -2013,7 +2026,7 @@ describe('Phase 6B HTTP workflow', () => {
     it('rejects "0" page values', async () => {
       const projectId = await createProject(app, { title: 'Zero Page Project 2' });
       await createRelease(app, { projectId, title: 'Zero Page Release', status: 'idea' });
-      const res = await request(app).get('/releases?page=0').expect(200);
+      const res = await app.testAgent.get('/releases?page=0').expect(200);
       expect(res.text).toContain('Page 1');
       expect(res.text).toContain('Zero Page Release');
     });
@@ -2021,7 +2034,7 @@ describe('Phase 6B HTTP workflow', () => {
     it('rejects blank page values', async () => {
       const projectId = await createProject(app, { title: 'Blank Page Project' });
       await createRelease(app, { projectId, title: 'Blank Release', status: 'idea' });
-      const res = await request(app).get('/releases?page=').expect(200);
+      const res = await app.testAgent.get('/releases?page=').expect(200);
       expect(res.text).toContain('Page 1');
       expect(res.text).toContain('Blank Release');
     });
@@ -2034,7 +2047,7 @@ describe('Phase 6B HTTP workflow', () => {
       // assertion could pass without ever rendering a board column. The
       // new test pins the exact column-header markup: each column header
       // contains a status badge with the status label text.
-      const res = await request(app).get('/releases?view=board').expect(200);
+      const res = await app.testAgent.get('/releases?view=board').expect(200);
       const columns = ['idea', 'planned', 'drafting', 'ready', 'published', 'cancelled'];
       for (const status of columns) {
         // Phase 10.5C: column headers use status-badge partial instead of
@@ -2052,7 +2065,7 @@ describe('Phase 6B HTTP workflow', () => {
       // <span class="count">(N)</span> — proving the column is real.
       // Phase 10.5C: column headers use shared status-badge partial
       // instead of inline status-X color classes.
-      const res = await request(app).get('/releases?view=board').expect(200);
+      const res = await app.testAgent.get('/releases?view=board').expect(200);
       const columns = ['idea', 'planned', 'drafting', 'ready', 'published', 'cancelled'];
       for (const status of columns) {
         expect(res.text).toMatch(
@@ -2075,7 +2088,7 @@ describe('Phase 6B HTTP workflow', () => {
       await createRelease(app, { projectId, title: 'ZZZ-Board-Idea-Card-Test', status: 'idea' });
       await createRelease(app, { projectId, title: 'ZZZ-Board-Planned-Card-Test', status: 'planned' });
 
-      const res = await request(app).get('/releases?view=board').expect(200);
+      const res = await app.testAgent.get('/releases?view=board').expect(200);
       // Each card must wrap the title in a .board-card div.
       expect(res.text).toMatch(
         /<div class="board-card"[^>]*>[\s\S]*?ZZZ-Board-Idea-Card-Test[\s\S]*?<\/div>/,
@@ -2092,7 +2105,7 @@ describe('Phase 6B HTTP workflow', () => {
       const projectId = await createProject(app, { title: 'ZZZ-Board-Title-Project' });
       await createRelease(app, { projectId, title: 'Card Release', status: 'idea' });
 
-      const res = await request(app).get('/releases?view=board').expect(200);
+      const res = await app.testAgent.get('/releases?view=board').expect(200);
       expect(res.text).toMatch(
         /<div class="card-project">ZZZ-Board-Title-Project<\/div>/,
       );
@@ -2111,7 +2124,7 @@ describe('Phase 6B HTTP workflow', () => {
         plannedDate: '2025-06-15',
       });
 
-      const res = await request(app).get('/releases?view=board').expect(200);
+      const res = await app.testAgent.get('/releases?view=board').expect(200);
       expect(res.text).toMatch(
         /<span class="card-date">2025-06-15<\/span>/,
       );
@@ -2130,7 +2143,7 @@ describe('Phase 6B HTTP workflow', () => {
       });
       attachPresentAssetToRelease(db, Number(projectId), Number(releaseId), { name: 'asset.txt' });
 
-      const res = await request(app).get('/releases?view=board').expect(200);
+      const res = await app.testAgent.get('/releases?view=board').expect(200);
       expect(res.text).toMatch(
         /<span class="card-assets">\s*1 asset\s*<\/span>/,
       );
@@ -2153,7 +2166,7 @@ describe('Phase 6B HTTP workflow', () => {
       db.prepare(`UPDATE assets SET is_present = 0, missing_since = datetime('now') WHERE id = ?`).run(asset.id);
       db.prepare(`INSERT INTO release_assets (release_id, asset_id, role, sort_order) VALUES (?, ?, 'attachment', 0)`).run(Number(releaseId), asset.id);
 
-      const res = await request(app).get('/releases?view=board').expect(200);
+      const res = await app.testAgent.get('/releases?view=board').expect(200);
       // Card with the missing release must contain the missing-indicator.
       expect(res.text).toMatch(
         /<div class="board-card"[^>]*>[\s\S]*?ZZZ-Board-Missing-Card-Release[\s\S]*?<span class="missing-indicator"[^>]*>⚠\s*1<\/span>[\s\S]*?<\/div>/,
@@ -2165,7 +2178,7 @@ describe('Phase 6B HTTP workflow', () => {
       // string also appears in the list view's empty placeholder. Pin
       // the empty placeholder to the shared empty-state markup emitted
       // by each board column.
-      const res = await request(app).get('/releases?view=board').expect(200);
+      const res = await app.testAgent.get('/releases?view=board').expect(200);
       const boardEmptyMatches = res.text.match(/<div class="empty-state">\s*<h4 class="empty-state-heading">No releases<\/h4>\s*<\/div>/g) || [];
       // Six columns × one "No releases" each = 6.
       expect(boardEmptyMatches.length).toBe(6);
@@ -2175,7 +2188,7 @@ describe('Phase 6B HTTP workflow', () => {
       const projectId = await createProject(app, { title: 'Board Read-Only Project' });
       await createRelease(app, { projectId, title: 'Read-Only Release', status: 'idea' });
 
-      const res = await request(app).get('/releases?view=board').expect(200);
+      const res = await app.testAgent.get('/releases?view=board').expect(200);
       expect(res.text).not.toContain('action="/releases/');
       expect(res.text).not.toContain('method="post"');
     });
@@ -2189,7 +2202,7 @@ describe('Phase 6B HTTP workflow', () => {
       await createRelease(app, { projectId: p1, title: 'ZZZ-P1-Card', status: 'idea' });
       await createRelease(app, { projectId: p2, title: 'ZZZ-P2-Card', status: 'idea' });
 
-      const res = await request(app).get(`/releases?view=board&project=${p1}`).expect(200);
+      const res = await app.testAgent.get(`/releases?view=board&project=${p1}`).expect(200);
       expect(res.text).toMatch(
         /<div class="board-card"[^>]*>[\s\S]*?ZZZ-P1-Card[\s\S]*?<\/div>/,
       );
@@ -2209,9 +2222,9 @@ describe('Phase 6B HTTP workflow', () => {
         status: 'planned',
         plannedDate: '2025-06-20',
       });
-      await request(app).post(`/projects/${projectId}/archive`).expect(302);
+      await app.testAgent.post(`/projects/${projectId}/archive`).send({ _csrf: app.testCsrfToken }).expect(302);
 
-      const res = await request(app).get('/releases?view=board').expect(200);
+      const res = await app.testAgent.get('/releases?view=board').expect(200);
       expect(res.text).not.toMatch(
         /<div class="board-card"[^>]*>[\s\S]*?ZZZ-Board-Hidden-Archived-Parent[\s\S]*?<\/div>/,
       );
@@ -2225,7 +2238,7 @@ describe('Phase 6B HTTP workflow', () => {
       // test only matched the "Release Calendar" page heading, which
       // would also be true on an error page that happens to render the
       // layout.
-      const res = await request(app).get('/releases/calendar').expect(200);
+      const res = await app.testAgent.get('/releases/calendar').expect(200);
       expect(res.text).toContain('Release Calendar');
       // Calendar nav structure: a <div class="calendar-nav"> with the
       // month <h2> and prev/next buttons.
@@ -2238,7 +2251,7 @@ describe('Phase 6B HTTP workflow', () => {
       // The previous test only checked `toContain('Previous')` and
       // `toContain('Next')`, which any unrelated link or label would
       // satisfy. The new test extracts the actual nav anchors.
-      const res = await request(app).get('/releases/calendar').expect(200);
+      const res = await app.testAgent.get('/releases/calendar').expect(200);
       // Prev/next anchors must exist as <a> elements, not as plain text.
       expect(extractCalendarNavHref(res.text, '← Previous')).not.toBeNull();
       expect(extractCalendarNavHref(res.text, 'Next →')).not.toBeNull();
@@ -2247,7 +2260,7 @@ describe('Phase 6B HTTP workflow', () => {
     it('uses explicit month from query (calendar header h2)', async () => {
       // Pin the rendered month to the exact query value via the <h2>
       // element, not the loose `toContain` that the previous test used.
-      const res = await request(app).get('/releases/calendar?month=2025-06').expect(200);
+      const res = await app.testAgent.get('/releases/calendar?month=2025-06').expect(200);
       expect(extractCalendarHeaderMonth(res.text)).toBe('2025-06');
     });
 
@@ -2260,7 +2273,7 @@ describe('Phase 6B HTTP workflow', () => {
         plannedDate: '2025-06-15',
       });
 
-      const res = await request(app).get('/releases/calendar?month=2025-06').expect(200);
+      const res = await app.testAgent.get('/releases/calendar?month=2025-06').expect(200);
       // The release title must be rendered inside the calendar grid
       // (in a .calendar-release div, not in any other location).
       expect(res.text).toMatch(/<div class="calendar-release"[^>]*>[\s\S]*?ZZZ-June-15-Calendar-Release[\s\S]*?<\/div>/);
@@ -2273,7 +2286,7 @@ describe('Phase 6B HTTP workflow', () => {
     });
 
     it('shows empty days without releases (calendar grid has 30 day cells for June)', async () => {
-      const res = await request(app).get('/releases/calendar?month=2025-06').expect(200);
+      const res = await app.testAgent.get('/releases/calendar?month=2025-06').expect(200);
       // The grid emits one <td class="calendar-day">…</td> per day
       // plus leading and trailing empty cells (with the additional
       // "empty-day" modifier) to fill the week. The previous test
@@ -2303,7 +2316,7 @@ describe('Phase 6B HTTP workflow', () => {
       db.prepare(`UPDATE assets SET is_present = 0, missing_since = datetime('now') WHERE id = ?`).run(asset.id);
       db.prepare(`INSERT INTO release_assets (release_id, asset_id, role, sort_order) VALUES (?, ?, 'attachment', 0)`).run(Number(releaseId), asset.id);
 
-      const res = await request(app).get('/releases/calendar?month=2025-06').expect(200);
+      const res = await app.testAgent.get('/releases/calendar?month=2025-06').expect(200);
       expect(res.text).toContain('Missing Calendar Release');
       expect(res.text).toContain('⚠');
     });
@@ -2317,7 +2330,7 @@ describe('Phase 6B HTTP workflow', () => {
         plannedDate: '2025-06-15',
       });
 
-      const res = await request(app).get('/releases/calendar?month=2025-06').expect(200);
+      const res = await app.testAgent.get('/releases/calendar?month=2025-06').expect(200);
       expect(res.text).toMatch(new RegExp(`href="/releases/${releaseId}"`));
     });
 
@@ -2397,7 +2410,7 @@ describe('Phase 6B HTTP workflow', () => {
       // The HTTP query is encoded — Express decodes it before reaching
       // the service. We pass the literal bad value, URL-encoded if it
       // contains special characters.
-      const res = await request(app)
+      const res = await app.testAgent
         .get(`/releases/calendar?month=${encodeURIComponent(bad)}`)
         .expect(200);
 
@@ -2422,7 +2435,7 @@ describe('Phase 6B HTTP workflow', () => {
 
     it('calendar nav strips all list/board filters, page state, and unknown params', async () => {
       const noisyQuery = 'month=2025-06&readiness=publishable&status=ready&project=1&schedule=overdue&page=3&pageSize=10&sort=title&order=asc&includeArchived=1&junk=x';
-      const res = await request(app).get(`/releases/calendar?${noisyQuery}`).expect(200);
+      const res = await app.testAgent.get(`/releases/calendar?${noisyQuery}`).expect(200);
 
       const prevHref = extractCalendarNavHref(res.text, '← Previous');
       const nextHref = extractCalendarNavHref(res.text, 'Next →');
@@ -2451,14 +2464,14 @@ describe('Phase 6B HTTP workflow', () => {
         status: 'planned',
         plannedDate: '2025-06-15',
       });
-      await request(app).post(`/projects/${projectId}/archive`).expect(302);
+      await app.testAgent.post(`/projects/${projectId}/archive`).send({ _csrf: app.testCsrfToken }).expect(302);
 
-      const res = await request(app).get('/releases/calendar?month=2025-06').expect(200);
+      const res = await app.testAgent.get('/releases/calendar?month=2025-06').expect(200);
       expect(res.text).not.toContain('Hidden From Calendar');
     });
 
     it('has navigation links to list and board', async () => {
-      const res = await request(app).get('/releases/calendar').expect(200);
+      const res = await app.testAgent.get('/releases/calendar').expect(200);
       expect(res.text).toContain('href="/releases"');
       expect(res.text).toContain('href="/releases?view=board"');
     });
@@ -2472,7 +2485,7 @@ describe('Phase 6B HTTP workflow', () => {
     // both links remain.
 
     it('lower boundary (1000-01) has no Previous anchor (only a disabled span)', async () => {
-      const res = await request(app).get('/releases/calendar?month=1000-01').expect(200);
+      const res = await app.testAgent.get('/releases/calendar?month=1000-01').expect(200);
       // The rendered header must show exactly 1000-01.
       expect(extractCalendarHeaderMonth(res.text)).toBe('1000-01');
       // No anchor for the previous month (which would be 0999-12). Use
@@ -2489,7 +2502,7 @@ describe('Phase 6B HTTP workflow', () => {
     });
 
     it('upper boundary (9999-12) has no Next anchor (only a disabled span)', async () => {
-      const res = await request(app).get('/releases/calendar?month=9999-12').expect(200);
+      const res = await app.testAgent.get('/releases/calendar?month=9999-12').expect(200);
       expect(extractCalendarHeaderMonth(res.text)).toBe('9999-12');
       // No anchor for the next month (which would be 10000-01).
       expect(extractCalendarNavHref(res.text, 'Next →')).toBeNull();
@@ -2504,7 +2517,7 @@ describe('Phase 6B HTTP workflow', () => {
     });
 
     it('in-range months retain both Previous and Next links with exact month= values', async () => {
-      const res = await request(app).get('/releases/calendar?month=2025-06').expect(200);
+      const res = await app.testAgent.get('/releases/calendar?month=2025-06').expect(200);
       expect(extractCalendarHeaderMonth(res.text)).toBe('2025-06');
       const prevHref = extractCalendarNavHref(res.text, '← Previous');
       const nextHref = extractCalendarNavHref(res.text, 'Next →');
@@ -2519,7 +2532,7 @@ describe('Phase 6B HTTP workflow', () => {
     it('in-range boundary months (1000-02, 9999-11) keep both links with exact values', async () => {
       // 1000-02 — just above the lower boundary. Previous must point to
       // 1000-01 (still in range), Next must point to 1000-03.
-      const lowRes = await request(app).get('/releases/calendar?month=1000-02').expect(200);
+      const lowRes = await app.testAgent.get('/releases/calendar?month=1000-02').expect(200);
       expect(extractCalendarHeaderMonth(lowRes.text)).toBe('1000-02');
       const lowPrev = new URL(extractCalendarNavHref(lowRes.text, '← Previous'), 'http://localhost');
       const lowNext = new URL(extractCalendarNavHref(lowRes.text, 'Next →'), 'http://localhost');
@@ -2527,7 +2540,7 @@ describe('Phase 6B HTTP workflow', () => {
       expect(lowNext.searchParams.get('month')).toBe('1000-03');
 
       // 9999-11 — just below the upper boundary.
-      const highRes = await request(app).get('/releases/calendar?month=9999-11').expect(200);
+      const highRes = await app.testAgent.get('/releases/calendar?month=9999-11').expect(200);
       expect(extractCalendarHeaderMonth(highRes.text)).toBe('9999-11');
       const highPrev = new URL(extractCalendarNavHref(highRes.text, '← Previous'), 'http://localhost');
       const highNext = new URL(extractCalendarNavHref(highRes.text, 'Next →'), 'http://localhost');
@@ -2547,13 +2560,13 @@ describe('Phase 6B HTTP workflow', () => {
         status: 'planned',
       });
 
-      const res = await request(app).get(`/releases/${releaseId}`).expect(200);
+      const res = await app.testAgent.get(`/releases/${releaseId}`).expect(200);
       expect(res.text).toContain('Detail Regression Release');
     });
 
     it('release create form still renders', async () => {
       const projectId = await createProject(app, { title: 'Create Regression' });
-      const res = await request(app).get(`/releases/new?projectId=${projectId}`).expect(200);
+      const res = await app.testAgent.get(`/releases/new?projectId=${projectId}`).expect(200);
       expect(res.text).toContain('Create');
     });
 
@@ -2565,7 +2578,7 @@ describe('Phase 6B HTTP workflow', () => {
         status: 'idea',
       });
 
-      const res = await request(app).get(`/releases/${releaseId}/edit`).expect(200);
+      const res = await app.testAgent.get(`/releases/${releaseId}/edit`).expect(200);
       expect(res.text).toContain('Edit');
     });
 
@@ -2577,9 +2590,9 @@ describe('Phase 6B HTTP workflow', () => {
         status: 'idea',
       });
 
-      await request(app).post(`/releases/${releaseId}/archive`).expect(302);
+      await app.testAgent.post(`/releases/${releaseId}/archive`).send({ _csrf: app.testCsrfToken }).expect(302);
 
-      const res = await request(app).get(`/releases/${releaseId}`).expect(200);
+      const res = await app.testAgent.get(`/releases/${releaseId}`).expect(200);
       expect(res.text).toContain('Archived');
     });
 
@@ -2593,11 +2606,12 @@ describe('Phase 6B HTTP workflow', () => {
       });
 
       // 2. Archive the parent project.
-      await request(app).post(`/projects/${projectId}/archive`).expect(302);
+      await app.testAgent.post(`/projects/${projectId}/archive`).send({ _csrf: app.testCsrfToken }).expect(302);
 
       // 3. POST the release archive endpoint — must be rejected.
-      await request(app)
+      await app.testAgent
         .post(`/releases/${releaseId}/archive`)
+        .send({ _csrf: app.testCsrfToken })
         .expect(422);
 
       // 4. Query the database — archived_at must still be NULL.
@@ -2626,15 +2640,16 @@ describe('Phase 6B HTTP workflow', () => {
     async function createReleaseWithLinkedAsset(projectId, title) {
       const releaseId = await createRelease(app, { projectId, title, status: 'idea' });
       // Scan to create the asset record
-      await request(app).post(`/projects/${projectId}/scan`).expect(302);
+      await app.testAgent.post(`/projects/${projectId}/scan`).send({ _csrf: app.testCsrfToken }).expect(302);
       const assetRepo = createAssetRepository(db);
       const assets = assetRepo.findByProjectId(projectId);
       expect(assets.length).toBeGreaterThan(0);
       const asset = assets[0];
       // Link via POST
-      await request(app)
+      await app.testAgent
         .post(`/releases/${releaseId}/assets`)
         .send(`selectedAssetIds=${asset.id}`)
+        .send('_csrf=' + encodeURIComponent(app.testCsrfToken))
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
       return { releaseId, assetId: asset.id };
@@ -2646,9 +2661,9 @@ describe('Phase 6B HTTP workflow', () => {
       it('archived project asset page contains no scan form or submit button', async () => {
         const projectId = await createProjectWithFile({ title: 'Archived Scan Hide' });
         // Archive the project
-        await request(app).post(`/projects/${projectId}/archive`).expect(302);
+        await app.testAgent.post(`/projects/${projectId}/archive`).send({ _csrf: app.testCsrfToken }).expect(302);
 
-        const res = await request(app).get(`/projects/${projectId}/assets`).expect(200);
+        const res = await app.testAgent.get(`/projects/${projectId}/assets`).expect(200);
         // The scan form must not be rendered — assert the form markup is absent
         expect(res.text).not.toContain(`action="/projects/${projectId}/scan"`);
         expect(res.text).not.toMatch(/<button[^>]*>\s*Scan Now\s*<\/button>/);
@@ -2663,7 +2678,7 @@ describe('Phase 6B HTTP workflow', () => {
       it('active project contains the actual scan form and submit button', async () => {
         const projectId = await createProjectWithFile({ title: 'Active Scan Show' });
 
-        const res = await request(app).get(`/projects/${projectId}/assets`).expect(200);
+        const res = await app.testAgent.get(`/projects/${projectId}/assets`).expect(200);
         // Assert the form element with the correct action
         expect(res.text).toContain(`<form method="post" action="/projects/${projectId}/scan" class="inline-form">`);
         // Assert the submit button inside the form
@@ -2675,10 +2690,11 @@ describe('Phase 6B HTTP workflow', () => {
       it('POST scan for archived project is rejected', async () => {
         const projectId = await createProjectWithFile({ title: 'Archived Scan Reject' });
         // Archive the project
-        await request(app).post(`/projects/${projectId}/archive`).expect(302);
+        await app.testAgent.post(`/projects/${projectId}/archive`).send({ _csrf: app.testCsrfToken }).expect(302);
 
-        await request(app)
+        await app.testAgent
           .post(`/projects/${projectId}/scan`)
+          .send({ _csrf: app.testCsrfToken })
           .expect(302)
           .expect('Location', `/projects/${projectId}/assets?scan_error=archived`);
       });
@@ -2689,7 +2705,7 @@ describe('Phase 6B HTTP workflow', () => {
         expect(projectDir).not.toBeNull();
 
         // Establish baseline: scan the initial file
-        await request(app).post(`/projects/${projectId}/scan`).expect(302);
+        await app.testAgent.post(`/projects/${projectId}/scan`).send({ _csrf: app.testCsrfToken }).expect(302);
 
         // Create filesystem conditions that would cause each scanner action:
         //   1. Insert — a new file on disk not yet in the DB
@@ -2715,11 +2731,12 @@ describe('Phase 6B HTTP workflow', () => {
         expect(beforeRows.length).toBeGreaterThanOrEqual(1);
 
         // Archive the project
-        await request(app).post(`/projects/${projectId}/archive`).expect(302);
+        await app.testAgent.post(`/projects/${projectId}/archive`).send({ _csrf: app.testCsrfToken }).expect(302);
 
         // Attempt scan — must be rejected
-        await request(app)
+        await app.testAgent
           .post(`/projects/${projectId}/scan`)
+          .send({ _csrf: app.testCsrfToken })
           .expect(302)
           .expect('Location', `/projects/${projectId}/assets?scan_error=archived`);
 
@@ -2758,7 +2775,7 @@ describe('Phase 6B HTTP workflow', () => {
         const projectId = await createProjectWithFile({ title: 'Usage Link Test' });
         const { releaseId } = await createReleaseWithLinkedAsset(projectId, 'Usage Link Release');
 
-        const res = await request(app).get(`/projects/${projectId}/assets`).expect(200);
+        const res = await app.testAgent.get(`/projects/${projectId}/assets`).expect(200);
         // The usage link should point to the release detail, not the asset-selection page
         const expectedHref = `/releases/${releaseId}`;
         expect(res.text).toContain(`href="${expectedHref}"`);
@@ -2774,9 +2791,9 @@ describe('Phase 6B HTTP workflow', () => {
         const { releaseId } = await createReleaseWithLinkedAsset(projectId, 'Archived UI Release');
 
         // Archive the release
-        await request(app).post(`/releases/${releaseId}/archive`).expect(302);
+        await app.testAgent.post(`/releases/${releaseId}/archive`).send({ _csrf: app.testCsrfToken }).expect(302);
 
-        const res = await request(app).get(`/releases/${releaseId}/assets`).expect(200);
+        const res = await app.testAgent.get(`/releases/${releaseId}/assets`).expect(200);
         // No bulk-selection checkboxes (form is structurally omitted for read-only)
         expect(res.text).not.toContain('type="checkbox"');
         // No role selects from the legacy form
@@ -2794,9 +2811,9 @@ describe('Phase 6B HTTP workflow', () => {
         const { releaseId } = await createReleaseWithLinkedAsset(projectId, 'Archived No Save Release');
 
         // Archive the release
-        await request(app).post(`/releases/${releaseId}/archive`).expect(302);
+        await app.testAgent.post(`/releases/${releaseId}/archive`).send({ _csrf: app.testCsrfToken }).expect(302);
 
-        const res = await request(app).get(`/releases/${releaseId}/assets`).expect(200);
+        const res = await app.testAgent.get(`/releases/${releaseId}/assets`).expect(200);
         expect(res.text).not.toContain('Save Selection');
       });
 
@@ -2804,7 +2821,7 @@ describe('Phase 6B HTTP workflow', () => {
         const projectId = await createProjectWithFile({ title: 'Active Release Editable' });
         const { releaseId } = await createReleaseWithLinkedAsset(projectId, 'Active Editable Release');
 
-        const res = await request(app).get(`/releases/${releaseId}/assets`).expect(200);
+        const res = await app.testAgent.get(`/releases/${releaseId}/assets`).expect(200);
         // Checkboxes present and not disabled
         expect(res.text).toContain('type="checkbox"');
         expect(res.text).not.toMatch(/type="checkbox"[^>]*disabled/);
@@ -2818,9 +2835,9 @@ describe('Phase 6B HTTP workflow', () => {
         const { releaseId } = await createReleaseWithLinkedAsset(projectId, 'Archived Parent Release');
 
         // Archive the PARENT project (not the release)
-        await request(app).post(`/projects/${projectId}/archive`).expect(302);
+        await app.testAgent.post(`/projects/${projectId}/archive`).send({ _csrf: app.testCsrfToken }).expect(302);
 
-        const res = await request(app).get(`/releases/${releaseId}/assets`).expect(200);
+        const res = await app.testAgent.get(`/releases/${releaseId}/assets`).expect(200);
         // No bulk-selection checkboxes (form is structurally omitted for read-only)
         expect(res.text).not.toContain('type="checkbox"');
         // Should show the parent-archived notice
@@ -2834,12 +2851,13 @@ describe('Phase 6B HTTP workflow', () => {
         const { releaseId } = await createReleaseWithLinkedAsset(projectId, 'Archived POST Reject Release');
 
         // Archive the release
-        await request(app).post(`/releases/${releaseId}/archive`).expect(302);
+        await app.testAgent.post(`/releases/${releaseId}/archive`).send({ _csrf: app.testCsrfToken }).expect(302);
 
         // Attempt to POST asset selection
-        await request(app)
+        await app.testAgent
           .post(`/releases/${releaseId}/assets`)
           .send('selectedAssetIds=99999')
+          .send('_csrf=' + encodeURIComponent(app.testCsrfToken))
           .set('Content-Type', 'application/x-www-form-urlencoded')
           .expect(422);
       });
@@ -2855,10 +2873,10 @@ describe('Phase 6B HTTP workflow', () => {
         for (let i = 0; i < 15; i++) {
           fs.writeFileSync(path.join(projectDir, `page_${i}.txt`), 'content');
         }
-        await request(app).post(`/projects/${projectId}/scan`).expect(302);
+        await app.testAgent.post(`/projects/${projectId}/scan`).send({ _csrf: app.testCsrfToken }).expect(302);
 
         // Request with valid filters plus junk=x
-        const res = await request(app)
+        const res = await app.testAgent
           .get(`/projects/${projectId}/assets?presence=present&usage=all&pageSize=10&junk=x`)
           .expect(200);
 
@@ -2896,7 +2914,7 @@ describe('Phase 6B HTTP workflow', () => {
       });
       attachPresentAssetToRelease(db, Number(projectId), Number(releaseId), { name: 'asset.txt', present: true });
 
-      const res = await request(app).get(`/releases/${releaseId}`).expect(200);
+      const res = await app.testAgent.get(`/releases/${releaseId}`).expect(200);
       // The readiness panel must contain the scan-state wording
       const panelMatch = res.text.match(/<section class="panel panel--readiness">[\s\S]*?<\/section>/);
       expect(panelMatch).not.toBeNull();
@@ -2914,7 +2932,7 @@ describe('Phase 6B HTTP workflow', () => {
       });
       // No assets — blocked by assets_selected
 
-      const res = await request(app).get(`/releases/${releaseId}`).expect(200);
+      const res = await app.testAgent.get(`/releases/${releaseId}`).expect(200);
       const panelMatch = res.text.match(/<section class="panel panel--readiness">[\s\S]*?<\/section>/);
       expect(panelMatch).not.toBeNull();
       expect(panelMatch[0]).toContain('Asset presence reflects the last completed scan');
@@ -2974,19 +2992,19 @@ describe('Phase 6B HTTP workflow', () => {
       // Keep the blocked release's facts unchanged: it has no selected asset.
       expect(db.prepare('SELECT COUNT(*) AS count FROM release_assets WHERE release_id = ?').get(Number(blockedId)).count).toBe(0);
 
-      const publishableDetail = await request(app).get(`/releases/${publishableId}`).expect(200);
+      const publishableDetail = await app.testAgent.get(`/releases/${publishableId}`).expect(200);
       const publishablePanel = findReadinessPanel(publishableDetail.text);
       expect(publishablePanel).not.toBeNull();
       expect(publishablePanel).toMatch(/<p class="readiness-badge readiness-publishable">Publishable<\/p>/);
 
-      const blockedDetail = await request(app).get(`/releases/${blockedId}`).expect(200);
+      const blockedDetail = await app.testAgent.get(`/releases/${blockedId}`).expect(200);
       const blockedPanel = findReadinessPanel(blockedDetail.text);
       expect(blockedPanel).not.toBeNull();
       expect(blockedPanel).toMatch(/<p class="readiness-badge readiness-blocked">Needs attention<\/p>/);
       expect(blockedPanel).toMatch(/<span class="check-label">\s*Assets selected\s*<\/span>/);
       expect(blockedPanel).toContain('0 selected');
 
-      const dashboard = await request(app).get('/').expect(200);
+      const dashboard = await app.testAgent.get('/').expect(200);
       const readyGroup = findAttentionGroup(dashboard.text, 'attention-ready');
       const blockedGroup = findAttentionGroup(dashboard.text, 'attention-blocked');
       expect(readyGroup).not.toBeNull();
@@ -2996,7 +3014,7 @@ describe('Phase 6B HTTP workflow', () => {
       expect(blockedGroup).toContain(`href="/releases/${blockedId}">Cross View Blocked Release</a>`);
       expect(blockedGroup).not.toContain(`Cross View Publishable Release`);
 
-      const list = await request(app).get('/releases').expect(200);
+      const list = await app.testAgent.get('/releases').expect(200);
       const publishableRow = findListRow(list.text, publishableId);
       const blockedRow = findListRow(list.text, blockedId);
       expect(publishableRow).not.toBeNull();
@@ -3005,7 +3023,7 @@ describe('Phase 6B HTTP workflow', () => {
       expect(blockedRow).toContain('No assets selected');
       expect(blockedRow).not.toContain('Publishable');
 
-      const board = await request(app).get('/releases?view=board').expect(200);
+      const board = await app.testAgent.get('/releases?view=board').expect(200);
       const publishableCard = findBoardCard(board.text, publishableId);
       const blockedCard = findBoardCard(board.text, blockedId);
       expect(publishableCard).not.toBeNull();
@@ -3014,7 +3032,7 @@ describe('Phase 6B HTTP workflow', () => {
       expect(blockedCard).toContain('No assets selected');
       expect(blockedCard).not.toContain('Publishable');
 
-      const calendar = await request(app).get('/releases/calendar?month=2025-06').expect(200);
+      const calendar = await app.testAgent.get('/releases/calendar?month=2025-06').expect(200);
       expect(calendar.text).toMatch(/<div class="calendar-nav"[^>]*>[\s\S]*?<h2>2025-06<\/h2>/);
       const publishableCalendarEntry = findCalendarEntry(calendar.text, publishableId);
       const blockedCalendarEntry = findCalendarEntry(calendar.text, blockedId);
@@ -3031,8 +3049,9 @@ describe('Phase 6B HTTP workflow', () => {
       const blockedBeforeAssets = db.prepare(
         'SELECT * FROM assets WHERE id IN (SELECT asset_id FROM release_assets WHERE release_id = ?)'
       ).all(Number(blockedId));
-      await request(app)
+      await app.testAgent
         .post(`/releases/${blockedId}/publish`)
+        .send({ _csrf: app.testCsrfToken })
         .expect(422);
       expect(snapshotReleaseRow(db, Number(blockedId))).toEqual(blockedBefore);
       expect(findReadinessFacts(db, Number(blockedId))).toEqual(blockedBeforeFacts);
@@ -3045,15 +3064,16 @@ describe('Phase 6B HTTP workflow', () => {
           .all(Number(blockedId))
       ).toEqual(blockedBeforeAssets);
       // Verify the release remains blocked by the same exact blocker keys
-      const blockedAfterDetail = await request(app).get(`/releases/${blockedId}`).expect(200);
+      const blockedAfterDetail = await app.testAgent.get(`/releases/${blockedId}`).expect(200);
       const blockedAfterPanel = findReadinessPanel(blockedAfterDetail.text);
       expect(blockedAfterPanel).not.toBeNull();
       expect(blockedAfterPanel).toMatch(/<p class="readiness-badge readiness-blocked">Needs attention<\/p>/);
       expect(blockedAfterPanel).toMatch(/<span class="check-label">\s*Assets selected\s*<\/span>/);
       expect(blockedAfterPanel).toContain('0 selected');
 
-      const publishableResponse = await request(app)
+      const publishableResponse = await app.testAgent
         .post(`/releases/${publishableId}/publish`)
+        .send({ _csrf: app.testCsrfToken })
         .expect(302);
       expect(publishableResponse.headers.location).toBe(`/releases/${publishableId}`);
     });

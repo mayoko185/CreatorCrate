@@ -25,6 +25,20 @@ const NOTICES = {
     variant: 'warning',
     text: 'Backup created successfully, but one or more older backups could not be automatically pruned. Check the backup directory permissions.',
   },
+  authentication_disabled: {
+    variant: 'warning',
+    text: 'Authentication has been disabled. Anyone who can reach this server can access CreatorCrate.',
+  },
+  auth_already_enabled: { variant: 'error', text: 'Authentication is already enabled.' },
+  auth_already_disabled: { variant: 'error', text: 'Authentication is already disabled.' },
+  auth_transition_conflict: {
+    variant: 'error',
+    text: 'Another authentication change is already in progress. Please try again in a moment.',
+  },
+  auth_transition_failed: {
+    variant: 'error',
+    text: 'Could not change the authentication setting. The previous configuration is still active.',
+  },
 };
 
 function resolveNotice(code) {
@@ -45,7 +59,14 @@ function resolveNotice(code) {
  *   re-pointing every other service/route at it — this module never touches
  *   any connection but the one it was given.
  */
-export function createSettingsRouter({ appName, db, backupService, maintenanceState, authService, cookieOptions, onDatabaseReplaced }) {
+function transitionFailureNotice(result) {
+  if (result.alreadyEnabled) return 'auth_already_enabled';
+  if (result.alreadyDisabled) return 'auth_already_disabled';
+  if (result.conflict) return 'auth_transition_conflict';
+  return 'auth_transition_failed';
+}
+
+export function createSettingsRouter({ appName, db, backupService, maintenanceState, authService, cookieOptions, onDatabaseReplaced, authTransitionService }) {
   const router = express.Router();
   const replaceDatabase = typeof onDatabaseReplaced === 'function' ? onDatabaseReplaced : () => {};
 
@@ -91,6 +112,75 @@ export function createSettingsRouter({ appName, db, backupService, maintenanceSt
       }
       clearSessionCookie(res, cookieOptions);
       res.redirect('/login?notice=password_rotated');
+    });
+
+    // Phase 13 — guarded disable-authentication workflow. Only reachable
+    // while authentication is enabled (requireAuth already protects it like
+    // any other route; authTransitionService.disable() also independently
+    // refuses if it somehow finds auth already disabled).
+    router.get('/security/disable', (_req, res) => {
+      res.render('settings/disable-confirm.njk', {
+        appName,
+        currentPasswordError: null,
+      });
+    });
+
+    router.post('/security/disable', (req, res) => {
+      const result = authTransitionService.disable({
+        username: res.locals.auth?.username,
+        currentPassword: req.body?.currentPassword,
+      });
+      if (!result.ok) {
+        if (result.currentPasswordError) {
+          res.status(400);
+          res.render('settings/disable-confirm.njk', {
+            appName,
+            currentPasswordError: result.currentPasswordError,
+          });
+          return;
+        }
+        res.redirect(`/settings/security?notice=${transitionFailureNotice(result)}`);
+        return;
+      }
+      clearSessionCookie(res, cookieOptions);
+      res.redirect('/settings/security?notice=authentication_disabled');
+    });
+  } else {
+    // Phase 13 — browser-based enable-authentication workflow. Available
+    // only while authentication is disabled; the app has no session/auth
+    // wall at all in this mode, so CSRF here is the disabled-mode anonymous
+    // pepper-derived token (see middleware/csrf.js), not session-bound.
+    router.get('/security', (req, res) => {
+      res.render('settings/security-disabled.njk', {
+        appName,
+        notice: resolveNotice(req.query.notice),
+        errors: [],
+        retainedUsername: '',
+      });
+    });
+
+    router.post('/security/enable', (req, res) => {
+      const username = typeof req.body?.username === 'string' ? req.body.username.trim().toLowerCase() : '';
+      const result = authTransitionService.enable({
+        username,
+        password: req.body?.password,
+        confirmation: req.body?.confirmPassword,
+      });
+      if (!result.ok) {
+        if (result.errors) {
+          res.status(400);
+          res.render('settings/security-disabled.njk', {
+            appName,
+            notice: null,
+            errors: result.errors,
+            retainedUsername: username,
+          });
+          return;
+        }
+        res.redirect(`/settings/security?notice=${transitionFailureNotice(result)}`);
+        return;
+      }
+      res.redirect('/login?notice=authentication_enabled');
     });
   }
 

@@ -23,6 +23,8 @@ import { createApp } from '../src/app.js';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { STATUS_DIR_MAP } from '../src/storage/project-storage.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
+import { ensureAuthEnablement } from '../src/auth/auth-state.js';
+import { getDisabledModeCsrf } from './helpers/auth.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 const STYLESHEET_PATH = fileURLToPath(new URL('../src/static/creatorcrate.css', import.meta.url));
@@ -55,8 +57,10 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
   let app;
   let tmpDir;
   let projectsRoot;
+  let agent;
+  let csrfToken;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-105c-'));
     projectsRoot = path.join(tmpDir, 'projects');
     fs.mkdirSync(projectsRoot, { recursive: true });
@@ -66,7 +70,11 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
     const dbPath = path.join(tmpDir, 'test.db');
     db = openDatabase(dbPath);
     runMigrations(db, MIGRATIONS_DIR);
-    app = createApp({ appName: 'CreatorCrate', db, projectsRoot });
+    const appDataRoot = path.join(tmpDir, 'app');
+    fs.mkdirSync(appDataRoot, { recursive: true });
+    const { csrfPepper } = ensureAuthEnablement(appDataRoot);
+    app = createApp({ appName: 'CreatorCrate', db, projectsRoot }, { appDataRoot, authState: { csrfPepper } });
+    ({ agent, csrfToken } = await getDisabledModeCsrf(app, appDataRoot));
   });
 
   afterEach(() => {
@@ -78,7 +86,7 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
 
   describe('release list and board', () => {
     it('release list has page-heading with New Release action', async () => {
-      const res = await request(app).get('/releases').expect(200);
+      const res = await agent.get('/releases').expect(200);
       expect(hasClass(res.text, 'page-heading')).toBe(true);
       expect(hasClass(res.text, 'page-heading-copy')).toBe(true);
       expect(res.text).toContain('New Release');
@@ -86,12 +94,12 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
     });
 
     it('release list has exactly one h1', async () => {
-      const res = await request(app).get('/releases').expect(200);
+      const res = await agent.get('/releases').expect(200);
       expect(countTags(res.text, 'h1')).toBe(1);
     });
 
     it('release list uses shared view-switcher-option pattern', async () => {
-      const res = await request(app).get('/releases').expect(200);
+      const res = await agent.get('/releases').expect(200);
       expect(res.text).toContain('view-switcher-option');
       expect(res.text).toContain('aria-label="View"');
       // List is the active view via aria-current, no dead active class
@@ -100,65 +108,65 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
     });
 
     it('release list uses data-table with table-scroll', async () => {
-      const projRes = await request(app)
-        .post('/projects')
+      const projRes = await agent.post('/projects')
         .send('title=List+Table+Test')
         .send('status=tbd')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
       const projectId = projRes.headers.location.replace('/projects/', '');
 
-      await request(app)
-        .post('/releases')
+      await agent.post('/releases')
         .send(`projectId=${projectId}`)
         .send('title=Release+List+Test')
         .send('status=idea')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
-      const res = await request(app).get('/releases').expect(200);
+      const res = await agent.get('/releases').expect(200);
       expect(hasClass(res.text, 'data-table')).toBe(true);
       expect(hasClass(res.text, 'table-scroll')).toBe(true);
     });
 
     it('release list uses status-badge for status column', async () => {
-      const projRes = await request(app)
-        .post('/projects')
+      const projRes = await agent.post('/projects')
         .send('title=Status+Badge+Release')
         .send('status=tbd')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
       const projectId = projRes.headers.location.replace('/projects/', '');
 
-      await request(app)
-        .post('/releases')
+      await agent.post('/releases')
         .send(`projectId=${projectId}`)
         .send('title=Badge+Test+Release')
         .send('status=drafting')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
-      const res = await request(app).get('/releases').expect(200);
+      const res = await agent.get('/releases').expect(200);
       expect(res.text).toContain('status-badge');
       expect(res.text).toMatch(/status-badge--draft/);
     });
 
     it('release list empty state uses shared partial', async () => {
-      const res = await request(app).get('/releases').expect(200);
+      const res = await agent.get('/releases').expect(200);
       expect(res.text).toContain('empty-state');
       expect(res.text).toContain('empty-state-heading');
     });
 
     it('board view uses status-badge in column headers', async () => {
-      const res = await request(app).get('/releases?view=board').expect(200);
+      const res = await agent.get('/releases?view=board').expect(200);
       expect(res.text).toContain('status-badge');
       expect(res.text).toContain('board-column-header');
     });
 
     it('board view renders a named bounded scroll container', async () => {
-      const res = await request(app).get('/releases?view=board').expect(200);
+      const res = await agent.get('/releases?view=board').expect(200);
       const css = extractStyle(res.text);
       expect(res.text).toContain('<div class="board-scroll" tabindex="0" aria-label="Release board columns">');
       expect(res.text).toContain('<div class="board-container">');
@@ -168,40 +176,41 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
     });
 
     it('board view filters have unique label IDs (no duplicates)', async () => {
-      const res = await request(app).get('/releases?view=board').expect(200);
+      const res = await agent.get('/releases?view=board').expect(200);
       const ids = res.text.match(/id="board-[^"]+"/g) || [];
       const uniqueIds = new Set(ids);
       expect(ids.length).toBe(uniqueIds.size);
     });
 
     it('list view filters have unique label IDs (no duplicates)', async () => {
-      const res = await request(app).get('/releases').expect(200);
+      const res = await agent.get('/releases').expect(200);
       const ids = res.text.match(/id="list-[^"]+"/g) || [];
       const uniqueIds = new Set(ids);
       expect(ids.length).toBe(uniqueIds.size);
     });
 
     it('archived releases use status-badge instead of archived-badge span', async () => {
-      const projRes = await request(app)
-        .post('/projects')
+      const projRes = await agent.post('/projects')
         .send('title=Archived+Badge+Release')
         .send('status=tbd')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
       const projectId = projRes.headers.location.replace('/projects/', '');
 
-      const createRes = await request(app)
-        .post('/releases')
+      const createRes = await agent.post('/releases')
         .send(`projectId=${projectId}`)
         .send('title=Archived+Release+Badge')
         .send('status=idea')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
-      await request(app).post(`${createRes.headers.location}/archive`).expect(302);
+      await agent.post(`${createRes.headers.location}/archive`).send('_csrf=' + encodeURIComponent(csrfToken))
+        .expect(302);
 
-      const res = await request(app).get('/releases?includeArchived=1').expect(200);
+      const res = await agent.get('/releases?includeArchived=1').expect(200);
       expect(res.text).toMatch(/status-badge--archived/);
     });
   });
@@ -213,44 +222,44 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
 
     for (const status of statuses) {
       it(`renders "${status}" with status-badge in release list`, async () => {
-        const projRes = await request(app)
-          .post('/projects')
+        const projRes = await agent.post('/projects')
           .send(`title=Status+${status}+Release`)
           .send('status=tbd')
           .send('priority=normal')
           .set('Content-Type', 'application/x-www-form-urlencoded')
+          .send('_csrf=' + encodeURIComponent(csrfToken))
           .expect(302);
         const projectId = projRes.headers.location.replace('/projects/', '');
 
-        await request(app)
-          .post('/releases')
+        await agent.post('/releases')
           .send(`projectId=${projectId}`)
           .send(`title=Release+Status+${status}`)
           .send(`status=${status}`)
           .set('Content-Type', 'application/x-www-form-urlencoded')
+          .send('_csrf=' + encodeURIComponent(csrfToken))
           .expect(302);
 
-        const res = await request(app).get('/releases').expect(200);
+        const res = await agent.get('/releases').expect(200);
         expect(res.text).toContain('status-badge');
       });
     }
 
     it('renders "published" with status-badge after publishing', async () => {
-      const projRes = await request(app)
-        .post('/projects')
+      const projRes = await agent.post('/projects')
         .send('title=Status+Published+Release')
         .send('status=tbd')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
       const projectId = projRes.headers.location.replace('/projects/', '');
 
-      const relRes = await request(app)
-        .post('/releases')
+      const relRes = await agent.post('/releases')
         .send(`projectId=${projectId}`)
         .send('title=Release+Status+published')
         .send('status=ready')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
       // Add an asset so it can be published
@@ -258,74 +267,75 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
       const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
       const matching = entries.filter(e => e.endsWith(`-${slug}`));
       fs.writeFileSync(path.join(projectsRoot, 'tbd', matching[0], 'test.txt'), 'hello');
-      await request(app).post(`/projects/${projectId}/scan`).expect(302);
+      await agent.post(`/projects/${projectId}/scan`).send('_csrf=' + encodeURIComponent(csrfToken))
+        .expect(302);
 
       const { createAssetRepository } = await import('../src/data/asset-repository.js');
       const assetRepo = createAssetRepository(db);
       const assets = assetRepo.findByProjectId(Number(projectId));
       const assetId = String(assets[0].id);
 
-      await request(app)
-        .post(`${relRes.headers.location}/assets`)
+      await agent.post(`${relRes.headers.location}/assets`)
         .send(`selectedAssetIds[]=${assetId}`)
         .send('roles[]=primary')
         .send('sortOrder[]=0')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
-      await request(app)
-        .post(`${relRes.headers.location}/publish`)
+      await agent.post(`${relRes.headers.location}/publish`)
         .send('publishedDate=2026-08-01')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
-      const res = await request(app).get('/releases').expect(200);
+      const res = await agent.get('/releases').expect(200);
       expect(res.text).toContain('status-badge--published');
     });
 
     it('release detail uses status-badge for release status', async () => {
-      const projRes = await request(app)
-        .post('/projects')
+      const projRes = await agent.post('/projects')
         .send('title=Detail+Status+Badge')
         .send('status=tbd')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
       const projectId = projRes.headers.location.replace('/projects/', '');
 
-      const createRes = await request(app)
-        .post('/releases')
+      const createRes = await agent.post('/releases')
         .send(`projectId=${projectId}`)
         .send('title=Detail+Badge+Test')
         .send('status=ready')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
-      const res = await request(app).get(createRes.headers.location).expect(200);
+      const res = await agent.get(createRes.headers.location).expect(200);
       expect(res.text).toContain('status-badge');
       expect(res.text).toMatch(/status-badge--active/);
     });
 
     it('dates in release detail have context labels', async () => {
-      const projRes = await request(app)
-        .post('/projects')
+      const projRes = await agent.post('/projects')
         .send('title=Date+Label+Test')
         .send('status=tbd')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
       const projectId = projRes.headers.location.replace('/projects/', '');
 
-      const createRes = await request(app)
-        .post('/releases')
+      const createRes = await agent.post('/releases')
         .send(`projectId=${projectId}`)
         .send('title=Date+Labels')
         .send('status=idea')
         .send('plannedDate=2025-12-01')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
-      const res = await request(app).get(createRes.headers.location).expect(200);
+      const res = await agent.get(createRes.headers.location).expect(200);
       expect(res.text).toContain('(release target)');
     });
   });
@@ -334,21 +344,21 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
 
   describe('release calendar', () => {
     it('calendar uses page-heading with view switcher', async () => {
-      const res = await request(app).get('/releases/calendar').expect(200);
+      const res = await agent.get('/releases/calendar').expect(200);
       expect(hasClass(res.text, 'page-heading')).toBe(true);
       expect(hasClass(res.text, 'page-heading-copy')).toBe(true);
       expect(countTags(res.text, 'h1')).toBe(1);
     });
 
     it('calendar has view-switcher links back to list and board', async () => {
-      const res = await request(app).get('/releases/calendar').expect(200);
+      const res = await agent.get('/releases/calendar').expect(200);
       expect(res.text).toContain('view-switcher-option');
       expect(res.text).toMatch(/href="\/releases"/);
       expect(res.text).toMatch(/href="\/releases\?view=board"/);
     });
 
     it('calendar renders a named bounded scroll container for narrow screens', async () => {
-      const res = await request(app).get('/releases/calendar').expect(200);
+      const res = await agent.get('/releases/calendar').expect(200);
       const css = extractStyle(res.text);
       expect(res.text).toContain('<div class="calendar-scroll" tabindex="0" aria-label="Release calendar grid">');
       expect(res.text).toContain('<table class="calendar-table">');
@@ -358,25 +368,25 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
     });
 
     it('calendar uses status-badge partial instead of inline status classes', async () => {
-      const projRes = await request(app)
-        .post('/projects')
+      const projRes = await agent.post('/projects')
         .send('title=Calendar+Badge+Test')
         .send('status=tbd')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
       const projectId = projRes.headers.location.replace('/projects/', '');
 
-      await request(app)
-        .post('/releases')
+      await agent.post('/releases')
         .send(`projectId=${projectId}`)
         .send('title=Calendar+Release+Badge')
         .send('status=planned')
         .send('plannedDate=2025-06-15')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
-      const res = await request(app).get('/releases/calendar?month=2025-06').expect(200);
+      const res = await agent.get('/releases/calendar?month=2025-06').expect(200);
       expect(res.text).toContain('status-badge');
     });
 
@@ -386,7 +396,7 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
       // releases are marked individually via the "empty" day-cell class
       // rather than swapping the whole page for the shared empty-state
       // partial, which would strand the user without month navigation.
-      const res = await request(app).get('/releases/calendar?month=2099-01').expect(200);
+      const res = await agent.get('/releases/calendar?month=2099-01').expect(200);
       expect(res.text).toContain('<table class="calendar-table">');
       expect(res.text).toMatch(/<td class="calendar-day empty"[^>]*>/);
       expect(res.text).not.toContain('<div class="calendar-release');
@@ -397,69 +407,69 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
 
   describe('release detail', () => {
     it('has exactly one h1', async () => {
-      const projRes = await request(app)
-        .post('/projects')
+      const projRes = await agent.post('/projects')
         .send('title=Detail+H1+Test')
         .send('status=tbd')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
       const projectId = projRes.headers.location.replace('/projects/', '');
 
-      const createRes = await request(app)
-        .post('/releases')
+      const createRes = await agent.post('/releases')
         .send(`projectId=${projectId}`)
         .send('title=H1+Detail+Release')
         .send('status=idea')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
-      const res = await request(app).get(createRes.headers.location).expect(200);
+      const res = await agent.get(createRes.headers.location).expect(200);
       expect(countTags(res.text, 'h1')).toBe(1);
     });
 
     it('uses page-heading with edit action', async () => {
-      const projRes = await request(app)
-        .post('/projects')
+      const projRes = await agent.post('/projects')
         .send('title=Detail+Action+Test')
         .send('status=tbd')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
       const projectId = projRes.headers.location.replace('/projects/', '');
 
-      const createRes = await request(app)
-        .post('/releases')
+      const createRes = await agent.post('/releases')
         .send(`projectId=${projectId}`)
         .send('title=Action+Test+Release')
         .send('status=idea')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
-      const res = await request(app).get(createRes.headers.location).expect(200);
+      const res = await agent.get(createRes.headers.location).expect(200);
       expect(hasClass(res.text, 'page-heading')).toBe(true);
       expect(res.text).toContain('Edit');
     });
 
     it('shows destructive section with archive button for non-archived releases', async () => {
-      const projRes = await request(app)
-        .post('/projects')
+      const projRes = await agent.post('/projects')
         .send('title=Destructive+Section+Test')
         .send('status=tbd')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
       const projectId = projRes.headers.location.replace('/projects/', '');
 
-      const createRes = await request(app)
-        .post('/releases')
+      const createRes = await agent.post('/releases')
         .send(`projectId=${projectId}`)
         .send('title=Destructive+Release')
         .send('status=idea')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
-      const res = await request(app).get(createRes.headers.location).expect(200);
+      const res = await agent.get(createRes.headers.location).expect(200);
       expect(hasClass(res.text, 'destructive-section')).toBe(true);
       expect(hasClass(res.text, 'button-danger')).toBe(true);
       expect(res.text).toContain('Danger zone');
@@ -467,83 +477,85 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
     });
 
     it('hides destructive section for archived releases', async () => {
-      const projRes = await request(app)
-        .post('/projects')
+      const projRes = await agent.post('/projects')
         .send('title=Archived+No+Danger+Release')
         .send('status=tbd')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
       const projectId = projRes.headers.location.replace('/projects/', '');
 
-      const createRes = await request(app)
-        .post('/releases')
+      const createRes = await agent.post('/releases')
         .send(`projectId=${projectId}`)
         .send('title=Archived+Release+No+Danger')
         .send('status=idea')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
-      await request(app).post(`${createRes.headers.location}/archive`).expect(302);
+      await agent.post(`${createRes.headers.location}/archive`).send('_csrf=' + encodeURIComponent(csrfToken))
+        .expect(302);
 
-      const res = await request(app).get(createRes.headers.location).expect(200);
+      const res = await agent.get(createRes.headers.location).expect(200);
       expect(hasClass(res.text, 'destructive-section')).toBe(false);
     });
 
     it('uses shared notice partial for archived and published states', async () => {
-      const projRes = await request(app)
-        .post('/projects')
+      const projRes = await agent.post('/projects')
         .send('title=Notice+Test+Release')
         .send('status=tbd')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
       const projectId = projRes.headers.location.replace('/projects/', '');
 
-      const createRes = await request(app)
-        .post('/releases')
+      const createRes = await agent.post('/releases')
         .send(`projectId=${projectId}`)
         .send('title=Notice+Release')
         .send('status=idea')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
-      await request(app).post(`${createRes.headers.location}/archive`).expect(302);
+      await agent.post(`${createRes.headers.location}/archive`).send('_csrf=' + encodeURIComponent(csrfToken))
+        .expect(302);
 
-      const res = await request(app).get(createRes.headers.location).expect(200);
+      const res = await agent.get(createRes.headers.location).expect(200);
       expect(res.text).toContain('notice--warning');
       expect(res.text).toContain('read-only');
     });
 
     it('uses shared panel class for readiness section', async () => {
-      const projRes = await request(app)
-        .post('/projects')
+      const projRes = await agent.post('/projects')
         .send('title=Panel+Test+Release')
         .send('status=tbd')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
       const projectId = projRes.headers.location.replace('/projects/', '');
 
-      const createRes = await request(app)
-        .post('/releases')
+      const createRes = await agent.post('/releases')
         .send(`projectId=${projectId}`)
         .send('title=Panel+Release')
         .send('status=ready')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
-      const res = await request(app).get(createRes.headers.location).expect(200);
+      const res = await agent.get(createRes.headers.location).expect(200);
       expect(res.text).toContain('class="panel panel--readiness"');
     });
 
     it('release detail uses data-table for selected assets', async () => {
-      const projRes = await request(app)
-        .post('/projects')
+      const projRes = await agent.post('/projects')
         .send('title=Table+Test+Release')
         .send('status=tbd')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
       const projectId = projRes.headers.location.replace('/projects/', '');
 
@@ -552,27 +564,28 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
       const matching = entries.filter(e => e.endsWith(`-${slug}`));
       const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
       fs.writeFileSync(path.join(projectDir, 'detail-selected.txt'), 'selected');
-      await request(app).post(`/projects/${projectId}/scan`).expect(302);
+      await agent.post(`/projects/${projectId}/scan`).send('_csrf=' + encodeURIComponent(csrfToken))
+        .expect(302);
       const assetRepo = createAssetRepository(db);
       const asset = assetRepo.findByProjectId(Number(projectId)).find(a => a.filename === 'detail-selected.txt');
 
-      const createRes = await request(app)
-        .post('/releases')
+      const createRes = await agent.post('/releases')
         .send(`projectId=${projectId}`)
         .send('title=Table+Release')
         .send('status=idea')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
-      await request(app)
-        .post(`${createRes.headers.location}/assets`)
+      await agent.post(`${createRes.headers.location}/assets`)
         .send(`selectedAssetIds[]=${asset.id}`)
         .send('roles[]=primary')
         .send('sortOrder[]=0')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
-      const res = await request(app).get(createRes.headers.location).expect(200);
+      const res = await agent.get(createRes.headers.location).expect(200);
       const selectedSection = extractSectionByHeading(res.text, 'Selected Assets');
       expect(selectedSection).toContain('<div class="table-scroll" tabindex="0" aria-label="Selected release assets">');
       expect(selectedSection).toContain('<table class="data-table">');
@@ -586,16 +599,16 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
 
   describe('release form shared contract', () => {
     it('create form has form sections with visible labels', async () => {
-      const projRes = await request(app)
-        .post('/projects')
+      const projRes = await agent.post('/projects')
         .send('title=Form+Section+Test')
         .send('status=tbd')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
       const projectId = projRes.headers.location.replace('/projects/', '');
 
-      const res = await request(app).get(`/releases/new?projectId=${projectId}`).expect(200);
+      const res = await agent.get(`/releases/new?projectId=${projectId}`).expect(200);
       expect(res.text).toContain('Basic information');
       expect(res.text).toContain('Status and scheduling');
       expect(res.text).toContain('Links');
@@ -611,47 +624,46 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
     });
 
     it('create form has exactly one h1', async () => {
-      const projRes = await request(app)
-        .post('/projects')
+      const projRes = await agent.post('/projects')
         .send('title=H1+Release+Form')
         .send('status=tbd')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
       const projectId = projRes.headers.location.replace('/projects/', '');
 
-      const res = await request(app).get(`/releases/new?projectId=${projectId}`).expect(200);
+      const res = await agent.get(`/releases/new?projectId=${projectId}`).expect(200);
       expect(countTags(res.text, 'h1')).toBe(1);
       expect(hasClass(res.text, 'page-heading')).toBe(true);
     });
 
     it('create form has primary submit and secondary cancel', async () => {
-      const projRes = await request(app)
-        .post('/projects')
+      const projRes = await agent.post('/projects')
         .send('title=Form+Actions+Test')
         .send('status=tbd')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
       const projectId = projRes.headers.location.replace('/projects/', '');
 
-      const res = await request(app).get(`/releases/new?projectId=${projectId}`).expect(200);
+      const res = await agent.get(`/releases/new?projectId=${projectId}`).expect(200);
       expect(res.text).toContain('button-primary');
       expect(res.text).toContain('button-secondary');
     });
 
     it('create form preserves submitted values on validation error', async () => {
-      const projRes = await request(app)
-        .post('/projects')
+      const projRes = await agent.post('/projects')
         .send('title=Release+Error+Test')
         .send('status=tbd')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
       const projectId = projRes.headers.location.replace('/projects/', '');
 
-      const res = await request(app)
-        .post('/releases')
+      const res = await agent.post('/releases')
         .send(`projectId=${projectId}`)
         .send('title=Preserved+Release+Title')
         .send('description=Preserved+release+description')
@@ -661,6 +673,7 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
         .send('publishedDate=2026-08-15')
         .send('patreonUrl=https://patreon.com/preserved-release')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(422);
 
       expect(res.text).toContain('Planned date must be a valid date (YYYY-MM-DD).');
@@ -681,21 +694,21 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
 
   describe('publish workflow', () => {
     it('publish page uses page-heading with cancel action', async () => {
-      const projRes = await request(app)
-        .post('/projects')
+      const projRes = await agent.post('/projects')
         .send('title=Publish+Heading+Test')
         .send('status=tbd')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
       const projectId = projRes.headers.location.replace('/projects/', '');
 
-      const relRes = await request(app)
-        .post('/releases')
+      const relRes = await agent.post('/releases')
         .send(`projectId=${projectId}`)
         .send('title=Publish+Heading+Release')
         .send('status=ready')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
       // Add an asset to make it publishable
@@ -703,106 +716,109 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
       const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
       const matching = entries.filter(e => e.endsWith(`-${slug}`));
       fs.writeFileSync(path.join(projectsRoot, 'tbd', matching[0], 'test.txt'), 'hello');
-      await request(app).post(`/projects/${projectId}/scan`).expect(302);
+      await agent.post(`/projects/${projectId}/scan`).send('_csrf=' + encodeURIComponent(csrfToken))
+        .expect(302);
 
       const { createAssetRepository } = await import('../src/data/asset-repository.js');
       const assetRepo = createAssetRepository(db);
       const assets = assetRepo.findByProjectId(Number(projectId));
       const assetId = String(assets[0].id);
 
-      await request(app)
-        .post(`${relRes.headers.location}/assets`)
+      await agent.post(`${relRes.headers.location}/assets`)
         .send(`selectedAssetIds[]=${assetId}`)
         .send('roles[]=primary')
         .send('sortOrder[]=0')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
-      const res = await request(app).get(`${relRes.headers.location}/publish`).expect(200);
+      const res = await agent.get(`${relRes.headers.location}/publish`).expect(200);
       expect(hasClass(res.text, 'page-heading')).toBe(true);
       expect(res.text).toContain('Cancel');
       expect(countTags(res.text, 'h1')).toBe(1);
     });
 
     it('publish page uses shared panel class for readiness section', async () => {
-      const projRes = await request(app)
-        .post('/projects')
+      const projRes = await agent.post('/projects')
         .send('title=Publish+Panel+Test')
         .send('status=tbd')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
       const projectId = projRes.headers.location.replace('/projects/', '');
 
-      const relRes = await request(app)
-        .post('/releases')
+      const relRes = await agent.post('/releases')
         .send(`projectId=${projectId}`)
         .send('title=Publish+Panel+Release')
         .send('status=ready')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
       const slug = 'publish-panel-test';
       const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
       const matching = entries.filter(e => e.endsWith(`-${slug}`));
       fs.writeFileSync(path.join(projectsRoot, 'tbd', matching[0], 'test.txt'), 'hello');
-      await request(app).post(`/projects/${projectId}/scan`).expect(302);
+      await agent.post(`/projects/${projectId}/scan`).send('_csrf=' + encodeURIComponent(csrfToken))
+        .expect(302);
 
       const { createAssetRepository } = await import('../src/data/asset-repository.js');
       const assetRepo = createAssetRepository(db);
       const assets = assetRepo.findByProjectId(Number(projectId));
       const assetId = String(assets[0].id);
 
-      await request(app)
-        .post(`${relRes.headers.location}/assets`)
+      await agent.post(`${relRes.headers.location}/assets`)
         .send(`selectedAssetIds[]=${assetId}`)
         .send('roles[]=primary')
         .send('sortOrder[]=0')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
-      const res = await request(app).get(`${relRes.headers.location}/publish`).expect(200);
+      const res = await agent.get(`${relRes.headers.location}/publish`).expect(200);
       expect(res.text).toContain('class="panel panel--readiness"');
     });
 
     it('publish page uses status-badge for release status', async () => {
-      const projRes = await request(app)
-        .post('/projects')
+      const projRes = await agent.post('/projects')
         .send('title=Publish+Badge+Test')
         .send('status=tbd')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
       const projectId = projRes.headers.location.replace('/projects/', '');
 
-      const relRes = await request(app)
-        .post('/releases')
+      const relRes = await agent.post('/releases')
         .send(`projectId=${projectId}`)
         .send('title=Publish+Badge+Release')
         .send('status=ready')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
       const slug = 'publish-badge-test';
       const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
       const matching = entries.filter(e => e.endsWith(`-${slug}`));
       fs.writeFileSync(path.join(projectsRoot, 'tbd', matching[0], 'test.txt'), 'hello');
-      await request(app).post(`/projects/${projectId}/scan`).expect(302);
+      await agent.post(`/projects/${projectId}/scan`).send('_csrf=' + encodeURIComponent(csrfToken))
+        .expect(302);
 
       const { createAssetRepository } = await import('../src/data/asset-repository.js');
       const assetRepo = createAssetRepository(db);
       const assets = assetRepo.findByProjectId(Number(projectId));
       const assetId = String(assets[0].id);
 
-      await request(app)
-        .post(`${relRes.headers.location}/assets`)
+      await agent.post(`${relRes.headers.location}/assets`)
         .send(`selectedAssetIds[]=${assetId}`)
         .send('roles[]=primary')
         .send('sortOrder[]=0')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
-      const res = await request(app).get(`${relRes.headers.location}/publish`).expect(200);
+      const res = await agent.get(`${relRes.headers.location}/publish`).expect(200);
       expect(res.text).toContain('status-badge');
     });
   });
@@ -811,60 +827,61 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
 
   describe('release asset curation', () => {
     it('asset page uses page-heading', async () => {
-      const projRes = await request(app)
-        .post('/projects')
+      const projRes = await agent.post('/projects')
         .send('title=Asset+Heading+Test')
         .send('status=tbd')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
       const projectId = projRes.headers.location.replace('/projects/', '');
 
-      const relRes = await request(app)
-        .post('/releases')
+      const relRes = await agent.post('/releases')
         .send(`projectId=${projectId}`)
         .send('title=Asset+Heading+Release')
         .send('status=idea')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
-      const res = await request(app).get(`${relRes.headers.location}/assets`).expect(200);
+      const res = await agent.get(`${relRes.headers.location}/assets`).expect(200);
       expect(hasClass(res.text, 'page-heading')).toBe(true);
       expect(countTags(res.text, 'h1')).toBe(1);
     });
 
     it('asset page uses shared notice partial for archived state', async () => {
-      const projRes = await request(app)
-        .post('/projects')
+      const projRes = await agent.post('/projects')
         .send('title=Archived+Asset+Notice')
         .send('status=tbd')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
       const projectId = projRes.headers.location.replace('/projects/', '');
 
-      const relRes = await request(app)
-        .post('/releases')
+      const relRes = await agent.post('/releases')
         .send(`projectId=${projectId}`)
         .send('title=Archived+Asset+Release')
         .send('status=idea')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
-      await request(app).post(`${relRes.headers.location}/archive`).expect(302);
+      await agent.post(`${relRes.headers.location}/archive`).send('_csrf=' + encodeURIComponent(csrfToken))
+        .expect(302);
 
-      const res = await request(app).get(`${relRes.headers.location}/assets`).expect(200);
+      const res = await agent.get(`${relRes.headers.location}/assets`).expect(200);
       expect(res.text).toContain('notice--warning');
       expect(res.text).toContain('archived');
     });
 
     it('asset page uses deterministic selected and candidate tables with bounded wrappers', async () => {
-      const projRes = await request(app)
-        .post('/projects')
+      const projRes = await agent.post('/projects')
         .send('title=Asset+Table+Test')
         .send('status=tbd')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
       const projectId = projRes.headers.location.replace('/projects/', '');
 
@@ -875,21 +892,21 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
       fs.writeFileSync(path.join(projectDir, 'selected-primary-with-long-action-name.txt'), 'selected one');
       fs.writeFileSync(path.join(projectDir, 'selected-preview.txt'), 'selected two');
       fs.writeFileSync(path.join(projectDir, 'candidate-available.txt'), 'candidate');
-      await request(app).post(`/projects/${projectId}/scan`).expect(302);
+      await agent.post(`/projects/${projectId}/scan`).send('_csrf=' + encodeURIComponent(csrfToken))
+        .expect(302);
       const assetRepo = createAssetRepository(db);
       const assets = assetRepo.findByProjectId(Number(projectId));
       const byFilename = (filename) => assets.find((asset) => asset.filename === filename);
 
-      const relRes = await request(app)
-        .post('/releases')
+      const relRes = await agent.post('/releases')
         .send(`projectId=${projectId}`)
         .send('title=Asset+Table+Release')
         .send('status=idea')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
-      await request(app)
-        .post(`${relRes.headers.location}/assets`)
+      await agent.post(`${relRes.headers.location}/assets`)
         .send(`selectedAssetIds[]=${byFilename('selected-primary-with-long-action-name.txt').id}`)
         .send(`selectedAssetIds[]=${byFilename('selected-preview.txt').id}`)
         .send('roles[]=primary')
@@ -897,9 +914,10 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
         .send('sortOrder[]=0')
         .send('sortOrder[]=1')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
-      const res = await request(app).get(`${relRes.headers.location}/assets`).expect(200);
+      const res = await agent.get(`${relRes.headers.location}/assets`).expect(200);
       const selectedSection = extractSectionByHeading(res.text, 'Selected Assets');
       const candidateSection = extractSectionByHeading(res.text, 'Available Assets');
 
@@ -924,46 +942,46 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
     });
 
     it('asset page empty state uses shared partial', async () => {
-      const projRes = await request(app)
-        .post('/projects')
+      const projRes = await agent.post('/projects')
         .send('title=Asset+Empty+State')
         .send('status=tbd')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
       const projectId = projRes.headers.location.replace('/projects/', '');
 
-      const relRes = await request(app)
-        .post('/releases')
+      const relRes = await agent.post('/releases')
         .send(`projectId=${projectId}`)
         .send('title=Asset+Empty+Release')
         .send('status=idea')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
-      const res = await request(app).get(`${relRes.headers.location}/assets`).expect(200);
+      const res = await agent.get(`${relRes.headers.location}/assets`).expect(200);
       expect(res.text).toContain('empty-state');
     });
 
     it('asset page has unique label IDs for filter fields', async () => {
-      const projRes = await request(app)
-        .post('/projects')
+      const projRes = await agent.post('/projects')
         .send('title=Asset+Filter+IDs')
         .send('status=tbd')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
       const projectId = projRes.headers.location.replace('/projects/', '');
 
-      const relRes = await request(app)
-        .post('/releases')
+      const relRes = await agent.post('/releases')
         .send(`projectId=${projectId}`)
         .send('title=Asset+Filter+Release')
         .send('status=idea')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
-      const res = await request(app).get(`${relRes.headers.location}/assets`).expect(200);
+      const res = await agent.get(`${relRes.headers.location}/assets`).expect(200);
       const ids = res.text.match(/id="[^"]+"/g) || [];
       const uniqueIds = new Set(ids);
       expect(ids.length).toBe(uniqueIds.size);
@@ -979,29 +997,29 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
         { name: 'release calendar', url: '/releases/calendar' },
       ];
       for (const { name, url } of pages) {
-        const res = await request(app).get(url).expect(200);
+        const res = await agent.get(url).expect(200);
         expect(hasClass(res.text, 'page-heading')).toBe(true);
         expect(countTags(res.text, 'h1')).toBe(1);
       }
     });
 
     it('release form uses page-heading', async () => {
-      const projRes = await request(app)
-        .post('/projects')
+      const projRes = await agent.post('/projects')
         .send('title=Consistent+Heading')
         .send('status=tbd')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
       const projectId = projRes.headers.location.replace('/projects/', '');
 
-      const res = await request(app).get(`/releases/new?projectId=${projectId}`).expect(200);
+      const res = await agent.get(`/releases/new?projectId=${projectId}`).expect(200);
       expect(hasClass(res.text, 'page-heading')).toBe(true);
       expect(countTags(res.text, 'h1')).toBe(1);
     });
 
     it('no duplicate status-badge variant definitions in CSS', async () => {
-      const res = await request(app).get('/releases').expect(200);
+      const res = await agent.get('/releases').expect(200);
       const css = extractStyle(res.text);
       // All shared badge variants must be defined
       expect(css).toContain('.status-badge--neutral');
@@ -1013,25 +1031,25 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
     });
 
     it('release list and project list use the same status-badge partial', async () => {
-      const projRes = await request(app)
-        .post('/projects')
+      const projRes = await agent.post('/projects')
         .send('title=Badge+Consistency')
         .send('status=tbd')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
       const projectId = projRes.headers.location.replace('/projects/', '');
 
-      await request(app)
-        .post('/releases')
+      await agent.post('/releases')
         .send(`projectId=${projectId}`)
         .send('title=Badge+Release')
         .send('status=drafting')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
-      const projectRes = await request(app).get('/projects').expect(200);
-      const releaseRes = await request(app).get('/releases').expect(200);
+      const projectRes = await agent.get('/projects').expect(200);
+      const releaseRes = await agent.get('/releases').expect(200);
 
       // Both pages render status badges with the same variant class pattern
       expect(projectRes.text).toContain('status-badge');
@@ -1043,63 +1061,63 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
 
   describe('accessibility', () => {
     it('release list has exactly one h1', async () => {
-      const res = await request(app).get('/releases').expect(200);
+      const res = await agent.get('/releases').expect(200);
       expect(countTags(res.text, 'h1')).toBe(1);
     });
 
     it('release calendar has exactly one h1', async () => {
-      const res = await request(app).get('/releases/calendar').expect(200);
+      const res = await agent.get('/releases/calendar').expect(200);
       expect(countTags(res.text, 'h1')).toBe(1);
     });
 
     it('release form has exactly one h1', async () => {
-      const projRes = await request(app)
-        .post('/projects')
+      const projRes = await agent.post('/projects')
         .send('title=H1+Form+Test')
         .send('status=tbd')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
       const projectId = projRes.headers.location.replace('/projects/', '');
 
-      const res = await request(app).get(`/releases/new?projectId=${projectId}`).expect(200);
+      const res = await agent.get(`/releases/new?projectId=${projectId}`).expect(200);
       expect(countTags(res.text, 'h1')).toBe(1);
     });
 
     it('release detail has exactly one h1', async () => {
-      const projRes = await request(app)
-        .post('/projects')
+      const projRes = await agent.post('/projects')
         .send('title=H1+Detail+Test')
         .send('status=tbd')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
       const projectId = projRes.headers.location.replace('/projects/', '');
 
-      const createRes = await request(app)
-        .post('/releases')
+      const createRes = await agent.post('/releases')
         .send(`projectId=${projectId}`)
         .send('title=H1+Detail+Release')
         .send('status=idea')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
-      const res = await request(app).get(createRes.headers.location).expect(200);
+      const res = await agent.get(createRes.headers.location).expect(200);
       expect(countTags(res.text, 'h1')).toBe(1);
     });
 
     it('view-switcher has aria-label', async () => {
-      const res = await request(app).get('/releases').expect(200);
+      const res = await agent.get('/releases').expect(200);
       expect(res.text).toContain('aria-label="View"');
     });
 
     it('calendar navigation has aria-label', async () => {
-      const res = await request(app).get('/releases/calendar').expect(200);
+      const res = await agent.get('/releases/calendar').expect(200);
       expect(res.text).toContain('aria-label="Calendar navigation"');
     });
 
     it('no nested interactive elements in view switcher', async () => {
-      const res = await request(app).get('/releases').expect(200);
+      const res = await agent.get('/releases').expect(200);
       // View switcher options are <a> elements, not <button> inside <a>
       const switcherMatch = res.text.match(/<nav class="view-switcher"[^>]*>[\s\S]*?<\/nav>/);
       if (switcherMatch) {
@@ -1114,36 +1132,36 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
 
   describe('no-JavaScript behavior', () => {
     it('release list filter form works without JavaScript', async () => {
-      const res = await request(app).get('/releases').expect(200);
+      const res = await agent.get('/releases').expect(200);
       // Filter form uses method="get" — no JS required
       expect(res.text).toMatch(/<form[^>]+method="get"[^>]*action="\/releases"/);
     });
 
     it('release calendar navigation links work without JavaScript', async () => {
-      const res = await request(app).get('/releases/calendar').expect(200);
+      const res = await agent.get('/releases/calendar').expect(200);
       // Previous/Next are real <a> links
       expect(res.text).toMatch(/<a class="button" href="[^"]*">/);
     });
 
     it('release archive form works without JavaScript (uses onclick confirm)', async () => {
-      const projRes = await request(app)
-        .post('/projects')
+      const projRes = await agent.post('/projects')
         .send('title=NoJS+Archive')
         .send('status=tbd')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
       const projectId = projRes.headers.location.replace('/projects/', '');
 
-      const createRes = await request(app)
-        .post('/releases')
+      const createRes = await agent.post('/releases')
         .send(`projectId=${projectId}`)
         .send('title=NoJS+Archive+Release')
         .send('status=idea')
         .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
-      const res = await request(app).get(createRes.headers.location).expect(200);
+      const res = await agent.get(createRes.headers.location).expect(200);
       // Archive form uses method="post" — works without JS
       expect(res.text).toMatch(/<form method="post" action="\/releases\/\d+\/archive"/);
     });

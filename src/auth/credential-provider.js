@@ -169,16 +169,18 @@ export function createStaticCredentialProvider({ username, passwordHash }) {
   };
 }
 
-export function createManagedCredentialProvider({ appDataRoot, bootstrapUsername, bootstrapPasswordHash }) {
+export function createManagedCredentialProvider({ appDataRoot, bootstrapUsername, bootstrapPasswordHash } = {}) {
   const filePath = credentialFilePathForRoot(appDataRoot);
   let credential;
   if (assertUsableExistingFile(filePath)) {
     credential = readCredentialFile(filePath);
-  } else {
+  } else if (bootstrapUsername !== undefined || bootstrapPasswordHash !== undefined) {
     credential = writeCredentialFile(filePath, {
       username: normalizeUsername(bootstrapUsername),
       passwordHash: bootstrapPasswordHash,
     });
+  } else {
+    throw new CredentialError('Managed credential file is missing.');
   }
 
   return {
@@ -194,6 +196,19 @@ export function createManagedCredentialProvider({ appDataRoot, bootstrapUsername
       return verifyPassword(candidatePassword, credential.passwordHash);
     },
   };
+}
+
+/**
+ * Unconditionally (over)writes the managed credential file, regardless of
+ * whether one already exists. Distinct from `createManagedCredentialProvider`'s
+ * bootstrap, which only writes when the file is *absent* — if a stale file
+ * exists it silently keeps reading the old credentials. The enable-auth
+ * workflow (auth-transition-service.js) needs every enable to replace
+ * whatever was there, never resurrect it, so it calls this instead.
+ */
+export function writeManagedCredential(appDataRoot, { username, passwordHash }) {
+  const filePath = credentialFilePathForRoot(appDataRoot);
+  return writeCredentialFile(filePath, { username: normalizeUsername(username), passwordHash });
 }
 
 export function rotateCredentialPassword(provider, { currentPassword, newPassword, confirmation }) {

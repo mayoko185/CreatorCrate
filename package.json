@@ -14,7 +14,7 @@
     "test:watch": "vitest",
     "check": "pnpm test",
     "auth:hash": "node scripts/hash-password.js",
-    "auth:reset-managed": "node scripts/reset-managed-credential.js"
+    "auth:reset": "node scripts/auth-reset.js"
   },
   "dependencies": {
     "@sindresorhus/slugify": "^2.2.1",

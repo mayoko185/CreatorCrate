@@ -78,6 +78,14 @@
           <p class="app-section-title">{{ shell.activeSection or shell.appName or appName }}</p>
         </header>
 
+        {% if auth and auth.enabled == false and shellVisible %}
+          <div class="auth-disabled-banner" role="alert">
+            {{ icons.icon('warning') }}
+            <p>Authentication is disabled. Anyone who can reach this server can access CreatorCrate.</p>
+            <a href="/settings/security" class="button button-secondary button-small">Enable Authentication</a>
+          </div>
+        {% endif %}
+
         <main id="main-content" tabindex="-1">
           {% block content %}{% endblock %}
         </main>

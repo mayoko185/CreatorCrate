@@ -39,14 +39,21 @@ export function createApplicationContext(
   initialDb,
   appFactory = createApp
 ) {
-  function buildApp(db) {
+  // Phase 13: mutable so a runtime auth enable/disable (replaceAuthConfig)
+  // can update just the `authConfig` slice without losing whatever else a
+  // prior rebuild (e.g. a live restore) already carried forward. Never
+  // mutated directly — always replaced wholesale by a candidate object only
+  // after that candidate has already been proven to build successfully.
+  let activeAppOpts = { ...appOpts };
+
+  function buildApp(db, opts) {
     return appFactory(
       { appName, db, projectsRoot, previewRoot },
-      { ...appOpts, onDatabaseReplaced: replaceDatabase }
+      { ...opts, onDatabaseReplaced: replaceDatabase, onAuthConfigReplaced: replaceAuthConfig }
     );
   }
 
-  let current = { db: initialDb, app: buildApp(initialDb) };
+  let current = { db: initialDb, app: buildApp(initialDb, activeAppOpts) };
 
   /**
    * Reconstruct every db-bound repository/service/route against `newDb` and
@@ -64,12 +71,29 @@ export function createApplicationContext(
   function replaceDatabase(newDb) {
     let newApp;
     try {
-      newApp = buildApp(newDb);
+      newApp = buildApp(newDb, activeAppOpts);
     } catch (err) {
       try { closeDatabase(newDb); } catch { /* best-effort */ }
       throw err;
     }
     current = { db: newDb, app: newApp };
+  }
+
+  /**
+   * Phase 13 — swap just the auth configuration (enable/disable/rebuild
+   * auth) against the *current* database, with no restart. Builds against a
+   * candidate options object first; `activeAppOpts` and `current` are only
+   * committed after `buildApp` returns successfully, so a failed rebuild
+   * (e.g. a malformed authConfig) never leaves the live context out of sync
+   * with what it's supposed to be running — the caller (auth-transition-
+   * service.js) sees the thrown error and is responsible for rolling back
+   * whatever managed-state files it had already written.
+   */
+  function replaceAuthConfig(newAuthConfig) {
+    const candidateOpts = { ...activeAppOpts, authConfig: newAuthConfig };
+    const newApp = buildApp(current.db, candidateOpts);
+    activeAppOpts = candidateOpts;
+    current = { db: current.db, app: newApp };
   }
 
   return {
@@ -80,6 +104,7 @@ export function createApplicationContext(
       return current.app;
     },
     replaceDatabase,
+    replaceAuthConfig,
     handleRequest(req, res) {
       current.app(req, res);
     },

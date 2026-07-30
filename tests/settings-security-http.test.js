@@ -5,10 +5,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createApp } from '../src/app.js';
+import { createApplicationContext } from '../src/app-context.js';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { hashPassword } from '../src/auth/password-hash.js';
 import { createManagedCredentialProvider, createStaticCredentialProvider } from '../src/auth/credential-provider.js';
 import { createLoginThrottler } from '../src/auth/login-throttle.js';
+import { ensureAuthEnablement, enableAuthState, readAuthEnablement } from '../src/auth/auth-state.js';
 import { AUTH_CONFIG, TEST_PASSWORD, authenticate, extractCsrfToken } from './helpers/auth.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
@@ -186,5 +188,198 @@ describe('settings security — managed credential restart persistence', () => {
       closeDatabase(db);
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
+  });
+});
+
+const AUTH_SETTINGS = Object.freeze({ sessionTtlHours: 24, cookieSecure: false, trustProxy: false, hstsEnabled: false });
+const NEW_USERNAME = 'newadmin';
+
+// ─── Phase 13: browser enable/disable authentication workflow ─────────
+describe('settings security — enable authentication workflow', () => {
+  let tmpDir;
+  let appDataRoot;
+  let db;
+  let appContext;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-enable-auth-'));
+    appDataRoot = path.join(tmpDir, 'app');
+    fs.mkdirSync(appDataRoot, { recursive: true });
+    db = openDatabase(path.join(appDataRoot, 'test.db'));
+    runMigrations(db, MIGRATIONS_DIR);
+    ensureAuthEnablement(appDataRoot);
+
+    appContext = createApplicationContext(
+      {
+        appName: 'CreatorCrate',
+        appOpts: {
+          appDataRoot,
+          authConfig: null,
+          authSettings: AUTH_SETTINGS,
+          authState: { csrfPepper: ensureAuthEnablement(appDataRoot).csrfPepper },
+        },
+      },
+      db
+    );
+  });
+
+  afterEach(() => {
+    closeDatabase(appContext.db);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  async function getEnableForm() {
+    const agent = request.agent(appContext.handleRequest);
+    const page = await agent.get('/settings/security').expect(200);
+    return { agent, csrfToken: extractCsrfToken(page.text) };
+  }
+
+  it('shows the enable form (no login page, no rotate-password form) while disabled', async () => {
+    const { agent } = await getEnableForm();
+    const res = await agent.get('/settings/security').expect(200);
+    expect(res.text).toContain('Enable authentication');
+    expect(res.text).toContain('Anyone who can reach this server can currently access CreatorCrate');
+    expect(res.text).not.toContain('Change password');
+  });
+
+  it('rejects a mismatched confirmation without writing any managed state', async () => {
+    const { agent, csrfToken } = await getEnableForm();
+    const res = await agent
+      .post('/settings/security/enable')
+      .type('form')
+      .send({ _csrf: csrfToken, username: NEW_USERNAME, password: 'CorrectHorseBattery1', confirmPassword: 'Different1234567' })
+      .expect(400);
+    expect(res.text).toContain('Enable authentication');
+    expect(readAuthEnablement(appDataRoot).enabled).toBe(false);
+  });
+
+  it('enables authentication immediately, with no restart, and the chosen credentials work right away', async () => {
+    const { agent, csrfToken } = await getEnableForm();
+    const password = 'CorrectHorseBattery1';
+    const res = await agent
+      .post('/settings/security/enable')
+      .type('form')
+      .send({ _csrf: csrfToken, username: NEW_USERNAME, password, confirmPassword: password })
+      .expect(302);
+    expect(res.headers.location).toBe('/login?notice=authentication_enabled');
+
+    expect(readAuthEnablement(appDataRoot).enabled).toBe(true);
+
+    // Same appContext, no restart: protected routes now require login.
+    await request(appContext.handleRequest).get('/projects').expect(302);
+
+    const loginAgent = request.agent(appContext.handleRequest);
+    const loginPage = await loginAgent.get('/login').expect(200);
+    await loginAgent
+      .post('/login')
+      .type('form')
+      .send({ username: NEW_USERNAME, password, _csrf: extractCsrfToken(loginPage.text) })
+      .expect(302);
+    await loginAgent.get('/projects').expect(200);
+  });
+
+  it('CSRF is required for the enable form', async () => {
+    const { agent } = await getEnableForm();
+    const password = 'CorrectHorseBattery1';
+    await agent
+      .post('/settings/security/enable')
+      .type('form')
+      .send({ username: NEW_USERNAME, password, confirmPassword: password })
+      .expect(403);
+    expect(readAuthEnablement(appDataRoot).enabled).toBe(false);
+  });
+});
+
+describe('settings security — disable authentication workflow', () => {
+  let tmpDir;
+  let appDataRoot;
+  let db;
+  let appContext;
+  let provider;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-disable-auth-'));
+    appDataRoot = path.join(tmpDir, 'app');
+    fs.mkdirSync(appDataRoot, { recursive: true });
+    db = openDatabase(path.join(appDataRoot, 'test.db'));
+    runMigrations(db, MIGRATIONS_DIR);
+    provider = createManagedCredentialProvider({
+      appDataRoot,
+      bootstrapUsername: 'admin',
+      bootstrapPasswordHash: hashPassword(TEST_PASSWORD),
+    });
+    const sessionSecret = 'c'.repeat(64);
+    // Persist the matching on-disk "enabled" state — the disable workflow
+    // reads auth-enablement.json directly, so the fixture's in-memory
+    // authConfig and the on-disk managed state must agree.
+    const pepper = ensureAuthEnablement(appDataRoot).csrfPepper;
+    const authEnablementState = enableAuthState(appDataRoot, { sessionSecret, csrfPepper: pepper });
+
+    appContext = createApplicationContext(
+      {
+        appName: 'CreatorCrate',
+        appOpts: {
+          appDataRoot,
+          authConfig: { ...AUTH_SETTINGS, sessionSecret, credentialProvider: provider },
+          authSettings: AUTH_SETTINGS,
+          authState: { csrfPepper: authEnablementState.csrfPepper },
+          loginThrottler: createLoginThrottler({ baseDelayMs: 0, maxDelayMs: 0 }),
+        },
+      },
+      db
+    );
+  });
+
+  afterEach(() => {
+    closeDatabase(appContext.db);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('rejects disable with the wrong current password, leaving auth enabled', async () => {
+    const { agent } = await authenticate(appContext.handleRequest);
+    const page = await agent.get('/settings/security/disable').expect(200);
+    const res = await agent
+      .post('/settings/security/disable')
+      .type('form')
+      .send({ _csrf: extractCsrfToken(page.text), currentPassword: 'totally-wrong' })
+      .expect(400);
+    expect(res.text).toContain('Current password is incorrect.');
+    await request(appContext.handleRequest).get('/projects').expect(302);
+  });
+
+  it('disables authentication immediately: sessions revoked, cookie cleared, routes public with no restart', async () => {
+    const { agent } = await authenticate(appContext.handleRequest);
+    const page = await agent.get('/settings/security/disable').expect(200);
+    const res = await agent
+      .post('/settings/security/disable')
+      .type('form')
+      .send({ _csrf: extractCsrfToken(page.text), currentPassword: TEST_PASSWORD })
+      .expect(302);
+    expect(res.headers.location).toBe('/settings/security?notice=authentication_disabled');
+    expect(res.headers['set-cookie'].join('\n')).toMatch(/cc_session=;/);
+
+    // Same appContext, no restart: the old session cookie no longer applies
+    // (there is no auth wall at all now, so the point is moot, but the
+    // cookie itself must be gone), and routes are public immediately.
+    await agent.get('/projects').expect(200);
+    await request(appContext.handleRequest).get('/projects').expect(200);
+
+    expect(readAuthEnablement(appDataRoot).enabled).toBe(false);
+    // The old login no longer applies at all: /login has nothing to log
+    // into anymore and just redirects to Settings > Security.
+    const res2 = await request(appContext.handleRequest).get('/login');
+    expect(res2.status).toBe(302);
+    expect(res2.headers.location).toBe('/settings/security');
+  });
+
+  it('requires CSRF for the disable form', async () => {
+    const { agent } = await authenticate(appContext.handleRequest);
+    await agent.get('/settings/security/disable').expect(200);
+    await agent
+      .post('/settings/security/disable')
+      .type('form')
+      .send({ currentPassword: TEST_PASSWORD })
+      .expect(403);
+    await request(appContext.handleRequest).get('/projects').expect(302);
   });
 });

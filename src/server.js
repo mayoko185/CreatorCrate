@@ -11,6 +11,7 @@ import { createProjectService } from './services/project-service.js';
 import { createBackupService } from './services/backup-service.js';
 import { createApplicationContext } from './app-context.js';
 import { createManagedCredentialProvider, CredentialError } from './auth/credential-provider.js';
+import { ensureAuthEnablement, AuthStateError } from './auth/auth-state.js';
 
 async function main() {
   let config;
@@ -94,20 +95,40 @@ async function main() {
     retentionCount: config.backupRetentionCount,
   });
 
-  let credentialProvider;
+  // Phase 13: authentication is optional and browser-managed. The managed
+  // auth-enablement file is the sole authority for whether login is
+  // required; an absent file means "never enabled yet" and is lazily
+  // created as an explicit disabled state (with a fresh CSRF pepper) rather
+  // than silently defaulting anything auth-identity-related.
+  let authState;
   try {
-    credentialProvider = createManagedCredentialProvider({
-      appDataRoot: config.appDataRoot,
-      bootstrapUsername: config.auth.username,
-      bootstrapPasswordHash: config.auth.passwordHash,
-    });
+    authState = ensureAuthEnablement(config.appDataRoot);
   } catch (err) {
-    if (err instanceof CredentialError) {
+    if (err instanceof AuthStateError) {
       closeDatabase(db);
-      console.error(`Credential error: ${err.message}`);
+      console.error(`Auth-state error: ${err.message}`);
       process.exit(1);
     }
     throw err;
+  }
+
+  let authConfig = null;
+  if (authState.enabled) {
+    let credentialProvider;
+    try {
+      // No bootstrap: an enabled managed state without a credential file is
+      // a malformed/incomplete configuration and must fail startup safely,
+      // never silently create a default credential.
+      credentialProvider = createManagedCredentialProvider({ appDataRoot: config.appDataRoot });
+    } catch (err) {
+      if (err instanceof CredentialError) {
+        closeDatabase(db);
+        console.error(`Credential error: ${err.message}`);
+        process.exit(1);
+      }
+      throw err;
+    }
+    authConfig = { ...config.auth, sessionSecret: authState.sessionSecret, credentialProvider };
   }
 
   // Phase 11.2 (fixed): the application context owns the currently active
@@ -125,8 +146,9 @@ async function main() {
       migrationsDir,
       backupService,
       maintenanceState,
-      authConfig: { ...config.auth, credentialProvider },
-      credentialProvider,
+      authConfig,
+      authSettings: config.auth,
+      authState: { csrfPepper: authState.csrfPepper },
     },
   }, db);
 

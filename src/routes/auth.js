@@ -36,6 +36,7 @@ function sanitizeNext(value) {
 
 const LOGIN_NOTICES = {
   password_rotated: { variant: 'success', text: 'Password changed. Sign in again with the new password.' },
+  authentication_enabled: { variant: 'success', text: 'Authentication has been enabled. Sign in to continue.' },
 };
 
 function resolveLoginNotice(code) {

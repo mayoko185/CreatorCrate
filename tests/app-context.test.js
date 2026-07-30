@@ -21,8 +21,9 @@ import { createBackupService } from '../src/services/backup-service.js';
 import { STATUS_DIR_MAP } from '../src/storage/project-storage.js';
 import { hashPassword } from '../src/auth/password-hash.js';
 import { generateSessionToken, hashSessionToken } from '../src/auth/session-token.js';
-import { createStaticCredentialProvider } from '../src/auth/credential-provider.js';
+import { createStaticCredentialProvider, createManagedCredentialProvider } from '../src/auth/credential-provider.js';
 import { createLoginThrottler } from '../src/auth/login-throttle.js';
+import { ensureAuthEnablement, enableAuthState, readAuthEnablement } from '../src/auth/auth-state.js';
 import { extractCsrfToken } from './helpers/auth.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
@@ -447,5 +448,161 @@ describe('live restore — authentication interaction', () => {
     expect(
       appContext.db.prepare('SELECT id FROM sessions WHERE id = ?').get(staleHash)
     ).toBeUndefined();
+  });
+});
+
+// ─── Phase 13: runtime auth enable/disable toggling ─────────────────────
+
+describe('application context — replaceAuthConfig (restart-free auth toggling)', () => {
+  let tmpDir;
+  let appContext;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-replace-auth-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('rebuilds against the current db, not the original constructor db, and commits only on success', () => {
+    const initialDb = { id: 'initial' };
+    const calls = [];
+    const factory = (config, opts) => {
+      calls.push({ db: config.db, authConfig: opts.authConfig });
+      if (opts.authConfig?.fail) {
+        throw new Error('simulated auth rebuild failure');
+      }
+      return { db: config.db, authConfig: opts.authConfig };
+    };
+
+    appContext = createApplicationContext({ appName: APP_NAME, appOpts: {} }, initialDb, factory);
+    expect(appContext.app.authConfig).toBeUndefined();
+
+    appContext.replaceAuthConfig({ enabled: true });
+    expect(appContext.app.authConfig).toEqual({ enabled: true });
+    expect(appContext.app.db).toBe(initialDb);
+
+    // A failed rebuild never commits — the prior (enabled) app stays active.
+    expect(() => appContext.replaceAuthConfig({ fail: true })).toThrow('simulated auth rebuild failure');
+    expect(appContext.app.authConfig).toEqual({ enabled: true });
+
+    // Disabling (authConfig -> null) still builds against the *current* db.
+    appContext.replaceAuthConfig(null);
+    expect(appContext.app.authConfig).toBeNull();
+    expect(appContext.app.db).toBe(initialDb);
+  });
+
+  it('a subsequent replaceDatabase carries forward whatever authConfig is currently live, not the original one', () => {
+    const initialDb = { id: 'initial' };
+    const factory = (config, opts) => ({ db: config.db, authConfig: opts.authConfig });
+    appContext = createApplicationContext({ appName: APP_NAME, appOpts: { authConfig: { enabled: false } } }, initialDb, factory);
+
+    appContext.replaceAuthConfig({ enabled: true, marker: 'toggled-on' });
+    const newDb = { id: 'replacement' };
+    appContext.replaceDatabase(newDb);
+
+    expect(appContext.app.db).toBe(newDb);
+    expect(appContext.app.authConfig).toEqual({ enabled: true, marker: 'toggled-on' });
+  });
+});
+
+describe('live restore — does not change auth mode or revert managed credentials', () => {
+  let tmpDir;
+  let appDataRoot;
+  let projectsRoot;
+  let databasePath;
+  let db;
+  let backupService;
+  let maintenanceState;
+  let appContext;
+
+  const PASSWORD = 'CorrectHorseBatteryStaple';
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-restore-auth-mode-'));
+    appDataRoot = path.join(tmpDir, 'app');
+    fs.mkdirSync(appDataRoot, { recursive: true });
+    projectsRoot = path.join(tmpDir, 'projects');
+    fs.mkdirSync(projectsRoot, { recursive: true });
+    for (const dir of Object.values(STATUS_DIR_MAP)) {
+      fs.mkdirSync(path.join(projectsRoot, dir), { recursive: true });
+    }
+    databasePath = path.join(appDataRoot, 'creatorcrate.db');
+    db = openDatabase(databasePath);
+    runMigrations(db, MIGRATIONS_DIR);
+    backupService = createBackupService({ appDataRoot, databasePath, migrationsDir: MIGRATIONS_DIR });
+    maintenanceState = { active: false };
+
+    const pepper = ensureAuthEnablement(appDataRoot).csrfPepper;
+    const sessionSecret = 'd'.repeat(64);
+    enableAuthState(appDataRoot, { sessionSecret, csrfPepper: pepper });
+    const credentialProvider = createManagedCredentialProvider({
+      appDataRoot,
+      bootstrapUsername: 'admin',
+      bootstrapPasswordHash: hashPassword(PASSWORD),
+    });
+
+    appContext = createApplicationContext(
+      {
+        appName: APP_NAME,
+        projectsRoot,
+        appOpts: {
+          appDataRoot,
+          databasePath,
+          migrationsDir: MIGRATIONS_DIR,
+          backupService,
+          maintenanceState,
+          authConfig: { sessionTtlHours: 24, cookieSecure: false, sessionSecret, credentialProvider },
+          authState: { csrfPepper: pepper },
+          loginThrottler: createLoginThrottler({ baseDelayMs: 0, maxDelayMs: 0 }),
+        },
+      },
+      db
+    );
+  });
+
+  afterEach(() => {
+    maintenanceState.active = false;
+    try { closeDatabase(appContext.db); } catch { /* already closed by a test */ }
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('a database restore leaves the managed auth-enablement state and password untouched', async () => {
+    const stateBefore = readAuthEnablement(appDataRoot);
+
+    const agent = request.agent(appContext.handleRequest);
+    const loginPage = await agent.get('/login').expect(200);
+    await agent
+      .post('/login')
+      .type('form')
+      .send({ username: 'admin', password: PASSWORD, _csrf: extractCsrfToken(loginPage.text) })
+      .expect(302);
+    const backupsPage = await agent.get('/settings/backups').expect(200);
+    const backupCsrf = extractCsrfToken(backupsPage.text);
+
+    await agent.post('/settings/backups').type('form').send({ _csrf: backupCsrf }).expect(302);
+    const backupFilename = backupService.listBackups()[0].filename;
+
+    await agent
+      .post(`/settings/backups/${backupFilename}/restore`)
+      .type('form')
+      .send({ _csrf: backupCsrf })
+      .expect(302);
+
+    // Restore invalidates sessions (existing Phase 11.2 contract) — the old
+    // cookie no longer authenticates.
+    await agent.get('/projects').expect(302);
+
+    // But the managed auth-enablement state itself is untouched by the
+    // restore, and the password still works with a fresh login.
+    expect(readAuthEnablement(appDataRoot)).toEqual(stateBefore);
+    const newAgent = request.agent(appContext.handleRequest);
+    const newLoginPage = await newAgent.get('/login').expect(200);
+    await newAgent
+      .post('/login')
+      .type('form')
+      .send({ username: 'admin', password: PASSWORD, _csrf: extractCsrfToken(newLoginPage.text) })
+      .expect(302);
   });
 });

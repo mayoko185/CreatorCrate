@@ -5,6 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createApp } from '../src/app.js';
+import { ensureAuthEnablement } from '../src/auth/auth-state.js';
+import { getDisabledModeCsrf } from './helpers/auth.js';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { STATUS_DIR_MAP } from '../src/storage/project-storage.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
@@ -27,9 +29,10 @@ function getReleaseAssets(db, releaseId) {
  * Helper: create a project, scan a file into it, create a release, and
  * select the scanned asset. Returns { projectId, releaseLocation, assetId }.
  */
-async function setupPublishableRelease(app, projectsRoot, db) {
-  const projRes = await request(app)
+async function setupPublishableRelease(agent, projectsRoot, db, csrfToken) {
+  const projRes = await agent
     .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
     .send('title=Readiness+Test+Project')
     .send('status=tbd')
     .send('priority=normal')
@@ -42,14 +45,16 @@ async function setupPublishableRelease(app, projectsRoot, db) {
   const matching = entries.filter((e) => e.endsWith(`-${slug}`));
   const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
   fs.writeFileSync(path.join(projectDir, 'asset.png'), 'png');
-  await request(app).post(`/projects/${projectId}/scan`).expect(302);
+  await agent.post(`/projects/${projectId}/scan`)
+      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
   const assetRepo = createAssetRepository(db);
   const assets = assetRepo.findByProjectId(Number(projectId));
   const assetId = String(assets[0].id);
 
-  const createRes = await request(app)
+  const createRes = await agent
     .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
     .send(`projectId=${projectId}`)
     .send('title=Readiness+Test+Release')
     .send('status=ready')
@@ -58,8 +63,9 @@ async function setupPublishableRelease(app, projectsRoot, db) {
   const releaseLocation = createRes.headers.location;
 
   // Select the asset
-  await request(app)
+  await agent
     .post(releaseLocation + '/assets')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
     .send(`selectedAssetIds[]=${assetId}`)
     .send('roles[]=primary')
     .send('sortOrder[]=0')
@@ -74,20 +80,27 @@ describe('release HTTP workflow', () => {
   let app;
   let tmpDir;
   let projectsRoot;
+  let appDataRoot;
   let releaseRepository;
+  let agent;
+  let csrfToken;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-http-'));
     projectsRoot = path.join(tmpDir, 'projects');
     fs.mkdirSync(projectsRoot, { recursive: true });
     for (const dir of Object.values(STATUS_DIR_MAP)) {
       fs.mkdirSync(path.join(projectsRoot, dir), { recursive: true });
     }
+    appDataRoot = path.join(tmpDir, 'app');
+    fs.mkdirSync(appDataRoot, { recursive: true });
     const dbPath = path.join(tmpDir, 'test.db');
     db = openDatabase(dbPath);
     runMigrations(db, MIGRATIONS_DIR);
     releaseRepository = createReleaseRepository(db);
-    app = createApp({ appName: 'CreatorCrate', db, projectsRoot });
+    const { csrfPepper } = ensureAuthEnablement(appDataRoot);
+    app = createApp({ appName: 'CreatorCrate', db, projectsRoot }, { appDataRoot, authState: { csrfPepper } });
+    ({ agent, csrfToken } = await getDisabledModeCsrf(app, appDataRoot));
   });
 
   afterEach(() => {
@@ -126,8 +139,9 @@ describe('release HTTP workflow', () => {
     }
 
     it('release form shows help text for planned date in the correct field container', async () => {
-      const projRes = await request(app)
+      const projRes = await agent
         .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Release+Wording+Project')
         .send('status=tbd')
         .send('priority=normal')
@@ -135,7 +149,7 @@ describe('release HTTP workflow', () => {
         .expect(302);
       const projectId = projRes.headers.location.replace('/projects/', '');
 
-      const res = await request(app).get(`/releases/new?projectId=${projectId}`).expect(200);
+      const res = await agent.get(`/releases/new?projectId=${projectId}`).expect(200);
       const container = getFieldContainer(res.text, 'plannedDate');
       expect(container).not.toBeNull();
       expect(container).toContain('Target publication date for this release');
@@ -143,8 +157,9 @@ describe('release HTTP workflow', () => {
     });
 
     it('release form shows help text for published date in the correct field container', async () => {
-      const projRes = await request(app)
+      const projRes = await agent
         .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Release+Wording+Pub')
         .send('status=tbd')
         .send('priority=normal')
@@ -152,7 +167,7 @@ describe('release HTTP workflow', () => {
         .expect(302);
       const projectId = projRes.headers.location.replace('/projects/', '');
 
-      const res = await request(app).get(`/releases/new?projectId=${projectId}`).expect(200);
+      const res = await agent.get(`/releases/new?projectId=${projectId}`).expect(200);
       const container = getFieldContainer(res.text, 'publishedDate');
       expect(container).not.toBeNull();
       expect(container).toContain('When this release was published');
@@ -160,8 +175,9 @@ describe('release HTTP workflow', () => {
     });
 
     it('release form shows help text for Patreon URL in the correct field container', async () => {
-      const projRes = await request(app)
+      const projRes = await agent
         .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Release+Wording+URL')
         .send('status=tbd')
         .send('priority=normal')
@@ -169,7 +185,7 @@ describe('release HTTP workflow', () => {
         .expect(302);
       const projectId = projRes.headers.location.replace('/projects/', '');
 
-      const res = await request(app).get(`/releases/new?projectId=${projectId}`).expect(200);
+      const res = await agent.get(`/releases/new?projectId=${projectId}`).expect(200);
       const container = getFieldContainer(res.text, 'patreonUrl');
       expect(container).not.toBeNull();
       expect(container).toContain('Link to this release on Patreon');
@@ -177,8 +193,9 @@ describe('release HTTP workflow', () => {
     });
 
     it('release detail shows context labels in the correct dt/dd pairs', async () => {
-      const projRes = await request(app)
+      const projRes = await agent
         .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Release+Detail+Wording')
         .send('status=tbd')
         .send('priority=normal')
@@ -186,8 +203,9 @@ describe('release HTTP workflow', () => {
         .expect(302);
       const projectId = projRes.headers.location.replace('/projects/', '');
 
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=Detail+Wording+Release')
         .send('status=idea')
@@ -198,7 +216,7 @@ describe('release HTTP workflow', () => {
         .expect(302);
       const releaseLocation = createRes.headers.location;
 
-      const res = await request(app).get(releaseLocation).expect(200);
+      const res = await agent.get(releaseLocation).expect(200);
 
       // Planned date: <dt>Planned date</dt> ... <small>(release target)</small>
       const plannedDt = res.text.match(/<dt>Planned date<\/dt>\s*<dd>[^<]*(?:<small>\(release target\)<\/small>)[^<]*<\/dd>/);
@@ -227,8 +245,9 @@ describe('release HTTP workflow', () => {
      * Returns { projectId, releaseId, releaseLocation, assetId }.
      */
     async function setupPublishableForLegacyTest() {
-      const projRes = await request(app)
+      const projRes = await agent
         .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Legacy+Readiness+Project')
         .send('status=tbd')
         .send('priority=normal')
@@ -241,14 +260,16 @@ describe('release HTTP workflow', () => {
       const matching = entries.filter((e) => e.endsWith(`-${slug}`));
       const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
       fs.writeFileSync(path.join(projectDir, 'asset.png'), 'png');
-      await request(app).post(`/projects/${projectId}/scan`).expect(302);
+      await agent.post(`/projects/${projectId}/scan`)
+      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
       const assetRepo = createAssetRepository(db);
       const assets = assetRepo.findByProjectId(Number(projectId));
       const assetId = String(assets[0].id);
 
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=Legacy+Readiness+Release')
         .send('status=ready')
@@ -258,8 +279,9 @@ describe('release HTTP workflow', () => {
       const releaseId = Number(releaseLocation.replace('/releases/', ''));
 
       // Select the asset
-      await request(app)
+      await agent
         .post(releaseLocation + '/assets')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`selectedAssetIds[]=${assetId}`)
         .send('roles[]=primary')
         .send('sortOrder[]=0')
@@ -289,8 +311,9 @@ describe('release HTTP workflow', () => {
       expect(before.result.publishable).toBe(true);
 
       // Set the project planned_date
-      await request(app)
+      await agent
         .post(`/projects/${projectId}`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Legacy+Readiness+Project')
         .send('status=tbd')
         .send('priority=normal')
@@ -308,7 +331,7 @@ describe('release HTTP workflow', () => {
       expect(after.result.facts).toEqual(before.result.facts);
 
       // HTTP assertion: release detail remains correct
-      const detail = await request(app).get(releaseLocation).expect(200);
+      const detail = await agent.get(releaseLocation).expect(200);
       expect(detail.text).toContain('Publishable');
     });
 
@@ -319,8 +342,9 @@ describe('release HTTP workflow', () => {
       expect(before).not.toBeNull();
       expect(before.result.publishable).toBe(true);
 
-      await request(app)
+      await agent
         .post(`/projects/${projectId}`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Legacy+Readiness+Project')
         .send('status=tbd')
         .send('priority=normal')
@@ -335,7 +359,7 @@ describe('release HTTP workflow', () => {
       expect(after.result.checks).toEqual(before.result.checks);
       expect(after.result.facts).toEqual(before.result.facts);
 
-      const detail = await request(app).get(releaseLocation).expect(200);
+      const detail = await agent.get(releaseLocation).expect(200);
       expect(detail.text).toContain('Publishable');
     });
 
@@ -346,8 +370,9 @@ describe('release HTTP workflow', () => {
       expect(before).not.toBeNull();
       expect(before.result.publishable).toBe(true);
 
-      await request(app)
+      await agent
         .post(`/projects/${projectId}`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Legacy+Readiness+Project')
         .send('status=tbd')
         .send('priority=normal')
@@ -362,7 +387,7 @@ describe('release HTTP workflow', () => {
       expect(after.result.checks).toEqual(before.result.checks);
       expect(after.result.facts).toEqual(before.result.facts);
 
-      const detail = await request(app).get(releaseLocation).expect(200);
+      const detail = await agent.get(releaseLocation).expect(200);
       expect(detail.text).toContain('Publishable');
     });
 
@@ -371,8 +396,9 @@ describe('release HTTP workflow', () => {
       // project B in the junction table. The production projection's
       // LEFT JOIN assets ON a.id = ra.asset_id AND a.project_id = r.project_id
       // must exclude the cross-project row from all counts.
-      const projARes = await request(app)
+      const projARes = await agent
         .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Cross+Project+A')
         .send('status=tbd')
         .send('priority=normal')
@@ -380,8 +406,9 @@ describe('release HTTP workflow', () => {
         .expect(302);
       const projectAId = Number(projARes.headers.location.replace('/projects/', ''));
 
-      const projBRes = await request(app)
+      const projBRes = await agent
         .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Cross+Project+B')
         .send('status=tbd')
         .send('priority=normal')
@@ -395,15 +422,17 @@ describe('release HTTP workflow', () => {
       const matchingB = entriesB.filter((e) => e.endsWith(`-${slugB}`));
       const projectBDir = path.join(projectsRoot, 'tbd', matchingB[0]);
       fs.writeFileSync(path.join(projectBDir, 'asset-b.png'), 'png');
-      await request(app).post(`/projects/${projectBId}/scan`).expect(302);
+      await agent.post(`/projects/${projectBId}/scan`)
+      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
       const assetRepo = createAssetRepository(db);
       const assetsB = assetRepo.findByProjectId(projectBId);
       const assetBId = assetsB[0].id;
 
       // Create a release on project A
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectAId}`)
         .send('title=Cross+Project+Release')
         .send('status=ready')
@@ -439,15 +468,16 @@ describe('release HTTP workflow', () => {
   // ─── Release list ─────────────────────────────────────────────────────────
 
   it('release list renders', async () => {
-    const res = await request(app).get('/releases').expect(200);
+    const res = await agent.get('/releases').expect(200);
     expect(res.text).toContain('Releases');
     expect(res.text).toContain('No releases');
   });
 
   it('release list shows releases from all projects', async () => {
     // Create a project first
-    const projRes = await request(app)
+    const projRes = await agent
       .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('title=List+Test+Project')
       .send('status=tbd')
       .send('priority=normal')
@@ -456,8 +486,9 @@ describe('release HTTP workflow', () => {
     const projectId = projRes.headers.location.replace('/projects/', '');
 
     // Create releases
-    await request(app)
+    await agent
       .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=Release+One')
       .send('status=idea')
@@ -465,22 +496,24 @@ describe('release HTTP workflow', () => {
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
-    await request(app)
+    await agent
       .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=Release+Two')
       .send('status=planned')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
-    const res = await request(app).get('/releases').expect(200);
+    const res = await agent.get('/releases').expect(200);
     expect(res.text).toContain('Release One');
     expect(res.text).toContain('Release Two');
   });
 
   it('release list filters by status', async () => {
-    const projRes = await request(app)
+    const projRes = await agent
       .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('title=Filter+Test+Project')
       .send('status=tbd')
       .send('priority=normal')
@@ -488,23 +521,25 @@ describe('release HTTP workflow', () => {
       .expect(302);
     const projectId = projRes.headers.location.replace('/projects/', '');
 
-    await request(app)
+    await agent
       .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=Idea+Release')
       .send('status=idea')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
-    await request(app)
+    await agent
       .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=Planned+Release')
       .send('status=planned')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
-    const res = await request(app).get('/releases?status=idea').expect(200);
+    const res = await agent.get('/releases?status=idea').expect(200);
     expect(res.text).toContain('Idea Release');
     expect(res.text).not.toContain('Planned Release');
   });
@@ -513,22 +548,24 @@ describe('release HTTP workflow', () => {
 
   it('new-release form renders with project selection', async () => {
     // Create a project first
-    const projRes = await request(app)
+    const projRes = await agent
       .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('title=New+Release+Test')
       .send('status=tbd')
       .send('priority=normal')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
-    const res = await request(app).get('/releases/new').expect(200);
+    const res = await agent.get('/releases/new').expect(200);
     expect(res.text).toContain('Create Release');
     expect(res.text).toContain('New Release Test');
   });
 
   it('valid create request redirects to detail', async () => {
-    const projRes = await request(app)
+    const projRes = await agent
       .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('title=Create+Redirect+Test')
       .send('status=tbd')
       .send('priority=normal')
@@ -536,8 +573,9 @@ describe('release HTTP workflow', () => {
       .expect(302);
     const projectId = projRes.headers.location.replace('/projects/', '');
 
-    const res = await request(app)
+    const res = await agent
       .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=Test+Release')
       .send('description=A+test+release')
@@ -549,8 +587,9 @@ describe('release HTTP workflow', () => {
   });
 
   it('invalid create request rerenders with values and errors', async () => {
-    const projRes = await request(app)
+    const projRes = await agent
       .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('title=Error+Test+Project')
       .send('status=tbd')
       .send('priority=normal')
@@ -558,8 +597,9 @@ describe('release HTTP workflow', () => {
       .expect(302);
     const projectId = projRes.headers.location.replace('/projects/', '');
 
-    const res = await request(app)
+    const res = await agent
       .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=')
       .send('status=invalid')
@@ -569,8 +609,9 @@ describe('release HTTP workflow', () => {
   });
 
   it('missing project returns error', async () => {
-    const res = await request(app)
+    const res = await agent
       .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('projectId=99999')
       .send('title=Orphan+Release')
       .send('status=idea')
@@ -580,8 +621,9 @@ describe('release HTTP workflow', () => {
   });
 
   it('malformed projectId is rejected', async () => {
-    const res = await request(app)
+    const res = await agent
       .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('projectId=1junk')
       .send('title=Bad+Id+Release')
       .send('status=idea')
@@ -593,8 +635,9 @@ describe('release HTTP workflow', () => {
   // ─── Release detail ───────────────────────────────────────────────────────
 
   it('release detail renders', async () => {
-    const projRes = await request(app)
+    const projRes = await agent
       .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('title=Detail+Test+Project')
       .send('status=tbd')
       .send('priority=normal')
@@ -602,8 +645,9 @@ describe('release HTTP workflow', () => {
       .expect(302);
     const projectId = projRes.headers.location.replace('/projects/', '');
 
-    const createRes = await request(app)
+    const createRes = await agent
       .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=Detail+View+Test')
       .send('status=idea')
@@ -612,25 +656,26 @@ describe('release HTTP workflow', () => {
       .expect(302);
 
     const location = createRes.headers.location;
-    const res = await request(app).get(location).expect(200);
+    const res = await agent.get(location).expect(200);
     expect(res.text).toContain('Detail View Test');
     expect(res.text).toContain('Edit');
     expect(res.text).toContain('Manage Assets');
   });
 
   it('missing release returns 404', async () => {
-    await request(app).get('/releases/9999').expect(404);
+    await agent.get('/releases/9999').expect(404);
   });
 
   it('invalid release id returns 404', async () => {
-    await request(app).get('/releases/abc').expect(404);
+    await agent.get('/releases/abc').expect(404);
   });
 
   // ─── Edit release ─────────────────────────────────────────────────────────
 
   it('edit form renders with existing values', async () => {
-    const projRes = await request(app)
+    const projRes = await agent
       .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('title=Edit+Test+Project')
       .send('status=tbd')
       .send('priority=normal')
@@ -638,22 +683,24 @@ describe('release HTTP workflow', () => {
       .expect(302);
     const projectId = projRes.headers.location.replace('/projects/', '');
 
-    const createRes = await request(app)
+    const createRes = await agent
       .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=Before+Edit')
       .send('status=idea')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
-    const res = await request(app).get(`${createRes.headers.location}/edit`).expect(200);
+    const res = await agent.get(`${createRes.headers.location}/edit`).expect(200);
     expect(res.text).toContain('Edit Release');
     expect(res.text).toContain('Before Edit');
   });
 
   it('valid update redirects to detail', async () => {
-    const projRes = await request(app)
+    const projRes = await agent
       .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('title=Update+Test+Project')
       .send('status=tbd')
       .send('priority=normal')
@@ -661,49 +708,54 @@ describe('release HTTP workflow', () => {
       .expect(302);
     const projectId = projRes.headers.location.replace('/projects/', '');
 
-    const createRes = await request(app)
+    const createRes = await agent
       .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=Old+Title')
       .send('status=idea')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
-    const res = await request(app)
+    const res = await agent
       .post(createRes.headers.location)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('title=New+Title')
       .send('status=planned')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
     expect(res.headers.location).toBe(createRes.headers.location);
 
-    const detail = await request(app).get(createRes.headers.location).expect(200);
+    const detail = await agent.get(createRes.headers.location).expect(200);
     expect(detail.text).toContain('New Title');
   });
 
   // ─── Publish ───────────────────────────────────────────────────────────────
 
   it('publish action sets published_date and redirects', async () => {
-    const { releaseLocation } = await setupPublishableRelease(app, projectsRoot, db);
+    const { releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
 
-    const res = await request(app)
+    const res = await agent
       .post(`${releaseLocation}/publish`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .expect(302);
     expect(res.headers.location).toBe(releaseLocation);
 
-    const detail = await request(app).get(releaseLocation).expect(200);
+    const detail = await agent.get(releaseLocation).expect(200);
     expect(detail.text).toContain('Published');
   });
 
   it('cannot publish already published release', async () => {
-    const { releaseLocation } = await setupPublishableRelease(app, projectsRoot, db);
+    const { releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
 
-    await request(app)
+    await agent
       .post(`${releaseLocation}/publish`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .expect(302);
 
-    const res = await request(app)
+    const res = await agent
       .post(`${releaseLocation}/publish`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .expect(422);
     expect(res.text).toContain('already published');
   });
@@ -711,8 +763,9 @@ describe('release HTTP workflow', () => {
   // ─── Archive ──────────────────────────────────────────────────────────────
 
   it('archive action sets archived_at and redirects', async () => {
-    const projRes = await request(app)
+    const projRes = await agent
       .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('title=Archive+Test+Project')
       .send('status=tbd')
       .send('priority=normal')
@@ -720,26 +773,29 @@ describe('release HTTP workflow', () => {
       .expect(302);
     const projectId = projRes.headers.location.replace('/projects/', '');
 
-    const createRes = await request(app)
+    const createRes = await agent
       .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=To+Archive')
       .send('status=idea')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
-    const res = await request(app)
+    const res = await agent
       .post(`${createRes.headers.location}/archive`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .expect(302);
     expect(res.headers.location).toBe(createRes.headers.location);
 
-    const detail = await request(app).get(createRes.headers.location).expect(200);
+    const detail = await agent.get(createRes.headers.location).expect(200);
     expect(detail.text).toContain('Archived');
   });
 
   it('cannot archive already archived release', async () => {
-    const projRes = await request(app)
+    const projRes = await agent
       .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('title=Double+Archive+Project')
       .send('status=tbd')
       .send('priority=normal')
@@ -747,20 +803,23 @@ describe('release HTTP workflow', () => {
       .expect(302);
     const projectId = projRes.headers.location.replace('/projects/', '');
 
-    const createRes = await request(app)
+    const createRes = await agent
       .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=Double+Archive')
       .send('status=idea')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
-    await request(app)
+    await agent
       .post(`${createRes.headers.location}/archive`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .expect(302);
 
-    const res = await request(app)
+    const res = await agent
       .post(`${createRes.headers.location}/archive`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .expect(422);
     expect(res.text).toMatch(/archived and cannot be modified/);
   });
@@ -768,8 +827,9 @@ describe('release HTTP workflow', () => {
   // ─── Asset selection ──────────────────────────────────────────────────────
 
   it('asset selection page renders project assets', async () => {
-    const projRes = await request(app)
+    const projRes = await agent
       .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('title=Asset+Selection+Project')
       .send('status=tbd')
       .send('priority=normal')
@@ -778,19 +838,21 @@ describe('release HTTP workflow', () => {
     const projectId = projRes.headers.location.replace('/projects/', '');
 
     // Scan to create assets
-    await request(app)
+    await agent
       .post(`/projects/${projectId}/scan`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .expect(302);
 
-    const createRes = await request(app)
+    const createRes = await agent
       .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=Asset+Selection+Release')
       .send('status=idea')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
-    const res = await request(app)
+    const res = await agent
       .get(`${createRes.headers.location}/assets`)
       .expect(200);
     expect(res.text).toContain('Asset Selection Release');
@@ -798,8 +860,9 @@ describe('release HTTP workflow', () => {
   });
 
   it('asset selection requires assets from correct project', async () => {
-    const proj1Res = await request(app)
+    const proj1Res = await agent
       .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('title=Project+One')
       .send('status=tbd')
       .send('priority=normal')
@@ -807,8 +870,9 @@ describe('release HTTP workflow', () => {
       .expect(302);
     const projectId1 = proj1Res.headers.location.replace('/projects/', '');
 
-    const proj2Res = await request(app)
+    const proj2Res = await agent
       .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('title=Project+Two')
       .send('status=tbd')
       .send('priority=normal')
@@ -816,8 +880,9 @@ describe('release HTTP workflow', () => {
       .expect(302);
     const projectId2 = proj2Res.headers.location.replace('/projects/', '');
 
-    const createRes = await request(app)
+    const createRes = await agent
       .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId1}`)
       .send('title=Cross+Project+Test')
       .send('status=idea')
@@ -825,13 +890,14 @@ describe('release HTTP workflow', () => {
       .expect(302);
 
     // Verify the release is associated with project 1
-    const detail = await request(app).get(createRes.headers.location).expect(200);
+    const detail = await agent.get(createRes.headers.location).expect(200);
     expect(detail.text).toContain('Project One');
   });
 
   it('asset selection form submission with explicit fields saves selections', async () => {
-    const projRes = await request(app)
+    const projRes = await agent
       .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('title=Asset+Form+Test+Project')
       .send('status=tbd')
       .send('priority=normal')
@@ -851,7 +917,8 @@ describe('release HTTP workflow', () => {
     fs.writeFileSync(path.join(projectDir, 'file1.png'), 'png');
     fs.writeFileSync(path.join(projectDir, 'file2.txt'), 'txt');
 
-    await request(app).post(`/projects/${projectId}/scan`).expect(302);
+    await agent.post(`/projects/${projectId}/scan`)
+      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
     // Get the actual asset ID from the database
     const assetRepo = createAssetRepository(db);
@@ -860,8 +927,9 @@ describe('release HTTP workflow', () => {
     const firstAssetId = String(assets[0].id);
 
     // Create a release
-    const createRes = await request(app)
+    const createRes = await agent
       .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=Asset+Form+Test+Release')
       .send('status=idea')
@@ -871,8 +939,9 @@ describe('release HTTP workflow', () => {
     const releaseId = Number(createRes.headers.location.replace('/releases/', ''));
 
     // Submit asset selection using the new explicit format
-    const submitRes = await request(app)
+    const submitRes = await agent
       .post(createRes.headers.location + '/assets')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`selectedAssetIds[]=${firstAssetId}`)
       .send('roles[]=primary')
       .send('sortOrder[]=0')
@@ -889,8 +958,9 @@ describe('release HTTP workflow', () => {
   });
 
   it('rejects malformed asset IDs with 422', async () => {
-    const projRes = await request(app)
+    const projRes = await agent
       .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('title=Malformed+Asset+ID+Test')
       .send('status=tbd')
       .send('priority=normal')
@@ -906,15 +976,17 @@ describe('release HTTP workflow', () => {
     };
     const projectDir = getProjectDir();
     fs.writeFileSync(path.join(projectDir, 'mid.png'), 'png');
-    await request(app).post(`/projects/${projectId}/scan`).expect(302);
+    await agent.post(`/projects/${projectId}/scan`)
+      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
     const assetRepo = createAssetRepository(db);
     const assets = assetRepo.findByProjectId(Number(projectId));
     expect(assets.length).toBeGreaterThan(0);
     const assetId = String(assets[0].id);
 
-    const createRes = await request(app)
+    const createRes = await agent
       .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=Malformed+Asset+ID+Release')
       .send('status=idea')
@@ -924,8 +996,9 @@ describe('release HTTP workflow', () => {
     const releaseId = Number(createRes.headers.location.replace('/releases/', ''));
 
     // Persist a selection first
-    await request(app)
+    await agent
       .post(createRes.headers.location + '/assets')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`selectedAssetIds[]=${assetId}`)
       .send('roles[]=primary')
       .send('sortOrder[]=0')
@@ -936,8 +1009,9 @@ describe('release HTTP workflow', () => {
     expect(beforeRows).toHaveLength(1);
 
     // Submit with malformed asset ID (e.g., "1x")
-    const res = await request(app)
+    const res = await agent
       .post(createRes.headers.location + '/assets')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('selectedAssetIds[]=1x')
       .send('roles[1x]=primary')
       .send('sortOrder[1x]=0')
@@ -952,8 +1026,9 @@ describe('release HTTP workflow', () => {
   });
 
   it('publish only works for ready status releases', async () => {
-    const projRes = await request(app)
+    const projRes = await agent
       .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('title=Publish+Ready+Test')
       .send('status=tbd')
       .send('priority=normal')
@@ -962,8 +1037,9 @@ describe('release HTTP workflow', () => {
     const projectId = projRes.headers.location.replace('/projects/', '');
 
     // Create release with idea status
-    const ideaRes = await request(app)
+    const ideaRes = await agent
       .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=Idea+Release')
       .send('status=idea')
@@ -971,8 +1047,9 @@ describe('release HTTP workflow', () => {
       .expect(302);
 
     // Publishing idea status should fail — readiness policy reports status_ready
-    const publishRes = await request(app)
+    const publishRes = await agent
       .post(`${ideaRes.headers.location}/publish`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .expect(422);
     expect(publishRes.text).toContain('ready');
   });
@@ -980,8 +1057,9 @@ describe('release HTTP workflow', () => {
   // ─── Error rendering safety ───────────────────────────────────────────────
 
   it('error responses contain no absolute filesystem paths', async () => {
-    const projRes = await request(app)
+    const projRes = await agent
       .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('title=No+Path+Release+Test')
       .send('status=tbd')
       .send('priority=normal')
@@ -989,8 +1067,9 @@ describe('release HTTP workflow', () => {
       .expect(302);
     const projectId = projRes.headers.location.replace('/projects/', '');
 
-    const res = await request(app)
+    const res = await agent
       .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=No+Path+Release')
       .send('status=invalid')
@@ -1006,8 +1085,9 @@ describe('release HTTP workflow', () => {
     // fields are disabled for newly-checked rows, so the browser never sends
     // them. The server must accept this and apply sensible defaults rather
     // than rejecting the submission.
-    const projRes = await request(app)
+    const projRes = await agent
       .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('title=NoJS+Asset+Test')
       .send('status=tbd')
       .send('priority=normal')
@@ -1026,7 +1106,8 @@ describe('release HTTP workflow', () => {
     const projectDir = getProjectDir();
     fs.writeFileSync(path.join(projectDir, 'a.png'), 'png');
     fs.writeFileSync(path.join(projectDir, 'b.txt'), 'txt');
-    await request(app).post(`/projects/${projectId}/scan`).expect(302);
+    await agent.post(`/projects/${projectId}/scan`)
+      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
     const assetRepo = createAssetRepository(db);
     const assets = assetRepo.findByProjectId(Number(projectId));
@@ -1034,8 +1115,9 @@ describe('release HTTP workflow', () => {
     const firstAssetId = String(assets[0].id);
     const secondAssetId = String(assets[1].id);
 
-    const createRes = await request(app)
+    const createRes = await agent
       .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=NoJS+Asset+Release')
       .send('status=idea')
@@ -1047,8 +1129,9 @@ describe('release HTTP workflow', () => {
     // Submission with ONLY selectedAssetIds — no roles[], no sortOrder[].
     // The browser renumbers arrays after excluding disabled controls, so the
     // server receives an array of asset ids and no role/sortOrder values.
-    const submitRes = await request(app)
+    const submitRes = await agent
       .post(createRes.headers.location + '/assets')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`selectedAssetIds[]=${firstAssetId}`)
       .send(`selectedAssetIds[]=${secondAssetId}`)
       .set('Content-Type', 'application/x-www-form-urlencoded')
@@ -1070,8 +1153,9 @@ describe('release HTTP workflow', () => {
     // Realistic case: a user enables JS for some rows but not others. The
     // browser renumbers arrays after excluding disabled controls. The server
     // must still accept the submission.
-    const projRes = await request(app)
+    const projRes = await agent
       .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('title=PartialJS+Asset+Test')
       .send('status=tbd')
       .send('priority=normal')
@@ -1088,15 +1172,17 @@ describe('release HTTP workflow', () => {
     const projectDir = getProjectDir();
     fs.writeFileSync(path.join(projectDir, 'one.png'), 'png');
     fs.writeFileSync(path.join(projectDir, 'two.txt'), 'txt');
-    await request(app).post(`/projects/${projectId}/scan`).expect(302);
+    await agent.post(`/projects/${projectId}/scan`)
+      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
     const assetRepo = createAssetRepository(db);
     const assets = assetRepo.findByProjectId(Number(projectId));
     const firstAssetId = String(assets[0].id);
     const secondAssetId = String(assets[1].id);
 
-    const createRes = await request(app)
+    const createRes = await agent
       .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=PartialJS+Release')
       .send('status=idea')
@@ -1108,8 +1194,9 @@ describe('release HTTP workflow', () => {
     // Two selected, but only one role / sortOrder pair. The second selected
     // asset will fall back to defaults. This mirrors what the browser sends
     // when the second row's role/sortOrder are disabled.
-    await request(app)
+    await agent
       .post(createRes.headers.location + '/assets')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`selectedAssetIds[]=${firstAssetId}`)
       .send(`selectedAssetIds[]=${secondAssetId}`)
       .send('roles[]=primary')
@@ -1135,8 +1222,9 @@ describe('release HTTP workflow', () => {
     // (asset A as preview, plus a cross-project asset). The 422 must render
     // the form with "preview" selected, NOT "primary" — proving the form
     // reflects the submission, not the persisted state.
-    const projRes = await request(app)
+    const projRes = await agent
       .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('title=Preserve+Selection+Test')
       .send('status=tbd')
       .send('priority=normal')
@@ -1145,8 +1233,9 @@ describe('release HTTP workflow', () => {
     const projectId = projRes.headers.location.replace('/projects/', '');
 
     // Sibling project — used to create a cross-project asset id.
-    const proj2Res = await request(app)
+    const proj2Res = await agent
       .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('title=Other+Project')
       .send('status=tbd')
       .send('priority=normal')
@@ -1161,11 +1250,13 @@ describe('release HTTP workflow', () => {
     };
     const mainDir = getProjectDir('preserve-selection-test');
     fs.writeFileSync(path.join(mainDir, 'main.png'), 'png');
-    await request(app).post(`/projects/${projectId}/scan`).expect(302);
+    await agent.post(`/projects/${projectId}/scan`)
+      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
     const otherDir = getProjectDir('other-project');
     fs.writeFileSync(path.join(otherDir, 'other.png'), 'png');
-    await request(app).post(`/projects/${otherProjectId}/scan`).expect(302);
+    await agent.post(`/projects/${otherProjectId}/scan`)
+      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
     const assetRepo = createAssetRepository(db);
     const mainAssets = assetRepo.findByProjectId(Number(projectId));
@@ -1175,8 +1266,9 @@ describe('release HTTP workflow', () => {
     const mainAssetId = mainAssets[0].id;
     const otherAssetId = otherAssets[0].id;
 
-    const createRes = await request(app)
+    const createRes = await agent
       .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=Preserve+Selection+Release')
       .send('status=idea')
@@ -1188,8 +1280,9 @@ describe('release HTTP workflow', () => {
     // Persist a baseline selection: asset A as primary, sort order 0.
     // This is what the user sees if the route falls back to the DB on
     // validation failure — the regression we are guarding against.
-    await request(app)
+    await agent
       .post(createRes.headers.location + '/assets')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`selectedAssetIds[]=${mainAssetId}`)
       .send('roles[]=primary')
       .send('sortOrder[]=0')
@@ -1202,8 +1295,9 @@ describe('release HTTP workflow', () => {
 
     // Now submit a DIFFERENT selection: change the role to "preview" and
     // add a cross-project asset. This must produce a 422 from the service.
-    const res = await request(app)
+    const res = await agent
       .post(createRes.headers.location + '/assets')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`selectedAssetIds[]=${mainAssetId}`)
       .send(`selectedAssetIds[]=${otherAssetId}`)
       .send('roles[]=preview')
@@ -1237,8 +1331,9 @@ describe('release HTTP workflow', () => {
   // ─── Phase 6D: duplicate rejection, form-state preservation, DB assertions ──
 
   it('rejects duplicate asset IDs with 422 and no junction rows', async () => {
-    const projRes = await request(app)
+    const projRes = await agent
       .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('title=Duplicate+Asset+Test')
       .send('status=tbd')
       .send('priority=normal')
@@ -1254,15 +1349,17 @@ describe('release HTTP workflow', () => {
     };
     const projectDir = getProjectDir();
     fs.writeFileSync(path.join(projectDir, 'dup.png'), 'png');
-    await request(app).post(`/projects/${projectId}/scan`).expect(302);
+    await agent.post(`/projects/${projectId}/scan`)
+      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
     const assetRepo = createAssetRepository(db);
     const assets = assetRepo.findByProjectId(Number(projectId));
     expect(assets.length).toBeGreaterThan(0);
     const assetId = String(assets[0].id);
 
-    const createRes = await request(app)
+    const createRes = await agent
       .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=Duplicate+Asset+Release')
       .send('status=idea')
@@ -1272,8 +1369,9 @@ describe('release HTTP workflow', () => {
     const releaseId = Number(createRes.headers.location.replace('/releases/', ''));
 
     // Submit the same asset ID twice
-    const res = await request(app)
+    const res = await agent
       .post(createRes.headers.location + '/assets')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`selectedAssetIds[]=${assetId}`)
       .send(`selectedAssetIds[]=${assetId}`)
       .send('roles[]=primary')
@@ -1291,8 +1389,9 @@ describe('release HTTP workflow', () => {
   });
 
   it('rejects duplicate string IDs with 422', async () => {
-    const projRes = await request(app)
+    const projRes = await agent
       .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('title=Dup+String+Test')
       .send('status=tbd')
       .send('priority=normal')
@@ -1308,15 +1407,17 @@ describe('release HTTP workflow', () => {
     };
     const projectDir = getProjectDir();
     fs.writeFileSync(path.join(projectDir, 'dupstr.png'), 'png');
-    await request(app).post(`/projects/${projectId}/scan`).expect(302);
+    await agent.post(`/projects/${projectId}/scan`)
+      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
     const assetRepo = createAssetRepository(db);
     const assets = assetRepo.findByProjectId(Number(projectId));
     expect(assets.length).toBeGreaterThan(0);
     const assetId = String(assets[0].id);
 
-    const createRes = await request(app)
+    const createRes = await agent
       .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=Dup+String+Release')
       .send('status=idea')
@@ -1326,8 +1427,9 @@ describe('release HTTP workflow', () => {
     const releaseId = Number(createRes.headers.location.replace('/releases/', ''));
 
     // Submit same ID twice as string values
-    const res = await request(app)
+    const res = await agent
       .post(createRes.headers.location + '/assets')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`selectedAssetIds[]=${assetId}`)
       .send(`selectedAssetIds[]=${assetId}`)
       .set('Content-Type', 'application/x-www-form-urlencoded')
@@ -1341,8 +1443,9 @@ describe('release HTTP workflow', () => {
   });
 
   it('rejects nested array selectedAssetIds safely', async () => {
-    const projRes = await request(app)
+    const projRes = await agent
       .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('title=Nested+Array+Test')
       .send('status=tbd')
       .send('priority=normal')
@@ -1358,15 +1461,17 @@ describe('release HTTP workflow', () => {
     };
     const projectDir = getProjectDir();
     fs.writeFileSync(path.join(projectDir, 'nested.png'), 'png');
-    await request(app).post(`/projects/${projectId}/scan`).expect(302);
+    await agent.post(`/projects/${projectId}/scan`)
+      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
     const assetRepo = createAssetRepository(db);
     const assets = assetRepo.findByProjectId(Number(projectId));
     expect(assets.length).toBeGreaterThan(0);
     const assetId = String(assets[0].id);
 
-    const createRes = await request(app)
+    const createRes = await agent
       .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=Nested+Array+Release')
       .send('status=idea')
@@ -1376,8 +1481,9 @@ describe('release HTTP workflow', () => {
     const releaseId = Number(createRes.headers.location.replace('/releases/', ''));
 
     // Persist a selection first
-    await request(app)
+    await agent
       .post(createRes.headers.location + '/assets')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`selectedAssetIds[]=${assetId}`)
       .send('roles[]=primary')
       .send('sortOrder[]=0')
@@ -1388,8 +1494,9 @@ describe('release HTTP workflow', () => {
     expect(beforeRows).toHaveLength(1);
 
     // Submit with a nested array value (malformed)
-    const res = await request(app)
+    const res = await agent
       .post(createRes.headers.location + '/assets')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       // Express extended parsing: selectedAssetIds[0][]=1 produces nested array
       .send('selectedAssetIds[0][]=1')
       .set('Content-Type', 'application/x-www-form-urlencoded')
@@ -1403,8 +1510,9 @@ describe('release HTTP workflow', () => {
   });
 
   it('rejects object selectedAssetIds safely', async () => {
-    const projRes = await request(app)
+    const projRes = await agent
       .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('title=Object+Asset+Test')
       .send('status=tbd')
       .send('priority=normal')
@@ -1420,15 +1528,17 @@ describe('release HTTP workflow', () => {
     };
     const projectDir = getProjectDir();
     fs.writeFileSync(path.join(projectDir, 'obj.png'), 'png');
-    await request(app).post(`/projects/${projectId}/scan`).expect(302);
+    await agent.post(`/projects/${projectId}/scan`)
+      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
     const assetRepo = createAssetRepository(db);
     const assets = assetRepo.findByProjectId(Number(projectId));
     expect(assets.length).toBeGreaterThan(0);
     const assetId = String(assets[0].id);
 
-    const createRes = await request(app)
+    const createRes = await agent
       .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=Object+Asset+Release')
       .send('status=idea')
@@ -1439,8 +1549,9 @@ describe('release HTTP workflow', () => {
 
     // Submit with an object value (numeric keys, valid shape) — the route
     // normalizes it to an array and then the duplicate detection catches it.
-    const res = await request(app)
+    const res = await agent
       .post(createRes.headers.location + '/assets')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`selectedAssetIds[0]=${assetId}`)
       .send(`selectedAssetIds[1]=${assetId}`)
       .send('roles[0]=primary')
@@ -1458,8 +1569,9 @@ describe('release HTTP workflow', () => {
   });
 
   it('rejects blank selectedAssetIds safely', async () => {
-    const projRes = await request(app)
+    const projRes = await agent
       .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('title=Blank+Asset+Test')
       .send('status=tbd')
       .send('priority=normal')
@@ -1475,15 +1587,17 @@ describe('release HTTP workflow', () => {
     };
     const projectDir = getProjectDir();
     fs.writeFileSync(path.join(projectDir, 'blank.png'), 'png');
-    await request(app).post(`/projects/${projectId}/scan`).expect(302);
+    await agent.post(`/projects/${projectId}/scan`)
+      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
     const assetRepo = createAssetRepository(db);
     const assets = assetRepo.findByProjectId(Number(projectId));
     expect(assets.length).toBeGreaterThan(0);
     const assetId = String(assets[0].id);
 
-    const createRes = await request(app)
+    const createRes = await agent
       .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=Blank+Asset+Release')
       .send('status=idea')
@@ -1493,8 +1607,9 @@ describe('release HTTP workflow', () => {
     const releaseId = Number(createRes.headers.location.replace('/releases/', ''));
 
     // Persist a selection first
-    await request(app)
+    await agent
       .post(createRes.headers.location + '/assets')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`selectedAssetIds[]=${assetId}`)
       .send('roles[]=primary')
       .send('sortOrder[]=0')
@@ -1505,8 +1620,9 @@ describe('release HTTP workflow', () => {
     expect(beforeRows).toHaveLength(1);
 
     // Submit with blank asset ID
-    const res = await request(app)
+    const res = await agent
       .post(createRes.headers.location + '/assets')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('selectedAssetIds[]=')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(422);
@@ -1519,8 +1635,9 @@ describe('release HTTP workflow', () => {
   });
 
   it('rejects non-integer asset IDs safely', async () => {
-    const projRes = await request(app)
+    const projRes = await agent
       .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('title=NonInt+Asset+Test')
       .send('status=tbd')
       .send('priority=normal')
@@ -1536,15 +1653,17 @@ describe('release HTTP workflow', () => {
     };
     const projectDir = getProjectDir();
     fs.writeFileSync(path.join(projectDir, 'ni.png'), 'png');
-    await request(app).post(`/projects/${projectId}/scan`).expect(302);
+    await agent.post(`/projects/${projectId}/scan`)
+      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
     const assetRepo = createAssetRepository(db);
     const assets = assetRepo.findByProjectId(Number(projectId));
     expect(assets.length).toBeGreaterThan(0);
     const assetId = String(assets[0].id);
 
-    const createRes = await request(app)
+    const createRes = await agent
       .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=NonInt+Asset+Release')
       .send('status=idea')
@@ -1554,8 +1673,9 @@ describe('release HTTP workflow', () => {
     const releaseId = Number(createRes.headers.location.replace('/releases/', ''));
 
     // Persist a selection first
-    await request(app)
+    await agent
       .post(createRes.headers.location + '/assets')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`selectedAssetIds[]=${assetId}`)
       .send('roles[]=primary')
       .send('sortOrder[]=0')
@@ -1566,8 +1686,9 @@ describe('release HTTP workflow', () => {
     expect(beforeRows).toHaveLength(1);
 
     // Submit with float string
-    const res = await request(app)
+    const res = await agent
       .post(createRes.headers.location + '/assets')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('selectedAssetIds[]=1.5')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(422);
@@ -1580,8 +1701,9 @@ describe('release HTTP workflow', () => {
   });
 
   it('rejects negative asset IDs safely', async () => {
-    const projRes = await request(app)
+    const projRes = await agent
       .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('title=Neg+Asset+Test')
       .send('status=tbd')
       .send('priority=normal')
@@ -1597,15 +1719,17 @@ describe('release HTTP workflow', () => {
     };
     const projectDir = getProjectDir();
     fs.writeFileSync(path.join(projectDir, 'neg.png'), 'png');
-    await request(app).post(`/projects/${projectId}/scan`).expect(302);
+    await agent.post(`/projects/${projectId}/scan`)
+      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
     const assetRepo = createAssetRepository(db);
     const assets = assetRepo.findByProjectId(Number(projectId));
     expect(assets.length).toBeGreaterThan(0);
     const assetId = String(assets[0].id);
 
-    const createRes = await request(app)
+    const createRes = await agent
       .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=Neg+Asset+Release')
       .send('status=idea')
@@ -1615,8 +1739,9 @@ describe('release HTTP workflow', () => {
     const releaseId = Number(createRes.headers.location.replace('/releases/', ''));
 
     // Persist a selection first
-    await request(app)
+    await agent
       .post(createRes.headers.location + '/assets')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`selectedAssetIds[]=${assetId}`)
       .send('roles[]=primary')
       .send('sortOrder[]=0')
@@ -1626,8 +1751,9 @@ describe('release HTTP workflow', () => {
     const beforeRows = getReleaseAssets(db, releaseId);
     expect(beforeRows).toHaveLength(1);
 
-    const res = await request(app)
+    const res = await agent
       .post(createRes.headers.location + '/assets')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('selectedAssetIds[]=-1')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(422);
@@ -1640,8 +1766,9 @@ describe('release HTTP workflow', () => {
   });
 
   it('rejects zero asset IDs safely', async () => {
-    const projRes = await request(app)
+    const projRes = await agent
       .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('title=Zero+Asset+Test')
       .send('status=tbd')
       .send('priority=normal')
@@ -1657,15 +1784,17 @@ describe('release HTTP workflow', () => {
     };
     const projectDir = getProjectDir();
     fs.writeFileSync(path.join(projectDir, 'zero.png'), 'png');
-    await request(app).post(`/projects/${projectId}/scan`).expect(302);
+    await agent.post(`/projects/${projectId}/scan`)
+      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
     const assetRepo = createAssetRepository(db);
     const assets = assetRepo.findByProjectId(Number(projectId));
     expect(assets.length).toBeGreaterThan(0);
     const assetId = String(assets[0].id);
 
-    const createRes = await request(app)
+    const createRes = await agent
       .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=Zero+Asset+Release')
       .send('status=idea')
@@ -1675,8 +1804,9 @@ describe('release HTTP workflow', () => {
     const releaseId = Number(createRes.headers.location.replace('/releases/', ''));
 
     // Persist a selection first
-    await request(app)
+    await agent
       .post(createRes.headers.location + '/assets')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`selectedAssetIds[]=${assetId}`)
       .send('roles[]=primary')
       .send('sortOrder[]=0')
@@ -1686,8 +1816,9 @@ describe('release HTTP workflow', () => {
     const beforeRows = getReleaseAssets(db, releaseId);
     expect(beforeRows).toHaveLength(1);
 
-    const res = await request(app)
+    const res = await agent
       .post(createRes.headers.location + '/assets')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('selectedAssetIds[]=0')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(422);
@@ -1700,8 +1831,9 @@ describe('release HTTP workflow', () => {
   });
 
   it('single selected asset + invalid role → 422 and checkbox remains selected', async () => {
-    const projRes = await request(app)
+    const projRes = await agent
       .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('title=Single+Asset+Role+Test')
       .send('status=tbd')
       .send('priority=normal')
@@ -1717,15 +1849,17 @@ describe('release HTTP workflow', () => {
     };
     const projectDir = getProjectDir();
     fs.writeFileSync(path.join(projectDir, 'single.png'), 'png');
-    await request(app).post(`/projects/${projectId}/scan`).expect(302);
+    await agent.post(`/projects/${projectId}/scan`)
+      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
     const assetRepo = createAssetRepository(db);
     const assets = assetRepo.findByProjectId(Number(projectId));
     expect(assets.length).toBeGreaterThan(0);
     const assetId = String(assets[0].id);
 
-    const createRes = await request(app)
+    const createRes = await agent
       .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=Single+Asset+Role+Release')
       .send('status=idea')
@@ -1735,8 +1869,9 @@ describe('release HTTP workflow', () => {
     const releaseId = Number(createRes.headers.location.replace('/releases/', ''));
 
     // Persist a baseline selection
-    await request(app)
+    await agent
       .post(createRes.headers.location + '/assets')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`selectedAssetIds=${assetId}`)
       .send('roles[0]=primary')
       .send('sortOrder[0]=0')
@@ -1747,8 +1882,9 @@ describe('release HTTP workflow', () => {
     expect(beforeRows).toHaveLength(1);
 
     // Submit one valid asset with an invalid role — triggers 422
-    const res = await request(app)
+    const res = await agent
       .post(createRes.headers.location + '/assets')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`selectedAssetIds=${assetId}`)
       .send('roles[0]=invalid-role')
       .send('sortOrder[0]=0')
@@ -1764,8 +1900,9 @@ describe('release HTTP workflow', () => {
   });
 
   it('multiple selected assets + one validation error → all valid selections remain checked', async () => {
-    const projRes = await request(app)
+    const projRes = await agent
       .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('title=Multi+Asset+Preserve+Test')
       .send('status=tbd')
       .send('priority=normal')
@@ -1782,7 +1919,8 @@ describe('release HTTP workflow', () => {
     const projectDir = getProjectDir();
     fs.writeFileSync(path.join(projectDir, 'a.png'), 'png');
     fs.writeFileSync(path.join(projectDir, 'b.png'), 'png');
-    await request(app).post(`/projects/${projectId}/scan`).expect(302);
+    await agent.post(`/projects/${projectId}/scan`)
+      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
     const assetRepo = createAssetRepository(db);
     const assets = assetRepo.findByProjectId(Number(projectId));
@@ -1790,8 +1928,9 @@ describe('release HTTP workflow', () => {
     const assetId1 = String(assets[0].id);
     const assetId2 = String(assets[1].id);
 
-    const createRes = await request(app)
+    const createRes = await agent
       .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=Multi+Asset+Preserve+Release')
       .send('status=idea')
@@ -1801,8 +1940,9 @@ describe('release HTTP workflow', () => {
     const releaseId = Number(createRes.headers.location.replace('/releases/', ''));
 
     // Persist a baseline selection
-    await request(app)
+    await agent
       .post(createRes.headers.location + '/assets')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`selectedAssetIds[]=${assetId1}`)
       .send(`selectedAssetIds[]=${assetId2}`)
       .send('roles[]=primary')
@@ -1816,8 +1956,9 @@ describe('release HTTP workflow', () => {
     expect(beforeRows).toHaveLength(2);
 
     // Submit two valid assets with an invalid role on the second — triggers 422
-    const res = await request(app)
+    const res = await agent
       .post(createRes.headers.location + '/assets')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`selectedAssetIds[]=${assetId1}`)
       .send(`selectedAssetIds[]=${assetId2}`)
       .send('roles[]=primary')
@@ -1837,8 +1978,9 @@ describe('release HTTP workflow', () => {
   });
 
   it('intentional clear (no selectedAssetIds) succeeds and removes all rows', async () => {
-    const projRes = await request(app)
+    const projRes = await agent
       .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('title=Empty+Selection+Test')
       .send('status=tbd')
       .send('priority=normal')
@@ -1854,15 +1996,17 @@ describe('release HTTP workflow', () => {
     };
     const projectDir = getProjectDir();
     fs.writeFileSync(path.join(projectDir, 'clear.png'), 'png');
-    await request(app).post(`/projects/${projectId}/scan`).expect(302);
+    await agent.post(`/projects/${projectId}/scan`)
+      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
     const assetRepo = createAssetRepository(db);
     const assets = assetRepo.findByProjectId(Number(projectId));
     expect(assets.length).toBeGreaterThan(0);
     const assetId = String(assets[0].id);
 
-    const createRes = await request(app)
+    const createRes = await agent
       .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=Empty+Selection+Release')
       .send('status=idea')
@@ -1872,8 +2016,9 @@ describe('release HTTP workflow', () => {
     const releaseId = Number(createRes.headers.location.replace('/releases/', ''));
 
     // Persist a selection first
-    await request(app)
+    await agent
       .post(createRes.headers.location + '/assets')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`selectedAssetIds[]=${assetId}`)
       .send('roles[]=primary')
       .send('sortOrder[]=0')
@@ -1883,8 +2028,9 @@ describe('release HTTP workflow', () => {
     expect(getReleaseAssets(db, releaseId)).toHaveLength(1);
 
     // Submit with no selectedAssetIds at all — should succeed (empty = clear)
-    const res = await request(app)
+    const res = await agent
       .post(createRes.headers.location + '/assets')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
@@ -1898,8 +2044,9 @@ describe('release HTTP workflow', () => {
   it('empty scalar selectedAssetIds= clears all selections', async () => {
     // Regression: selectedAssetIds= as an empty scalar string must be treated
     // as an intentional clear, not a malformed submission.
-    const projRes = await request(app)
+    const projRes = await agent
       .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('title=Empty+Scalar+Clear+Test')
       .send('status=tbd')
       .send('priority=normal')
@@ -1915,15 +2062,17 @@ describe('release HTTP workflow', () => {
     };
     const projectDir = getProjectDir();
     fs.writeFileSync(path.join(projectDir, 'esc.png'), 'png');
-    await request(app).post(`/projects/${projectId}/scan`).expect(302);
+    await agent.post(`/projects/${projectId}/scan`)
+      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
     const assetRepo = createAssetRepository(db);
     const assets = assetRepo.findByProjectId(Number(projectId));
     expect(assets.length).toBeGreaterThan(0);
     const assetId = String(assets[0].id);
 
-    const createRes = await request(app)
+    const createRes = await agent
       .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=Empty+Scalar+Clear+Release')
       .send('status=idea')
@@ -1933,8 +2082,9 @@ describe('release HTTP workflow', () => {
     const releaseId = Number(createRes.headers.location.replace('/releases/', ''));
 
     // Persist a selection first
-    await request(app)
+    await agent
       .post(createRes.headers.location + '/assets')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`selectedAssetIds[]=${assetId}`)
       .send('roles[]=primary')
       .send('sortOrder[]=0')
@@ -1944,8 +2094,9 @@ describe('release HTTP workflow', () => {
     expect(getReleaseAssets(db, releaseId)).toHaveLength(1);
 
     // Submit with selectedAssetIds= (empty scalar) — must succeed and clear
-    const res = await request(app)
+    const res = await agent
       .post(createRes.headers.location + '/assets')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('selectedAssetIds=')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
@@ -1959,8 +2110,9 @@ describe('release HTTP workflow', () => {
 
   it('rejects null selectedAssetIds with 422 and preserves rows', async () => {
     // Regression: null must be treated as malformed, not as an intentional clear.
-    const projRes = await request(app)
+    const projRes = await agent
       .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('title=Null+Asset+Reject+Test')
       .send('status=tbd')
       .send('priority=normal')
@@ -1976,15 +2128,17 @@ describe('release HTTP workflow', () => {
     };
     const projectDir = getProjectDir();
     fs.writeFileSync(path.join(projectDir, 'null.png'), 'png');
-    await request(app).post(`/projects/${projectId}/scan`).expect(302);
+    await agent.post(`/projects/${projectId}/scan`)
+      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
     const assetRepo = createAssetRepository(db);
     const assets = assetRepo.findByProjectId(Number(projectId));
     expect(assets.length).toBeGreaterThan(0);
     const assetId = String(assets[0].id);
 
-    const createRes = await request(app)
+    const createRes = await agent
       .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=Null+Asset+Reject+Release')
       .send('status=idea')
@@ -1994,8 +2148,9 @@ describe('release HTTP workflow', () => {
     const releaseId = Number(createRes.headers.location.replace('/releases/', ''));
 
     // Persist a selection first
-    await request(app)
+    await agent
       .post(createRes.headers.location + '/assets')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`selectedAssetIds[]=${assetId}`)
       .send('roles[]=primary')
       .send('sortOrder[]=0')
@@ -2006,9 +2161,9 @@ describe('release HTTP workflow', () => {
     expect(beforeRows).toHaveLength(1);
 
     // Submit with null via JSON body
-    const res = await request(app)
+    const res = await agent
       .post(createRes.headers.location + '/assets')
-      .send({ selectedAssetIds: null })
+      .send({ selectedAssetIds: null, _csrf: csrfToken })
       .set('Content-Type', 'application/json')
       .expect(422);
 
@@ -2020,8 +2175,9 @@ describe('release HTTP workflow', () => {
   });
 
   it('malformed object/nested values are rejected safely', async () => {
-    const projRes = await request(app)
+    const projRes = await agent
       .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('title=Malformed+Object+Test')
       .send('status=tbd')
       .send('priority=normal')
@@ -2037,7 +2193,8 @@ describe('release HTTP workflow', () => {
     const projectDir = getProjectDir('malformed-object-test');
     fs.writeFileSync(path.join(projectDir, 'm1.png'), 'png');
     fs.writeFileSync(path.join(projectDir, 'm2.png'), 'png');
-    await request(app).post(`/projects/${projectId}/scan`).expect(302);
+    await agent.post(`/projects/${projectId}/scan`)
+      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
     const assetRepo = createAssetRepository(db);
     const assets = assetRepo.findByProjectId(Number(projectId));
@@ -2045,8 +2202,9 @@ describe('release HTTP workflow', () => {
     const assetId1 = String(assets[0].id);
     const assetId2 = String(assets[1].id);
 
-    const createRes = await request(app)
+    const createRes = await agent
       .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=Malformed+Object+Release')
       .send('status=idea')
@@ -2056,8 +2214,9 @@ describe('release HTTP workflow', () => {
     const releaseId = Number(createRes.headers.location.replace('/releases/', ''));
 
     // Persist a selection first
-    await request(app)
+    await agent
       .post(createRes.headers.location + '/assets')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`selectedAssetIds[]=${assetId1}`)
       .send('roles[]=primary')
       .send('sortOrder[]=0')
@@ -2072,8 +2231,9 @@ describe('release HTTP workflow', () => {
     // parsing quirk: selectedAssetIds[0]=1 → { '0': '1' }). The route
     // normalizes this to an array via normalizeSelectedAssetIds.
     // Use a cross-project asset to trigger a validation error (422).
-    const proj2Res = await request(app)
+    const proj2Res = await agent
       .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('title=Other+Malformed+Project')
       .send('status=tbd')
       .send('priority=normal')
@@ -2082,14 +2242,16 @@ describe('release HTTP workflow', () => {
     const otherProjectId = proj2Res.headers.location.replace('/projects/', '');
     const otherProjectDir = getProjectDir('other-malformed-project');
     fs.writeFileSync(path.join(otherProjectDir, 'other.png'), 'png');
-    await request(app).post(`/projects/${otherProjectId}/scan`).expect(302);
+    await agent.post(`/projects/${otherProjectId}/scan`)
+      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
     const otherAssets = assetRepo.findByProjectId(Number(otherProjectId));
     expect(otherAssets.length).toBeGreaterThan(0);
     const otherAssetId = String(otherAssets[0].id);
 
-    const res = await request(app)
+    const res = await agent
       .post(createRes.headers.location + '/assets')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`selectedAssetIds[0]=${assetId1}`)
       .send(`selectedAssetIds[1]=${otherAssetId}`)
       .send('roles[0]=primary')
@@ -2109,8 +2271,9 @@ describe('release HTTP workflow', () => {
   });
 
   it('rejects selectedAssetIds[foo][bar]=1 (nested object with non-numeric keys) and preserves rows', async () => {
-    const projRes = await request(app)
+    const projRes = await agent
       .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('title=Nested+Obj+Key+Test')
       .send('status=tbd')
       .send('priority=normal')
@@ -2126,15 +2289,17 @@ describe('release HTTP workflow', () => {
     };
     const projectDir = getProjectDir();
     fs.writeFileSync(path.join(projectDir, 'nok.png'), 'png');
-    await request(app).post(`/projects/${projectId}/scan`).expect(302);
+    await agent.post(`/projects/${projectId}/scan`)
+      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
     const assetRepo = createAssetRepository(db);
     const assets = assetRepo.findByProjectId(Number(projectId));
     expect(assets.length).toBeGreaterThan(0);
     const assetId = String(assets[0].id);
 
-    const createRes = await request(app)
+    const createRes = await agent
       .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=Nested+Obj+Key+Release')
       .send('status=idea')
@@ -2144,8 +2309,9 @@ describe('release HTTP workflow', () => {
     const releaseId = Number(createRes.headers.location.replace('/releases/', ''));
 
     // Persist a selection first
-    await request(app)
+    await agent
       .post(createRes.headers.location + '/assets')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`selectedAssetIds[]=${assetId}`)
       .send('roles[]=primary')
       .send('sortOrder[]=0')
@@ -2156,8 +2322,9 @@ describe('release HTTP workflow', () => {
     expect(beforeRows).toHaveLength(1);
 
     // Submit with selectedAssetIds[foo][bar]=1 — nested object with non-numeric keys
-    const res = await request(app)
+    const res = await agent
       .post(createRes.headers.location + '/assets')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('selectedAssetIds[foo][bar]=1')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(422);
@@ -2170,8 +2337,9 @@ describe('release HTTP workflow', () => {
   });
 
   it('rejects selectedAssetIds[foo]=1 (non-numeric key) and preserves rows', async () => {
-    const projRes = await request(app)
+    const projRes = await agent
       .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('title=NonNumeric+Key+Test')
       .send('status=tbd')
       .send('priority=normal')
@@ -2187,15 +2355,17 @@ describe('release HTTP workflow', () => {
     };
     const projectDir = getProjectDir();
     fs.writeFileSync(path.join(projectDir, 'nnk.png'), 'png');
-    await request(app).post(`/projects/${projectId}/scan`).expect(302);
+    await agent.post(`/projects/${projectId}/scan`)
+      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
     const assetRepo = createAssetRepository(db);
     const assets = assetRepo.findByProjectId(Number(projectId));
     expect(assets.length).toBeGreaterThan(0);
     const assetId = String(assets[0].id);
 
-    const createRes = await request(app)
+    const createRes = await agent
       .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=NonNumeric+Key+Release')
       .send('status=idea')
@@ -2205,8 +2375,9 @@ describe('release HTTP workflow', () => {
     const releaseId = Number(createRes.headers.location.replace('/releases/', ''));
 
     // Persist a selection first
-    await request(app)
+    await agent
       .post(createRes.headers.location + '/assets')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`selectedAssetIds[]=${assetId}`)
       .send('roles[]=primary')
       .send('sortOrder[]=0')
@@ -2217,8 +2388,9 @@ describe('release HTTP workflow', () => {
     expect(beforeRows).toHaveLength(1);
 
     // Submit with selectedAssetIds[foo]=1 — non-numeric key
-    const res = await request(app)
+    const res = await agent
       .post(createRes.headers.location + '/assets')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('selectedAssetIds[foo]=1')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(422);
@@ -2231,8 +2403,9 @@ describe('release HTTP workflow', () => {
   });
 
   it('rejects mixed flat and nested values and preserves rows', async () => {
-    const projRes = await request(app)
+    const projRes = await agent
       .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('title=Mixed+Nested+Test')
       .send('status=tbd')
       .send('priority=normal')
@@ -2248,15 +2421,17 @@ describe('release HTTP workflow', () => {
     };
     const projectDir = getProjectDir();
     fs.writeFileSync(path.join(projectDir, 'mn.png'), 'png');
-    await request(app).post(`/projects/${projectId}/scan`).expect(302);
+    await agent.post(`/projects/${projectId}/scan`)
+      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
     const assetRepo = createAssetRepository(db);
     const assets = assetRepo.findByProjectId(Number(projectId));
     expect(assets.length).toBeGreaterThan(0);
     const assetId = String(assets[0].id);
 
-    const createRes = await request(app)
+    const createRes = await agent
       .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=Mixed+Nested+Release')
       .send('status=idea')
@@ -2266,8 +2441,9 @@ describe('release HTTP workflow', () => {
     const releaseId = Number(createRes.headers.location.replace('/releases/', ''));
 
     // Persist a selection first
-    await request(app)
+    await agent
       .post(createRes.headers.location + '/assets')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`selectedAssetIds[]=${assetId}`)
       .send('roles[]=primary')
       .send('sortOrder[]=0')
@@ -2278,8 +2454,9 @@ describe('release HTTP workflow', () => {
     expect(beforeRows).toHaveLength(1);
 
     // Submit with mixed flat and nested values — one valid scalar and one nested
-    const res = await request(app)
+    const res = await agent
       .post(createRes.headers.location + '/assets')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`selectedAssetIds[]=${assetId}`)
       .send('selectedAssetIds[0][]=1')
       .set('Content-Type', 'application/x-www-form-urlencoded')
@@ -2293,8 +2470,9 @@ describe('release HTTP workflow', () => {
   });
 
   it('archived release rejection preserves persisted rows', async () => {
-    const projRes = await request(app)
+    const projRes = await agent
       .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('title=Archived+Preserve+Test')
       .send('status=tbd')
       .send('priority=normal')
@@ -2310,15 +2488,17 @@ describe('release HTTP workflow', () => {
     };
     const projectDir = getProjectDir();
     fs.writeFileSync(path.join(projectDir, 'ap.png'), 'png');
-    await request(app).post(`/projects/${projectId}/scan`).expect(302);
+    await agent.post(`/projects/${projectId}/scan`)
+      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
     const assetRepo = createAssetRepository(db);
     const assets = assetRepo.findByProjectId(Number(projectId));
     expect(assets.length).toBeGreaterThan(0);
     const assetId = String(assets[0].id);
 
-    const createRes = await request(app)
+    const createRes = await agent
       .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=Archived+Preserve+Release')
       .send('status=idea')
@@ -2328,8 +2508,9 @@ describe('release HTTP workflow', () => {
     const releaseId = Number(createRes.headers.location.replace('/releases/', ''));
 
     // Persist a selection
-    await request(app)
+    await agent
       .post(createRes.headers.location + '/assets')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`selectedAssetIds[]=${assetId}`)
       .send('roles[]=primary')
       .send('sortOrder[]=0')
@@ -2340,13 +2521,15 @@ describe('release HTTP workflow', () => {
     expect(beforeRows).toHaveLength(1);
 
     // Archive the release
-    await request(app)
+    await agent
       .post(`${createRes.headers.location}/archive`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .expect(302);
 
     // Attempt to modify assets on the archived release
-    const res = await request(app)
+    const res = await agent
       .post(createRes.headers.location + '/assets')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`selectedAssetIds[]=${assetId}`)
       .send('roles[]=preview')
       .send('sortOrder[]=5')
@@ -2360,7 +2543,7 @@ describe('release HTTP workflow', () => {
     expect(afterRows).toEqual(beforeRows);
 
     // GET the assets page — no bulk-selection checkboxes, no Save Selection
-    const assetsPage = await request(app)
+    const assetsPage = await agent
       .get(`${createRes.headers.location}/assets`)
       .expect(200);
     // The entire bulk-selection form must be absent in read-only scope
@@ -2376,8 +2559,9 @@ describe('release HTTP workflow', () => {
   });
 
   it('archived parent rejection preserves persisted rows', async () => {
-    const projRes = await request(app)
+    const projRes = await agent
       .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('title=Archived+Parent+Preserve')
       .send('status=tbd')
       .send('priority=normal')
@@ -2393,15 +2577,17 @@ describe('release HTTP workflow', () => {
     };
     const projectDir = getProjectDir();
     fs.writeFileSync(path.join(projectDir, 'app.png'), 'png');
-    await request(app).post(`/projects/${projectId}/scan`).expect(302);
+    await agent.post(`/projects/${projectId}/scan`)
+      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
     const assetRepo = createAssetRepository(db);
     const assets = assetRepo.findByProjectId(Number(projectId));
     expect(assets.length).toBeGreaterThan(0);
     const assetId = String(assets[0].id);
 
-    const createRes = await request(app)
+    const createRes = await agent
       .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=Archived+Parent+Preserve+Release')
       .send('status=idea')
@@ -2411,8 +2597,9 @@ describe('release HTTP workflow', () => {
     const releaseId = Number(createRes.headers.location.replace('/releases/', ''));
 
     // Persist a selection
-    await request(app)
+    await agent
       .post(createRes.headers.location + '/assets')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`selectedAssetIds[]=${assetId}`)
       .send('roles[]=primary')
       .send('sortOrder[]=0')
@@ -2423,13 +2610,15 @@ describe('release HTTP workflow', () => {
     expect(beforeRows).toHaveLength(1);
 
     // Archive the parent project
-    await request(app)
+    await agent
       .post(`/projects/${projectId}/archive`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .expect(302);
 
     // Attempt to modify assets — parent is archived
-    const res = await request(app)
+    const res = await agent
       .post(createRes.headers.location + '/assets')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`selectedAssetIds[]=${assetId}`)
       .send('roles[]=preview')
       .send('sortOrder[]=5')
@@ -2443,7 +2632,7 @@ describe('release HTTP workflow', () => {
     expect(afterRows).toEqual(beforeRows);
 
     // GET the assets page — no bulk-selection checkboxes, no Save Selection
-    const assetsPage = await request(app)
+    const assetsPage = await agent
       .get(`${createRes.headers.location}/assets`)
       .expect(200);
     // The entire bulk-selection form must be absent in read-only scope
@@ -2459,8 +2648,9 @@ describe('release HTTP workflow', () => {
   });
 
   it('replacement removes only intentionally deselected rows', async () => {
-    const projRes = await request(app)
+    const projRes = await agent
       .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('title=Replacement+Test')
       .send('status=tbd')
       .send('priority=normal')
@@ -2477,7 +2667,8 @@ describe('release HTTP workflow', () => {
     const projectDir = getProjectDir();
     fs.writeFileSync(path.join(projectDir, 'keep.png'), 'png');
     fs.writeFileSync(path.join(projectDir, 'remove.png'), 'png');
-    await request(app).post(`/projects/${projectId}/scan`).expect(302);
+    await agent.post(`/projects/${projectId}/scan`)
+      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
     const assetRepo = createAssetRepository(db);
     const assets = assetRepo.findByProjectId(Number(projectId));
@@ -2485,8 +2676,9 @@ describe('release HTTP workflow', () => {
     const keepAssetId = String(assets[0].id);
     const removeAssetId = String(assets[1].id);
 
-    const createRes = await request(app)
+    const createRes = await agent
       .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=Replacement+Release')
       .send('status=idea')
@@ -2496,8 +2688,9 @@ describe('release HTTP workflow', () => {
     const releaseId = Number(createRes.headers.location.replace('/releases/', ''));
 
     // Persist two selections
-    await request(app)
+    await agent
       .post(createRes.headers.location + '/assets')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`selectedAssetIds[]=${keepAssetId}`)
       .send(`selectedAssetIds[]=${removeAssetId}`)
       .send('roles[]=primary')
@@ -2511,8 +2704,9 @@ describe('release HTTP workflow', () => {
     expect(beforeRows).toHaveLength(2);
 
     // Submit with only the first asset — the second should be removed
-    await request(app)
+    await agent
       .post(createRes.headers.location + '/assets')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`selectedAssetIds[]=${keepAssetId}`)
       .send('roles[]=preview')
       .send('sortOrder[]=5')
@@ -2527,28 +2721,30 @@ describe('release HTTP workflow', () => {
   it('publish preserves an explicit publishedDate submitted with the publish form', async () => {
     // Simulates the detail page's publish button sending a hidden
     // publishedDate field — the route must honor it.
-    const { releaseLocation } = await setupPublishableRelease(app, projectsRoot, db);
+    const { releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
 
-    const res = await request(app)
+    const res = await agent
       .post(`${releaseLocation}/publish`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('publishedDate=2025-12-15')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
     expect(res.headers.location).toBe(releaseLocation);
 
-    const detail = await request(app).get(releaseLocation).expect(200);
+    const detail = await agent.get(releaseLocation).expect(200);
     expect(detail.text).toContain('2025-12-15');
   });
 
   it('publish preserves a previously edited publishedDate when publish form omits it', async () => {
     // Simulates: user edits the release and sets a publishedDate, then clicks
     // the publish button (which historically overwrote the date with today).
-    const { releaseLocation, projectId } = await setupPublishableRelease(app, projectsRoot, db);
+    const { releaseLocation, projectId } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
 
     // Edit the release to set a publishedDate
-    await request(app)
+    await agent
       .post(releaseLocation)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('title=Publishable+Release')
       .send('status=ready')
       .send('publishedDate=2025-08-20')
@@ -2557,12 +2753,13 @@ describe('release HTTP workflow', () => {
 
     // Publish button with no publishedDate in the body — the route must fall
     // back to the release's existing publishedDate.
-    await request(app)
+    await agent
       .post(`${releaseLocation}/publish`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
-    const detail = await request(app).get(releaseLocation).expect(200);
+    const detail = await agent.get(releaseLocation).expect(200);
     expect(detail.text).toContain('2025-08-20');
     expect(detail.text).toContain('Published');
   });
@@ -2570,23 +2767,25 @@ describe('release HTTP workflow', () => {
   it('publish uses today when neither the form nor the release has a publishedDate', async () => {
     // The default-to-today path must still work for releases that were never
     // given a date.
-    const { releaseLocation } = await setupPublishableRelease(app, projectsRoot, db);
+    const { releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
 
     const today = getLocalTodayIso();
-    await request(app)
+    await agent
       .post(`${releaseLocation}/publish`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
-    const detail = await request(app).get(releaseLocation).expect(200);
+    const detail = await agent.get(releaseLocation).expect(200);
     expect(detail.text).toContain(today);
   });
 
   // ─── Phase 7C-1: Readiness enforcement HTTP tests ───────────────────────
 
   it('direct POST with zero assets returns 422 and renders readiness blockers', async () => {
-    const projRes = await request(app)
+    const projRes = await agent
       .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('title=Zero+Asset+Publish+Test')
       .send('status=tbd')
       .send('priority=normal')
@@ -2594,8 +2793,9 @@ describe('release HTTP workflow', () => {
       .expect(302);
     const projectId = projRes.headers.location.replace('/projects/', '');
 
-    const createRes = await request(app)
+    const createRes = await agent
       .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=Zero+Asset+Publish')
       .send('status=ready')
@@ -2603,8 +2803,9 @@ describe('release HTTP workflow', () => {
       .expect(302);
 
     // Direct POST with no assets selected — must be blocked
-    const res = await request(app)
+    const res = await agent
       .post(`${createRes.headers.location}/publish`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .expect(422);
 
     // Must render the detail page with readiness panel and blocker feedback
@@ -2614,14 +2815,15 @@ describe('release HTTP workflow', () => {
   });
 
   it('direct POST with missing selected asset returns 422', async () => {
-    const { releaseLocation, projectId } = await setupPublishableRelease(app, projectsRoot, db);
+    const { releaseLocation, projectId } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
 
     // Mark the selected asset as missing
     const assetRepo = createAssetRepository(db);
     assetRepo.markMissingByProjectIdAndPathNotIn(Number(projectId), []);
 
-    const res = await request(app)
+    const res = await agent
       .post(`${releaseLocation}/publish`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .expect(422);
 
     expect(res.text).toContain('Cannot publish');
@@ -2629,16 +2831,18 @@ describe('release HTTP workflow', () => {
   });
 
   it('fully publishable release succeeds via POST', async () => {
-    const { releaseLocation } = await setupPublishableRelease(app, projectsRoot, db);
+    const { releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
 
-    await request(app)
+    await agent
       .post(`${releaseLocation}/publish`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .expect(302);
   });
 
   it('rejected publish does not change database state', async () => {
-    const projRes = await request(app)
+    const projRes = await agent
       .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('title=Rejected+State+Test')
       .send('status=tbd')
       .send('priority=normal')
@@ -2646,8 +2850,9 @@ describe('release HTTP workflow', () => {
       .expect(302);
     const projectId = projRes.headers.location.replace('/projects/', '');
 
-    const createRes = await request(app)
+    const createRes = await agent
       .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=Rejected+State+Release')
       .send('status=ready')
@@ -2655,32 +2860,35 @@ describe('release HTTP workflow', () => {
       .expect(302);
 
     // Verify initial state
-    const before = await request(app).get(createRes.headers.location).expect(200);
+    const before = await agent.get(createRes.headers.location).expect(200);
     expect(before.text).toContain('Status: ready');
     expect(before.text).not.toContain('Published');
 
     // Attempt publish (will fail — no assets)
-    await request(app)
+    await agent
       .post(`${createRes.headers.location}/publish`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .expect(422);
 
     // State must be unchanged
-    const after = await request(app).get(createRes.headers.location).expect(200);
+    const after = await agent.get(createRes.headers.location).expect(200);
     expect(after.text).toContain('Status: ready');
     expect(after.text).not.toContain('Published');
   });
 
   it('archived release publish rejection remains intact', async () => {
-    const { releaseLocation } = await setupPublishableRelease(app, projectsRoot, db);
+    const { releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
 
     // Archive the release
-    await request(app)
+    await agent
       .post(`${releaseLocation}/archive`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .expect(302);
 
     // Publish must be rejected
-    const res = await request(app)
+    const res = await agent
       .post(`${releaseLocation}/publish`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .expect(422);
     expect(res.text).toMatch(/archived/i);
   });
@@ -2695,8 +2903,9 @@ describe('release HTTP workflow', () => {
 
   describe('archived parent project gates release mutation controls', () => {
     it('release detail hides Edit, Archive, Publish, and Manage Assets when parent project is archived', async () => {
-      const projRes = await request(app)
+      const projRes = await agent
         .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Gated+Controls+Project')
         .send('status=tbd')
         .send('priority=normal')
@@ -2704,8 +2913,9 @@ describe('release HTTP workflow', () => {
         .expect(302);
       const projectId = projRes.headers.location.replace('/projects/', '');
 
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=Gated+Release')
         .send('status=ready')
@@ -2714,11 +2924,12 @@ describe('release HTTP workflow', () => {
       const releaseLocation = createRes.headers.location;
 
       // Archive the parent project. The release stays active in the DB.
-      await request(app)
+      await agent
         .post(`/projects/${projectId}/archive`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
-      const detail = await request(app).get(releaseLocation).expect(200);
+      const detail = await agent.get(releaseLocation).expect(200);
       // Read-only notice must be present.
       expect(detail.text).toMatch(/read-only/i);
       // Mutation controls must be hidden.
@@ -2729,9 +2940,9 @@ describe('release HTTP workflow', () => {
     });
 
     it('release detail still exposes mutation controls for an active project (regression)', async () => {
-      const { releaseLocation } = await setupPublishableRelease(app, projectsRoot, db);
+      const { releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
 
-      const detail = await request(app).get(releaseLocation).expect(200);
+      const detail = await agent.get(releaseLocation).expect(200);
       // Mutation controls are visible.
       expect(detail.text).toMatch(/href="\/releases\/\d+\/edit"/);
       expect(detail.text).toMatch(/action="\/releases\/\d+\/archive"/);
@@ -2740,8 +2951,9 @@ describe('release HTTP workflow', () => {
     });
 
     it('asset selection page hides Save and disables inputs when parent project is archived', async () => {
-      const projRes = await request(app)
+      const projRes = await agent
         .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Gated+Assets+Project')
         .send('status=tbd')
         .send('priority=normal')
@@ -2757,10 +2969,12 @@ describe('release HTTP workflow', () => {
       };
       const projectDir = getProjectDir();
       fs.writeFileSync(path.join(projectDir, 'gated.png'), 'png');
-      await request(app).post(`/projects/${projectId}/scan`).expect(302);
+      await agent.post(`/projects/${projectId}/scan`)
+      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=Gated+Asset+Release')
         .send('status=idea')
@@ -2769,11 +2983,12 @@ describe('release HTTP workflow', () => {
       const releaseLocation = createRes.headers.location;
 
       // Archive the parent project.
-      await request(app)
+      await agent
         .post(`/projects/${projectId}/archive`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
-      const assets = await request(app)
+      const assets = await agent
         .get(`${releaseLocation}/assets`)
         .expect(200);
       // Read-only notice must be present.
@@ -2791,8 +3006,9 @@ describe('release HTTP workflow', () => {
     });
 
     it('active project asset selection page has enabled checkboxes and Save button (regression)', async () => {
-      const projRes = await request(app)
+      const projRes = await agent
         .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Active+Assets+Project')
         .send('status=tbd')
         .send('priority=normal')
@@ -2808,10 +3024,12 @@ describe('release HTTP workflow', () => {
       };
       const projectDir = getProjectDir();
       fs.writeFileSync(path.join(projectDir, 'active.png'), 'png');
-      await request(app).post(`/projects/${projectId}/scan`).expect(302);
+      await agent.post(`/projects/${projectId}/scan`)
+      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=Active+Asset+Release')
         .send('status=idea')
@@ -2819,7 +3037,7 @@ describe('release HTTP workflow', () => {
         .expect(302);
       const releaseLocation = createRes.headers.location;
 
-      const assets = await request(app)
+      const assets = await agent
         .get(`${releaseLocation}/assets`)
         .expect(200);
       // Each checkbox element must NOT contain disabled.
@@ -2838,8 +3056,9 @@ describe('release HTTP workflow', () => {
     });
 
     it('POST /releases/:id update returns 422 when parent project is archived', async () => {
-      const projRes = await request(app)
+      const projRes = await agent
         .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Update+Reject+Archived')
         .send('status=tbd')
         .send('priority=normal')
@@ -2847,20 +3066,23 @@ describe('release HTTP workflow', () => {
         .expect(302);
       const projectId = projRes.headers.location.replace('/projects/', '');
 
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=Update+Reject+Release')
         .send('status=idea')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
-      await request(app).post(`/projects/${projectId}/archive`).expect(302);
+      await agent.post(`/projects/${projectId}/archive`)
+      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
       // The update POST must be rejected with 422 because the parent project
       // is archived. The error page must surface the rejection reason.
-      const res = await request(app)
+      const res = await agent
         .post(createRes.headers.location)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=New+Title')
         .send('status=planned')
         .set('Content-Type', 'application/x-www-form-urlencoded');
@@ -2869,14 +3091,16 @@ describe('release HTTP workflow', () => {
     });
 
     it('POST /releases/:id/publish renders release detail when parent project is archived', async () => {
-      const { releaseLocation, projectId, assetId } = await setupPublishableRelease(app, projectsRoot, db);
+      const { releaseLocation, projectId, assetId } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
       const releaseId = Number(releaseLocation.replace('/releases/', ''));
       const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
 
-      await request(app).post(`/projects/${projectId}/archive`).expect(302);
+      await agent.post(`/projects/${projectId}/archive`)
+      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
-      const res = await request(app)
+      const res = await agent
         .post(`${releaseLocation}/publish`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .set('Content-Type', 'application/x-www-form-urlencoded');
       expect(res.status).toBe(422);
       expect(res.text).toContain('Readiness Test Release');
@@ -2894,8 +3118,9 @@ describe('release HTTP workflow', () => {
     });
 
     it('POST /releases/:id/archive returns 422 when parent project is archived', async () => {
-      const projRes = await request(app)
+      const projRes = await agent
         .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Archive+Reject+Archived')
         .send('status=tbd')
         .send('priority=normal')
@@ -2903,26 +3128,30 @@ describe('release HTTP workflow', () => {
         .expect(302);
       const projectId = projRes.headers.location.replace('/projects/', '');
 
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=Archive+Reject+Release')
         .send('status=idea')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
-      await request(app).post(`/projects/${projectId}/archive`).expect(302);
+      await agent.post(`/projects/${projectId}/archive`)
+      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
-      const res = await request(app)
+      const res = await agent
         .post(`${createRes.headers.location}/archive`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .set('Content-Type', 'application/x-www-form-urlencoded');
       expect(res.status).toBe(422);
       expect(res.text).toMatch(/archived/i);
     });
 
     it('POST /releases/:id/assets returns 422 when parent project is archived', async () => {
-      const projRes = await request(app)
+      const projRes = await agent
         .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Asset+Reject+Archived')
         .send('status=tbd')
         .send('priority=normal')
@@ -2938,25 +3167,29 @@ describe('release HTTP workflow', () => {
       };
       const projectDir = getProjectDir();
       fs.writeFileSync(path.join(projectDir, 'a.png'), 'png');
-      await request(app).post(`/projects/${projectId}/scan`).expect(302);
+      await agent.post(`/projects/${projectId}/scan`)
+      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
       const assetRepo = createAssetRepository(db);
       const assets = assetRepo.findByProjectId(Number(projectId));
       expect(assets.length).toBeGreaterThan(0);
       const assetId = String(assets[0].id);
 
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=Asset+Reject+Release')
         .send('status=idea')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
-      await request(app).post(`/projects/${projectId}/archive`).expect(302);
+      await agent.post(`/projects/${projectId}/archive`)
+      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
-      const res = await request(app)
+      const res = await agent
         .post(`${createRes.headers.location}/assets`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`selectedAssetIds[]=${assetId}`)
         .send('roles[]=primary')
         .send('sortOrder[]=0')
@@ -2970,8 +3203,8 @@ describe('release HTTP workflow', () => {
 
   describe('release detail readiness panel', () => {
     it('fully publishable release shows Publishable and all checks pass', async () => {
-      const { releaseLocation } = await setupPublishableRelease(app, projectsRoot, db);
-      const res = await request(app).get(releaseLocation).expect(200);
+      const { releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
+      const res = await agent.get(releaseLocation).expect(200);
 
       expect(res.text).toContain('Publishable');
       expect(res.text).toContain('Status is ready');
@@ -2983,8 +3216,9 @@ describe('release HTTP workflow', () => {
     });
 
     it('non-ready status shows blocked with status detail', async () => {
-      const projRes = await request(app)
+      const projRes = await agent
         .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Non+Ready+Status+Test')
         .send('status=tbd')
         .send('priority=normal')
@@ -2992,23 +3226,25 @@ describe('release HTTP workflow', () => {
         .expect(302);
       const projectId = projRes.headers.location.replace('/projects/', '');
 
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=Non+Ready+Release')
         .send('status=idea')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
-      const res = await request(app).get(createRes.headers.location).expect(200);
+      const res = await agent.get(createRes.headers.location).expect(200);
       expect(res.text).toContain('Needs attention');
       expect(res.text).toContain('Status: idea');
       expect(res.text).not.toContain('Publishable');
     });
 
     it('zero selected assets shows blocked with count', async () => {
-      const projRes = await request(app)
+      const projRes = await agent
         .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Zero+Selected+Test')
         .send('status=tbd')
         .send('priority=normal')
@@ -3016,62 +3252,66 @@ describe('release HTTP workflow', () => {
         .expect(302);
       const projectId = projRes.headers.location.replace('/projects/', '');
 
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=Zero+Selected+Release')
         .send('status=ready')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
-      const res = await request(app).get(createRes.headers.location).expect(200);
+      const res = await agent.get(createRes.headers.location).expect(200);
       expect(res.text).toContain('Needs attention');
       expect(res.text).toContain('0 selected');
     });
 
     it('missing selected asset shows blocked with missing count', async () => {
-      const { releaseLocation, projectId, assetId } = await setupPublishableRelease(app, projectsRoot, db);
+      const { releaseLocation, projectId, assetId } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
 
       // Mark the selected asset as missing
       const assetRepo = createAssetRepository(db);
       assetRepo.markMissingByProjectIdAndPathNotIn(Number(projectId), []);
 
-      const res = await request(app).get(releaseLocation).expect(200);
+      const res = await agent.get(releaseLocation).expect(200);
       expect(res.text).toContain('Needs attention');
       expect(res.text).toContain('1 missing');
     });
 
     it('archived release shows scope blocked', async () => {
-      const { releaseLocation } = await setupPublishableRelease(app, projectsRoot, db);
+      const { releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
 
       // Archive the release
-      await request(app)
+      await agent
         .post(`${releaseLocation}/archive`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
-      const res = await request(app).get(releaseLocation).expect(200);
+      const res = await agent.get(releaseLocation).expect(200);
       // Archived releases show the archived notice instead of readiness panel
       expect(res.text).toContain('archived and read-only');
       expect(res.text).not.toContain('Needs attention');
     });
 
     it('archived parent project shows scope blocked', async () => {
-      const { releaseLocation, projectId } = await setupPublishableRelease(app, projectsRoot, db);
+      const { releaseLocation, projectId } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
 
       // Archive the parent project
-      await request(app)
+      await agent
         .post(`/projects/${projectId}/archive`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
-      const res = await request(app).get(releaseLocation).expect(200);
+      const res = await agent.get(releaseLocation).expect(200);
       // Archived parent shows the parent archived notice instead of readiness panel
       expect(res.text).toContain('parent project is archived');
       expect(res.text).not.toContain('Needs attention');
     });
 
     it('multiple blockers render simultaneously', async () => {
-      const projRes = await request(app)
+      const projRes = await agent
         .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Multiple+Blockers+Test')
         .send('status=tbd')
         .send('priority=normal')
@@ -3080,23 +3320,24 @@ describe('release HTTP workflow', () => {
       const projectId = projRes.headers.location.replace('/projects/', '');
 
       // Create release with idea status and no assets — two blockers
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=Multiple+Blockers+Release')
         .send('status=idea')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
-      const res = await request(app).get(createRes.headers.location).expect(200);
+      const res = await agent.get(createRes.headers.location).expect(200);
       expect(res.text).toContain('Needs attention');
       expect(res.text).toContain('Status: idea');
       expect(res.text).toContain('0 selected');
     });
 
     it('all four check labels render', async () => {
-      const { releaseLocation } = await setupPublishableRelease(app, projectsRoot, db);
-      const res = await request(app).get(releaseLocation).expect(200);
+      const { releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
+      const res = await agent.get(releaseLocation).expect(200);
 
       expect(res.text).toContain('Status is ready');
       expect(res.text).toContain('Assets selected');
@@ -3105,15 +3346,16 @@ describe('release HTTP workflow', () => {
     });
 
     it('factual selected count renders', async () => {
-      const { releaseLocation } = await setupPublishableRelease(app, projectsRoot, db);
-      const res = await request(app).get(releaseLocation).expect(200);
+      const { releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
+      const res = await agent.get(releaseLocation).expect(200);
 
       expect(res.text).toContain('1 selected');
     });
 
     it('last-completed-scan wording renders when blocked', async () => {
-      const projRes = await request(app)
+      const projRes = await agent
         .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Scan+Wording+Test')
         .send('status=tbd')
         .send('priority=normal')
@@ -3121,22 +3363,24 @@ describe('release HTTP workflow', () => {
         .expect(302);
       const projectId = projRes.headers.location.replace('/projects/', '');
 
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=Scan+Wording+Release')
         .send('status=idea')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
-      const res = await request(app).get(createRes.headers.location).expect(200);
+      const res = await agent.get(createRes.headers.location).expect(200);
       expect(res.text).toContain('Asset presence reflects the last completed scan');
       expect(res.text).toContain('not performing a live filesystem check');
     });
 
     it('corrective links appear when valid', async () => {
-      const projRes = await request(app)
+      const projRes = await agent
         .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Corrective+Links+Test')
         .send('status=tbd')
         .send('priority=normal')
@@ -3144,15 +3388,16 @@ describe('release HTTP workflow', () => {
         .expect(302);
       const projectId = projRes.headers.location.replace('/projects/', '');
 
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=Corrective+Links+Release')
         .send('status=idea')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
-      const res = await request(app).get(createRes.headers.location).expect(200);
+      const res = await agent.get(createRes.headers.location).expect(200);
       // Check within the readiness panel section
       const panelMatch = res.text.match(/<section class="panel panel--readiness">[\s\S]*?<\/section>/);
       expect(panelMatch).not.toBeNull();
@@ -3164,14 +3409,15 @@ describe('release HTTP workflow', () => {
     });
 
     it('corrective links hidden for archived release', async () => {
-      const { releaseLocation } = await setupPublishableRelease(app, projectsRoot, db);
+      const { releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
 
       // Archive the release
-      await request(app)
+      await agent
         .post(`${releaseLocation}/archive`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
-      const res = await request(app).get(releaseLocation).expect(200);
+      const res = await agent.get(releaseLocation).expect(200);
       // Archived releases have no readiness panel at all
       expect(res.text).not.toMatch(/<section class="panel panel--readiness">/);
       expect(res.text).not.toMatch(/href="\/releases\/\d+\/edit"/);
@@ -3179,13 +3425,14 @@ describe('release HTTP workflow', () => {
     });
 
     it('corrective links hidden for archived parent project', async () => {
-      const { releaseLocation, projectId } = await setupPublishableRelease(app, projectsRoot, db);
+      const { releaseLocation, projectId } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
 
-      await request(app)
+      await agent
         .post(`/projects/${projectId}/archive`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
-      const res = await request(app).get(releaseLocation).expect(200);
+      const res = await agent.get(releaseLocation).expect(200);
       // Archived parent releases have no readiness panel at all
       expect(res.text).not.toMatch(/<section class="panel panel--readiness">/);
       expect(res.text).not.toMatch(/href="\/releases\/\d+\/edit"/);
@@ -3193,12 +3440,13 @@ describe('release HTTP workflow', () => {
     });
 
     it('missing release remains 404', async () => {
-      await request(app).get('/releases/99999').expect(404);
+      await agent.get('/releases/99999').expect(404);
     });
 
     it('no absolute filesystem paths render', async () => {
-      const projRes = await request(app)
+      const projRes = await agent
         .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=No+Path+Readiness+Test')
         .send('status=tbd')
         .send('priority=normal')
@@ -3206,23 +3454,25 @@ describe('release HTTP workflow', () => {
         .expect(302);
       const projectId = projRes.headers.location.replace('/projects/', '');
 
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=No+Path+Readiness+Release')
         .send('status=idea')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
-      const res = await request(app).get(createRes.headers.location).expect(200);
+      const res = await agent.get(createRes.headers.location).expect(200);
       expect(res.text).not.toMatch(/[A-Z]:\\/);
     });
 
     // ─── Phase 7A regression: publication is not enforced yet ──────────────
 
     it('rejects publish for a blocked release (readiness enforced)', async () => {
-      const projRes = await request(app)
+      const projRes = await agent
         .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Enforced+Test')
         .send('status=tbd')
         .send('priority=normal')
@@ -3232,8 +3482,9 @@ describe('release HTTP workflow', () => {
 
       // Create a release with ready status (publishable by status) but no
       // assets selected — readiness panel shows blocked, publish must fail.
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=Enforced+Release')
         .send('status=ready')
@@ -3241,13 +3492,14 @@ describe('release HTTP workflow', () => {
         .expect(302);
 
       // Verify the readiness panel shows it's blocked (no assets selected)
-      const detail = await request(app).get(createRes.headers.location).expect(200);
+      const detail = await agent.get(createRes.headers.location).expect(200);
       expect(detail.text).toContain('Needs attention');
       expect(detail.text).toContain('0 selected');
 
       // Publish must now be rejected — readiness IS enforced
-      const publishRes = await request(app)
+      const publishRes = await agent
         .post(`${createRes.headers.location}/publish`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(422);
       expect(publishRes.text).toContain('Cannot publish');
     });
@@ -3257,8 +3509,9 @@ describe('release HTTP workflow', () => {
 
   describe('publish action UI gating', () => {
     it('blocked release has no Publish button', async () => {
-      const projRes = await request(app)
+      const projRes = await agent
         .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Blocked+No+Publish+Test')
         .send('status=tbd')
         .send('priority=normal')
@@ -3267,15 +3520,16 @@ describe('release HTTP workflow', () => {
       const projectId = projRes.headers.location.replace('/projects/', '');
 
       // Create a ready release with no assets — blocked by assets_selected
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=Blocked+No+Publish')
         .send('status=ready')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
-      const detail = await request(app).get(createRes.headers.location).expect(200);
+      const detail = await agent.get(createRes.headers.location).expect(200);
       // Readiness panel shows blocked
       expect(detail.text).toContain('Needs attention');
       // Publish button must NOT be present
@@ -3283,9 +3537,9 @@ describe('release HTTP workflow', () => {
     });
 
     it('publishable release has Publish button', async () => {
-      const { releaseLocation } = await setupPublishableRelease(app, projectsRoot, db);
+      const { releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
 
-      const detail = await request(app).get(releaseLocation).expect(200);
+      const detail = await agent.get(releaseLocation).expect(200);
       // Readiness panel shows publishable
       expect(detail.text).toContain('Publishable');
       // Publish button must be present
@@ -3293,8 +3547,9 @@ describe('release HTTP workflow', () => {
     });
 
     it('forged blocked POST still returns 422', async () => {
-      const projRes = await request(app)
+      const projRes = await agent
         .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Forged+POST+Test')
         .send('status=tbd')
         .send('priority=normal')
@@ -3302,8 +3557,9 @@ describe('release HTTP workflow', () => {
         .expect(302);
       const projectId = projRes.headers.location.replace('/projects/', '');
 
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=Forged+POST+Release')
         .send('status=ready')
@@ -3311,15 +3567,17 @@ describe('release HTTP workflow', () => {
         .expect(302);
 
       // Direct POST with no assets — server must reject
-      const res = await request(app)
+      const res = await agent
         .post(`${createRes.headers.location}/publish`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(422);
       expect(res.text).toContain('Cannot publish');
     });
 
     it('one remaining blocker keeps release blocked', async () => {
-      const projRes = await request(app)
+      const projRes = await agent
         .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=One+Blocker+Test')
         .send('status=tbd')
         .send('priority=normal')
@@ -3328,15 +3586,16 @@ describe('release HTTP workflow', () => {
       const projectId = projRes.headers.location.replace('/projects/', '');
 
       // Create a release with idea status — blocked by status_ready
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=One+Blocker+Release')
         .send('status=idea')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
-      const detail = await request(app).get(createRes.headers.location).expect(200);
+      const detail = await agent.get(createRes.headers.location).expect(200);
       // Must show blocked
       expect(detail.text).toContain('Needs attention');
       // No Publish button
@@ -3344,24 +3603,25 @@ describe('release HTTP workflow', () => {
     });
 
     it('all blockers resolved makes release publishable', async () => {
-      const { releaseLocation } = await setupPublishableRelease(app, projectsRoot, db);
+      const { releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
 
-      const detail = await request(app).get(releaseLocation).expect(200);
+      const detail = await agent.get(releaseLocation).expect(200);
       expect(detail.text).toContain('Publishable');
       expect(detail.text).toMatch(/href="\/releases\/\d+\/publish"/);
     });
 
     it('publication date and status behavior remain correct', async () => {
-      const { releaseLocation } = await setupPublishableRelease(app, projectsRoot, db);
+      const { releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
 
       // Publish with explicit date
-      await request(app)
+      await agent
         .post(`${releaseLocation}/publish`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('publishedDate=2025-11-01')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
-      const detail = await request(app).get(releaseLocation).expect(200);
+      const detail = await agent.get(releaseLocation).expect(200);
       expect(detail.text).toContain('Published');
       expect(detail.text).toContain('2025-11-01');
       // Publish button must be gone after publication
@@ -3369,14 +3629,15 @@ describe('release HTTP workflow', () => {
     });
 
     it('archive guards remain correct — archived release has no Publish button', async () => {
-      const { releaseLocation } = await setupPublishableRelease(app, projectsRoot, db);
+      const { releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
 
       // Archive the release
-      await request(app)
+      await agent
         .post(`${releaseLocation}/archive`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
-      const detail = await request(app).get(releaseLocation).expect(200);
+      const detail = await agent.get(releaseLocation).expect(200);
       // Archived release notice shown
       expect(detail.text).toContain('archived and read-only');
       // No Publish button
@@ -3384,14 +3645,15 @@ describe('release HTTP workflow', () => {
     });
 
     it('archived parent project hides Publish button', async () => {
-      const { releaseLocation, projectId } = await setupPublishableRelease(app, projectsRoot, db);
+      const { releaseLocation, projectId } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
 
       // Archive the parent project
-      await request(app)
+      await agent
         .post(`/projects/${projectId}/archive`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
-      const detail = await request(app).get(releaseLocation).expect(200);
+      const detail = await agent.get(releaseLocation).expect(200);
       // Archived parent notice shown
       expect(detail.text).toContain('parent project is archived');
       // No Publish button
@@ -3399,20 +3661,22 @@ describe('release HTTP workflow', () => {
     });
 
     it('published release has no Publish button', async () => {
-      const { releaseLocation } = await setupPublishableRelease(app, projectsRoot, db);
+      const { releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
 
-      await request(app)
+      await agent
         .post(`${releaseLocation}/publish`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
-      const detail = await request(app).get(releaseLocation).expect(200);
+      const detail = await agent.get(releaseLocation).expect(200);
       expect(detail.text).toContain('Published');
       expect(detail.text).not.toMatch(/href="\/releases\/\d+\/publish"/);
     });
 
     it('cancelled release has no Publish button', async () => {
-      const projRes = await request(app)
+      const projRes = await agent
         .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Cancelled+No+Publish+Test')
         .send('status=tbd')
         .send('priority=normal')
@@ -3420,15 +3684,16 @@ describe('release HTTP workflow', () => {
         .expect(302);
       const projectId = projRes.headers.location.replace('/projects/', '');
 
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=Cancelled+No+Publish')
         .send('status=cancelled')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
-      const detail = await request(app).get(createRes.headers.location).expect(200);
+      const detail = await agent.get(createRes.headers.location).expect(200);
       // Readiness panel shows blocked (status_ready fails)
       expect(detail.text).toContain('Needs attention');
       // No Publish button
@@ -3444,8 +3709,9 @@ describe('release HTTP workflow', () => {
      * then mark it missing. Returns { releaseLocation, assetId, assetRepo }.
      */
     async function setupMissingAsset() {
-      const projRes = await request(app)
+      const projRes = await agent
         .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Missing+Remove+Test')
         .send('status=tbd')
         .send('priority=normal')
@@ -3458,14 +3724,16 @@ describe('release HTTP workflow', () => {
       const matching = entries.filter((e) => e.endsWith(`-${slug}`));
       const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
       fs.writeFileSync(path.join(projectDir, 'asset.png'), 'png');
-      await request(app).post(`/projects/${projectId}/scan`).expect(302);
+      await agent.post(`/projects/${projectId}/scan`)
+      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
       const assetRepo = createAssetRepository(db);
       const assets = assetRepo.findByProjectId(Number(projectId));
       const assetId = String(assets[0].id);
 
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=Missing+Remove+Release')
         .send('status=ready')
@@ -3474,8 +3742,9 @@ describe('release HTTP workflow', () => {
       const releaseLocation = createRes.headers.location;
 
       // Select the asset
-      await request(app)
+      await agent
         .post(releaseLocation + '/assets')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`selectedAssetIds[]=${assetId}`)
         .send('roles[]=primary')
         .send('sortOrder[]=0')
@@ -3491,7 +3760,7 @@ describe('release HTTP workflow', () => {
     it('missing selection shows Remove action on detail page', async () => {
       const { releaseLocation } = await setupMissingAsset();
 
-      const res = await request(app).get(releaseLocation).expect(200);
+      const res = await agent.get(releaseLocation).expect(200);
       expect(res.text).toContain('Missing');
       expect(res.text).toContain('/remove');
     });
@@ -3503,14 +3772,14 @@ describe('release HTTP workflow', () => {
       const assets = assetRepo.findByProjectId(Number(projectId));
       assetRepo.restorePresent(Number(projectId), [assets[0].relative_path]);
 
-      const res = await request(app).get(releaseLocation).expect(200);
+      const res = await agent.get(releaseLocation).expect(200);
       expect(res.text).toContain('Present');
       // The Remove button is rendered as a form with action containing '/remove'
       expect(res.text).not.toContain('/remove');
     });
 
     it('forged POST cannot remove a present selected asset', async () => {
-      const { releaseLocation, assetId, projectId } = await setupPublishableRelease(app, projectsRoot, db);
+      const { releaseLocation, assetId, projectId } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
       const releaseId = Number(releaseLocation.replace('/releases/', ''));
 
       // Add a second present asset with a distinctive role and sort order
@@ -3519,14 +3788,16 @@ describe('release HTTP workflow', () => {
       const matching = entries.filter((e) => e.endsWith(`-${slug}`));
       const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
       fs.writeFileSync(path.join(projectDir, 'second-asset.txt'), 'second content');
-      await request(app).post(`/projects/${projectId}/scan`).expect(302);
+      await agent.post(`/projects/${projectId}/scan`)
+      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
       const assetRepo = createAssetRepository(db);
       const allAssets = assetRepo.findByProjectId(Number(projectId));
       const secondAsset = allAssets.find((a) => a.id !== Number(assetId));
       // Select both assets with distinctive roles and sort orders
-      await request(app)
+      await agent
         .post(releaseLocation + '/assets')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`selectedAssetIds[]=${assetId}`)
         .send(`selectedAssetIds[]=${secondAsset.id}`)
         .send('roles[]=primary')
@@ -3552,8 +3823,9 @@ describe('release HTTP workflow', () => {
       const beforeFile2Size = beforeFile2Exists ? fs.statSync(file2Path).size : null;
 
       // Attempt to remove the first (present) asset
-      await request(app)
+      await agent
         .post(`${releaseLocation}/assets/${assetId}/remove`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(422);
 
       // Assert: junction rows are unchanged
@@ -3583,13 +3855,15 @@ describe('release HTTP workflow', () => {
       const matching = entries.filter((e) => e.endsWith(`-${slug}`));
       const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
       fs.writeFileSync(path.join(projectDir, 'second.png'), 'png');
-      await request(app).post(`/projects/${projectId}/scan`).expect(302);
+      await agent.post(`/projects/${projectId}/scan`)
+      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
       const assetRepo = createAssetRepository(db);
       const allAssets = assetRepo.findByProjectId(Number(projectId));
       const secondAsset = allAssets.find((a) => a.id !== assetId);
-      await request(app)
+      await agent
         .post(releaseLocation + '/assets')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`selectedAssetIds[]=${assetId}`)
         .send(`selectedAssetIds[]=${secondAsset.id}`)
         .send('roles[]=primary')
@@ -3605,8 +3879,9 @@ describe('release HTTP workflow', () => {
       const beforeRows = getReleaseAssets(db, Number(releaseLocation.replace('/releases/', '')));
       expect(beforeRows).toHaveLength(2);
 
-      await request(app)
+      await agent
         .post(`${releaseLocation}/assets/${assetId}/remove`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
       const afterRows = getReleaseAssets(db, Number(releaseLocation.replace('/releases/', '')));
@@ -3623,13 +3898,15 @@ describe('release HTTP workflow', () => {
       const matching = entries.filter((e) => e.endsWith(`-${slug}`));
       const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
       fs.writeFileSync(path.join(projectDir, 'second.png'), 'png');
-      await request(app).post(`/projects/${projectId}/scan`).expect(302);
+      await agent.post(`/projects/${projectId}/scan`)
+      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
       const assetRepo = createAssetRepository(db);
       const allAssets = assetRepo.findByProjectId(Number(projectId));
       const secondAsset = allAssets.find((a) => a.id !== assetId);
-      await request(app)
+      await agent
         .post(releaseLocation + '/assets')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`selectedAssetIds[]=${assetId}`)
         .send(`selectedAssetIds[]=${secondAsset.id}`)
         .send('roles[]=primary')
@@ -3643,14 +3920,15 @@ describe('release HTTP workflow', () => {
       assetRepo.markMissingByProjectIdAndPathNotIn(Number(projectId), ['second.png']);
 
       // Verify readiness shows blocked
-      const before = await request(app).get(releaseLocation).expect(200);
+      const before = await agent.get(releaseLocation).expect(200);
       expect(before.text).toContain('Needs attention');
 
-      await request(app)
+      await agent
         .post(`${releaseLocation}/assets/${assetId}/remove`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
-      const after = await request(app).get(releaseLocation).expect(200);
+      const after = await agent.get(releaseLocation).expect(200);
       expect(after.text).toContain('Publishable');
     });
 
@@ -3658,32 +3936,36 @@ describe('release HTTP workflow', () => {
       const { releaseLocation, assetId } = await setupMissingAsset();
 
       // Archive the release
-      await request(app)
+      await agent
         .post(`${releaseLocation}/archive`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
       // Detail page must not show Remove form (check for the form action URL)
-      const detail = await request(app).get(releaseLocation).expect(200);
+      const detail = await agent.get(releaseLocation).expect(200);
       expect(detail.text).not.toContain('/remove');
 
       // Direct POST must be rejected
-      await request(app)
+      await agent
         .post(`${releaseLocation}/assets/${assetId}/remove`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(422);
     });
 
     it('malformed IDs return 404', async () => {
-      await request(app)
+      await agent
         .post('/releases/abc/assets/1/remove')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(404);
 
-      await request(app)
+      await agent
         .post('/releases/1/assets/abc/remove')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(404);
     });
 
     it('no GET mutation route exists', async () => {
-      await request(app)
+      await agent
         .get('/releases/1/assets/1/remove')
         .expect(404);
     });
@@ -3713,8 +3995,9 @@ describe('release HTTP workflow', () => {
     }
 
     it('unknown query parameters are stripped from generated links', async () => {
-      const projRes = await request(app)
+      const projRes = await agent
         .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=URL+Strip+Test')
         .send('status=tbd')
         .send('priority=normal')
@@ -3722,15 +4005,16 @@ describe('release HTTP workflow', () => {
         .expect(302);
       const projectId = projRes.headers.location.replace('/projects/', '');
 
-      await request(app)
+      await agent
         .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=URL+Strip+Release')
         .send('status=idea')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
-      const res = await request(app)
+      const res = await agent
         .get('/releases?view=list&junk=x&status=bogus&project=1junk&pageSize=bad')
         .expect(200);
 
@@ -3748,8 +4032,9 @@ describe('release HTTP workflow', () => {
     });
 
     it('invalid status is not preserved in pagination links', async () => {
-      const projRes = await request(app)
+      const projRes = await agent
         .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=URL+Status+Test')
         .send('status=tbd')
         .send('priority=normal')
@@ -3759,8 +4044,9 @@ describe('release HTTP workflow', () => {
 
       // Create enough releases to trigger pagination
       for (let i = 0; i < 30; i++) {
-        await request(app)
+        await agent
           .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
           .send(`projectId=${projectId}`)
           .send(`title=URL+Status+Release+${i}`)
           .send('status=idea')
@@ -3768,7 +4054,7 @@ describe('release HTTP workflow', () => {
           .expect(302);
       }
 
-      const res = await request(app)
+      const res = await agent
         .get('/releases?status=bogus&page=2')
         .expect(200);
 
@@ -3783,7 +4069,7 @@ describe('release HTTP workflow', () => {
     });
 
     it('invalid project ID is not preserved in list-to-board switch', async () => {
-      const res = await request(app)
+      const res = await agent
         .get('/releases?project=1junk&view=list')
         .expect(200);
 
@@ -3797,8 +4083,9 @@ describe('release HTTP workflow', () => {
     });
 
     it('invalid pageSize is not preserved in generated links', async () => {
-      const projRes = await request(app)
+      const projRes = await agent
         .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=URL+PageSize+Test')
         .send('status=tbd')
         .send('priority=normal')
@@ -3807,8 +4094,9 @@ describe('release HTTP workflow', () => {
       const projectId = projRes.headers.location.replace('/projects/', '');
 
       for (let i = 0; i < 30; i++) {
-        await request(app)
+        await agent
           .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
           .send(`projectId=${projectId}`)
           .send(`title=URL+PageSize+Release+${i}`)
           .send('status=idea')
@@ -3816,7 +4104,7 @@ describe('release HTTP workflow', () => {
           .expect(302);
       }
 
-      const res = await request(app)
+      const res = await agent
         .get('/releases?pageSize=bad&page=2')
         .expect(200);
 
@@ -3830,8 +4118,9 @@ describe('release HTTP workflow', () => {
     });
 
     it('valid filters are preserved through list/board switching', async () => {
-      const projRes = await request(app)
+      const projRes = await agent
         .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=URL+Preserve+Test')
         .send('status=tbd')
         .send('priority=normal')
@@ -3839,15 +4128,16 @@ describe('release HTTP workflow', () => {
         .expect(302);
       const projectId = projRes.headers.location.replace('/projects/', '');
 
-      await request(app)
+      await agent
         .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=URL+Preserve+Release')
         .send('status=idea')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
-      const res = await request(app)
+      const res = await agent
         .get('/releases?status=idea&view=list')
         .expect(200);
 
@@ -3860,7 +4150,7 @@ describe('release HTTP workflow', () => {
     });
 
     it('default readiness=all is omitted from generated links', async () => {
-      const res = await request(app)
+      const res = await agent
         .get('/releases?readiness=all')
         .expect(200);
 
@@ -3872,7 +4162,7 @@ describe('release HTTP workflow', () => {
     });
 
     it('valid readiness filter is preserved in generated links', async () => {
-      const res = await request(app)
+      const res = await agent
         .get('/releases?readiness=publishable')
         .expect(200);
 
@@ -3883,7 +4173,7 @@ describe('release HTTP workflow', () => {
     });
 
     it('invalid readiness is not preserved in generated links', async () => {
-      const res = await request(app)
+      const res = await agent
         .get('/releases?readiness=bogus')
         .expect(200);
 
@@ -3896,8 +4186,9 @@ describe('release HTTP workflow', () => {
     // ─── Phase 7D-4: Canonical page state in generated URLs ──────────────
 
     it('page=2 Previous link omits page and retains pageSize', async () => {
-      const projRes = await request(app)
+      const projRes = await agent
         .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Page+Canon+Test')
         .send('status=tbd')
         .send('priority=normal')
@@ -3906,8 +4197,9 @@ describe('release HTTP workflow', () => {
       const projectId = projRes.headers.location.replace('/projects/', '');
 
       for (let i = 0; i < 30; i++) {
-        await request(app)
+        await agent
           .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
           .send(`projectId=${projectId}`)
           .send(`title=Page+Canon+Release+${i}`)
           .send('status=idea')
@@ -3915,7 +4207,7 @@ describe('release HTTP workflow', () => {
           .expect(302);
       }
 
-      const res = await request(app)
+      const res = await agent
         .get('/releases?pageSize=10&page=2')
         .expect(200);
 
@@ -3929,8 +4221,9 @@ describe('release HTTP workflow', () => {
     });
 
     it('list page 2 → Board link has no page', async () => {
-      const projRes = await request(app)
+      const projRes = await agent
         .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Page+Board+Test')
         .send('status=tbd')
         .send('priority=normal')
@@ -3939,8 +4232,9 @@ describe('release HTTP workflow', () => {
       const projectId = projRes.headers.location.replace('/projects/', '');
 
       for (let i = 0; i < 30; i++) {
-        await request(app)
+        await agent
           .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
           .send(`projectId=${projectId}`)
           .send(`title=Page+Board+Release+${i}`)
           .send('status=idea')
@@ -3948,7 +4242,7 @@ describe('release HTTP workflow', () => {
           .expect(302);
       }
 
-      const res = await request(app)
+      const res = await agent
         .get('/releases?page=2')
         .expect(200);
 
@@ -3961,7 +4255,7 @@ describe('release HTTP workflow', () => {
     });
 
     it('Board → List link has no stale page', async () => {
-      const res = await request(app)
+      const res = await agent
         .get('/releases?view=board')
         .expect(200);
 
@@ -3974,8 +4268,9 @@ describe('release HTTP workflow', () => {
     });
 
     it('list page 3 → Previous link contains page=2', async () => {
-      const projRes = await request(app)
+      const projRes = await agent
         .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Page+Prev+Test')
         .send('status=tbd')
         .send('priority=normal')
@@ -3984,8 +4279,9 @@ describe('release HTTP workflow', () => {
       const projectId = projRes.headers.location.replace('/projects/', '');
 
       for (let i = 0; i < 60; i++) {
-        await request(app)
+        await agent
           .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
           .send(`projectId=${projectId}`)
           .send(`title=Page+Prev+Release+${i}`)
           .send('status=idea')
@@ -3993,7 +4289,7 @@ describe('release HTTP workflow', () => {
           .expect(302);
       }
 
-      const res = await request(app)
+      const res = await agent
         .get('/releases?page=3')
         .expect(200);
 
@@ -4004,8 +4300,9 @@ describe('release HTTP workflow', () => {
     });
 
     it('Next-page URL contains the correct page number', async () => {
-      const projRes = await request(app)
+      const projRes = await agent
         .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Page+Next+Test')
         .send('status=tbd')
         .send('priority=normal')
@@ -4014,8 +4311,9 @@ describe('release HTTP workflow', () => {
       const projectId = projRes.headers.location.replace('/projects/', '');
 
       for (let i = 0; i < 30; i++) {
-        await request(app)
+        await agent
           .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
           .send(`projectId=${projectId}`)
           .send(`title=Page+Next+Release+${i}`)
           .send('status=idea')
@@ -4023,7 +4321,7 @@ describe('release HTTP workflow', () => {
           .expect(302);
       }
 
-      const res = await request(app)
+      const res = await agent
         .get('/releases')
         .expect(200);
 
@@ -4034,8 +4332,9 @@ describe('release HTTP workflow', () => {
     });
 
     it('valid filters remain preserved while page is canonicalized', async () => {
-      const projRes = await request(app)
+      const projRes = await agent
         .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Page+Filter+Test')
         .send('status=tbd')
         .send('priority=normal')
@@ -4044,8 +4343,9 @@ describe('release HTTP workflow', () => {
       const projectId = projRes.headers.location.replace('/projects/', '');
 
       for (let i = 0; i < 30; i++) {
-        await request(app)
+        await agent
           .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
           .send(`projectId=${projectId}`)
           .send(`title=Page+Filter+Release+${i}`)
           .send('status=idea')
@@ -4053,7 +4353,7 @@ describe('release HTTP workflow', () => {
           .expect(302);
       }
 
-      const res = await request(app)
+      const res = await agent
         .get('/releases?status=idea&page=2')
         .expect(200);
 
@@ -4066,7 +4366,7 @@ describe('release HTTP workflow', () => {
     });
 
     it('calendar navigation does not inherit unsupported readiness state', async () => {
-      const res = await request(app)
+      const res = await agent
         .get('/releases/calendar?readiness=publishable')
         .expect(200);
 
@@ -4117,10 +4417,11 @@ describe('release HTTP workflow', () => {
 
   describe('published release HTTP asset-selection lock', () => {
     async function setupPublishedRelease(app, db, projectsRoot) {
-      const { projectId, releaseLocation, assetId } = await setupPublishableRelease(app, projectsRoot, db);
+      const { projectId, releaseLocation, assetId } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
       // Publish the release
-      await request(app)
+      await agent
         .post(releaseLocation + '/publish')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('publishedDate=2025-06-15')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
@@ -4131,8 +4432,9 @@ describe('release HTTP workflow', () => {
       const { releaseLocation, assetId } = await setupPublishedRelease(app, db, projectsRoot);
       const before = getReleaseAssets(db, Number(releaseLocation.replace('/releases/', '')));
 
-      const res = await request(app)
+      const res = await agent
         .post(releaseLocation + '/assets')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`selectedAssetIds[]=${assetId}`)
         .send('roles[]=attachment')
         .send('sortOrder[]=0')
@@ -4149,8 +4451,9 @@ describe('release HTTP workflow', () => {
       const releaseId = Number(releaseLocation.replace('/releases/', ''));
       const before = getReleaseAssets(db, releaseId);
 
-      const res = await request(app)
+      const res = await agent
         .post(`${releaseLocation}/assets/${assetId}/remove`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(422);
 
@@ -4160,12 +4463,13 @@ describe('release HTTP workflow', () => {
     });
 
     it('rejects missing-asset corrective removal with 422 for a published release', async () => {
-      const { projectId, releaseLocation, assetId } = await setupPublishableRelease(app, projectsRoot, db);
+      const { projectId, releaseLocation, assetId } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
       const releaseId = Number(releaseLocation.replace('/releases/', ''));
 
       // Publish the release
-      await request(app)
+      await agent
         .post(releaseLocation + '/publish')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('publishedDate=2025-06-15')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
@@ -4178,8 +4482,9 @@ describe('release HTTP workflow', () => {
       fs.unlinkSync(path.join(projectDir, 'asset.png'));
 
       // Run the real project scan so the asset becomes is_present = 0
-      await request(app)
+      await agent
         .post(`/projects/${projectId}/scan`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
       // Snapshot the complete ordered release_assets rows
@@ -4189,8 +4494,9 @@ describe('release HTTP workflow', () => {
       const beforeAsset = assetRepo.findById(Number(assetId));
 
       // POST the corrective removal route
-      const res = await request(app)
+      const res = await agent
         .post(`${releaseLocation}/assets/${assetId}/remove`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(422);
 
@@ -4218,12 +4524,13 @@ describe('release HTTP workflow', () => {
 
   describe('published release scan regression', () => {
     it('scan updates asset presence without changing junction rows for a published release', async () => {
-      const { projectId, releaseLocation, assetId } = await setupPublishableRelease(app, projectsRoot, db);
+      const { projectId, releaseLocation, assetId } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
       const releaseId = Number(releaseLocation.replace('/releases/', ''));
 
       // Publish the release
-      await request(app)
+      await agent
         .post(releaseLocation + '/publish')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('publishedDate=2025-06-15')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
@@ -4239,8 +4546,9 @@ describe('release HTTP workflow', () => {
       fs.unlinkSync(path.join(projectDir, 'asset.png'));
 
       // Scan — should succeed and detect the removal
-      await request(app)
+      await agent
         .post(`/projects/${projectId}/scan`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
       // Junction rows must be exactly unchanged
@@ -4263,9 +4571,10 @@ describe('release HTTP workflow', () => {
 
   describe('published release detail presentation', () => {
     async function setupPublishedRelease() {
-      const { projectId, releaseLocation, assetId } = await setupPublishableRelease(app, projectsRoot, db);
-      await request(app)
+      const { projectId, releaseLocation, assetId } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
+      await agent
         .post(releaseLocation + '/publish')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('publishedDate=2025-06-15')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
@@ -4274,21 +4583,21 @@ describe('release HTTP workflow', () => {
 
     it('shows publication summary instead of Needs attention', async () => {
       const { releaseLocation } = await setupPublishedRelease();
-      const res = await request(app).get(releaseLocation).expect(200);
+      const res = await agent.get(releaseLocation).expect(200);
       expect(res.text).toMatch(/Publication Summary/);
       expect(res.text).not.toMatch(/Needs attention/);
     });
 
     it('shows published date in the publication summary', async () => {
       const { releaseLocation } = await setupPublishedRelease();
-      const res = await request(app).get(releaseLocation).expect(200);
+      const res = await agent.get(releaseLocation).expect(200);
       expect(res.text).toMatch(/Published date/);
       expect(res.text).toMatch(/2025-06-15/);
     });
 
     it('shows selected assets table once (not duplicated)', async () => {
       const { releaseLocation } = await setupPublishedRelease();
-      const res = await request(app).get(releaseLocation).expect(200);
+      const res = await agent.get(releaseLocation).expect(200);
       // Count occurrences of "Selected Assets" heading
       const matches = res.text.match(/Selected Assets/g);
       expect(matches).not.toBeNull();
@@ -4311,21 +4620,22 @@ describe('release HTTP workflow', () => {
 
     it('shows locked-selection wording', async () => {
       const { releaseLocation } = await setupPublishedRelease();
-      const res = await request(app).get(releaseLocation).expect(200);
+      const res = await agent.get(releaseLocation).expect(200);
       expect(res.text).toMatch(/asset selection is locked/i);
     });
 
     it('shows present/missing state and scan caveat', async () => {
       const { releaseLocation } = await setupPublishedRelease();
-      const res = await request(app).get(releaseLocation).expect(200);
+      const res = await agent.get(releaseLocation).expect(200);
       expect(res.text).toMatch(/Present/);
       expect(res.text).toMatch(/not performing a live filesystem check/);
     });
 
     it('published metadata edit succeeds (title, description, notes, dates, patreon)', async () => {
       const { releaseLocation } = await setupPublishedRelease();
-      const res = await request(app)
+      const res = await agent
         .post(releaseLocation)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Updated+Published+Title')
         .send('description=Updated+description')
         .send('notes=Updated+notes')
@@ -4337,7 +4647,7 @@ describe('release HTTP workflow', () => {
         .expect(302);
       expect(res.headers.location).toBe(releaseLocation);
 
-      const detail = await request(app).get(releaseLocation).expect(200);
+      const detail = await agent.get(releaseLocation).expect(200);
       expect(detail.text).toContain('Updated Published Title');
       expect(detail.text).toContain('Updated description');
       expect(detail.text).toContain('Updated notes');
@@ -4348,22 +4658,24 @@ describe('release HTTP workflow', () => {
 
     it('published status remains unchanged after metadata edit', async () => {
       const { releaseLocation } = await setupPublishedRelease();
-      await request(app)
+      await agent
         .post(releaseLocation)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Status+Check')
         .send('status=published')
         .send('publishedDate=2025-06-15')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
-      const detail = await request(app).get(releaseLocation).expect(200);
+      const detail = await agent.get(releaseLocation).expect(200);
       expect(detail.text).toMatch(/Published/);
     });
 
     it('attempted status change from published fails', async () => {
       const { releaseLocation } = await setupPublishedRelease();
-      const res = await request(app)
+      const res = await agent
         .post(releaseLocation)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Status+Change+Attempt')
         .send('status=ready')
         .set('Content-Type', 'application/x-www-form-urlencoded')
@@ -4373,20 +4685,20 @@ describe('release HTTP workflow', () => {
 
     it('published asset page is read-only (no Save Selection button)', async () => {
       const { releaseLocation } = await setupPublishedRelease();
-      const res = await request(app).get(releaseLocation + '/assets').expect(200);
+      const res = await agent.get(releaseLocation + '/assets').expect(200);
       expect(res.text).not.toMatch(/Save Selection/);
       expect(res.text).toMatch(/locked and read-only/);
     });
 
     it('published detail hides Publish button', async () => {
       const { releaseLocation } = await setupPublishedRelease();
-      const res = await request(app).get(releaseLocation).expect(200);
+      const res = await agent.get(releaseLocation).expect(200);
       expect(res.text).not.toMatch(/\/publish/);
     });
 
     it('published detail keeps Edit but not Archive (Danger Zone excludes published)', async () => {
       const { releaseLocation } = await setupPublishedRelease();
-      const res = await request(app).get(releaseLocation).expect(200);
+      const res = await agent.get(releaseLocation).expect(200);
       expect(res.text).toMatch(/\/releases\/\d+\/edit/);
       // Archive is only in the Danger Zone, which excludes published releases.
       expect(res.text).not.toMatch(/action="\/releases\/\d+\/archive"/);
@@ -4394,7 +4706,7 @@ describe('release HTTP workflow', () => {
 
     it('published detail hides Manage Assets link', async () => {
       const { releaseLocation } = await setupPublishedRelease();
-      const res = await request(app).get(releaseLocation).expect(200);
+      const res = await agent.get(releaseLocation).expect(200);
       expect(res.text).not.toMatch(/Manage Assets/);
     });
   });
@@ -4407,40 +4719,44 @@ describe('release HTTP workflow', () => {
 
   describe('archived published release detail hides published-only notices', () => {
     async function setupArchivedPublishedRelease() {
-      const { projectId, releaseLocation, assetId } = await setupPublishableRelease(app, projectsRoot, db);
+      const { projectId, releaseLocation, assetId } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
       const releaseId = Number(releaseLocation.replace('/releases/', ''));
       // Publish
-      await request(app)
+      await agent
         .post(releaseLocation + '/publish')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('publishedDate=2025-06-15')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
       // Archive the release
-      await request(app)
+      await agent
         .post(releaseLocation + '/archive')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
       return { projectId, releaseLocation, releaseId, assetId };
     }
 
     async function setupArchivedParentPublishedRelease() {
-      const { projectId, releaseLocation, assetId } = await setupPublishableRelease(app, projectsRoot, db);
+      const { projectId, releaseLocation, assetId } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
       const releaseId = Number(releaseLocation.replace('/releases/', ''));
       // Publish
-      await request(app)
+      await agent
         .post(releaseLocation + '/publish')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('publishedDate=2025-06-15')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
       // Archive the parent project
-      await request(app)
+      await agent
         .post(`/projects/${projectId}/archive`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
       return { projectId, releaseLocation, releaseId, assetId };
     }
 
     it('archived published detail hides Publication Summary', async () => {
       const { releaseLocation } = await setupArchivedPublishedRelease();
-      const res = await request(app).get(releaseLocation).expect(200);
+      const res = await agent.get(releaseLocation).expect(200);
       // Archived notice appears
       expect(res.text).toMatch(/archived and read-only/);
       // Published-only notices must NOT appear
@@ -4454,7 +4770,7 @@ describe('release HTTP workflow', () => {
 
     it('archived-parent published detail hides Publication Summary', async () => {
       const { releaseLocation } = await setupArchivedParentPublishedRelease();
-      const res = await request(app).get(releaseLocation).expect(200);
+      const res = await agent.get(releaseLocation).expect(200);
       // Archived notice appears
       expect(res.text).toMatch(/parent project is archived/);
       // Published-only notices must NOT appear
@@ -4468,7 +4784,7 @@ describe('release HTTP workflow', () => {
 
     it('archived published asset page hides published-only notice', async () => {
       const { releaseLocation } = await setupArchivedPublishedRelease();
-      const res = await request(app).get(releaseLocation + '/assets').expect(200);
+      const res = await agent.get(releaseLocation + '/assets').expect(200);
       // Archived notice appears
       expect(res.text).toMatch(/archived/);
       // Published-only notice must NOT appear
@@ -4477,7 +4793,7 @@ describe('release HTTP workflow', () => {
 
     it('archived-parent published asset page hides published-only notice', async () => {
       const { releaseLocation } = await setupArchivedParentPublishedRelease();
-      const res = await request(app).get(releaseLocation + '/assets').expect(200);
+      const res = await agent.get(releaseLocation + '/assets').expect(200);
       // Archived notice appears
       expect(res.text).toMatch(/archived/);
       // Published-only notice must NOT appear
@@ -4487,8 +4803,9 @@ describe('release HTTP workflow', () => {
 
   describe('archived release lifecycle', () => {
     async function setupArchivedRelease() {
-      const projRes = await request(app)
+      const projRes = await agent
         .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Archived+Lifecycle+Project')
         .send('status=tbd')
         .send('priority=normal')
@@ -4496,8 +4813,9 @@ describe('release HTTP workflow', () => {
         .expect(302);
       const projectId = projRes.headers.location.replace('/projects/', '');
 
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=Archived+Lifecycle+Release')
         .send('status=ready')
@@ -4506,8 +4824,9 @@ describe('release HTTP workflow', () => {
       const releaseLocation = createRes.headers.location;
       const releaseId = Number(releaseLocation.replace('/releases/', ''));
 
-      await request(app)
+      await agent
         .post(releaseLocation + '/archive')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
       return { projectId, releaseLocation, releaseId };
@@ -4515,7 +4834,7 @@ describe('release HTTP workflow', () => {
 
     it('archived detail exposes no mutation controls', async () => {
       const { releaseLocation } = await setupArchivedRelease();
-      const res = await request(app).get(releaseLocation).expect(200);
+      const res = await agent.get(releaseLocation).expect(200);
       expect(res.text).not.toMatch(/\/releases\/\d+\/edit/);
       expect(res.text).not.toMatch(/\/archive/);
       expect(res.text).not.toMatch(/Manage Assets/);
@@ -4525,7 +4844,7 @@ describe('release HTTP workflow', () => {
 
     it('archived GET edit redirects to detail', async () => {
       const { releaseLocation } = await setupArchivedRelease();
-      const res = await request(app).get(releaseLocation + '/edit').expect(302);
+      const res = await agent.get(releaseLocation + '/edit').expect(302);
       expect(res.headers.location).toBe(releaseLocation);
     });
 
@@ -4533,8 +4852,9 @@ describe('release HTTP workflow', () => {
       const { releaseLocation, releaseId } = await setupArchivedRelease();
       const before = releaseRepository.findById(releaseId);
 
-      const res = await request(app)
+      const res = await agent
         .post(releaseLocation)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Should+Not+Change')
         .send('status=ready')
         .set('Content-Type', 'application/x-www-form-urlencoded')
@@ -4549,8 +4869,9 @@ describe('release HTTP workflow', () => {
       const { releaseLocation, releaseId } = await setupArchivedRelease();
       const before = getReleaseAssets(db, releaseId);
 
-      const res = await request(app)
+      const res = await agent
         .post(releaseLocation + '/assets')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('selectedAssetIds[]=99999')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(422);
@@ -4561,8 +4882,9 @@ describe('release HTTP workflow', () => {
 
     it('archive POST on archived release returns 422 with readiness null', async () => {
       const { releaseLocation } = await setupArchivedRelease();
-      const res = await request(app)
+      const res = await agent
         .post(releaseLocation + '/archive')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(422);
       expect(res.text).toMatch(/archived and cannot be modified/);
       // Must render detail.njk, not publish.njk
@@ -4577,8 +4899,9 @@ describe('release HTTP workflow', () => {
 
     it('publish POST on archived release returns 422 with readiness null', async () => {
       const { releaseLocation } = await setupArchivedRelease();
-      const res = await request(app)
+      const res = await agent
         .post(releaseLocation + '/publish')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(422);
       expect(res.text).toMatch(/archived/);
       // Must render detail.njk, not publish.njk
@@ -4594,8 +4917,9 @@ describe('release HTTP workflow', () => {
 
   describe('archived-parent release lifecycle', () => {
     async function setupArchivedParentRelease() {
-      const projRes = await request(app)
+      const projRes = await agent
         .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Archived+Parent+Project')
         .send('status=tbd')
         .send('priority=normal')
@@ -4603,8 +4927,9 @@ describe('release HTTP workflow', () => {
         .expect(302);
       const projectId = projRes.headers.location.replace('/projects/', '');
 
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=Archived+Parent+Release')
         .send('status=ready')
@@ -4614,8 +4939,9 @@ describe('release HTTP workflow', () => {
       const releaseId = Number(releaseLocation.replace('/releases/', ''));
 
       // Archive the parent project using the dedicated archive route
-      await request(app)
+      await agent
         .post(`/projects/${projectId}/archive`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
       return { projectId, releaseLocation, releaseId };
@@ -4623,7 +4949,7 @@ describe('release HTTP workflow', () => {
 
     it('archived-parent GET edit redirects to detail', async () => {
       const { releaseLocation } = await setupArchivedParentRelease();
-      const res = await request(app).get(releaseLocation + '/edit').expect(302);
+      const res = await agent.get(releaseLocation + '/edit').expect(302);
       expect(res.headers.location).toBe(releaseLocation);
     });
 
@@ -4631,8 +4957,9 @@ describe('release HTTP workflow', () => {
       const { releaseLocation, releaseId } = await setupArchivedParentRelease();
       const before = releaseRepository.findById(releaseId);
 
-      const res = await request(app)
+      const res = await agent
         .post(releaseLocation)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Should+Not+Change')
         .send('status=ready')
         .set('Content-Type', 'application/x-www-form-urlencoded')
@@ -4647,8 +4974,9 @@ describe('release HTTP workflow', () => {
       const { releaseLocation, releaseId } = await setupArchivedParentRelease();
       const before = getReleaseAssets(db, releaseId);
 
-      const res = await request(app)
+      const res = await agent
         .post(releaseLocation + '/assets')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('selectedAssetIds[]=99999')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(422);
@@ -4659,8 +4987,9 @@ describe('release HTTP workflow', () => {
 
     it('archived-parent archive POST returns 422 with readiness null', async () => {
       const { releaseLocation } = await setupArchivedParentRelease();
-      const res = await request(app)
+      const res = await agent
         .post(releaseLocation + '/archive')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(422);
       expect(res.text).toMatch(/archived/);
       // Must render detail.njk, not publish.njk
@@ -4675,8 +5004,9 @@ describe('release HTTP workflow', () => {
 
     it('archived-parent publish POST returns 422 with readiness null', async () => {
       const { releaseLocation } = await setupArchivedParentRelease();
-      const res = await request(app)
+      const res = await agent
         .post(releaseLocation + '/publish')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(422);
       expect(res.text).toMatch(/archived/);
       // Must render detail.njk, not publish.njk
@@ -4692,8 +5022,9 @@ describe('release HTTP workflow', () => {
 
   describe('cancelled release behavior remains unchanged', () => {
     it('cancelled release detail still shows readiness', async () => {
-      const projRes = await request(app)
+      const projRes = await agent
         .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Cancelled+Readiness+Project')
         .send('status=tbd')
         .send('priority=normal')
@@ -4701,8 +5032,9 @@ describe('release HTTP workflow', () => {
         .expect(302);
       const projectId = projRes.headers.location.replace('/projects/', '');
 
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=Cancelled+Readiness+Release')
         .send('status=cancelled')
@@ -4710,7 +5042,7 @@ describe('release HTTP workflow', () => {
         .expect(302);
       const releaseLocation = createRes.headers.location;
 
-      const res = await request(app).get(releaseLocation).expect(200);
+      const res = await agent.get(releaseLocation).expect(200);
       // Cancelled releases still show readiness panel (not published summary)
       expect(res.text).toMatch(/Readiness/);
       expect(res.text).not.toMatch(/Publication Summary/);
@@ -4725,8 +5057,8 @@ describe('release HTTP workflow', () => {
 
   describe('publication review page (Phase 8-3)', () => {
     it('publishable ready GET returns 200', async () => {
-      const { releaseLocation } = await setupPublishableRelease(app, projectsRoot, db);
-      const res = await request(app)
+      const { releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
+      const res = await agent
         .get(`${releaseLocation}/publish`)
         .expect(200);
       expect(res.text).toContain('Review &amp; Publish');
@@ -4734,8 +5066,9 @@ describe('release HTTP workflow', () => {
     });
 
     it('blocked-ready GET returns 200', async () => {
-      const projRes = await request(app)
+      const projRes = await agent
         .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Blocked+Ready+Review+Test')
         .send('status=tbd')
         .send('priority=normal')
@@ -4743,15 +5076,16 @@ describe('release HTTP workflow', () => {
         .expect(302);
       const projectId = projRes.headers.location.replace('/projects/', '');
 
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=Blocked+Ready+Review')
         .send('status=ready')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
-      const res = await request(app)
+      const res = await agent
         .get(`${createRes.headers.location}/publish`)
         .expect(200);
       expect(res.text).toContain('Review &amp; Publish');
@@ -4759,12 +5093,12 @@ describe('release HTTP workflow', () => {
     });
 
     it('GET performs no database or junction mutation', async () => {
-      const { releaseLocation, projectId, assetId } = await setupPublishableRelease(app, projectsRoot, db);
+      const { releaseLocation, projectId, assetId } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
       const releaseId = Number(releaseLocation.replace('/releases/', ''));
       const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
       const beforeJunction = getReleaseAssets(db, releaseId);
 
-      await request(app)
+      await agent
         .get(`${releaseLocation}/publish`)
         .expect(200);
 
@@ -4775,8 +5109,8 @@ describe('release HTTP workflow', () => {
     });
 
     it('ordered assets, roles, order, presence, and caveat render', async () => {
-      const { releaseLocation } = await setupPublishableRelease(app, projectsRoot, db);
-      const res = await request(app)
+      const { releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
+      const res = await agent
         .get(`${releaseLocation}/publish`)
         .expect(200);
 
@@ -4801,8 +5135,9 @@ describe('release HTTP workflow', () => {
 
       for (const { status, label } of NON_READY_STATUSES) {
         it(`GET redirects for ${label} status`, async () => {
-          const projRes = await request(app)
+          const projRes = await agent
             .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
             .send('title=Lifecycle+Redirect+Test')
             .send('status=tbd')
             .send('priority=normal')
@@ -4815,8 +5150,9 @@ describe('release HTTP workflow', () => {
 
           if (status === 'published') {
             // published can only be reached via publishRelease, not direct create
-            const createRes = await request(app)
+            const createRes = await agent
               .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
               .send(`projectId=${projectId}`)
               .send('title=Lifecycle+Redirect+published')
               .send('status=ready')
@@ -4831,25 +5167,29 @@ describe('release HTTP workflow', () => {
             const matching = entries.filter((e) => e.endsWith(`-${slug}`));
             const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
             fs.writeFileSync(path.join(projectDir, 'pub-asset.txt'), 'content');
-            await request(app).post(`/projects/${projectId}/scan`).expect(302);
+            await agent.post(`/projects/${projectId}/scan`)
+      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
             const assetRepo = createAssetRepository(db);
             const assets = assetRepo.findByProjectId(Number(projectId));
-            await request(app)
+            await agent
               .post(releaseLocation + '/assets')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
               .send(`selectedAssetIds[]=${assets[0].id}`)
               .send('roles[]=primary')
               .send('sortOrder[]=0')
               .set('Content-Type', 'application/x-www-form-urlencoded')
               .expect(302);
 
-            await request(app)
+            await agent
               .post(`${releaseLocation}/publish`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
               .set('Content-Type', 'application/x-www-form-urlencoded')
               .expect(302);
           } else {
-            const createRes = await request(app)
+            const createRes = await agent
               .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
               .send(`projectId=${projectId}`)
               .send(`title=Lifecycle+Redirect+${label}`)
               .send(`status=${status}`)
@@ -4861,7 +5201,7 @@ describe('release HTTP workflow', () => {
 
           const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
 
-          const res = await request(app)
+          const res = await agent
             .get(`${releaseLocation}/publish`)
             .expect(302);
 
@@ -4874,16 +5214,17 @@ describe('release HTTP workflow', () => {
       }
 
       it('GET redirects for archived release', async () => {
-        const { releaseLocation } = await setupPublishableRelease(app, projectsRoot, db);
+        const { releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
         const releaseId = Number(releaseLocation.replace('/releases/', ''));
 
-        await request(app)
+        await agent
           .post(`${releaseLocation}/archive`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
           .expect(302);
 
         const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
 
-        const res = await request(app)
+        const res = await agent
           .get(`${releaseLocation}/publish`)
           .expect(302);
 
@@ -4893,16 +5234,17 @@ describe('release HTTP workflow', () => {
       });
 
       it('GET redirects for archived parent project', async () => {
-        const { releaseLocation, projectId } = await setupPublishableRelease(app, projectsRoot, db);
+        const { releaseLocation, projectId } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
         const releaseId = Number(releaseLocation.replace('/releases/', ''));
 
-        await request(app)
+        await agent
           .post(`/projects/${projectId}/archive`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
           .expect(302);
 
         const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
 
-        const res = await request(app)
+        const res = await agent
           .get(`${releaseLocation}/publish`)
           .expect(302);
 
@@ -4913,35 +5255,35 @@ describe('release HTTP workflow', () => {
     });
 
     it('malformed/unknown IDs return 404', async () => {
-      await request(app)
+      await agent
         .get('/releases/abc/publish')
         .expect(404);
 
-      await request(app)
+      await agent
         .get('/releases/99999/publish')
         .expect(404);
     });
 
     describe('route-neighbor coverage', () => {
       it('GET /releases/:id still renders detail', async () => {
-        const { releaseLocation } = await setupPublishableRelease(app, projectsRoot, db);
-        const res = await request(app)
+        const { releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
+        const res = await agent
           .get(releaseLocation)
           .expect(200);
         expect(res.text).toContain('Readiness Test Release');
       });
 
       it('GET /releases/:id/edit still renders edit form', async () => {
-        const { releaseLocation } = await setupPublishableRelease(app, projectsRoot, db);
-        const res = await request(app)
+        const { releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
+        const res = await agent
           .get(`${releaseLocation}/edit`)
           .expect(200);
         expect(res.text).toContain('Edit Release');
       });
 
       it('GET /releases/:id/assets still renders asset selection', async () => {
-        const { releaseLocation } = await setupPublishableRelease(app, projectsRoot, db);
-        const res = await request(app)
+        const { releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
+        const res = await agent
           .get(`${releaseLocation}/assets`)
           .expect(200);
         expect(res.text).toContain('Assets —');
@@ -4950,26 +5292,28 @@ describe('release HTTP workflow', () => {
       });
 
       it('POST /releases/:id/publish still publishes', async () => {
-        const { releaseLocation } = await setupPublishableRelease(app, projectsRoot, db);
-        const res = await request(app)
+        const { releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
+        const res = await agent
           .post(`${releaseLocation}/publish`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
           .set('Content-Type', 'application/x-www-form-urlencoded')
           .expect(302);
         expect(res.headers.location).toBe(releaseLocation);
       });
 
       it('GET and POST /releases/:id/publish coexist correctly', async () => {
-        const { releaseLocation } = await setupPublishableRelease(app, projectsRoot, db);
+        const { releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
 
         // GET returns 200
-        const getRes = await request(app)
+        const getRes = await agent
           .get(`${releaseLocation}/publish`)
           .expect(200);
         expect(getRes.text).toContain('Review &amp; Publish');
 
         // POST returns 302
-        const postRes = await request(app)
+        const postRes = await agent
           .post(`${releaseLocation}/publish`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
           .set('Content-Type', 'application/x-www-form-urlencoded')
           .expect(302);
         expect(postRes.headers.location).toBe(releaseLocation);
@@ -4977,20 +5321,20 @@ describe('release HTTP workflow', () => {
     });
 
     it('persisted date prefills', async () => {
-      const { releaseLocation } = await setupPublishableRelease(app, projectsRoot, db);
+      const { releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
       // Set a persisted published_date
       const releaseId = Number(releaseLocation.replace('/releases/', ''));
       db.prepare("UPDATE releases SET published_date = '2025-12-01' WHERE id = ?").run(releaseId);
 
-      const res = await request(app)
+      const res = await agent
         .get(`${releaseLocation}/publish`)
         .expect(200);
       expect(res.text).toContain('value="2025-12-01"');
     });
 
     it('local-today fallback prefills', async () => {
-      const { releaseLocation } = await setupPublishableRelease(app, projectsRoot, db);
-      const res = await request(app)
+      const { releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
+      const res = await agent
         .get(`${releaseLocation}/publish`)
         .expect(200);
 
@@ -4999,11 +5343,12 @@ describe('release HTTP workflow', () => {
     });
 
     it('valid submitted date persists exactly', async () => {
-      const { releaseLocation } = await setupPublishableRelease(app, projectsRoot, db);
+      const { releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
       const releaseId = Number(releaseLocation.replace('/releases/', ''));
 
-      await request(app)
+      await agent
         .post(`${releaseLocation}/publish`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('publishedDate=2025-11-01')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
@@ -5014,11 +5359,12 @@ describe('release HTTP workflow', () => {
     });
 
     it('missing direct-POST date preserves fallback behavior', async () => {
-      const { releaseLocation } = await setupPublishableRelease(app, projectsRoot, db);
+      const { releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
       const releaseId = Number(releaseLocation.replace('/releases/', ''));
 
-      await request(app)
+      await agent
         .post(`${releaseLocation}/publish`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
@@ -5036,13 +5382,14 @@ describe('release HTTP workflow', () => {
 
       for (const { label, value } of INVALID_DATES) {
         it(`returns 422 for ${label}: "${value}"`, async () => {
-          const { releaseLocation } = await setupPublishableRelease(app, projectsRoot, db);
+          const { releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
           const releaseId = Number(releaseLocation.replace('/releases/', ''));
           const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
           const beforeJunction = getReleaseAssets(db, releaseId);
 
-          const res = await request(app)
+          const res = await agent
             .post(`${releaseLocation}/publish`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
             .send(`publishedDate=${value}`)
             .set('Content-Type', 'application/x-www-form-urlencoded')
             .expect(422);
@@ -5061,11 +5408,12 @@ describe('release HTTP workflow', () => {
       }
 
       it('whitespace-only input is treated as no date (falls through to today)', async () => {
-        const { releaseLocation } = await setupPublishableRelease(app, projectsRoot, db);
+        const { releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
         const releaseId = Number(releaseLocation.replace('/releases/', ''));
 
-        await request(app)
+        await agent
           .post(`${releaseLocation}/publish`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
           .send('publishedDate=   ')
           .set('Content-Type', 'application/x-www-form-urlencoded')
           .expect(302);
@@ -5077,11 +5425,12 @@ describe('release HTTP workflow', () => {
       });
 
       it('leading/trailing whitespace on a valid date is trimmed and accepted', async () => {
-        const { releaseLocation } = await setupPublishableRelease(app, projectsRoot, db);
+        const { releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
         const releaseId = Number(releaseLocation.replace('/releases/', ''));
 
-        await request(app)
+        await agent
           .post(`${releaseLocation}/publish`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
           .send('publishedDate=  2025-06-15  ')
           .set('Content-Type', 'application/x-www-form-urlencoded')
           .expect(302);
@@ -5093,10 +5442,10 @@ describe('release HTTP workflow', () => {
     });
 
     it('readiness changes after GET cause POST rejection', async () => {
-      const { releaseLocation, projectId } = await setupPublishableRelease(app, projectsRoot, db);
+      const { releaseLocation, projectId } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
 
       // Load the review page (GET)
-      await request(app)
+      await agent
         .get(`${releaseLocation}/publish`)
         .expect(200);
 
@@ -5106,20 +5455,22 @@ describe('release HTTP workflow', () => {
       const matching = entries.filter((e) => e.endsWith(`-${slug}`));
       const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
       fs.unlinkSync(path.join(projectDir, 'asset.png'));
-      await request(app)
+      await agent
         .post(`/projects/${projectId}/scan`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
       // POST should now be rejected
-      const res = await request(app)
+      const res = await agent
         .post(`${releaseLocation}/publish`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(422);
       expect(res.text).toContain('Cannot publish');
     });
 
     it('stale POST leaves row and junctions unchanged', async () => {
-      const { releaseLocation, projectId, assetId } = await setupPublishableRelease(app, projectsRoot, db);
+      const { releaseLocation, projectId, assetId } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
       const releaseId = Number(releaseLocation.replace('/releases/', ''));
       const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
       const beforeJunction = getReleaseAssets(db, releaseId);
@@ -5130,13 +5481,15 @@ describe('release HTTP workflow', () => {
       const matching = entries.filter((e) => e.endsWith(`-${slug}`));
       const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
       fs.unlinkSync(path.join(projectDir, 'asset.png'));
-      await request(app)
+      await agent
         .post(`/projects/${projectId}/scan`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
       // POST publish — should be rejected
-      await request(app)
+      await agent
         .post(`${releaseLocation}/publish`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(422);
 
@@ -5147,8 +5500,9 @@ describe('release HTTP workflow', () => {
     });
 
     it('direct forged POST still cannot bypass readiness', async () => {
-      const projRes = await request(app)
+      const projRes = await agent
         .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Forged+Review+POST+Test')
         .send('status=tbd')
         .send('priority=normal')
@@ -5156,8 +5510,9 @@ describe('release HTTP workflow', () => {
         .expect(302);
       const projectId = projRes.headers.location.replace('/projects/', '');
 
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=Forged+Review+POST')
         .send('status=ready')
@@ -5165,17 +5520,19 @@ describe('release HTTP workflow', () => {
         .expect(302);
 
       // Direct POST with no assets — server must reject
-      const res = await request(app)
+      const res = await agent
         .post(`${createRes.headers.location}/publish`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(422);
       expect(res.text).toContain('Cannot publish');
     });
 
     it('successful publication redirects to published summary', async () => {
-      const { releaseLocation } = await setupPublishableRelease(app, projectsRoot, db);
+      const { releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
 
-      const res = await request(app)
+      const res = await agent
         .post(`${releaseLocation}/publish`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
@@ -5183,23 +5540,25 @@ describe('release HTTP workflow', () => {
       expect(res.headers.location).toBe(releaseLocation);
 
       // Detail should show published summary
-      const detail = await request(app).get(releaseLocation).expect(200);
+      const detail = await agent.get(releaseLocation).expect(200);
       expect(detail.text).toContain('Publication Summary');
     });
 
     it('newly published selection is already locked', async () => {
-      const { releaseLocation, assetId } = await setupPublishableRelease(app, projectsRoot, db);
+      const { releaseLocation, assetId } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
       const releaseId = Number(releaseLocation.replace('/releases/', ''));
 
       // Publish
-      await request(app)
+      await agent
         .post(`${releaseLocation}/publish`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
       // Attempt to change asset selection — must be rejected
-      const res = await request(app)
+      const res = await agent
         .post(releaseLocation + '/assets')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`selectedAssetIds[]=${assetId}`)
         .send('roles[]=attachment')
         .send('sortOrder[]=0')
@@ -5210,8 +5569,8 @@ describe('release HTTP workflow', () => {
     });
 
     it('no JavaScript confirmation is required', async () => {
-      const { releaseLocation } = await setupPublishableRelease(app, projectsRoot, db);
-      const res = await request(app)
+      const { releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
+      const res = await agent
         .get(`${releaseLocation}/publish`)
         .expect(200);
 
@@ -5220,7 +5579,7 @@ describe('release HTTP workflow', () => {
     });
 
     it('renders assets in sort_order ASC, asset_id ASC order', async () => {
-      const { releaseLocation, projectId } = await setupPublishableRelease(app, projectsRoot, db);
+      const { releaseLocation, projectId } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
       const releaseId = Number(releaseLocation.replace('/releases/', ''));
       const assetRepo = createAssetRepository(db);
 
@@ -5235,7 +5594,8 @@ describe('release HTTP workflow', () => {
       fs.writeFileSync(path.join(projectDir, 'alpha.txt'), 'alpha');
       fs.writeFileSync(path.join(projectDir, 'charlie.txt'), 'charlie');
       fs.writeFileSync(path.join(projectDir, 'bravo.txt'), 'bravo');
-      await request(app).post(`/projects/${projectId}/scan`).expect(302);
+      await agent.post(`/projects/${projectId}/scan`)
+      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
       const allAssets = assetRepo.findByProjectId(Number(projectId));
       const assetMap = {};
@@ -5248,8 +5608,9 @@ describe('release HTTP workflow', () => {
       // sort_order 0: alpha (asset_id lower) then bravo (asset_id higher) — tie
       // sort_order 1: charlie
       // sort_order 5: delta
-      await request(app)
+      await agent
         .post(releaseLocation + '/assets')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`selectedAssetIds[]=${assetMap['delta.txt'].id}`)
         .send(`selectedAssetIds[]=${assetMap['bravo.txt'].id}`)
         .send(`selectedAssetIds[]=${assetMap['alpha.txt'].id}`)
@@ -5266,7 +5627,7 @@ describe('release HTTP workflow', () => {
         .expect(302);
 
       // Fetch the review page
-      const res = await request(app)
+      const res = await agent
         .get(`${releaseLocation}/publish`)
         .expect(200);
 
@@ -5341,8 +5702,9 @@ describe('release HTTP workflow', () => {
     }
 
     async function setupArchivedReleaseWithAsset() {
-      const projRes = await request(app)
+      const projRes = await agent
         .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Complete+State+Archived+Project')
         .send('status=tbd')
         .send('priority=normal')
@@ -5355,14 +5717,16 @@ describe('release HTTP workflow', () => {
       const matching = entries.filter((e) => e.endsWith(`-${slug}`));
       const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
       fs.writeFileSync(path.join(projectDir, 'asset.png'), 'png');
-      await request(app).post(`/projects/${projectId}/scan`).expect(302);
+      await agent.post(`/projects/${projectId}/scan`)
+      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
       const assetRepo = createAssetRepository(db);
       const assets = assetRepo.findByProjectId(Number(projectId));
       const assetId = String(assets[0].id);
 
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=Complete+State+Archived+Release')
         .send('status=ready')
@@ -5372,8 +5736,9 @@ describe('release HTTP workflow', () => {
       const releaseId = Number(releaseLocation.replace('/releases/', ''));
 
       // Select the asset
-      await request(app)
+      await agent
         .post(releaseLocation + '/assets')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`selectedAssetIds[]=${assetId}`)
         .send('roles[]=primary')
         .send('sortOrder[]=0')
@@ -5381,16 +5746,18 @@ describe('release HTTP workflow', () => {
         .expect(302);
 
       // Archive the release
-      await request(app)
+      await agent
         .post(releaseLocation + '/archive')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
       return { projectId, releaseLocation, releaseId, assetId: Number(assetId) };
     }
 
     async function setupArchivedParentReleaseWithAsset() {
-      const projRes = await request(app)
+      const projRes = await agent
         .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Complete+State+Archived+Parent')
         .send('status=tbd')
         .send('priority=normal')
@@ -5403,14 +5770,16 @@ describe('release HTTP workflow', () => {
       const matching = entries.filter((e) => e.endsWith(`-${slug}`));
       const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
       fs.writeFileSync(path.join(projectDir, 'asset.png'), 'png');
-      await request(app).post(`/projects/${projectId}/scan`).expect(302);
+      await agent.post(`/projects/${projectId}/scan`)
+      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
       const assetRepo = createAssetRepository(db);
       const assets = assetRepo.findByProjectId(Number(projectId));
       const assetId = String(assets[0].id);
 
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=Complete+State+Archived+Parent+Release')
         .send('status=ready')
@@ -5420,8 +5789,9 @@ describe('release HTTP workflow', () => {
       const releaseId = Number(releaseLocation.replace('/releases/', ''));
 
       // Select the asset
-      await request(app)
+      await agent
         .post(releaseLocation + '/assets')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`selectedAssetIds[]=${assetId}`)
         .send('roles[]=primary')
         .send('sortOrder[]=0')
@@ -5429,8 +5799,9 @@ describe('release HTTP workflow', () => {
         .expect(302);
 
       // Archive the parent project
-      await request(app)
+      await agent
         .post(`/projects/${projectId}/archive`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
       return { projectId, releaseLocation, releaseId, assetId: Number(assetId) };
@@ -5443,8 +5814,9 @@ describe('release HTTP workflow', () => {
       const beforeRelease = snapshotRelease(releaseId);
       const beforeJunction = snapshotJunction(releaseId);
 
-      const res = await request(app)
+      const res = await agent
         .post(releaseLocation)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Should+Not+Change')
         .send('status=ready')
         .set('Content-Type', 'application/x-www-form-urlencoded')
@@ -5460,8 +5832,9 @@ describe('release HTTP workflow', () => {
       const beforeRelease = snapshotRelease(releaseId);
       const beforeJunction = snapshotJunction(releaseId);
 
-      const res = await request(app)
+      const res = await agent
         .post(releaseLocation)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Should+Not+Change')
         .send('status=ready')
         .set('Content-Type', 'application/x-www-form-urlencoded')
@@ -5477,8 +5850,9 @@ describe('release HTTP workflow', () => {
       const beforeRelease = snapshotRelease(releaseId);
       const beforeJunction = snapshotJunction(releaseId);
 
-      const res = await request(app)
+      const res = await agent
         .post(releaseLocation + '/assets')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('selectedAssetIds[]=99999')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(422);
@@ -5493,8 +5867,9 @@ describe('release HTTP workflow', () => {
       const beforeRelease = snapshotRelease(releaseId);
       const beforeJunction = snapshotJunction(releaseId);
 
-      const res = await request(app)
+      const res = await agent
         .post(releaseLocation + '/assets')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('selectedAssetIds[]=99999')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(422);
@@ -5509,8 +5884,9 @@ describe('release HTTP workflow', () => {
       const beforeRelease = snapshotRelease(releaseId);
       const beforeJunction = snapshotJunction(releaseId);
 
-      const res = await request(app)
+      const res = await agent
         .post(releaseLocation + '/archive')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(422);
 
@@ -5524,8 +5900,9 @@ describe('release HTTP workflow', () => {
       const beforeRelease = snapshotRelease(releaseId);
       const beforeJunction = snapshotJunction(releaseId);
 
-      const res = await request(app)
+      const res = await agent
         .post(releaseLocation + '/archive')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(422);
 
@@ -5539,8 +5916,9 @@ describe('release HTTP workflow', () => {
       const beforeRelease = snapshotRelease(releaseId);
       const beforeJunction = snapshotJunction(releaseId);
 
-      const res = await request(app)
+      const res = await agent
         .post(releaseLocation + '/publish')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(422);
 
@@ -5554,8 +5932,9 @@ describe('release HTTP workflow', () => {
       const beforeRelease = snapshotRelease(releaseId);
       const beforeJunction = snapshotJunction(releaseId);
 
-      const res = await request(app)
+      const res = await agent
         .post(releaseLocation + '/publish')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(422);
 
@@ -5569,8 +5948,9 @@ describe('release HTTP workflow', () => {
       const beforeRelease = snapshotRelease(releaseId);
       const beforeJunction = snapshotJunction(releaseId);
 
-      const res = await request(app)
+      const res = await agent
         .post(`${releaseLocation}/assets/${assetId}/remove`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(422);
 
@@ -5588,8 +5968,9 @@ describe('release HTTP workflow', () => {
       const assetRepo = createAssetRepository(db);
       const beforeAsset = assetRepo.findById(assetId);
 
-      const res = await request(app)
+      const res = await agent
         .post(`${releaseLocation}/assets/${assetId}/remove`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(422);
 
@@ -5612,12 +5993,13 @@ describe('release HTTP workflow', () => {
     // ── Successful published metadata edit ───────────────────────────────
 
     it('published metadata edit changes only intended fields and preserves status and junction rows', async () => {
-      const { releaseLocation, projectId } = await setupPublishableRelease(app, projectsRoot, db);
+      const { releaseLocation, projectId } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
       const releaseId = Number(releaseLocation.replace('/releases/', ''));
 
       // Publish the release
-      await request(app)
+      await agent
         .post(releaseLocation + '/publish')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('publishedDate=2025-06-15')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
@@ -5626,8 +6008,9 @@ describe('release HTTP workflow', () => {
       const beforeJunction = snapshotJunction(releaseId);
 
       // Edit metadata: title, description, notes, plannedDate, publishedDate, patreonUrl
-      await request(app)
+      await agent
         .post(releaseLocation)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Updated+Published+Title')
         .send('description=Updated+description')
         .send('notes=Updated+notes')
@@ -5670,7 +6053,7 @@ describe('release HTTP workflow', () => {
 
   describe('published detail structural selected-assets table assertions', () => {
     async function setupPublishedRelease() {
-      const { projectId, releaseLocation, assetId } = await setupPublishableRelease(app, projectsRoot, db);
+      const { projectId, releaseLocation, assetId } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
       const releaseId = Number(releaseLocation.replace('/releases/', ''));
 
       // Add a second asset with a different role and sort order
@@ -5679,15 +6062,17 @@ describe('release HTTP workflow', () => {
       const matching = entries.filter((e) => e.endsWith(`-${slug}`));
       const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
       fs.writeFileSync(path.join(projectDir, 'second-asset.txt'), 'second content');
-      await request(app).post(`/projects/${projectId}/scan`).expect(302);
+      await agent.post(`/projects/${projectId}/scan`)
+      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
       const assetRepo = createAssetRepository(db);
       const allAssets = assetRepo.findByProjectId(Number(projectId));
       const secondAsset = allAssets.find((a) => a.id !== Number(assetId));
 
       // Select both assets with distinctive roles and sort orders
-      await request(app)
+      await agent
         .post(releaseLocation + '/assets')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`selectedAssetIds[]=${assetId}`)
         .send(`selectedAssetIds[]=${secondAsset.id}`)
         .send('roles[]=primary')
@@ -5698,8 +6083,9 @@ describe('release HTTP workflow', () => {
         .expect(302);
 
       // Publish
-      await request(app)
+      await agent
         .post(releaseLocation + '/publish')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('publishedDate=2025-06-15')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
@@ -5709,7 +6095,7 @@ describe('release HTTP workflow', () => {
 
     it('exactly one shared data-table appears in the selected-assets section', async () => {
       const { releaseLocation } = await setupPublishedRelease();
-      const res = await request(app).get(releaseLocation).expect(200);
+      const res = await agent.get(releaseLocation).expect(200);
 
       // Extract the Selected Assets section
       const sectionMatch = res.text.match(/<h2>Selected Assets<\/h2>[\s\S]*?<\/section>/);
@@ -5724,7 +6110,7 @@ describe('release HTTP workflow', () => {
 
     it('multiple assets render in sort_order ASC, asset_id ASC order', async () => {
       const { releaseLocation, releaseId } = await setupPublishedRelease();
-      const res = await request(app).get(releaseLocation).expect(200);
+      const res = await agent.get(releaseLocation).expect(200);
 
       // Extract the Selected Assets section
       const sectionMatch = res.text.match(/<h2>Selected Assets<\/h2>[\s\S]*?<\/section>/);
@@ -5753,7 +6139,7 @@ describe('release HTTP workflow', () => {
 
     it('roles and presence values correspond to the correct rows', async () => {
       const { releaseLocation, releaseId, assetId, secondAssetId } = await setupPublishedRelease();
-      const res = await request(app).get(releaseLocation).expect(200);
+      const res = await agent.get(releaseLocation).expect(200);
 
       // Extract the Selected Assets section
       const sectionMatch = res.text.match(/<h2>Selected Assets<\/h2>[\s\S]*?<\/section>/);
@@ -5803,8 +6189,9 @@ describe('release HTTP workflow', () => {
      * Returns { projectId, releaseLocation, releaseId, assetRepo, allAssets }.
      */
     async function setupReleaseWithAssets() {
-      const projRes = await request(app)
+      const projRes = await agent
         .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Candidate+Discovery+Test')
         .send('status=tbd')
         .send('priority=normal')
@@ -5822,13 +6209,15 @@ describe('release HTTP workflow', () => {
       fs.writeFileSync(path.join(projectDir, 'beta.png'), 'beta content');
       fs.writeFileSync(path.join(projectDir, 'gamma.txt'), 'gamma content');
       fs.writeFileSync(path.join(projectDir, 'delta.txt'), 'delta content');
-      await request(app).post(`/projects/${projectId}/scan`).expect(302);
+      await agent.post(`/projects/${projectId}/scan`)
+      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
       const assetRepo = createAssetRepository(db);
       const allAssets = assetRepo.findByProjectId(Number(projectId));
 
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=Candidate+Discovery+Release')
         .send('status=ready')
@@ -5839,8 +6228,9 @@ describe('release HTTP workflow', () => {
 
       // Select one asset (alpha.txt)
       const alphaAsset = allAssets.find((a) => a.filename === 'alpha.txt');
-      await request(app)
+      await agent
         .post(releaseLocation + '/assets')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`selectedAssetIds[]=${alphaAsset.id}`)
         .send('roles[]=primary')
         .send('sortOrder[]=0')
@@ -5852,7 +6242,7 @@ describe('release HTTP workflow', () => {
 
     it('selected and available sections are distinct on the page', async () => {
       const { releaseLocation } = await setupReleaseWithAssets();
-      const res = await request(app).get(`${releaseLocation}/assets`).expect(200);
+      const res = await agent.get(`${releaseLocation}/assets`).expect(200);
 
       // Both sections must be present
       expect(res.text).toContain('Selected Assets');
@@ -5861,7 +6251,7 @@ describe('release HTTP workflow', () => {
 
     it('selected section shows the complete selected asset', async () => {
       const { releaseLocation } = await setupReleaseWithAssets();
-      const res = await request(app).get(`${releaseLocation}/assets`).expect(200);
+      const res = await agent.get(`${releaseLocation}/assets`).expect(200);
 
       // The selected asset (alpha.txt) must appear in the selected section
       const selectedSection = res.text.match(/<h2>Selected Assets<\/h2>[\s\S]*?<\/section>/);
@@ -5872,7 +6262,7 @@ describe('release HTTP workflow', () => {
     it('selected section is complete across candidate pages', async () => {
       const { releaseLocation } = await setupReleaseWithAssets();
       // Request a small candidate page size — selected section must still show all
-      const res = await request(app).get(`${releaseLocation}/assets?pageSize=1`).expect(200);
+      const res = await agent.get(`${releaseLocation}/assets?pageSize=1`).expect(200);
 
       // Selected section must still contain alpha.txt
       const selectedSection = res.text.match(/<h2>Selected Assets<\/h2>[\s\S]*?<\/section>/);
@@ -5882,7 +6272,7 @@ describe('release HTTP workflow', () => {
 
     it('candidate page is bounded by page size', async () => {
       const { releaseLocation } = await setupReleaseWithAssets();
-      const res = await request(app).get(`${releaseLocation}/assets?pageSize=1`).expect(200);
+      const res = await agent.get(`${releaseLocation}/assets?pageSize=1`).expect(200);
 
       // The candidate table should show only 1 row (pageSize=1)
       // The pagination info should show "Page 1 of 3"
@@ -5891,7 +6281,7 @@ describe('release HTTP workflow', () => {
 
     it('pagination preserves search and extension filters', async () => {
       const { releaseLocation } = await setupReleaseWithAssets();
-      const res = await request(app).get(`${releaseLocation}/assets?search=beta&pageSize=1`).expect(200);
+      const res = await agent.get(`${releaseLocation}/assets?search=beta&pageSize=1`).expect(200);
 
       // The filter form must retain the search value
       expect(res.text).toContain('value="beta"');
@@ -5899,20 +6289,20 @@ describe('release HTTP workflow', () => {
 
     it('invalid page falls back to 1', async () => {
       const { releaseLocation } = await setupReleaseWithAssets();
-      const res = await request(app).get(`${releaseLocation}/assets?page=invalid`).expect(200);
+      const res = await agent.get(`${releaseLocation}/assets?page=invalid`).expect(200);
       // Page should render without error
       expect(res.status).toBe(200);
     });
 
     it('invalid page size falls back to default', async () => {
       const { releaseLocation } = await setupReleaseWithAssets();
-      const res = await request(app).get(`${releaseLocation}/assets?pageSize=invalid`).expect(200);
+      const res = await agent.get(`${releaseLocation}/assets?pageSize=invalid`).expect(200);
       expect(res.status).toBe(200);
     });
 
     it('unknown query parameters are stripped from generated URLs', async () => {
       const { releaseLocation } = await setupReleaseWithAssets();
-      const res = await request(app).get(`${releaseLocation}/assets?unknown=param&junk=value`).expect(200);
+      const res = await agent.get(`${releaseLocation}/assets?unknown=param&junk=value`).expect(200);
 
       // The page should render without error
       expect(res.status).toBe(200);
@@ -5923,13 +6313,14 @@ describe('release HTTP workflow', () => {
       const releaseId = Number(releaseLocation.replace('/releases/', ''));
 
       // Publish the release
-      await request(app)
+      await agent
         .post(`${releaseLocation}/publish`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('publishedDate=2025-06-15')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
-      const res = await request(app).get(`${releaseLocation}/assets`).expect(200);
+      const res = await agent.get(`${releaseLocation}/assets`).expect(200);
       // Must show locked notice
       expect(res.text).toContain('locked and read-only');
       // Save Selection button must not be present
@@ -5940,11 +6331,12 @@ describe('release HTTP workflow', () => {
       const { releaseLocation } = await setupReleaseWithAssets();
 
       // Archive the release
-      await request(app)
+      await agent
         .post(`${releaseLocation}/archive`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
-      const res = await request(app).get(`${releaseLocation}/assets`).expect(200);
+      const res = await agent.get(`${releaseLocation}/assets`).expect(200);
       // Must show archived notice
       expect(res.text).toContain('archived');
       // Save Selection button must not be present
@@ -5955,11 +6347,12 @@ describe('release HTTP workflow', () => {
       const { releaseLocation, projectId } = await setupReleaseWithAssets();
 
       // Archive the parent project
-      await request(app)
+      await agent
         .post(`/projects/${projectId}/archive`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
-      const res = await request(app).get(`${releaseLocation}/assets`).expect(200);
+      const res = await agent.get(`${releaseLocation}/assets`).expect(200);
       // Must show archived notice
       expect(res.text).toContain('archived');
       // Save Selection button must not be present
@@ -5968,7 +6361,7 @@ describe('release HTTP workflow', () => {
 
     it('no N+1 candidate query path — single page load is fast', async () => {
       const { releaseLocation } = await setupReleaseWithAssets();
-      const res = await request(app).get(`${releaseLocation}/assets`).expect(200);
+      const res = await agent.get(`${releaseLocation}/assets`).expect(200);
       // The page renders both sections without error
       expect(res.text).toContain('Selected Assets');
       expect(res.text).toContain('Available Assets');
@@ -5981,8 +6374,9 @@ describe('release HTTP workflow', () => {
 
   describe('role guidance and accessibility (Phase 9-3)', () => {
     async function setupBasicRelease() {
-      const projRes = await request(app)
+      const projRes = await agent
         .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Role+Guidance+Test')
         .send('status=tbd')
         .send('priority=normal')
@@ -5996,10 +6390,12 @@ describe('release HTTP workflow', () => {
       const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
       fs.writeFileSync(path.join(projectDir, 'asset.png'), 'png');
       fs.writeFileSync(path.join(projectDir, 'asset2.png'), 'png2');
-      await request(app).post(`/projects/${projectId}/scan`).expect(302);
+      await agent.post(`/projects/${projectId}/scan`)
+      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=Role+Guidance+Release')
         .send('status=idea')
@@ -6011,7 +6407,7 @@ describe('release HTTP workflow', () => {
 
     it('role guidance section is present with all four roles', async () => {
       const { releaseLocation } = await setupBasicRelease();
-      const res = await request(app).get(`${releaseLocation}/assets`).expect(200);
+      const res = await agent.get(`${releaseLocation}/assets`).expect(200);
 
       expect(res.text).toContain('Asset Roles');
       expect(res.text).toContain('Primary');
@@ -6022,7 +6418,7 @@ describe('release HTTP workflow', () => {
 
     it('role guidance describes organizational intent without cardinality rules', async () => {
       const { releaseLocation } = await setupBasicRelease();
-      const res = await request(app).get(`${releaseLocation}/assets`).expect(200);
+      const res = await agent.get(`${releaseLocation}/assets`).expect(200);
 
       // Primary description
       expect(res.text).toContain('main asset for this release');
@@ -6036,25 +6432,25 @@ describe('release HTTP workflow', () => {
 
     it('search input has visible label', async () => {
       const { releaseLocation } = await setupBasicRelease();
-      const res = await request(app).get(`${releaseLocation}/assets`).expect(200);
+      const res = await agent.get(`${releaseLocation}/assets`).expect(200);
       expect(res.text).toContain('<label for="candidate-search">Search available assets</label>');
     });
 
     it('extension filter has visible label', async () => {
       const { releaseLocation } = await setupBasicRelease();
-      const res = await request(app).get(`${releaseLocation}/assets`).expect(200);
+      const res = await agent.get(`${releaseLocation}/assets`).expect(200);
       expect(res.text).toContain('<label for="candidate-extension">Extension</label>');
     });
 
     it('page-size control has visible label', async () => {
       const { releaseLocation } = await setupBasicRelease();
-      const res = await request(app).get(`${releaseLocation}/assets`).expect(200);
+      const res = await agent.get(`${releaseLocation}/assets`).expect(200);
       expect(res.text).toContain('<label for="candidate-page-size">Page size</label>');
     });
 
     it('Add button has accessible name', async () => {
       const { releaseLocation } = await setupBasicRelease();
-      const res = await request(app).get(`${releaseLocation}/assets`).expect(200);
+      const res = await agent.get(`${releaseLocation}/assets`).expect(200);
       expect(res.text).toContain('aria-label="Add ');
     });
 
@@ -6064,14 +6460,15 @@ describe('release HTTP workflow', () => {
       const assetRepo = createAssetRepository(db);
       const assets = assetRepo.findByProjectId(Number(projectId));
       for (const asset of assets) {
-        await request(app)
+        await agent
           .post(`${releaseLocation}/assets/add`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
           .send(`assetId=${asset.id}`)
           .set('Content-Type', 'application/x-www-form-urlencoded')
           .expect(302);
       }
 
-      const res = await request(app).get(`${releaseLocation}/assets`).expect(200);
+      const res = await agent.get(`${releaseLocation}/assets`).expect(200);
       expect(res.text).toContain('aria-label="Remove ');
     });
 
@@ -6081,14 +6478,15 @@ describe('release HTTP workflow', () => {
       const assetRepo = createAssetRepository(db);
       const assets = assetRepo.findByProjectId(Number(projectId));
       for (const asset of assets) {
-        await request(app)
+        await agent
           .post(`${releaseLocation}/assets/add`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
           .send(`assetId=${asset.id}`)
           .set('Content-Type', 'application/x-www-form-urlencoded')
           .expect(302);
       }
 
-      const res = await request(app).get(`${releaseLocation}/assets`).expect(200);
+      const res = await agent.get(`${releaseLocation}/assets`).expect(200);
       expect(res.text).toContain('aria-label="Move ');
       expect(res.text).toContain(' up"');
     });
@@ -6099,14 +6497,15 @@ describe('release HTTP workflow', () => {
       const assetRepo = createAssetRepository(db);
       const assets = assetRepo.findByProjectId(Number(projectId));
       for (const asset of assets) {
-        await request(app)
+        await agent
           .post(`${releaseLocation}/assets/add`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
           .send(`assetId=${asset.id}`)
           .set('Content-Type', 'application/x-www-form-urlencoded')
           .expect(302);
       }
 
-      const res = await request(app).get(`${releaseLocation}/assets`).expect(200);
+      const res = await agent.get(`${releaseLocation}/assets`).expect(200);
       expect(res.text).toContain('aria-label="Move ');
       expect(res.text).toContain(' down"');
     });
@@ -6117,14 +6516,15 @@ describe('release HTTP workflow', () => {
       const assetRepo = createAssetRepository(db);
       const assets = assetRepo.findByProjectId(Number(projectId));
       for (const asset of assets) {
-        await request(app)
+        await agent
           .post(`${releaseLocation}/assets/add`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
           .send(`assetId=${asset.id}`)
           .set('Content-Type', 'application/x-www-form-urlencoded')
           .expect(302);
       }
 
-      const res = await request(app).get(`${releaseLocation}/assets`).expect(200);
+      const res = await agent.get(`${releaseLocation}/assets`).expect(200);
 
       // First item's Move Up should be disabled with descriptive title
       expect(res.text).toContain('disabled');
@@ -6137,14 +6537,15 @@ describe('release HTTP workflow', () => {
       const assetRepo = createAssetRepository(db);
       const assets = assetRepo.findByProjectId(Number(projectId));
       for (const asset of assets) {
-        await request(app)
+        await agent
           .post(`${releaseLocation}/assets/add`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
           .send(`assetId=${asset.id}`)
           .set('Content-Type', 'application/x-www-form-urlencoded')
           .expect(302);
       }
 
-      const res = await request(app).get(`${releaseLocation}/assets`).expect(200);
+      const res = await agent.get(`${releaseLocation}/assets`).expect(200);
 
       // Role select exists for mutable scope in the new per-row form
       const roleSelectMatch = res.text.match(/<label for="role-\d+"[^>]*>Role for/);
@@ -6164,8 +6565,9 @@ describe('release HTTP workflow', () => {
 
   describe('Phase 9-3 lifecycle regression', () => {
     async function setupReleaseWithTwoAssets() {
-      const projRes = await request(app)
+      const projRes = await agent
         .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Lifecycle+Regression+Test')
         .send('status=tbd')
         .send('priority=normal')
@@ -6179,13 +6581,15 @@ describe('release HTTP workflow', () => {
       const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
       fs.writeFileSync(path.join(projectDir, 'a.png'), 'png');
       fs.writeFileSync(path.join(projectDir, 'b.png'), 'png');
-      await request(app).post(`/projects/${projectId}/scan`).expect(302);
+      await agent.post(`/projects/${projectId}/scan`)
+      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
       const assetRepo = createAssetRepository(db);
       const allAssets = assetRepo.findByProjectId(Number(projectId));
 
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=Lifecycle+Regression+Release')
         .send('status=ready')
@@ -6195,8 +6599,9 @@ describe('release HTTP workflow', () => {
       const releaseId = Number(releaseLocation.replace('/releases/', ''));
 
       // Select both assets
-      await request(app)
+      await agent
         .post(releaseLocation + '/assets')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`selectedAssetIds[]=${allAssets[0].id}`)
         .send(`selectedAssetIds[]=${allAssets[1].id}`)
         .send('roles[]=primary')
@@ -6213,23 +6618,25 @@ describe('release HTTP workflow', () => {
       const { releaseLocation } = await setupReleaseWithTwoAssets();
 
       // Publish
-      await request(app)
+      await agent
         .post(`${releaseLocation}/publish`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('publishedDate=2025-06-15')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
-      const beforeDetail = await request(app).get(releaseLocation).expect(200);
+      const beforeDetail = await agent.get(releaseLocation).expect(200);
       expect(beforeDetail.text).toContain('Publication Summary');
 
       // Attempt mutation via Phase 9-2 route
-      await request(app)
+      await agent
         .post(`${releaseLocation}/assets/add`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('assetId=99999')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(422);
 
-      const afterDetail = await request(app).get(releaseLocation).expect(200);
+      const afterDetail = await agent.get(releaseLocation).expect(200);
       expect(afterDetail.text).toContain('Publication Summary');
     });
 
@@ -6240,15 +6647,16 @@ describe('release HTTP workflow', () => {
       expect(beforeRows).toHaveLength(2);
 
       // Archive
-      await request(app)
+      await agent
         .post(`${releaseLocation}/archive`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
       const afterRows = getReleaseAssets(db, releaseId);
       expect(afterRows).toEqual(beforeRows);
 
       // Detail page shows archived notice
-      const detail = await request(app).get(releaseLocation).expect(200);
+      const detail = await agent.get(releaseLocation).expect(200);
       expect(detail.text).toContain('archived');
     });
 
@@ -6258,8 +6666,9 @@ describe('release HTTP workflow', () => {
       const beforeRows = getReleaseAssets(db, releaseId);
 
       // Archive parent project
-      await request(app)
+      await agent
         .post(`/projects/${projectId}/archive`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
       const afterRows = getReleaseAssets(db, releaseId);
@@ -6270,14 +6679,15 @@ describe('release HTTP workflow', () => {
       const { releaseLocation, releaseId, projectId, assetRepo, allAssets } = await setupReleaseWithTwoAssets();
 
       // Publish
-      await request(app)
+      await agent
         .post(`${releaseLocation}/publish`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('publishedDate=2025-06-15')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
       // Verify readiness is not shown (published)
-      const detail = await request(app).get(releaseLocation).expect(200);
+      const detail = await agent.get(releaseLocation).expect(200);
       expect(detail.text).not.toContain('Publishable');
       expect(detail.text).toContain('Publication Summary');
     });
@@ -6290,7 +6700,7 @@ describe('release HTTP workflow', () => {
       db.prepare('UPDATE assets SET is_present = 0, missing_since = datetime(\'now\') WHERE id = ?').run(assetToRemove.id);
 
       // Detail page must still show the missing asset
-      const detail = await request(app).get(releaseLocation).expect(200);
+      const detail = await agent.get(releaseLocation).expect(200);
       expect(detail.text).toContain(assetToRemove.filename);
       expect(detail.text).toContain('Missing');
     });
@@ -6300,8 +6710,9 @@ describe('release HTTP workflow', () => {
 
   describe('cross-view ordering consistency (Phase 9-3)', () => {
     async function setupOrderedRelease() {
-      const projRes = await request(app)
+      const projRes = await agent
         .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Ordering+Test')
         .send('status=tbd')
         .send('priority=normal')
@@ -6316,7 +6727,8 @@ describe('release HTTP workflow', () => {
       fs.writeFileSync(path.join(projectDir, 'c.txt'), 'c');
       fs.writeFileSync(path.join(projectDir, 'a.txt'), 'a');
       fs.writeFileSync(path.join(projectDir, 'b.txt'), 'b');
-      await request(app).post(`/projects/${projectId}/scan`).expect(302);
+      await agent.post(`/projects/${projectId}/scan`)
+      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
       const assetRepo = createAssetRepository(db);
       const allAssets = assetRepo.findByProjectId(Number(projectId));
@@ -6324,8 +6736,9 @@ describe('release HTTP workflow', () => {
       const assetA = allAssets.find((a) => a.filename === 'a.txt');
       const assetB = allAssets.find((a) => a.filename === 'b.txt');
 
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=Ordering+Release')
         .send('status=ready')
@@ -6335,20 +6748,23 @@ describe('release HTTP workflow', () => {
       const releaseId = Number(releaseLocation.replace('/releases/', ''));
 
       // Add assets via Phase 9-2 add route in non-alphabetical order
-      await request(app)
+      await agent
         .post(`${releaseLocation}/assets/add`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`assetId=${assetC.id}`)
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
-      await request(app)
+      await agent
         .post(`${releaseLocation}/assets/add`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`assetId=${assetA.id}`)
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
-      await request(app)
+      await agent
         .post(`${releaseLocation}/assets/add`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`assetId=${assetB.id}`)
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
@@ -6358,7 +6774,7 @@ describe('release HTTP workflow', () => {
 
     it('curation page shows assets in sort_order ASC order', async () => {
       const { releaseLocation } = await setupOrderedRelease();
-      const res = await request(app).get(`${releaseLocation}/assets`).expect(200);
+      const res = await agent.get(`${releaseLocation}/assets`).expect(200);
 
       // The selected section should show assets in order: c, a, b
       const selectedSection = res.text.match(/<h2>Selected Assets<\/h2>[\s\S]*?<\/section>/);
@@ -6372,7 +6788,7 @@ describe('release HTTP workflow', () => {
 
     it('release detail shows assets in same order as curation page', async () => {
       const { releaseLocation } = await setupOrderedRelease();
-      const res = await request(app).get(releaseLocation).expect(200);
+      const res = await agent.get(releaseLocation).expect(200);
 
       const cPos = res.text.indexOf('c.txt');
       const aPos = res.text.indexOf('a.txt');
@@ -6383,7 +6799,7 @@ describe('release HTTP workflow', () => {
 
     it('publication review shows assets in same order as curation page', async () => {
       const { releaseLocation } = await setupOrderedRelease();
-      const res = await request(app).get(`${releaseLocation}/publish`).expect(200);
+      const res = await agent.get(`${releaseLocation}/publish`).expect(200);
 
       const cPos = res.text.indexOf('c.txt');
       const aPos = res.text.indexOf('a.txt');
@@ -6396,13 +6812,14 @@ describe('release HTTP workflow', () => {
       const { releaseLocation } = await setupOrderedRelease();
 
       // Publish
-      await request(app)
+      await agent
         .post(`${releaseLocation}/publish`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('publishedDate=2025-06-15')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
-      const res = await request(app).get(releaseLocation).expect(200);
+      const res = await agent.get(releaseLocation).expect(200);
 
       const cPos = res.text.indexOf('c.txt');
       const aPos = res.text.indexOf('a.txt');
@@ -6416,8 +6833,9 @@ describe('release HTTP workflow', () => {
 
   describe('count/page parity after mutations (Phase 9-3)', () => {
     it('candidate count decreases after adding an asset', async () => {
-      const projRes = await request(app)
+      const projRes = await agent
         .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Count+Parity+Test')
         .send('status=tbd')
         .send('priority=normal')
@@ -6431,13 +6849,15 @@ describe('release HTTP workflow', () => {
       const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
       fs.writeFileSync(path.join(projectDir, 'a.txt'), 'a');
       fs.writeFileSync(path.join(projectDir, 'b.txt'), 'b');
-      await request(app).post(`/projects/${projectId}/scan`).expect(302);
+      await agent.post(`/projects/${projectId}/scan`)
+      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
       const assetRepo = createAssetRepository(db);
       const allAssets = assetRepo.findByProjectId(Number(projectId));
 
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=Count+Parity+Release')
         .send('status=idea')
@@ -6446,24 +6866,26 @@ describe('release HTTP workflow', () => {
       const releaseLocation = createRes.headers.location;
 
       // Before add: 2 candidates
-      let res = await request(app).get(`${releaseLocation}/assets`).expect(200);
+      let res = await agent.get(`${releaseLocation}/assets`).expect(200);
       expect(res.text).toContain('2 candidates available');
 
       // Add one asset
-      await request(app)
+      await agent
         .post(`${releaseLocation}/assets/add`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`assetId=${allAssets[0].id}`)
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
       // After add: 1 candidate
-      res = await request(app).get(`${releaseLocation}/assets`).expect(200);
+      res = await agent.get(`${releaseLocation}/assets`).expect(200);
       expect(res.text).toContain('1 candidate available');
     });
 
     it('candidate count increases after removing an asset', async () => {
-      const projRes = await request(app)
+      const projRes = await agent
         .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Count+Parity+Remove+Test')
         .send('status=tbd')
         .send('priority=normal')
@@ -6477,13 +6899,15 @@ describe('release HTTP workflow', () => {
       const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
       fs.writeFileSync(path.join(projectDir, 'a.txt'), 'a');
       fs.writeFileSync(path.join(projectDir, 'b.txt'), 'b');
-      await request(app).post(`/projects/${projectId}/scan`).expect(302);
+      await agent.post(`/projects/${projectId}/scan`)
+      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
       const assetRepo = createAssetRepository(db);
       const allAssets = assetRepo.findByProjectId(Number(projectId));
 
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=Count+Parity+Remove+Release')
         .send('status=idea')
@@ -6492,29 +6916,32 @@ describe('release HTTP workflow', () => {
       const releaseLocation = createRes.headers.location;
 
       // Add both assets
-      await request(app)
+      await agent
         .post(`${releaseLocation}/assets/add`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`assetId=${allAssets[0].id}`)
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
-      await request(app)
+      await agent
         .post(`${releaseLocation}/assets/add`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`assetId=${allAssets[1].id}`)
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
       // Before remove: 0 candidates
-      let res = await request(app).get(`${releaseLocation}/assets`).expect(200);
+      let res = await agent.get(`${releaseLocation}/assets`).expect(200);
       expect(res.text).toContain('0 candidates available');
 
       // Remove one asset
-      await request(app)
+      await agent
         .post(`${releaseLocation}/assets/${allAssets[0].id}/remove-selected`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
       // After remove: 1 candidate
-      res = await request(app).get(`${releaseLocation}/assets`).expect(200);
+      res = await agent.get(`${releaseLocation}/assets`).expect(200);
       expect(res.text).toContain('1 candidate available');
     });
   });
@@ -6523,8 +6950,9 @@ describe('release HTTP workflow', () => {
 
   describe('Phase 9-4 mutation route HTTP tests', () => {
     async function setupPhase94Release() {
-      const projRes = await request(app)
+      const projRes = await agent
         .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Phase+9-4+Test')
         .send('status=tbd')
         .send('priority=normal')
@@ -6539,13 +6967,15 @@ describe('release HTTP workflow', () => {
       fs.writeFileSync(path.join(projectDir, 'alpha.txt'), 'alpha');
       fs.writeFileSync(path.join(projectDir, 'beta.txt'), 'beta');
       fs.writeFileSync(path.join(projectDir, 'gamma.txt'), 'gamma');
-      await request(app).post(`/projects/${projectId}/scan`).expect(302);
+      await agent.post(`/projects/${projectId}/scan`)
+      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
       const assetRepo = createAssetRepository(db);
       const allAssets = assetRepo.findByProjectId(Number(projectId));
 
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=Phase+9-4+Release')
         .send('status=idea')
@@ -6566,7 +6996,8 @@ describe('release HTTP workflow', () => {
 
       fs.writeFileSync(path.join(projectDir, 'delta.txt'), 'delta');
       fs.writeFileSync(path.join(projectDir, 'epsilon.txt'), 'epsilon');
-      await request(app).post(`/projects/${projectId}/scan`).expect(302);
+      await agent.post(`/projects/${projectId}/scan`)
+      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
       return fixture;
     }
@@ -6574,8 +7005,9 @@ describe('release HTTP workflow', () => {
     async function setupPhase94SelectedRelease(assetCount) {
       const fixture = await setupPhase94Release();
       for (let index = 0; index < assetCount; index++) {
-        await request(app)
+        await agent
           .post(`${fixture.releaseLocation}/assets/add`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
           .send(`assetId=${fixture.allAssets[index].id}`)
           .set('Content-Type', 'application/x-www-form-urlencoded')
           .expect(302);
@@ -6600,10 +7032,12 @@ describe('release HTTP workflow', () => {
       });
 
       // Re-create app with the stubbed service
-      const stubbedApp = createApp({ appName: 'CreatorCrate', db, projectsRoot }, { releaseService: stubbedService });
+      const stubbedApp = createApp({ appName: 'CreatorCrate', db, projectsRoot }, { releaseService: stubbedService, appDataRoot, authState: { csrfPepper: ensureAuthEnablement(appDataRoot).csrfPepper } });
+      const { agent: stubbedAgent, csrfToken: stubbedCsrfToken } = await getDisabledModeCsrf(stubbedApp, appDataRoot);
 
-      const res = await request(stubbedApp)
+      const res = await stubbedAgent
         .post(`${releaseLocation}/assets/add`)
+        .send('_csrf=' + encodeURIComponent(stubbedCsrfToken))
         .send('assetId=1')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(500);
@@ -6626,8 +7060,9 @@ describe('release HTTP workflow', () => {
       const beforeRows = getReleaseAssets(db, releaseId);
       expect(beforeRows).toHaveLength(0);
 
-      const res = await request(app)
+      const res = await agent
         .post(`${releaseLocation}/assets/add`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`assetId=${allAssets[0].id}`)
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
@@ -6642,8 +7077,9 @@ describe('release HTTP workflow', () => {
 
     it('add route preserves candidate filters in redirect', async () => {
       const { releaseLocation, releaseId, allAssets } = await setupPhase94Release();
-      const res = await request(app)
+      const res = await agent
         .post(`${releaseLocation}/assets/add?search=alpha&pageSize=50`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`assetId=${allAssets[0].id}`)
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
@@ -6654,8 +7090,9 @@ describe('release HTTP workflow', () => {
 
     it('add route strips unknown parameters from redirect', async () => {
       const { releaseLocation, releaseId, allAssets } = await setupPhase94Release();
-      const res = await request(app)
+      const res = await agent
         .post(`${releaseLocation}/assets/add?unknown=param&junk=value`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`assetId=${allAssets[0].id}`)
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
@@ -6666,13 +7103,15 @@ describe('release HTTP workflow', () => {
     it('remove-selected route succeeds and redirects', async () => {
       const { releaseLocation, releaseId, allAssets } = await setupPhase94Release();
       // Add two assets first
-      await request(app)
+      await agent
         .post(`${releaseLocation}/assets/add`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`assetId=${allAssets[0].id}`)
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
-      await request(app)
+      await agent
         .post(`${releaseLocation}/assets/add`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`assetId=${allAssets[1].id}`)
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
@@ -6680,8 +7119,9 @@ describe('release HTTP workflow', () => {
       const beforeRows = getReleaseAssets(db, releaseId);
       expect(beforeRows).toHaveLength(2);
 
-      const res = await request(app)
+      const res = await agent
         .post(`${releaseLocation}/assets/${allAssets[0].id}/remove-selected`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
@@ -6694,14 +7134,16 @@ describe('release HTTP workflow', () => {
 
     it('remove-selected route preserves candidate filters in redirect', async () => {
       const { releaseLocation, releaseId, allAssets } = await setupPhase94Release();
-      await request(app)
+      await agent
         .post(`${releaseLocation}/assets/add`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`assetId=${allAssets[0].id}`)
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
-      const res = await request(app)
+      const res = await agent
         .post(`${releaseLocation}/assets/${allAssets[0].id}/remove-selected?search=beta&extension=txt`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
@@ -6711,14 +7153,16 @@ describe('release HTTP workflow', () => {
     it('role route succeeds and redirects', async () => {
       const { releaseLocation, releaseId, allAssets } = await setupPhase94Release();
       // Add one asset
-      await request(app)
+      await agent
         .post(`${releaseLocation}/assets/add`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`assetId=${allAssets[0].id}`)
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
-      const res = await request(app)
+      const res = await agent
         .post(`${releaseLocation}/assets/${allAssets[0].id}/role`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('role=primary')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
@@ -6732,14 +7176,16 @@ describe('release HTTP workflow', () => {
 
     it('role route preserves candidate filters in redirect', async () => {
       const { releaseLocation, releaseId, allAssets } = await setupPhase94Release();
-      await request(app)
+      await agent
         .post(`${releaseLocation}/assets/add`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`assetId=${allAssets[0].id}`)
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
-      const res = await request(app)
+      const res = await agent
         .post(`${releaseLocation}/assets/${allAssets[0].id}/role?search=gamma&pageSize=100`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('role=preview')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
@@ -6750,13 +7196,15 @@ describe('release HTTP workflow', () => {
     it('move-up route succeeds and preserves query state in redirect', async () => {
       const { releaseLocation, releaseId, allAssets } = await setupPhase94MoveRelease();
       // Add two assets
-      await request(app)
+      await agent
         .post(`${releaseLocation}/assets/add`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`assetId=${allAssets[0].id}`)
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
-      await request(app)
+      await agent
         .post(`${releaseLocation}/assets/add`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`assetId=${allAssets[1].id}`)
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
@@ -6766,8 +7214,9 @@ describe('release HTTP workflow', () => {
       expect(beforeRows[1].asset_id).toBe(allAssets[1].id);
 
       // Move the second asset up
-      const res = await request(app)
+      const res = await agent
         .post(`${releaseLocation}/assets/${allAssets[1].id}/move-up`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .query({
           search: '  txt  ',
           extension: ' TXT ',
@@ -6795,20 +7244,23 @@ describe('release HTTP workflow', () => {
     it('move-down route succeeds and omits page=1 from redirect', async () => {
       const { releaseLocation, releaseId, allAssets } = await setupPhase94MoveRelease();
       // Add two assets
-      await request(app)
+      await agent
         .post(`${releaseLocation}/assets/add`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`assetId=${allAssets[0].id}`)
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
-      await request(app)
+      await agent
         .post(`${releaseLocation}/assets/add`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`assetId=${allAssets[1].id}`)
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
       // Move the first asset down
-      const res = await request(app)
+      const res = await agent
         .post(`${releaseLocation}/assets/${allAssets[0].id}/move-down`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .query({
           search: '  txt  ',
           extension: ' TXT ',
@@ -6836,8 +7288,9 @@ describe('release HTTP workflow', () => {
     // ── Validation/error tests ────────────────────────────────────────
 
     it('rejects malformed release ID with 404', async () => {
-      await request(app)
+      await agent
         .post('/releases/abc/assets/add')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('assetId=1')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(404);
@@ -6882,8 +7335,9 @@ describe('release HTTP workflow', () => {
           const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
           const beforeJunction = getReleaseAssets(db, releaseId);
 
-          let req = request(app)
+          let req = agent
             .post(routeCase.path(malformedReleaseId, allAssets[routeCase.assetIndex].id))
+      .send('_csrf=' + encodeURIComponent(csrfToken))
             .set('Content-Type', 'application/x-www-form-urlencoded');
           if (routeCase.body) {
             req = req.send(routeCase.body);
@@ -6899,8 +7353,9 @@ describe('release HTTP workflow', () => {
 
     it('rejects malformed asset ID in add with 422', async () => {
       const { releaseLocation } = await setupPhase94Release();
-      const res = await request(app)
+      const res = await agent
         .post(`${releaseLocation}/assets/add`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('assetId=abc')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(422);
@@ -6909,8 +7364,9 @@ describe('release HTTP workflow', () => {
 
     it('rejects malformed asset ID in remove-selected with 404', async () => {
       const { releaseLocation } = await setupPhase94Release();
-      await request(app)
+      await agent
         .post(`${releaseLocation}/assets/abc/remove-selected`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(404);
     });
@@ -6920,8 +7376,9 @@ describe('release HTTP workflow', () => {
       const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
       const beforeJunction = getReleaseAssets(db, releaseId);
 
-      const res = await request(app)
+      const res = await agent
         .post(`${releaseLocation}/assets/abc/role`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('role=primary')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(404);
@@ -6938,8 +7395,9 @@ describe('release HTTP workflow', () => {
       const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
       const beforeJunction = getReleaseAssets(db, releaseId);
 
-      const res = await request(app)
+      const res = await agent
         .post(`${releaseLocation}/assets/0/role`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('role=primary')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(404);
@@ -6956,8 +7414,9 @@ describe('release HTTP workflow', () => {
       const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
       const beforeJunction = getReleaseAssets(db, releaseId);
 
-      const res = await request(app)
+      const res = await agent
         .post(`${releaseLocation}/assets/-1/role`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('role=primary')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(404);
@@ -6974,8 +7433,9 @@ describe('release HTTP workflow', () => {
       const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
       const beforeJunction = getReleaseAssets(db, releaseId);
 
-      const res = await request(app)
+      const res = await agent
         .post(`${releaseLocation}/assets/1abc/role`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('role=primary')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(404);
@@ -6992,8 +7452,9 @@ describe('release HTTP workflow', () => {
       const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
       const beforeJunction = getReleaseAssets(db, releaseId);
 
-      const res = await request(app)
+      const res = await agent
         .post(`${releaseLocation}/assets/abc/move-up`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(404);
       expect(res.text).not.toContain('Something went wrong');
@@ -7009,8 +7470,9 @@ describe('release HTTP workflow', () => {
       const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
       const beforeJunction = getReleaseAssets(db, releaseId);
 
-      const res = await request(app)
+      const res = await agent
         .post(`${releaseLocation}/assets/0/move-up`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(404);
       expect(res.text).not.toContain('Something went wrong');
@@ -7026,8 +7488,9 @@ describe('release HTTP workflow', () => {
       const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
       const beforeJunction = getReleaseAssets(db, releaseId);
 
-      const res = await request(app)
+      const res = await agent
         .post(`${releaseLocation}/assets/-1/move-up`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(404);
       expect(res.text).not.toContain('Something went wrong');
@@ -7043,8 +7506,9 @@ describe('release HTTP workflow', () => {
       const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
       const beforeJunction = getReleaseAssets(db, releaseId);
 
-      const res = await request(app)
+      const res = await agent
         .post(`${releaseLocation}/assets/1abc/move-up`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(404);
       expect(res.text).not.toContain('Something went wrong');
@@ -7060,8 +7524,9 @@ describe('release HTTP workflow', () => {
       const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
       const beforeJunction = getReleaseAssets(db, releaseId);
 
-      const res = await request(app)
+      const res = await agent
         .post(`${releaseLocation}/assets/abc/move-down`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(404);
       expect(res.text).not.toContain('Something went wrong');
@@ -7077,8 +7542,9 @@ describe('release HTTP workflow', () => {
       const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
       const beforeJunction = getReleaseAssets(db, releaseId);
 
-      const res = await request(app)
+      const res = await agent
         .post(`${releaseLocation}/assets/0/move-down`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(404);
       expect(res.text).not.toContain('Something went wrong');
@@ -7094,8 +7560,9 @@ describe('release HTTP workflow', () => {
       const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
       const beforeJunction = getReleaseAssets(db, releaseId);
 
-      const res = await request(app)
+      const res = await agent
         .post(`${releaseLocation}/assets/-1/move-down`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(404);
       expect(res.text).not.toContain('Something went wrong');
@@ -7111,8 +7578,9 @@ describe('release HTTP workflow', () => {
       const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
       const beforeJunction = getReleaseAssets(db, releaseId);
 
-      const res = await request(app)
+      const res = await agent
         .post(`${releaseLocation}/assets/1abc/move-down`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(404);
       expect(res.text).not.toContain('Something went wrong');
@@ -7126,14 +7594,16 @@ describe('release HTTP workflow', () => {
     it('rejects invalid role with 422', async () => {
       const { releaseLocation, allAssets } = await setupPhase94Release();
       // Add an asset first
-      await request(app)
+      await agent
         .post(`${releaseLocation}/assets/add`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`assetId=${allAssets[0].id}`)
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
-      const res = await request(app)
+      const res = await agent
         .post(`${releaseLocation}/assets/${allAssets[0].id}/role`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('role=invalid_role')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(422);
@@ -7142,8 +7612,9 @@ describe('release HTTP workflow', () => {
 
     it('rejects unselected target in remove-selected with 422', async () => {
       const { releaseLocation, allAssets } = await setupPhase94Release();
-      const res = await request(app)
+      const res = await agent
         .post(`${releaseLocation}/assets/${allAssets[0].id}/remove-selected`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(422);
       expect(res.text).toContain('not selected');
@@ -7152,8 +7623,9 @@ describe('release HTTP workflow', () => {
     it('rejects cross-project target with 422', async () => {
       const { releaseLocation } = await setupPhase94Release();
       // Create another project with an asset
-      const projRes2 = await request(app)
+      const projRes2 = await agent
         .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Cross+Project')
         .send('status=tbd')
         .send('priority=normal')
@@ -7165,12 +7637,14 @@ describe('release HTTP workflow', () => {
       const matching2 = entries2.filter((e) => e.endsWith(`-${slug2}`));
       const projectDir2 = path.join(projectsRoot, 'tbd', matching2[0]);
       fs.writeFileSync(path.join(projectDir2, 'cross.txt'), 'cross');
-      await request(app).post(`/projects/${projectId2}/scan`).expect(302);
+      await agent.post(`/projects/${projectId2}/scan`)
+      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
       const assetRepo2 = createAssetRepository(db);
       const otherAssets = assetRepo2.findByProjectId(Number(projectId2));
 
-      const res = await request(app)
+      const res = await agent
         .post(`${releaseLocation}/assets/add`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`assetId=${otherAssets[0].id}`)
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(422);
@@ -7179,8 +7653,9 @@ describe('release HTTP workflow', () => {
 
     it('rejects missing candidate with 404', async () => {
       const { releaseLocation } = await setupPhase94Release();
-      const res = await request(app)
+      const res = await agent
         .post(`${releaseLocation}/assets/add`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('assetId=99999')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(404);
@@ -7189,15 +7664,17 @@ describe('release HTTP workflow', () => {
     it('rejects already-selected candidate with 422', async () => {
       const { releaseLocation, allAssets } = await setupPhase94Release();
       // Add the asset once
-      await request(app)
+      await agent
         .post(`${releaseLocation}/assets/add`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`assetId=${allAssets[0].id}`)
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
       // Try to add again
-      const res = await request(app)
+      const res = await agent
         .post(`${releaseLocation}/assets/add`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`assetId=${allAssets[0].id}`)
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(422);
@@ -7207,13 +7684,15 @@ describe('release HTTP workflow', () => {
     it('boundary move-up on first item is a no-op', async () => {
       const { releaseLocation, releaseId, allAssets } = await setupPhase94Release();
       // Add two assets
-      await request(app)
+      await agent
         .post(`${releaseLocation}/assets/add`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`assetId=${allAssets[0].id}`)
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
-      await request(app)
+      await agent
         .post(`${releaseLocation}/assets/add`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`assetId=${allAssets[1].id}`)
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
@@ -7221,8 +7700,9 @@ describe('release HTTP workflow', () => {
       const beforeRows = getReleaseAssets(db, releaseId);
 
       // Move first item up — should be a no-op
-      await request(app)
+      await agent
         .post(`${releaseLocation}/assets/${allAssets[0].id}/move-up`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
@@ -7233,13 +7713,15 @@ describe('release HTTP workflow', () => {
     it('boundary move-down on last item is a no-op', async () => {
       const { releaseLocation, releaseId, allAssets } = await setupPhase94Release();
       // Add two assets
-      await request(app)
+      await agent
         .post(`${releaseLocation}/assets/add`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`assetId=${allAssets[0].id}`)
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
-      await request(app)
+      await agent
         .post(`${releaseLocation}/assets/add`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`assetId=${allAssets[1].id}`)
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
@@ -7247,8 +7729,9 @@ describe('release HTTP workflow', () => {
       const beforeRows = getReleaseAssets(db, releaseId);
 
       // Move last item down — should be a no-op
-      await request(app)
+      await agent
         .post(`${releaseLocation}/assets/${allAssets[1].id}/move-down`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
@@ -7259,8 +7742,9 @@ describe('release HTTP workflow', () => {
     // ── Lifecycle HTTP matrix ─────────────────────────────────────────
 
     async function setupReleaseWithTwoAssets() {
-      const projRes = await request(app)
+      const projRes = await agent
         .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Lifecycle+Matrix+Test')
         .send('status=tbd')
         .send('priority=normal')
@@ -7274,13 +7758,15 @@ describe('release HTTP workflow', () => {
       const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
       fs.writeFileSync(path.join(projectDir, 'a.txt'), 'a');
       fs.writeFileSync(path.join(projectDir, 'b.txt'), 'b');
-      await request(app).post(`/projects/${projectId}/scan`).expect(302);
+      await agent.post(`/projects/${projectId}/scan`)
+      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
       const assetRepo = createAssetRepository(db);
       const allAssets = assetRepo.findByProjectId(Number(projectId));
 
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=Lifecycle+Matrix+Release')
         .send('status=ready')
@@ -7290,8 +7776,9 @@ describe('release HTTP workflow', () => {
       const releaseId = Number(releaseLocation.replace('/releases/', ''));
 
       // Select both assets
-      await request(app)
+      await agent
         .post(releaseLocation + '/assets')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`selectedAssetIds[]=${allAssets[0].id}`)
         .send(`selectedAssetIds[]=${allAssets[1].id}`)
         .send('roles[]=primary')
@@ -7307,8 +7794,9 @@ describe('release HTTP workflow', () => {
     describe('lifecycle matrix — published release', () => {
       async function setupPublishedRelease() {
         const ctx = await setupReleaseWithTwoAssets();
-        await request(app)
+        await agent
           .post(`${ctx.releaseLocation}/publish`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
           .send('publishedDate=2025-06-15')
           .set('Content-Type', 'application/x-www-form-urlencoded')
           .expect(302);
@@ -7320,8 +7808,9 @@ describe('release HTTP workflow', () => {
         const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
         const beforeJunction = getReleaseAssets(db, releaseId);
 
-        const res = await request(app)
+        const res = await agent
           .post(`${releaseLocation}/assets/add`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
           .send(`assetId=${allAssets[0].id}`)
           .set('Content-Type', 'application/x-www-form-urlencoded')
           .expect(422);
@@ -7338,8 +7827,9 @@ describe('release HTTP workflow', () => {
         const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
         const beforeJunction = getReleaseAssets(db, releaseId);
 
-        const res = await request(app)
+        const res = await agent
           .post(`${releaseLocation}/assets/${allAssets[0].id}/remove-selected`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
           .set('Content-Type', 'application/x-www-form-urlencoded')
           .expect(422);
 
@@ -7355,8 +7845,9 @@ describe('release HTTP workflow', () => {
         const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
         const beforeJunction = getReleaseAssets(db, releaseId);
 
-        const res = await request(app)
+        const res = await agent
           .post(`${releaseLocation}/assets/${allAssets[0].id}/role`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
           .send('role=preview')
           .set('Content-Type', 'application/x-www-form-urlencoded')
           .expect(422);
@@ -7373,8 +7864,9 @@ describe('release HTTP workflow', () => {
         const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
         const beforeJunction = getReleaseAssets(db, releaseId);
 
-        const res = await request(app)
+        const res = await agent
           .post(`${releaseLocation}/assets/${allAssets[0].id}/move-up`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
           .set('Content-Type', 'application/x-www-form-urlencoded')
           .expect(422);
 
@@ -7390,8 +7882,9 @@ describe('release HTTP workflow', () => {
         const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
         const beforeJunction = getReleaseAssets(db, releaseId);
 
-        const res = await request(app)
+        const res = await agent
           .post(`${releaseLocation}/assets/${allAssets[0].id}/move-down`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
           .set('Content-Type', 'application/x-www-form-urlencoded')
           .expect(422);
 
@@ -7406,8 +7899,9 @@ describe('release HTTP workflow', () => {
     describe('lifecycle matrix — archived release', () => {
       async function setupArchivedRelease() {
         const ctx = await setupReleaseWithTwoAssets();
-        await request(app)
+        await agent
           .post(`${ctx.releaseLocation}/archive`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
           .expect(302);
         return ctx;
       }
@@ -7417,8 +7911,9 @@ describe('release HTTP workflow', () => {
         const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
         const beforeJunction = getReleaseAssets(db, releaseId);
 
-        const res = await request(app)
+        const res = await agent
           .post(`${releaseLocation}/assets/add`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
           .send(`assetId=${allAssets[0].id}`)
           .set('Content-Type', 'application/x-www-form-urlencoded')
           .expect(422);
@@ -7435,8 +7930,9 @@ describe('release HTTP workflow', () => {
         const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
         const beforeJunction = getReleaseAssets(db, releaseId);
 
-        const res = await request(app)
+        const res = await agent
           .post(`${releaseLocation}/assets/${allAssets[0].id}/remove-selected`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
           .set('Content-Type', 'application/x-www-form-urlencoded')
           .expect(422);
 
@@ -7452,8 +7948,9 @@ describe('release HTTP workflow', () => {
         const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
         const beforeJunction = getReleaseAssets(db, releaseId);
 
-        const res = await request(app)
+        const res = await agent
           .post(`${releaseLocation}/assets/${allAssets[0].id}/role`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
           .send('role=preview')
           .set('Content-Type', 'application/x-www-form-urlencoded')
           .expect(422);
@@ -7470,8 +7967,9 @@ describe('release HTTP workflow', () => {
         const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
         const beforeJunction = getReleaseAssets(db, releaseId);
 
-        const res = await request(app)
+        const res = await agent
           .post(`${releaseLocation}/assets/${allAssets[0].id}/move-up`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
           .set('Content-Type', 'application/x-www-form-urlencoded')
           .expect(422);
 
@@ -7487,8 +7985,9 @@ describe('release HTTP workflow', () => {
         const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
         const beforeJunction = getReleaseAssets(db, releaseId);
 
-        const res = await request(app)
+        const res = await agent
           .post(`${releaseLocation}/assets/${allAssets[0].id}/move-down`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
           .set('Content-Type', 'application/x-www-form-urlencoded')
           .expect(422);
 
@@ -7503,8 +8002,9 @@ describe('release HTTP workflow', () => {
     describe('lifecycle matrix — archived parent', () => {
       async function setupArchivedParentRelease() {
         const ctx = await setupReleaseWithTwoAssets();
-        await request(app)
+        await agent
           .post(`/projects/${ctx.projectId}/archive`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
           .expect(302);
         return ctx;
       }
@@ -7514,8 +8014,9 @@ describe('release HTTP workflow', () => {
         const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
         const beforeJunction = getReleaseAssets(db, releaseId);
 
-        const res = await request(app)
+        const res = await agent
           .post(`${releaseLocation}/assets/add`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
           .send(`assetId=${allAssets[0].id}`)
           .set('Content-Type', 'application/x-www-form-urlencoded')
           .expect(422);
@@ -7532,8 +8033,9 @@ describe('release HTTP workflow', () => {
         const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
         const beforeJunction = getReleaseAssets(db, releaseId);
 
-        const res = await request(app)
+        const res = await agent
           .post(`${releaseLocation}/assets/${allAssets[0].id}/remove-selected`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
           .set('Content-Type', 'application/x-www-form-urlencoded')
           .expect(422);
 
@@ -7549,8 +8051,9 @@ describe('release HTTP workflow', () => {
         const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
         const beforeJunction = getReleaseAssets(db, releaseId);
 
-        const res = await request(app)
+        const res = await agent
           .post(`${releaseLocation}/assets/${allAssets[0].id}/role`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
           .send('role=preview')
           .set('Content-Type', 'application/x-www-form-urlencoded')
           .expect(422);
@@ -7567,8 +8070,9 @@ describe('release HTTP workflow', () => {
         const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
         const beforeJunction = getReleaseAssets(db, releaseId);
 
-        const res = await request(app)
+        const res = await agent
           .post(`${releaseLocation}/assets/${allAssets[0].id}/move-up`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
           .set('Content-Type', 'application/x-www-form-urlencoded')
           .expect(422);
 
@@ -7584,8 +8088,9 @@ describe('release HTTP workflow', () => {
         const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
         const beforeJunction = getReleaseAssets(db, releaseId);
 
-        const res = await request(app)
+        const res = await agent
           .post(`${releaseLocation}/assets/${allAssets[0].id}/move-down`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
           .set('Content-Type', 'application/x-www-form-urlencoded')
           .expect(422);
 
@@ -7601,8 +8106,9 @@ describe('release HTTP workflow', () => {
 
     describe('candidate URL tests', () => {
       async function setupReleaseWithAssets() {
-        const projRes = await request(app)
+        const projRes = await agent
           .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
           .send('title=Candidate+URL+Test')
           .send('status=tbd')
           .send('priority=normal')
@@ -7618,13 +8124,15 @@ describe('release HTTP workflow', () => {
         fs.writeFileSync(path.join(projectDir, 'beta.txt'), 'beta');
         fs.writeFileSync(path.join(projectDir, 'gamma.txt'), 'gamma');
         fs.writeFileSync(path.join(projectDir, 'delta.txt'), 'delta');
-        await request(app).post(`/projects/${projectId}/scan`).expect(302);
+        await agent.post(`/projects/${projectId}/scan`)
+      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
         const assetRepo = createAssetRepository(db);
         const allAssets = assetRepo.findByProjectId(Number(projectId));
 
-        const createRes = await request(app)
+        const createRes = await agent
           .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
           .send(`projectId=${projectId}`)
           .send('title=Candidate+URL+Release')
           .send('status=idea')
@@ -7655,7 +8163,7 @@ describe('release HTTP workflow', () => {
 
       it('Next link pathname and query on page 1', async () => {
         const { releaseLocation, releaseId } = await setupReleaseWithAssets();
-        const res = await request(app).get(`${releaseLocation}/assets?pageSize=1`).expect(200);
+        const res = await agent.get(`${releaseLocation}/assets?pageSize=1`).expect(200);
 
         const url = parseLinkByText(res.text, 'Next');
         expect(url).not.toBeNull();
@@ -7667,7 +8175,7 @@ describe('release HTTP workflow', () => {
 
       it('Previous link on page 2 omits page=1', async () => {
         const { releaseLocation, releaseId } = await setupReleaseWithAssets();
-        const res = await request(app).get(`${releaseLocation}/assets?pageSize=1&page=2`).expect(200);
+        const res = await agent.get(`${releaseLocation}/assets?pageSize=1&page=2`).expect(200);
 
         const url = parseLinkByText(res.text, 'Previous');
         expect(url).not.toBeNull();
@@ -7680,7 +8188,7 @@ describe('release HTTP workflow', () => {
 
       it('Next link on page 2 preserves page=2', async () => {
         const { releaseLocation, releaseId } = await setupReleaseWithAssets();
-        const res = await request(app).get(`${releaseLocation}/assets?pageSize=1&page=2`).expect(200);
+        const res = await agent.get(`${releaseLocation}/assets?pageSize=1&page=2`).expect(200);
 
         const url = parseLinkByText(res.text, 'Next');
         expect(url).not.toBeNull();
@@ -7692,7 +8200,7 @@ describe('release HTTP workflow', () => {
 
       it('page 1 is omitted from pagination URLs', async () => {
         const { releaseLocation, releaseId } = await setupReleaseWithAssets();
-        const res = await request(app).get(`${releaseLocation}/assets?pageSize=1`).expect(200);
+        const res = await agent.get(`${releaseLocation}/assets?pageSize=1`).expect(200);
 
         const url = parseLinkByText(res.text, 'Next');
         expect(url).not.toBeNull();
@@ -7706,7 +8214,7 @@ describe('release HTTP workflow', () => {
       it('search and extension filters are preserved in pagination URLs', async () => {
         const { releaseLocation, releaseId } = await setupReleaseWithAssets();
         // extension=txt matches 3 files (alpha, beta, gamma), pageSize=1 → 3 pages
-        const res = await request(app).get(`${releaseLocation}/assets?extension=txt&pageSize=1`).expect(200);
+        const res = await agent.get(`${releaseLocation}/assets?extension=txt&pageSize=1`).expect(200);
 
         const url = parseLinkByText(res.text, 'Next');
         expect(url).not.toBeNull();
@@ -7719,7 +8227,7 @@ describe('release HTTP workflow', () => {
 
       it('unknown parameters are stripped from generated URLs', async () => {
         const { releaseLocation, releaseId } = await setupReleaseWithAssets();
-        const res = await request(app).get(`${releaseLocation}/assets?unknown=param&junk=value&pageSize=1`).expect(200);
+        const res = await agent.get(`${releaseLocation}/assets?unknown=param&junk=value&pageSize=1`).expect(200);
 
         const url = parseLinkByText(res.text, 'Next');
         expect(url).not.toBeNull();
@@ -7736,7 +8244,7 @@ describe('release HTTP workflow', () => {
       it('page beyond final page clamps and renders canonical links', async () => {
         const { releaseLocation, releaseId } = await setupReleaseWithAssets();
         // 4 files, pageSize=1 → 4 pages. Request page=999 → clamped to page 4.
-        const res = await request(app).get(`${releaseLocation}/assets?pageSize=1&page=999`).expect(200);
+        const res = await agent.get(`${releaseLocation}/assets?pageSize=1&page=999`).expect(200);
 
         // Displayed page is the clamped page
         expect(res.text).toContain('Page 4 of 4');
@@ -7770,8 +8278,9 @@ describe('release HTTP workflow', () => {
 
   describe('Phase 9-5 exact rendered candidate rows', () => {
     async function setupVariedAssets() {
-      const projRes = await request(app)
+      const projRes = await agent
         .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Exact+Candidate+Rows')
         .send('status=tbd')
         .send('priority=normal')
@@ -7793,14 +8302,16 @@ describe('release HTTP workflow', () => {
       fs.writeFileSync(path.join(projectDir, 'beta.txt'), 'beta');
       fs.writeFileSync(path.join(projectDir, 'selected.txt'), 'selected');
       fs.writeFileSync(path.join(projectDir, 'missing.txt'), 'missing');
-      await request(app).post(`/projects/${projectId}/scan`).expect(302);
+      await agent.post(`/projects/${projectId}/scan`)
+      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
       const assetRepo = createAssetRepository(db);
       const allAssets = assetRepo.findByProjectId(Number(projectId));
       const byFilename = (name) => allAssets.find((a) => a.filename === name);
 
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=Exact+Candidate+Release')
         .send('status=idea')
@@ -7810,8 +8321,9 @@ describe('release HTTP workflow', () => {
       const releaseId = Number(releaseLocation.replace('/releases/', ''));
 
       // Select one asset
-      await request(app)
+      await agent
         .post(`${releaseLocation}/assets`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`selectedAssetIds[]=${byFilename('selected.txt').id}`)
         .send('roles[]=primary')
         .send('sortOrder[]=0')
@@ -7828,7 +8340,7 @@ describe('release HTTP workflow', () => {
 
     it('renders exact candidate asset IDs and sequence', async () => {
       const { releaseLocation, byFilename } = await setupVariedAssets();
-      const res = await request(app).get(`${releaseLocation}/assets`).expect(200);
+      const res = await agent.get(`${releaseLocation}/assets`).expect(200);
 
       const candidateSection = getCandidateSection(res.text);
 
@@ -7880,7 +8392,7 @@ describe('release HTTP workflow', () => {
       const higherId = insertAsset('DUP.txt').id;
       expect(higherId).toBeGreaterThan(lowerId);
 
-      const res = await request(app).get(`${releaseLocation}/assets`).expect(200);
+      const res = await agent.get(`${releaseLocation}/assets`).expect(200);
       const candidateSection = getCandidateSection(res.text);
 
       // Extract filenames and IDs
@@ -7919,7 +8431,7 @@ describe('release HTTP workflow', () => {
 
     it('selected asset is absent from candidates', async () => {
       const { releaseLocation, byFilename } = await setupVariedAssets();
-      const res = await request(app).get(`${releaseLocation}/assets`).expect(200);
+      const res = await agent.get(`${releaseLocation}/assets`).expect(200);
 
       const candidateSection = getCandidateSection(res.text);
       expect(candidateSection).not.toContain(byFilename('selected.txt').filename);
@@ -7927,7 +8439,7 @@ describe('release HTTP workflow', () => {
 
     it('missing unselected asset is absent from candidates', async () => {
       const { releaseLocation, byFilename } = await setupVariedAssets();
-      const res = await request(app).get(`${releaseLocation}/assets`).expect(200);
+      const res = await agent.get(`${releaseLocation}/assets`).expect(200);
 
       const candidateSection = getCandidateSection(res.text);
       expect(candidateSection).not.toContain(byFilename('missing.txt').filename);
@@ -7935,7 +8447,7 @@ describe('release HTTP workflow', () => {
 
     it('same-project present unselected assets appear in candidates', async () => {
       const { releaseLocation, byFilename } = await setupVariedAssets();
-      const res = await request(app).get(`${releaseLocation}/assets`).expect(200);
+      const res = await agent.get(`${releaseLocation}/assets`).expect(200);
 
       const candidateSection = getCandidateSection(res.text);
       expect(candidateSection).toContain(byFilename('alpha.png').filename);
@@ -7944,7 +8456,7 @@ describe('release HTTP workflow', () => {
 
     it('candidate total matches rendered count', async () => {
       const { releaseLocation } = await setupVariedAssets();
-      const res = await request(app).get(`${releaseLocation}/assets`).expect(200);
+      const res = await agent.get(`${releaseLocation}/assets`).expect(200);
 
       const candidateSection = getCandidateSection(res.text);
 
@@ -7964,8 +8476,9 @@ describe('release HTTP workflow', () => {
 
   describe('Phase 9-5 rendered count and page parity', () => {
     async function setupCountTestAssets() {
-      const projRes = await request(app)
+      const projRes = await agent
         .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Count+Parity+Test')
         .send('status=tbd')
         .send('priority=normal')
@@ -7987,13 +8500,15 @@ describe('release HTTP workflow', () => {
       for (const f of files) {
         fs.writeFileSync(path.join(projectDir, f), f);
       }
-      await request(app).post(`/projects/${projectId}/scan`).expect(302);
+      await agent.post(`/projects/${projectId}/scan`)
+      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
       const assetRepo = createAssetRepository(db);
       const allAssets = assetRepo.findByProjectId(Number(projectId));
 
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=Count+Parity+Release')
         .send('status=idea')
@@ -8008,7 +8523,7 @@ describe('release HTTP workflow', () => {
     it('no filter — rendered row count equals page size', async () => {
       const { releaseLocation } = await setupCountTestAssets();
       // pageSize=4 should show 4 rows, total=10, pageCount=3
-      const res = await request(app).get(`${releaseLocation}/assets?pageSize=4`).expect(200);
+      const res = await agent.get(`${releaseLocation}/assets?pageSize=4`).expect(200);
 
       const candidateSection = getCandidateSection(res.text);
 
@@ -8023,7 +8538,7 @@ describe('release HTTP workflow', () => {
 
     it('filename search — correct count and single page', async () => {
       const { releaseLocation } = await setupCountTestAssets();
-      const res = await request(app).get(`${releaseLocation}/assets?search=alpha`).expect(200);
+      const res = await agent.get(`${releaseLocation}/assets?search=alpha`).expect(200);
 
       const candidateSection = getCandidateSection(res.text);
       const trRe = /<tr>/g;
@@ -8036,7 +8551,7 @@ describe('release HTTP workflow', () => {
 
     it('extension filter — correct count and page count', async () => {
       const { releaseLocation } = await setupCountTestAssets();
-      const res = await request(app).get(`${releaseLocation}/assets?extension=txt&pageSize=2`).expect(200);
+      const res = await agent.get(`${releaseLocation}/assets?extension=txt&pageSize=2`).expect(200);
 
       const candidateSection = getCandidateSection(res.text);
       const trRe = /<tr>/g;
@@ -8050,7 +8565,7 @@ describe('release HTTP workflow', () => {
 
     it('combined search + extension — correct counts', async () => {
       const { releaseLocation } = await setupCountTestAssets();
-      const res = await request(app).get(`${releaseLocation}/assets?search=alpha&extension=png`).expect(200);
+      const res = await agent.get(`${releaseLocation}/assets?search=alpha&extension=png`).expect(200);
 
       const candidateSection = getCandidateSection(res.text);
       const trRe = /<tr>/g;
@@ -8063,7 +8578,7 @@ describe('release HTTP workflow', () => {
 
     it('page beyond final page falls back to last page', async () => {
       const { releaseLocation, releaseId } = await setupCountTestAssets();
-      const res = await request(app).get(`${releaseLocation}/assets?pageSize=4&page=999`).expect(200);
+      const res = await agent.get(`${releaseLocation}/assets?pageSize=4&page=999`).expect(200);
 
       expect(res.text).toContain('Page 3 of 3');
 
@@ -8090,8 +8605,9 @@ describe('release HTTP workflow', () => {
   describe('Phase 9-5 malformed cross-project HTTP fixture', () => {
     it('malformed junction row does not hide valid candidates', async () => {
       // Create project A with assets
-      const projARes = await request(app)
+      const projARes = await agent
         .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Malformed+A')
         .send('status=tbd')
         .send('priority=normal')
@@ -8104,11 +8620,13 @@ describe('release HTTP workflow', () => {
       const projectDirA = path.join(projectsRoot, 'tbd', matchingA[0]);
       fs.writeFileSync(path.join(projectDirA, 'alpha.png'), 'alpha');
       fs.writeFileSync(path.join(projectDirA, 'beta.png'), 'beta');
-      await request(app).post(`/projects/${projectAId}/scan`).expect(302);
+      await agent.post(`/projects/${projectAId}/scan`)
+      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
       // Create project B with an asset
-      const projBRes = await request(app)
+      const projBRes = await agent
         .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Malformed+B')
         .send('status=tbd')
         .send('priority=normal')
@@ -8120,15 +8638,17 @@ describe('release HTTP workflow', () => {
       const matchingB = entriesB.filter((e) => e.endsWith(`-${slugB}`));
       const projectDirB = path.join(projectsRoot, 'tbd', matchingB[0]);
       fs.writeFileSync(path.join(projectDirB, 'cross.txt'), 'cross');
-      await request(app).post(`/projects/${projectBId}/scan`).expect(302);
+      await agent.post(`/projects/${projectBId}/scan`)
+      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
       const assetRepo = createAssetRepository(db);
       const assetsA = assetRepo.findByProjectId(Number(projectAId));
       const assetsB = assetRepo.findByProjectId(Number(projectBId));
 
       // Create release in project A
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectAId}`)
         .send('title=Malformed+Release')
         .send('status=idea')
@@ -8138,8 +8658,9 @@ describe('release HTTP workflow', () => {
       const releaseId = Number(releaseLocation.replace('/releases/', ''));
 
       // Select one valid asset from project A
-      await request(app)
+      await agent
         .post(`${releaseLocation}/assets`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`selectedAssetIds[]=${assetsA[0].id}`)
         .send('roles[]=primary')
         .send('sortOrder[]=0')
@@ -8152,7 +8673,7 @@ describe('release HTTP workflow', () => {
       ).run(releaseId, assetsB[0].id, 'attachment', 99);
 
       // Fetch candidate page
-      const res = await request(app).get(`${releaseLocation}/assets`).expect(200);
+      const res = await agent.get(`${releaseLocation}/assets`).expect(200);
 
       const candidateSection = getCandidateSection(res.text);
 
@@ -8162,8 +8683,9 @@ describe('release HTTP workflow', () => {
 
     it('selected and available sections remain consistent with ownership', async () => {
       // Create a clean project and release
-      const projRes = await request(app)
+      const projRes = await agent
         .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Consistency+Check')
         .send('status=tbd')
         .send('priority=normal')
@@ -8176,13 +8698,15 @@ describe('release HTTP workflow', () => {
       const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
       fs.writeFileSync(path.join(projectDir, 'valid1.txt'), 'v1');
       fs.writeFileSync(path.join(projectDir, 'valid2.txt'), 'v2');
-      await request(app).post(`/projects/${projectId}/scan`).expect(302);
+      await agent.post(`/projects/${projectId}/scan`)
+      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
       const assetRepo = createAssetRepository(db);
       const assets = assetRepo.findByProjectId(Number(projectId));
 
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=Consistency+Release')
         .send('status=idea')
@@ -8192,15 +8716,16 @@ describe('release HTTP workflow', () => {
       const releaseId = Number(releaseLocation.replace('/releases/', ''));
 
       // Select valid2.txt
-      await request(app)
+      await agent
         .post(`${releaseLocation}/assets`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`selectedAssetIds[]=${assets[1].id}`)
         .send('roles[]=preview')
         .send('sortOrder[]=0')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
-      const res = await request(app).get(`${releaseLocation}/assets`).expect(200);
+      const res = await agent.get(`${releaseLocation}/assets`).expect(200);
 
       // Selected section should show the selected asset
       const selectedSection = res.text.split('<h2>Selected Assets</h2>')[1];
@@ -8220,8 +8745,9 @@ describe('release HTTP workflow', () => {
 
   describe('Phase 9-5 read-only control visibility', () => {
     async function setupReadOnlyRelease(status, archiveAction = null) {
-      const projRes = await request(app)
+      const projRes = await agent
         .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Read+Only+Test')
         .send('status=tbd')
         .send('priority=normal')
@@ -8234,13 +8760,15 @@ describe('release HTTP workflow', () => {
       const matching = entries.filter((e) => e.endsWith(`-${slug}`));
       const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
       fs.writeFileSync(path.join(projectDir, 'asset.png'), 'png');
-      await request(app).post(`/projects/${projectId}/scan`).expect(302);
+      await agent.post(`/projects/${projectId}/scan`)
+      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
       const assetRepo = createAssetRepository(db);
       const assets = assetRepo.findByProjectId(Number(projectId));
 
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=Read+Only+Release')
         .send(`status=${status === 'published' ? 'ready' : status === 'cancelled' ? 'idea' : 'idea'}`)
@@ -8250,8 +8778,9 @@ describe('release HTTP workflow', () => {
       const releaseId = Number(releaseLocation.replace('/releases/', ''));
 
       // Select the asset
-      await request(app)
+      await agent
         .post(`${releaseLocation}/assets`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`selectedAssetIds[]=${assets[0].id}`)
         .send('roles[]=primary')
         .send('sortOrder[]=0')
@@ -8259,18 +8788,21 @@ describe('release HTTP workflow', () => {
         .expect(302);
 
       if (status === 'published') {
-        await request(app)
+        await agent
           .post(`${releaseLocation}/publish`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
           .send('publishedDate=2025-06-15')
           .set('Content-Type', 'application/x-www-form-urlencoded')
           .expect(302);
       } else if (status === 'archived-release') {
-        await request(app)
+        await agent
           .post(`${releaseLocation}/archive`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
           .expect(302);
       } else if (status === 'archived-parent') {
-        await request(app)
+        await agent
           .post(`/projects/${projectId}/archive`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
           .expect(302);
       }
 
@@ -8278,7 +8810,7 @@ describe('release HTTP workflow', () => {
     }
 
     async function assertNoMutationControls(releaseLocation) {
-      const res = await request(app).get(`${releaseLocation}/assets`).expect(200);
+      const res = await agent.get(`${releaseLocation}/assets`).expect(200);
 
       // No Add forms
       const addForms = res.text.match(/action="[^"]*\/assets\/add"/g);
@@ -8342,8 +8874,9 @@ describe('release HTTP workflow', () => {
 
   describe('release detail archive action deduplication', () => {
     async function createEligibleRelease() {
-      const projRes = await request(app)
+      const projRes = await agent
         .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Dedup+Archive+Project')
         .send('status=tbd')
         .send('priority=normal')
@@ -8351,8 +8884,9 @@ describe('release HTTP workflow', () => {
         .expect(302);
       const projectId = projRes.headers.location.replace('/projects/', '');
 
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=Dedup+Archive+Release')
         .send('status=idea')
@@ -8363,7 +8897,7 @@ describe('release HTTP workflow', () => {
 
     it('renders exactly one archive form for an eligible release', async () => {
       const { releaseLocation } = await createEligibleRelease();
-      const res = await request(app).get(releaseLocation).expect(200);
+      const res = await agent.get(releaseLocation).expect(200);
 
       const archiveForms = res.text.match(/action="\/releases\/\d+\/archive"/g);
       expect(archiveForms).toHaveLength(1);
@@ -8371,7 +8905,7 @@ describe('release HTTP workflow', () => {
 
     it('remaining archive action is inside the destructive section', async () => {
       const { releaseLocation } = await createEligibleRelease();
-      const res = await request(app).get(releaseLocation).expect(200);
+      const res = await agent.get(releaseLocation).expect(200);
 
       expect(res.text).toContain('destructive-section');
       expect(res.text).toContain('Danger zone');
@@ -8380,7 +8914,7 @@ describe('release HTTP workflow', () => {
 
     it('heading-level area does not contain a second archive form', async () => {
       const { releaseLocation } = await createEligibleRelease();
-      const res = await request(app).get(releaseLocation).expect(200);
+      const res = await agent.get(releaseLocation).expect(200);
 
       // The page-heading header must only have the Edit link, not an Archive form.
       const headingMatch = res.text.match(/<header class="page-heading">[\s\S]*?<\/header>/);
@@ -8390,20 +8924,22 @@ describe('release HTTP workflow', () => {
     });
 
     it('published release has no archive form', async () => {
-      const { releaseLocation } = await setupPublishableRelease(app, projectsRoot, db);
+      const { releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
       // Publish the release
-      await request(app)
+      await agent
         .post(`${releaseLocation}/publish`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
-      const res = await request(app).get(releaseLocation).expect(200);
+      const res = await agent.get(releaseLocation).expect(200);
       const archiveForms = res.text.match(/action="\/releases\/\d+\/archive"/g);
       expect(archiveForms).toBeNull();
     });
 
     it('cancelled release has no archive form', async () => {
-      const projRes = await request(app)
+      const projRes = await agent
         .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Cancel+Archive+Project')
         .send('status=tbd')
         .send('priority=normal')
@@ -8411,33 +8947,36 @@ describe('release HTTP workflow', () => {
         .expect(302);
       const projectId = projRes.headers.location.replace('/projects/', '');
 
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=Cancel+Archive+Release')
         .send('status=cancelled')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
-      const res = await request(app).get(createRes.headers.location).expect(200);
+      const res = await agent.get(createRes.headers.location).expect(200);
       const archiveForms = res.text.match(/action="\/releases\/\d+\/archive"/g);
       expect(archiveForms).toBeNull();
     });
 
     it('already archived release has no archive form', async () => {
       const { releaseLocation } = await createEligibleRelease();
-      await request(app).post(`${releaseLocation}/archive`).expect(302);
+      await agent.post(`${releaseLocation}/archive`)
+      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
-      const res = await request(app).get(releaseLocation).expect(200);
+      const res = await agent.get(releaseLocation).expect(200);
       const archiveForms = res.text.match(/action="\/releases\/\d+\/archive"/g);
       expect(archiveForms).toBeNull();
     });
 
     it('project-archived release has no archive form', async () => {
       const { projectId, releaseLocation } = await createEligibleRelease();
-      await request(app).post(`/projects/${projectId}/archive`).expect(302);
+      await agent.post(`/projects/${projectId}/archive`)
+      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
-      const res = await request(app).get(releaseLocation).expect(200);
+      const res = await agent.get(releaseLocation).expect(200);
       const archiveForms = res.text.match(/action="\/releases\/\d+\/archive"/g);
       expect(archiveForms).toBeNull();
     });
@@ -8445,19 +8984,19 @@ describe('release HTTP workflow', () => {
 
   describe('calendar switcher self-link', () => {
     it('calendar switcher anchor has a valid href with normalized month', async () => {
-      const res = await request(app).get('/releases/calendar').expect(200);
+      const res = await agent.get('/releases/calendar').expect(200);
       // The calendar route normalizes to the current month, so the canonical
       // self-link always carries the month parameter.
       expect(res.text).toMatch(/<a class="view-switcher-option" href="\/releases\/calendar\?month=\d{4}-\d{2}"[^>]*aria-current="page"[^>]*>Calendar<\/a>/);
     });
 
     it('calendar switcher preserves explicit month in href', async () => {
-      const res = await request(app).get('/releases/calendar?month=2026-07').expect(200);
+      const res = await agent.get('/releases/calendar?month=2026-07').expect(200);
       expect(res.text).toMatch(/<a class="view-switcher-option" href="\/releases\/calendar\?month=2026-07"[^>]*aria-current="page"[^>]*>Calendar<\/a>/);
     });
 
     it('all three switcher items are real anchors with valid hrefs', async () => {
-      const res = await request(app).get('/releases/calendar?month=2026-07').expect(200);
+      const res = await agent.get('/releases/calendar?month=2026-07').expect(200);
       // List
       expect(res.text).toMatch(/<a class="view-switcher-option" href="\/releases"[^>]*>List<\/a>/);
       // Board
@@ -8469,7 +9008,7 @@ describe('release HTTP workflow', () => {
     });
 
     it('exactly one switcher item is current within the view-switcher nav', async () => {
-      const res = await request(app).get('/releases/calendar?month=2026-07').expect(200);
+      const res = await agent.get('/releases/calendar?month=2026-07').expect(200);
       // Extract the view-switcher nav to scope the count (the sidebar nav also
       // carries aria-current="page" for the Releases section).
       const switcherMatch = res.text.match(/<nav class="view-switcher"[^>]*>([\s\S]*?)<\/nav>/);
@@ -8481,8 +9020,9 @@ describe('release HTTP workflow', () => {
 
   describe('release list empty-state detection', () => {
     async function createReleaseWithTitle(title, status = 'idea') {
-      const projRes = await request(app)
+      const projRes = await agent
         .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`title=${encodeURIComponent(title + ' Project')}`)
         .send('status=tbd')
         .send('priority=normal')
@@ -8490,8 +9030,9 @@ describe('release HTTP workflow', () => {
         .expect(302);
       const projectId = projRes.headers.location.replace('/projects/', '');
 
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send(`title=${encodeURIComponent(title)}`)
         .send(`status=${status}`)
@@ -8527,7 +9068,7 @@ describe('release HTTP workflow', () => {
     }
 
     it('zero releases with no filters shows "No releases yet" and New Release action', async () => {
-      const res = await request(app).get('/releases').expect(200);
+      const res = await agent.get('/releases').expect(200);
       const emptyBlock = extractEmptyState(res.text);
       expect(emptyBlock).not.toBeNull();
       expect(emptyBlock).toContain('No releases yet');
@@ -8536,7 +9077,7 @@ describe('release HTTP workflow', () => {
     });
 
     it('zero releases with only sort/order params shows "No releases yet" (not filtered)', async () => {
-      const res = await request(app).get('/releases?sort=created&order=asc').expect(200);
+      const res = await agent.get('/releases?sort=created&order=asc').expect(200);
       const emptyBlock = extractEmptyState(res.text);
       expect(emptyBlock).not.toBeNull();
       expect(emptyBlock).toContain('No releases yet');
@@ -8548,7 +9089,7 @@ describe('release HTTP workflow', () => {
     it('releases exist but status filter returns none shows "No releases match" and Reset Filters', async () => {
       await createReleaseWithTitle('Visible Release', 'idea');
 
-      const res = await request(app).get('/releases?status=published').expect(200);
+      const res = await agent.get('/releases?status=published').expect(200);
       const emptyBlock = extractEmptyState(res.text);
       expect(emptyBlock).not.toBeNull();
       expect(emptyBlock).toContain('No releases match');
@@ -8561,7 +9102,7 @@ describe('release HTTP workflow', () => {
       await createReleaseWithTitle('Existing Release', 'idea');
 
       // Project ID 999 does not exist
-      const res = await request(app).get('/releases?project=999').expect(200);
+      const res = await agent.get('/releases?project=999').expect(200);
       const emptyBlock = extractEmptyState(res.text);
       expect(emptyBlock).not.toBeNull();
       expect(emptyBlock).toContain('No releases match');
@@ -8572,7 +9113,7 @@ describe('release HTTP workflow', () => {
     it('Reset Filters URL has the exact canonical path and no query keys', async () => {
       await createReleaseWithTitle('Reset URL Release', 'idea');
 
-      const res = await request(app).get('/releases?status=published').expect(200);
+      const res = await agent.get('/releases?status=published').expect(200);
       const emptyBlock = extractEmptyState(res.text);
       expect(emptyBlock).not.toBeNull();
       // The reset link must be exactly /releases with no query string
@@ -8584,7 +9125,7 @@ describe('release HTTP workflow', () => {
     it('New Release does not appear in the filtered-empty state', async () => {
       await createReleaseWithTitle('Filter Test Release', 'idea');
 
-      const res = await request(app).get('/releases?status=published').expect(200);
+      const res = await agent.get('/releases?status=published').expect(200);
       const emptyBlock = extractEmptyState(res.text);
       expect(emptyBlock).not.toBeNull();
       expect(emptyBlock).not.toContain('href="/releases/new"');
@@ -8594,7 +9135,7 @@ describe('release HTTP workflow', () => {
     it('releases exist and are visible shows the table, not an empty state', async () => {
       await createReleaseWithTitle('Shown Release', 'idea');
 
-      const res = await request(app).get('/releases').expect(200);
+      const res = await agent.get('/releases').expect(200);
       expect(res.text).toContain('table-scroll');
       expect(res.text).toContain('Shown Release');
       // No empty-state block in the rendered content

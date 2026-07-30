@@ -8,6 +8,8 @@
  */
 import request from 'supertest';
 import { hashPassword } from '../../src/auth/password-hash.js';
+import { ensureAuthEnablement } from '../../src/auth/auth-state.js';
+import { deriveDisabledModeCsrfToken } from '../../src/middleware/csrf.js';
 
 const TEST_PASSWORD = 'CorrectHorseBatteryStaple';
 const TEST_USERNAME = 'admin';
@@ -105,6 +107,38 @@ export async function submitAuthenticatedForm(agent, csrfToken, method, path, fi
   return agent[method](path)
     .type('form')
     .send({ ...fields, _csrf: csrfToken });
+}
+
+/**
+ * Phase 13 — disabled-mode CSRF (no authConfig / no session at all). Any
+ * response sets the anonymous `cc_csrf_anon` cookie (see
+ * middleware/csrf.js's createDisabledModeCsrfMiddleware); the expected token
+ * is computed independently from that cookie value and the same
+ * `csrfPepper` the app was built with — this does NOT depend on any page
+ * happening to render a form field, unlike the authenticated-session helpers
+ * above.
+ *
+ * Requires the app to have been created with
+ * `{ appDataRoot, authState: { csrfPepper } }` in its opts (same
+ * `appDataRoot` passed here), matching how server.js wires it in production.
+ *
+ * Usage:
+ *   const { agent, csrfToken } = await getDisabledModeCsrf(app, appDataRoot);
+ *   await agent.post('/projects').type('form').send({ ..., _csrf: csrfToken });
+ */
+export async function getDisabledModeCsrf(app, appDataRoot, path = '/health') {
+  const agent = request.agent(app);
+  const res = await agent.get(path);
+  const setCookie = res.headers['set-cookie'] || [];
+  const cookieHeader = setCookie.find((c) => c.startsWith('cc_csrf_anon='));
+  if (!cookieHeader) {
+    throw new Error(`No cc_csrf_anon cookie was set by GET ${path}. Did createApp get authState.csrfPepper?`);
+  }
+  const rawSecret = cookieHeader.split(';')[0].split('=')[1];
+  const cookieSecret = decodeURIComponent(rawSecret);
+  const { csrfPepper } = ensureAuthEnablement(appDataRoot);
+  const csrfToken = deriveDisabledModeCsrfToken(csrfPepper, cookieSecret);
+  return { agent, csrfToken };
 }
 
 /**

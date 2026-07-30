@@ -13,6 +13,8 @@ import {
 } from '../src/storage/project-storage.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
 import { buildAssetRevisionToken } from '../src/services/preview-service.js';
+import { ensureAuthEnablement } from '../src/auth/auth-state.js';
+import { getDisabledModeCsrf } from './helpers/auth.js';
 import slugify from '@sindresorhus/slugify';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
@@ -26,13 +28,16 @@ describe('asset browser HTTP workflow', () => {
   let projectsRoot;
   let previewRoot;
   let assetRepo;
+  let agent;
+  let csrfToken;
 
   function createProject(title, status = 'tbd') {
-    return request(app)
+    return agent
       .post('/projects')
       .send(`title=${encodeURIComponent(title)}`)
       .send(`status=${status}`)
       .send('priority=normal')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .set('Content-Type', 'application/x-www-form-urlencoded');
   }
 
@@ -107,18 +112,20 @@ describe('asset browser HTTP workflow', () => {
   }
 
   async function createReleaseUsingAsset(projectId, assetId, title = 'Viewer Release', status = 'planned') {
-    const releaseRes = await request(app)
+    const releaseRes = await agent
       .post('/releases')
       .send(`projectId=${projectId}`)
       .send(`title=${encodeURIComponent(title)}`)
       .send(`status=${status}`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
     const releaseId = releaseRes.headers.location.replace('/releases/', '');
-    await request(app)
+    await agent
       .post(`/releases/${releaseId}/assets`)
       .send(`selectedAssetIds=${assetId}`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
     return releaseId;
@@ -167,7 +174,7 @@ describe('asset browser HTTP workflow', () => {
     return SERVED_CSS;
   }
 
-  beforeEach(() => {
+  beforeEach(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-asset-browser-'));
     projectsRoot = path.join(tmpDir, 'projects');
     fs.mkdirSync(projectsRoot, { recursive: true });
@@ -180,7 +187,11 @@ describe('asset browser HTTP workflow', () => {
     db = openDatabase(dbPath);
     runMigrations(db, MIGRATIONS_DIR);
     assetRepo = createAssetRepository(db);
-    app = createApp({ appName: 'CreatorCrate', db, projectsRoot, previewRoot });
+    const appDataRoot = path.join(tmpDir, 'app');
+    fs.mkdirSync(appDataRoot, { recursive: true });
+    const { csrfPepper } = ensureAuthEnablement(appDataRoot);
+    app = createApp({ appName: 'CreatorCrate', db, projectsRoot, previewRoot }, { appDataRoot, authState: { csrfPepper } });
+    ({ agent, csrfToken } = await getDisabledModeCsrf(app, appDataRoot));
   });
 
   afterEach(() => {
@@ -193,7 +204,7 @@ describe('asset browser HTTP workflow', () => {
   it('renders asset browser with project title', async () => {
     const res = await createProject('Browser Title Test');
     const id = res.headers.location.replace('/projects/', '');
-    const res2 = await request(app).get(`/projects/${id}/assets`).expect(200);
+    const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
     expect(res2.text).toContain('Assets — Browser Title Test');
     expect(res2.text).toContain('Scan Now');
     expect(res2.text).toContain('Back to Project');
@@ -202,7 +213,7 @@ describe('asset browser HTTP workflow', () => {
   it('shows scan-freshness wording explaining data is not live', async () => {
     const res = await createProject('Freshness Wording');
     const id = res.headers.location.replace('/projects/', '');
-    const res2 = await request(app).get(`/projects/${id}/assets`).expect(200);
+    const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
     expect(res2.text).toContain('Asset state reflects the last completed scan');
     expect(res2.text).toContain('files are not checked live');
     expect(res2.text).toContain('Failed or incomplete scans do not update this information');
@@ -217,9 +228,9 @@ describe('asset browser HTTP workflow', () => {
     fs.writeFileSync(path.join(projectDir, 'a.png'), 'png');
     fs.writeFileSync(path.join(projectDir, 'b.jpg'), 'jpg');
     fs.writeFileSync(path.join(projectDir, 'c.txt'), 'txt');
-    await request(app).post(`/projects/${id}/scan`).expect(302);
+    await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
-    const res2 = await request(app).get(`/projects/${id}/assets`).expect(200);
+    const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
     expect(res2.text).toContain('3 assets found');
   });
 
@@ -231,14 +242,14 @@ describe('asset browser HTTP workflow', () => {
     const projectDir = getProjectDir('Presence Default');
 
     fs.writeFileSync(path.join(projectDir, 'present.png'), 'png');
-    await request(app).post(`/projects/${id}/scan`).expect(302);
+    await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
     // Remove the file to create a missing asset
     fs.rmSync(path.join(projectDir, 'present.png'));
 
-    await request(app).post(`/projects/${id}/scan`).expect(302);
+    await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
-    const res2 = await request(app).get(`/projects/${id}/assets`).expect(200);
+    const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
     // Both present and missing assets are shown in "all" view
     expect(res2.text).toContain('present.png');
     expect(res2.text).toContain('Missing at last scan');
@@ -251,13 +262,13 @@ describe('asset browser HTTP workflow', () => {
 
     fs.writeFileSync(path.join(projectDir, 'file1.png'), 'png');
     fs.writeFileSync(path.join(projectDir, 'file2.png'), 'png');
-    await request(app).post(`/projects/${id}/scan`).expect(302);
+    await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
     // Remove one file to make it missing
     fs.rmSync(path.join(projectDir, 'file1.png'));
-    await request(app).post(`/projects/${id}/scan`).expect(302);
+    await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets?presence=present`)
       .expect(200);
     expect(res2.text).toContain('file2.png');
@@ -273,12 +284,12 @@ describe('asset browser HTTP workflow', () => {
 
     fs.writeFileSync(path.join(projectDir, 'kept.png'), 'png');
     fs.writeFileSync(path.join(projectDir, 'deleted.png'), 'png');
-    await request(app).post(`/projects/${id}/scan`).expect(302);
+    await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
     fs.rmSync(path.join(projectDir, 'deleted.png'));
-    await request(app).post(`/projects/${id}/scan`).expect(302);
+    await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets?presence=missing`)
       .expect(200);
     expect(res2.text).toContain('deleted.png');
@@ -292,9 +303,9 @@ describe('asset browser HTTP workflow', () => {
     const projectDir = getProjectDir('Invalid Presence');
 
     fs.writeFileSync(path.join(projectDir, 'asset.png'), 'png');
-    await request(app).post(`/projects/${id}/scan`).expect(302);
+    await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets?presence=junk`)
       .expect(200);
     expect(res2.text).toContain('asset.png');
@@ -309,30 +320,32 @@ describe('asset browser HTTP workflow', () => {
 
     fs.writeFileSync(path.join(projectDir, 'used.png'), 'png');
     fs.writeFileSync(path.join(projectDir, 'unused.png'), 'png');
-    await request(app).post(`/projects/${id}/scan`).expect(302);
+    await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
     // Create a release and link an asset
     const assets = assetRepo.findByProjectId(id);
     const usedAsset = assets.find((a) => a.filename === 'used.png');
     const unusedAsset = assets.find((a) => a.filename === 'unused.png');
 
-    const releaseRes = await request(app)
+    const releaseRes = await agent
       .post('/releases')
       .send(`projectId=${id}`)
       .send('title=Used+Asset+Release')
       .send('status=idea')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
     const releaseId = releaseRes.headers.location.replace('/releases/', '');
 
-    await request(app)
+    await agent
       .post(`/releases/${releaseId}/assets`)
       .send(`selectedAssetIds=${usedAsset.id}`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets?usage=used`)
       .expect(200);
     expect(res2.text).toContain('used.png');
@@ -347,28 +360,30 @@ describe('asset browser HTTP workflow', () => {
 
     fs.writeFileSync(path.join(projectDir, 'used.png'), 'png');
     fs.writeFileSync(path.join(projectDir, 'unused.png'), 'png');
-    await request(app).post(`/projects/${id}/scan`).expect(302);
+    await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
     const assets = assetRepo.findByProjectId(id);
     const usedAsset = assets.find((a) => a.filename === 'used.png');
 
-    const releaseRes = await request(app)
+    const releaseRes = await agent
       .post('/releases')
       .send(`projectId=${id}`)
       .send('title=Link+Release')
       .send('status=idea')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
     const releaseId = releaseRes.headers.location.replace('/releases/', '');
 
-    await request(app)
+    await agent
       .post(`/releases/${releaseId}/assets`)
       .send(`selectedAssetIds=${usedAsset.id}`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets?usage=unused`)
       .expect(200);
     expect(res2.text).toContain('unused.png');
@@ -382,9 +397,9 @@ describe('asset browser HTTP workflow', () => {
     const projectDir = getProjectDir('Invalid Usage');
 
     fs.writeFileSync(path.join(projectDir, 'asset.png'), 'png');
-    await request(app).post(`/projects/${id}/scan`).expect(302);
+    await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets?usage=badrubbish`)
       .expect(200);
     expect(res2.text).toContain('asset.png');
@@ -401,33 +416,35 @@ describe('asset browser HTTP workflow', () => {
     fs.writeFileSync(path.join(projectDir, 'present-unused.png'), 'png');
     fs.writeFileSync(path.join(projectDir, 'missing-used.png'), 'png');
     fs.writeFileSync(path.join(projectDir, 'missing-unused.png'), 'png');
-    await request(app).post(`/projects/${id}/scan`).expect(302);
+    await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
     // Link one present asset to a release
     let assets = assetRepo.findByProjectId(id);
     const presentUsed = assets.find((a) => a.filename === 'present-used.png');
 
-    const releaseRes = await request(app)
+    const releaseRes = await agent
       .post('/releases')
       .send(`projectId=${id}`)
       .send('title=Combine+Release')
       .send('status=idea')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
     const releaseId = releaseRes.headers.location.replace('/releases/', '');
 
-    await request(app)
+    await agent
       .post(`/releases/${releaseId}/assets`)
       .send(`selectedAssetIds=${presentUsed.id}`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
     // Remove missing-used from disk so it becomes missing
     fs.rmSync(path.join(projectDir, 'missing-used.png'));
-    await request(app).post(`/projects/${id}/scan`).expect(302);
+    await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
     // Query: present + used
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets?presence=present&usage=used`)
       .expect(200);
     expect(res2.text).toContain('present-used.png');
@@ -444,30 +461,32 @@ describe('asset browser HTTP workflow', () => {
     const projectDir = getProjectDir('Usage Count');
 
     fs.writeFileSync(path.join(projectDir, 'asset.png'), 'png');
-    await request(app).post(`/projects/${id}/scan`).expect(302);
+    await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
     const assets = assetRepo.findByProjectId(id);
     const asset = assets[0];
 
     // Create two releases and link the same asset to both
     for (const title of ['First Release', 'Second Release']) {
-      const relRes = await request(app)
+      const relRes = await agent
         .post('/releases')
         .send(`projectId=${id}`)
         .send(`title=${encodeURIComponent(title)}`)
         .send('status=idea')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
       const releaseId = relRes.headers.location.replace('/releases/', '');
 
-      await request(app)
+      await agent
         .post(`/releases/${releaseId}/assets`)
         .send(`selectedAssetIds=${asset.id}`)
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
     }
 
-    const res2 = await request(app).get(`/projects/${id}/assets`).expect(200);
+    const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
     expect(res2.text).toContain('Used by 2 releases');
   });
 
@@ -477,27 +496,29 @@ describe('asset browser HTTP workflow', () => {
     const projectDir = getProjectDir('Release Titles');
 
     fs.writeFileSync(path.join(projectDir, 'shared.png'), 'png');
-    await request(app).post(`/projects/${id}/scan`).expect(302);
+    await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
     const assets = assetRepo.findByProjectId(id);
     const asset = assets[0];
 
-    const relRes = await request(app)
+    const relRes = await agent
       .post('/releases')
       .send(`projectId=${id}`)
       .send('title=Status+Check+Release')
       .send('status=planned')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
     const releaseId = relRes.headers.location.replace('/releases/', '');
 
-    await request(app)
+    await agent
       .post(`/releases/${releaseId}/assets`)
       .send(`selectedAssetIds=${asset.id}`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
-    const res2 = await request(app).get(`/projects/${id}/assets`).expect(200);
+    const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
     expect(res2.text).toContain('Status Check Release');
     expect(res2.text).toContain('planned');
     // Check the release detail link exists (not the asset-selection page)
@@ -513,9 +534,9 @@ describe('asset browser HTTP workflow', () => {
     const projectDir = getProjectDir('Present Wording');
 
     fs.writeFileSync(path.join(projectDir, 'still-here.png'), 'png');
-    await request(app).post(`/projects/${id}/scan`).expect(302);
+    await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
-    const res2 = await request(app).get(`/projects/${id}/assets`).expect(200);
+    const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
     expect(res2.text).toContain('Present at last scan');
   });
 
@@ -525,12 +546,12 @@ describe('asset browser HTTP workflow', () => {
     const projectDir = getProjectDir('Missing Wording');
 
     fs.writeFileSync(path.join(projectDir, 'gone.png'), 'png');
-    await request(app).post(`/projects/${id}/scan`).expect(302);
+    await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
     fs.rmSync(path.join(projectDir, 'gone.png'));
-    await request(app).post(`/projects/${id}/scan`).expect(302);
+    await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets?presence=missing`)
       .expect(200);
     expect(res2.text).toContain('Missing at last scan');
@@ -544,13 +565,13 @@ describe('asset browser HTTP workflow', () => {
     // Create two files: one present, one that will become missing
     fs.writeFileSync(path.join(projectDir, 'present-file.txt'), 'present');
     fs.writeFileSync(path.join(projectDir, 'missing-file.txt'), 'missing');
-    await request(app).post(`/projects/${id}/scan`).expect(302);
+    await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
     // Remove missing-file to make it missing
     fs.rmSync(path.join(projectDir, 'missing-file.txt'));
-    await request(app).post(`/projects/${id}/scan`).expect(302);
+    await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
-    const res2 = await request(app).get(`/projects/${id}/assets`).expect(200);
+    const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
 
     // Locate the present-file row and assert its presence element.
     // Match a single <tr>…</tr> that contains the filename without crossing row boundaries.
@@ -580,10 +601,10 @@ describe('asset browser HTTP workflow', () => {
     for (let i = 0; i < 35; i++) {
       fs.writeFileSync(path.join(projectDir, `file${String(i).padStart(2, '0')}.png`), `content${i}`);
     }
-    await request(app).post(`/projects/${id}/scan`).expect(302);
+    await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
     // Request page 1 with presence filter
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets?presence=present&page=1`)
       .expect(200);
 
@@ -607,10 +628,10 @@ describe('asset browser HTTP workflow', () => {
     for (let i = 0; i < 12; i++) {
       fs.writeFileSync(path.join(projectDir, `File & ${String(i).padStart(2, '0')}.png`), `content${i}`);
     }
-    await request(app).post(`/projects/${id}/scan`).expect(302);
+    await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
     const encodedSearch = encodeURIComponent('File &');
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets?view=grid&search=${encodedSearch}&extension=.PNG&presence=present&usage=unused&page=1&pageSize=10&unknown=strip-me`)
       .expect(200);
 
@@ -642,9 +663,9 @@ describe('asset browser HTTP workflow', () => {
     for (let i = 0; i < 12; i++) {
       fs.writeFileSync(path.join(projectDir, `file${String(i).padStart(2, '0')}.png`), `content${i}`);
     }
-    await request(app).post(`/projects/${id}/scan`).expect(302);
+    await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets?view=table&pageSize=10&junk=1`)
       .expect(200);
 
@@ -663,9 +684,9 @@ describe('asset browser HTTP workflow', () => {
     for (let i = 0; i < 5; i++) {
       fs.writeFileSync(path.join(projectDir, `file${i}.png`), 'png');
     }
-    await request(app).post(`/projects/${id}/scan`).expect(302);
+    await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets?page=garbage`)
       .expect(200);
     // page falls back to 1; with 5 assets at 25/page pageCount=1 so no nav renders.
@@ -682,9 +703,9 @@ describe('asset browser HTTP workflow', () => {
     for (let i = 0; i < 5; i++) {
       fs.writeFileSync(path.join(projectDir, `file${i}.png`), 'png');
     }
-    await request(app).post(`/projects/${id}/scan`).expect(302);
+    await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets?page=-5`)
       .expect(200);
     // With 5 assets at 25/page, pageCount=1 so no pagination nav renders.
@@ -702,10 +723,10 @@ describe('asset browser HTTP workflow', () => {
     for (let i = 0; i < 5; i++) {
       fs.writeFileSync(path.join(projectDir, `file${i}.png`), 'png');
     }
-    await request(app).post(`/projects/${id}/scan`).expect(302);
+    await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
     // Page 99 is out of range for 5 assets at 25/page; page is clamped to 1.
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets?page=99`)
       .expect(200);
     expect(res2.text).toContain('5 assets found');
@@ -721,9 +742,9 @@ describe('asset browser HTTP workflow', () => {
     for (let i = 0; i < 5; i++) {
       fs.writeFileSync(path.join(projectDir, `file${i}.png`), 'png');
     }
-    await request(app).post(`/projects/${id}/scan`).expect(302);
+    await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets?pageSize=junk`)
       .expect(200);
     // pageSize clamps to default 25; 5 assets render without pagination nav.
@@ -740,9 +761,9 @@ describe('asset browser HTTP workflow', () => {
     for (let i = 0; i < 5; i++) {
       fs.writeFileSync(path.join(projectDir, `file${i}.png`), 'png');
     }
-    await request(app).post(`/projects/${id}/scan`).expect(302);
+    await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets?pageSize=500`)
       .expect(200);
     // pageSize clamps to 100; 5 assets render without error.
@@ -758,9 +779,9 @@ describe('asset browser HTTP workflow', () => {
     const projectDir = getProjectDir('Empty Filtered');
 
     fs.writeFileSync(path.join(projectDir, 'present.png'), 'png');
-    await request(app).post(`/projects/${id}/scan`).expect(302);
+    await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets?presence=missing`)
       .expect(200);
     expect(res2.text).toContain('No assets match the current filters');
@@ -771,7 +792,7 @@ describe('asset browser HTTP workflow', () => {
     const res = await createProject('No Assets Project');
     const id = res.headers.location.replace('/projects/', '');
 
-    const res2 = await request(app).get(`/projects/${id}/assets`).expect(200);
+    const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
     expect(res2.text).toContain('No assets found');
     expect(res2.text).toContain('Scan Now');
   });
@@ -779,15 +800,15 @@ describe('asset browser HTTP workflow', () => {
   // ─── 404 handling ───────────────────────────────────────────────
 
   it('returns 404 for missing project', async () => {
-    await request(app).get('/projects/99999/assets').expect(404);
+    await agent.get('/projects/99999/assets').expect(404);
   });
 
   it('returns 404 for invalid project id', async () => {
-    await request(app).get('/projects/abc/assets').expect(404);
+    await agent.get('/projects/abc/assets').expect(404);
   });
 
   it('404 response does not contain stack traces', async () => {
-    const res = await request(app).get('/projects/99999/assets').expect(404);
+    const res = await agent.get('/projects/99999/assets').expect(404);
     expect(res.text).not.toContain('at ');
     expect(res.text).not.toContain('Error:');
   });
@@ -800,13 +821,13 @@ describe('asset browser HTTP workflow', () => {
     const projectDir = getProjectDir('Archivable Project');
 
     fs.writeFileSync(path.join(projectDir, 'archivable.png'), 'png');
-    await request(app).post(`/projects/${id}/scan`).expect(302);
+    await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
     // Archive the project
-    await request(app).post(`/projects/${id}/archive`).expect(302);
+    await agent.post(`/projects/${id}/archive`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
     // Assets page should still render
-    const res2 = await request(app).get(`/projects/${id}/assets`).expect(200);
+    const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
     expect(res2.text).toContain('archivable.png');
     expect(res2.text).toContain('Assets — Archivable Project');
   });
@@ -820,8 +841,9 @@ describe('asset browser HTTP workflow', () => {
 
     fs.writeFileSync(path.join(projectDir, 'newfile.png'), 'png');
 
-    const scanRes = await request(app)
+    const scanRes = await agent
       .post(`/projects/${id}/scan`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .expect(302);
 
     expect(scanRes.headers.location).toContain(`/projects/${id}/assets`);
@@ -832,8 +854,9 @@ describe('asset browser HTTP workflow', () => {
     const id = res.headers.location.replace('/projects/', '');
 
     // Scan via the redirect-following approach
-    const scanRes = await request(app)
+    const scanRes = await agent
       .post(`/projects/${id}/scan`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .redirects(1)
       .expect(200);
 
@@ -848,9 +871,9 @@ describe('asset browser HTTP workflow', () => {
     const projectDir = getProjectDir('No Path Leak');
 
     fs.writeFileSync(path.join(projectDir, 'secret.png'), 'png');
-    await request(app).post(`/projects/${id}/scan`).expect(302);
+    await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
-    const res2 = await request(app).get(`/projects/${id}/assets`).expect(200);
+    const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
     expect(res2.text).not.toMatch(/[A-Z]:\\/);
     expect(res2.text).not.toMatch(/\/home\//);
     expect(res2.text).not.toMatch(/\/Users\//);
@@ -864,10 +887,10 @@ describe('asset browser HTTP workflow', () => {
     const projectDir = getProjectDir('Spoof Scan Result');
 
     fs.writeFileSync(path.join(projectDir, 'legit.png'), 'png');
-    await request(app).post(`/projects/${id}/scan`).expect(302);
+    await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
     // Six-digit value exceeds the \d{1,5} allowlist — must not be rendered.
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets?scan_result=added=123456`)
       .expect(200);
 
@@ -879,7 +902,7 @@ describe('asset browser HTTP workflow', () => {
     const res = await createProject('Spoof Scan Error');
     const id = res.headers.location.replace('/projects/', '');
 
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets?scan_error=1`)
       .expect(200);
 
@@ -897,9 +920,9 @@ describe('asset browser HTTP workflow', () => {
     // Create a nested file
     fs.mkdirSync(path.join(projectDir, 'subdir'), { recursive: true });
     fs.writeFileSync(path.join(projectDir, 'subdir', 'nested.png'), 'png');
-    await request(app).post(`/projects/${id}/scan`).expect(302);
+    await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
-    const res2 = await request(app).get(`/projects/${id}/assets`).expect(200);
+    const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
     expect(res2.text).toContain('nested.png');
     expect(res2.text).toContain('subdir');
     expect(res2.text).toContain('nested.png'); // filename column
@@ -915,9 +938,9 @@ describe('asset browser HTTP workflow', () => {
 
     fs.writeFileSync(path.join(projectDir, 'image.png'), 'png');
     fs.writeFileSync(path.join(projectDir, 'doc.txt'), 'txt');
-    await request(app).post(`/projects/${id}/scan`).expect(302);
+    await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
-    const res2 = await request(app).get(`/projects/${id}/assets`).expect(200);
+    const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
     expect(res2.text).toContain('<code>png</code>');
     expect(res2.text).toContain('<code>txt</code>');
   });
@@ -930,9 +953,9 @@ describe('asset browser HTTP workflow', () => {
     fs.writeFileSync(path.join(projectDir, 'Hero-Final.png'), 'png');
     fs.writeFileSync(path.join(projectDir, 'hero-source.kra'), 'kra');
     fs.writeFileSync(path.join(projectDir, 'other.png'), 'png');
-    await request(app).post(`/projects/${id}/scan`).expect(302);
+    await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets?search=hero&extension=.PNG`)
       .expect(200);
 
@@ -951,9 +974,9 @@ describe('asset browser HTTP workflow', () => {
     fs.writeFileSync(path.join(projectDir, 'image.png'), 'png');
     fs.writeFileSync(path.join(projectDir, 'source.kra'), 'kra');
     fs.writeFileSync(path.join(projectDir, 'photo.jpg'), 'jpg');
-    await request(app).post(`/projects/${id}/scan`).expect(302);
+    await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets?search=no-match&presence=missing&usage=used`)
       .expect(200);
 
@@ -969,7 +992,7 @@ describe('asset browser HTTP workflow', () => {
     const res = await createProject('Filter State');
     const id = res.headers.location.replace('/projects/', '');
 
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets?presence=missing`)
       .expect(200);
 
@@ -981,7 +1004,7 @@ describe('asset browser HTTP workflow', () => {
     const res = await createProject('Usage Filter State');
     const id = res.headers.location.replace('/projects/', '');
 
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets?usage=unused`)
       .expect(200);
 
@@ -993,7 +1016,7 @@ describe('asset browser HTTP workflow', () => {
     const res = await createProject('Reset Link');
     const id = res.headers.location.replace('/projects/', '');
 
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets?presence=missing&usage=used`)
       .expect(200);
 
@@ -1012,10 +1035,10 @@ describe('asset browser HTTP workflow', () => {
     for (let i = 0; i < 35; i++) {
       fs.writeFileSync(path.join(projectDir, `file${String(i).padStart(2, '0')}.png`), `c${i}`);
     }
-    await request(app).post(`/projects/${id}/scan`).expect(302);
+    await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
     // Use pageSize=10 and presence=present to make pagination visible
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets?presence=present&pageSize=10`)
       .expect(200);
 
@@ -1048,9 +1071,9 @@ describe('asset browser HTTP workflow', () => {
     for (let i = 0; i < 35; i++) {
       fs.writeFileSync(path.join(projectDir, `Filtered & ${String(i).padStart(2, '0')}.png`), `c${i}`);
     }
-    await request(app).post(`/projects/${id}/scan`).expect(302);
+    await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
-    const initial = await request(app)
+    const initial = await agent
       .get(`/projects/${id}/assets?view=grid&search=${encodeURIComponent('Filtered &')}&extension=.PNG&presence=present&usage=unused&page=2&pageSize=10&junk=drop`)
       .expect(200);
 
@@ -1075,7 +1098,7 @@ describe('asset browser HTTP workflow', () => {
     expect(form).not.toContain('junk');
 
     const submittedHref = `/projects/${id}/assets?view=grid&search=Filtered+%26&extension=png&presence=present&usage=unused&pageSize=25`;
-    const submitted = await request(app).get(submittedHref).expect(200);
+    const submitted = await agent.get(submittedHref).expect(200);
     expect(submitted.text).toContain('value="25" selected');
     expect(submitted.text).toContain('35 assets found');
 
@@ -1098,9 +1121,9 @@ describe('asset browser HTTP workflow', () => {
     const projectDir = getProjectDir('Last Seen');
 
     fs.writeFileSync(path.join(projectDir, 'stable.png'), 'png');
-    await request(app).post(`/projects/${id}/scan`).expect(302);
+    await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
-    const res2 = await request(app).get(`/projects/${id}/assets`).expect(200);
+    const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
     // last_seen_at should be a date/datetime string
     expect(res2.text).toMatch(/\d{4}-\d{2}-\d{2}/);
   });
@@ -1111,12 +1134,12 @@ describe('asset browser HTTP workflow', () => {
     const projectDir = getProjectDir('Missing Since');
 
     fs.writeFileSync(path.join(projectDir, 'was-there.png'), 'png');
-    await request(app).post(`/projects/${id}/scan`).expect(302);
+    await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
     fs.rmSync(path.join(projectDir, 'was-there.png'));
-    await request(app).post(`/projects/${id}/scan`).expect(302);
+    await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets?presence=missing`)
       .expect(200);
     expect(res2.text).toMatch(/\d{4}-\d{2}-\d{2}/);
@@ -1137,7 +1160,7 @@ describe('asset browser HTTP workflow', () => {
     const releaseId = await createReleaseUsingAsset(id, asset.id, 'Hero Release', 'planned');
     const revision = buildAssetRevisionToken(asset);
 
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets/${asset.id}`)
       .expect(200);
 
@@ -1164,7 +1187,7 @@ describe('asset browser HTTP workflow', () => {
   it('renders exact previous, next, and back URLs across pages', async () => {
     const { id, assets } = await setupOrderedImageAssets('Viewer Cross Page');
 
-    const res = await request(app)
+    const res = await agent
       .get(`/projects/${id}/assets/${assets.bravo.id}?pageSize=1`)
       .expect(200);
 
@@ -1184,7 +1207,7 @@ describe('asset browser HTTP workflow', () => {
   it('renders canonical navigation for a direct deep link without page', async () => {
     const { id, assets } = await setupOrderedImageAssets('Viewer Direct Link');
 
-    const res = await request(app)
+    const res = await agent
       .get(`/projects/${id}/assets/${assets.bravo.id}`)
       .expect(200);
 
@@ -1202,13 +1225,13 @@ describe('asset browser HTTP workflow', () => {
   it('omits previous on the first asset and next on the last asset', async () => {
     const { id, assets } = await setupOrderedImageAssets('Viewer Edge Links');
 
-    const first = await request(app)
+    const first = await agent
       .get(`/projects/${id}/assets/${assets.alpha.id}?pageSize=1`)
       .expect(200);
     expectNoAnchor(first.text, 'asset-viewer-prev');
     expectAnchorHref(first.text, 'asset-viewer-next', `/projects/${id}/assets/${assets.bravo.id}?page=2&pageSize=1`);
 
-    const last = await request(app)
+    const last = await agent
       .get(`/projects/${id}/assets/${assets.charlie.id}?pageSize=1`)
       .expect(200);
     expectNoAnchor(last.text, 'asset-viewer-next');
@@ -1225,7 +1248,7 @@ describe('asset browser HTTP workflow', () => {
     const heroTwo = writeIndexedAsset(id, projectDir, 'Hero & Two.png', png);
     writeIndexedAsset(id, projectDir, 'Other.jpg', png, { extension: 'jpg', mimeType: 'image/jpeg' });
 
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets/${heroTwo.id}?view=grid&search=${encodeURIComponent('Hero &')}&extension=.PNG&presence=present&usage=unused&page=99&pageSize=1&junk=1`)
       .expect(200);
 
@@ -1248,7 +1271,7 @@ describe('asset browser HTTP workflow', () => {
     writeIndexedAsset(id, projectDir, 'Hero & One.png', png);
     const other = writeIndexedAsset(id, projectDir, 'Other.jpg', png, { extension: 'jpg', mimeType: 'image/jpeg' });
 
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets/${other.id}?search=${encodeURIComponent('Hero &')}&page=3&pageSize=1`)
       .expect(200);
 
@@ -1268,7 +1291,7 @@ describe('asset browser HTTP workflow', () => {
     const asset = writeIndexedAsset(id, projectDir, 'gone.png', await makePng());
     assetRepo.markMissingByProjectIdAndPathNotIn(id, []);
 
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets/${asset.id}`)
       .expect(200);
 
@@ -1289,7 +1312,7 @@ describe('asset browser HTTP workflow', () => {
       mimeType: 'application/x-krita',
     });
 
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets/${asset.id}`)
       .expect(200);
 
@@ -1309,7 +1332,7 @@ describe('asset browser HTTP workflow', () => {
       mimeType: 'image/jpeg',
     });
 
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets/${asset.id}`)
       .expect(200);
 
@@ -1326,9 +1349,9 @@ describe('asset browser HTTP workflow', () => {
     if (!projectDir) throw new Error('projectDir not found for Viewer Archived');
     const asset = writeIndexedAsset(id, projectDir, 'archived.png', await makePng());
 
-    await request(app).post(`/projects/${id}/archive`).expect(302);
+    await agent.post(`/projects/${id}/archive`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets/${asset.id}`)
       .expect(200);
     expect(res2.text).toContain('Project: Viewer Archived');
@@ -1338,19 +1361,19 @@ describe('asset browser HTTP workflow', () => {
   it('rejects malformed viewer project and asset IDs', async () => {
     const { id, assets } = await setupOrderedImageAssets('Viewer Malformed IDs');
 
-    await request(app).get(`/projects/abc/assets/${assets.alpha.id}`).expect(404);
-    await request(app).get(`/projects/0/assets/${assets.alpha.id}`).expect(404);
-    await request(app).get(`/projects/${id}/assets/abc`).expect(404);
-    await request(app).get(`/projects/${id}/assets/0`).expect(404);
-    await request(app).get(`/projects/${id}/assets/1.5`).expect(404);
+    await agent.get(`/projects/abc/assets/${assets.alpha.id}`).expect(404);
+    await agent.get(`/projects/0/assets/${assets.alpha.id}`).expect(404);
+    await agent.get(`/projects/${id}/assets/abc`).expect(404);
+    await agent.get(`/projects/${id}/assets/0`).expect(404);
+    await agent.get(`/projects/${id}/assets/1.5`).expect(404);
   });
 
   it('returns 404 for unknown and cross-project viewer assets', async () => {
     const owner = await setupOrderedImageAssets('Viewer Owner');
     const other = await setupOrderedImageAssets('Viewer Other');
 
-    await request(app).get(`/projects/${owner.id}/assets/999999`).expect(404);
-    await request(app).get(`/projects/${other.id}/assets/${owner.assets.alpha.id}`).expect(404);
+    await agent.get(`/projects/${owner.id}/assets/999999`).expect(404);
+    await agent.get(`/projects/${other.id}/assets/${owner.assets.alpha.id}`).expect(404);
   });
 
   it('does not render absolute paths or original bytes in viewer HTML', async () => {
@@ -1364,7 +1387,7 @@ describe('asset browser HTTP workflow', () => {
       mimeType: 'application/octet-stream',
     });
 
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets/${asset.id}`)
       .expect(200);
 
@@ -1410,29 +1433,29 @@ describe('asset browser HTTP workflow', () => {
     const png = await makePng(96, 64);
     const asset = writeIndexedAsset(id, projectDir, 'media.png', png);
 
-    const thumbnail = await request(app)
+    const thumbnail = await agent
       .get(`/projects/${id}/assets/${asset.id}/thumbnail`)
       .expect(200);
     expect(thumbnail.headers['content-type']).toBe('image/webp');
 
-    const preview = await request(app)
+    const preview = await agent
       .get(`/projects/${id}/assets/${asset.id}/preview`)
       .expect(200);
     expect(preview.headers['content-type']).toBe('image/webp');
 
-    const original = await request(app)
+    const original = await agent
       .get(`/projects/${id}/assets/${asset.id}/original`)
       .expect(200);
     expect(original.headers['content-type']).toBe('image/png');
     expect(original.body.equals(png)).toBe(true);
 
-    const viewer = await request(app)
+    const viewer = await agent
       .get(`/projects/${id}/assets/${asset.id}`)
       .expect(200);
     expect(viewer.headers['content-type']).toMatch(/html/);
     expect(viewer.text).toContain('<h1>media.png</h1>');
 
-    const browser = await request(app)
+    const browser = await agent
       .get(`/projects/${id}/assets`)
       .expect(200);
     expect(browser.headers['content-type']).toMatch(/html/);
@@ -1442,7 +1465,7 @@ describe('asset browser HTTP workflow', () => {
   it('meets the server-rendered accessibility baseline for the viewer', async () => {
     const { id, assets } = await setupOrderedImageAssets('Viewer Accessibility');
 
-    const res = await request(app)
+    const res = await agent
       .get(`/projects/${id}/assets/${assets.bravo.id}?pageSize=1`)
       .expect(200);
 
@@ -1482,7 +1505,7 @@ describe('asset browser HTTP workflow', () => {
     });
     await createReleaseUsingAsset(id, asset.id, 'Long Viewer Release');
 
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets/${asset.id}`)
       .expect(200);
 
@@ -1508,9 +1531,9 @@ describe('asset browser HTTP workflow', () => {
     const id = res.headers.location.replace('/projects/', '');
     const projectDir = getProjectDir('Grid Default List');
     fs.writeFileSync(path.join(projectDir, 'alpha.png'), 'png');
-    await request(app).post(`/projects/${id}/scan`).expect(302);
+    await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
-    const res2 = await request(app).get(`/projects/${id}/assets`).expect(200);
+    const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
     expect(res2.text).toContain('data-table');
     expect(res2.text).not.toContain('asset-table');
     expect(res2.text).toContain('data-table');
@@ -1523,7 +1546,7 @@ describe('asset browser HTTP workflow', () => {
     const projectDir = getProjectDir('Grid Renders');
     const asset = writeIndexedAsset(id, projectDir, 'alpha.png', await makePng());
 
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets?view=grid`)
       .expect(200);
     expect(res2.text).toContain('<ul class="asset-grid">');
@@ -1540,7 +1563,7 @@ describe('asset browser HTTP workflow', () => {
     writeIndexedAsset(id, projectDir, 'two.png', png);
     writeIndexedAsset(id, projectDir, 'three.png', png);
 
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets?view=grid`)
       .expect(200);
     const cardCount = (res2.text.match(/<article class="asset-card"/g) || []).length;
@@ -1553,7 +1576,7 @@ describe('asset browser HTTP workflow', () => {
     const projectDir = getProjectDir('Grid Viewer Link');
     const asset = writeIndexedAsset(id, projectDir, 'hero.png', await makePng());
 
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets?view=grid`)
       .expect(200);
     expectAnchorHref(res2.text, 'asset-card-link', `/projects/${id}/assets/${asset.id}`);
@@ -1566,7 +1589,7 @@ describe('asset browser HTTP workflow', () => {
     const asset = writeIndexedAsset(id, projectDir, 'shot.png', await makePng());
     const revision = buildAssetRevisionToken(asset);
 
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets?view=grid`)
       .expect(200);
     expect(res2.text).toContain(
@@ -1580,7 +1603,7 @@ describe('asset browser HTTP workflow', () => {
     const projectDir = getProjectDir('Grid Lazy Attrs');
     writeIndexedAsset(id, projectDir, 'pic.png', await makePng());
 
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets?view=grid`)
       .expect(200);
     expect(res2.text).toContain('loading="lazy"');
@@ -1598,7 +1621,7 @@ describe('asset browser HTTP workflow', () => {
       mimeType: 'application/x-krita',
     });
 
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets?view=grid`)
       .expect(200);
     const card = extractCard(res2.text, asset.id);
@@ -1616,7 +1639,7 @@ describe('asset browser HTTP workflow', () => {
     const asset = writeIndexedAsset(id, projectDir, 'gone.png', await makePng());
     assetRepo.markMissingByProjectIdAndPathNotIn(id, []);
 
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets?view=grid`)
       .expect(200);
     const card = extractCard(res2.text, asset.id);
@@ -1635,7 +1658,7 @@ describe('asset browser HTTP workflow', () => {
       modifiedAt: 'invalid',
     });
 
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets?view=grid`)
       .expect(200);
     const card = extractCard(res2.text, asset.id);
@@ -1652,7 +1675,7 @@ describe('asset browser HTTP workflow', () => {
     const projectDir = getProjectDir('Grid Present Badge');
     const asset = writeIndexedAsset(id, projectDir, 'present.png', await makePng());
 
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets?view=grid`)
       .expect(200);
     const card = extractCard(res2.text, asset.id);
@@ -1669,7 +1692,7 @@ describe('asset browser HTTP workflow', () => {
       mimeType: 'application/x-krita',
     });
 
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets?view=grid`)
       .expect(200);
     expect(res2.text).not.toContain('/thumbnail');
@@ -1681,9 +1704,9 @@ describe('asset browser HTTP workflow', () => {
     const id = res.headers.location.replace('/projects/', '');
     const projectDir = getProjectDir('Grid Switch LG');
     fs.writeFileSync(path.join(projectDir, 'pic.png'), 'png');
-    await request(app).post(`/projects/${id}/scan`).expect(302);
+    await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets?presence=present&pageSize=10`)
       .expect(200);
     const gridHref = anchorHref(res2.text, 'view-switcher-grid');
@@ -1699,9 +1722,9 @@ describe('asset browser HTTP workflow', () => {
     const id = res.headers.location.replace('/projects/', '');
     const projectDir = getProjectDir('Grid Switch GL');
     fs.writeFileSync(path.join(projectDir, 'pic.png'), 'png');
-    await request(app).post(`/projects/${id}/scan`).expect(302);
+    await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets?view=grid&presence=present&pageSize=10`)
       .expect(200);
     const listHref = anchorHref(res2.text, 'view-switcher-list');
@@ -1718,9 +1741,9 @@ describe('asset browser HTTP workflow', () => {
     const projectDir = getProjectDir('Grid Filter Preserve');
     fs.writeFileSync(path.join(projectDir, 'hero-one.png'), 'png');
     fs.writeFileSync(path.join(projectDir, 'hero-two.png'), 'png');
-    await request(app).post(`/projects/${id}/scan`).expect(302);
+    await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets?search=hero&extension=.png&presence=present&usage=unused`)
       .expect(200);
     const gridHref = anchorHref(res2.text, 'view-switcher-grid');
@@ -1738,9 +1761,9 @@ describe('asset browser HTTP workflow', () => {
     const id = res.headers.location.replace('/projects/', '');
     const projectDir = getProjectDir('Grid PageSize Preserve');
     fs.writeFileSync(path.join(projectDir, 'pic.png'), 'png');
-    await request(app).post(`/projects/${id}/scan`).expect(302);
+    await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets?pageSize=50`)
       .expect(200);
     const gridHref = anchorHref(res2.text, 'view-switcher-grid');
@@ -1756,9 +1779,9 @@ describe('asset browser HTTP workflow', () => {
     for (let i = 0; i < 12; i++) {
       fs.writeFileSync(path.join(projectDir, `file${String(i).padStart(2, '0')}.png`), `c${i}`);
     }
-    await request(app).post(`/projects/${id}/scan`).expect(302);
+    await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets?view=grid&pageSize=10`)
       .expect(200);
     const nextMatch = res2.text.match(/<a href="([^"]+)" class="pagination-next">Next/);
@@ -1775,15 +1798,15 @@ describe('asset browser HTTP workflow', () => {
     const id = res.headers.location.replace('/projects/', '');
     const projectDir = getProjectDir('Grid Aria Current');
     fs.writeFileSync(path.join(projectDir, 'pic.png'), 'png');
-    await request(app).post(`/projects/${id}/scan`).expect(302);
+    await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
-    const gridRes = await request(app)
+    const gridRes = await agent
       .get(`/projects/${id}/assets?view=grid`)
       .expect(200);
     expect(gridRes.text).toContain('aria-current="page">Grid');
     expect(gridRes.text).not.toContain('aria-current="page">List');
 
-    const listRes = await request(app)
+    const listRes = await agent
       .get(`/projects/${id}/assets`)
       .expect(200);
     expect(listRes.text).toContain('aria-current="page">List');
@@ -1795,9 +1818,9 @@ describe('asset browser HTTP workflow', () => {
     const id = res.headers.location.replace('/projects/', '');
     const projectDir = getProjectDir('Grid Reset Filters');
     fs.writeFileSync(path.join(projectDir, 'pic.png'), 'png');
-    await request(app).post(`/projects/${id}/scan`).expect(302);
+    await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets?view=grid&presence=missing`)
       .expect(200);
     expect(res2.text).toContain('No assets match the current filters');
@@ -1810,9 +1833,9 @@ describe('asset browser HTTP workflow', () => {
     const id = res.headers.location.replace('/projects/', '');
     const projectDir = getProjectDir('Grid Reset Button');
     fs.writeFileSync(path.join(projectDir, 'pic.png'), 'png');
-    await request(app).post(`/projects/${id}/scan`).expect(302);
+    await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets?view=grid&presence=present`)
       .expect(200);
     expect(res2.text).toContain(`href="/projects/${id}/assets?view=grid"`);
@@ -1823,9 +1846,9 @@ describe('asset browser HTTP workflow', () => {
     const id = Number(res.headers.location.replace('/projects/', ''));
     const projectDir = getProjectDir('Grid Archived');
     writeIndexedAsset(id, projectDir, 'archived.png', await makePng());
-    await request(app).post(`/projects/${id}/archive`).expect(302);
+    await agent.post(`/projects/${id}/archive`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets?view=grid`)
       .expect(200);
     expect(res2.text).toContain('<ul class="asset-grid">');
@@ -1839,7 +1862,7 @@ describe('asset browser HTTP workflow', () => {
     const projectDir = getProjectDir('Grid No Paths');
     writeIndexedAsset(id, projectDir, 'secret.png', await makePng());
 
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets?view=grid`)
       .expect(200);
     expect(res2.text).not.toMatch(/[A-Z]:\\/);
@@ -1859,7 +1882,7 @@ describe('asset browser HTTP workflow', () => {
       mimeType: 'application/octet-stream',
     });
 
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets?view=grid`)
       .expect(200);
     expect(res2.text).toContain('data.bin');
@@ -1873,7 +1896,7 @@ describe('asset browser HTTP workflow', () => {
     writeIndexedAsset(id, projectDir, 'one.png', await makePng());
     writeIndexedAsset(id, projectDir, 'two.png', await makePng());
 
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets?view=grid`)
       .expect(200);
     const itemCount = (res2.text.match(/<li class="asset-grid-item">/g) || []).length;
@@ -1893,7 +1916,7 @@ describe('asset browser HTTP workflow', () => {
     const asset = writeIndexedAsset(id, projectDir, 'used.png', await makePng());
     await createReleaseUsingAsset(id, asset.id, 'Grid Release', 'planned');
 
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets?view=grid`)
       .expect(200);
     const card = extractCard(res2.text, asset.id);
@@ -1909,7 +1932,7 @@ describe('asset browser HTTP workflow', () => {
       sizeBytes: 1536,
     });
 
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets?view=grid`)
       .expect(200);
     const card = extractCard(res2.text, asset.id);
@@ -1925,7 +1948,7 @@ describe('asset browser HTTP workflow', () => {
     const first = writeIndexedAsset(id, projectDir, 'preview.png', await makePng());
     const second = writeIndexedAsset(id, projectDir, 'art & final.png', await makePng());
 
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets?view=grid`)
       .expect(200);
     expect(extractCard(res2.text, first.id)).toContain('alt="Preview of preview.png"');
@@ -1948,7 +1971,7 @@ describe('asset browser HTTP workflow', () => {
       modifiedAt: '2026-07-28 10:00:00',
     });
 
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets?view=grid`)
       .expect(200);
     expect(extractCard(res2.text, asset.id)).toContain(`alt="Preview of Asset ${asset.id}"`);
@@ -1960,14 +1983,14 @@ describe('asset browser HTTP workflow', () => {
     const res = await createProject('PhaseC Script');
     const id = res.headers.location.replace('/projects/', '');
 
-    const res2 = await request(app).get(`/projects/${id}/assets`).expect(200);
+    const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
     const scriptCount = (res2.text.match(/<script type="module" src="\/creatorcrate\.js"><\/script>/g) || []).length;
 
     expect(scriptCount).toBe(1);
   });
 
   it('serves the dependency-free static client module', async () => {
-    const res = await request(app).get('/creatorcrate.js').expect(200);
+    const res = await agent.get('/creatorcrate.js').expect(200);
 
     expect(res.headers['content-type']).toMatch(/javascript/);
     expect(res.text).toContain('enhancePreviewMedia');
@@ -1979,7 +2002,7 @@ describe('asset browser HTTP workflow', () => {
     const projectDir = getProjectDir('PhaseC Grid Hooks');
     const asset = writeIndexedAsset(id, projectDir, 'hooked.png', await makePng());
 
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets?view=grid`)
       .expect(200);
     const card = extractCard(res2.text, asset.id);
@@ -2001,7 +2024,7 @@ describe('asset browser HTTP workflow', () => {
       mimeType: 'application/x-krita',
     });
 
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets?view=grid`)
       .expect(200);
     const card = extractCard(res2.text, asset.id);
@@ -2019,7 +2042,7 @@ describe('asset browser HTTP workflow', () => {
     const projectDir = getProjectDir('PhaseC Viewer Hooks');
     const asset = writeIndexedAsset(id, projectDir, 'viewer.png', await makePng());
 
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets/${asset.id}`)
       .expect(200);
 
@@ -2035,7 +2058,7 @@ describe('asset browser HTTP workflow', () => {
     const projectDir = getProjectDir('PhaseC Viewer No JavaScript');
     const asset = writeIndexedAsset(id, projectDir, 'viewer-fallback.png', await makePng());
 
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets/${asset.id}`)
       .expect(200);
 
@@ -2050,7 +2073,7 @@ describe('asset browser HTTP workflow', () => {
   it('renders reduced-motion coverage for preview image transitions', async () => {
     const res = await createProject('PhaseC Reduced Motion');
     const id = res.headers.location.replace('/projects/', '');
-    const res2 = await request(app).get(`/projects/${id}/assets`).expect(200);
+    const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
 
     expect(renderedStyle(res2.text)).toMatch(
       /@media \(prefers-reduced-motion: reduce\) \{[\s\S]*\.asset-card-thumb[\s\S]*\.asset-preview-image[\s\S]*transition: none !important;/
@@ -2062,7 +2085,7 @@ describe('asset browser HTTP workflow', () => {
   it('renders design tokens for surfaces, borders, focus, spacing, radius, shadow, and transition', async () => {
     const res = await createProject('PhaseB Tokens');
     const id = res.headers.location.replace('/projects/', '');
-    const res2 = await request(app).get(`/projects/${id}/assets`).expect(200);
+    const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
     const style = renderedStyle(res2.text);
     expect(style).toContain('--surface-card');
     expect(style).toContain('--border:');
@@ -2077,14 +2100,14 @@ describe('asset browser HTTP workflow', () => {
   it('renders responsive grid CSS with auto-fill minmax', async () => {
     const res = await createProject('PhaseB Grid CSS');
     const id = res.headers.location.replace('/projects/', '');
-    const res2 = await request(app).get(`/projects/${id}/assets`).expect(200);
+    const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
     expect(renderedStyle(res2.text)).toContain('grid-template-columns: repeat(auto-fill, minmax(');
   });
 
   it('renders aspect-ratio rule on the thumbnail frame', async () => {
     const res = await createProject('PhaseB Aspect');
     const id = res.headers.location.replace('/projects/', '');
-    const res2 = await request(app).get(`/projects/${id}/assets`).expect(200);
+    const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
     expect(renderedStyle(res2.text)).toMatch(/\.asset-card-media\s*\{[^}]*aspect-ratio/);
   });
 
@@ -2093,7 +2116,7 @@ describe('asset browser HTTP workflow', () => {
     const id = Number(res.headers.location.replace('/projects/', ''));
     const projectDir = getProjectDir('PhaseB Thumb Fit');
     writeIndexedAsset(id, projectDir, 'pic.png', await makePng());
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets?view=grid`)
       .expect(200);
     expect(renderedStyle(res2.text)).toMatch(/\.asset-card-thumb\s*\{[^}]*object-fit:\s*contain/);
@@ -2104,7 +2127,7 @@ describe('asset browser HTTP workflow', () => {
     const id = Number(res.headers.location.replace('/projects/', ''));
     const projectDir = getProjectDir('PhaseB Viewer Fit');
     const asset = writeIndexedAsset(id, projectDir, 'hero.png', await makePng());
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets/${asset.id}`)
       .expect(200);
     expect(renderedStyle(res2.text)).toMatch(/\.asset-preview-image\s*\{[^}]*object-fit:\s*contain/);
@@ -2113,7 +2136,7 @@ describe('asset browser HTTP workflow', () => {
   it('makes the native hidden attribute authoritative over preview display rules', async () => {
     const res = await createProject('PhaseB Hidden CSS');
     const id = res.headers.location.replace('/projects/', '');
-    const res2 = await request(app).get(`/projects/${id}/assets`).expect(200);
+    const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
     const style = renderedStyle(res2.text);
     const hiddenRule = '[hidden] { display: none !important; }';
 
@@ -2125,7 +2148,7 @@ describe('asset browser HTTP workflow', () => {
   it('renders placeholder color classes for missing and unsupported assets', async () => {
     const res = await createProject('PhaseB Placeholder CSS');
     const id = res.headers.location.replace('/projects/', '');
-    const res2 = await request(app).get(`/projects/${id}/assets`).expect(200);
+    const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
     const style = renderedStyle(res2.text);
     expect(style).toContain('.asset-card-placeholder-missing');
     expect(style).toContain('.asset-card-placeholder-no-preview');
@@ -2134,21 +2157,21 @@ describe('asset browser HTTP workflow', () => {
   it('renders active view CSS using aria-current attribute selector', async () => {
     const res = await createProject('PhaseB Active CSS');
     const id = res.headers.location.replace('/projects/', '');
-    const res2 = await request(app).get(`/projects/${id}/assets`).expect(200);
+    const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
     expect(renderedStyle(res2.text)).toContain('[aria-current="page"]');
   });
 
   it('renders prefers-reduced-motion media query', async () => {
     const res = await createProject('PhaseB Reduced Motion');
     const id = res.headers.location.replace('/projects/', '');
-    const res2 = await request(app).get(`/projects/${id}/assets`).expect(200);
+    const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
     expect(renderedStyle(res2.text)).toContain('@media (prefers-reduced-motion: reduce)');
   });
 
   it('renders focus-visible and focus-within CSS for asset cards', async () => {
     const res = await createProject('PhaseB Focus CSS');
     const id = res.headers.location.replace('/projects/', '');
-    const res2 = await request(app).get(`/projects/${id}/assets`).expect(200);
+    const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
     const style = renderedStyle(res2.text);
     expect(style).toMatch(/\.asset-card-link:focus-visible/);
     expect(style).toMatch(/\.asset-card:focus-within/);
@@ -2157,7 +2180,7 @@ describe('asset browser HTTP workflow', () => {
   it('renders wider content CSS for asset browser and viewer pages', async () => {
     const res = await createProject('PhaseB Wide CSS');
     const id = res.headers.location.replace('/projects/', '');
-    const res2 = await request(app).get(`/projects/${id}/assets`).expect(200);
+    const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
     const style = renderedStyle(res2.text);
     expect(style).toContain('body.asset-browser-page main');
     expect(style).toContain('body.asset-viewer-page main');
@@ -2169,7 +2192,7 @@ describe('asset browser HTTP workflow', () => {
     const projectDir = getProjectDir('PhaseB Title Attr');
     const longName = 'a-really-long-filename-that-exceeds-typical-card-width.png';
     const asset = writeIndexedAsset(id, projectDir, longName, await makePng());
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets?view=grid`)
       .expect(200);
     const card = extractCard(res2.text, asset.id);
@@ -2183,7 +2206,7 @@ describe('asset browser HTTP workflow', () => {
     const projectDir = getProjectDir('PhaseB No Inline');
     writeIndexedAsset(id, projectDir, 'one.png', await makePng());
     writeIndexedAsset(id, projectDir, 'two.png', await makePng());
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets?view=grid`)
       .expect(200);
     const cardRegex = /<article class="asset-card"[\s\S]*?<\/article>/g;
@@ -2199,7 +2222,7 @@ describe('asset browser HTTP workflow', () => {
     const id = Number(res.headers.location.replace('/projects/', ''));
     const projectDir = getProjectDir('PhaseB No Nested');
     writeIndexedAsset(id, projectDir, 'one.png', await makePng());
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets?view=grid`)
       .expect(200);
     const cardArticle = res2.text.match(/<article class="asset-card"[\s\S]*?<\/article>/);
@@ -2215,7 +2238,7 @@ describe('asset browser HTTP workflow', () => {
   it('asset toolbar wrapper groups view switcher and filter form', async () => {
     const res = await createProject('PhaseB Toolbar');
     const id = res.headers.location.replace('/projects/', '');
-    const res2 = await request(app).get(`/projects/${id}/assets`).expect(200);
+    const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
     const toolbarStart = res2.text.indexOf('class="asset-toolbar"');
     expect(toolbarStart).toBeGreaterThan(-1);
     const switcherPos = res2.text.indexOf('class="view-switcher"', toolbarStart);
@@ -2227,7 +2250,7 @@ describe('asset browser HTTP workflow', () => {
   it('renders pagination focus-visible CSS for keyboard accessibility', async () => {
     const res = await createProject('PhaseB Pagination CSS');
     const id = res.headers.location.replace('/projects/', '');
-    const res2 = await request(app).get(`/projects/${id}/assets`).expect(200);
+    const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
     const style = renderedStyle(res2.text);
     expect(style).toMatch(/\.pagination-prev:focus-visible/);
     expect(style).toMatch(/\.pagination-next:focus-visible/);
@@ -2236,7 +2259,7 @@ describe('asset browser HTTP workflow', () => {
   it('renders body class asset-browser-page on the assets listing', async () => {
     const res = await createProject('PhaseB Body Class');
     const id = res.headers.location.replace('/projects/', '');
-    const res2 = await request(app).get(`/projects/${id}/assets`).expect(200);
+    const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
     expect(res2.text).toContain('<body class="asset-browser-page">');
   });
 
@@ -2245,7 +2268,7 @@ describe('asset browser HTTP workflow', () => {
     const id = Number(res.headers.location.replace('/projects/', ''));
     const projectDir = getProjectDir('PhaseB Viewer Body');
     const asset = writeIndexedAsset(id, projectDir, 'view.png', await makePng());
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets/${asset.id}`)
       .expect(200);
     expect(res2.text).toContain('<body class="asset-viewer-page">');
@@ -2256,7 +2279,7 @@ describe('asset browser HTTP workflow', () => {
     const id = Number(res.headers.location.replace('/projects/', ''));
     const projectDir = getProjectDir('PhaseB Media Wrapper');
     writeIndexedAsset(id, projectDir, 'pic.png', await makePng());
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets?view=grid`)
       .expect(200);
     expect(res2.text).toContain('class="asset-card-media"');
@@ -2267,7 +2290,7 @@ describe('asset browser HTTP workflow', () => {
     const id = Number(res.headers.location.replace('/projects/', ''));
     const projectDir = getProjectDir('PhaseB Viewer Frame');
     const asset = writeIndexedAsset(id, projectDir, 'hero.png', await makePng());
-    const res2 = await request(app)
+    const res2 = await agent
       .get(`/projects/${id}/assets/${asset.id}`)
       .expect(200);
     const style = renderedStyle(res2.text);
@@ -2278,7 +2301,7 @@ describe('asset browser HTTP workflow', () => {
   it('renders a valid non-recursive success token and no undefined custom properties', async () => {
     const res = await createProject('PhaseB Token Validation');
     const id = res.headers.location.replace('/projects/', '');
-    const res2 = await request(app).get(`/projects/${id}/assets`).expect(200);
+    const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
     const style = renderedStyle(res2.text);
     const declared = new Set(
       [...style.matchAll(/--([A-Za-z0-9_-]+)\s*:/g)].map((match) => match[1])
@@ -2295,7 +2318,7 @@ describe('asset browser HTTP workflow', () => {
   it('renders wrapping and containment rules for viewer and grid intrinsic-width content', async () => {
     const res = await createProject('PhaseB Mobile Containment');
     const id = res.headers.location.replace('/projects/', '');
-    const res2 = await request(app).get(`/projects/${id}/assets`).expect(200);
+    const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
     const style = renderedStyle(res2.text);
 
     expect(style).toMatch(/\.page-heading\s*\{[^}]*min-width:\s*0/);

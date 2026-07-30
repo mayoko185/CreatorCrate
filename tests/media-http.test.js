@@ -24,6 +24,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import slugify from '@sindresorhus/slugify';
 import { createApp } from '../src/app.js';
+import { ensureAuthEnablement } from '../src/auth/auth-state.js';
+import { getDisabledModeCsrf } from './helpers/auth.js';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { createProjectRepository } from '../src/data/project-repository.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
@@ -97,6 +99,10 @@ function makeHarness({ withMediaService = true } = {}) {
   }
   const previewRoot = path.join(tmpDir, 'app', 'previews');
   fs.mkdirSync(previewRoot, { recursive: true });
+
+  const appDataRoot = path.join(tmpDir, 'app');
+  fs.mkdirSync(appDataRoot, { recursive: true });
+  const { csrfPepper } = ensureAuthEnablement(appDataRoot);
 
   const dbPath = path.join(tmpDir, 'test.db');
   const db = openDatabase(dbPath);
@@ -173,13 +179,14 @@ function makeHarness({ withMediaService = true } = {}) {
 
   const app = createApp(
     { appName: 'CreatorCrate', db, projectsRoot, previewRoot },
-    { previewService, mediaService }
+    { previewService, mediaService, appDataRoot, authState: { csrfPepper } }
   );
 
   return {
     tmpDir,
     projectsRoot,
     previewRoot,
+    appDataRoot,
     db,
     projectRepo,
     assetRepo,
@@ -1103,7 +1110,8 @@ describe('media routes — security', () => {
 
     // Archive the project through the HTTP API (moves the directory to
     // archived/).
-    await request(h.app).post(`/projects/${project.id}/archive`).expect(302);
+    const { agent, csrfToken } = await getDisabledModeCsrf(h.app, h.appDataRoot);
+    await agent.post(`/projects/${project.id}/archive`).send({ _csrf: csrfToken }).expect(302);
 
     // Re-index the asset at its new (archived) location so the row points
     // to a present file again. The scan would do this on the next scan.

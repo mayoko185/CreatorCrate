@@ -132,45 +132,37 @@ For Docker deployment:
    docker compose down
    ```
 
-## Phase 12 authentication and deployment security
+## Authentication (optional, browser-managed)
 
-CreatorCrate uses one operator account. It intentionally does **not** implement registration, password reset email, OAuth, API tokens, multiple accounts, or remember-me cookies.
+CreatorCrate runs with **authentication disabled by default** — no environment variables to set, no password hash to generate, no session secret to paste. It supports at most one operator account. It intentionally does **not** implement registration, password reset email, OAuth, API tokens, multiple accounts, or remember-me cookies.
 
-### Initial credential setup
+### Enabling authentication
 
-Generate the password hash without putting the plaintext password in shell arguments:
+1. Start CreatorCrate normally (no `.env` auth configuration needed).
+2. Open **Settings → Security**. While authentication is disabled, a persistent warning banner is shown throughout the app (and this page explains the risk) with an "Enable Authentication" form.
+3. Choose a username and password (minimum 12 characters) and submit.
 
-```bash
-pnpm auth:hash
-```
+The password is hashed and a session secret is generated internally — both are stored under `APP_DATA_ROOT` (`operator-credential.json`, `auth-enablement.json`), never in `.env`, never printed, never rendered. Authentication becomes active immediately, with no restart, and every route requiring login is protected from that point on.
 
-Set these values in `.env`:
+### Disabling authentication
 
-```text
-CREATORCRATE_USERNAME=admin
-CREATORCRATE_PASSWORD_HASH=<output from pnpm auth:hash>
-SESSION_SECRET=<32+ random characters>
-```
-
-Generate `SESSION_SECRET` with a password manager or:
-
-```bash
-openssl rand -hex 32
-```
-
-On first startup, the environment username/hash bootstrap a managed credential file at `APP_DATA_ROOT/operator-credential.json`. After that file exists, it is authoritative; changing `CREATORCRATE_PASSWORD_HASH` alone will not replace the active password.
+Go to **Settings → Security → Disable Authentication**, confirm with your current password. This immediately revokes all sessions, clears your cookie, and returns the server to the disabled/no-login state — no restart required. Enabling authentication again later always starts fresh: choose a new username and password.
 
 ### Password rotation and emergency reset
 
-- Use **Settings → Security** to rotate the operator password.
+- Use **Settings → Security** to rotate the operator password while authentication is enabled.
 - Successful rotation revokes every server-side session and redirects the current browser to login.
-- To replace the managed credential from the server console, stop the app and run:
+- If you get locked out, run this on the server host (stop `pnpm start` first, or be aware a running process won't pick up the change until restarted):
 
   ```bash
-  pnpm auth:reset-managed
+  pnpm auth:reset
   ```
 
-  The command reads the new password interactively or from stdin, never from argv. Restart CreatorCrate afterward.
+  This disables authentication after an interactive confirmation prompt — no password arguments, no hash/secret ever printed. Restart CreatorCrate afterward, then re-enable from the browser with a new password.
+
+### Advanced: environment-bootstrapped password hash
+
+`pnpm auth:hash` remains available for advanced/scripted deployments that want to precompute a password hash outside the browser flow, but it is **not** part of normal setup — the ordinary path is the Settings → Security enable form above.
 
 ### Sessions, cookies, proxy, and TLS
 
@@ -200,9 +192,10 @@ Backups do **not** include:
 
 - media/project files under `PROJECTS_ROOT`;
 - generated preview files under `APP_DATA_ROOT/previews`;
-- the managed credential file `APP_DATA_ROOT/operator-credential.json`.
+- the managed credential file `APP_DATA_ROOT/operator-credential.json`;
+- the managed auth-enablement file `APP_DATA_ROOT/auth-enablement.json`.
 
-A database restore therefore does not revert the operator password. Use `pnpm auth:reset-managed` when the managed credential itself must be replaced.
+A database restore therefore never changes whether authentication is enabled and never reverts the operator password — the managed auth state on disk stays authoritative across a restore, and restoring still invalidates sessions. Host-level backup of `APP_DATA_ROOT` (not just the SQLite backups) is required if you want authentication settings to survive a redeploy. Use `pnpm auth:reset` for emergency recovery.
 
 ## Two-bind-mount design
 
@@ -646,7 +639,6 @@ application provides, and is not recommended.
 - Thumbnail generation and image processing
 - Duplicate detection
 - Cloud storage integration (including for backups — backups are local to `APP_DATA_ROOT` only)
-- Authentication and authorization
 - Patreon API integration
 - Tags and file-type filtering beyond extension
 - Scheduled/automatic backup creation (no cron inside the application container)
@@ -655,8 +647,10 @@ These will be added in subsequent phases.
 
 ## Public media access (Phase 10.1C)
 
-CreatorCrate has no authentication. Anyone who can reach the web application
-can request its media routes:
+Media routes are protected by the same login wall as the rest of the
+application whenever authentication is enabled (see "Authentication
+(optional, browser-managed)" above). While authentication is disabled,
+anyone who can reach the web application can request its media routes:
 
 ```text
 GET /projects/:projectId/assets/:assetId/thumbnail
@@ -688,8 +682,9 @@ later scanned filesystem change or cache rebuild. The browser revision token is
 for cache selection only; it is not a content hash or authorization mechanism.
 
 Deployment access controls (network ACLs, reverse-proxy auth, VPN,
-firewall) remain the operator's responsibility. Authentication is
-deferred to a later phase and is not added in this pass.
+firewall) remain the operator's responsibility regardless of whether
+CreatorCrate's own authentication is enabled — it is strongly recommended
+but optional, and TLS termination is always the operator's responsibility.
 
 ## Verification
 

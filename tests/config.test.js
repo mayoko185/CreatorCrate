@@ -1,13 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { createConfig, ConfigError } from '../src/config.js';
-import { hashPassword } from '../src/auth/password-hash.js';
 import path from 'node:path';
-
-// Fixed valid auth values shared across tests that are not themselves
-// exercising auth validation — generated the same way an operator would via
-// `pnpm auth:hash`.
-const VALID_PASSWORD_HASH = hashPassword('CorrectHorseBatteryStaple');
-const VALID_SESSION_SECRET = 'a'.repeat(32);
 
 function env(overrides = {}) {
   return {
@@ -17,20 +10,13 @@ function env(overrides = {}) {
     APP_DATA_ROOT: './data/app',
     PROJECTS_ROOT: './data/projects',
     DATABASE_PATH: './data/app/creatorcrate.db',
-    CREATORCRATE_USERNAME: 'admin',
-    CREATORCRATE_PASSWORD_HASH: VALID_PASSWORD_HASH,
-    SESSION_SECRET: VALID_SESSION_SECRET,
     ...overrides,
   };
 }
 
 describe('createConfig', () => {
-  it('uses defaults when environment supplies only required auth fields', () => {
-    const config = createConfig({
-      CREATORCRATE_USERNAME: 'admin',
-      CREATORCRATE_PASSWORD_HASH: VALID_PASSWORD_HASH,
-      SESSION_SECRET: VALID_SESSION_SECRET,
-    });
+  it('uses defaults when environment is otherwise empty', () => {
+    const config = createConfig({});
     expect(config.nodeEnv).toBe('development');
     expect(config.port).toBe(3000);
     expect(config.appName).toBe('CreatorCrate');
@@ -39,8 +25,14 @@ describe('createConfig', () => {
     expect(config.databasePath).toBe(path.resolve('./data/app/creatorcrate.db'));
   });
 
-  it('fails startup when no authentication configuration is provided', () => {
-    expect(() => createConfig({})).toThrow(ConfigError);
+  // Phase 13: authentication is optional and browser-managed — an empty
+  // environment (no CREATORCRATE_USERNAME/CREATORCRATE_PASSWORD_HASH/
+  // SESSION_SECRET, all removed as normal settings) must start successfully,
+  // not fail. This replaces the old "fails startup when no authentication
+  // configuration is provided" contract, which asserted the obsolete
+  // mandatory-environment-auth requirement.
+  it('starts successfully with no authentication configuration provided', () => {
+    expect(() => createConfig({})).not.toThrow();
   });
 
   it('applies environment overrides', () => {
@@ -181,65 +173,22 @@ describe('createConfig', () => {
     expect(() => createConfig(env({ BACKUP_RETENTION_COUNT: value }))).toThrow(ConfigError);
   });
 
-  // ─── Authentication configuration (Phase 12.1) ─────────────────────────
+  // ─── Authentication settings (Phase 13: optional, browser-managed) ────
+  // Identity (username/password hash) and the session secret are no longer
+  // environment configuration at all — see src/auth/auth-state.js and
+  // src/auth/credential-provider.js. config.auth is settings-only.
 
-  it('parses valid auth configuration with conservative defaults', () => {
+  it('parses auth settings with conservative defaults and no identity fields', () => {
     const config = createConfig(env());
-    expect(config.auth.username).toBe('admin');
-    expect(config.auth.passwordHash).toBe(VALID_PASSWORD_HASH);
-    expect(config.auth.sessionSecret).toBe(VALID_SESSION_SECRET);
     expect(config.auth.sessionTtlHours).toBe(24);
     expect(config.auth.cookieSecure).toBe(false);
     expect(config.auth.trustProxy).toBe(false);
     expect(config.auth.hstsEnabled).toBe(false);
     expect(config.auth.managedCredentialPath).toBe(path.join(config.appDataRoot, 'operator-credential.json'));
     expect(Object.isFrozen(config.auth)).toBe(true);
-  });
-
-  it('normalizes CREATORCRATE_USERNAME to lowercase and trims whitespace', () => {
-    const config = createConfig(env({ CREATORCRATE_USERNAME: '  Admin  ' }));
-    expect(config.auth.username).toBe('admin');
-  });
-
-  it('rejects a missing CREATORCRATE_USERNAME', () => {
-    expect(() => createConfig(env({ CREATORCRATE_USERNAME: '' }))).toThrow(ConfigError);
-  });
-
-  it.each(['ab', 'a'.repeat(65), '-admin', 'admin-', 'Admin User', 'admin!'])(
-    'rejects invalid CREATORCRATE_USERNAME %s',
-    (value) => {
-      expect(() => createConfig(env({ CREATORCRATE_USERNAME: value }))).toThrow(ConfigError);
-    }
-  );
-
-  it('rejects a missing CREATORCRATE_PASSWORD_HASH', () => {
-    expect(() => createConfig(env({ CREATORCRATE_PASSWORD_HASH: '' }))).toThrow(ConfigError);
-  });
-
-  it.each(['plaintext-password', 'bcrypt$10$abc', 'scrypt$notanumber$8$1$c2FsdA==$aGFzaA=='])(
-    'rejects an invalid/unrecognized CREATORCRATE_PASSWORD_HASH %s',
-    (value) => {
-      expect(() => createConfig(env({ CREATORCRATE_PASSWORD_HASH: value }))).toThrow(ConfigError);
-    }
-  );
-
-  it('never accepts a plaintext password in place of a hash', () => {
-    expect(() => createConfig(env({ CREATORCRATE_PASSWORD_HASH: 'CorrectHorseBatteryStaple' }))).toThrow(
-      ConfigError
-    );
-  });
-
-  it('rejects a missing SESSION_SECRET', () => {
-    expect(() => createConfig(env({ SESSION_SECRET: '' }))).toThrow(ConfigError);
-  });
-
-  it('rejects a SESSION_SECRET below the minimum length', () => {
-    expect(() => createConfig(env({ SESSION_SECRET: 'short-secret' }))).toThrow(ConfigError);
-  });
-
-  it('accepts a SESSION_SECRET at exactly the minimum length', () => {
-    const config = createConfig(env({ SESSION_SECRET: 'b'.repeat(32) }));
-    expect(config.auth.sessionSecret).toBe('b'.repeat(32));
+    expect(config.auth.username).toBeUndefined();
+    expect(config.auth.passwordHash).toBeUndefined();
+    expect(config.auth.sessionSecret).toBeUndefined();
   });
 
   it('defaults SESSION_TTL_HOURS to 24 when unset', () => {
@@ -289,14 +238,9 @@ describe('createConfig', () => {
     expect(() => createConfig(env({ HSTS_ENABLED: value }))).toThrow(ConfigError);
   });
 
-  it('never leaks the configured secrets in the ConfigError message', () => {
-    try {
-      createConfig(env({ SESSION_SECRET: 'short' }));
-      throw new Error('expected ConfigError');
-    } catch (err) {
-      expect(err).toBeInstanceOf(ConfigError);
-      expect(err.message).not.toContain('short');
-      expect(err.message).not.toContain(VALID_PASSWORD_HASH);
-    }
-  });
+  // The old "never leaks configured secrets in the ConfigError message" test
+  // is removed, not just updated: it existed only because
+  // CREATORCRATE_PASSWORD_HASH/SESSION_SECRET used to pass through
+  // createConfig. Neither does anymore (Phase 13) — there is no longer a
+  // secret for this module to leak.
 });

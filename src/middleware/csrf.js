@@ -140,6 +140,103 @@ export function clearAnonCsrfCookie(res) {
   res.clearCookie(ANON_CSRF_PREFIX, { path: '/login' });
 }
 
+// ─── Disabled-mode CSRF (Phase 13) ─────────────────────────────────────
+
+/**
+ * While authentication is disabled there is no session to bind a CSRF
+ * secret to, but mutating requests must still be protected. A plain
+ * double-submit cookie (the same random value echoed back as both cookie
+ * and form field) isn't quite enough here: whoever holds the cookie would
+ * also hold the "secret" used to compute the token, so it adds nothing
+ * beyond what a bare cookie already provides. Instead, the per-visitor
+ * cookie value is only ever the HMAC *input*; the key is `csrfPepper` — a
+ * random value generated once and persisted server-side in
+ * auth-enablement.json (see auth-state.js), never sent to any client. A
+ * forger who can only set/read cookies can never compute a valid token
+ * without also reading APP_DATA_ROOT, and the token stays valid across a
+ * restart because the pepper is persisted, not regenerated per-process.
+ */
+const DISABLED_CSRF_COOKIE = 'cc_csrf_anon';
+const DISABLED_CSRF_COOKIE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+
+// Exported for test helpers (tests/helpers/auth.js's getDisabledModeCsrf) —
+// lets a test independently compute the expected token from the persisted
+// pepper + the issued visitor cookie, without depending on any particular
+// page happening to render a form.
+export function deriveDisabledModeCsrfToken(csrfPepper, visitorSecret) {
+  return crypto.createHmac('sha256', csrfPepper).update(visitorSecret).digest('hex');
+}
+
+function getCookie(req, name) {
+  const header = req.headers.cookie;
+  if (!header) return null;
+  for (const part of header.split(';')) {
+    const idx = part.indexOf('=');
+    if (idx === -1) continue;
+    const key = part.slice(0, idx).trim();
+    if (key === name) {
+      const rawValue = part.slice(idx + 1).trim();
+      if (rawValue.length === 0) return null;
+      try {
+        return decodeURIComponent(rawValue);
+      } catch {
+        return rawValue;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * @param {object} opts
+ * @param {boolean} opts.cookieSecure
+ * @param {string} opts.csrfPepper - persistent, server-only HMAC key (see
+ *   above). Required — disabled-mode CSRF cannot function without it.
+ */
+export function createDisabledModeCsrfMiddleware({ cookieSecure, csrfPepper }) {
+  function ensureVisitorCookie(req, res) {
+    let secret = getCookie(req, DISABLED_CSRF_COOKIE);
+    if (!secret) {
+      secret = generateCsrfSecret();
+      res.cookie(DISABLED_CSRF_COOKIE, secret, {
+        httpOnly: true,
+        sameSite: 'lax',
+        secure: !!cookieSecure,
+        path: '/',
+        maxAge: DISABLED_CSRF_COOKIE_MAX_AGE_MS,
+      });
+    }
+    return secret;
+  }
+
+  function exposeCsrfToken(req, res, next) {
+    const secret = ensureVisitorCookie(req, res);
+    res.locals._csrf = deriveDisabledModeCsrfToken(csrfPepper, secret);
+    next();
+  }
+
+  function requireCsrf(req, res, next) {
+    if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
+      return next();
+    }
+
+    const secret = getCookie(req, DISABLED_CSRF_COOKIE);
+    const submitted = typeof req.body === 'object' && req.body !== null ? req.body._csrf : undefined;
+
+    if (!secret || typeof submitted !== 'string') {
+      return res.status(403).json({ status: 'error', message: 'Invalid or missing CSRF token.' });
+    }
+    const expected = deriveDisabledModeCsrfToken(csrfPepper, secret);
+    if (submitted.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(submitted), Buffer.from(expected))) {
+      return res.status(403).json({ status: 'error', message: 'Invalid or missing CSRF token.' });
+    }
+
+    next();
+  }
+
+  return { exposeCsrfToken, requireCsrf };
+}
+
 // ─── Middleware ──────────────────────────────────────────────────────────
 
 /**

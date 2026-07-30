@@ -1119,6 +1119,30 @@
       .notice p { margin: 0; }
       .notice p + p { margin-top: var(--space-sm); }
 
+      /* ── Disabled-authentication banner ── */
+      .auth-disabled-banner {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: var(--space-md);
+        padding: var(--space-md) var(--space-lg);
+        background: rgba(210, 153, 34, 0.18);
+        border-left: 4px solid var(--warning);
+        border-radius: 0 var(--radius-lg) var(--radius-lg) 0;
+        margin: 0 var(--space-lg) var(--space-lg);
+      }
+      .auth-disabled-banner svg {
+        width: 1.25rem;
+        height: 1.25rem;
+        flex-shrink: 0;
+        color: var(--warning);
+      }
+      .auth-disabled-banner p {
+        margin: 0;
+        flex: 1 1 auto;
+        min-width: 12rem;
+      }
+
       /* ── Empty states ── */
       .empty-state {
         padding: var(--space-xl) var(--space-lg);

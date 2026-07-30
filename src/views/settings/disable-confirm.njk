@@ -1,0 +1,33 @@
+{% extends "layout.njk" %}
+{% import "partials/page-heading.njk" as pageHeading %}
+
+{% block title %}Disable Authentication – {{ appName }}{% endblock %}
+
+{% block content %}
+  {% call pageHeading.render("Disable Authentication") %}
+    <a class="button button-secondary" href="/settings/security">Cancel</a>
+  {% endcall %}
+
+  {% if currentPasswordError %}
+    <div class="error-summary" role="alert" id="disable-errors">
+      <p>{{ currentPasswordError }}</p>
+    </div>
+  {% endif %}
+
+  <div class="destructive-section">
+    <h2>Turn off login for everyone?</h2>
+    <p>Once authentication is disabled, <strong>anyone who can reach this server will be able to access CreatorCrate</strong> — no username or password will be required. All current sessions will be signed out immediately.</p>
+    <p>Your current password and session key are discarded; enabling authentication again later will require choosing a new username and password.</p>
+    <form method="post" action="/settings/security/disable" novalidate>
+      <input type="hidden" name="_csrf" value="{{ _csrf }}">
+      <div class="field {% if currentPasswordError %}field-error{% endif %}">
+        <label for="currentPassword">Current password <span class="required" aria-label="required">*</span></label>
+        <input type="password" id="currentPassword" name="currentPassword" autocomplete="current-password" required{% if currentPasswordError %} aria-describedby="disable-errors" aria-invalid="true"{% endif %}>
+      </div>
+      <div class="form-actions">
+        <button type="submit" class="button button-danger">Disable Authentication</button>
+        <a class="button button-secondary" href="/settings/security">Cancel</a>
+      </div>
+    </form>
+  </div>
+{% endblock %}

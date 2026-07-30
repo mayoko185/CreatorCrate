@@ -26,6 +26,8 @@ import { fileURLToPath } from 'node:url';
 import { createApp } from '../src/app.js';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { STATUS_DIR_MAP } from '../src/storage/project-storage.js';
+import { ensureAuthEnablement } from '../src/auth/auth-state.js';
+import { getDisabledModeCsrf } from './helpers/auth.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 const VIEWS_DIR = fileURLToPath(new URL('../src/views', import.meta.url));
@@ -88,18 +90,25 @@ describe('Phase 10.5A: Shared page-level components', () => {
   let app;
   let tmpDir;
   let projectsRoot;
+  let appDataRoot;
+  let agent;
+  let csrfToken;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-shared-'));
     projectsRoot = path.join(tmpDir, 'projects');
     fs.mkdirSync(projectsRoot, { recursive: true });
     for (const dir of Object.values(STATUS_DIR_MAP)) {
       fs.mkdirSync(path.join(projectsRoot, dir), { recursive: true });
     }
+    appDataRoot = path.join(tmpDir, 'app');
+    fs.mkdirSync(appDataRoot, { recursive: true });
+    const { csrfPepper } = ensureAuthEnablement(appDataRoot);
     const dbPath = path.join(tmpDir, 'test.db');
     db = openDatabase(dbPath);
     runMigrations(db, MIGRATIONS_DIR);
-    app = createApp({ appName: 'CreatorCrate', db, projectsRoot });
+    app = createApp({ appName: 'CreatorCrate', db, projectsRoot }, { appDataRoot, authState: { csrfPepper } });
+    ({ agent, csrfToken } = await getDisabledModeCsrf(app, appDataRoot));
   });
 
   afterEach(() => {
@@ -111,40 +120,41 @@ describe('Phase 10.5A: Shared page-level components', () => {
 
   describe('page-heading contract', () => {
     it('project form has exactly one h1 inside page-heading-copy', async () => {
-      const res = await request(app).get('/projects/new').expect(200);
+      const res = await agent.get('/projects/new').expect(200);
       expect(countTags(res.text, 'h1')).toBe(1);
       expect(hasClass(res.text, 'page-heading-copy')).toBe(true);
       expect(hasClass(res.text, 'page-heading')).toBe(true);
     });
 
     it('release form has exactly one h1 inside page-heading-copy', async () => {
-      const projRes = await request(app)
+      const projRes = await agent
         .post('/projects')
         .send('title=Heading+Test')
         .send('status=tbd')
         .send('priority=normal')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
-      const res = await request(app).get('/releases/new').expect(200);
+      const res = await agent.get('/releases/new').expect(200);
       expect(countTags(res.text, 'h1')).toBe(1);
       expect(hasClass(res.text, 'page-heading')).toBe(true);
     });
 
     it('project list has exactly one h1 inside page-heading', async () => {
-      const res = await request(app).get('/projects').expect(200);
+      const res = await agent.get('/projects').expect(200);
       expect(countTags(res.text, 'h1')).toBe(1);
       expect(hasClass(res.text, 'page-heading')).toBe(true);
     });
 
     it('release list has exactly one h1 inside page-heading', async () => {
-      const res = await request(app).get('/releases').expect(200);
+      const res = await agent.get('/releases').expect(200);
       expect(countTags(res.text, 'h1')).toBe(1);
       expect(hasClass(res.text, 'page-heading')).toBe(true);
     });
 
     it('dashboard has exactly one h1 inside page-heading', async () => {
-      const res = await request(app).get('/').expect(200);
+      const res = await agent.get('/').expect(200);
       expect(countTags(res.text, 'h1')).toBe(1);
       expect(hasClass(res.text, 'page-heading')).toBe(true);
       expect(hasClass(res.text, 'page-heading-copy')).toBe(true);
@@ -156,26 +166,27 @@ describe('Phase 10.5A: Shared page-level components', () => {
 
   describe('action variants', () => {
     it('button-primary is rendered for primary actions', async () => {
-      const res = await request(app).get('/projects').expect(200);
+      const res = await agent.get('/projects').expect(200);
       expect(hasClass(res.text, 'button-primary')).toBe(true);
     });
 
     it('button-secondary is rendered for cancel links', async () => {
-      const res = await request(app).get('/projects/new').expect(200);
+      const res = await agent.get('/projects/new').expect(200);
       expect(hasClass(res.text, 'button-secondary')).toBe(true);
     });
 
     it('button-danger is rendered for destructive actions', async () => {
-      const projRes = await request(app)
+      const projRes = await agent
         .post('/projects')
         .send('title=Danger+Test')
         .send('status=tbd')
         .send('priority=normal')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
       const id = projRes.headers.location.replace('/projects/', '');
 
-      const detail = await request(app).get(`/projects/${id}`).expect(200);
+      const detail = await agent.get(`/projects/${id}`).expect(200);
       expect(hasClass(detail.text, 'button-danger')).toBe(true);
     });
   });
@@ -184,7 +195,7 @@ describe('Phase 10.5A: Shared page-level components', () => {
 
   describe('button/link parity', () => {
     it('links and buttons with class button have consistent base styles', async () => {
-      const res = await request(app).get('/projects').expect(200);
+      const res = await agent.get('/projects').expect(200);
       const css = extractStyle(res.text);
 
       // .button base exists
@@ -201,7 +212,7 @@ describe('Phase 10.5A: Shared page-level components', () => {
     });
 
     it('buttons have focus-visible styles', async () => {
-      const res = await request(app).get('/projects').expect(200);
+      const res = await agent.get('/projects').expect(200);
       const css = extractStyle(res.text);
       expect(css).toContain('.button:focus-visible');
     });
@@ -211,7 +222,7 @@ describe('Phase 10.5A: Shared page-level components', () => {
 
   describe('form labels and errors', () => {
     it('project form has visible labels for every control', async () => {
-      const res = await request(app).get('/projects/new').expect(200);
+      const res = await agent.get('/projects/new').expect(200);
       // Every <label> must have a for= attribute matching an input id
       const labels = res.text.match(/<label[^>]*for="([^"]+)"[^>]*>/g) || [];
       expect(labels.length).toBeGreaterThan(0);
@@ -226,11 +237,12 @@ describe('Phase 10.5A: Shared page-level components', () => {
     });
 
     it('project form error state renders field-error-message text', async () => {
-      const res = await request(app)
+      const res = await agent
         .post('/projects')
         .send('title=')
         .send('status=invalid')
         .send('priority=normal')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(422);
 
@@ -239,7 +251,7 @@ describe('Phase 10.5A: Shared page-level components', () => {
     });
 
     it('project form required indicators use aria-label', async () => {
-      const res = await request(app).get('/projects/new').expect(200);
+      const res = await agent.get('/projects/new').expect(200);
       const requiredSpans = res.text.match(/<span class="required"[^>]*>/g) || [];
       for (const span of requiredSpans) {
         expect(span).toContain('aria-label="required"');
@@ -251,15 +263,16 @@ describe('Phase 10.5A: Shared page-level components', () => {
 
   describe('status badges', () => {
     it('project list uses status-badge with readable text', async () => {
-      await request(app)
+      await agent
         .post('/projects')
         .send('title=Badge+Test')
         .send('status=tbd')
         .send('priority=normal')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
-      const res = await request(app).get('/projects').expect(200);
+      const res = await agent.get('/projects').expect(200);
       // The status badge must contain text content (not just color)
       expect(res.text).toContain('status-badge');
       // The text "Tbd" must appear inside a badge
@@ -267,20 +280,21 @@ describe('Phase 10.5A: Shared page-level components', () => {
     });
 
     it('project detail uses status-badge', async () => {
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/projects')
         .send('title=Badge+Detail')
         .send('status=tbd')
         .send('priority=normal')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
-      const res = await request(app).get(createRes.headers.location).expect(200);
+      const res = await agent.get(createRes.headers.location).expect(200);
       expect(res.text).toContain('status-badge');
     });
 
     it('status-badge variant classes are defined in CSS', async () => {
-      const res = await request(app).get('/projects').expect(200);
+      const res = await agent.get('/projects').expect(200);
       const css = extractStyle(res.text);
       // All semantic variants
       expect(css).toContain('.status-badge--neutral');
@@ -302,13 +316,13 @@ describe('Phase 10.5A: Shared page-level components', () => {
         `INSERT INTO projects (title, slug, description, notes, status, priority, planned_date, published_date, patreon_url)
          VALUES (?, ?, '', '', 'tbd', 'normal', NULL, NULL, NULL)`
       ).run('Table Test', 'table-test');
-      const res = await request(app).get('/projects').expect(200);
+      const res = await agent.get('/projects').expect(200);
       expect(res.text).toContain('data-table');
       expect(res.text).toContain('table-scroll');
     });
 
     it('data-table styles are defined with proper header styles', async () => {
-      const res = await request(app).get('/projects').expect(200);
+      const res = await agent.get('/projects').expect(200);
       const css = extractStyle(res.text);
       expect(css).toContain('.data-table');
       expect(css).toContain('.data-table th');
@@ -316,39 +330,42 @@ describe('Phase 10.5A: Shared page-level components', () => {
 
     it('ordinary project tables are not extra tab stops', async () => {
       // Need at least one project so the table renders (empty state has no table-scroll)
-      await request(app)
+      await agent
         .post('/projects')
         .send('title=Tabindex+Test')
         .send('status=tbd')
         .send('priority=normal')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
-      const res = await request(app).get('/projects').expect(200);
+      const res = await agent.get('/projects').expect(200);
       const wrapper = res.text.match(/<div class="table-scroll">[\s\S]*?<table class="data-table">/);
       expect(wrapper).not.toBeNull();
       expect(wrapper[0]).not.toContain('tabindex="0"');
     });
 
     it('intrinsically wide release tables remain focusable and named', async () => {
-      const projRes = await request(app)
+      const projRes = await agent
         .post('/projects')
         .send('title=Wide+Table+Test')
         .send('status=tbd')
         .send('priority=normal')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
       const projectId = projRes.headers.location.replace('/projects/', '');
 
-      await request(app)
+      await agent
         .post('/releases')
         .send(`projectId=${projectId}`)
         .send('title=Wide+Release')
         .send('status=idea')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
-      const res = await request(app).get('/releases').expect(200);
+      const res = await agent.get('/releases').expect(200);
       expect(res.text).toMatch(/<div class="table-scroll" tabindex="0" aria-label="Release list">/);
     });
   });
@@ -357,13 +374,13 @@ describe('Phase 10.5A: Shared page-level components', () => {
 
   describe('empty-state contract', () => {
     it('project list empty state uses shared partial', async () => {
-      const res = await request(app).get('/projects').expect(200);
+      const res = await agent.get('/projects').expect(200);
       expect(res.text).toContain('empty-state');
       expect(res.text).toContain('empty-state-heading');
     });
 
     it('empty-state heading is semantic and not an h1', async () => {
-      const res = await request(app).get('/projects').expect(200);
+      const res = await agent.get('/projects').expect(200);
       expect(res.text).toMatch(/<h2 class="empty-state-heading">No projects yet<\/h2>/);
       expect(res.text).not.toMatch(/<p class="empty-state-heading">/);
       const emptyStateBlock = res.text.match(/class="empty-state"[\s\S]*?<\/div>/);
@@ -377,38 +394,40 @@ describe('Phase 10.5A: Shared page-level components', () => {
 
   describe('destructive section', () => {
     it('project detail has destructive section with danger styling', async () => {
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/projects')
         .send('title=Destructive+Test')
         .send('status=tbd')
         .send('priority=normal')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
-      const res = await request(app).get(createRes.headers.location).expect(200);
+      const res = await agent.get(createRes.headers.location).expect(200);
       expect(res.text).toContain('destructive-section');
       expect(res.text).toContain('button-danger');
     });
 
     it('archived project detail has no destructive section', async () => {
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/projects')
         .send('title=Archived+No+Destructive')
         .send('status=tbd')
         .send('priority=normal')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
       const id = createRes.headers.location.replace('/projects/', '');
 
-      await request(app).post(`/projects/${id}/archive`).expect(302);
+      await agent.post(`/projects/${id}/archive`).send({ _csrf: csrfToken }).expect(302);
 
-      const res = await request(app).get(`/projects/${id}`).expect(200);
+      const res = await agent.get(`/projects/${id}`).expect(200);
       // Check HTML class attribute, not CSS definition (which appears in <style>)
       expect(hasClass(res.text, 'destructive-section')).toBe(false);
     });
 
     it('destructive-section CSS has danger border color', async () => {
-      const res = await request(app).get('/projects').expect(200);
+      const res = await agent.get('/projects').expect(200);
       const css = extractStyle(res.text);
       expect(css).toContain('.destructive-section');
       expect(css).toContain('border: 1px solid var(--danger)');
@@ -419,33 +438,36 @@ describe('Phase 10.5A: Shared page-level components', () => {
 
   describe('notice variants', () => {
     it('release detail uses notice--warning for archived state', async () => {
-      const projRes = await request(app)
+      const projRes = await agent
         .post('/projects')
         .send('title=Notice+Test')
         .send('status=tbd')
         .send('priority=normal')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
       const projectId = projRes.headers.location.replace('/projects/', '');
 
-      const relRes = await request(app)
+      const relRes = await agent
         .post('/releases')
         .send(`projectId=${projectId}`)
         .send('title=Archived+Release')
         .send('status=idea')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
-      await request(app)
+      await agent
         .post(`${relRes.headers.location}/archive`)
+        .send({ _csrf: csrfToken })
         .expect(302);
 
-      const detail = await request(app).get(relRes.headers.location).expect(200);
+      const detail = await agent.get(relRes.headers.location).expect(200);
       expect(detail.text).toContain('notice--warning');
     });
 
     it('notice variant CSS classes are defined', async () => {
-      const res = await request(app).get('/projects').expect(200);
+      const res = await agent.get('/projects').expect(200);
       const css = extractStyle(res.text);
       expect(css).toContain('.notice--info');
       expect(css).toContain('.notice--success');
@@ -501,7 +523,7 @@ describe('Phase 10.5A: Shared page-level components', () => {
 
   describe('no duplicate IDs', () => {
     it('project form has no duplicate IDs', async () => {
-      const res = await request(app).get('/projects/new').expect(200);
+      const res = await agent.get('/projects/new').expect(200);
       const ids = res.text.match(/id="([^"]+)"/g) || [];
       const uniqueIds = new Set(ids);
       expect(ids.length).toBe(uniqueIds.size);
@@ -512,35 +534,36 @@ describe('Phase 10.5A: Shared page-level components', () => {
 
   describe('single h1 per page', () => {
     it('project form has exactly one h1', async () => {
-      const res = await request(app).get('/projects/new').expect(200);
+      const res = await agent.get('/projects/new').expect(200);
       expect(countTags(res.text, 'h1')).toBe(1);
     });
 
     it('project detail has exactly one h1', async () => {
-      const createRes = await request(app)
+      const createRes = await agent
         .post('/projects')
         .send('title=H1+Test')
         .send('status=tbd')
         .send('priority=normal')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
-      const res = await request(app).get(createRes.headers.location).expect(200);
+      const res = await agent.get(createRes.headers.location).expect(200);
       expect(countTags(res.text, 'h1')).toBe(1);
     });
 
     it('project list has exactly one h1', async () => {
-      const res = await request(app).get('/projects').expect(200);
+      const res = await agent.get('/projects').expect(200);
       expect(countTags(res.text, 'h1')).toBe(1);
     });
 
     it('dashboard has exactly one h1', async () => {
-      const res = await request(app).get('/').expect(200);
+      const res = await agent.get('/').expect(200);
       expect(countTags(res.text, 'h1')).toBe(1);
     });
 
     it('release list has exactly one h1', async () => {
-      const res = await request(app).get('/releases').expect(200);
+      const res = await agent.get('/releases').expect(200);
       expect(countTags(res.text, 'h1')).toBe(1);
     });
   });
@@ -549,7 +572,7 @@ describe('Phase 10.5A: Shared page-level components', () => {
 
   describe('mobile-safe class structure', () => {
     it('page-heading has mobile responsive CSS', async () => {
-      const res = await request(app).get('/projects').expect(200);
+      const res = await agent.get('/projects').expect(200);
       const css = extractStyle(res.text);
       // Mobile breakpoint exists
       expect(css).toMatch(/@media\s*\(max-width:\s*540px\)/);
@@ -558,14 +581,14 @@ describe('Phase 10.5A: Shared page-level components', () => {
     });
 
     it('data-table has responsive styles', async () => {
-      const res = await request(app).get('/projects').expect(200);
+      const res = await agent.get('/projects').expect(200);
       const css = extractStyle(res.text);
       expect(css).toContain('.data-table');
       expect(css).toContain('.table-scroll');
     });
 
     it('field-row becomes column on mobile', async () => {
-      const res = await request(app).get('/projects/new').expect(200);
+      const res = await agent.get('/projects/new').expect(200);
       const css = extractStyle(res.text);
       // The mobile breakpoint must contain a rule that makes field-row stack
       // This is split across lines, so check for the class and the property separately
