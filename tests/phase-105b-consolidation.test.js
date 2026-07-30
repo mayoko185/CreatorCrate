@@ -49,11 +49,6 @@ function extractStyle(html) {
   return SERVED_CSS;
 }
 
-function extractSummaryCards(html) {
-  const m = html.match(/<section class="summary-cards"[\s\S]*?<\/section>/);
-  return m ? m[0] : '';
-}
-
 async function makePng(width = 64, height = 64) {
   const sharp = (await import('sharp')).default;
   return sharp({
@@ -94,110 +89,6 @@ describe('Phase 10.5B: Dashboard and project visual consolidation', () => {
   afterEach(() => {
     closeDatabase(db);
     fs.rmSync(tmpDir, { recursive: true, force: true });
-  });
-
-  // ─── 1. Dashboard hierarchy ─────────────────────────────────────────
-
-  describe('dashboard hierarchy', () => {
-    it('has exactly one h1', async () => {
-      const res = await agent.get('/').expect(200);
-      expect(countTags(res.text, 'h1')).toBe(1);
-    });
-
-    it('has page-heading-copy with description', async () => {
-      const res = await agent.get('/').expect(200);
-      expect(hasClass(res.text, 'page-heading-copy')).toBe(true);
-      expect(hasClass(res.text, 'page-heading-description')).toBe(true);
-    });
-
-    it('renders summary cards section', async () => {
-      const res = await agent.get('/').expect(200);
-      expect(hasClass(res.text, 'summary-cards')).toBe(true);
-      const cards = extractSummaryCards(res.text);
-      expect(cards).toContain('href="/projects"');
-      expect(cards).not.toContain('href="/releases"');
-      expect(cards).toMatch(/<div class="summary-card">\s*<span class="summary-card-value">0<\/span>\s*<span class="summary-card-label">Assets<\/span>/);
-    });
-
-    it('renders concise supporting context on every summary card', async () => {
-      const res = await agent.get('/').expect(200);
-      const cards = extractSummaryCards(res.text);
-      expect((cards.match(/summary-card-context/g) || []).length).toBe(4);
-      expect(cards).toContain('Projects currently tracked');
-      expect(cards).toContain('Across all projects');
-      expect(cards).toContain('Releases requiring review');
-      expect(cards).toContain('Files missing at the last scan');
-    });
-
-    it('summary cards have tabular-nums font-variant-numeric in CSS', async () => {
-      const res = await agent.get('/').expect(200);
-      const css = extractStyle(res.text);
-      expect(css).toContain('.summary-card-value');
-      expect(css).toContain('font-variant-numeric: tabular-nums');
-    });
-
-    it('renders need-attention link when attention count > 0', async () => {
-      // Create a project and release to generate attention data
-      await agent
-        .post('/projects')
-        .send('title=Attention+Test')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-
-      const res = await agent.get('/').expect(200);
-      // Summary cards always render (with or without attention)
-      expect(hasClass(res.text, 'summary-cards')).toBe(true);
-    });
-
-    it('renders project counts in a details element', async () => {
-      const res = await agent.get('/').expect(200);
-      expect(res.text).toContain('<details');
-      expect(res.text).toContain('Project counts');
-    });
-
-    it('recently updated projects use status badges', async () => {
-      const projRes = await agent
-        .post('/projects')
-        .send('title=Badge+Recent')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-
-      const res = await agent.get('/').expect(200);
-      // Status badge appears in recently updated
-      expect(res.text).toContain('status-badge');
-    });
-  });
-
-  // ─── 2. Summary-card semantics ──────────────────────────────────────
-
-  describe('summary-card semantics', () => {
-    it('summary cards have aria-label on the section', async () => {
-      const res = await agent.get('/').expect(200);
-      expect(res.text).toContain('aria-label="Overview"');
-    });
-
-    it('summary-card-value has numeric content', async () => {
-      const res = await agent.get('/').expect(200);
-      expect(res.text).toContain('summary-card-value');
-      expect(res.text).toContain('summary-card-label');
-    });
-  });
-
-  // ─── 3. No new query growth ─────────────────────────────────────────
-
-  describe('dashboard data composition', () => {
-    it('dashboard renders data from the composed view-model', async () => {
-      const res = await agent.get('/').expect(200);
-      expect(res.text).toContain('summary-card-value');
-      expect(res.text).toContain('count-card');
-      expect(res.text).toContain('Projects currently tracked');
-    });
   });
 
   // ─── 4. Project list action hierarchy ──────────────────────────────
@@ -574,14 +465,6 @@ describe('Phase 10.5B: Dashboard and project visual consolidation', () => {
     it('dashboard empty attention uses empty-state', async () => {
       const res = await agent.get('/').expect(200);
       // Empty attention state uses the empty-state class
-      expect(res.text).toContain('empty-state');
-    });
-
-    it('dashboard has a clear no-project state with the shared empty-state contract', async () => {
-      const res = await agent.get('/').expect(200);
-      expect(res.text).toContain('No projects are currently tracked');
-      expect(res.text).toContain('Create a project to start organizing releases and assets.');
-      expect(res.text).toContain('href="/projects/new"');
       expect(res.text).toContain('empty-state');
     });
   });

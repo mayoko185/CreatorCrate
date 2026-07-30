@@ -18,6 +18,29 @@ import { ensureAuthEnablement } from '../src/auth/auth-state.js';
 import { getDisabledModeCsrf } from './helpers/auth.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
+const STYLESHEET_PATH = fileURLToPath(new URL('../src/static/creatorcrate.css', import.meta.url));
+const SERVED_CSS = fs.readFileSync(STYLESHEET_PATH, 'utf8');
+
+function countTags(html, tag) {
+  const re = new RegExp(`<${tag}[\\s>]`, 'g');
+  return (html.match(re) || []).length;
+}
+
+function hasClass(html, className) {
+  const re = new RegExp(`class="[^"]*\\b${className}\\b[^"]*"`);
+  return re.test(html);
+}
+
+/** Return the served local stylesheet linked by the rendered page. */
+function extractStyle(html) {
+  expect(html).toContain('<link rel="stylesheet" href="/creatorcrate.css">');
+  return SERVED_CSS;
+}
+
+function extractSummaryCards(html) {
+  const m = html.match(/<section class="summary-cards"[\s\S]*?<\/section>/);
+  return m ? m[0] : '';
+}
 
 function getProjectDir(projectsRoot, title, status = 'tbd') {
   const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-');
@@ -403,6 +426,121 @@ describe('Phase 6B HTTP dashboard', () => {
 
       const res = await app.testAgent.get('/').expect(200);
       expect(res.text).not.toContain('Missing selection (');
+    });
+  });
+
+  // ─── Dashboard visual and structural contracts ─────────────────────
+  //
+  // Moved from phase-105b-consolidation.test.js — organizational move
+  // only. Behavior and assertions are unchanged from their prior home.
+
+  describe('dashboard visual and structural contracts', () => {
+    describe('dashboard hierarchy', () => {
+      it('has exactly one h1', async () => {
+        const res = await app.testAgent.get('/').expect(200);
+        expect(countTags(res.text, 'h1')).toBe(1);
+      });
+
+      it('has page-heading-copy with description', async () => {
+        const res = await app.testAgent.get('/').expect(200);
+        expect(hasClass(res.text, 'page-heading-copy')).toBe(true);
+        expect(hasClass(res.text, 'page-heading-description')).toBe(true);
+      });
+
+      it('renders summary cards section', async () => {
+        const res = await app.testAgent.get('/').expect(200);
+        expect(hasClass(res.text, 'summary-cards')).toBe(true);
+        const cards = extractSummaryCards(res.text);
+        expect(cards).toContain('href="/projects"');
+        expect(cards).not.toContain('href="/releases"');
+        expect(cards).toMatch(/<div class="summary-card">\s*<span class="summary-card-value">0<\/span>\s*<span class="summary-card-label">Assets<\/span>/);
+      });
+
+      it('renders concise supporting context on every summary card', async () => {
+        const res = await app.testAgent.get('/').expect(200);
+        const cards = extractSummaryCards(res.text);
+        expect((cards.match(/summary-card-context/g) || []).length).toBe(4);
+        expect(cards).toContain('Projects currently tracked');
+        expect(cards).toContain('Across all projects');
+        expect(cards).toContain('Releases requiring review');
+        expect(cards).toContain('Files missing at the last scan');
+      });
+
+      it('summary cards have tabular-nums font-variant-numeric in CSS', async () => {
+        const res = await app.testAgent.get('/').expect(200);
+        const css = extractStyle(res.text);
+        expect(css).toContain('.summary-card-value');
+        expect(css).toContain('font-variant-numeric: tabular-nums');
+      });
+
+      it('renders need-attention link when attention count > 0', async () => {
+        // Create a project and release to generate attention data
+        await app.testAgent
+          .post('/projects')
+          .send('title=Attention+Test')
+          .send('status=tbd')
+          .send('priority=normal')
+          .set('Content-Type', 'application/x-www-form-urlencoded')
+          .send('_csrf=' + encodeURIComponent(app.testCsrfToken))
+          .expect(302);
+
+        const res = await app.testAgent.get('/').expect(200);
+        // Summary cards always render (with or without attention)
+        expect(hasClass(res.text, 'summary-cards')).toBe(true);
+      });
+
+      it('renders project counts in a details element', async () => {
+        const res = await app.testAgent.get('/').expect(200);
+        expect(res.text).toContain('<details');
+        expect(res.text).toContain('Project counts');
+      });
+
+      it('recently updated projects use status badges', async () => {
+        const projRes = await app.testAgent
+          .post('/projects')
+          .send('title=Badge+Recent')
+          .send('status=tbd')
+          .send('priority=normal')
+          .set('Content-Type', 'application/x-www-form-urlencoded')
+          .send('_csrf=' + encodeURIComponent(app.testCsrfToken))
+          .expect(302);
+
+        const res = await app.testAgent.get('/').expect(200);
+        // Status badge appears in recently updated
+        expect(res.text).toContain('status-badge');
+      });
+    });
+
+    describe('summary-card semantics', () => {
+      it('summary cards have aria-label on the section', async () => {
+        const res = await app.testAgent.get('/').expect(200);
+        expect(res.text).toContain('aria-label="Overview"');
+      });
+
+      it('summary-card-value has numeric content', async () => {
+        const res = await app.testAgent.get('/').expect(200);
+        expect(res.text).toContain('summary-card-value');
+        expect(res.text).toContain('summary-card-label');
+      });
+    });
+
+    describe('dashboard data composition', () => {
+      it('dashboard renders data from the composed view-model', async () => {
+        const res = await app.testAgent.get('/').expect(200);
+        expect(res.text).toContain('summary-card-value');
+        expect(res.text).toContain('count-card');
+        expect(res.text).toContain('Projects currently tracked');
+      });
+    });
+
+    describe('contextual empty states', () => {
+      it('dashboard has a clear no-project state with the shared empty-state contract', async () => {
+        const res = await app.testAgent.get('/').expect(200);
+        expect(res.text).toContain('No projects are currently tracked');
+        expect(res.text).toContain('Create a project to start organizing releases and assets.');
+        expect(res.text).toContain('href="/projects/new"');
+        expect(res.text).toContain('empty-state');
+      });
     });
   });
 });
