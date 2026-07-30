@@ -15,62 +15,14 @@ import {
 const SORT_OPTIONS = ['updated', 'created', 'planned', 'title'];
 const PAGE_SIZE = 25;
 
+export { handleReleaseListOrBoard };
+
 export function createReleasesRouter({ appName, releaseService, projectService, workflowQueryService }) {
   const router = express.Router();
 
   // GET /releases — Release list across all projects (list or board view)
   router.get('/', (req, res, next) => {
-    try {
-      const view = req.query.view === 'board' ? 'board' : 'list';
-      const normalizedFilters = workflowQueryService.normalizeListFilters(req.query);
-      // Build query from normalized filters only — no raw req.query values
-      const query = {};
-      query.view = view;
-      if (normalizedFilters.projectId !== null) query.project = String(normalizedFilters.projectId);
-      if (normalizedFilters.status !== null) query.status = normalizedFilters.status;
-      if (normalizedFilters.schedule !== null) query.schedule = normalizedFilters.schedule;
-      if (normalizedFilters.includeArchived) query.includeArchived = '1';
-      if (normalizedFilters.sortBy !== 'updated') query.sort = normalizedFilters.sortBy;
-      if (normalizedFilters.order !== 'desc') query.order = normalizedFilters.order;
-      if (normalizedFilters.page > 1) query.page = String(normalizedFilters.page);
-      if (normalizedFilters.pageSize !== 25) query.pageSize = String(normalizedFilters.pageSize);
-      if (normalizedFilters.readiness !== 'all') query.readiness = normalizedFilters.readiness;
-      const pageUrl = buildPageUrl(req, query);
-
-      if (view === 'board') {
-        const { columns, today } = workflowQueryService.getReleaseBoard(req.query);
-        return res.render('releases/index.njk', {
-          appName,
-          view: 'board',
-          columns,
-          today,
-          query,
-          statuses: RELEASE_STATUSES,
-          pageUrl,
-        });
-      }
-
-      // List view
-      const { releases, total, page, pageSize, pageCount, today, hasAnyReleases } = workflowQueryService.getReleaseList(req.query);
-
-      res.render('releases/index.njk', {
-        appName,
-        view: 'list',
-        releases,
-        total,
-        page,
-        pageSize,
-        pageCount,
-        today,
-        hasAnyReleases,
-        pageUrl,
-        query,
-        statuses: RELEASE_STATUSES,
-        sortOptions: SORT_OPTIONS,
-      });
-    } catch (err) {
-      next(err);
-    }
+    handleReleaseListOrBoard(req, res, next, { appName, workflowQueryService });
   });
 
   // GET /releases/calendar — Monthly calendar view
@@ -854,6 +806,74 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
 }
 
 /**
+ * Shared GET / handler for the release list/board view. Reused by both the
+ * /releases router and the /release-management router (Phase 2A) so the
+ * filtering, sorting, pagination, and board-grouping contract stays identical
+ * across both mount points — only `req.baseUrl` differs between them, and
+ * `buildPageUrl`/`basePath` below derive their URLs from that dynamically.
+ * @param {import('express').Request} req
+ * @param {import('express').Response} res
+ * @param {import('express').NextFunction} next
+ * @param {object} deps - { appName, workflowQueryService }
+ */
+function handleReleaseListOrBoard(req, res, next, { appName, workflowQueryService }) {
+  try {
+    const view = req.query.view === 'board' ? 'board' : 'list';
+    const normalizedFilters = workflowQueryService.normalizeListFilters(req.query);
+    // Build query from normalized filters only — no raw req.query values
+    const query = {};
+    query.view = view;
+    if (normalizedFilters.projectId !== null) query.project = String(normalizedFilters.projectId);
+    if (normalizedFilters.status !== null) query.status = normalizedFilters.status;
+    if (normalizedFilters.schedule !== null) query.schedule = normalizedFilters.schedule;
+    if (normalizedFilters.includeArchived) query.includeArchived = '1';
+    if (normalizedFilters.sortBy !== 'updated') query.sort = normalizedFilters.sortBy;
+    if (normalizedFilters.order !== 'desc') query.order = normalizedFilters.order;
+    if (normalizedFilters.page > 1) query.page = String(normalizedFilters.page);
+    if (normalizedFilters.pageSize !== 25) query.pageSize = String(normalizedFilters.pageSize);
+    if (normalizedFilters.readiness !== 'all') query.readiness = normalizedFilters.readiness;
+    const pageUrl = buildPageUrl(req, query);
+    const basePath = req.baseUrl;
+
+    if (view === 'board') {
+      const { columns, today } = workflowQueryService.getReleaseBoard(req.query);
+      return res.render('releases/index.njk', {
+        appName,
+        view: 'board',
+        columns,
+        today,
+        query,
+        statuses: RELEASE_STATUSES,
+        pageUrl,
+        basePath,
+      });
+    }
+
+    // List view
+    const { releases, total, page, pageSize, pageCount, today, hasAnyReleases } = workflowQueryService.getReleaseList(req.query);
+
+    res.render('releases/index.njk', {
+      appName,
+      view: 'list',
+      releases,
+      total,
+      page,
+      pageSize,
+      pageCount,
+      today,
+      hasAnyReleases,
+      pageUrl,
+      query,
+      statuses: RELEASE_STATUSES,
+      sortOptions: SORT_OPTIONS,
+      basePath,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
  * Render the asset management page with an error message.
  * Preserves candidate filter state from the current request.
  * Pagination URLs always target the GET route (/releases/:id/assets),
@@ -1128,11 +1148,13 @@ function buildAssetRedirectUrl(releaseId, candidateFilters, candidatePage, candi
 }
 
 function buildPageUrl(req, baseQuery = req.query) {
-  // Use req.baseUrl + req.path to get the full path for pagination URLs
-  // req.path is relative to the router mount point (/), so we need baseUrl (/releases)
-  // When req.path is '/', we get a trailing slash which we strip
-  const basePath = req.baseUrl + req.path;
-  const cleanPath = basePath === '/releases/' ? '/releases' : basePath;
+  // Use req.baseUrl + req.path to get the full path for pagination URLs.
+  // req.path is relative to the router mount point, so we need baseUrl (e.g.
+  // /releases or /release-management). When req.path is '/', we get a
+  // trailing slash which we strip — this must work for any mount point, not
+  // just /releases, since this handler is shared with /release-management.
+  const rawPath = req.baseUrl + req.path;
+  const cleanPath = rawPath.length > 1 && rawPath.endsWith('/') ? rawPath.slice(0, -1) : rawPath;
   return function pageUrl(overrides) {
     const query = { ...baseQuery };
 

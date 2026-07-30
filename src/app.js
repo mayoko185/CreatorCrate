@@ -7,6 +7,7 @@ import { createHealthRouter } from './routes/health.js';
 import { createProjectsRouter } from './routes/projects.js';
 import { createAssetsRouter } from './routes/assets.js';
 import { createReleasesRouter } from './routes/releases.js';
+import { createReleaseManagementRouter } from './routes/release-management.js';
 import { createMediaRouter } from './routes/media.js';
 import { createSettingsRouter } from './routes/settings.js';
 import { createProjectService } from './services/project-service.js';
@@ -243,6 +244,11 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   app.use('/projects', createAssetsRouter({ appName, projectService, assetScanner, workflowQueryService }));
 
   app.use('/releases', createReleasesRouter({ appName, releaseService, projectService, workflowQueryService }));
+
+  // Phase 2A: dedicated release-management route, reusing the release-record
+  // list/board handler unchanged. Mounted after /releases so route order
+  // does not affect either — the two mount points do not overlap.
+  app.use('/release-management', createReleaseManagementRouter({ appName, workflowQueryService }));
 
   app.use('/settings', createSettingsRouter({
     appName,
