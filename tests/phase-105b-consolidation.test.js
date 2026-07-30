@@ -567,7 +567,8 @@ describe('Phase 10.5B: Dashboard and project visual consolidation', () => {
         .expect(302);
 
       const res = await agent.get(createRes.headers.location).expect(200);
-      expect(res.text).toContain('No releases yet');
+      // Phase 2C: reframed as optional/secondary copy, not "no releases yet".
+      expect(res.text).toContain('No release records for this project.');
     });
 
     it('dashboard empty attention uses empty-state', async () => {

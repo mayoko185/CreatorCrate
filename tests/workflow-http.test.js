@@ -602,7 +602,10 @@ describe('Phase 6B HTTP workflow', () => {
     it('shows safe empty states for a project with no releases or assets', async () => {
       const projectId = await createProject(app, { title: 'Bare Project' });
       const res = await app.testAgent.get(`/projects/${projectId}`).expect(200);
-      expect(res.text).toContain('No releases yet');
+      // Phase 2C: empty release-record state is optional/secondary copy, not
+      // "no releases yet" language implying the project is incomplete.
+      expect(res.text).toContain('No release records for this project.');
+      expect(res.text).not.toContain('No releases yet');
     });
 
     it('archived project does not show the "Create release" action', async () => {
@@ -659,7 +662,9 @@ describe('Phase 6B HTTP workflow', () => {
       const res = await app.testAgent.get(`/projects/${projectId}`).expect(200);
 
       expect(res.text).toContain(`href="/projects/${projectId}/edit"`);
-      expect(res.text).toMatch(/<a[^>]*>\s*Edit\s*<\/a>/);
+      // Phase 2C: the workspace edit action is labeled "Edit project" so its
+      // publication-editing purpose is unambiguous.
+      expect(res.text).toMatch(/<a[^>]*>\s*Edit project\s*<\/a>/);
       expect(res.text).toContain(`action="/projects/${projectId}/archive"`);
       expect(res.text).toMatch(/<button[^>]*>\s*Archive project\s*<\/button>/);
     });
