@@ -465,10 +465,10 @@ describe('release HTTP workflow', () => {
     });
   });
 
-  // ─── Release list ─────────────────────────────────────────────────────────
+  // ─── Release list (Phase 2B: moved to /release-management) ────────────────
 
   it('release list renders', async () => {
-    const res = await agent.get('/releases').expect(200);
+    const res = await agent.get('/release-management').expect(200);
     expect(res.text).toContain('Releases');
     expect(res.text).toContain('No releases');
   });
@@ -505,7 +505,7 @@ describe('release HTTP workflow', () => {
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
-    const res = await agent.get('/releases').expect(200);
+    const res = await agent.get('/release-management').expect(200);
     expect(res.text).toContain('Release One');
     expect(res.text).toContain('Release Two');
   });
@@ -539,7 +539,7 @@ describe('release HTTP workflow', () => {
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
-    const res = await agent.get('/releases?status=idea').expect(200);
+    const res = await agent.get('/release-management?status=idea').expect(200);
     expect(res.text).toContain('Idea Release');
     expect(res.text).not.toContain('Planned Release');
   });
@@ -3977,7 +3977,7 @@ describe('release HTTP workflow', () => {
   // or malformed inputs from req.query. Only normalized, allow-listed filter
   // values may appear in pagination, view-switching, and page-size links.
 
-  describe('release URL construction from normalized filters', () => {
+  describe('release calendar URL construction', () => {
     /**
      * Parse query parameters from a URL string (handles HTML-escaped &amp;).
      */
@@ -3993,377 +3993,6 @@ describe('release HTTP workflow', () => {
       }
       return obj;
     }
-
-    it('unknown query parameters are stripped from generated links', async () => {
-      const projRes = await agent
-        .post('/projects')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-        .send('title=URL+Strip+Test')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .expect(302);
-      const projectId = projRes.headers.location.replace('/projects/', '');
-
-      await agent
-        .post('/releases')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-        .send(`projectId=${projectId}`)
-        .send('title=URL+Strip+Release')
-        .send('status=idea')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .expect(302);
-
-      const res = await agent
-        .get('/releases?view=list&junk=x&status=bogus&project=1junk&pageSize=bad')
-        .expect(200);
-
-      // Locate the "Board" link (view switcher) and parse its URL
-      const boardMatch = res.text.match(/<a\s[^>]*href="(\/releases\?[^"]*)"[^>]*>Board<\/a>/);
-      expect(boardMatch).not.toBeNull();
-      const boardQuery = parseQuery(boardMatch[1]);
-      // Valid normalized filters are preserved
-      expect(boardQuery.view).toBe('board');
-      // Invalid and unknown parameters are absent
-      expect(boardQuery.junk).toBeUndefined();
-      expect(boardQuery.status).toBeUndefined();
-      expect(boardQuery.project).toBeUndefined();
-      expect(boardQuery.pageSize).toBeUndefined();
-    });
-
-    it('invalid status is not preserved in pagination links', async () => {
-      const projRes = await agent
-        .post('/projects')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-        .send('title=URL+Status+Test')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .expect(302);
-      const projectId = projRes.headers.location.replace('/projects/', '');
-
-      // Create enough releases to trigger pagination
-      for (let i = 0; i < 30; i++) {
-        await agent
-          .post('/releases')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-          .send(`projectId=${projectId}`)
-          .send(`title=URL+Status+Release+${i}`)
-          .send('status=idea')
-          .set('Content-Type', 'application/x-www-form-urlencoded')
-          .expect(302);
-      }
-
-      const res = await agent
-        .get('/releases?status=bogus&page=2')
-        .expect(200);
-
-      // Locate the "Previous" pagination link
-      const prevMatch = res.text.match(/<a\s[^>]*href="(\/releases\?[^"]*)"[^>]*>Previous<\/a>/);
-      expect(prevMatch).not.toBeNull();
-      const prevQuery = parseQuery(prevMatch[1]);
-      // Invalid status must not appear
-      expect(prevQuery.status).toBeUndefined();
-      // Page=1 is the default so it's omitted from generated URLs
-      expect(prevQuery.page).toBeUndefined();
-    });
-
-    it('invalid project ID is not preserved in list-to-board switch', async () => {
-      const res = await agent
-        .get('/releases?project=1junk&view=list')
-        .expect(200);
-
-      const boardMatch = res.text.match(/<a\s[^>]*href="(\/releases\?[^"]*)"[^>]*>Board<\/a>/);
-      expect(boardMatch).not.toBeNull();
-      const boardQuery = parseQuery(boardMatch[1]);
-      // Invalid project must not appear
-      expect(boardQuery.project).toBeUndefined();
-      // View must be board
-      expect(boardQuery.view).toBe('board');
-    });
-
-    it('invalid pageSize is not preserved in generated links', async () => {
-      const projRes = await agent
-        .post('/projects')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-        .send('title=URL+PageSize+Test')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .expect(302);
-      const projectId = projRes.headers.location.replace('/projects/', '');
-
-      for (let i = 0; i < 30; i++) {
-        await agent
-          .post('/releases')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-          .send(`projectId=${projectId}`)
-          .send(`title=URL+PageSize+Release+${i}`)
-          .send('status=idea')
-          .set('Content-Type', 'application/x-www-form-urlencoded')
-          .expect(302);
-      }
-
-      const res = await agent
-        .get('/releases?pageSize=bad&page=2')
-        .expect(200);
-
-      // Pagination link must not contain the invalid pageSize
-      const prevMatch = res.text.match(/<a\s[^>]*href="(\/releases\?[^"]*)"[^>]*>Previous<\/a>/);
-      expect(prevMatch).not.toBeNull();
-      const prevQuery = parseQuery(prevMatch[1]);
-      expect(prevQuery.pageSize).toBeUndefined();
-      // Page=1 is the default so it's omitted from generated URLs
-      expect(prevQuery.page).toBeUndefined();
-    });
-
-    it('valid filters are preserved through list/board switching', async () => {
-      const projRes = await agent
-        .post('/projects')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-        .send('title=URL+Preserve+Test')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .expect(302);
-      const projectId = projRes.headers.location.replace('/projects/', '');
-
-      await agent
-        .post('/releases')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-        .send(`projectId=${projectId}`)
-        .send('title=URL+Preserve+Release')
-        .send('status=idea')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .expect(302);
-
-      const res = await agent
-        .get('/releases?status=idea&view=list')
-        .expect(200);
-
-      // Board link must preserve the status filter
-      const boardMatch = res.text.match(/<a\s[^>]*href="(\/releases\?[^"]*)"[^>]*>Board<\/a>/);
-      expect(boardMatch).not.toBeNull();
-      const boardQuery = parseQuery(boardMatch[1]);
-      expect(boardQuery.status).toBe('idea');
-      expect(boardQuery.view).toBe('board');
-    });
-
-    it('default readiness=all is omitted from generated links', async () => {
-      const res = await agent
-        .get('/releases?readiness=all')
-        .expect(200);
-
-      // Board link must not contain readiness=all
-      const boardMatch = res.text.match(/<a\s[^>]*href="(\/releases\?[^"]*)"[^>]*>Board<\/a>/);
-      expect(boardMatch).not.toBeNull();
-      const boardQuery = parseQuery(boardMatch[1]);
-      expect(boardQuery.readiness).toBeUndefined();
-    });
-
-    it('valid readiness filter is preserved in generated links', async () => {
-      const res = await agent
-        .get('/releases?readiness=publishable')
-        .expect(200);
-
-      const boardMatch = res.text.match(/<a\s[^>]*href="(\/releases\?[^"]*)"[^>]*>Board<\/a>/);
-      expect(boardMatch).not.toBeNull();
-      const boardQuery = parseQuery(boardMatch[1]);
-      expect(boardQuery.readiness).toBe('publishable');
-    });
-
-    it('invalid readiness is not preserved in generated links', async () => {
-      const res = await agent
-        .get('/releases?readiness=bogus')
-        .expect(200);
-
-      const boardMatch = res.text.match(/<a\s[^>]*href="(\/releases\?[^"]*)"[^>]*>Board<\/a>/);
-      expect(boardMatch).not.toBeNull();
-      const boardQuery = parseQuery(boardMatch[1]);
-      expect(boardQuery.readiness).toBeUndefined();
-    });
-
-    // ─── Phase 7D-4: Canonical page state in generated URLs ──────────────
-
-    it('page=2 Previous link omits page and retains pageSize', async () => {
-      const projRes = await agent
-        .post('/projects')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-        .send('title=Page+Canon+Test')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .expect(302);
-      const projectId = projRes.headers.location.replace('/projects/', '');
-
-      for (let i = 0; i < 30; i++) {
-        await agent
-          .post('/releases')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-          .send(`projectId=${projectId}`)
-          .send(`title=Page+Canon+Release+${i}`)
-          .send('status=idea')
-          .set('Content-Type', 'application/x-www-form-urlencoded')
-          .expect(302);
-      }
-
-      const res = await agent
-        .get('/releases?pageSize=10&page=2')
-        .expect(200);
-
-      // Previous URL must omit page (page=1 is the default)
-      const prevMatch = res.text.match(/<a\s[^>]*href="(\/releases\?[^"]*)"[^>]*>Previous<\/a>/);
-      expect(prevMatch).not.toBeNull();
-      const prevQuery = parseQuery(prevMatch[1]);
-      expect(prevQuery.page).toBeUndefined();
-      // pageSize=10 must be retained
-      expect(prevQuery.pageSize).toBe('10');
-    });
-
-    it('list page 2 → Board link has no page', async () => {
-      const projRes = await agent
-        .post('/projects')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-        .send('title=Page+Board+Test')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .expect(302);
-      const projectId = projRes.headers.location.replace('/projects/', '');
-
-      for (let i = 0; i < 30; i++) {
-        await agent
-          .post('/releases')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-          .send(`projectId=${projectId}`)
-          .send(`title=Page+Board+Release+${i}`)
-          .send('status=idea')
-          .set('Content-Type', 'application/x-www-form-urlencoded')
-          .expect(302);
-      }
-
-      const res = await agent
-        .get('/releases?page=2')
-        .expect(200);
-
-      // Board link must not contain page
-      const boardMatch = res.text.match(/<a\s[^>]*href="(\/releases\?[^"]*)"[^>]*>Board<\/a>/);
-      expect(boardMatch).not.toBeNull();
-      const boardQuery = parseQuery(boardMatch[1]);
-      expect(boardQuery.page).toBeUndefined();
-      expect(boardQuery.view).toBe('board');
-    });
-
-    it('Board → List link has no stale page', async () => {
-      const res = await agent
-        .get('/releases?view=board')
-        .expect(200);
-
-      // List link must not contain page
-      const listMatch = res.text.match(/<a\s[^>]*href="(\/releases\?[^"]*)"[^>]*>List<\/a>/);
-      expect(listMatch).not.toBeNull();
-      const listQuery = parseQuery(listMatch[1]);
-      expect(listQuery.page).toBeUndefined();
-      expect(listQuery.view).toBe('list');
-    });
-
-    it('list page 3 → Previous link contains page=2', async () => {
-      const projRes = await agent
-        .post('/projects')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-        .send('title=Page+Prev+Test')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .expect(302);
-      const projectId = projRes.headers.location.replace('/projects/', '');
-
-      for (let i = 0; i < 60; i++) {
-        await agent
-          .post('/releases')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-          .send(`projectId=${projectId}`)
-          .send(`title=Page+Prev+Release+${i}`)
-          .send('status=idea')
-          .set('Content-Type', 'application/x-www-form-urlencoded')
-          .expect(302);
-      }
-
-      const res = await agent
-        .get('/releases?page=3')
-        .expect(200);
-
-      const prevMatch = res.text.match(/<a\s[^>]*href="(\/releases\?[^"]*)"[^>]*>Previous<\/a>/);
-      expect(prevMatch).not.toBeNull();
-      const prevQuery = parseQuery(prevMatch[1]);
-      expect(prevQuery.page).toBe('2');
-    });
-
-    it('Next-page URL contains the correct page number', async () => {
-      const projRes = await agent
-        .post('/projects')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-        .send('title=Page+Next+Test')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .expect(302);
-      const projectId = projRes.headers.location.replace('/projects/', '');
-
-      for (let i = 0; i < 30; i++) {
-        await agent
-          .post('/releases')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-          .send(`projectId=${projectId}`)
-          .send(`title=Page+Next+Release+${i}`)
-          .send('status=idea')
-          .set('Content-Type', 'application/x-www-form-urlencoded')
-          .expect(302);
-      }
-
-      const res = await agent
-        .get('/releases')
-        .expect(200);
-
-      const nextMatch = res.text.match(/<a\s[^>]*href="(\/releases\?[^"]*)"[^>]*>Next<\/a>/);
-      expect(nextMatch).not.toBeNull();
-      const nextQuery = parseQuery(nextMatch[1]);
-      expect(nextQuery.page).toBe('2');
-    });
-
-    it('valid filters remain preserved while page is canonicalized', async () => {
-      const projRes = await agent
-        .post('/projects')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-        .send('title=Page+Filter+Test')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .expect(302);
-      const projectId = projRes.headers.location.replace('/projects/', '');
-
-      for (let i = 0; i < 30; i++) {
-        await agent
-          .post('/releases')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-          .send(`projectId=${projectId}`)
-          .send(`title=Page+Filter+Release+${i}`)
-          .send('status=idea')
-          .set('Content-Type', 'application/x-www-form-urlencoded')
-          .expect(302);
-      }
-
-      const res = await agent
-        .get('/releases?status=idea&page=2')
-        .expect(200);
-
-      // Previous link must retain status=idea and omit page
-      const prevMatch = res.text.match(/<a\s[^>]*href="(\/releases\?[^"]*)"[^>]*>Previous<\/a>/);
-      expect(prevMatch).not.toBeNull();
-      const prevQuery = parseQuery(prevMatch[1]);
-      expect(prevQuery.status).toBe('idea');
-      expect(prevQuery.page).toBeUndefined();
-    });
 
     it('calendar navigation does not inherit unsupported readiness state', async () => {
       const res = await agent
@@ -8998,9 +8627,9 @@ describe('release HTTP workflow', () => {
     it('all three switcher items are real anchors with valid hrefs', async () => {
       const res = await agent.get('/releases/calendar?month=2026-07').expect(200);
       // List
-      expect(res.text).toMatch(/<a class="view-switcher-option" href="\/releases"[^>]*>List<\/a>/);
+      expect(res.text).toMatch(/<a class="view-switcher-option" href="\/release-management"[^>]*>List<\/a>/);
       // Board
-      expect(res.text).toMatch(/<a class="view-switcher-option" href="\/releases\?view=board"[^>]*>Board<\/a>/);
+      expect(res.text).toMatch(/<a class="view-switcher-option" href="\/release-management\?view=board"[^>]*>Board<\/a>/);
       // Calendar — must have a real href, not just be a bare anchor
       const calMatch = res.text.match(/<a class="view-switcher-option" href="([^"]+)"[^>]*aria-current="page"[^>]*>Calendar<\/a>/);
       expect(calMatch).not.toBeNull();
@@ -9093,128 +8722,4 @@ describe('release HTTP workflow', () => {
     });
   });
 
-  describe('release list empty-state detection', () => {
-    async function createReleaseWithTitle(title, status = 'idea') {
-      const projRes = await agent
-        .post('/projects')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-        .send(`title=${encodeURIComponent(title + ' Project')}`)
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .expect(302);
-      const projectId = projRes.headers.location.replace('/projects/', '');
-
-      const createRes = await agent
-        .post('/releases')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-        .send(`projectId=${projectId}`)
-        .send(`title=${encodeURIComponent(title)}`)
-        .send(`status=${status}`)
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .expect(302);
-      return createRes.headers.location;
-    }
-
-    /**
-     * Extract the empty-state block from rendered HTML by counting div nesting.
-     * Returns the raw HTML from <div class="empty-state"> through its matching
-     * closing </div>, or null if not found.
-     */
-    function extractEmptyState(html) {
-      const startMarker = '<div class="empty-state">';
-      const startIdx = html.indexOf(startMarker);
-      if (startIdx === -1) return null;
-      let pos = startIdx + startMarker.length;
-      let depth = 1;
-      while (depth > 0 && pos < html.length) {
-        const openIdx = html.indexOf('<div', pos);
-        const closeIdx = html.indexOf('</div>', pos);
-        if (closeIdx === -1) return null;
-        if (openIdx !== -1 && openIdx < closeIdx) {
-          depth++;
-          pos = openIdx + 4;
-        } else {
-          depth--;
-          pos = closeIdx + 6;
-        }
-      }
-      return html.slice(startIdx, pos);
-    }
-
-    it('zero releases with no filters shows "No releases yet" and New Release action', async () => {
-      const res = await agent.get('/releases').expect(200);
-      const emptyBlock = extractEmptyState(res.text);
-      expect(emptyBlock).not.toBeNull();
-      expect(emptyBlock).toContain('No releases yet');
-      expect(emptyBlock).toContain('href="/releases/new"');
-      expect(emptyBlock).toContain('New Release');
-    });
-
-    it('zero releases with only sort/order params shows "No releases yet" (not filtered)', async () => {
-      const res = await agent.get('/releases?sort=created&order=asc').expect(200);
-      const emptyBlock = extractEmptyState(res.text);
-      expect(emptyBlock).not.toBeNull();
-      expect(emptyBlock).toContain('No releases yet');
-      // New Release is the primary remedy, not Reset Filters
-      expect(emptyBlock).toContain('href="/releases/new"');
-      expect(emptyBlock).not.toContain('Reset Filters');
-    });
-
-    it('releases exist but status filter returns none shows "No releases match" and Reset Filters', async () => {
-      await createReleaseWithTitle('Visible Release', 'idea');
-
-      const res = await agent.get('/releases?status=published').expect(200);
-      const emptyBlock = extractEmptyState(res.text);
-      expect(emptyBlock).not.toBeNull();
-      expect(emptyBlock).toContain('No releases match');
-      expect(emptyBlock).toContain('Reset Filters');
-      // Reset Filters URL is the canonical release list path
-      expect(emptyBlock).toContain('href="/releases"');
-    });
-
-    it('releases exist but project filter returns none shows filtered-empty state', async () => {
-      await createReleaseWithTitle('Existing Release', 'idea');
-
-      // Project ID 999 does not exist
-      const res = await agent.get('/releases?project=999').expect(200);
-      const emptyBlock = extractEmptyState(res.text);
-      expect(emptyBlock).not.toBeNull();
-      expect(emptyBlock).toContain('No releases match');
-      expect(emptyBlock).toContain('Reset Filters');
-      expect(emptyBlock).toContain('href="/releases"');
-    });
-
-    it('Reset Filters URL has the exact canonical path and no query keys', async () => {
-      await createReleaseWithTitle('Reset URL Release', 'idea');
-
-      const res = await agent.get('/releases?status=published').expect(200);
-      const emptyBlock = extractEmptyState(res.text);
-      expect(emptyBlock).not.toBeNull();
-      // The reset link must be exactly /releases with no query string
-      const resetMatch = emptyBlock.match(/href="(\/releases(?:\?[^"]*)?)"/);
-      expect(resetMatch).not.toBeNull();
-      expect(resetMatch[1]).toBe('/releases');
-    });
-
-    it('New Release does not appear in the filtered-empty state', async () => {
-      await createReleaseWithTitle('Filter Test Release', 'idea');
-
-      const res = await agent.get('/releases?status=published').expect(200);
-      const emptyBlock = extractEmptyState(res.text);
-      expect(emptyBlock).not.toBeNull();
-      expect(emptyBlock).not.toContain('href="/releases/new"');
-      expect(emptyBlock).not.toContain('New Release');
-    });
-
-    it('releases exist and are visible shows the table, not an empty state', async () => {
-      await createReleaseWithTitle('Shown Release', 'idea');
-
-      const res = await agent.get('/releases').expect(200);
-      expect(res.text).toContain('table-scroll');
-      expect(res.text).toContain('Shown Release');
-      // No empty-state block in the rendered content
-      expect(extractEmptyState(res.text)).toBeNull();
-    });
-  });
 });

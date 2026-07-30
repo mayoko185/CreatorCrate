@@ -568,6 +568,10 @@ export function createProjectService(db, projectsRoot) {
       return repository.list(options);
     },
 
+    listPublished(options = {}) {
+      return repository.listPublished(options);
+    },
+
     countByStatus() {
       return repository.countByStatus();
     },

@@ -15,14 +15,33 @@ import {
 const SORT_OPTIONS = ['updated', 'created', 'planned', 'title'];
 const PAGE_SIZE = 25;
 
+// Phase 2B: query parameters that unambiguously target the release-record
+// list/board (now at /release-management). A GET /releases request carrying
+// any of these is a stale bookmark/link to the old release-record list, not
+// a request for the Published Work page — redirect it, preserving every
+// query parameter as-is.
+const RELEASE_MANAGEMENT_PARAMS = ['view', 'project', 'status', 'schedule', 'readiness', 'includeArchived'];
+
+const PUBLISHED_SORT_OPTIONS = ['published', 'title', 'updated'];
+const PUBLISHED_PAGE_SIZE = 25;
+
 export { handleReleaseListOrBoard };
 
 export function createReleasesRouter({ appName, releaseService, projectService, workflowQueryService }) {
   const router = express.Router();
 
-  // GET /releases — Release list across all projects (list or board view)
+  // GET /releases — Published Work: project-derived list of published
+  // projects (Phase 2B). Requests that clearly target the old release-record
+  // list/board are redirected to /release-management instead.
   router.get('/', (req, res, next) => {
-    handleReleaseListOrBoard(req, res, next, { appName, workflowQueryService });
+    const targetsReleaseManagement = RELEASE_MANAGEMENT_PARAMS.some(
+      (key) => req.query[key] !== undefined
+    );
+    if (targetsReleaseManagement) {
+      const queryString = req.url.includes('?') ? req.url.slice(req.url.indexOf('?')) : '';
+      return res.redirect(`/release-management${queryString}`);
+    }
+    handlePublishedWork(req, res, next, { appName, projectService });
   });
 
   // GET /releases/calendar — Monthly calendar view
@@ -867,6 +886,85 @@ function handleReleaseListOrBoard(req, res, next, { appName, workflowQueryServic
       statuses: RELEASE_STATUSES,
       sortOptions: SORT_OPTIONS,
       basePath,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * Parse and normalize GET /releases (Published Work) query parameters.
+ * @param {Object} raw - req.query
+ */
+function parsePublishedQuery(raw) {
+  const search = typeof raw.search === 'string' ? raw.search.trim() : '';
+  const sortBy = PUBLISHED_SORT_OPTIONS.includes(raw.sort) ? raw.sort : 'published';
+  const order = raw.order === 'asc' ? 'asc' : 'desc';
+
+  let page = Number.parseInt(raw.page, 10);
+  if (!Number.isInteger(page) || page < 1) {
+    page = 1;
+  }
+
+  return { search, sortBy, order, page };
+}
+
+function buildPublishedPageUrl(req) {
+  const rawPath = req.baseUrl + req.path;
+  const cleanPath = rawPath.length > 1 && rawPath.endsWith('/') ? rawPath.slice(0, -1) : rawPath;
+  return function pageUrl(overrides) {
+    const query = { ...req.query };
+    for (const [key, value] of Object.entries(overrides)) {
+      if (value === undefined || value === null || value === '' || (key === 'page' && value == 1)) {
+        delete query[key];
+      } else {
+        query[key] = String(value);
+      }
+    }
+    const search = new URLSearchParams(query).toString();
+    return search ? `${cleanPath}?${search}` : cleanPath;
+  };
+}
+
+/**
+ * GET /releases handler (Phase 2B): published-project listing. A project
+ * appears once its status is 'published' and it is not archived — no
+ * release record is required or consulted.
+ * @param {import('express').Request} req
+ * @param {import('express').Response} res
+ * @param {import('express').NextFunction} next
+ * @param {object} deps - { appName, projectService }
+ */
+function handlePublishedWork(req, res, next, { appName, projectService }) {
+  try {
+    const parsed = parsePublishedQuery(req.query);
+    const baseOptions = { search: parsed.search, sortBy: parsed.sortBy, order: parsed.order };
+
+    const { total } = projectService.listPublished({ ...baseOptions, limit: 0 });
+    const { total: totalPublished } = projectService.listPublished({ limit: 0 });
+    const pageCount = Math.max(1, Math.ceil(total / PUBLISHED_PAGE_SIZE));
+    const currentPage = Math.min(parsed.page, pageCount);
+    const offset = (currentPage - 1) * PUBLISHED_PAGE_SIZE;
+    const { rows } = projectService.listPublished({ ...baseOptions, limit: PUBLISHED_PAGE_SIZE, offset });
+
+    const pageUrl = buildPublishedPageUrl(req);
+
+    res.render('releases/published.njk', {
+      appName,
+      projects: rows,
+      total,
+      hasAnyPublished: totalPublished > 0,
+      searchActive: Boolean(parsed.search),
+      page: currentPage,
+      pageSize: PUBLISHED_PAGE_SIZE,
+      pageCount,
+      pageUrl,
+      query: {
+        search: parsed.search,
+        sort: parsed.sortBy,
+        order: parsed.order,
+      },
+      sortOptions: PUBLISHED_SORT_OPTIONS,
     });
   } catch (err) {
     next(err);

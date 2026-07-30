@@ -147,7 +147,7 @@ describe('Phase 10.5A: Shared page-level components', () => {
       expect(hasClass(res.text, 'page-heading')).toBe(true);
     });
 
-    it('release list has exactly one h1 inside page-heading', async () => {
+    it('published work page has exactly one h1 inside page-heading', async () => {
       const res = await agent.get('/releases').expect(200);
       expect(countTags(res.text, 'h1')).toBe(1);
       expect(hasClass(res.text, 'page-heading')).toBe(true);
@@ -365,7 +365,7 @@ describe('Phase 10.5A: Shared page-level components', () => {
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
-      const res = await agent.get('/releases').expect(200);
+      const res = await agent.get('/release-management').expect(200);
       expect(res.text).toMatch(/<div class="table-scroll" tabindex="0" aria-label="Release list">/);
     });
   });
@@ -562,7 +562,7 @@ describe('Phase 10.5A: Shared page-level components', () => {
       expect(countTags(res.text, 'h1')).toBe(1);
     });
 
-    it('release list has exactly one h1', async () => {
+    it('published work page has exactly one h1', async () => {
       const res = await agent.get('/releases').expect(200);
       expect(countTags(res.text, 'h1')).toBe(1);
     });

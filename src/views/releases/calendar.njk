@@ -6,8 +6,8 @@
 {% block content %}
   {% call pageHeading.render("Release Calendar") %}
     <nav class="view-switcher" aria-label="Release view">
-      <a class="view-switcher-option" href="/releases">List</a>
-      <a class="view-switcher-option" href="/releases?view=board">Board</a>
+      <a class="view-switcher-option" href="/release-management">List</a>
+      <a class="view-switcher-option" href="/release-management?view=board">Board</a>
       <a class="view-switcher-option" href="/releases/calendar{% if query.month %}?month={{ query.month }}{% endif %}" aria-current="page">Calendar</a>
     </nav>
   {% endcall %}

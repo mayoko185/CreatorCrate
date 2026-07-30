@@ -321,14 +321,14 @@ describe('Phase 10.6B: Visual-polish hardening', () => {
 
   describe('typography consistency', () => {
     it('board card project and meta text is at least 0.75rem', async () => {
-      const res = await request(app).get('/releases?view=board').expect(200);
+      const res = await request(app).get('/release-management?view=board').expect(200);
       const css = extractStyle(res.text);
       expect(css).toMatch(/\.card-project\s*\{[^}]*font-size:\s*0\.75rem/);
       expect(css).toMatch(/\.card-meta\s*\{[^}]*font-size:\s*0\.75rem/);
     });
 
     it('card-readiness text is at least 0.75rem', async () => {
-      const res = await request(app).get('/releases?view=board').expect(200);
+      const res = await request(app).get('/release-management?view=board').expect(200);
       const css = extractStyle(res.text);
       expect(css).toMatch(/\.card-readiness \.readiness-publishable\s*\{[^}]*font-size:\s*0\.75rem/);
       expect(css).toMatch(/\.card-readiness \.readiness-blocked\s*\{[^}]*font-size:\s*0\.75rem/);
@@ -562,7 +562,7 @@ describe('Phase 10.6B: Visual-polish hardening', () => {
     });
 
     it('board cards have overflow containment', async () => {
-      const res = await request(app).get('/releases?view=board').expect(200);
+      const res = await request(app).get('/release-management?view=board').expect(200);
       const css = extractStyle(res.text);
       expect(css).toMatch(/\.board-card\s*\{[^}]*overflow-wrap/);
     });
@@ -655,7 +655,7 @@ describe('Phase 10.6B: Visual-polish hardening', () => {
     });
 
     it('release list links use --link colour', async () => {
-      const res = await request(app).get('/releases').expect(200);
+      const res = await request(app).get('/release-management').expect(200);
       const css = extractStyle(res.text);
       expect(css).toMatch(/\.release-list a\s*\{[^}]*color:\s*var\(--link\)/);
     });
@@ -700,7 +700,7 @@ describe('Phase 10.6B: Visual-polish hardening', () => {
     });
 
     it('board-card archived opacity is at least 0.6', async () => {
-      const res = await request(app).get('/releases?view=board').expect(200);
+      const res = await request(app).get('/release-management?view=board').expect(200);
       const css = extractStyle(res.text);
       const opacityMatch = css.match(/\.board-card\.archived\s*\{[^}]*opacity:\s*([0-9.]+)/);
       expect(opacityMatch).not.toBeNull();

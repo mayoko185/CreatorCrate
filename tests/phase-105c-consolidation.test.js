@@ -86,7 +86,7 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
 
   describe('release list and board', () => {
     it('release list has page-heading with New Release action', async () => {
-      const res = await agent.get('/releases').expect(200);
+      const res = await agent.get('/release-management').expect(200);
       expect(hasClass(res.text, 'page-heading')).toBe(true);
       expect(hasClass(res.text, 'page-heading-copy')).toBe(true);
       expect(res.text).toContain('New Release');
@@ -94,12 +94,12 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
     });
 
     it('release list has exactly one h1', async () => {
-      const res = await agent.get('/releases').expect(200);
+      const res = await agent.get('/release-management').expect(200);
       expect(countTags(res.text, 'h1')).toBe(1);
     });
 
     it('release list uses shared view-switcher-option pattern', async () => {
-      const res = await agent.get('/releases').expect(200);
+      const res = await agent.get('/release-management').expect(200);
       expect(res.text).toContain('view-switcher-option');
       expect(res.text).toContain('aria-label="View"');
       // List is the active view via aria-current, no dead active class
@@ -125,7 +125,7 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
         .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
-      const res = await agent.get('/releases').expect(200);
+      const res = await agent.get('/release-management').expect(200);
       expect(hasClass(res.text, 'data-table')).toBe(true);
       expect(hasClass(res.text, 'table-scroll')).toBe(true);
     });
@@ -148,25 +148,25 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
         .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
-      const res = await agent.get('/releases').expect(200);
+      const res = await agent.get('/release-management').expect(200);
       expect(res.text).toContain('status-badge');
       expect(res.text).toMatch(/status-badge--draft/);
     });
 
     it('release list empty state uses shared partial', async () => {
-      const res = await agent.get('/releases').expect(200);
+      const res = await agent.get('/release-management').expect(200);
       expect(res.text).toContain('empty-state');
       expect(res.text).toContain('empty-state-heading');
     });
 
     it('board view uses status-badge in column headers', async () => {
-      const res = await agent.get('/releases?view=board').expect(200);
+      const res = await agent.get('/release-management?view=board').expect(200);
       expect(res.text).toContain('status-badge');
       expect(res.text).toContain('board-column-header');
     });
 
     it('board view renders a named bounded scroll container', async () => {
-      const res = await agent.get('/releases?view=board').expect(200);
+      const res = await agent.get('/release-management?view=board').expect(200);
       const css = extractStyle(res.text);
       expect(res.text).toContain('<div class="board-scroll" tabindex="0" aria-label="Release board columns">');
       expect(res.text).toContain('<div class="board-container">');
@@ -176,14 +176,14 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
     });
 
     it('board view filters have unique label IDs (no duplicates)', async () => {
-      const res = await agent.get('/releases?view=board').expect(200);
+      const res = await agent.get('/release-management?view=board').expect(200);
       const ids = res.text.match(/id="board-[^"]+"/g) || [];
       const uniqueIds = new Set(ids);
       expect(ids.length).toBe(uniqueIds.size);
     });
 
     it('list view filters have unique label IDs (no duplicates)', async () => {
-      const res = await agent.get('/releases').expect(200);
+      const res = await agent.get('/release-management').expect(200);
       const ids = res.text.match(/id="list-[^"]+"/g) || [];
       const uniqueIds = new Set(ids);
       expect(ids.length).toBe(uniqueIds.size);
@@ -210,7 +210,7 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
       await agent.post(`${createRes.headers.location}/archive`).send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
-      const res = await agent.get('/releases?includeArchived=1').expect(200);
+      const res = await agent.get('/release-management?includeArchived=1').expect(200);
       expect(res.text).toMatch(/status-badge--archived/);
     });
   });
@@ -239,7 +239,7 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
           .send('_csrf=' + encodeURIComponent(csrfToken))
           .expect(302);
 
-        const res = await agent.get('/releases').expect(200);
+        const res = await agent.get('/release-management').expect(200);
         expect(res.text).toContain('status-badge');
       });
     }
@@ -289,7 +289,7 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
         .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
-      const res = await agent.get('/releases').expect(200);
+      const res = await agent.get('/release-management').expect(200);
       expect(res.text).toContain('status-badge--published');
     });
 
@@ -353,8 +353,8 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
     it('calendar has view-switcher links back to list and board', async () => {
       const res = await agent.get('/releases/calendar').expect(200);
       expect(res.text).toContain('view-switcher-option');
-      expect(res.text).toMatch(/href="\/releases"/);
-      expect(res.text).toMatch(/href="\/releases\?view=board"/);
+      expect(res.text).toMatch(/href="\/release-management"/);
+      expect(res.text).toMatch(/href="\/release-management\?view=board"/);
     });
 
     it('calendar renders a named bounded scroll container for narrow screens', async () => {
@@ -1021,7 +1021,7 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
     });
 
     it('no duplicate status-badge variant definitions in CSS', async () => {
-      const res = await agent.get('/releases').expect(200);
+      const res = await agent.get('/release-management').expect(200);
       const css = extractStyle(res.text);
       // All shared badge variants must be defined
       expect(css).toContain('.status-badge--neutral');
@@ -1051,7 +1051,7 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
         .expect(302);
 
       const projectRes = await agent.get('/projects').expect(200);
-      const releaseRes = await agent.get('/releases').expect(200);
+      const releaseRes = await agent.get('/release-management').expect(200);
 
       // Both pages render status badges with the same variant class pattern
       expect(projectRes.text).toContain('status-badge');
@@ -1063,7 +1063,7 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
 
   describe('accessibility', () => {
     it('release list has exactly one h1', async () => {
-      const res = await agent.get('/releases').expect(200);
+      const res = await agent.get('/release-management').expect(200);
       expect(countTags(res.text, 'h1')).toBe(1);
     });
 
@@ -1109,7 +1109,7 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
     });
 
     it('view-switcher has aria-label', async () => {
-      const res = await agent.get('/releases').expect(200);
+      const res = await agent.get('/release-management').expect(200);
       expect(res.text).toContain('aria-label="View"');
     });
 
@@ -1119,7 +1119,7 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
     });
 
     it('no nested interactive elements in view switcher', async () => {
-      const res = await agent.get('/releases').expect(200);
+      const res = await agent.get('/release-management').expect(200);
       // View switcher options are <a> elements, not <button> inside <a>
       const switcherMatch = res.text.match(/<nav class="view-switcher"[^>]*>[\s\S]*?<\/nav>/);
       if (switcherMatch) {
@@ -1134,9 +1134,9 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
 
   describe('no-JavaScript behavior', () => {
     it('release list filter form works without JavaScript', async () => {
-      const res = await agent.get('/releases').expect(200);
+      const res = await agent.get('/release-management').expect(200);
       // Filter form uses method="get" — no JS required
-      expect(res.text).toMatch(/<form[^>]+method="get"[^>]*action="\/releases"/);
+      expect(res.text).toMatch(/<form[^>]+method="get"[^>]*action="\/release-management"/);
     });
 
     it('release calendar navigation links work without JavaScript', async () => {

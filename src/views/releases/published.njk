@@ -1,0 +1,100 @@
+{% extends "layout.njk" %}
+{% import "partials/page-heading.njk" as pageHeading %}
+
+{% block content %}
+  {{ pageHeading.render("Published Work", "Projects published through CreatorCrate.") }}
+
+  <form class="filters" method="get" action="/releases">
+    <div class="field">
+      <label for="published-search">Search</label>
+      <input type="search" id="published-search" name="search" value="{{ query.search or '' }}">
+    </div>
+
+    <div class="field">
+      <label for="published-sort">Sort</label>
+      <select id="published-sort" name="sort">
+        {% for opt in sortOptions %}
+          <option value="{{ opt }}" {% if query.sort == opt or (not query.sort and opt == 'published') %}selected{% endif %}>{{ opt | replace('-', ' ') | title }}</option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <div class="field">
+      <label for="published-order">Sort order</label>
+      <select id="published-order" name="order">
+        <option value="desc" {% if query.order != 'asc' %}selected{% endif %}>Desc</option>
+        <option value="asc" {% if query.order == 'asc' %}selected{% endif %}>Asc</option>
+      </select>
+    </div>
+
+    <button class="button" type="submit">Filter</button>
+    <a class="button button-secondary" href="/releases">Reset Search</a>
+  </form>
+
+  <p class="results-meta">{{ total }} published project{% if total != 1 %}s{% endif %} found</p>
+
+  {% if projects.length > 0 %}
+    <div class="table-scroll" tabindex="0" aria-label="Published work list">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Title</th>
+            <th>Status</th>
+            <th>Published</th>
+            <th>Patreon</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for project in projects %}
+            <tr>
+              <td>
+                <a href="/projects/{{ project.id }}">{{ project.title }}</a>
+                {% if project.description %}
+                  <p class="excerpt">{{ project.description | truncate(140) }}</p>
+                {% endif %}
+              </td>
+              <td>{% set status = project.status %}{% include "partials/status-badge.njk" %}</td>
+              <td>{{ project.published_date or 'Not recorded' }}</td>
+              <td>
+                {% if project.patreon_url %}
+                  <a href="{{ project.patreon_url }}" rel="noopener noreferrer" target="_blank">Patreon</a>
+                {% else %}
+                  —
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    {% if pageCount > 1 %}
+      <nav class="pagination" aria-label="Published work pages">
+        {% if page > 1 %}
+          <a class="button" href="{{ pageUrl({ page: page - 1 }) }}">Previous</a>
+        {% endif %}
+
+        <span>Page {{ page }} of {{ pageCount }}</span>
+
+        {% if page < pageCount %}
+          <a class="button" href="{{ pageUrl({ page: page + 1 }) }}">Next</a>
+        {% endif %}
+      </nav>
+    {% endif %}
+  {% else %}
+    {% if searchActive and hasAnyPublished %}
+      {% set emptyHeading = "No published work matches your search" %}
+      {% set emptyDescription = "" %}
+      {% set emptyActionUrl = "/releases" %}
+      {% set emptyActionLabel = "Reset Search" %}
+      {% set emptyHeadingLevel = "h2" %}
+    {% else %}
+      {% set emptyHeading = "No published work yet" %}
+      {% set emptyDescription = "Publish a project to see it here." %}
+      {% set emptyActionUrl = "/projects" %}
+      {% set emptyActionLabel = "Browse Projects" %}
+      {% set emptyHeadingLevel = "h2" %}
+    {% endif %}
+    {% include "partials/empty-state.njk" %}
+  {% endif %}
+{% endblock %}

@@ -167,7 +167,7 @@ describe('Phase 10.6A: keyboard and focus-state hardening', () => {
     });
 
     it('scrollable regions carry tabindex="0" and a name (not positive)', async () => {
-      const res = await agent.get('/releases').expect(200);
+      const res = await agent.get('/release-management').expect(200);
       // The release list table is an intrinsically wide scroll region.
       expect(res.text).toMatch(
         /<div class="table-scroll" tabindex="0" aria-label="Release list">/,
