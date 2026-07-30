@@ -118,12 +118,12 @@ describe('application shell — navigation model', () => {
   describe('destinations', () => {
     it('renders only existing top-level destinations', async () => {
       const res = await agent.get('/').expect(200);
-      expect(navHrefs(res.text)).toEqual(['/', '/projects', '/releases', '/settings']);
+      expect(navHrefs(res.text)).toEqual(['/', '/projects', '/releases', '/calendar', '/settings']);
     });
 
     it('renders a decorative icon for every nav item', async () => {
       const res = await agent.get('/').expect(200);
-      expect(countNavIcons(res.text)).toBe(4);
+      expect(countNavIcons(res.text)).toBe(5);
       expect(res.text).toContain('aria-hidden="true"');
     });
   });
@@ -165,16 +165,29 @@ describe('application shell — navigation model', () => {
     });
   });
 
-  describe('active state — releases family', () => {
-    it('marks Releases active on the release list', async () => {
+  describe('active state — released (Published Work) family', () => {
+    it('marks Published Work active on the release list', async () => {
       const res = await agent.get('/releases').expect(200);
       expect(activeNavKeys(res.text)).toEqual(['releases']);
       expect(countActive(res.text)).toBe(1);
     });
 
-    it('marks Releases active on release detail', async () => {
+    it('marks Published Work active on release detail', async () => {
       const res = await agent.get(releaseLocation).expect(200);
       expect(activeNavKeys(res.text)).toEqual(['releases']);
+    });
+  });
+
+  describe('active state — calendar', () => {
+    it('marks Calendar active on the canonical calendar route', async () => {
+      const res = await agent.get('/calendar').expect(200);
+      expect(activeNavKeys(res.text)).toEqual(['calendar']);
+      expect(countActive(res.text)).toBe(1);
+    });
+
+    it('leaves Published Work inactive on /calendar', async () => {
+      const res = await agent.get('/calendar').expect(200);
+      expect(activeNavKeys(res.text)).not.toContain('releases');
     });
   });
 

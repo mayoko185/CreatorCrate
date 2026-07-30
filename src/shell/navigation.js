@@ -53,14 +53,13 @@ const NAVIGATION_ITEMS = [
   },
   {
     key: 'releases',
-    label: 'Releases',
+    label: 'Published Work',
     href: '/releases',
     icon: 'releases',
-    // Phase 2D: /releases is Published Work; /release-management (the
-    // release-record list/board) and /calendar (the project-backed
-    // calendar) have no separate sidebar item of their own, so they stay
-    // grouped under this item rather than leaving the primary nav
-    // misleadingly inactive.
+    // Phase 2E: /releases is Published Work; /release-management (the
+    // release-record list/board) and every release-record route stay
+    // grouped under this item. /calendar now has its own dedicated sidebar
+    // item (below) rather than being grouped here.
     matches: [
       '/releases',
       '/releases/new',
@@ -69,8 +68,17 @@ const NAVIGATION_ITEMS = [
       '/releases/:id/publish',
       '/releases/:id/assets',
       '/release-management',
-      '/calendar',
     ],
+  },
+  {
+    key: 'calendar',
+    label: 'Calendar',
+    href: '/calendar',
+    icon: 'calendar',
+    // Phase 2E: the canonical project-backed calendar route gets its own
+    // dedicated primary-navigation item, discoverable independently of
+    // Published Work.
+    matches: ['/calendar'],
   },
   {
     key: 'settings',

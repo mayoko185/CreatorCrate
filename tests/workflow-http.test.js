@@ -475,7 +475,7 @@ describe('Phase 6B HTTP workflow', () => {
     it('renders the release summary section heading', async () => {
       const projectId = await createProject(app, { title: 'Release Summary Project' });
       const res = await app.testAgent.get(`/projects/${projectId}`).expect(200);
-      expect(res.text).toContain('Releases');
+      expect(res.text).toContain('Release records and packaging');
       expect(res.text).toContain('Status');
     });
 

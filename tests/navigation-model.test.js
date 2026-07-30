@@ -24,8 +24,9 @@ function activeKeys(path, opts = {}) {
 describe('navigation model — destinations', () => {
   it('exposes only destinations that resolve to real page routes', () => {
     const { navigation } = buildShellModel({ appName: APP_NAME, path: '/' });
-    // Dashboard, Projects, Releases, Settings. No Health (JSON-only), no dead links.
-    expect(navigation.map((n) => n.href)).toEqual(['/', '/projects', '/releases', '/settings']);
+    // Dashboard, Projects, Published Work, Calendar, Settings. No Health
+    // (JSON-only), no dead links.
+    expect(navigation.map((n) => n.href)).toEqual(['/', '/projects', '/releases', '/calendar', '/settings']);
   });
 
   it('every navigation item has a stable key, label, href, and icon', () => {
@@ -47,6 +48,44 @@ describe('navigation model — destinations', () => {
   it('icon keys are unique across items', () => {
     const icons = NAVIGATION_ITEMS.map((i) => i.icon);
     expect(new Set(icons).size).toBe(icons.length);
+  });
+});
+
+describe('navigation model — Phase 2E: dedicated Calendar item', () => {
+  it('contains exactly one Calendar item', () => {
+    const calendarItems = NAVIGATION_ITEMS.filter((i) => i.key === 'calendar');
+    expect(calendarItems).toHaveLength(1);
+  });
+
+  it('Calendar has href /calendar and a defined icon', () => {
+    const item = NAVIGATION_ITEMS.find((i) => i.key === 'calendar');
+    expect(item.href).toBe('/calendar');
+    expect(item.icon).toBe('calendar');
+  });
+
+  it('Published Work (formerly Releases) has href /releases', () => {
+    const item = NAVIGATION_ITEMS.find((i) => i.key === 'releases');
+    expect(item.label).toBe('Published Work');
+    expect(item.href).toBe('/releases');
+  });
+
+  it('item order is exactly Dashboard, Projects, Published Work, Calendar, Settings', () => {
+    expect(NAVIGATION_ITEMS.map((i) => i.label)).toEqual([
+      'Dashboard',
+      'Projects',
+      'Published Work',
+      'Calendar',
+      'Settings',
+    ]);
+  });
+
+  it('Calendar appears immediately after Published Work and before Settings', () => {
+    const keys = NAVIGATION_ITEMS.map((i) => i.key);
+    const releasesIdx = keys.indexOf('releases');
+    const calendarIdx = keys.indexOf('calendar');
+    const settingsIdx = keys.indexOf('settings');
+    expect(calendarIdx).toBe(releasesIdx + 1);
+    expect(settingsIdx).toBe(calendarIdx + 1);
   });
 });
 
@@ -84,7 +123,7 @@ describe('navigation model — projects active state', () => {
   });
 });
 
-describe('navigation model — releases active state', () => {
+describe('navigation model — released (Published Work) active state', () => {
   it('is active on the release list', () => {
     expect(activeKeys('/releases')).toEqual(['releases']);
   });
@@ -97,17 +136,31 @@ describe('navigation model — releases active state', () => {
     expect(activeKeys('/releases/9/assets')).toEqual(['releases']);
   });
 
-  // Phase 2D: /calendar is the canonical project-backed calendar route, and
-  // /release-management is the release-record list/board — neither has a
-  // separate sidebar item, so both stay grouped under Releases rather than
-  // leaving the primary nav misleadingly inactive.
-  it('is active on the canonical calendar route', () => {
-    expect(activeKeys('/calendar')).toEqual(['releases']);
-  });
-
+  // Phase 2E: /release-management is the release-record list/board — it has
+  // no separate sidebar item, so it stays grouped under Published Work.
   it('is active on the release-management route', () => {
     expect(activeKeys('/release-management')).toEqual(['releases']);
     expect(activeKeys('/release-management?view=board')).toEqual(['releases']);
+  });
+
+  // Phase 2E: /calendar now has its own dedicated sidebar item and must not
+  // activate Published Work.
+  it('is not active on the canonical calendar route', () => {
+    expect(activeKeys('/calendar')).not.toContain('releases');
+  });
+});
+
+describe('navigation model — calendar active state', () => {
+  it('is active on the canonical calendar route', () => {
+    expect(activeKeys('/calendar')).toEqual(['calendar']);
+  });
+
+  it('is not active on /calendarized (no broad prefix matching)', () => {
+    expect(activeKeys('/calendarized')).toEqual([]);
+  });
+
+  it('is not active on /releases/calendar (a different path)', () => {
+    expect(activeKeys('/releases/calendar')).not.toContain('calendar');
   });
 });
 
@@ -154,6 +207,11 @@ describe('navigation model — prefix safety', () => {
     expect(activeKeys('/releasesx')).toEqual([]);
   });
 
+  it('an unrelated sibling prefix does not activate calendar', () => {
+    expect(activeKeys('/calendarized')).toEqual([]);
+    expect(activeKeys('/calendar-old')).toEqual([]);
+  });
+
   it('a query string is stripped before matching', () => {
     expect(activeKeys('/projects?status=tbd&page=2')).toEqual(['projects']);
     expect(activeKeys('/projects/5/assets?view=grid')).toEqual(['projects']);
@@ -178,6 +236,7 @@ describe('navigation model — active-count invariants', () => {
       '/releases/3/edit',
       '/releases/3/publish',
       '/releases/3/assets',
+      '/releases/new',
       '/settings',
       '/settings/backups',
       '/settings/backups/creatorcrate-2026-01-01T000000Z.sqlite/restore',
@@ -202,7 +261,8 @@ describe('navigation model — active-count invariants', () => {
 describe('navigation model — active section (header source)', () => {
   it('exposes the active item label as activeSection', () => {
     expect(buildShellModel({ appName: APP_NAME, path: '/projects' }).activeSection).toBe('Projects');
-    expect(buildShellModel({ appName: APP_NAME, path: '/releases/3/edit' }).activeSection).toBe('Releases');
+    expect(buildShellModel({ appName: APP_NAME, path: '/releases/3/edit' }).activeSection).toBe('Published Work');
+    expect(buildShellModel({ appName: APP_NAME, path: '/calendar' }).activeSection).toBe('Calendar');
     expect(buildShellModel({ appName: APP_NAME, path: '/' }).activeSection).toBe('Dashboard');
   });
 

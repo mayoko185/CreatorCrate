@@ -2949,7 +2949,7 @@ describe('release HTTP workflow', () => {
     // Verify initial state
     const before = await agent.get(createRes.headers.location).expect(200);
     expect(before.text).toContain('Status: ready');
-    expect(before.text).not.toContain('Published');
+    expect(before.text).not.toContain('readiness-badge readiness-publishable">Published</p>');
 
     // Attempt publish (will fail — no assets)
     await agent
@@ -2960,7 +2960,7 @@ describe('release HTTP workflow', () => {
     // State must be unchanged
     const after = await agent.get(createRes.headers.location).expect(200);
     expect(after.text).toContain('Status: ready');
-    expect(after.text).not.toContain('Published');
+    expect(after.text).not.toContain('readiness-badge readiness-publishable">Published</p>');
   });
 
   it('archived release publish rejection remains intact', async () => {
@@ -8728,7 +8728,7 @@ describe('release HTTP workflow', () => {
     it('exactly one switcher item is current within the view-switcher nav', async () => {
       const res = await agent.get('/calendar?month=2026-07').expect(200);
       // Extract the view-switcher nav to scope the count (the sidebar nav also
-      // carries aria-current="page" for the Releases section).
+      // carries aria-current="page" for the Calendar section).
       const switcherMatch = res.text.match(/<nav class="view-switcher"[^>]*>([\s\S]*?)<\/nav>/);
       expect(switcherMatch).not.toBeNull();
       const currentCount = (switcherMatch[1].match(/aria-current="page"/g) || []).length;

@@ -199,16 +199,16 @@ describe('application shell (Phase 10.4B) — landmarks & structure', () => {
       expect(res.text).toContain('<aside class="app-sidebar">');
     });
 
-    it('renders all four destinations', async () => {
+    it('renders all five destinations', async () => {
       const res = await agent.get('/').expect(200);
-      expect(navHrefs(res.text)).toEqual(['/', '/projects', '/releases', '/settings']);
+      expect(navHrefs(res.text)).toEqual(['/', '/projects', '/releases', '/calendar', '/settings']);
     });
 
     it('renders a decorative icon + label span for every nav link', async () => {
       const res = await agent.get('/').expect(200);
       // Each link carries an aria-hidden svg and a non-hidden label span.
-      expect((res.text.match(/class="app-nav-label"/g) || []).length).toBe(4);
-      expect((res.text.match(/class="app-nav-link" data-nav-key="[^"]+"/g) || []).length).toBe(4);
+      expect((res.text.match(/class="app-nav-label"/g) || []).length).toBe(5);
+      expect((res.text.match(/class="app-nav-link" data-nav-key="[^"]+"/g) || []).length).toBe(5);
     });
   });
 
@@ -270,7 +270,7 @@ describe('application shell (Phase 10.4B) — landmarks & structure', () => {
       const res = await agent.get('/').expect(200);
       // Extract each nav anchor and assert it has no aria-label.
       const links = res.text.match(/<a href="[^"]+" class="app-nav-link"[^>]*>/g) || [];
-      expect(links.length).toBe(4);
+      expect(links.length).toBe(5);
       for (const anchor of links) {
         expect(anchor).not.toMatch(/aria-label=/);
       }
@@ -286,7 +286,24 @@ describe('application shell (Phase 10.4B) — landmarks & structure', () => {
       const res = await agent.get('/').expect(200);
       expect(res.text).toContain('class="app-nav-label">Dashboard</span>');
       expect(res.text).toContain('class="app-nav-label">Projects</span>');
-      expect(res.text).toContain('class="app-nav-label">Releases</span>');
+      expect(res.text).toContain('class="app-nav-label">Published Work</span>');
+      expect(res.text).toContain('class="app-nav-label">Calendar</span>');
+      expect(res.text).toContain('class="app-nav-label">Settings</span>');
+    });
+
+    it('no old "Releases" label remains in the primary sidebar', async () => {
+      const res = await agent.get('/').expect(200);
+      const navBlock = res.text.match(/<nav class="app-nav"[\s\S]*?<\/nav>/);
+      expect(navBlock).not.toBeNull();
+      expect(navBlock[0]).not.toContain('class="app-nav-label">Releases</span>');
+    });
+
+    it('no duplicate Calendar link exists in the primary sidebar', async () => {
+      const res = await agent.get('/').expect(200);
+      const navBlock = res.text.match(/<nav class="app-nav"[\s\S]*?<\/nav>/);
+      expect(navBlock).not.toBeNull();
+      const calendarLinks = navBlock[0].match(/data-nav-key="calendar"/g) || [];
+      expect(calendarLinks).toHaveLength(1);
     });
 
     it('icons inside links are decorative (aria-hidden) so the name is the label', async () => {
@@ -298,7 +315,7 @@ describe('application shell (Phase 10.4B) — landmarks & structure', () => {
       expect(navBlock).not.toBeNull();
       const svgCount = (navBlock[0].match(/<svg/g) || []).length;
       const hiddenCount = (navBlock[0].match(/aria-hidden="true"/g) || []).length;
-      expect(svgCount).toBe(4);
+      expect(svgCount).toBe(5);
       expect(svgCount).toBe(hiddenCount);
     });
   });
@@ -312,6 +329,8 @@ describe('application shell (Phase 10.4B) — landmarks & structure', () => {
         `/projects/${projectId}/assets`,
         `/projects/${projectId}/assets/${assetId}`,
         '/releases',
+        '/calendar',
+        '/release-management',
       ];
       for (const url of pages) {
         const res = await agent.get(url).expect(200);
@@ -327,6 +346,27 @@ describe('application shell (Phase 10.4B) — landmarks & structure', () => {
     it('inactive items never carry aria-current', async () => {
       const res = await agent.get('/').expect(200);
       expect(countActive(res.text)).toBe(1);
+    });
+
+    it('/calendar gives Calendar the active class and aria-current', async () => {
+      const res = await agent.get('/calendar').expect(200);
+      expect(activeNavKeys(res.text)).toEqual(['calendar']);
+      expect(res.text).toMatch(
+        /<a href="\/calendar" class="app-nav-link" data-nav-key="calendar" aria-current="page">/,
+      );
+    });
+
+    it('/calendar leaves Published Work inactive', async () => {
+      const res = await agent.get('/calendar').expect(200);
+      expect(activeNavKeys(res.text)).not.toContain('releases');
+    });
+
+    it('/releases gives Published Work the active class and aria-current', async () => {
+      const res = await agent.get('/releases').expect(200);
+      expect(activeNavKeys(res.text)).toEqual(['releases']);
+      expect(res.text).toMatch(
+        /<a href="\/releases" class="app-nav-link" data-nav-key="releases" aria-current="page">/,
+      );
     });
 
     it('the active state is structural (filled background + bold text), not color alone', async () => {
