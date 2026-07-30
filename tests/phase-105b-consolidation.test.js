@@ -2,21 +2,16 @@
  * Phase 10.5B — Visual consolidation of dashboard and project pages.
  *
  * Verifies:
- *  - Dashboard hierarchy and summary cards
- *  - Summary-card semantics (accessible labels, tabular numerals, links)
- *  - No new query growth (dashboard renders same data)
- *  - Project list action hierarchy and status badges
- *  - Exact project status text in badges
- *  - Archived project notice on detail page
- *  - Project form labels, errors, and actions
- *  - Destructive-action separation on project detail
+ *  - Project list action hierarchy
+ *  - Archived project asset page notice
  *  - Asset browser shared page heading
  *  - Asset viewer shared page heading and action hierarchy
- *  - Contextual empty states
  *  - One <h1> per page
- *  - No absolute filesystem path leakage
- *  - No route or form behavior regression
- *  - Mobile no-overflow CSS rules
+ *  - Contextual empty states
+ *
+ * Asset-viewer/browser and archived-asset-page tests remain here until a
+ * dedicated asset test owner exists. Other cases previously covered here
+ * have moved to projects-http.test.js and dashboard-http.test.js.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
@@ -30,8 +25,6 @@ import { ensureAuthEnablement } from '../src/auth/auth-state.js';
 import { getDisabledModeCsrf } from './helpers/auth.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
-const STYLESHEET_PATH = fileURLToPath(new URL('../src/static/creatorcrate.css', import.meta.url));
-const SERVED_CSS = fs.readFileSync(STYLESHEET_PATH, 'utf8');
 
 function countTags(html, tag) {
   const re = new RegExp(`<${tag}[\\s>]`, 'g');
@@ -41,12 +34,6 @@ function countTags(html, tag) {
 function hasClass(html, className) {
   const re = new RegExp(`class="[^"]*\\b${className}\\b[^"]*"`);
   return re.test(html);
-}
-
-/** Return the served local stylesheet linked by the rendered page. */
-function extractStyle(html) {
-  expect(html).toContain('<link rel="stylesheet" href="/creatorcrate.css">');
-  return SERVED_CSS;
 }
 
 async function makePng(width = 64, height = 64) {
@@ -91,94 +78,9 @@ describe('Phase 10.5B: Dashboard and project visual consolidation', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  // ─── 4. Project list action hierarchy ──────────────────────────────
-
-  describe('project list action hierarchy', () => {
-    it('has page-heading with New Project primary action', async () => {
-      const res = await agent.get('/projects').expect(200);
-      expect(hasClass(res.text, 'page-heading')).toBe(true);
-      expect(res.text).toContain('New Project');
-      expect(res.text).toContain('button-primary');
-    });
-
-    it('has exactly one h1', async () => {
-      const res = await agent.get('/projects').expect(200);
-      expect(countTags(res.text, 'h1')).toBe(1);
-    });
-
-    it('uses data-table for project list', async () => {
-      await agent
-        .post('/projects')
-        .send('title=Table+Test')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-
-      const res = await agent.get('/projects').expect(200);
-      expect(res.text).toContain('data-table');
-      expect(res.text).toContain('table-scroll');
-    });
-
-  });
-
   // ─── 6. Archived notice ──────────────────────────────────────────────
 
   describe('archived project notice', () => {
-    it('shows a warning notice on archived project detail', async () => {
-      const createRes = await agent
-        .post('/projects')
-        .send('title=Archived+Notice+Test')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-      const id = createRes.headers.location.replace('/projects/', '');
-
-      await agent.post(`/projects/${id}/archive`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
-
-      const res = await agent.get(`/projects/${id}`).expect(200);
-      expect(res.text).toContain('archived');
-      expect(res.text).toContain('read-only');
-      expect(hasClass(res.text, 'notice--warning')).toBe(true);
-    });
-
-    it('hides Edit link on archived project', async () => {
-      const createRes = await agent
-        .post('/projects')
-        .send('title=No+Edit+Archived')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-      const id = createRes.headers.location.replace('/projects/', '');
-
-      await agent.post(`/projects/${id}/archive`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
-
-      const res = await agent.get(`/projects/${id}`).expect(200);
-      expect(res.text).not.toContain(`/projects/${id}/edit`);
-    });
-
-    it('hides destructive section on archived project', async () => {
-      const createRes = await agent
-        .post('/projects')
-        .send('title=No+Danger+Archived')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-      const id = createRes.headers.location.replace('/projects/', '');
-
-      await agent.post(`/projects/${id}/archive`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
-
-      const res = await agent.get(`/projects/${id}`).expect(200);
-      expect(hasClass(res.text, 'destructive-section')).toBe(false);
-    });
-
     it('archived project asset page shows archived notice', async () => {
       const createRes = await agent
         .post('/projects')
@@ -195,120 +97,6 @@ describe('Phase 10.5B: Dashboard and project visual consolidation', () => {
       const res = await agent.get(`/projects/${id}/assets`).expect(200);
       expect(res.text).toContain('archived');
       expect(res.text).toContain('read-only');
-    });
-  });
-
-  // ─── 7. Project form labels, errors, and actions ────────────────────
-
-  describe('project form labels and actions', () => {
-    it('create form has form sections with visible labels', async () => {
-      const res = await agent.get('/projects/new').expect(200);
-      expect(res.text).toContain('Basic information');
-      expect(res.text).toContain('Status and scheduling');
-      expect(res.text).toContain('Links');
-      // Every label has a for= matching an input id
-      const labels = res.text.match(/<label[^>]*for="([^"]+)"[^>]*>/g) || [];
-      expect(labels.length).toBeGreaterThan(0);
-      for (const label of labels) {
-        const forMatch = label.match(/for="([^"]+)"/);
-        if (forMatch) {
-          expect(res.text).toMatch(new RegExp(`id="${forMatch[1]}"`));
-        }
-      }
-    });
-
-    it('create form has primary submit and secondary cancel', async () => {
-      const res = await agent.get('/projects/new').expect(200);
-      expect(res.text).toContain('button-primary');
-      expect(res.text).toContain('button-secondary');
-    });
-
-    it('create form preserves submitted values on validation error', async () => {
-      const res = await agent
-        .post('/projects')
-        .send('title=Preserved+Create')
-        .send('description=Create+description')
-        .send('notes=Create+notes')
-        .send('status=ready')
-        .send('priority=high')
-        .send('plannedDate=2026-08-01')
-        .send('publishedDate=2026-08-15')
-        .send('patreonUrl=http://example.com/not-patreon')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(422);
-
-      expect(res.text).toContain('Patreon URL must be a valid https://patreon.com link.');
-      expect(res.text).toContain('value="Preserved Create"');
-      expect(res.text).toContain('Create description');
-      expect(res.text).toContain('Create notes');
-      expect(res.text).toContain('<option value="ready" selected>Ready</option>');
-      expect(res.text).toContain('<option value="high" selected>High</option>');
-      expect(res.text).toContain('value="2026-08-01"');
-      expect(res.text).toContain('value="2026-08-15"');
-      expect(res.text).toContain('value="http://example.com/not-patreon"');
-    });
-
-    it('edit form preserves submitted values on validation error', async () => {
-      const createRes = await agent
-        .post('/projects')
-        .send('title=Editable+Preserve')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-
-      const res = await agent
-        .post(createRes.headers.location)
-        .send('title=Edited+Preserved')
-        .send('description=Edited+description')
-        .send('notes=Edited+notes')
-        .send('status=planned')
-        .send('priority=low')
-        .send('plannedDate=2026-09-01')
-        .send('publishedDate=2026-09-15')
-        .send('patreonUrl=http://example.com/not-patreon')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(422);
-
-      expect(res.text).toContain('Patreon URL must be a valid https://patreon.com link.');
-      expect(res.text).toContain('value="Edited Preserved"');
-      expect(res.text).toContain('Edited description');
-      expect(res.text).toContain('Edited notes');
-      expect(res.text).toContain('<option value="planned" selected>Planned</option>');
-      expect(res.text).toContain('<option value="low" selected>Low</option>');
-      expect(res.text).toContain('value="2026-09-01"');
-      expect(res.text).toContain('value="2026-09-15"');
-      expect(res.text).toContain('value="http://example.com/not-patreon"');
-      expect(res.text).toContain(`href="${createRes.headers.location}"`);
-    });
-
-    it('edit form has exactly one h1', async () => {
-      const res = await agent.get('/projects/new').expect(200);
-      expect(countTags(res.text, 'h1')).toBe(1);
-    });
-  });
-
-  // ─── 8. Destructive-action separation ──────────────────────────────
-
-  describe('destructive-action separation', () => {
-    it('project detail has destructive-section with danger styling', async () => {
-      const createRes = await agent
-        .post('/projects')
-        .send('title=Danger+Zone+Test')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-
-      const res = await agent.get(createRes.headers.location).expect(200);
-      expect(hasClass(res.text, 'destructive-section')).toBe(true);
-      expect(hasClass(res.text, 'button-danger')).toBe(true);
-      expect(res.text).toContain('Danger zone');
-      expect(res.text).toContain('Archive project');
     });
   });
 
@@ -370,27 +158,6 @@ describe('Phase 10.5B: Dashboard and project visual consolidation', () => {
   // ─── 11. Contextual empty states ────────────────────────────────────
 
   describe('contextual empty states', () => {
-    it('project list empty state uses shared partial', async () => {
-      const res = await agent.get('/projects').expect(200);
-      expect(res.text).toContain('empty-state');
-      expect(res.text).toContain('empty-state-heading');
-    });
-
-    it('project detail with no releases shows contextual empty state', async () => {
-      const createRes = await agent
-        .post('/projects')
-        .send('title=Empty+Releases')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-
-      const res = await agent.get(createRes.headers.location).expect(200);
-      // Phase 2C: reframed as optional/secondary copy, not "no releases yet".
-      expect(res.text).toContain('No release records for this project.');
-    });
-
     it('dashboard empty attention uses empty-state', async () => {
       const res = await agent.get('/').expect(200);
       // Empty attention state uses the empty-state class
@@ -398,134 +165,4 @@ describe('Phase 10.5B: Dashboard and project visual consolidation', () => {
     });
   });
 
-  // ─── 12. Single h1 per page ────────────────────────────────────────
-
-  describe('single h1 per page', () => {
-    const pages = [
-      { name: 'dashboard', url: '/' },
-      { name: 'project list', url: '/projects' },
-      { name: 'project create', url: '/projects/new' },
-    ];
-
-    for (const { name, url } of pages) {
-      it(`${name} has exactly one h1`, async () => {
-        const res = await agent.get(url).expect(200);
-        expect(countTags(res.text, 'h1')).toBe(1);
-      });
-    }
-
-    it('project detail has exactly one h1', async () => {
-      const createRes = await agent
-        .post('/projects')
-        .send('title=H1+Detail')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-
-      const res = await agent.get(createRes.headers.location).expect(200);
-      expect(countTags(res.text, 'h1')).toBe(1);
-    });
-  });
-
-  // ─── 13. No absolute path leakage ──────────────────────────────────
-
-  describe('no absolute path leakage', () => {
-    it('project detail does not expose absolute filesystem paths', async () => {
-      const createRes = await agent
-        .post('/projects')
-        .send('title=Path+Leak+Test')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-
-      const res = await agent.get(createRes.headers.location).expect(200);
-      expect(res.text).not.toMatch(/[A-Z]:\\/);
-      // Project directory is shown as relative path
-      expect(res.text).toContain('relative to projects share');
-    });
-  });
-
-  // ─── 14. No route or form behavior regression ──────────────────────
-
-  describe('no route or form behavior regression', () => {
-    it('project list still filters by status', async () => {
-      await agent
-        .post('/projects')
-        .send('title=Filter+Test')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-
-      const res = await agent.get('/projects?status=tbd').expect(200);
-      expect(res.text).toContain('Filter Test');
-    });
-
-    it('project create still works', async () => {
-      const res = await agent
-        .post('/projects')
-        .send('title=Regression+Create')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-      expect(res.headers.location).toMatch(/^\/projects\/\d+$/);
-    });
-
-    it('project archive still works', async () => {
-      const createRes = await agent
-        .post('/projects')
-        .send('title=Archive+Regression')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-      const id = createRes.headers.location.replace('/projects/', '');
-
-      await agent.post(`/projects/${id}/archive`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
-
-      const detail = await agent.get(`/projects/${id}`).expect(200);
-      expect(detail.text).toContain('Archived');
-    });
-
-    it('dashboard still renders release sections', async () => {
-      const res = await agent.get('/').expect(200);
-      expect(res.text).toContain('Releases needing attention');
-      expect(res.text).toContain('Release status');
-    });
-  });
-
-  // ─── 15. Mobile no-overflow CSS ────────────────────────────────────
-
-  describe('mobile no-overflow CSS', () => {
-    it('summary cards have responsive grid rules', async () => {
-      const res = await agent.get('/').expect(200);
-      const css = extractStyle(res.text);
-      expect(css).toContain('.summary-cards');
-      expect(css).toContain('grid-template-columns');
-      // Mobile breakpoint reflows cards
-      expect(css).toMatch(/@media\s*\(max-width:\s*540px\)/);
-    });
-
-    it('page-heading has responsive flex behavior', async () => {
-      const res = await agent.get('/').expect(200);
-      const css = extractStyle(res.text);
-      expect(css).toContain('.page-heading');
-      expect(css).toContain('flex-wrap');
-    });
-
-    it('field-row stacks on mobile', async () => {
-      const res = await agent.get('/projects/new').expect(200);
-      const css = extractStyle(res.text);
-      expect(css).toContain('.field-row');
-      expect(css).toMatch(/@media\s*\(max-width:\s*540px\)/);
-    });
-  });
 });

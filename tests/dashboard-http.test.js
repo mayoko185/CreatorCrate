@@ -473,6 +473,15 @@ describe('Phase 6B HTTP dashboard', () => {
         expect(css).toContain('font-variant-numeric: tabular-nums');
       });
 
+      it('summary cards have responsive grid rules', async () => {
+        const res = await app.testAgent.get('/').expect(200);
+        const css = extractStyle(res.text);
+        expect(css).toContain('.summary-cards');
+        expect(css).toContain('grid-template-columns');
+        // Mobile breakpoint reflows cards
+        expect(css).toMatch(/@media\s*\(max-width:\s*540px\)/);
+      });
+
       it('renders need-attention link when attention count > 0', async () => {
         // Create a project and release to generate attention data
         await app.testAgent

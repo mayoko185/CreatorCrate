@@ -122,6 +122,9 @@ describe('project HTTP workflow', () => {
     expect(res.text).toContain('value="2026-08-01"');
     expect(res.text).toContain('value="2026-08-15"');
     expect(res.text).toContain('value="http://example.com/not-patreon"');
+    expect(res.text).toContain('Basic information');
+    expect(res.text).toContain('Status and scheduling');
+    expect(res.text).toContain('Links');
     expect(res.text).toContain('href="/projects"');
   });
 
@@ -240,6 +243,9 @@ describe('project HTTP workflow', () => {
     expect(res.text).toContain('value="2026-10-01"');
     expect(res.text).toContain('value="2026-10-15"');
     expect(res.text).toContain('value="http://example.com/not-patreon"');
+    expect(res.text).toContain('Basic information');
+    expect(res.text).toContain('Status and scheduling');
+    expect(res.text).toContain('Links');
     expect(res.text).toContain(`href="${createRes.headers.location}"`);
   });
 
@@ -328,6 +334,29 @@ describe('project HTTP workflow', () => {
     const status = await agent.get('/projects?status=ready').expect(200);
     expect(status.text).toContain('Beta One');
     expect(status.text).not.toContain('Searchable Alpha');
+  });
+
+  it('project list still filters by status', async () => {
+    await agent
+      .post('/projects')
+      .send('title=Status+Filter+Match')
+      .send('status=in-progress')
+      .send('priority=normal')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .expect(302);
+    await agent
+      .post('/projects')
+      .send('title=Status+Filter+Nonmatch')
+      .send('status=planned')
+      .send('priority=normal')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .expect(302);
+
+    const res = await agent.get('/projects?status=in-progress').expect(200);
+    expect(res.text).toContain('Status Filter Match');
+    expect(res.text).not.toContain('Status Filter Nonmatch');
   });
 
   it('valid status filter with no matches shows filtered-empty state and reset action', async () => {
@@ -1374,6 +1403,72 @@ describe('project HTTP workflow', () => {
       // Distinctive file exists at the new path with unchanged contents
       expect(fs.existsSync(path.join(newDir, 'status-move.txt'))).toBe(true);
       expect(fs.readFileSync(path.join(newDir, 'status-move.txt'), 'utf8')).toBe('moved content');
+    });
+  });
+
+  // ─── Archived project detail behavior ───────────────────────────────
+  //
+  // Moved from phase-105b-consolidation.test.js — organizational move
+  // only. Behavior and assertions are unchanged from their prior home.
+
+  describe('archived project detail behavior', () => {
+    it('shows a warning notice on archived project detail', async () => {
+      const createRes = await agent
+        .post('/projects')
+        .send('title=Archived+Notice+Test')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .expect(302);
+      const id = createRes.headers.location.replace('/projects/', '');
+
+      await agent.post(`/projects/${id}/archive`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
+
+      const res = await agent.get(`/projects/${id}`).expect(200);
+      expect(res.text).toContain('archived');
+      expect(res.text).toContain('read-only');
+      expect(res.text).toMatch(/class="[^"]*\bnotice--warning\b[^"]*"/);
+    });
+
+    it('hides Edit link on archived project', async () => {
+      const createRes = await agent
+        .post('/projects')
+        .send('title=No+Edit+Archived')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .expect(302);
+      const id = createRes.headers.location.replace('/projects/', '');
+
+      await agent.post(`/projects/${id}/archive`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
+
+      const res = await agent.get(`/projects/${id}`).expect(200);
+      expect(res.text).not.toContain(`/projects/${id}/edit`);
+    });
+  });
+
+  // ─── Project detail path safety ─────────────────────────────────────
+  //
+  // Moved from phase-105b-consolidation.test.js — organizational move
+  // only. Behavior and assertions are unchanged from their prior home.
+
+  describe('project detail path safety', () => {
+    it('project detail does not expose absolute filesystem paths', async () => {
+      const createRes = await agent
+        .post('/projects')
+        .send('title=Path+Leak+Test')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .expect(302);
+
+      const res = await agent.get(createRes.headers.location).expect(200);
+      expect(res.text).not.toMatch(/[A-Z]:\\/);
+      // Project directory is shown as relative path
+      expect(res.text).toContain('relative to projects share');
     });
   });
 

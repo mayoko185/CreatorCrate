@@ -160,6 +160,14 @@ describe('Phase 10.5A: Shared page-level components', () => {
       expect(hasClass(res.text, 'page-heading-copy')).toBe(true);
       expect(hasClass(res.text, 'page-heading-description')).toBe(true);
     });
+
+    it('has page-heading with New Project primary action', async () => {
+      const res = await agent.get('/projects').expect(200);
+      expect(hasClass(res.text, 'page-heading')).toBe(true);
+      expect(res.text).toContain('New Project');
+      expect(res.text).toContain('button-primary');
+      expect(res.text).toContain('href="/projects/new"');
+    });
   });
 
   // ─── 2. Action variants ────────────────────────────────────────────────
@@ -388,6 +396,21 @@ describe('Phase 10.5A: Shared page-level components', () => {
         expect(countTags(emptyStateBlock[0], 'h1')).toBe(0);
       }
     });
+
+    it('project detail with no releases shows contextual empty state', async () => {
+      const createRes = await agent
+        .post('/projects')
+        .send('title=Empty+Releases')
+        .send('status=tbd')
+        .send('priority=normal')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      const res = await agent.get(createRes.headers.location).expect(200);
+      expect(res.text).toContain('No release records for this project.');
+      expect(countTags(res.text, 'h1')).toBe(1);
+    });
   });
 
   // ─── 8. Destructive sections ───────────────────────────────────────────
@@ -406,6 +429,8 @@ describe('Phase 10.5A: Shared page-level components', () => {
       const res = await agent.get(createRes.headers.location).expect(200);
       expect(res.text).toContain('destructive-section');
       expect(res.text).toContain('button-danger');
+      expect(res.text).toContain('Danger zone');
+      expect(res.text).toContain('Archive project');
     });
 
     it('archived project detail has no destructive section', async () => {
@@ -578,6 +603,7 @@ describe('Phase 10.5A: Shared page-level components', () => {
       expect(css).toMatch(/@media\s*\(max-width:\s*540px\)/);
       // page-heading flex-direction: column on mobile
       expect(css).toMatch(/\.page-heading\s*\{[^}]*flex/i);
+      expect(css).toContain('flex-wrap');
     });
 
     it('data-table has responsive styles', async () => {
