@@ -2331,226 +2331,10 @@ describe('workflow query service', () => {
     });
   });
 
-  // ─── Phase 6C: Release Planning Views — getReleaseCalendar ──────────────────
+  // ─── Calendar month utilities — parseMonth/prevMonth/nextMonth ─────────────
+  // Shared by getProjectCalendar (the canonical /calendar data source).
 
-  describe('getReleaseCalendar', () => {
-    it('returns month string and days array', () => {
-      const result = service.getReleaseCalendar('2025-06', { today: '2025-06-15' });
-      expect(result.month).toBe('2025-06');
-      expect(Array.isArray(result.days)).toBe(true);
-    });
-
-    it('returns 30 days for June', () => {
-      const result = service.getReleaseCalendar('2025-06', { today: '2025-06-15' });
-      expect(result.days).toHaveLength(30);
-    });
-
-    it('returns 31 days for July', () => {
-      const result = service.getReleaseCalendar('2025-07', { today: '2025-07-15' });
-      expect(result.days).toHaveLength(31);
-    });
-
-    it('returns 28 days for non-leap February', () => {
-      const result = service.getReleaseCalendar('2025-02', { today: '2025-02-15' });
-      expect(result.days).toHaveLength(28);
-    });
-
-    it('returns 29 days for leap year February', () => {
-      const result = service.getReleaseCalendar('2024-02', { today: '2024-02-15' });
-      expect(result.days).toHaveLength(29);
-    });
-
-    it('invalid month falls back to current month', () => {
-      const result = service.getReleaseCalendar('invalid', { today: '2025-06-15' });
-      // Must be the exact current month derived from the today option —
-      // not "any YYYY-MM" that happens to satisfy the format regex.
-      expect(result.month).toBe('2025-06');
-      // prev/next must be derived from the EXACT fallback month.
-      expect(result.prevMonth).toBe('2025-05');
-      expect(result.nextMonth).toBe('2025-07');
-    });
-
-    it('invalid month format falls back to current month', () => {
-      const result = service.getReleaseCalendar('2025-13', { today: '2025-06-15' });
-      // 13 is not a valid month — must fall back to today's month.
-      expect(result.month).toBe('2025-06');
-      expect(result.prevMonth).toBe('2025-05');
-      expect(result.nextMonth).toBe('2025-07');
-    });
-
-    // ─── Exact-fallback assertions for malformed and out-of-range months
-    //
-    // The previous tests only asserted `result.month` matched a YYYY-MM
-    // regex. That lets a buggy implementation that always returns
-    // "1000-01" pass. These tests pin the exact fallback to the
-    // current month from the `today` option, and also assert the exact
-    // prev/next values derived from that fallback. The exact-fallback
-    // contract: every malformed or out-of-range month string in
-    // [0001-01, 0999-12, 10000-01, 2025-00, 2025-13, "invalid", null,
-    // undefined] must resolve to the current local month.
-
-    const MALFORMED_MONTHS = [
-      '0001-01',
-      '0999-12',
-      '10000-01',
-      '2025-00',
-      '2025-13',
-      'invalid',
-      '',
-    ];
-
-    it.each(MALFORMED_MONTHS)(
-      'malformed/unsupported month %s falls back to the exact current month',
-      (bad) => {
-        const result = service.getReleaseCalendar(bad, { today: '2025-06-15' });
-        expect(result.month).toBe('2025-06');
-        // prev/next must be exact values derived from the fallback.
-        expect(result.prevMonth).toBe('2025-05');
-        expect(result.nextMonth).toBe('2025-07');
-      },
-    );
-
-    it('falls back to a hardcoded year/month when the today option is also invalid', () => {
-      // Last-resort path: even if today is null/garbage, the function
-      // must NOT return null — it falls back to a hardcoded default
-      // (year=2026, month=7). The exact value is part of the contract.
-      const result = service.getReleaseCalendar('0001-01', { today: 'invalid-today' });
-      expect(result.month).toBe('2026-07');
-      expect(result.prevMonth).toBe('2026-06');
-      expect(result.nextMonth).toBe('2026-08');
-    });
-
-    it('calculates previous month correctly', () => {
-      const result = service.getReleaseCalendar('2025-06', { today: '2025-06-15' });
-      expect(result.prevMonth).toBe('2025-05');
-    });
-
-    it('calculates previous month at January correctly', () => {
-      const result = service.getReleaseCalendar('2025-01', { today: '2025-01-15' });
-      expect(result.prevMonth).toBe('2024-12');
-    });
-
-    it('calculates next month correctly', () => {
-      const result = service.getReleaseCalendar('2025-06', { today: '2025-06-15' });
-      expect(result.nextMonth).toBe('2025-07');
-    });
-
-    it('calculates next month at December correctly', () => {
-      const result = service.getReleaseCalendar('2025-12', { today: '2025-12-15' });
-      expect(result.nextMonth).toBe('2026-01');
-    });
-
-    it('groups releases by planned_date', () => {
-      const project = insertProject(db, { title: 'Calendar Group Project' });
-      insertRelease(db, { projectId: project.id, title: 'June 15 R', status: 'planned', plannedDate: '2025-06-15' });
-      insertRelease(db, { projectId: project.id, title: 'June 15 Another', status: 'planned', plannedDate: '2025-06-15' });
-      insertRelease(db, { projectId: project.id, title: 'June 20', status: 'planned', plannedDate: '2025-06-20' });
-
-      const result = service.getReleaseCalendar('2025-06', { today: '2025-06-15' });
-      const june15 = result.days.find((d) => d.date === '2025-06-15');
-      const june20 = result.days.find((d) => d.date === '2025-06-20');
-
-      expect(june15.releases).toHaveLength(2);
-      expect(june20.releases).toHaveLength(1);
-    });
-
-    it('days without releases have empty arrays', () => {
-      const result = service.getReleaseCalendar('2025-06', { today: '2025-06-15' });
-      const daysWithReleases = result.days.filter((d) => d.releases.length > 0);
-      expect(daysWithReleases).toHaveLength(0); // no releases created
-    });
-
-    it('calendar excludes releases from archived parent projects', () => {
-      const project = insertProject(db, { title: 'Calendar Archived Parent' });
-      insertRelease(db, { projectId: project.id, title: 'Hidden', status: 'planned', plannedDate: '2025-06-15' });
-      db.prepare(`UPDATE projects SET archived_at = datetime('now') WHERE id = ?`).run(project.id);
-
-      const result = service.getReleaseCalendar('2025-06', { today: '2025-06-15' });
-      const june15 = result.days.find((d) => d.date === '2025-06-15');
-      expect(june15.releases).toHaveLength(0);
-    });
-
-    it('exposes today in result', () => {
-      const result = service.getReleaseCalendar('2025-06', { today: '2025-06-15' });
-      expect(result.today).toBe('2025-06-15');
-    });
-
-    // ─── Calendar grid structure ─────────────────────────────────────────
-
-    it('September 2025: September 1 is Monday, firstDayWeekday=0', () => {
-      const result = service.getReleaseCalendar('2025-09', { today: '2025-09-15' });
-      // new Date(2025, 8, 1).getDay() = 1 (Monday)
-      // (1 + 6) % 7 = 0 → Monday-first offset
-      expect(result.firstDayWeekday).toBe(0);
-    });
-
-    it('September 2025: 30 days in the month', () => {
-      const result = service.getReleaseCalendar('2025-09', { today: '2025-09-15' });
-      expect(result.days).toHaveLength(30);
-    });
-
-    it('September 2025: Monday-first with 0 leading padding, 5 trailing padding, 5 rows', () => {
-      // September 2025: Sep 1 is Monday (getDay=1), firstDayWeekday=(1+6)%7=0.
-      // 0 leading empty cells. 30 days. cellCount=0+30=30. remainder=2. trailing=5.
-      // rows = floor(30/7) + 1 = 4 + 1 = 5 rows.
-      const result = service.getReleaseCalendar('2025-09', { today: '2025-09-15' });
-      const cellCount = result.firstDayWeekday + result.days.length;
-      expect(cellCount).toBe(30);
-      expect(cellCount % 7).toBe(2);
-      const rows = Math.floor(cellCount / 7) + (cellCount % 7 > 0 ? 1 : 0);
-      expect(rows).toBe(5);
-    });
-
-    it('July 2025: July 1 is Tuesday, leading padding=1, trailing=3, 5 rows', () => {
-      // July 2025: Jul 1 is Tuesday (getDay=2), firstDayWeekday=(2+6)%7=1.
-      // 1 leading empty cell. 31 days. cellCount=1+31=32. remainder=4. trailing=3.
-      // rows = floor(32/7) + 1 = 4 + 1 = 5 rows.
-      const result = service.getReleaseCalendar('2025-07', { today: '2025-07-15' });
-      expect(result.firstDayWeekday).toBe(1);
-      const cellCount = result.firstDayWeekday + result.days.length;
-      expect(cellCount).toBe(32);
-      expect(cellCount % 7).toBe(4);
-      const rows = Math.floor(cellCount / 7) + (cellCount % 7 > 0 ? 1 : 0);
-      expect(rows).toBe(5);
-    });
-
-    it('February 2025: Feb 1 is Saturday, leading padding=5, 5 rows', () => {
-      // February 2025: Feb 1 is Saturday (getDay=6), firstDayWeekday=(6+6)%7=5.
-      // 5 leading empty cells. 28 days. cellCount=5+28=33. remainder=5. trailing=2.
-      // rows = floor(33/7) + 1 = 4 + 1 = 5 rows.
-      const result = service.getReleaseCalendar('2025-02', { today: '2025-02-15' });
-      expect(result.firstDayWeekday).toBe(5);
-      const cellCount = result.firstDayWeekday + result.days.length;
-      expect(cellCount).toBe(33);
-      const rows = Math.floor(cellCount / 7) + (cellCount % 7 > 0 ? 1 : 0);
-      expect(rows).toBe(5);
-    });
-
-    it('releases outside the month are excluded', () => {
-      const project = insertProject(db, { title: 'Outside Month Project' });
-      insertRelease(db, { projectId: project.id, title: 'August 31', status: 'planned', plannedDate: '2025-08-31' });
-      insertRelease(db, { projectId: project.id, title: 'September 15', status: 'planned', plannedDate: '2025-09-15' });
-      insertRelease(db, { projectId: project.id, title: 'October 1', status: 'planned', plannedDate: '2025-10-01' });
-
-      const result = service.getReleaseCalendar('2025-09', { today: '2025-09-15' });
-      const titles = result.days.flatMap((d) => d.releases).map((r) => r.title);
-      expect(titles).toContain('September 15');
-      expect(titles).not.toContain('August 31');
-      expect(titles).not.toContain('October 1');
-    });
-
-    it('multiple releases on the same day are all retained', () => {
-      const project = insertProject(db, { title: 'Multi Day Project' });
-      insertRelease(db, { projectId: project.id, title: 'Sept 15 - Alpha', status: 'idea', plannedDate: '2025-09-15' });
-      insertRelease(db, { projectId: project.id, title: 'Sept 15 - Beta', status: 'planned', plannedDate: '2025-09-15' });
-      insertRelease(db, { projectId: project.id, title: 'Sept 15 - Gamma', status: 'drafting', plannedDate: '2025-09-15' });
-
-      const result = service.getReleaseCalendar('2025-09', { today: '2025-09-15' });
-      const sept15 = result.days.find((d) => d.date === '2025-09-15');
-      expect(sept15.releases).toHaveLength(3);
-      expect(sept15.releases.map((r) => r.title).sort()).toEqual(['Sept 15 - Alpha', 'Sept 15 - Beta', 'Sept 15 - Gamma']);
-    });
-
+  describe('calendar month utilities', () => {
     // ─── parseMonth year-range validation ───────────────────────────────
 
     it('parseMonth accepts years 1000-9999', () => {
@@ -2592,22 +2376,6 @@ describe('workflow query service', () => {
       expect(parseMonth('2025-6')).toBeNull();
       expect(parseMonth('25-06')).toBeNull();
       expect(parseMonth('2025-06-01')).toBeNull();
-    });
-
-    it('getReleaseCalendar falls back to current month for year 0001 (HTTP 200, not 500)', () => {
-      // Invalid low-year month must not throw — service must fall back gracefully.
-      const result = service.getReleaseCalendar('0001-01', { today: '2025-06-15' });
-      expect(result.month).toBe('2025-06');
-    });
-
-    it('getReleaseCalendar falls back for year 0999', () => {
-      const result = service.getReleaseCalendar('0999-12', { today: '2025-06-15' });
-      expect(result.month).toBe('2025-06');
-    });
-
-    it('getReleaseCalendar falls back for year 10000', () => {
-      const result = service.getReleaseCalendar('10000-01', { today: '2025-06-15' });
-      expect(result.month).toBe('2025-06');
     });
 
     it('prevMonth returns null for invalid month string', () => {
@@ -2656,26 +2424,6 @@ describe('workflow query service', () => {
     it('nextMonth stays in-range just below the upper boundary (9999-11)', () => {
       const { nextMonth } = service;
       expect(nextMonth('9999-11')).toBe('9999-12');
-    });
-
-    it('getReleaseCalendar exposes null prevMonth at the lower boundary', () => {
-      const result = service.getReleaseCalendar('1000-01', { today: '1000-01-15' });
-      expect(result.month).toBe('1000-01');
-      expect(result.prevMonth).toBeNull();
-      expect(result.nextMonth).toBe('1000-02');
-    });
-
-    it('getReleaseCalendar exposes null nextMonth at the upper boundary', () => {
-      const result = service.getReleaseCalendar('9999-12', { today: '9999-12-15' });
-      expect(result.month).toBe('9999-12');
-      expect(result.nextMonth).toBeNull();
-      expect(result.prevMonth).toBe('9999-11');
-    });
-
-    it('getReleaseCalendar exposes both links for in-range months', () => {
-      const result = service.getReleaseCalendar('2025-06', { today: '2025-06-15' });
-      expect(result.prevMonth).toBe('2025-05');
-      expect(result.nextMonth).toBe('2025-07');
     });
 
     it('prevMonth and nextMonth work for valid years', () => {
@@ -4250,9 +3998,9 @@ describe('workflow query service', () => {
   // ─── Phase 7B-3: Planning View Readiness Indicators ──────────────────
   //
   // Compact readiness indicators (_readiness) are attached to releases in
-  // getReleaseList, getReleaseBoard, and getReleaseCalendar. All three use
-  // the same _attachReadiness helper so one set of scenarios is sufficient,
-  // but each method's result shape is verified for completeness.
+  // getReleaseList and getReleaseBoard. Both use the same _attachReadiness
+  // helper so one set of scenarios is sufficient, but each method's result
+  // shape is verified for completeness.
 
   function insertReadyReleaseWithPresentAsset(db, project, title) {
     const release = insertRelease(db, {
@@ -4402,42 +4150,6 @@ describe('workflow query service', () => {
       const result = service.getReleaseBoard({}, { today: '2099-01-01' });
       const readyCol = result.columns.ready || [];
       expect(readyCol.filter((r) => r.id === release.id)).toHaveLength(1);
-    });
-  });
-
-  describe('getReleaseCalendar — readiness indicators', () => {
-    it('calendar entries remain readable and correct after readiness attachment', () => {
-      const project = insertProject(db, { title: 'Calendar Project' });
-      const readyPub = insertReadyReleaseWithPresentAsset(db, project, 'Calendar Pub');
-      const readyBlocked = insertReadyReleaseWithNoAssets(db, project, 'Calendar Blocked');
-      const planned = insertRelease(db, {
-        projectId: project.id, title: 'Calendar Planned', status: 'planned', plannedDate: '2099-01-01',
-      });
-
-      const result = service.getReleaseCalendar('2099-01', { today: '2099-01-01' });
-
-      // Find releases on Jan 1
-      const jan1 = result.days.find((d) => d.date === '2099-01-01');
-      expect(jan1).toBeDefined();
-      const releases = jan1.releases;
-
-      const foundPub = releases.find((r) => r.id === readyPub.id);
-      const foundBlocked = releases.find((r) => r.id === readyBlocked.id);
-      const foundPlanned = releases.find((r) => r.id === planned.id);
-
-      expect(foundPub._readiness.publishable).toBe(true);
-      expect(foundBlocked._readiness.publishable).toBe(false);
-      expect(foundPlanned._readiness).toBeUndefined();
-    });
-
-    it('no duplicate calendar entries after readiness attachment', () => {
-      const project = insertProject(db, { title: 'Calendar No Dup' });
-      const release = insertReadyReleaseWithPresentAsset(db, project, 'Calendar Unique');
-
-      const result = service.getReleaseCalendar('2099-01', { today: '2099-01-01' });
-      const jan1 = result.days.find((d) => d.date === '2099-01-01');
-      const matches = jan1.releases.filter((r) => r.id === release.id);
-      expect(matches).toHaveLength(1);
     });
   });
 

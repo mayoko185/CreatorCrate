@@ -519,80 +519,6 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
   }
 
   /**
-   * Calendar view data for a given month.
-   * @param {string} month - YYYY-MM month string
-   * @param {Object} [options]
-   * @param {string} [options.today] - ISO date YYYY-MM-DD override
-   * @returns {{ month: string, days: Array<{ date: string, releases: Array }>, prevMonth: string, nextMonth: string, today: string }}
-   */
-  function getReleaseCalendar(month, options = {}) {
-    const today = options.today || defaultToday();
-    const validated = parseMonth(month);
-
-    // Fall back to current month if invalid
-    const { year, month: monthNum } = validated || parseMonth(today.slice(0, 7)) || { year: 2026, month: 7 };
-
-    // Calculate inclusive start (first day of month) and exclusive end (first day of next month)
-    const startDate = `${year}-${String(monthNum).padStart(2, '0')}-01`;
-    let endYear = year;
-    let endMonth = monthNum + 1;
-    if (endMonth > 12) {
-      endMonth = 1;
-      endYear++;
-    }
-    const endDate = `${endYear}-${String(endMonth).padStart(2, '0')}-01`;
-
-    const releases = releaseRepository.findCalendarRange(startDate, endDate, {
-      activeScheduleFilter: true,
-    });
-
-    // ── Phase 7B-3: Compact Release Readiness Indicators ──────────────
-    // Batch-attach readiness facts for all status=ready releases in the
-    // calendar month — no N+1 readiness queries per release.
-    const enhanced = _attachReadiness(releases);
-
-    // Group releases by planned_date
-    const byDate = new Map();
-    for (const release of enhanced) {
-      const date = release.planned_date;
-      if (!byDate.has(date)) {
-        byDate.set(date, []);
-      }
-      byDate.get(date).push(release);
-    }
-
-    // Build days array for the month
-    const daysInMonth = [31, isLeapYear(year) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][monthNum - 1];
-    const days = [];
-    for (let d = 1; d <= daysInMonth; d++) {
-      const date = `${year}-${String(monthNum).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
-      days.push({ date, releases: byDate.get(date) || [] });
-    }
-
-    // Compute first day of month weekday (Monday=0, Sunday=6) for calendar grid padding
-    const firstDay = new Date(year, monthNum - 1, 1);
-    const firstDayWeekday = (firstDay.getDay() + 6) % 7;
-
-    // Leading padding cells show the tail end of the previous month's dates
-    // (dimmed, non-interactive) rather than blank cells — needs that month's
-    // day count to compute the numbers.
-    const prevMonthNum = monthNum === 1 ? 12 : monthNum - 1;
-    const prevMonthYear = monthNum === 1 ? year - 1 : year;
-    const prevMonthDaysCount = [31, isLeapYear(prevMonthYear) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][prevMonthNum - 1];
-
-    const monthStr = `${year}-${String(monthNum).padStart(2, '0')}`;
-    return {
-      month: monthStr,
-      days,
-      firstDayWeekday,
-      prevMonthDaysCount,
-      prevMonth: prevMonth(monthStr),
-      nextMonth: nextMonth(monthStr),
-      today,
-    };
-  }
-
-  /**
    * Project-backed calendar view data for a given month.
    *
    * Calendar entries are project records, not release records: each
@@ -1177,7 +1103,7 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
    * round-trip, then evaluated through the shared pure policy per release.
    * No N+1 readiness queries.
    *
-   * @param {Array} releases — release rows from findPage/findBoard/findCalendarRange
+   * @param {Array} releases — release rows from findPage/findBoard
    * @returns {Array} same releases with optional _readiness attached
    */
   function _attachReadiness(releases) {
@@ -1286,7 +1212,6 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
     getProjectWorkspace,
     getReleaseList,
     getReleaseBoard,
-    getReleaseCalendar,
     getProjectCalendar,
     getProjectAssetBrowser,
     getProjectAssetViewer,

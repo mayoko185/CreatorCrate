@@ -1374,69 +1374,6 @@ export function createReleaseRepository(db) {
       return db.prepare(sql).all(...params);
     },
 
-    /**
-     * Releases within a bounded calendar range (inclusive start, exclusive end).
-     * Uses planned_date for grouping — no in-memory filtering.
-     * @param {string} startDate - ISO date YYYY-MM-DD (inclusive)
-     * @param {string} endDate - ISO date YYYY-MM-DD (exclusive)
-     * @param {Object} filters
-     * @param {number|null} filters.projectId
-     * @param {boolean} filters.includeArchived
-     * @param {boolean} filters.activeScheduleFilter
-     * @returns {Array<ReleaseRecord & {project_title: string, selected_asset_count: number, missing_asset_count: number}>}
-     */
-    findCalendarRange(startDate, endDate, filters) {
-      const {
-        projectId,
-        includeArchived = false,
-        activeScheduleFilter = false,
-      } = filters;
-
-      const conditions = [];
-      const params = [];
-
-      if (projectId != null) {
-        conditions.push('releases.project_id = ?');
-        params.push(projectId);
-      }
-
-      if (!includeArchived) {
-        conditions.push('releases.archived_at IS NULL');
-      }
-
-      // For calendar: include all releases with planned_date in [startDate, endDate)
-      conditions.push('releases.planned_date IS NOT NULL');
-      conditions.push('releases.planned_date >= ?');
-      params.push(startDate);
-      conditions.push('releases.planned_date < ?');
-      params.push(endDate);
-
-      if (activeScheduleFilter) {
-        conditions.push(ACTIVE_PARENT_PROJECT);
-      }
-
-      const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-
-      const selectedCountSubquery = `(SELECT COUNT(DISTINCT a.id) FROM release_assets ra JOIN assets a ON a.id = ra.asset_id AND a.project_id = releases.project_id WHERE ra.release_id = releases.id)`;
-      const missingCountSubquery = `(SELECT COUNT(DISTINCT a.id) FROM release_assets ra JOIN assets a ON a.id = ra.asset_id AND a.project_id = releases.project_id WHERE ra.release_id = releases.id AND a.is_present = 0)`;
-
-      const sql = `
-        SELECT releases.id, releases.project_id, projects.title AS project_title,
-               releases.title, releases.description, releases.notes,
-               releases.status, releases.planned_date, releases.published_date,
-               releases.patreon_url, releases.created_at, releases.updated_at,
-               releases.archived_at,
-               ${selectedCountSubquery} AS selected_asset_count,
-               ${missingCountSubquery} AS missing_asset_count
-        FROM releases
-        JOIN projects ON projects.id = releases.project_id
-        ${where}
-        ORDER BY releases.planned_date ASC, releases.updated_at DESC, releases.id DESC
-      `;
-
-      return db.prepare(sql).all(...params);
-    },
-
     // ─── Phase 6D: Asset Browser Queries ─────────────────────────────────
 
     /**

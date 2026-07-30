@@ -1411,7 +1411,6 @@ describe('asset browser HTTP workflow', () => {
           getProjectAssetViewer: () => { throw new Error('viewer service exploded'); },
           getReleaseList: () => ({}),
           getReleaseBoard: () => ({}),
-          getReleaseCalendar: () => ({}),
           getReleaseReadiness: () => ({}),
         },
       }
