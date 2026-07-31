@@ -1,17 +1,17 @@
 {% extends "layout.njk" %}
 {% import "partials/page-heading.njk" as pageHeading %}
 
-{% block title %}Asset Categories – {{ project.title }} – {{ appName }}{% endblock %}
+{% set page_title = "Projects — " ~ project.title ~ " — Asset Categories" %}
 
-{% block body_class %}project-asset-categories-page{% endblock %}
+{% block title %}Asset Categories – {{ project.title }} – {{ appName }}{% endblock %}
 
 {% block content %}
   {% if project.archived_at %}
-    {% call pageHeading.render("Asset Categories" ~ " — " ~ project.title, "These categories belong only to this project and do not affect the global Settings defaults.", "archived") %}
+    {% call pageHeading.render("These categories belong only to this project and do not affect the global Settings defaults.", "archived") %}
       <a class="button button-secondary" href="/projects/{{ project.id }}">Back to project</a>
     {% endcall %}
   {% else %}
-    {% call pageHeading.render("Asset Categories" ~ " — " ~ project.title, "These categories belong only to this project and do not affect the global Settings defaults.") %}
+    {% call pageHeading.render("These categories belong only to this project and do not affect the global Settings defaults.") %}
       <a class="button button-secondary" href="/projects/{{ project.id }}">Back to project</a>
     {% endcall %}
   {% endif %}

@@ -35,13 +35,17 @@ import { authenticate, AUTH_CONFIG } from './helpers/auth.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 const APP_NAME = 'CreatorCrate';
-const STYLESHEET_PATH = fileURLToPath(new URL('../src/static/creatorcrate.css', import.meta.url));
-const SERVED_CSS = fs.readFileSync(STYLESHEET_PATH, 'utf8');
 
-/** Return the served local stylesheet linked by the rendered page. */
-function extractStyle(html) {
+/**
+ * Fetch the actually-served stylesheet through the HTTP test agent (not the
+ * source file on disk), so these assertions fail if /creatorcrate.css stops
+ * being served correctly, not just if the source file changes.
+ */
+async function extractStyle(agent, html) {
   expect(html).toContain('<link rel="stylesheet" href="/creatorcrate.css">');
-  return SERVED_CSS;
+  const res = await agent.get('/creatorcrate.css').expect(200);
+  expect(res.headers['content-type']).toMatch(/text\/css/);
+  return res.text;
 }
 
 /** hrefs of every mobile nav link, in document order. */
@@ -176,14 +180,16 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
       expect(summaryBlock[1]).toContain('Projects');
     });
 
-    it('the summary falls back to the app name when no section is active', async () => {
+    it('the summary shows a status-specific title on a controlled not-found page', async () => {
       const res = await agent.get('/projects/999999').expect(404);
       const summaryBlock = res.text.match(
         /<summary class="mobile-nav-summary">([\s\S]*?)<\/summary>/,
       );
-      // Both the brand and the section fallback show the app name.
-      const brandMatches = (summaryBlock[1].match(new RegExp(APP_NAME, 'g')) || []).length;
-      expect(brandMatches).toBeGreaterThanOrEqual(2);
+      // The brand mark still shows the app name; the section title carries
+      // the error page's own page_title ("Error 404") rather than falling
+      // back to a second copy of the app name.
+      expect(summaryBlock[1]).toContain(APP_NAME);
+      expect(summaryBlock[1]).toContain('Error 404');
     });
 
     it('the summary is not an <h1> (no duplicate page heading)', async () => {
@@ -303,39 +309,39 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
   // ── §2: Responsive shell contract — CSS visibility ────────────────
   describe('responsive CSS — breakpoint and visibility', () => {
     it('uses an exact max-width:1023px breakpoint for mobile activation', async () => {
-      const css = extractStyle((await agent.get('/').expect(200)).text);
+      const css = await extractStyle(agent, (await agent.get('/').expect(200)).text);
       expect(css).toMatch(/@media\s*\(max-width:\s*1023px\)/);
     });
 
     it('hides the mobile disclosure by default (desktop base rule)', async () => {
-      const css = extractStyle((await agent.get('/').expect(200)).text);
+      const css = await extractStyle(agent, (await agent.get('/').expect(200)).text);
       // Base rule (outside any media query) sets .mobile-nav to display:none.
       expect(css).toMatch(/\.mobile-nav\s*\{\s*display:\s*none/);
     });
 
     it('hides the desktop sidebar inside the mobile breakpoint', async () => {
-      const css = extractStyle((await agent.get('/').expect(200)).text);
+      const css = await extractStyle(agent, (await agent.get('/').expect(200)).text);
       expect(css).toMatch(
         /@media\s*\(max-width:\s*1023px\)\s*\{[\s\S]*?\.app-sidebar\s*\{[\s\S]*?display:\s*none/,
       );
     });
 
     it('removes the reserved sidebar margin inside the mobile breakpoint', async () => {
-      const css = extractStyle((await agent.get('/').expect(200)).text);
+      const css = await extractStyle(agent, (await agent.get('/').expect(200)).text);
       expect(css).toMatch(
         /@media\s*\(max-width:\s*1023px\)\s*\{[\s\S]*?\.app-main\s*\{[\s\S]*?margin-left:\s*0/,
       );
     });
 
     it('reveals the mobile disclosure inside the mobile breakpoint', async () => {
-      const css = extractStyle((await agent.get('/').expect(200)).text);
+      const css = await extractStyle(agent, (await agent.get('/').expect(200)).text);
       expect(css).toMatch(
         /@media\s*\(max-width:\s*1023px\)\s*\{[\s\S]*?\.mobile-nav\s*\{[\s\S]*?display:\s*block/,
       );
     });
 
     it('does not rely on user-agent or feature detection', async () => {
-      const css = extractStyle((await agent.get('/').expect(200)).text);
+      const css = await extractStyle(agent, (await agent.get('/').expect(200)).text);
       expect(css).not.toMatch(/user-agent/i);
     });
   });
@@ -351,7 +357,7 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
     });
 
     it('desktop sidebar uses display:none !important inside the breakpoint', async () => {
-      const css = extractStyle((await agent.get('/').expect(200)).text);
+      const css = await extractStyle(agent, (await agent.get('/').expect(200)).text);
       // !important guarantees the fixed sidebar never leaks into the mobile
       // layout or accessibility tree even if specificity rules change.
       expect(css).toMatch(
@@ -360,7 +366,7 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
     });
 
     it('mobile nav is display:none outside the breakpoint', async () => {
-      const css = extractStyle((await agent.get('/').expect(200)).text);
+      const css = await extractStyle(agent, (await agent.get('/').expect(200)).text);
       expect(css).toMatch(/\.mobile-nav\s*\{\s*display:\s*none/);
     });
   });
@@ -387,7 +393,7 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
     });
 
     it('the open state uses the native [open] attribute selector', async () => {
-      const css = extractStyle((await agent.get('/').expect(200)).text);
+      const css = await extractStyle(agent, (await agent.get('/').expect(200)).text);
       expect(css).toMatch(/\.mobile-nav\[open\]/);
     });
 
@@ -415,7 +421,7 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
   // ── §6: Responsive page containment (no-overflow contract) ────────
   describe('no-overflow contract', () => {
     it('the mobile section title can shrink (min-width:0 + overflow)', async () => {
-      const css = extractStyle((await agent.get('/').expect(200)).text);
+      const css = await extractStyle(agent, (await agent.get('/').expect(200)).text);
       const sectionRule = css.match(/\.mobile-nav-section\s*\{[\s\S]*?\}/);
       expect(sectionRule).not.toBeNull();
       expect(sectionRule[0]).toMatch(/min-width:\s*0/);
@@ -424,7 +430,7 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
     });
 
     it('the mobile breakpoint does not reserve the sidebar column', async () => {
-      const css = extractStyle((await agent.get('/').expect(200)).text);
+      const css = await extractStyle(agent, (await agent.get('/').expect(200)).text);
       // margin-left:0 on .app-main inside the breakpoint means the content
       // column uses the full viewport at 320/360/390/768 widths.
       expect(css).toMatch(
@@ -433,13 +439,13 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
     });
 
     it('the desktop sidebar margin still applies outside the breakpoint', async () => {
-      const css = extractStyle((await agent.get('/').expect(200)).text);
+      const css = await extractStyle(agent, (await agent.get('/').expect(200)).text);
       const mainRule = css.match(/\.app-main\s*\{[\s\S]*?\}/);
       expect(mainRule[0]).toMatch(/margin-left:\s*var\(--shell-sidebar-collapsed\)/);
     });
 
     it('the mobile summary has no fixed width exceeding the smallest viewport', async () => {
-      const css = extractStyle((await agent.get('/').expect(200)).text);
+      const css = await extractStyle(agent, (await agent.get('/').expect(200)).text);
       const summaryRule = css.match(/\.mobile-nav-summary\s*\{[\s\S]*?\}/);
       expect(summaryRule).not.toBeNull();
       // No explicit width on the summary — it fills the viewport by default.
@@ -465,7 +471,7 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
       // The mobile summary, section, and links use flex with min-width:0 or
       // nowrap + truncation, so nothing forces a width beyond the viewport.
       // Assert the CSS has no fixed width >= 320px on mobile shell elements.
-      const css = extractStyle(res.text);
+      const css = await extractStyle(agent, res.text);
       const mobileSelectors = [
         /\.mobile-nav-summary\s*\{[\s\S]*?\}/,
         /\.mobile-nav-section\s*\{[\s\S]*?\}/,
@@ -488,19 +494,19 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
   // ── §7: Desktop regression ────────────────────────────────────────
   describe('desktop regression', () => {
     it('desktop sidebar CSS is still present', async () => {
-      const css = extractStyle((await agent.get('/').expect(200)).text);
+      const css = await extractStyle(agent, (await agent.get('/').expect(200)).text);
       expect(css).toMatch(/\.app-sidebar\s*\{[\s\S]*?position:\s*fixed/);
     });
 
     it('desktop hover expansion is unchanged', async () => {
-      const css = extractStyle((await agent.get('/').expect(200)).text);
+      const css = await extractStyle(agent, (await agent.get('/').expect(200)).text);
       expect(css).toMatch(
         /\.app-sidebar:hover[\s\S]*?width:\s*var\(--shell-sidebar-expanded\)/,
       );
     });
 
     it('desktop focus-within expansion is unchanged', async () => {
-      const css = extractStyle((await agent.get('/').expect(200)).text);
+      const css = await extractStyle(agent, (await agent.get('/').expect(200)).text);
       expect(css).toMatch(
         /\.app-sidebar:focus-within[\s\S]*?width:\s*var\(--shell-sidebar-expanded\)/,
       );
@@ -525,7 +531,7 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
     });
 
     it('reduced-motion rules still cover the desktop shell', async () => {
-      const css = extractStyle((await agent.get('/').expect(200)).text);
+      const css = await extractStyle(agent, (await agent.get('/').expect(200)).text);
       const reduced = css.match(
         /@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{([\s\S]*?)\n\s*\}/,
       );
@@ -538,22 +544,22 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
   // ── §4: <details> visual states ───────────────────────────────────
   describe('<details> visual states', () => {
     it('defines a closed-state summary style', async () => {
-      const css = extractStyle((await agent.get('/').expect(200)).text);
+      const css = await extractStyle(agent, (await agent.get('/').expect(200)).text);
       expect(css).toMatch(/\.mobile-nav-summary\s*\{/);
     });
 
     it('defines an open-state selector via .mobile-nav[open]', async () => {
-      const css = extractStyle((await agent.get('/').expect(200)).text);
+      const css = await extractStyle(agent, (await agent.get('/').expect(200)).text);
       expect(css).toMatch(/\.mobile-nav\[open\]\s+\.mobile-nav-toggle::after/);
     });
 
     it('summary has a focus-visible indicator', async () => {
-      const css = extractStyle((await agent.get('/').expect(200)).text);
+      const css = await extractStyle(agent, (await agent.get('/').expect(200)).text);
       expect(css).toMatch(/\.mobile-nav-summary:focus-visible[\s\S]*?outline/);
     });
 
     it('active mobile link uses a structural accent bar, not color alone', async () => {
-      const css = extractStyle((await agent.get('/').expect(200)).text);
+      const css = await extractStyle(agent, (await agent.get('/').expect(200)).text);
       expect(css).toMatch(
         /\.mobile-nav-link\[aria-current="page"\]::before/,
       );
@@ -566,7 +572,7 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
     });
 
     it('links are touch-sized (min-height >= 44px)', async () => {
-      const css = extractStyle((await agent.get('/').expect(200)).text);
+      const css = await extractStyle(agent, (await agent.get('/').expect(200)).text);
       const linkRule = css.match(/\.mobile-nav-link\s*\{[\s\S]*?\}/);
       expect(linkRule).not.toBeNull();
       expect(linkRule[0]).toMatch(/min-height:\s*var\(--shell-nav-item-height\)/);
@@ -576,11 +582,53 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
     });
 
     it('the open panel has clear separation from page content', async () => {
-      const css = extractStyle((await agent.get('/').expect(200)).text);
+      const css = await extractStyle(agent, (await agent.get('/').expect(200)).text);
       const panelRule = css.match(/\.mobile-nav-primary\s*\{[\s\S]*?\}/);
       expect(panelRule).not.toBeNull();
       expect(panelRule[0]).toMatch(/border-bottom/);
       expect(panelRule[0]).toMatch(/box-shadow/);
+    });
+  });
+
+  // ── §4b: Mobile title behavior (open vs closed) ────────────────────
+  describe('mobile title behavior (open vs closed)', () => {
+    it('the closed-state summary shows the page-specific title', async () => {
+      const res = await agent.get('/projects').expect(200);
+      const summaryBlock = res.text.match(
+        /<summary class="mobile-nav-summary">([\s\S]*?)<\/summary>/,
+      );
+      expect(summaryBlock[1]).toContain('<span class="mobile-nav-section">Projects</span>');
+    });
+
+    it('a long page title truncates instead of breaking the summary bar', async () => {
+      const css = await extractStyle(agent, (await agent.get('/').expect(200)).text);
+      const sectionRule = css.match(/\.mobile-nav-section\s*\{[\s\S]*?\}/)[0];
+      expect(sectionRule).toMatch(/white-space:\s*nowrap/);
+      expect(sectionRule).toMatch(/text-overflow:\s*ellipsis/);
+    });
+
+    it('CSS hides the page-specific title once the menu is open, matching the desktop shell', async () => {
+      // Phase 14: opening the disclosure reverts the summary's title to the
+      // brand mark ("CreatorCrate") — mirroring the desktop sidebar, whose
+      // brand becomes visible once expanded — instead of keeping the
+      // page-specific title visible.
+      const css = await extractStyle(agent, (await agent.get('/').expect(200)).text);
+      expect(css).toMatch(/\.mobile-nav\[open\]\s+\.mobile-nav-section\s*\{[^}]*display:\s*none/);
+    });
+
+    it('the open panel does not render a second copy of the page title', async () => {
+      const res = await agent.get('/projects').expect(200);
+      const panelBlock = res.text.match(/<nav class="mobile-nav-primary"[\s\S]*?<\/nav>/);
+      expect(panelBlock).not.toBeNull();
+      expect(panelBlock[0]).not.toContain('mobile-nav-section');
+    });
+
+    it('the brand mark left visible when open reads the app name', async () => {
+      const res = await agent.get('/projects').expect(200);
+      const summaryBlock = res.text.match(
+        /<summary class="mobile-nav-summary">([\s\S]*?)<\/summary>/,
+      );
+      expect(summaryBlock[1]).toContain(`<span class="mobile-nav-brand">${APP_NAME}</span>`);
     });
   });
 
@@ -614,7 +662,7 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
     });
 
     it('reduced-motion rules cover the mobile shell transitions', async () => {
-      const css = extractStyle((await agent.get('/').expect(200)).text);
+      const css = await extractStyle(agent, (await agent.get('/').expect(200)).text);
       const reduced = css.match(
         /@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{([\s\S]*?)\n\s*\}/,
       );

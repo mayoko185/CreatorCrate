@@ -1,14 +1,15 @@
 {% extends "layout.njk" %}
 {% import "partials/page-heading.njk" as pageHeading %}
 
+{% set page_title = "Releases — " ~ release.title ~ " — Assets" %}
+
 {% block content %}
   {% set projectArchived = project and project.archived_at %}
   {% set releaseArchived = release and release.archived_at %}
   {% set isPublished = release and release.status == 'published' %}
   {% set isArchived = projectArchived or releaseArchived %}
   {% set readOnly = isArchived or isPublished %}
-  {% set assetsHeading = "Assets — " + release.title %}
-  {% call pageHeading.render(assetsHeading) %}
+  {% call pageHeading.render() %}
     <a class="button button-secondary" href="/releases/{{ release.id }}">Back to Release</a>
   {% endcall %}
 

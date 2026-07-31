@@ -1,22 +1,28 @@
 {#
-  Shared page heading macro.
+  Shared page heading macro — supporting content only (description, status
+  badge, actions). The page title itself lives in the compact top header
+  (see layout.njk's `page_title` contract), not here: authenticated pages
+  render exactly one <h1>, and this macro no longer emits one.
 
   Usage without actions:
     {% import "partials/page-heading.njk" as pageHeading %}
-    {{ pageHeading.render("Page title", "Optional description") }}
+    {{ pageHeading.render("Optional description") }}
 
   Usage with actions:
-    {% call pageHeading.render("Page title") %}
+    {% call pageHeading.render() %}
       <a class="button button-primary" href="/new">Create</a>
     {% endcall %}
+
+  Renders nothing when there is no description, badge, or caller content —
+  callers should not end up with an empty wrapper.
 
   Text parameters are escaped by Nunjucks autoescaping. Action markup is only
   accepted through the Nunjucks caller block; do not pass arbitrary HTML strings.
 #}
-{% macro render(title, description='', badgeStatus='', badgeText='') %}
+{% macro render(description='', badgeStatus='', badgeText='') %}
+{% if description or badgeStatus or badgeText or caller is defined %}
 <header class="page-heading">
   <div class="page-heading-copy">
-    <h1>{{ title }}</h1>
     {% if badgeStatus or badgeText %}
       {% if badgeText %}
         {% set headingBadgeStatus = badgeStatus or 'neutral' %}
@@ -45,4 +51,5 @@
     </div>
   {% endif %}
 </header>
+{% endif %}
 {% endmacro %}

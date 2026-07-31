@@ -2,10 +2,11 @@
 {% import "partials/page-heading.njk" as pageHeading %}
 
 {% set title = action ~ ' Project' %}
+{% set page_title = "Projects — Edit " ~ project.title if action == 'Edit' else "Projects — " ~ title %}
 {% set formDescription = "Create a tracked project record." if action == 'Create' else "Update project metadata and planning fields." %}
 
 {% block content %}
-  {{ pageHeading.render(title, formDescription) }}
+  {{ pageHeading.render(formDescription) }}
 
   {% if errors.general %}
     <div class="error-summary" role="alert">

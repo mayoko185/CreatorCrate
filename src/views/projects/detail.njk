@@ -1,13 +1,15 @@
 {% extends "layout.njk" %}
 {% import "partials/page-heading.njk" as pageHeading %}
 
+{% set page_title = "Projects — " ~ project.title %}
+
 {% block content %}
   {% if not project.archived_at %}
-    {% call pageHeading.render(project.title, "Project status, dates, and Patreon link govern publication — release records below are optional.", project.status) %}
+    {% call pageHeading.render("Project status, dates, and Patreon link govern publication — release records below are optional.", project.status) %}
       <a class="button" href="/projects/{{ project.id }}/edit">Edit project</a>
     {% endcall %}
   {% else %}
-    {{ pageHeading.render(project.title, "This project is archived and read-only.", "archived") }}
+    {{ pageHeading.render("This project is archived and read-only.", "archived") }}
   {% endif %}
 
   {% if project.archived_at %}

@@ -2,8 +2,8 @@
  * Phase 10.4A — application-shell HTTP tests.
  *
  * Verifies the rendered shell: navigation destinations, route-aware active
- * state, document title, single-<h1> invariant, preserved body classes,
- * icon presence, and the no-active rule on controlled not-found pages.
+ * state, document title, single-<h1> invariant, icon presence, and the
+ * no-active rule on controlled not-found pages.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import request from 'supertest';
@@ -219,9 +219,10 @@ describe('application shell — navigation model', () => {
       expect(res.text).toContain(`<title>${APP_NAME}</title>`);
     });
 
-    it('the shell brand is not an <h1> (no duplicate page heading)', async () => {
+    it('the compact header title is the page\'s sole <h1> (no duplicate page heading)', async () => {
       const res = await agent.get('/').expect(200);
-      // Exactly one h1, supplied by the page template — the shell adds none.
+      // Exactly one h1, supplied by the shell header via page_title — the
+      // page-heading component below it renders supporting content only.
       expect(countH1(res.text)).toBe(1);
     });
 
@@ -241,17 +242,12 @@ describe('application shell — navigation model', () => {
     });
   });
 
-  describe('body-class preservation', () => {
-    it('the asset-browser body class remains available', async () => {
-      const res = await agent.get(`/projects/${projectId}/assets`)
-        .expect(200);
-      expect(res.text).toContain('asset-browser-page');
-    });
-
-    it('the asset-viewer body class remains available', async () => {
-      const res = await agent.get(`/projects/${projectId}/assets/${assetId}`)
-        .expect(200);
-      expect(res.text).toContain('asset-viewer-page');
+  describe('page-specific body classes', () => {
+    it('no longer emits a page-specific body class for asset pages (Phase 14: shared page width)', async () => {
+      const browse = await agent.get(`/projects/${projectId}/assets`).expect(200);
+      expect(browse.text).toContain('<body class="">');
+      const viewer = await agent.get(`/projects/${projectId}/assets/${assetId}`).expect(200);
+      expect(viewer.text).toContain('<body class="">');
     });
   });
 });

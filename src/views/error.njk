@@ -1,8 +1,10 @@
 {% extends "layout.njk" %}
 
+{% set page_title = "Error " ~ status %}
+
 {% block content %}
   <div class="error-box">
-    <h1>{{ status }}</h1>
+    <p class="error-status">{{ status }}</p>
     <p>{{ message }}</p>
   </div>
 {% endblock %}

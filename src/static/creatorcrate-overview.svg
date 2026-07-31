@@ -1,0 +1,28 @@
+<svg viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+  <!-- crate body -->
+  <rect x="20" y="70" width="160" height="110" rx="10" fill="#c98a52" stroke="#2b1c10" stroke-width="7"/>
+  <line x1="65" y1="78" x2="65" y2="180" stroke="#a56a36" stroke-width="4"/>
+  <line x1="135" y1="78" x2="135" y2="180" stroke="#a56a36" stroke-width="4"/>
+  <line x1="24" y1="128" x2="176" y2="128" stroke="#a56a36" stroke-width="5"/>
+
+  <!-- lid: flat on the left, propped open on the right -->
+  <rect x="20" y="58" width="55" height="18" rx="7" fill="#a56a36" stroke="#2b1c10" stroke-width="7"/>
+  <polygon points="75,74 75,56 165,20 178,40" fill="#a56a36" stroke="#2b1c10" stroke-width="7" stroke-linejoin="round"/>
+
+  <!-- dark gap where the lid is cracked open -->
+  <polygon points="75,74 178,74 178,34 108,46" fill="#2b1c10"/>
+
+  <!-- fingers gripping the front edge -->
+  <rect x="87" y="66" width="16" height="20" rx="8" fill="#e8b384" stroke="#2b1c10" stroke-width="6"/>
+  <rect x="104" y="68" width="16" height="22" rx="8" fill="#e8b384" stroke="#2b1c10" stroke-width="6"/>
+  <rect x="121" y="66" width="16" height="20" rx="8" fill="#e8b384" stroke="#2b1c10" stroke-width="6"/>
+
+  <!-- eyebrow -->
+  <path d="M113,40 Q136,27 161,38" fill="none" stroke="#2b1c10" stroke-width="8" stroke-linecap="round"/>
+
+  <!-- one big simple mascot eye -->
+  <circle cx="137" cy="52" r="23" fill="#ffffff" stroke="#2b1c10" stroke-width="7"/>
+  <circle cx="142" cy="56" r="11" fill="#2b1c10"/>
+  <circle cx="134" cy="46" r="4.5" fill="#ffffff"/>
+  <circle cx="147" cy="62" r="2" fill="#ffffff" opacity="0.85"/>
+</svg>

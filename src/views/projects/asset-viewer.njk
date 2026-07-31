@@ -1,7 +1,7 @@
 {% extends "layout.njk" %}
 {% import "partials/page-heading.njk" as pageHeading %}
 
-{% block body_class %}asset-viewer-page{% endblock %}
+{% set page_title = "Assets — " ~ project.title ~ " — " ~ asset.filename %}
 
 {% block title %}{{ asset.filename }} — {{ appName }}{% endblock %}
 
@@ -24,7 +24,7 @@
     <a class="asset-viewer-back" href="{{ backToAssetsLink.href }}">Back to Assets</a>
   </nav>
 
-  {% call pageHeading.render(asset.filename, "Asset preview, metadata, and release usage.", viewerBadgeStatus, viewerBadgeText) %}
+  {% call pageHeading.render("Asset preview, metadata, and release usage.", viewerBadgeStatus, viewerBadgeText) %}
     {% if previousAssetLink %}
       <a class="button asset-viewer-prev" href="{{ previousAssetLink.href }}" rel="prev">Previous asset</a>
     {% endif %}

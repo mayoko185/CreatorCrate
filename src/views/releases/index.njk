@@ -1,8 +1,10 @@
 {% extends "layout.njk" %}
 {% import "partials/page-heading.njk" as pageHeading %}
 
+{% set page_title = "Releases" %}
+
 {% block content %}
-  {% call pageHeading.render("Releases") %}
+  {% call pageHeading.render() %}
     <nav class="view-switcher" aria-label="View">
       <a class="view-switcher-option" href="{{ pageUrl({ view: 'list' }) }}"{% if view !== 'board' %} aria-current="page"{% endif %}>List</a>
       <a class="view-switcher-option" href="{{ pageUrl({ view: 'board' }) }}"{% if view === 'board' %} aria-current="page"{% endif %}>Board</a>

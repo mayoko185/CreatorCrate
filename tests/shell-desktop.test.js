@@ -37,13 +37,17 @@ import { authenticate, AUTH_CONFIG, extractCsrfToken } from './helpers/auth.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 const APP_NAME = 'CreatorCrate';
-const STYLESHEET_PATH = fileURLToPath(new URL('../src/static/creatorcrate.css', import.meta.url));
-const SERVED_CSS = fs.readFileSync(STYLESHEET_PATH, 'utf8');
 
-/** Return the served local stylesheet linked by the rendered page. */
-function extractStyle(html) {
+/**
+ * Fetch the actually-served stylesheet through the HTTP test agent (not the
+ * source file on disk), so these assertions fail if /creatorcrate.css stops
+ * being served correctly, not just if the source file changes.
+ */
+async function extractStyle(agent, html) {
   expect(html).toContain('<link rel="stylesheet" href="/creatorcrate.css">');
-  return SERVED_CSS;
+  const res = await agent.get('/creatorcrate.css').expect(200);
+  expect(res.headers['content-type']).toMatch(/text\/css/);
+  return res.text;
 }
 
 /** Count active desktop nav links only (scoped to class="app-nav-link"). */
@@ -149,18 +153,18 @@ describe('application shell (Phase 10.4B) — landmarks & structure', () => {
       expect(res.text).toContain('class="app-section-title"');
     });
 
-    it('the header section title reflects the active section, not a duplicate h1', async () => {
+    it('the header title is the page-specific title, rendered as the sole <h1>', async () => {
       const dash = await agent.get('/').expect(200);
-      // Dashboard active → section title is "Dashboard".
-      expect(dash.text).toContain('class="app-section-title">Dashboard</p>');
+      // Dashboard page declares page_title "Dashboard".
+      expect(dash.text).toContain('<h1 class="app-section-title">Dashboard</h1>');
       const proj = await agent.get('/projects').expect(200);
-      expect(proj.text).toContain('class="app-section-title">Projects</p>');
+      expect(proj.text).toContain('<h1 class="app-section-title">Projects</h1>');
     });
 
-    it('the header falls back to the app name when no section is active', async () => {
-      // A 404 renders the error page with noActive → header shows the app name.
+    it('the header shows a status-specific title for error pages', async () => {
+      // A 404 renders the error page, whose page_title is "Error 404".
       const res = await agent.get('/projects/999999').expect(404);
-      expect(res.text).toContain(`class="app-section-title">${APP_NAME}</p>`);
+      expect(res.text).toContain('<h1 class="app-section-title">Error 404</h1>');
     });
 
     it('does not wrap page content in nested <main> elements on any page', async () => {
@@ -214,13 +218,13 @@ describe('application shell (Phase 10.4B) — landmarks & structure', () => {
 
   describe('hover expansion CSS', () => {
     it('defines :hover expansion to the expanded width', async () => {
-      const css = extractStyle((await agent.get('/').expect(200)).text);
+      const css = await extractStyle(agent, (await agent.get('/').expect(200)).text);
       expect(css).toMatch(/\.app-sidebar:hover\b/);
       expect(css).toMatch(/\.app-sidebar:hover[\s\S]*?width:\s*var\(--shell-sidebar-expanded\)/);
     });
 
     it('labels become visible on hover', async () => {
-      const css = extractStyle((await agent.get('/').expect(200)).text);
+      const css = await extractStyle(agent, (await agent.get('/').expect(200)).text);
       expect(css).toMatch(/\.app-sidebar:hover \.app-nav-label[\s\S]*?opacity:\s*1/);
       expect(css).toMatch(/\.app-sidebar:hover \.app-nav-label[\s\S]*?width:\s*auto/);
     });
@@ -228,19 +232,19 @@ describe('application shell (Phase 10.4B) — landmarks & structure', () => {
 
   describe(':focus-within keyboard expansion CSS', () => {
     it('defines :focus-within expansion to the expanded width', async () => {
-      const css = extractStyle((await agent.get('/').expect(200)).text);
+      const css = await extractStyle(agent, (await agent.get('/').expect(200)).text);
       expect(css).toMatch(/\.app-sidebar:focus-within\b/);
       expect(css).toMatch(/\.app-sidebar:focus-within[\s\S]*?width:\s*var\(--shell-sidebar-expanded\)/);
     });
 
     it('labels become visible on keyboard focus', async () => {
-      const css = extractStyle((await agent.get('/').expect(200)).text);
+      const css = await extractStyle(agent, (await agent.get('/').expect(200)).text);
       expect(css).toMatch(/\.app-sidebar:focus-within \.app-nav-label[\s\S]*?opacity:\s*1/);
       expect(css).toMatch(/\.app-sidebar:focus-within \.app-nav-label[\s\S]*?width:\s*auto/);
     });
 
     it('collapsed labels are clipped, not removed from the a11y tree', async () => {
-      const css = extractStyle((await agent.get('/').expect(200)).text);
+      const css = await extractStyle(agent, (await agent.get('/').expect(200)).text);
       const labelBlock = css.match(/\.app-nav-label\s*\{[^}]*\}/);
       expect(labelBlock).not.toBeNull();
       const rule = labelBlock[0];
@@ -253,13 +257,13 @@ describe('application shell (Phase 10.4B) — landmarks & structure', () => {
     });
 
     it('nav links expose strong focus-visible styling', async () => {
-      const css = extractStyle((await agent.get('/').expect(200)).text);
+      const css = await extractStyle(agent, (await agent.get('/').expect(200)).text);
       expect(css).toMatch(/\.app-nav-link:focus-visible/);
       expect(css).toMatch(/\.app-nav-link:focus-visible[\s\S]*?outline/);
     });
 
     it('the skip link becomes visible only on focus', async () => {
-      const css = extractStyle((await agent.get('/').expect(200)).text);
+      const css = await extractStyle(agent, (await agent.get('/').expect(200)).text);
       expect(css).toMatch(/\.skip-link\s*\{[\s\S]*?transform:\s*translateY\(/);
       expect(css).toMatch(/\.skip-link:focus[\s\S]*?translateY\(0\)/);
     });
@@ -370,7 +374,7 @@ describe('application shell (Phase 10.4B) — landmarks & structure', () => {
     });
 
     it('the active state is structural (filled background + bold text), not color alone', async () => {
-      const css = extractStyle((await agent.get('/').expect(200)).text);
+      const css = await extractStyle(agent, (await agent.get('/').expect(200)).text);
       // Phase 13.2 (Concept D): the active item is a filled background pill
       // plus bold text — a shape/weight change, not just a color swap. The
       // earlier ::before accent-bar treatment was dropped to match the
@@ -402,7 +406,7 @@ describe('application shell (Phase 10.4B) — landmarks & structure', () => {
 
   describe('no-overflow layout guarantee', () => {
     it('the sidebar is position:fixed so its growth never enters the flow', async () => {
-      const css = extractStyle((await agent.get('/').expect(200)).text);
+      const css = await extractStyle(agent, (await agent.get('/').expect(200)).text);
       const sidebarRule = css.match(/\.app-sidebar\s*\{[\s\S]*?\}/);
       expect(sidebarRule).not.toBeNull();
       expect(sidebarRule[0]).toMatch(/position:\s*fixed/);
@@ -410,7 +414,7 @@ describe('application shell (Phase 10.4B) — landmarks & structure', () => {
     });
 
     it('the main column reserves only the collapsed width', async () => {
-      const css = extractStyle((await agent.get('/').expect(200)).text);
+      const css = await extractStyle(agent, (await agent.get('/').expect(200)).text);
       const mainRule = css.match(/\.app-main\s*\{[\s\S]*?\}/);
       expect(mainRule).not.toBeNull();
       expect(mainRule[0]).toMatch(/margin-left:\s*var\(--shell-sidebar-collapsed\)/);
@@ -418,7 +422,7 @@ describe('application shell (Phase 10.4B) — landmarks & structure', () => {
     });
 
     it('the expanded width is larger than the collapsed width', async () => {
-      const css = extractStyle((await agent.get('/').expect(200)).text);
+      const css = await extractStyle(agent, (await agent.get('/').expect(200)).text);
       expect(css).toMatch(/--shell-sidebar-collapsed:\s*(\d+)px/);
       expect(css).toMatch(/--shell-sidebar-expanded:\s*(\d+)px/);
       const collapsed = Number(css.match(/--shell-sidebar-collapsed:\s*(\d+)px/)[1]);
@@ -427,7 +431,7 @@ describe('application shell (Phase 10.4B) — landmarks & structure', () => {
     });
 
     it('the expanded sidebar overlays with a higher z-index than the header', async () => {
-      const css = extractStyle((await agent.get('/').expect(200)).text);
+      const css = await extractStyle(agent, (await agent.get('/').expect(200)).text);
       // Sidebar z-index must be >= header so the overlay sits on top.
       const sb = css.match(/\.app-sidebar\s*\{[\s\S]*?z-index:\s*var\((--shell-z-sidebar)\)/);
       const hd = css.match(/\.app-header\s*\{[\s\S]*?z-index:\s*var\((--shell-z-header)\)/);
@@ -441,7 +445,7 @@ describe('application shell (Phase 10.4B) — landmarks & structure', () => {
 
   describe('reduced motion', () => {
     it('reduced-motion rules cover the shell width/label transitions', async () => {
-      const css = extractStyle((await agent.get('/').expect(200)).text);
+      const css = await extractStyle(agent, (await agent.get('/').expect(200)).text);
       const reduced = css.match(/@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{([\s\S]*?)\n\s*\}/);
       expect(reduced).not.toBeNull();
       const block = reduced[1];
@@ -464,7 +468,7 @@ describe('application shell (Phase 10.4B) — landmarks & structure', () => {
     });
 
     it('expansion is expressed purely through CSS pseudo-classes', async () => {
-      const css = extractStyle((await agent.get('/').expect(200)).text);
+      const css = await extractStyle(agent, (await agent.get('/').expect(200)).text);
       // The expansion triggers are :hover and :focus-within — not scripted.
       expect(css).toMatch(/\.app-sidebar:hover/);
       expect(css).toMatch(/\.app-sidebar:focus-within/);

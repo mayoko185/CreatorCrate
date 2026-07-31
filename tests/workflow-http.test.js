@@ -469,7 +469,7 @@ describe('Phase 6B HTTP workflow', () => {
     it('project edit form still renders', async () => {
       const projectId = await createProject(app, { title: 'Still Works Project' });
       const res = await app.testAgent.get(`/projects/${projectId}/edit`).expect(200);
-      expect(res.text).toContain('Edit Project');
+      expect(res.text).toContain('Projects — Edit Still Works Project');
     });
 
     it('asset listing still works from project detail', async () => {
@@ -1949,7 +1949,7 @@ describe('Phase 6B HTTP workflow', () => {
       // would also be true on an error page that happens to render the
       // layout.
       const res = await app.testAgent.get('/calendar').expect(200);
-      expect(res.text).toMatch(/<h1>Calendar<\/h1>/);
+      expect(res.text).toMatch(/<h1 class="app-section-title">Calendar<\/h1>/);
       // Calendar nav structure: a <div class="calendar-nav"> with the
       // month <h2> and prev/next buttons.
       expect(res.text).toMatch(/<div class="calendar-nav"[^>]*>[\s\S]*?<h2>\d{4}-\d{2}<\/h2>/);
@@ -2321,7 +2321,7 @@ describe('Phase 6B HTTP workflow', () => {
       const redirectRes = await app.testAgent.get('/releases/calendar?month=2025-06');
       const target = redirectRes.headers.location;
       const finalRes = await app.testAgent.get(target).expect(200);
-      expect(finalRes.text).toMatch(/<h1>Calendar<\/h1>/);
+      expect(finalRes.text).toMatch(/<h1 class="app-section-title">Calendar<\/h1>/);
     });
 
     it('POST is not supported (falls through to the 404 handler)', async () => {

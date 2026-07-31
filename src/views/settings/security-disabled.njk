@@ -1,12 +1,12 @@
 {% extends "layout.njk" %}
 {% import "partials/page-heading.njk" as pageHeading %}
 
+{% set page_title = "Settings — Security" %}
+
 {% block title %}Security – {{ appName }}{% endblock %}
 
-{% block body_class %}settings-page{% endblock %}
-
 {% block content %}
-  {{ pageHeading.render("Security", "Authentication is currently disabled. Choose a username and password to require login for this server.") }}
+  {{ pageHeading.render("Authentication is currently disabled. Choose a username and password to require login for this server.") }}
 
   {% if notice %}
     {% set noticeVariant = notice.variant %}

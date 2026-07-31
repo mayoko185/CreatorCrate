@@ -449,7 +449,7 @@ describe('Published Work HTTP route (Phase 2B)', () => {
 
       const res = await agent.get('/projects').expect(200);
       expect(res.text).toContain('Projects Page Smoke Project');
-      expect(res.text).toContain('<h1>Projects</h1>');
+      expect(res.text).toContain('<h1 class="app-section-title">Projects</h1>');
     });
   });
 });

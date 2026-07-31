@@ -78,17 +78,16 @@
   </tr>
 {% endmacro %}
 
-{% block body_class %}asset-browser-page{% endblock %}
+{% set page_title = "Assets — " + project.title %}
 
 {% block content %}
-  {% set assetsHeading = "Assets — " + project.title %}
   {% set assetsHeadingDescription = "Browse scanned files, category, and release usage." %}
   {% if project.archived_at %}
-    {% call pageHeading.render(assetsHeading, assetsHeadingDescription, "archived") %}
+    {% call pageHeading.render(assetsHeadingDescription, "archived") %}
       <a class="button" href="/projects/{{ project.id }}">Back to Project</a>
     {% endcall %}
   {% else %}
-    {% call pageHeading.render(assetsHeading, assetsHeadingDescription) %}
+    {% call pageHeading.render(assetsHeadingDescription) %}
     {% if not project.archived_at %}
       <form method="post" action="/projects/{{ project.id }}/scan" class="inline-form">
         <input type="hidden" name="_csrf" value="{{ _csrf }}">

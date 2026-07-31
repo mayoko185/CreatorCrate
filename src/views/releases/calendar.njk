@@ -1,10 +1,10 @@
 {% extends "layout.njk" %}
 {% import "partials/page-heading.njk" as pageHeading %}
 
-{% block body_class %}calendar-page{% endblock %}
+{% set page_title = "Calendar" %}
 
 {% block content %}
-  {% call pageHeading.render("Calendar", "Project scheduling across CreatorCrate.") %}
+  {% call pageHeading.render("Project scheduling across CreatorCrate.") %}
     <nav class="view-switcher" aria-label="Workflow view">
       <a class="view-switcher-option" href="/releases">Published Work</a>
       <a class="view-switcher-option" href="/release-management">Release Records</a>

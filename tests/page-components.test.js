@@ -31,18 +31,21 @@ import { getDisabledModeCsrf } from './helpers/auth.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 const VIEWS_DIR = fileURLToPath(new URL('../src/views', import.meta.url));
-const STYLESHEET_PATH = fileURLToPath(new URL('../src/static/creatorcrate.css', import.meta.url));
-const SERVED_CSS = fs.readFileSync(STYLESHEET_PATH, 'utf8');
-
 function renderPartial(templateName, context = {}) {
   const env = nunjucks.configure(VIEWS_DIR, { autoescape: true, noCache: true });
   return env.render(templateName, context);
 }
 
-/** Return the served local stylesheet linked by the rendered page. */
-function extractStyle(html) {
+/**
+ * Fetch the actually-served stylesheet through the HTTP test agent (not the
+ * source file on disk), so these assertions fail if /creatorcrate.css stops
+ * being served correctly, not just if the source file changes.
+ */
+async function extractStyle(agent, html) {
   expect(html).toContain('<link rel="stylesheet" href="/creatorcrate.css">');
-  return SERVED_CSS;
+  const res = await agent.get('/creatorcrate.css').expect(200);
+  expect(res.headers['content-type']).toMatch(/text\/css/);
+  return res.text;
 }
 
 function listProductionTemplates(dir = VIEWS_DIR) {
@@ -117,16 +120,29 @@ describe('Phase 10.5A: Shared page-level components', () => {
   });
 
   // ─── 1. Page heading contract ─────────────────────────────────────────
+  //
+  // Phase 14: the page-heading component is supporting content only
+  // (description, badges, actions) — it never renders an <h1>. The page's
+  // single <h1> lives in the compact top header instead, driven by the
+  // template's `page_title` contract.
 
   describe('page-heading contract', () => {
-    it('project form has exactly one h1 inside page-heading-copy', async () => {
+    /** Extract the <header class="page-heading">…</header> block, if any. */
+    function extractPageHeading(html) {
+      const match = html.match(/<header class="page-heading">[\s\S]*?<\/header>/);
+      return match ? match[0] : '';
+    }
+
+    it('project form has exactly one h1, supplied by the header, not page-heading', async () => {
       const res = await agent.get('/projects/new').expect(200);
       expect(countTags(res.text, 'h1')).toBe(1);
+      expect(res.text).toContain('<h1 class="app-section-title">Projects — Create Project</h1>');
       expect(hasClass(res.text, 'page-heading-copy')).toBe(true);
       expect(hasClass(res.text, 'page-heading')).toBe(true);
+      expect(countTags(extractPageHeading(res.text), 'h1')).toBe(0);
     });
 
-    it('release form has exactly one h1 inside page-heading-copy', async () => {
+    it('release form has exactly one h1 and renders no empty page-heading wrapper', async () => {
       const projRes = await agent
         .post('/projects')
         .send('title=Heading+Test')
@@ -138,27 +154,36 @@ describe('Phase 10.5A: Shared page-level components', () => {
 
       const res = await agent.get('/releases/new').expect(200);
       expect(countTags(res.text, 'h1')).toBe(1);
-      expect(hasClass(res.text, 'page-heading')).toBe(true);
+      expect(res.text).toContain('<h1 class="app-section-title">Releases — Create Release</h1>');
+      // The release form has no description, badge, or action for
+      // page-heading to carry — it must not render an empty wrapper.
+      expect(hasClass(res.text, 'page-heading')).toBe(false);
     });
 
-    it('project list has exactly one h1 inside page-heading', async () => {
+    it('project list has exactly one h1, and page-heading carries supporting content only', async () => {
       const res = await agent.get('/projects').expect(200);
       expect(countTags(res.text, 'h1')).toBe(1);
+      expect(res.text).toContain('<h1 class="app-section-title">Projects</h1>');
       expect(hasClass(res.text, 'page-heading')).toBe(true);
+      expect(countTags(extractPageHeading(res.text), 'h1')).toBe(0);
     });
 
-    it('published work page has exactly one h1 inside page-heading', async () => {
+    it('published work page has exactly one h1, and page-heading carries supporting content only', async () => {
       const res = await agent.get('/releases').expect(200);
       expect(countTags(res.text, 'h1')).toBe(1);
+      expect(res.text).toContain('<h1 class="app-section-title">Published Work</h1>');
       expect(hasClass(res.text, 'page-heading')).toBe(true);
+      expect(countTags(extractPageHeading(res.text), 'h1')).toBe(0);
     });
 
-    it('dashboard has exactly one h1 inside page-heading', async () => {
+    it('dashboard has exactly one h1, and page-heading carries supporting content only', async () => {
       const res = await agent.get('/').expect(200);
       expect(countTags(res.text, 'h1')).toBe(1);
+      expect(res.text).toContain('<h1 class="app-section-title">Dashboard</h1>');
       expect(hasClass(res.text, 'page-heading')).toBe(true);
       expect(hasClass(res.text, 'page-heading-copy')).toBe(true);
       expect(hasClass(res.text, 'page-heading-description')).toBe(true);
+      expect(countTags(extractPageHeading(res.text), 'h1')).toBe(0);
     });
 
     it('has page-heading with New Project primary action', async () => {
@@ -167,6 +192,25 @@ describe('Phase 10.5A: Shared page-level components', () => {
       expect(res.text).toContain('New Project');
       expect(res.text).toContain('button-primary');
       expect(res.text).toContain('href="/projects/new"');
+    });
+
+    it('the page-heading macro never emits an <h1>, even with description, badge, and actions', () => {
+      const env = nunjucks.configure(VIEWS_DIR, { autoescape: true, noCache: true });
+      const html = env.renderString(
+        '{% import "partials/page-heading.njk" as pageHeading %}{% call pageHeading.render("desc", "success", "Ready") %}<a href="#">Action</a>{% endcall %}',
+        {}
+      );
+      expect(html).toContain('page-heading');
+      expect(html).not.toMatch(/<h1/);
+    });
+
+    it('the page-heading macro renders no wrapper when called with no arguments', () => {
+      const env = nunjucks.configure(VIEWS_DIR, { autoescape: true, noCache: true });
+      const html = env.renderString(
+        '{% import "partials/page-heading.njk" as pageHeading %}{{ pageHeading.render() }}',
+        {}
+      );
+      expect(html.trim()).toBe('');
     });
   });
 
@@ -204,7 +248,7 @@ describe('Phase 10.5A: Shared page-level components', () => {
   describe('button/link parity', () => {
     it('links and buttons with class button have consistent base styles', async () => {
       const res = await agent.get('/projects').expect(200);
-      const css = extractStyle(res.text);
+      const css = await extractStyle(agent, res.text);
 
       // .button base exists
       expect(css).toContain('.button {');
@@ -221,7 +265,7 @@ describe('Phase 10.5A: Shared page-level components', () => {
 
     it('buttons have focus-visible styles', async () => {
       const res = await agent.get('/projects').expect(200);
-      const css = extractStyle(res.text);
+      const css = await extractStyle(agent, res.text);
       expect(css).toContain('.button:focus-visible');
     });
   });
@@ -303,7 +347,7 @@ describe('Phase 10.5A: Shared page-level components', () => {
 
     it('status-badge variant classes are defined in CSS', async () => {
       const res = await agent.get('/projects').expect(200);
-      const css = extractStyle(res.text);
+      const css = await extractStyle(agent, res.text);
       // All semantic variants
       expect(css).toContain('.status-badge--neutral');
       expect(css).toContain('.status-badge--active');
@@ -331,7 +375,7 @@ describe('Phase 10.5A: Shared page-level components', () => {
 
     it('data-table styles are defined with proper header styles', async () => {
       const res = await agent.get('/projects').expect(200);
-      const css = extractStyle(res.text);
+      const css = await extractStyle(agent, res.text);
       expect(css).toContain('.data-table');
       expect(css).toContain('.data-table th');
     });
@@ -453,7 +497,7 @@ describe('Phase 10.5A: Shared page-level components', () => {
 
     it('destructive-section CSS has danger border color', async () => {
       const res = await agent.get('/projects').expect(200);
-      const css = extractStyle(res.text);
+      const css = await extractStyle(agent, res.text);
       expect(css).toContain('.destructive-section');
       expect(css).toContain('border: 1px solid var(--danger)');
     });
@@ -493,7 +537,7 @@ describe('Phase 10.5A: Shared page-level components', () => {
 
     it('notice variant CSS classes are defined', async () => {
       const res = await agent.get('/projects').expect(200);
-      const css = extractStyle(res.text);
+      const css = await extractStyle(agent, res.text);
       expect(css).toContain('.notice--info');
       expect(css).toContain('.notice--success');
       expect(css).toContain('.notice--warning');
@@ -598,7 +642,7 @@ describe('Phase 10.5A: Shared page-level components', () => {
   describe('mobile-safe class structure', () => {
     it('page-heading has mobile responsive CSS', async () => {
       const res = await agent.get('/projects').expect(200);
-      const css = extractStyle(res.text);
+      const css = await extractStyle(agent, res.text);
       // Mobile breakpoint exists
       expect(css).toMatch(/@media\s*\(max-width:\s*540px\)/);
       // page-heading flex-direction: column on mobile
@@ -608,14 +652,14 @@ describe('Phase 10.5A: Shared page-level components', () => {
 
     it('data-table has responsive styles', async () => {
       const res = await agent.get('/projects').expect(200);
-      const css = extractStyle(res.text);
+      const css = await extractStyle(agent, res.text);
       expect(css).toContain('.data-table');
       expect(css).toContain('.table-scroll');
     });
 
     it('field-row becomes column on mobile', async () => {
       const res = await agent.get('/projects/new').expect(200);
-      const css = extractStyle(res.text);
+      const css = await extractStyle(agent, res.text);
       // The mobile breakpoint must contain a rule that makes field-row stack
       // This is split across lines, so check for the class and the property separately
       expect(css).toContain('.field-row');

@@ -1,11 +1,9 @@
 {% extends "layout.njk" %}
-{% import "partials/page-heading.njk" as pageHeading %}
 
 {% set title = action ~ ' Release' %}
+{% set page_title = "Releases — Edit " ~ release.title if action == 'Edit' else "Releases — " ~ title %}
 
 {% block content %}
-  {{ pageHeading.render(title) }}
-
   {% if errors.general %}
     <div class="error-summary" role="alert">
       <p>{{ errors.general }}</p>

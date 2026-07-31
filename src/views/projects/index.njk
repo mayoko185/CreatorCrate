@@ -1,8 +1,10 @@
 {% extends "layout.njk" %}
 {% import "partials/page-heading.njk" as pageHeading %}
 
+{% set page_title = "Projects" %}
+
 {% block content %}
-  {% call pageHeading.render("Projects", "Browse active and archived project records.") %}
+  {% call pageHeading.render("Browse active and archived project records.") %}
     <a class="button button-primary" href="/projects/new">New Project</a>
   {% endcall %}
 

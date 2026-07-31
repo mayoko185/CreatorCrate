@@ -19,10 +19,6 @@ import { getDisabledModeCsrf } from './helpers/auth.js';
 import slugify from '@sindresorhus/slugify';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
-const STYLESHEET_PATH = fileURLToPath(new URL('../src/static/creatorcrate.css', import.meta.url));
-// Source-file read for declaration/token inspection only — not proof the
-// file is actually served correctly. See readStylesheetSource() below.
-const STYLESHEET_SOURCE = fs.readFileSync(STYLESHEET_PATH, 'utf8');
 
 describe('asset browser HTTP workflow', () => {
   let db;
@@ -179,17 +175,18 @@ describe('asset browser HTTP workflow', () => {
 
   // Phase 12 CSP hardening moved styling out of an inline <style> block and
   // into an external stylesheet (linked via <link rel="stylesheet">) so no
-  // 'unsafe-inline' style-src is required. This reads the CSS SOURCE FILE
-  // on disk for tests that only need to inspect declared rules/tokens — it
-  // does NOT prove the file is actually served correctly over HTTP (wrong
-  // route, stale response, misconfigured static middleware would all be
-  // invisible here). For that contract, fetch /creatorcrate.css directly
-  // through the test app via supertest instead of using this helper.
-  function readStylesheetSource(html) {
+  // 'unsafe-inline' style-src is required. This fetches the actually-served
+  // stylesheet through the HTTP test agent — not the source file on disk —
+  // so these assertions fail if /creatorcrate.css stops being served
+  // correctly (wrong route, stale response, misconfigured static
+  // middleware), not just if the source file changes.
+  async function readStylesheetSource(html) {
     if (!html.includes('<link rel="stylesheet" href="/creatorcrate.css">')) {
       throw new Error('Rendered page did not include its stylesheet.');
     }
-    return STYLESHEET_SOURCE;
+    const res = await agent.get('/creatorcrate.css').expect(200);
+    expect(res.headers['content-type']).toMatch(/text\/css/);
+    return res.text;
   }
 
   beforeEach(async () => {
@@ -1289,7 +1286,7 @@ describe('asset browser HTTP workflow', () => {
     expect(res2.headers['content-type']).toMatch(/html/);
     expect(res2.text).toContain('<title>hero.png — CreatorCrate</title>');
     expect(res2.text).toContain('class="page-heading"');
-    expect(res2.text).toContain('<h1>hero.png</h1>');
+    expect(res2.text).toContain('<h1 class="app-section-title">Assets — Viewer Previewable — hero.png</h1>');
     expect(res2.text).toContain('Asset preview, metadata, and release usage.');
     expectAnchorHref(res2.text, 'asset-viewer-project', `/projects/${id}`);
     expectAnchorHref(res2.text, 'asset-viewer-back', `/projects/${id}/assets`);
@@ -1566,7 +1563,7 @@ describe('asset browser HTTP workflow', () => {
       .get(`/projects/${id}/assets/${asset.id}`)
       .expect(200);
     expect(res2.text).toContain('Project: Viewer Archived');
-    expect(res2.text).toContain('<h1>archived.png</h1>');
+    expect(res2.text).toContain('<h1 class="app-section-title">Assets — Viewer Archived — archived.png</h1>');
   });
 
   it('rejects malformed viewer project and asset IDs', async () => {
@@ -1663,7 +1660,7 @@ describe('asset browser HTTP workflow', () => {
       .get(`/projects/${id}/assets/${asset.id}`)
       .expect(200);
     expect(viewer.headers['content-type']).toMatch(/html/);
-    expect(viewer.text).toContain('<h1>media.png</h1>');
+    expect(viewer.text).toContain('<h1 class="app-section-title">Assets — Viewer Route Precedence — media.png</h1>');
 
     const browser = await agent
       .get(`/projects/${id}/assets`)
@@ -1720,7 +1717,7 @@ describe('asset browser HTTP workflow', () => {
       .expect(200);
 
     expect(res2.text).toContain(`<title>${filename} — CreatorCrate</title>`);
-    expect(res2.text).toContain(`<h1>${filename}</h1>`);
+    expect(res2.text).toContain(`<h1 class="app-section-title">Assets — Viewer Long Content — ${filename}</h1>`);
     expect(res2.text).toContain(`<code>${relativePath}</code>`);
     expect(res2.text).toContain('<code>application/vnd.example.extremely-long-mime-type</code>');
     expect(res2.text).toContain('Long Viewer Release');
@@ -1816,7 +1813,7 @@ describe('asset browser HTTP workflow', () => {
     const id = res.headers.location.replace('/projects/', '');
     const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
 
-    expect(readStylesheetSource(res2.text)).toMatch(
+    expect(await readStylesheetSource(res2.text)).toMatch(
       /@media \(prefers-reduced-motion: reduce\) \{[\s\S]*\.asset-thumb-image[\s\S]*\.asset-preview-image[\s\S]*transition: none !important;/
     );
   });
@@ -1827,7 +1824,7 @@ describe('asset browser HTTP workflow', () => {
     const res = await createProject('PhaseB Tokens');
     const id = res.headers.location.replace('/projects/', '');
     const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
-    const style = readStylesheetSource(res2.text);
+    const style = await readStylesheetSource(res2.text);
     expect(style).toContain('--surface-card');
     expect(style).toContain('--border:');
     expect(style).toContain('--border-strong');
@@ -1842,7 +1839,7 @@ describe('asset browser HTTP workflow', () => {
     const res = await createProject('PhaseB Thumb Fit');
     const id = res.headers.location.replace('/projects/', '');
     const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
-    expect(readStylesheetSource(res2.text)).toMatch(/\.asset-thumb-image\s*\{[^}]*object-fit:\s*cover/);
+    expect(await readStylesheetSource(res2.text)).toMatch(/\.asset-thumb-image\s*\{[^}]*object-fit:\s*cover/);
   });
 
   it('renders object-fit contain for viewer preview images', async () => {
@@ -1853,14 +1850,14 @@ describe('asset browser HTTP workflow', () => {
     const res2 = await agent
       .get(`/projects/${id}/assets/${asset.id}`)
       .expect(200);
-    expect(readStylesheetSource(res2.text)).toMatch(/\.asset-preview-image\s*\{[^}]*object-fit:\s*contain/);
+    expect(await readStylesheetSource(res2.text)).toMatch(/\.asset-preview-image\s*\{[^}]*object-fit:\s*contain/);
   });
 
   it('makes the native hidden attribute authoritative over preview display rules', async () => {
     const res = await createProject('PhaseB Hidden CSS');
     const id = res.headers.location.replace('/projects/', '');
     const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
-    const style = readStylesheetSource(res2.text);
+    const style = await readStylesheetSource(res2.text);
     const hiddenRule = '[hidden] { display: none !important; }';
 
     expect(style).toContain(hiddenRule);
@@ -1872,32 +1869,36 @@ describe('asset browser HTTP workflow', () => {
     const res = await createProject('PhaseB Active CSS');
     const id = res.headers.location.replace('/projects/', '');
     const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
-    expect(readStylesheetSource(res2.text)).toContain('[aria-current="page"]');
+    expect(await readStylesheetSource(res2.text)).toContain('[aria-current="page"]');
   });
 
   it('renders prefers-reduced-motion media query', async () => {
     const res = await createProject('PhaseB Reduced Motion');
     const id = res.headers.location.replace('/projects/', '');
     const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
-    expect(readStylesheetSource(res2.text)).toContain('@media (prefers-reduced-motion: reduce)');
+    expect(await readStylesheetSource(res2.text)).toContain('@media (prefers-reduced-motion: reduce)');
   });
 
   it('renders focus-visible CSS for category nav links and asset filenames', async () => {
     const res = await createProject('PhaseB Focus CSS');
     const id = res.headers.location.replace('/projects/', '');
     const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
-    const style = readStylesheetSource(res2.text);
+    const style = await readStylesheetSource(res2.text);
     expect(style).toMatch(/\.asset-browser-nav-list a:focus-visible/);
     expect(style).toMatch(/\.asset-file-link:focus-visible/);
   });
 
-  it('renders wider content CSS for asset browser and viewer pages', async () => {
+  it('inherits the shared page-width frame instead of a page-specific override', async () => {
     const res = await createProject('PhaseB Wide CSS');
     const id = res.headers.location.replace('/projects/', '');
     const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
-    const style = readStylesheetSource(res2.text);
-    expect(style).toContain('body.asset-browser-page main');
-    expect(style).toContain('body.asset-viewer-page main');
+    const style = await readStylesheetSource(res2.text);
+    // Phase 14: asset pages no longer define their own outer-width
+    // override — they inherit --page-width via .app-main main like every
+    // other authenticated page.
+    expect(style).not.toContain('body.asset-browser-page main');
+    expect(style).not.toContain('body.asset-viewer-page main');
+    expect(style).toMatch(/\.app-main main\s*\{[^}]*max-width:\s*var\(--page-width\)/);
   });
 
   it('renders the two-column browser shell with a category nav and a content panel', async () => {
@@ -1916,27 +1917,9 @@ describe('asset browser HTTP workflow', () => {
     const res = await createProject('PhaseB Pagination CSS');
     const id = res.headers.location.replace('/projects/', '');
     const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
-    const style = readStylesheetSource(res2.text);
+    const style = await readStylesheetSource(res2.text);
     expect(style).toMatch(/\.pagination-prev:focus-visible/);
     expect(style).toMatch(/\.pagination-next:focus-visible/);
-  });
-
-  it('renders body class asset-browser-page on the assets listing', async () => {
-    const res = await createProject('PhaseB Body Class');
-    const id = res.headers.location.replace('/projects/', '');
-    const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
-    expect(res2.text).toContain('<body class="asset-browser-page">');
-  });
-
-  it('renders body class asset-viewer-page on the asset viewer', async () => {
-    const res = await createProject('PhaseB Viewer Body');
-    const id = Number(res.headers.location.replace('/projects/', ''));
-    const projectDir = getProjectDir('PhaseB Viewer Body');
-    const asset = writeIndexedAsset(id, projectDir, 'view.png', await makePng());
-    const res2 = await agent
-      .get(`/projects/${id}/assets/${asset.id}`)
-      .expect(200);
-    expect(res2.text).toContain('<body class="asset-viewer-page">');
   });
 
   it('renders viewer preview frame with contained image and responsive max-height', async () => {
@@ -1947,7 +1930,7 @@ describe('asset browser HTTP workflow', () => {
     const res2 = await agent
       .get(`/projects/${id}/assets/${asset.id}`)
       .expect(200);
-    const style = readStylesheetSource(res2.text);
+    const style = await readStylesheetSource(res2.text);
     expect(style).toMatch(/\.asset-preview-image\s*\{[^}]*max-height/);
     expect(style).toMatch(/\.asset-preview-image\s*\{[^}]*object-fit:\s*contain/);
   });
@@ -1956,7 +1939,7 @@ describe('asset browser HTTP workflow', () => {
     const res = await createProject('PhaseB Token Validation');
     const id = res.headers.location.replace('/projects/', '');
     const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
-    const style = readStylesheetSource(res2.text);
+    const style = await readStylesheetSource(res2.text);
     const declared = new Set(
       [...style.matchAll(/--([A-Za-z0-9_-]+)\s*:/g)].map((match) => match[1])
     );
@@ -2002,11 +1985,13 @@ describe('asset browser HTTP workflow', () => {
     const res = await createProject('PhaseB Mobile Containment');
     const id = res.headers.location.replace('/projects/', '');
     const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
-    const style = readStylesheetSource(res2.text);
+    const style = await readStylesheetSource(res2.text);
 
     expect(style).toMatch(/\.page-heading\s*\{[^}]*min-width:\s*0/);
-    expect(style).toMatch(/\.page-heading-copy h1\s*\{[^}]*overflow-wrap:\s*anywhere[^}]*word-break:\s*break-word/);
-    expect(style).not.toMatch(/\.page-heading-copy h1\s*\{[^}]*word-break:\s*break-all/);
+    // Phase 14: the long-title-safe element is now .app-section-title (the
+    // compact header's sole h1) — it truncates with an ellipsis rather than
+    // wrapping, since it lives in a fixed-height header bar.
+    expect(style).toMatch(/\.app-section-title\s*\{[^}]*overflow:\s*hidden[^}]*text-overflow:\s*ellipsis[^}]*white-space:\s*nowrap/);
     expect(style).toMatch(/\.page-heading-actions\s*\{[^}]*min-width:\s*0[^}]*max-width:\s*100%/);
     expect(style).toMatch(/\.asset-viewer-breadcrumb\s*\{[^}]*min-width:\s*0[^}]*max-width:\s*100%/);
     expect(style).toMatch(/\.asset-viewer-breadcrumb a\s*\{[^}]*overflow-wrap:\s*anywhere[^}]*word-break:\s*break-word/);

@@ -165,8 +165,7 @@ describe('project HTTP workflow', () => {
       .set('Content-Type', 'application/x-www-form-urlencoded')
         .send('_csrf=' + encodeURIComponent(csrfToken));
     const res = await agent.get(`${createRes.headers.location}/edit`).expect(200);
-    expect(res.text).toContain('Edit Project');
-    expect(res.text).toContain('Editable Project');
+    expect(res.text).toContain('Projects — Edit Editable Project');
     expect(res.text).not.toContain('value="archived"');
   });
 
@@ -1534,7 +1533,7 @@ describe('project HTTP workflow', () => {
 
       const res = await agent.get(`/projects/${id}/edit`);
       expect(res.status).toBe(200);
-      expect(res.text).toContain('Edit Project');
+      expect(res.text).toContain('Projects — Edit Edit Active Allowed');
     });
 
     it('GET /projects/:id/edit still 404s for non-existent projects (regression)', async () => {

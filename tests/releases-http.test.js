@@ -1410,8 +1410,7 @@ describe('release HTTP workflow', () => {
       .expect(302);
 
     const res = await agent.get(`${createRes.headers.location}/edit`).expect(200);
-    expect(res.text).toContain('Edit Release');
-    expect(res.text).toContain('Before Edit');
+    expect(res.text).toContain('Releases — Edit Before Edit');
   });
 
   it('valid update redirects to detail', async () => {
@@ -5624,7 +5623,7 @@ describe('release HTTP workflow', () => {
         const res = await agent
           .get(`${releaseLocation}/edit`)
           .expect(200);
-        expect(res.text).toContain('Edit Release');
+        expect(res.text).toContain('Releases — Edit Readiness Test Release');
       });
 
       it('GET /releases/:id/assets still renders asset selection', async () => {
@@ -5632,7 +5631,7 @@ describe('release HTTP workflow', () => {
         const res = await agent
           .get(`${releaseLocation}/assets`)
           .expect(200);
-        expect(res.text).toContain('Assets —');
+        expect(res.text).toContain('— Assets');
         // Phase 10.5C: asset tables use shared data-table class
         expect(res.text).toContain('data-table');
       });

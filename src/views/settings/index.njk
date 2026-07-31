@@ -1,12 +1,12 @@
 {% extends "layout.njk" %}
 {% import "partials/page-heading.njk" as pageHeading %}
 
+{% set page_title = "Settings" %}
+
 {% block title %}Settings – {{ appName }}{% endblock %}
 
-{% block body_class %}settings-page{% endblock %}
-
 {% block content %}
-  {{ pageHeading.render("Settings", "Application control center") }}
+  {{ pageHeading.render("Application control center") }}
 
   <div class="settings-stats">
     <div class="settings-stat{% if authEnabled %} ok{% else %} warn{% endif %}">

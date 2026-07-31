@@ -1,8 +1,10 @@
 {% extends "layout.njk" %}
 {% import "partials/page-heading.njk" as pageHeading %}
 
+{% set page_title = "Releases — Review & Publish — " ~ release.title %}
+
 {% block content %}
-  {% call pageHeading.render("Review & Publish") %}
+  {% call pageHeading.render() %}
     <a class="button" href="/releases/{{ release.id }}">Cancel</a>
   {% endcall %}
 

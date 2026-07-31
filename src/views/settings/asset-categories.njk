@@ -1,12 +1,12 @@
 {% extends "layout.njk" %}
 {% import "partials/page-heading.njk" as pageHeading %}
 
+{% set page_title = "Settings — Asset Categories" %}
+
 {% block title %}Asset Categories – {{ appName }}{% endblock %}
 
-{% block body_class %}settings-page{% endblock %}
-
 {% block content %}
-  {{ pageHeading.render("Asset Categories", "Global defaults copied into every new project.") }}
+  {{ pageHeading.render("Global defaults copied into every new project.") }}
 
   {% if notice %}
     {% set noticeVariant = notice.variant %}

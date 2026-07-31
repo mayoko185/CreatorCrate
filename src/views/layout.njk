@@ -47,7 +47,7 @@
         <summary class="mobile-nav-summary">
           <img src="/logo.svg" alt="" class="mobile-nav-logo">
           <span class="mobile-nav-brand">{{ shell.appName or appName }}</span>
-          <span class="mobile-nav-section">{{ shell.activeSection or shell.appName or appName }}</span>
+          <span class="mobile-nav-section">{{ page_title or shell.activeSection or shell.appName or appName }}</span>
           <span class="mobile-nav-toggle">Menu</span>
         </summary>
         <nav class="mobile-nav-primary" aria-label="Primary">
@@ -73,7 +73,15 @@
 
       <div class="app-main{% if not shellVisible %} app-main--centered{% endif %}">
         <header class="app-header"{% if not shellVisible %} hidden{% endif %}>
-          <p class="app-section-title">{{ shell.activeSection or shell.appName or appName }}</p>
+          {# The compact header title is the page's sole <h1> — the
+             page-heading component below no longer renders one. When the
+             shell is hidden (login.njk), skip the h1 so login's own
+             standalone heading stays the only one on the page. #}
+          {% if shellVisible %}
+            <h1 class="app-section-title">{{ page_title or shell.activeSection or shell.appName or appName }}</h1>
+          {% else %}
+            <p class="app-section-title">{{ page_title or shell.activeSection or shell.appName or appName }}</p>
+          {% endif %}
         </header>
 
         {% if auth and auth.enabled == false and shellVisible %}

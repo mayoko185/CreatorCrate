@@ -1,8 +1,10 @@
 {% extends "layout.njk" %}
 {% import "partials/page-heading.njk" as pageHeading %}
 
+{% set page_title = "Published Work" %}
+
 {% block content %}
-  {{ pageHeading.render("Published Work", "Projects published through CreatorCrate.") }}
+  {{ pageHeading.render("Projects published through CreatorCrate.") }}
 
   <form class="filters" method="get" action="/releases">
     <div class="field">

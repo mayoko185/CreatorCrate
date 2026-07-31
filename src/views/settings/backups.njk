@@ -1,12 +1,12 @@
 {% extends "layout.njk" %}
 {% import "partials/page-heading.njk" as pageHeading %}
 
+{% set page_title = "Settings — Backups" %}
+
 {% block title %}Backups – {{ appName }}{% endblock %}
 
-{% block body_class %}settings-page{% endblock %}
-
 {% block content %}
-  {% call pageHeading.render("Backups") %}
+  {% call pageHeading.render() %}
     <form method="post" action="/settings/backups" class="inline-form">
       <input type="hidden" name="_csrf" value="{{ _csrf }}">
       <button type="submit" class="button button-primary">Create Backup</button>

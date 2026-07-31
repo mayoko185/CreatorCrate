@@ -1,12 +1,12 @@
 {% extends "layout.njk" %}
 {% import "partials/page-heading.njk" as pageHeading %}
 
+{% set page_title = "Settings — Security" %}
+
 {% block title %}Security – {{ appName }}{% endblock %}
 
-{% block body_class %}settings-page{% endblock %}
-
 {% block content %}
-  {{ pageHeading.render("Security", "Rotate the single operator password. Existing sessions are revoked after a successful change.") }}
+  {{ pageHeading.render("Rotate the single operator password. Existing sessions are revoked after a successful change.") }}
 
   {% if notice %}
     {% set noticeVariant = notice.variant %}

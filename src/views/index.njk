@@ -1,8 +1,10 @@
 {% extends "layout.njk" %}
 {% import "partials/page-heading.njk" as pageHeading %}
 
+{% set page_title = "Dashboard" %}
+
 {% block content %}
-  {% call pageHeading.render(appName, "Organize your Patreon art projects in one self-hosted place.") %}
+  {% call pageHeading.render("Organize your Patreon art projects in one self-hosted place.") %}
     <a class="button button-primary" href="/projects/new">New Project</a>
     <a class="button" href="/projects">View All Projects</a>
     <a class="button" href="/releases">View All Releases</a>

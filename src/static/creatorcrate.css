@@ -78,6 +78,13 @@
         --shell-z-sidebar: 20;
         --shell-z-header: 15;
         --shell-z-skip: 30;
+        /* ── Shared outer page-width frame (Phase 14) ──
+           Single source of truth for the authenticated app's content column.
+           The header and every page's <main> inherit this from the layout —
+           pages must not redefine the outer frame; inner components (tables,
+           forms, scroll containers) may still apply their own local
+           constraints inside it. */
+        --page-width: 1200px;
       }
       * { box-sizing: border-box; }
       [hidden] { display: none !important; }
@@ -266,6 +273,13 @@
         top: 0;
         z-index: var(--shell-z-header);
         flex: none;
+        /* Align the title to the same shared page frame as .app-main main
+           below, so the header title lines up with page content edges
+           instead of spanning the full viewport width. */
+        max-width: var(--page-width);
+        width: 100%;
+        margin: 0 auto;
+        box-sizing: border-box;
       }
       .app-section-title {
         margin: 0;
@@ -281,7 +295,7 @@
       }
       .app-main main {
         flex: 1;
-        max-width: 720px;
+        max-width: var(--page-width);
         width: 100%;
         min-width: 0;
         margin: 0 auto;
@@ -308,13 +322,18 @@
         background: var(--surface);
         border-radius: 0.5rem;
       }
-      .error-box h1 { color: var(--danger); }
+      .error-box .error-status {
+        margin: 0 0 var(--space-sm);
+        font-size: 2.2rem;
+        font-weight: 300;
+        color: var(--danger);
+      }
       .button {
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        min-height: 2.5rem;
-        padding: 0.5rem 1rem;
+        min-height: 2rem;
+        padding: 0.4rem 0.8rem;
         border: 1px solid var(--border);
         border-radius: 0.375rem;
         background: var(--surface);
@@ -322,6 +341,11 @@
         text-decoration: none;
         cursor: pointer;
         font-size: 1rem;
+        /* Decouples button height from the body's 1.6 paragraph line-height
+           (Phase 15: ~20% smaller shared button system) — buttons are
+           label-length text, not prose, so a tighter line box is correct
+           here without touching font-size. */
+        line-height: 1.2;
         white-space: nowrap;
         flex: none;
       }
@@ -354,7 +378,8 @@
       .project-list { list-style: none; padding: 0; }
       .project-list li { padding: 0.75rem 0; border-bottom: 1px solid var(--border); }
       .project-list a { font-weight: 600; color: var(--link); text-decoration: none; }
-      .project-list a:hover { text-decoration: underline; }
+      .project-list a:visited { color: var(--link); }
+      .project-list a:hover { filter: brightness(1.15); }
       .meta { display: block; font-size: 0.875rem; color: var(--muted); }
       .filters {
         display: flex;
@@ -430,7 +455,8 @@
         color: var(--link);
         text-decoration: none;
       }
-      .asset-file-link:hover { text-decoration: underline; }
+      .asset-file-link:visited { color: var(--link); }
+      .asset-file-link:hover { filter: brightness(1.15); }
       .asset-file-link:focus-visible {
         outline: 2px solid var(--focus-ring);
         outline-offset: 2px;
@@ -477,7 +503,8 @@
       .release-list li { padding: 0.5rem 0; border-bottom: 1px solid var(--border); }
       .release-list li:last-child { border-bottom: none; }
       .release-list a { font-weight: 600; color: var(--link); text-decoration: none; }
-      .release-list a:hover { text-decoration: underline; }
+      .release-list a:visited { color: var(--link); }
+      .release-list a:hover { filter: brightness(1.15); }
       .attention-overdue h3 { color: var(--danger) !important; }
       .attention-ready h3 { color: var(--accent) !important; }
       .attention-warning h3 { color: var(--danger) !important; }
@@ -513,9 +540,9 @@
         border: 0;
       }
       .button-small {
-        min-height: 2rem;
-        min-inline-size: 2rem;
-        padding: 0.25rem 0.625rem;
+        min-height: 1.6rem;
+        min-inline-size: 1.6rem;
+        padding: 0.2rem 0.5rem;
         font-size: 0.8rem;
       }
       .asset-actions { display: flex; gap: 0.25rem; flex-wrap: nowrap; }
@@ -551,24 +578,11 @@
 
       /* ═══ Phase 10.3B: Asset browser visual hierarchy ═══ */
 
-      /* ── Wider content area for asset pages ── */
-      body.asset-browser-page main,
-      body.asset-viewer-page main {
-        max-width: 1200px;
-      }
-
-      /* ── Wider content area for the calendar: a primary workspace, not a
-         720px-capped content column (Phase 13.3) ── */
-      body.calendar-page main {
-        max-width: 1400px;
-      }
-
-      /* ── Wider content area for Settings: the nav + content two-column
-         layout needs more room than the shared 720px column, or tables in
-         .settings-content get squeezed (Phase 13.4) ── */
-      body.settings-page main {
-        max-width: 1100px;
-      }
+      /* Phase 14: asset pages, the calendar, and Settings previously
+         overrode the outer page width per body class. They now inherit the
+         shared --page-width frame from .app-main main like every other
+         authenticated page; internal layouts (e.g. .calendar-scroll,
+         .settings-content) apply their own local constraints instead. */
 
       /* ── Scan freshness note ── */
       .scan-freshness {
@@ -708,7 +722,8 @@
         color: var(--link);
         text-decoration: none;
       }
-      .asset-browser-nav-manage:hover { text-decoration: underline; }
+      .asset-browser-nav-manage:visited { color: var(--link); }
+      .asset-browser-nav-manage:hover { filter: brightness(1.15); }
       .asset-browser-nav-manage:focus-visible {
         outline: 2px solid var(--focus-ring);
         outline-offset: 2px;
@@ -1106,14 +1121,6 @@
         min-width: 0;
         max-width: 100%;
       }
-      .page-heading-copy h1 {
-        margin: 0;
-        font-size: 2.2rem;
-        font-weight: 300;
-        letter-spacing: -0.01em;
-        overflow-wrap: anywhere;
-        word-break: break-word;
-      }
       .page-heading-description {
         margin: var(--space-xs) 0 0;
         color: var(--muted);
@@ -1236,8 +1243,11 @@
         color: var(--accent);
         text-decoration: none;
       }
+      .readiness-actions a:visited {
+        color: var(--accent);
+      }
       .readiness-actions a:hover {
-        text-decoration: underline;
+        filter: brightness(1.15);
       }
 
       /* ── Row actions ── */
@@ -1517,8 +1527,11 @@
         color: var(--text);
         text-decoration: none;
       }
+      .card-title a:visited {
+        color: var(--text);
+      }
       .card-title a:hover {
-        text-decoration: underline;
+        color: var(--accent);
       }
       .card-project {
         color: var(--muted);
@@ -1570,8 +1583,11 @@
         color: var(--link);
         text-decoration: none;
       }
+      .readiness-link:visited {
+        color: var(--link);
+      }
       .readiness-link:hover {
-        text-decoration: underline;
+        filter: brightness(1.15);
       }
       .readiness-link:focus-visible {
         outline: 2px solid var(--focus-ring);
@@ -1692,8 +1708,11 @@
         overflow-wrap: anywhere;
         word-break: break-word;
       }
+      .calendar-release a:visited {
+        color: var(--text);
+      }
       .calendar-release a:hover {
-        text-decoration: underline;
+        color: var(--accent);
       }
       /* ── Mobile agenda: replaces reliance on horizontal scroll below the
          calendar-agenda breakpoint. Same day data as the grid above, just a
@@ -1754,8 +1773,11 @@
         color: var(--text);
         text-decoration: none;
       }
+      .agenda-release a:visited {
+        color: var(--text);
+      }
       .agenda-release a:hover {
-        text-decoration: underline;
+        color: var(--accent);
       }
 
       /* ═══ Phase 10.5C: Release asset curation ═══ */
@@ -1791,7 +1813,7 @@
         min-width: 0;
       }
       .release-asset-actions .button-small {
-        min-height: 2.25rem;
+        min-height: 1.8rem;
       }
 
       /* Agenda breakpoint: below this, the grid is replaced by the agenda
@@ -1816,7 +1838,7 @@
           width: 100%;
         }
         .release-asset-actions .button-small {
-          min-height: 2.5rem;
+          min-height: 2rem;
         }
         .role-descriptions {
           grid-template-columns: minmax(0, 1fr);
@@ -2240,6 +2262,11 @@
         line-height: 1;
       }
       .mobile-nav[open] .mobile-nav-toggle::after { content: "✕"; }
+      /* Open state: the summary bar's title reverts to the brand name
+         (matching the desktop shell, where the sidebar shows its brand once
+         expanded) instead of the page-specific title, and the open panel
+         below never repeats that title either. */
+      .mobile-nav[open] .mobile-nav-section { display: none; }
 
       /* ── Open panel ── */
       .mobile-nav-primary {
@@ -2315,9 +2342,13 @@
       /* ── Link consistency ── */
       a:not([class]) {
         color: var(--link);
+        text-decoration: none;
+      }
+      a:not([class]):visited {
+        color: var(--link);
       }
       a:not([class]):hover {
-        text-decoration: underline;
+        color: var(--accent-2);
       }
       a:not([class]):focus-visible {
         outline: 2px solid var(--focus-ring);
@@ -2360,14 +2391,6 @@
       }
       .board-column-content {
         min-width: 0;
-      }
-
-      /* ── Page heading long-title wrapping ── */
-      .page-heading-copy h1 {
-        min-width: 0;
-        max-width: 100%;
-        overflow-wrap: anywhere;
-        word-break: break-word;
       }
 
       /* ── Attention group headings ── */
