@@ -266,6 +266,63 @@ export function createReleaseRepository(db) {
     }
   });
 
+  const raExistingByReleaseStmt = db.prepare(`
+    SELECT asset_id, sort_order FROM release_assets WHERE release_id = ?
+  `);
+
+  /**
+   * Transactional bulk append: adds multiple assets to a release with role
+   * 'attachment', appended contiguously after the current last manual-order
+   * item. Already-associated asset IDs are skipped (not an error). Duplicate
+   * IDs within the submitted array are deduplicated before insertion — they
+   * never consume more than one order slot. Existing rows (asset IDs, roles,
+   * sort_order) are never touched.
+   *
+   * One synchronous transaction — either every new row is appended or none
+   * are (e.g. an ownership mismatch rolls back the entire append).
+   *
+   * @param {number} releaseId
+   * @param {number[]} assetIds - pre-validated positive integers, in the
+   *   desired append order (e.g. the visible-page order the caller built)
+   * @returns {{ added: number, alreadyAssociated: number }}
+   */
+  const appendAssetsToReleaseTx = db.transaction((releaseId, assetIds) => {
+    const existingRows = raExistingByReleaseStmt.all(releaseId);
+    const existingIds = new Set(existingRows.map((r) => r.asset_id));
+    let nextOrder = existingRows.length > 0
+      ? Math.max(...existingRows.map((r) => r.sort_order)) + 1
+      : 0;
+
+    let added = 0;
+    let alreadyAssociated = 0;
+    const seen = new Set();
+
+    for (const assetId of assetIds) {
+      // Deduplicate the submission itself — a repeated ID must not consume
+      // an extra order slot or attempt a second insert.
+      if (seen.has(assetId)) continue;
+      seen.add(assetId);
+
+      if (existingIds.has(assetId)) {
+        alreadyAssociated++;
+        continue;
+      }
+
+      const row = raInsertOwnershipGuarded.get(releaseId, assetId, 'attachment', nextOrder, releaseId, assetId);
+      if (!row) {
+        const err = new Error(`Asset ${assetId} does not belong to the same project as release ${releaseId}`);
+        err.code = 'CROSS_PROJECT_ASSET';
+        throw err;
+      }
+
+      existingIds.add(assetId);
+      nextOrder += 1;
+      added += 1;
+    }
+
+    return { added, alreadyAssociated };
+  });
+
   /**
    * Transactional reindex: read all rows for a release in deterministic order
    * (sort_order ASC, asset_id ASC) and assign contiguous sort_order values
@@ -1055,6 +1112,36 @@ export function createReleaseRepository(db) {
     },
 
     /**
+     * Bulk-append multiple assets to a release in one transaction — see
+     * {@link appendAssetsToReleaseTx}.
+     * @param {number} releaseId
+     * @param {number[]} assetIds - pre-validated positive integers
+     * @returns {{ added: number, alreadyAssociated: number }}
+     */
+    appendAssetsToRelease(releaseId, assetIds) {
+      return appendAssetsToReleaseTx(releaseId, assetIds);
+    },
+
+    /**
+     * Releases in one project that are valid targets for adding new asset
+     * associations: not archived, not published. (Cancelled releases remain
+     * eligible — existing curation methods like addCandidateAsset already
+     * permit mutating a cancelled release's selection, so this query mirrors
+     * that policy rather than inventing a stricter one.) One bounded query,
+     * render-ready id/title/status only.
+     * @param {number} projectId
+     * @returns {Array<{id: number, title: string, status: string}>}
+     */
+    findEligibleAssetSelectionTargets(projectId) {
+      return db.prepare(`
+        SELECT id, title, status
+        FROM releases
+        WHERE project_id = ? AND archived_at IS NULL AND status != 'published'
+        ORDER BY title COLLATE NOCASE ASC, id ASC
+      `).all(projectId);
+    },
+
+    /**
      * Insert a single asset selection.
      *
      * Uses an ownership-guarded insert that only succeeds when the asset
@@ -1573,7 +1660,9 @@ export function createReleaseRepository(db) {
           r.title,
           r.status,
           r.archived_at AS release_archived_at,
-          p.archived_at AS project_archived_at
+          p.archived_at AS project_archived_at,
+          ra.role,
+          ra.sort_order
         FROM release_assets ra
         JOIN releases r ON r.id = ra.release_id
         JOIN projects p ON p.id = r.project_id

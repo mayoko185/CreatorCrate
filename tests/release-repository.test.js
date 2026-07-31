@@ -3008,4 +3008,172 @@ describe('release repository', () => {
       expect(after[2].sort_order).toBe(2);
     });
   });
+
+  // ─── Phase 3 chunk 3: appendAssetsToRelease (bulk browser association) ──
+
+  describe('appendAssetsToRelease', () => {
+    function snapshotJunction(releaseId) {
+      return db.prepare(`
+        SELECT release_id, asset_id, role, sort_order, created_at
+        FROM release_assets
+        WHERE release_id = ?
+        ORDER BY sort_order ASC, asset_id ASC
+      `).all(releaseId);
+    }
+
+    it('appends multiple assets transactionally with role attachment, contiguous after the last item', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Bulk' }) });
+      const existing = assetRepo.upsert(projectId, 'existing.txt', sampleAsset(projectId, { relativePath: 'existing.txt' }));
+      releaseRepo.addReleaseAsset(release.id, existing.id, 'primary', 0);
+
+      const a1 = assetRepo.upsert(projectId, 'a.txt', sampleAsset(projectId, { relativePath: 'a.txt' }));
+      const a2 = assetRepo.upsert(projectId, 'b.txt', sampleAsset(projectId, { relativePath: 'b.txt' }));
+
+      const result = releaseRepo.appendAssetsToRelease(release.id, [a1.id, a2.id]);
+
+      expect(result).toEqual({ added: 2, alreadyAssociated: 0 });
+      const rows = snapshotJunction(release.id);
+      expect(rows).toHaveLength(3);
+      expect(rows.map((r) => r.asset_id)).toEqual([existing.id, a1.id, a2.id]);
+      expect(rows[0].role).toBe('primary');
+      expect(rows[0].sort_order).toBe(0);
+      expect(rows[1].role).toBe('attachment');
+      expect(rows[1].sort_order).toBe(1);
+      expect(rows[2].role).toBe('attachment');
+      expect(rows[2].sort_order).toBe(2);
+    });
+
+    it('skips already-associated assets without touching their existing role/order', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Skip Existing' }) });
+      const already = assetRepo.upsert(projectId, 'already.txt', sampleAsset(projectId, { relativePath: 'already.txt' }));
+      releaseRepo.addReleaseAsset(release.id, already.id, 'primary', 0);
+      const before = snapshotJunction(release.id);
+
+      const fresh = assetRepo.upsert(projectId, 'fresh.txt', sampleAsset(projectId, { relativePath: 'fresh.txt' }));
+
+      const result = releaseRepo.appendAssetsToRelease(release.id, [already.id, fresh.id]);
+
+      expect(result).toEqual({ added: 1, alreadyAssociated: 1 });
+      const after = snapshotJunction(release.id);
+      // The pre-existing row is byte-for-byte unchanged (role, sort_order, created_at).
+      expect(after.find((r) => r.asset_id === already.id)).toEqual(before[0]);
+      const newRow = after.find((r) => r.asset_id === fresh.id);
+      expect(newRow.role).toBe('attachment');
+      expect(newRow.sort_order).toBe(1);
+    });
+
+    it('appends new rows after the current maximum sort_order, even when the existing rows have a gap', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Gap' }) });
+      const a1 = assetRepo.upsert(projectId, 'a.txt', sampleAsset(projectId, { relativePath: 'a.txt' }));
+      const a2 = assetRepo.upsert(projectId, 'b.txt', sampleAsset(projectId, { relativePath: 'b.txt' }));
+      // Deliberate gap: sort_order 0 and 5 (simulating legacy curation state
+      // that never got reindexed).
+      releaseRepo.addReleaseAsset(release.id, a1.id, 'primary', 0);
+      db.prepare(`
+        INSERT INTO release_assets (release_id, asset_id, role, sort_order) VALUES (?, ?, ?, ?)
+      `).run(release.id, a2.id, 'attachment', 5);
+
+      const a3 = assetRepo.upsert(projectId, 'c.txt', sampleAsset(projectId, { relativePath: 'c.txt' }));
+      const result = releaseRepo.appendAssetsToRelease(release.id, [a3.id]);
+
+      expect(result.added).toBe(1);
+      const newRow = snapshotJunction(release.id).find((r) => r.asset_id === a3.id);
+      expect(newRow.sort_order).toBe(6);
+    });
+
+    it('deduplicates the submitted array — a repeated ID does not consume an extra order slot or insert twice', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Dedupe' }) });
+      const a1 = assetRepo.upsert(projectId, 'a.txt', sampleAsset(projectId, { relativePath: 'a.txt' }));
+      const a2 = assetRepo.upsert(projectId, 'b.txt', sampleAsset(projectId, { relativePath: 'b.txt' }));
+
+      const result = releaseRepo.appendAssetsToRelease(release.id, [a1.id, a1.id, a2.id, a1.id]);
+
+      expect(result).toEqual({ added: 2, alreadyAssociated: 0 });
+      const rows = snapshotJunction(release.id);
+      expect(rows).toHaveLength(2);
+      expect(rows.map((r) => r.asset_id)).toEqual([a1.id, a2.id]);
+      expect(rows.map((r) => r.sort_order)).toEqual([0, 1]);
+    });
+
+    it('rolls back the entire append when a cross-project asset ID is included', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Rollback' }) });
+      const a1 = assetRepo.upsert(projectId, 'a.txt', sampleAsset(projectId, { relativePath: 'a.txt' }));
+      const before = snapshotJunction(release.id);
+
+      const otherProject = projectRepo.create(sampleProject({ title: 'Other' }));
+      const otherAsset = assetRepo.upsert(otherProject.id, 'other.txt', sampleAsset(otherProject.id, { relativePath: 'other.txt' }));
+
+      expect(() => {
+        releaseRepo.appendAssetsToRelease(release.id, [a1.id, otherAsset.id]);
+      }).toThrow();
+
+      // No partial append — not even the valid same-project asset was inserted.
+      expect(snapshotJunction(release.id)).toEqual(before);
+    });
+
+    it('does not reorder or otherwise modify existing release_assets rows', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Preserve Order' }) });
+      const a1 = assetRepo.upsert(projectId, 'a.txt', sampleAsset(projectId, { relativePath: 'a.txt' }));
+      const a2 = assetRepo.upsert(projectId, 'b.txt', sampleAsset(projectId, { relativePath: 'b.txt' }));
+      releaseRepo.addReleaseAsset(release.id, a1.id, 'preview', 0);
+      releaseRepo.addReleaseAsset(release.id, a2.id, 'source', 1);
+      const before = snapshotJunction(release.id);
+
+      const a3 = assetRepo.upsert(projectId, 'c.txt', sampleAsset(projectId, { relativePath: 'c.txt' }));
+      releaseRepo.appendAssetsToRelease(release.id, [a3.id]);
+
+      const after = snapshotJunction(release.id);
+      expect(after.slice(0, 2)).toEqual(before);
+    });
+
+    it('does not change release status', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Status Stable', status: 'planned' }) });
+      const a1 = assetRepo.upsert(projectId, 'a.txt', sampleAsset(projectId, { relativePath: 'a.txt' }));
+
+      releaseRepo.appendAssetsToRelease(release.id, [a1.id]);
+
+      expect(releaseRepo.findById(release.id).status).toBe('planned');
+    });
+  });
+
+  describe('findEligibleAssetSelectionTargets', () => {
+    it('returns only non-archived, non-published releases for the given project', () => {
+      const active = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Active', status: 'idea' }) });
+      const cancelled = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Cancelled', status: 'cancelled' }) });
+      const published = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Published', status: 'planned' }) });
+      releaseRepo.publish(published.id, '2026-01-01');
+      const toArchive = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Archived' }) });
+      releaseRepo.archive(toArchive.id);
+
+      const targets = releaseRepo.findEligibleAssetSelectionTargets(projectId);
+      const ids = targets.map((t) => t.id);
+
+      expect(ids).toContain(active.id);
+      expect(ids).toContain(cancelled.id);
+      expect(ids).not.toContain(published.id);
+      expect(ids).not.toContain(toArchive.id);
+    });
+
+    it('does not expose releases from another project', () => {
+      const mine = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Mine' }) });
+      const otherProject = projectRepo.create(sampleProject({ title: 'Other' }));
+      const theirs = releaseRepo.create({ projectId: otherProject.id, ...sampleRelease({ title: 'Theirs' }) });
+
+      const targets = releaseRepo.findEligibleAssetSelectionTargets(projectId);
+      const ids = targets.map((t) => t.id);
+
+      expect(ids).toContain(mine.id);
+      expect(ids).not.toContain(theirs.id);
+    });
+
+    it('returns render-ready id/title/status only, ordered by title', () => {
+      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Zebra' }) });
+      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Alpha' }) });
+
+      const targets = releaseRepo.findEligibleAssetSelectionTargets(projectId);
+
+      expect(targets.map((t) => t.title)).toEqual(['Alpha', 'Zebra']);
+      expect(Object.keys(targets[0]).sort()).toEqual(['id', 'status', 'title']);
+    });
+  });
 });

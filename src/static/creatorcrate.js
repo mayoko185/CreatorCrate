@@ -106,11 +106,89 @@ export function enhanceConfirmations(scope = globalThis.document) {
   return controls.length;
 }
 
+// ─── Phase 3 chunk 3: page-local asset selection ──────────────────────────
+//
+// Scoped entirely to [data-asset-selection-form] — the project asset
+// browser's bulk-add-to-release form. The unrelated release asset-selection
+// page (releases/assets.njk) uses its own checkboxes/markup and carries no
+// such attribute, so it is untouched by this module. No local storage, no
+// network requests: selection state lives only in the DOM's checked/
+// unchecked state for the lifetime of this page.
+
+const ASSET_SELECTION_FORM_SELECTOR = '[data-asset-selection-form]';
+const ASSET_SELECTION_CHECKBOX_SELECTOR = 'input[type="checkbox"][name="selectedAssetIds"]:not(:disabled)';
+
+function getAssetSelectionCheckboxes(form) {
+  return Array.from(form.querySelectorAll(ASSET_SELECTION_CHECKBOX_SELECTOR));
+}
+
+function updateAssetSelectionState(form) {
+  const checkboxes = getAssetSelectionCheckboxes(form);
+  const selectedCount = checkboxes.filter((checkbox) => checkbox.checked).length;
+
+  const countEl = form.querySelector('[data-selected-count]');
+  if (countEl) {
+    countEl.textContent = `${selectedCount} selected`;
+  }
+
+  const releaseSelect = form.querySelector('[data-release-select]');
+  const submitButton = form.querySelector('[data-bulk-submit]');
+  if (submitButton) {
+    const hasReleaseTarget = Boolean(releaseSelect && releaseSelect.value);
+    submitButton.disabled = !(selectedCount > 0 && hasReleaseTarget);
+  }
+}
+
+export function enhanceAssetSelection(scope = globalThis.document) {
+  if (!scope || typeof scope.querySelectorAll !== 'function') return 0;
+
+  const forms = scope.querySelectorAll(ASSET_SELECTION_FORM_SELECTOR);
+  forms.forEach((form) => {
+    // Missing-asset rows render a disabled checkbox (or none at all) — the
+    // selector above already excludes disabled checkboxes, so Select All /
+    // Clear / the live count can never touch them.
+    const checkboxes = getAssetSelectionCheckboxes(form);
+    checkboxes.forEach((checkbox) => {
+      checkbox.addEventListener('change', () => updateAssetSelectionState(form));
+    });
+
+    const selectAllButton = form.querySelector('[data-select-all]');
+    if (selectAllButton) {
+      selectAllButton.addEventListener('click', () => {
+        checkboxes.forEach((checkbox) => { checkbox.checked = true; });
+        updateAssetSelectionState(form);
+      });
+    }
+
+    const clearButton = form.querySelector('[data-clear-selection]');
+    if (clearButton) {
+      clearButton.addEventListener('click', () => {
+        checkboxes.forEach((checkbox) => { checkbox.checked = false; });
+        updateAssetSelectionState(form);
+      });
+    }
+
+    const releaseSelect = form.querySelector('[data-release-select]');
+    if (releaseSelect) {
+      releaseSelect.addEventListener('change', () => updateAssetSelectionState(form));
+    }
+
+    // Establish correct initial state on load — e.g. after a validation
+    // failure re-render where some checkboxes are pre-checked from the
+    // submitted selection, the count and submit-enabled state must reflect
+    // that immediately, not just after the next change event.
+    updateAssetSelectionState(form);
+  });
+
+  return forms.length;
+}
+
 if (typeof document !== 'undefined') {
   const run = () => {
     enhancePreviewMedia(document);
     enhanceAutoSubmit(document);
     enhanceConfirmations(document);
+    enhanceAssetSelection(document);
   };
 
   if (document.readyState === 'loading') {

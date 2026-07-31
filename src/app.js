@@ -269,7 +269,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     app.use('/projects', createMediaRouter({ mediaService }));
   }
 
-  app.use('/projects', createAssetsRouter({ appName, projectService, assetScanner, workflowQueryService }));
+  app.use('/projects', createAssetsRouter({ appName, projectService, assetScanner, workflowQueryService, releaseService }));
 
   // Phase 2 chunk 3: project-specific category routes. The router receives
   // the already-constructed `projectAssetCategoryService` explicitly — it

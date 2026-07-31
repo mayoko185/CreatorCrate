@@ -29,13 +29,44 @@ const ALLOWED_SORTS = {
   modified: { column: 'modified_at' },
 };
 
-const ASSET_BROWSER_ORDERING = 'a.filename COLLATE NOCASE ASC, a.extension ASC, a.id ASC';
-
 function buildOrderClause(sortBy, order) {
   const sort = ALLOWED_SORTS[sortBy] || ALLOWED_SORTS.filename;
   const direction = order === 'asc' ? 'ASC' : 'DESC';
   return `ORDER BY ${sort.column} ${direction}`;
 }
+
+/**
+ * Canonical asset-browser order clause builder. Explicit sort keys only —
+ * no natural sort. Every branch ends with `a.id ASC` as a deterministic
+ * tie-breaker. Null placement for modified/size/category is fixed (nulls
+ * last) independent of the requested direction, so toggling asc/desc never
+ * moves missing-value rows to the top.
+ *
+ * @param {'filename'|'modified'|'size'|'category'} sortBy
+ * @param {'asc'|'desc'} order
+ * @returns {string} a full `ORDER BY ...` clause
+ */
+function buildAssetBrowserOrderClause(sortBy, order) {
+  const dir = order === 'desc' ? 'DESC' : 'ASC';
+
+  if (sortBy === 'modified') {
+    return `ORDER BY (a.modified_at IS NULL) ASC, a.modified_at ${dir}, a.id ASC`;
+  }
+  if (sortBy === 'size') {
+    return `ORDER BY (a.size_bytes IS NULL) ASC, a.size_bytes ${dir}, a.id ASC`;
+  }
+  if (sortBy === 'category') {
+    return `ORDER BY (a.category_id IS NULL) ASC, c.display_order ${dir}, a.category_id ${dir}, a.nested_path COLLATE NOCASE ${dir}, a.filename COLLATE NOCASE ${dir}, a.id ASC`;
+  }
+  return `ORDER BY a.filename COLLATE NOCASE ${dir}, a.id ASC`;
+}
+
+const CATEGORY_JOIN = 'LEFT JOIN project_asset_categories c ON c.project_id = a.project_id AND c.id = a.category_id';
+
+const ASSET_BROWSER_CATEGORY_COLUMNS = `
+          c.display_name AS category_display_name,
+          c.enabled AS category_enabled,
+          c.display_order AS category_display_order,`;
 
 function escapeLike(value) {
   return value.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
@@ -249,6 +280,23 @@ export function createAssetRepository(db) {
      */
     findById(id) {
       return findByIdStmt.get(id);
+    },
+
+    /**
+     * Find multiple assets by id in one bounded query. Used by bulk
+     * operations (e.g. adding several assets to a release) so validation
+     * never issues one lookup per submitted ID. Duplicate IDs are
+     * deduplicated before querying; unmatched IDs are simply absent from
+     * the result (no error).
+     * @param {number[]} ids
+     * @returns {import('./asset-repository.js').AssetRecord[]}
+     */
+    findByIds(ids) {
+      if (!Array.isArray(ids) || ids.length === 0) return [];
+      const unique = [...new Set(ids)];
+      const placeholders = unique.map(() => '?').join(',');
+      const sql = `SELECT ${ASSET_COLUMNS.join(', ')} FROM assets WHERE id IN (${placeholders})`;
+      return db.prepare(sql).all(...unique);
     },
 
     /**
@@ -540,6 +588,7 @@ export function createAssetRepository(db) {
      * @param {string|null} [filters.extension]
      * @param {'all'|'present'|'missing'} [filters.presence]
      * @param {'all'|'used'|'unused'} [filters.usage]
+     * @param {'all'|'uncategorized'|number} [filters.category]
      * @returns {{ conditions: string[], params: any[] }}
      */
     _buildAssetBrowserConditions(projectId, filters) {
@@ -547,8 +596,9 @@ export function createAssetRepository(db) {
       const params = [projectId];
 
       if (filters.search) {
-        conditions.push(`a.filename COLLATE NOCASE LIKE ? ESCAPE '\\'`);
-        params.push(`%${escapeLike(filters.search)}%`);
+        conditions.push(`(a.filename COLLATE NOCASE LIKE ? ESCAPE '\\' OR a.relative_path COLLATE NOCASE LIKE ? ESCAPE '\\')`);
+        const term = `%${escapeLike(filters.search)}%`;
+        params.push(term, term);
       }
 
       if (filters.extension) {
@@ -570,6 +620,14 @@ export function createAssetRepository(db) {
       }
       // 'all' = no usage restriction
 
+      if (filters.category === 'uncategorized') {
+        conditions.push('a.category_id IS NULL');
+      } else if (typeof filters.category === 'number') {
+        conditions.push('a.category_id = ?');
+        params.push(filters.category);
+      }
+      // 'all' / undefined = no category restriction
+
       return { conditions, params };
     },
 
@@ -589,20 +647,22 @@ export function createAssetRepository(db) {
      * @returns {Array<{id: number, project_id: number, relative_path: string, filename: string, extension: string, mime_type: string, size_bytes: number, modified_at: string|null, is_present: number, last_seen_at: string|null, missing_since: string|null, release_usage_count: number}>}
      */
     findProjectAssetPage(projectId, filters = {}) {
-      const { search = null, extension = null, presence = 'all', usage = 'all', page = 1, pageSize = 25 } = filters;
+      const {
+        search = null, extension = null, presence = 'all', usage = 'all', category = 'all',
+        sort = 'filename', order = 'asc', page = 1, pageSize = 25,
+      } = filters;
 
       const { conditions, params } = this._buildAssetBrowserConditions(projectId, {
         search,
         extension,
         presence,
         usage,
+        category,
       });
 
       const offset = (Math.max(1, page) - 1) * Math.max(1, pageSize);
+      const orderClause = buildAssetBrowserOrderClause(sort, order);
 
-      // Deterministic ordering: filename (case-insensitive), extension, id.
-      // Asset ID as final tie-breaker ensures stable order even when
-      // filenames and extensions are identical across different files.
       const sql = `
         SELECT
           a.id,
@@ -617,11 +677,12 @@ export function createAssetRepository(db) {
           a.modified_at,
           a.is_present,
           a.last_seen_at,
-          a.missing_since,
+          a.missing_since,${ASSET_BROWSER_CATEGORY_COLUMNS}
           (SELECT COUNT(DISTINCT ra.release_id) FROM release_assets ra JOIN releases r ON r.id = ra.release_id WHERE ra.asset_id = a.id AND r.project_id = a.project_id) AS release_usage_count
         FROM assets a
+        ${CATEGORY_JOIN}
         WHERE ${conditions.join(' AND ')}
-        ORDER BY ${ASSET_BROWSER_ORDERING}
+        ${orderClause}
         LIMIT ? OFFSET ?
       `;
 
@@ -651,23 +712,31 @@ export function createAssetRepository(db) {
      * @returns {undefined | {id: number, project_id: number, relative_path: string, filename: string, extension: string, mime_type: string, size_bytes: number, modified_at: string|null, is_present: number, last_seen_at: string|null, missing_since: string|null, release_usage_count: number, filtered_position: number|null, previous_asset_id: number|null, next_asset_id: number|null, filtered_total: number}}
      */
     findProjectAssetViewerContext(projectId, assetId, filters = {}) {
-      const { search = null, extension = null, presence = 'all', usage = 'all' } = filters;
+      const {
+        search = null, extension = null, presence = 'all', usage = 'all', category = 'all',
+        sort = 'filename', order = 'asc',
+      } = filters;
 
       const { conditions, params } = this._buildAssetBrowserConditions(projectId, {
         search,
         extension,
         presence,
         usage,
+        category,
       });
+
+      const orderClause = buildAssetBrowserOrderClause(sort, order);
+      const orderBody = orderClause.slice('ORDER BY '.length);
 
       const sql = `
         WITH filtered AS (
           SELECT
             a.id,
-            ROW_NUMBER() OVER (ORDER BY ${ASSET_BROWSER_ORDERING}) AS filtered_position,
-            LAG(a.id) OVER (ORDER BY ${ASSET_BROWSER_ORDERING}) AS previous_asset_id,
-            LEAD(a.id) OVER (ORDER BY ${ASSET_BROWSER_ORDERING}) AS next_asset_id
+            ROW_NUMBER() OVER (ORDER BY ${orderBody}) AS filtered_position,
+            LAG(a.id) OVER (ORDER BY ${orderBody}) AS previous_asset_id,
+            LEAD(a.id) OVER (ORDER BY ${orderBody}) AS next_asset_id
           FROM assets a
+          ${CATEGORY_JOIN}
           WHERE ${conditions.join(' AND ')}
         ),
         filtered_total AS (
@@ -686,13 +755,14 @@ export function createAssetRepository(db) {
           a.modified_at,
           a.is_present,
           a.last_seen_at,
-          a.missing_since,
+          a.missing_since,${ASSET_BROWSER_CATEGORY_COLUMNS}
           (SELECT COUNT(DISTINCT ra.release_id) FROM release_assets ra JOIN releases r ON r.id = ra.release_id WHERE ra.asset_id = a.id AND r.project_id = a.project_id) AS release_usage_count,
           f.filtered_position,
           f.previous_asset_id,
           f.next_asset_id,
           filtered_total.total AS filtered_total
         FROM assets a
+        ${CATEGORY_JOIN}
         CROSS JOIN filtered_total
         LEFT JOIN filtered f ON f.id = a.id
         WHERE a.project_id = ? AND a.id = ?
@@ -714,18 +784,58 @@ export function createAssetRepository(db) {
      * @returns {number}
      */
     countProjectAssets(projectId, filters = {}) {
-      const { search = null, extension = null, presence = 'all', usage = 'all' } = filters;
+      const { search = null, extension = null, presence = 'all', usage = 'all', category = 'all' } = filters;
 
       const { conditions, params } = this._buildAssetBrowserConditions(projectId, {
         search,
         extension,
         presence,
         usage,
+        category,
       });
 
       const sql = `SELECT COUNT(*) AS c FROM assets a WHERE ${conditions.join(' AND ')}`;
       const row = db.prepare(sql).get(...params);
       return row.c;
+    },
+
+    /**
+     * Whole-project asset navigation counts for the asset browser: total
+     * count, uncategorized count, missing count, and a total-per-category
+     * breakdown (present + missing both contribute). Independent of the
+     * active browser search/extension/presence/usage/category/pagination
+     * filters. One bounded GROUP BY query — never one query per category.
+     *
+     * @param {number} projectId
+     * @returns {{ total: number, uncategorized: number, missing: number, byCategoryId: Object<number, number> }}
+     */
+    getProjectAssetNavigationCounts(projectId) {
+      const rows = db.prepare(`
+        SELECT
+          category_id,
+          COUNT(*) AS total,
+          SUM(CASE WHEN is_present = 0 THEN 1 ELSE 0 END) AS missing
+        FROM assets
+        WHERE project_id = ?
+        GROUP BY category_id
+      `).all(projectId);
+
+      let total = 0;
+      let uncategorized = 0;
+      let missing = 0;
+      const byCategoryId = {};
+
+      for (const row of rows) {
+        total += row.total;
+        missing += row.missing;
+        if (row.category_id === null) {
+          uncategorized = row.total;
+        } else {
+          byCategoryId[row.category_id] = row.total;
+        }
+      }
+
+      return { total, uncategorized, missing, byCategoryId };
     },
   };
 }

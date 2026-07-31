@@ -28,6 +28,7 @@
 import { createReleaseRepository, RELEASE_STATUSES } from '../data/release-repository.js';
 import { createProjectRepository } from '../data/project-repository.js';
 import { createAssetRepository } from '../data/asset-repository.js';
+import { createAssetCategoryRepository } from '../data/asset-category-repository.js';
 import { classifyPreviewable, buildAssetRevisionToken } from './preview-service.js';
 import { getLocalTodayIso } from '../util/date.js';
 
@@ -47,8 +48,14 @@ const DEFAULT_LIMITS = Object.freeze({
 const ASSET_BROWSER_DEFAULT_PAGE_SIZE = 25;
 const ASSET_BROWSER_MAX_PAGE_SIZE = 100;
 const ASSET_BROWSER_SEARCH_MAX_LENGTH = 128;
-const ASSET_BROWSER_ORDERING = 'a.filename COLLATE NOCASE ASC, a.extension ASC, a.id ASC';
-const ASSET_BROWSER_CONTEXT_KEYS = ['view', 'search', 'extension', 'presence', 'usage', 'page', 'pageSize'];
+const ASSET_BROWSER_ORDERING = 'a.filename COLLATE NOCASE ASC, a.id ASC';
+
+/**
+ * Canonical asset-browser/viewer query context keys. `view` (list/grid) was
+ * a Phase 3 chunk-1 legacy-template compatibility concern; chunk 2 removed
+ * the grid/list switch and its query parameter entirely.
+ */
+const ASSET_BROWSER_CONTEXT_KEYS = ['category', 'search', 'extension', 'presence', 'usage', 'sort', 'order', 'page', 'pageSize'];
 
 /**
  * The application-local calendar date used as the default dashboard
@@ -134,6 +141,7 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
   const projectRepository = createProjectRepository(db);
   const releaseRepository = createReleaseRepository(db);
   const assetRepository = createAssetRepository(db);
+  const assetCategoryRepository = createAssetCategoryRepository(db);
 
   /**
    * Compose the dashboard view-model. Returns an object with all sections
@@ -619,23 +627,34 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
     return num;
   }
 
+  const ASSET_BROWSER_SORT_VALUES = ['filename', 'modified', 'size', 'category'];
+  const ASSET_BROWSER_ORDER_VALUES = ['asc', 'desc'];
+
   /**
-   * Normalize and validate asset browser query parameters.
+   * Normalize and validate asset browser query parameters. This is the
+   * canonical filter/sort/pagination contract shared by the browser and
+   * viewer — it deliberately does NOT include `view` (list/grid), which is
+   * a legacy-template-only concern handled by the browser composition
+   * function directly.
+   *
    * @param {Object} raw
    * @param {string[]} extensionChoices - normalized extensions available in the project scope
-   * @returns {{ view: 'list'|'grid', search: string|null, extension: string|null, presence: 'all'|'present'|'missing', usage: 'all'|'used'|'unused', page: number, pageSize: number }}
+   * @param {Array<{id: number}>} projectCategories - the requesting project's own category rows
+   * @returns {{ search: string|null, extension: string|null, presence: 'all'|'present'|'missing', usage: 'all'|'used'|'unused', category: 'all'|'uncategorized'|number, sort: 'filename'|'modified'|'size'|'category', order: 'asc'|'desc', page: number, pageSize: number }}
    */
-  function normalizeAssetBrowserQuery(raw = {}, extensionChoices = []) {
-    const viewValues = ['list', 'grid'];
+  function normalizeAssetBrowserQuery(raw = {}, extensionChoices = [], projectCategories = []) {
     const presenceValues = ['all', 'present', 'missing'];
     const usageValues = ['all', 'used', 'unused'];
 
-    const view = viewValues.includes(raw.view) ? raw.view : 'list';
     const presence = presenceValues.includes(raw.presence) ? raw.presence : 'all';
     const usage = usageValues.includes(raw.usage) ? raw.usage : 'all';
 
     const search = normalizeAssetBrowserSearch(raw.search);
     const extension = normalizeAssetBrowserExtension(raw.extension, extensionChoices);
+    const category = normalizeAssetBrowserCategory(raw.category, projectCategories);
+
+    const sort = ASSET_BROWSER_SORT_VALUES.includes(raw.sort) ? raw.sort : 'filename';
+    const order = ASSET_BROWSER_ORDER_VALUES.includes(raw.order) ? raw.order : 'asc';
 
     const pageRaw = parseStrictPositiveInt(raw.page);
     const page = pageRaw !== null ? pageRaw : 1;
@@ -644,7 +663,32 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
     let pageSize = pageSizeRaw !== null ? pageSizeRaw : ASSET_BROWSER_DEFAULT_PAGE_SIZE;
     if (pageSize > ASSET_BROWSER_MAX_PAGE_SIZE) pageSize = ASSET_BROWSER_MAX_PAGE_SIZE;
 
-    return { view, search, extension, presence, usage, page, pageSize };
+    return { search, extension, presence, usage, category, sort, order, page, pageSize };
+  }
+
+  /**
+   * Normalize the `category` query parameter against the contract:
+   *   - omitted or 'all' -> 'all' (no restriction)
+   *   - 'uncategorized' -> 'uncategorized'
+   *   - a canonical positive category ID owned by this project -> that ID
+   *   - malformed, missing, or cross-project category ID -> 'all'
+   *
+   * Ownership is validated here, against the caller-supplied project-owned
+   * category rows, before any value reaches SQL.
+   *
+   * @param {unknown} raw
+   * @param {Array<{id: number}>} projectCategories
+   * @returns {'all'|'uncategorized'|number}
+   */
+  function normalizeAssetBrowserCategory(raw, projectCategories) {
+    if (raw === undefined || raw === null || raw === '' || raw === 'all') return 'all';
+    if (raw === 'uncategorized') return 'uncategorized';
+
+    const id = parseStrictPositiveInt(raw);
+    if (id === null) return 'all';
+
+    const owned = projectCategories.some((c) => c.id === id);
+    return owned ? id : 'all';
   }
 
   function normalizeAssetBrowserSearch(value) {
@@ -716,9 +760,11 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
   function appendCanonicalAssetBrowserParam(query, key, value) {
     if (value === undefined || value === null || value === '') return;
     const normalized = String(value);
-    if (key === 'view' && normalized === 'list') return;
+    if (key === 'category' && normalized === 'all') return;
     if (key === 'presence' && normalized === 'all') return;
     if (key === 'usage' && normalized === 'all') return;
+    if (key === 'sort' && normalized === 'filename') return;
+    if (key === 'order' && normalized === 'asc') return;
     if (key === 'page' && normalized === '1') return;
     if (key === 'pageSize' && normalized === String(ASSET_BROWSER_DEFAULT_PAGE_SIZE)) return;
     query[key] = normalized;
@@ -767,6 +813,174 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
     };
   }
 
+  /**
+   * Build the category presentation fields attached to an asset row/viewer
+   * model from the category-joined repository columns. Uncategorized assets
+   * (category_id IS NULL, or a join that could not resolve — e.g. a
+   * cross-project category_id) return null.
+   * @param {object} asset - repository row with category_* joined columns
+   * @returns {null | { id: number, displayName: string, enabled: boolean, displayOrder: number }}
+   */
+  function buildAssetCategoryModel(asset) {
+    if (asset.category_id === null || asset.category_id === undefined || asset.category_display_name == null) {
+      return null;
+    }
+    return {
+      id: asset.category_id,
+      displayName: asset.category_display_name,
+      enabled: Boolean(asset.category_enabled),
+      displayOrder: asset.category_display_order,
+    };
+  }
+
+  /**
+   * Compose the whole-project category navigation model: every project
+   * category (including zero-count ones), split into enabled/disabled and
+   * ordered by display_order, each annotated with its whole-project asset
+   * count. Counts are independent of the active browser filters.
+   *
+   * Each navigation destination is a specific canonical (category, presence)
+   * pair — All Assets is (category=all, presence=all), a category link is
+   * (that category id, presence=all), Missing Assets is (category=all,
+   * presence=missing). `isActive`/`allActive`/`uncategorizedActive`/
+   * `missingActive` below are computed by exact match against the
+   * *normalized* filters, so a composed filter like category=2&presence=missing
+   * matches none of the simplified destinations and nothing claims active
+   * state — at most one destination can ever be active.
+   *
+   * @param {Array} projectCategories - all of the project's own category rows
+   * @param {{ total: number, uncategorized: number, missing: number, byCategoryId: Object<number, number> }} navCounts
+   * @param {{ category: 'all'|'uncategorized'|number, presence: 'all'|'present'|'missing' }} filters - normalized browser filters
+   */
+  function buildCategoryNavigationModel(projectCategories, navCounts, filters) {
+    const items = projectCategories.map((category) => ({
+      id: category.id,
+      displayName: category.display_name,
+      enabled: Boolean(category.enabled),
+      displayOrder: category.display_order,
+      assetCount: navCounts.byCategoryId[category.id] || 0,
+      isActive: filters.category === category.id && filters.presence === 'all',
+    }));
+
+    return {
+      enabled: items.filter((c) => c.enabled),
+      disabled: items.filter((c) => !c.enabled),
+      uncategorizedCount: navCounts.uncategorized,
+      totalCount: navCounts.total,
+      missingCount: navCounts.missing,
+      allActive: filters.category === 'all' && filters.presence === 'all',
+      uncategorizedActive: filters.category === 'uncategorized' && filters.presence === 'all',
+      missingActive: filters.category === 'all' && filters.presence === 'missing',
+    };
+  }
+
+  /**
+   * Render-ready location label for the browser table / viewer, from the
+   * chunk-1 `nested_path` + category model. Never parses `relative_path`.
+   *
+   *   - non-empty nested_path -> the nested_path itself (works for both
+   *     categorized nested assets and uncategorized assets under unknown
+   *     directories)
+   *   - empty nested_path + no category -> "Project root"
+   *   - empty nested_path + a category (i.e. sitting at the category root)
+   *     -> "—"
+   * @param {{ nested_path: string, category_id: number|null }} asset
+   * @returns {string}
+   */
+  function buildAssetLocationLabel(asset) {
+    if (asset.nested_path) return asset.nested_path;
+    return asset.category_id === null || asset.category_id === undefined ? 'Project root' : '—';
+  }
+
+  /**
+   * Compact, render-ready release-usage summary. `mode` tells the template
+   * which of the three required presentations to use without branching on
+   * counts itself: 'none' (no releases), 'single' (one release + role),
+   * 'multiple' (N releases, rendered inside a <details>).
+   * @param {Array} releaseUsage - rows from findReleaseUsageForAssetIds (has role, sort_order)
+   */
+  function buildReleaseUsageSummary(releaseUsage) {
+    const count = releaseUsage.length;
+    if (count === 0) return { count: 0, mode: 'none', releases: [] };
+    if (count === 1) return { count: 1, mode: 'single', releases: releaseUsage };
+    return { count, mode: 'multiple', releases: releaseUsage };
+  }
+
+  /**
+   * Attach the render-ready presentation fields shared by the browser table
+   * rows and the viewer asset model, so neither template branches on raw
+   * category/nested_path/release_usage data itself.
+   * @param {object} asset - a row already carrying `category`/`nested_path`/`release_usage`
+   */
+  function buildAssetRowPresentation(asset) {
+    const category = asset.category !== undefined ? asset.category : buildAssetCategoryModel(asset);
+    const isPresent = Boolean(asset.is_present);
+    return {
+      categoryLabel: category ? category.displayName : 'Uncategorized',
+      categoryDisabled: category ? !category.enabled : false,
+      locationLabel: buildAssetLocationLabel(asset),
+      typeLabel: asset.extension ? asset.extension.toUpperCase() : 'File',
+      presenceLabel: isPresent ? 'Present' : 'Missing at last scan',
+      releaseSummary: buildReleaseUsageSummary(asset.release_usage || []),
+      viewerUrl: `/projects/${asset.project_id}/assets/${asset.id}`,
+    };
+  }
+
+  /**
+   * Safe, distinct empty-state context for the browser table. Never implies
+   * a scan or deletion happened unless it did. Computed entirely from
+   * already-fetched data (the bounded whole-project `navCounts` query) — no
+   * additional query.
+   * @param {object} filters - normalized canonical filters
+   * @param {number} total - filtered result count
+   * @param {{ total: number }} navCounts - whole-project navigation counts
+   * @param {boolean} projectArchived
+   */
+  function buildAssetBrowserEmptyState(filters, total, navCounts, projectArchived) {
+    if (total > 0) return null;
+
+    if (navCounts.total === 0) {
+      return projectArchived
+        ? {
+          kind: 'no-assets-archived',
+          heading: 'No assets found',
+          description: 'This archived project has no assets on record.',
+          showScanAction: false,
+        }
+        : {
+          kind: 'no-assets',
+          heading: 'No assets found',
+          description: 'Scan the project directory to discover asset files.',
+          showScanAction: true,
+        };
+    }
+
+    if (filters.presence === 'missing') {
+      return {
+        kind: 'missing-empty',
+        heading: 'No missing assets',
+        description: 'Every indexed asset was present at the last completed scan. CreatorCrate does not delete files — this reflects scan results only.',
+        showScanAction: false,
+      };
+    }
+
+    if (filters.category !== 'all') {
+      return {
+        kind: 'category-empty',
+        heading: 'No assets in this category',
+        description: 'This category currently has no matching assets. Try All Assets or adjust the other filters.',
+        showScanAction: false,
+      };
+    }
+
+    return {
+      kind: 'filtered',
+      heading: 'No assets match the current filters',
+      description: 'Adjust or clear the filters to see all assets.',
+      showScanAction: false,
+    };
+  }
+
   function summarizeProject(project) {
     return {
       id: project.id,
@@ -783,6 +997,9 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
       id: asset.id,
       project_id: asset.project_id,
       relative_path: asset.relative_path,
+      nested_path: asset.nested_path,
+      category_id: asset.category_id,
+      category: buildAssetCategoryModel(asset),
       filename: asset.filename,
       previewAltText: buildPreviewAltText(asset),
       extension: asset.extension,
@@ -808,74 +1025,7 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
       thumbnail_url: preview.urls.thumbnail,
       preview_url: preview.urls.preview,
       original_url: buildOriginalUrl(asset),
-    };
-  }
-
-  /**
-   * Convert one browser asset row into a render-ready card model.
-   * Does NOT generate previews — it only reads data already attached to the
-   * browser row. Safe to call for present, missing, and unsupported assets.
-   *
-   * @param {object} asset - browser asset row (has `.preview` attached)
-   * @returns {{
-   *   id: number,
-   *   filename: string,
-   *   extension: string,
-   *   compactTypeLabel: string|null,
-   *   formattedSize: string,
-   *   modifiedAt: string,
-   *   presenceState: string,
-   *   isPresent: boolean,
-   *   releaseUsageCount: number,
-   *   previewCapability: string,
-   *   isPreviewable: boolean,
-   *   hasThumbnail: boolean,
-   *   thumbnailUrl: string|null,
-   *   viewerUrl: string,
-   *   originalEligible: boolean,
-   *   statusText: string,
-   * }}
-   */
-  function buildAssetCardModel(asset) {
-    const preview = asset.preview || buildAssetPreviewModel(asset);
-    const isPresent = Boolean(asset.is_present);
-    const thumbnailUrl = preview.urls ? preview.urls.thumbnail : null;
-
-    let statusText;
-    let statusBadgeStatus;
-    if (!isPresent) {
-      statusText = 'Missing at last scan';
-      statusBadgeStatus = 'missing-at-last-scan';
-    } else if (preview.state === 'unsupported') {
-      statusText = 'Unsupported preview';
-      statusBadgeStatus = 'unsupported';
-    } else if (!thumbnailUrl) {
-      statusText = 'Preview unavailable';
-      statusBadgeStatus = 'unavailable';
-    } else {
-      statusText = 'Present at last scan';
-      statusBadgeStatus = 'present-at-last-scan';
-    }
-
-    return {
-      id: asset.id,
-      filename: asset.filename,
-      previewAltText: buildPreviewAltText(asset),
-      extension: asset.extension,
-      compactTypeLabel: asset.extension ? asset.extension.toUpperCase() : null,
-      formattedSize: formatFileSize(asset.size_bytes),
-      modifiedAt: asset.modified_at,
-      presenceState: asset.presence_state || (isPresent ? 'present' : 'missing'),
-      isPresent,
-      releaseUsageCount: asset.release_usage_count || 0,
-      previewCapability: preview.state,
-      isPreviewable: preview.previewable,
-      hasThumbnail: Boolean(thumbnailUrl),
-      thumbnailUrl,
-      viewerUrl: `/projects/${asset.project_id}/assets/${asset.id}`,
-      originalEligible: preview.previewable,
-      statusText,
-      statusBadgeStatus,
+      ...buildAssetRowPresentation({ ...asset, release_usage: releaseUsage }),
     };
   }
 
@@ -886,11 +1036,13 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
    *
    * @param {number} projectId
    * @param {Object} [rawQuery] - raw query parameters
-   * @param {string} [rawQuery.view] - 'list'|'grid'
-   * @param {string} [rawQuery.search] - filename search term
+   * @param {string} [rawQuery.search] - filename/relative-path search term
    * @param {string} [rawQuery.extension] - extension filter, with or without leading dot
    * @param {string} [rawQuery.presence] - 'all'|'present'|'missing'
    * @param {string} [rawQuery.usage] - 'all'|'used'|'unused'
+   * @param {string} [rawQuery.category] - 'all'|'uncategorized'|<project-owned category id>
+   * @param {string} [rawQuery.sort] - 'filename'|'modified'|'size'|'category'
+   * @param {string} [rawQuery.order] - 'asc'|'desc'
    * @param {string|number} [rawQuery.page]
    * @param {string|number} [rawQuery.pageSize]
    * @returns {null | {
@@ -899,8 +1051,10 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
    *   page: number,
    *   pageSize: number,
    *   pageCount: number,
-   *   filters: { view: string, search: string|null, extension: string|null, presence: string, usage: string },
+   *   filters: object,
    *   extensionChoices: Array<{ value: string, label: string, selected: boolean }>,
+   *   categoryNavigation: object,
+   *   emptyState: object|null,
    *   ordering: string,
    *   searchMaxLength: number,
    * }}
@@ -909,8 +1063,23 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
     const project = projectRepository.findById(projectId);
     if (!project) return null;
 
+    const projectCategories = assetCategoryRepository.listProjectCategories(projectId);
     const extensions = assetRepository.listProjectAssetExtensions(projectId);
-    const filters = normalizeAssetBrowserQuery(rawQuery, extensions);
+    const navCounts = assetRepository.getProjectAssetNavigationCounts(projectId);
+
+    // Archived projects are read-only — bulk release-association targets are
+    // never rendered there, so skip the (otherwise bounded) query entirely.
+    const isArchived = Boolean(project.archived_at);
+    const releaseTargets = isArchived
+      ? []
+      : releaseRepository.findEligibleAssetSelectionTargets(projectId).map((release) => ({
+        id: release.id,
+        title: release.title,
+        status: release.status,
+      }));
+
+    const filters = normalizeAssetBrowserQuery(rawQuery, extensions, projectCategories);
+
     const total = assetRepository.countProjectAssets(projectId, filters);
 
     const pageCount = Math.max(1, Math.ceil(total / filters.pageSize));
@@ -939,6 +1108,9 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
       id: asset.id,
       project_id: asset.project_id,
       relative_path: asset.relative_path,
+      nested_path: asset.nested_path,
+      category_id: asset.category_id,
+      category: buildAssetCategoryModel(asset),
       filename: asset.filename,
       extension: asset.extension,
       mime_type: asset.mime_type,
@@ -957,32 +1129,72 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
       preview_revision: asset.preview.revision,
       thumbnail_url: asset.preview.urls.thumbnail,
       preview_url: asset.preview.urls.preview,
+    })).map((asset) => ({
+      ...asset,
+      formattedSize: formatFileSize(asset.size_bytes),
+      previewAltText: buildPreviewAltText(asset),
+      isPreviewable: asset.preview.previewable,
+      hasThumbnail: Boolean(asset.thumbnail_url),
+      originalEligible: asset.preview.previewable,
+      ...buildAssetRowPresentation(asset),
+      // Override buildAssetRowPresentation's bare default with the canonical
+      // viewer URL for the browser's own normalized+clamped context — the
+      // page a user actually clicked from, not an out-of-range raw page —
+      // so Back/Previous/Next in the viewer resume the same filtered,
+      // sorted, paginated context instead of silently reverting to defaults.
+      viewerUrl: buildProjectAssetViewerUrl(projectId, asset.id, filters, page),
     }));
-
-    const cards = assets.map(buildAssetCardModel);
 
     return {
       assets,
-      cards,
       total,
       page,
       pageSize: filters.pageSize,
       pageCount,
       filters: {
-        view: filters.view,
         search: filters.search,
         extension: filters.extension,
         presence: filters.presence,
         usage: filters.usage,
+        category: filters.category,
+        sort: filters.sort,
+        order: filters.order,
       },
       extensionChoices: extensions.map((extension) => ({
         value: extension,
         label: extension,
         selected: extension === filters.extension,
       })),
+      categoryNavigation: buildCategoryNavigationModel(projectCategories, navCounts, filters),
+      emptyState: buildAssetBrowserEmptyState(filters, total, navCounts, isArchived),
+      isArchived,
+      releaseTargets,
       ordering: ASSET_BROWSER_ORDERING,
       searchMaxLength: ASSET_BROWSER_SEARCH_MAX_LENGTH,
     };
+  }
+
+  /**
+   * Lightweight canonical-context normalizer for the asset browser. Used by
+   * routes that need to rebuild a normalized `/projects/:id/assets` URL
+   * (manual-scan redirects, the bulk release-association PRG redirect)
+   * without paying for the full asset page/count/release-usage queries that
+   * `getProjectAssetBrowser` performs. Bounded: one project lookup, one
+   * category list, one extension list.
+   *
+   * @param {number} projectId
+   * @param {Object} [rawQuery] - raw query/body fields (same shape as getProjectAssetBrowser)
+   * @returns {null | { filters: object }}
+   */
+  function getProjectAssetBrowserContext(projectId, rawQuery = {}) {
+    const project = projectRepository.findById(projectId);
+    if (!project) return null;
+
+    const projectCategories = assetCategoryRepository.listProjectCategories(projectId);
+    const extensions = assetRepository.listProjectAssetExtensions(projectId);
+    const filters = normalizeAssetBrowserQuery(rawQuery, extensions, projectCategories);
+
+    return { filters };
   }
 
   /**
@@ -1000,8 +1212,8 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
    * @returns {null | {
    *   project: object,
    *   asset: object,
-   *   context: { view: string, search: string|null, extension: string|null, presence: string, usage: string, page: number, pageSize: number },
-   *   filters: { view: string, search: string|null, extension: string|null, presence: string, usage: string },
+   *   context: object,
+   *   filters: object,
    *   filteredOut: boolean,
    *   filteredPosition: number|null,
    *   filteredTotal: number,
@@ -1018,8 +1230,9 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
     const project = projectRepository.findById(projectId);
     if (!project) return null;
 
+    const projectCategories = assetCategoryRepository.listProjectCategories(projectId);
     const extensions = assetRepository.listProjectAssetExtensions(projectId);
-    const context = normalizeAssetBrowserQuery(rawQuery, extensions);
+    const context = normalizeAssetBrowserQuery(rawQuery, extensions, projectCategories);
     const asset = assetRepository.findProjectAssetViewerContext(projectId, normalizedAssetId, context);
     if (!asset) return null;
 
@@ -1045,11 +1258,13 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
       asset: buildViewerAssetModel(asset, releaseUsage),
       context,
       filters: {
-        view: context.view,
         search: context.search,
         extension: context.extension,
         presence: context.presence,
         usage: context.usage,
+        category: context.category,
+        sort: context.sort,
+        order: context.order,
       },
       extensionChoices: extensions.map((extension) => ({
         value: extension,
@@ -1214,6 +1429,7 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
     getReleaseBoard,
     getProjectCalendar,
     getProjectAssetBrowser,
+    getProjectAssetBrowserContext,
     getProjectAssetViewer,
     getReleaseReadiness,
     normalizeListFilters,

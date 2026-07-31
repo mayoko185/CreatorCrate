@@ -922,7 +922,7 @@ describe('asset repository', () => {
       expect(upperContext.previous_asset_id).toBe(lower.id);
     });
 
-    it('uses extension to break equal-filename ties before asset ID', () => {
+    it('uses asset ID (not extension) to break equal-filename ties — canonical filename sort has no natural/extension tiebreak', () => {
       const png = addViewerAsset('renders/png-file', { filename: 'asset', extension: 'png', mimeType: 'image/png' });
       const jpg = addViewerAsset('renders/jpg-file', { filename: 'asset', extension: 'jpg', mimeType: 'image/jpeg' });
 
@@ -930,10 +930,11 @@ describe('asset repository', () => {
       const pngContext = assetRepo.findProjectAssetViewerContext(projectId, png.id);
 
       expect(jpg.id).toBeGreaterThan(png.id);
-      expect(jpgContext.filtered_position).toBe(1);
-      expect(jpgContext.next_asset_id).toBe(png.id);
-      expect(pngContext.filtered_position).toBe(2);
-      expect(pngContext.previous_asset_id).toBe(jpg.id);
+      // Filenames are identical ("asset"), so the only tie-breaker is a.id ASC.
+      expect(pngContext.filtered_position).toBe(1);
+      expect(pngContext.next_asset_id).toBe(jpg.id);
+      expect(jpgContext.filtered_position).toBe(2);
+      expect(jpgContext.previous_asset_id).toBe(png.id);
     });
 
     it('uses asset ID to break exact filename and extension ties', () => {

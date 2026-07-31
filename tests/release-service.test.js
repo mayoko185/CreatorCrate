@@ -2971,4 +2971,220 @@ describe('release service', () => {
       expect(rows[1].asset_id).toBe(asset1.id);
     });
   });
+
+  // ─── Phase 3 chunk 3: addAssetsToRelease (bulk browser association) ─────
+
+  describe('addAssetsToRelease', () => {
+    function presentAsset(overrides = {}) {
+      return assetRepo.upsert(projectId, overrides.relativePath ?? 'present.txt', sampleAsset(projectId, overrides));
+    }
+
+    function missingAsset(overrides = {}) {
+      const asset = presentAsset({ relativePath: 'missing.txt', ...overrides });
+      assetRepo.markMissingByProjectIdAndPathNotIn(projectId, []);
+      return assetRepo.findById(asset.id);
+    }
+
+    it('adds multiple present assets and returns added/alreadyAssociated counts', () => {
+      const release = service.createRelease(projectId, validInput({ title: 'Bulk' }));
+      const a1 = presentAsset({ relativePath: 'a.txt' });
+      const a2 = presentAsset({ relativePath: 'b.txt' });
+
+      const result = service.addAssetsToRelease(release.id, projectId, [a1.id, a2.id]);
+
+      expect(result).toEqual({ added: 2, alreadyAssociated: 0 });
+      const rows = service.listReleaseAssets(release.id);
+      expect(rows.map((r) => r.asset_id).sort((x, y) => x - y)).toEqual([a1.id, a2.id].sort((x, y) => x - y));
+      expect(rows.every((r) => r.role === 'attachment')).toBe(true);
+    });
+
+    it('mixed already-associated and new input returns correct counts and only inserts the new ones', () => {
+      const release = service.createRelease(projectId, validInput({ title: 'Mixed' }));
+      const already = presentAsset({ relativePath: 'already.txt' });
+      service.addCandidateAsset(release.id, already.id);
+      const fresh = presentAsset({ relativePath: 'fresh.txt' });
+
+      const result = service.addAssetsToRelease(release.id, projectId, [already.id, fresh.id]);
+
+      expect(result).toEqual({ added: 1, alreadyAssociated: 1 });
+      const rows = service.listReleaseAssets(release.id);
+      expect(rows).toHaveLength(2);
+    });
+
+    it('rejects an empty array', () => {
+      const release = service.createRelease(projectId, validInput({ title: 'Empty' }));
+      expect(() => service.addAssetsToRelease(release.id, projectId, [])).toThrow(ReleaseValidationError);
+    });
+
+    it('rejects a non-array assetIds argument', () => {
+      const release = service.createRelease(projectId, validInput({ title: 'NotArray' }));
+      expect(() => service.addAssetsToRelease(release.id, projectId, 'not-an-array')).toThrow(ReleaseValidationError);
+    });
+
+    it('rejects malformed asset IDs', () => {
+      const release = service.createRelease(projectId, validInput({ title: 'Malformed' }));
+      expect(() => service.addAssetsToRelease(release.id, projectId, ['abc'])).toThrow(ReleaseValidationError);
+      expect(() => service.addAssetsToRelease(release.id, projectId, ['1.5'])).toThrow(ReleaseValidationError);
+      expect(() => service.addAssetsToRelease(release.id, projectId, ['0'])).toThrow(ReleaseValidationError);
+      expect(() => service.addAssetsToRelease(release.id, projectId, ['-1'])).toThrow(ReleaseValidationError);
+    });
+
+    it('rejects duplicate asset IDs in the submitted array', () => {
+      const release = service.createRelease(projectId, validInput({ title: 'Dup' }));
+      const a1 = presentAsset({ relativePath: 'a.txt' });
+      expect(() => service.addAssetsToRelease(release.id, projectId, [a1.id, a1.id])).toThrow(ReleaseValidationError);
+    });
+
+    it('rejects a malformed projectId or releaseId before touching the database', () => {
+      const release = service.createRelease(projectId, validInput({ title: 'BadIds' }));
+      const a1 = presentAsset({ relativePath: 'a.txt' });
+
+      expect(() => service.addAssetsToRelease(release.id, 'not-a-number', [a1.id])).toThrow(ReleaseValidationError);
+      expect(() => service.addAssetsToRelease('not-a-number', projectId, [a1.id])).toThrow(ReleaseValidationError);
+    });
+
+    it('rejects a release that belongs to a different project (does not leak existence)', () => {
+      const otherProject = projectRepo.create(sampleProject({ title: 'Other' }));
+      const release = service.createRelease(otherProject.id, validInput({ title: 'Theirs' }));
+      const a1 = presentAsset({ relativePath: 'a.txt' });
+
+      expect(() => service.addAssetsToRelease(release.id, projectId, [a1.id])).toThrow(ReleaseNotFoundError);
+    });
+
+    it('rejects an unknown release ID', () => {
+      expect(() => service.addAssetsToRelease(999999, projectId, [1])).toThrow(ReleaseNotFoundError);
+    });
+
+    it('rejects a cross-project asset', () => {
+      const release = service.createRelease(projectId, validInput({ title: 'CrossAsset' }));
+      const otherProject = projectRepo.create(sampleProject({ title: 'Other' }));
+      const theirAsset = assetRepo.upsert(otherProject.id, 'theirs.txt', sampleAsset(otherProject.id, { relativePath: 'theirs.txt' }));
+
+      expect(() => service.addAssetsToRelease(release.id, projectId, [theirAsset.id])).toThrow(ReleaseValidationError);
+    });
+
+    it('rejects a missing (not present) asset', () => {
+      const release = service.createRelease(projectId, validInput({ title: 'MissingAsset' }));
+      const gone = missingAsset();
+
+      expect(() => service.addAssetsToRelease(release.id, projectId, [gone.id])).toThrow(ReleaseValidationError);
+    });
+
+    it('rejects an unknown asset ID', () => {
+      const release = service.createRelease(projectId, validInput({ title: 'UnknownAsset' }));
+      expect(() => service.addAssetsToRelease(release.id, projectId, [999999])).toThrow(AssetNotFoundError);
+    });
+
+    it('rejects mutation on an archived project', () => {
+      const release = service.createRelease(projectId, validInput({ title: 'ArchivedProject' }));
+      const a1 = presentAsset({ relativePath: 'a.txt' });
+      projectRepo.archive(projectId);
+
+      expect(() => service.addAssetsToRelease(release.id, projectId, [a1.id])).toThrow(ReleaseParentArchivedError);
+    });
+
+    it('rejects mutation on an archived release', () => {
+      const release = service.createRelease(projectId, validInput({ title: 'ArchivedRelease' }));
+      const a1 = presentAsset({ relativePath: 'a.txt' });
+      service.archiveRelease(release.id);
+
+      expect(() => service.addAssetsToRelease(release.id, projectId, [a1.id])).toThrow(ReleaseArchivedError);
+    });
+
+    it('rejects mutation on a published release', () => {
+      const { release, asset } = createPublishableRelease(service, assetRepo, projectId, { title: 'Published' });
+      service.publishRelease(release.id);
+      const a1 = presentAsset({ relativePath: 'extra.txt' });
+
+      expect(() => service.addAssetsToRelease(release.id, projectId, [a1.id])).toThrow(ReleasePublishedError);
+      expect(asset.id).toBeGreaterThan(0);
+    });
+
+    it('permits mutation on a cancelled release, matching existing curation policy', () => {
+      const release = service.createRelease(projectId, validInput({ title: 'Cancelled', status: 'cancelled' }));
+      const a1 = presentAsset({ relativePath: 'a.txt' });
+
+      const result = service.addAssetsToRelease(release.id, projectId, [a1.id]);
+      expect(result.added).toBe(1);
+    });
+
+    it('validates all input before any repository access — an invalid submission never mutates state', () => {
+      const release = service.createRelease(projectId, validInput({ title: 'ValidateFirst' }));
+      const a1 = presentAsset({ relativePath: 'a.txt' });
+
+      // Trailing malformed ID should reject the whole call — a1 must not
+      // have been added despite appearing earlier in the array.
+      expect(() => service.addAssetsToRelease(release.id, projectId, [a1.id, 'not-a-number'])).toThrow(ReleaseValidationError);
+      expect(service.listReleaseAssets(release.id)).toHaveLength(0);
+    });
+
+    it('uses one bounded asset lookup rather than one query per submitted ID', () => {
+      // Instrument db.prepare BEFORE constructing the service so its
+      // internally-owned assetRepository's statements (cached or ad hoc)
+      // are all observed. Each submission includes one missing asset last,
+      // so validation always rejects right after the asset lookup and
+      // before the repository.appendAssetsToRelease transaction runs —
+      // isolating the validation-phase query count (which must not scale
+      // with the number of submitted IDs) from the mutation phase (which
+      // necessarily writes one row per new asset and would scale). Same
+      // technique workflow-query-service's bounded-query tests use.
+      const originalPrepare = db.prepare.bind(db);
+      let executions = 0;
+      function wrapStatement(statement) {
+        return new Proxy(statement, {
+          get(target, prop, receiver) {
+            if (prop === 'get' || prop === 'all' || prop === 'run') {
+              return (...args) => {
+                executions++;
+                return target[prop](...args);
+              };
+            }
+            const value = Reflect.get(target, prop, receiver);
+            return typeof value === 'function' ? value.bind(target) : value;
+          },
+        });
+      }
+      db.prepare = (...args) => wrapStatement(originalPrepare(...args));
+
+      const instrumentedService = createReleaseService({ db, evaluateReleaseReadiness });
+
+      const smallRelease = instrumentedService.createRelease(projectId, validInput({ title: 'Small' }));
+      // Mark this one asset missing in isolation (it is the only asset that
+      // exists in the project so far), then create the rest as present.
+      const smallMissing = presentAsset({ relativePath: 'small-missing.txt' });
+      assetRepo.markMissingByProjectIdAndPathNotIn(projectId, []);
+      const smallIds = [
+        presentAsset({ relativePath: 'small-1.txt' }).id,
+        presentAsset({ relativePath: 'small-2.txt' }).id,
+        smallMissing.id,
+      ];
+
+      const largeRelease = instrumentedService.createRelease(projectId, validInput({ title: 'Large' }));
+      // Same isolation trick: mark everything currently present (including
+      // the already-used small-* assets, which are no longer needed) as
+      // missing, then create the large-N present assets afterward.
+      const largeMissing = presentAsset({ relativePath: 'large-missing.txt' });
+      assetRepo.markMissingByProjectIdAndPathNotIn(projectId, []);
+      const largeIds = [];
+      for (let i = 0; i < 20; i++) {
+        largeIds.push(presentAsset({ relativePath: `large-${i}.txt` }).id);
+      }
+      largeIds.push(largeMissing.id);
+
+      executions = 0;
+      expect(() => instrumentedService.addAssetsToRelease(smallRelease.id, projectId, smallIds)).toThrow(ReleaseValidationError);
+      const smallCount = executions;
+
+      executions = 0;
+      expect(() => instrumentedService.addAssetsToRelease(largeRelease.id, projectId, largeIds)).toThrow(ReleaseValidationError);
+      const largeCount = executions;
+
+      db.prepare = originalPrepare;
+
+      expect(smallCount).toBe(largeCount);
+      // Sanity: the release was never mutated since validation rejected first.
+      expect(instrumentedService.listReleaseAssets(smallRelease.id)).toHaveLength(0);
+      expect(instrumentedService.listReleaseAssets(largeRelease.id)).toHaveLength(0);
+    });
+  });
 });

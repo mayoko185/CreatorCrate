@@ -7,14 +7,23 @@ import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { createWorkflowQueryService } from '../src/services/workflow-query-service.js';
 import { evaluateReleaseReadiness } from '../src/services/release-readiness-policy.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
+import { createAssetCategoryRepository } from '../src/data/asset-category-repository.js';
 import { createReleaseRepository } from '../src/data/release-repository.js';
 import { getLocalTodayIso } from '../src/util/date.js';
 import { buildRevisionToken } from '../src/storage/preview-cache.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 const DASHBOARD_FIXED_STATEMENT_EXECUTIONS = 14;
-const ASSET_BROWSER_FIXED_STATEMENT_EXECUTIONS = 5;
-const ASSET_VIEWER_FIXED_STATEMENT_EXECUTIONS = 4;
+// Phase 3 chunk 1: browser composition now also loads the project's
+// category rows and whole-project navigation counts (2 additional bounded
+// statements); viewer composition loads the category rows for canonical
+// category normalization (1 additional bounded statement). Both remain
+// fixed regardless of project size.
+// Phase 3 chunk 3: browser composition also loads eligible release targets
+// for the bulk-add-to-release form (1 additional bounded statement, only
+// for non-archived projects — archived projects skip it entirely).
+const ASSET_BROWSER_FIXED_STATEMENT_EXECUTIONS = 8;
+const ASSET_VIEWER_FIXED_STATEMENT_EXECUTIONS = 5;
 // getReleaseList composes: countFiltered (filtered total),
 // countFiltered({ includeArchived: true }) (hasAnyReleases existence), findPage
 // (page rows), and one batch readiness-facts query when the page holds at least
@@ -2585,11 +2594,13 @@ describe('workflow query service', () => {
       expect(result.pageSize).toBe(25);
       expect(result.pageCount).toBe(1);
       expect(result.filters).toEqual({
-        view: 'list',
         search: null,
         extension: null,
         presence: 'all',
         usage: 'all',
+        category: 'all',
+        sort: 'filename',
+        order: 'asc',
       });
     });
 
@@ -2601,11 +2612,13 @@ describe('workflow query service', () => {
       const result = service.getProjectAssetBrowser(project.id);
 
       expect(result.filters).toEqual({
-        view: 'list',
         search: null,
         extension: null,
         presence: 'all',
         usage: 'all',
+        category: 'all',
+        sort: 'filename',
+        order: 'asc',
       });
       expect(result.total).toBe(2);
     });
@@ -2620,32 +2633,25 @@ describe('workflow query service', () => {
       });
 
       expect(result.filters).toEqual({
-        view: 'list',
         search: null,
         extension: null,
         presence: 'all',
         usage: 'all',
+        category: 'all',
+        sort: 'filename',
+        order: 'asc',
       });
     });
 
-    it('accepts grid view without changing the list page data contract', () => {
-      const project = insertProject(db, { title: 'Grid View' });
+    it('ignores a legacy view parameter — grid/list was removed in Phase 3 chunk 2', () => {
+      const project = insertProject(db, { title: 'Legacy View Param' });
       insertAsset(db, { projectId: project.id, relativePath: 'a.txt', filename: 'a.txt', isPresent: 1 });
 
       const result = service.getProjectAssetBrowser(project.id, { view: 'grid' });
 
-      expect(result.filters.view).toBe('grid');
+      expect(result.filters.view).toBeUndefined();
       expect(result.assets).toHaveLength(1);
       expect(result.page).toBe(1);
-    });
-
-    it('invalid view falls back to list', () => {
-      const project = insertProject(db, { title: 'Invalid View' });
-      insertAsset(db, { projectId: project.id, relativePath: 'a.txt', filename: 'a.txt', isPresent: 1 });
-
-      const result = service.getProjectAssetBrowser(project.id, { view: 'cards' });
-
-      expect(result.filters.view).toBe('list');
     });
 
     it('normalizes search by trimming empty input and bounding long values', () => {
@@ -2936,6 +2942,70 @@ describe('workflow query service', () => {
         state: 'previewable',
         previewable: true,
         sourceMetadataValid: true,
+      });
+    });
+
+    // ─── Defect fix: row viewerUrl carries the normalized/clamped context ──
+
+    describe('viewerUrl carries normalized context', () => {
+      it('is a bare path when every filter is at its default', () => {
+        const project = insertProject(db, { title: 'Viewer URL Defaults' });
+        const asset = insertAsset(db, { projectId: project.id, relativePath: 'a.txt', filename: 'a.txt', isPresent: 1 });
+
+        const result = service.getProjectAssetBrowser(project.id);
+        const row = result.assets.find((a) => a.id === asset.id);
+
+        expect(row.viewerUrl).toBe(`/projects/${project.id}/assets/${asset.id}`);
+      });
+
+      it('preserves category/search/extension/presence/usage/sort/order/pageSize and the clamped page', () => {
+        const assetCategoryRepo = createAssetCategoryRepository(db);
+        const assetRepo = createAssetRepository(db);
+        const project = insertProject(db, { title: 'Viewer URL Context' });
+        const category = assetCategoryRepo.addProjectCategory({
+          projectId: project.id, displayName: 'Renders', directorySlug: 'renders-vurl', displayOrder: 0, enabled: true,
+        });
+        for (let i = 0; i < 5; i++) {
+          assetRepo.upsert(project.id, `renders/hero-${i}.png`, {
+            filename: `hero-${i}.png`, extension: 'png', mimeType: 'image/png',
+            sizeBytes: 10, modifiedAt: null, categoryId: category.id, nestedPath: '',
+          });
+        }
+
+        const result = service.getProjectAssetBrowser(project.id, {
+          category: String(category.id), search: 'hero', extension: 'png',
+          presence: 'present', usage: 'unused', sort: 'size', order: 'desc',
+          page: '2', pageSize: '2',
+          // Obsolete/unknown fields must never reach the generated URL.
+          view: 'grid', unknownField: 'strip-me',
+        });
+        const row = result.assets[0];
+
+        const url = new URL(row.viewerUrl, 'http://localhost');
+        expect(url.pathname).toBe(`/projects/${project.id}/assets/${row.id}`);
+        expect(url.searchParams.get('category')).toBe(String(category.id));
+        expect(url.searchParams.get('search')).toBe('hero');
+        expect(url.searchParams.get('extension')).toBe('png');
+        expect(url.searchParams.get('presence')).toBe('present');
+        expect(url.searchParams.get('usage')).toBe('unused');
+        expect(url.searchParams.get('sort')).toBe('size');
+        expect(url.searchParams.get('order')).toBe('desc');
+        expect(url.searchParams.get('page')).toBe('2');
+        expect(url.searchParams.get('pageSize')).toBe('2');
+        expect(url.searchParams.has('view')).toBe(false);
+        expect(url.searchParams.has('unknownField')).toBe(false);
+      });
+
+      it('uses the clamped page, not an out-of-range requested page', () => {
+        const project = insertProject(db, { title: 'Viewer URL Clamped Page' });
+        const asset = insertAsset(db, { projectId: project.id, relativePath: 'a.txt', filename: 'a.txt', isPresent: 1 });
+
+        const result = service.getProjectAssetBrowser(project.id, { page: '99' });
+        const row = result.assets.find((a) => a.id === asset.id);
+
+        expect(result.page).toBe(1); // only 1 asset -> pageCount 1 -> clamped to 1
+        const url = new URL(row.viewerUrl, 'http://localhost');
+        expect(url.searchParams.has('page')).toBe(false); // page=1 is the omitted default
       });
     });
 
@@ -3334,6 +3404,214 @@ describe('workflow query service', () => {
       expect(result).not.toBeNull();
       expect(result.assets).toHaveLength(1);
     });
+
+    // ─── Phase 3 chunk 3: eligible release targets ────────────────────
+
+    describe('releaseTargets', () => {
+      it('includes active, planned, and cancelled releases but excludes published and archived', () => {
+        const project = insertProject(db, { title: 'Targets Basic' });
+        const active = insertRelease(db, { projectId: project.id, title: 'Active', status: 'idea' });
+        const cancelled = insertRelease(db, { projectId: project.id, title: 'Cancelled', status: 'cancelled' });
+        const published = insertRelease(db, { projectId: project.id, title: 'Published', status: 'published', publishedDate: '2026-01-01' });
+        const archived = insertRelease(db, { projectId: project.id, title: 'Archived', archivedAt: '2026-01-01 00:00:00' });
+
+        const result = service.getProjectAssetBrowser(project.id);
+        const ids = result.releaseTargets.map((t) => t.id);
+
+        expect(ids).toContain(active.id);
+        expect(ids).toContain(cancelled.id);
+        expect(ids).not.toContain(published.id);
+        expect(ids).not.toContain(archived.id);
+      });
+
+      it('is project-scoped — does not include another project\'s releases', () => {
+        const project = insertProject(db, { title: 'Targets Mine' });
+        const other = insertProject(db, { title: 'Targets Other' });
+        const mine = insertRelease(db, { projectId: project.id, title: 'Mine' });
+        const theirs = insertRelease(db, { projectId: other.id, title: 'Theirs' });
+
+        const result = service.getProjectAssetBrowser(project.id);
+        const ids = result.releaseTargets.map((t) => t.id);
+
+        expect(ids).toContain(mine.id);
+        expect(ids).not.toContain(theirs.id);
+      });
+
+      it('returns an empty list for archived projects and skips the query entirely (one fewer statement than a non-archived project)', () => {
+        const activeProject = insertProject(db, { title: 'Targets Active Compare' });
+        insertRelease(db, { projectId: activeProject.id, title: 'Eligible' });
+        insertAsset(db, { projectId: activeProject.id, relativePath: 'a.txt', filename: 'a.txt', isPresent: 1 });
+
+        const archivedProject = insertProject(db, { title: 'Targets Archived Project', archivedAt: '2026-01-01 00:00:00' });
+        insertRelease(db, { projectId: archivedProject.id, title: 'Would Be Eligible' });
+        insertAsset(db, { projectId: archivedProject.id, relativePath: 'a.txt', filename: 'a.txt', isPresent: 1 });
+
+        const counter = instrumentStatementExecution(db);
+        const instrumentedService = createWorkflowQueryService({ db, evaluateReleaseReadiness });
+
+        counter.reset();
+        const activeResult = instrumentedService.getProjectAssetBrowser(activeProject.id);
+        const activeCount = counter.count();
+
+        counter.reset();
+        const archivedResult = instrumentedService.getProjectAssetBrowser(archivedProject.id);
+        const archivedCount = counter.count();
+
+        expect(archivedResult.isArchived).toBe(true);
+        expect(archivedResult.releaseTargets).toEqual([]);
+        expect(activeResult.releaseTargets.length).toBeGreaterThan(0);
+        expect(archivedCount).toBe(activeCount - 1);
+      });
+    });
+
+    // ─── Defect fix: exact-destination category-nav active state ─────────
+
+    describe('categoryNavigation active-state matches exactly one destination', () => {
+      function setupNavProject(title) {
+        const assetCategoryRepo = createAssetCategoryRepository(db);
+        const project = insertProject(db, { title });
+        const category = assetCategoryRepo.addProjectCategory({
+          projectId: project.id, displayName: 'Renders', directorySlug: `renders-${project.id}`, displayOrder: 0, enabled: true,
+        });
+        return { project, category };
+      }
+
+      function countActive(nav) {
+        let count = 0;
+        if (nav.allActive) count++;
+        if (nav.uncategorizedActive) count++;
+        if (nav.missingActive) count++;
+        for (const c of [...nav.enabled, ...nav.disabled]) {
+          if (c.isActive) count++;
+        }
+        return count;
+      }
+
+      it('default context (category=all, presence=all) -> only All is active', () => {
+        const { project } = setupNavProject('Nav Default');
+        const nav = service.getProjectAssetBrowser(project.id).categoryNavigation;
+
+        expect(nav.allActive).toBe(true);
+        expect(nav.uncategorizedActive).toBe(false);
+        expect(nav.missingActive).toBe(false);
+        expect(nav.enabled.every((c) => !c.isActive)).toBe(true);
+        expect(countActive(nav)).toBe(1);
+      });
+
+      it('one category with default presence -> only that category is active', () => {
+        const { project, category } = setupNavProject('Nav Category');
+        const nav = service.getProjectAssetBrowser(project.id, { category: String(category.id) }).categoryNavigation;
+
+        expect(nav.allActive).toBe(false);
+        expect(nav.uncategorizedActive).toBe(false);
+        expect(nav.missingActive).toBe(false);
+        expect(nav.enabled.find((c) => c.id === category.id).isActive).toBe(true);
+        expect(countActive(nav)).toBe(1);
+      });
+
+      it('uncategorized with default presence -> only Uncategorized is active', () => {
+        const { project } = setupNavProject('Nav Uncategorized');
+        const nav = service.getProjectAssetBrowser(project.id, { category: 'uncategorized' }).categoryNavigation;
+
+        expect(nav.uncategorizedActive).toBe(true);
+        expect(nav.allActive).toBe(false);
+        expect(nav.missingActive).toBe(false);
+        expect(countActive(nav)).toBe(1);
+      });
+
+      it('presence=missing with category=all -> only Missing Assets is active', () => {
+        const { project } = setupNavProject('Nav Missing');
+        const nav = service.getProjectAssetBrowser(project.id, { presence: 'missing' }).categoryNavigation;
+
+        expect(nav.missingActive).toBe(true);
+        expect(nav.allActive).toBe(false);
+        expect(nav.uncategorizedActive).toBe(false);
+        expect(countActive(nav)).toBe(1);
+      });
+
+      it('category + presence=missing (composed filter) -> no navigation item is active', () => {
+        const { project, category } = setupNavProject('Nav Composed Category Missing');
+        const nav = service.getProjectAssetBrowser(project.id, { category: String(category.id), presence: 'missing' }).categoryNavigation;
+
+        expect(countActive(nav)).toBe(0);
+      });
+
+      it('category=all + presence=present -> no navigation item is active', () => {
+        const { project } = setupNavProject('Nav All Present');
+        const nav = service.getProjectAssetBrowser(project.id, { presence: 'present' }).categoryNavigation;
+
+        expect(countActive(nav)).toBe(0);
+      });
+
+      it('malformed/cross-project category input normalizes to All -> only All is active', () => {
+        const { project } = setupNavProject('Nav Malformed');
+        const nav = service.getProjectAssetBrowser(project.id, { category: 'not-a-real-id' }).categoryNavigation;
+
+        expect(nav.allActive).toBe(true);
+        expect(countActive(nav)).toBe(1);
+      });
+
+      it('never marks more than one destination active across the full matrix', () => {
+        const { project, category } = setupNavProject('Nav Matrix');
+        const combos = [
+          {},
+          { category: String(category.id) },
+          { category: 'uncategorized' },
+          { presence: 'missing' },
+          { category: String(category.id), presence: 'missing' },
+          { presence: 'present' },
+          { presence: 'used' },
+          { category: '999999' },
+        ];
+        for (const rawQuery of combos) {
+          const nav = service.getProjectAssetBrowser(project.id, rawQuery).categoryNavigation;
+          expect(countActive(nav)).toBeLessThanOrEqual(1);
+        }
+      });
+    });
+  });
+
+  describe('getProjectAssetBrowserContext', () => {
+    it('returns null for a missing project', () => {
+      expect(service.getProjectAssetBrowserContext(9999)).toBeNull();
+    });
+
+    it('normalizes category/search/filter/sort/page fields the same way as the full browser', () => {
+      const project = insertProject(db, { title: 'Context Basic' });
+
+      const result = service.getProjectAssetBrowserContext(project.id, {
+        search: '  hero  ', extension: '.PNG', presence: 'missing', usage: 'used',
+        category: 'bogus', sort: 'size', order: 'desc', page: '3', pageSize: '10',
+      });
+
+      expect(result.filters).toEqual({
+        search: 'hero',
+        extension: null, // no assets/extensions exist yet, so .png is not a valid choice
+        presence: 'missing',
+        usage: 'used',
+        category: 'all', // unknown category id normalizes to All
+        sort: 'size',
+        order: 'desc',
+        page: 3,
+        pageSize: 10,
+      });
+    });
+
+    it('is bounded and does not query asset pages, counts, or release usage', () => {
+      const project = insertProject(db, { title: 'Context Bounded' });
+      for (let i = 0; i < 30; i++) {
+        insertAsset(db, { projectId: project.id, relativePath: `f${i}.txt`, filename: `f${i}.txt`, isPresent: 1 });
+      }
+
+      const counter = instrumentStatementExecution(db);
+      const instrumentedService = createWorkflowQueryService({ db, evaluateReleaseReadiness });
+      counter.reset();
+      instrumentedService.getProjectAssetBrowserContext(project.id, {});
+
+      // project lookup + category list + extension list — independent of
+      // how many assets exist, and far fewer than the full browser query.
+      expect(counter.count()).toBe(3);
+    });
   });
 
   describe('getProjectAssetViewer', () => {
@@ -3372,6 +3650,9 @@ describe('workflow query service', () => {
       const last = addViewerAsset(project, '03-notes.txt');
       linkAssetToRelease(db, { releaseId: release.id, assetId: current.id });
 
+      // `view` is passed here to prove it is accepted (legacy-template
+      // compatibility) but never propagated into the canonical context or
+      // any generated navigation URL below.
       const result = service.getProjectAssetViewer(project.id, current.id, {
         view: 'grid',
         search: '0',
@@ -3410,14 +3691,17 @@ describe('workflow query service', () => {
       expect(result.asset.original_url).toBe(`/projects/${project.id}/assets/${current.id}/original`);
 
       expect(result.context).toMatchObject({
-        view: 'grid',
         search: '0',
         extension: null,
         presence: 'all',
         usage: 'all',
+        category: 'all',
+        sort: 'filename',
+        order: 'asc',
         page: 1,
         pageSize: 2,
       });
+      expect(result.context.view).toBeUndefined();
       expect(result.filteredOut).toBe(false);
       expect(result.filteredPosition).toBe(2);
       expect(result.filteredTotal).toBe(3);
@@ -3425,13 +3709,13 @@ describe('workflow query service', () => {
       expect(result.previousAssetLink.assetId).toBe(first.id);
       expect(result.nextAssetLink.assetId).toBe(last.id);
       expectLocalUrl(result.previousAssetLink.href, `/projects/${project.id}/assets/${first.id}`, {
-        view: 'grid', search: '0', pageSize: '2',
+        search: '0', pageSize: '2',
       });
       expectLocalUrl(result.nextAssetLink.href, `/projects/${project.id}/assets/${last.id}`, {
-        view: 'grid', search: '0', page: '2', pageSize: '2',
+        search: '0', page: '2', pageSize: '2',
       });
       expectLocalUrl(result.backToAssetsLink.href, `/projects/${project.id}/assets`, {
-        view: 'grid', search: '0', pageSize: '2',
+        search: '0', pageSize: '2',
       });
     });
 

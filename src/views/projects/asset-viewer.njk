@@ -78,13 +78,31 @@
       <dt>Filename</dt>
       <dd><code>{{ asset.filename }}</code></dd>
 
-      <dt>Relative path</dt>
+      <dt>Category</dt>
+      <dd>
+        {{ asset.categoryLabel }}
+        {% if asset.categoryDisabled %}<em class="asset-category-disabled-marker">(disabled)</em>{% endif %}
+      </dd>
+
+      <dt>Location</dt>
+      <dd>{{ asset.locationLabel }}</dd>
+
+      <dt>Canonical relative path</dt>
       <dd><code>{{ asset.relative_path }}</code></dd>
+
+      <dt>Presence</dt>
+      <dd>
+        {% if asset.is_present %}
+          {% set status = 'present-at-last-scan' %}{% include "partials/status-badge.njk" %}
+        {% else %}
+          {% set status = 'missing-at-last-scan' %}{% include "partials/status-badge.njk" %}
+        {% endif %}
+      </dd>
 
       <dt>Extension</dt>
       <dd><code>{{ asset.extension or '—' }}</code></dd>
 
-      <dt>Recorded MIME</dt>
+      <dt>Recorded MIME type</dt>
       <dd><code>{{ asset.mime_type or '—' }}</code></dd>
 
       <dt>Size</dt>
@@ -99,14 +117,11 @@
       <dt>Recorded modified time</dt>
       <dd>{{ asset.modified_at or '—' }}</dd>
 
-      <dt>Presence</dt>
-      <dd>
-        {% if asset.is_present %}
-          {% set status = 'present-at-last-scan' %}{% include "partials/status-badge.njk" %}
-        {% else %}
-          {% set status = 'missing-at-last-scan' %}{% include "partials/status-badge.njk" %}
-        {% endif %}
-      </dd>
+      <dt>Last seen</dt>
+      <dd>{{ asset.last_seen_at or '—' }}</dd>
+
+      <dt>Missing since</dt>
+      <dd>{{ asset.missing_since or '—' }}</dd>
     </dl>
   </section>
 
@@ -121,6 +136,7 @@
           {% for usage in asset.release_usage %}
             <li>
               <a href="/releases/{{ usage.release_id }}">{{ usage.title }}</a>
+              <span class="release-role">{{ usage.role | title }}</span>
               <span class="release-status">({{ usage.status }})</span>
             </li>
           {% endfor %}

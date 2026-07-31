@@ -418,9 +418,24 @@
         word-break: break-word;
       }
       .description, .notes { white-space: pre-wrap; }
+      /* .asset-filename (plain <td>) is shared with the release asset-selection
+         tables (releases/assets.njk, detail.njk, publish.njk) — do not give it
+         link styling here. The project asset browser's filename link uses the
+         distinct .asset-file-link class below. */
       .asset-filename { font-weight: 600; }
       .asset-path code { font-size: 0.8rem; color: var(--muted); }
       .asset-date { color: var(--muted); font-size: 0.8rem; }
+      .asset-file-link {
+        font-weight: 600;
+        color: var(--link);
+        text-decoration: none;
+      }
+      .asset-file-link:hover { text-decoration: underline; }
+      .asset-file-link:focus-visible {
+        outline: 2px solid var(--focus-ring);
+        outline-offset: 2px;
+      }
+      .asset-location { color: var(--muted); font-size: 0.8rem; }
       .scan-error, .scan-success {
         padding: 1rem 1.25rem;
         border-radius: 0 0.5rem 0.5rem 0;
@@ -596,143 +611,274 @@
         font-weight: 600;
       }
 
-      /* ── Asset toolbar wrapper ── */
-      .asset-toolbar {
-        background: var(--surface);
-        border: 1px solid var(--border);
-        border-radius: var(--radius-lg);
-        padding: var(--space-lg);
-        margin-bottom: var(--space-xl);
-      }
-      .asset-toolbar .view-switcher {
-        margin-bottom: var(--space-lg);
-      }
+      /* ═══ Phase 15.2: Asset browser — category nav + compact table ═══ */
 
-      /* ── Responsive asset grid ── */
-      .asset-grid {
-        list-style: none;
-        padding: 0;
-        margin: 0;
+      /* ── Two-column browser shell ── */
+      .asset-browser-layout {
         display: grid;
-        min-width: 0;
-        max-width: 100%;
-        grid-template-columns: repeat(auto-fill, minmax(min(220px, 100%), 1fr));
-        gap: var(--space-lg);
+        grid-template-columns: 14rem 1fr;
+        gap: var(--space-xl);
+        align-items: start;
+        margin-top: var(--space-lg);
       }
+      .asset-browser-content { min-width: 0; }
 
-      /* ── Card ── */
-      .asset-grid-item { min-width: 0; margin: 0; padding: 0; }
-
-      .asset-card {
-        background: var(--surface-card);
-        border: 1px solid var(--border);
-        border-radius: var(--radius-lg);
-        overflow: hidden;
-        min-width: 0;
-        max-width: 100%;
-        height: 100%;
-        transition:
-          border-color var(--transition-base),
-          box-shadow var(--transition-base);
-      }
-      .asset-card-link {
+      /* ── Category navigation panel ── */
+      .asset-browser-nav {
         display: flex;
         flex-direction: column;
-        height: 100%;
-        color: inherit;
-        text-decoration: none;
+        gap: var(--space-sm);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
+        background: var(--surface);
+        padding: var(--space-md);
       }
-      .asset-card-link:focus-visible {
+      .asset-browser-nav-list {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+      .asset-browser-nav-list a {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: var(--space-sm);
+        padding: var(--space-xs) var(--space-sm);
+        border-radius: var(--radius-sm);
+        color: var(--muted);
+        text-decoration: none;
+        font-size: 0.875rem;
+        transition: background var(--transition-fast), color var(--transition-fast);
+      }
+      .asset-browser-nav-list a:hover {
+        background: var(--surface-hover);
+        color: var(--text);
+      }
+      .asset-browser-nav-list a:focus-visible {
         outline: 2px solid var(--focus-ring);
         outline-offset: -2px;
       }
-      .asset-card-link { min-width: 0; max-width: 100%; }
-
-      /* ── Thumbnail frame ── */
-      .asset-card-media {
-        aspect-ratio: 1 / 1;
+      .asset-browser-nav-list a[aria-current="page"] {
+        background: var(--surface-card);
+        color: var(--text);
+        font-weight: 600;
+        box-shadow: inset 3px 0 0 var(--accent);
+      }
+      .asset-nav-label { min-width: 0; overflow-wrap: anywhere; }
+      .asset-nav-count {
+        flex-shrink: 0;
+        font-variant-numeric: tabular-nums;
+        font-size: 0.75rem;
+        color: var(--muted);
         background: var(--bg);
-        border-bottom: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+        padding: 0.0625rem 0.375rem;
+      }
+      .asset-browser-nav-section {
+        border-top: 1px solid var(--border);
+        padding-top: var(--space-sm);
+      }
+      .asset-browser-nav-heading {
+        margin: 0 0 var(--space-xs);
+        font-size: 0.75rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--muted);
+      }
+      .asset-browser-nav-empty {
+        margin: 0;
+        font-size: 0.8125rem;
+        color: var(--muted);
+      }
+      .asset-nav-disabled-marker,
+      .asset-category-disabled-marker {
+        font-style: normal;
+        font-size: 0.75rem;
+        color: var(--muted);
+      }
+      .asset-browser-nav-manage {
+        display: block;
+        margin-top: var(--space-xs);
+        padding-top: var(--space-sm);
+        border-top: 1px solid var(--border);
+        font-size: 0.8125rem;
+        color: var(--link);
+        text-decoration: none;
+      }
+      .asset-browser-nav-manage:hover { text-decoration: underline; }
+      .asset-browser-nav-manage:focus-visible {
+        outline: 2px solid var(--focus-ring);
+        outline-offset: 2px;
+      }
+
+      /* ── Compact asset table: preview/type cell ── */
+      .asset-table .asset-thumb-cell { width: 3.25rem; }
+      .asset-thumb,
+      .asset-thumb-fallback,
+      .asset-thumb-type,
+      .asset-thumb-missing {
         display: flex;
         align-items: center;
         justify-content: center;
+        width: 2.5rem;
+        height: 2.5rem;
+        border-radius: var(--radius-sm);
+        border: 1px solid var(--border);
+        background: var(--bg);
         overflow: hidden;
       }
-      .asset-card-thumb {
+      .asset-thumb-image {
         width: 100%;
         height: 100%;
-        object-fit: contain;
+        object-fit: cover;
         display: block;
         opacity: 1;
         transition: opacity var(--transition-base);
       }
-      .asset-card-media[data-preview-state="loading"] .asset-card-thumb,
-      .asset-preview-frame[data-preview-state="loading"] .asset-preview-image {
-        opacity: 0.65;
+      .asset-thumb[data-preview-state="loading"] .asset-thumb-image { opacity: 0.65; }
+      .asset-thumb-fallback,
+      .asset-thumb-type {
+        font-size: 0.625rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+      .asset-thumb-missing {
+        color: var(--danger);
+        font-weight: 700;
       }
 
-      /* ── Card placeholders ── */
-      .asset-card-placeholder {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        width: 100%;
-        height: 100%;
-        padding: var(--space-md);
+      /* ── File cell: filename primary, location secondary ── */
+      .asset-file-cell { min-width: 10rem; }
+
+      /* ── Category / type cells ── */
+      .asset-type-label {
+        font-family: var(--mono);
         font-size: 0.8125rem;
-        text-align: center;
-        line-height: 1.4;
+        color: var(--muted);
       }
-      .asset-card-placeholder-missing { color: var(--danger); }
-      .asset-card-placeholder-no-preview { color: var(--warning); }
-      .asset-card-fallback { color: var(--muted); }
 
-      /* ── Card body hierarchy ── */
-      .asset-card-body {
-        padding: var(--space-md);
+      /* ── Release usage (browser table cell and viewer section) ── */
+      .release-role {
+        margin-left: 0.375rem;
+        font-size: 0.75rem;
+        color: var(--muted);
+      }
+      .asset-unused { color: var(--muted); font-size: 0.875rem; }
+      .release-usage-details summary {
+        cursor: pointer;
+        color: var(--link);
+        font-size: 0.9375rem;
+      }
+      .release-usage-details summary:focus-visible {
+        outline: 2px solid var(--focus-ring);
+        outline-offset: 2px;
+      }
+      .release-usage-details[open] summary { margin-bottom: var(--space-xs); }
+      .release-usage-details .release-detail-list {
+        list-style: none;
+        margin: 0;
+        padding: 0;
         display: flex;
         flex-direction: column;
         gap: var(--space-xs);
-        min-width: 0;
-        max-width: 100%;
-        flex: 1;
       }
-      .asset-card-filename {
-        font-weight: 600;
-        font-size: 0.9375rem;
-        overflow-wrap: anywhere;
-        word-break: break-word;
-      }
-      .asset-card-meta,
-      .asset-card-status,
-      .asset-card-usage {
-        min-width: 0;
-        max-width: 100%;
-        overflow-wrap: anywhere;
-        word-break: break-word;
-      }
-      .asset-card-meta {
+
+      /* ═══ Phase 3 chunk 3: page-local asset selection ═══ */
+
+      .bulk-select-form { margin: 0; }
+      .selection-scope-note {
+        margin: 0 0 var(--space-sm);
         font-size: 0.8125rem;
         color: var(--muted);
+      }
+      .asset-table .asset-select-cell { width: 2.25rem; text-align: center; }
+      .asset-select-cell input[type="checkbox"],
+      .bulk-toolbar input[type="checkbox"] {
+        width: 1.125rem;
+        height: 1.125rem;
+        margin: 0;
+      }
+      .asset-select-cell input[type="checkbox"]:focus-visible {
+        outline: 2px solid var(--focus-ring);
+        outline-offset: 2px;
+      }
+      /* Disabled (missing-asset) checkboxes are conveyed by the row's own
+         "Missing at last scan" badge and this dimmed, not-allowed cursor —
+         never color alone. */
+      .asset-select-cell input[type="checkbox"]:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+
+      .bulk-toolbar {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: var(--space-md);
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
+        padding: var(--space-md);
+        margin-bottom: var(--space-lg);
+      }
+      .bulk-toolbar .button:focus-visible {
+        outline: 2px solid var(--focus-ring);
+        outline-offset: 2px;
+      }
+      .selected-count {
+        font-size: 0.875rem;
+        font-weight: 600;
+        color: var(--text);
         font-variant-numeric: tabular-nums;
       }
-      .asset-card-status { font-size: 0.8125rem; color: var(--muted); }
-      .asset-card-usage { font-size: 0.75rem; color: var(--accent); }
-
-      /* ── Hover / focus ── */
-      .asset-card:hover {
-        border-color: var(--border-strong);
-        box-shadow: var(--shadow-md);
+      .bulk-release-field {
+        display: flex;
+        flex-direction: column;
+        gap: 0.25rem;
+        min-width: 12rem;
+        font-size: 0.875rem;
       }
-      .asset-card:focus-within {
-        border-color: var(--focus-ring);
-        box-shadow: 0 0 0 1px var(--focus-ring);
+      .bulk-release-field span { color: var(--muted); }
+      .bulk-release-field select {
+        padding: 0.5rem;
+        background: var(--bg);
+        color: var(--text);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+        font-size: 0.9375rem;
+      }
+      .bulk-release-field select:focus-visible {
+        outline: 2px solid var(--focus-ring);
+        outline-offset: 2px;
+      }
+      .bulk-toolbar [data-bulk-submit] {
+        margin-left: auto;
+      }
+      .bulk-toolbar [data-bulk-submit]:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+      }
+
+      @media (max-width: 767px) {
+        .bulk-toolbar {
+          flex-direction: column;
+          align-items: stretch;
+        }
+        .bulk-toolbar [data-bulk-submit] {
+          margin-left: 0;
+        }
+        .bulk-release-field {
+          min-width: 0;
+        }
       }
 
       /* ── Reduced motion ── */
       @media (prefers-reduced-motion: reduce) {
-        .asset-card,
-        .asset-card-thumb,
+        .asset-thumb-image,
         .view-switcher-option,
         .pagination-prev,
         .pagination-next,
@@ -753,12 +899,10 @@
         }
       }
 
-      /* ── Responsive grid: mobile ── */
-      @media (max-width: 540px) {
-        .asset-grid {
-          grid-template-columns: repeat(auto-fill, minmax(min(150px, 100%), 1fr));
-          gap: var(--space-md);
-        }
+      /* ── Responsive: stack the browser shell, keep the nav scannable ── */
+      @media (max-width: 767px) {
+        .asset-browser-layout { grid-template-columns: 1fr; }
+        .asset-browser-nav { padding: var(--space-sm); }
       }
 
       /* ── Pagination ── */

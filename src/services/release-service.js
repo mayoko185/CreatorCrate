@@ -1184,5 +1184,104 @@ export function createReleaseService({ db, evaluateReleaseReadiness }) {
     listAllReleases(options = {}) {
       return repository.findAll(options);
     },
+
+    // ─── Phase 3 chunk 3: Bulk asset-browser release association ─────────
+
+    /**
+     * Transactionally add multiple present, same-project assets to one
+     * mutable release. Assigns role 'attachment' and appends contiguously
+     * after the release's current last manual-order item; existing
+     * associations, roles, and order are never touched.
+     *
+     * All input validation happens before any repository access — a single
+     * bounded lookup loads every submitted asset so this never issues one
+     * query per ID. The actual append is delegated to one repository
+     * transaction (`appendAssetsToRelease`); this method does not loop over
+     * a single-asset add and cannot partially mutate on its own.
+     *
+     * Already-associated submitted assets are not an error — they are
+     * skipped and reported via `alreadyAssociated`.
+     *
+     * @param {number} releaseId
+     * @param {number} projectId - the project the browser page belongs to;
+     *   the release must belong to this same project
+     * @param {Array<number|string>} assetIds - candidate asset IDs, any order
+     * @returns {{ added: number, alreadyAssociated: number }}
+     * @throws {ReleaseValidationError} malformed/empty/duplicate input, an
+     *   asset outside the project, or a missing (not present) asset
+     * @throws {ReleaseNotFoundError} unknown release, or a release that
+     *   belongs to a different project than `projectId`
+     * @throws {ReleaseArchivedError} the release itself is archived
+     * @throws {ReleaseParentArchivedError} the parent project is archived
+     * @throws {ReleasePublishedError} the release is published (locked)
+     * @throws {AssetNotFoundError} an unknown asset ID was submitted
+     */
+    addAssetsToRelease(releaseId, projectId, assetIds) {
+      const normalizedProjectId = parseStrictPositiveInt(projectId);
+      if (normalizedProjectId === null) {
+        throw new ReleaseValidationError({ projectId: 'projectId must be a positive integer.' });
+      }
+
+      const normalizedReleaseId = parseStrictPositiveInt(releaseId);
+      if (normalizedReleaseId === null) {
+        throw new ReleaseValidationError({ releaseId: 'releaseId must be a positive integer.' });
+      }
+
+      if (!Array.isArray(assetIds) || assetIds.length === 0) {
+        throw new ReleaseValidationError({ assetIds: 'At least one asset must be selected.' });
+      }
+
+      const normalizedAssetIds = [];
+      const seen = new Set();
+      for (const raw of assetIds) {
+        const id = parseStrictPositiveInt(raw);
+        if (id === null) {
+          throw new ReleaseValidationError({ assetIds: 'Asset IDs must be positive integers.' });
+        }
+        if (seen.has(id)) {
+          throw new ReleaseValidationError({ assetIds: 'Duplicate asset IDs are not allowed.' });
+        }
+        seen.add(id);
+        normalizedAssetIds.push(id);
+      }
+
+      const release = repository.findById(normalizedReleaseId);
+      if (!release) {
+        throw new ReleaseNotFoundError(normalizedReleaseId);
+      }
+      // A release that exists but belongs to a different project is treated
+      // identically to an unknown release — existence must not leak across
+      // projects.
+      if (release.project_id !== normalizedProjectId) {
+        throw new ReleaseNotFoundError(normalizedReleaseId);
+      }
+
+      guardParentProjectNotArchived(release.project_id);
+      guardReleaseNotArchived(release);
+      guardReleaseNotPublished(release);
+
+      // One bounded lookup for every submitted asset — never one query per ID.
+      const assets = assetRepository.findByIds(normalizedAssetIds);
+      const assetsById = new Map(assets.map((a) => [a.id, a]));
+
+      for (const id of normalizedAssetIds) {
+        const asset = assetsById.get(id);
+        if (!asset) {
+          throw new AssetNotFoundError(id);
+        }
+        if (asset.project_id !== release.project_id) {
+          throw new ReleaseValidationError({
+            assets: `Asset ${id} does not belong to the release's project.`,
+          });
+        }
+        if (asset.is_present === 0) {
+          throw new ReleaseValidationError({
+            assets: `Asset ${id} is currently missing and cannot be added.`,
+          });
+        }
+      }
+
+      return repository.appendAssetsToRelease(normalizedReleaseId, normalizedAssetIds);
+    },
   };
 }

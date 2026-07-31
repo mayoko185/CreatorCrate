@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import {
   enhancePreview,
   enhancePreviewMedia,
+  enhanceAssetSelection,
 } from '../src/static/creatorcrate.js';
 
 function makeElement(props = {}) {
@@ -130,5 +131,184 @@ describe('static preview enhancement helpers', () => {
 
     expect(source).not.toMatch(/innerHTML/i);
     expect(source).not.toMatch(/aria-live|\.focus\(|keydown|keyup|keypress/i);
+  });
+
+  it('does not use localStorage, sessionStorage, or fetch', () => {
+    const source = fs.readFileSync(
+      fileURLToPath(new URL('../src/static/creatorcrate.js', import.meta.url)),
+      'utf8'
+    );
+
+    expect(source).not.toMatch(/localStorage|sessionStorage|fetch\(|XMLHttpRequest/i);
+  });
+});
+
+// ─── Phase 3 chunk 3: page-local asset selection ─────────────────────────
+
+function makeCheckbox({ checked = false, disabled = false } = {}) {
+  const listeners = [];
+  return {
+    checked,
+    disabled,
+    addEventListener(type, handler) {
+      listeners.push({ type, handler });
+    },
+    dispatch(type) {
+      for (const l of listeners.filter((entry) => entry.type === type)) l.handler();
+    },
+  };
+}
+
+function makeControl({ value = '', disabled = false } = {}) {
+  const listeners = [];
+  return {
+    value,
+    disabled,
+    textContent: '',
+    addEventListener(type, handler) {
+      listeners.push({ type, handler });
+    },
+    dispatch(type) {
+      for (const l of listeners.filter((entry) => entry.type === type)) l.handler();
+    },
+  };
+}
+
+/**
+ * Mock an [data-asset-selection-form] element. `enabledCheckboxes` are the
+ * rows the CSS selector `input[type="checkbox"][name="selectedAssetIds"]:not(:disabled)`
+ * would match — i.e. present-asset rows only. Missing-asset rows render a
+ * disabled checkbox that the real DOM selector excludes entirely, so the
+ * mock's querySelectorAll for that selector never returns them either.
+ */
+function makeAssetSelectionForm({ enabledCheckboxes = [], selectedCount, releaseSelect, selectAll, clearSelection, bulkSubmit } = {}) {
+  const singles = {
+    '[data-selected-count]': selectedCount ?? makeControl(),
+    '[data-release-select]': releaseSelect ?? makeControl(),
+    '[data-select-all]': selectAll ?? makeControl(),
+    '[data-clear-selection]': clearSelection ?? makeControl(),
+    '[data-bulk-submit]': bulkSubmit ?? makeControl(),
+  };
+  return {
+    querySelectorAll(selector) {
+      if (selector.includes('selectedAssetIds')) return enabledCheckboxes;
+      return [];
+    },
+    querySelector(selector) {
+      return singles[selector] || null;
+    },
+    _singles: singles,
+  };
+}
+
+describe('page-local asset selection enhancement', () => {
+  it('is scoped to [data-asset-selection-form] and no-ops when absent', () => {
+    const scope = {
+      querySelectorAll(selector) {
+        expect(selector).toBe('[data-asset-selection-form]');
+        return [];
+      },
+    };
+
+    expect(() => enhanceAssetSelection(scope)).not.toThrow();
+    expect(enhanceAssetSelection(scope)).toBe(0);
+  });
+
+  it('Select All checks only the enabled (present-asset) checkboxes', () => {
+    const cb1 = makeCheckbox();
+    const cb2 = makeCheckbox();
+    const form = makeAssetSelectionForm({ enabledCheckboxes: [cb1, cb2] });
+    const scope = { querySelectorAll: () => [form] };
+
+    enhanceAssetSelection(scope);
+    form._singles['[data-select-all]'].dispatch('click');
+
+    expect(cb1.checked).toBe(true);
+    expect(cb2.checked).toBe(true);
+  });
+
+  it('Clear Selection unchecks the enabled checkboxes', () => {
+    const cb1 = makeCheckbox({ checked: true });
+    const cb2 = makeCheckbox({ checked: true });
+    const form = makeAssetSelectionForm({ enabledCheckboxes: [cb1, cb2] });
+    const scope = { querySelectorAll: () => [form] };
+
+    enhanceAssetSelection(scope);
+    form._singles['[data-clear-selection]'].dispatch('click');
+
+    expect(cb1.checked).toBe(false);
+    expect(cb2.checked).toBe(false);
+  });
+
+  it('missing-asset (disabled) checkboxes are never part of the enabled set Select All/Clear touch', () => {
+    // A disabled checkbox never appears in the mock's enabledCheckboxes —
+    // this proves the module only ever iterates the checkboxes it was
+    // handed, mirroring the real :not(:disabled) selector excluding them.
+    const disabledLikeMissingRow = makeCheckbox({ disabled: true });
+    const form = makeAssetSelectionForm({ enabledCheckboxes: [] });
+    const scope = { querySelectorAll: () => [form] };
+
+    enhanceAssetSelection(scope);
+    form._singles['[data-select-all]'].dispatch('click');
+
+    expect(disabledLikeMissingRow.checked).toBe(false);
+  });
+
+  it('updates the live selected count after a checkbox change', () => {
+    const cb1 = makeCheckbox();
+    const cb2 = makeCheckbox();
+    const countEl = makeControl();
+    const form = makeAssetSelectionForm({ enabledCheckboxes: [cb1, cb2], selectedCount: countEl });
+    const scope = { querySelectorAll: () => [form] };
+
+    enhanceAssetSelection(scope);
+    expect(countEl.textContent).toBe('0 selected');
+
+    cb1.checked = true;
+    cb1.dispatch('change');
+    expect(countEl.textContent).toBe('1 selected');
+
+    cb2.checked = true;
+    cb2.dispatch('change');
+    expect(countEl.textContent).toBe('2 selected');
+  });
+
+  it('submit is disabled until at least one asset is selected and a release is chosen', () => {
+    const cb1 = makeCheckbox();
+    const releaseSelect = makeControl({ value: '' });
+    const submit = makeControl();
+    const form = makeAssetSelectionForm({ enabledCheckboxes: [cb1], releaseSelect, bulkSubmit: submit });
+    const scope = { querySelectorAll: () => [form] };
+
+    enhanceAssetSelection(scope);
+    expect(submit.disabled).toBe(true);
+
+    cb1.checked = true;
+    cb1.dispatch('change');
+    expect(submit.disabled).toBe(true); // asset selected, but no release yet
+
+    releaseSelect.value = '5';
+    releaseSelect.dispatch('change');
+    expect(submit.disabled).toBe(false);
+
+    cb1.checked = false;
+    cb1.dispatch('change');
+    expect(submit.disabled).toBe(true); // release chosen, but no assets now
+  });
+
+  it('establishes correct initial state on load (e.g. a validation rerender with a preserved selection)', () => {
+    const cb1 = makeCheckbox({ checked: true }); // pre-checked from a submitted selection
+    const releaseSelect = makeControl({ value: '5' }); // pre-selected from submission
+    const submit = makeControl();
+    const countEl = makeControl();
+    const form = makeAssetSelectionForm({
+      enabledCheckboxes: [cb1], releaseSelect, bulkSubmit: submit, selectedCount: countEl,
+    });
+    const scope = { querySelectorAll: () => [form] };
+
+    enhanceAssetSelection(scope);
+
+    expect(countEl.textContent).toBe('1 selected');
+    expect(submit.disabled).toBe(false);
   });
 });
