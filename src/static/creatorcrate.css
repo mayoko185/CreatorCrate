@@ -148,7 +148,12 @@
         align-items: center;
         gap: var(--space-sm);
         height: var(--shell-header-height);
-        padding: 0 var(--space-md);
+        padding: 0 var(--space-md) 0 calc(var(--space-md) + 5px);
+        flex: none;
+      }
+      .app-sidebar-logo {
+        width: 32px;
+        height: 32px;
         flex: none;
       }
       .app-sidebar-brand {
@@ -2036,7 +2041,7 @@
         align-items: center;
         gap: var(--space-md);
         height: var(--shell-header-height);
-        padding: 0 var(--space-lg);
+        padding: 0 var(--space-lg) 0 calc(var(--space-lg) + 5px);
         background: var(--surface);
         border-bottom: 1px solid var(--border);
         cursor: pointer;
@@ -2051,6 +2056,11 @@
         outline-offset: -2px;
       }
 
+      .mobile-nav-logo {
+        width: 28px;
+        height: 28px;
+        flex: none;
+      }
       .mobile-nav-brand {
         flex: none;
         font-weight: 700;
@@ -2246,6 +2256,7 @@
          visually cropped mid-word by .app-sidebar's overflow:hidden.
          Matches the .app-nav-label collapse/reveal contract now. */
       .app-sidebar-footer {
+        margin-top: var(--space-md);
         padding: var(--space-sm) var(--space-md);
         border-top: 1px solid var(--border);
         display: flex;

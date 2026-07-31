@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}{{ shell.pageTitle or appName }}{% endblock %}</title>
     <link rel="stylesheet" href="/creatorcrate.css">
+    <link rel="icon" type="image/svg+xml" href="/logo.svg">
     <script type="module" src="/creatorcrate.js"></script>
   </head>
   <body class="{% block body_class %}{% endblock %}">
@@ -15,6 +16,7 @@
       {% if shellVisible %}
       <aside class="app-sidebar">
         <div class="app-sidebar-mark">
+          <img src="/logo.svg" alt="" class="app-sidebar-logo">
           <span class="app-sidebar-brand">{{ shell.appName or appName }}</span>
         </div>
         {% if shell %}
@@ -43,6 +45,7 @@
 
       <details class="mobile-nav">
         <summary class="mobile-nav-summary">
+          <img src="/logo.svg" alt="" class="mobile-nav-logo">
           <span class="mobile-nav-brand">{{ shell.appName or appName }}</span>
           <span class="mobile-nav-section">{{ shell.activeSection or shell.appName or appName }}</span>
           <span class="mobile-nav-toggle">Menu</span>

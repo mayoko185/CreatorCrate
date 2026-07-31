@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="src/static/logo.svg" width="96" alt="CreatorCrate logo">
+</p>
+
 # CreatorCrate
 
 CreatorCrate is a single-user, self-hosted web application for organizing Patreon art projects and their files. It runs in Docker on the same server as an SMB file share so project files stay directly accessible on the host filesystem.
