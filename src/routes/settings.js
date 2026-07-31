@@ -3,6 +3,10 @@ import { BackupError } from '../services/backup-service.js';
 import { invalidateAllSessionsForDb } from '../services/auth-service.js';
 import { clearSessionCookie } from '../middleware/auth.js';
 import { formatRelativeTime } from '../util/date.js';
+import {
+  AssetCategoryValidationError,
+  AssetCategoryNotFoundError,
+} from '../services/asset-category-service.js';
 
 function createNotFound() {
   const err = new Error('Not found');
@@ -40,6 +44,20 @@ const NOTICES = {
     variant: 'error',
     text: 'Could not change the authentication setting. The previous configuration is still active.',
   },
+  category_added: { variant: 'success', text: 'Asset category default added.' },
+  category_updated: { variant: 'success', text: 'Asset category default updated.' },
+  category_enabled: { variant: 'success', text: 'Asset category default enabled.' },
+  category_disabled: { variant: 'success', text: 'Asset category default disabled.' },
+  category_deleted: { variant: 'success', text: 'Asset category default deleted.' },
+  category_reordered: { variant: 'success', text: 'Asset category order updated.' },
+  category_reorder_failed: {
+    variant: 'error',
+    text: 'Could not update the order. No changes were made.',
+  },
+  category_mutation_failed: {
+    variant: 'error',
+    text: 'Could not save the asset category default. Please try again.',
+  },
 };
 
 function resolveNotice(code) {
@@ -67,9 +85,50 @@ function transitionFailureNotice(result) {
   return 'auth_transition_failed';
 }
 
+function parseCategoryId(value) {
+  const id = Number.parseInt(value, 10);
+  if (!Number.isInteger(id) || id < 1 || String(id) !== String(value)) {
+    return null;
+  }
+  return id;
+}
+
+// Directory-slug uniqueness is enforced by a case-insensitive unique index,
+// not by the service's own validation — a conflicting insert/update throws
+// straight from better-sqlite3 rather than an AssetCategoryValidationError.
+function isDuplicateSlugError(err) {
+  return (
+    err != null &&
+    err.code === 'SQLITE_CONSTRAINT_UNIQUE' &&
+    typeof err.message === 'string' &&
+    err.message.includes('asset_category_defaults')
+  );
+}
+
+function parseOrderIds(raw) {
+  if (raw === undefined || raw === null) return [];
+  const values = Array.isArray(raw) ? raw : [raw];
+  return values.map((v) => Number(v));
+}
+
+// Full order array with the given id swapped one position toward `direction`.
+// Returns null if the id isn't present; returns the unchanged order if
+// already at the boundary (a no-op move).
+function buildMovedOrder(categories, id, direction) {
+  const ids = categories.map((c) => c.id);
+  const index = ids.indexOf(id);
+  if (index === -1) return null;
+  const swapWith = direction === 'up' ? index - 1 : index + 1;
+  if (swapWith < 0 || swapWith >= ids.length) return ids;
+  const reordered = [...ids];
+  [reordered[index], reordered[swapWith]] = [reordered[swapWith], reordered[index]];
+  return reordered;
+}
+
 export function createSettingsRouter({
   appName,
   db,
+  assetCategoryService,
   backupService,
   maintenanceState,
   authService,
@@ -303,6 +362,181 @@ export function createSettingsRouter({
       res.redirect('/settings/backups?notice=backup_deleted');
     } catch {
       res.redirect('/settings/backups?notice=delete_failed');
+    }
+  });
+
+  // ─── Asset category defaults (Phase 1) ────────────────────────────────
+  //
+  // Database-only: every handler below talks exclusively to
+  // assetCategoryService (already-constructed, injected explicitly — see
+  // app.js). None of these routes touch project-storage, manifests, or the
+  // filesystem. These are global *defaults* copied into new projects at
+  // creation time; editing/disabling/deleting a default never reaches back
+  // into project-owned categories already copied from it.
+
+  function renderCategoriesPage(res, { status = 200, notice = null, editingId = null, editValues = null, editErrors = {}, addValues = {}, addErrors = {} } = {}) {
+    const categories = assetCategoryService.listDefaults();
+    res.status(status).render('settings/asset-categories.njk', {
+      appName,
+      categories,
+      notice,
+      editingId,
+      editValues,
+      editErrors,
+      addValues,
+      addErrors,
+    });
+  }
+
+  router.get('/asset-categories', (req, res) => {
+    const editingId = parseCategoryId(req.query.edit);
+    let editValues = null;
+    if (editingId !== null) {
+      const found = assetCategoryService.listDefaults().find((c) => c.id === editingId);
+      if (found) {
+        editValues = { displayName: found.display_name, directorySlug: found.directory_slug };
+      }
+    }
+    renderCategoriesPage(res, {
+      notice: resolveNotice(req.query.notice),
+      editingId: editValues ? editingId : null,
+      editValues,
+    });
+  });
+
+  router.post('/asset-categories', (req, res) => {
+    const addValues = { displayName: req.body?.displayName, directorySlug: req.body?.directorySlug, enabled: Boolean(req.body?.enabled) };
+    try {
+      assetCategoryService.addDefault({
+        displayName: req.body?.displayName,
+        directorySlug: req.body?.directorySlug,
+        enabled: req.body?.enabled === 'on' || req.body?.enabled === 'true',
+      });
+      res.redirect('/settings/asset-categories?notice=category_added');
+    } catch (err) {
+      if (err instanceof AssetCategoryValidationError) {
+        renderCategoriesPage(res, { status: 422, addValues, addErrors: err.errors });
+        return;
+      }
+      if (isDuplicateSlugError(err)) {
+        renderCategoriesPage(res, {
+          status: 422,
+          addValues,
+          addErrors: { directorySlug: 'A category with this directory slug already exists.' },
+        });
+        return;
+      }
+      renderCategoriesPage(res, { status: 500, addValues, notice: resolveNotice('category_mutation_failed') });
+    }
+  });
+
+  // Single reorder mutation, used both by the explicit "move" buttons
+  // (which submit a full precomputed order) and directly postable with an
+  // arbitrary ID set — either way it always goes through the service/
+  // repository's complete transactional reorder contract, so a rejected
+  // reorder never partially mutates positions. Registered before the
+  // generic '/asset-categories/:id' route below so the literal "reorder"
+  // segment is never captured as an :id param.
+  router.post('/asset-categories/reorder', (req, res) => {
+    try {
+      const orderedIds = parseOrderIds(req.body?.order);
+      assetCategoryService.reorderDefaults(orderedIds);
+      res.redirect('/settings/asset-categories?notice=category_reordered');
+    } catch {
+      res.redirect('/settings/asset-categories?notice=category_reorder_failed');
+    }
+  });
+
+  router.post('/asset-categories/:id', (req, res, next) => {
+    const id = parseCategoryId(req.params.id);
+    if (id === null) return next(createNotFound());
+
+    const editValues = { displayName: req.body?.displayName, directorySlug: req.body?.directorySlug };
+    try {
+      assetCategoryService.editDefault(id, editValues);
+      res.redirect('/settings/asset-categories?notice=category_updated');
+    } catch (err) {
+      if (err instanceof AssetCategoryNotFoundError) {
+        return next(createNotFound());
+      }
+      if (err instanceof AssetCategoryValidationError) {
+        renderCategoriesPage(res, { status: 422, editingId: id, editValues, editErrors: err.errors });
+        return;
+      }
+      if (isDuplicateSlugError(err)) {
+        renderCategoriesPage(res, {
+          status: 422,
+          editingId: id,
+          editValues,
+          editErrors: { directorySlug: 'A category with this directory slug already exists.' },
+        });
+        return;
+      }
+      renderCategoriesPage(res, { status: 500, editingId: id, editValues, notice: resolveNotice('category_mutation_failed') });
+    }
+  });
+
+  router.post('/asset-categories/:id/enable', (req, res, next) => {
+    const id = parseCategoryId(req.params.id);
+    if (id === null) return next(createNotFound());
+    try {
+      assetCategoryService.setDefaultEnabled(id, true);
+      res.redirect('/settings/asset-categories?notice=category_enabled');
+    } catch (err) {
+      if (err instanceof AssetCategoryNotFoundError) return next(createNotFound());
+      next(err);
+    }
+  });
+
+  router.post('/asset-categories/:id/disable', (req, res, next) => {
+    const id = parseCategoryId(req.params.id);
+    if (id === null) return next(createNotFound());
+    try {
+      assetCategoryService.setDefaultEnabled(id, false);
+      res.redirect('/settings/asset-categories?notice=category_disabled');
+    } catch (err) {
+      if (err instanceof AssetCategoryNotFoundError) return next(createNotFound());
+      next(err);
+    }
+  });
+
+  router.post('/asset-categories/:id/delete', (req, res, next) => {
+    const id = parseCategoryId(req.params.id);
+    if (id === null) return next(createNotFound());
+    try {
+      assetCategoryService.deleteDefault(id);
+      res.redirect('/settings/asset-categories?notice=category_deleted');
+    } catch (err) {
+      if (err instanceof AssetCategoryNotFoundError) return next(createNotFound());
+      next(err);
+    }
+  });
+
+  router.post('/asset-categories/:id/move-up', (req, res, next) => {
+    const id = parseCategoryId(req.params.id);
+    if (id === null) return next(createNotFound());
+    const categories = assetCategoryService.listDefaults();
+    const orderedIds = buildMovedOrder(categories, id, 'up');
+    if (!orderedIds) return next(createNotFound());
+    try {
+      assetCategoryService.reorderDefaults(orderedIds);
+      res.redirect('/settings/asset-categories?notice=category_reordered');
+    } catch {
+      res.redirect('/settings/asset-categories?notice=category_reorder_failed');
+    }
+  });
+
+  router.post('/asset-categories/:id/move-down', (req, res, next) => {
+    const id = parseCategoryId(req.params.id);
+    if (id === null) return next(createNotFound());
+    const categories = assetCategoryService.listDefaults();
+    const orderedIds = buildMovedOrder(categories, id, 'down');
+    if (!orderedIds) return next(createNotFound());
+    try {
+      assetCategoryService.reorderDefaults(orderedIds);
+      res.redirect('/settings/asset-categories?notice=category_reordered');
+    } catch {
+      res.redirect('/settings/asset-categories?notice=category_reorder_failed');
     }
   });
 

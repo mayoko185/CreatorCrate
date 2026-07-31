@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   MANIFEST_FILENAME,
+  MANIFEST_SCHEMA_VERSION,
   serializeManifest,
   deserializeManifest,
   formatManifestJson,
@@ -34,6 +35,15 @@ function makeProject(overrides = {}) {
     patreon_url: null,
     ...overrides,
   };
+}
+
+/** Create minimal project-owned category rows for serialization tests. */
+function makeCategories(overrides = []) {
+  return [
+    { id: 1, project_id: 42, display_name: 'Source', directory_slug: 'source', display_order: 0, enabled: 1, created_at: '2026-07-26 14:00:00', updated_at: '2026-07-26 14:00:00' },
+    { id: 2, project_id: 42, display_name: 'Exports', directory_slug: 'exports', display_order: 1, enabled: 1, created_at: '2026-07-26 14:00:00', updated_at: '2026-07-26 14:00:00' },
+    ...overrides,
+  ];
 }
 
 /** Create a complete valid project directory on disk for writer tests. */
@@ -69,6 +79,7 @@ describe('serializeManifest', () => {
 
     const keys = Object.keys(manifest).sort();
     expect(keys).toEqual([
+      'assetCategories',
       'createdAt',
       'description',
       'id',
@@ -87,9 +98,10 @@ describe('serializeManifest', () => {
     ].sort());
   });
 
-  it('sets schemaVersion to exactly 1', () => {
+  it('sets schemaVersion to exactly 2', () => {
     const manifest = serializeManifest(makeProject());
-    expect(manifest.schemaVersion).toBe(1);
+    expect(manifest.schemaVersion).toBe(MANIFEST_SCHEMA_VERSION);
+    expect(manifest.schemaVersion).toBe(2);
   });
 
   it('uses camelCase for all JSON field names', () => {
@@ -174,6 +186,53 @@ describe('serializeManifest', () => {
     const manifest = serializeManifest(project);
     expect(manifest.createdAt).toBe('2026-07-26T14:00:00.000Z');
   });
+
+  // ─── assetCategories ─────────────────────────────────
+
+  it('defaults assetCategories to an empty array when no categories are given', () => {
+    const manifest = serializeManifest(makeProject());
+    expect(manifest.assetCategories).toEqual([]);
+  });
+
+  it('serializes categories to exactly displayName/directorySlug/displayOrder/enabled', () => {
+    const manifest = serializeManifest(makeProject(), makeCategories());
+    for (const category of manifest.assetCategories) {
+      expect(Object.keys(category).sort()).toEqual(
+        ['displayName', 'directorySlug', 'displayOrder', 'enabled'].sort()
+      );
+    }
+  });
+
+  it('maps category fields correctly and coerces enabled to a boolean', () => {
+    const manifest = serializeManifest(makeProject(), [
+      { id: 7, project_id: 42, display_name: 'Source', directory_slug: 'source', display_order: 0, enabled: 1 },
+      { id: 8, project_id: 42, display_name: 'Extras', directory_slug: 'extras', display_order: 1, enabled: 0 },
+    ]);
+
+    expect(manifest.assetCategories).toEqual([
+      { displayName: 'Source', directorySlug: 'source', displayOrder: 0, enabled: true },
+      { displayName: 'Extras', directorySlug: 'extras', displayOrder: 1, enabled: false },
+    ]);
+  });
+
+  it('preserves the given category order', () => {
+    const manifest = serializeManifest(makeProject(), makeCategories());
+    expect(manifest.assetCategories.map((c) => c.directorySlug)).toEqual(['source', 'exports']);
+  });
+
+  it('does not serialize database category IDs, project IDs, or timestamps', () => {
+    const manifest = serializeManifest(makeProject(), makeCategories());
+    const json = formatManifestJson(manifest);
+    for (const category of manifest.assetCategories) {
+      expect(category).not.toHaveProperty('id');
+      expect(category).not.toHaveProperty('projectId');
+      expect(category).not.toHaveProperty('createdAt');
+      expect(category).not.toHaveProperty('updatedAt');
+    }
+    // Category primary-key/foreign-key values must never leak into the file.
+    expect(json).not.toMatch(/"id":\s*1\b/);
+    expect(json).not.toMatch(/"id":\s*2\b/);
+  });
 });
 
 // ─── deserializeManifest ─────────────────────────────────────────────────
@@ -181,7 +240,7 @@ describe('serializeManifest', () => {
 describe('deserializeManifest', () => {
   it('converts camelCase manifest back to snake_case', () => {
     const manifest = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       id: 42,
       title: 'Test',
       slug: 'test',
@@ -196,6 +255,7 @@ describe('deserializeManifest', () => {
       publishedDate: null,
       patreonUrl: 'https://patreon.com/user',
       thumbnail: null,
+      assetCategories: [],
     };
 
     const data = deserializeManifest(manifest);
@@ -229,6 +289,176 @@ describe('deserializeManifest', () => {
     expect(result.planned_date).toBe('2026-08-15');
     expect(result.published_date).toBeNull();
     expect(result.patreon_url).toBe('https://patreon.com/creator');
+  });
+
+  it('rejects a schema-version-1 manifest', () => {
+    const v1Manifest = {
+      schemaVersion: 1,
+      id: 42,
+      title: 'Test',
+      slug: 'test',
+      status: 'tbd',
+      priority: 'normal',
+      description: '',
+      notes: '',
+      tags: [],
+      createdAt: '2026-07-26T14:00:00.000Z',
+      updatedAt: '2026-07-26T14:00:00.000Z',
+      plannedDate: null,
+      publishedDate: null,
+      patreonUrl: null,
+      thumbnail: null,
+    };
+    expect(() => deserializeManifest(v1Manifest)).toThrow(StorageError);
+  });
+
+  it('rejects a manifest with no schemaVersion', () => {
+    expect(() => deserializeManifest({ id: 1, title: 'x', slug: 'x' })).toThrow(StorageError);
+  });
+
+  it('rejects a null manifest', () => {
+    expect(() => deserializeManifest(null)).toThrow(StorageError);
+  });
+
+  // ─── authoritative assetCategories validation ────────────────────────
+
+  function validBaseManifest(overrides = {}) {
+    return {
+      schemaVersion: 2,
+      id: 42,
+      title: 'Test',
+      slug: 'test',
+      status: 'tbd',
+      priority: 'normal',
+      description: '',
+      notes: '',
+      tags: [],
+      createdAt: '2026-07-26T14:00:00.000Z',
+      updatedAt: '2026-07-26T14:00:00.000Z',
+      plannedDate: null,
+      publishedDate: null,
+      patreonUrl: null,
+      thumbnail: null,
+      assetCategories: [],
+      ...overrides,
+    };
+  }
+
+  it('accepts a valid manifest with an empty assetCategories array', () => {
+    expect(() => deserializeManifest(validBaseManifest())).not.toThrow();
+  });
+
+  it('accepts a valid manifest with populated assetCategories', () => {
+    const manifest = validBaseManifest({
+      assetCategories: [
+        { displayName: 'Source', directorySlug: 'source', displayOrder: 0, enabled: true },
+        { displayName: 'Exports', directorySlug: 'exports', displayOrder: 1, enabled: false },
+      ],
+    });
+    expect(() => deserializeManifest(manifest)).not.toThrow();
+  });
+
+  it('rejects a manifest missing assetCategories', () => {
+    const manifest = validBaseManifest();
+    delete manifest.assetCategories;
+    expect(() => deserializeManifest(manifest)).toThrow(StorageError);
+  });
+
+  it('rejects a manifest with an obsolete "categories" property', () => {
+    const manifest = validBaseManifest({ categories: [] });
+    expect(() => deserializeManifest(manifest)).toThrow(StorageError);
+  });
+
+  it('rejects a non-array assetCategories', () => {
+    const manifest = validBaseManifest({ assetCategories: { source: true } });
+    expect(() => deserializeManifest(manifest)).toThrow(StorageError);
+  });
+
+  it('rejects a category missing required fields', () => {
+    const manifest = validBaseManifest({
+      assetCategories: [{ displayName: 'Source', directorySlug: 'source', displayOrder: 0 }],
+    });
+    expect(() => deserializeManifest(manifest)).toThrow(StorageError);
+  });
+
+  it('rejects a category with extra fields such as id', () => {
+    const manifest = validBaseManifest({
+      assetCategories: [
+        { id: 1, displayName: 'Source', directorySlug: 'source', displayOrder: 0, enabled: true },
+      ],
+    });
+    expect(() => deserializeManifest(manifest)).toThrow(StorageError);
+  });
+
+  it('rejects duplicate directory slugs differing only by case', () => {
+    const manifest = validBaseManifest({
+      assetCategories: [
+        { displayName: 'Source', directorySlug: 'source', displayOrder: 0, enabled: true },
+        { displayName: 'SOURCE Again', directorySlug: 'SOURCE', displayOrder: 1, enabled: true },
+      ],
+    });
+    expect(() => deserializeManifest(manifest)).toThrow(StorageError);
+  });
+
+  it('rejects an unsafe directory slug', () => {
+    const manifest = validBaseManifest({
+      assetCategories: [
+        { displayName: 'Bad', directorySlug: 'Not Valid', displayOrder: 0, enabled: true },
+      ],
+    });
+    expect(() => deserializeManifest(manifest)).toThrow(StorageError);
+  });
+
+  it('rejects a non-boolean enabled value', () => {
+    const manifest = validBaseManifest({
+      assetCategories: [
+        { displayName: 'Source', directorySlug: 'source', displayOrder: 0, enabled: 'true' },
+      ],
+    });
+    expect(() => deserializeManifest(manifest)).toThrow(StorageError);
+  });
+
+  it('rejects a negative display order', () => {
+    const manifest = validBaseManifest({
+      assetCategories: [
+        { displayName: 'Source', directorySlug: 'source', displayOrder: -1, enabled: true },
+      ],
+    });
+    expect(() => deserializeManifest(manifest)).toThrow(StorageError);
+  });
+
+  it('rejects duplicate display orders', () => {
+    const manifest = validBaseManifest({
+      assetCategories: [
+        { displayName: 'Source', directorySlug: 'source', displayOrder: 0, enabled: true },
+        { displayName: 'Exports', directorySlug: 'exports', displayOrder: 0, enabled: true },
+      ],
+    });
+    expect(() => deserializeManifest(manifest)).toThrow(StorageError);
+  });
+
+  it('rejects sparse display orders', () => {
+    const manifest = validBaseManifest({
+      assetCategories: [
+        { displayName: 'Source', directorySlug: 'source', displayOrder: 0, enabled: true },
+        { displayName: 'Exports', directorySlug: 'exports', displayOrder: 2, enabled: true },
+      ],
+    });
+    expect(() => deserializeManifest(manifest)).toThrow(StorageError);
+  });
+
+  it('rejects a non-integer display order', () => {
+    const manifest = validBaseManifest({
+      assetCategories: [
+        { displayName: 'Source', directorySlug: 'source', displayOrder: 0.5, enabled: true },
+      ],
+    });
+    expect(() => deserializeManifest(manifest)).toThrow(StorageError);
+  });
+
+  it('rejects an incorrect (non-integer) project id', () => {
+    const manifest = validBaseManifest({ id: 'not-an-id' });
+    expect(() => deserializeManifest(manifest)).toThrow(StorageError);
   });
 });
 
@@ -293,10 +523,24 @@ describe('manifest file operations', () => {
 
       const content = fs.readFileSync(manifestPath, 'utf8');
       const parsed = JSON.parse(content);
-      expect(parsed.schemaVersion).toBe(1);
+      expect(parsed.schemaVersion).toBe(2);
       expect(parsed.id).toBe(42);
       expect(parsed.title).toBe('Summer Character Set');
       expect(parsed.slug).toBe('summer-set');
+      expect(parsed.assetCategories).toEqual([]);
+    });
+
+    it('writes the given categories in the given order', () => {
+      const { absPath } = createRealProjectDir(projectsRoot, 'in-progress', 42, 'with-categories');
+      const project = makeProject({ id: 42, slug: 'with-categories' });
+
+      writeManifestSync(absPath, project, projectsRoot, makeCategories());
+
+      const manifest = readManifestSync(absPath);
+      expect(manifest.assetCategories).toEqual([
+        { displayName: 'Source', directorySlug: 'source', displayOrder: 0, enabled: true },
+        { displayName: 'Exports', directorySlug: 'exports', displayOrder: 1, enabled: true },
+      ]);
     });
 
     it('replaces an existing manifest', () => {
@@ -444,7 +688,7 @@ describe('manifest file operations', () => {
       // Read it back via readManifestSync
       const manifest = readManifestSync(absPath);
       expect(manifest).not.toBeNull();
-      expect(manifest.schemaVersion).toBe(1);
+      expect(manifest.schemaVersion).toBe(2);
       expect(manifest.id).toBe(42);
       expect(manifest.title).toBe('Summer Character Set');
     });

@@ -375,4 +375,106 @@ describe('database and migrations', () => {
     db.prepare('DELETE FROM assets WHERE id = ?').run(assetId);
     expect(db.prepare('SELECT COUNT(*) AS c FROM release_assets WHERE asset_id = ?').get(assetId).c).toBe(0);
   });
+
+  // ─── Phase 1: asset category migration tests ────────────────────────
+
+  it('creates the asset_category_defaults and project_asset_categories tables from migration 010', () => {
+    db = openDatabase(dbPath);
+    runMigrations(db, MIGRATIONS_DIR);
+    const tables = db
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (?, ?)")
+      .all('asset_category_defaults', 'project_asset_categories')
+      .map((row) => row.name);
+    expect(tables).toContain('asset_category_defaults');
+    expect(tables).toContain('project_asset_categories');
+  });
+
+  it('seeds the five required defaults, enabled, in exact order', () => {
+    db = openDatabase(dbPath);
+    runMigrations(db, MIGRATIONS_DIR);
+    const rows = db
+      .prepare('SELECT display_name, directory_slug, display_order, enabled FROM asset_category_defaults ORDER BY display_order ASC, id ASC')
+      .all();
+
+    expect(rows).toEqual([
+      { display_name: 'Source', directory_slug: 'source', display_order: 0, enabled: 1 },
+      { display_name: 'Exports', directory_slug: 'exports', display_order: 1, enabled: 1 },
+      { display_name: 'Extras', directory_slug: 'extras', display_order: 2, enabled: 1 },
+      { display_name: 'References', directory_slug: 'references', display_order: 3, enabled: 1 },
+      { display_name: 'Thumbnails', directory_slug: 'thumbnails', display_order: 4, enabled: 1 },
+    ]);
+  });
+
+  it('does not seed obsolete defaults or nested export paths', () => {
+    db = openDatabase(dbPath);
+    runMigrations(db, MIGRATIONS_DIR);
+    const slugs = db
+      .prepare('SELECT directory_slug FROM asset_category_defaults')
+      .pluck()
+      .all();
+
+    for (const obsolete of ['raw', 'wip', 'promo', 'final', 'exports/full', 'exports/web']) {
+      expect(slugs).not.toContain(obsolete);
+    }
+    expect(slugs).toHaveLength(5);
+  });
+
+  it('project_asset_categories references the owning project correctly', () => {
+    db = openDatabase(dbPath);
+    runMigrations(db, MIGRATIONS_DIR);
+
+    const ddl = db
+      .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'project_asset_categories'")
+      .pluck()
+      .get();
+    expect(ddl).toMatch(/FOREIGN KEY\s*\(project_id\)\s*REFERENCES\s*projects\(id\)/i);
+
+    const projectId = db.prepare(`
+      INSERT INTO projects (title, slug, description, notes, status, priority, planned_date, published_date, patreon_url)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run('Test Project', 'test-project', '', '', 'tbd', 'normal', null, null, null).lastInsertRowid;
+
+    const categoryId = db.prepare(`
+      INSERT INTO project_asset_categories (project_id, display_name, directory_slug, display_order, enabled)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(projectId, 'Source', 'source', 0, 1).lastInsertRowid;
+
+    const row = db.prepare('SELECT project_id FROM project_asset_categories WHERE id = ?').get(categoryId);
+    expect(row.project_id).toBe(projectId);
+  });
+
+  it('project_asset_categories has no live relationship to asset_category_defaults', () => {
+    db = openDatabase(dbPath);
+    runMigrations(db, MIGRATIONS_DIR);
+    const columns = db
+      .prepare("SELECT name FROM pragma_table_info('project_asset_categories')")
+      .pluck()
+      .all();
+    expect(columns).not.toContain('default_category_id');
+  });
+
+  it('leaves the assets table schema unchanged', () => {
+    db = openDatabase(dbPath);
+    runMigrations(db, MIGRATIONS_DIR);
+
+    const columns = db
+      .prepare("SELECT name, type, \"notnull\", dflt_value, pk FROM pragma_table_info('assets')")
+      .all();
+
+    expect(columns).toEqual([
+      { name: 'id', type: 'INTEGER', notnull: 0, dflt_value: null, pk: 1 },
+      { name: 'project_id', type: 'INTEGER', notnull: 1, dflt_value: null, pk: 0 },
+      { name: 'relative_path', type: 'TEXT', notnull: 1, dflt_value: null, pk: 0 },
+      { name: 'filename', type: 'TEXT', notnull: 1, dflt_value: null, pk: 0 },
+      { name: 'extension', type: 'TEXT', notnull: 1, dflt_value: "''", pk: 0 },
+      { name: 'mime_type', type: 'TEXT', notnull: 1, dflt_value: "'application/octet-stream'", pk: 0 },
+      { name: 'size_bytes', type: 'INTEGER', notnull: 1, dflt_value: '0', pk: 0 },
+      { name: 'modified_at', type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 },
+      { name: 'created_at', type: 'TEXT', notnull: 1, dflt_value: "datetime('now')", pk: 0 },
+      { name: 'updated_at', type: 'TEXT', notnull: 1, dflt_value: "datetime('now')", pk: 0 },
+      { name: 'is_present', type: 'INTEGER', notnull: 1, dflt_value: '1', pk: 0 },
+      { name: 'last_seen_at', type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 },
+      { name: 'missing_since', type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 },
+    ]);
+  });
 });

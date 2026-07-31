@@ -145,27 +145,92 @@ export function ensureNoConflict(dirPath) {
   }
 }
 
-// ─── Standard subdirectory creation ──────────────────────────────────────
+// ─── Category-driven subdirectory creation ───────────────────────────────
 
-const PROJECT_SUBDIR_PATHS = [
-  'source',
-  path.join('exports', 'full'),
-  path.join('exports', 'web'),
-  'references',
-  'extras',
-  'thumbnails',
-];
+const RESERVED_DEVICE_NAMES = new Set([
+  'CON', 'PRN', 'AUX', 'NUL',
+  'COM1', 'COM2', 'COM3', 'COM4', 'COM5', 'COM6', 'COM7', 'COM8', 'COM9',
+  'LPT1', 'LPT2', 'LPT3', 'LPT4', 'LPT5', 'LPT6', 'LPT7', 'LPT8', 'LPT9',
+]);
+
+// Portable single-segment slug: lowercase alphanumeric, hyphen-separated.
+// Enforced independently of any upstream (service-layer) validation —
+// uppercase, spaces, underscores, and dotted names like "project.json" all
+// fail this pattern regardless of what already ran before this boundary.
+const DIRECTORY_SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 /**
- * Create the standard subdirectory structure inside a project directory.
- * The project directory itself must already exist and must not be a symlink.
+ * Defensively validate a category directory slug at the storage boundary.
+ * Independent of (and not imported from) the asset-category service layer —
+ * storage must not trust an upstream validator and must reject unsafe
+ * values itself before ever touching the filesystem.
  *
- * Does NOT create placeholder files — only empty directories.
+ * @param {string} slug
+ * @throws {StorageError} if the slug is not a single safe direct-child name
+ */
+function assertSafeCategorySlug(slug) {
+  if (typeof slug !== 'string' || slug.length === 0) {
+    throw new StorageError('Category directory slug must be a non-empty string.');
+  }
+  // eslint-disable-next-line no-control-regex
+  if (slug.includes('\0') || /[\x00-\x1f]/.test(slug)) {
+    throw new StorageError(`Category directory slug "${slug}" contains control characters.`);
+  }
+  if (slug.includes('/') || slug.includes('\\')) {
+    throw new StorageError(`Category directory slug "${slug}" must not contain path separators.`);
+  }
+  if (slug === '.' || slug === '..') {
+    throw new StorageError('Category directory slug must not be "." or "..".');
+  }
+  if (path.isAbsolute(slug) || /^[a-zA-Z]:[\\/]/.test(slug)) {
+    throw new StorageError(`Category directory slug "${slug}" must not be an absolute path.`);
+  }
+  if (slug !== slug.trim()) {
+    throw new StorageError(`Category directory slug "${slug}" must not have leading or trailing spaces.`);
+  }
+  if (slug.endsWith('.')) {
+    throw new StorageError(`Category directory slug "${slug}" must not end with a dot.`);
+  }
+  if (slug.toLowerCase() === 'project.json') {
+    throw new StorageError(`Category directory slug "${slug}" must not be "project.json".`);
+  }
+  if (RESERVED_DEVICE_NAMES.has(slug.toUpperCase())) {
+    throw new StorageError(`Category directory slug "${slug}" must not be a reserved device name.`);
+  }
+  if (!DIRECTORY_SLUG_PATTERN.test(slug)) {
+    throw new StorageError(
+      `Category directory slug "${slug}" must be lowercase alphanumeric segments separated by single hyphens.`
+    );
+  }
+}
+
+/**
+ * Accept only the "enabled" shapes storage tolerates: real booleans (the
+ * service-layer shape) and SQLite's raw 0/1 integers (the repository-row
+ * shape). Anything else — a string, null, a float — is rejected outright
+ * rather than silently coerced.
+ *
+ * @param {*} value
+ * @returns {boolean}
+ */
+function isValidEnabledField(value) {
+  return value === true || value === false || value === 1 || value === 0;
+}
+
+/**
+ * Create one direct-child directory per enabled category inside a project
+ * directory. The project directory itself must already exist and must not
+ * be a symlink. Disabled categories are skipped. Does NOT create placeholder
+ * files — only empty directories.
  *
  * @param {string} projectDir - Resolved absolute path to project directory
- * @throws {StorageError} if the path is invalid, is a symlink, or subdirs cannot be created
+ * @param {Array<{directory_slug?: string, directorySlug?: string, enabled?: boolean|number}>} categories -
+ *   Ordered project-owned category records (or an explicitly mapped
+ *   storage-safe shape with the same field names)
+ * @throws {StorageError} if the path is invalid, is a symlink, a slug is
+ *   unsafe, or a directory cannot be created
  */
-export function createProjectSubdirs(projectDir) {
+export function createProjectCategoryDirs(projectDir, categories) {
   let stats;
   try {
     stats = fs.lstatSync(projectDir);
@@ -185,13 +250,51 @@ export function createProjectSubdirs(projectDir) {
     );
   }
 
-  for (const sub of PROJECT_SUBDIR_PATHS) {
-    const subPath = path.join(projectDir, sub);
+  if (!Array.isArray(categories)) {
+    throw new StorageError('Category collection must be an array.');
+  }
+
+  // Preflight the COMPLETE category set — including disabled entries — as a
+  // single invariant, before creating anything. A disabled category with an
+  // unsafe slug, or a duplicate slug shared by any combination of enabled
+  // and disabled entries, must reject the whole set; otherwise the
+  // filesystem and the manifest (which independently rejects duplicates)
+  // could disagree about whether the category set is even valid.
+  const seenSlugs = new Set();
+  for (const category of categories) {
+    const slug = category.directory_slug ?? category.directorySlug;
+    assertSafeCategorySlug(slug);
+
+    if (!isValidEnabledField(category.enabled)) {
+      throw new StorageError('Category "enabled" field must be a boolean.');
+    }
+
+    const slugKey = slug.toLowerCase();
+    if (seenSlugs.has(slugKey)) {
+      throw new StorageError(`Duplicate category directory slug "${slug}".`);
+    }
+    seenSlugs.add(slugKey);
+  }
+
+  const enabledCategories = categories.filter(
+    (category) => category.enabled === true || category.enabled === 1
+  );
+
+  for (const category of enabledCategories) {
+    const slug = category.directory_slug ?? category.directorySlug;
+    const subPath = path.join(projectDir, slug);
+    // Belt-and-suspenders: the slug checks above already rule out
+    // separators/traversal, but confirm the resolved path really is a
+    // single direct child of projectDir before creating anything.
+    if (path.dirname(subPath) !== projectDir) {
+      throw new StorageError(`Category directory slug "${slug}" is not a safe direct child.`);
+    }
+
     try {
       fs.mkdirSync(subPath, { recursive: true });
     } catch (err) {
       throw new StorageError(
-        `Failed to create project subdirectory "${sub}".`
+        `Failed to create project category directory "${slug}".`
       );
     }
   }

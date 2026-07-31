@@ -465,13 +465,14 @@ describe('project HTTP workflow', () => {
       const projectDir = getProjectDir('Subdirs HTTP', 'tbd');
       expect(projectDir).not.toBeNull();
 
-      const expectedSubdirs = ['source', 'references', 'extras', 'thumbnails',
-        path.join('exports', 'full'), path.join('exports', 'web')];
+      const expectedSubdirs = ['source', 'exports', 'extras', 'references', 'thumbnails'];
       for (const sub of expectedSubdirs) {
         const subPath = path.join(projectDir, sub);
         expect(fs.existsSync(subPath)).toBe(true);
         expect(fs.statSync(subPath).isDirectory()).toBe(true);
       }
+      expect(fs.existsSync(path.join(projectDir, 'exports', 'full'))).toBe(false);
+      expect(fs.existsSync(path.join(projectDir, 'exports', 'web'))).toBe(false);
     });
 
     it('writes a project manifest', async () => {
@@ -492,9 +493,12 @@ describe('project HTTP workflow', () => {
       expect(fs.existsSync(manifestPath)).toBe(true);
 
       const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-      expect(manifest.schemaVersion).toBe(1);
+      expect(manifest.schemaVersion).toBe(2);
       expect(manifest.title).toBe('Manifest HTTP');
       expect(manifest.description).toBe('Test description');
+      expect(manifest.assetCategories.map((c) => c.directorySlug)).toEqual([
+        'source', 'exports', 'extras', 'references', 'thumbnails',
+      ]);
     });
 
     it('stores relative path in the database', async () => {
@@ -1591,5 +1595,78 @@ describe('project HTTP workflow', () => {
         expect(res.text).toContain('status-badge');
       });
     }
+  });
+});
+
+// ─── Asset-category dependency wiring (app composition root) ─────────────
+
+describe('asset-category dependency wiring through createApp', () => {
+  let db;
+  let tmpDir;
+  let projectsRoot;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-di-'));
+    projectsRoot = path.join(tmpDir, 'projects');
+    fs.mkdirSync(projectsRoot, { recursive: true });
+    for (const dir of Object.values(STATUS_DIR_MAP)) {
+      fs.mkdirSync(path.join(projectsRoot, dir), { recursive: true });
+    }
+    const dbPath = path.join(tmpDir, 'test.db');
+    db = openDatabase(dbPath);
+    runMigrations(db, MIGRATIONS_DIR);
+  });
+
+  afterEach(() => {
+    closeDatabase(db);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('projectService uses the exact injected assetCategoryService, not one it constructs itself', async () => {
+    const appDataRoot = path.join(tmpDir, 'app');
+    fs.mkdirSync(appDataRoot, { recursive: true });
+    const { csrfPepper } = ensureAuthEnablement(appDataRoot);
+
+    const fakeCategory = { display_name: 'Fake', directory_slug: 'fake', display_order: 0, enabled: 1 };
+    let copyCallCount = 0;
+    const fakeAssetCategoryService = {
+      copyDefaultsForProject(projectId) {
+        copyCallCount++;
+        return [{ ...fakeCategory, id: 1, project_id: projectId }];
+      },
+      listProjectCategories() {
+        return [];
+      },
+    };
+
+    const app = createApp(
+      { appName: 'CreatorCrate', db, projectsRoot },
+      { appDataRoot, authState: { csrfPepper }, assetCategoryService: fakeAssetCategoryService }
+    );
+    const { agent, csrfToken } = await getDisabledModeCsrf(app, appDataRoot);
+
+    await agent
+      .post('/projects')
+      .send('title=DI+Check')
+      .send('status=tbd')
+      .send('priority=normal')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .expect(302);
+
+    // The fake was invoked exactly once — proving projectService received
+    // and used this exact instance rather than constructing its own
+    // repository/service internally.
+    expect(copyCallCount).toBe(1);
+
+    const dirName = formatProjectDirName(1, 'di-check');
+    const relPath = buildProjectRelPath('tbd', dirName);
+    const absPath = resolveProjectDir(projectsRoot, relPath);
+    expect(fs.existsSync(path.join(absPath, 'fake'))).toBe(true);
+
+    const manifest = readManifestSync(absPath);
+    expect(manifest.assetCategories).toEqual([
+      { displayName: 'Fake', directorySlug: 'fake', displayOrder: 0, enabled: true },
+    ]);
   });
 });

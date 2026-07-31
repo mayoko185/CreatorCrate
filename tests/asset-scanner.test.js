@@ -6,6 +6,8 @@ import { fileURLToPath } from 'node:url';
 import slugify from '@sindresorhus/slugify';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { createProjectRepository } from '../src/data/project-repository.js';
+import { createAssetCategoryRepository } from '../src/data/asset-category-repository.js';
+import { createAssetCategoryService } from '../src/services/asset-category-service.js';
 import { createProjectService, ProjectNotFoundError } from '../src/services/project-service.js';
 import { createAssetScanner } from '../src/services/asset-scanner.js';
 import {
@@ -59,7 +61,8 @@ describe('asset scanner', () => {
     db = openDatabase(dbPath);
     runMigrations(db, MIGRATIONS_DIR);
     projectRepo = createProjectRepository(db);
-    projectService = createProjectService(db, projectsRoot);
+    const assetCategoryService = createAssetCategoryService(createAssetCategoryRepository(db));
+    projectService = createProjectService(db, projectsRoot, { assetCategoryService });
     assetScanner = createAssetScanner(db, projectsRoot, { projectService });
   });
 

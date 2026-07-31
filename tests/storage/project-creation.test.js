@@ -4,6 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { openDatabase, runMigrations, closeDatabase } from '../../src/db.js';
+import { createAssetCategoryRepository } from '../../src/data/asset-category-repository.js';
+import { createAssetCategoryService } from '../../src/services/asset-category-service.js';
 import {
   createProjectService,
   ProjectValidationError,
@@ -53,7 +55,8 @@ describe('project creation integration', () => {
     const dbPath = path.join(tmpDir, 'test.db');
     db = openDatabase(dbPath);
     runMigrations(db, MIGRATIONS_DIR);
-    service = createProjectService(db, projectsRoot);
+    const assetCategoryService = createAssetCategoryService(createAssetCategoryRepository(db));
+    service = createProjectService(db, projectsRoot, { assetCategoryService });
   });
 
   afterEach(() => {
@@ -99,23 +102,27 @@ describe('project creation integration', () => {
       expect(Number(prefix)).toBe(project.id);
     });
 
-    it('creates exactly the expected subdirectories', () => {
+    it('creates exactly the expected category directories', () => {
       const project = service.create(validInput({ title: 'Subdir Check' }));
       const absPath = resolveProjectDir(
         projectsRoot,
         buildProjectRelPath(project.status, formatProjectDirName(project.id, project.slug))
       );
 
-      const expected = [
-        'source', 'references', 'extras', 'thumbnails',
-        path.join('exports', 'full'), path.join('exports', 'web'),
-      ];
+      const expected = ['source', 'exports', 'extras', 'references', 'thumbnails'];
 
       for (const sub of expected) {
         const subPath = path.join(absPath, sub);
         expect(fs.existsSync(subPath)).toBe(true);
         expect(fs.statSync(subPath).isDirectory()).toBe(true);
       }
+
+      // No legacy exports/full or exports/web nesting.
+      expect(fs.existsSync(path.join(absPath, 'exports', 'full'))).toBe(false);
+      expect(fs.existsSync(path.join(absPath, 'exports', 'web'))).toBe(false);
+
+      const topLevel = fs.readdirSync(absPath).filter((e) => e !== MANIFEST_FILENAME);
+      expect(topLevel.sort()).toEqual([...expected].sort());
     });
 
     it('writes valid manifest matching project data', () => {
@@ -136,7 +143,7 @@ describe('project creation integration', () => {
       const content = fs.readFileSync(path.join(absPath, MANIFEST_FILENAME), 'utf8');
       const manifest = JSON.parse(content);
 
-      expect(manifest.schemaVersion).toBe(1);
+      expect(manifest.schemaVersion).toBe(2);
       expect(manifest.id).toBe(project.id);
       expect(manifest.title).toBe('Manifest Data');
       expect(manifest.slug).toBe('manifest-data');
@@ -149,6 +156,10 @@ describe('project creation integration', () => {
       expect(manifest.patreonUrl).toBe('https://patreon.com/artist');
       expect(manifest.createdAt).toBeTruthy();
       expect(manifest.updatedAt).toBeTruthy();
+      expect(manifest.assetCategories.map((c) => c.directorySlug)).toEqual([
+        'source', 'exports', 'extras', 'references', 'thumbnails',
+      ]);
+      expect(manifest.assetCategories.every((c) => c.enabled === true)).toBe(true);
     });
 
     it('stores relative path and returns updated project', () => {
@@ -182,8 +193,18 @@ describe('project creation integration', () => {
     });
 
     it('removes directory and database record when manifest write fails', () => {
-      const renameSpy = vi.spyOn(fs, 'renameSync').mockImplementation(() => {
-        throw new Error('rename failed');
+      // writeManifestSync's atomic temp-file → project.json step uses
+      // fs.renameSync — inject failure only for that specific rename.
+      // Cleanup's own quarantine-and-verify sequence also uses
+      // fs.renameSync (to move tracked artifacts aside before removing
+      // them), so a blanket failure here would break compensation itself
+      // rather than exercising it.
+      const originalRenameSync = fs.renameSync;
+      const renameSpy = vi.spyOn(fs, 'renameSync').mockImplementation((src, dest) => {
+        if (path.basename(dest) === 'project.json') {
+          throw new Error('rename failed');
+        }
+        return originalRenameSync(src, dest);
       });
 
       expect(() => service.create(validInput({ title: 'Manifest Fail' }))).toThrow(
@@ -243,6 +264,166 @@ describe('project creation integration', () => {
         buildProjectRelPath(legit.status, formatProjectDirName(legit.id, legit.slug))
       );
       expect(fs.existsSync(legitDir)).toBe(true);
+    });
+
+    it('does not delete a replacement directory swapped in before compensation runs', () => {
+      // Simulates a concurrent process renaming the newly created project
+      // root away and dropping a foreign, non-empty, non-symlink directory
+      // at the same path — all before compensation gets a chance to run.
+      // Only a filesystem-identity check (not path/basename/containment
+      // checks alone) can tell that the directory at the expected path is
+      // no longer the one this operation created.
+      let capturedAbsPath;
+      let movedAsidePath;
+      const foreignFileName = 'important-foreign-file.txt';
+      const foreignFileContent = 'do not delete me';
+
+      const renameSpy = vi.spyOn(fs, 'renameSync').mockImplementation((src, dest) => {
+        // writeManifestSync's final step: renameSync(tempPath, manifestPath).
+        // Intercept exactly that call, once.
+        if (path.basename(dest) === 'project.json' && !capturedAbsPath) {
+          capturedAbsPath = path.dirname(dest);
+          movedAsidePath = `${capturedAbsPath}-moved-aside`;
+
+          renameSpy.mockRestore();
+          fs.renameSync(capturedAbsPath, movedAsidePath); // "another process" moves it away
+
+          // A different, non-empty, non-symlink directory now occupies the
+          // exact original expected path — same basename, same containment.
+          fs.mkdirSync(capturedAbsPath, { recursive: true });
+          fs.writeFileSync(path.join(capturedAbsPath, foreignFileName), foreignFileContent);
+
+          throw new Error('injected manifest write failure');
+        }
+      });
+
+      try {
+        expect(() => service.create(validInput({ title: 'Swap Race' }))).toThrow(
+          'Project creation failed. Please try again.'
+        );
+      } finally {
+        renameSpy.mockRestore();
+      }
+
+      // Database rows (project + copied categories) rolled back.
+      expect(service.repository.findBySlug('swap-race')).toBeUndefined();
+
+      // The foreign replacement directory and its contents are untouched.
+      expect(fs.existsSync(capturedAbsPath)).toBe(true);
+      expect(fs.statSync(capturedAbsPath).isDirectory()).toBe(true);
+      const foreignFilePath = path.join(capturedAbsPath, foreignFileName);
+      expect(fs.existsSync(foreignFilePath)).toBe(true);
+      expect(fs.readFileSync(foreignFilePath, 'utf8')).toBe(foreignFileContent);
+
+      // Clean up test-created artifacts (outside the service's own cleanup).
+      fs.rmSync(capturedAbsPath, { recursive: true, force: true });
+      if (movedAsidePath && fs.existsSync(movedAsidePath)) {
+        fs.rmSync(movedAsidePath, { recursive: true, force: true });
+      }
+    });
+
+    it('does not delete a foreign artifact swapped in after a child passes its identity check', () => {
+      // The tracked "source" category directory is quarantined (atomically
+      // renamed aside) and its identity verified there — closing the old
+      // check-then-remove race. This simulates a concurrent process
+      // dropping a foreign, non-empty directory at the child's now-vacant
+      // *original* pathname immediately after that quarantine rename
+      // succeeds — i.e. after the identity check has already moved our own
+      // artifact safely aside, and before removal from quarantine.
+      const dirName = formatProjectDirName(1, 'child-swap');
+      const relPath = buildProjectRelPath('tbd', dirName);
+      const absPath = resolveProjectDir(projectsRoot, relPath);
+      const childPath = path.join(absPath, 'source');
+      const foreignFileName = 'do-not-delete.txt';
+      const foreignFileContent = 'foreign artifact — must survive';
+
+      let intercepted = false;
+      const originalRenameSync = fs.renameSync;
+      const renameSpy = vi.spyOn(fs, 'renameSync').mockImplementation((src, dest) => {
+        if (!intercepted && path.basename(dest).startsWith('.cc-quarantine') && src === childPath) {
+          intercepted = true;
+          originalRenameSync(src, dest); // Cleanup's own atomic quarantine rename.
+          fs.mkdirSync(src, { recursive: true });
+          fs.writeFileSync(path.join(src, foreignFileName), foreignFileContent);
+          return undefined;
+        }
+        return originalRenameSync(src, dest);
+      });
+
+      const setDirSpy = vi.spyOn(service.repository, 'setProjectDir').mockImplementation(() => {
+        throw new Error('DB update failed');
+      });
+
+      try {
+        expect(() => service.create(validInput({ title: 'Child Swap' }))).toThrow(
+          'Project creation failed. Please try again.'
+        );
+      } finally {
+        setDirSpy.mockRestore();
+        renameSpy.mockRestore();
+      }
+
+      expect(intercepted).toBe(true);
+
+      // Database rows rolled back — the original failure remains authoritative.
+      expect(service.repository.findBySlug('child-swap')).toBeUndefined();
+
+      // The foreign replacement at the child's original path is untouched.
+      expect(fs.existsSync(childPath)).toBe(true);
+      expect(fs.statSync(childPath).isDirectory()).toBe(true);
+      const foreignFilePath = path.join(childPath, foreignFileName);
+      expect(fs.existsSync(foreignFilePath)).toBe(true);
+      expect(fs.readFileSync(foreignFilePath, 'utf8')).toBe(foreignFileContent);
+
+      fs.rmSync(absPath, { recursive: true, force: true });
+    });
+
+    it('does not delete a foreign directory swapped in for the root after its identity check', () => {
+      // Same race as above, but for the project root itself: a concurrent
+      // process drops an empty foreign directory at the root's now-vacant
+      // *original* pathname right after the root's own quarantine rename
+      // succeeds (all tracked children have already been quarantined and
+      // removed from the real, unswapped root by this point).
+      const dirName = formatProjectDirName(1, 'root-swap');
+      const relPath = buildProjectRelPath('tbd', dirName);
+      const absPath = resolveProjectDir(projectsRoot, relPath);
+
+      let intercepted = false;
+      const originalRenameSync = fs.renameSync;
+      const renameSpy = vi.spyOn(fs, 'renameSync').mockImplementation((src, dest) => {
+        if (!intercepted && path.basename(dest).startsWith('.cc-quarantine') && src === absPath) {
+          intercepted = true;
+          originalRenameSync(src, dest); // Cleanup's own atomic quarantine rename of the root.
+          fs.mkdirSync(src, { recursive: true });
+          return undefined;
+        }
+        return originalRenameSync(src, dest);
+      });
+
+      const setDirSpy = vi.spyOn(service.repository, 'setProjectDir').mockImplementation(() => {
+        throw new Error('DB update failed');
+      });
+
+      try {
+        expect(() => service.create(validInput({ title: 'Root Swap' }))).toThrow(
+          'Project creation failed. Please try again.'
+        );
+      } finally {
+        setDirSpy.mockRestore();
+        renameSpy.mockRestore();
+      }
+
+      expect(intercepted).toBe(true);
+
+      // Database rows rolled back — the original failure remains authoritative.
+      expect(service.repository.findBySlug('root-swap')).toBeUndefined();
+
+      // The foreign replacement at the root's original path is untouched.
+      expect(fs.existsSync(absPath)).toBe(true);
+      expect(fs.statSync(absPath).isDirectory()).toBe(true);
+      expect(fs.readdirSync(absPath)).toEqual([]);
+
+      fs.rmSync(absPath, { recursive: true, force: true });
     });
 
     it('surfaces generic user-visible error without absolute paths', () => {

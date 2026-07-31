@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import slugify from '@sindresorhus/slugify';
 import {
   createProjectRepository,
@@ -12,11 +13,16 @@ import {
   buildProjectRelPath,
   resolveProjectDir,
   ensureNoConflict,
-  createProjectSubdirs,
+  createProjectCategoryDirs,
   verifyProjectDirOwnership,
   renameProjectDirSync,
 } from '../storage/project-storage.js';
-import { writeManifestSync, readManifestSync } from '../storage/manifest.js';
+import {
+  writeManifestSync,
+  readManifestSync,
+  validateManifestV2,
+  MANIFEST_FILENAME,
+} from '../storage/manifest.js';
 
 export { STATUSES, WORKFLOW_STATUSES, PRIORITIES };
 
@@ -70,7 +76,19 @@ function isValidPatreonUrl(value) {
   }
 }
 
-export function createProjectService(db, projectsRoot) {
+/**
+ * @param {import('better-sqlite3').Database} db
+ * @param {string} projectsRoot
+ * @param {object} deps
+ * @param {object} deps.assetCategoryService - Injected asset-category
+ *   service (see services/asset-category-service.js). Required — this
+ *   service never constructs its own category repository or service.
+ */
+export function createProjectService(db, projectsRoot, { assetCategoryService } = {}) {
+  if (!assetCategoryService) {
+    throw new Error('createProjectService requires an assetCategoryService dependency.');
+  }
+
   const repository = createProjectRepository(db);
 
   function validate(input, options = {}) {
@@ -177,7 +195,8 @@ export function createProjectService(db, projectsRoot) {
       // Step B: Restore original manifest at original location
       if (currentAbsPath && fs.existsSync(currentAbsPath)) {
         try {
-          writeManifestSync(currentAbsPath, project, projectsRoot);
+          const categories = assetCategoryService.listProjectCategories(project.id);
+          writeManifestSync(currentAbsPath, project, projectsRoot, categories);
         } catch (manifestErr) {
           console.error(
             `[CreatorCrate] Update rollback — failed to restore manifest ` +
@@ -237,7 +256,8 @@ export function createProjectService(db, projectsRoot) {
       // Step B: Restore original manifest at original location
       if (currentAbsPath && fs.existsSync(currentAbsPath)) {
         try {
-          writeManifestSync(currentAbsPath, project, projectsRoot);
+          const categories = assetCategoryService.listProjectCategories(project.id);
+          writeManifestSync(currentAbsPath, project, projectsRoot, categories);
         } catch (manifestErr) {
           console.error(
             `[CreatorCrate] Archive rollback — failed to restore manifest ` +
@@ -275,64 +295,78 @@ export function createProjectService(db, projectsRoot) {
     create(input) {
       const normalized = validate(input);
 
-      // Phase 1: Create database record to obtain numeric ID
       let project;
-      try {
-        project = repository.create(normalized);
-      } catch (err) {
-        if (isSlugUniqueConstraintError(err)) {
-          throw new ProjectValidationError({
-            title: 'A project with this title already exists.',
-          });
-        }
-        throw err;
-      }
-
-      // ── Compute paths ──────────────────────────────────────────────
-      const dirName = formatProjectDirName(project.id, project.slug);
-      const relPath = buildProjectRelPath(project.status, dirName);
-      const absPath = resolveProjectDir(projectsRoot, relPath);
-
+      let relPath;
       let dirCreated = false;
+      // Cleanup ownership record — set ONLY after the exact exclusive root
+      // creation below succeeds. Never inferred from the DB row, a slug, or
+      // a preflight check; it is the sole authority for what compensation
+      // is allowed to recursively remove.
+      let ownership = null;
 
-      try {
-        // Phase 2: Create filesystem directory structure
-        // 2a. Verify no existing file/directory at destination
+      const runCreate = db.transaction(() => {
+        // Phase 1: Insert the project row to obtain a numeric ID.
+        try {
+          project = repository.create(normalized);
+        } catch (err) {
+          if (isSlugUniqueConstraintError(err)) {
+            throw new ProjectValidationError({
+              title: 'A project with this title already exists.',
+            });
+          }
+          throw err;
+        }
+
+        // Phase 2: Copy enabled global defaults into independent,
+        // project-owned category rows, in deterministic contiguous order.
+        const categories = assetCategoryService.copyDefaultsForProject(project.id);
+
+        // Phase 3: Compute the canonical (unchanged) project-directory path.
+        const dirName = formatProjectDirName(project.id, project.slug);
+        relPath = buildProjectRelPath(project.status, dirName);
+        const absPath = resolveProjectDir(projectsRoot, relPath);
+
+        // Phase 4: Destination safety check.
         ensureNoConflict(absPath);
-        // 2b. Create the project directory
-        fs.mkdirSync(absPath, { recursive: true });
+
+        // Phase 5: Exclusively create the final project root.
+        createProjectRootExclusive(absPath, dirName);
         dirCreated = true;
-        // 2c. Create standard subdirectories (source, exports/, etc.)
-        createProjectSubdirs(absPath);
+        ownership = beginOwnership(project.id, relPath, dirName, absPath);
 
-        // Phase 3: Write the project manifest (project.json)
-        writeManifestSync(absPath, project, projectsRoot);
+        // Phase 6: Category-driven child directories (enabled categories only).
+        createProjectCategoryDirs(absPath, categories);
+        for (const category of categories) {
+          if (!isCategoryEnabled(category)) continue;
+          trackOwnedChild(ownership, absPath, category.directory_slug ?? category.directorySlug, true);
+        }
 
-        // Phase 4: Store the relative project path in the database
+        // Phase 7: Write the schema-version-2 manifest with those categories.
+        writeManifestSync(absPath, project, projectsRoot, categories);
+        trackOwnedChild(ownership, absPath, MANIFEST_FILENAME, false);
+
+        // Phase 8: Persist the relative project path.
         project = repository.setProjectDir(project.id, relPath);
 
         return project;
+      });
+
+      try {
+        return runCreate();
       } catch (err) {
         // ── Compensation ──────────────────────────────────────────
-        // Rollback filesystem artifacts if any were created
-        if (dirCreated) {
-          safeRemoveCreatedDir(absPath, project.id, projectsRoot);
-        }
-
-        // Rollback database record (hard delete, not archive)
-        try {
-          repository.deleteById(project.id);
-        } catch (deleteErr) {
-          console.error(
-            `[CreatorCrate] Creation rollback — failed to delete project ` +
-            `record ${project.id}: ${deleteErr.message}`
-          );
+        // By the time we reach here, SQLite has already rolled back the
+        // project row and any project-category rows inserted above.
+        if (dirCreated && ownership) {
+          safeRemoveCreatedDir(ownership, projectsRoot);
         }
 
         // Log original failure (project ID + relative path, no absolute paths)
         console.error(
-          `[CreatorCrate] Project creation failed for project ${project.id} ` +
-          `(${relPath}): ${err.message}`
+          `[CreatorCrate] Project creation failed` +
+          (project ? ` for project ${project.id}` : '') +
+          (relPath ? ` (${relPath})` : '') +
+          `: ${err.message}`
         );
 
         // Let validation errors propagate normally
@@ -390,7 +424,12 @@ export function createProjectService(db, projectsRoot) {
         }
 
         // Verify existing manifest belongs to the expected project
-        const manifest = readManifestSync(currentAbsPath);
+        let manifest = null;
+        try {
+          manifest = validateManifestV2(readManifestSync(currentAbsPath));
+        } catch {
+          manifest = null;
+        }
         if (!manifest || manifest.id !== project.id) {
           throw new Error('Existing manifest does not match the expected project.');
         }
@@ -433,9 +472,12 @@ export function createProjectService(db, projectsRoot) {
           dirMoved = true;
         }
 
-        // Phase 5: Write updated manifest at final location
+        // Phase 5: Write updated manifest at final location, preserving the
+        // project's current categories (never recopied or propagated from
+        // global defaults here).
         const manifestTarget = dirNeedsChange ? newAbsPath : currentAbsPath;
-        writeManifestSync(manifestTarget, updated, projectsRoot);
+        const categories = assetCategoryService.listProjectCategories(id);
+        writeManifestSync(manifestTarget, updated, projectsRoot, categories);
 
         // Phase 6: Update stored path in database (if directory changed)
         if (dirNeedsChange) {
@@ -501,7 +543,12 @@ export function createProjectService(db, projectsRoot) {
       }
 
       // Verify existing manifest matches the project
-      const manifest = readManifestSync(currentAbsPath);
+      let manifest = null;
+      try {
+        manifest = validateManifestV2(readManifestSync(currentAbsPath));
+      } catch {
+        manifest = null;
+      }
       if (!manifest || manifest.id !== project.id) {
         throw new Error('Existing manifest does not match the expected project.');
       }
@@ -534,8 +581,9 @@ export function createProjectService(db, projectsRoot) {
         }
         dbArchived = true;
 
-        // Phase 3: Write manifest at new location
-        writeManifestSync(newAbsPath, archived, projectsRoot);
+        // Phase 3: Write manifest at new location, preserving current categories
+        const categories = assetCategoryService.listProjectCategories(id);
+        writeManifestSync(newAbsPath, archived, projectsRoot, categories);
 
         // Phase 4: Update stored relative path
         const updated = repository.setProjectDir(id, newRelPath);
@@ -589,11 +637,12 @@ export function createProjectService(db, projectsRoot) {
      * Adoption rules (all must pass):
      * - Destination is a real directory (not a file, not a symlink)
      * - project.json exists and is valid JSON
-     * - schemaVersion is 1
+     * - schemaVersion is 2
      * - Manifest project ID matches the database record
      * - Manifest slug matches the database record
      *
-     * Never overwrites or modifies a non-matching directory.
+     * Never overwrites or modifies a non-matching directory, and never
+     * invents categories for a project that has no project-category rows.
      *
      * Startup behavior: failures do NOT halt the caller. Each project is
      * processed independently; errors and conflicts are logged and collected
@@ -609,6 +658,7 @@ export function createProjectService(db, projectsRoot) {
         let dirName, relPath, absPath;
         let createdByUs = false;
         let exists = false;
+        let ownership = null;
 
         try {
           dirName = formatProjectDirName(project.id, project.slug);
@@ -637,15 +687,11 @@ export function createProjectService(db, projectsRoot) {
               );
             }
 
-            const manifest = readManifestSync(absPath);
-            if (!manifest) {
+            const rawManifest = readManifestSync(absPath);
+            if (!rawManifest) {
               throw new Error('Destination has no project manifest.');
             }
-            if (manifest.schemaVersion !== 1) {
-              throw new Error(
-                `Schema version ${manifest.schemaVersion} is not supported.`
-              );
-            }
+            const manifest = validateManifestV2(rawManifest);
             if (manifest.id !== project.id) {
               throw new Error(
                 `Manifest ID ${manifest.id} does not match project ${project.id}.`
@@ -661,10 +707,23 @@ export function createProjectService(db, projectsRoot) {
             // ── Fresh creation: verify safety then create ──
             resolveProjectDir(projectsRoot, relPath);
             ensureNoConflict(absPath);
-            fs.mkdirSync(absPath, { recursive: true });
+            const categories = assetCategoryService.listProjectCategories(project.id);
+            // Same exclusive-creation guarantee as normal project creation:
+            // a foreign directory appearing between the preflight checks
+            // above and this call must surface as a conflict, not be
+            // silently adopted as if this operation created it.
+            createProjectRootExclusive(absPath, dirName);
             createdByUs = true;
-            createProjectSubdirs(absPath);
-            writeManifestSync(absPath, project, projectsRoot);
+            ownership = beginOwnership(project.id, relPath, dirName, absPath);
+
+            createProjectCategoryDirs(absPath, categories);
+            for (const category of categories) {
+              if (!isCategoryEnabled(category)) continue;
+              trackOwnedChild(ownership, absPath, category.directory_slug ?? category.directorySlug, true);
+            }
+
+            writeManifestSync(absPath, project, projectsRoot, categories);
+            trackOwnedChild(ownership, absPath, MANIFEST_FILENAME, false);
           }
 
           // ── Store relative path ──
@@ -685,9 +744,9 @@ export function createProjectService(db, projectsRoot) {
             );
           } else {
             // Failed during fresh creation — compensate
-            if (createdByUs && absPath) {
+            if (createdByUs && ownership) {
               try {
-                safeRemoveCreatedDir(absPath, project.id, projectsRoot);
+                safeRemoveCreatedDir(ownership, projectsRoot);
               } catch (cleanupErr) {
                 console.error(
                   `[CreatorCrate] Backfill cleanup failed for project ${project.id}: ${cleanupErr.message}`
@@ -732,80 +791,260 @@ function isSlugUniqueConstraintError(err) {
 }
 
 /**
- * Safely remove a newly created project directory during creation rollback.
- *
- * Safety checks (in order):
- * 1. Path is contained within PROJECTS_ROOT.
- * 2. Path contains no symlinks (via resolveProjectDir).
- * 3. Directory name matches the expected project ID prefix.
- * 4. Target is a real directory (not a file or symlink).
- *
- * Only after all checks pass is recursive removal attempted.
- *
- * @param {string} projectDir - Absolute path to the project directory
- * @param {number} expectedId - Expected project ID for ownership check
- * @param {string} projectsRoot - Absolute path to PROJECTS_ROOT
+ * @param {object} category - Category row (snake_case or storage-safe shape)
+ * @returns {boolean}
  */
-function safeRemoveCreatedDir(projectDir, expectedId, projectsRoot) {
-  // Step 1: Verify containment — reject paths that escape PROJECTS_ROOT
-  const relPath = path.relative(projectsRoot, projectDir);
-  if (!relPath || relPath.startsWith('..') || path.isAbsolute(relPath)) {
-    console.error(
-      `[CreatorCrate] Rollback skipped — path escapes PROJECTS_ROOT: ` +
-      `"${path.basename(projectDir)}"`
-    );
+function isCategoryEnabled(category) {
+  return category.enabled === true || category.enabled === 1;
+}
+
+/**
+ * Exclusively create a project root directory. No `recursive: true` — a
+ * foreign directory appearing at this exact path between preflight checks
+ * and this call must surface as a real destination conflict rather than
+ * silently being adopted as if this operation created it. Shared by normal
+ * project creation and fresh-directory backfill so both get the identical
+ * exclusivity guarantee.
+ *
+ * @param {string} absPath
+ * @param {string} dirName - Used only for the error message (no absolute paths)
+ * @throws {Error} on EEXIST (destination conflict) or any other creation failure
+ */
+function createProjectRootExclusive(absPath, dirName) {
+  try {
+    fs.mkdirSync(absPath);
+  } catch (err) {
+    if (err.code === 'EEXIST') {
+      throw new Error(`Destination "${dirName}" already exists.`);
+    }
+    throw err;
+  }
+}
+
+/**
+ * Begin a cleanup-ownership record for a just-created project root. Must be
+ * called immediately after the root directory is exclusively created, so
+ * the captured filesystem identity (device + inode) reflects exactly the
+ * directory this operation created — not whatever might occupy that path
+ * later, if it is renamed away and replaced before compensation runs.
+ *
+ * @param {number} projectId
+ * @param {string} relPath - Path relative to PROJECTS_ROOT
+ * @param {string} expectedBasename - Directory name this operation created
+ * @param {string} absPath - Absolute path to the newly created root
+ * @returns {{projectId: number, relPath: string, expectedBasename: string, rootIdentity: {dev: number, ino: number}, children: Array}}
+ */
+function beginOwnership(projectId, relPath, expectedBasename, absPath) {
+  const stats = fs.lstatSync(absPath);
+  return {
+    projectId,
+    relPath,
+    expectedBasename,
+    rootIdentity: { dev: stats.dev, ino: stats.ino },
+    children: [],
+  };
+}
+
+/**
+ * Record the filesystem identity of an artifact (category directory or the
+ * manifest file) immediately after this operation created it, so
+ * compensation can later verify it is still the exact artifact created here
+ * before removing it.
+ *
+ * @param {object} ownership - Record from {@link beginOwnership}
+ * @param {string} rootAbsPath - Absolute path to the owned project root
+ * @param {string} name - Direct-child name (category slug or manifest filename)
+ * @param {boolean} isDirectory
+ */
+function trackOwnedChild(ownership, rootAbsPath, name, isDirectory) {
+  try {
+    const stats = fs.lstatSync(path.join(rootAbsPath, name));
+    ownership.children.push({ name, isDirectory, dev: stats.dev, ino: stats.ino });
+  } catch {
+    // Vanished before we could capture it — nothing to track for cleanup.
+  }
+}
+
+/**
+ * Log a cleanup problem without exposing an absolute path to the user —
+ * only the project ID and a safe artifact name (never a full path) reach
+ * the log line.
+ */
+function logCleanupProblem(projectId, reason) {
+  console.error(`[CreatorCrate] Creation rollback for project ${projectId} — ${reason}.`);
+}
+
+/**
+ * Generate an unpredictable, collision-resistant quarantine basename. Kept
+ * visually distinct from manifest.js's own temp-file pattern
+ * (`.{hex12}.project.json.tmp`) so the two never collide or get confused
+ * with one another during normal manifest cleanup.
+ *
+ * @returns {string}
+ */
+function generateQuarantineName() {
+  return `.cc-quarantine-${process.pid}-${Date.now().toString(36)}-${crypto.randomBytes(9).toString('hex')}`;
+}
+
+/**
+ * Best-effort restoration of a quarantined artifact back to its original
+ * pathname. Only proceeds when that pathname is currently free — never
+ * overwrites whatever now occupies it, so a foreign replacement that
+ * appeared at the original path is always preserved untouched.
+ *
+ * @param {string} quarantinePath
+ * @param {string} originalPath
+ * @param {number} projectId
+ * @param {string} name - Safe artifact name for logging (never a full path)
+ */
+function restoreQuarantined(quarantinePath, originalPath, projectId, name) {
+  try {
+    fs.lstatSync(originalPath);
+    // Something already occupies the original path — never overwrite it.
+    logCleanupProblem(projectId, `left artifact "${name}" at quarantine — original location is occupied`);
+    return;
+  } catch (err) {
+    if (err.code !== 'ENOENT') {
+      logCleanupProblem(projectId, `left artifact "${name}" at quarantine — could not verify original location`);
+      return;
+    }
+  }
+  try {
+    fs.renameSync(quarantinePath, originalPath);
+  } catch {
+    logCleanupProblem(projectId, `failed to restore artifact "${name}" after an identity mismatch`);
+  }
+}
+
+/**
+ * Atomic quarantine-and-verify removal of one tracked artifact (a category
+ * directory, the manifest file, or the project root itself).
+ *
+ * Never checks identity at the artifact's well-known pathname and then
+ * removes that same pathname later — that TOCTOU window is exactly what
+ * let a concurrent process swap in a foreign replacement between the check
+ * and the removal. Instead:
+ *
+ *   1. Atomically rename the artifact to an unpredictable, private
+ *      quarantine pathname in the same parent directory (exclusive
+ *      retry-on-collision — never overwrites an existing quarantine path).
+ *   2. Inspect the artifact now sitting at that quarantine pathname.
+ *   3. Compare its filesystem identity (dev + ino) with the identity
+ *      recorded when CreatorCrate created it.
+ *   4. Only on a match: remove it from quarantine (a file via unlink; a
+ *      directory only non-recursively and only if empty).
+ *   5. On a mismatch: never delete it. Restore it to its original pathname
+ *      when that pathname is free; otherwise leave it at the quarantine
+ *      path and log the problem safely (no absolute paths).
+ *
+ * Because nothing else can guess the quarantine pathname, whatever a
+ * concurrent process does to the *original* pathname after step 1 cannot
+ * affect what this function inspects or removes.
+ *
+ * @param {string} parentDir - Resolved absolute directory containing the artifact
+ * @param {string} name - Direct-child basename to quarantine and verify
+ * @param {{dev: number, ino: number}} expectedIdentity - Identity captured at creation time
+ * @param {boolean} isDirectory
+ * @param {number} projectId - For safe (path-free) logging only
+ */
+function quarantineAndVerify(parentDir, name, expectedIdentity, isDirectory, projectId) {
+  const originalPath = path.join(parentDir, name);
+
+  let quarantinePath = null;
+  for (let attempt = 0; attempt < 8 && !quarantinePath; attempt++) {
+    const candidate = path.join(parentDir, generateQuarantineName());
+    try {
+      fs.renameSync(originalPath, candidate);
+      quarantinePath = candidate;
+    } catch (err) {
+      if (err.code === 'ENOENT') return; // Already gone — nothing to do.
+      if (err.code === 'EEXIST' || err.code === 'ENOTEMPTY') continue; // Quarantine name collision — retry.
+      logCleanupProblem(projectId, `failed to quarantine artifact "${name}" for verification`);
+      return;
+    }
+  }
+  if (!quarantinePath) {
+    logCleanupProblem(projectId, `failed to quarantine artifact "${name}" — no free quarantine name`);
     return;
   }
 
-  // resolveProjectDir does additional safety checks (containment + symlinks)
+  let stats;
+  try {
+    stats = fs.lstatSync(quarantinePath);
+  } catch {
+    return; // Vanished between quarantine and inspection — nothing to do.
+  }
+
+  const identityMatches = stats.dev === expectedIdentity.dev && stats.ino === expectedIdentity.ino;
+  if (!identityMatches) {
+    logCleanupProblem(projectId, `artifact "${name}" was replaced; leaving it untouched`);
+    restoreQuarantined(quarantinePath, originalPath, projectId, name);
+    return;
+  }
+
+  try {
+    if (isDirectory) {
+      if (!stats.isDirectory() || stats.isSymbolicLink()) {
+        logCleanupProblem(projectId, `artifact "${name}" is no longer a plain directory`);
+        restoreQuarantined(quarantinePath, originalPath, projectId, name);
+        return;
+      }
+      if (fs.readdirSync(quarantinePath).length > 0) {
+        logCleanupProblem(projectId, `artifact "${name}" is not empty`);
+        restoreQuarantined(quarantinePath, originalPath, projectId, name);
+        return;
+      }
+      fs.rmdirSync(quarantinePath);
+    } else {
+      if (!stats.isFile() || stats.isSymbolicLink()) {
+        logCleanupProblem(projectId, `artifact "${name}" is no longer a plain file`);
+        restoreQuarantined(quarantinePath, originalPath, projectId, name);
+        return;
+      }
+      fs.unlinkSync(quarantinePath);
+    }
+  } catch {
+    logCleanupProblem(projectId, `failed to remove artifact "${name}" from quarantine`);
+    restoreQuarantined(quarantinePath, originalPath, projectId, name);
+  }
+}
+
+/**
+ * Safely remove a newly created project directory during creation rollback.
+ *
+ * This function never checks identity at an artifact's well-known pathname
+ * and removes that same pathname later — see {@link quarantineAndVerify}
+ * for why that check-then-remove pattern is unsafe and how the atomic
+ * quarantine sequence replaces it. Tracked children are quarantined and
+ * verified first (the root can only be removed once empty), then the root
+ * itself is quarantined and verified from within its own parent directory.
+ *
+ * A failed cleanup may leave the originally created directory or some of
+ * its artifacts behind when ownership can no longer be proven — that is
+ * preferable to deleting data this operation did not create. Any such
+ * problem is logged with the project ID and artifact name only, never an
+ * absolute path.
+ *
+ * @param {object} ownership - Record from {@link beginOwnership}, with
+ *   `children` populated via {@link trackOwnedChild} for each artifact
+ * @param {string} projectsRoot - Absolute path to PROJECTS_ROOT
+ */
+function safeRemoveCreatedDir(ownership, projectsRoot) {
+  if (!ownership) return;
+  const { projectId, relPath, rootIdentity, children } = ownership;
+
   let resolved;
   try {
     resolved = resolveProjectDir(projectsRoot, relPath);
   } catch {
-    // Directory doesn't exist or path is invalid — nothing to clean up
+    // Path no longer safe to resolve (escapes root, symlink component) —
+    // nothing can be safely removed.
     return;
   }
 
-  // Step 2: Verify directory ownership (ID prefix match)
-  if (!verifyProjectDirOwnership(resolved, expectedId)) {
-    console.error(
-      `[CreatorCrate] Rollback skipped — directory "${path.basename(resolved)}" ` +
-      `does not match expected ID ${expectedId}.`
-    );
-    return;
+  for (const child of children) {
+    quarantineAndVerify(resolved, child.name, { dev: child.dev, ino: child.ino }, child.isDirectory === true, projectId);
   }
 
-  // Step 3: Verify it's a real directory, not a symlink
-  let stats;
-  try {
-    stats = fs.lstatSync(resolved);
-  } catch {
-    return; // Already gone
-  }
-
-  if (!stats.isDirectory()) {
-    console.error(
-      `[CreatorCrate] Rollback skipped — "${path.basename(resolved)}" ` +
-      `is not a directory.`
-    );
-    return;
-  }
-
-  if (stats.isSymbolicLink()) {
-    console.error(
-      `[CreatorCrate] Rollback skipped — "${path.basename(resolved)}" ` +
-      `is a symbolic link.`
-    );
-    return;
-  }
-
-  // Step 4: Recursively remove the directory tree
-  try {
-    fs.rmSync(resolved, { recursive: true, force: true });
-  } catch (err) {
-    console.error(
-      `[CreatorCrate] Rollback — failed to remove directory ` +
-      `"${path.basename(resolved)}": ${err.message}`
-    );
-  }
+  quarantineAndVerify(path.dirname(resolved), path.basename(resolved), rootIdentity, true, projectId);
 }

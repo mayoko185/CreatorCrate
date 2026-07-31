@@ -12,6 +12,8 @@ import { createCalendarRouter } from './routes/calendar.js';
 import { createMediaRouter } from './routes/media.js';
 import { createSettingsRouter } from './routes/settings.js';
 import { createProjectService } from './services/project-service.js';
+import { createAssetCategoryRepository } from './data/asset-category-repository.js';
+import { createAssetCategoryService } from './services/asset-category-service.js';
 import { createAssetScanner } from './services/asset-scanner.js';
 import { createReleaseService } from './services/release-service.js';
 import { createWorkflowQueryService } from './services/workflow-query-service.js';
@@ -87,7 +89,15 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     index: false,
   }));
 
-  const projectService = createProjectService(db, projectsRoot);
+  // Phase 1 (asset categories): dependencies are constructed once here and
+  // threaded explicitly — the repository receives the database, the service
+  // receives the repository, and projectService receives the already-built
+  // service. Nothing downstream constructs its own repository. The same
+  // instance is what a future Settings router will receive too.
+  const assetCategoryRepository = opts.assetCategoryRepository || createAssetCategoryRepository(db);
+  const assetCategoryService = opts.assetCategoryService || createAssetCategoryService(assetCategoryRepository);
+
+  const projectService = createProjectService(db, projectsRoot, { assetCategoryService });
   const assetScanner = createAssetScanner(db, projectsRoot, { projectService });
   const releaseService = opts.releaseService || createReleaseService({ db, evaluateReleaseReadiness });
   const workflowQueryService = opts.workflowQueryService || createWorkflowQueryService({ db, evaluateReleaseReadiness });
@@ -259,6 +269,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   app.use('/settings', createSettingsRouter({
     appName,
     db,
+    assetCategoryService,
     backupService,
     maintenanceState,
     authService,

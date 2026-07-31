@@ -4,6 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
+import { createAssetCategoryRepository } from '../src/data/asset-category-repository.js';
+import { createAssetCategoryService } from '../src/services/asset-category-service.js';
 import {
   createProjectService,
   ProjectValidationError,
@@ -16,7 +18,7 @@ import {
   resolveProjectDir,
   renameProjectDirSync,
   ensureNoConflict,
-  createProjectSubdirs,
+  createProjectCategoryDirs,
   verifyProjectDirOwnership,
   STATUS_DIR_MAP,
 } from '../src/storage/project-storage.js';
@@ -40,12 +42,48 @@ describe('project service', () => {
     const dbPath = path.join(tmpDir, 'test.db');
     db = openDatabase(dbPath);
     runMigrations(db, MIGRATIONS_DIR);
-    service = createProjectService(db, projectsRoot);
+    const assetCategoryService = createAssetCategoryService(createAssetCategoryRepository(db));
+    service = createProjectService(db, projectsRoot, { assetCategoryService });
   });
 
   afterEach(() => {
     closeDatabase(db);
     fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  // ─── Dependency injection ───────────────────────────────────────────
+
+  describe('asset-category dependency injection', () => {
+    it('requires an assetCategoryService dependency', () => {
+      expect(() => createProjectService(db, projectsRoot)).toThrow(
+        'createProjectService requires an assetCategoryService dependency.'
+      );
+      expect(() => createProjectService(db, projectsRoot, {})).toThrow(
+        'createProjectService requires an assetCategoryService dependency.'
+      );
+    });
+
+    it('uses the exact injected assetCategoryService (a focused fake), not one it constructs itself', () => {
+      let copyCallCount = 0;
+      let listCallCount = 0;
+      const fake = {
+        copyDefaultsForProject(projectId) {
+          copyCallCount++;
+          return [{ display_name: 'Fake', directory_slug: 'fake', display_order: 0, enabled: 1, project_id: projectId }];
+        },
+        listProjectCategories() {
+          listCallCount++;
+          return [];
+        },
+      };
+      const fakeService = createProjectService(db, projectsRoot, { assetCategoryService: fake });
+
+      const project = fakeService.create(validInput({ title: 'Fake DI Project' }));
+      expect(copyCallCount).toBe(1);
+
+      fakeService.update(project.id, validInput({ title: 'Fake DI Project', description: 'changed' }));
+      expect(listCallCount).toBeGreaterThan(0);
+    });
   });
 
   it('rejects a missing title', () => {
@@ -201,15 +239,8 @@ describe('project service', () => {
       expect(dirName.startsWith(String(project.id).padStart(6, '0'))).toBe(true);
     });
 
-    it('creates all standard subdirectories', () => {
-      const expectedSubdirs = [
-        'source',
-        path.join('exports', 'full'),
-        path.join('exports', 'web'),
-        'references',
-        'extras',
-        'thumbnails',
-      ];
+    it('creates a category directory for each enabled default', () => {
+      const expectedSubdirs = ['source', 'exports', 'extras', 'references', 'thumbnails'];
       const project = service.create(validInput({ title: 'Subdirs Test' }));
       const { absPath } = getProjectDir(project);
 
@@ -218,6 +249,9 @@ describe('project service', () => {
         expect(fs.existsSync(subPath)).toBe(true);
         expect(fs.statSync(subPath).isDirectory()).toBe(true);
       }
+
+      expect(fs.existsSync(path.join(absPath, 'exports', 'full'))).toBe(false);
+      expect(fs.existsSync(path.join(absPath, 'exports', 'web'))).toBe(false);
     });
 
     it('writes a manifest with the exact expected project data', () => {
@@ -240,7 +274,7 @@ describe('project service', () => {
       const content = fs.readFileSync(manifestPath, 'utf8');
       const manifest = JSON.parse(content);
 
-      expect(manifest.schemaVersion).toBe(1);
+      expect(manifest.schemaVersion).toBe(2);
       expect(manifest.id).toBe(project.id);
       expect(manifest.title).toBe('Manifest Test');
       expect(manifest.slug).toBe('manifest-test');
@@ -253,6 +287,9 @@ describe('project service', () => {
       expect(manifest.patreonUrl).toBe('https://patreon.com/creator');
       expect(manifest.tags).toEqual([]);
       expect(manifest.thumbnail).toBeNull();
+      expect(manifest.assetCategories.map((c) => c.directorySlug)).toEqual([
+        'source', 'exports', 'extras', 'references', 'thumbnails',
+      ]);
     });
 
     it('stores the relative path in the database', () => {
@@ -283,9 +320,18 @@ describe('project service', () => {
     });
 
     it('removes the database record and directory when manifest creation fails', () => {
-      // writeManifestSync uses fs.renameSync internally — inject failure
-      const renameSpy = vi.spyOn(fs, 'renameSync').mockImplementation(() => {
-        throw new Error('rename failed');
+      // writeManifestSync uses fs.renameSync internally for its atomic
+      // temp-file → project.json step — inject failure only for that
+      // specific rename. Cleanup's own quarantine-and-verify sequence also
+      // uses fs.renameSync (to move tracked artifacts aside before removing
+      // them), so a blanket failure here would break compensation itself
+      // rather than exercising it.
+      const originalRenameSync = fs.renameSync;
+      const renameSpy = vi.spyOn(fs, 'renameSync').mockImplementation((src, dest) => {
+        if (path.basename(dest) === 'project.json') {
+          throw new Error('rename failed');
+        }
+        return originalRenameSync(src, dest);
       });
 
       expect(() => service.create(validInput({ title: 'Manifest Fail' }))).toThrow(
@@ -560,7 +606,8 @@ describe('project service', () => {
       const { absPath: srcPath } = getProjectDir(project);
       // Create a manifest so pre-flight manifest check passes
       fs.writeFileSync(path.join(srcPath, 'project.json'), JSON.stringify({
-        id: project.id, title: 'Conflict Src', slug: 'conflict-src', status: 'tbd',
+        schemaVersion: 2, id: project.id, title: 'Conflict Src', slug: 'conflict-src', status: 'tbd',
+        assetCategories: [],
       }));
 
       // Create a directory at the target path to simulate a conflict
@@ -684,6 +731,21 @@ describe('project service', () => {
       // Pre-flight validation rejects the mismatch before any mutation
       expect(() => service.update(project.id, validInput({
         title: 'Manifest Mismatch', // same slug — triggers status move
+        status: 'in-progress',
+      }))).toThrow('Existing manifest does not match the expected project');
+    });
+
+    it('rejects a structurally invalid manifest (missing assetCategories) on update preflight', () => {
+      const project = createTestProject({ title: 'Structurally Invalid' });
+      const { absPath } = getProjectDir(project);
+
+      const manifestPath = path.join(absPath, 'project.json');
+      const corrupt = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+      delete corrupt.assetCategories;
+      fs.writeFileSync(manifestPath, JSON.stringify(corrupt, null, 2));
+
+      expect(() => service.update(project.id, validInput({
+        title: 'Structurally Invalid',
         status: 'in-progress',
       }))).toThrow('Existing manifest does not match the expected project');
     });
@@ -926,19 +988,70 @@ describe('project service', () => {
       expect(fs.statSync(absPath).isDirectory()).toBe(true);
     });
 
-    it('creates standard subdirectories', () => {
+    it('reports a destination conflict without adopting when a foreign directory appears just before the exclusive root creation', () => {
+      // Backfill's preflight sees no destination, then — immediately before
+      // the exclusive, non-recursive root mkdirSync — a concurrent process
+      // creates a non-empty foreign directory at the exact destination.
+      // Fresh backfill must use the same exclusive-creation guarantee as
+      // normal project creation: this must surface as EEXIST, not silently
+      // succeed and adopt the foreign directory as ours.
+      const project = insertNullDirRecord({ title: 'Backfill Race', slug: 'backfill-race' });
+      const { absPath } = getProjectDir(project);
+
+      const originalMkdirSync = fs.mkdirSync;
+      let intercepted = false;
+      const mkdirSpy = vi.spyOn(fs, 'mkdirSync').mockImplementation((dirPath, options) => {
+        if (!intercepted && dirPath === absPath && !(options && options.recursive)) {
+          intercepted = true;
+          originalMkdirSync(absPath, { recursive: true });
+          fs.writeFileSync(path.join(absPath, 'foreign-file.txt'), 'do not touch');
+          return originalMkdirSync(dirPath, options); // Now throws EEXIST for real.
+        }
+        return originalMkdirSync(dirPath, options);
+      });
+
+      let result;
+      try {
+        result = service.backfillProjectDirs();
+      } finally {
+        mkdirSpy.mockRestore();
+      }
+
+      expect(intercepted).toBe(true);
+      expect(result.backfilled).toBe(0);
+      expect(result.adopted).toBe(0);
+      expect(result.conflicts).toBe(0);
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0].id).toBe(project.id);
+
+      // No ownership was captured, so no cleanup ran — the foreign
+      // directory and its contents are untouched.
+      expect(fs.existsSync(absPath)).toBe(true);
+      const entries = fs.readdirSync(absPath);
+      expect(entries).toEqual(['foreign-file.txt']);
+      expect(fs.readFileSync(path.join(absPath, 'foreign-file.txt'), 'utf8')).toBe('do not touch');
+
+      // No category directory or manifest was written into it.
+      expect(fs.existsSync(path.join(absPath, MANIFEST_FILENAME))).toBe(false);
+
+      // Database state remains correct: project_dir is still null.
+      const updated = service.repository.findById(project.id);
+      expect(updated.project_dir).toBeNull();
+
+      fs.rmSync(absPath, { recursive: true, force: true });
+    });
+
+    it('does not invent category directories for a project with no category rows', () => {
       const project = insertNullDirRecord({ title: 'Subdirs Backfill', slug: 'subdirs-backfill' });
       service.backfillProjectDirs();
 
       const { absPath } = getProjectDir(project);
-      const expectedSubdirs = ['source', 'references', 'extras', 'thumbnails',
-        path.join('exports', 'full'), path.join('exports', 'web')];
 
-      for (const sub of expectedSubdirs) {
-        const fullPath = path.join(absPath, sub);
-        expect(fs.existsSync(fullPath)).toBe(true);
-        expect(fs.statSync(fullPath).isDirectory()).toBe(true);
-      }
+      // insertNullDirRecord bypasses the service.create() flow (and its
+      // default-copy step), so this project has no project_asset_categories
+      // rows — backfill must not invent any category directories for it.
+      const entries = fs.readdirSync(absPath);
+      expect(entries).toEqual([MANIFEST_FILENAME]);
     });
 
     it('writes a manifest with correct project data', () => {
@@ -953,12 +1066,13 @@ describe('project service', () => {
       const manifest = readManifestSync(absPath);
 
       expect(manifest).not.toBeNull();
-      expect(manifest.schemaVersion).toBe(1);
+      expect(manifest.schemaVersion).toBe(2);
       expect(manifest.id).toBe(project.id);
       expect(manifest.title).toBe('Manifest Backfill');
       expect(manifest.slug).toBe('manifest-backfill');
       expect(manifest.description).toBe('Test description');
       expect(manifest.status).toBe('tbd');
+      expect(manifest.assetCategories).toEqual([]);
     });
 
     it('stores the relative path in the database', () => {
@@ -1008,7 +1122,7 @@ describe('project service', () => {
       // Create directory with a wrong manifest
       fs.mkdirSync(absPath, { recursive: true });
       const wrongManifest = {
-        schemaVersion: 1,
+        schemaVersion: 2,
         id: 99999,
         title: 'Wrong',
         slug: 'wrong',
@@ -1030,6 +1144,42 @@ describe('project service', () => {
       expect(stored.id).toBe(99999);
 
       // Clean up
+      fs.rmSync(absPath, { recursive: true, force: true });
+    });
+
+    it('refuses to adopt a directory whose manifest is missing assetCategories', () => {
+      const project = insertNullDirRecord({ title: 'No Categories Field', slug: 'no-categories-field' });
+      const { absPath } = getProjectDir(project);
+
+      fs.mkdirSync(absPath, { recursive: true });
+      const badManifest = {
+        schemaVersion: 2,
+        id: project.id,
+        title: 'No Categories Field',
+        slug: 'no-categories-field',
+        status: 'tbd',
+        priority: 'normal',
+        description: '',
+        notes: '',
+        tags: [],
+        createdAt: '2026-07-26T14:00:00.000Z',
+        updatedAt: '2026-07-26T14:00:00.000Z',
+        plannedDate: null,
+        publishedDate: null,
+        patreonUrl: null,
+        thumbnail: null,
+        // assetCategories intentionally omitted
+      };
+      const manifestPath = path.join(absPath, MANIFEST_FILENAME);
+      fs.writeFileSync(manifestPath, JSON.stringify(badManifest, null, 2) + '\n');
+
+      const result = service.backfillProjectDirs();
+      expect(result.conflicts).toBe(1);
+      expect(result.backfilled).toBe(0);
+
+      const updated = service.repository.findById(project.id);
+      expect(updated.project_dir).toBeNull();
+
       fs.rmSync(absPath, { recursive: true, force: true });
     });
 
@@ -1062,7 +1212,7 @@ describe('project service', () => {
 
       // Manually create the directory with a valid manifest
       fs.mkdirSync(absPath, { recursive: true });
-      createProjectSubdirs(absPath);
+      createProjectCategoryDirs(absPath, []);
       writeManifestSync(absPath, project, projectsRoot);
 
       // Add a custom file to prove it was adopted, not overridden
@@ -1144,16 +1294,16 @@ describe('project service', () => {
       expect(updated.project_dir).toBeNull();
     });
 
-    it('rejects unsupported manifest schema version on adoption', () => {
-      const project = insertNullDirRecord({ title: 'Schema V2', slug: 'schema-v2' });
+    it('rejects a schema-version-1 manifest on adoption (no v1 compatibility)', () => {
+      const project = insertNullDirRecord({ title: 'Schema V1', slug: 'schema-v1' });
       const { absPath } = getProjectDir(project);
 
       fs.mkdirSync(absPath, { recursive: true });
       const badManifest = {
-        schemaVersion: 2,
+        schemaVersion: 1,
         id: project.id,
-        title: 'Schema V2',
-        slug: 'schema-v2',
+        title: 'Schema V1',
+        slug: 'schema-v1',
         status: 'tbd',
       };
       const manifestPath = path.join(absPath, MANIFEST_FILENAME);

@@ -8,6 +8,8 @@ import { validateMounts, FilesystemError } from './filesystem.js';
 import { ensureStatusDirs, ensurePreviewRoot, StorageError } from './storage/path-manager.js';
 import { openDatabase, runMigrations, closeDatabase, DatabaseError } from './db.js';
 import { createProjectService } from './services/project-service.js';
+import { createAssetCategoryRepository } from './data/asset-category-repository.js';
+import { createAssetCategoryService } from './services/asset-category-service.js';
 import { createBackupService } from './services/backup-service.js';
 import { createApplicationContext } from './app-context.js';
 import { createManagedCredentialProvider, CredentialError } from './auth/credential-provider.js';
@@ -70,7 +72,9 @@ async function main() {
   }
 
   // Backfill project directories for existing Phase 2 records with no path
-  const backfillService = createProjectService(db, config.projectsRoot);
+  const assetCategoryRepository = createAssetCategoryRepository(db);
+  const assetCategoryService = createAssetCategoryService(assetCategoryRepository);
+  const backfillService = createProjectService(db, config.projectsRoot, { assetCategoryService });
   const backfillResults = backfillService.backfillProjectDirs();
   if (backfillResults.errors.length > 0) {
     console.error(

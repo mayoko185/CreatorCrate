@@ -7,7 +7,7 @@ import {
   buildProjectRelPath,
   resolveProjectDir,
   ensureNoConflict,
-  createProjectSubdirs,
+  createProjectCategoryDirs,
   verifyProjectDirOwnership,
   removeProjectDir,
   renameProjectDirSync,
@@ -241,20 +241,22 @@ describe('ensureNoConflict', () => {
   });
 });
 
-// ─── createProjectSubdirs ────────────────────────────────────────────────
+// ─── createProjectCategoryDirs ───────────────────────────────────────────
 
-describe('createProjectSubdirs', () => {
+describe('createProjectCategoryDirs', () => {
   let tmpDir;
   let projectDir;
 
-  const EXPECTED_SUBDIRS = [
-    'source',
-    path.join('exports', 'full'),
-    path.join('exports', 'web'),
-    'references',
-    'extras',
-    'thumbnails',
-  ];
+  const EXPECTED_SUBDIRS = ['source', 'exports', 'extras', 'references', 'thumbnails'];
+
+  /** Ordered, all-enabled category rows matching the seeded defaults. */
+  function makeCategories(slugs = EXPECTED_SUBDIRS) {
+    return slugs.map((slug, i) => ({
+      directory_slug: slug,
+      display_order: i,
+      enabled: 1,
+    }));
+  }
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-subdirs-'));
@@ -266,8 +268,8 @@ describe('createProjectSubdirs', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('creates all standard subdirectories', () => {
-    createProjectSubdirs(projectDir);
+  it('creates one direct-child directory per enabled category', () => {
+    createProjectCategoryDirs(projectDir, makeCategories());
     for (const sub of EXPECTED_SUBDIRS) {
       const subPath = path.join(projectDir, sub);
       expect(fs.existsSync(subPath)).toBe(true);
@@ -275,16 +277,42 @@ describe('createProjectSubdirs', () => {
     }
   });
 
+  it('does not create exports/full or exports/web', () => {
+    createProjectCategoryDirs(projectDir, makeCategories());
+    expect(fs.existsSync(path.join(projectDir, 'exports', 'full'))).toBe(false);
+    expect(fs.existsSync(path.join(projectDir, 'exports', 'web'))).toBe(false);
+  });
+
+  it('skips disabled categories', () => {
+    const categories = [
+      { directory_slug: 'source', display_order: 0, enabled: 1 },
+      { directory_slug: 'extras', display_order: 1, enabled: 0 },
+      { directory_slug: 'exports', display_order: 2, enabled: true },
+      { directory_slug: 'thumbnails', display_order: 3, enabled: false },
+    ];
+    createProjectCategoryDirs(projectDir, categories);
+
+    expect(fs.existsSync(path.join(projectDir, 'source'))).toBe(true);
+    expect(fs.existsSync(path.join(projectDir, 'exports'))).toBe(true);
+    expect(fs.existsSync(path.join(projectDir, 'extras'))).toBe(false);
+    expect(fs.existsSync(path.join(projectDir, 'thumbnails'))).toBe(false);
+  });
+
+  it('creates no directories when given an empty list', () => {
+    createProjectCategoryDirs(projectDir, []);
+    expect(fs.readdirSync(projectDir)).toEqual([]);
+  });
+
   it('is idempotent', () => {
-    createProjectSubdirs(projectDir);
-    createProjectSubdirs(projectDir);
+    createProjectCategoryDirs(projectDir, makeCategories());
+    createProjectCategoryDirs(projectDir, makeCategories());
     for (const sub of EXPECTED_SUBDIRS) {
       expect(fs.statSync(path.join(projectDir, sub)).isDirectory()).toBe(true);
     }
   });
 
   it('does not create files or unrelated directories', () => {
-    createProjectSubdirs(projectDir);
+    createProjectCategoryDirs(projectDir, makeCategories());
     const created = new Set(
       fs.readdirSync(projectDir, { recursive: true }).map(norm)
     );
@@ -303,7 +331,7 @@ describe('createProjectSubdirs', () => {
     // Create an unknown directory inside the project dir
     fs.mkdirSync(path.join(projectDir, 'user-data'));
 
-    createProjectSubdirs(projectDir);
+    createProjectCategoryDirs(projectDir, makeCategories());
 
     // After creation, the user-data dir should still exist
     expect(fs.statSync(path.join(projectDir, 'user-data')).isDirectory()).toBe(true);
@@ -316,13 +344,163 @@ describe('createProjectSubdirs', () => {
 
   it('throws when project directory does not exist', () => {
     const missing = path.join(tmpDir, 'nonexistent');
-    expect(() => createProjectSubdirs(missing)).toThrow(StorageError);
+    expect(() => createProjectCategoryDirs(missing, makeCategories())).toThrow(StorageError);
   });
 
   it('throws when project directory is a file', () => {
     const filePath = path.join(tmpDir, 'not-a-dir');
     fs.writeFileSync(filePath, '');
-    expect(() => createProjectSubdirs(filePath)).toThrow(StorageError);
+    expect(() => createProjectCategoryDirs(filePath, makeCategories())).toThrow(StorageError);
+  });
+
+  // ─── slug safety ──────────────────────────────────────
+
+  it('rejects a slug containing a path separator', () => {
+    expect(() => createProjectCategoryDirs(projectDir, [
+      { directory_slug: 'nested/evil', display_order: 0, enabled: 1 },
+    ])).toThrow(StorageError);
+    expect(() => createProjectCategoryDirs(projectDir, [
+      { directory_slug: 'nested\\evil', display_order: 0, enabled: 1 },
+    ])).toThrow(StorageError);
+  });
+
+  it('rejects traversal slugs', () => {
+    expect(() => createProjectCategoryDirs(projectDir, [
+      { directory_slug: '..', display_order: 0, enabled: 1 },
+    ])).toThrow(StorageError);
+    expect(() => createProjectCategoryDirs(projectDir, [
+      { directory_slug: '.', display_order: 0, enabled: 1 },
+    ])).toThrow(StorageError);
+  });
+
+  it('rejects an absolute-path slug', () => {
+    expect(() => createProjectCategoryDirs(projectDir, [
+      { directory_slug: '/etc/passwd', display_order: 0, enabled: 1 },
+    ])).toThrow(StorageError);
+    expect(() => createProjectCategoryDirs(projectDir, [
+      { directory_slug: 'C:\\evil', display_order: 0, enabled: 1 },
+    ])).toThrow(StorageError);
+  });
+
+  it('rejects a reserved device name', () => {
+    expect(() => createProjectCategoryDirs(projectDir, [
+      { directory_slug: 'CON', display_order: 0, enabled: 1 },
+    ])).toThrow(StorageError);
+  });
+
+  it('rejects an empty slug', () => {
+    expect(() => createProjectCategoryDirs(projectDir, [
+      { directory_slug: '', display_order: 0, enabled: 1 },
+    ])).toThrow(StorageError);
+  });
+
+  it('does not create anything when an unsafe slug is rejected', () => {
+    expect(() => createProjectCategoryDirs(projectDir, [
+      { directory_slug: 'source', display_order: 0, enabled: 1 },
+      { directory_slug: '../evil', display_order: 1, enabled: 1 },
+    ])).toThrow(StorageError);
+    // All enabled slugs are validated up front, before any directory is
+    // created — an unsafe later entry must not leave an earlier, valid
+    // entry partially created.
+    expect(fs.existsSync(path.join(projectDir, 'source'))).toBe(false);
+    expect(fs.existsSync(path.join(tmpDir, '..', 'evil'))).toBe(false);
+  });
+
+  it('rejects an unsafe portable slug before creating any directory', () => {
+    for (const slug of ['project.json', 'PROJECT.JSON', 'Source', 'source files', '.hidden', 'source_files']) {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-subdirs-slug-'));
+      expect(() => createProjectCategoryDirs(dir, [
+        { directory_slug: slug, display_order: 0, enabled: 1 },
+      ])).toThrow(StorageError);
+      expect(fs.readdirSync(dir)).toEqual([]);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects when an early slug is valid but a later slug is invalid, creating nothing', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-subdirs-order-'));
+    expect(() => createProjectCategoryDirs(dir, [
+      { directory_slug: 'valid-one', display_order: 0, enabled: 1 },
+      { directory_slug: 'source files', display_order: 1, enabled: 1 },
+    ])).toThrow(StorageError);
+    expect(fs.readdirSync(dir)).toEqual([]);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('accepts an explicitly mapped storage-safe shape (directorySlug/enabled)', () => {
+    createProjectCategoryDirs(projectDir, [
+      { directorySlug: 'source', enabled: true },
+      { directorySlug: 'extras', enabled: false },
+    ]);
+    expect(fs.existsSync(path.join(projectDir, 'source'))).toBe(true);
+    expect(fs.existsSync(path.join(projectDir, 'extras'))).toBe(false);
+  });
+
+  // ─── complete-set preflight (duplicates, disabled validity) ───────────
+
+  it('rejects a non-array category collection without touching the filesystem', () => {
+    expect(() => createProjectCategoryDirs(projectDir, null)).toThrow(StorageError);
+    expect(() => createProjectCategoryDirs(projectDir, { directory_slug: 'source', enabled: 1 }))
+      .toThrow(StorageError);
+    expect(fs.readdirSync(projectDir)).toEqual([]);
+  });
+
+  it('rejects two enabled categories sharing the same slug, creating nothing', () => {
+    expect(() => createProjectCategoryDirs(projectDir, [
+      { directory_slug: 'source', display_order: 0, enabled: 1 },
+      { directory_slug: 'source', display_order: 1, enabled: 1 },
+    ])).toThrow(StorageError);
+    expect(fs.readdirSync(projectDir)).toEqual([]);
+  });
+
+  it('rejects duplicate slugs differing only by case, creating nothing', () => {
+    expect(() => createProjectCategoryDirs(projectDir, [
+      { directory_slug: 'source', display_order: 0, enabled: 1 },
+      { directory_slug: 'Source', display_order: 1, enabled: 1 },
+    ])).toThrow(StorageError);
+    expect(fs.readdirSync(projectDir)).toEqual([]);
+  });
+
+  it('rejects an enabled category sharing a slug with a disabled category, creating nothing', () => {
+    expect(() => createProjectCategoryDirs(projectDir, [
+      { directory_slug: 'source', display_order: 0, enabled: 1 },
+      { directory_slug: 'source', display_order: 1, enabled: 0 },
+    ])).toThrow(StorageError);
+    expect(fs.readdirSync(projectDir)).toEqual([]);
+  });
+
+  it('rejects a disabled category with an unsafe slug, creating nothing', () => {
+    expect(() => createProjectCategoryDirs(projectDir, [
+      { directory_slug: 'source', display_order: 0, enabled: 1 },
+      { directory_slug: '../evil', display_order: 1, enabled: 0 },
+    ])).toThrow(StorageError);
+    expect(fs.readdirSync(projectDir)).toEqual([]);
+    expect(fs.existsSync(path.join(tmpDir, 'evil'))).toBe(false);
+  });
+
+  it('rejects a valid first category followed by a duplicate later category, creating nothing', () => {
+    expect(() => createProjectCategoryDirs(projectDir, [
+      { directory_slug: 'source', display_order: 0, enabled: 1 },
+      { directory_slug: 'extras', display_order: 1, enabled: 1 },
+      { directory_slug: 'source', display_order: 2, enabled: 0 },
+    ])).toThrow(StorageError);
+    expect(fs.readdirSync(projectDir)).toEqual([]);
+  });
+
+  it('rejects a malformed "enabled" field even when direct input bypasses service validation', () => {
+    expect(() => createProjectCategoryDirs(projectDir, [
+      { directory_slug: 'source', display_order: 0, enabled: 'true' },
+    ])).toThrow(StorageError);
+    expect(fs.readdirSync(projectDir)).toEqual([]);
+  });
+
+  it('still creates nothing for a disabled valid category and creates enabled valid categories', () => {
+    createProjectCategoryDirs(projectDir, [
+      { directory_slug: 'source', display_order: 0, enabled: 1 },
+      { directory_slug: 'extras', display_order: 1, enabled: 0 },
+    ]);
+    expect(fs.existsSync(path.join(projectDir, 'source'))).toBe(true);
+    expect(fs.existsSync(path.join(projectDir, 'extras'))).toBe(false);
   });
 });
 
@@ -535,8 +713,10 @@ describe('integrated directory lifecycle', () => {
     ensureNoConflict(absPath);
     fs.mkdirSync(absPath, { recursive: true });
 
-    // 3. Create subdirectories
-    createProjectSubdirs(absPath);
+    // 3. Create category directories
+    createProjectCategoryDirs(absPath, [
+      { directory_slug: 'source', display_order: 0, enabled: 1 },
+    ]);
 
     // 4. Verify ownership
     expect(verifyProjectDirOwnership(absPath, id)).toBe(true);
