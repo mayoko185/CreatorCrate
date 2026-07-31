@@ -12,6 +12,13 @@ import {
   removeProjectDir,
   renameProjectDirSync,
   STATUS_DIR_MAP,
+  resolveCategoryDir,
+  preflightCategoryDestination,
+  createCategoryDirExclusive,
+  requireRealCategoryDir,
+  quarantineCategoryDir,
+  restoreQuarantinedCategoryDir,
+  removeEmptyDirIfIdentityMatches,
 } from '../../src/storage/project-storage.js';
 import { StorageError } from '../../src/storage/path-manager.js';
 
@@ -677,6 +684,464 @@ describe('renameProjectDirSync', () => {
     } finally {
       spy.mockRestore();
     }
+  });
+});
+
+// ─── Category directory management (Phase 2 chunk 2) ─────────────────────
+
+describe('resolveCategoryDir', () => {
+  let tmpDir;
+  let projectDir;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-cat-resolve-'));
+    projectDir = path.join(tmpDir, 'my-project');
+    fs.mkdirSync(projectDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('resolves a direct-child path for a valid slug', () => {
+    expect(resolveCategoryDir(projectDir, 'source')).toBe(path.join(projectDir, 'source'));
+  });
+
+  it('rejects a traversal slug', () => {
+    expect(() => resolveCategoryDir(projectDir, '../evil')).toThrow(StorageError);
+  });
+
+  it('rejects a slug containing a path separator', () => {
+    expect(() => resolveCategoryDir(projectDir, 'nested/evil')).toThrow(StorageError);
+  });
+
+  it('rejects an unsafe portable slug', () => {
+    expect(() => resolveCategoryDir(projectDir, 'Source')).toThrow(StorageError);
+    expect(() => resolveCategoryDir(projectDir, 'project.json')).toThrow(StorageError);
+  });
+});
+
+describe('preflightCategoryDestination', () => {
+  let tmpDir;
+  let projectDir;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-cat-preflight-'));
+    projectDir = path.join(tmpDir, 'my-project');
+    fs.mkdirSync(projectDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('passes when no entry exists at the slug', () => {
+    expect(() => preflightCategoryDestination(projectDir, 'source')).not.toThrow();
+  });
+
+  it('rejects an exact existing directory', () => {
+    fs.mkdirSync(path.join(projectDir, 'source'));
+    expect(() => preflightCategoryDestination(projectDir, 'source')).toThrow(StorageError);
+  });
+
+  it('rejects an existing file at the slug', () => {
+    fs.writeFileSync(path.join(projectDir, 'source'), '');
+    expect(() => preflightCategoryDestination(projectDir, 'source')).toThrow(StorageError);
+  });
+
+  it('rejects a case-insensitive collision with a differently cased sibling', () => {
+    fs.mkdirSync(path.join(projectDir, 'Source'));
+    expect(() => preflightCategoryDestination(projectDir, 'source')).toThrow(StorageError);
+  });
+
+  it('rejects an unsafe slug before checking the filesystem', () => {
+    expect(() => preflightCategoryDestination(projectDir, '../evil')).toThrow(StorageError);
+  });
+});
+
+describe('createCategoryDirExclusive', () => {
+  let tmpDir;
+  let projectDir;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-cat-create-'));
+    projectDir = path.join(tmpDir, 'my-project');
+    fs.mkdirSync(projectDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('creates the directory and returns its filesystem identity', () => {
+    const result = createCategoryDirExclusive(projectDir, 'source');
+    expect(fs.existsSync(result.absPath)).toBe(true);
+    expect(fs.statSync(result.absPath).isDirectory()).toBe(true);
+    expect(typeof result.identity.dev).toBe('number');
+    expect(typeof result.identity.ino).toBe('number');
+  });
+
+  it('throws when the destination already exists', () => {
+    fs.mkdirSync(path.join(projectDir, 'source'));
+    expect(() => createCategoryDirExclusive(projectDir, 'source')).toThrow(StorageError);
+  });
+
+  it('rejects an unsafe slug without creating anything', () => {
+    expect(() => createCategoryDirExclusive(projectDir, '../evil')).toThrow(StorageError);
+    expect(fs.readdirSync(projectDir)).toEqual([]);
+  });
+
+  // Defect 5: mkdirSync succeeds but the immediate identity capture fails.
+  describe('post-creation identity capture failure', () => {
+    it('recovers via bounded retry and returns identity when a transient stat failure clears', () => {
+      const targetPath = path.join(projectDir, 'source');
+      const realLstatSync = fs.lstatSync;
+      let calls = 0;
+      const spy = vi.spyOn(fs, 'lstatSync').mockImplementation((p, ...rest) => {
+        if (p === targetPath) {
+          calls++;
+          if (calls < 2) {
+            const err = new Error('transient stat failure');
+            err.code = 'EIO';
+            throw err;
+          }
+        }
+        return realLstatSync.call(fs, p, ...rest);
+      });
+
+      try {
+        const result = createCategoryDirExclusive(projectDir, 'source');
+        expect(result.absPath).toBe(targetPath);
+        expect(typeof result.identity.dev).toBe('number');
+        expect(typeof result.identity.ino).toBe('number');
+        expect(fs.existsSync(targetPath)).toBe(true);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    // Defect 3: identity could never be established — the pathname was
+    // never proven to still be the directory this call created, so it must
+    // not be removed, even though it is (in this scenario) still genuinely
+    // empty and still genuinely ours.
+    it('throws without removing the still-empty directory it created when identity can never be captured', () => {
+      const targetPath = path.join(projectDir, 'source');
+      const lstatSpy = vi.spyOn(fs, 'lstatSync').mockImplementation((p) => {
+        if (p === targetPath) {
+          const err = new Error('persistent stat failure');
+          err.code = 'EIO';
+          throw err;
+        }
+        throw new Error(`unexpected lstatSync(${p})`);
+      });
+      const rmdirSpy = vi.spyOn(fs, 'rmdirSync');
+      const rmSpy = vi.spyOn(fs, 'rmSync');
+
+      try {
+        expect(() => createCategoryDirExclusive(projectDir, 'source')).toThrow(StorageError);
+      } finally {
+        lstatSpy.mockRestore();
+        rmdirSpy.mockRestore();
+        rmSpy.mockRestore();
+      }
+
+      // Never removed — an unproven pathname is left exactly as it is.
+      expect(rmdirSpy).not.toHaveBeenCalled();
+      expect(rmSpy).not.toHaveBeenCalled();
+      expect(fs.existsSync(targetPath)).toBe(true);
+      expect(fs.statSync(targetPath).isDirectory()).toBe(true);
+      expect(fs.readdirSync(targetPath)).toEqual([]);
+    });
+
+    it('never removes a foreign replacement or foreign content that appeared while identity capture kept failing', () => {
+      const targetPath = path.join(projectDir, 'source');
+      const spy = vi.spyOn(fs, 'lstatSync').mockImplementation((p) => {
+        if (p === targetPath) {
+          // Simulate a foreign actor populating the directory in the same
+          // window identity capture is failing in.
+          if (!fs.existsSync(path.join(targetPath, 'foreign.txt'))) {
+            fs.writeFileSync(path.join(targetPath, 'foreign.txt'), 'mine');
+          }
+          const err = new Error('persistent stat failure');
+          err.code = 'EIO';
+          throw err;
+        }
+        throw new Error(`unexpected lstatSync(${p})`);
+      });
+      const rmdirSpy = vi.spyOn(fs, 'rmdirSync');
+
+      try {
+        expect(() => createCategoryDirExclusive(projectDir, 'source')).toThrow(StorageError);
+      } finally {
+        spy.mockRestore();
+        rmdirSpy.mockRestore();
+      }
+
+      // The directory (and the foreign content inside it) must survive.
+      expect(rmdirSpy).not.toHaveBeenCalled();
+      expect(fs.existsSync(targetPath)).toBe(true);
+      expect(fs.existsSync(path.join(targetPath, 'foreign.txt'))).toBe(true);
+    });
+  });
+});
+
+describe('requireRealCategoryDir', () => {
+  let tmpDir;
+  let projectDir;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-cat-require-'));
+    projectDir = path.join(tmpDir, 'my-project');
+    fs.mkdirSync(projectDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('passes for a real directory', () => {
+    const dir = path.join(projectDir, 'source');
+    fs.mkdirSync(dir);
+    expect(() => requireRealCategoryDir(dir)).not.toThrow();
+  });
+
+  it('throws when missing', () => {
+    expect(() => requireRealCategoryDir(path.join(projectDir, 'missing'))).toThrow(StorageError);
+  });
+
+  it('throws when it is a file', () => {
+    const filePath = path.join(projectDir, 'source');
+    fs.writeFileSync(filePath, '');
+    expect(() => requireRealCategoryDir(filePath)).toThrow(StorageError);
+  });
+
+  it('throws when it is a symlink', () => {
+    if (!symlinksSupported()) return;
+    const target = path.join(projectDir, 'target');
+    fs.mkdirSync(target);
+    const link = path.join(projectDir, 'link');
+    fs.symlinkSync(target, link, 'junction');
+    expect(() => requireRealCategoryDir(link)).toThrow(StorageError);
+  });
+});
+
+describe('quarantineCategoryDir / restoreQuarantinedCategoryDir / removeEmptyDirIfIdentityMatches', () => {
+  let tmpDir;
+  let projectDir;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-cat-quarantine-'));
+    projectDir = path.join(tmpDir, 'my-project');
+    fs.mkdirSync(projectDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('quarantines then removes an empty identity-matching directory', () => {
+    const { absPath, identity } = createCategoryDirExclusive(projectDir, 'source');
+    expect(fs.existsSync(absPath)).toBe(true);
+
+    const quarantinePath = quarantineCategoryDir(projectDir, 'source');
+    expect(quarantinePath).toBeTruthy();
+    expect(fs.existsSync(absPath)).toBe(false);
+    expect(fs.existsSync(quarantinePath)).toBe(true);
+
+    const result = removeEmptyDirIfIdentityMatches(quarantinePath, identity);
+    expect(result.removed).toBe(true);
+    expect(fs.existsSync(quarantinePath)).toBe(false);
+  });
+
+  it('returns null when quarantining an already-absent directory', () => {
+    expect(quarantineCategoryDir(projectDir, 'ghost')).toBeNull();
+  });
+
+  it('refuses to remove a non-empty quarantined directory, leaving it in place', () => {
+    const { absPath, identity } = createCategoryDirExclusive(projectDir, 'source');
+    fs.writeFileSync(path.join(absPath, 'file.txt'), 'hi');
+
+    const quarantinePath = quarantineCategoryDir(projectDir, 'source');
+    const result = removeEmptyDirIfIdentityMatches(quarantinePath, identity);
+
+    expect(result.removed).toBe(false);
+    expect(result.reason).toBe('not-empty');
+    expect(fs.existsSync(quarantinePath)).toBe(true);
+  });
+
+  it('refuses to remove on an identity mismatch', () => {
+    createCategoryDirExclusive(projectDir, 'source');
+    const quarantinePath = quarantineCategoryDir(projectDir, 'source');
+
+    const fakeIdentity = { dev: -1, ino: -1 };
+    const result = removeEmptyDirIfIdentityMatches(quarantinePath, fakeIdentity);
+
+    expect(result.removed).toBe(false);
+    expect(result.reason).toBe('identity-mismatch');
+    expect(fs.existsSync(quarantinePath)).toBe(true);
+  });
+
+  // Defect 2: a readdirSync failure must never leak as a raw filesystem
+  // exception, and must never be treated as proof of emptiness.
+  it('reports a structured read-failed result (not a thrown exception) when readdirSync fails, and leaves the directory in place', () => {
+    const { identity } = createCategoryDirExclusive(projectDir, 'source');
+    const quarantinePath = quarantineCategoryDir(projectDir, 'source');
+
+    const readdirSpy = vi.spyOn(fs, 'readdirSync').mockImplementationOnce((p) => {
+      if (p === quarantinePath) {
+        const err = new Error('permission denied');
+        err.code = 'EACCES';
+        throw err;
+      }
+      throw new Error(`unexpected readdirSync(${p})`);
+    });
+    const rmdirSpy = vi.spyOn(fs, 'rmdirSync');
+    const rmSpy = vi.spyOn(fs, 'rmSync');
+
+    let result;
+    try {
+      result = removeEmptyDirIfIdentityMatches(quarantinePath, identity);
+    } finally {
+      readdirSpy.mockRestore();
+      rmdirSpy.mockRestore();
+      rmSpy.mockRestore();
+    }
+
+    expect(result).toEqual({ removed: false, reason: 'read-failed' });
+    expect(rmdirSpy).not.toHaveBeenCalled();
+    expect(rmSpy).not.toHaveBeenCalled();
+    expect(fs.existsSync(quarantinePath)).toBe(true);
+  });
+
+  it('reports a structured remove-failed result when rmdirSync fails on a proven-empty directory', () => {
+    const { identity } = createCategoryDirExclusive(projectDir, 'source');
+    const quarantinePath = quarantineCategoryDir(projectDir, 'source');
+
+    const rmdirSpy = vi.spyOn(fs, 'rmdirSync').mockImplementationOnce((p) => {
+      if (p === quarantinePath) {
+        const err = new Error('device busy');
+        err.code = 'EBUSY';
+        throw err;
+      }
+      throw new Error(`unexpected rmdirSync(${p})`);
+    });
+
+    let result;
+    try {
+      result = removeEmptyDirIfIdentityMatches(quarantinePath, identity);
+    } finally {
+      rmdirSpy.mockRestore();
+    }
+
+    expect(result).toEqual({ removed: false, reason: 'remove-failed' });
+    expect(fs.existsSync(quarantinePath)).toBe(true);
+  });
+
+  // Defect 1: Node has no portable atomic no-replace directory rename, so
+  // restoration can never safely move the quarantined directory back to its
+  // original slug — it always reports failure and leaves both the
+  // quarantine and the original pathname completely untouched.
+  it('never performs a rename-based restore, even when the original path appears free', () => {
+    createCategoryDirExclusive(projectDir, 'source');
+    const quarantinePath = quarantineCategoryDir(projectDir, 'source');
+    const originalPath = path.join(projectDir, 'source');
+
+    const renameSpy = vi.spyOn(fs, 'renameSync');
+    let result;
+    try {
+      result = restoreQuarantinedCategoryDir(quarantinePath, projectDir, 'source');
+    } finally {
+      renameSpy.mockRestore();
+    }
+
+    expect(result).toEqual({ restored: false, reason: 'no-safe-no-replace-rename-available' });
+    expect(renameSpy).not.toHaveBeenCalled();
+    expect(fs.existsSync(quarantinePath)).toBe(true);
+    expect(fs.existsSync(originalPath)).toBe(false);
+  });
+
+  it('does not restore over an occupied original location', () => {
+    createCategoryDirExclusive(projectDir, 'source');
+    const quarantinePath = quarantineCategoryDir(projectDir, 'source');
+
+    // Something else now occupies the original slug.
+    fs.mkdirSync(path.join(projectDir, 'source'));
+    fs.writeFileSync(path.join(projectDir, 'source', 'competing.txt'), 'competing');
+
+    const result = restoreQuarantinedCategoryDir(quarantinePath, projectDir, 'source');
+
+    expect(result.restored).toBe(false);
+    expect(result.reason).toBe('original-path-occupied');
+    expect(fs.existsSync(path.join(projectDir, 'source', 'competing.txt'))).toBe(true);
+    expect(fs.existsSync(quarantinePath)).toBe(true);
+  });
+
+  // Defect 1: restoration must never overwrite ANY competing artifact —
+  // empty directory, file, or symlink — including one that appears at the
+  // exact instant of the check (the "final rename boundary"), not just one
+  // pre-placed before the check runs. Because no rename is ever attempted,
+  // this holds unconditionally.
+  describe('never overwrites a competing artifact at the original path', () => {
+    it('a competing empty directory appearing at the exact check boundary is preserved', () => {
+      createCategoryDirExclusive(projectDir, 'source');
+      const quarantinePath = quarantineCategoryDir(projectDir, 'source');
+      const originalPath = path.join(projectDir, 'source');
+
+      // Simulate a concurrent actor creating an empty directory in the
+      // same instant the occupancy check reports "not found".
+      const lstatSpy = vi.spyOn(fs, 'lstatSync').mockImplementationOnce((p) => {
+        fs.mkdirSync(p);
+        const err = new Error('ENOENT');
+        err.code = 'ENOENT';
+        throw err;
+      });
+      const renameSpy = vi.spyOn(fs, 'renameSync');
+
+      let result;
+      try {
+        result = restoreQuarantinedCategoryDir(quarantinePath, projectDir, 'source');
+      } finally {
+        lstatSpy.mockRestore();
+        renameSpy.mockRestore();
+      }
+
+      expect(result.restored).toBe(false);
+      expect(renameSpy).not.toHaveBeenCalled();
+      expect(fs.existsSync(originalPath)).toBe(true);
+      expect(fs.readdirSync(originalPath)).toEqual([]);
+      expect(fs.existsSync(quarantinePath)).toBe(true);
+    });
+
+    it('a competing file is preserved', () => {
+      createCategoryDirExclusive(projectDir, 'source');
+      const quarantinePath = quarantineCategoryDir(projectDir, 'source');
+
+      const originalPath = path.join(projectDir, 'source');
+      fs.writeFileSync(originalPath, 'competing file content');
+
+      const result = restoreQuarantinedCategoryDir(quarantinePath, projectDir, 'source');
+
+      expect(result.restored).toBe(false);
+      expect(fs.readFileSync(originalPath, 'utf8')).toBe('competing file content');
+      expect(fs.existsSync(quarantinePath)).toBe(true);
+    });
+
+    it('a competing symlink is preserved', () => {
+      if (!symlinksSupported()) return;
+      createCategoryDirExclusive(projectDir, 'source');
+      const quarantinePath = quarantineCategoryDir(projectDir, 'source');
+
+      const originalPath = path.join(projectDir, 'source');
+      const linkTarget = path.join(projectDir, 'link-target');
+      fs.mkdirSync(linkTarget);
+      fs.symlinkSync(linkTarget, originalPath, 'junction');
+
+      const result = restoreQuarantinedCategoryDir(quarantinePath, projectDir, 'source');
+
+      expect(result.restored).toBe(false);
+      expect(fs.lstatSync(originalPath).isSymbolicLink()).toBe(true);
+      expect(fs.existsSync(quarantinePath)).toBe(true);
+    });
   });
 });
 

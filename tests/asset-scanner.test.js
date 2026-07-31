@@ -63,7 +63,7 @@ describe('asset scanner', () => {
     projectRepo = createProjectRepository(db);
     const assetCategoryService = createAssetCategoryService(createAssetCategoryRepository(db));
     projectService = createProjectService(db, projectsRoot, { assetCategoryService });
-    assetScanner = createAssetScanner(db, projectsRoot, { projectService });
+    assetScanner = createAssetScanner(db, projectsRoot, { projectService, assetCategoryService });
   });
 
   afterEach(() => {
@@ -710,5 +710,152 @@ describe('asset scanner', () => {
     const after = assetScanner.repository.findByProjectId(project.id);
     expect(after.length).toBe(1);
     expect(after[0].is_present).toBe(1);
+  });
+
+  // ─── Phase 2 chunk 1: category classification ────────────────────
+
+  describe('category classification', () => {
+    function addCategory(projectId, displayName, directorySlug, { enabled = true } = {}) {
+      return db.prepare(`
+        INSERT INTO project_asset_categories (project_id, display_name, directory_slug, enabled)
+        VALUES (?, ?, ?, ?)
+        RETURNING id, project_id, display_name, directory_slug, enabled
+      `).get(projectId, displayName, directorySlug, enabled ? 1 : 0);
+    }
+
+    it('leaves a project-root file uncategorized', () => {
+      const { project, absPath } = createProjectWithDir('Root File');
+      fs.writeFileSync(path.join(absPath, 'cover.png'), 'png');
+
+      assetScanner.scanProjectAssets(project.id);
+
+      const asset = assetScanner.repository.findByProjectIdAndPath(project.id, 'cover.png');
+      expect(asset.category_id).toBeNull();
+      expect(asset.nested_path).toBe('');
+    });
+
+    it('classifies a file under an exact category slug match', () => {
+      const { project, absPath } = createProjectWithDir('Exact Match');
+      const source = addCategory(project.id, 'Source', 'source');
+      fs.mkdirSync(path.join(absPath, 'source'));
+      fs.writeFileSync(path.join(absPath, 'source', 'file.kra'), 'kra');
+
+      assetScanner.scanProjectAssets(project.id);
+
+      const asset = assetScanner.repository.findByProjectIdAndPath(project.id, 'source/file.kra');
+      expect(asset.category_id).toBe(source.id);
+      expect(asset.nested_path).toBe('');
+    });
+
+    it('classifies a nested file under its category root and keeps the remaining path as nested_path', () => {
+      const { project, absPath } = createProjectWithDir('Nested Category');
+      const exports = addCategory(project.id, 'Exports', 'exports');
+      fs.mkdirSync(path.join(absPath, 'exports', 'web'), { recursive: true });
+      fs.writeFileSync(path.join(absPath, 'exports', 'web', 'final.png'), 'png');
+
+      assetScanner.scanProjectAssets(project.id);
+
+      const asset = assetScanner.repository.findByProjectIdAndPath(project.id, 'exports/web/final.png');
+      expect(asset.category_id).toBe(exports.id);
+      expect(asset.nested_path).toBe('web');
+    });
+
+    it('still recognizes a disabled category for classification', () => {
+      const { project, absPath } = createProjectWithDir('Disabled Category');
+      const extras = addCategory(project.id, 'Extras', 'extras', { enabled: false });
+      fs.mkdirSync(path.join(absPath, 'extras'));
+      fs.writeFileSync(path.join(absPath, 'extras', 'bonus.png'), 'png');
+
+      assetScanner.scanProjectAssets(project.id);
+
+      const asset = assetScanner.repository.findByProjectIdAndPath(project.id, 'extras/bonus.png');
+      expect(asset.category_id).toBe(extras.id);
+      expect(asset.nested_path).toBe('');
+    });
+
+    it('leaves an unknown top-level directory uncategorized and preserves it as nested_path', () => {
+      const { project, absPath } = createProjectWithDir('Unknown Top');
+      addCategory(project.id, 'Source', 'source');
+      fs.mkdirSync(path.join(absPath, 'unknown'));
+      fs.writeFileSync(path.join(absPath, 'unknown', 'file.txt'), 'txt');
+
+      assetScanner.scanProjectAssets(project.id);
+
+      const asset = assetScanner.repository.findByProjectIdAndPath(project.id, 'unknown/file.txt');
+      expect(asset.category_id).toBeNull();
+      expect(asset.nested_path).toBe('unknown');
+    });
+
+    it('preserves the complete unknown directory portion for a deep unknown path', () => {
+      const { project, absPath } = createProjectWithDir('Deep Unknown');
+      fs.mkdirSync(path.join(absPath, 'unknown', 'deep'), { recursive: true });
+      fs.writeFileSync(path.join(absPath, 'unknown', 'deep', 'file.txt'), 'txt');
+
+      assetScanner.scanProjectAssets(project.id);
+
+      const asset = assetScanner.repository.findByProjectIdAndPath(project.id, 'unknown/deep/file.txt');
+      expect(asset.category_id).toBeNull();
+      expect(asset.nested_path).toBe('unknown/deep');
+    });
+
+    it('accepts a unique case-insensitive category slug match', () => {
+      const { project, absPath } = createProjectWithDir('Case Insensitive');
+      const source = addCategory(project.id, 'Source', 'source');
+      fs.mkdirSync(path.join(absPath, 'SOURCE'));
+      fs.writeFileSync(path.join(absPath, 'SOURCE', 'file.kra'), 'kra');
+
+      assetScanner.scanProjectAssets(project.id);
+
+      const asset = assetScanner.repository.findByProjectIdAndPath(project.id, 'SOURCE/file.kra');
+      expect(asset.category_id).toBe(source.id);
+      expect(asset.nested_path).toBe('');
+    });
+
+    it('normalizes discovered relative paths to forward slashes before classifying', () => {
+      const { project, absPath } = createProjectWithDir('Slash Normalization');
+      const exports = addCategory(project.id, 'Exports', 'exports');
+      fs.mkdirSync(path.join(absPath, 'exports', 'web'), { recursive: true });
+      fs.writeFileSync(path.join(absPath, 'exports', 'web', 'final.png'), 'png');
+
+      assetScanner.scanProjectAssets(project.id);
+
+      const asset = assetScanner.repository.findByProjectIdAndPath(project.id, 'exports/web/final.png');
+      expect(asset.relative_path).not.toContain('\\');
+      expect(asset.category_id).toBe(exports.id);
+      expect(asset.nested_path).toBe('web');
+    });
+
+    it('treats an external rename/move as a missing old row plus a new asset row', () => {
+      const { project, absPath } = createProjectWithDir('External Move');
+      fs.writeFileSync(path.join(absPath, 'old-name.png'), 'content');
+      assetScanner.scanProjectAssets(project.id);
+      const original = assetScanner.repository.findByProjectIdAndPath(project.id, 'old-name.png');
+
+      // Simulate an external (e.g. SMB) rename: old path gone, new path present.
+      fs.renameSync(path.join(absPath, 'old-name.png'), path.join(absPath, 'new-name.png'));
+
+      const result = assetScanner.scanProjectAssets(project.id);
+      expect(result.added).toBe(1);
+      expect(result.removed).toBe(1);
+
+      const oldRow = assetScanner.repository.findByProjectIdAndPath(project.id, 'old-name.png');
+      expect(oldRow.is_present).toBe(0);
+      expect(oldRow.id).toBe(original.id);
+
+      const newRow = assetScanner.repository.findByProjectIdAndPath(project.id, 'new-name.png');
+      expect(newRow.is_present).toBe(1);
+      expect(newRow.id).not.toBe(original.id);
+    });
+
+    it('does not write project.json while scanning', () => {
+      const { project, absPath } = createProjectWithDir('No Manifest Write');
+      fs.writeFileSync(path.join(absPath, 'file.png'), 'png');
+      const manifestPath = path.join(absPath, 'project.json');
+      expect(fs.existsSync(manifestPath)).toBe(false);
+
+      assetScanner.scanProjectAssets(project.id);
+
+      expect(fs.existsSync(manifestPath)).toBe(false);
+    });
   });
 });

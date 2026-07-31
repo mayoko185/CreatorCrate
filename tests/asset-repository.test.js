@@ -1347,4 +1347,199 @@ describe('asset repository', () => {
       expect(results).toHaveLength(1);
     });
   });
+
+  // ─── Phase 2 chunk 1: category_id / nested_path ─────────────────────
+
+  function createCategory(forProjectId, displayName, directorySlug) {
+    return db.prepare(`
+      INSERT INTO project_asset_categories (project_id, display_name, directory_slug)
+      VALUES (?, ?, ?)
+      RETURNING id, project_id, display_name, directory_slug
+    `).get(forProjectId, displayName, directorySlug);
+  }
+
+  describe('category_id and nested_path', () => {
+    it('upsert persists category_id and nested_path', () => {
+      const category = createCategory(projectId, 'Source', 'source');
+
+      const asset = assetRepo.upsert(projectId, 'source/file.kra', {
+        filename: 'file.kra', extension: 'kra', mimeType: 'application/x-krita',
+        sizeBytes: 100, modifiedAt: null, categoryId: category.id, nestedPath: '',
+      });
+
+      expect(asset.category_id).toBe(category.id);
+      expect(asset.nested_path).toBe('');
+    });
+
+    it('upsert defaults to NULL category_id and empty nested_path', () => {
+      const asset = assetRepo.upsert(projectId, 'cover.png', {
+        filename: 'cover.png', extension: 'png', mimeType: 'image/png',
+        sizeBytes: 10, modifiedAt: null,
+      });
+
+      expect(asset.category_id).toBeNull();
+      expect(asset.nested_path).toBe('');
+    });
+
+    it('exposes category_id and nested_path on every relevant projection', () => {
+      const category = createCategory(projectId, 'Exports', 'exports');
+      const asset = assetRepo.upsert(projectId, 'exports/web/final.png', {
+        filename: 'final.png', extension: 'png', mimeType: 'image/png',
+        sizeBytes: 100, modifiedAt: null, categoryId: category.id, nestedPath: 'web',
+      });
+
+      expect(assetRepo.findById(asset.id).category_id).toBe(category.id);
+      expect(assetRepo.findById(asset.id).nested_path).toBe('web');
+
+      const byPath = assetRepo.findByProjectIdAndPath(projectId, 'exports/web/final.png');
+      expect(byPath.category_id).toBe(category.id);
+      expect(byPath.nested_path).toBe('web');
+
+      const listed = assetRepo.findByProjectId(projectId).find((a) => a.id === asset.id);
+      expect(listed.category_id).toBe(category.id);
+      expect(listed.nested_path).toBe('web');
+
+      const page = assetRepo.findProjectAssetPage(projectId, { pageSize: 10 }).find((a) => a.id === asset.id);
+      expect(page.category_id).toBe(category.id);
+      expect(page.nested_path).toBe('web');
+
+      const viewer = assetRepo.findProjectAssetViewerContext(projectId, asset.id);
+      expect(viewer.category_id).toBe(category.id);
+      expect(viewer.nested_path).toBe('web');
+    });
+  });
+
+  // ─── Phase 2 chunk 1: atomic scan reconciliation ────────────────────
+
+  describe('reconcileScannedAssets', () => {
+    function discoveredFile(overrides = {}) {
+      return {
+        relativePath: 'a.png',
+        filename: 'a.png',
+        extension: 'png',
+        mimeType: 'image/png',
+        sizeBytes: 100,
+        modifiedAt: '2026-01-01T00:00:00.000Z',
+        categoryId: null,
+        nestedPath: '',
+        ...overrides,
+      };
+    }
+
+    it('inserts newly discovered files', () => {
+      const result = assetRepo.reconcileScannedAssets(projectId, [discoveredFile()]);
+      expect(result).toEqual({ added: 1, updated: 0, removed: 0, total: 1 });
+      expect(assetRepo.findByProjectIdAndPath(projectId, 'a.png')).toBeTruthy();
+    });
+
+    it('does not count a fully unchanged row as updated', () => {
+      assetRepo.reconcileScannedAssets(projectId, [discoveredFile()]);
+      const result = assetRepo.reconcileScannedAssets(projectId, [discoveredFile()]);
+      expect(result).toEqual({ added: 0, updated: 0, removed: 0, total: 1 });
+    });
+
+    it('counts a category_id change as updated even when size and mtime match', () => {
+      const category = createCategory(projectId, 'Source', 'source');
+      assetRepo.reconcileScannedAssets(projectId, [discoveredFile()]);
+
+      const result = assetRepo.reconcileScannedAssets(projectId, [
+        discoveredFile({ categoryId: category.id }),
+      ]);
+
+      expect(result).toEqual({ added: 0, updated: 1, removed: 0, total: 1 });
+      expect(assetRepo.findByProjectIdAndPath(projectId, 'a.png').category_id).toBe(category.id);
+    });
+
+    it('repairs a stale nested_path even when size and mtime are unchanged', () => {
+      assetRepo.reconcileScannedAssets(projectId, [discoveredFile({ nestedPath: 'stale' })]);
+
+      const result = assetRepo.reconcileScannedAssets(projectId, [discoveredFile({ nestedPath: 'fixed' })]);
+
+      expect(result.updated).toBe(1);
+      expect(assetRepo.findByProjectIdAndPath(projectId, 'a.png').nested_path).toBe('fixed');
+    });
+
+    it('restores a missing file that reappears and counts it as updated', () => {
+      assetRepo.reconcileScannedAssets(projectId, [
+        discoveredFile(),
+        discoveredFile({ relativePath: 'b.png', filename: 'b.png' }),
+      ]);
+
+      const afterRemoval = assetRepo.reconcileScannedAssets(projectId, [discoveredFile()]);
+      expect(afterRemoval.removed).toBe(1);
+      expect(assetRepo.findByProjectIdAndPath(projectId, 'b.png').is_present).toBe(0);
+
+      const afterRestore = assetRepo.reconcileScannedAssets(projectId, [
+        discoveredFile(),
+        discoveredFile({ relativePath: 'b.png', filename: 'b.png' }),
+      ]);
+      expect(afterRestore).toEqual({ added: 0, updated: 1, removed: 0, total: 2 });
+      expect(assetRepo.findByProjectIdAndPath(projectId, 'b.png').is_present).toBe(1);
+    });
+
+    it('marks all assets missing on an empty discovered snapshot', () => {
+      assetRepo.reconcileScannedAssets(projectId, [discoveredFile()]);
+      const result = assetRepo.reconcileScannedAssets(projectId, []);
+      expect(result).toEqual({ added: 0, updated: 0, removed: 1, total: 1 });
+    });
+
+    it('rolls back the entire reconciliation, including missing-state changes, on failure', () => {
+      const other = createProject('Reconcile Rollback Other');
+      const otherCategory = createCategory(other.id, 'Source', 'source');
+
+      assetRepo.reconcileScannedAssets(projectId, [discoveredFile({ relativePath: 'keep.png', filename: 'keep.png' })]);
+      expect(assetRepo.findByProjectIdAndPath(projectId, 'keep.png').is_present).toBe(1);
+
+      expect(() => {
+        // categoryId belongs to a different project — violates the composite
+        // foreign key (project_id, category_id) and must roll back the
+        // whole batch, including the implicit "keep.png missing" transition
+        // this same call would otherwise have made.
+        assetRepo.reconcileScannedAssets(projectId, [
+          discoveredFile({ relativePath: 'bad.png', filename: 'bad.png', categoryId: otherCategory.id }),
+        ]);
+      }).toThrow();
+
+      expect(assetRepo.findByProjectIdAndPath(projectId, 'bad.png')).toBeUndefined();
+      const keep = assetRepo.findByProjectIdAndPath(projectId, 'keep.png');
+      expect(keep.is_present).toBe(1);
+      expect(keep.missing_since).toBeNull();
+    });
+  });
+
+  // ─── Phase 2 chunk 2: project-category mutation support ────────────────
+
+  describe('countByCategoryId', () => {
+    it('counts present and missing rows referencing a category', () => {
+      const category = createCategory(projectId, 'Source', 'source');
+      const present = assetRepo.upsert(projectId, 'source/a.png', {
+        filename: 'a.png', extension: 'png', mimeType: 'image/png',
+        sizeBytes: 1, modifiedAt: null, categoryId: category.id,
+      });
+      assetRepo.upsert(projectId, 'source/b.png', {
+        filename: 'b.png', extension: 'png', mimeType: 'image/png',
+        sizeBytes: 1, modifiedAt: null, categoryId: category.id,
+      });
+      assetRepo.markAllMissing(projectId);
+
+      expect(assetRepo.countByCategoryId(projectId, category.id)).toBe(2);
+      expect(assetRepo.findById(present.id).is_present).toBe(0);
+    });
+
+    it('returns 0 for a category with no referencing assets', () => {
+      const category = createCategory(projectId, 'Empty', 'empty');
+      expect(assetRepo.countByCategoryId(projectId, category.id)).toBe(0);
+    });
+
+    it('does not count assets from a different category', () => {
+      const source = createCategory(projectId, 'Source', 'source');
+      const exports_ = createCategory(projectId, 'Exports', 'exports');
+      assetRepo.upsert(projectId, 'exports/a.png', {
+        filename: 'a.png', extension: 'png', mimeType: 'image/png',
+        sizeBytes: 1, modifiedAt: null, categoryId: exports_.id,
+      });
+      expect(assetRepo.countByCategoryId(projectId, source.id)).toBe(0);
+    });
+  });
+
 });

@@ -61,6 +61,101 @@ export function createAssetCategoryRepository(db) {
     RETURNING ${PROJECT_COLUMNS.join(', ')}
   `);
 
+  // ─── Phase 2 chunk 2: project-scoped category mutations ─────────────────
+
+  const findProjectCategoryByIdStmt = db.prepare(
+    `${SELECT_PROJECT_CATEGORIES} WHERE project_id = ? AND id = ?`
+  );
+  const insertProjectCategoryWithEnabledStmt = db.prepare(`
+    INSERT INTO project_asset_categories (project_id, display_name, directory_slug, display_order, enabled)
+    VALUES (?, ?, ?, ?, ?)
+    RETURNING ${PROJECT_COLUMNS.join(', ')}
+  `);
+  const updateProjectCategoryDisplayNameStmt = db.prepare(`
+    UPDATE project_asset_categories
+    SET display_name = ?, updated_at = datetime('now')
+    WHERE project_id = ? AND id = ?
+    RETURNING ${PROJECT_COLUMNS.join(', ')}
+  `);
+  const setProjectCategoryEnabledStmt = db.prepare(`
+    UPDATE project_asset_categories
+    SET enabled = ?, updated_at = datetime('now')
+    WHERE project_id = ? AND id = ?
+    RETURNING ${PROJECT_COLUMNS.join(', ')}
+  `);
+  const setProjectCategoryOrderStmt = db.prepare(`
+    UPDATE project_asset_categories
+    SET display_order = ?, updated_at = datetime('now')
+    WHERE project_id = ? AND id = ?
+  `);
+  const deleteProjectCategoryStmt = db.prepare(
+    'DELETE FROM project_asset_categories WHERE project_id = ? AND id = ?'
+  );
+
+  const reorderProjectCategoriesTx = db.transaction((projectId, orderedIds) => {
+    const current = listProjectCategoriesStmt.all(projectId);
+    const currentIds = current.map((row) => row.id);
+
+    if (orderedIds.length !== currentIds.length) {
+      throw new AssetCategoryError(
+        `Reorder sequence length ${orderedIds.length} does not match current project category count ${currentIds.length}.`,
+        { code: 'INVALID_SEQUENCE_LENGTH' }
+      );
+    }
+
+    const seen = new Set();
+    for (const id of orderedIds) {
+      if (!Number.isInteger(id)) {
+        throw new AssetCategoryError(`Invalid project category ID: ${id}.`, { code: 'INVALID_ID' });
+      }
+      if (seen.has(id)) {
+        throw new AssetCategoryError(`Duplicate project category ID: ${id}.`, { code: 'DUPLICATE_ID' });
+      }
+      seen.add(id);
+    }
+
+    const currentSet = new Set(currentIds);
+    for (const id of orderedIds) {
+      if (!currentSet.has(id)) {
+        throw new AssetCategoryError(
+          `Project category ID ${id} does not exist for project ${projectId}.`,
+          { code: 'UNKNOWN_ID' }
+        );
+      }
+    }
+
+    for (let i = 0; i < orderedIds.length; i++) {
+      const result = setProjectCategoryOrderStmt.run(i, projectId, orderedIds[i]);
+      if (result.changes !== 1) {
+        throw new AssetCategoryError(
+          `Reorder update for project category ${orderedIds[i]} affected ${result.changes} rows, expected 1.`,
+          { code: 'UPDATE_CHANGES_MISMATCH' }
+        );
+      }
+    }
+
+    return listProjectCategoriesStmt.all(projectId);
+  });
+
+  const deleteProjectCategoryAndCompactTx = db.transaction((projectId, categoryId) => {
+    const result = deleteProjectCategoryStmt.run(projectId, categoryId);
+    if (result.changes !== 1) {
+      throw new AssetCategoryError(
+        `Project category ${categoryId} not found for project ${projectId}.`,
+        { code: 'NOT_FOUND' }
+      );
+    }
+
+    const remaining = listProjectCategoriesStmt.all(projectId);
+    for (let i = 0; i < remaining.length; i++) {
+      if (remaining[i].display_order !== i) {
+        setProjectCategoryOrderStmt.run(i, projectId, remaining[i].id);
+      }
+    }
+
+    return listProjectCategoriesStmt.all(projectId);
+  });
+
   const reorderDefaultsTx = db.transaction((orderedIds) => {
     const current = listDefaultsStmt.all();
     const currentIds = current.map((row) => row.id);
@@ -160,6 +255,56 @@ export function createAssetCategoryRepository(db) {
      */
     copyEnabledDefaultsForProject(projectId) {
       return copyEnabledDefaultsTx(projectId);
+    },
+
+    // ─── Phase 2 chunk 2: project-scoped category mutations ───────────────
+
+    /**
+     * Find a project-owned category by both project ID and category ID.
+     * A category owned by a different project is indistinguishable from an
+     * unknown ID — both return undefined.
+     */
+    findProjectCategoryById(projectId, categoryId) {
+      return findProjectCategoryByIdStmt.get(projectId, categoryId);
+    },
+
+    /**
+     * Append a new project-owned category at an explicit display position
+     * with an explicit enabled state.
+     */
+    addProjectCategory({ projectId, displayName, directorySlug, displayOrder, enabled }) {
+      return insertProjectCategoryWithEnabledStmt.get(
+        projectId, displayName, directorySlug, displayOrder, enabled ? 1 : 0
+      );
+    },
+
+    /** Update only a project category's display_name. Slug is untouched. */
+    updateProjectCategoryDisplayName(projectId, categoryId, displayName) {
+      return updateProjectCategoryDisplayNameStmt.get(displayName, projectId, categoryId);
+    },
+
+    /** Set only a project category's enabled state. */
+    setProjectCategoryEnabled(projectId, categoryId, enabled) {
+      return setProjectCategoryEnabledStmt.get(enabled ? 1 : 0, projectId, categoryId);
+    },
+
+    /**
+     * Persist a complete reorder of one project's categories. `orderedIds`
+     * must be an exact permutation of that project's current category IDs;
+     * positions are rewritten to contiguous 0..n-1 values in the given
+     * order. Never touches another project's categories or global defaults.
+     */
+    reorderProjectCategories(projectId, orderedIds) {
+      return reorderProjectCategoriesTx(projectId, orderedIds);
+    },
+
+    /**
+     * Delete one project category and compact the remaining categories'
+     * positions back to a contiguous 0..n-1 sequence, atomically.
+     * @returns {Array} The project's remaining categories, post-compaction.
+     */
+    deleteProjectCategoryAndCompact(projectId, categoryId) {
+      return deleteProjectCategoryAndCompactTx(projectId, categoryId);
     },
   };
 }

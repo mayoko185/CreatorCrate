@@ -1,0 +1,177 @@
+{% extends "layout.njk" %}
+{% import "partials/page-heading.njk" as pageHeading %}
+
+{% block title %}Asset Categories – {{ project.title }} – {{ appName }}{% endblock %}
+
+{% block body_class %}project-asset-categories-page{% endblock %}
+
+{% block content %}
+  {% if project.archived_at %}
+    {% call pageHeading.render("Asset Categories" ~ " — " ~ project.title, "These categories belong only to this project and do not affect the global Settings defaults.", "archived") %}
+      <a class="button button-secondary" href="/projects/{{ project.id }}">Back to project</a>
+    {% endcall %}
+  {% else %}
+    {% call pageHeading.render("Asset Categories" ~ " — " ~ project.title, "These categories belong only to this project and do not affect the global Settings defaults.") %}
+      <a class="button button-secondary" href="/projects/{{ project.id }}">Back to project</a>
+    {% endcall %}
+  {% endif %}
+
+  {% if notice %}
+    {% set noticeVariant = notice.variant %}
+    {% set noticeText = notice.text %}
+    {% include "partials/notice.njk" %}
+  {% endif %}
+
+  {% if project.archived_at %}
+    {% set noticeVariant = "warning" %}
+    {% set noticeText = "This project is archived, so its categories are shown read-only. No category here can be added, edited, reordered, or deleted." %}
+    {% include "partials/notice.njk" %}
+  {% endif %}
+
+  <div class="panel panel--info">
+    <p>
+      These categories belong only to <strong>{{ project.title }}</strong>. Adding, renaming, enabling,
+      disabling, reordering, or deleting a category here never changes the global Settings defaults used
+      when new projects are created.
+    </p>
+    <p>
+      Disabling a category does not delete its files — a disabled category's existing assets are still
+      recognized the next time this project is scanned.
+    </p>
+    <p>
+      <strong>Display name</strong> and <strong>directory slug</strong> are separate. Editing the display
+      name only changes the label shown in CreatorCrate. The directory slug is set when a category is
+      added and cannot currently be changed afterward — it is fixed to the folder that was created on disk.
+    </p>
+  </div>
+
+  {% if not project.archived_at %}
+    <div class="settings-section">
+      <h3>Add a category</h3>
+      {% if addErrors.displayName or addErrors.directorySlug %}
+        <div class="error-summary" role="alert" id="add-category-errors">
+          <p>Could not add the category. Fix the fields below and try again.</p>
+        </div>
+      {% endif %}
+      <form method="post" action="/projects/{{ project.id }}/asset-categories" class="project-form" novalidate>
+        <input type="hidden" name="_csrf" value="{{ _csrf }}">
+        <div class="field-row">
+          <div class="field {% if addErrors.displayName %}field-error{% endif %}">
+            <label for="add-displayName">Display name <span class="required" aria-label="required">*</span></label>
+            <input type="text" id="add-displayName" name="displayName" value="{{ addValues.displayName or '' }}" maxlength="100" required{% if addErrors.displayName %} aria-describedby="add-displayName-error" aria-invalid="true"{% endif %}>
+            {% if addErrors.displayName %}<span class="field-error-message" id="add-displayName-error">{{ addErrors.displayName }}</span>{% endif %}
+          </div>
+
+          <div class="field {% if addErrors.directorySlug %}field-error{% endif %}">
+            <label for="add-directorySlug">Directory slug <span class="required" aria-label="required">*</span></label>
+            <input type="text" id="add-directorySlug" name="directorySlug" value="{{ addValues.directorySlug or '' }}" maxlength="100" required{% if addErrors.directorySlug %} aria-describedby="add-directorySlug-error" aria-invalid="true"{% endif %}>
+            <span class="help-text">Lowercase letters, numbers, and single hyphens only.</span>
+            {% if addErrors.directorySlug %}<span class="field-error-message" id="add-directorySlug-error">{{ addErrors.directorySlug }}</span>{% endif %}
+          </div>
+
+          <div class="field">
+            <label for="add-enabled">
+              <input type="checkbox" id="add-enabled" name="enabled" value="on"{% if addValues.enabled %} checked{% endif %}>
+              Enabled
+            </label>
+          </div>
+        </div>
+
+        <div class="form-actions">
+          <button type="submit" class="button button-primary">Add Category</button>
+        </div>
+      </form>
+    </div>
+  {% endif %}
+
+  <div class="settings-section">
+    <h3>Categories</h3>
+    {% if categories.length > 0 %}
+      <div class="table-scroll" tabindex="0" aria-label="Project asset categories">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Position</th>
+              <th>Display name</th>
+              <th>Directory slug</th>
+              <th>Status</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for category in categories %}
+              {% set rowNameErrors = nameEdit.errors if (nameEdit and nameEdit.categoryId == category.id) else {} %}
+              {% set rowNameValue = nameEdit.values.displayName if (nameEdit and nameEdit.categoryId == category.id) else category.display_name %}
+              <tr>
+                <td class="num">{{ loop.index }}</td>
+                <td>
+                  <div>{{ category.display_name }}</div>
+                  {% if not project.archived_at %}
+                    {% if rowNameErrors.displayName %}
+                      <span class="field-error-message">{{ rowNameErrors.displayName }}</span>
+                    {% endif %}
+                    <form method="post" action="/projects/{{ project.id }}/asset-categories/{{ category.id }}/name" class="inline-form category-name-form">
+                      <input type="hidden" name="_csrf" value="{{ _csrf }}">
+                      <label class="sr-only" for="name-{{ category.id }}">Display name for category {{ loop.index }}</label>
+                      <input type="text" id="name-{{ category.id }}" name="displayName" maxlength="100" value="{{ rowNameValue }}">
+                      <button type="submit" class="button button-small button-secondary">Save name</button>
+                    </form>
+                    <p class="help-text">Changes the label only — the folder on disk is not renamed.</p>
+                  {% endif %}
+                </td>
+                <td>
+                  <div><code>{{ category.directory_slug }}</code></div>
+                </td>
+                <td>
+                  {% if category.enabled %}
+                    <span class="status-badge status-badge--success">Enabled</span>
+                  {% else %}
+                    <span class="status-badge status-badge--neutral">Disabled</span>
+                  {% endif %}
+                </td>
+                <td class="row-actions">
+                  {% if not project.archived_at %}
+                    {% if category.enabled %}
+                      <form method="post" action="/projects/{{ project.id }}/asset-categories/{{ category.id }}/disable" class="inline-form">
+                        <input type="hidden" name="_csrf" value="{{ _csrf }}">
+                        <button type="submit" class="button button-small button-secondary">Disable</button>
+                      </form>
+                    {% else %}
+                      <form method="post" action="/projects/{{ project.id }}/asset-categories/{{ category.id }}/enable" class="inline-form">
+                        <input type="hidden" name="_csrf" value="{{ _csrf }}">
+                        <button type="submit" class="button button-small button-secondary">Enable</button>
+                      </form>
+                    {% endif %}
+
+                    {% if not loop.first %}
+                      <form method="post" action="/projects/{{ project.id }}/asset-categories/{{ category.id }}/move-up" class="inline-form">
+                        <input type="hidden" name="_csrf" value="{{ _csrf }}">
+                        <button type="submit" class="button button-small button-secondary" aria-label="Move {{ category.display_name }} up">Move Up</button>
+                      </form>
+                    {% endif %}
+
+                    {% if not loop.last %}
+                      <form method="post" action="/projects/{{ project.id }}/asset-categories/{{ category.id }}/move-down" class="inline-form">
+                        <input type="hidden" name="_csrf" value="{{ _csrf }}">
+                        <button type="submit" class="button button-small button-secondary" aria-label="Move {{ category.display_name }} down">Move Down</button>
+                      </form>
+                    {% endif %}
+
+                    <form method="post" action="/projects/{{ project.id }}/asset-categories/{{ category.id }}/delete" class="inline-form">
+                      <input type="hidden" name="_csrf" value="{{ _csrf }}">
+                      <button type="submit" class="button button-small button-danger" data-confirm="Delete this category? Only possible when no asset references it and its folder is empty or missing.">Delete</button>
+                    </form>
+                  {% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      {% set emptyHeading = "No categories yet" %}
+      {% set emptyDescription = "Add a category above to start organizing this project's assets." %}
+      {% include "partials/empty-state.njk" %}
+    {% endif %}
+  </div>
+{% endblock %}

@@ -418,6 +418,36 @@ describe('release repository', () => {
       expect(selections[1].filename).toBe('b.txt');
       expect(selections[2].filename).toBe('a.txt');
     });
+
+    // Phase 2 chunk 1: category_id/nested_path must survive this projection.
+    it('includes category_id and nested_path for a categorized selected asset', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease() });
+      const category = db.prepare(`
+        INSERT INTO project_asset_categories (project_id, display_name, directory_slug)
+        VALUES (?, 'Source', 'source')
+        RETURNING id
+      `).get(projectId);
+      const asset = assetRepo.upsert(projectId, 'source/nested/file.kra', {
+        ...sampleAsset(projectId, { relativePath: 'source/nested/file.kra', filename: 'file.kra' }),
+        categoryId: category.id,
+        nestedPath: 'nested',
+      });
+      releaseRepo.addReleaseAsset(release.id, asset.id, 'source', 0);
+
+      const [sel] = releaseRepo.listReleaseAssets(release.id);
+      expect(sel.category_id).toBe(category.id);
+      expect(sel.nested_path).toBe('nested');
+    });
+
+    it('returns category_id = null and empty nested_path for an uncategorized selected asset', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease() });
+      const asset = assetRepo.upsert(projectId, 'root.txt', sampleAsset(projectId, { relativePath: 'root.txt', filename: 'root.txt' }));
+      releaseRepo.addReleaseAsset(release.id, asset.id, 'attachment', 0);
+
+      const [sel] = releaseRepo.listReleaseAssets(release.id);
+      expect(sel.category_id).toBeNull();
+      expect(sel.nested_path).toBe('');
+    });
   });
 
   describe('removeReleaseAsset', () => {
@@ -2062,6 +2092,35 @@ describe('release repository', () => {
       expect(candidates.map((c) => c.id)).toContain(ourAsset.id);
       // The corrupt cross-project asset must not appear (different project)
       expect(candidates.map((c) => c.id)).not.toContain(otherAsset.id);
+    });
+
+    // Phase 2 chunk 1: category_id/nested_path must survive this projection.
+    it('includes category_id and nested_path for a categorized candidate', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'R' }) });
+      const category = db.prepare(`
+        INSERT INTO project_asset_categories (project_id, display_name, directory_slug)
+        VALUES (?, 'Source', 'source')
+        RETURNING id
+      `).get(projectId);
+      const asset = assetRepo.upsert(projectId, 'source/nested/file.txt', {
+        ...sampleAsset(projectId, { relativePath: 'source/nested/file.txt', filename: 'file.txt' }),
+        categoryId: category.id,
+        nestedPath: 'nested',
+      });
+
+      const [candidate] = releaseRepo.findReleaseCandidatePage(release.id, projectId);
+      expect(candidate.id).toBe(asset.id);
+      expect(candidate.category_id).toBe(category.id);
+      expect(candidate.nested_path).toBe('nested');
+    });
+
+    it('returns category_id = null and empty nested_path for an uncategorized candidate', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'R' }) });
+      insertAsset({ projectId, relativePath: 'root.txt', filename: 'root.txt' });
+
+      const [candidate] = releaseRepo.findReleaseCandidatePage(release.id, projectId);
+      expect(candidate.category_id).toBeNull();
+      expect(candidate.nested_path).toBe('');
     });
   });
 

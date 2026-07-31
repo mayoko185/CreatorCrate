@@ -200,21 +200,63 @@ function walkDirectory(dirPath, projectRelPrefix = '') {
 }
 
 /**
+ * Classify a discovered file's category assignment and nested path from its
+ * normalized relative path and the project's categories (including disabled
+ * ones). Never infers from size, mtime, or filename — only the first path
+ * segment is matched against category directory slugs.
+ *
+ * Match order: exact slug match, then a unique case-insensitive match. An
+ * ambiguous case-insensitive match (0 or 2+ candidates) fails closed to
+ * uncategorized, preserving the full unknown directory portion in
+ * nested_path.
+ *
+ * @param {string} relativePath
+ * @param {Array<{id: number, directory_slug: string}>} categories
+ * @returns {{ categoryId: number|null, nestedPath: string }}
+ */
+function classifyAsset(relativePath, categories) {
+  const normalized = relativePath.replace(/\\/g, '/');
+  const segments = normalized.split('/');
+  const dirSegments = segments.slice(0, -1);
+
+  if (dirSegments.length === 0) {
+    return { categoryId: null, nestedPath: '' };
+  }
+
+  const firstSegment = dirSegments[0];
+
+  const exactMatch = categories.find((c) => c.directory_slug === firstSegment);
+  if (exactMatch) {
+    return { categoryId: exactMatch.id, nestedPath: dirSegments.slice(1).join('/') };
+  }
+
+  const lowerFirst = firstSegment.toLowerCase();
+  const ciMatches = categories.filter((c) => c.directory_slug.toLowerCase() === lowerFirst);
+  if (ciMatches.length === 1) {
+    return { categoryId: ciMatches[0].id, nestedPath: dirSegments.slice(1).join('/') };
+  }
+
+  return { categoryId: null, nestedPath: dirSegments.join('/') };
+}
+
+/**
  * Create an asset scanner service.
  *
  * Responsibilities:
  * - Accept a project and resolve its directory safely.
  * - Recursively scan files (ignoring CreatorCrate metadata files).
- * - Compare discovered files with existing database records.
- * - Insert new files, update changed files, remove stale records.
+ * - Classify each file against the project's asset categories.
+ * - Reconcile the discovered snapshot with existing database records in one
+ *   atomic repository transaction.
  * - Return a scan summary with counts.
  *
  * @param {import('better-sqlite3').Database} db
  * @param {string} projectsRoot
  * @param {object} deps
  * @param {import('../services/project-service.js').ProjectService} deps.projectService
+ * @param {import('../services/asset-category-service.js')} deps.assetCategoryService
  */
-export function createAssetScanner(db, projectsRoot, { projectService }) {
+export function createAssetScanner(db, projectsRoot, { projectService, assetCategoryService }) {
   const repository = createAssetRepository(db);
 
   /**
@@ -269,39 +311,21 @@ export function createAssetScanner(db, projectsRoot, { projectService }) {
       throw new Error('Project directory cannot be scanned.');
     }
 
-    // Discover present paths and restore any that were previously missing
-    const discoveredPaths = discovered.map((d) => d.relativePath);
+    // Load project categories once per scan (including disabled ones) and
+    // classify each discovered file against them. Filesystem traversal is
+    // already complete at this point — no database transaction is held
+    // while walking the directory.
+    const categories = assetCategoryService.listProjectCategories(projectId);
+    const classified = discovered.map((file) => {
+      const { categoryId, nestedPath } = classifyAsset(file.relativePath, categories);
+      return { ...file, categoryId, nestedPath };
+    });
 
-    // Restore any previously-missing assets that are now present
-    repository.restorePresent(projectId, discoveredPaths);
-
-    // Find new/changed files
-    let added = 0;
-    let updated = 0;
-
-    for (const file of discovered) {
-      const existing = repository.findByProjectIdAndPath(projectId, file.relativePath);
-      if (!existing) {
-        // New file
-        repository.upsert(projectId, file.relativePath, file);
-        added++;
-      } else if (
-        existing.is_present === 0 ||
-        existing.size_bytes !== file.sizeBytes ||
-        existing.modified_at !== file.modifiedAt
-      ) {
-        // File was missing and is back, or content changed
-        repository.upsert(projectId, file.relativePath, file);
-        updated++;
-      }
-    }
-
-    // Mark records as missing for files that no longer exist on disk
-    const removed = repository.markMissingByProjectIdAndPathNotIn(projectId, discoveredPaths);
-
-    const total = repository.countByProjectId(projectId);
-
-    return { added, updated, removed, total };
+    // Reconcile the complete discovered snapshot in one atomic repository
+    // transaction: insert new paths, restore/update existing ones (including
+    // a path-derived-field repair when size/mtime are unchanged), and mark
+    // undiscovered paths missing.
+    return repository.reconcileScannedAssets(projectId, classified);
   }
 
   /**

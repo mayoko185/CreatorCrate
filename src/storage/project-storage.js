@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { StorageError, STATUS_DIR_MAP } from './path-manager.js';
 
 export { STATUS_DIR_MAP };
@@ -414,4 +415,288 @@ export function renameProjectDirSync(oldPath, newPath) {
       `Failed to move directory "${path.basename(oldPath)}" to "${path.basename(newPath)}".`
     );
   }
+}
+
+// ─── Category directory management (Phase 2 chunk 2) ─────────────────────
+//
+// Focused direct-child operations for individual project-owned category
+// directories. These mirror the identity-capture / quarantine-and-verify
+// safety pattern project-service.js uses for whole project directories, but
+// scoped to a single category directory and never recursive.
+
+/**
+ * Resolve and structurally validate a category directory path as a direct
+ * child of `projectDir`. Does not check existence — callers that need an
+ * existing directory must stat the result themselves.
+ *
+ * @param {string} projectDir - Resolved absolute path to the project directory
+ * @param {string} slug - Category directory slug
+ * @returns {string} Resolved absolute path to the category directory
+ * @throws {StorageError} if the slug is unsafe or not a direct child
+ */
+export function resolveCategoryDir(projectDir, slug) {
+  assertSafeCategorySlug(slug);
+  const subPath = path.join(projectDir, slug);
+  if (path.dirname(subPath) !== projectDir) {
+    throw new StorageError(`Category directory slug "${slug}" is not a safe direct child.`);
+  }
+  return subPath;
+}
+
+/**
+ * Preflight a category destination case-insensitively: rejects when any
+ * existing direct child of `projectDir` matches `slug` case-insensitively,
+ * regardless of what that entry is (file, directory, or symlink). The
+ * portable slug policy only ever accepts lowercase input, so this also
+ * catches a stray differently-cased artifact left over from manual
+ * filesystem intervention.
+ *
+ * @param {string} projectDir - Resolved absolute path to the project directory
+ * @param {string} slug - Candidate category directory slug
+ * @returns {string} The resolved (not yet necessarily existing) absolute destination path
+ * @throws {StorageError} if the slug is unsafe or a case-insensitive collision exists
+ */
+export function preflightCategoryDestination(projectDir, slug) {
+  const targetPath = resolveCategoryDir(projectDir, slug);
+
+  let entries;
+  try {
+    entries = fs.readdirSync(projectDir);
+  } catch (err) {
+    throw new StorageError('Cannot read project directory.');
+  }
+
+  const lowerSlug = slug.toLowerCase();
+  const collision = entries.some((entry) => entry.toLowerCase() === lowerSlug);
+  if (collision) {
+    throw new StorageError(`Destination "${slug}" already exists.`);
+  }
+
+  return targetPath;
+}
+
+// Bounded retry count for the post-creation identity capture below. Purely
+// in-process and immediate (no delay) — it only covers a transient stat
+// failure on the directory this call just made, not a real wait for outside
+// state to settle.
+const IDENTITY_CAPTURE_ATTEMPTS = 3;
+
+/**
+ * Exclusively create a direct-child category directory and capture its
+ * filesystem identity immediately, so a later rollback can verify it is
+ * still the exact directory this call created before removing it.
+ *
+ * Once `mkdirSync` succeeds, this directory exists. If the identity capture
+ * that follows fails even after a bounded retry, this helper does **not**
+ * attempt to remove the directory at `targetPath` — a plain `rmdirSync`
+ * would target a pathname whose current occupant was never actually
+ * verified to be the directory this call created. A concurrent actor could
+ * have replaced it with a different (still-empty) directory in that same
+ * window, and an unconditional `rmdirSync` cannot tell the difference; it
+ * would silently delete that foreign directory. Deleting unproven content
+ * is strictly worse than leaving behind a directory this call itself made,
+ * so on an unrecoverable identity-capture failure the pathname is left
+ * exactly as it is (whatever currently occupies it) and the original
+ * identity-capture error is thrown. The caller must treat this as a hard
+ * failure and must not proceed with any database or manifest mutation.
+ *
+ * @param {string} projectDir - Resolved absolute path to the project directory
+ * @param {string} slug - Category directory slug
+ * @returns {{absPath: string, identity: {dev: number, ino: number}}}
+ * @throws {StorageError} if the slug is unsafe, creation fails, or identity
+ *   could not be established for the directory just created
+ */
+export function createCategoryDirExclusive(projectDir, slug) {
+  const targetPath = resolveCategoryDir(projectDir, slug);
+  try {
+    fs.mkdirSync(targetPath);
+  } catch (err) {
+    if (err.code === 'EEXIST') {
+      throw new StorageError(`Destination "${slug}" already exists.`);
+    }
+    throw new StorageError(`Failed to create category directory "${slug}".`);
+  }
+
+  let stats = null;
+  let captureErr = null;
+  for (let attempt = 0; attempt < IDENTITY_CAPTURE_ATTEMPTS && !stats; attempt++) {
+    try {
+      stats = fs.lstatSync(targetPath);
+    } catch (err) {
+      captureErr = err;
+    }
+  }
+
+  if (stats) {
+    return { absPath: targetPath, identity: { dev: stats.dev, ino: stats.ino } };
+  }
+
+  // Identity could never be established — never remove an unproven
+  // pathname. Whatever currently occupies it (still ours, or a foreign
+  // replacement) is left completely alone.
+  throw new StorageError(
+    `Category directory "${slug}" was created but its identity could not be verified: ${captureErr?.code || captureErr?.message || 'unknown error'}.`
+  );
+}
+
+/**
+ * Validate that an existing direct-child category directory is a real,
+ * non-symlink directory. Never creates or modifies anything.
+ *
+ * @param {string} categoryAbsPath - Resolved absolute path to the category directory
+ * @returns {fs.Stats}
+ * @throws {StorageError} if missing, not a directory, or a symbolic link
+ */
+export function requireRealCategoryDir(categoryAbsPath) {
+  let stats;
+  try {
+    stats = fs.lstatSync(categoryAbsPath);
+  } catch (err) {
+    if (err.code === 'ENOENT') {
+      throw new StorageError('Category directory does not exist.');
+    }
+    throw new StorageError(`Cannot access "${path.basename(categoryAbsPath)}".`);
+  }
+  if (stats.isSymbolicLink()) {
+    throw new StorageError(`"${path.basename(categoryAbsPath)}" is a symbolic link.`);
+  }
+  if (!stats.isDirectory()) {
+    throw new StorageError(`"${path.basename(categoryAbsPath)}" is not a directory.`);
+  }
+  return stats;
+}
+
+/**
+ * Generate an unpredictable, collision-resistant sibling basename for
+ * quarantine/rename staging. Visually distinct from manifest.js's temp-file
+ * pattern and from project-service.js's project-root quarantine names, so
+ * none of the three can ever collide with or be confused for one another.
+ *
+ * @param {string} kind - Short label distinguishing the caller (e.g. "cat-quarantine")
+ * @returns {string}
+ */
+function generateSiblingTempName(kind) {
+  return `.cc-${kind}-${process.pid}-${Date.now().toString(36)}-${crypto.randomBytes(9).toString('hex')}`;
+}
+
+/**
+ * Atomically quarantine a direct-child category directory by renaming it to
+ * an unpredictable sibling pathname, so a concurrent process can no longer
+ * affect what a subsequent identity check and removal inspect. Mirrors
+ * project-service.js's quarantine-and-verify pattern for the whole project
+ * root, scoped here to a single category directory.
+ *
+ * @param {string} projectDir - Resolved absolute path to the project directory
+ * @param {string} slug - Category directory slug to quarantine
+ * @returns {string|null} The quarantine path, or null if the source was already gone
+ * @throws {StorageError} if quarantining fails for a reason other than absence
+ */
+export function quarantineCategoryDir(projectDir, slug) {
+  const originalPath = resolveCategoryDir(projectDir, slug);
+
+  let quarantinePath = null;
+  for (let attempt = 0; attempt < 8 && !quarantinePath; attempt++) {
+    const candidate = path.join(projectDir, generateSiblingTempName('cat-quarantine'));
+    try {
+      fs.renameSync(originalPath, candidate);
+      quarantinePath = candidate;
+    } catch (err) {
+      if (err.code === 'ENOENT') return null;
+      if (err.code === 'EEXIST' || err.code === 'ENOTEMPTY') continue;
+      throw new StorageError(`Failed to quarantine category directory "${slug}".`);
+    }
+  }
+  if (!quarantinePath) {
+    throw new StorageError(`Failed to quarantine category directory "${slug}" — no free quarantine name.`);
+  }
+  return quarantinePath;
+}
+
+/**
+ * Report on — but never attempt — moving a quarantined category directory
+ * back to its original slug.
+ *
+ * Node has no portable atomic "rename only if the destination is absent"
+ * primitive for directories: POSIX `rename()` silently replaces an existing
+ * *empty* destination directory, and there is no cross-platform equivalent
+ * of Linux's `RENAME_NOREPLACE`. A check that the original path is currently
+ * free is not proof that it will still be free by the time a separate
+ * rename call actually runs — the two are distinct syscalls with an
+ * unavoidable gap between them, and a concurrent actor creating an empty
+ * directory in that gap would be silently replaced by an ordinary rename.
+ * No caller of this helper holds any exclusive claim on the *original* slug
+ * pathname that would close that gap (only the unpredictable quarantine
+ * pathname is ever exclusively owned), so this never performs the move.
+ *
+ * The quarantined directory and everything inside it are always left
+ * exactly as they are. Any artifact already occupying the original path is
+ * also left exactly as it is. This is a diagnostic report only, not a
+ * mutation — safe for a caller to call unconditionally and log the result.
+ *
+ * @param {string} quarantinePath - Absolute path returned by {@link quarantineCategoryDir}
+ * @param {string} projectDir - Resolved absolute path to the project directory
+ * @param {string} slug - Original category directory slug
+ * @returns {{restored: false, reason: string}} Always reports no restoration;
+ *   `reason` distinguishes why, for logging only.
+ */
+export function restoreQuarantinedCategoryDir(quarantinePath, projectDir, slug) {
+  let originalPath;
+  try {
+    originalPath = resolveCategoryDir(projectDir, slug);
+  } catch {
+    return { restored: false, reason: 'invalid-slug' };
+  }
+
+  try {
+    fs.lstatSync(originalPath);
+    return { restored: false, reason: 'original-path-occupied' };
+  } catch (err) {
+    if (err.code !== 'ENOENT') {
+      return { restored: false, reason: 'original-path-unreadable' };
+    }
+  }
+
+  return { restored: false, reason: 'no-safe-no-replace-rename-available' };
+}
+
+/**
+ * Remove a directory only if it still matches a previously captured
+ * filesystem identity and is empty. Never recursive. Used both to finish
+ * quarantined-directory deletion and to roll back a directory this
+ * operation itself just created.
+ *
+ * @param {string} dirPath - Absolute path to inspect and possibly remove
+ * @param {{dev: number, ino: number}} expectedIdentity
+ * @returns {{removed: boolean, reason?: string}}
+ */
+export function removeEmptyDirIfIdentityMatches(dirPath, expectedIdentity) {
+  let stats;
+  try {
+    stats = fs.lstatSync(dirPath);
+  } catch {
+    return { removed: false, reason: 'missing' };
+  }
+  if (!stats.isDirectory() || stats.isSymbolicLink()) {
+    return { removed: false, reason: 'not-a-plain-directory' };
+  }
+  if (stats.dev !== expectedIdentity.dev || stats.ino !== expectedIdentity.ino) {
+    return { removed: false, reason: 'identity-mismatch' };
+  }
+  // An unreadable directory is never treated as empty — that would risk
+  // removing something whose contents could not actually be verified.
+  let entries;
+  try {
+    entries = fs.readdirSync(dirPath);
+  } catch {
+    return { removed: false, reason: 'read-failed' };
+  }
+  if (entries.length > 0) {
+    return { removed: false, reason: 'not-empty' };
+  }
+  try {
+    fs.rmdirSync(dirPath);
+  } catch {
+    return { removed: false, reason: 'remove-failed' };
+  }
+  return { removed: true };
 }

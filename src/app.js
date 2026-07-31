@@ -6,6 +6,7 @@ import { createIndexRouter } from './routes/index.js';
 import { createHealthRouter } from './routes/health.js';
 import { createProjectsRouter } from './routes/projects.js';
 import { createAssetsRouter } from './routes/assets.js';
+import { createProjectAssetCategoriesRouter } from './routes/project-asset-categories.js';
 import { createReleasesRouter } from './routes/releases.js';
 import { createReleaseManagementRouter } from './routes/release-management.js';
 import { createCalendarRouter } from './routes/calendar.js';
@@ -14,6 +15,7 @@ import { createSettingsRouter } from './routes/settings.js';
 import { createProjectService } from './services/project-service.js';
 import { createAssetCategoryRepository } from './data/asset-category-repository.js';
 import { createAssetCategoryService } from './services/asset-category-service.js';
+import { createProjectAssetCategoryService } from './services/project-asset-category-service.js';
 import { createAssetScanner } from './services/asset-scanner.js';
 import { createReleaseService } from './services/release-service.js';
 import { createWorkflowQueryService } from './services/workflow-query-service.js';
@@ -98,7 +100,22 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   const assetCategoryService = opts.assetCategoryService || createAssetCategoryService(assetCategoryRepository);
 
   const projectService = createProjectService(db, projectsRoot, { assetCategoryService });
-  const assetScanner = createAssetScanner(db, projectsRoot, { projectService });
+  const assetScanner = createAssetScanner(db, projectsRoot, { projectService, assetCategoryService });
+
+  // Phase 2 chunk 2: project-specific category mutations. Reuses the
+  // project repository (via projectService.repository) and the asset
+  // repository (via assetScanner.repository) rather than constructing
+  // duplicates. The router mounted below (Phase 2 chunk 3) receives this
+  // service explicitly.
+  const projectAssetCategoryService = opts.projectAssetCategoryService || createProjectAssetCategoryService({
+    db,
+    projectRepository: projectService.repository,
+    assetCategoryRepository,
+    assetRepository: assetScanner.repository,
+    projectsRoot,
+  });
+  app.locals.projectAssetCategoryService = projectAssetCategoryService;
+
   const releaseService = opts.releaseService || createReleaseService({ db, evaluateReleaseReadiness });
   const workflowQueryService = opts.workflowQueryService || createWorkflowQueryService({ db, evaluateReleaseReadiness });
 
@@ -253,6 +270,11 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   }
 
   app.use('/projects', createAssetsRouter({ appName, projectService, assetScanner, workflowQueryService }));
+
+  // Phase 2 chunk 3: project-specific category routes. The router receives
+  // the already-constructed `projectAssetCategoryService` explicitly — it
+  // never constructs a repository or service of its own.
+  app.use('/projects', createProjectAssetCategoriesRouter({ appName, projectService, projectAssetCategoryService }));
 
   app.use('/releases', createReleasesRouter({ appName, releaseService, projectService, workflowQueryService }));
 

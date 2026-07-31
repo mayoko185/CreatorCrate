@@ -453,7 +453,12 @@ describe('database and migrations', () => {
     expect(columns).not.toContain('default_category_id');
   });
 
-  it('leaves the assets table schema unchanged', () => {
+  // Migration 010 itself left assets untouched; migration 011 (Phase 2
+  // chunk 1) intentionally rebuilds it to add category_id/nested_path — see
+  // tests/asset-category-migration.test.js for the rebuild's own coverage
+  // (column set, FK behavior, data preservation). This asserts the final
+  // shape produced by running every migration through 011 in sequence.
+  it('produces the expected assets table schema through migration 011', () => {
     db = openDatabase(dbPath);
     runMigrations(db, MIGRATIONS_DIR);
 
@@ -464,7 +469,9 @@ describe('database and migrations', () => {
     expect(columns).toEqual([
       { name: 'id', type: 'INTEGER', notnull: 0, dflt_value: null, pk: 1 },
       { name: 'project_id', type: 'INTEGER', notnull: 1, dflt_value: null, pk: 0 },
+      { name: 'category_id', type: 'INTEGER', notnull: 0, dflt_value: null, pk: 0 },
       { name: 'relative_path', type: 'TEXT', notnull: 1, dflt_value: null, pk: 0 },
+      { name: 'nested_path', type: 'TEXT', notnull: 1, dflt_value: "''", pk: 0 },
       { name: 'filename', type: 'TEXT', notnull: 1, dflt_value: null, pk: 0 },
       { name: 'extension', type: 'TEXT', notnull: 1, dflt_value: "''", pk: 0 },
       { name: 'mime_type', type: 'TEXT', notnull: 1, dflt_value: "'application/octet-stream'", pk: 0 },

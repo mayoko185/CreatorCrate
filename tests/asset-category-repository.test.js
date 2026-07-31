@@ -217,4 +217,189 @@ describe('asset category repository', () => {
       expect(copied.length).toBe(defaults.filter((d) => d.enabled === 1).length);
     });
   });
+
+  // ─── Phase 2 chunk 2: project-scoped category mutations ────────────────
+
+  describe('project category mutations', () => {
+    it('finds a project category by project ID and category ID', () => {
+      const project = createProject();
+      const [category] = repository.copyEnabledDefaultsForProject(project.id);
+
+      const found = repository.findProjectCategoryById(project.id, category.id);
+      expect(found).toEqual(category);
+    });
+
+    it('treats a category owned by another project as not found', () => {
+      const projectA = createProject('Project A');
+      const projectB = createProject('Project B');
+      const [categoryA] = repository.copyEnabledDefaultsForProject(projectA.id);
+      repository.copyEnabledDefaultsForProject(projectB.id);
+
+      expect(repository.findProjectCategoryById(projectB.id, categoryA.id)).toBeUndefined();
+    });
+
+    it('returns undefined for an unknown category ID', () => {
+      const project = createProject();
+      expect(repository.findProjectCategoryById(project.id, 999999)).toBeUndefined();
+    });
+
+    it('appends a new project category deterministically', () => {
+      const project = createProject();
+      repository.copyEnabledDefaultsForProject(project.id);
+      const before = repository.listProjectCategories(project.id);
+      const nextOrder = before.length;
+
+      const added = repository.addProjectCategory({
+        projectId: project.id,
+        displayName: 'Raw',
+        directorySlug: 'raw',
+        displayOrder: nextOrder,
+        enabled: true,
+      });
+
+      expect(added.project_id).toBe(project.id);
+      expect(added.display_name).toBe('Raw');
+      expect(added.directory_slug).toBe('raw');
+      expect(added.display_order).toBe(nextOrder);
+      expect(added.enabled).toBe(1);
+
+      const after = repository.listProjectCategories(project.id);
+      expect(after).toHaveLength(before.length + 1);
+      expect(after[after.length - 1].id).toBe(added.id);
+    });
+
+    it('adds a disabled project category', () => {
+      const project = createProject();
+      const added = repository.addProjectCategory({
+        projectId: project.id,
+        displayName: 'Raw',
+        directorySlug: 'raw',
+        displayOrder: 0,
+        enabled: false,
+      });
+      expect(added.enabled).toBe(0);
+    });
+
+    it('edits only the display name, leaving the slug untouched', () => {
+      const project = createProject();
+      const [category] = repository.copyEnabledDefaultsForProject(project.id);
+
+      const updated = repository.updateProjectCategoryDisplayName(project.id, category.id, 'Renamed');
+
+      expect(updated.display_name).toBe('Renamed');
+      expect(updated.directory_slug).toBe(category.directory_slug);
+      expect(updated.id).toBe(category.id);
+    });
+
+    it('does not edit a display name for a category owned by another project', () => {
+      const projectA = createProject('Project A');
+      const projectB = createProject('Project B');
+      const [categoryA] = repository.copyEnabledDefaultsForProject(projectA.id);
+      repository.copyEnabledDefaultsForProject(projectB.id);
+
+      const result = repository.updateProjectCategoryDisplayName(projectB.id, categoryA.id, 'Hijacked');
+      expect(result).toBeUndefined();
+      expect(repository.findProjectCategoryById(projectA.id, categoryA.id).display_name).toBe(categoryA.display_name);
+    });
+
+    it('sets the enabled state for a project category', () => {
+      const project = createProject();
+      const [category] = repository.copyEnabledDefaultsForProject(project.id);
+
+      const disabled = repository.setProjectCategoryEnabled(project.id, category.id, false);
+      expect(disabled.enabled).toBe(0);
+      const enabled = repository.setProjectCategoryEnabled(project.id, category.id, true);
+      expect(enabled.enabled).toBe(1);
+    });
+
+    it('reorders a project\'s categories to contiguous zero-based positions', () => {
+      const project = createProject();
+      const categories = repository.copyEnabledDefaultsForProject(project.id);
+      const reversedIds = categories.map((c) => c.id).reverse();
+
+      const reordered = repository.reorderProjectCategories(project.id, reversedIds);
+
+      expect(reordered.map((c) => c.id)).toEqual(reversedIds);
+      expect(reordered.map((c) => c.display_order)).toEqual(reordered.map((_, i) => i));
+    });
+
+    it('reorder is exact — rejects missing, duplicate, or unknown IDs', () => {
+      const project = createProject();
+      const categories = repository.copyEnabledDefaultsForProject(project.id);
+      const ids = categories.map((c) => c.id);
+
+      expect(() => repository.reorderProjectCategories(project.id, ids.slice(1))).toThrow();
+      expect(() => repository.reorderProjectCategories(project.id, [...ids.slice(1), ids[0], ids[0]])).toThrow();
+      expect(() => repository.reorderProjectCategories(project.id, [...ids.slice(1), 999999])).toThrow();
+    });
+
+    it('reorder does not accept another project\'s category IDs', () => {
+      const projectA = createProject('Project A');
+      const projectB = createProject('Project B');
+      const categoriesA = repository.copyEnabledDefaultsForProject(projectA.id);
+      repository.copyEnabledDefaultsForProject(projectB.id);
+
+      expect(() => repository.reorderProjectCategories(projectB.id, categoriesA.map((c) => c.id))).toThrow();
+    });
+
+    it('a failed reorder makes no partial mutation', () => {
+      const project = createProject();
+      const categories = repository.copyEnabledDefaultsForProject(project.id);
+      const before = repository.listProjectCategories(project.id);
+      const ids = categories.map((c) => c.id);
+
+      expect(() => repository.reorderProjectCategories(project.id, [...ids.slice(1), 999999])).toThrow();
+
+      const after = repository.listProjectCategories(project.id);
+      expect(after).toEqual(before);
+    });
+
+    it('reorder never mutates global defaults', () => {
+      const project = createProject();
+      const categories = repository.copyEnabledDefaultsForProject(project.id);
+      const defaultsBefore = repository.listDefaults();
+
+      repository.reorderProjectCategories(project.id, categories.map((c) => c.id).reverse());
+
+      expect(repository.listDefaults()).toEqual(defaultsBefore);
+    });
+
+    it('deletes a project category and compacts remaining positions', () => {
+      const project = createProject();
+      const categories = repository.copyEnabledDefaultsForProject(project.id);
+      const [, second, third] = categories;
+
+      const remaining = repository.deleteProjectCategoryAndCompact(project.id, second.id);
+
+      expect(remaining.find((c) => c.id === second.id)).toBeUndefined();
+      expect(remaining.map((c) => c.display_order)).toEqual(remaining.map((_, i) => i));
+      expect(remaining.find((c) => c.id === third.id).display_order).toBe(
+        remaining.findIndex((c) => c.id === third.id)
+      );
+    });
+
+    it('deleting a category owned by another project throws and mutates nothing', () => {
+      const projectA = createProject('Project A');
+      const projectB = createProject('Project B');
+      const [categoryA] = repository.copyEnabledDefaultsForProject(projectA.id);
+      repository.copyEnabledDefaultsForProject(projectB.id);
+
+      expect(() => repository.deleteProjectCategoryAndCompact(projectB.id, categoryA.id)).toThrow();
+      expect(repository.findProjectCategoryById(projectA.id, categoryA.id)).toBeTruthy();
+    });
+
+    it('project-category mutations never mutate global defaults', () => {
+      const project = createProject();
+      const [category] = repository.copyEnabledDefaultsForProject(project.id);
+      const defaultsBefore = repository.listDefaults();
+
+      repository.updateProjectCategoryDisplayName(project.id, category.id, 'Changed');
+      repository.setProjectCategoryEnabled(project.id, category.id, false);
+      repository.addProjectCategory({
+        projectId: project.id, displayName: 'New', directorySlug: 'new', displayOrder: 99, enabled: true,
+      });
+
+      expect(repository.listDefaults()).toEqual(defaultsBefore);
+    });
+  });
 });

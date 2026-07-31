@@ -165,7 +165,7 @@ export function createReleaseRepository(db) {
 
   const raFindByRelease = db.prepare(`
     SELECT ra.release_id, ra.asset_id, ra.role, ra.sort_order, ra.created_at,
-           a.project_id, a.relative_path, a.filename, a.extension,
+           a.project_id, a.category_id, a.relative_path, a.nested_path, a.filename, a.extension,
            a.mime_type, a.size_bytes, a.modified_at, a.is_present,
            a.last_seen_at, a.missing_since, a.created_at as asset_created_at,
            a.updated_at as asset_updated_at
@@ -872,7 +872,7 @@ export function createReleaseRepository(db) {
      * List assets selected for a release.
      * Returns full asset rows enriched with release_assets metadata.
      * @param {number} releaseId
-     * @returns {Array<{release_id: number, asset_id: number, role: string, sort_order: number, created_at: string, project_id: number, relative_path: string, filename: string, extension: string, mime_type: string, size_bytes: number, modified_at: string|null, is_present: number, last_seen_at: string|null, missing_since: string|null, asset_created_at: string, asset_updated_at: string}>}
+     * @returns {Array<{release_id: number, asset_id: number, role: string, sort_order: number, created_at: string, project_id: number, category_id: number|null, relative_path: string, nested_path: string, filename: string, extension: string, mime_type: string, size_bytes: number, modified_at: string|null, is_present: number, last_seen_at: string|null, missing_since: string|null, asset_created_at: string, asset_updated_at: string}>}
      */
     listReleaseAssets(releaseId) {
       return raFindByRelease.all(releaseId, releaseId);
@@ -1452,7 +1452,7 @@ export function createReleaseRepository(db) {
      * @param {string} [filters.extension] - exact extension filter
      * @param {number} [filters.page=1]
      * @param {number} [filters.pageSize=25]
-     * @returns {Array<{id: number, project_id: number, relative_path: string, filename: string, extension: string, mime_type: string, size_bytes: number, is_present: number}>}
+     * @returns {Array<{id: number, project_id: number, category_id: number|null, relative_path: string, nested_path: string, filename: string, extension: string, mime_type: string, size_bytes: number, is_present: number}>}
      */
     findReleaseCandidatePage(releaseId, projectId, filters = {}) {
       const { page = 1, pageSize = 25 } = filters;
@@ -1461,7 +1461,7 @@ export function createReleaseRepository(db) {
       const offset = (Math.max(1, page) - 1) * Math.max(1, pageSize);
 
       const sql = `
-        SELECT a.id, a.project_id, a.relative_path, a.filename, a.extension,
+        SELECT a.id, a.project_id, a.category_id, a.relative_path, a.nested_path, a.filename, a.extension,
                a.mime_type, a.size_bytes, a.is_present
         FROM assets a
         WHERE ${conditions.join(' AND ')}

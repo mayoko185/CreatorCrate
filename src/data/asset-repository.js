@@ -8,7 +8,9 @@
 const ASSET_COLUMNS = [
   'id',
   'project_id',
+  'category_id',
   'relative_path',
+  'nested_path',
   'filename',
   'extension',
   'mime_type',
@@ -63,9 +65,11 @@ export function createAssetRepository(db) {
   `);
 
   const upsertStmt = db.prepare(`
-    INSERT INTO assets (project_id, relative_path, filename, extension, mime_type, size_bytes, modified_at, is_present, last_seen_at, missing_since)
-    VALUES (?, ?, ?, ?, ?, ?, ?, 1, datetime('now'), NULL)
+    INSERT INTO assets (project_id, relative_path, category_id, nested_path, filename, extension, mime_type, size_bytes, modified_at, is_present, last_seen_at, missing_since)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'), NULL)
     ON CONFLICT(project_id, relative_path) DO UPDATE SET
+      category_id = excluded.category_id,
+      nested_path = excluded.nested_path,
       filename = excluded.filename,
       extension = excluded.extension,
       mime_type = excluded.mime_type,
@@ -76,6 +80,136 @@ export function createAssetRepository(db) {
       missing_since = NULL,
       updated_at = datetime('now')
     RETURNING ${ASSET_COLUMNS.join(', ')}
+  `);
+
+  const selectExistingForReconcileStmt = db.prepare(`
+    SELECT id, category_id, nested_path, relative_path, filename, extension, mime_type, size_bytes, modified_at, is_present
+    FROM assets
+    WHERE project_id = ?
+  `);
+
+  const insertReconcileStmt = db.prepare(`
+    INSERT INTO assets (project_id, relative_path, category_id, nested_path, filename, extension, mime_type, size_bytes, modified_at, is_present, last_seen_at, missing_since)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'), NULL)
+  `);
+
+  const updateReconcileStmt = db.prepare(`
+    UPDATE assets
+    SET category_id = ?,
+        nested_path = ?,
+        filename = ?,
+        extension = ?,
+        mime_type = ?,
+        size_bytes = ?,
+        modified_at = ?,
+        is_present = 1,
+        last_seen_at = datetime('now'),
+        missing_since = NULL,
+        updated_at = datetime('now')
+    WHERE id = ?
+  `);
+
+  const markMissingNotInReconcileStmt = (presentPaths) => {
+    const placeholders = presentPaths.map(() => '?').join(',');
+    return db.prepare(`
+      UPDATE assets
+      SET is_present = 0,
+          missing_since = COALESCE(missing_since, datetime('now')),
+          updated_at = datetime('now')
+      WHERE project_id = ? AND relative_path NOT IN (${placeholders}) AND is_present = 1
+    `);
+  };
+
+  const markAllMissingReconcileStmt = db.prepare(`
+    UPDATE assets
+    SET is_present = 0,
+        missing_since = COALESCE(missing_since, datetime('now')),
+        updated_at = datetime('now')
+    WHERE project_id = ? AND is_present = 1
+  `);
+
+  /**
+   * Atomic scan reconciliation. Takes the complete discovered snapshot for a
+   * project (already classified with categoryId/nestedPath) and applies it
+   * in one transaction: inserts new paths, restores/updates existing ones
+   * (including a path-derived-field-only repair when size/mtime match), and
+   * marks undiscovered paths missing. Rolls back entirely on any failure.
+   *
+   * @param {number} projectId
+   * @param {Array<{relativePath: string, filename: string, extension: string, mimeType: string, sizeBytes: number, modifiedAt: string|null, categoryId: number|null, nestedPath: string}>} discovered
+   * @returns {{ added: number, updated: number, removed: number, total: number }}
+   */
+  const reconcileScannedAssetsTx = db.transaction((projectId, discovered) => {
+    const existingByPath = new Map(
+      selectExistingForReconcileStmt.all(projectId).map((row) => [row.relative_path, row])
+    );
+
+    let added = 0;
+    let updated = 0;
+    const discoveredPaths = [];
+
+    for (const file of discovered) {
+      discoveredPaths.push(file.relativePath);
+      const categoryId = file.categoryId ?? null;
+      const nestedPath = file.nestedPath ?? '';
+      const modifiedAt = file.modifiedAt || null;
+      const existing = existingByPath.get(file.relativePath);
+
+      if (!existing) {
+        insertReconcileStmt.run(
+          projectId,
+          file.relativePath,
+          categoryId,
+          nestedPath,
+          file.filename,
+          file.extension,
+          file.mimeType,
+          file.sizeBytes,
+          modifiedAt,
+        );
+        added++;
+        continue;
+      }
+
+      const changed =
+        existing.is_present === 0 ||
+        existing.category_id !== categoryId ||
+        existing.nested_path !== nestedPath ||
+        existing.filename !== file.filename ||
+        existing.extension !== file.extension ||
+        existing.mime_type !== file.mimeType ||
+        existing.size_bytes !== file.sizeBytes ||
+        existing.modified_at !== modifiedAt;
+
+      if (changed) {
+        updateReconcileStmt.run(
+          categoryId,
+          nestedPath,
+          file.filename,
+          file.extension,
+          file.mimeType,
+          file.sizeBytes,
+          modifiedAt,
+          existing.id,
+        );
+        updated++;
+      }
+    }
+
+    const removed =
+      discoveredPaths.length === 0
+        ? markAllMissingReconcileStmt.run(projectId).changes
+        : markMissingNotInReconcileStmt(discoveredPaths).run(projectId, ...discoveredPaths).changes;
+
+    const total = countByProjectStmt.get(projectId).c;
+
+    return { added, updated, removed, total };
+  });
+
+  // ─── Phase 2 chunk 2: project-category mutation support ────────────────
+
+  const countAssetsByCategoryStmt = db.prepare(`
+    SELECT COUNT(*) AS c FROM assets WHERE project_id = ? AND category_id = ?
   `);
 
   const deletePathsNotInStmt = db.prepare(`
@@ -172,18 +306,32 @@ export function createAssetRepository(db) {
      * @param {string} data.mimeType
      * @param {number} data.sizeBytes
      * @param {string|null} data.modifiedAt
+     * @param {number|null} [data.categoryId]
+     * @param {string} [data.nestedPath]
      * @returns {import('./asset-repository.js').AssetRecord}
      */
     upsert(projectId, relativePath, data) {
       return upsertStmt.get(
         projectId,
         relativePath,
+        data.categoryId ?? null,
+        data.nestedPath ?? '',
         data.filename,
         data.extension,
         data.mimeType,
         data.sizeBytes,
         data.modifiedAt || null,
       );
+    },
+
+    /**
+     * Atomic scan reconciliation — see {@link reconcileScannedAssetsTx}.
+     * @param {number} projectId
+     * @param {Array<{relativePath: string, filename: string, extension: string, mimeType: string, sizeBytes: number, modifiedAt: string|null, categoryId: number|null, nestedPath: string}>} discovered
+     * @returns {{ added: number, updated: number, removed: number, total: number }}
+     */
+    reconcileScannedAssets(projectId, discovered) {
+      return reconcileScannedAssetsTx(projectId, discovered);
     },
 
   /**
@@ -339,6 +487,19 @@ export function createAssetRepository(db) {
       return row.c;
     },
 
+    // ─── Phase 2 chunk 2: project-category mutation support ──────────────
+
+    /**
+     * Count every asset row (present or missing) referencing a project
+     * category. Used to decide whether a category can be safely deleted.
+     * @param {number} projectId
+     * @param {number} categoryId
+     * @returns {number}
+     */
+    countByCategoryId(projectId, categoryId) {
+      return countAssetsByCategoryStmt.get(projectId, categoryId).c;
+    },
+
     /**
      * Get distinct extensions used by a project's assets.
      * @param {number} projectId
@@ -446,7 +607,9 @@ export function createAssetRepository(db) {
         SELECT
           a.id,
           a.project_id,
+          a.category_id,
           a.relative_path,
+          a.nested_path,
           a.filename,
           a.extension,
           a.mime_type,
@@ -513,7 +676,9 @@ export function createAssetRepository(db) {
         SELECT
           a.id,
           a.project_id,
+          a.category_id,
           a.relative_path,
+          a.nested_path,
           a.filename,
           a.extension,
           a.mime_type,
@@ -569,7 +734,9 @@ export function createAssetRepository(db) {
  * @typedef {object} AssetRecord
  * @property {number} id
  * @property {number} project_id
+ * @property {number|null} category_id
  * @property {string} relative_path
+ * @property {string} nested_path
  * @property {string} filename
  * @property {string} extension
  * @property {string} mime_type

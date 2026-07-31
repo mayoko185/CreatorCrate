@@ -163,6 +163,16 @@ describe('asset browser HTTP workflow', () => {
     expect(Array.from(url.searchParams.keys())).toEqual(keys);
   }
 
+  // Scopes preview-image assertions to the asset preview section only. The
+  // app shell now renders a logo <img> in the sidebar on every page, so
+  // asserting no '<img ' anywhere in the response would false-positive on
+  // that unrelated chrome rather than the asset preview itself.
+  function previewSectionHtml(html) {
+    const match = html.match(/<section class="asset-preview-section"[^>]*>[\s\S]*?<\/section>/);
+    if (!match) throw new Error('Rendered page did not include an asset-preview-section.');
+    return match[0];
+  }
+
   // Phase 12 CSP hardening moved styling out of an inline <style> block and
   // into the served external stylesheet (linked via <link rel="stylesheet">)
   // so no 'unsafe-inline' style-src is required. CSS assertions read the
@@ -1303,7 +1313,7 @@ describe('asset browser HTTP workflow', () => {
 
     expect(res2.text).toContain('Missing at last scan. Preview and original viewing are unavailable.');
     expect(res2.text).toContain('Preview unavailable for missing assets.');
-    expect(res2.text).not.toContain('<img ');
+    expect(previewSectionHtml(res2.text)).not.toContain('<img ');
     expect(res2.text).not.toContain('/preview?v=');
     expectNoAnchor(res2.text, 'asset-viewer-original');
   });
@@ -1324,7 +1334,7 @@ describe('asset browser HTTP workflow', () => {
 
     expect(res2.text).toContain('Unsupported asset preview. This asset type or recorded MIME cannot be previewed inline.');
     expect(res2.text).toContain('Preview unavailable for unsupported assets.');
-    expect(res2.text).not.toContain('<img ');
+    expect(previewSectionHtml(res2.text)).not.toContain('<img ');
     expect(res2.text).not.toContain('/preview?v=');
     expectNoAnchor(res2.text, 'asset-viewer-original');
   });
@@ -1343,7 +1353,7 @@ describe('asset browser HTTP workflow', () => {
       .expect(200);
 
     expect(res2.text).toContain('Unsupported asset preview. This asset type or recorded MIME cannot be previewed inline.');
-    expect(res2.text).not.toContain('<img ');
+    expect(previewSectionHtml(res2.text)).not.toContain('<img ');
     expect(res2.text).not.toContain('/preview?v=');
     expectNoAnchor(res2.text, 'asset-viewer-original');
   });

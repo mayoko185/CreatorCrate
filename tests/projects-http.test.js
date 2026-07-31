@@ -153,6 +153,7 @@ describe('project HTTP workflow', () => {
     const res = await agent.get(location).expect(200);
     expect(res.text).toContain('Detail Project');
     expect(res.text).toContain('Edit');
+    expect(res.text).toContain(`${location}/asset-categories`);
   });
 
   it('edit form renders', async () => {
@@ -1450,6 +1451,23 @@ describe('project HTTP workflow', () => {
 
       const res = await agent.get(`/projects/${id}`).expect(200);
       expect(res.text).not.toContain(`/projects/${id}/edit`);
+    });
+
+    it('still shows the Asset Categories link on an archived project (read-only page remains reachable)', async () => {
+      const createRes = await agent
+        .post('/projects')
+        .send('title=Archived+Categories+Link')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .expect(302);
+      const id = createRes.headers.location.replace('/projects/', '');
+
+      await agent.post(`/projects/${id}/archive`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
+
+      const res = await agent.get(`/projects/${id}`).expect(200);
+      expect(res.text).toContain(`/projects/${id}/asset-categories`);
     });
   });
 
