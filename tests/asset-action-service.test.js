@@ -203,6 +203,87 @@ describe('asset action service', () => {
       expect(result.mime_type).toBe('image/jpeg');
     });
 
+    it('renames from a basename while preserving the current extension', () => {
+      writeFile('archive.final.png', 'content');
+      const asset = createAsset('archive.final.png');
+
+      const result = actionService.renameAssetBasename(project.id, asset.id, 'renamed');
+
+      expect(result.relative_path).toBe('renamed.png');
+      expect(result.filename).toBe('renamed.png');
+      expect(fs.existsSync(path.join(absPath, 'archive.final.png'))).toBe(false);
+      expect(fs.existsSync(path.join(absPath, 'renamed.png'))).toBe(true);
+    });
+
+    it('validates the reconstructed filename for basename renames', () => {
+      writeFile('a.png', 'content');
+      const asset = createAsset('a.png');
+
+      expect(() => actionService.renameAssetBasename(project.id, asset.id, 'bad/name')).toThrow(AssetActionError);
+      expect(fs.existsSync(path.join(absPath, 'a.png'))).toBe(true);
+    });
+
+    it('rejects a missing basename before reconstructing the filename', () => {
+      writeFile('a.png', 'content');
+      const asset = createAsset('a.png');
+
+      expect(() => actionService.renameAssetBasename(project.id, asset.id, undefined)).toThrow(AssetActionError);
+      expect(fs.existsSync(path.join(absPath, 'a.png'))).toBe(true);
+    });
+
+    it('preserves only the final extension for multi-dot filenames', () => {
+      writeFile('scene.v2.kra', 'content');
+      const asset = createAsset('scene.v2.kra');
+
+      const result = actionService.renameAssetBasename(project.id, asset.id, 'final-scene');
+
+      expect(result.filename).toBe('final-scene.kra');
+      expect(fs.existsSync(path.join(absPath, 'final-scene.kra'))).toBe(true);
+    });
+
+    it('keeps extensionless assets extensionless', () => {
+      writeFile('README', 'content');
+      const asset = createAsset('README');
+
+      const result = actionService.renameAssetBasename(project.id, asset.id, 'NOTES');
+
+      expect(result.filename).toBe('NOTES');
+      expect(result.extension).toBe('');
+      expect(fs.existsSync(path.join(absPath, 'NOTES'))).toBe(true);
+    });
+
+    it('rejects invalid, unchanged, and case-only basenames before filesystem mutation', () => {
+      writeFile('photo.PNG', 'content');
+      const asset = createAsset('photo.PNG');
+
+      for (const [basename, code] of [
+        ['photo', 'UNCHANGED_LOCATION'],
+        ['PHOTO', 'CASE_ONLY_RENAME_UNSUPPORTED'],
+        ['bad/name', 'INVALID_FILENAME'],
+        ['bad.', 'INVALID_FILENAME'],
+        ['CON', 'INVALID_FILENAME'],
+      ]) {
+        try {
+          actionService.renameAssetBasename(project.id, asset.id, basename);
+          expect.unreachable();
+        } catch (err) {
+          expect(err).toBeInstanceOf(AssetActionError);
+          expect(err.code).toBe(code);
+        }
+        expect(fs.existsSync(path.join(absPath, 'photo.PNG'))).toBe(true);
+      }
+    });
+
+    it('preserves the current extension casing from the project path', () => {
+      writeFile('photo.PNG', 'content');
+      const asset = createAsset('photo.PNG');
+
+      const result = actionService.renameAssetBasename(project.id, asset.id, 'renamed');
+
+      expect(result.filename).toBe('renamed.PNG');
+      expect(fs.existsSync(path.join(absPath, 'renamed.PNG'))).toBe(true);
+    });
+
     it('preserves category_id and nested_path', () => {
       const category = createEnabledCategory('Renders', 'renders');
       writeFile('renders/final/old.png', 'content');

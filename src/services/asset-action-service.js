@@ -393,6 +393,25 @@ export function createAssetActionService({
       });
   }
 
+  function renameAssetBasenameLocked(projectId, assetId, basename) {
+    const asset = requirePresentAsset(projectId, assetId);
+    try {
+      assertValidAssetFilename(basename);
+    } catch (err) {
+      if (err instanceof AssetFilenameValidationError) {
+        throw new AssetActionError(err.message, { code: 'INVALID_FILENAME' });
+      }
+      throw err;
+    }
+
+    const pathSegments = asset.relative_path.split('/');
+    const currentFilename = pathSegments[pathSegments.length - 1];
+    const extensionStart = currentFilename.lastIndexOf('.');
+    const extension = extensionStart > 0 ? currentFilename.slice(extensionStart + 1) : '';
+    const filename = extension ? `${basename}.${extension}` : basename;
+    return renameAssetLocked(projectId, assetId, filename);
+  }
+
   // Holds the project lock for its entire body — validation through
   // database update. Never exposed publicly; only reachable via runLocked from
   // the returned moveAsset method below.
@@ -671,6 +690,24 @@ export function createAssetActionService({
       assertPositiveInteger(projectId, 'INVALID_PROJECT_ID', 'projectId');
       assertPositiveInteger(assetId, 'INVALID_ASSET_ID', 'assetId');
       return runLocked(projectId, () => renameAssetLocked(projectId, assetId, filename));
+    },
+
+    /**
+     * Rename an asset from a basename while preserving its current extension.
+     * The complete filename is reconstructed under the project lock and then
+     * passes through the same validation and filesystem mutation path as a
+     * direct complete-filename rename.
+     *
+     * @param {number} projectId
+     * @param {number} assetId
+     * @param {string} basename - New filename without the current extension.
+     * @returns {import('../data/asset-repository.js').AssetRecord}
+     * @throws {AssetActionError}
+     */
+    renameAssetBasename(projectId, assetId, basename) {
+      assertPositiveInteger(projectId, 'INVALID_PROJECT_ID', 'projectId');
+      assertPositiveInteger(assetId, 'INVALID_ASSET_ID', 'assetId');
+      return runLocked(projectId, () => renameAssetBasenameLocked(projectId, assetId, basename));
     },
 
     /**

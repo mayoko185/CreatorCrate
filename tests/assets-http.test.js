@@ -408,7 +408,7 @@ describe('asset browser HTTP workflow', () => {
       .expect(200);
     expect(res2.text).toContain('unused.png');
     expect(res2.text).not.toContain('>used.png<');
-    expect(res2.text).toContain('No releases');
+    expect(res2.text).toContain('Not used by a release');
   });
 
   it('invalid usage filter falls back to all', async () => {
@@ -506,8 +506,8 @@ describe('asset browser HTTP workflow', () => {
         .expect(302);
     }
 
-    const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
-    expect(res2.text).toContain('<summary>2 releases</summary>');
+    const res2 = await agent.get(`/projects/${id}/assets?view=list`).expect(200);
+    expect(res2.text).toContain('aria-label="Used in 2 releases"');
   });
 
   it('shows release titles and statuses for used assets', async () => {
@@ -538,7 +538,7 @@ describe('asset browser HTTP workflow', () => {
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
-    const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
+    const res2 = await agent.get(`/projects/${id}/assets?view=list`).expect(200);
     expect(res2.text).toContain('Status Check Release');
     expect(res2.text).toContain('planned');
     // Check the release detail link exists (not the asset-selection page)
@@ -556,7 +556,7 @@ describe('asset browser HTTP workflow', () => {
     fs.writeFileSync(path.join(projectDir, 'still-here.png'), 'png');
     await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
-    const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
+    const res2 = await agent.get(`/projects/${id}/assets?view=list`).expect(200);
     expect(res2.text).toContain('Present at last scan');
   });
 
@@ -591,22 +591,24 @@ describe('asset browser HTTP workflow', () => {
     fs.rmSync(path.join(projectDir, 'missing-file.txt'));
     await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
-    const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
+    const res2 = await agent.get(`/projects/${id}/assets?view=list`).expect(200);
 
     // Locate the present-file row and assert its presence element.
     // Match a single <tr>…</tr> that contains the filename without crossing row boundaries.
     const presentRowRe = /<tr[^>]*>(?:(?!<\/tr>)[\s\S])*present-file\.txt(?:(?!<\/tr>)[\s\S])*<\/tr>/;
     const presentRow = res2.text.match(presentRowRe);
     expect(presentRow).not.toBeNull();
-    expect(presentRow[0]).toContain('<span class="status-badge status-badge--success">Present</span>');
-    expect(presentRow[0]).not.toContain('status-badge--error');
+    expect(presentRow[0]).toContain('asset-indicator--present');
+    expect(presentRow[0]).toContain('aria-label="Present"');
+    expect(presentRow[0]).not.toContain('asset-indicator--missing');
 
     // Locate the missing-file row and assert its presence element
     const missingRowRe = /<tr[^>]*>(?:(?!<\/tr>)[\s\S])*missing-file\.txt(?:(?!<\/tr>)[\s\S])*<\/tr>/;
     const missingRow = res2.text.match(missingRowRe);
     expect(missingRow).not.toBeNull();
-    expect(missingRow[0]).toContain('<span class="status-badge status-badge--error">Missing at last scan</span>');
-    expect(missingRow[0]).not.toContain('status-badge--success');
+    expect(missingRow[0]).toContain('asset-indicator--missing');
+    expect(missingRow[0]).toContain('aria-label="Missing at last scan"');
+    expect(missingRow[0]).not.toContain('asset-indicator--present');
   });
 
   // ─── Pagination ──────────────────────────────────────────────────
@@ -652,22 +654,22 @@ describe('asset browser HTTP workflow', () => {
 
     const encodedSearch = encodeURIComponent('File &');
     const res2 = await agent
-      .get(`/projects/${id}/assets?search=${encodedSearch}&extension=.PNG&presence=present&usage=unused&page=1&pageSize=10&unknown=strip-me`)
+      .get(`/projects/${id}/assets?search=${encodedSearch}&extension=.PNG&presence=present&usage=unused&page=1&pageSize=10&view=list&unknown=strip-me`)
       .expect(200);
 
     const nextMatch = res2.text.match(/<a href="([^"]+)" class="pagination-next">Next/);
     expect(nextMatch).not.toBeNull();
     const href = nextMatch[1].replace(/&amp;/g, '&');
-    expect(href).toBe(`/projects/${id}/assets?search=File+%26&extension=png&presence=present&usage=unused&page=2&pageSize=10`);
+    expect(href).toBe(`/projects/${id}/assets?search=File+%26&extension=png&presence=present&usage=unused&page=2&pageSize=10&view=list`);
 
     const nextUrl = new URL(href, 'http://localhost');
     expect(Array.from(nextUrl.searchParams.keys())).toEqual([
-      'search', 'extension', 'presence', 'usage', 'page', 'pageSize',
+      'search', 'extension', 'presence', 'usage', 'page', 'pageSize', 'view',
     ]);
     expect(nextUrl.searchParams.get('search')).toBe('File &');
     expect(nextUrl.searchParams.get('extension')).toBe('png');
     expect(nextUrl.searchParams.get('page')).toBe('2');
-    expect(nextUrl.searchParams.has('view')).toBe(false);
+    expect(nextUrl.searchParams.get('view')).toBe('list');
     expect(nextUrl.searchParams.has('unknown')).toBe(false);
     expect(nextUrl.searchParams.has('scan_result')).toBe(false);
     // Table rows render versioned thumbnail URLs for previewable assets,
@@ -830,7 +832,7 @@ describe('asset browser HTTP workflow', () => {
     const res = await createProject('No Assets Project');
     const id = res.headers.location.replace('/projects/', '');
 
-    const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
+    const res2 = await agent.get(`/projects/${id}/assets?view=list`).expect(200);
     expect(res2.text).toContain('No assets found');
     // The empty-state partial's action div must not exist for the
     // no-assets case — the only "Scan Now" control on the page is the
@@ -1026,8 +1028,8 @@ describe('asset browser HTTP workflow', () => {
     fs.writeFileSync(path.join(projectDir, 'unknown', 'deep', 'file.txt'), 'x');
     await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
-    const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
-    expect(res2.text).toContain('>file.txt<');
+    const res2 = await agent.get(`/projects/${id}/assets?view=list`).expect(200);
+    expect(res2.text).toContain('>file<');
     expect(res2.text).toContain('unknown/deep');
     // The full canonical relative path (dir + filename) must not appear in the row.
     expect(res2.text).not.toContain('unknown/deep/file.txt');
@@ -1041,8 +1043,8 @@ describe('asset browser HTTP workflow', () => {
     fs.writeFileSync(path.join(projectDir, 'notes.txt'), 'x');
     await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
-    const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
-    expect(res2.text).toContain('>notes.txt<');
+    const res2 = await agent.get(`/projects/${id}/assets?view=list`).expect(200);
+    expect(res2.text).toContain('>notes<');
     expect(res2.text).toContain('Project root');
     expect(res2.text).toContain('Uncategorized');
   });
@@ -1328,11 +1330,11 @@ describe('asset browser HTTP workflow', () => {
     });
 
     const res2 = await agent
-      .get(`/projects/${id}/assets?category=${category.id}&search=hero&extension=.PNG&presence=present&usage=unused&sort=filename&order=desc&pageSize=2&junk=strip-me`)
+      .get(`/projects/${id}/assets?category=${category.id}&search=hero&extension=.PNG&presence=present&usage=unused&sort=filename&order=desc&pageSize=2&view=list&junk=strip-me`)
       .expect(200);
 
     // First row on a descending-filename page 1 of 2 is "Hero Two.png".
-    const linkMatch = res2.text.match(/<a class="asset-file-link" href="([^"]+)">Hero Two\.png<\/a>/);
+    const linkMatch = res2.text.match(/<a class="asset-file-link" href="([^"]+)">Hero Two<\/a>/);
     expect(linkMatch).not.toBeNull();
     const rowHref = decodeHtmlHref(linkMatch[1]);
     const rowUrl = new URL(rowHref, 'http://localhost');
@@ -1346,7 +1348,7 @@ describe('asset browser HTTP workflow', () => {
     expect(rowUrl.searchParams.get('order')).toBe('desc');
     expect(rowUrl.searchParams.get('pageSize')).toBe('2');
     expect(rowUrl.searchParams.has('sort')).toBe(false); // 'filename' is the omitted default
-    expect(rowUrl.searchParams.has('view')).toBe(false);
+    expect(rowUrl.searchParams.get('view')).toBe('list');
     expect(rowUrl.searchParams.has('junk')).toBe(false);
 
     // Follow the row link into the viewer and confirm Back/Previous/Next
@@ -1354,7 +1356,7 @@ describe('asset browser HTTP workflow', () => {
     const viewerRes = await agent.get(rowHref).expect(200);
     const expectedQuery = {
       category: String(category.id), search: 'hero', extension: 'png',
-      presence: 'present', usage: 'unused', order: 'desc', pageSize: '2',
+      presence: 'present', usage: 'unused', order: 'desc', pageSize: '2', view: 'list',
     };
     expectQueryKeys(rowHref, Object.keys(expectedQuery));
 
@@ -1363,7 +1365,6 @@ describe('asset browser HTTP workflow', () => {
     for (const [key, value] of Object.entries(expectedQuery)) {
       expect(backUrl.searchParams.get(key)).toBe(value);
     }
-    expect(backUrl.searchParams.has('view')).toBe(false);
 
     const nextHref = decodeHtmlHref(anchorHref(viewerRes.text, 'asset-viewer-next'));
     const nextUrl = new URL(nextHref, 'http://localhost');
@@ -1380,14 +1381,14 @@ describe('asset browser HTTP workflow', () => {
     const projectDir = getProjectDir('Row Link Clamped Page');
     const asset = writeIndexedAsset(id, projectDir, 'only.png', await makePng());
 
-    const res2 = await agent.get(`/projects/${id}/assets?page=99`).expect(200);
-    const linkMatch = res2.text.match(/<a class="asset-file-link" href="([^"]+)">only\.png<\/a>/);
+    const res2 = await agent.get(`/projects/${id}/assets?page=99&view=list`).expect(200);
+    const linkMatch = res2.text.match(/<a class="asset-file-link" href="([^"]+)">only<\/a>/);
     expect(linkMatch).not.toBeNull();
     const rowHref = decodeHtmlHref(linkMatch[1]);
 
     // Only one asset -> pageCount 1 -> clamped to page 1 -> 'page' is the
     // omitted default, never the out-of-range requested value.
-    expect(rowHref).toBe(`/projects/${id}/assets/${asset.id}`);
+    expect(rowHref).toBe(`/projects/${id}/assets/${asset.id}?view=list`);
   });
 
   it('renders exact previous, next, and back URLs across pages', async () => {
@@ -1458,15 +1459,15 @@ describe('asset browser HTTP workflow', () => {
       .get(`/projects/${id}/assets/${heroTwo.id}?view=grid&search=${encodeURIComponent('Hero &')}&extension=.PNG&presence=present&usage=unused&page=99&pageSize=1&junk=1`)
       .expect(200);
 
-    // `view=grid` is part of the canonical context, so it propagates into
-    // every generated viewer navigation URL exactly like the other filters.
-    const previousHref = `/projects/${id}/assets/${heroOne.id}?search=Hero+%26&extension=png&presence=present&usage=unused&pageSize=1&view=grid`;
-    const backHref = `/projects/${id}/assets?search=Hero+%26&extension=png&presence=present&usage=unused&page=2&pageSize=1&view=grid`;
+    // Grid is the canonical default, so it is omitted from generated viewer
+    // navigation URLs while the other normalized filters are preserved.
+    const previousHref = `/projects/${id}/assets/${heroOne.id}?search=Hero+%26&extension=png&presence=present&usage=unused&pageSize=1`;
+    const backHref = `/projects/${id}/assets?search=Hero+%26&extension=png&presence=present&usage=unused&page=2&pageSize=1`;
     expectAnchorHref(res2.text, 'asset-viewer-prev', previousHref);
     expectAnchorHref(res2.text, 'asset-viewer-back', backHref);
     expectNoAnchor(res2.text, 'asset-viewer-next');
-    expectQueryKeys(previousHref, ['search', 'extension', 'presence', 'usage', 'pageSize', 'view']);
-    expectQueryKeys(backHref, ['search', 'extension', 'presence', 'usage', 'page', 'pageSize', 'view']);
+    expectQueryKeys(previousHref, ['search', 'extension', 'presence', 'usage', 'pageSize']);
+    expectQueryKeys(backHref, ['search', 'extension', 'presence', 'usage', 'page', 'pageSize']);
     expect(res2.text).not.toContain('junk=1');
   });
 
@@ -1729,7 +1730,7 @@ describe('asset browser HTTP workflow', () => {
     const res = await createProject('PhaseC Script');
     const id = res.headers.location.replace('/projects/', '');
 
-    const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
+    const res2 = await agent.get(`/projects/${id}/assets?view=list`).expect(200);
     const scriptCount = (res2.text.match(/<script type="module" src="\/creatorcrate\.js"><\/script>/g) || []).length;
 
     expect(scriptCount).toBe(1);
@@ -1782,7 +1783,7 @@ describe('asset browser HTTP workflow', () => {
     const projectDir = getProjectDir('PhaseC Table Hooks');
     writeIndexedAsset(id, projectDir, 'hooked.png', await makePng());
 
-    const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
+    const res2 = await agent.get(`/projects/${id}/assets?view=list`).expect(200);
 
     expect(res2.text).toContain('class="asset-thumb" data-preview-enhancement data-preview-state="loading"');
     expect(res2.text).toContain('data-preview-image');
@@ -1800,7 +1801,7 @@ describe('asset browser HTTP workflow', () => {
       mimeType: 'application/x-krita',
     });
 
-    const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
+    const res2 = await agent.get(`/projects/${id}/assets?view=list`).expect(200);
 
     expect(res2.text).not.toContain('data-preview-enhancement');
     expect(res2.text).not.toContain('data-preview-image');
@@ -1811,7 +1812,7 @@ describe('asset browser HTTP workflow', () => {
   it('renders reduced-motion coverage for preview image transitions', async () => {
     const res = await createProject('PhaseC Reduced Motion');
     const id = res.headers.location.replace('/projects/', '');
-    const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
+       const res2 = await agent.get(`/projects/${id}/assets?view=list`).expect(200);
 
     expect(await readStylesheetSource(res2.text)).toMatch(
       /@media \(prefers-reduced-motion: reduce\) \{[\s\S]*\.asset-thumb-image[\s\S]*\.asset-preview-image[\s\S]*transition: none !important;/
@@ -2014,7 +2015,7 @@ describe('asset browser HTTP workflow', () => {
     fs.writeFileSync(path.join(projectDir, 'a.png'), 'png');
     await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
-    const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
+    const res2 = await agent.get(`/projects/${id}/assets?view=list`).expect(200);
     expect((res2.text.match(/<table class="data-table asset-table">/g) || []).length).toBe(1);
     expect((res2.text.match(/<table\b/g) || []).length).toBe(1);
     for (const heading of ['Preview', 'File', 'Category', 'Type', 'Presence', 'Release usage', 'Actions']) {
@@ -2028,7 +2029,7 @@ describe('asset browser HTTP workflow', () => {
     const projectDir = getProjectDir('Actions Cell Markup');
     writeIndexedAsset(id, projectDir, 'a.png', await makePng());
 
-    const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
+    const res2 = await agent.get(`/projects/${id}/assets?view=list`).expect(200);
     // The <td> itself carries no flex/display override — only the inner
     // <span class="row-actions"> does, so the cell keeps standard table
     // layout while its contents are right-aligned.
@@ -2047,18 +2048,25 @@ describe('asset browser HTTP workflow', () => {
     fs.writeFileSync(path.join(projectDir, 'a.png'), 'png');
     await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
-    const listRes = await agent.get(`/projects/${id}/assets`).expect(200);
+    const listRes = await agent.get(`/projects/${id}/assets?view=list`).expect(200);
     expect(listRes.text).toContain('class="view-switcher"');
     expect(listRes.text).toMatch(/class="view-switcher-option" href="[^"]*"\s+aria-current="page">List</);
     expect(listRes.text).not.toContain('asset-grid');
     expect(listRes.text).toContain('data-table asset-table');
+    expect(listRes.text).toContain('data-tooltip="View asset details"');
+    expect(listRes.text).not.toMatch(/class="asset-details-link[^>]*title="/);
 
-    const gridRes = await agent.get(`/projects/${id}/assets?view=grid`).expect(200);
+    const gridRes = await agent.get(`/projects/${id}/assets`).expect(200);
     expect(gridRes.text).toContain('class="view-switcher"');
     expect(gridRes.text).toMatch(/class="view-switcher-option" href="[^"]*"\s+aria-current="page">Grid</);
+    expect(gridRes.text.indexOf('>Grid</a>')).toBeLessThan(gridRes.text.indexOf('>List</a>'));
+    expect(gridRes.text).toContain('data-asset-grid-size-controls');
+    expect(gridRes.text).toContain('data-grid-size="default"');
+    expect(gridRes.text).toContain('aria-pressed="true"');
     expect(gridRes.text).toContain('class="asset-grid"');
     expect(gridRes.text).toContain('class="asset-card"');
     expect(gridRes.text).not.toContain('data-table asset-table');
+    expect(listRes.text).not.toContain('data-asset-grid-size-controls');
   });
 
   it('renders equivalent metadata, actions, and bulk-selection fields for a grid card', async () => {
@@ -2069,13 +2077,201 @@ describe('asset browser HTTP workflow', () => {
 
     const res2 = await agent.get(`/projects/${id}/assets?view=grid`).expect(200);
     const html = res2.text;
+    const cardMatch = html.match(/<article class="asset-card[\s\S]*?<\/article>/);
+    expect(cardMatch).not.toBeNull();
+    const card = cardMatch[0];
 
     expect(html).toContain(`data-asset-id="${asset.id}"`);
-    expect(html).toContain(`name="selectedAssetIds" value="${asset.id}"`);
+    expect((card.match(/<input type="checkbox"/g) || []).length).toBe(1);
+    expect((card.match(/class="asset-selection-control"/g) || []).length).toBe(1);
+    expect(card.indexOf('class="asset-selection-control"')).toBeLessThan(card.indexOf('asset-indicator'));
+    expect(card).toContain(`name="selectedAssetIds" value="${asset.id}"`);
+    expect(card).toContain('form="bulk-select-form"');
     expect(html).toContain(`aria-label="Select hero.png"`);
-    expect(html).toMatch(/<a class="asset-card-filename" href="[^"]*">hero\.png<\/a>/);
-    expect(html).toContain('View details');
-    expect(html).toContain('Present at last scan');
+    expect(html).toMatch(/<a class="asset-card-filename" href="[^"]*">hero<\/a>/);
+    expect(html).toContain('class="asset-card-media-link"');
+    expect(html).toContain('class="asset-details-link asset-tooltip asset-tooltip--right"');
+    expect(html).toContain('aria-label="View details for hero.png"');
+    expect(html).toContain('asset-indicator--present');
+    expect(html).toContain('aria-label="Present" data-tooltip="Present">P</span>');
+    expect(card).toContain('role="option" aria-selected="false" data-asset-selectable-card tabindex="0"');
+    expect(card).toContain('aria-selected="false"');
+    expect(card).not.toContain('asset-card-selection-badge');
+    expect(card).not.toContain('title="');
+    expect(card).not.toContain('class="asset-card-category"');
+    expect(card).toContain('data-tooltip="View asset details"');
+    expect(card).toContain('data-asset-rename-trigger');
+    expect(card).toContain('data-asset-rename-editor');
+    expect(card).toContain('href="/projects/');
+    expect(card).toMatch(/class="asset-card-rename-editor" data-asset-rename-editor hidden>/);
+    expect(card).not.toContain('<summary');
+    expect(card).not.toContain('<details');
+    expect(card).toContain('data-asset-rename-input');
+    expect(card).toContain('value="hero"');
+    expect(card).not.toContain('value="hero.png"');
+    expect(card).toContain('data-asset-rename-confirm');
+    expect(card).toContain('data-asset-rename-cancel');
+    expect(card).toContain('name="origin" value="assets"');
+    expect(card).toMatch(/<div class="asset-card-media" data-preview-enhancement data-preview-state="loading">\s*<a class="asset-card-media-link" href="[^"]+" aria-label="View details for hero\.png">\s*<img class="asset-card-thumb"[^>]*data-preview-image>\s*<\/a>\s*<span class="asset-card-placeholder asset-card-fallback" data-preview-fallback hidden>PNG<\/span>\s*<\/div>/);
+    expect(card).not.toMatch(/<a class="asset-card-media-link"[^>]*>\s*<div class="asset-card-media"/);
+
+    const style = await readStylesheetSource(html);
+    const assetCardRule = style.match(/\.asset-card\s*\{([^}]*)\}/)?.[1] || '';
+    const assetCardMediaRule = style.match(/\.asset-card-media\s*\{([^}]*)\}/)?.[1] || '';
+    expect(assetCardRule).not.toMatch(/overflow\s*:\s*hidden/);
+    expect(assetCardMediaRule).toMatch(/overflow\s*:\s*hidden/);
+    expect(assetCardMediaRule).toMatch(/border-radius\s*:\s*0\s+0\s+var\(--radius-lg\)\s+var\(--radius-lg\)/);
+    expect(style).toMatch(/\.asset-indicator\s*\{[^}]*width:\s*1\.5rem[^}]*height:\s*1\.5rem[^}]*border-radius:\s*var\(--radius-sm\)/);
+    expect(style).toMatch(/\.asset-selection-control\s*\{[^}]*width:\s*1\.75rem[^}]*height:\s*1\.75rem[^}]*border-radius:\s*var\(--radius-md\)/);
+    expect(style).toMatch(/\.asset-card-top \.asset-details-link\s*\{[^}]*margin-left:\s*auto/);
+    expect(style).toMatch(/\.asset-card:has\(\.asset-select-checkbox:checked\)/);
+    expect(style).toMatch(/\.asset-tooltip\[data-tooltip\]:hover::after[\s\S]*\.asset-tooltip\[data-tooltip\]:focus-visible::after/);
+    expect(style).toMatch(/\.asset-tooltip--left\[data-tooltip\]::after/);
+    expect(style).toMatch(/\.asset-tooltip--right\[data-tooltip\]::after/);
+    expect(card).toMatch(/asset-tooltip--left[\s\S]*asset-tooltip--right/);
+    expect(card.indexOf('asset-tooltip--right')).toBeLessThan(card.indexOf('asset-card-media'));
+  });
+
+  it('keeps missing and unavailable grid media placeholders outside the details link', async () => {
+    const res = await createProject('Grid Media Placeholders');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('Grid Media Placeholders');
+    const missing = writeIndexedAsset(id, projectDir, 'missing.png', await makePng());
+    writeIndexedAsset(id, projectDir, 'source.kra', Buffer.from('kra'), {
+      extension: 'kra', mimeType: 'application/x-krita',
+    });
+    await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
+    fs.rmSync(path.join(projectDir, 'missing.png'));
+    await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
+
+    const res2 = await agent.get(`/projects/${id}/assets?view=grid`).expect(200);
+    const cards = [...res2.text.matchAll(/<article class="asset-card[\s\S]*?<\/article>/g)].map((match) => match[0]);
+    const missingCard = cards.find((card) => card.includes(`data-asset-id="${missing.id}"`));
+    const unsupportedCard = cards.find((card) => card.includes('>source<'));
+
+    expect(missingCard).toBeDefined();
+    expect(missingCard).toMatch(/<div class="asset-card-media">\s*<span class="asset-card-placeholder asset-card-placeholder-missing">Missing at last scan<\/span>\s*<\/div>/);
+    expect(missingCard).not.toContain('asset-card-media-link');
+    expect(unsupportedCard).toBeDefined();
+    expect(unsupportedCard).toMatch(/<div class="asset-card-media">\s*<span class="asset-card-placeholder">KRA — preview not supported<\/span>\s*<\/div>/);
+    expect(unsupportedCard).not.toContain('asset-card-media-link');
+  });
+
+  it('uses the higher-resolution preview derivative in Grid and the thumbnail derivative in List', async () => {
+    const res = await createProject('Grid Preview Derivative');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('Grid Preview Derivative');
+    const asset = writeIndexedAsset(id, projectDir, 'hero.png', await makePng(512, 384));
+
+    const grid = await agent.get(`/projects/${id}/assets`).expect(200);
+    expect(grid.text).toMatch(new RegExp(`<img class="asset-card-thumb"[^>]*src="/projects/${id}/assets/${asset.id}/preview\\?v=`));
+    expect(grid.text).not.toMatch(new RegExp(`<img class="asset-card-thumb"[^>]*src="[^"]+/original`));
+
+    const list = await agent.get(`/projects/${id}/assets?view=list`).expect(200);
+    expect(list.text).toMatch(new RegExp(`<img class="asset-thumb-image"[^>]*src="/projects/${id}/assets/${asset.id}/thumbnail\\?v=`));
+    expect(list.text).not.toMatch(new RegExp(`<img class="asset-thumb-image"[^>]*src="[^"]+/preview`));
+  });
+
+  it('submits only the basename in the List rename form while displaying the extension suffix', async () => {
+    const res = await createProject('Display Filename Form');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('Display Filename Form');
+    writeIndexedAsset(id, projectDir, 'archive.final.png', await makePng());
+
+    const list = await agent.get(`/projects/${id}/assets?view=list`).expect(200);
+    expect(list.text).toContain('>archive.final<');
+    expect(list.text).toContain('value="archive.final"');
+    expect(list.text).toContain('class="asset-rename-extension" aria-hidden="true">.png</span>');
+    expect(list.text).toContain('>PNG<');
+  });
+
+  it('preserves the current extension for browser-origin basename renames', async () => {
+    const res = await createProject('Browser Basename Rename');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('Browser Basename Rename');
+    const asset = writeIndexedAsset(id, projectDir, 'archive.final.png', await makePng());
+
+    const rename = await agent
+      .post(`/projects/${id}/assets/${asset.id}/rename`)
+      .send({ filename: 'renamed', origin: 'assets', view: 'list', _csrf: csrfToken })
+      .type('form')
+      .expect(302);
+
+    const location = new URL(rename.headers.location, 'http://localhost');
+    expect(location.pathname).toBe(`/projects/${id}/assets`);
+    expect(location.searchParams.get('view')).toBe('list');
+    expect(fs.existsSync(path.join(projectDir, 'renamed.png'))).toBe(true);
+    expect(fs.existsSync(path.join(projectDir, 'archive.final.png'))).toBe(false);
+  });
+
+  it('reopens the grid Rename editor with the submitted basename after a controlled failure', async () => {
+    const res = await createProject('Grid Rename Failure');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('Grid Rename Failure');
+    const asset = writeIndexedAsset(id, projectDir, 'scene.v2.kra', Buffer.from('kra'), {
+      extension: 'kra', mimeType: 'application/x-krita',
+    });
+
+    const failed = await agent
+      .post(`/projects/${id}/assets/${asset.id}/rename`)
+      .send({ filename: 'bad/name', origin: 'assets', view: 'grid', _csrf: csrfToken })
+      .type('form')
+      .expect(422);
+
+    const card = failed.text.match(/<article class="asset-card[\s\S]*?<\/article>/)?.[0];
+    expect(card).toBeDefined();
+    expect(card).toContain('data-asset-title-row hidden');
+    expect(card).toContain('data-asset-rename-editor');
+    expect(card).toMatch(/class="asset-card-rename-editor" data-asset-rename-editor>/);
+    expect(card).not.toContain('<summary');
+    expect(card).not.toContain('<details');
+    expect(card).toContain('value="bad/name"');
+    expect(card).toContain('aria-label="New basename for scene.v2.kra"');
+    expect(fs.existsSync(path.join(projectDir, 'scene.v2.kra'))).toBe(true);
+    expect(fs.existsSync(path.join(projectDir, 'bad', 'name.kra'))).toBe(false);
+  });
+
+  it('renames from the grid with basename-only input and returns to canonical grid context', async () => {
+    const res = await createProject('Grid Rename Success');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('Grid Rename Success');
+    const asset = writeIndexedAsset(id, projectDir, 'scene.v2.kra', Buffer.from('kra'), {
+      extension: 'kra', mimeType: 'application/x-krita',
+    });
+
+    const renamed = await agent
+      .post(`/projects/${id}/assets/${asset.id}/rename`)
+      .send({ filename: 'final-scene', origin: 'assets', view: 'grid', page: '1', pageSize: '25', _csrf: csrfToken })
+      .type('form')
+      .expect(302);
+
+    const location = new URL(renamed.headers.location, 'http://localhost');
+    expect(location.pathname).toBe(`/projects/${id}/assets`);
+    expect(location.searchParams.get('notice')).toBe('asset-renamed');
+    expect(location.searchParams.has('view')).toBe(false);
+    expect(location.searchParams.has('filename')).toBe(false);
+    expect(fs.existsSync(path.join(projectDir, 'final-scene.kra'))).toBe(true);
+    expect(fs.existsSync(path.join(projectDir, 'scene.v2.kra'))).toBe(false);
+  });
+
+  it('renders a checked grid checkbox with selected class and aria-selected after a bulk validation failure', async () => {
+    const res = await createProject('Grid Selected State');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('Grid Selected State');
+    const asset = writeIndexedAsset(id, projectDir, 'selected.png', await makePng());
+
+    const failed = await agent
+      .post(`/projects/${id}/assets/move-selected`)
+      .send({ selectedAssetIds: String(asset.id), destinationCategory: 'not-valid', view: 'grid', _csrf: csrfToken })
+      .type('form')
+      .expect(422);
+
+    const card = failed.text.match(/<article class="asset-card[\s\S]*?<\/article>/)?.[0];
+    expect(card).toBeDefined();
+    expect(card).toContain('class="asset-card is-selected"');
+    expect(card).toContain('aria-selected="true"');
+    expect(card).toContain('class="asset-selection-control is-selected"');
+    expect(card).toMatch(/<input type="checkbox"[^>]*checked>/);
   });
 
   it('disables selection for a missing asset in grid view', async () => {
@@ -2147,6 +2343,11 @@ describe('asset browser HTTP workflow', () => {
     expect(res2.text).toContain('>Missing Assets<');
     expect(res2.text).toContain(`href="/projects/${id}/asset-categories"`);
     expect(res2.text).toContain('Manage Categories');
+
+    const gridCards = [...res2.text.matchAll(/<article class="asset-card[\s\S]*?<\/article>/g)].map((match) => match[0]).join('\n');
+    expect(gridCards).not.toContain('Renders');
+    expect(gridCards).not.toContain('Archive');
+    expect(gridCards).not.toContain('asset-card-category');
 
     // Whole-project counts, independent of the current filter/page.
     expect(res2.text).toMatch(/All Assets[\s\S]{0,80}<span class="asset-nav-count">3<\/span>/);
@@ -2322,17 +2523,17 @@ describe('asset browser HTTP workflow', () => {
       sizeBytes: 10, modifiedAt: null, nestedPath: 'unknown/deep',
     });
 
-    const res2 = await agent.get(`/projects/${id}/assets?pageSize=100`).expect(200);
+    const res2 = await agent.get(`/projects/${id}/assets?pageSize=100&view=list`).expect(200);
     const html = res2.text;
 
-    expect(html).toMatch(/>final\.png<[\s\S]{0,600}web\/social[\s\S]{0,900}Exports/);
-    expect(html).toMatch(/>notes\.txt<[\s\S]{0,600}Project root[\s\S]{0,900}Uncategorized/);
-    expect(html).toMatch(/>file\.txt<[\s\S]{0,600}unknown\/deep[\s\S]{0,900}Uncategorized/);
+    expect(html).toMatch(/>final<[\s\S]{0,600}web\/social[\s\S]{0,900}Exports/);
+    expect(html).toMatch(/>notes<[\s\S]{0,600}Project root[\s\S]{0,900}Uncategorized/);
+    expect(html).toMatch(/>file<[\s\S]{0,600}unknown\/deep[\s\S]{0,900}Uncategorized/);
 
     // A categorized asset sitting at its category root has no useful
     // secondary location beyond the category label — the placeholder
     // dash is gone and the .asset-location element is omitted entirely.
-    const artworkRowMatch = html.match(/<tr[^>]*>[\s\S]*?>artwork\.kra<[\s\S]*?<\/tr>/);
+    const artworkRowMatch = html.match(/<tr[^>]*>[\s\S]*?>artwork<[\s\S]*?<\/tr>/);
     expect(artworkRowMatch).not.toBeNull();
     expect(artworkRowMatch[0]).not.toContain('asset-location');
     expect(artworkRowMatch[0]).not.toContain('—');
@@ -2355,8 +2556,8 @@ describe('asset browser HTTP workflow', () => {
     assetRepo.markMissingByProjectIdAndPathNotIn(id, ['present.png']);
 
     const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
-    expect(res2.text).toContain('<span class="status-badge status-badge--success">Present</span>');
-    expect(res2.text).toContain('<span class="status-badge status-badge--error">Missing at last scan</span>');
+    expect(res2.text).toContain('aria-label="Present"');
+    expect(res2.text).toContain('aria-label="Missing at last scan"');
     expect(res2.text).not.toContain(`/projects/${id}/assets/${missing.id}/thumbnail`);
   });
 
@@ -2389,10 +2590,10 @@ describe('asset browser HTTP workflow', () => {
     const res2 = await agent.get(`/projects/${id}/assets?pageSize=100`).expect(200);
     const html = res2.text;
 
-    expect(html).toMatch(/none\.png[\s\S]{0,900}No releases/);
+    expect(html).toMatch(/none[\s\S]{0,900}Not used by a release/);
     expect(html).toMatch(new RegExp(`single\\.png[\\s\\S]{0,900}Solo Release[\\s\\S]{0,200}Attachment`));
-    expect(html).toContain('<details class="release-usage-details">');
-    expect(html).toContain('<summary>2 releases</summary>');
+    expect(html).toContain('<details class="release-usage-details asset-usage-details">');
+    expect(html).toContain('aria-label="Used in 2 releases"');
     expect(html).toContain('Release One');
     expect(html).toContain('Release Two');
     expect(html).toContain(`/releases/${relA}`);
@@ -2445,7 +2646,7 @@ describe('asset browser HTTP workflow', () => {
       const missing = writeIndexedAsset(id, projectDir, 'gone.png', await makePng());
       assetRepo.markMissingByProjectIdAndPathNotIn(id, ['present.png']);
 
-      const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
+      const res2 = await agent.get(`/projects/${id}/assets?view=list`).expect(200);
       const html = res2.text;
 
       expect(html).toContain(`<input type="checkbox" form="bulk-select-form" name="selectedAssetIds" value="${present.id}"`);
@@ -2457,6 +2658,23 @@ describe('asset browser HTTP workflow', () => {
       expect(missingRowMatch[0]).toContain('<input type="checkbox" disabled');
       expect(missingRowMatch[0]).not.toContain('name="selectedAssetIds"');
       expect(missing.id).toBeGreaterThan(0);
+    });
+
+    it('renders selected grid state from server-submitted checkbox values', async () => {
+      const res = await createProject('Selection Selected State');
+      const id = Number(res.headers.location.replace('/projects/', ''));
+      const projectDir = getProjectDir('Selection Selected State');
+      const asset = writeIndexedAsset(id, projectDir, 'selected.png', await makePng());
+
+      const rejected = await agent
+        .post(`/projects/${id}/assets/add-to-release`)
+        .type('form')
+        .send({ selectedAssetIds: String(asset.id), _csrf: csrfToken })
+        .expect(422);
+
+      expect(rejected.text).toMatch(new RegExp(`class="asset-card is-selected"\\s+data-asset-id="${asset.id}"`));
+      expect(rejected.text).toContain(`name="selectedAssetIds" value="${asset.id}"`);
+      expect(rejected.text).toContain('checked');
     });
 
     it('states that selection is page-local', async () => {
@@ -3394,7 +3612,7 @@ describe('asset browser HTTP workflow', () => {
 
     // ─── Main browser action integration ─────────────────────────────────
     describe('main assets-page rename and move-selected', () => {
-      it('renders an eligible list Rename form with the complete canonical context', async () => {
+      it('renders an eligible list Rename form with the basename and complete canonical context', async () => {
         const { id, asset } = await setupProjectWithAsset('Main List Rename', 'old.png');
 
         const res = await agent
@@ -3415,7 +3633,8 @@ describe('asset browser HTTP workflow', () => {
         expect(form).toContain('name="page" value="1"');
         expect(form).toContain('name="pageSize" value="50"');
         expect(form).toContain('name="view" value="list"');
-        expect(form).toContain('value="old.png"');
+        expect(form).toContain('value="old"');
+        expect(form).toContain('class="asset-rename-extension" aria-hidden="true">.png</span>');
         expect(form).not.toContain('unknown');
       });
 
@@ -3423,17 +3642,18 @@ describe('asset browser HTTP workflow', () => {
         const { id, asset } = await setupProjectWithAsset('Main Grid Rename', 'hero.png');
 
         const res = await agent.get(`/projects/${id}/assets?view=grid`).expect(200);
-        const card = res.text.match(new RegExp(`<article class="asset-card" data-asset-id="${asset.id}">[\\s\\S]*?<\\/article>`));
+        const card = res.text.match(new RegExp(`<article class="asset-card(?: is-selected)?"\\s+data-asset-id="${asset.id}"[^>]*>[\\s\\S]*?<\\/article>`));
         expect(card).not.toBeNull();
         expect(card[0]).toContain(`action="/projects/${id}/assets/${asset.id}/rename"`);
-        expect(card[0]).toContain('class="asset-card-rename-form"');
+        expect(card[0]).toContain('class="asset-card-rename-editor"');
         expect(card[0]).toContain('name="origin" value="assets"');
-        expect(card[0]).toContain('value="hero.png"');
+        expect(card[0]).toContain('value="hero"');
+        expect(card[0]).toContain('class="asset-rename-extension" aria-hidden="true">.png</span>');
         expect((card[0].match(/<form\b/g) || []).length).toBe((card[0].match(/<\/form>/g) || []).length);
         expect((res.text.match(/<h1\b/g) || []).length).toBe(1);
 
         const bulkStart = res.text.indexOf('<form id="bulk-select-form"');
-        const gridStart = res.text.indexOf('<ul class="asset-grid">');
+        const gridStart = res.text.search(/<ul class="asset-grid"[^>]*>/);
         expect(bulkStart).toBeGreaterThanOrEqual(0);
         expect(res.text.indexOf('</form>', bulkStart)).toBeLessThan(gridStart);
         expect(res.text).toMatch(/<input type="checkbox" form="bulk-select-form"[^>]*name="selectedAssetIds"/);
@@ -3460,7 +3680,7 @@ describe('asset browser HTTP workflow', () => {
           .post(`/projects/${id}/assets/${asset.id}/rename`)
           .type('form')
           .send({
-            filename: 'new.png', origin: 'assets', category: 'all', search: 'new', extension: '.png',
+            filename: 'new', origin: 'assets', category: 'all', search: 'new', extension: '.png',
             presence: 'present', usage: 'unused', sort: 'size', order: 'desc', page: '1', pageSize: '50',
             view: 'grid', unknown: 'strip-me', _csrf: csrfToken,
           })
@@ -3475,7 +3695,7 @@ describe('asset browser HTTP workflow', () => {
         expect(location.searchParams.get('sort')).toBe('size');
         expect(location.searchParams.get('order')).toBe('desc');
         expect(location.searchParams.get('pageSize')).toBe('50');
-        expect(location.searchParams.get('view')).toBe('grid');
+        expect(location.searchParams.has('view')).toBe(false);
         expect(location.searchParams.has('category')).toBe(false);
         expect(location.searchParams.has('page')).toBe(false);
         expect(location.searchParams.has('unknown')).toBe(false);
@@ -3513,11 +3733,11 @@ describe('asset browser HTTP workflow', () => {
         const invalidRes = await agent
           .post(`/projects/${invalid.id}/assets/${invalid.asset.id}/rename`)
           .type('form')
-          .send({ filename: '..', origin: 'assets', search: 'old', view: 'grid', _csrf: csrfToken })
+          .send({ filename: 'bad/name', origin: 'assets', search: 'old', view: 'grid', _csrf: csrfToken })
           .expect(422);
         expect(invalidRes.text).toContain('Enter a valid filename.');
-        expect(invalidRes.text).toContain('value=".."');
-        expect(invalidRes.text).toContain('class="asset-card-rename-form"');
+        expect(invalidRes.text).toContain('value="bad/name"');
+          expect(invalidRes.text).toContain('class="asset-card-rename-editor"');
         expect(invalidRes.text).not.toContain('asset-preview-section');
 
         const conflict = await setupProjectWithAsset('Main Rename Conflict', 'old.png');
@@ -3525,7 +3745,7 @@ describe('asset browser HTTP workflow', () => {
         const conflictRes = await agent
           .post(`/projects/${conflict.id}/assets/${conflict.asset.id}/rename`)
           .type('form')
-          .send({ filename: 'taken.png', origin: 'assets', _csrf: csrfToken })
+          .send({ filename: 'taken', origin: 'assets', _csrf: csrfToken })
           .expect(409);
         expect(conflictRes.text).toContain('Destination already exists.');
         expect(conflictRes.text).toContain(`action="/projects/${conflict.id}/assets/${conflict.asset.id}/rename"`);
@@ -3622,7 +3842,7 @@ describe('asset browser HTTP workflow', () => {
         expect(location.searchParams.get('sort')).toBe('size');
         expect(location.searchParams.get('order')).toBe('desc');
         expect(location.searchParams.get('pageSize')).toBe('50');
-        expect(location.searchParams.get('view')).toBe('grid');
+        expect(location.searchParams.has('view')).toBe(false);
         expect(location.searchParams.get('assets_moved')).toBe('2');
         expect(location.searchParams.has('unknown')).toBe(false);
         expect(location.searchParams.has('path')).toBe(false);

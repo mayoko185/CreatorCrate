@@ -2601,7 +2601,7 @@ describe('workflow query service', () => {
         category: 'all',
         sort: 'filename',
         order: 'asc',
-        view: 'list',
+        view: 'grid',
       });
     });
 
@@ -2620,7 +2620,7 @@ describe('workflow query service', () => {
         category: 'all',
         sort: 'filename',
         order: 'asc',
-        view: 'list',
+        view: 'grid',
       });
       expect(result.total).toBe(2);
     });
@@ -2642,17 +2642,17 @@ describe('workflow query service', () => {
         category: 'all',
         sort: 'filename',
         order: 'asc',
-        view: 'list',
+        view: 'grid',
       });
     });
 
-    it('defaults the view to list when omitted', () => {
+    it('defaults the view to grid when omitted', () => {
       const project = insertProject(db, { title: 'Default View' });
       insertAsset(db, { projectId: project.id, relativePath: 'a.txt', filename: 'a.txt', isPresent: 1 });
 
       const result = service.getProjectAssetBrowser(project.id);
 
-      expect(result.filters.view).toBe('list');
+      expect(result.filters.view).toBe('grid');
     });
 
     it('accepts a valid grid view parameter', () => {
@@ -2666,13 +2666,13 @@ describe('workflow query service', () => {
       expect(result.page).toBe(1);
     });
 
-    it('normalizes an invalid view value to list', () => {
+    it('normalizes an invalid view value to grid', () => {
       const project = insertProject(db, { title: 'Invalid View Param' });
       insertAsset(db, { projectId: project.id, relativePath: 'a.txt', filename: 'a.txt', isPresent: 1 });
 
       const result = service.getProjectAssetBrowser(project.id, { view: 'table' });
 
-      expect(result.filters.view).toBe('list');
+      expect(result.filters.view).toBe('grid');
     });
 
     it('normalizes search by trimming empty input and bounding long values', () => {
@@ -3013,7 +3013,7 @@ describe('workflow query service', () => {
         expect(url.searchParams.get('order')).toBe('desc');
         expect(url.searchParams.get('page')).toBe('2');
         expect(url.searchParams.get('pageSize')).toBe('2');
-        expect(url.searchParams.get('view')).toBe('grid');
+        expect(url.searchParams.has('view')).toBe(false);
         expect(url.searchParams.has('unknownField')).toBe(false);
       });
 
@@ -3067,6 +3067,7 @@ describe('workflow query service', () => {
       const byName = Object.fromEntries(result.assets.map((asset) => [asset.filename, asset]));
 
       expect(byName['present.png'].preview_state).toBe('previewable');
+      expect(byName['present.png'].displayFilename).toBe('present');
       expect(byName['source.kra'].preview_state).toBe('unsupported');
       expect(byName['missing.png'].preview_state).toBe('missing');
       expect(byName['source.kra'].preview_revision).toBeNull();
@@ -3121,6 +3122,32 @@ describe('workflow query service', () => {
       expect(noMtime.preview_revision).toBeNull();
       expect(noMtime.thumbnail_url).toBeNull();
       expect(noMtime.preview_url).toBeNull();
+    });
+
+    it('projects display filenames without changing the stored filename', () => {
+      const project = insertProject(db, { title: 'Display Filenames' });
+      const names = ['one.png', 'archive.final.webp', 'README', '.gitignore', '.config.json'];
+      for (const filename of names) {
+        insertAsset(db, {
+          projectId: project.id,
+          relativePath: filename,
+          filename,
+          extension: filename.includes('.') && !filename.endsWith('.') ? filename.split('.').pop() : '',
+          isPresent: 1,
+        });
+      }
+
+      const result = service.getProjectAssetBrowser(project.id, { pageSize: 100 });
+      const displayByFilename = Object.fromEntries(result.assets.map((asset) => [asset.filename, asset.displayFilename]));
+
+      expect(displayByFilename).toEqual({
+        'one.png': 'one',
+        'archive.final.webp': 'archive.final',
+        README: 'README',
+        '.gitignore': '.gitignore',
+        '.config.json': '.config',
+      });
+      expect(result.assets.find((asset) => asset.filename === 'archive.final.webp').filename).toBe('archive.final.webp');
     });
 
     it('release_usage details are attached to the correct assets', () => {
@@ -3615,7 +3642,7 @@ describe('workflow query service', () => {
         order: 'desc',
         page: 3,
         pageSize: 10,
-        view: 'list',
+        view: 'grid',
       });
     });
 
@@ -3731,13 +3758,13 @@ describe('workflow query service', () => {
       expect(result.previousAssetLink.assetId).toBe(first.id);
       expect(result.nextAssetLink.assetId).toBe(last.id);
       expectLocalUrl(result.previousAssetLink.href, `/projects/${project.id}/assets/${first.id}`, {
-        search: '0', pageSize: '2', view: 'grid',
+        search: '0', pageSize: '2',
       });
       expectLocalUrl(result.nextAssetLink.href, `/projects/${project.id}/assets/${last.id}`, {
-        search: '0', page: '2', pageSize: '2', view: 'grid',
+        search: '0', page: '2', pageSize: '2',
       });
       expectLocalUrl(result.backToAssetsLink.href, `/projects/${project.id}/assets`, {
-        search: '0', pageSize: '2', view: 'grid',
+        search: '0', pageSize: '2',
       });
     });
 

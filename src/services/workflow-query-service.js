@@ -634,12 +634,12 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
 
   /**
    * Normalize the `view` query parameter: missing/invalid values fall back
-   * to 'list', matching every other filter's fallback-to-default contract.
+   * to the Grid-first browser default.
    * @param {unknown} value
    * @returns {'list'|'grid'}
    */
   function normalizeAssetBrowserView(value) {
-    return ASSET_BROWSER_VIEW_VALUES.includes(value) ? value : 'list';
+    return ASSET_BROWSER_VIEW_VALUES.includes(value) ? value : 'grid';
   }
 
   /**
@@ -779,7 +779,7 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
     if (key === 'order' && normalized === 'asc') return;
     if (key === 'page' && normalized === '1') return;
     if (key === 'pageSize' && normalized === String(ASSET_BROWSER_DEFAULT_PAGE_SIZE)) return;
-    if (key === 'view' && normalized === 'list') return;
+    if (key === 'view' && normalized === 'grid') return;
     query[key] = normalized;
   }
 
@@ -906,6 +906,15 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
     return asset.category_id === null || asset.category_id === undefined ? 'Project root' : '';
   }
 
+  function buildDisplayFilename(filename) {
+    if (typeof filename !== 'string') return '';
+    const lastDot = filename.lastIndexOf('.');
+    // A leading dot is the filename itself for assets such as `.gitignore`;
+    // a trailing dot does not introduce a meaningful extension.
+    if (lastDot <= 0 || lastDot === filename.length - 1) return filename;
+    return filename.slice(0, lastDot);
+  }
+
   /**
    * Compact, render-ready release-usage summary. `mode` tells the template
    * which of the three required presentations to use without branching on
@@ -933,6 +942,7 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
       categoryLabel: category ? category.displayName : 'Uncategorized',
       categoryDisabled: category ? !category.enabled : false,
       locationLabel: buildAssetLocationLabel(asset),
+      displayFilename: buildDisplayFilename(asset.filename),
       typeLabel: asset.extension ? asset.extension.toUpperCase() : 'File',
       presenceLabel: isPresent ? 'Present' : 'Missing at last scan',
       releaseSummary: buildReleaseUsageSummary(asset.release_usage || []),

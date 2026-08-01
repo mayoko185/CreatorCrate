@@ -123,9 +123,9 @@ export function createAssetsRouter({ appName, projectService, assetScanner, work
   });
 
   // POST /projects/:projectId/assets/:assetId/rename — Rename a single
-  // asset's file in place. All filename validation belongs to
-  // assetActionService.renameAsset; this route only extracts the form
-  // field and maps the result.
+  // asset's file in place. Browser-origin forms submit a basename and use the
+  // service's extension-preserving operation; viewer-origin forms retain the
+  // complete-filename action contract.
   router.post('/:projectId/assets/:assetId/rename', (req, res, next) => {
     try {
       const projectId = parseId(req.params.projectId);
@@ -151,7 +151,9 @@ export function createAssetsRouter({ appName, projectService, assetScanner, work
 
       let renamed;
       try {
-        renamed = assetActionService.renameAsset(projectId, assetId, filename);
+        renamed = origin === 'assets'
+          ? assetActionService.renameAssetBasename(projectId, assetId, filename)
+          : assetActionService.renameAsset(projectId, assetId, filename);
       } catch (err) {
         return handleAssetActionFailure(err, {
           appName, workflowQueryService, req, res, next,
@@ -508,7 +510,7 @@ function buildCanonicalContextQuery(workflowQueryService, projectId, rawContext,
   const contextResult = workflowQueryService.getProjectAssetBrowserContext(projectId, rawContext);
   const filters = contextResult
     ? contextResult.filters
-    : { search: null, extension: null, presence: 'all', usage: 'all', category: 'all', sort: 'filename', order: 'asc', page: 1, pageSize: 25, view: 'list' };
+    : { search: null, extension: null, presence: 'all', usage: 'all', category: 'all', sort: 'filename', order: 'asc', page: 1, pageSize: 25, view: 'grid' };
 
   const query = buildCanonicalBrowserQuery(filters, filters.page, filters.pageSize);
   for (const [key, value] of Object.entries(extraQuery)) {
@@ -620,7 +622,7 @@ function appendCanonicalParam(query, key, value) {
   if (key === 'order' && normalized === 'asc') return;
   if (key === 'page' && normalized === '1') return;
   if (key === 'pageSize' && normalized === '25') return;
-  if (key === 'view' && normalized === 'list') return;
+  if (key === 'view' && normalized === 'grid') return;
   query[key] = normalized;
 }
 
