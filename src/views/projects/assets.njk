@@ -1,6 +1,30 @@
 {% extends "layout.njk" %}
 {% import "partials/page-heading.njk" as pageHeading %}
 
+{% macro releaseUsageInline(asset) %}
+  {% if asset.releaseSummary.mode == 'none' %}
+    <span class="asset-unused">No releases</span>
+  {% elif asset.releaseSummary.mode == 'single' %}
+    {% set usage = asset.releaseSummary.releases[0] %}
+    <a href="/releases/{{ usage.release_id }}">{{ usage.title }}</a>
+    <span class="release-role">{{ usage.role | title }}</span>
+    <span class="release-status">({{ usage.status }})</span>
+  {% else %}
+    <details class="release-usage-details">
+      <summary>{{ asset.releaseSummary.count }} releases</summary>
+      <ul class="release-detail-list">
+        {% for usage in asset.releaseSummary.releases %}
+          <li>
+            <a href="/releases/{{ usage.release_id }}">{{ usage.title }}</a>
+            <span class="release-role">{{ usage.role | title }}</span>
+            <span class="release-status">({{ usage.status }})</span>
+          </li>
+        {% endfor %}
+      </ul>
+    </details>
+  {% endif %}
+{% endmacro %}
+
 {% macro assetRow(asset, isArchived, submittedSelectedAssetIds) %}
   <tr{% if not asset.is_present %} class="is-missing"{% endif %}>
     {% if not isArchived %}
@@ -35,7 +59,7 @@
     </td>
     <td class="asset-file-cell">
       <a class="asset-file-link" href="{{ asset.viewerUrl }}">{{ asset.filename }}</a>
-      <br><small class="asset-location">{{ asset.locationLabel }}</small>
+      {% if asset.locationLabel %}<br><small class="asset-location">{{ asset.locationLabel }}</small>{% endif %}
     </td>
     <td class="asset-category-cell">
       {{ asset.categoryLabel }}
@@ -50,32 +74,67 @@
       {% endif %}
     </td>
     <td class="asset-release-usage-cell">
-      {% if asset.releaseSummary.mode == 'none' %}
-        <span class="asset-unused">No releases</span>
-      {% elif asset.releaseSummary.mode == 'single' %}
-        {% set usage = asset.releaseSummary.releases[0] %}
-        <a href="/releases/{{ usage.release_id }}">{{ usage.title }}</a>
-        <span class="release-role">{{ usage.role | title }}</span>
-        <span class="release-status">({{ usage.status }})</span>
-      {% else %}
-        <details class="release-usage-details">
-          <summary>{{ asset.releaseSummary.count }} releases</summary>
-          <ul class="release-detail-list">
-            {% for usage in asset.releaseSummary.releases %}
-              <li>
-                <a href="/releases/{{ usage.release_id }}">{{ usage.title }}</a>
-                <span class="release-role">{{ usage.role | title }}</span>
-                <span class="release-status">({{ usage.status }})</span>
-              </li>
-            {% endfor %}
-          </ul>
-        </details>
-      {% endif %}
+      {{ releaseUsageInline(asset) }}
     </td>
-    <td class="row-actions">
-      <a class="button button-small" href="{{ asset.viewerUrl }}">View details</a>
+    <td class="asset-actions-cell">
+      <span class="row-actions">
+        <a class="button button-small" href="{{ asset.viewerUrl }}">View details</a>
+      </span>
     </td>
   </tr>
+{% endmacro %}
+
+{% macro assetCard(asset, isArchived, submittedSelectedAssetIds) %}
+  <li class="asset-grid-item{% if not asset.is_present %} is-missing{% endif %}">
+    <article class="asset-card" data-asset-id="{{ asset.id }}">
+      <div class="asset-card-top">
+        {% if not isArchived %}
+          {% if asset.is_present %}
+            <input type="checkbox" id="asset-card-select-{{ asset.id }}" name="selectedAssetIds" value="{{ asset.id }}"
+                   aria-label="Select {{ asset.filename }}"
+                   {% if (asset.id ~ '') in submittedSelectedAssetIds %}checked{% endif %}>
+          {% else %}
+            <input type="checkbox" id="asset-card-select-{{ asset.id }}" disabled aria-label="{{ asset.filename }} is missing at last scan and cannot be selected">
+          {% endif %}
+        {% endif %}
+        {% if asset.is_present %}
+          {% set status = 'present' %}{% include "partials/status-badge.njk" %}
+        {% else %}
+          {% set status = 'missing-at-last-scan' %}{% include "partials/status-badge.njk" %}
+        {% endif %}
+      </div>
+
+      <div class="asset-card-media"{% if asset.hasThumbnail %} data-preview-enhancement data-preview-state="loading"{% endif %}>
+        {% if asset.hasThumbnail %}
+          <img class="asset-card-thumb"
+               src="{{ asset.thumbnail_url }}"
+               alt="{{ asset.previewAltText }}"
+               loading="lazy"
+               decoding="async"
+               data-preview-image>
+          <span class="asset-card-placeholder asset-card-fallback" data-preview-fallback hidden>{{ asset.typeLabel }}</span>
+        {% elif not asset.is_present %}
+          <span class="asset-card-placeholder asset-card-placeholder-missing">Missing at last scan</span>
+        {% elif asset.preview_state == 'unsupported' %}
+          <span class="asset-card-placeholder">{{ asset.typeLabel }} — preview not supported</span>
+        {% else %}
+          <span class="asset-card-placeholder">Preview unavailable</span>
+        {% endif %}
+      </div>
+
+      <div class="asset-card-body">
+        <a class="asset-card-filename" href="{{ asset.viewerUrl }}">{{ asset.filename }}</a>
+        <span class="asset-card-category">
+          {{ asset.categoryLabel }}
+          {% if asset.categoryDisabled %}<em class="asset-category-disabled-marker">(disabled)</em>{% endif %}
+          {% if asset.locationLabel %} · {{ asset.locationLabel }}{% endif %}
+        </span>
+        <span class="asset-card-meta">{{ asset.typeLabel }} · {{ asset.formattedSize }}</span>
+        <span class="asset-card-usage">{{ releaseUsageInline(asset) }}</span>
+        <a class="button button-small asset-card-view" href="{{ asset.viewerUrl }}">View details</a>
+      </div>
+    </article>
+  </li>
 {% endmacro %}
 
 {% set page_title = "Assets — " + project.title %}
@@ -232,7 +291,17 @@
     </nav>
 
     <div class="asset-browser-content">
+      <nav class="view-switcher" aria-label="Asset display">
+        <a class="view-switcher-option" href="{{ pageUrl({ view: 'list' }) }}"
+           {% if filters.view != 'grid' %}aria-current="page"{% endif %}>List</a>
+        <a class="view-switcher-option" href="{{ pageUrl({ view: 'grid' }) }}"
+           {% if filters.view == 'grid' %}aria-current="page"{% endif %}>Grid</a>
+      </nav>
+
       <form class="filters" method="get" action="/projects/{{ project.id }}/assets">
+        {% if filters.view != 'list' %}
+          <input type="hidden" name="view" value="{{ filters.view }}">
+        {% endif %}
         <div class="field">
           <label for="search">Search</label>
           <input id="search" name="search" type="search" value="{{ filters.search or '' }}" maxlength="{{ searchMaxLength }}">
@@ -333,27 +402,35 @@
             </div>
         {% endif %}
 
-        <div class="table-scroll" tabindex="0" aria-label="Project assets">
-          <table class="data-table asset-table">
-            <thead>
-              <tr>
-                {% if not isArchived %}<th scope="col"><span class="sr-only">Select</span></th>{% endif %}
-                <th scope="col">Preview</th>
-                <th scope="col">File</th>
-                <th scope="col">Category</th>
-                <th scope="col">Type</th>
-                <th scope="col">Presence</th>
-                <th scope="col">Release usage</th>
-                <th scope="col">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {% for asset in assets %}
-                {{ assetRow(asset, isArchived, submittedSelectedAssetIds) }}
-              {% endfor %}
-            </tbody>
-          </table>
-        </div>
+        {% if filters.view == 'grid' %}
+          <ul class="asset-grid">
+            {% for asset in assets %}
+              {{ assetCard(asset, isArchived, submittedSelectedAssetIds) }}
+            {% endfor %}
+          </ul>
+        {% else %}
+          <div class="table-scroll" tabindex="0" aria-label="Project assets">
+            <table class="data-table asset-table">
+              <thead>
+                <tr>
+                  {% if not isArchived %}<th scope="col"><span class="sr-only">Select</span></th>{% endif %}
+                  <th scope="col">Preview</th>
+                  <th scope="col">File</th>
+                  <th scope="col">Category</th>
+                  <th scope="col">Type</th>
+                  <th scope="col">Presence</th>
+                  <th scope="col">Release usage</th>
+                  <th scope="col">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for asset in assets %}
+                  {{ assetRow(asset, isArchived, submittedSelectedAssetIds) }}
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        {% endif %}
 
         {% if not isArchived %}
           </form>
@@ -402,6 +479,9 @@
             {% endif %}
             {% if filters.order != 'asc' %}
               <input type="hidden" name="order" value="{{ filters.order }}">
+            {% endif %}
+            {% if filters.view != 'list' %}
+              <input type="hidden" name="view" value="{{ filters.view }}">
             {% endif %}
             <button class="button button-small" type="submit">Apply</button>
           </form>

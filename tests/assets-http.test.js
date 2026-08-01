@@ -1307,7 +1307,7 @@ describe('asset browser HTTP workflow', () => {
 
   // ─── Defect fix: browser row links carry normalized/clamped context ────
 
-  it('a browser row viewer link carries the full normalized context, strips view/unknown, and the viewer preserves it across Back/Previous/Next', async () => {
+  it('a browser row viewer link carries the full normalized context, strips unknown fields, and the viewer preserves it across Back/Previous/Next', async () => {
     const res = await createProject('Row Link Context');
     const id = Number(res.headers.location.replace('/projects/', ''));
     const category = assetCategoryRepo.addProjectCategory({
@@ -1327,7 +1327,7 @@ describe('asset browser HTTP workflow', () => {
     });
 
     const res2 = await agent
-      .get(`/projects/${id}/assets?category=${category.id}&search=hero&extension=.PNG&presence=present&usage=unused&sort=filename&order=desc&pageSize=2&junk=strip-me&view=grid`)
+      .get(`/projects/${id}/assets?category=${category.id}&search=hero&extension=.PNG&presence=present&usage=unused&sort=filename&order=desc&pageSize=2&junk=strip-me`)
       .expect(200);
 
     // First row on a descending-filename page 1 of 2 is "Hero Two.png".
@@ -1457,16 +1457,15 @@ describe('asset browser HTTP workflow', () => {
       .get(`/projects/${id}/assets/${heroTwo.id}?view=grid&search=${encodeURIComponent('Hero &')}&extension=.PNG&presence=present&usage=unused&page=99&pageSize=1&junk=1`)
       .expect(200);
 
-    // `view` is accepted on the request (legacy-template compatibility) but
-    // is not part of the canonical context, so it is never propagated into
-    // generated viewer navigation URLs.
-    const previousHref = `/projects/${id}/assets/${heroOne.id}?search=Hero+%26&extension=png&presence=present&usage=unused&pageSize=1`;
-    const backHref = `/projects/${id}/assets?search=Hero+%26&extension=png&presence=present&usage=unused&page=2&pageSize=1`;
+    // `view=grid` is part of the canonical context, so it propagates into
+    // every generated viewer navigation URL exactly like the other filters.
+    const previousHref = `/projects/${id}/assets/${heroOne.id}?search=Hero+%26&extension=png&presence=present&usage=unused&pageSize=1&view=grid`;
+    const backHref = `/projects/${id}/assets?search=Hero+%26&extension=png&presence=present&usage=unused&page=2&pageSize=1&view=grid`;
     expectAnchorHref(res2.text, 'asset-viewer-prev', previousHref);
     expectAnchorHref(res2.text, 'asset-viewer-back', backHref);
     expectNoAnchor(res2.text, 'asset-viewer-next');
-    expectQueryKeys(previousHref, ['search', 'extension', 'presence', 'usage', 'pageSize']);
-    expectQueryKeys(backHref, ['search', 'extension', 'presence', 'usage', 'page', 'pageSize']);
+    expectQueryKeys(previousHref, ['search', 'extension', 'presence', 'usage', 'pageSize', 'view']);
+    expectQueryKeys(backHref, ['search', 'extension', 'presence', 'usage', 'page', 'pageSize', 'view']);
     expect(res2.text).not.toContain('junk=1');
   });
 
@@ -1952,7 +1951,7 @@ describe('asset browser HTTP workflow', () => {
     }
   });
 
-  it('serves /creatorcrate.css with the shared .asset-filename/.asset-date/.asset-file-link declarations, without obsolete grid/card selectors', async () => {
+  it('serves /creatorcrate.css with the shared .asset-filename/.asset-date/.asset-file-link declarations and intrinsic-ratio grid rules', async () => {
     // This asserts the actual HTTP-served stylesheet — not the source file
     // on disk — so it can catch a misconfigured static route, wrong served
     // file, or stale response that a source-file read would miss.
@@ -1973,12 +1972,13 @@ describe('asset browser HTTP workflow', () => {
     // (distinct from .asset-filename) must still be served.
     expect(style).toMatch(/\.asset-file-link\s*\{[^}]*font-weight:\s*600[^}]*\}/);
 
-    // The Phase 3 asset-browser cleanup removed these project-browser-only
-    // selectors; they must not have come back as part of this restoration.
-    expect(style).not.toMatch(/\.asset-grid\b/);
-    expect(style).not.toMatch(/\.asset-card\b/);
-    expect(style).not.toMatch(/\.view-switcher-list\b/);
-    expect(style).not.toMatch(/\.view-switcher-grid\b/);
+    // The restored grid view uses a responsive, intrinsic-ratio card grid —
+    // no square aspect-ratio, no fixed-frame object-fit:contain cropping.
+    expect(style).toMatch(/\.asset-grid\s*\{[^}]*grid-template-columns:\s*repeat\(auto-fit,\s*minmax\(/);
+    expect(style).toMatch(/\.asset-card\s*\{/);
+    expect(style).toMatch(/\.asset-card-thumb\s*\{[^}]*display:\s*block[^}]*width:\s*100%[^}]*height:\s*auto[^}]*\}/);
+    expect(style).not.toMatch(/\.asset-card-thumb\s*\{[^}]*aspect-ratio:\s*1/);
+    expect(style).not.toMatch(/\.asset-card[^{]*\{[^}]*object-fit:\s*contain/);
   });
 
   it('renders wrapping and containment rules for viewer and browser intrinsic-width content', async () => {
@@ -2021,20 +2021,90 @@ describe('asset browser HTTP workflow', () => {
     }
   });
 
-  it('no grid/list switch markup or view parameter remains anywhere on the page', async () => {
-    const res = await createProject('No Grid Switch');
+  it('keeps the Actions cell a real table cell with a flex wrapper for controls, right-aligned via CSS', async () => {
+    const res = await createProject('Actions Cell Markup');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('Actions Cell Markup');
+    writeIndexedAsset(id, projectDir, 'a.png', await makePng());
+
+    const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
+    // The <td> itself carries no flex/display override — only the inner
+    // <span class="row-actions"> does, so the cell keeps standard table
+    // layout while its contents are right-aligned.
+    expect(res2.text).toMatch(/<td class="asset-actions-cell">\s*<span class="row-actions">/);
+    expect(res2.text).not.toMatch(/<td class="row-actions">/);
+
+    const style = await readStylesheetSource(res2.text);
+    expect(style).toMatch(/\.asset-table \.asset-actions-cell\s*\{[^}]*text-align:\s*right/);
+    expect(style).toMatch(/\.asset-table thead th:last-child\s*\{[^}]*text-align:\s*right/);
+  });
+
+  it('renders accessible List/Grid view controls with the correct selected state', async () => {
+    const res = await createProject('View Switcher');
     const id = res.headers.location.replace('/projects/', '');
-    const projectDir = getProjectDir('No Grid Switch');
+    const projectDir = getProjectDir('View Switcher');
     fs.writeFileSync(path.join(projectDir, 'a.png'), 'png');
     await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
+    const listRes = await agent.get(`/projects/${id}/assets`).expect(200);
+    expect(listRes.text).toContain('class="view-switcher"');
+    expect(listRes.text).toMatch(/class="view-switcher-option" href="[^"]*"\s+aria-current="page">List</);
+    expect(listRes.text).not.toContain('asset-grid');
+    expect(listRes.text).toContain('data-table asset-table');
+
+    const gridRes = await agent.get(`/projects/${id}/assets?view=grid`).expect(200);
+    expect(gridRes.text).toContain('class="view-switcher"');
+    expect(gridRes.text).toMatch(/class="view-switcher-option" href="[^"]*"\s+aria-current="page">Grid</);
+    expect(gridRes.text).toContain('class="asset-grid"');
+    expect(gridRes.text).toContain('class="asset-card"');
+    expect(gridRes.text).not.toContain('data-table asset-table');
+  });
+
+  it('renders equivalent metadata, actions, and bulk-selection fields for a grid card', async () => {
+    const res = await createProject('Grid Card Parity');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('Grid Card Parity');
+    const asset = writeIndexedAsset(id, projectDir, 'hero.png', await makePng());
+
     const res2 = await agent.get(`/projects/${id}/assets?view=grid`).expect(200);
-    expect(res2.text).not.toContain('view-switcher');
-    expect(res2.text).not.toContain('asset-grid');
-    expect(res2.text).not.toContain('asset-card');
-    expect(res2.text).not.toContain('name="view"');
-    // Pagination/filter links must never carry the legacy `view` parameter.
-    expect(res2.text).not.toMatch(/href="[^"]*[?&]view=/);
+    const html = res2.text;
+
+    expect(html).toContain(`data-asset-id="${asset.id}"`);
+    expect(html).toContain(`name="selectedAssetIds" value="${asset.id}"`);
+    expect(html).toContain(`aria-label="Select hero.png"`);
+    expect(html).toMatch(/<a class="asset-card-filename" href="[^"]*">hero\.png<\/a>/);
+    expect(html).toContain('View details');
+    expect(html).toContain('Present at last scan');
+  });
+
+  it('disables selection for a missing asset in grid view', async () => {
+    const res = await createProject('Grid Missing Selection');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('Grid Missing Selection');
+    if (!projectDir) throw new Error('projectDir not found for Grid Missing Selection');
+    const filePath = path.join(projectDir, 'gone.png');
+    fs.writeFileSync(filePath, 'png');
+    await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
+    fs.rmSync(filePath);
+    await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
+
+    const res2 = await agent.get(`/projects/${id}/assets?view=grid`).expect(200);
+    expect(res2.text).toMatch(/<input type="checkbox" id="asset-card-select-\d+" disabled aria-label="gone\.png is missing at last scan and cannot be selected">/);
+    expect(res2.text).toContain('Missing at last scan');
+  });
+
+  it('wraps long filenames safely in grid cards', async () => {
+    const res = await createProject('Grid Long Filename');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('Grid Long Filename');
+    const filename = 'this-is-a-very-long-grid-card-filename-that-must-wrap-without-expanding-the-layout.png';
+    writeIndexedAsset(id, projectDir, filename, await makePng());
+
+    const res2 = await agent.get(`/projects/${id}/assets?view=grid`).expect(200);
+    expect(res2.text).toContain(filename);
+
+    const style = await readStylesheetSource(res2.text);
+    expect(style).toMatch(/\.asset-card-filename\s*\{[^}]*overflow-wrap:\s*anywhere[^}]*word-break:\s*break-word/);
   });
 
   it('renders category navigation with All, Uncategorized, enabled categories, a disabled section, Missing, and a manage link', async () => {
@@ -2255,9 +2325,17 @@ describe('asset browser HTTP workflow', () => {
     const html = res2.text;
 
     expect(html).toMatch(/>final\.png<[\s\S]{0,600}web\/social[\s\S]{0,900}Exports/);
-    expect(html).toMatch(/>artwork\.kra<[\s\S]{0,600}—[\s\S]{0,900}Source/);
     expect(html).toMatch(/>notes\.txt<[\s\S]{0,600}Project root[\s\S]{0,900}Uncategorized/);
     expect(html).toMatch(/>file\.txt<[\s\S]{0,600}unknown\/deep[\s\S]{0,900}Uncategorized/);
+
+    // A categorized asset sitting at its category root has no useful
+    // secondary location beyond the category label — the placeholder
+    // dash is gone and the .asset-location element is omitted entirely.
+    const artworkRowMatch = html.match(/<tr[^>]*>[\s\S]*?>artwork\.kra<[\s\S]*?<\/tr>/);
+    expect(artworkRowMatch).not.toBeNull();
+    expect(artworkRowMatch[0]).not.toContain('asset-location');
+    expect(artworkRowMatch[0]).not.toContain('—');
+    expect(artworkRowMatch[0]).toContain('Source');
 
     // Full canonical relative paths never appear in the primary row.
     expect(html).not.toContain('exports/web/social/final.png');

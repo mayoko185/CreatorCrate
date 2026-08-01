@@ -2,7 +2,7 @@ import express from 'express';
 import { ProjectNotFoundError } from '../services/project-service.js';
 import { ReleaseValidationError } from '../services/release-service.js';
 
-const ASSET_BROWSER_QUERY_KEYS = ['category', 'search', 'extension', 'presence', 'usage', 'sort', 'order', 'page', 'pageSize'];
+const ASSET_BROWSER_QUERY_KEYS = ['category', 'search', 'extension', 'presence', 'usage', 'sort', 'order', 'page', 'pageSize', 'view'];
 
 // The complete set of hidden fields the browser's filter/scan/bulk forms
 // round-trip so a POST can rebuild the exact same normalized GET context.
@@ -322,7 +322,7 @@ function buildAssetsRedirectUrl(workflowQueryService, projectId, rawContext, ext
   const contextResult = workflowQueryService.getProjectAssetBrowserContext(projectId, rawContext);
   const filters = contextResult
     ? contextResult.filters
-    : { search: null, extension: null, presence: 'all', usage: 'all', category: 'all', sort: 'filename', order: 'asc', page: 1, pageSize: 25 };
+    : { search: null, extension: null, presence: 'all', usage: 'all', category: 'all', sort: 'filename', order: 'asc', page: 1, pageSize: 25, view: 'list' };
 
   const query = buildCanonicalBrowserQuery(filters, filters.page, filters.pageSize);
   for (const [key, value] of Object.entries(extraQuery)) {
@@ -397,6 +397,7 @@ function buildCanonicalBrowserQuery(filters, page, pageSize) {
   appendCanonicalParam(query, 'order', filters.order);
   appendCanonicalParam(query, 'page', page);
   appendCanonicalParam(query, 'pageSize', pageSize);
+  appendCanonicalParam(query, 'view', filters.view);
   return query;
 }
 
@@ -410,6 +411,7 @@ function appendCanonicalParam(query, key, value) {
   if (key === 'order' && normalized === 'asc') return;
   if (key === 'page' && normalized === '1') return;
   if (key === 'pageSize' && normalized === '25') return;
+  if (key === 'view' && normalized === 'list') return;
   query[key] = normalized;
 }
 

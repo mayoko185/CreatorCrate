@@ -2601,6 +2601,7 @@ describe('workflow query service', () => {
         category: 'all',
         sort: 'filename',
         order: 'asc',
+        view: 'list',
       });
     });
 
@@ -2619,6 +2620,7 @@ describe('workflow query service', () => {
         category: 'all',
         sort: 'filename',
         order: 'asc',
+        view: 'list',
       });
       expect(result.total).toBe(2);
     });
@@ -2640,18 +2642,37 @@ describe('workflow query service', () => {
         category: 'all',
         sort: 'filename',
         order: 'asc',
+        view: 'list',
       });
     });
 
-    it('ignores a legacy view parameter — grid/list was removed in Phase 3 chunk 2', () => {
-      const project = insertProject(db, { title: 'Legacy View Param' });
+    it('defaults the view to list when omitted', () => {
+      const project = insertProject(db, { title: 'Default View' });
+      insertAsset(db, { projectId: project.id, relativePath: 'a.txt', filename: 'a.txt', isPresent: 1 });
+
+      const result = service.getProjectAssetBrowser(project.id);
+
+      expect(result.filters.view).toBe('list');
+    });
+
+    it('accepts a valid grid view parameter', () => {
+      const project = insertProject(db, { title: 'Grid View Param' });
       insertAsset(db, { projectId: project.id, relativePath: 'a.txt', filename: 'a.txt', isPresent: 1 });
 
       const result = service.getProjectAssetBrowser(project.id, { view: 'grid' });
 
-      expect(result.filters.view).toBeUndefined();
+      expect(result.filters.view).toBe('grid');
       expect(result.assets).toHaveLength(1);
       expect(result.page).toBe(1);
+    });
+
+    it('normalizes an invalid view value to list', () => {
+      const project = insertProject(db, { title: 'Invalid View Param' });
+      insertAsset(db, { projectId: project.id, relativePath: 'a.txt', filename: 'a.txt', isPresent: 1 });
+
+      const result = service.getProjectAssetBrowser(project.id, { view: 'table' });
+
+      expect(result.filters.view).toBe('list');
     });
 
     it('normalizes search by trimming empty input and bounding long values', () => {
@@ -2958,7 +2979,7 @@ describe('workflow query service', () => {
         expect(row.viewerUrl).toBe(`/projects/${project.id}/assets/${asset.id}`);
       });
 
-      it('preserves category/search/extension/presence/usage/sort/order/pageSize and the clamped page', () => {
+      it('preserves category/search/extension/presence/usage/sort/order/pageSize/view and the clamped page', () => {
         const assetCategoryRepo = createAssetCategoryRepository(db);
         const assetRepo = createAssetRepository(db);
         const project = insertProject(db, { title: 'Viewer URL Context' });
@@ -2975,9 +2996,9 @@ describe('workflow query service', () => {
         const result = service.getProjectAssetBrowser(project.id, {
           category: String(category.id), search: 'hero', extension: 'png',
           presence: 'present', usage: 'unused', sort: 'size', order: 'desc',
-          page: '2', pageSize: '2',
-          // Obsolete/unknown fields must never reach the generated URL.
-          view: 'grid', unknownField: 'strip-me',
+          page: '2', pageSize: '2', view: 'grid',
+          // Unknown fields must never reach the generated URL.
+          unknownField: 'strip-me',
         });
         const row = result.assets[0];
 
@@ -2992,7 +3013,7 @@ describe('workflow query service', () => {
         expect(url.searchParams.get('order')).toBe('desc');
         expect(url.searchParams.get('page')).toBe('2');
         expect(url.searchParams.get('pageSize')).toBe('2');
-        expect(url.searchParams.has('view')).toBe(false);
+        expect(url.searchParams.get('view')).toBe('grid');
         expect(url.searchParams.has('unknownField')).toBe(false);
       });
 
@@ -3594,6 +3615,7 @@ describe('workflow query service', () => {
         order: 'desc',
         page: 3,
         pageSize: 10,
+        view: 'list',
       });
     });
 
@@ -3650,9 +3672,9 @@ describe('workflow query service', () => {
       const last = addViewerAsset(project, '03-notes.txt');
       linkAssetToRelease(db, { releaseId: release.id, assetId: current.id });
 
-      // `view` is passed here to prove it is accepted (legacy-template
-      // compatibility) but never propagated into the canonical context or
-      // any generated navigation URL below.
+      // `view` is passed here to prove it round-trips into the canonical
+      // context and every generated navigation URL below, just like the
+      // other filter/sort/pagination fields.
       const result = service.getProjectAssetViewer(project.id, current.id, {
         view: 'grid',
         search: '0',
@@ -3700,8 +3722,8 @@ describe('workflow query service', () => {
         order: 'asc',
         page: 1,
         pageSize: 2,
+        view: 'grid',
       });
-      expect(result.context.view).toBeUndefined();
       expect(result.filteredOut).toBe(false);
       expect(result.filteredPosition).toBe(2);
       expect(result.filteredTotal).toBe(3);
@@ -3709,13 +3731,13 @@ describe('workflow query service', () => {
       expect(result.previousAssetLink.assetId).toBe(first.id);
       expect(result.nextAssetLink.assetId).toBe(last.id);
       expectLocalUrl(result.previousAssetLink.href, `/projects/${project.id}/assets/${first.id}`, {
-        search: '0', pageSize: '2',
+        search: '0', pageSize: '2', view: 'grid',
       });
       expectLocalUrl(result.nextAssetLink.href, `/projects/${project.id}/assets/${last.id}`, {
-        search: '0', page: '2', pageSize: '2',
+        search: '0', page: '2', pageSize: '2', view: 'grid',
       });
       expectLocalUrl(result.backToAssetsLink.href, `/projects/${project.id}/assets`, {
-        search: '0', pageSize: '2',
+        search: '0', pageSize: '2', view: 'grid',
       });
     });
 

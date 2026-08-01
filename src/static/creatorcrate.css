@@ -891,6 +891,121 @@
         }
       }
 
+      /* ── Asset browser actions column: real <td>, flex only on the inner
+         wrapper (never the cell itself), scoped to the asset browser table
+         only — the release/Settings tables keep their own row-actions <td>
+         convention untouched. ── */
+      .asset-table .asset-actions-cell { text-align: right; }
+      .asset-table thead th:last-child { text-align: right; }
+
+      /* ── Asset grid: intrinsic-ratio cards, responsive columns ── */
+      .asset-grid {
+        list-style: none;
+        margin: var(--space-lg) 0;
+        padding: 0;
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+        gap: var(--space-lg);
+        align-items: start;
+      }
+      .asset-grid-item { min-width: 0; }
+      .asset-grid-item.is-missing .asset-card { opacity: 0.6; }
+      .asset-card {
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
+        overflow: hidden;
+      }
+      .asset-card-top {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: var(--space-sm);
+        padding: var(--space-xs) var(--space-sm);
+      }
+      .asset-card-top input[type="checkbox"] {
+        width: 1.125rem;
+        height: 1.125rem;
+        margin: 0;
+      }
+      .asset-card-top input[type="checkbox"]:focus-visible {
+        outline: 2px solid var(--focus-ring);
+        outline-offset: 2px;
+      }
+      .asset-card-top input[type="checkbox"]:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+      /* Intrinsic-ratio media: the image renders at its natural aspect
+         ratio (no aspect-ratio:1, no fixed height, no cropping). The
+         fallback states share a min-height so cards without a thumbnail
+         still read as a stable media area. */
+      .asset-card-media {
+        border-top: 1px solid var(--border);
+        border-bottom: 1px solid var(--border);
+        background: var(--bg);
+      }
+      .asset-card-thumb {
+        display: block;
+        width: 100%;
+        height: auto;
+      }
+      .asset-card-placeholder {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 8rem;
+        padding: var(--space-md);
+        color: var(--muted);
+        font-size: 0.8125rem;
+        text-align: center;
+      }
+      .asset-card-placeholder-missing { color: var(--danger); }
+      .asset-card-body {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: var(--space-xs);
+        padding: var(--space-md);
+        min-width: 0;
+      }
+      .asset-card-filename {
+        font-weight: 600;
+        color: var(--link);
+        text-decoration: none;
+        min-width: 0;
+        max-width: 100%;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+      }
+      .asset-card-filename:visited { color: var(--link); }
+      .asset-card-filename:hover { filter: brightness(1.15); }
+      .asset-card-filename:focus-visible {
+        outline: 2px solid var(--focus-ring);
+        outline-offset: 2px;
+      }
+      .asset-card-category,
+      .asset-card-meta,
+      .asset-card-usage {
+        min-width: 0;
+        max-width: 100%;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+        font-size: 0.8125rem;
+        color: var(--muted);
+      }
+      .asset-card-view { margin-top: var(--space-xs); }
+
+      @media (max-width: 540px) {
+        .asset-grid {
+          grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+          gap: var(--space-md);
+        }
+      }
+
       /* ── Reduced motion ── */
       @media (prefers-reduced-motion: reduce) {
         .asset-thumb-image,
@@ -2227,7 +2342,11 @@
         height: 28px;
         flex: none;
       }
+      /* Brand mark: hidden in the closed state (the page-specific title
+         takes its place there) and shown only once the menu is open,
+         mirroring the desktop sidebar's brand/nav-item relationship. */
       .mobile-nav-brand {
+        display: none;
         flex: none;
         font-weight: 700;
         font-size: 1rem;
@@ -2243,6 +2362,17 @@
         font-size: 0.9375rem;
         color: var(--muted);
         text-align: right;
+      }
+      /* Open state: the brand mark takes over the section title's spacer
+         role (flex: 1 1 auto) so the toggle stays pinned to the right edge
+         of the bar instead of collapsing in next to the logo once the
+         section title (the other flex-growing sibling) is hidden. */
+      .mobile-nav[open] .mobile-nav-brand {
+        display: block;
+        flex: 1 1 auto;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
       }
       /* Menu toggle — the text "Menu" carries the accessible name; the
          ::after glyph is purely visual and swaps on [open]. */

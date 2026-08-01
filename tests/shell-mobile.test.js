@@ -630,6 +630,22 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
       );
       expect(summaryBlock[1]).toContain(`<span class="mobile-nav-brand">${APP_NAME}</span>`);
     });
+
+    it('CSS hides the brand mark in the closed state so it does not double up with the page title', async () => {
+      const css = await extractStyle(agent, (await agent.get('/').expect(200)).text);
+      const brandRule = css.match(/\.mobile-nav-brand\s*\{[\s\S]*?\}/);
+      expect(brandRule).not.toBeNull();
+      expect(brandRule[0]).toMatch(/display:\s*none/);
+    });
+
+    it('CSS keeps the toggle pinned to the same right edge in both states by giving the open-state brand mark the flex-growing spacer role', async () => {
+      // Once open, .mobile-nav-section (the only flex:1 1 auto sibling in the
+      // closed state) is hidden — without a replacement spacer the toggle
+      // would collapse in next to the logo instead of staying at the right
+      // edge of the bar.
+      const css = await extractStyle(agent, (await agent.get('/').expect(200)).text);
+      expect(css).toMatch(/\.mobile-nav\[open\]\s+\.mobile-nav-brand\s*\{[^}]*display:\s*block[^}]*flex:\s*1 1 auto/);
+    });
   });
 
   // ── §8: Accessibility ─────────────────────────────────────────────

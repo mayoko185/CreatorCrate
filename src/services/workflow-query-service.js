@@ -51,11 +51,11 @@ const ASSET_BROWSER_SEARCH_MAX_LENGTH = 128;
 const ASSET_BROWSER_ORDERING = 'a.filename COLLATE NOCASE ASC, a.id ASC';
 
 /**
- * Canonical asset-browser/viewer query context keys. `view` (list/grid) was
- * a Phase 3 chunk-1 legacy-template compatibility concern; chunk 2 removed
- * the grid/list switch and its query parameter entirely.
+ * Canonical asset-browser/viewer query context keys, including `view`
+ * (list/grid presentation) so it round-trips through every generated
+ * browser/viewer URL exactly like the other filter/sort/pagination fields.
  */
-const ASSET_BROWSER_CONTEXT_KEYS = ['category', 'search', 'extension', 'presence', 'usage', 'sort', 'order', 'page', 'pageSize'];
+const ASSET_BROWSER_CONTEXT_KEYS = ['category', 'search', 'extension', 'presence', 'usage', 'sort', 'order', 'page', 'pageSize', 'view'];
 
 /**
  * The application-local calendar date used as the default dashboard
@@ -630,17 +630,27 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
   const ASSET_BROWSER_SORT_VALUES = ['filename', 'modified', 'size', 'category'];
   const ASSET_BROWSER_ORDER_VALUES = ['asc', 'desc'];
 
+  const ASSET_BROWSER_VIEW_VALUES = ['list', 'grid'];
+
+  /**
+   * Normalize the `view` query parameter: missing/invalid values fall back
+   * to 'list', matching every other filter's fallback-to-default contract.
+   * @param {unknown} value
+   * @returns {'list'|'grid'}
+   */
+  function normalizeAssetBrowserView(value) {
+    return ASSET_BROWSER_VIEW_VALUES.includes(value) ? value : 'list';
+  }
+
   /**
    * Normalize and validate asset browser query parameters. This is the
-   * canonical filter/sort/pagination contract shared by the browser and
-   * viewer — it deliberately does NOT include `view` (list/grid), which is
-   * a legacy-template-only concern handled by the browser composition
-   * function directly.
+   * canonical filter/sort/pagination/presentation contract shared by the
+   * browser and viewer.
    *
    * @param {Object} raw
    * @param {string[]} extensionChoices - normalized extensions available in the project scope
    * @param {Array<{id: number}>} projectCategories - the requesting project's own category rows
-   * @returns {{ search: string|null, extension: string|null, presence: 'all'|'present'|'missing', usage: 'all'|'used'|'unused', category: 'all'|'uncategorized'|number, sort: 'filename'|'modified'|'size'|'category', order: 'asc'|'desc', page: number, pageSize: number }}
+   * @returns {{ search: string|null, extension: string|null, presence: 'all'|'present'|'missing', usage: 'all'|'used'|'unused', category: 'all'|'uncategorized'|number, sort: 'filename'|'modified'|'size'|'category', order: 'asc'|'desc', page: number, pageSize: number, view: 'list'|'grid' }}
    */
   function normalizeAssetBrowserQuery(raw = {}, extensionChoices = [], projectCategories = []) {
     const presenceValues = ['all', 'present', 'missing'];
@@ -663,7 +673,9 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
     let pageSize = pageSizeRaw !== null ? pageSizeRaw : ASSET_BROWSER_DEFAULT_PAGE_SIZE;
     if (pageSize > ASSET_BROWSER_MAX_PAGE_SIZE) pageSize = ASSET_BROWSER_MAX_PAGE_SIZE;
 
-    return { search, extension, presence, usage, category, sort, order, page, pageSize };
+    const view = normalizeAssetBrowserView(raw.view);
+
+    return { search, extension, presence, usage, category, sort, order, page, pageSize, view };
   }
 
   /**
@@ -767,6 +779,7 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
     if (key === 'order' && normalized === 'asc') return;
     if (key === 'page' && normalized === '1') return;
     if (key === 'pageSize' && normalized === String(ASSET_BROWSER_DEFAULT_PAGE_SIZE)) return;
+    if (key === 'view' && normalized === 'list') return;
     query[key] = normalized;
   }
 
@@ -883,13 +896,14 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
    *     directories)
    *   - empty nested_path + no category -> "Project root"
    *   - empty nested_path + a category (i.e. sitting at the category root)
-   *     -> "—"
+   *     -> '' (no useful secondary location beyond the category label
+   *     already shown, so the template omits the location element entirely)
    * @param {{ nested_path: string, category_id: number|null }} asset
    * @returns {string}
    */
   function buildAssetLocationLabel(asset) {
     if (asset.nested_path) return asset.nested_path;
-    return asset.category_id === null || asset.category_id === undefined ? 'Project root' : '—';
+    return asset.category_id === null || asset.category_id === undefined ? 'Project root' : '';
   }
 
   /**
@@ -1159,6 +1173,7 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
         category: filters.category,
         sort: filters.sort,
         order: filters.order,
+        view: filters.view,
       },
       extensionChoices: extensions.map((extension) => ({
         value: extension,
@@ -1265,6 +1280,7 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
         category: context.category,
         sort: context.sort,
         order: context.order,
+        view: context.view,
       },
       extensionChoices: extensions.map((extension) => ({
         value: extension,
