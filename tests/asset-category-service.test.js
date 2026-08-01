@@ -4,6 +4,7 @@ import {
   AssetCategoryValidationError,
   AssetCategoryNotFoundError,
 } from '../src/services/asset-category-service.js';
+import { parseEnabledField } from '../src/services/asset-category-validation.js';
 
 function makeFakeRepository(overrides = {}) {
   return {
@@ -21,6 +22,38 @@ function makeFakeRepository(overrides = {}) {
 }
 
 describe('asset category service', () => {
+  describe('enabled form parsing', () => {
+    it.each([
+      ['0', false],
+      ['1', true],
+      ['on', true],
+      ['off', false],
+      ['true', true],
+      ['false', false],
+      [['0', '1'], true],
+      [['1', '0'], true],
+    ])('parses %p as %s', (value, expected) => {
+      expect(parseEnabledField(value)).toBe(expected);
+    });
+
+    it('uses a deliberate creation default only when the field is absent', () => {
+      expect(parseEnabledField(undefined, { defaultValue: true })).toBe(true);
+      expect(parseEnabledField(undefined, { defaultValue: false })).toBe(false);
+      expect(() => parseEnabledField(undefined)).toThrow(AssetCategoryValidationError);
+    });
+
+    it.each([undefined, null, '', '2', ['0', '1', '1'], ['0', 'on'], true, {}])(
+      'rejects malformed enabled value %p',
+      (value) => {
+        if (value === undefined) {
+          expect(() => parseEnabledField(value)).toThrow(AssetCategoryValidationError);
+          return;
+        }
+        expect(() => parseEnabledField(value)).toThrow(AssetCategoryValidationError);
+      },
+    );
+  });
+
   describe('dependency injection', () => {
     it('accepts the repository explicitly and uses only that instance', () => {
       const repo = makeFakeRepository();

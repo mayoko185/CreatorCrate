@@ -119,6 +119,40 @@ export function assertStrictBoolean(value, fieldLabel) {
 }
 
 /**
+ * Parse the deliberately small set of HTML form representations used by
+ * enabled-state controls. A checked switch submits the hidden `0` sentinel
+ * and the checkbox's `1` value, which `qs` exposes as an array.
+ *
+ * @param {unknown} value
+ * @param {{defaultValue?: boolean, fieldLabel?: string}} [options]
+ * @returns {boolean}
+ * @throws {AssetCategoryValidationError}
+ */
+export function parseEnabledField(value, { defaultValue, fieldLabel = 'enabled' } = {}) {
+  if (value === undefined) {
+    if (defaultValue === true || defaultValue === false) return defaultValue;
+    throw new AssetCategoryValidationError({ [fieldLabel]: 'Enabled value is required.' });
+  }
+
+  const values = Array.isArray(value) ? value : [value];
+  const isHiddenAndChecked = values.length === 2
+    && values.every((item) => typeof item === 'string')
+    && new Set(values).size === 2
+    && values.includes('0')
+    && values.includes('1');
+  if (isHiddenAndChecked) return true;
+
+  if (values.length === 1 && typeof values[0] === 'string') {
+    if (values[0] === '1' || values[0] === 'on' || values[0] === 'true') return true;
+    if (values[0] === '0' || values[0] === 'off' || values[0] === 'false') return false;
+  }
+
+  throw new AssetCategoryValidationError({
+    [fieldLabel]: 'Enabled value must be 0, 1, on, off, true, or false.',
+  });
+}
+
+/**
  * Validate a combined { displayName, directorySlug } category input payload.
  * @returns {{ displayName: string, directorySlug: string }}
  * @throws {AssetCategoryValidationError}

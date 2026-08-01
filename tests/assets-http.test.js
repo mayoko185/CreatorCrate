@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import request from 'supertest';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -13,6 +13,7 @@ import {
 } from '../src/storage/project-storage.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
 import { createAssetCategoryRepository } from '../src/data/asset-category-repository.js';
+import { createAssetBrowserPreferenceRepository } from '../src/data/asset-browser-preference-repository.js';
 import { buildAssetRevisionToken } from '../src/services/preview-service.js';
 import { ensureAuthEnablement } from '../src/auth/auth-state.js';
 import { AssetActionError } from '../src/services/asset-action-service.js';
@@ -29,6 +30,7 @@ describe('asset browser HTTP workflow', () => {
   let previewRoot;
   let assetRepo;
   let assetCategoryRepo;
+  let assetBrowserPreferenceRepo;
   let agent;
   let csrfToken;
 
@@ -204,6 +206,7 @@ describe('asset browser HTTP workflow', () => {
     runMigrations(db, MIGRATIONS_DIR);
     assetRepo = createAssetRepository(db);
     assetCategoryRepo = createAssetCategoryRepository(db);
+    assetBrowserPreferenceRepo = createAssetBrowserPreferenceRepository(db);
     const appDataRoot = path.join(tmpDir, 'app');
     fs.mkdirSync(appDataRoot, { recursive: true });
     const { csrfPepper } = ensureAuthEnablement(appDataRoot);
@@ -227,6 +230,214 @@ describe('asset browser HTTP workflow', () => {
     expect(res2.text).toContain('Back to Project');
     expect(res2.text).toContain('class="page-heading"');
     expect((res2.text.match(/<h1\b/g) || []).length).toBe(1);
+  });
+
+  // ─── Phase B Chunk 3: bare-page defaults ─────────────────────────────
+
+  describe('bare Assets-page default resolution', () => {
+    async function projectIdFor(title) {
+      const res = await createProject(title);
+      return Number(res.headers.location.replace('/projects/', ''));
+    }
+
+    function firstProjectCategory(projectId) {
+      const [category] = assetCategoryRepo.listProjectCategories(projectId);
+      if (!category) throw new Error(`project ${projectId} has no category`);
+      return category;
+    }
+
+    async function expectBareAll(title, configure) {
+      const id = await projectIdFor(title);
+      await configure(id);
+
+      const response = await agent.get(`/projects/${id}/assets`).expect(200);
+      expect(response.headers.location).toBeUndefined();
+      expect(response.text).toMatch(/<a href="\/projects\/\d+\/assets\?category=all"[\s\S]*All Assets/);
+      return id;
+    }
+
+    it('renders All without redirect when the project preference is All', async () => {
+      await expectBareAll('Bare Project All', async (id) => {
+        assetBrowserPreferenceRepo.upsertProjectPreference(id, 'all', null);
+      });
+    });
+
+    it('renders All when the project inherits a global All preference', async () => {
+      await expectBareAll('Bare Inherit Global All', async (id) => {
+        assetBrowserPreferenceRepo.upsertProjectPreference(id, 'inherit', null);
+        assetBrowserPreferenceRepo.setGlobalDefault('all');
+      });
+    });
+
+    it('redirects a valid project-specific default to its numeric category ID', async () => {
+      const id = await projectIdFor('Bare Specific Default');
+      const category = firstProjectCategory(id);
+      assetBrowserPreferenceRepo.upsertProjectPreference(id, 'category', category.id);
+
+      const response = await agent.get(`/projects/${id}/assets`).expect(302);
+      expect(response.headers.location).toBe(`/projects/${id}/assets?category=${category.id}`);
+    });
+
+    it('redirects an inherited matching global slug to the project category ID', async () => {
+      const id = await projectIdFor('Bare Inherited Slug');
+      const category = firstProjectCategory(id);
+      assetBrowserPreferenceRepo.upsertProjectPreference(id, 'inherit', null);
+      assetBrowserPreferenceRepo.setGlobalDefault(category.directory_slug);
+
+      const response = await agent.get(`/projects/${id}/assets`).expect(302);
+      expect(response.headers.location).toBe(`/projects/${id}/assets?category=${category.id}`);
+    });
+
+    it('falls back to All when a stored project category is disabled without clearing storage', async () => {
+      const id = await projectIdFor('Bare Disabled Default');
+      const category = firstProjectCategory(id);
+      assetBrowserPreferenceRepo.upsertProjectPreference(id, 'category', category.id);
+      assetCategoryRepo.setProjectCategoryEnabled(id, category.id, false);
+
+      const response = await agent.get(`/projects/${id}/assets`).expect(200);
+      expect(response.headers.location).toBeUndefined();
+      expect(response.text).toMatch(/<a href="\/projects\/\d+\/assets\?category=all"[\s\S]*All Assets/);
+      expect(assetBrowserPreferenceRepo.findProjectPreference(id)).toMatchObject({
+        default_category_mode: 'category',
+        default_category_id: category.id,
+      });
+    });
+
+    it('falls back to All when a stored project category is stale without clearing storage', async () => {
+      const id = await projectIdFor('Bare Stale Default');
+      const category = firstProjectCategory(id);
+      assetBrowserPreferenceRepo.upsertProjectPreference(id, 'category', category.id);
+      db.prepare('DELETE FROM project_asset_categories WHERE project_id = ? AND id = ?').run(id, category.id);
+
+      const response = await agent.get(`/projects/${id}/assets`).expect(200);
+      expect(response.headers.location).toBeUndefined();
+      expect(assetBrowserPreferenceRepo.findProjectPreference(id)).toMatchObject({
+        default_category_mode: 'category',
+        default_category_id: category.id,
+      });
+    });
+
+    it.each(['missing', 'disabled'])('falls back to All for an inherited %s global slug', async (change) => {
+      const id = await projectIdFor(`Bare Global ${change}`);
+      const category = firstProjectCategory(id);
+      assetBrowserPreferenceRepo.upsertProjectPreference(id, 'inherit', null);
+      assetBrowserPreferenceRepo.setGlobalDefault(category.directory_slug);
+      if (change === 'missing') {
+        db.prepare('DELETE FROM project_asset_categories WHERE project_id = ? AND id = ?').run(id, category.id);
+      } else {
+        assetCategoryRepo.setProjectCategoryEnabled(id, category.id, false);
+      }
+
+      const response = await agent.get(`/projects/${id}/assets`).expect(200);
+      expect(response.headers.location).toBeUndefined();
+      expect(assetBrowserPreferenceRepo.getGlobalDefault()).toBe(category.directory_slug);
+    });
+
+    it('resolves a bare specific default before the full browser query', async () => {
+      const project = db.prepare(`
+        INSERT INTO projects (title, slug, description, notes, status, priority,
+                              planned_date, published_date, patreon_url, archived_at)
+        VALUES ('Early Default Project', 'early-default-project', '', '', 'tbd', 'normal', NULL, NULL, NULL, NULL)
+        RETURNING *
+      `).get();
+      const fullBrowserQuery = vi.fn(() => {
+        throw new Error('full browser query should not run for a default redirect');
+      });
+      const preferenceService = {
+        resolveEffectiveCategory: vi.fn(() => ({
+          effective: { kind: 'category', category: { id: 77 } },
+        })),
+      };
+      const isolatedAppDataRoot = path.join(tmpDir, 'early-default-app');
+      fs.mkdirSync(isolatedAppDataRoot, { recursive: true });
+      const isolatedApp = createApp(
+        { appName: 'CreatorCrate', db, projectsRoot, previewRoot },
+        {
+          appDataRoot: isolatedAppDataRoot,
+          workflowQueryService: { getProjectAssetBrowser: fullBrowserQuery },
+          assetBrowserPreferenceService: preferenceService,
+        }
+      );
+
+      const response = await request(isolatedApp).get(`/projects/${project.id}/assets`).expect(302);
+      expect(response.headers.location).toBe(`/projects/${project.id}/assets?category=77`);
+      expect(preferenceService.resolveEffectiveCategory).toHaveBeenCalledWith(project.id);
+      expect(fullBrowserQuery).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('non-bare requests block defaults', () => {
+    it.each([
+      ['explicit All', 'category=all'],
+      ['explicit numeric category', 'category=1'],
+      ['uncategorized', 'category=uncategorized'],
+      ['search', 'search=needle'],
+      ['filter', 'presence=present'],
+      ['pagination', 'page=2'],
+      ['explicit List', 'view=list'],
+      ['explicit Grid', 'view=grid'],
+      ['notice', 'notice=asset-renamed'],
+      ['unknown query', 'unknown=value'],
+      ['invalid category', 'category=invalid'],
+      ['stale category', 'category=999999'],
+    ])('%s does not activate a configured specific default', async (_label, query) => {
+      const res = await createProject(`Blocks Default ${query}`);
+      const id = Number(res.headers.location.replace('/projects/', ''));
+      const [category] = assetCategoryRepo.listProjectCategories(id);
+      assetBrowserPreferenceRepo.upsertProjectPreference(id, 'category', category.id);
+
+      const resolveSpy = vi.spyOn(app.locals.assetBrowserPreferenceService, 'resolveEffectiveCategory');
+      const response = await agent.get(`/projects/${id}/assets?${query}`).expect(200);
+
+      expect(response.headers.location).toBeUndefined();
+      expect(resolveSpy).not.toHaveBeenCalled();
+      resolveSpy.mockRestore();
+    });
+  });
+
+  describe('Assets-page project default removal', () => {
+    async function createProjectId(title) {
+      const res = await createProject(title);
+      return Number(res.headers.location.replace('/projects/', ''));
+    }
+
+    it('does not render the preference control or its success notice', async () => {
+      const id = await createProjectId('Assets Default Removed');
+      const res = await agent
+        .get(`/projects/${id}/assets?category=all&notice=project_asset_default_saved`)
+        .expect(200);
+
+      expect(res.text).not.toContain('Asset browser default');
+      expect(res.text).not.toContain('assets-default-category');
+      expect(res.text).not.toContain(`action="/projects/${id}/assets/default-category"`);
+      expect(res.text).not.toContain('Project asset default saved.');
+      expect(res.text).not.toContain('name="defaultCategory"');
+    });
+
+    it('returns normal not-found behavior for the removed preference endpoint', async () => {
+      const id = await createProjectId('Assets Default Endpoint Removed');
+      const res = await agent.post(`/projects/${id}/assets/default-category`).type('form')
+        .send({ defaultCategory: 'all', _csrf: csrfToken })
+        .expect(404);
+
+      expect(res.text).toContain('Not found');
+      expect(res.text).not.toContain('Something went wrong.');
+      expect(res.text).not.toContain('assetBrowserPreferenceService');
+    });
+
+    it('explicit All overrides a configured specific default without invoking bare resolution', async () => {
+      const id = await createProjectId('Assets Explicit All Override');
+      const [category] = assetCategoryRepo.listProjectCategories(id);
+      assetBrowserPreferenceRepo.upsertProjectPreference(id, 'category', category.id);
+
+      const resolveSpy = vi.spyOn(app.locals.assetBrowserPreferenceService, 'resolveEffectiveCategory');
+      const res = await agent.get(`/projects/${id}/assets?category=all`).expect(200);
+
+      expect(res.headers.location).toBeUndefined();
+      expect(resolveSpy).not.toHaveBeenCalled();
+      expect(res.text).toMatch(/<option value="all" selected>All categories/);
+      resolveSpy.mockRestore();
+    });
   });
 
   it('shows scan-freshness wording explaining data is not live and files are not deleted', async () => {
@@ -641,6 +852,49 @@ describe('asset browser HTTP workflow', () => {
     expect(nextUrl.searchParams.get('page')).toBe('2');
   });
 
+  it('preserves explicit All through browser links, forms, viewer navigation, and pagination', async () => {
+    const { id, assets } = await setupOrderedImageAssets('Explicit All Context');
+    const response = await agent
+      .get(`/projects/${id}/assets?category=all&pageSize=1&view=list`)
+      .expect(200);
+
+    const viewLinks = [...response.text.matchAll(/class="view-switcher-option" href="([^"]+)"/g)]
+      .map((match) => new URL(decodeHtmlHref(match[1]), 'http://localhost'));
+    expect(viewLinks).toHaveLength(2);
+    for (const url of viewLinks) {
+      expect(url.searchParams.get('category')).toBe('all');
+    }
+
+    const nextMatch = response.text.match(/<a href="([^"]+)" class="pagination-next">Next/);
+    expect(nextMatch).not.toBeNull();
+    const nextUrl = new URL(decodeHtmlHref(nextMatch[1]), 'http://localhost');
+    expect(nextUrl.searchParams.get('category')).toBe('all');
+    expect(nextUrl.searchParams.get('page')).toBe('2');
+
+    const rowMatch = response.text.match(/<a class="asset-file-link" href="([^"]+)">alpha<\/a>/);
+    expect(rowMatch).not.toBeNull();
+    const rowHref = decodeHtmlHref(rowMatch[1]);
+    expect(new URL(rowHref, 'http://localhost').searchParams.get('category')).toBe('all');
+
+    const viewer = await agent.get(rowHref).expect(200);
+    for (const className of ['asset-viewer-back', 'asset-viewer-next']) {
+      const href = anchorHref(viewer.text, className);
+      expect(href).not.toBeNull();
+      expect(new URL(decodeHtmlHref(href), 'http://localhost').searchParams.get('category')).toBe('all');
+    }
+    expect(new URL(decodeHtmlHref(anchorHref(viewer.text, 'asset-viewer-next')), 'http://localhost').pathname)
+      .toBe(`/projects/${id}/assets/${assets.bravo.id}`);
+
+    const scanForm = response.text.match(/<form method="post" action="\/projects\/\d+\/scan"[^>]*>[\s\S]*?<\/form>/)?.[0];
+    expect(scanForm).toContain('<input type="hidden" name="category" value="all">');
+
+    const pageSizeForm = response.text.match(/<form class="page-size-form"[^>]*>[\s\S]*?<\/form>/)?.[0];
+    expect(pageSizeForm).toContain('<input type="hidden" name="category" value="all">');
+
+    const categorySelect = response.text.match(/<select id="category" name="category">[\s\S]*?<\/select>/)?.[0];
+    expect(categorySelect).toContain('<option value="all" selected>');
+  });
+
   it('renders exact canonical pagination URLs for normalized browser filters', async () => {
     const res = await createProject('Canonical Asset URLs');
     const id = res.headers.location.replace('/projects/', '');
@@ -858,7 +1112,7 @@ describe('asset browser HTTP workflow', () => {
       const res = await createProject('Scan Ctrl Form Shape');
       const id = res.headers.location.replace('/projects/', '');
 
-      const res2 = await agent.get(`/projects/${id}/assets?search=hero&presence=present&sort=size&order=desc&pageSize=50`).expect(200);
+      const res2 = await agent.get(`/projects/${id}/assets?category=all&search=hero&presence=present&sort=size&order=desc&pageSize=50`).expect(200);
       const html = res2.text;
 
       // Exactly one "Scan Now" label on the page.
@@ -1140,7 +1394,7 @@ describe('asset browser HTTP workflow', () => {
       .get(`/projects/${id}/assets?presence=missing&usage=used`)
       .expect(200);
 
-    expect(res2.text).toContain('href="/projects/' + id + '/assets"');
+    expect(res2.text).toContain('href="/projects/' + id + '/assets?category=all"');
   });
 
   // ─── PageSize form preserves filters ───────────────────────────
@@ -2088,7 +2342,9 @@ describe('asset browser HTTP workflow', () => {
     expect(card).toContain(`name="selectedAssetIds" value="${asset.id}"`);
     expect(card).toContain('form="bulk-select-form"');
     expect(html).toContain(`aria-label="Select hero.png"`);
-    expect(html).toMatch(/<a class="asset-card-filename" href="[^"]*">hero<\/a>/);
+    expect(card).toMatch(/<span class="asset-card-title-text">hero<\/span>/);
+    expect(card).not.toContain('asset-card-filename');
+    expect(card).not.toMatch(/<a[^>]*>hero<\/a>/);
     expect(html).toContain('class="asset-card-media-link"');
     expect(html).toContain('class="asset-details-link asset-tooltip asset-tooltip--right"');
     expect(html).toContain('aria-label="View details for hero.png"');
@@ -2103,7 +2359,8 @@ describe('asset browser HTTP workflow', () => {
     expect(card).toContain('data-asset-rename-trigger');
     expect(card).toContain('data-asset-rename-editor');
     expect(card).toContain('href="/projects/');
-    expect(card).toMatch(/class="asset-card-rename-editor" data-asset-rename-editor hidden>/);
+    expect(card).toMatch(/class="asset-card-rename-editor" data-asset-rename-editor hidden inert>/);
+    expect(card).toMatch(/class="asset-card-rename-input"[^>]*\bdisabled\b/);
     expect(card).not.toContain('<summary');
     expect(card).not.toContain('<details');
     expect(card).toContain('data-asset-rename-input');
@@ -2130,6 +2387,9 @@ describe('asset browser HTTP workflow', () => {
     expect(style).toMatch(/\.asset-tooltip--right\[data-tooltip\]::after/);
     expect(card).toMatch(/asset-tooltip--left[\s\S]*asset-tooltip--right/);
     expect(card.indexOf('asset-tooltip--right')).toBeLessThan(card.indexOf('asset-card-media'));
+
+    const list = await agent.get(`/projects/${id}/assets?view=list`).expect(200);
+    expect(list.text).toMatch(/<a class="asset-file-link" href="[^"]*">hero<\/a>/);
   });
 
   it('keeps missing and unavailable grid media placeholders outside the details link', async () => {
@@ -2301,7 +2561,7 @@ describe('asset browser HTTP workflow', () => {
     expect(res2.text).toContain(filename);
 
     const style = await readStylesheetSource(res2.text);
-    expect(style).toMatch(/\.asset-card-filename\s*\{[^}]*overflow-wrap:\s*anywhere[^}]*word-break:\s*break-word/);
+    expect(style).toMatch(/\.asset-card-title-text\s*\{[^}]*overflow-wrap:\s*anywhere[^}]*word-break:\s*break-word/);
   });
 
   it('renders category navigation with All, Uncategorized, enabled categories, a disabled section, Missing, and a manage link', async () => {
@@ -2742,17 +3002,19 @@ describe('asset browser HTTP workflow', () => {
         .post(`/projects/${id}/assets/add-to-release`)
         .type('form')
         .send({
-          releaseId: String(releaseId),
-          selectedAssetIds: String(asset.id),
-          presence: 'present',
+           releaseId: String(releaseId),
+           selectedAssetIds: String(asset.id),
+           category: 'all',
+           presence: 'present',
           sort: 'size',
           page: '1',
           _csrf: csrfToken,
         })
         .expect(302);
 
-      const redirect = new URL(res2.headers.location, 'http://localhost');
-      expect(redirect.pathname).toBe(`/projects/${id}/assets`);
+       const redirect = new URL(res2.headers.location, 'http://localhost');
+       expect(redirect.pathname).toBe(`/projects/${id}/assets`);
+       expect(redirect.searchParams.get('category')).toBe('all');
       expect(redirect.searchParams.get('presence')).toBe('present');
       expect(redirect.searchParams.get('sort')).toBe('size');
       expect(redirect.searchParams.get('bulk_added')).toBe('1');
@@ -2796,11 +3058,12 @@ describe('asset browser HTTP workflow', () => {
       const res2 = await agent
         .post(`/projects/${id}/assets/add-to-release`)
         .type('form')
-        .send({ releaseId: String(releaseId), _csrf: csrfToken })
+        .send({ releaseId: String(releaseId), category: 'all', _csrf: csrfToken })
         .expect(422);
 
-      expect(res2.text).toContain('At least one asset must be selected.');
-      expect(res2.text).toContain(`value="${releaseId}" selected`);
+       expect(res2.text).toContain('At least one asset must be selected.');
+       expect(res2.text).toContain(`value="${releaseId}" selected`);
+       expect(res2.text).toContain('<input type="hidden" name="category" value="all">');
     });
 
     it('controlled rejection for malformed asset IDs, preserving the submitted selection', async () => {
@@ -2977,6 +3240,7 @@ describe('asset browser HTTP workflow', () => {
       const formMatch = res2.text.match(/<form method="post" action="\/projects\/\d+\/scan"[^>]*>[\s\S]*?<\/form>/);
       expect(formMatch).not.toBeNull();
       const form = formMatch[0];
+      expect(form).toContain('<input type="hidden" name="category" value="all">');
       expect(form).toContain('<input type="hidden" name="search" value="hero">');
       expect(form).toContain('<input type="hidden" name="presence" value="present">');
       expect(form).toContain('<input type="hidden" name="sort" value="size">');
@@ -2997,7 +3261,7 @@ describe('asset browser HTTP workflow', () => {
         .post(`/projects/${id}/scan`)
         .type('form')
         .send({
-          search: 'f1', extension: '.png', presence: 'present', usage: 'unused',
+          category: 'all', search: 'f1', extension: '.png', presence: 'present', usage: 'unused',
           sort: 'size', order: 'desc', page: '1', pageSize: '10',
           junk: 'strip-me', _csrf: csrfToken,
         })
@@ -3005,6 +3269,7 @@ describe('asset browser HTTP workflow', () => {
 
       const redirect = new URL(res2.headers.location, 'http://localhost');
       expect(redirect.pathname).toBe(`/projects/${id}/assets`);
+      expect(redirect.searchParams.get('category')).toBe('all');
       expect(redirect.searchParams.get('search')).toBe('f1');
       expect(redirect.searchParams.get('extension')).toBe('png');
       expect(redirect.searchParams.get('presence')).toBe('present');
@@ -3029,7 +3294,7 @@ describe('asset browser HTTP workflow', () => {
         .expect(302);
 
       const redirect = new URL(res2.headers.location, 'http://localhost');
-      expect(redirect.searchParams.has('category')).toBe(false); // 'all' is the omitted default
+      expect(redirect.searchParams.get('category')).toBe('all');
     });
 
     it('displays Added/Updated/Missing/Total labels, with the scanner\'s "removed" shown as "Missing"', async () => {
@@ -3087,9 +3352,10 @@ describe('asset browser HTTP workflow', () => {
       // Remove the project directory to force a filesystem scan error.
       fs.rmSync(projectDir, { recursive: true, force: true });
 
-      const res2 = await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
+      const res2 = await agent.post(`/projects/${id}/scan`).send({ category: 'all', _csrf: csrfToken }).type('form').expect(302);
       const redirect = new URL(res2.headers.location, 'http://localhost');
       expect(redirect.searchParams.get('scan_error')).toBe('filesystem');
+      expect(redirect.searchParams.get('category')).toBe('all');
 
       const after = assetRepo.findByProjectId(id).length;
       expect(after).toBe(before);
@@ -3212,12 +3478,13 @@ describe('asset browser HTTP workflow', () => {
 
         const res = await agent
           .post(`/projects/${id}/assets/${asset.id}/rename`)
-          .send({ filename: 'new.png', _csrf: csrfToken })
+          .send({ filename: 'new.png', category: 'all', _csrf: csrfToken })
           .type('form')
           .expect(302);
 
         const location = new URL(res.headers.location, 'http://localhost');
         expect(location.pathname).toBe(`/projects/${id}/assets/${asset.id}`);
+        expect(location.searchParams.get('category')).toBe('all');
         expect(location.searchParams.get('notice')).toBe('asset-renamed');
         expect(fs.existsSync(path.join(projectDir, 'new.png'))).toBe(true);
         expect(fs.existsSync(path.join(projectDir, 'old.png'))).toBe(false);
@@ -3232,11 +3499,12 @@ describe('asset browser HTTP workflow', () => {
 
         const res = await agent
           .post(`/projects/${id}/assets/${asset.id}/rename`)
-          .send({ filename: 'new.png', sort: 'modified', order: 'desc', junkField: 'strip-me', _csrf: csrfToken })
+          .send({ filename: 'new.png', category: 'all', sort: 'modified', order: 'desc', junkField: 'strip-me', _csrf: csrfToken })
           .type('form')
           .expect(302);
 
         const location = new URL(res.headers.location, 'http://localhost');
+        expect(location.searchParams.get('category')).toBe('all');
         expect(location.searchParams.get('sort')).toBe('modified');
         expect(location.searchParams.get('order')).toBe('desc');
         expect(location.searchParams.has('junkField')).toBe(false);
@@ -3247,12 +3515,13 @@ describe('asset browser HTTP workflow', () => {
 
         const res = await agent
           .post(`/projects/${id}/assets/${asset.id}/rename`)
-          .send({ filename: '..', _csrf: csrfToken })
+          .send({ filename: '..', category: 'all', _csrf: csrfToken })
           .type('form')
           .expect(422);
 
         expect(res.text).toContain('Enter a valid filename.');
         expect(res.text).toContain('value=".."');
+        expect(res.text).toContain('<input type="hidden" name="category" value="all">');
       });
 
       it('rejects filenames with Win32-forbidden characters with 422', async () => {
@@ -3397,12 +3666,13 @@ describe('asset browser HTTP workflow', () => {
 
         const res = await agent
           .post(`/projects/${id}/assets/${asset.id}/move`)
-          .send({ destinationCategory: String(category.id), _csrf: csrfToken })
+          .send({ destinationCategory: String(category.id), category: 'all', _csrf: csrfToken })
           .type('form')
           .expect(302);
 
         const location = new URL(res.headers.location, 'http://localhost');
         expect(location.pathname).toBe(`/projects/${id}/assets/${asset.id}`);
+        expect(location.searchParams.get('category')).toBe('all');
         expect(location.searchParams.get('notice')).toBe('asset-moved');
 
         const updated = assetRepo.findById(asset.id);
@@ -3415,17 +3685,18 @@ describe('asset browser HTTP workflow', () => {
         const category = makeEnabledCategory(id, projectDir, 'renders-move-uncat');
         await agent
           .post(`/projects/${id}/assets/${asset.id}/move`)
-          .send({ destinationCategory: String(category.id), _csrf: csrfToken })
+          .send({ destinationCategory: String(category.id), category: 'all', _csrf: csrfToken })
           .type('form')
           .expect(302);
 
         const res = await agent
           .post(`/projects/${id}/assets/${asset.id}/move`)
-          .send({ destinationCategory: 'uncategorized', _csrf: csrfToken })
+          .send({ destinationCategory: 'uncategorized', category: 'all', _csrf: csrfToken })
           .type('form')
           .expect(302);
 
         const location = new URL(res.headers.location, 'http://localhost');
+        expect(location.searchParams.get('category')).toBe('all');
         expect(location.searchParams.get('notice')).toBe('asset-moved');
         const updated = assetRepo.findById(asset.id);
         expect(updated.category_id).toBeNull();
@@ -3458,7 +3729,7 @@ describe('asset browser HTTP workflow', () => {
 
         const res = await agent
           .post(`/projects/${id}/assets/${asset.id}/move`)
-          .send({ destinationCategory: String(category.id), _csrf: csrfToken })
+          .send({ destinationCategory: String(category.id), category: 'all', _csrf: csrfToken })
           .type('form')
           .expect(409);
         expect(res.text).toContain('The selected category is disabled or unavailable.');
@@ -3530,6 +3801,7 @@ describe('asset browser HTTP workflow', () => {
           .type('form')
           .expect(409);
         expect(res.text).toContain(`value="${category.id}" selected`);
+        expect(res.text).toContain('<input type="hidden" name="category" value="all">');
       });
 
       it('preserves supported browser context and strips unknown fields on the redirect', async () => {
@@ -3538,11 +3810,12 @@ describe('asset browser HTTP workflow', () => {
 
         const res = await agent
           .post(`/projects/${id}/assets/${asset.id}/move`)
-          .send({ destinationCategory: String(category.id), presence: 'present', junkField: 'strip-me', _csrf: csrfToken })
+          .send({ destinationCategory: String(category.id), category: 'all', presence: 'present', junkField: 'strip-me', _csrf: csrfToken })
           .type('form')
           .expect(302);
 
         const location = new URL(res.headers.location, 'http://localhost');
+        expect(location.searchParams.get('category')).toBe('all');
         expect(location.searchParams.get('presence')).toBe('present');
         expect(location.searchParams.has('junkField')).toBe(false);
       });
@@ -3649,6 +3922,13 @@ describe('asset browser HTTP workflow', () => {
         expect(card[0]).toContain('name="origin" value="assets"');
         expect(card[0]).toContain('value="hero"');
         expect(card[0]).toContain('class="asset-rename-extension" aria-hidden="true">.png</span>');
+        const editor = card[0].match(/<form[^>]*class="asset-card-rename-editor"[\s\S]*?<\/form>/)?.[0];
+        expect(editor).not.toBeUndefined();
+        expect(editor).toMatch(/<form[^>]*\bhidden\b[^>]*\binert\b/);
+        expect(editor).toMatch(/<input type="hidden" name="_csrf"[^>]*\bdisabled\b/);
+        expect(editor).toMatch(/<input type="text"[^>]*class="asset-card-rename-input"[^>]*\bdisabled\b/);
+        expect(editor).toMatch(/<button[^>]*data-asset-rename-confirm[^>]*\bdisabled\b/);
+        expect(editor).toMatch(/<button[^>]*data-asset-rename-cancel[^>]*\bdisabled\b/);
         expect((card[0].match(/<form\b/g) || []).length).toBe((card[0].match(/<\/form>/g) || []).length);
         expect((res.text.match(/<h1\b/g) || []).length).toBe(1);
 
@@ -3658,6 +3938,33 @@ describe('asset browser HTTP workflow', () => {
         expect(res.text.indexOf('</form>', bulkStart)).toBeLessThan(gridStart);
         expect(res.text).toMatch(/<input type="checkbox" form="bulk-select-form"[^>]*name="selectedAssetIds"/);
         expect(res.text).toContain('formaction="/projects/' + id + '/assets/move-selected"');
+      });
+
+      it('opens only the affected grid Rename editor after a controlled validation failure', async () => {
+        const { id, assets } = await setupOrderedImageAssets('Main Grid Rename Failure');
+        const res = await agent
+          .post(`/projects/${id}/assets/${assets.alpha.id}/rename`)
+          .type('form')
+          .send({ filename: 'bad/name', origin: 'assets', category: 'all', view: 'grid', _csrf: csrfToken })
+          .expect(422);
+
+        const activeEditor = res.text.match(new RegExp(`<form method="post" action="/projects/${id}/assets/${assets.alpha.id}/rename"[\\s\\S]*?<\\/form>`))?.[0];
+        expect(activeEditor).not.toBeUndefined();
+        expect(activeEditor).not.toMatch(/<form[^>]*\bhidden\b/);
+        expect(activeEditor).not.toMatch(/<form[^>]*\binert\b/);
+        expect(activeEditor).not.toMatch(/class="asset-card-rename-input"[^>]*\bdisabled\b/);
+        expect(activeEditor).toContain('value="bad/name"');
+
+        const inactiveEditors = [...res.text.matchAll(/<form method="post" action="\/projects\/\d+\/assets\/\d+\/rename"[\s\S]*?<\/form>/g)]
+          .map(([form]) => form)
+          .filter((form) => !form.includes(`/assets/${assets.alpha.id}/rename`));
+        expect(inactiveEditors.length).toBeGreaterThan(0);
+        for (const editor of inactiveEditors) {
+          expect(editor).toMatch(/<form[^>]*\bhidden\b[^>]*\binert\b/);
+          expect(editor).toMatch(/<input type="text"[^>]*class="asset-card-rename-input"[^>]*\bdisabled\b/);
+          expect(editor).toMatch(/<button[^>]*data-asset-rename-confirm[^>]*\bdisabled\b/);
+          expect(editor).toMatch(/<button[^>]*data-asset-rename-cancel[^>]*\bdisabled\b/);
+        }
       });
 
       it('hides main-page Rename for missing assets and archived projects', async () => {
@@ -3696,7 +4003,7 @@ describe('asset browser HTTP workflow', () => {
         expect(location.searchParams.get('order')).toBe('desc');
         expect(location.searchParams.get('pageSize')).toBe('50');
         expect(location.searchParams.has('view')).toBe(false);
-        expect(location.searchParams.has('category')).toBe(false);
+        expect(location.searchParams.get('category')).toBe('all');
         expect(location.searchParams.has('page')).toBe(false);
         expect(location.searchParams.has('unknown')).toBe(false);
         expect(fs.existsSync(path.join(projectDir, 'new.png'))).toBe(true);
@@ -3733,10 +4040,11 @@ describe('asset browser HTTP workflow', () => {
         const invalidRes = await agent
           .post(`/projects/${invalid.id}/assets/${invalid.asset.id}/rename`)
           .type('form')
-          .send({ filename: 'bad/name', origin: 'assets', search: 'old', view: 'grid', _csrf: csrfToken })
+          .send({ filename: 'bad/name', origin: 'assets', category: 'all', search: 'old', view: 'grid', _csrf: csrfToken })
           .expect(422);
         expect(invalidRes.text).toContain('Enter a valid filename.');
         expect(invalidRes.text).toContain('value="bad/name"');
+        expect(invalidRes.text).toContain('<input type="hidden" name="category" value="all">');
           expect(invalidRes.text).toContain('class="asset-card-rename-editor"');
         expect(invalidRes.text).not.toContain('asset-preview-section');
 
@@ -3835,6 +4143,7 @@ describe('asset browser HTTP workflow', () => {
 
         const location = new URL(res.headers.location, 'http://localhost');
         expect(location.pathname).toBe(`/projects/${id}/assets`);
+        expect(location.searchParams.get('category')).toBe('all');
         expect(location.searchParams.get('search')).toBe('a');
         expect(location.searchParams.get('extension')).toBe('png');
         expect(location.searchParams.get('presence')).toBe('present');
@@ -3906,10 +4215,11 @@ describe('asset browser HTTP workflow', () => {
         const { agent: partialAgent, csrfToken: partialCsrf } = await getDisabledModeCsrf(partialApp, path.join(tmpDir, 'app'));
         const partial = await setupProjectWithAsset('Bulk Partial Failure', 'a.png');
         const partialRes = await partialAgent.post(`/projects/${partial.id}/assets/move-selected`).type('form')
-          .send({ selectedAssetIds: [String(partial.asset.id), '2'], destinationCategory: 'uncategorized', _csrf: partialCsrf }).expect(500);
+          .send({ selectedAssetIds: [String(partial.asset.id), '2'], destinationCategory: 'uncategorized', category: 'all', _csrf: partialCsrf }).expect(500);
         expect(partialRes.text).toContain('Moved 1 of 2 assets before a failure occurred.');
         expect(partialRes.text).toContain(`value="${partial.asset.id}"`);
         expect(partialRes.text).toContain('checked');
+        expect(partialRes.text).toContain('<input type="hidden" name="category" value="all">');
         expect(partialRes.text).not.toContain('partial details');
         expect(partialRes.text).not.toContain('SQLITE');
 
@@ -3924,8 +4234,9 @@ describe('asset browser HTTP workflow', () => {
         const { agent: recoveryAgent, csrfToken: recoveryCsrf } = await getDisabledModeCsrf(recoveryApp, path.join(tmpDir, 'app'));
         const recovery = await setupProjectWithAsset('Bulk Recovery Failure', 'a.png');
         const recoveryRes = await recoveryAgent.post(`/projects/${recovery.id}/assets/move-selected`).type('form')
-          .send({ selectedAssetIds: [String(recovery.asset.id), '2'], destinationCategory: 'uncategorized', _csrf: recoveryCsrf }).expect(500);
+          .send({ selectedAssetIds: [String(recovery.asset.id), '2'], destinationCategory: 'uncategorized', category: 'all', _csrf: recoveryCsrf }).expect(500);
         expect(recoveryRes.text).toContain('Inspect the project folder before scanning.');
+        expect(recoveryRes.text).toContain('<input type="hidden" name="category" value="all">');
         expect(recoveryRes.text).not.toContain('recovery details');
       });
 

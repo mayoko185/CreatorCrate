@@ -7,6 +7,8 @@ import {
   ProjectAssetCategoryError,
 } from '../services/project-asset-category-service.js';
 import { StorageError } from '../storage/path-manager.js';
+import { buildProjectAssetBrowserPreferenceModel } from '../services/asset-browser-preference-presenter.js';
+import { parseEnabledField } from '../services/asset-category-validation.js';
 
 // Controlled, curated notice text keyed by a fixed code — never the raw
 // exception message, so an internal failure detail can never reach a
@@ -27,6 +29,7 @@ const NOTICES = {
     text: 'This category still has assets or files. Disable it instead of deleting it.',
   },
   category_delete_failed: { variant: 'error', text: 'Could not delete the category. Please try again.' },
+  project_default_saved: { variant: 'success', text: 'Project asset default saved.' },
 };
 
 function resolveNotice(code) {
@@ -47,8 +50,8 @@ function parseId(value) {
   return id;
 }
 
-function normalizeEnabledCheckbox(value) {
-  return value === 'on' || value === 'true';
+function isArchivedProject(project) {
+  return Boolean(project?.archived_at || project?.status === 'archived');
 }
 
 function parseOrderIds(raw) {
@@ -96,20 +99,48 @@ function buildMovedOrder(categories, id, direction) {
  * @param {string} deps.appName
  * @param {import('../services/project-service.js').ProjectService} deps.projectService
  * @param {ReturnType<import('../services/project-asset-category-service.js').createProjectAssetCategoryService>} deps.projectAssetCategoryService
+ * @param {ReturnType<import('../services/asset-browser-preference-service.js').createAssetBrowserPreferenceService>} deps.assetBrowserPreferenceService
  */
-export function createProjectAssetCategoriesRouter({ appName, projectService, projectAssetCategoryService }) {
+export function createProjectAssetCategoriesRouter({
+  appName,
+  projectService,
+  projectAssetCategoryService,
+  assetBrowserPreferenceService,
+} = {}) {
+  if (!assetBrowserPreferenceService) {
+    throw new Error('createProjectAssetCategoriesRouter requires an assetBrowserPreferenceService dependency.');
+  }
+
   const router = express.Router();
 
-  function renderPage(res, project, { status = 200, notice = null, addValues = {}, addErrors = {}, nameEdit = null } = {}) {
+  function renderPage(res, project, {
+    status = 200,
+    notice = null,
+    addValues = { enabled: true },
+    addErrors = {},
+    nameEdit = null,
+    preferenceSubmittedValue,
+    preferenceError = null,
+    enabledControl = null,
+  } = {}) {
     const categories = projectAssetCategoryService.list(project.id);
+    const preference = buildProjectAssetBrowserPreferenceModel({
+      projectId: project.id,
+      preferenceService: assetBrowserPreferenceService,
+      categories,
+      submittedValue: preferenceSubmittedValue,
+      error: preferenceError,
+    });
     res.status(status).render('projects/asset-categories.njk', {
       appName,
       project,
       categories,
+      assetBrowserPreference: preference,
       notice,
       addValues,
       addErrors,
       nameEdit,
+      enabledControl,
     });
   }
 
@@ -138,6 +169,32 @@ export function createProjectAssetCategoriesRouter({ appName, projectService, pr
     }
   });
 
+  router.post('/:projectId/asset-categories/default', (req, res, next) => {
+    const project = loadProjectOr404(req, res, next);
+    if (!project) return;
+
+    const submittedValue = typeof req.body?.defaultCategory === 'string' ? req.body.defaultCategory : '';
+
+    if (isArchivedProject(project)) {
+      return renderPage(res, project, { status: 409 });
+    }
+
+    try {
+      assetBrowserPreferenceService.setProjectPreference(project.id, submittedValue);
+      res.redirect(`/projects/${project.id}/asset-categories?notice=project_default_saved`);
+    } catch (err) {
+      if (err instanceof AssetCategoryValidationError) {
+        return renderPage(res, project, {
+          status: 422,
+          preferenceSubmittedValue: submittedValue,
+          preferenceError: err,
+        });
+      }
+      if (err instanceof ProjectNotFoundError) return next(createNotFound());
+      next(err);
+    }
+  });
+
   router.post('/:projectId/asset-categories', (req, res, next) => {
     const project = loadProjectOr404(req, res, next);
     if (!project) return;
@@ -145,10 +202,11 @@ export function createProjectAssetCategoriesRouter({ appName, projectService, pr
     const addValues = {
       displayName: req.body?.displayName,
       directorySlug: req.body?.directorySlug,
-      enabled: normalizeEnabledCheckbox(req.body?.enabled),
+      enabled: true,
     };
 
     try {
+      addValues.enabled = parseEnabledField(req.body?.enabled, { defaultValue: true });
       projectAssetCategoryService.add(project.id, {
         displayName: req.body?.displayName,
         directorySlug: req.body?.directorySlug,
@@ -226,10 +284,10 @@ export function createProjectAssetCategoriesRouter({ appName, projectService, pr
     }
   });
 
-  function handleSetEnabled(req, res, next, enabled) {
-    const project = loadProjectOr404(req, res, next);
+  function handleSetEnabled(req, res, next, enabled, { project: suppliedProject = null, categoryId: suppliedCategoryId = null } = {}) {
+    const project = suppliedProject || loadProjectOr404(req, res, next);
     if (!project) return;
-    const categoryId = parseId(req.params.categoryId);
+    const categoryId = suppliedCategoryId || parseId(req.params.categoryId);
     if (categoryId === null) return next(createNotFound());
 
     try {
@@ -244,6 +302,32 @@ export function createProjectAssetCategoriesRouter({ appName, projectService, pr
       res.redirect(`/projects/${project.id}/asset-categories?notice=category_enable_failed`);
     }
   }
+
+  router.post('/:projectId/asset-categories/:categoryId/enabled', (req, res, next) => {
+    const project = loadProjectOr404(req, res, next);
+    if (!project) return;
+    const categoryId = parseId(req.params.categoryId);
+    if (categoryId === null) return next(createNotFound());
+
+    let enabled;
+    try {
+      enabled = parseEnabledField(req.body?.enabled);
+    } catch (err) {
+      if (err instanceof AssetCategoryValidationError) {
+        return renderPage(res, project, {
+          status: 422,
+          enabledControl: {
+            categoryId,
+            submitted: null,
+            errorMessage: err.errors.enabled || err.message,
+          },
+        });
+      }
+      return next(err);
+    }
+
+    return handleSetEnabled(req, res, next, enabled, { project, categoryId });
+  });
 
   router.post('/:projectId/asset-categories/:categoryId/enable', (req, res, next) => handleSetEnabled(req, res, next, true));
   router.post('/:projectId/asset-categories/:categoryId/disable', (req, res, next) => handleSetEnabled(req, res, next, false));

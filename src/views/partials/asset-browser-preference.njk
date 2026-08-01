@@ -1,0 +1,112 @@
+{% macro project(model, projectId, action, controlId, csrf, archived=false, context=null, contextFields=[]) %}
+  <section class="settings-section asset-browser-default-section asset-browser-default-section--project" aria-labelledby="{{ controlId }}-heading">
+    <h3 id="{{ controlId }}-heading">Asset browser default</h3>
+    <p class="asset-browser-default-description" id="{{ controlId }}-help">Choose the category opened when visiting Assets without filters.</p>
+
+    {% if model.fallbackExplanation %}
+      <div class="notice notice--warning" role="status" id="{{ controlId }}-fallback">
+        <p>{{ model.fallbackExplanation }}</p>
+      </div>
+    {% endif %}
+
+    {% if model.errorMessage %}
+      <div class="error-summary" role="alert" id="{{ controlId }}-error">
+        <p>Could not save the asset browser default. {{ model.errorMessage }}</p>
+      </div>
+    {% endif %}
+
+    <p class="asset-browser-default-summary">
+      <span><span class="asset-browser-default-summary-label">Saved:</span> <strong>{{ model.storedLabel }}</strong></span>
+      <span><span class="asset-browser-default-summary-label">Effective:</span> <strong>{{ model.effectiveLabel }}</strong></span>
+    </p>
+
+    {% if archived %}
+      <p class="help-text asset-browser-default-readonly">This archived project is read-only; its saved default is shown for reference.</p>
+    {% else %}
+      <form method="post" action="{{ action }}" class="project-form asset-browser-default-form" novalidate>
+        <input type="hidden" name="_csrf" value="{{ csrf }}">
+        {% if context %}
+          {% for key in contextFields %}
+            {% if context[key] is not none and context[key] != '' %}
+              <input type="hidden" name="{{ key }}" value="{{ context[key] }}">
+            {% endif %}
+          {% endfor %}
+        {% endif %}
+        <div class="asset-browser-default-control-row">
+          <div class="field">
+            <label for="{{ controlId }}">Default category</label>
+            <select id="{{ controlId }}" name="defaultCategory" class="form-control"
+                    aria-describedby="{{ controlId }}-help{% if model.errorMessage %} {{ controlId }}-error{% endif %}"
+                    {% if model.errorMessage %}aria-invalid="true"{% endif %} required>
+              {% if model.selectionPlaceholder %}
+                <option value="{{ model.selectionPlaceholder.value }}" disabled{% if not model.submittedOption %} selected{% endif %}>{{ model.selectionPlaceholder.label }}</option>
+              {% endif %}
+              {% if model.submittedOption %}
+                <option value="{{ model.submittedOption.value }}" selected>{{ model.submittedOption.label }}</option>
+              {% endif %}
+              <option value="inherit"{% if model.selectedValue == 'inherit' %} selected{% endif %}>Inherit global default</option>
+              <option value="all"{% if model.selectedValue == 'all' %} selected{% endif %}>All Categories</option>
+              {% for category in model.enabledCategories %}
+                <option value="{{ category.value }}"{% if model.selectedValue == category.value %} selected{% endif %}>{{ category.displayName }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="form-actions asset-browser-default-action-row">
+            <button type="submit" class="button button-primary">Save default</button>
+          </div>
+        </div>
+      </form>
+    {% endif %}
+  </section>
+{% endmacro %}
+
+{% macro global(model, action, controlId, csrf) %}
+  <section class="settings-section asset-browser-default-section" aria-labelledby="{{ controlId }}-heading">
+    <h3 id="{{ controlId }}-heading">Asset browser default</h3>
+    <p id="{{ controlId }}-help">
+      This applies only to projects set to <strong>Inherit global default</strong>.
+      It does not recopy or mutate project categories. Each inheriting project resolves this global slug
+      against its own enabled categories; unavailable matches fall back to All Categories.
+    </p>
+
+    {% if model.warning %}
+      <div class="notice notice--warning" role="status" id="{{ controlId }}-warning">
+        <p>{{ model.warning }}</p>
+      </div>
+    {% endif %}
+
+    {% if model.errorMessage %}
+      <div class="error-summary" role="alert" id="{{ controlId }}-error">
+        <p>Could not save the global asset browser default. {{ model.errorMessage }}</p>
+      </div>
+    {% endif %}
+
+    <p class="help-text">
+      Saved setting: <strong>{{ model.storedLabel }}</strong>.
+      {% if model.fallback %}Effective behavior for inheriting projects: <strong>All Categories</strong>.{% endif %}
+    </p>
+
+    <form method="post" action="{{ action }}" class="project-form" novalidate>
+      <input type="hidden" name="_csrf" value="{{ csrf }}">
+      <label for="{{ controlId }}">Default category</label>
+      <select id="{{ controlId }}" name="defaultCategory"
+              aria-describedby="{{ controlId }}-help{% if model.errorMessage %} {{ controlId }}-error{% endif %}"
+              {% if model.errorMessage %}aria-invalid="true"{% endif %} required>
+        {% if model.selectionPlaceholder %}
+          <option value="{{ model.selectionPlaceholder.value }}" disabled{% if not model.submittedOption %} selected{% endif %}>{{ model.selectionPlaceholder.label }}</option>
+        {% endif %}
+        {% if model.submittedOption %}
+          <option value="{{ model.submittedOption.value }}" selected>{{ model.submittedOption.label }}</option>
+        {% endif %}
+        <option value="all"{% if model.selectedValue == 'all' %} selected{% endif %}>All Categories</option>
+        {% for category in model.enabledCategories %}
+          <option value="{{ category.directorySlug }}"{% if model.selectedValue == category.directorySlug %} selected{% endif %}>{{ category.displayName }}</option>
+        {% endfor %}
+      </select>
+      <span class="help-text">Category labels are shown here; the stable directory slug is stored.</span>
+      <div class="form-actions">
+        <button type="submit" class="button button-primary">Save default</button>
+      </div>
+    </form>
+  </section>
+{% endmacro %}

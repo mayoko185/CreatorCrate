@@ -176,7 +176,7 @@
       <div class="asset-card-body">
         <div class="asset-card-title-controls">
           <div class="asset-card-title-row" data-asset-title-row{% if renameAttempt %} hidden{% endif %}>
-            <a class="asset-card-filename" href="{{ asset.viewerUrl }}">{{ asset.displayFilename }}</a>
+            <span class="asset-card-title-text">{{ asset.displayFilename }}</span>
             {% if not isArchived and asset.is_present %}
               <a class="button button-small asset-rename-trigger" data-asset-rename-trigger
                  href="{{ asset.viewerUrl }}" aria-label="Rename {{ asset.filename }}">Rename</a>
@@ -184,22 +184,22 @@
           </div>
           {% if not isArchived and asset.is_present %}
             <form method="post" action="/projects/{{ project.id }}/assets/{{ asset.id }}/rename"
-                  class="asset-card-rename-editor" data-asset-rename-editor{% if not renameAttempt %} hidden{% endif %}>
-              <input type="hidden" name="_csrf" value="{{ _csrf }}">
-              <input type="hidden" name="origin" value="assets">
+                  class="asset-card-rename-editor" data-asset-rename-editor{% if not renameAttempt %} hidden inert{% endif %}>
+              <input type="hidden" name="_csrf" value="{{ _csrf }}"{% if not renameAttempt %} disabled{% endif %}>
+              <input type="hidden" name="origin" value="assets"{% if not renameAttempt %} disabled{% endif %}>
               {% for key in contextFields %}
                 {% if context[key] is not none and context[key] != '' %}
-                  <input type="hidden" name="{{ key }}" value="{{ context[key] }}">
+                  <input type="hidden" name="{{ key }}" value="{{ context[key] }}"{% if not renameAttempt %} disabled{% endif %}>
                 {% endif %}
               {% endfor %}
               <span class="asset-card-rename-field{% if asset.extension %} has-extension{% endif %}">
                 <input type="text" name="filename" value="{% if renameAttempt %}{{ renameFailure.submittedFilename }}{% else %}{{ asset.displayFilename }}{% endif %}"
                        class="asset-card-rename-input" data-asset-rename-input required maxlength="255"
-                       aria-label="New basename for {{ asset.filename }}" autocomplete="off">
+                       aria-label="New basename for {{ asset.filename }}" autocomplete="off"{% if not renameAttempt %} disabled{% endif %}>
                 {% if asset.extension %}<span class="asset-rename-extension" aria-hidden="true">.{{ asset.extension }}</span>{% endif %}
               </span>
-              <button type="submit" class="button button-small" data-asset-rename-confirm>Confirm</button>
-              <button type="button" class="button button-small button-secondary" data-asset-rename-cancel>Cancel</button>
+              <button type="submit" class="button button-small" data-asset-rename-confirm{% if not renameAttempt %} disabled{% endif %}>Confirm</button>
+              <button type="button" class="button button-small button-secondary" data-asset-rename-cancel{% if not renameAttempt %} disabled{% endif %}>Cancel</button>
             </form>
             {% if renameAttempt %}
               <span class="asset-action-error" role="alert">{{ renameFailure.message }}</span>
@@ -582,7 +582,7 @@
               <option value="100" {% if pageSize == 100 %}selected{% endif %}>100</option>
             </select>
             {# Preserve current filters in pageSize form #}
-            {% if filters.category != 'all' %}
+            {% if filters.category != 'all' or context.categoryWasSupplied %}
               <input type="hidden" name="category" value="{{ filters.category }}">
             {% endif %}
             {% if filters.search %}

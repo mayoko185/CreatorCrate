@@ -264,6 +264,26 @@ function setHidden(element, hidden) {
   else element.removeAttribute?.('hidden');
 }
 
+function setAssetRenameControlsDisabled(editor, disabled) {
+  const controls = editor.querySelectorAll?.('input, button, select, textarea') || [];
+  controls.forEach((control) => {
+    control.disabled = disabled;
+    if (disabled) control.setAttribute?.('disabled', '');
+    else control.removeAttribute?.('disabled');
+  });
+}
+
+function setAssetRenameInert(editor, inert) {
+  if (inert) editor.setAttribute?.('inert', '');
+  else editor.removeAttribute?.('inert');
+}
+
+function syncAssetRenameState(editor, editing) {
+  setAssetRenameControlsDisabled(editor, !editing);
+  setAssetRenameInert(editor, !editing);
+  setHidden(editor, !editing);
+}
+
 function focusAssetRenameInput(editor) {
   const input = editor.querySelector?.('[data-asset-rename-input]');
   if (!input) return;
@@ -276,20 +296,24 @@ export function enhanceAssetRenames(scope = globalThis.document) {
 
   const triggers = scope.querySelectorAll(ASSET_RENAME_TRIGGER_SELECTOR);
   triggers.forEach((trigger) => {
-    if (isEnhancementBound(trigger, 'assetRenameBound')) return;
-
     const region = trigger.closest?.('.asset-card-title-controls');
     const titleRow = region?.querySelector?.('[data-asset-title-row]');
     const editor = region?.querySelector?.(ASSET_RENAME_EDITOR_SELECTOR);
     if (!titleRow || !editor) return;
 
-    markEnhancementBound(trigger, 'assetRenameBound');
-
     const setEditing = (editing, { focus = false } = {}) => {
       setHidden(titleRow, editing);
-      setHidden(editor, !editing);
+      syncAssetRenameState(editor, editing);
       if (editing && focus) focusAssetRenameInput(editor);
     };
+
+    const initiallyEditing = editor.hidden !== true;
+    if (isEnhancementBound(trigger, 'assetRenameBound')) {
+      setEditing(initiallyEditing);
+      return;
+    }
+
+    markEnhancementBound(trigger, 'assetRenameBound');
 
     const closeEditor = () => {
       setEditing(false);
@@ -313,7 +337,6 @@ export function enhanceAssetRenames(scope = globalThis.document) {
       closeEditor();
     });
 
-    const initiallyEditing = editor.hidden !== true;
     setEditing(initiallyEditing, { focus: initiallyEditing });
   });
 

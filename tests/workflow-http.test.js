@@ -2463,8 +2463,8 @@ describe('Phase 6B HTTP workflow', () => {
         expect(res.text).toContain(`<form method="post" action="/projects/${projectId}/scan" class="inline-form">`);
         // Assert the submit button inside the form
         expect(res.text).toMatch(/<button class="button button-primary" type="submit">Scan Now<\/button>/);
-        // The empty-state action also contains "Scan Now" as a link
-        expect(res.text).toContain('Scan Now</a>');
+        // Scanning is POST-only; the empty state intentionally has no GET link.
+        expect(res.text).not.toContain('Scan Now</a>');
       });
 
       it('POST scan for archived project is rejected', async () => {
@@ -2476,7 +2476,7 @@ describe('Phase 6B HTTP workflow', () => {
           .post(`/projects/${projectId}/scan`)
           .send({ _csrf: app.testCsrfToken })
           .expect(302)
-          .expect('Location', `/projects/${projectId}/assets?scan_error=archived`);
+          .expect('Location', `/projects/${projectId}/assets?category=all&scan_error=archived`);
       });
 
       it('archived scan rejection causes no asset changes (full row snapshot)', async () => {
@@ -2518,7 +2518,7 @@ describe('Phase 6B HTTP workflow', () => {
           .post(`/projects/${projectId}/scan`)
           .send({ _csrf: app.testCsrfToken })
           .expect(302)
-          .expect('Location', `/projects/${projectId}/assets?scan_error=archived`);
+          .expect('Location', `/projects/${projectId}/assets?category=all&scan_error=archived`);
 
         // Snapshot asset rows after the rejected scan
         const afterRows = db.prepare(`

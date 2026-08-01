@@ -74,6 +74,7 @@ function manifestExists(absPath) {
  * @param {import('../data/project-repository.js').ProjectRepository} deps.projectRepository
  * @param {ReturnType<import('../data/asset-category-repository.js').createAssetCategoryRepository>} deps.assetCategoryRepository
  * @param {ReturnType<import('../data/asset-repository.js').createAssetRepository>} deps.assetRepository
+ * @param {ReturnType<import('../data/asset-browser-preference-repository.js').createAssetBrowserPreferenceRepository>} deps.assetBrowserPreferenceRepository
  * @param {string} deps.projectsRoot
  * @param {Console} [deps.logger]
  */
@@ -82,6 +83,7 @@ export function createProjectAssetCategoryService({
   projectRepository,
   assetCategoryRepository,
   assetRepository,
+  assetBrowserPreferenceRepository,
   projectsRoot,
   logger = console,
 } = {}) {
@@ -90,6 +92,7 @@ export function createProjectAssetCategoryService({
   if (!assetCategoryRepository) throw new Error('createProjectAssetCategoryService requires an assetCategoryRepository dependency.');
   if (!assetRepository) throw new Error('createProjectAssetCategoryService requires an assetRepository dependency.');
   if (!projectsRoot) throw new Error('createProjectAssetCategoryService requires a projectsRoot dependency.');
+  if (!assetBrowserPreferenceRepository) throw new Error('createProjectAssetCategoryService requires an assetBrowserPreferenceRepository dependency.');
 
   function requireProject(projectId) {
     assertPositiveIntegerId(projectId, 'projectId');
@@ -649,6 +652,10 @@ export function createProjectAssetCategoryService({
 
       try {
         const runDelete = db.transaction(() => {
+          // All non-transactional deletion preconditions and filesystem
+          // cleanup have completed above. Reset the selected preference only
+          // inside the same transaction as category deletion.
+          assetBrowserPreferenceRepository.resetProjectPreferenceIfCategory(projectId, categoryId);
           assetCategoryRepository.deleteProjectCategoryAndCompact(projectId, categoryId);
           const categories = assetCategoryRepository.listProjectCategories(projectId);
           writeManifestSync(absPath, project, projectsRoot, categories);

@@ -83,10 +83,20 @@ function isValidPatreonUrl(value) {
  * @param {object} deps.assetCategoryService - Injected asset-category
  *   service (see services/asset-category-service.js). Required — this
  *   service never constructs its own category repository or service.
+ * @param {object} deps.assetBrowserPreferenceRepository - Injected
+ *   transaction-compatible preference repository. Required — project
+ *   creation owns preference-row initialization in its database transaction.
  */
-export function createProjectService(db, projectsRoot, { assetCategoryService } = {}) {
+export function createProjectService(
+  db,
+  projectsRoot,
+  { assetCategoryService, assetBrowserPreferenceRepository } = {}
+) {
   if (!assetCategoryService) {
     throw new Error('createProjectService requires an assetCategoryService dependency.');
+  }
+  if (!assetBrowserPreferenceRepository) {
+    throw new Error('createProjectService requires an assetBrowserPreferenceRepository dependency.');
   }
 
   const repository = createProjectRepository(db);
@@ -321,31 +331,36 @@ export function createProjectService(db, projectsRoot, { assetCategoryService } 
         // project-owned category rows, in deterministic contiguous order.
         const categories = assetCategoryService.copyDefaultsForProject(project.id);
 
-        // Phase 3: Compute the canonical (unchanged) project-directory path.
+        // Phase 3: Initialize the explicit project preference in this same
+        // transaction. The repository deliberately does not open a nested
+        // transaction, so a failure rolls back the project and copied rows.
+        assetBrowserPreferenceRepository.ensureProjectPreference(project.id);
+
+        // Phase 4: Compute the canonical (unchanged) project-directory path.
         const dirName = formatProjectDirName(project.id, project.slug);
         relPath = buildProjectRelPath(project.status, dirName);
         const absPath = resolveProjectDir(projectsRoot, relPath);
 
-        // Phase 4: Destination safety check.
+        // Phase 5: Destination safety check.
         ensureNoConflict(absPath);
 
-        // Phase 5: Exclusively create the final project root.
+        // Phase 6: Exclusively create the final project root.
         createProjectRootExclusive(absPath, dirName);
         dirCreated = true;
         ownership = beginOwnership(project.id, relPath, dirName, absPath);
 
-        // Phase 6: Category-driven child directories (enabled categories only).
+        // Phase 7: Category-driven child directories (enabled categories only).
         createProjectCategoryDirs(absPath, categories);
         for (const category of categories) {
           if (!isCategoryEnabled(category)) continue;
           trackOwnedChild(ownership, absPath, category.directory_slug ?? category.directorySlug, true);
         }
 
-        // Phase 7: Write the schema-version-2 manifest with those categories.
+        // Phase 8: Write the schema-version-2 manifest with those categories.
         writeManifestSync(absPath, project, projectsRoot, categories);
         trackOwnedChild(ownership, absPath, MANIFEST_FILENAME, false);
 
-        // Phase 8: Persist the relative project path.
+        // Phase 9: Persist the relative project path.
         project = repository.setProjectDir(project.id, relPath);
 
         return project;

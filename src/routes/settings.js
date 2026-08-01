@@ -7,6 +7,9 @@ import {
   AssetCategoryValidationError,
   AssetCategoryNotFoundError,
 } from '../services/asset-category-service.js';
+import { AssetCategoryValidationError as PreferenceValidationError } from '../services/asset-browser-preference-service.js';
+import { buildGlobalAssetBrowserPreferenceModel } from '../services/asset-browser-preference-presenter.js';
+import { parseEnabledField } from '../services/asset-category-validation.js';
 
 function createNotFound() {
   const err = new Error('Not found');
@@ -58,6 +61,7 @@ const NOTICES = {
     variant: 'error',
     text: 'Could not save the asset category default. Please try again.',
   },
+  global_default_saved: { variant: 'success', text: 'Global asset-browser default saved.' },
 };
 
 function resolveNotice(code) {
@@ -140,7 +144,12 @@ export function createSettingsRouter({
   appDataRoot,
   backupRetentionCount,
   authSettings,
-}) {
+  assetBrowserPreferenceService,
+} = {}) {
+  if (!assetBrowserPreferenceService) {
+    throw new Error('createSettingsRouter requires an assetBrowserPreferenceService dependency.');
+  }
+
   const router = express.Router();
   const replaceDatabase = typeof onDatabaseReplaced === 'function' ? onDatabaseReplaced : () => {};
 
@@ -374,17 +383,36 @@ export function createSettingsRouter({
   // creation time; editing/disabling/deleting a default never reaches back
   // into project-owned categories already copied from it.
 
-  function renderCategoriesPage(res, { status = 200, notice = null, editingId = null, editValues = null, editErrors = {}, addValues = {}, addErrors = {} } = {}) {
+  function renderCategoriesPage(res, {
+    status = 200,
+    notice = null,
+    editingId = null,
+    editValues = null,
+    editErrors = {},
+    addValues = { enabled: true },
+    addErrors = {},
+    preferenceSubmittedValue,
+    preferenceError = null,
+    enabledControl = null,
+  } = {}) {
     const categories = assetCategoryService.listDefaults();
+    const assetBrowserPreference = buildGlobalAssetBrowserPreferenceModel({
+      preferenceService: assetBrowserPreferenceService,
+      categories,
+      submittedValue: preferenceSubmittedValue,
+      error: preferenceError,
+    });
     res.status(status).render('settings/asset-categories.njk', {
       appName,
       categories,
+      assetBrowserPreference,
       notice,
       editingId,
       editValues,
       editErrors,
       addValues,
       addErrors,
+      enabledControl,
     });
   }
 
@@ -404,13 +432,32 @@ export function createSettingsRouter({
     });
   });
 
-  router.post('/asset-categories', (req, res) => {
-    const addValues = { displayName: req.body?.displayName, directorySlug: req.body?.directorySlug, enabled: Boolean(req.body?.enabled) };
+  router.post('/asset-categories/browser-default', (req, res) => {
+    const submittedValue = typeof req.body?.defaultCategory === 'string' ? req.body.defaultCategory : '';
     try {
+      assetBrowserPreferenceService.setGlobalPreference(submittedValue);
+      res.redirect('/settings/asset-categories?notice=global_default_saved');
+    } catch (err) {
+      if (err instanceof PreferenceValidationError) {
+        renderCategoriesPage(res, {
+          status: 422,
+          preferenceSubmittedValue: submittedValue,
+          preferenceError: err,
+        });
+        return;
+      }
+      renderCategoriesPage(res, { status: 500 });
+    }
+  });
+
+  router.post('/asset-categories', (req, res) => {
+    const addValues = { displayName: req.body?.displayName, directorySlug: req.body?.directorySlug, enabled: true };
+    try {
+      addValues.enabled = parseEnabledField(req.body?.enabled, { defaultValue: true });
       assetCategoryService.addDefault({
         displayName: req.body?.displayName,
         directorySlug: req.body?.directorySlug,
-        enabled: req.body?.enabled === 'on' || req.body?.enabled === 'true',
+        enabled: addValues.enabled,
       });
       res.redirect('/settings/asset-categories?notice=category_added');
     } catch (err) {
@@ -482,6 +529,37 @@ export function createSettingsRouter({
     try {
       assetCategoryService.setDefaultEnabled(id, true);
       res.redirect('/settings/asset-categories?notice=category_enabled');
+    } catch (err) {
+      if (err instanceof AssetCategoryNotFoundError) return next(createNotFound());
+      next(err);
+    }
+  });
+
+  router.post('/asset-categories/:id/enabled', (req, res, next) => {
+    const id = parseCategoryId(req.params.id);
+    if (id === null) return next(createNotFound());
+
+    let enabled;
+    try {
+      enabled = parseEnabledField(req.body?.enabled);
+    } catch (err) {
+      if (err instanceof AssetCategoryValidationError) {
+        return renderCategoriesPage(res, {
+          status: 422,
+          enabledControl: {
+            categoryId: id,
+            submitted: null,
+            errorMessage: err.errors.enabled || err.message,
+          },
+        });
+      }
+      return next(err);
+    }
+
+    try {
+      assetCategoryService.setDefaultEnabled(id, enabled);
+      const notice = enabled ? 'category_enabled' : 'category_disabled';
+      res.redirect(`/settings/asset-categories?notice=${notice}`);
     } catch (err) {
       if (err instanceof AssetCategoryNotFoundError) return next(createNotFound());
       next(err);

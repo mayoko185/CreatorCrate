@@ -7,6 +7,7 @@ import slugify from '@sindresorhus/slugify';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { createProjectRepository } from '../src/data/project-repository.js';
 import { createAssetCategoryRepository } from '../src/data/asset-category-repository.js';
+import { createAssetBrowserPreferenceRepository } from '../src/data/asset-browser-preference-repository.js';
 import { createAssetCategoryService } from '../src/services/asset-category-service.js';
 import { createProjectService, ProjectNotFoundError } from '../src/services/project-service.js';
 import { createAssetScanner } from '../src/services/asset-scanner.js';
@@ -64,7 +65,10 @@ describe('asset scanner', () => {
     runMigrations(db, MIGRATIONS_DIR);
     projectRepo = createProjectRepository(db);
     const assetCategoryService = createAssetCategoryService(createAssetCategoryRepository(db));
-    projectService = createProjectService(db, projectsRoot, { assetCategoryService });
+    projectService = createProjectService(db, projectsRoot, {
+      assetCategoryService,
+      assetBrowserPreferenceRepository: createAssetBrowserPreferenceRepository(db),
+    });
     projectOperationCoordinator = createProjectOperationCoordinator();
     assetScanner = createAssetScanner(db, projectsRoot, { projectService, assetCategoryService, projectOperationCoordinator });
   });

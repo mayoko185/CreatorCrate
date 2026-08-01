@@ -1,5 +1,7 @@
 {% extends "layout.njk" %}
 {% import "partials/page-heading.njk" as pageHeading %}
+{% import "partials/asset-browser-preference.njk" as assetBrowserPreferenceForm %}
+{% import "partials/form-switch.njk" as formSwitch %}
 
 {% set page_title = "Projects — " ~ project.title ~ " — Asset Categories" %}
 
@@ -45,15 +47,26 @@
     </p>
   </div>
 
+  {{ assetBrowserPreferenceForm.project(
+    assetBrowserPreference,
+    project.id,
+    "/projects/" ~ project.id ~ "/asset-categories/default",
+    "project-asset-categories-default-category",
+    _csrf,
+    project.archived_at
+  ) }}
+
   {% if not project.archived_at %}
-    <div class="settings-section">
+    <div class="settings-section category-management-section category-management-add project-category-management-add">
       <h3>Add a category</h3>
-      {% if addErrors.displayName or addErrors.directorySlug %}
+      {% if addErrors.displayName or addErrors.directorySlug or addErrors.enabled %}
         <div class="error-summary" role="alert" id="add-category-errors">
           <p>Could not add the category. Fix the fields below and try again.</p>
         </div>
       {% endif %}
-      <form method="post" action="/projects/{{ project.id }}/asset-categories" class="project-form" novalidate>
+      {% set addEnabled = true %}
+      {% if addValues.enabled is defined %}{% set addEnabled = addValues.enabled %}{% endif %}
+      <form method="post" action="/projects/{{ project.id }}/asset-categories" class="project-form project-category-management-form" novalidate>
         <input type="hidden" name="_csrf" value="{{ _csrf }}">
         <div class="field-row">
           <div class="field {% if addErrors.displayName %}field-error{% endif %}">
@@ -69,98 +82,122 @@
             {% if addErrors.directorySlug %}<span class="field-error-message" id="add-directorySlug-error">{{ addErrors.directorySlug }}</span>{% endif %}
           </div>
 
-          <div class="field">
-            <label for="add-enabled">
-              <input type="checkbox" id="add-enabled" name="enabled" value="on"{% if addValues.enabled %} checked{% endif %}>
-              Enabled
-            </label>
+          <div class="field field--switch">
+            <span class="field-label">Enabled</span>
+            {{ formSwitch.control(
+              "add-enabled",
+              "enabled",
+              addEnabled,
+              "New category enabled state",
+              "add-enabled-error" if addErrors.enabled else null,
+              true if addErrors.enabled else false
+            ) }}
+            {% if addErrors.enabled %}<span class="field-error-message" id="add-enabled-error">{{ addErrors.enabled }}</span>{% endif %}
           </div>
         </div>
 
-        <div class="form-actions">
+        <div class="category-management-action-row">
           <button type="submit" class="button button-primary">Add Category</button>
         </div>
       </form>
     </div>
   {% endif %}
 
-  <div class="settings-section">
-    <h3>Categories</h3>
-    {% if categories.length > 0 %}
-      <div class="table-scroll" tabindex="0" aria-label="Project asset categories">
-        <table class="data-table">
+  <div class="settings-section category-management-section category-management-list-section project-category-management-section">
+      <h3>Categories</h3>
+      <p class="category-management-section-note">Changing a display name does not rename its directory.</p>
+      {% if categories.length > 0 %}
+      <div class="table-scroll category-management-list" tabindex="0" aria-label="Project asset categories">
+        <table class="data-table category-management-table">
           <thead>
             <tr>
               <th>Position</th>
               <th>Display name</th>
               <th>Directory slug</th>
-              <th>Status</th>
-              <th></th>
+              <th>Enabled</th>
+              <th>Actions</th>
             </tr>
           </thead>
           <tbody>
             {% for category in categories %}
-              {% set rowNameErrors = nameEdit.errors if (nameEdit and nameEdit.categoryId == category.id) else {} %}
-              {% set rowNameValue = nameEdit.values.displayName if (nameEdit and nameEdit.categoryId == category.id) else category.display_name %}
-              <tr>
-                <td class="num">{{ loop.index }}</td>
-                <td>
-                  <div>{{ category.display_name }}</div>
+              {% set rowEnabled = category.enabled %}
+              {% set rowEnabledError = null %}
+              {% if enabledControl and enabledControl.categoryId == category.id %}
+                {% if enabledControl.submitted is not none %}{% set rowEnabled = enabledControl.submitted %}{% endif %}
+                {% set rowEnabledError = enabledControl.errorMessage %}
+              {% endif %}
+              {% set rowEnabledErrorId = "category-" ~ category.id ~ "-enabled-error" %}
+              <tr class="category-management-row">
+                <td class="num" data-label="Position">{{ loop.index }}</td>
+                <td class="category-management-name" data-label="Display name">
+                  {% set rowNameErrors = nameEdit.errors if (nameEdit and nameEdit.categoryId == category.id) else {} %}
+                  {% set rowNameValue = nameEdit.values.displayName if (nameEdit and nameEdit.categoryId == category.id) else category.display_name %}
                   {% if not project.archived_at %}
-                    {% if rowNameErrors.displayName %}
-                      <span class="field-error-message">{{ rowNameErrors.displayName }}</span>
-                    {% endif %}
-                    <form method="post" action="/projects/{{ project.id }}/asset-categories/{{ category.id }}/name" class="inline-form category-name-form">
+                    <form method="post" action="/projects/{{ project.id }}/asset-categories/{{ category.id }}/name" class="inline-form category-name-form" novalidate>
                       <input type="hidden" name="_csrf" value="{{ _csrf }}">
                       <label class="sr-only" for="name-{{ category.id }}">Display name for category {{ loop.index }}</label>
-                      <input type="text" id="name-{{ category.id }}" name="displayName" maxlength="100" value="{{ rowNameValue }}">
+                      <input type="text" id="name-{{ category.id }}" name="displayName" maxlength="100" value="{{ rowNameValue }}" required{% if rowNameErrors.displayName %} aria-describedby="name-{{ category.id }}-error" aria-invalid="true"{% endif %}>
                       <button type="submit" class="button button-small button-secondary">Save name</button>
+                      {% if rowNameErrors.displayName %}
+                        <span class="field-error-message" id="name-{{ category.id }}-error" role="alert">{{ rowNameErrors.displayName }}</span>
+                      {% endif %}
                     </form>
-                    <p class="help-text">Changes the label only — the folder on disk is not renamed.</p>
+                  {% else %}
+                    <span class="category-management-name-value">{{ category.display_name }}</span>
                   {% endif %}
                 </td>
-                <td>
+                <td class="category-management-slug" data-label="Directory slug">
                   <div><code>{{ category.directory_slug }}</code></div>
                 </td>
-                <td>
-                  {% if category.enabled %}
-                    <span class="status-badge status-badge--success">Enabled</span>
+                <td class="category-management-enabled" data-label="Enabled">
+                  {% if project.archived_at %}
+                    {{ formSwitch.control(
+                      "project-category-enabled-" ~ category.id,
+                      "enabled",
+                      rowEnabled,
+                      "Category " ~ category.display_name ~ " enabled state",
+                      null,
+                      false,
+                      true
+                    ) }}
                   {% else %}
-                    <span class="status-badge status-badge--neutral">Disabled</span>
+                    <form method="post" action="/projects/{{ project.id }}/asset-categories/{{ category.id }}/enabled" class="category-enabled-form">
+                      <input type="hidden" name="_csrf" value="{{ _csrf }}">
+                      {{ formSwitch.control(
+                        "project-category-enabled-" ~ category.id,
+                        "enabled",
+                        rowEnabled,
+                        "Category " ~ category.display_name ~ " enabled state",
+                        rowEnabledErrorId if rowEnabledError else null,
+                        true if rowEnabledError else false
+                      ) }}
+                      <button type="submit" class="button button-small button-secondary">Save status</button>
+                    </form>
+                    {% if rowEnabledError %}<span class="field-error-message" id="{{ rowEnabledErrorId }}" role="alert">{{ rowEnabledError }}</span>{% endif %}
                   {% endif %}
                 </td>
-                <td class="row-actions">
+                <td class="category-management-actions row-actions" data-label="Actions">
                   {% if not project.archived_at %}
-                    {% if category.enabled %}
-                      <form method="post" action="/projects/{{ project.id }}/asset-categories/{{ category.id }}/disable" class="inline-form">
-                        <input type="hidden" name="_csrf" value="{{ _csrf }}">
-                        <button type="submit" class="button button-small button-secondary">Disable</button>
-                      </form>
-                    {% else %}
-                      <form method="post" action="/projects/{{ project.id }}/asset-categories/{{ category.id }}/enable" class="inline-form">
-                        <input type="hidden" name="_csrf" value="{{ _csrf }}">
-                        <button type="submit" class="button button-small button-secondary">Enable</button>
-                      </form>
-                    {% endif %}
+                    <div class="category-management-action-group">
+                      {% if not loop.first %}
+                        <form method="post" action="/projects/{{ project.id }}/asset-categories/{{ category.id }}/move-up" class="inline-form">
+                          <input type="hidden" name="_csrf" value="{{ _csrf }}">
+                          <button type="submit" class="button button-small button-secondary" aria-label="Move {{ category.display_name }} up">Move Up</button>
+                        </form>
+                      {% endif %}
 
-                    {% if not loop.first %}
-                      <form method="post" action="/projects/{{ project.id }}/asset-categories/{{ category.id }}/move-up" class="inline-form">
-                        <input type="hidden" name="_csrf" value="{{ _csrf }}">
-                        <button type="submit" class="button button-small button-secondary" aria-label="Move {{ category.display_name }} up">Move Up</button>
-                      </form>
-                    {% endif %}
+                      {% if not loop.last %}
+                        <form method="post" action="/projects/{{ project.id }}/asset-categories/{{ category.id }}/move-down" class="inline-form">
+                          <input type="hidden" name="_csrf" value="{{ _csrf }}">
+                          <button type="submit" class="button button-small button-secondary" aria-label="Move {{ category.display_name }} down">Move Down</button>
+                        </form>
+                      {% endif %}
 
-                    {% if not loop.last %}
-                      <form method="post" action="/projects/{{ project.id }}/asset-categories/{{ category.id }}/move-down" class="inline-form">
+                      <form method="post" action="/projects/{{ project.id }}/asset-categories/{{ category.id }}/delete" class="inline-form">
                         <input type="hidden" name="_csrf" value="{{ _csrf }}">
-                        <button type="submit" class="button button-small button-secondary" aria-label="Move {{ category.display_name }} down">Move Down</button>
+                        <button type="submit" class="button button-small button-danger" data-confirm="Delete this category? Only possible when no asset references it and its folder is empty or missing.">Delete</button>
                       </form>
-                    {% endif %}
-
-                    <form method="post" action="/projects/{{ project.id }}/asset-categories/{{ category.id }}/delete" class="inline-form">
-                      <input type="hidden" name="_csrf" value="{{ _csrf }}">
-                      <button type="submit" class="button button-small button-danger" data-confirm="Delete this category? Only possible when no asset references it and its folder is empty or missing.">Delete</button>
-                    </form>
+                    </div>
                   {% endif %}
                 </td>
               </tr>

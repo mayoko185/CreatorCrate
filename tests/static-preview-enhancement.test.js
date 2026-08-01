@@ -427,7 +427,7 @@ describe('page-local asset selection enhancement', () => {
     expect(checkbox.checked).toBe(false);
   });
 
-  it('covers blank media and lower card space while excluding real interactive descendants', () => {
+  it('selects blank card/title space while excluding real interactive descendants', () => {
     const form = makeAssetSelectionForm({});
     const checkbox = makeCheckbox();
     checkbox.form = form;
@@ -438,7 +438,8 @@ describe('page-local asset selection enhancement', () => {
       fallback: {},
       blankLower: {},
       image: {},
-      filename: {},
+      titleRow: {},
+      titleText: {},
       details: {},
       status: {},
       renameTrigger: {},
@@ -447,7 +448,7 @@ describe('page-local asset selection enhancement', () => {
       checkbox,
     };
     const interactiveTargets = new Set([
-      mediaLink, targets.image, targets.filename, targets.details, targets.status,
+      mediaLink, targets.details, targets.status,
       targets.renameTrigger, targets.renameInput, targets.renameButton, targets.checkbox,
     ]);
     const card = {
@@ -469,7 +470,9 @@ describe('page-local asset selection enhancement', () => {
     mediaLink.closest = () => mediaLink;
     targets.image.closest = (selector) => selector.includes('a') ? mediaLink : null;
     for (const name of ['blankMedia', 'fallback', 'blankLower']) targets[name].closest = () => null;
-    for (const name of ['filename', 'details', 'status', 'renameTrigger', 'renameInput', 'renameButton']) {
+    targets.titleRow.closest = () => null;
+    targets.titleText.closest = () => null;
+    for (const name of ['details', 'status', 'renameTrigger', 'renameInput', 'renameButton']) {
       targets[name].closest = () => targets[name];
     }
 
@@ -492,13 +495,17 @@ describe('page-local asset selection enhancement', () => {
     expect(checkbox.checked).toBe(false);
     click(targets.blankLower);
     expect(checkbox.checked).toBe(true);
+    click(targets.titleRow);
+    expect(checkbox.checked).toBe(false);
+    click(targets.titleText);
+    expect(checkbox.checked).toBe(true);
 
     click(mediaLink);
     expect(checkbox.checked).toBe(true);
     click(targets.image);
     expect(checkbox.checked).toBe(true);
     for (const target of [
-      targets.filename, targets.details, targets.status,
+      targets.details, targets.status,
       targets.renameTrigger, targets.renameInput, targets.renameButton, targets.checkbox,
     ]) {
       click(target);
@@ -520,13 +527,29 @@ describe('page-local asset selection enhancement', () => {
 describe('asset grid rename enhancement', () => {
   function makeRenameRegion({ editing = false } = {}) {
     const listeners = [];
+    const makeControl = (props = {}) => ({
+      disabled: false,
+      ...props,
+      setAttribute(name) {
+        if (name === 'disabled') this.disabled = true;
+      },
+      removeAttribute(name) {
+        if (name === 'disabled') this.disabled = false;
+      },
+    });
+    const context = makeControl();
     const input = {
+      ...makeControl(),
       focused: false,
       selected: false,
       focus() { this.focused = true; },
       select() { this.selected = true; },
     };
-    const cancel = { addEventListener(type, handler) { listeners.push({ target: 'cancel', type, handler }); } };
+    const confirm = makeControl();
+    const cancel = {
+      ...makeControl(),
+      addEventListener(type, handler) { listeners.push({ target: 'cancel', type, handler }); },
+    };
     const titleRow = {
       hidden: editing,
       setAttribute(name) { if (name === 'hidden') this.hidden = true; },
@@ -535,13 +558,24 @@ describe('asset grid rename enhancement', () => {
     const editor = {
       dataset: {},
       hidden: !editing,
+      inert: false,
       addEventListener(type, handler) { listeners.push({ target: 'editor', type, handler }); },
-      setAttribute(name) { if (name === 'hidden') this.hidden = true; },
-      removeAttribute(name) { if (name === 'hidden') this.hidden = false; },
+      setAttribute(name) {
+        if (name === 'hidden') this.hidden = true;
+        if (name === 'inert') this.inert = true;
+      },
+      removeAttribute(name) {
+        if (name === 'hidden') this.hidden = false;
+        if (name === 'inert') this.inert = false;
+      },
       querySelector(selector) {
         if (selector === '[data-asset-rename-input]') return input;
         if (selector === '[data-asset-rename-cancel]') return cancel;
         return null;
+      },
+      querySelectorAll(selector) {
+        if (selector === 'input, button, select, textarea') return [context, input, confirm, cancel];
+        return [];
       },
       dispatch(type, event = {}) {
         for (const listener of listeners.filter((entry) => entry.target === 'editor' && entry.type === type)) {
@@ -549,6 +583,8 @@ describe('asset grid rename enhancement', () => {
         }
       },
       cancel,
+      confirm,
+      context,
       input,
       titleRow,
     };
@@ -576,17 +612,25 @@ describe('asset grid rename enhancement', () => {
         listener.handler(event);
       }
     };
-    return { trigger, editor, input, titleRow, cancel, region, listeners };
+    return { trigger, editor, input, titleRow, cancel, confirm, context, region, listeners };
   }
 
-  it('opens the inline editor, focuses/selects the basename, supports Escape/Cancel, and is idempotent', () => {
-    const { trigger, editor, input, titleRow, cancel, region, listeners } = makeRenameRegion();
+  it('keeps inactive controls out of the keyboard surface and supports idempotent open/close behavior', () => {
+    const { trigger, editor, input, titleRow, cancel, confirm, context, region, listeners } = makeRenameRegion();
     const scope = { querySelectorAll: (selector) => selector === '[data-asset-rename-trigger]' ? [trigger] : [] };
 
     expect(enhanceAssetRenames(scope)).toBe(1);
     expect(enhanceAssetRenames(scope)).toBe(1);
     expect(listeners.filter((entry) => entry.target === 'trigger' && entry.type === 'click')).toHaveLength(1);
+    expect(listeners.filter((entry) => entry.target === 'editor' && entry.type === 'keydown')).toHaveLength(1);
+    expect(listeners.filter((entry) => entry.target === 'cancel' && entry.type === 'click')).toHaveLength(1);
     expect(trigger.closest().querySelector('[data-asset-rename-editor]')).toBe(editor);
+    expect(editor.hidden).toBe(true);
+    expect(editor.inert).toBe(true);
+    expect(context.disabled).toBe(true);
+    expect(input.disabled).toBe(true);
+    expect(confirm.disabled).toBe(true);
+    expect(cancel.disabled).toBe(true);
 
     let prevented = false;
     trigger.dispatch('click', { preventDefault() { prevented = true; } });
@@ -594,6 +638,11 @@ describe('asset grid rename enhancement', () => {
     expect(input.focused).toBe(true);
     expect(input.selected).toBe(true);
     expect(editor.hidden).toBe(false);
+    expect(editor.inert).toBe(false);
+    expect(context.disabled).toBe(false);
+    expect(input.disabled).toBe(false);
+    expect(confirm.disabled).toBe(false);
+    expect(cancel.disabled).toBe(false);
     expect(titleRow.hidden).toBe(true);
 
     let submitPrevented = false;
@@ -603,13 +652,37 @@ describe('asset grid rename enhancement', () => {
     editor.dispatch('keydown', { key: 'Escape', preventDefault() { prevented = true; } });
     expect(prevented).toBe(true);
     expect(editor.hidden).toBe(true);
+    expect(editor.inert).toBe(true);
+    expect(context.disabled).toBe(true);
+    expect(input.disabled).toBe(true);
+    expect(confirm.disabled).toBe(true);
+    expect(cancel.disabled).toBe(true);
     expect(titleRow.hidden).toBe(false);
     expect(trigger.focused).toBe(true);
 
     trigger.dispatch('click', { preventDefault() {} });
     cancel.dispatch({ preventDefault() {} });
     expect(editor.hidden).toBe(true);
+    expect(editor.inert).toBe(true);
     expect(titleRow.hidden).toBe(false);
+  });
+
+  it('keeps a server-rendered initially open editor active', () => {
+    const { trigger, editor, input, titleRow, cancel, confirm, context, listeners } = makeRenameRegion({ editing: true });
+    const scope = { querySelectorAll: (selector) => selector === '[data-asset-rename-trigger]' ? [trigger] : [] };
+
+    enhanceAssetRenames(scope);
+    enhanceAssetRenames(scope);
+
+    expect(editor.hidden).toBe(false);
+    expect(editor.inert).toBe(false);
+    expect(context.disabled).toBe(false);
+    expect(input.disabled).toBe(false);
+    expect(confirm.disabled).toBe(false);
+    expect(cancel.disabled).toBe(false);
+    expect(input.focused).toBe(true);
+    expect(input.selected).toBe(true);
+    expect(listeners.filter((entry) => entry.target === 'trigger' && entry.type === 'click')).toHaveLength(1);
   });
 });
 

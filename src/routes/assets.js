@@ -2,6 +2,7 @@ import express from 'express';
 import { ProjectNotFoundError } from '../services/project-service.js';
 import { ReleaseValidationError } from '../services/release-service.js';
 import { UNCATEGORIZED } from '../services/asset-action-service.js';
+import { buildCanonicalAssetBrowserQuery } from '../services/workflow-query-service.js';
 
 const ASSET_BROWSER_QUERY_KEYS = ['category', 'search', 'extension', 'presence', 'usage', 'sort', 'order', 'page', 'pageSize', 'view'];
 
@@ -32,8 +33,23 @@ const ASSET_RENAME_ORIGINS = new Set(['assets', 'viewer']);
  * @param {ReturnType<import('../services/asset-action-service.js').createAssetActionService>} [deps.assetActionService]
  *   Rename/move filesystem action service (Phase: asset actions chunk 3).
  *   Used by the single-file and batch asset-action route handlers.
+ * @param {ReturnType<import('../services/asset-browser-preference-service.js').createAssetBrowserPreferenceService>} deps.assetBrowserPreferenceService
+ *   Application-scoped preference service used only for bare Assets-page
+ *   default resolution.
  */
-export function createAssetsRouter({ appName, projectService, assetScanner, workflowQueryService, releaseService, assetActionService }) {
+export function createAssetsRouter({
+  appName,
+  projectService,
+  assetScanner,
+  workflowQueryService,
+  releaseService,
+  assetActionService,
+  assetBrowserPreferenceService,
+} = {}) {
+  if (!assetBrowserPreferenceService || typeof assetBrowserPreferenceService.resolveEffectiveCategory !== 'function') {
+    throw new Error('createAssetsRouter requires an assetBrowserPreferenceService dependency.');
+  }
+
   const router = express.Router({ mergeParams: true });
 
   // GET /projects/:id/assets — Asset listing page
@@ -47,6 +63,24 @@ export function createAssetsRouter({ appName, projectService, assetScanner, work
       const project = projectService.findById(id);
       if (!project) {
         return next(createNotFound());
+      }
+
+      // Only a completely bare parsed query may activate the configured
+      // default. Any query key — including unknown, invalid, notice, or
+      // pagination input — deliberately blocks default resolution.
+      if (isBareAssetBrowserRequest(req.query)) {
+        const resolution = assetBrowserPreferenceService.resolveEffectiveCategory(id);
+        const effective = resolution && resolution.effective;
+        if (!effective || (effective.kind !== 'all' && effective.kind !== 'category')) {
+          throw new Error('assetBrowserPreferenceService returned an invalid effective category resolution.');
+        }
+        if (effective.kind === 'category') {
+          const categoryId = effective.category && effective.category.id;
+          if (!Number.isSafeInteger(categoryId) || categoryId <= 0) {
+            throw new Error('assetBrowserPreferenceService returned an invalid effective category ID.');
+          }
+          return res.redirect(buildDefaultCategoryUrl(id, categoryId));
+        }
       }
 
       const data = workflowQueryService.getProjectAssetBrowser(id, req.query);
@@ -425,6 +459,14 @@ function parseId(value) {
   return id;
 }
 
+function isBareAssetBrowserRequest(query) {
+  return Boolean(query && typeof query === 'object' && Object.keys(query).length === 0);
+}
+
+function buildDefaultCategoryUrl(projectId, categoryId) {
+  return `/projects/${projectId}/assets?category=${encodeURIComponent(String(categoryId))}`;
+}
+
 function parseRenameOrigin(raw) {
   // Omitted origin is retained as the legacy viewer-origin contract for
   // direct callers; an explicit origin must be one of the fixed values.
@@ -441,14 +483,8 @@ function parseRenameOrigin(raw) {
  */
 function buildAssetsPageUrl(projectId, allowedParams) {
   const basePath = `/projects/${projectId}/assets`;
-  return function pageUrl(overrides) {
-    const query = {};
-    for (const key of ASSET_BROWSER_QUERY_KEYS) {
-      const value = Object.prototype.hasOwnProperty.call(overrides, key)
-        ? overrides[key]
-        : allowedParams[key];
-      appendCanonicalParam(query, key, value);
-    }
+  return function pageUrl(overrides = {}) {
+    const query = buildCanonicalAssetBrowserQuery(allowedParams, allowedParams.page, overrides);
     const search = new URLSearchParams(query).toString();
     return search ? `${basePath}?${search}` : basePath;
   };
@@ -460,6 +496,12 @@ function buildAssetsPageUrl(projectId, allowedParams) {
  * Centralizing this keeps both call sites in sync as the browser model grows.
  */
 function buildBrowserRenderModel(project, data) {
+  const context = {
+    ...(data.context || data.filters),
+    page: data.page,
+    pageSize: data.pageSize,
+  };
+
   return {
     project,
     assets: data.assets,
@@ -484,9 +526,9 @@ function buildBrowserRenderModel(project, data) {
     // Flat context + field allowlist so the scan and bulk-add forms can
     // render their hidden context-preservation fields with one loop instead
     // of hardcoding each key.
-    context: { ...data.filters, page: data.page, pageSize: data.pageSize },
+    context,
     contextFields: ASSET_BROWSER_CONTEXT_FIELDS,
-    pageUrl: buildAssetsPageUrl(project.id, buildCanonicalBrowserQuery(data.filters, data.page, data.pageSize)),
+    pageUrl: buildAssetsPageUrl(project.id, context),
   };
 }
 
@@ -508,11 +550,25 @@ function buildBrowserRenderModel(project, data) {
  */
 function buildCanonicalContextQuery(workflowQueryService, projectId, rawContext, extraQuery = {}) {
   const contextResult = workflowQueryService.getProjectAssetBrowserContext(projectId, rawContext);
-  const filters = contextResult
-    ? contextResult.filters
-    : { search: null, extension: null, presence: 'all', usage: 'all', category: 'all', sort: 'filename', order: 'asc', page: 1, pageSize: 25, view: 'grid' };
+  const context = contextResult
+    ? (contextResult.context || contextResult.filters)
+    : {
+      search: null,
+      extension: null,
+      presence: 'all',
+      usage: 'all',
+      category: 'all',
+      categorySelection: 'invalid-as-all',
+      categoryWasSupplied: true,
+      sort: 'filename',
+      order: 'asc',
+      page: 1,
+      pageSize: 25,
+      view: 'grid',
+      queryWasNonBare: true,
+    };
 
-  const query = buildCanonicalBrowserQuery(filters, filters.page, filters.pageSize);
+  const query = buildCanonicalAssetBrowserQuery(context, context.page);
   for (const [key, value] of Object.entries(extraQuery)) {
     if (value === undefined || value === null || value === '') continue;
     query[key] = String(value);
@@ -595,35 +651,6 @@ function describeBulkError(err) {
     if (values.length > 0) return values.join(' ');
   }
   return err.message;
-}
-
-function buildCanonicalBrowserQuery(filters, page, pageSize) {
-  const query = {};
-  appendCanonicalParam(query, 'category', filters.category);
-  appendCanonicalParam(query, 'search', filters.search);
-  appendCanonicalParam(query, 'extension', filters.extension);
-  appendCanonicalParam(query, 'presence', filters.presence);
-  appendCanonicalParam(query, 'usage', filters.usage);
-  appendCanonicalParam(query, 'sort', filters.sort);
-  appendCanonicalParam(query, 'order', filters.order);
-  appendCanonicalParam(query, 'page', page);
-  appendCanonicalParam(query, 'pageSize', pageSize);
-  appendCanonicalParam(query, 'view', filters.view);
-  return query;
-}
-
-function appendCanonicalParam(query, key, value) {
-  if (value === undefined || value === null || value === '') return;
-  const normalized = String(value);
-  if (key === 'category' && normalized === 'all') return;
-  if (key === 'presence' && normalized === 'all') return;
-  if (key === 'usage' && normalized === 'all') return;
-  if (key === 'sort' && normalized === 'filename') return;
-  if (key === 'order' && normalized === 'asc') return;
-  if (key === 'page' && normalized === '1') return;
-  if (key === 'pageSize' && normalized === '25') return;
-  if (key === 'view' && normalized === 'grid') return;
-  query[key] = normalized;
 }
 
 function createNotFound() {

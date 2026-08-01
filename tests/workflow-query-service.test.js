@@ -4,7 +4,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
-import { createWorkflowQueryService } from '../src/services/workflow-query-service.js';
+import {
+  createWorkflowQueryService,
+  buildCanonicalAssetBrowserQuery,
+} from '../src/services/workflow-query-service.js';
 import { evaluateReleaseReadiness } from '../src/services/release-readiness-policy.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
 import { createAssetCategoryRepository } from '../src/data/asset-category-repository.js';
@@ -3661,6 +3664,54 @@ describe('workflow query service', () => {
       // how many assets exist, and far fewer than the full browser query.
       expect(counter.count()).toBe(3);
     });
+
+    it.each([
+      ['implicit All', {}, 'implicit-all', false, 'all'],
+      ['explicit All', { category: 'all' }, 'explicit-all', true, 'all'],
+      ['explicit Uncategorized', { category: 'uncategorized' }, 'explicit-uncategorized', true, 'uncategorized'],
+      ['invalid category', { category: 'invalid' }, 'invalid-as-all', true, 'all'],
+      ['stale category', { category: '999999' }, 'invalid-as-all', true, 'all'],
+    ])('records %s category intent without changing the public filter shape', (_label, rawQuery, selection, supplied, category) => {
+      const project = insertProject(db, { title: `Context Intent ${_label}` });
+      const result = service.getProjectAssetBrowserContext(project.id, rawQuery);
+
+      expect(result.filters.category).toBe(category);
+      expect(result.context.categorySelection).toBe(selection);
+      expect(result.context.categoryWasSupplied).toBe(supplied);
+      expect(result.filters).not.toHaveProperty('categorySelection');
+      expect(result.filters).not.toHaveProperty('categoryWasSupplied');
+    });
+
+    it('records a valid specific category as explicit and centralizes safe canonical cleanup', () => {
+      const assetCategoryRepo = createAssetCategoryRepository(db);
+      const project = insertProject(db, { title: 'Context Specific Intent' });
+      const category = assetCategoryRepo.addProjectCategory({
+        projectId: project.id,
+        displayName: 'Renders',
+        directorySlug: 'renders-context-intent',
+        displayOrder: 0,
+        enabled: true,
+      });
+
+      const specific = service.getProjectAssetBrowserContext(project.id, { category: String(category.id) });
+      const bare = service.getProjectAssetBrowserContext(project.id, {});
+      const unknown = service.getProjectAssetBrowserContext(project.id, { unknown: 'value' });
+      const invalid = service.getProjectAssetBrowserContext(project.id, { category: 'invalid' });
+      const filtered = service.getProjectAssetBrowserContext(project.id, { unknown: 'value', search: 'hero' });
+
+      expect(specific.context.categorySelection).toBe('explicit-specific');
+      expect(specific.context.categoryWasSupplied).toBe(true);
+      expect(buildCanonicalAssetBrowserQuery(bare.context, bare.context.page)).toEqual({});
+      expect(buildCanonicalAssetBrowserQuery(unknown.context, unknown.context.page)).toEqual({ category: 'all' });
+      expect(buildCanonicalAssetBrowserQuery(invalid.context, invalid.context.page)).toEqual({ category: 'all' });
+      expect(buildCanonicalAssetBrowserQuery(filtered.context, filtered.context.page)).toEqual({
+        search: 'hero',
+      });
+      expect(buildCanonicalAssetBrowserQuery(
+        service.getProjectAssetBrowserContext(project.id, { category: 'all' }).context,
+        1,
+      )).toEqual({ category: 'all' });
+    });
   });
 
   describe('getProjectAssetViewer', () => {
@@ -3765,6 +3816,32 @@ describe('workflow query service', () => {
       });
       expectLocalUrl(result.backToAssetsLink.href, `/projects/${project.id}/assets`, {
         search: '0', pageSize: '2',
+      });
+    });
+
+    it('keeps explicit All in viewer Back and adjacent navigation URLs', () => {
+      const project = insertProject(db, { title: 'Viewer Explicit All' });
+      const first = addViewerAsset(project, '01-first.txt');
+      const current = addViewerAsset(project, '02-current.txt');
+      const last = addViewerAsset(project, '03-last.txt');
+
+      const result = service.getProjectAssetViewer(project.id, current.id, {
+        category: 'all',
+        pageSize: '2',
+      });
+
+      expectLocalUrl(result.previousAssetLink.href, `/projects/${project.id}/assets/${first.id}`, {
+        category: 'all',
+        pageSize: '2',
+      });
+      expectLocalUrl(result.backToAssetsLink.href, `/projects/${project.id}/assets`, {
+        category: 'all',
+        pageSize: '2',
+      });
+      expectLocalUrl(result.nextAssetLink.href, `/projects/${project.id}/assets/${last.id}`, {
+        category: 'all',
+        page: '2',
+        pageSize: '2',
       });
     });
 

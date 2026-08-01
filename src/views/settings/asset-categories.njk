@@ -1,5 +1,7 @@
 {% extends "layout.njk" %}
 {% import "partials/page-heading.njk" as pageHeading %}
+{% import "partials/asset-browser-preference.njk" as assetBrowserPreferenceForm %}
+{% import "partials/form-switch.njk" as formSwitch %}
 
 {% set page_title = "Settings — Asset Categories" %}
 
@@ -23,13 +25,22 @@
         <p>These are the global asset category defaults used only when a project is created — future projects will be seeded from whichever defaults are enabled here. Changing, disabling, or deleting a default here does <strong>not</strong> modify categories already copied into existing projects.</p>
       </div>
 
-      <div class="settings-section">
+      {{ assetBrowserPreferenceForm.global(
+        assetBrowserPreference,
+        "/settings/asset-categories/browser-default",
+        "global-asset-browser-default",
+        _csrf
+      ) }}
+
+      <div class="settings-section category-management-section category-management-add">
         <h3>Add a default</h3>
-        {% if addErrors.displayName or addErrors.directorySlug %}
+        {% if addErrors.displayName or addErrors.directorySlug or addErrors.enabled %}
           <div class="error-summary" role="alert" id="add-category-errors">
             <p>Could not add the category. Fix the fields below and try again.</p>
           </div>
         {% endif %}
+        {% set addEnabled = true %}
+        {% if addValues.enabled is defined %}{% set addEnabled = addValues.enabled %}{% endif %}
         <form method="post" action="/settings/asset-categories" class="project-form" novalidate>
           <input type="hidden" name="_csrf" value="{{ _csrf }}">
           <div class="field-row">
@@ -46,11 +57,18 @@
               {% if addErrors.directorySlug %}<span class="field-error-message" id="add-directorySlug-error">{{ addErrors.directorySlug }}</span>{% endif %}
             </div>
 
-            <div class="field">
-              <label for="add-enabled">
-                <input type="checkbox" id="add-enabled" name="enabled" value="on"{% if addValues.enabled %} checked{% endif %}>
-                Enabled
-              </label>
+            <div class="field field--switch">
+              <span class="field-label">Enabled</span>
+              {{ formSwitch.control(
+                "add-enabled",
+                "enabled",
+                addEnabled,
+                "New global category enabled state",
+                "add-enabled-error" if addErrors.enabled else null,
+                true if addErrors.enabled else false
+              ) }}
+              <span class="help-text">New global categories are enabled by default.</span>
+              {% if addErrors.enabled %}<span class="field-error-message" id="add-enabled-error">{{ addErrors.enabled }}</span>{% endif %}
             </div>
           </div>
 
@@ -92,47 +110,58 @@
         </div>
       {% endif %}
 
-      <div class="settings-section">
-        <h3>Defaults</h3>
-        {% if categories.length > 0 %}
-          <div class="table-scroll" tabindex="0" aria-label="Global asset category defaults">
-            <table class="data-table">
+        <div class="settings-section category-management-section category-management-list-section">
+          <h3>Defaults</h3>
+          {% if categories.length > 0 %}
+          <div class="table-scroll category-management-list" tabindex="0" aria-label="Global asset category defaults">
+            <table class="data-table category-management-table">
               <thead>
                 <tr>
                   <th>Position</th>
                   <th>Display name</th>
                   <th>Directory slug</th>
                   <th>Status</th>
-                  <th></th>
+                  <th>Enabled</th>
+                  <th>Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {% for category in categories %}
-                  <tr>
+                  {% set rowEnabled = category.enabled %}
+                  {% set rowEnabledError = null %}
+                  {% if enabledControl and enabledControl.categoryId == category.id %}
+                    {% if enabledControl.submitted is not none %}{% set rowEnabled = enabledControl.submitted %}{% endif %}
+                    {% set rowEnabledError = enabledControl.errorMessage %}
+                  {% endif %}
+                  {% set rowEnabledErrorId = "global-category-" ~ category.id ~ "-enabled-error" %}
+                  <tr class="category-management-row">
                     <td class="num">{{ loop.index }}</td>
-                    <td>{{ category.display_name }}</td>
-                    <td><code>{{ category.directory_slug }}</code></td>
-                    <td>
-                      {% if category.enabled %}
+                    <td class="category-management-name">{{ category.display_name }}</td>
+                    <td class="category-management-slug"><code>{{ category.directory_slug }}</code></td>
+                    <td class="category-management-status">
+                      {% if rowEnabled %}
                         <span class="status-badge status-badge--success">Enabled</span>
                       {% else %}
                         <span class="status-badge status-badge--neutral">Disabled</span>
                       {% endif %}
                     </td>
-                    <td class="row-actions">
+                    <td class="category-management-enabled">
+                      <form method="post" action="/settings/asset-categories/{{ category.id }}/enabled" class="category-enabled-form">
+                        <input type="hidden" name="_csrf" value="{{ _csrf }}">
+                        {{ formSwitch.control(
+                          "global-category-enabled-" ~ category.id,
+                          "enabled",
+                          rowEnabled,
+                          "Category " ~ category.display_name ~ " enabled state",
+                          rowEnabledErrorId if rowEnabledError else null,
+                          true if rowEnabledError else false
+                        ) }}
+                        <button type="submit" class="button button-small button-secondary">Save</button>
+                      </form>
+                      {% if rowEnabledError %}<span class="field-error-message" id="{{ rowEnabledErrorId }}" role="alert">{{ rowEnabledError }}</span>{% endif %}
+                    </td>
+                    <td class="category-management-actions row-actions">
                       <a class="button button-small button-secondary" href="/settings/asset-categories?edit={{ category.id }}">Edit</a>
-
-                      {% if category.enabled %}
-                        <form method="post" action="/settings/asset-categories/{{ category.id }}/disable" class="inline-form">
-                          <input type="hidden" name="_csrf" value="{{ _csrf }}">
-                          <button type="submit" class="button button-small button-secondary">Disable</button>
-                        </form>
-                      {% else %}
-                        <form method="post" action="/settings/asset-categories/{{ category.id }}/enable" class="inline-form">
-                          <input type="hidden" name="_csrf" value="{{ _csrf }}">
-                          <button type="submit" class="button button-small button-secondary">Enable</button>
-                        </form>
-                      {% endif %}
 
                       {% if not loop.first %}
                         <form method="post" action="/settings/asset-categories/{{ category.id }}/move-up" class="inline-form">

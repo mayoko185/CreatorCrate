@@ -84,6 +84,18 @@ async function createProject(agent, csrfToken, title) {
   return Number(res.headers.location.replace('/projects/', ''));
 }
 
+function getGlobalBrowserDefault(db) {
+  return db.prepare('SELECT value FROM app_meta WHERE key = ?').pluck().get('asset_browser.default_category');
+}
+
+function getProjectBrowserPreference(db, projectId) {
+  return db.prepare(`
+    SELECT default_category_mode, default_category_id
+    FROM project_asset_browser_preferences
+    WHERE project_id = ?
+  `).get(projectId);
+}
+
 describe('settings — asset category defaults HTTP', () => {
   let ctx;
 
@@ -186,6 +198,7 @@ describe('settings — asset category defaults HTTP', () => {
       expect(res.text).toContain('Enabled');
       expect(res.text).toMatch(/newly created projects|future project/i);
       expect(listBefore.text).toContain('Source');
+      expect(res.text).toMatch(/<input\s+type="checkbox"\s+id="global-category-enabled-\d+"[\s\S]*?checked/);
     });
 
     it('renders defaults in deterministic display_order then id order', async () => {
@@ -215,6 +228,126 @@ describe('settings — asset category defaults HTTP', () => {
     });
   });
 
+  describe('global asset-browser default control', () => {
+    it('selects All by default and offers enabled global categories only', async () => {
+      ctx = setupTmp();
+      const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
+      const { agent, csrfToken } = await authenticate(app);
+      const source = ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE directory_slug = ?').get('source');
+      await agent.post(`/settings/asset-categories/${source.id}/disable`).type('form').send({ _csrf: csrfToken }).expect(302);
+
+      const res = await agent.get('/settings/asset-categories').expect(200);
+      expect(res.text).toMatch(/<option value="all" selected>All Categories/);
+      expect(res.text).toContain('<option value="exports">Exports');
+      expect(res.text).not.toContain('<option value="source">Source');
+      expect(res.text).toMatch(/projects set to.*Inherit global default/i);
+      expect(res.text).toMatch(/stable directory slug is stored/i);
+    });
+
+    it('selects an enabled global slug while displaying the category label', async () => {
+      ctx = setupTmp();
+      const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
+      const { agent, csrfToken } = await authenticate(app);
+      await agent.post('/settings/asset-categories/browser-default').type('form')
+        .send({ defaultCategory: 'exports', _csrf: csrfToken }).expect(302);
+
+      const res = await agent.get('/settings/asset-categories').expect(200);
+      expect(res.text).toMatch(/<option value="exports" selected>Exports/);
+      expect(res.text).toContain('Saved setting: <strong>Exports</strong>');
+      expect(getGlobalBrowserDefault(ctx.db)).toBe('exports');
+    });
+
+    it('warns for stale, disabled, and malformed stored values without rewriting them', async () => {
+      ctx = setupTmp();
+      const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
+      const { agent, csrfToken } = await authenticate(app);
+      const source = ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE directory_slug = ?').get('source');
+
+      ctx.db.prepare('UPDATE app_meta SET value = ? WHERE key = ?').run('source', 'asset_browser.default_category');
+      await agent.post(`/settings/asset-categories/${source.id}/disable`).type('form').send({ _csrf: csrfToken }).expect(302);
+      const disabled = await agent.get('/settings/asset-categories').expect(200);
+      expect(disabled.text).toMatch(/saved global category is disabled/i);
+      expect(disabled.text).toMatch(/Effective behavior for inheriting projects:.*All Categories/i);
+      expect(getGlobalBrowserDefault(ctx.db)).toBe('source');
+
+      ctx.db.prepare('UPDATE app_meta SET value = ? WHERE key = ?').run('does-not-exist', 'asset_browser.default_category');
+      const stale = await agent.get('/settings/asset-categories').expect(200);
+      expect(stale.text).toMatch(/unavailable or was deleted/i);
+      expect(getGlobalBrowserDefault(ctx.db)).toBe('does-not-exist');
+
+      ctx.db.prepare('UPDATE app_meta SET value = ? WHERE key = ?').run('category:12', 'asset_browser.default_category');
+      const malformed = await agent.get('/settings/asset-categories').expect(200);
+      expect(malformed.text).toMatch(/saved global default is malformed/i);
+      expect(getGlobalBrowserDefault(ctx.db)).toBe('category:12');
+    });
+
+    it('saves All and an enabled slug without changing project preference rows or copied categories', async () => {
+      ctx = setupTmp();
+      const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
+      const { agent, csrfToken } = await authenticate(app);
+      const projectId = await createProject(agent, csrfToken, 'Global Default Independence');
+      const categoriesBefore = ctx.db.prepare('SELECT * FROM project_asset_categories WHERE project_id = ? ORDER BY id').all(projectId);
+      const preferenceBefore = getProjectBrowserPreference(ctx.db, projectId);
+
+      const all = await agent.post('/settings/asset-categories/browser-default').type('form')
+        .send({ defaultCategory: 'all', _csrf: csrfToken }).expect(302);
+      expect(all.headers.location).toBe('/settings/asset-categories?notice=global_default_saved');
+      const slug = await agent.post('/settings/asset-categories/browser-default').type('form')
+        .send({ defaultCategory: 'exports', _csrf: csrfToken }).expect(302);
+      expect(slug.headers.location).toBe('/settings/asset-categories?notice=global_default_saved');
+
+      expect(getGlobalBrowserDefault(ctx.db)).toBe('exports');
+      expect(getProjectBrowserPreference(ctx.db, projectId)).toEqual(preferenceBefore);
+      expect(ctx.db.prepare('SELECT * FROM project_asset_categories WHERE project_id = ? ORDER BY id').all(projectId))
+        .toEqual(categoriesBefore);
+    });
+
+    it('rejects unknown and disabled slugs with 422, retaining the submitted value and prior storage', async () => {
+      ctx = setupTmp();
+      const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
+      const { agent, csrfToken } = await authenticate(app);
+      const source = ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE directory_slug = ?').get('source');
+      ctx.db.prepare('UPDATE app_meta SET value = ? WHERE key = ?').run('exports', 'asset_browser.default_category');
+
+      const unknown = await agent.post('/settings/asset-categories/browser-default').type('form')
+        .send({ defaultCategory: 'unknown-slug', _csrf: csrfToken }).expect(422);
+      expect(unknown.text).toContain('unknown-slug');
+      expect(unknown.text).toContain('Global preference must be all or an enabled global category slug');
+      expect(getGlobalBrowserDefault(ctx.db)).toBe('exports');
+
+      await agent.post(`/settings/asset-categories/${source.id}/disable`).type('form').send({ _csrf: csrfToken }).expect(302);
+      const disabled = await agent.post('/settings/asset-categories/browser-default').type('form')
+        .send({ defaultCategory: 'source', _csrf: csrfToken }).expect(422);
+      expect(disabled.text).toContain('source');
+      expect(disabled.text).toContain('selected global category is disabled');
+      expect(getGlobalBrowserDefault(ctx.db)).toBe('exports');
+    });
+
+    it('requires CSRF and does not render arbitrary notice values', async () => {
+      ctx = setupTmp();
+      const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
+      const { agent } = await authenticate(app);
+
+      await agent.post('/settings/asset-categories/browser-default').type('form')
+        .send({ defaultCategory: 'all' }).expect(403);
+      const res = await agent.get('/settings/asset-categories?notice=%3Cscript%3Ealert(1)%3C%2Fscript%3E').expect(200);
+      expect(res.text).not.toContain('<script>alert(1)</script>');
+      expect(res.text).not.toContain('alert(1)');
+    });
+
+    it('does not expose a global category using the reserved all slug as a second selectable meaning', async () => {
+      ctx = setupTmp();
+      const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
+      const { agent, csrfToken } = await authenticate(app);
+
+      await agent.post('/settings/asset-categories').type('form')
+        .send({ displayName: 'Ambiguous All', directorySlug: 'all', enabled: 'on', _csrf: csrfToken }).expect(302);
+      const res = await agent.get('/settings/asset-categories').expect(200);
+      expect(res.text).toMatch(/directory slug .*all.*reserved|reserved.*all.*sentinel/i);
+      expect((res.text.match(/<option value="all"/g) || []).length).toBe(1);
+    });
+  });
+
   // ─── Add ──────────────────────────────────────────────────────────────────
 
   describe('adding', () => {
@@ -227,7 +360,7 @@ describe('settings — asset category defaults HTTP', () => {
         .send({ displayName: 'Storyboards', directorySlug: 'storyboards', enabled: 'on', _csrf: csrfToken })
         .expect(302);
       await agent.post('/settings/asset-categories').type('form')
-        .send({ displayName: 'Drafts', directorySlug: 'drafts', _csrf: csrfToken })
+        .send({ displayName: 'Drafts', directorySlug: 'drafts', enabled: '0', _csrf: csrfToken })
         .expect(302);
 
       const rows = ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE directory_slug IN (?, ?)').all('storyboards', 'drafts');
@@ -235,6 +368,37 @@ describe('settings — asset category defaults HTTP', () => {
       const drafts = rows.find((r) => r.directory_slug === 'drafts');
       expect(storyboards.enabled).toBe(1);
       expect(drafts.enabled).toBe(0);
+    });
+
+    it('defaults an omitted enabled field to enabled', async () => {
+      ctx = setupTmp();
+      const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
+      const { agent, csrfToken } = await authenticate(app);
+
+      await agent.post('/settings/asset-categories').type('form')
+        .send({ displayName: 'Drafts', directorySlug: 'drafts', _csrf: csrfToken }).expect(302);
+
+      expect(ctx.db.prepare('SELECT enabled FROM asset_category_defaults WHERE directory_slug = ?').get('drafts').enabled).toBe(1);
+    });
+
+    it('retains switch state on add validation failure and rejects malformed values', async () => {
+      ctx = setupTmp();
+      const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
+      const { agent, csrfToken } = await authenticate(app);
+
+      const unchecked = await agent.post('/settings/asset-categories').type('form')
+        .send({ displayName: '', directorySlug: 'unchecked', enabled: '0', _csrf: csrfToken }).expect(422);
+      const uncheckedSwitch = unchecked.text.match(/<input\s+type="checkbox"\s+id="add-enabled"[\s\S]*?>/)?.[0] || '';
+      expect(uncheckedSwitch).not.toContain('checked');
+
+      const checked = await agent.post('/settings/asset-categories').type('form')
+        .send({ displayName: '', directorySlug: 'checked', enabled: ['0', '1'], _csrf: csrfToken }).expect(422);
+      expect(checked.text).toMatch(/<input\s+type="checkbox"\s+id="add-enabled"[\s\S]*?checked/);
+
+      const malformed = await agent.post('/settings/asset-categories').type('form')
+        .send({ displayName: 'Malformed', directorySlug: 'malformed', enabled: 'maybe', _csrf: csrfToken }).expect(422);
+      expect(malformed.text).toContain('Enabled value must be');
+      expect(ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE directory_slug = ?').get('malformed')).toBeUndefined();
     });
 
     it('trims display name and validates through the service', async () => {
@@ -388,6 +552,33 @@ describe('settings — asset category defaults HTTP', () => {
   // ─── Toggle ───────────────────────────────────────────────────────────────
 
   describe('enable/disable', () => {
+    it('unified switch route parses unchecked and hidden-plus-checked values', async () => {
+      ctx = setupTmp();
+      const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
+      const { agent, csrfToken } = await authenticate(app);
+      const row = ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE directory_slug = ?').get('source');
+
+      await agent.post(`/settings/asset-categories/${row.id}/enabled`).type('form')
+        .send({ enabled: '0', _csrf: csrfToken }).expect(302);
+      expect(ctx.db.prepare('SELECT enabled FROM asset_category_defaults WHERE id = ?').get(row.id).enabled).toBe(0);
+
+      await agent.post(`/settings/asset-categories/${row.id}/enabled`).type('form')
+        .send({ enabled: ['0', '1'], _csrf: csrfToken }).expect(302);
+      expect(ctx.db.prepare('SELECT enabled FROM asset_category_defaults WHERE id = ?').get(row.id).enabled).toBe(1);
+    });
+
+    it('rejects malformed switch values with 422 and retains the stored state', async () => {
+      ctx = setupTmp();
+      const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
+      const { agent, csrfToken } = await authenticate(app);
+      const row = ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE directory_slug = ?').get('source');
+
+      const res = await agent.post(`/settings/asset-categories/${row.id}/enabled`).type('form')
+        .send({ enabled: ['0', '1', '1'], _csrf: csrfToken }).expect(422);
+      expect(res.text).toContain('Enabled value must be');
+      expect(ctx.db.prepare('SELECT enabled FROM asset_category_defaults WHERE id = ?').get(row.id).enabled).toBe(1);
+    });
+
     it('disables an enabled default and re-enables it', async () => {
       ctx = setupTmp();
       const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });

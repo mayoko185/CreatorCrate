@@ -7,14 +7,114 @@
  * Deliberately calls createApp directly (no supertest) — this is a
  * construction-time fact, not application behavior.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+const dependencyInstrumentation = vi.hoisted(() => ({
+  preferenceRepositories: [],
+  projectServices: [],
+  preferenceServices: [],
+  projectAssetCategoryServices: [],
+  assetRouters: [],
+  projectAssetCategoryRouters: [],
+  settingsRouters: [],
+}));
+
+vi.mock('../src/data/asset-browser-preference-repository.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    createAssetBrowserPreferenceRepository(...args) {
+      const repository = actual.createAssetBrowserPreferenceRepository(...args);
+      dependencyInstrumentation.preferenceRepositories.push({ args, repository });
+      return repository;
+    },
+  };
+});
+
+vi.mock('../src/services/project-service.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    createProjectService(...args) {
+      const service = actual.createProjectService(...args);
+      dependencyInstrumentation.projectServices.push({ args, service });
+      return service;
+    },
+  };
+});
+
+vi.mock('../src/services/asset-browser-preference-service.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    createAssetBrowserPreferenceService(...args) {
+      const service = actual.createAssetBrowserPreferenceService(...args);
+      dependencyInstrumentation.preferenceServices.push({ args, service });
+      return service;
+    },
+  };
+});
+
+vi.mock('../src/services/project-asset-category-service.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    createProjectAssetCategoryService(...args) {
+      const service = actual.createProjectAssetCategoryService(...args);
+      dependencyInstrumentation.projectAssetCategoryServices.push({ args, service });
+      return service;
+    },
+  };
+});
+
+vi.mock('../src/routes/assets.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    createAssetsRouter(...args) {
+      const router = actual.createAssetsRouter(...args);
+      dependencyInstrumentation.assetRouters.push({ args, router });
+      return router;
+    },
+  };
+});
+
+vi.mock('../src/routes/project-asset-categories.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    createProjectAssetCategoriesRouter(...args) {
+      const router = actual.createProjectAssetCategoriesRouter(...args);
+      dependencyInstrumentation.projectAssetCategoryRouters.push({ args, router });
+      return router;
+    },
+  };
+});
+
+vi.mock('../src/routes/settings.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    createSettingsRouter(...args) {
+      const router = actual.createSettingsRouter(...args);
+      dependencyInstrumentation.settingsRouters.push({ args, router });
+      return router;
+    },
+  };
+});
+
 import { createApp } from '../src/app.js';
+import { createAssetsRouter } from '../src/routes/assets.js';
+import { createProjectAssetCategoriesRouter } from '../src/routes/project-asset-categories.js';
+import { createSettingsRouter } from '../src/routes/settings.js';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { createAssetCategoryRepository } from '../src/data/asset-category-repository.js';
+import { createAssetBrowserPreferenceRepository } from '../src/data/asset-browser-preference-repository.js';
+import { createProjectRepository } from '../src/data/project-repository.js';
 import { createAssetCategoryService } from '../src/services/asset-category-service.js';
 import { createProjectService } from '../src/services/project-service.js';
 import { createProjectOperationCoordinator, ProjectOperationError } from '../src/services/project-operation-coordinator.js';
@@ -43,6 +143,7 @@ describe('app construction — asset actions chunk 3 wiring', () => {
     db = openDatabase(path.join(appDataRoot, 'test.db'));
     runMigrations(db, MIGRATIONS_DIR);
     csrfPepper = ensureAuthEnablement(appDataRoot).csrfPepper;
+    for (const calls of Object.values(dependencyInstrumentation)) calls.length = 0;
   });
 
   afterEach(() => {
@@ -70,6 +171,112 @@ describe('app construction — asset actions chunk 3 wiring', () => {
     expect(typeof app.locals.assetScanner.scanProjectAssets).toBe('function');
   });
 
+  it('constructs the preference service once and keeps it available without route wiring', () => {
+    const app = buildApp();
+
+    expect(app.locals.assetBrowserPreferenceService).toBeTruthy();
+    expect(typeof app.locals.assetBrowserPreferenceService.getProjectPreference).toBe('function');
+    expect(typeof app.locals.assetBrowserPreferenceService.resolveEffectiveCategory).toBe('function');
+  });
+
+  it('omits the Assets router when filesystem roots are unavailable', () => {
+    const app = createApp(
+      { appName: 'CreatorCrate', db },
+      { authState: { csrfPepper }, appDataRoot }
+    );
+
+    expect(dependencyInstrumentation.assetRouters).toHaveLength(0);
+    expect(dependencyInstrumentation.projectAssetCategoryRouters).toHaveLength(0);
+    expect(dependencyInstrumentation.settingsRouters).toHaveLength(1);
+    expect(app.locals.assetActionService).toBeNull();
+    expect(app.locals.projectAssetCategoryService).toBeNull();
+  });
+
+  it('constructs the rooted Assets router once with non-null dependencies', () => {
+    const app = buildApp();
+
+    expect(dependencyInstrumentation.assetRouters).toHaveLength(1);
+    const [routerCall] = dependencyInstrumentation.assetRouters;
+    const dependencies = routerCall.args[0];
+
+    expect(dependencies.projectService).toBeTruthy();
+    expect(dependencies.assetScanner).toBe(app.locals.assetScanner);
+    expect(dependencies.workflowQueryService).toBeTruthy();
+    expect(dependencies.releaseService).toBeTruthy();
+    expect(dependencies.assetActionService).toBe(app.locals.assetActionService);
+    expect(dependencies.assetBrowserPreferenceService).toBe(app.locals.assetBrowserPreferenceService);
+  });
+
+  it('fails clearly when the Assets router preference dependency is absent', () => {
+    expect(() => createAssetsRouter({})).toThrow(
+      'createAssetsRouter requires an assetBrowserPreferenceService dependency.'
+    );
+  });
+
+  it('fails clearly when either other preference-aware router dependency is absent', () => {
+    expect(() => createProjectAssetCategoriesRouter({})).toThrow(
+      'createProjectAssetCategoriesRouter requires an assetBrowserPreferenceService dependency.'
+    );
+    expect(() => createSettingsRouter({})).toThrow(
+      'createSettingsRouter requires an assetBrowserPreferenceService dependency.'
+    );
+  });
+
+  it('passes one preference repository instance through the complete app graph', () => {
+    const app = buildApp();
+
+    expect(dependencyInstrumentation.preferenceRepositories).toHaveLength(1);
+    expect(dependencyInstrumentation.projectServices).toHaveLength(1);
+    expect(dependencyInstrumentation.preferenceServices).toHaveLength(1);
+    expect(dependencyInstrumentation.projectAssetCategoryServices).toHaveLength(1);
+
+    const { args: repositoryArgs, repository } = dependencyInstrumentation.preferenceRepositories[0];
+    const { args: projectServiceArgs } = dependencyInstrumentation.projectServices[0];
+    const { args: preferenceServiceArgs, service: preferenceService } = dependencyInstrumentation.preferenceServices[0];
+    const { args: categoryServiceArgs } = dependencyInstrumentation.projectAssetCategoryServices[0];
+
+    expect(repositoryArgs[0]).toBe(db);
+    expect(projectServiceArgs[2].assetBrowserPreferenceRepository).toBe(repository);
+    expect(preferenceServiceArgs[0].preferenceRepository).toBe(repository);
+    expect(categoryServiceArgs[0].assetBrowserPreferenceRepository).toBe(repository);
+    expect(app.locals.assetBrowserPreferenceService).toBe(preferenceService);
+  });
+
+  it('passes the exact app-scoped preference service to all rooted preference-aware routers', () => {
+    const app = buildApp();
+    expect(dependencyInstrumentation.assetRouters).toHaveLength(1);
+    expect(dependencyInstrumentation.projectAssetCategoryRouters).toHaveLength(1);
+    expect(dependencyInstrumentation.settingsRouters).toHaveLength(1);
+
+    expect(dependencyInstrumentation.assetRouters[0].args[0].assetBrowserPreferenceService)
+      .toBe(app.locals.assetBrowserPreferenceService);
+    expect(dependencyInstrumentation.projectAssetCategoryRouters[0].args[0].assetBrowserPreferenceService)
+      .toBe(app.locals.assetBrowserPreferenceService);
+    expect(dependencyInstrumentation.settingsRouters[0].args[0].assetBrowserPreferenceService)
+      .toBe(app.locals.assetBrowserPreferenceService);
+  });
+
+  it('does not initialize project preference rows during dependency construction', () => {
+    const project = createProjectRepository(db).create({
+      title: 'Existing Project',
+      slug: 'existing-project',
+      description: '',
+      notes: '',
+      status: 'tbd',
+      priority: 'normal',
+      plannedDate: null,
+      publishedDate: null,
+      patreonUrl: null,
+    });
+    expect(db.prepare('SELECT COUNT(*) AS count FROM project_asset_browser_preferences').get().count).toBe(0);
+
+    buildApp();
+
+    expect(db.prepare(
+      'SELECT COUNT(*) AS count FROM project_asset_browser_preferences WHERE project_id = ?'
+    ).get(project.id).count).toBe(0);
+  });
+
   it('does not throw constructing the app (proves the assets router accepts the action service dependency)', () => {
     expect(() => buildApp()).not.toThrow();
   });
@@ -79,7 +286,10 @@ describe('app construction — asset actions chunk 3 wiring', () => {
     const app = buildApp({ projectOperationCoordinator: coordinator });
 
     const assetCategoryService = createAssetCategoryService(createAssetCategoryRepository(db));
-    const projectService = createProjectService(db, projectsRoot, { assetCategoryService });
+    const projectService = createProjectService(db, projectsRoot, {
+      assetCategoryService,
+      assetBrowserPreferenceRepository: createAssetBrowserPreferenceRepository(db),
+    });
     const project = projectService.create({
       title: 'Coordinator Sharing', description: '', notes: '', status: 'tbd', priority: 'normal',
       plannedDate: null, publishedDate: null, patreonUrl: null,
@@ -120,7 +330,10 @@ describe('app construction — asset actions chunk 3 wiring', () => {
     const app = buildApp();
 
     const assetCategoryService = createAssetCategoryService(createAssetCategoryRepository(db));
-    const projectService = createProjectService(db, projectsRoot, { assetCategoryService });
+    const projectService = createProjectService(db, projectsRoot, {
+      assetCategoryService,
+      assetBrowserPreferenceRepository: createAssetBrowserPreferenceRepository(db),
+    });
     const project = projectService.create({
       title: 'Default Coordinator', description: '', notes: '', status: 'tbd', priority: 'normal',
       plannedDate: null, publishedDate: null, patreonUrl: null,

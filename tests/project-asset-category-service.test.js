@@ -9,10 +9,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { createAssetCategoryRepository } from '../src/data/asset-category-repository.js';
+import { createAssetBrowserPreferenceRepository } from '../src/data/asset-browser-preference-repository.js';
 import { createAssetCategoryService } from '../src/services/asset-category-service.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
 import { createProjectRepository } from '../src/data/project-repository.js';
 import { createProjectService } from '../src/services/project-service.js';
+import { createAssetBrowserPreferenceService } from '../src/services/asset-browser-preference-service.js';
 import {
   createProjectAssetCategoryService,
   ProjectArchivedError,
@@ -46,8 +48,10 @@ describe('project asset category service', () => {
   let db;
   let projectRepository;
   let assetCategoryRepository;
+  let assetBrowserPreferenceRepository;
   let assetRepository;
   let projectService;
+  let assetBrowserPreferenceService;
   let service;
   let project;
   let absPath;
@@ -58,6 +62,7 @@ describe('project asset category service', () => {
       projectRepository,
       assetCategoryRepository,
       assetRepository,
+      assetBrowserPreferenceRepository,
       projectsRoot,
       ...overrides,
     });
@@ -123,7 +128,16 @@ describe('project asset category service', () => {
     assetCategoryRepository = createAssetCategoryRepository(db);
     assetRepository = createAssetRepository(db);
     const assetCategoryService = createAssetCategoryService(assetCategoryRepository);
-    projectService = createProjectService(db, projectsRoot, { assetCategoryService });
+    assetBrowserPreferenceRepository = createAssetBrowserPreferenceRepository(db);
+    projectService = createProjectService(db, projectsRoot, {
+      assetCategoryService,
+      assetBrowserPreferenceRepository,
+    });
+    assetBrowserPreferenceService = createAssetBrowserPreferenceService({
+      preferenceRepository: assetBrowserPreferenceRepository,
+      projectRepository,
+      assetCategoryRepository,
+    });
 
     service = makeService();
 
@@ -147,6 +161,9 @@ describe('project asset category service', () => {
         .toThrow(/assetRepository dependency/);
       expect(() => createProjectAssetCategoryService({ db, projectRepository, assetCategoryRepository, assetRepository }))
         .toThrow(/projectsRoot dependency/);
+      expect(() => createProjectAssetCategoryService({
+        db, projectRepository, assetCategoryRepository, assetRepository, projectsRoot,
+      })).toThrow(/assetBrowserPreferenceRepository dependency/);
     });
   });
 
@@ -841,6 +858,146 @@ describe('project asset category service', () => {
       expect(assetCategoryRepository.findProjectCategoryById(project.id, category.id)).toBeUndefined();
     });
 
+    it('resets the selected project preference when deleting that category', () => {
+      const [category] = service.list(project.id);
+      assetBrowserPreferenceRepository.upsertProjectPreference(project.id, 'category', category.id);
+
+      expect(service.delete(project.id, category.id)).toBe(true);
+
+      expect(assetCategoryRepository.findProjectCategoryById(project.id, category.id)).toBeUndefined();
+      expect(assetBrowserPreferenceService.getProjectPreference(project.id)).toEqual({
+        mode: 'inherit',
+        categoryId: null,
+      });
+    });
+
+    it('leaves a selected preference unchanged when deleting another category', () => {
+      const [selected, target] = service.list(project.id);
+      assetBrowserPreferenceRepository.upsertProjectPreference(project.id, 'category', selected.id);
+
+      expect(service.delete(project.id, target.id)).toBe(true);
+
+      expect(assetBrowserPreferenceService.getProjectPreference(project.id)).toEqual({
+        mode: 'category',
+        categoryId: selected.id,
+      });
+    });
+
+    it.each(['all', 'inherit'])('leaves a %s project preference unchanged when deleting a category', (mode) => {
+      const [category] = service.list(project.id);
+      assetBrowserPreferenceRepository.upsertProjectPreference(project.id, mode, null);
+
+      expect(service.delete(project.id, category.id)).toBe(true);
+
+      expect(assetBrowserPreferenceService.getProjectPreference(project.id)).toEqual({
+        mode,
+        categoryId: null,
+      });
+    });
+
+    it('retains a disabled selected category and resolves it again after re-enabling', () => {
+      const [category] = service.list(project.id);
+      assetBrowserPreferenceRepository.upsertProjectPreference(project.id, 'category', category.id);
+
+      service.setEnabled(project.id, category.id, false);
+      expect(assetBrowserPreferenceService.getProjectPreference(project.id)).toEqual({
+        mode: 'category',
+        categoryId: category.id,
+      });
+      expect(assetBrowserPreferenceService.resolveEffectiveCategory(project.id)).toMatchObject({
+        fallback: true,
+        effective: { kind: 'all', category: null },
+      });
+
+      service.setEnabled(project.id, category.id, true);
+      expect(assetBrowserPreferenceService.resolveEffectiveCategory(project.id)).toMatchObject({
+        fallback: false,
+        effective: { kind: 'category', category: { id: category.id } },
+      });
+    });
+
+    it('leaves the preference unchanged when deletion is blocked by an asset assignment', () => {
+      const [category] = service.list(project.id);
+      assetBrowserPreferenceRepository.upsertProjectPreference(project.id, 'category', category.id);
+      assetRepository.upsert(project.id, `${category.directory_slug}/a.png`, {
+        filename: 'a.png', extension: 'png', mimeType: 'image/png',
+        sizeBytes: 1, modifiedAt: null, categoryId: category.id,
+      });
+
+      expect(() => service.delete(project.id, category.id)).toThrow(ProjectAssetCategoryError);
+      expect(assetBrowserPreferenceService.getProjectPreference(project.id)).toEqual({
+        mode: 'category',
+        categoryId: category.id,
+      });
+      expect(assetCategoryRepository.findProjectCategoryById(project.id, category.id)).toBeTruthy();
+    });
+
+    it('rolls back the category deletion when preference reset fails', () => {
+      const [category] = service.list(project.id);
+      assetBrowserPreferenceRepository.upsertProjectPreference(project.id, 'category', category.id);
+      const originalReset = assetBrowserPreferenceRepository.resetProjectPreferenceIfCategory.bind(
+        assetBrowserPreferenceRepository
+      );
+      const resetSpy = vi.spyOn(assetBrowserPreferenceRepository, 'resetProjectPreferenceIfCategory')
+        .mockImplementation((...args) => {
+          originalReset(...args);
+          throw new Error('preference reset failed');
+        });
+
+      try {
+        expect(() => service.delete(project.id, category.id)).toThrow('preference reset failed');
+      } finally {
+        resetSpy.mockRestore();
+      }
+
+      expect(assetCategoryRepository.findProjectCategoryById(project.id, category.id)).toBeTruthy();
+      expect(assetBrowserPreferenceService.getProjectPreference(project.id)).toEqual({
+        mode: 'category',
+        categoryId: category.id,
+      });
+      expect(fs.existsSync(path.join(absPath, category.directory_slug))).toBe(true);
+    });
+
+    it('rolls back the preference reset when category deletion fails', () => {
+      const [category] = service.list(project.id);
+      assetBrowserPreferenceRepository.upsertProjectPreference(project.id, 'category', category.id);
+      const originalDelete = assetCategoryRepository.deleteProjectCategoryAndCompact.bind(
+        assetCategoryRepository
+      );
+      const deleteSpy = vi.spyOn(assetCategoryRepository, 'deleteProjectCategoryAndCompact')
+        .mockImplementation((...args) => {
+          originalDelete(...args);
+          throw new Error('category deletion failed');
+        });
+
+      try {
+        expect(() => service.delete(project.id, category.id)).toThrow('category deletion failed');
+      } finally {
+        deleteSpy.mockRestore();
+      }
+
+      expect(assetCategoryRepository.findProjectCategoryById(project.id, category.id)).toBeTruthy();
+      expect(assetBrowserPreferenceService.getProjectPreference(project.id)).toEqual({
+        mode: 'category',
+        categoryId: category.id,
+      });
+      expect(fs.existsSync(path.join(absPath, category.directory_slug))).toBe(true);
+    });
+
+    it('cannot use a category ID from another project to reset this project preference', () => {
+      const [category] = service.list(project.id);
+      const otherProject = projectService.create(validProjectInput({ title: 'Other Project' }));
+      const [otherCategory] = assetCategoryRepository.listProjectCategories(otherProject.id);
+      assetBrowserPreferenceRepository.upsertProjectPreference(project.id, 'category', category.id);
+
+      expect(() => service.delete(project.id, otherCategory.id)).toThrow(AssetCategoryNotFoundError);
+      expect(assetBrowserPreferenceService.getProjectPreference(project.id)).toEqual({
+        mode: 'category',
+        categoryId: category.id,
+      });
+      expect(assetCategoryRepository.findProjectCategoryById(otherProject.id, otherCategory.id)).toBeTruthy();
+    });
+
     it('safely quarantines and removes an empty directory, compacting positions', () => {
       const categoriesBefore = service.list(project.id);
       const target = categoriesBefore[1];
@@ -902,6 +1059,7 @@ describe('project asset category service', () => {
       const [category] = service.list(project.id);
       const slug = category.directory_slug;
       const categoryPath = path.join(absPath, slug);
+      assetBrowserPreferenceRepository.upsertProjectPreference(project.id, 'category', category.id);
 
       const originalRenameSync = fs.renameSync.bind(fs);
       let calls = 0;
@@ -924,6 +1082,11 @@ describe('project asset category service', () => {
 
       // Category row remains — the transaction rolled back.
       expect(assetCategoryRepository.findProjectCategoryById(project.id, category.id)).toBeTruthy();
+      // The selected-category reset rolled back with the failed transaction.
+      expect(assetBrowserPreferenceService.getProjectPreference(project.id)).toEqual({
+        mode: 'category',
+        categoryId: category.id,
+      });
       // Manifest remains unchanged (still lists the category).
       const manifest = readManifestSync(absPath);
       expect(manifest.assetCategories.find((c) => c.directorySlug === slug)).toBeTruthy();
@@ -940,10 +1103,11 @@ describe('project asset category service', () => {
     // writeManifestSync) happening AFTER the manifest was already
     // published from the (about-to-roll-back) in-progress state, and after
     // the category directory was already removed pre-commit.
-    it('restores the category row, order, prior manifest bytes, and directory when the transaction fails at commit time', () => {
+    it('restores the category row, order, selected preference, prior manifest bytes, and directory when the transaction fails at commit time', () => {
       const categoriesBefore = service.list(project.id);
       const target = categoriesBefore[1];
       const manifestBefore = readManifestSync(absPath);
+      assetBrowserPreferenceRepository.upsertProjectPreference(project.id, 'category', target.id);
 
       // Unrelated asset/release state that must be completely undisturbed.
       const otherCategory = categoriesBefore[0];
@@ -973,6 +1137,11 @@ describe('project asset category service', () => {
 
       // Category row and order remain exactly as before.
       expect(service.list(project.id)).toEqual(categoriesBefore);
+      // The selected-category reset rolled back with the failed transaction.
+      expect(assetBrowserPreferenceService.getProjectPreference(project.id)).toEqual({
+        mode: 'category',
+        categoryId: target.id,
+      });
       // The prior manifest bytes are restored exactly.
       expect(readManifestSync(absPath)).toEqual(manifestBefore);
       // The category directory was recreated (empty) as compensation.

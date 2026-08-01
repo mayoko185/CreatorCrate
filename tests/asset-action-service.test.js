@@ -15,6 +15,7 @@ import { fileURLToPath } from 'node:url';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
 import { createAssetCategoryRepository } from '../src/data/asset-category-repository.js';
+import { createAssetBrowserPreferenceRepository } from '../src/data/asset-browser-preference-repository.js';
 import { createAssetCategoryService } from '../src/services/asset-category-service.js';
 import { createProjectRepository } from '../src/data/project-repository.js';
 import { createProjectService } from '../src/services/project-service.js';
@@ -69,6 +70,7 @@ describe('asset action service', () => {
   let projectRepository;
   let assetRepository;
   let assetCategoryRepository;
+  let assetBrowserPreferenceRepository;
   let projectService;
   let categoryService;
   let actionService;
@@ -142,11 +144,20 @@ describe('asset action service', () => {
 
     projectRepository = createProjectRepository(db);
     assetCategoryRepository = createAssetCategoryRepository(db);
+    assetBrowserPreferenceRepository = createAssetBrowserPreferenceRepository(db);
     assetRepository = createAssetRepository(db);
     const assetCategoryService = createAssetCategoryService(assetCategoryRepository);
-    projectService = createProjectService(db, projectsRoot, { assetCategoryService });
+    projectService = createProjectService(db, projectsRoot, {
+      assetCategoryService,
+      assetBrowserPreferenceRepository,
+    });
     categoryService = createProjectAssetCategoryService({
-      db, projectRepository, assetCategoryRepository, assetRepository, projectsRoot,
+      db,
+      projectRepository,
+      assetCategoryRepository,
+      assetRepository,
+      assetBrowserPreferenceRepository,
+      projectsRoot,
     });
     projectOperationCoordinator = createProjectOperationCoordinator();
     actionService = createAssetActionService({

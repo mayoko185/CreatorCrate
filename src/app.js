@@ -15,6 +15,8 @@ import { createSettingsRouter } from './routes/settings.js';
 import { createProjectService } from './services/project-service.js';
 import { createAssetCategoryRepository } from './data/asset-category-repository.js';
 import { createAssetCategoryService } from './services/asset-category-service.js';
+import { createAssetBrowserPreferenceRepository } from './data/asset-browser-preference-repository.js';
+import { createAssetBrowserPreferenceService } from './services/asset-browser-preference-service.js';
 import { createProjectAssetCategoryService } from './services/project-asset-category-service.js';
 import { createAssetScanner } from './services/asset-scanner.js';
 import { createAssetActionService } from './services/asset-action-service.js';
@@ -100,8 +102,22 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   // instance is what a future Settings router will receive too.
   const assetCategoryRepository = opts.assetCategoryRepository || createAssetCategoryRepository(db);
   const assetCategoryService = opts.assetCategoryService || createAssetCategoryService(assetCategoryRepository);
+  const assetBrowserPreferenceRepository =
+    opts.assetBrowserPreferenceRepository || createAssetBrowserPreferenceRepository(db);
 
-  const projectService = createProjectService(db, projectsRoot, { assetCategoryService });
+  const projectService = createProjectService(db, projectsRoot, {
+    assetCategoryService,
+    assetBrowserPreferenceRepository,
+  });
+
+  const assetBrowserPreferenceService =
+    opts.assetBrowserPreferenceService ||
+    createAssetBrowserPreferenceService({
+      preferenceRepository: assetBrowserPreferenceRepository,
+      projectRepository: projectService.repository,
+      assetCategoryRepository,
+    });
+  app.locals.assetBrowserPreferenceService = assetBrowserPreferenceService;
 
   // Phase: asset actions chunk 3 — one process-local coordinator shared by
   // the scanner and the asset action service so a scan and a rename/move
@@ -119,13 +135,16 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   // repository (via assetScanner.repository) rather than constructing
   // duplicates. The router mounted below (Phase 2 chunk 3) receives this
   // service explicitly.
-  const projectAssetCategoryService = opts.projectAssetCategoryService || createProjectAssetCategoryService({
-    db,
-    projectRepository: projectService.repository,
-    assetCategoryRepository,
-    assetRepository: assetScanner.repository,
-    projectsRoot,
-  });
+  const projectAssetCategoryService = opts.projectAssetCategoryService || (projectsRoot
+    ? createProjectAssetCategoryService({
+      db,
+      projectRepository: projectService.repository,
+      assetCategoryRepository,
+      assetRepository: assetScanner.repository,
+      assetBrowserPreferenceRepository,
+      projectsRoot,
+    })
+    : null);
   app.locals.projectAssetCategoryService = projectAssetCategoryService;
 
   // Phase: asset actions chunk 3 — rename/move filesystem action service.
@@ -133,13 +152,15 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   // duplicate repository construction) and the same coordinator instance
   // as assetScanner, so a scan and a rename/move for one project can never
   // interleave. Wired into the asset browser/viewer routes below.
-  const assetActionService = opts.assetActionService || createAssetActionService({
-    projectRepository: projectService.repository,
-    assetRepository: assetScanner.repository,
-    assetCategoryRepository,
-    projectsRoot,
-    projectOperationCoordinator,
-  });
+  const assetActionService = opts.assetActionService || (projectsRoot
+    ? createAssetActionService({
+      projectRepository: projectService.repository,
+      assetRepository: assetScanner.repository,
+      assetCategoryRepository,
+      projectsRoot,
+      projectOperationCoordinator,
+    })
+    : null);
   app.locals.assetActionService = assetActionService;
 
   const releaseService = opts.releaseService || createReleaseService({ db, evaluateReleaseReadiness });
@@ -295,12 +316,34 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     app.use('/projects', createMediaRouter({ mediaService }));
   }
 
-  app.use('/projects', createAssetsRouter({ appName, projectService, assetScanner, workflowQueryService, releaseService, assetActionService }));
+  // The Assets router combines database-backed browser queries with
+  // filesystem-backed scanning and mutation handlers. Rootless applications
+  // intentionally do not construct those filesystem services, so omit the
+  // complete router instead of mounting handlers that would receive null
+  // dependencies and fail at request time.
+  if (projectsRoot) {
+    app.use('/projects', createAssetsRouter({
+      appName,
+      projectService,
+      assetScanner,
+      workflowQueryService,
+      releaseService,
+      assetActionService,
+      assetBrowserPreferenceService,
+    }));
+  }
 
   // Phase 2 chunk 3: project-specific category routes. The router receives
   // the already-constructed `projectAssetCategoryService` explicitly — it
   // never constructs a repository or service of its own.
-  app.use('/projects', createProjectAssetCategoriesRouter({ appName, projectService, projectAssetCategoryService }));
+  if (projectAssetCategoryService) {
+    app.use('/projects', createProjectAssetCategoriesRouter({
+      appName,
+      projectService,
+      projectAssetCategoryService,
+      assetBrowserPreferenceService,
+    }));
+  }
 
   app.use('/releases', createReleasesRouter({ appName, releaseService, projectService, workflowQueryService }));
 
@@ -331,6 +374,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     appDataRoot,
     backupRetentionCount: opts.backupRetentionCount,
     authSettings: opts.authSettings,
+    assetBrowserPreferenceService,
   }));
 
   app.use((_req, _res, next) => {

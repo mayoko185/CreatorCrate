@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { openDatabase, runMigrations, closeDatabase } from '../../src/db.js';
 import { createAssetCategoryRepository } from '../../src/data/asset-category-repository.js';
+import { createAssetBrowserPreferenceRepository } from '../../src/data/asset-browser-preference-repository.js';
 import { createAssetCategoryService } from '../../src/services/asset-category-service.js';
 import {
   createProjectService,
@@ -43,6 +44,7 @@ describe('project creation integration', () => {
   let tmpDir;
   let db;
   let service;
+  let assetBrowserPreferenceRepository;
   let projectsRoot;
 
   beforeEach(() => {
@@ -56,7 +58,11 @@ describe('project creation integration', () => {
     db = openDatabase(dbPath);
     runMigrations(db, MIGRATIONS_DIR);
     const assetCategoryService = createAssetCategoryService(createAssetCategoryRepository(db));
-    service = createProjectService(db, projectsRoot, { assetCategoryService });
+    assetBrowserPreferenceRepository = createAssetBrowserPreferenceRepository(db);
+    service = createProjectService(db, projectsRoot, {
+      assetCategoryService,
+      assetBrowserPreferenceRepository,
+    });
   });
 
   afterEach(() => {
@@ -78,6 +84,16 @@ describe('project creation integration', () => {
       expect(project.created_at).toBeTruthy();
       expect(project.updated_at).toBeTruthy();
       expect(project.archived_at).toBeNull();
+      expect(db.prepare(`
+        SELECT default_category_mode, default_category_id
+        FROM project_asset_browser_preferences
+        WHERE project_id = ?
+      `).get(project.id)).toEqual({ default_category_mode: 'inherit', default_category_id: null });
+      expect(db.prepare(`
+        SELECT COUNT(*) AS count
+        FROM project_asset_browser_preferences
+        WHERE project_id = ?
+      `).get(project.id).count).toBe(1);
     });
 
     it('creates project directory at correct path', () => {
@@ -179,6 +195,29 @@ describe('project creation integration', () => {
   // ── Failure injection and compensation ───────────────────────────────
 
   describe('compensation on failure', () => {
+    it('rolls back the project, copied categories, and preference row when preference initialization fails', () => {
+      const originalEnsure = assetBrowserPreferenceRepository.ensureProjectPreference.bind(
+        assetBrowserPreferenceRepository
+      );
+      const preferenceSpy = vi.spyOn(assetBrowserPreferenceRepository, 'ensureProjectPreference')
+        .mockImplementation((...args) => {
+          originalEnsure(...args);
+          throw new Error('preference insert failed');
+        });
+
+      try {
+        expect(() => service.create(validInput({ title: 'Preference Insert Fail' }))).toThrow(
+          'Project creation failed'
+        );
+      } finally {
+        preferenceSpy.mockRestore();
+      }
+
+      expect(service.repository.findBySlug('preference-insert-fail')).toBeUndefined();
+      expect(db.prepare('SELECT COUNT(*) AS count FROM project_asset_categories').get().count).toBe(0);
+      expect(db.prepare('SELECT COUNT(*) AS count FROM project_asset_browser_preferences').get().count).toBe(0);
+    });
+
     it('deletes database record when mkdirSync fails', () => {
       const mkdirSpy = vi.spyOn(fs, 'mkdirSync').mockImplementation(() => {
         throw new Error('disk full');

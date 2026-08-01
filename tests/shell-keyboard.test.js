@@ -48,16 +48,20 @@ function positiveTabindexMatches(html) {
 }
 
 /**
- * Collect focusable elements ([hidden]) that still contain interactive
- * descendants. Returns an array of human-readable offender descriptions.
+ * Collect hidden regions that still contain active interactive descendants.
+ * Inert regions and disabled form controls are intentionally excluded because
+ * both remove those descendants from the keyboard/accessibility surface.
  */
 function hiddenFocusableOffenders(html) {
   const offenders = [];
   const hiddenRe = /<(\w+)([^>]*)\bhidden\b([^>]*)>([\s\S]*?)<\/\1>/g;
   let m;
   while ((m = hiddenRe.exec(html)) !== null) {
+    const regionAttributes = `${m[2]} ${m[3]}`;
+    if (/\binert(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+))?/i.test(regionAttributes)) continue;
     const inner = m[4];
-    const interactive = inner.match(/<(?:a|button|input|select|textarea)\b/i);
+    const interactive = [...inner.matchAll(/<(?:a|button|input|select|textarea)\b([^>]*)>/gi)]
+      .some(([, attributes]) => !/\bdisabled(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+))?/i.test(attributes));
     const tabindexed = inner.match(/tabindex="0"/i);
     if (interactive || tabindexed) {
       offenders.push(m[0].slice(0, 80));
@@ -149,6 +153,7 @@ describe('Phase 10.6A: keyboard and focus-state hardening', () => {
         '/projects/new',
         `/projects/${projectId}`,
         `/projects/${projectId}/edit`,
+        `/projects/${projectId}/asset-categories`,
         `/projects/${projectId}/assets`,
         `/projects/${projectId}/assets/${assetIds[1]}`,
         '/releases',
@@ -185,6 +190,7 @@ describe('Phase 10.6A: keyboard and focus-state hardening', () => {
         '/',
         `/projects/${projectId}/assets`,
         `/projects/${projectId}/assets/${assetIds[0]}`,
+        `/projects/${projectId}/asset-categories`,
       ];
       for (const url of pages) {
         const res = await agent.get(url).expect(200);

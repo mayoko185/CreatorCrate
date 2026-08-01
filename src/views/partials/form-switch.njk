@@ -1,0 +1,23 @@
+{% macro control(id, name, checked, description, describedBy=null, invalid=false, readonly=false) %}
+  <div class="form-switch{% if readonly %} form-switch--readonly{% endif %}">
+    {% if not readonly %}
+      <input type="hidden" name="{{ name }}" value="0" tabindex="-1">
+    {% endif %}
+    <input
+      type="checkbox"
+      id="{{ id }}"
+      name="{{ name }}"
+      value="1"
+      class="form-switch-control"
+      {% if checked %}checked{% endif %}
+      {% if readonly %}disabled{% endif %}
+      {% if describedBy %}aria-describedby="{{ describedBy }}"{% endif %}
+      {% if invalid %}aria-invalid="true"{% endif %}>
+    <label class="form-switch-label" for="{{ id }}">
+      <span class="form-switch-track" aria-hidden="true"><span class="form-switch-thumb"></span></span>
+      <span class="form-switch-state form-switch-state--on">Enabled</span>
+      <span class="form-switch-state form-switch-state--off">Disabled</span>
+      <span class="sr-only">{{ description }}</span>
+    </label>
+  </div>
+{% endmacro %}

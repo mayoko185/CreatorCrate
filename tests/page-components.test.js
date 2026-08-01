@@ -88,6 +88,19 @@ function hasClass(html, className) {
   return re.test(html);
 }
 
+function hasNestedForms(html) {
+  let depth = 0;
+  for (const tag of html.match(/<\/?form\b[^>]*>/gi) || []) {
+    if (tag.startsWith('</')) {
+      depth -= 1;
+    } else {
+      if (depth > 0) return true;
+      depth += 1;
+    }
+  }
+  return depth !== 0;
+}
+
 describe('Phase 10.5A: Shared page-level components', () => {
   let db;
   let app;
@@ -596,6 +609,121 @@ describe('Phase 10.5A: Shared page-level components', () => {
       const ids = res.text.match(/id="([^"]+)"/g) || [];
       const uniqueIds = new Set(ids);
       expect(ids.length).toBe(uniqueIds.size);
+    });
+  });
+
+  // ─── 11b. Asset-category enabled switches ─────────────────────────────
+
+  describe('asset-category enabled switch contract', () => {
+    function checkboxIds(html) {
+      return [...html.matchAll(/<input\b[^>]*type="checkbox"[^>]*id="([^"]+)"[^>]*>/g)]
+        .map(([, id]) => id);
+    }
+
+    function expectAccessibleSwitches(html) {
+      const ids = checkboxIds(html);
+      expect(ids.length).toBeGreaterThan(0);
+      expect(new Set(ids).size).toBe(ids.length);
+      for (const id of ids) {
+        expect(html).toContain(`for="${id}"`);
+      }
+      expect(html).toContain('name="enabled" value="0"');
+      expect(html).toContain('name="enabled"');
+      expect(html).toContain('value="1"');
+      const hiddenEnabledInputs = [...html.matchAll(/<input\b[^>]*type="hidden"[^>]*name="enabled"[^>]*>/g)]
+        .map(([input]) => input);
+      expect(hiddenEnabledInputs.length).toBeGreaterThan(0);
+      for (const input of hiddenEnabledInputs) expect(input).toContain('tabindex="-1"');
+      expect(html).toContain('form-switch-track');
+      expect(html).toContain('form-switch-state--on');
+      expect(html).toContain('form-switch-state--off');
+      expect(html).not.toMatch(/type="radio"/i);
+    }
+
+    it('project category rows keep slugs read-only, expose name editing, and use native labelled switches', async () => {
+      const projectRes = await agent
+        .post('/projects')
+        .type('form')
+        .send({ title: 'Switch Markup Project', status: 'tbd', priority: 'normal', _csrf: csrfToken })
+        .expect(302);
+      const projectId = projectRes.headers.location.replace('/projects/', '');
+      const category = db.prepare(`
+        SELECT * FROM project_asset_categories
+        WHERE project_id = ?
+        ORDER BY display_order ASC, id ASC
+        LIMIT 1
+      `).get(Number(projectId));
+
+      const res = await agent.get(`/projects/${projectId}/asset-categories`).expect(200);
+      expectAccessibleSwitches(res.text);
+      expect(res.text).toContain(`/projects/${projectId}/asset-categories/1/enabled`);
+      expect(res.text).toContain('>Save status</button>');
+      expect(res.text).toContain('>Save default</button>');
+      expect(res.text).toContain('asset-browser-default-section--project');
+      expect(res.text).toContain('asset-browser-default-control-row');
+      expect(res.text).toContain('name="defaultCategory" class="form-control"');
+      expect(res.text).not.toContain('New categories are enabled by default.');
+      expect(res.text).toContain('category-management-row');
+      expect(res.text).toContain('category-management-add');
+      expect(res.text).toContain('category-management-action-group');
+      expect(res.text).toContain('Changing a display name does not rename its directory.');
+      expect(res.text).not.toContain('Changes the label only — the folder on disk is not renamed.');
+
+      const categoriesTable = res.text.match(/<table class="[^\"]*\bcategory-management-table\b[^\"]*">[\s\S]*?<\/table>/)?.[0] || '';
+      expect(categoriesTable).not.toContain('<th>Status</th>');
+      expect(categoriesTable).not.toContain('category-management-status');
+
+      const nameForm = res.text.match(new RegExp(
+        `<form method="post" action="/projects/${projectId}/asset-categories/${category.id}/name"[^>]*>[\\s\\S]*?<\\/form>`
+      ))?.[0];
+      expect(nameForm).toBeDefined();
+      expect(nameForm).toContain('name="_csrf"');
+      expect(nameForm).toContain('name="displayName"');
+      expect(nameForm).toContain(`value="${category.display_name}"`);
+      expect(nameForm).toContain('>Save name</button>');
+      expect(nameForm).not.toContain('directorySlug');
+
+      const nameInputId = nameForm.match(/<input type="text" id="([^"]+)" name="displayName"/)?.[1];
+      expect(nameInputId).toBe(`name-${category.id}`);
+      expect(nameForm).toContain(`<label class="sr-only" for="${nameInputId}">`);
+      expect(res.text).toContain(`<code>${category.directory_slug}</code>`);
+
+      const ids = [...res.text.matchAll(/\bid="([^"]+)"/g)].map(([, id]) => id);
+      expect(new Set(ids).size).toBe(ids.length);
+      expect(hasNestedForms(res.text)).toBe(false);
+      expect((res.text.match(/<form\b/gi) || []).length).toBe((res.text.match(/<\/form>/gi) || []).length);
+      for (const form of res.text.match(/<form\b[\s\S]*?<\/form>/gi) || []) {
+        expect(form).toContain('name="_csrf"');
+      }
+    });
+
+    it('global category rows use native labelled switches and scoped layout classes', async () => {
+      const res = await agent.get('/settings/asset-categories').expect(200);
+      expectAccessibleSwitches(res.text);
+      expect(res.text).toContain('/settings/asset-categories/1/enabled');
+      expect(res.text).toContain('category-management-row');
+      expect(res.text).toContain('category-management-add');
+    });
+
+    it('switch and category layout styles are scoped and keyboard-visible', async () => {
+      const res = await agent.get('/settings/asset-categories').expect(200);
+      const css = await extractStyle(agent, res.text);
+
+      expect(css).toContain('.form-switch');
+      expect(css).toContain('.form-switch-control:focus-visible + .form-switch-label');
+      expect(css).toContain('.form-switch-control:checked + .form-switch-label .form-switch-track');
+      expect(css).toContain('.category-management-row');
+      expect(css).toContain('.category-management-list');
+      expect(css).toContain('.category-management-add');
+      expect(css).toContain('.category-name-form');
+      expect(css).toContain('.category-name-form input:focus-visible');
+      expect(css).toContain('.asset-browser-default-control-row');
+      expect(css).toContain('.asset-browser-default-control-row .form-control');
+      expect(css).toContain('.project-category-management-section .category-management-action-group');
+      expect(css).toContain('.project-category-management-section .category-management-table .category-management-row');
+      expect(css).toContain('.project-category-management-section .category-management-table .category-management-row td::before');
+      expect(css).toContain('.asset-select-cell input[type="checkbox"]');
+      expect(css).not.toMatch(/(?:^|\n)\s*input\[type=['"]checkbox['"]\]\s*\{/i);
     });
   });
 

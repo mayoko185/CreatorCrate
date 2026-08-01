@@ -26,6 +26,7 @@ import { createLoginThrottler } from '../src/auth/login-throttle.js';
 import { ensureAuthEnablement, enableAuthState, readAuthEnablement } from '../src/auth/auth-state.js';
 import { extractCsrfToken } from './helpers/auth.js';
 import { createAssetCategoryRepository } from '../src/data/asset-category-repository.js';
+import { createAssetBrowserPreferenceRepository } from '../src/data/asset-browser-preference-repository.js';
 import { createAssetCategoryService } from '../src/services/asset-category-service.js';
 import { createProjectService } from '../src/services/project-service.js';
 
@@ -155,12 +156,15 @@ describe('live restore — same-process application context', () => {
     await request(appContext.handleRequest).get('/health').expect(200);
   });
 
-  it('rebuilds the asset scanner and asset action service against the restored database, with no stale repository', async () => {
+  it('rebuilds db-bound asset and preference services against the restored database, with no stale repositories', async () => {
     // 1. Directly (no HTTP) create a project + real asset file, then index
     //    it through the APP'S OWN scanner instance (app.locals.assetScanner)
     //    — exercising the real construction path, not a separately built one.
     const assetCategoryService = createAssetCategoryService(createAssetCategoryRepository(appContext.db));
-    const projectService = createProjectService(appContext.db, projectsRoot, { assetCategoryService });
+    const projectService = createProjectService(appContext.db, projectsRoot, {
+      assetCategoryService,
+      assetBrowserPreferenceRepository: createAssetBrowserPreferenceRepository(appContext.db),
+    });
     const project = projectService.create({
       title: 'Restore Wiring Project', description: '', notes: '', status: 'tbd', priority: 'normal',
       plannedDate: null, publishedDate: null, patreonUrl: null,
@@ -170,6 +174,11 @@ describe('live restore — same-process application context', () => {
     appContext.app.locals.assetScanner.scanProjectAssets(project.id);
     const [asset] = appContext.app.locals.assetScanner.listProjectAssets(project.id);
     expect(asset).toBeTruthy();
+    const preferenceServiceBeforeRestore = appContext.app.locals.assetBrowserPreferenceService;
+    expect(preferenceServiceBeforeRestore.getProjectPreference(project.id)).toEqual({
+      mode: 'inherit',
+      categoryId: null,
+    });
 
     // 2. Back up the database (backups are DB-only — project files on disk
     //    are untouched by backup/restore, so no filesystem mutation happens
@@ -193,6 +202,15 @@ describe('live restore — same-process application context', () => {
     const [restoredAsset] = appContext.app.locals.assetScanner.listProjectAssets(project.id);
     expect(restoredAsset.id).toBe(asset.id);
     expect(restoredAsset.filename).toBe('a.png');
+
+    // The preference service must also be a new app-local instance bound to
+    // the restored database; the old service closed over the pre-restore DB.
+    const preferenceServiceAfterRestore = appContext.app.locals.assetBrowserPreferenceService;
+    expect(preferenceServiceAfterRestore).not.toBe(preferenceServiceBeforeRestore);
+    expect(preferenceServiceAfterRestore.getProjectPreference(project.id)).toEqual({
+      mode: 'inherit',
+      categoryId: null,
+    });
 
     const renamed = appContext.app.locals.assetActionService.renameAsset(project.id, restoredAsset.id, 'still-works.png');
     expect(renamed.filename).toBe('still-works.png');

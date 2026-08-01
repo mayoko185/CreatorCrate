@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { createAssetCategoryRepository } from '../src/data/asset-category-repository.js';
+import { createAssetBrowserPreferenceRepository } from '../src/data/asset-browser-preference-repository.js';
 import { createAssetCategoryService } from '../src/services/asset-category-service.js';
 import {
   createProjectService,
@@ -29,6 +30,7 @@ describe('project service', () => {
   let tmpDir;
   let db;
   let service;
+  let assetBrowserPreferenceRepository;
   let projectsRoot;
 
   beforeEach(() => {
@@ -43,7 +45,8 @@ describe('project service', () => {
     db = openDatabase(dbPath);
     runMigrations(db, MIGRATIONS_DIR);
     const assetCategoryService = createAssetCategoryService(createAssetCategoryRepository(db));
-    service = createProjectService(db, projectsRoot, { assetCategoryService });
+    assetBrowserPreferenceRepository = createAssetBrowserPreferenceRepository(db);
+    service = createProjectService(db, projectsRoot, { assetCategoryService, assetBrowserPreferenceRepository });
   });
 
   afterEach(() => {
@@ -63,6 +66,12 @@ describe('project service', () => {
       );
     });
 
+    it('requires an assetBrowserPreferenceRepository dependency', () => {
+      expect(() => createProjectService(db, projectsRoot, { assetCategoryService: {} })).toThrow(
+        'createProjectService requires an assetBrowserPreferenceRepository dependency.'
+      );
+    });
+
     it('uses the exact injected assetCategoryService (a focused fake), not one it constructs itself', () => {
       let copyCallCount = 0;
       let listCallCount = 0;
@@ -76,7 +85,10 @@ describe('project service', () => {
           return [];
         },
       };
-      const fakeService = createProjectService(db, projectsRoot, { assetCategoryService: fake });
+      const fakeService = createProjectService(db, projectsRoot, {
+        assetCategoryService: fake,
+        assetBrowserPreferenceRepository,
+      });
 
       const project = fakeService.create(validInput({ title: 'Fake DI Project' }));
       expect(copyCallCount).toBe(1);

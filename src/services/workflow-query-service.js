@@ -57,6 +57,107 @@ const ASSET_BROWSER_ORDERING = 'a.filename COLLATE NOCASE ASC, a.id ASC';
  */
 const ASSET_BROWSER_CONTEXT_KEYS = ['category', 'search', 'extension', 'presence', 'usage', 'sort', 'order', 'page', 'pageSize', 'view'];
 
+const ASSET_CATEGORY_SELECTIONS = Object.freeze({
+  IMPLICIT_ALL: 'implicit-all',
+  EXPLICIT_ALL: 'explicit-all',
+  EXPLICIT_SPECIFIC: 'explicit-specific',
+  EXPLICIT_UNCATEGORIZED: 'explicit-uncategorized',
+  INVALID_AS_ALL: 'invalid-as-all',
+});
+
+function inferAssetCategorySelection(value) {
+  if (value === 'all') return ASSET_CATEGORY_SELECTIONS.EXPLICIT_ALL;
+  if (value === 'uncategorized') return ASSET_CATEGORY_SELECTIONS.EXPLICIT_UNCATEGORIZED;
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value > 0) {
+    return ASSET_CATEGORY_SELECTIONS.EXPLICIT_SPECIFIC;
+  }
+  if (typeof value === 'string' && /^[1-9]\d*$/.test(value)) {
+    return ASSET_CATEGORY_SELECTIONS.EXPLICIT_SPECIFIC;
+  }
+  return ASSET_CATEGORY_SELECTIONS.INVALID_AS_ALL;
+}
+
+function hasOwn(object, key) {
+  return Object.prototype.hasOwnProperty.call(object, key);
+}
+
+function appendCanonicalAssetBrowserParam(query, key, value) {
+  if (value === undefined || value === null || value === '') return;
+  const normalized = String(value);
+  if (key === 'presence' && normalized === 'all') return;
+  if (key === 'usage' && normalized === 'all') return;
+  if (key === 'sort' && normalized === 'filename') return;
+  if (key === 'order' && normalized === 'asc') return;
+  if (key === 'page' && normalized === '1') return;
+  if (key === 'pageSize' && normalized === String(ASSET_BROWSER_DEFAULT_PAGE_SIZE)) return;
+  if (key === 'view' && normalized === 'grid') return;
+  query[key] = normalized;
+}
+
+/**
+ * Build the canonical browser/viewer query from normalized context.
+ *
+ * `categorySelection` and `queryWasNonBare` are internal context metadata;
+ * they affect whether an All category must remain explicit but are never
+ * serialized as query parameters or form fields.
+ */
+export function buildCanonicalAssetBrowserQuery(context = {}, page, overrides = {}) {
+  const effectivePage = hasOwn(overrides, 'page')
+    ? overrides.page
+    : (page === undefined ? context.page : page);
+  const nonCategoryQuery = {};
+
+  for (const key of ASSET_BROWSER_CONTEXT_KEYS.slice(1)) {
+    const value = key === 'page'
+      ? effectivePage
+      : (hasOwn(overrides, key) ? overrides[key] : context[key]);
+    appendCanonicalAssetBrowserParam(nonCategoryQuery, key, value);
+  }
+
+  const categoryWasOverridden = hasOwn(overrides, 'category');
+  const category = categoryWasOverridden ? overrides.category : context.category;
+  const categorySelection = categoryWasOverridden
+    ? inferAssetCategorySelection(category)
+    : (context.categorySelection || (
+      context.categoryWasSupplied
+        ? inferAssetCategorySelection(category)
+        : ASSET_CATEGORY_SELECTIONS.IMPLICIT_ALL
+    ));
+
+  const categoryIsAll = category === undefined || category === null || category === '' || category === 'all';
+  const retainExplicitAll = categoryIsAll && (
+    categorySelection === ASSET_CATEGORY_SELECTIONS.EXPLICIT_ALL
+    || categorySelection === ASSET_CATEGORY_SELECTIONS.INVALID_AS_ALL
+    || (
+      categorySelection === ASSET_CATEGORY_SELECTIONS.IMPLICIT_ALL
+      && context.queryWasNonBare === true
+      && Object.keys(nonCategoryQuery).length === 0
+    )
+  );
+
+  const query = {};
+  if (categoryIsAll) {
+    if (retainExplicitAll) query.category = 'all';
+  } else {
+    appendCanonicalAssetBrowserParam(query, 'category', category);
+  }
+  Object.assign(query, nonCategoryQuery);
+  return query;
+}
+
+function buildAssetBrowserFilters(context) {
+  return {
+    search: context.search,
+    extension: context.extension,
+    presence: context.presence,
+    usage: context.usage,
+    category: context.category,
+    sort: context.sort,
+    order: context.order,
+    view: context.view,
+  };
+}
+
 /**
  * The application-local calendar date used as the default dashboard
  * boundary. Tests and route callers can override this via the `today`
@@ -650,32 +751,49 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
    * @param {Object} raw
    * @param {string[]} extensionChoices - normalized extensions available in the project scope
    * @param {Array<{id: number}>} projectCategories - the requesting project's own category rows
-   * @returns {{ search: string|null, extension: string|null, presence: 'all'|'present'|'missing', usage: 'all'|'used'|'unused', category: 'all'|'uncategorized'|number, sort: 'filename'|'modified'|'size'|'category', order: 'asc'|'desc', page: number, pageSize: number, view: 'list'|'grid' }}
+   * @returns {{ search: string|null, extension: string|null, presence: 'all'|'present'|'missing', usage: 'all'|'used'|'unused', category: 'all'|'uncategorized'|number, categorySelection: string, categoryWasSupplied: boolean, sort: 'filename'|'modified'|'size'|'category', order: 'asc'|'desc', page: number, pageSize: number, view: 'list'|'grid', queryWasNonBare: boolean }}
    */
   function normalizeAssetBrowserQuery(raw = {}, extensionChoices = [], projectCategories = []) {
+    const safeRaw = raw && typeof raw === 'object' ? raw : {};
     const presenceValues = ['all', 'present', 'missing'];
     const usageValues = ['all', 'used', 'unused'];
 
-    const presence = presenceValues.includes(raw.presence) ? raw.presence : 'all';
-    const usage = usageValues.includes(raw.usage) ? raw.usage : 'all';
+    const presence = presenceValues.includes(safeRaw.presence) ? safeRaw.presence : 'all';
+    const usage = usageValues.includes(safeRaw.usage) ? safeRaw.usage : 'all';
 
-    const search = normalizeAssetBrowserSearch(raw.search);
-    const extension = normalizeAssetBrowserExtension(raw.extension, extensionChoices);
-    const category = normalizeAssetBrowserCategory(raw.category, projectCategories);
+    const search = normalizeAssetBrowserSearch(safeRaw.search);
+    const extension = normalizeAssetBrowserExtension(safeRaw.extension, extensionChoices);
+    const category = normalizeAssetBrowserCategory(
+      safeRaw.category,
+      projectCategories,
+      hasOwn(safeRaw, 'category'),
+    );
 
-    const sort = ASSET_BROWSER_SORT_VALUES.includes(raw.sort) ? raw.sort : 'filename';
-    const order = ASSET_BROWSER_ORDER_VALUES.includes(raw.order) ? raw.order : 'asc';
+    const sort = ASSET_BROWSER_SORT_VALUES.includes(safeRaw.sort) ? safeRaw.sort : 'filename';
+    const order = ASSET_BROWSER_ORDER_VALUES.includes(safeRaw.order) ? safeRaw.order : 'asc';
 
-    const pageRaw = parseStrictPositiveInt(raw.page);
+    const pageRaw = parseStrictPositiveInt(safeRaw.page);
     const page = pageRaw !== null ? pageRaw : 1;
 
-    const pageSizeRaw = parseStrictPositiveInt(raw.pageSize);
+    const pageSizeRaw = parseStrictPositiveInt(safeRaw.pageSize);
     let pageSize = pageSizeRaw !== null ? pageSizeRaw : ASSET_BROWSER_DEFAULT_PAGE_SIZE;
     if (pageSize > ASSET_BROWSER_MAX_PAGE_SIZE) pageSize = ASSET_BROWSER_MAX_PAGE_SIZE;
 
-    const view = normalizeAssetBrowserView(raw.view);
+    const view = normalizeAssetBrowserView(safeRaw.view);
 
-    return { search, extension, presence, usage, category, sort, order, page, pageSize, view };
+    return {
+      search,
+      extension,
+      presence,
+      usage,
+      ...category,
+      sort,
+      order,
+      page,
+      pageSize,
+      view,
+      queryWasNonBare: Object.keys(safeRaw).length > 0,
+    };
   }
 
   /**
@@ -690,17 +808,49 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
    *
    * @param {unknown} raw
    * @param {Array<{id: number}>} projectCategories
-   * @returns {'all'|'uncategorized'|number}
+   * @param {boolean} categoryWasSupplied
+   * @returns {{ category: 'all'|'uncategorized'|number, categorySelection: string, categoryWasSupplied: boolean }}
    */
-  function normalizeAssetBrowserCategory(raw, projectCategories) {
-    if (raw === undefined || raw === null || raw === '' || raw === 'all') return 'all';
-    if (raw === 'uncategorized') return 'uncategorized';
+  function normalizeAssetBrowserCategory(raw, projectCategories, categoryWasSupplied) {
+    if (!categoryWasSupplied) {
+      return {
+        category: 'all',
+        categorySelection: ASSET_CATEGORY_SELECTIONS.IMPLICIT_ALL,
+        categoryWasSupplied: false,
+      };
+    }
+    if (raw === 'all') {
+      return {
+        category: 'all',
+        categorySelection: ASSET_CATEGORY_SELECTIONS.EXPLICIT_ALL,
+        categoryWasSupplied: true,
+      };
+    }
+    if (raw === 'uncategorized') {
+      return {
+        category: 'uncategorized',
+        categorySelection: ASSET_CATEGORY_SELECTIONS.EXPLICIT_UNCATEGORIZED,
+        categoryWasSupplied: true,
+      };
+    }
 
     const id = parseStrictPositiveInt(raw);
-    if (id === null) return 'all';
+    if (id === null) {
+      return {
+        category: 'all',
+        categorySelection: ASSET_CATEGORY_SELECTIONS.INVALID_AS_ALL,
+        categoryWasSupplied: true,
+      };
+    }
 
     const owned = projectCategories.some((c) => c.id === id);
-    return owned ? id : 'all';
+    return {
+      category: owned ? id : 'all',
+      categorySelection: owned
+        ? ASSET_CATEGORY_SELECTIONS.EXPLICIT_SPECIFIC
+        : ASSET_CATEGORY_SELECTIONS.INVALID_AS_ALL,
+      categoryWasSupplied: true,
+    };
   }
 
   function normalizeAssetBrowserSearch(value) {
@@ -769,29 +919,6 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
     return `/projects/${asset.project_id}/assets/${asset.id}/original`;
   }
 
-  function appendCanonicalAssetBrowserParam(query, key, value) {
-    if (value === undefined || value === null || value === '') return;
-    const normalized = String(value);
-    if (key === 'category' && normalized === 'all') return;
-    if (key === 'presence' && normalized === 'all') return;
-    if (key === 'usage' && normalized === 'all') return;
-    if (key === 'sort' && normalized === 'filename') return;
-    if (key === 'order' && normalized === 'asc') return;
-    if (key === 'page' && normalized === '1') return;
-    if (key === 'pageSize' && normalized === String(ASSET_BROWSER_DEFAULT_PAGE_SIZE)) return;
-    if (key === 'view' && normalized === 'grid') return;
-    query[key] = normalized;
-  }
-
-  function buildAssetBrowserQuery(context, page) {
-    const query = {};
-    for (const key of ASSET_BROWSER_CONTEXT_KEYS) {
-      const value = key === 'page' ? page : context[key];
-      appendCanonicalAssetBrowserParam(query, key, value);
-    }
-    return query;
-  }
-
   function appendQuery(basePath, query) {
     const search = new URLSearchParams(query).toString();
     return search ? `${basePath}?${search}` : basePath;
@@ -800,14 +927,14 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
   function buildProjectAssetsUrl(projectId, context, page) {
     return appendQuery(
       `/projects/${projectId}/assets`,
-      buildAssetBrowserQuery(context, page)
+      buildCanonicalAssetBrowserQuery(context, page)
     );
   }
 
   function buildProjectAssetViewerUrl(projectId, assetId, context, page) {
     return appendQuery(
       `/projects/${projectId}/assets/${assetId}`,
-      buildAssetBrowserQuery(context, page)
+      buildCanonicalAssetBrowserQuery(context, page)
     );
   }
 
@@ -1175,16 +1302,8 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
       page,
       pageSize: filters.pageSize,
       pageCount,
-      filters: {
-        search: filters.search,
-        extension: filters.extension,
-        presence: filters.presence,
-        usage: filters.usage,
-        category: filters.category,
-        sort: filters.sort,
-        order: filters.order,
-        view: filters.view,
-      },
+      filters: buildAssetBrowserFilters(filters),
+      context: { ...filters, page, pageSize: filters.pageSize },
       extensionChoices: extensions.map((extension) => ({
         value: extension,
         label: extension,
@@ -1217,9 +1336,16 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
 
     const projectCategories = assetCategoryRepository.listProjectCategories(projectId);
     const extensions = assetRepository.listProjectAssetExtensions(projectId);
-    const filters = normalizeAssetBrowserQuery(rawQuery, extensions, projectCategories);
+    const context = normalizeAssetBrowserQuery(rawQuery, extensions, projectCategories);
 
-    return { filters };
+    return {
+      filters: {
+        ...buildAssetBrowserFilters(context),
+        page: context.page,
+        pageSize: context.pageSize,
+      },
+      context,
+    };
   }
 
   /**
@@ -1291,16 +1417,7 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
       project: summarizeProject(project),
       asset: buildViewerAssetModel(asset, releaseUsage),
       context,
-      filters: {
-        search: context.search,
-        extension: context.extension,
-        presence: context.presence,
-        usage: context.usage,
-        category: context.category,
-        sort: context.sort,
-        order: context.order,
-        view: context.view,
-      },
+      filters: buildAssetBrowserFilters(context),
       extensionChoices: extensions.map((extension) => ({
         value: extension,
         label: extension,
