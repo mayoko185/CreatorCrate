@@ -3939,6 +3939,54 @@ describe('workflow query service', () => {
       expect(smallCount).toBe(ASSET_VIEWER_FIXED_STATEMENT_EXECUTIONS);
       expect(largeCount).toBe(ASSET_VIEWER_FIXED_STATEMENT_EXECUTIONS);
     });
+
+    // ─── Phase: asset actions chunk 4 — rename/move form projections ────
+
+    describe('enabledCategories and canMutate', () => {
+      it('includes only enabled project categories, never disabled ones', () => {
+        const assetCategoryRepo = createAssetCategoryRepository(db);
+        const project = insertProject(db, { title: 'Viewer Enabled Categories' });
+        const enabled = assetCategoryRepo.addProjectCategory({
+          projectId: project.id, displayName: 'Renders', directorySlug: 'renders', displayOrder: 0, enabled: true,
+        });
+        assetCategoryRepo.addProjectCategory({
+          projectId: project.id, displayName: 'Archive', directorySlug: 'archive', displayOrder: 1, enabled: false,
+        });
+        const asset = addViewerAsset(project, 'a.txt');
+
+        const result = service.getProjectAssetViewer(project.id, asset.id);
+
+        expect(result.enabledCategories).toEqual([{ id: enabled.id, displayName: 'Renders' }]);
+      });
+
+      it('returns an empty enabledCategories list when the project has no categories', () => {
+        const project = insertProject(db, { title: 'Viewer No Categories' });
+        const asset = addViewerAsset(project, 'a.txt');
+        const result = service.getProjectAssetViewer(project.id, asset.id);
+        expect(result.enabledCategories).toEqual([]);
+      });
+
+      it('canMutate is true for a present asset in a non-archived project', () => {
+        const project = insertProject(db, { title: 'Viewer Mutable' });
+        const asset = addViewerAsset(project, 'a.txt', { isPresent: 1 });
+        const result = service.getProjectAssetViewer(project.id, asset.id);
+        expect(result.canMutate).toBe(true);
+      });
+
+      it('canMutate is false for a missing asset', () => {
+        const project = insertProject(db, { title: 'Viewer Missing Asset' });
+        const asset = addViewerAsset(project, 'a.txt', { isPresent: 0 });
+        const result = service.getProjectAssetViewer(project.id, asset.id);
+        expect(result.canMutate).toBe(false);
+      });
+
+      it('canMutate is false for an archived project even with a present asset', () => {
+        const project = insertProject(db, { title: 'Viewer Archived Project', archivedAt: '2026-01-01 00:00:00' });
+        const asset = addViewerAsset(project, 'a.txt', { isPresent: 1 });
+        const result = service.getProjectAssetViewer(project.id, asset.id);
+        expect(result.canMutate).toBe(false);
+      });
+    });
   });
 
   // ─── Phase 7A: Release Readiness — getReleaseReadiness ──────────────────

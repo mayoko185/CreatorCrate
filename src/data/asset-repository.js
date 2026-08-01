@@ -72,6 +72,18 @@ function escapeLike(value) {
   return value.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
 }
 
+// Detects a UNIQUE(project_id, relative_path) violation (idx_assets_project_path)
+// from updateAssetLocationStmt specifically, so an unrelated constraint
+// failure is never mistaken for a destination-path conflict.
+function isAssetPathUniqueConstraintError(err) {
+  return (
+    err != null &&
+    err.code === 'SQLITE_CONSTRAINT_UNIQUE' &&
+    typeof err.message === 'string' &&
+    err.message.includes('assets.project_id, assets.relative_path')
+  );
+}
+
 /**
  * Create an asset repository bound to a database connection.
  * @param {import('better-sqlite3').Database} db
@@ -93,6 +105,31 @@ export function createAssetRepository(db) {
     SELECT ${ASSET_COLUMNS.join(', ')}
     FROM assets
     WHERE project_id = ? AND relative_path = ?
+  `);
+
+  // Same-ID location update for asset rename/move (Phase: asset actions
+  // chunk 1). Identifies the row by project_id + id + the caller-supplied
+  // expected old relative_path so a stale/racing caller updates nothing.
+  // The UNIQUE(project_id, relative_path) index (idx_assets_project_path)
+  // makes a destination already owned by another row fail this statement
+  // with a SQLITE_CONSTRAINT_UNIQUE error rather than silently overwriting
+  // it; the wrapping method below translates that into a conflict result.
+  const updateAssetLocationStmt = db.prepare(`
+    UPDATE assets
+    SET relative_path = ?,
+        filename = ?,
+        extension = ?,
+        mime_type = ?,
+        category_id = ?,
+        nested_path = ?,
+        size_bytes = ?,
+        modified_at = ?,
+        is_present = 1,
+        last_seen_at = datetime('now'),
+        missing_since = NULL,
+        updated_at = datetime('now')
+    WHERE project_id = ? AND id = ? AND relative_path = ?
+    RETURNING ${ASSET_COLUMNS.join(', ')}
   `);
 
   const upsertStmt = db.prepare(`
@@ -341,6 +378,64 @@ export function createAssetRepository(db) {
      */
     findByProjectIdAndPath(projectId, relativePath) {
       return findByPathStmt.get(projectId, relativePath);
+    },
+
+    /**
+     * Update an existing asset's location and derived metadata in place,
+     * preserving its id. Used by asset rename/move (Phase: asset actions
+     * chunk 1) after the filesystem move succeeds. This method performs no
+     * filesystem operation itself.
+     *
+     * The row is identified by project_id + id + `expectedOldRelativePath`
+     * (the caller's last-known relative_path) so a stale caller — or one
+     * racing another mutation on the same row — updates nothing instead of
+     * clobbering a path it no longer matches. `id`, `project_id`, and
+     * `created_at` are never modified, and release_assets rows (associations,
+     * roles, sort_order) are untouched since they reference the unchanged
+     * asset id.
+     *
+     * @param {number} projectId
+     * @param {number} assetId
+     * @param {string} expectedOldRelativePath
+     * @param {object} data
+     * @param {string} data.relativePath - new relative_path
+     * @param {string} data.filename
+     * @param {string} data.extension
+     * @param {string} data.mimeType
+     * @param {number|null} [data.categoryId]
+     * @param {string} [data.nestedPath]
+     * @param {number} data.sizeBytes
+     * @param {string|null} data.modifiedAt
+     * @returns {{ ok: true, asset: import('./asset-repository.js').AssetRecord } | { ok: false, reason: 'NOT_FOUND' | 'DESTINATION_CONFLICT' }}
+     */
+    updateAssetLocation(projectId, assetId, expectedOldRelativePath, data) {
+      let updated;
+      try {
+        updated = updateAssetLocationStmt.get(
+          data.relativePath,
+          data.filename,
+          data.extension,
+          data.mimeType,
+          data.categoryId ?? null,
+          data.nestedPath ?? '',
+          data.sizeBytes,
+          data.modifiedAt || null,
+          projectId,
+          assetId,
+          expectedOldRelativePath,
+        );
+      } catch (err) {
+        if (isAssetPathUniqueConstraintError(err)) {
+          return { ok: false, reason: 'DESTINATION_CONFLICT' };
+        }
+        throw err;
+      }
+
+      if (!updated) {
+        return { ok: false, reason: 'NOT_FOUND' };
+      }
+
+      return { ok: true, asset: updated };
     },
 
     /**

@@ -1543,4 +1543,233 @@ describe('asset repository', () => {
     });
   });
 
+  // ─── Phase: asset actions chunk 1 — updateAssetLocation ─────────────────
+
+  describe('updateAssetLocation', () => {
+    function baseAsset(overrides = {}) {
+      return assetRepo.upsert(projectId, 'source/original.png', {
+        filename: 'original.png', extension: 'png', mimeType: 'image/png',
+        sizeBytes: 100, modifiedAt: '2026-01-01T00:00:00.000Z',
+        ...overrides,
+      });
+    }
+
+    it('updates location and metadata for a successful same-ID rename', () => {
+      const asset = baseAsset();
+
+      const result = assetRepo.updateAssetLocation(projectId, asset.id, 'source/original.png', {
+        relativePath: 'source/renamed.png',
+        filename: 'renamed.png',
+        extension: 'png',
+        mimeType: 'image/png',
+        sizeBytes: 200,
+        modifiedAt: '2026-02-02T00:00:00.000Z',
+      });
+
+      expect(result.ok).toBe(true);
+      expect(result.asset.relative_path).toBe('source/renamed.png');
+      expect(result.asset.filename).toBe('renamed.png');
+      expect(result.asset.size_bytes).toBe(200);
+      expect(result.asset.modified_at).toBe('2026-02-02T00:00:00.000Z');
+    });
+
+    it('updates category_id and nested_path on move', () => {
+      const asset = baseAsset();
+      const category = createCategory(projectId, 'Exports', 'exports');
+
+      const result = assetRepo.updateAssetLocation(projectId, asset.id, 'source/original.png', {
+        relativePath: 'exports/sub/original.png',
+        filename: 'original.png',
+        extension: 'png',
+        mimeType: 'image/png',
+        categoryId: category.id,
+        nestedPath: 'sub',
+        sizeBytes: 100,
+        modifiedAt: null,
+      });
+
+      expect(result.ok).toBe(true);
+      expect(result.asset.category_id).toBe(category.id);
+      expect(result.asset.nested_path).toBe('sub');
+    });
+
+    it('moves to Uncategorized using category_id = null', () => {
+      const category = createCategory(projectId, 'Exports', 'exports');
+      const asset = baseAsset({ categoryId: category.id, nestedPath: '' });
+
+      const result = assetRepo.updateAssetLocation(projectId, asset.id, 'source/original.png', {
+        relativePath: 'uncategorized.png',
+        filename: 'uncategorized.png',
+        extension: 'png',
+        mimeType: 'image/png',
+        categoryId: null,
+        nestedPath: '',
+        sizeBytes: 100,
+        modifiedAt: null,
+      });
+
+      expect(result.ok).toBe(true);
+      expect(result.asset.category_id).toBeNull();
+    });
+
+    it('preserves the asset ID across the update', () => {
+      const asset = baseAsset();
+
+      const result = assetRepo.updateAssetLocation(projectId, asset.id, 'source/original.png', {
+        relativePath: 'source/renamed.png',
+        filename: 'renamed.png',
+        extension: 'png',
+        mimeType: 'image/png',
+        sizeBytes: 100,
+        modifiedAt: null,
+      });
+
+      expect(result.asset.id).toBe(asset.id);
+    });
+
+    it('does not change created_at', () => {
+      const asset = baseAsset();
+
+      const result = assetRepo.updateAssetLocation(projectId, asset.id, 'source/original.png', {
+        relativePath: 'source/renamed.png',
+        filename: 'renamed.png',
+        extension: 'png',
+        mimeType: 'image/png',
+        sizeBytes: 100,
+        modifiedAt: null,
+      });
+
+      expect(result.asset.created_at).toBe(asset.created_at);
+    });
+
+    it('normalizes presence/missing fields on update', () => {
+      const asset = baseAsset();
+      assetRepo.markAllMissing(projectId);
+      expect(assetRepo.findById(asset.id).is_present).toBe(0);
+
+      const result = assetRepo.updateAssetLocation(projectId, asset.id, 'source/original.png', {
+        relativePath: 'source/renamed.png',
+        filename: 'renamed.png',
+        extension: 'png',
+        mimeType: 'image/png',
+        sizeBytes: 100,
+        modifiedAt: null,
+      });
+
+      expect(result.ok).toBe(true);
+      expect(result.asset.is_present).toBe(1);
+      expect(result.asset.missing_since).toBeNull();
+      expect(result.asset.last_seen_at).toBeTruthy();
+    });
+
+    it('performs no update when the expected old path does not match', () => {
+      const asset = baseAsset();
+
+      const result = assetRepo.updateAssetLocation(projectId, asset.id, 'source/wrong-path.png', {
+        relativePath: 'source/renamed.png',
+        filename: 'renamed.png',
+        extension: 'png',
+        mimeType: 'image/png',
+        sizeBytes: 100,
+        modifiedAt: null,
+      });
+
+      expect(result.ok).toBe(false);
+      expect(result.reason).toBe('NOT_FOUND');
+      expect(assetRepo.findById(asset.id).relative_path).toBe('source/original.png');
+    });
+
+    it('cannot update an asset belonging to a different project', () => {
+      const asset = baseAsset();
+      const other = createProject('Other Project');
+
+      const result = assetRepo.updateAssetLocation(other.id, asset.id, 'source/original.png', {
+        relativePath: 'source/renamed.png',
+        filename: 'renamed.png',
+        extension: 'png',
+        mimeType: 'image/png',
+        sizeBytes: 100,
+        modifiedAt: null,
+      });
+
+      expect(result.ok).toBe(false);
+      expect(result.reason).toBe('NOT_FOUND');
+      expect(assetRepo.findById(asset.id).project_id).toBe(projectId);
+      expect(assetRepo.findById(asset.id).relative_path).toBe('source/original.png');
+    });
+
+    it('conflicts when the destination path is owned by another present asset', () => {
+      const asset = baseAsset();
+      assetRepo.upsert(projectId, 'source/taken.png', {
+        filename: 'taken.png', extension: 'png', mimeType: 'image/png',
+        sizeBytes: 1, modifiedAt: null,
+      });
+
+      const result = assetRepo.updateAssetLocation(projectId, asset.id, 'source/original.png', {
+        relativePath: 'source/taken.png',
+        filename: 'taken.png',
+        extension: 'png',
+        mimeType: 'image/png',
+        sizeBytes: 100,
+        modifiedAt: null,
+      });
+
+      expect(result.ok).toBe(false);
+      expect(result.reason).toBe('DESTINATION_CONFLICT');
+      // Neither row was mutated.
+      expect(assetRepo.findById(asset.id).relative_path).toBe('source/original.png');
+    });
+
+    it('conflicts when the destination path is owned by a missing asset', () => {
+      const asset = baseAsset();
+      assetRepo.upsert(projectId, 'source/taken.png', {
+        filename: 'taken.png', extension: 'png', mimeType: 'image/png',
+        sizeBytes: 1, modifiedAt: null,
+      });
+      // Mark everything but the target asset missing.
+      assetRepo.markMissingByProjectIdAndPathNotIn(projectId, ['source/original.png']);
+      expect(assetRepo.findByProjectIdAndPath(projectId, 'source/taken.png').is_present).toBe(0);
+
+      const result = assetRepo.updateAssetLocation(projectId, asset.id, 'source/original.png', {
+        relativePath: 'source/taken.png',
+        filename: 'taken.png',
+        extension: 'png',
+        mimeType: 'image/png',
+        sizeBytes: 100,
+        modifiedAt: null,
+      });
+
+      expect(result.ok).toBe(false);
+      expect(result.reason).toBe('DESTINATION_CONFLICT');
+    });
+
+    it('leaves release_assets associations, roles, and sort_order unchanged', () => {
+      const asset = baseAsset();
+      const release = insertRelease(db, { projectId, title: 'R1' });
+      linkAssetToRelease(db, { releaseId: release.id, assetId: asset.id, role: 'primary', sortOrder: 3 });
+
+      const result = assetRepo.updateAssetLocation(projectId, asset.id, 'source/original.png', {
+        relativePath: 'source/renamed.png',
+        filename: 'renamed.png',
+        extension: 'png',
+        mimeType: 'image/png',
+        sizeBytes: 100,
+        modifiedAt: null,
+      });
+
+      expect(result.ok).toBe(true);
+
+      const link = db.prepare(
+        'SELECT release_id, asset_id, role, sort_order FROM release_assets WHERE release_id = ? AND asset_id = ?'
+      ).get(release.id, asset.id);
+
+      expect(link).toMatchObject({
+        release_id: release.id,
+        asset_id: asset.id,
+        role: 'primary',
+        sort_order: 3,
+      });
+    });
+  });
+
 });

@@ -25,12 +25,13 @@
   {% endif %}
 {% endmacro %}
 
-{% macro assetRow(asset, isArchived, submittedSelectedAssetIds) %}
+{% macro assetRow(asset, isArchived, submittedSelectedAssetIds, project, context, contextFields, renameFailure, _csrf) %}
+  {% set renameAttempt = renameFailure and renameFailure.assetId == asset.id %}
   <tr{% if not asset.is_present %} class="is-missing"{% endif %}>
     {% if not isArchived %}
       <td class="asset-select-cell">
         {% if asset.is_present %}
-          <input type="checkbox" name="selectedAssetIds" value="{{ asset.id }}"
+          <input type="checkbox" form="bulk-select-form" name="selectedAssetIds" value="{{ asset.id }}"
                  aria-label="Select {{ asset.filename }}"
                  {% if (asset.id ~ '') in submittedSelectedAssetIds %}checked{% endif %}>
         {% else %}
@@ -79,18 +80,37 @@
     <td class="asset-actions-cell">
       <span class="row-actions">
         <a class="button button-small" href="{{ asset.viewerUrl }}">View details</a>
+        {% if not isArchived and asset.is_present %}
+          <form method="post" action="/projects/{{ project.id }}/assets/{{ asset.id }}/rename" class="row-rename-form">
+            <input type="hidden" name="_csrf" value="{{ _csrf }}">
+            <input type="hidden" name="origin" value="assets">
+            {% for key in contextFields %}
+              {% if context[key] is not none and context[key] != '' %}
+                <input type="hidden" name="{{ key }}" value="{{ context[key] }}">
+              {% endif %}
+            {% endfor %}
+            <input type="text" name="filename" value="{% if renameAttempt %}{{ renameFailure.submittedFilename }}{% else %}{{ asset.filename }}{% endif %}"
+                   class="row-rename-input" required maxlength="255"
+                   aria-label="New filename for {{ asset.filename }}" autocomplete="off">
+            <button type="submit" class="button button-small">Rename</button>
+          </form>
+          {% if renameAttempt %}
+            <span class="asset-action-error" role="alert">{{ renameFailure.message }}</span>
+          {% endif %}
+        {% endif %}
       </span>
     </td>
   </tr>
 {% endmacro %}
 
-{% macro assetCard(asset, isArchived, submittedSelectedAssetIds) %}
+{% macro assetCard(asset, isArchived, submittedSelectedAssetIds, project, context, contextFields, renameFailure, _csrf) %}
+  {% set renameAttempt = renameFailure and renameFailure.assetId == asset.id %}
   <li class="asset-grid-item{% if not asset.is_present %} is-missing{% endif %}">
     <article class="asset-card" data-asset-id="{{ asset.id }}">
       <div class="asset-card-top">
         {% if not isArchived %}
           {% if asset.is_present %}
-            <input type="checkbox" id="asset-card-select-{{ asset.id }}" name="selectedAssetIds" value="{{ asset.id }}"
+            <input type="checkbox" form="bulk-select-form" id="asset-card-select-{{ asset.id }}" name="selectedAssetIds" value="{{ asset.id }}"
                    aria-label="Select {{ asset.filename }}"
                    {% if (asset.id ~ '') in submittedSelectedAssetIds %}checked{% endif %}>
           {% else %}
@@ -132,6 +152,24 @@
         <span class="asset-card-meta">{{ asset.typeLabel }} · {{ asset.formattedSize }}</span>
         <span class="asset-card-usage">{{ releaseUsageInline(asset) }}</span>
         <a class="button button-small asset-card-view" href="{{ asset.viewerUrl }}">View details</a>
+        {% if not isArchived and asset.is_present %}
+          <form method="post" action="/projects/{{ project.id }}/assets/{{ asset.id }}/rename" class="asset-card-rename-form">
+            <input type="hidden" name="_csrf" value="{{ _csrf }}">
+            <input type="hidden" name="origin" value="assets">
+            {% for key in contextFields %}
+              {% if context[key] is not none and context[key] != '' %}
+                <input type="hidden" name="{{ key }}" value="{{ context[key] }}">
+              {% endif %}
+            {% endfor %}
+            <input type="text" name="filename" value="{% if renameAttempt %}{{ renameFailure.submittedFilename }}{% else %}{{ asset.filename }}{% endif %}"
+                   class="asset-card-rename-input" required maxlength="255"
+                   aria-label="New filename for {{ asset.filename }}" autocomplete="off">
+            <button type="submit" class="button button-small">Rename</button>
+          </form>
+          {% if renameAttempt %}
+            <span class="asset-action-error" role="alert">{{ renameFailure.message }}</span>
+          {% endif %}
+        {% endif %}
       </div>
     </article>
   </li>
@@ -191,6 +229,26 @@
   {% if bulkError %}
     {% set noticeVariant = "danger" %}
     {% set noticeText = bulkError.message %}
+    {% include "partials/notice.njk" %}
+  {% endif %}
+
+  {% if moveNotice %}
+    <div class="scan-success">
+      <p>
+        Moved {{ moveNotice.movedCount }} asset{% if moveNotice.movedCount != 1 %}s{% endif %}.
+      </p>
+    </div>
+  {% endif %}
+
+  {% if assetActionNotice %}
+    {% set noticeVariant = "success" %}
+    {% set noticeText = assetActionNotice.message %}
+    {% include "partials/notice.njk" %}
+  {% endif %}
+
+  {% if bulkMoveError %}
+    {% set noticeVariant = "danger" %}
+    {% set noticeText = bulkMoveError.message %}
     {% include "partials/notice.njk" %}
   {% endif %}
 
@@ -373,7 +431,12 @@
 
       {% if assets.length > 0 %}
         {% if not isArchived %}
-          <form method="post" action="/projects/{{ project.id }}/assets/add-to-release" class="bulk-select-form" data-asset-selection-form>
+          {# bulk-select-form wraps only the toolbar. Checkboxes in the table
+             below are associated via form="bulk-select-form" so that per-row
+             rename forms can live inside the table without nesting issues.
+             The Move button uses formaction to submit to move-selected while
+             still carrying the checked selectedAssetIds. #}
+          <form id="bulk-select-form" method="post" action="/projects/{{ project.id }}/assets/add-to-release" class="bulk-select-form" data-asset-selection-form>
             <input type="hidden" name="_csrf" value="{{ _csrf }}">
             {% for key in contextFields %}
               {% if context[key] is not none and context[key] != '' %}
@@ -397,15 +460,29 @@
                   {% endfor %}
                 </select>
               </label>
-
               <button type="submit" class="button button-primary" data-bulk-submit>Add selected to release</button>
+
+              <span class="bulk-toolbar-divider" aria-hidden="true"></span>
+
+              <label class="field bulk-move-field">
+                <span>Move selected to</span>
+                <select name="destinationCategory">
+                  <option value="uncategorized">Uncategorized</option>
+                  {% for cat in categoryNavigation.enabled %}
+                    <option value="{{ cat.id }}">{{ cat.displayName }}</option>
+                  {% endfor %}
+                </select>
+              </label>
+              <button type="submit" class="button"
+                      formaction="/projects/{{ project.id }}/assets/move-selected">Move selected</button>
             </div>
+          </form>
         {% endif %}
 
         {% if filters.view == 'grid' %}
           <ul class="asset-grid">
             {% for asset in assets %}
-              {{ assetCard(asset, isArchived, submittedSelectedAssetIds) }}
+               {{ assetCard(asset, isArchived, submittedSelectedAssetIds, project, context, contextFields, renameFailure, _csrf) }}
             {% endfor %}
           </ul>
         {% else %}
@@ -425,15 +502,11 @@
               </thead>
               <tbody>
                 {% for asset in assets %}
-                  {{ assetRow(asset, isArchived, submittedSelectedAssetIds) }}
+                   {{ assetRow(asset, isArchived, submittedSelectedAssetIds, project, context, contextFields, renameFailure, _csrf) }}
                 {% endfor %}
               </tbody>
             </table>
           </div>
-        {% endif %}
-
-        {% if not isArchived %}
-          </form>
         {% endif %}
 
         {# Pagination #}

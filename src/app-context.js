@@ -1,5 +1,6 @@
 import { createApp } from './app.js';
 import { closeDatabase } from './db.js';
+import { createProjectOperationCoordinator } from './services/project-operation-coordinator.js';
 
 /**
  * Phase 11.2 live-restore fix — the mutable application context that owns
@@ -46,10 +47,21 @@ export function createApplicationContext(
   // after that candidate has already been proven to build successfully.
   let activeAppOpts = { ...appOpts };
 
+  // Phase: asset actions chunk 3 — constructed exactly once per application
+  // context (i.e. once per process, since server.js creates exactly one
+  // context) and threaded through every buildApp call below, including
+  // replaceDatabase and replaceAuthConfig rebuilds. This is what makes the
+  // scanner and the asset action service share one lock across a live
+  // database restore: buildApp always places it after `...opts`, so even a
+  // stray same-named key in `opts` can never shadow the shared instance
+  // with an independent one — exactly like onDatabaseReplaced/
+  // onAuthConfigReplaced below.
+  const projectOperationCoordinator = createProjectOperationCoordinator();
+
   function buildApp(db, opts) {
     return appFactory(
       { appName, db, projectsRoot, previewRoot },
-      { ...opts, onDatabaseReplaced: replaceDatabase, onAuthConfigReplaced: replaceAuthConfig }
+      { ...opts, projectOperationCoordinator, onDatabaseReplaced: replaceDatabase, onAuthConfigReplaced: replaceAuthConfig }
     );
   }
 

@@ -10,6 +10,7 @@ import { createAssetCategoryRepository } from '../src/data/asset-category-reposi
 import { createAssetCategoryService } from '../src/services/asset-category-service.js';
 import { createProjectService, ProjectNotFoundError } from '../src/services/project-service.js';
 import { createAssetScanner } from '../src/services/asset-scanner.js';
+import { createProjectOperationCoordinator, ProjectOperationError } from '../src/services/project-operation-coordinator.js';
 import {
   formatProjectDirName,
   buildProjectRelPath,
@@ -25,6 +26,7 @@ describe('asset scanner', () => {
   let projectRepo;
   let assetScanner;
   let projectsRoot;
+  let projectOperationCoordinator;
 
   /** Create a project and its directory on disk (mimics real creation). */
   function createProjectWithDir(title, status = 'tbd') {
@@ -63,7 +65,8 @@ describe('asset scanner', () => {
     projectRepo = createProjectRepository(db);
     const assetCategoryService = createAssetCategoryService(createAssetCategoryRepository(db));
     projectService = createProjectService(db, projectsRoot, { assetCategoryService });
-    assetScanner = createAssetScanner(db, projectsRoot, { projectService, assetCategoryService });
+    projectOperationCoordinator = createProjectOperationCoordinator();
+    assetScanner = createAssetScanner(db, projectsRoot, { projectService, assetCategoryService, projectOperationCoordinator });
   });
 
   afterEach(() => {
@@ -856,6 +859,134 @@ describe('asset scanner', () => {
       assetScanner.scanProjectAssets(project.id);
 
       expect(fs.existsSync(manifestPath)).toBe(false);
+    });
+  });
+
+  // ─── Coordinator integration (Phase: asset actions chunk 3) ────────────
+
+  describe('coordinator integration', () => {
+    it('requires a projectOperationCoordinator dependency', () => {
+      expect(() => createAssetScanner(db, projectsRoot, { projectService })).toThrow();
+    });
+
+    it('rejects same-project scan re-entry while the coordinator holds the lock', () => {
+      const { project, absPath } = createProjectWithDir('Reentrant Scan');
+      fs.writeFileSync(path.join(absPath, 'a.png'), 'png');
+
+      projectOperationCoordinator.run(project.id, () => {
+        expect(() => assetScanner.scanProjectAssets(project.id)).toThrow(ProjectOperationError);
+        try {
+          assetScanner.scanProjectAssets(project.id);
+        } catch (err) {
+          expect(err.code).toBe('PROJECT_OPERATION_IN_PROGRESS');
+        }
+      });
+    });
+
+    it('rejects a same-project scan while an action (or any other operation) holds the coordinator', () => {
+      const { project, absPath } = createProjectWithDir('Action Holds Lock');
+      fs.writeFileSync(path.join(absPath, 'a.png'), 'png');
+
+      // Simulates an asset-action-service call holding the lock — the
+      // coordinator itself doesn't know or care which caller holds it.
+      projectOperationCoordinator.run(project.id, () => {
+        expect(() => assetScanner.scanProjectAssets(project.id)).toThrow(ProjectOperationError);
+      });
+    });
+
+    it('rejects a same-project action while a scan holds the coordinator', () => {
+      const { project, absPath } = createProjectWithDir('Scan Holds Lock');
+      fs.writeFileSync(path.join(absPath, 'a.png'), 'png');
+
+      // Spy on the reconciliation step (the last thing scanProjectAssets
+      // does) to simulate a rename/move attempted while the scan is still
+      // inside its protected region.
+      let nestedAttemptError;
+      const spy = vi.spyOn(assetScanner.repository, 'reconcileScannedAssets');
+      const original = assetScanner.repository.reconcileScannedAssets.bind(assetScanner.repository);
+      spy.mockImplementationOnce((...args) => {
+        try {
+          projectOperationCoordinator.run(project.id, () => {});
+        } catch (err) {
+          nestedAttemptError = err;
+        }
+        return original(...args);
+      });
+
+      assetScanner.scanProjectAssets(project.id);
+
+      expect(nestedAttemptError).toBeInstanceOf(ProjectOperationError);
+      expect(nestedAttemptError.code).toBe('PROJECT_OPERATION_IN_PROGRESS');
+      spy.mockRestore();
+    });
+
+    it('permits different-project scans to run independently', () => {
+      const a = createProjectWithDir('Project A');
+      const b = createProjectWithDir('Project B');
+      fs.writeFileSync(path.join(b.absPath, 'a.png'), 'png');
+
+      let innerResult;
+      projectOperationCoordinator.run(a.project.id, () => {
+        innerResult = assetScanner.scanProjectAssets(b.project.id);
+      });
+
+      expect(innerResult.added).toBe(1);
+    });
+
+    it('holds the lock through traversal and the reconciliation transaction, not just one phase', () => {
+      const { project, absPath } = createProjectWithDir('Full Region');
+      fs.writeFileSync(path.join(absPath, 'a.png'), 'png');
+
+      let lockActiveDuringReconcile = null;
+      const spy = vi.spyOn(assetScanner.repository, 'reconcileScannedAssets');
+      const original = assetScanner.repository.reconcileScannedAssets.bind(assetScanner.repository);
+      spy.mockImplementationOnce((...args) => {
+        lockActiveDuringReconcile = projectOperationCoordinator.isActive(project.id);
+        return original(...args);
+      });
+
+      assetScanner.scanProjectAssets(project.id);
+
+      expect(lockActiveDuringReconcile).toBe(true);
+      expect(projectOperationCoordinator.isActive(project.id)).toBe(false);
+      spy.mockRestore();
+    });
+
+    it('releases the lock after a traversal failure', () => {
+      const { project, absPath } = createProjectWithDir('Traversal Failure');
+      fs.writeFileSync(path.join(absPath, 'a.png'), 'png');
+
+      const readdirSpy = vi.spyOn(fs, 'readdirSync').mockImplementationOnce(() => {
+        const err = new Error('simulated permission failure');
+        err.code = 'EACCES';
+        throw err;
+      });
+      try {
+        expect(() => assetScanner.scanProjectAssets(project.id)).toThrow();
+      } finally {
+        readdirSpy.mockRestore();
+      }
+
+      expect(projectOperationCoordinator.isActive(project.id)).toBe(false);
+      // The lock is usable again immediately afterward.
+      const result = assetScanner.scanProjectAssets(project.id);
+      expect(result.added).toBe(1);
+    });
+
+    it('releases the lock after a reconciliation failure', () => {
+      const { project, absPath } = createProjectWithDir('Reconcile Failure');
+      fs.writeFileSync(path.join(absPath, 'a.png'), 'png');
+
+      const spy = vi.spyOn(assetScanner.repository, 'reconcileScannedAssets').mockImplementationOnce(() => {
+        throw new Error('simulated reconciliation failure');
+      });
+      try {
+        expect(() => assetScanner.scanProjectAssets(project.id)).toThrow('simulated reconciliation failure');
+      } finally {
+        spy.mockRestore();
+      }
+
+      expect(projectOperationCoordinator.isActive(project.id)).toBe(false);
     });
   });
 });

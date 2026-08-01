@@ -48,6 +48,76 @@ import { resolveProjectDir } from './project-storage.js';
  */
 
 /**
+ * Resolve an asset-relative path beneath an already-validated project
+ * directory, with full containment and symlink checks, WITHOUT opening the
+ * file. Shared by {@link openAssetFile} (which opens the result read-only)
+ * and by callers that only need to stat/mutate the path themselves (e.g.
+ * the asset rename/move action service).
+ *
+ * Steps:
+ *   1. Reject an absolute or empty asset relative path.
+ *   2. Normalize the asset relative path and verify lexical containment
+ *      within the project directory.
+ *   3. Inspect every existing path component from the project directory down
+ *      to the file with lstat and reject any symlink.
+ *
+ * @param {string} projectDir   - Already-resolved absolute project directory
+ *                                 (e.g. via resolveProjectDir).
+ * @param {string} assetRelPath - Relative path of the asset inside the
+ *                                 project directory (e.g. "source/art.png").
+ * @returns {string} Resolved, validated absolute path. Does not guarantee
+ *   the path exists — callers that need existence must stat it themselves.
+ * @param {object} [options]
+ * @param {boolean} [options.checkFinalSymlink=true] - When false, the final
+ *   path component's own symlink-ness is NOT checked here — only every
+ *   intermediate directory component is. Set this to false when the caller
+ *   needs to distinguish "leaf is a symlink" from other leaf conditions
+ *   (missing, directory, non-regular) with its own dedicated lstat/error
+ *   handling; intermediate-component safety is still fully enforced either
+ *   way.
+ * @throws {StorageError} on any containment or (checked) symlink failure.
+ */
+export function resolveContainedAssetPath(projectDir, assetRelPath, { checkFinalSymlink = true } = {}) {
+  // 1. Reject an absolute or empty asset path.
+  if (!assetRelPath || typeof assetRelPath !== 'string') {
+    throw new StorageError('Asset path must be a non-empty relative path.');
+  }
+  if (path.isAbsolute(assetRelPath)) {
+    throw new StorageError('Asset path must be relative to the project directory.');
+  }
+
+  // 2. Normalize and verify lexical containment within the project dir.
+  //    path.normalize collapses ".." segments where possible but leaves a
+  //    leading ".." if the path escapes; the containment check catches that.
+  const normalizedAsset = path.normalize(assetRelPath);
+  if (normalizedAsset === '.') {
+    throw new StorageError('Asset path must not resolve to the project directory.');
+  }
+  // Reject a normalized path that is empty or starts with a traversal segment.
+  const firstSeg = normalizedAsset.split(path.sep)[0];
+  if (firstSeg === '..') {
+    throw new StorageError('Asset path escapes the project directory.');
+  }
+
+  const resolvedAsset = path.resolve(projectDir, normalizedAsset);
+  const relativeToProject = path.relative(projectDir, resolvedAsset);
+  if (
+    relativeToProject === '' ||
+    relativeToProject.startsWith('..') ||
+    path.isAbsolute(relativeToProject)
+  ) {
+    throw new StorageError('Asset path escapes the project directory.');
+  }
+
+  // 3. Inspect every existing path component from projectDir down to the file.
+  //    Reject any symlink in the path (intermediate always; final unless
+  //    the caller opted out via checkFinalSymlink: false).
+  checkAssetSymlinks(projectDir, resolvedAsset, { skipFinal: !checkFinalSymlink });
+
+  return resolvedAsset;
+}
+
+/**
  * Open an individual asset file inside a project directory with full
  * containment and symlink validation.
  *
@@ -74,40 +144,8 @@ export function openAssetFile(projectsRoot, projectRelPath, assetRelPath) {
   // 1. Resolve and validate the project directory (containment + symlinks).
   const projectDir = resolveProjectDir(projectsRoot, projectRelPath);
 
-  // 2. Reject an absolute or empty asset path.
-  if (!assetRelPath || typeof assetRelPath !== 'string') {
-    throw new StorageError('Asset path must be a non-empty relative path.');
-  }
-  if (path.isAbsolute(assetRelPath)) {
-    throw new StorageError('Asset path must be relative to the project directory.');
-  }
-
-  // 3. Normalize and verify lexical containment within the project dir.
-  //    path.normalize collapses ".." segments where possible but leaves a
-  //    leading ".." if the path escapes; the containment check catches that.
-  const normalizedAsset = path.normalize(assetRelPath);
-  if (normalizedAsset === '.') {
-    throw new StorageError('Asset path must not resolve to the project directory.');
-  }
-  // Reject a normalized path that is empty or starts with a traversal segment.
-  const firstSeg = normalizedAsset.split(path.sep)[0];
-  if (firstSeg === '..') {
-    throw new StorageError('Asset path escapes the project directory.');
-  }
-
-  const resolvedAsset = path.resolve(projectDir, normalizedAsset);
-  const relativeToProject = path.relative(projectDir, resolvedAsset);
-  if (
-    relativeToProject === '' ||
-    relativeToProject.startsWith('..') ||
-    path.isAbsolute(relativeToProject)
-  ) {
-    throw new StorageError('Asset path escapes the project directory.');
-  }
-
-  // 4. Inspect every existing path component from projectDir down to the file.
-  //    Reject any symlink in the path (intermediate or final).
-  checkAssetSymlinks(projectDir, resolvedAsset);
+  // 2-4. Resolve the asset path beneath it (containment + symlink checks).
+  const resolvedAsset = resolveContainedAssetPath(projectDir, assetRelPath);
 
   // 5. Open the final file read-only.
   let fd;
@@ -166,9 +204,14 @@ export function closeAssetFile(opened) {
  *
  * @param {string} projectDir - Validated absolute project directory.
  * @param {string} target     - Absolute target file path.
- * @throws {StorageError} if any existing component is a symbolic link.
+ * @param {object} [options]
+ * @param {boolean} [options.skipFinal=false] - When true, the final path
+ *   component (the target itself) is walked past without an lstat/symlink
+ *   check — only its intermediate ancestors are checked. The caller is then
+ *   responsible for inspecting the leaf itself.
+ * @throws {StorageError} if any existing (checked) component is a symbolic link.
  */
-function checkAssetSymlinks(projectDir, target) {
+function checkAssetSymlinks(projectDir, target, { skipFinal = false } = {}) {
   const relative = path.relative(projectDir, target);
   if (relative === '') return;
 
@@ -177,9 +220,11 @@ function checkAssetSymlinks(projectDir, target) {
   const parts = relative.split(path.sep);
   let current = projectDir;
 
-  for (const part of parts) {
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i];
     if (part === '') continue;
     current = path.join(current, part);
+    if (skipFinal && i === parts.length - 1) continue;
     try {
       const stats = fs.lstatSync(current);
       if (stats.isSymbolicLink()) {

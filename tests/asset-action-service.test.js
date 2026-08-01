@@ -1,0 +1,1392 @@
+/**
+ * Phase: asset actions chunk 2 — asset-action-service.
+ *
+ * Uses real temporary project directories on disk so rename/move, source
+ * validation, and compensation can be exercised against actual filesystem
+ * behavior rather than mocks, except where a test needs to deterministically
+ * simulate a failure that occurs between two of the service's own syscalls
+ * (never a real timing-based race — see the "residual behavior" section).
+ */
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
+import { createAssetRepository } from '../src/data/asset-repository.js';
+import { createAssetCategoryRepository } from '../src/data/asset-category-repository.js';
+import { createAssetCategoryService } from '../src/services/asset-category-service.js';
+import { createProjectRepository } from '../src/data/project-repository.js';
+import { createProjectService } from '../src/services/project-service.js';
+import { createProjectAssetCategoryService } from '../src/services/project-asset-category-service.js';
+import {
+  createAssetActionService,
+  AssetActionError,
+  UNCATEGORIZED,
+} from '../src/services/asset-action-service.js';
+import { createProjectOperationCoordinator, ProjectOperationError } from '../src/services/project-operation-coordinator.js';
+import { resolveProjectDir, STATUS_DIR_MAP } from '../src/storage/project-storage.js';
+import { getCacheDir } from '../src/storage/preview-cache.js';
+import { MANIFEST_FILENAME } from '../src/storage/manifest.js';
+
+const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
+
+function symlinksSupported() {
+  try {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-symlink-probe-'));
+    const target = path.join(tmp, 'target');
+    const link = path.join(tmp, 'link');
+    fs.mkdirSync(target);
+    fs.symlinkSync(target, link, 'junction');
+    fs.rmSync(tmp, { recursive: true, force: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const HAS_SYMLINKS = symlinksSupported();
+
+function validProjectInput(overrides = {}) {
+  return {
+    title: 'Test Project',
+    description: '',
+    notes: '',
+    status: 'tbd',
+    priority: 'normal',
+    plannedDate: null,
+    publishedDate: null,
+    patreonUrl: null,
+    ...overrides,
+  };
+}
+
+describe('asset action service', () => {
+  let tmpDir;
+  let projectsRoot;
+  let previewRoot;
+  let db;
+  let projectRepository;
+  let assetRepository;
+  let assetCategoryRepository;
+  let projectService;
+  let categoryService;
+  let actionService;
+  let projectOperationCoordinator;
+  let project;
+  let absPath;
+
+  function writeFile(relPath, content = 'bytes') {
+    const target = path.join(absPath, relPath);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, content);
+    return target;
+  }
+
+  function createAsset(relativePath, overrides = {}) {
+    const filename = relativePath.split('/').pop();
+    const dotIndex = filename.lastIndexOf('.');
+    const extension = dotIndex > 0 ? filename.slice(dotIndex + 1) : '';
+    return assetRepository.upsert(project.id, relativePath, {
+      filename,
+      extension,
+      mimeType: 'application/octet-stream',
+      sizeBytes: 5,
+      modifiedAt: null,
+      categoryId: null,
+      nestedPath: '',
+      ...overrides,
+    });
+  }
+
+  function createEnabledCategory(displayName, directorySlug) {
+    return categoryService.add(project.id, { displayName, directorySlug });
+  }
+
+  function createDisabledCategory(displayName, directorySlug) {
+    return categoryService.add(project.id, { displayName, directorySlug, enabled: false });
+  }
+
+  // A category row without ever creating its directory — simulates a
+  // category whose directory was removed (or never created) out from
+  // under the database record.
+  function createCategoryRowWithoutDir(displayName, directorySlug, displayOrder = 0) {
+    return assetCategoryRepository.addProjectCategory({
+      projectId: project.id, displayName, directorySlug, displayOrder, enabled: true,
+    });
+  }
+
+  function insertRelease(title = 'Release') {
+    return db.prepare(`INSERT INTO releases (project_id, title) VALUES (?, ?) RETURNING id`)
+      .get(project.id, title);
+  }
+
+  function linkReleaseAsset(releaseId, assetId, role = 'attachment', sortOrder = 0) {
+    db.prepare(`INSERT INTO release_assets (release_id, asset_id, role, sort_order) VALUES (?, ?, ?, ?)`)
+      .run(releaseId, assetId, role, sortOrder);
+  }
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-aas-'));
+    projectsRoot = path.join(tmpDir, 'projects');
+    previewRoot = path.join(tmpDir, 'previews');
+    fs.mkdirSync(projectsRoot, { recursive: true });
+    fs.mkdirSync(previewRoot, { recursive: true });
+    for (const dir of Object.values(STATUS_DIR_MAP)) {
+      fs.mkdirSync(path.join(projectsRoot, dir), { recursive: true });
+    }
+
+    const dbPath = path.join(tmpDir, 'test.db');
+    db = openDatabase(dbPath);
+    runMigrations(db, MIGRATIONS_DIR);
+
+    projectRepository = createProjectRepository(db);
+    assetCategoryRepository = createAssetCategoryRepository(db);
+    assetRepository = createAssetRepository(db);
+    const assetCategoryService = createAssetCategoryService(assetCategoryRepository);
+    projectService = createProjectService(db, projectsRoot, { assetCategoryService });
+    categoryService = createProjectAssetCategoryService({
+      db, projectRepository, assetCategoryRepository, assetRepository, projectsRoot,
+    });
+    projectOperationCoordinator = createProjectOperationCoordinator();
+    actionService = createAssetActionService({
+      projectRepository, assetRepository, assetCategoryRepository, projectsRoot, projectOperationCoordinator,
+    });
+
+    project = projectService.create(validProjectInput());
+    absPath = resolveProjectDir(projectsRoot, project.project_dir);
+  });
+
+  afterEach(() => {
+    closeDatabase(db);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  // ─── Construction ────────────────────────────────────────────────────
+
+  describe('construction', () => {
+    it('requires every dependency', () => {
+      expect(() => createAssetActionService({})).toThrow();
+      expect(() => createAssetActionService({ projectRepository })).toThrow();
+    });
+  });
+
+  // ─── renameAsset ───────────────────────────────────────────────────────
+
+  describe('renameAsset', () => {
+    it('renames a present root-level asset', () => {
+      writeFile('old.png', 'content');
+      const asset = createAsset('old.png');
+
+      const result = actionService.renameAsset(project.id, asset.id, 'new.png');
+
+      expect(result.relative_path).toBe('new.png');
+      expect(result.filename).toBe('new.png');
+      expect(fs.existsSync(path.join(absPath, 'old.png'))).toBe(false);
+      expect(fs.existsSync(path.join(absPath, 'new.png'))).toBe(true);
+    });
+
+    it('preserves the asset ID', () => {
+      writeFile('old.png', 'content');
+      const asset = createAsset('old.png');
+      const result = actionService.renameAsset(project.id, asset.id, 'new.png');
+      expect(result.id).toBe(asset.id);
+    });
+
+    it('updates extension and MIME type when the extension changes', () => {
+      writeFile('old.png', 'content');
+      const asset = createAsset('old.png', { extension: 'png', mimeType: 'image/png' });
+
+      const result = actionService.renameAsset(project.id, asset.id, 'new.jpg');
+
+      expect(result.extension).toBe('jpg');
+      expect(result.mime_type).toBe('image/jpeg');
+    });
+
+    it('preserves category_id and nested_path', () => {
+      const category = createEnabledCategory('Renders', 'renders');
+      writeFile('renders/final/old.png', 'content');
+      const asset = createAsset('renders/final/old.png', {
+        categoryId: category.id, nestedPath: 'final',
+      });
+
+      const result = actionService.renameAsset(project.id, asset.id, 'new.png');
+
+      expect(result.relative_path).toBe('renders/final/new.png');
+      expect(result.category_id).toBe(category.id);
+      expect(result.nested_path).toBe('final');
+    });
+
+    it('rejects an unchanged filename', () => {
+      writeFile('same.png', 'content');
+      const asset = createAsset('same.png');
+      expect(() => actionService.renameAsset(project.id, asset.id, 'same.png')).toThrow(AssetActionError);
+      try {
+        actionService.renameAsset(project.id, asset.id, 'same.png');
+      } catch (err) {
+        expect(err.code).toBe('UNCHANGED_LOCATION');
+      }
+    });
+
+    it('rejects a case-only rename', () => {
+      writeFile('same.png', 'content');
+      const asset = createAsset('same.png');
+      try {
+        actionService.renameAsset(project.id, asset.id, 'SAME.png');
+        expect.unreachable();
+      } catch (err) {
+        expect(err).toBeInstanceOf(AssetActionError);
+        expect(err.code).toBe('CASE_ONLY_RENAME_UNSUPPORTED');
+      }
+    });
+
+    it('rejects an invalid filename', () => {
+      writeFile('a.png', 'content');
+      const asset = createAsset('a.png');
+      try {
+        actionService.renameAsset(project.id, asset.id, '..');
+        expect.unreachable();
+      } catch (err) {
+        expect(err).toBeInstanceOf(AssetActionError);
+        expect(err.code).toBe('INVALID_FILENAME');
+      }
+      // No filesystem mutation attempted.
+      expect(fs.existsSync(path.join(absPath, 'a.png'))).toBe(true);
+    });
+
+    it('rejects Win32-forbidden characters before any filesystem mutation', () => {
+      writeFile('a.png', 'content');
+      const asset = createAsset('a.png');
+
+      const renameSpy = vi.spyOn(fs, 'renameSync');
+      for (const badName of ['foo<bar.png', 'foo>bar.png', 'foo:bar.png', 'foo"bar.png', 'foo|bar.png', 'foo?bar.png', 'foo*bar.png', 'C:foo.png']) {
+        try {
+          actionService.renameAsset(project.id, asset.id, badName);
+          expect.unreachable();
+        } catch (err) {
+          expect(err).toBeInstanceOf(AssetActionError);
+          expect(err.code).toBe('INVALID_FILENAME');
+        }
+      }
+
+      expect(renameSpy).not.toHaveBeenCalled();
+      renameSpy.mockRestore();
+      expect(fs.existsSync(path.join(absPath, 'a.png'))).toBe(true);
+    });
+
+    it('rejects when another asset row already owns the destination path', () => {
+      writeFile('a.png', 'content');
+      writeFile('b.png', 'content');
+      const asset = createAsset('a.png');
+      createAsset('b.png');
+
+      const renameSpy = vi.spyOn(fs, 'renameSync');
+      try {
+        actionService.renameAsset(project.id, asset.id, 'b.png');
+        expect.unreachable();
+      } catch (err) {
+        expect(err).toBeInstanceOf(AssetActionError);
+        expect(err.code).toBe('DESTINATION_CONFLICT');
+      }
+      expect(renameSpy).not.toHaveBeenCalled();
+      renameSpy.mockRestore();
+    });
+
+    it('rejects when the filesystem destination exists but no database row does', () => {
+      writeFile('a.png', 'content');
+      writeFile('b.png', 'filesystem-only'); // no matching asset row for b.png
+      const asset = createAsset('a.png');
+
+      const renameSpy = vi.spyOn(fs, 'renameSync');
+      try {
+        actionService.renameAsset(project.id, asset.id, 'b.png');
+        expect.unreachable();
+      } catch (err) {
+        expect(err).toBeInstanceOf(AssetActionError);
+        expect(err.code).toBe('DESTINATION_CONFLICT');
+      }
+      expect(renameSpy).not.toHaveBeenCalled();
+      renameSpy.mockRestore();
+      // The pre-existing file must not have been touched.
+      expect(fs.readFileSync(path.join(absPath, 'b.png'), 'utf8')).toBe('filesystem-only');
+    });
+
+    it('rejects when the filesystem destination is a directory', () => {
+      writeFile('a.png', 'content');
+      fs.mkdirSync(path.join(absPath, 'b.png'));
+      const asset = createAsset('a.png');
+
+      try {
+        actionService.renameAsset(project.id, asset.id, 'b.png');
+        expect.unreachable();
+      } catch (err) {
+        expect(err.code).toBe('DESTINATION_CONFLICT');
+      }
+    });
+
+    it.skipIf(!HAS_SYMLINKS)('rejects when the filesystem destination is a symlink', () => {
+      writeFile('a.png', 'content');
+      const outside = path.join(tmpDir, 'outside.png');
+      fs.writeFileSync(outside, 'evil');
+      fs.symlinkSync(outside, path.join(absPath, 'b.png'), 'file');
+      const asset = createAsset('a.png');
+
+      try {
+        actionService.renameAsset(project.id, asset.id, 'b.png');
+        expect.unreachable();
+      } catch (err) {
+        expect(err.code).toBe('DESTINATION_CONFLICT');
+      }
+    });
+  });
+
+  // ─── moveAsset ───────────────────────────────────────────────────────
+
+  describe('moveAsset', () => {
+    it('moves an asset into an enabled category root', () => {
+      const category = createEnabledCategory('Renders', 'renders');
+      writeFile('a.png', 'content');
+      const asset = createAsset('a.png');
+
+      const result = actionService.moveAsset(project.id, asset.id, category.id);
+
+      expect(result.relative_path).toBe('renders/a.png');
+      expect(result.category_id).toBe(category.id);
+      expect(fs.existsSync(path.join(absPath, 'renders', 'a.png'))).toBe(true);
+      expect(fs.existsSync(path.join(absPath, 'a.png'))).toBe(false);
+    });
+
+    it('moves an asset to Uncategorized (project root)', () => {
+      const category = createEnabledCategory('Renders', 'renders');
+      writeFile('renders/a.png', 'content');
+      const asset = createAsset('renders/a.png', { categoryId: category.id, nestedPath: '' });
+
+      const result = actionService.moveAsset(project.id, asset.id, UNCATEGORIZED);
+
+      expect(result.relative_path).toBe('a.png');
+      expect(result.category_id).toBeNull();
+      expect(fs.existsSync(path.join(absPath, 'a.png'))).toBe(true);
+    });
+
+    it('resets nested_path to empty on move', () => {
+      const staging = createEnabledCategory('Staging', 'staging');
+      const rendersCategory = createEnabledCategory('Renders', 'renders');
+      writeFile('staging/sub/a.png', 'content');
+      const asset = createAsset('staging/sub/a.png', { categoryId: staging.id, nestedPath: 'sub' });
+
+      const result = actionService.moveAsset(project.id, asset.id, rendersCategory.id);
+
+      expect(result.nested_path).toBe('');
+    });
+
+    it('updates category_id correctly', () => {
+      const category = createEnabledCategory('Renders', 'renders');
+      writeFile('a.png', 'content');
+      const asset = createAsset('a.png');
+      const result = actionService.moveAsset(project.id, asset.id, category.id);
+      expect(result.category_id).toBe(category.id);
+    });
+
+    it('rejects a disabled destination category', () => {
+      const category = createDisabledCategory('Archive', 'archive');
+      writeFile('a.png', 'content');
+      const asset = createAsset('a.png');
+
+      try {
+        actionService.moveAsset(project.id, asset.id, category.id);
+        expect.unreachable();
+      } catch (err) {
+        expect(err).toBeInstanceOf(AssetActionError);
+        expect(err.code).toBe('DESTINATION_CATEGORY_DISABLED');
+      }
+    });
+
+    it('rejects a nonexistent destination category', () => {
+      writeFile('a.png', 'content');
+      const asset = createAsset('a.png');
+      try {
+        actionService.moveAsset(project.id, asset.id, 999999);
+        expect.unreachable();
+      } catch (err) {
+        expect(err.code).toBe('DESTINATION_CATEGORY_INVALID');
+      }
+    });
+
+    it('rejects a category owned by a different project', () => {
+      const other = projectService.create(validProjectInput({ title: 'Other Project' }));
+      const otherCategoryService = categoryService; // same service, project-scoped by argument
+      const otherCategory = otherCategoryService.add(other.id, { displayName: 'Renders', directorySlug: 'renders' });
+
+      writeFile('a.png', 'content');
+      const asset = createAsset('a.png');
+
+      try {
+        actionService.moveAsset(project.id, asset.id, otherCategory.id);
+        expect.unreachable();
+      } catch (err) {
+        expect(err.code).toBe('DESTINATION_CATEGORY_INVALID');
+      }
+    });
+
+    it('rejects a category whose directory does not exist', () => {
+      const category = createCategoryRowWithoutDir('Ghost', 'ghost');
+      writeFile('a.png', 'content');
+      const asset = createAsset('a.png');
+
+      try {
+        actionService.moveAsset(project.id, asset.id, category.id);
+        expect.unreachable();
+      } catch (err) {
+        expect(err.code).toBe('DESTINATION_DIRECTORY_MISSING');
+      }
+    });
+
+    it.skipIf(!HAS_SYMLINKS)('rejects a category directory that is a symlink', () => {
+      const category = createCategoryRowWithoutDir('Linked', 'linked');
+      const outsideDir = path.join(tmpDir, 'outside-dir');
+      fs.mkdirSync(outsideDir, { recursive: true });
+      fs.symlinkSync(outsideDir, path.join(absPath, 'linked'), 'junction');
+
+      writeFile('a.png', 'content');
+      const asset = createAsset('a.png');
+
+      try {
+        actionService.moveAsset(project.id, asset.id, category.id);
+        expect.unreachable();
+      } catch (err) {
+        expect(err.code).toBe('DESTINATION_DIRECTORY_UNSAFE');
+      }
+    });
+
+    it('rejects an unchanged destination', () => {
+      const category = createEnabledCategory('Renders', 'renders');
+      writeFile('renders/a.png', 'content');
+      const asset = createAsset('renders/a.png', { categoryId: category.id, nestedPath: '' });
+
+      try {
+        actionService.moveAsset(project.id, asset.id, category.id);
+        expect.unreachable();
+      } catch (err) {
+        expect(err.code).toBe('UNCHANGED_LOCATION');
+      }
+    });
+
+    it('rejects an arbitrary string destination rather than treating it as a category ID', () => {
+      writeFile('a.png', 'content');
+      const asset = createAsset('a.png');
+      try {
+        actionService.moveAsset(project.id, asset.id, 'exports');
+        expect.unreachable();
+      } catch (err) {
+        expect(err.code).toBe('DESTINATION_CATEGORY_INVALID');
+      }
+    });
+  });
+
+  // ─── Source validation ─────────────────────────────────────────────────
+
+  describe('source validation', () => {
+    it('rejects an asset row marked missing', () => {
+      writeFile('a.png', 'content');
+      const asset = createAsset('a.png');
+      assetRepository.markAllMissing(project.id);
+
+      try {
+        actionService.renameAsset(project.id, asset.id, 'b.png');
+        expect.unreachable();
+      } catch (err) {
+        expect(err.code).toBe('ASSET_MISSING');
+      }
+    });
+
+    it('rejects a missing source file', () => {
+      const asset = createAsset('missing.png'); // never written to disk
+      try {
+        actionService.renameAsset(project.id, asset.id, 'b.png');
+        expect.unreachable();
+      } catch (err) {
+        expect(err.code).toBe('SOURCE_MISSING');
+      }
+    });
+
+    it.skipIf(!HAS_SYMLINKS)('rejects a symlinked source', () => {
+      const outside = path.join(tmpDir, 'outside.png');
+      fs.writeFileSync(outside, 'evil');
+      fs.symlinkSync(outside, path.join(absPath, 'link.png'), 'file');
+      const asset = createAsset('link.png');
+
+      try {
+        actionService.renameAsset(project.id, asset.id, 'b.png');
+        expect.unreachable();
+      } catch (err) {
+        expect(err.code).toBe('SOURCE_SYMLINK');
+      }
+    });
+
+    it('rejects a directory source', () => {
+      fs.mkdirSync(path.join(absPath, 'a-dir'));
+      const asset = createAsset('a-dir');
+
+      try {
+        actionService.renameAsset(project.id, asset.id, 'b.png');
+        expect.unreachable();
+      } catch (err) {
+        expect(err.code).toBe('SOURCE_NOT_REGULAR');
+      }
+    });
+
+    it('rejects an archived project', () => {
+      writeFile('a.png', 'content');
+      const asset = createAsset('a.png');
+      projectRepository.archive(project.id);
+
+      try {
+        actionService.renameAsset(project.id, asset.id, 'b.png');
+        expect.unreachable();
+      } catch (err) {
+        expect(err.code).toBe('PROJECT_ARCHIVED');
+      }
+    });
+
+    it('rejects an asset that does not belong to the project', () => {
+      const other = projectService.create(validProjectInput({ title: 'Other Project' }));
+      const otherAbsPath = resolveProjectDir(projectsRoot, other.project_dir);
+      fs.writeFileSync(path.join(otherAbsPath, 'a.png'), 'content');
+      const otherAsset = assetRepository.upsert(other.id, 'a.png', {
+        filename: 'a.png', extension: 'png', mimeType: 'image/png', sizeBytes: 5, modifiedAt: null,
+      });
+
+      try {
+        actionService.renameAsset(project.id, otherAsset.id, 'b.png');
+        expect.unreachable();
+      } catch (err) {
+        expect(err.code).toBe('ASSET_NOT_FOUND');
+      }
+    });
+
+    it('rejects an unknown project ID', () => {
+      writeFile('a.png', 'content');
+      const asset = createAsset('a.png');
+      try {
+        actionService.renameAsset(999999, asset.id, 'b.png');
+        expect.unreachable();
+      } catch (err) {
+        expect(err.code).toBe('PROJECT_NOT_FOUND');
+      }
+    });
+
+    it('rejects non-positive-integer IDs', () => {
+      for (const invalid of [0, -1, 1.5, 'x', null]) {
+        try {
+          actionService.renameAsset(invalid, 1, 'b.png');
+          expect.unreachable();
+        } catch (err) {
+          expect(err.code).toBe('INVALID_PROJECT_ID');
+        }
+      }
+      for (const invalid of [0, -1, 1.5, 'x', null]) {
+        try {
+          actionService.renameAsset(project.id, invalid, 'b.png');
+          expect.unreachable();
+        } catch (err) {
+          expect(err.code).toBe('INVALID_ASSET_ID');
+        }
+      }
+    });
+  });
+
+  // ─── Preservation ────────────────────────────────────────────────────
+
+  describe('preservation', () => {
+    it('leaves the asset ID unchanged', () => {
+      writeFile('a.png', 'content');
+      const asset = createAsset('a.png');
+      const result = actionService.renameAsset(project.id, asset.id, 'b.png');
+      expect(result.id).toBe(asset.id);
+      expect(assetRepository.findById(asset.id)).toBeTruthy();
+    });
+
+    it('leaves release_assets associations, roles, and sort_order unchanged', () => {
+      writeFile('a.png', 'content');
+      const asset = createAsset('a.png');
+      const release = insertRelease();
+      linkReleaseAsset(release.id, asset.id, 'primary', 4);
+
+      actionService.renameAsset(project.id, asset.id, 'b.png');
+
+      const link = db.prepare(
+        'SELECT release_id, asset_id, role, sort_order FROM release_assets WHERE release_id = ? AND asset_id = ?'
+      ).get(release.id, asset.id);
+      expect(link).toMatchObject({ release_id: release.id, asset_id: asset.id, role: 'primary', sort_order: 4 });
+    });
+
+    it('leaves project.json bytes unchanged', () => {
+      writeFile('a.png', 'content');
+      const asset = createAsset('a.png');
+      const manifestPath = path.join(absPath, MANIFEST_FILENAME);
+      const before = fs.readFileSync(manifestPath);
+
+      actionService.renameAsset(project.id, asset.id, 'b.png');
+
+      const after = fs.readFileSync(manifestPath);
+      expect(after.equals(before)).toBe(true);
+    });
+
+    it('leaves preview-cache sentinel files unchanged', () => {
+      writeFile('a.png', 'content');
+      const asset = createAsset('a.png');
+      const cacheDir = getCacheDir(previewRoot, project.id, asset.id);
+      fs.mkdirSync(cacheDir, { recursive: true });
+      const sentinelPath = path.join(cacheDir, 'thumbnail.webp');
+      fs.writeFileSync(sentinelPath, 'cached-bytes');
+
+      actionService.renameAsset(project.id, asset.id, 'b.png');
+
+      expect(fs.readFileSync(sentinelPath, 'utf8')).toBe('cached-bytes');
+    });
+  });
+
+  // ─── Post-move failure handling ──────────────────────────────────────
+
+  describe('post-move failure handling', () => {
+    it('returns RECOVERY_REQUIRED and leaves the moved file at the destination when the repository reports NOT_FOUND', () => {
+      writeFile('a.png', 'original-bytes');
+      const asset = createAsset('a.png');
+
+      const renameSpy = vi.spyOn(fs, 'renameSync');
+      const spy = vi.spyOn(assetRepository, 'updateAssetLocation').mockReturnValueOnce({ ok: false, reason: 'NOT_FOUND' });
+      try {
+        actionService.renameAsset(project.id, asset.id, 'b.png');
+        expect.unreachable();
+      } catch (err) {
+        expect(err).toBeInstanceOf(AssetActionError);
+        expect(err.code).toBe('RECOVERY_REQUIRED');
+      } finally {
+        spy.mockRestore();
+      }
+
+      // Destination is present with the original content.
+      expect(fs.readFileSync(path.join(absPath, 'b.png'), 'utf8')).toBe('original-bytes');
+      // Source is absent — no rename-back was attempted.
+      expect(fs.existsSync(path.join(absPath, 'a.png'))).toBe(false);
+      // renameSync was called exactly once (the forward move only).
+      expect(renameSpy).toHaveBeenCalledTimes(1);
+      renameSpy.mockRestore();
+      // Database row is unchanged because the update never committed.
+      expect(assetRepository.findById(asset.id).relative_path).toBe('a.png');
+    });
+
+    it('returns RECOVERY_REQUIRED and leaves the moved file at the destination when the repository reports DESTINATION_CONFLICT', () => {
+      writeFile('a.png', 'original-bytes');
+      const asset = createAsset('a.png');
+
+      const renameSpy = vi.spyOn(fs, 'renameSync');
+      const spy = vi.spyOn(assetRepository, 'updateAssetLocation').mockReturnValueOnce({ ok: false, reason: 'DESTINATION_CONFLICT' });
+      try {
+        actionService.renameAsset(project.id, asset.id, 'b.png');
+        expect.unreachable();
+      } catch (err) {
+        expect(err.code).toBe('RECOVERY_REQUIRED');
+      } finally {
+        spy.mockRestore();
+      }
+
+      expect(fs.readFileSync(path.join(absPath, 'b.png'), 'utf8')).toBe('original-bytes');
+      expect(fs.existsSync(path.join(absPath, 'a.png'))).toBe(false);
+      expect(renameSpy).toHaveBeenCalledTimes(1);
+      renameSpy.mockRestore();
+    });
+
+    it('returns RECOVERY_REQUIRED and leaves the moved file at the destination when the repository throws', () => {
+      writeFile('a.png', 'original-bytes');
+      const asset = createAsset('a.png');
+
+      const renameSpy = vi.spyOn(fs, 'renameSync');
+      const spy = vi.spyOn(assetRepository, 'updateAssetLocation').mockImplementationOnce(() => {
+        throw new Error('simulated database failure');
+      });
+      try {
+        actionService.renameAsset(project.id, asset.id, 'b.png');
+        expect.unreachable();
+      } catch (err) {
+        expect(err.code).toBe('RECOVERY_REQUIRED');
+      } finally {
+        spy.mockRestore();
+      }
+
+      expect(fs.readFileSync(path.join(absPath, 'b.png'), 'utf8')).toBe('original-bytes');
+      expect(fs.existsSync(path.join(absPath, 'a.png'))).toBe(false);
+      expect(renameSpy).toHaveBeenCalledTimes(1);
+      renameSpy.mockRestore();
+    });
+
+    it('returns RECOVERY_REQUIRED without rename-back when post-move destination verification fails', () => {
+      writeFile('a.png', 'original-bytes');
+      const asset = createAsset('a.png');
+      const destPath = path.join(absPath, 'b.png');
+
+      const realLstatSync = fs.lstatSync.bind(fs);
+      let failNext = false;
+      const lstatSpy = vi.spyOn(fs, 'lstatSync').mockImplementation((target, ...rest) => {
+        if (failNext && target === destPath) {
+          failNext = false;
+          const err = new Error('simulated transient stat failure');
+          err.code = 'EIO';
+          throw err;
+        }
+        return realLstatSync(target, ...rest);
+      });
+
+      const realRenameSync = fs.renameSync.bind(fs);
+      let renameCalls = 0;
+      const renameSpy = vi.spyOn(fs, 'renameSync').mockImplementation((src, dest) => {
+        renameCalls++;
+        realRenameSync(src, dest);
+        if (renameCalls === 1) failNext = true; // trigger verification failure after forward move
+      });
+
+      try {
+        actionService.renameAsset(project.id, asset.id, 'b.png');
+        expect.unreachable();
+      } catch (err) {
+        expect(err.code).toBe('RECOVERY_REQUIRED');
+      } finally {
+        lstatSpy.mockRestore();
+        renameSpy.mockRestore();
+      }
+
+      // renameSync called exactly once — no rename-back attempted.
+      expect(renameCalls).toBe(1);
+      // The moved file is at the destination (lstat failure was transient; real file is there).
+      expect(fs.existsSync(destPath)).toBe(true);
+      expect(fs.readFileSync(destPath, 'utf8')).toBe('original-bytes');
+      // Source is absent.
+      expect(fs.existsSync(path.join(absPath, 'a.png'))).toBe(false);
+    });
+
+    it('does not overwrite a file recreated at the source path after the forward move', () => {
+      writeFile('a.png', 'original-bytes');
+      const asset = createAsset('a.png');
+      const sourcePath = path.join(absPath, 'a.png');
+
+      const spy = vi.spyOn(assetRepository, 'updateAssetLocation').mockImplementationOnce(() => {
+        // Simulate a concurrent actor recreating the source path between
+        // the move and this repository call.
+        fs.writeFileSync(sourcePath, 'someone-elses-file');
+        throw new Error('simulated database failure');
+      });
+
+      try {
+        actionService.renameAsset(project.id, asset.id, 'b.png');
+        expect.unreachable();
+      } catch (err) {
+        expect(err).toBeInstanceOf(AssetActionError);
+        expect(err.code).toBe('RECOVERY_REQUIRED');
+      } finally {
+        spy.mockRestore();
+      }
+
+      // The recreated source file must not have been overwritten.
+      expect(fs.readFileSync(sourcePath, 'utf8')).toBe('someone-elses-file');
+      // The moved file must still be at the destination, untouched.
+      expect(fs.readFileSync(path.join(absPath, 'b.png'), 'utf8')).toBe('original-bytes');
+    });
+
+    it('leaves all observed content untouched when destination identity does not match after the move', () => {
+      writeFile('a.png', 'original-bytes');
+      const asset = createAsset('a.png');
+      const destPath = path.join(absPath, 'b.png');
+
+      const realRenameSync = fs.renameSync.bind(fs);
+      const renameSpy = vi.spyOn(fs, 'renameSync').mockImplementationOnce((src, dest) => {
+        realRenameSync(src, dest);
+        // Simulate an external actor replacing the destination the instant
+        // after our own rename completes, before verification runs.
+        fs.rmSync(dest, { force: true });
+        fs.writeFileSync(dest, 'replaced-by-someone-else');
+      });
+
+      try {
+        actionService.renameAsset(project.id, asset.id, 'b.png');
+        expect.unreachable();
+      } catch (err) {
+        expect(err.code).toBe('RECOVERY_REQUIRED');
+      }
+
+      // The replacement destination content must not have been overwritten.
+      expect(fs.readFileSync(destPath, 'utf8')).toBe('replaced-by-someone-else');
+      // Nothing was recreated at the source path.
+      expect(fs.existsSync(path.join(absPath, 'a.png'))).toBe(false);
+      // renameSync was called exactly once.
+      expect(renameSpy).toHaveBeenCalledTimes(1);
+      renameSpy.mockRestore();
+    });
+  });
+
+  // ─── Residual behavior ─────────────────────────────────────────────────
+
+  describe('residual behavior', () => {
+    it('never calls fs.renameSync once a known destination conflict is detected (database)', () => {
+      writeFile('a.png', 'content');
+      writeFile('b.png', 'content');
+      const asset = createAsset('a.png');
+      createAsset('b.png');
+
+      const renameSpy = vi.spyOn(fs, 'renameSync');
+      expect(() => actionService.renameAsset(project.id, asset.id, 'b.png')).toThrow(AssetActionError);
+      expect(renameSpy).not.toHaveBeenCalled();
+      renameSpy.mockRestore();
+    });
+
+    it('never calls fs.renameSync once a known destination conflict is detected (filesystem)', () => {
+      writeFile('a.png', 'content');
+      fs.mkdirSync(path.join(absPath, 'b.png'));
+      const asset = createAsset('a.png');
+
+      const renameSpy = vi.spyOn(fs, 'renameSync');
+      expect(() => actionService.renameAsset(project.id, asset.id, 'b.png')).toThrow(AssetActionError);
+      expect(renameSpy).not.toHaveBeenCalled();
+      renameSpy.mockRestore();
+    });
+  });
+
+  // ─── Coordinator integration (Phase: asset actions chunk 3) ────────────
+
+  describe('coordinator integration', () => {
+    it('requires a projectOperationCoordinator dependency', () => {
+      expect(() => createAssetActionService({
+        projectRepository, assetRepository, assetCategoryRepository, projectsRoot,
+      })).toThrow();
+    });
+
+    it('rejects a same-project rename while a coordinator-held operation is already in progress', () => {
+      writeFile('a.png', 'content');
+      const asset = createAsset('a.png');
+
+      projectOperationCoordinator.run(project.id, () => {
+        try {
+          actionService.renameAsset(project.id, asset.id, 'b.png');
+          expect.unreachable();
+        } catch (err) {
+          expect(err).toBeInstanceOf(AssetActionError);
+          expect(err.code).toBe('PROJECT_BUSY');
+        }
+      });
+
+      // Untouched — the busy rename never ran.
+      expect(fs.existsSync(path.join(absPath, 'a.png'))).toBe(true);
+    });
+
+    it('rejects a same-project move while a coordinator-held operation is already in progress', () => {
+      const category = createEnabledCategory('Renders', 'renders');
+      writeFile('a.png', 'content');
+      const asset = createAsset('a.png');
+
+      projectOperationCoordinator.run(project.id, () => {
+        try {
+          actionService.moveAsset(project.id, asset.id, category.id);
+          expect.unreachable();
+        } catch (err) {
+          expect(err.code).toBe('PROJECT_BUSY');
+        }
+      });
+    });
+
+    it('permits a different-project rename while another project holds the coordinator', () => {
+      const other = projectService.create(validProjectInput({ title: 'Other Project' }));
+      const otherAbsPath = resolveProjectDir(projectsRoot, other.project_dir);
+      fs.writeFileSync(path.join(otherAbsPath, 'a.png'), 'content');
+      const otherAsset = assetRepository.upsert(other.id, 'a.png', {
+        filename: 'a.png', extension: 'png', mimeType: 'image/png', sizeBytes: 5, modifiedAt: null,
+      });
+
+      let innerResult;
+      projectOperationCoordinator.run(project.id, () => {
+        innerResult = actionService.renameAsset(other.id, otherAsset.id, 'b.png');
+      });
+
+      expect(innerResult.relative_path).toBe('b.png');
+    });
+
+    it('holds the project lock through the repository update for renameAsset', () => {
+      writeFile('a.png', 'content');
+      const asset = createAsset('a.png');
+
+      let lockActiveDuringUpdate = null;
+      const spy = vi.spyOn(assetRepository, 'updateAssetLocation');
+      const original = spy.getMockImplementation() || assetRepository.updateAssetLocation.bind(assetRepository);
+      spy.mockImplementationOnce((...args) => {
+        lockActiveDuringUpdate = projectOperationCoordinator.isActive(project.id);
+        return original(...args);
+      });
+
+      actionService.renameAsset(project.id, asset.id, 'b.png');
+
+      expect(lockActiveDuringUpdate).toBe(true);
+      expect(projectOperationCoordinator.isActive(project.id)).toBe(false);
+      spy.mockRestore();
+    });
+
+    it('holds the project lock through the repository update for moveAsset', () => {
+      const category = createEnabledCategory('Renders', 'renders');
+      writeFile('a.png', 'content');
+      const asset = createAsset('a.png');
+
+      let lockActiveDuringUpdate = null;
+      const spy = vi.spyOn(assetRepository, 'updateAssetLocation');
+      const original = spy.getMockImplementation() || assetRepository.updateAssetLocation.bind(assetRepository);
+      spy.mockImplementationOnce((...args) => {
+        lockActiveDuringUpdate = projectOperationCoordinator.isActive(project.id);
+        return original(...args);
+      });
+
+      actionService.moveAsset(project.id, asset.id, category.id);
+
+      expect(lockActiveDuringUpdate).toBe(true);
+      expect(projectOperationCoordinator.isActive(project.id)).toBe(false);
+      spy.mockRestore();
+    });
+
+    it('releases the lock after a validation failure', () => {
+      writeFile('a.png', 'content');
+      const asset = createAsset('a.png');
+
+      expect(() => actionService.renameAsset(project.id, asset.id, '..')).toThrow(AssetActionError);
+      expect(projectOperationCoordinator.isActive(project.id)).toBe(false);
+
+      // The lock is usable again immediately afterward.
+      const result = actionService.renameAsset(project.id, asset.id, 'b.png');
+      expect(result.relative_path).toBe('b.png');
+    });
+
+    it('releases the lock after a filesystem failure', () => {
+      writeFile('a.png', 'content');
+      const asset = createAsset('a.png');
+
+      const renameSpy = vi.spyOn(fs, 'renameSync').mockImplementationOnce(() => {
+        throw new Error('simulated filesystem failure');
+      });
+      try {
+        expect(() => actionService.renameAsset(project.id, asset.id, 'b.png')).toThrow(AssetActionError);
+      } finally {
+        renameSpy.mockRestore();
+      }
+
+      expect(projectOperationCoordinator.isActive(project.id)).toBe(false);
+    });
+
+    it('releases the lock after a repository failure and compensation', () => {
+      writeFile('a.png', 'content');
+      const asset = createAsset('a.png');
+
+      const spy = vi.spyOn(assetRepository, 'updateAssetLocation').mockImplementationOnce(() => {
+        throw new Error('simulated database failure');
+      });
+      try {
+        expect(() => actionService.renameAsset(project.id, asset.id, 'b.png')).toThrow(AssetActionError);
+      } finally {
+        spy.mockRestore();
+      }
+
+      expect(projectOperationCoordinator.isActive(project.id)).toBe(false);
+    });
+
+    it('produces a stable AssetActionError busy code suitable for HTTP mapping', () => {
+      writeFile('a.png', 'content');
+      const asset = createAsset('a.png');
+
+      projectOperationCoordinator.run(project.id, () => {
+        try {
+          actionService.renameAsset(project.id, asset.id, 'b.png');
+          expect.unreachable();
+        } catch (err) {
+          expect(err).toBeInstanceOf(AssetActionError);
+          expect(err.name).toBe('AssetActionError');
+          expect(err.code).toBe('PROJECT_BUSY');
+          expect(err).not.toBeInstanceOf(ProjectOperationError);
+        }
+      });
+    });
+  });
+
+  // ─── moveAssets ────────────────────────────────────────────────────────
+
+  describe('moveAssets', () => {
+    // ── Input validation (before lock) ─────────────────────────────────
+
+    it('throws INVALID_ASSET_SELECTION when assetIds is not an array', () => {
+      try {
+        actionService.moveAssets(project.id, 'not-an-array', UNCATEGORIZED);
+        expect.unreachable();
+      } catch (err) {
+        expect(err).toBeInstanceOf(AssetActionError);
+        expect(err.code).toBe('INVALID_ASSET_SELECTION');
+      }
+    });
+
+    it('throws INVALID_ASSET_SELECTION when assetIds contains a non-positive-integer', () => {
+      try {
+        actionService.moveAssets(project.id, [0], UNCATEGORIZED);
+        expect.unreachable();
+      } catch (err) {
+        expect(err).toBeInstanceOf(AssetActionError);
+        expect(err.code).toBe('INVALID_ASSET_SELECTION');
+      }
+    });
+
+    it('throws NO_ASSETS_SELECTED for an empty array', () => {
+      try {
+        actionService.moveAssets(project.id, [], UNCATEGORIZED);
+        expect.unreachable();
+      } catch (err) {
+        expect(err).toBeInstanceOf(AssetActionError);
+        expect(err.code).toBe('NO_ASSETS_SELECTED');
+      }
+    });
+
+    // ── Destination validation (preflight, inside lock) ─────────────────
+
+    it('throws BATCH_PRECHECK_FAILED when the destination category is disabled', () => {
+      const disabled = createDisabledCategory('Archive', 'archive');
+      writeFile('a.png', 'content');
+      const asset = createAsset('a.png');
+      try {
+        actionService.moveAssets(project.id, [asset.id], disabled.id);
+        expect.unreachable();
+      } catch (err) {
+        expect(err).toBeInstanceOf(AssetActionError);
+        expect(err.code).toBe('BATCH_PRECHECK_FAILED');
+      }
+    });
+
+    it('throws BATCH_PRECHECK_FAILED when the destination category does not exist', () => {
+      writeFile('a.png', 'content');
+      const asset = createAsset('a.png');
+      try {
+        actionService.moveAssets(project.id, [asset.id], 999999);
+        expect.unreachable();
+      } catch (err) {
+        expect(err).toBeInstanceOf(AssetActionError);
+        expect(err.code).toBe('BATCH_PRECHECK_FAILED');
+      }
+    });
+
+    it('throws BATCH_PRECHECK_FAILED when an asset is missing at last scan', () => {
+      const category = createEnabledCategory('Renders', 'renders');
+      writeFile('a.png', 'content');
+      const asset = createAsset('a.png');
+      assetRepository.markAllMissing(project.id);
+      try {
+        actionService.moveAssets(project.id, [asset.id], category.id);
+        expect.unreachable();
+      } catch (err) {
+        expect(err).toBeInstanceOf(AssetActionError);
+        expect(err.code).toBe('BATCH_PRECHECK_FAILED');
+      }
+    });
+
+    it('throws BATCH_PRECHECK_FAILED when an asset is not found or cross-project', () => {
+      const category = createEnabledCategory('Renders', 'renders');
+      try {
+        actionService.moveAssets(project.id, [999999], category.id);
+        expect.unreachable();
+      } catch (err) {
+        expect(err).toBeInstanceOf(AssetActionError);
+        expect(err.code).toBe('BATCH_PRECHECK_FAILED');
+      }
+    });
+
+    it('throws BATCH_PRECHECK_FAILED when an asset is already in the target location', () => {
+      const category = createEnabledCategory('Renders', 'renders');
+      writeFile('renders/a.png', 'content');
+      const asset = createAsset('renders/a.png', { categoryId: category.id });
+      try {
+        actionService.moveAssets(project.id, [asset.id], category.id);
+        expect.unreachable();
+      } catch (err) {
+        expect(err).toBeInstanceOf(AssetActionError);
+        expect(err.code).toBe('BATCH_PRECHECK_FAILED');
+      }
+    });
+
+    it('throws BATCH_PRECHECK_FAILED when duplicate IDs are in the selection', () => {
+      const category = createEnabledCategory('Renders', 'renders');
+      writeFile('a.png', 'content');
+      const asset = createAsset('a.png');
+      try {
+        actionService.moveAssets(project.id, [asset.id, asset.id], category.id);
+        expect.unreachable();
+      } catch (err) {
+        expect(err).toBeInstanceOf(AssetActionError);
+        expect(err.code).toBe('BATCH_PRECHECK_FAILED');
+      }
+    });
+
+    it('throws BATCH_DUPLICATE_DESTINATION when two assets share the same destination filename', () => {
+      const src = createEnabledCategory('Archive', 'archive');
+      const dst = createEnabledCategory('Dest', 'dest');
+      writeFile('archive/a.png', 'content1');
+      writeFile('renders/a.png', 'content2');
+      const asset1 = createAsset('archive/a.png', { categoryId: src.id });
+      const asset2 = createAsset('renders/a.png');
+      try {
+        actionService.moveAssets(project.id, [asset1.id, asset2.id], dst.id);
+        expect.unreachable();
+      } catch (err) {
+        expect(err).toBeInstanceOf(AssetActionError);
+        expect(err.code).toBe('BATCH_DUPLICATE_DESTINATION');
+      }
+      // Nothing moved — both source files still present
+      expect(fs.existsSync(path.join(absPath, 'archive', 'a.png'))).toBe(true);
+      expect(fs.existsSync(path.join(absPath, 'renders', 'a.png'))).toBe(true);
+    });
+
+    it('throws BATCH_DESTINATION_CONFLICT when an existing asset record occupies the destination', () => {
+      const category = createEnabledCategory('Renders', 'renders');
+      writeFile('a.png', 'content');
+      writeFile('renders/a.png', 'other');
+      const moving = createAsset('a.png');
+      createAsset('renders/a.png', { categoryId: category.id });
+      try {
+        actionService.moveAssets(project.id, [moving.id], category.id);
+        expect.unreachable();
+      } catch (err) {
+        expect(err).toBeInstanceOf(AssetActionError);
+        expect(err.code).toBe('BATCH_DESTINATION_CONFLICT');
+      }
+    });
+
+    it('throws BATCH_DESTINATION_CONFLICT when a filesystem object occupies the destination', () => {
+      const category = createEnabledCategory('Renders', 'renders');
+      writeFile('a.png', 'content');
+      writeFile('renders/a.png', 'squatter'); // on disk, not in DB
+      const moving = createAsset('a.png');
+      try {
+        actionService.moveAssets(project.id, [moving.id], category.id);
+        expect.unreachable();
+      } catch (err) {
+        expect(err).toBeInstanceOf(AssetActionError);
+        expect(err.code).toBe('BATCH_DESTINATION_CONFLICT');
+      }
+    });
+
+    it('throws BATCH_PRECHECK_FAILED when source file is absent from disk', () => {
+      const category = createEnabledCategory('Renders', 'renders');
+      const asset = createAsset('a.png'); // record exists, file does not
+      try {
+        actionService.moveAssets(project.id, [asset.id], category.id);
+        expect.unreachable();
+      } catch (err) {
+        expect(err).toBeInstanceOf(AssetActionError);
+        expect(err.code).toBe('BATCH_PRECHECK_FAILED');
+      }
+    });
+
+    // ── Successful batch moves ─────────────────────────────────────────
+
+    it('moves a single asset into a category', () => {
+      const category = createEnabledCategory('Renders', 'renders');
+      writeFile('a.png', 'content');
+      const asset = createAsset('a.png');
+
+      const result = actionService.moveAssets(project.id, [asset.id], category.id);
+
+      expect(result.movedCount).toBe(1);
+      expect(result.requestedCount).toBe(1);
+      expect(result.completedAssetIds).toEqual([asset.id]);
+      expect(fs.existsSync(path.join(absPath, 'renders', 'a.png'))).toBe(true);
+      expect(fs.existsSync(path.join(absPath, 'a.png'))).toBe(false);
+    });
+
+    it('moves multiple assets into a category', () => {
+      const category = createEnabledCategory('Renders', 'renders');
+      writeFile('a.png', 'aaa');
+      writeFile('b.png', 'bbb');
+      const assetA = createAsset('a.png');
+      const assetB = createAsset('b.png');
+
+      const result = actionService.moveAssets(project.id, [assetA.id, assetB.id], category.id);
+
+      expect(result.movedCount).toBe(2);
+      expect(result.requestedCount).toBe(2);
+      expect(result.completedAssetIds).toEqual([assetA.id, assetB.id]);
+      expect(fs.existsSync(path.join(absPath, 'renders', 'a.png'))).toBe(true);
+      expect(fs.existsSync(path.join(absPath, 'renders', 'b.png'))).toBe(true);
+    });
+
+    it('moves assets to Uncategorized (project root)', () => {
+      const src = createEnabledCategory('Archive', 'archive');
+      writeFile('archive/a.png', 'content');
+      const asset = createAsset('archive/a.png', { categoryId: src.id });
+
+      const result = actionService.moveAssets(project.id, [asset.id], UNCATEGORIZED);
+
+      expect(result.movedCount).toBe(1);
+      const updated = assetRepository.findById(asset.id);
+      expect(updated.relative_path).toBe('a.png');
+      expect(updated.category_id).toBeNull();
+      expect(fs.existsSync(path.join(absPath, 'a.png'))).toBe(true);
+    });
+
+    it('resets nested_path to empty when moving from a subdirectory', () => {
+      const src = createEnabledCategory('Staging', 'staging');
+      const dst = createEnabledCategory('Renders', 'renders');
+      writeFile('staging/sub/a.png', 'content');
+      const asset = createAsset('staging/sub/a.png', { categoryId: src.id, nestedPath: 'sub' });
+
+      actionService.moveAssets(project.id, [asset.id], dst.id);
+
+      const updated = assetRepository.findById(asset.id);
+      expect(updated.nested_path).toBe('');
+    });
+
+    it('updates extension and MIME type based on the (unchanged) filename', () => {
+      const category = createEnabledCategory('Renders', 'renders');
+      writeFile('a.png', 'content');
+      const asset = createAsset('a.png', { mimeType: 'application/octet-stream' });
+
+      actionService.moveAssets(project.id, [asset.id], category.id);
+
+      const updated = assetRepository.findById(asset.id);
+      expect(updated.mime_type).toBe('image/png');
+    });
+
+    it('preserves release associations across the move', () => {
+      const category = createEnabledCategory('Renders', 'renders');
+      writeFile('a.png', 'content');
+      const asset = createAsset('a.png');
+      const rel = insertRelease('R1');
+      linkReleaseAsset(rel.id, asset.id);
+
+      actionService.moveAssets(project.id, [asset.id], category.id);
+
+      const rows = db.prepare('SELECT * FROM release_assets WHERE asset_id = ?').all(asset.id);
+      expect(rows).toHaveLength(1);
+      expect(rows[0].release_id).toBe(rel.id);
+    });
+
+    it('no filesystem mutation occurs during preflight phase failure', () => {
+      const src = createEnabledCategory('Archive', 'archive');
+      const dst = createEnabledCategory('Final', 'final');
+      writeFile('archive/a.png', 'aaa');
+      writeFile('archive/b.png', 'bbb'); // b.png also present
+      const assetA = createAsset('archive/a.png', { categoryId: src.id });
+      const assetB = createAsset('archive/b.png', { categoryId: src.id });
+      // Occupy the destination for b.png on disk to force BATCH_DESTINATION_CONFLICT
+      // (discovered during the filesystem preflight that scans ALL assets before moving any)
+      writeFile('final/b.png', 'squatter');
+
+      const renameSpy = vi.spyOn(fs, 'renameSync');
+      try {
+        actionService.moveAssets(project.id, [assetA.id, assetB.id], dst.id);
+        expect.unreachable();
+      } catch (err) {
+        expect(err.code).toBe('BATCH_DESTINATION_CONFLICT');
+      }
+      expect(renameSpy).not.toHaveBeenCalled();
+      renameSpy.mockRestore();
+
+      expect(fs.existsSync(path.join(absPath, 'archive', 'a.png'))).toBe(true);
+      expect(fs.existsSync(path.join(absPath, 'archive', 'b.png'))).toBe(true);
+    });
+
+    // ── Partial failure semantics ──────────────────────────────────────
+
+    it('reports BATCH_PARTIAL_FAILURE and batchContext when execution fails mid-batch', () => {
+      const category = createEnabledCategory('Renders', 'renders');
+      writeFile('a.png', 'aaa');
+      writeFile('b.png', 'bbb');
+      const assetA = createAsset('a.png');
+      const assetB = createAsset('b.png');
+
+      // Force the second renameSync to throw (simulating a filesystem error
+      // after the first asset was already moved).
+      let renameCalls = 0;
+      const origRename = fs.renameSync.bind(fs);
+      const renameSpy = vi.spyOn(fs, 'renameSync').mockImplementation((...args) => {
+        renameCalls++;
+        if (renameCalls === 2) throw new Error('injected disk error');
+        return origRename(...args);
+      });
+
+      try {
+        actionService.moveAssets(project.id, [assetA.id, assetB.id], category.id);
+        expect.unreachable();
+      } catch (err) {
+        expect(renameCalls).toBe(2);
+        renameSpy.mockRestore();
+        expect(err).toBeInstanceOf(AssetActionError);
+        expect(err.code).toBe('BATCH_PARTIAL_FAILURE');
+        expect(err.batchContext).toBeDefined();
+        expect(err.batchContext.movedCount).toBe(1);
+        expect(err.batchContext.requestedCount).toBe(2);
+        expect(err.batchContext.completedAssetIds).toEqual([assetA.id]);
+      }
+
+      // First asset was physically moved; second was not.
+      expect(fs.existsSync(path.join(absPath, 'renders', 'a.png'))).toBe(true);
+      expect(fs.existsSync(path.join(absPath, 'a.png'))).toBe(false);
+      expect(fs.existsSync(path.join(absPath, 'b.png'))).toBe(true);
+    });
+
+    it('reports BATCH_RECOVERY_REQUIRED when a post-move step fails mid-batch', () => {
+      const category = createEnabledCategory('Renders', 'renders');
+      writeFile('a.png', 'aaa');
+      writeFile('b.png', 'bbb');
+      const assetA = createAsset('a.png');
+      const assetB = createAsset('b.png');
+
+      // Inject a failure into lstatSync on the second call after rename
+      // (post-move verification), causing RECOVERY_REQUIRED for assetB.
+      let renameCalls = 0;
+      let lstatCalls = 0;
+      const origRename = fs.renameSync.bind(fs);
+      const origLstat = fs.lstatSync.bind(fs);
+      const renameSpy = vi.spyOn(fs, 'renameSync').mockImplementation((...args) => {
+        renameCalls++;
+        return origRename(...args);
+      });
+      const lstatSpy = vi.spyOn(fs, 'lstatSync').mockImplementation((...args) => {
+        lstatCalls++;
+        // Fail the lstat that verifies the destination after the second rename
+        if (renameCalls === 2 && lstatCalls >= 2) throw new Error('injected lstat error');
+        return origLstat(...args);
+      });
+
+      try {
+        actionService.moveAssets(project.id, [assetA.id, assetB.id], category.id);
+        expect.unreachable();
+      } catch (err) {
+        expect(renameCalls).toBe(2);
+        renameSpy.mockRestore();
+        lstatSpy.mockRestore();
+        expect(err).toBeInstanceOf(AssetActionError);
+        expect(err.code).toBe('BATCH_RECOVERY_REQUIRED');
+        expect(err.batchContext.movedCount).toBe(1);
+        expect(err.batchContext.completedAssetIds).toEqual([assetA.id]);
+      }
+    });
+
+    it('batchContext.movedCount is 0 when the very first execution fails', () => {
+      const category = createEnabledCategory('Renders', 'renders');
+      writeFile('a.png', 'aaa');
+      const assetA = createAsset('a.png');
+
+      const origRename = fs.renameSync.bind(fs);
+      const renameSpy = vi.spyOn(fs, 'renameSync').mockImplementationOnce(() => {
+        throw new Error('injected disk error');
+      });
+
+      try {
+        actionService.moveAssets(project.id, [assetA.id], category.id);
+        expect.unreachable();
+      } catch (err) {
+        renameSpy.mockRestore();
+        expect(err).toBeInstanceOf(AssetActionError);
+        expect(err.code).toBe('BATCH_PARTIAL_FAILURE');
+        expect(err.batchContext.movedCount).toBe(0);
+        expect(err.batchContext.completedAssetIds).toEqual([]);
+      }
+    });
+  });
+});

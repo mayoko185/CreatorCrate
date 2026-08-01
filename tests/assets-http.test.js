@@ -15,6 +15,7 @@ import { createAssetRepository } from '../src/data/asset-repository.js';
 import { createAssetCategoryRepository } from '../src/data/asset-category-repository.js';
 import { buildAssetRevisionToken } from '../src/services/preview-service.js';
 import { ensureAuthEnablement } from '../src/auth/auth-state.js';
+import { AssetActionError } from '../src/services/asset-action-service.js';
 import { getDisabledModeCsrf } from './helpers/auth.js';
 import slugify from '@sindresorhus/slugify';
 
@@ -2447,7 +2448,7 @@ describe('asset browser HTTP workflow', () => {
       const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
       const html = res2.text;
 
-      expect(html).toContain(`<input type="checkbox" name="selectedAssetIds" value="${present.id}"`);
+      expect(html).toContain(`<input type="checkbox" form="bulk-select-form" name="selectedAssetIds" value="${present.id}"`);
       expect(html).toContain(`aria-label="Select present.png"`);
       expect(html).toContain('aria-label="gone.png is missing at last scan and cannot be selected"');
       // The missing row's checkbox is disabled and carries no selectable value/name.
@@ -2477,7 +2478,7 @@ describe('asset browser HTTP workflow', () => {
       await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
       const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
-      const formMatch = res2.text.match(/<form method="post" action="\/projects\/\d+\/assets\/add-to-release"[^>]*>[\s\S]*?<input type="hidden" name="_csrf" value="[^"]+">/);
+      const formMatch = res2.text.match(/<form id="bulk-select-form" method="post" action="\/projects\/\d+\/assets\/add-to-release"[^>]*>[\s\S]*?<input type="hidden" name="_csrf" value="[^"]+">/);
       expect(formMatch).not.toBeNull();
       expect(formMatch[0]).toContain(`action="/projects/${id}/assets/add-to-release"`);
     });
@@ -2726,15 +2727,17 @@ describe('asset browser HTTP workflow', () => {
         .expect(404);
     });
 
-    it('does not expose a filesystem-mutation route (rename/move/delete/upload/replace)', async () => {
+    // Phase: asset actions chunk 4 added rename/move as real routes — see
+    // the dedicated 'POST /projects/:projectId/assets/:assetId/rename' and
+    // '.../move' describe blocks below for their full behavior. Delete,
+    // upload, and replace remain deliberately out of scope.
+    it('does not expose a filesystem-mutation route (delete/upload/replace)', async () => {
       const res = await createProject('No Filesystem Actions');
       const id = Number(res.headers.location.replace('/projects/', ''));
       const projectDir = getProjectDir('No Filesystem Actions');
       const asset = writeIndexedAsset(id, projectDir, 'a.png', await makePng());
 
       for (const path_ of [
-        `/projects/${id}/assets/${asset.id}/rename`,
-        `/projects/${id}/assets/${asset.id}/move`,
         `/projects/${id}/assets/${asset.id}/delete`,
         `/projects/${id}/assets/${asset.id}/replace`,
         `/projects/${id}/assets/upload`,
@@ -2877,6 +2880,840 @@ describe('asset browser HTTP workflow', () => {
       expect(res3.text).not.toMatch(/[A-Z]:\\/);
       expect(res3.text).not.toMatch(/\/home\//);
       expect(res3.text).not.toContain(tmpDir);
+    });
+  });
+
+  // ─── Phase: asset actions chunk 4 — rename/move HTTP integration ───────
+
+  describe('asset viewer rename/move', () => {
+    function buildStubActionApp(actionServiceStub) {
+      const appDataRootLocal = path.join(tmpDir, 'app');
+      const { csrfPepper } = ensureAuthEnablement(appDataRootLocal);
+      return createApp(
+        { appName: 'CreatorCrate', db, projectsRoot, previewRoot },
+        { appDataRoot: appDataRootLocal, authState: { csrfPepper }, assetActionService: actionServiceStub }
+      );
+    }
+
+    async function setupProjectWithAsset(title, relPath = 'a.png') {
+      const res = await createProject(title);
+      const id = Number(res.headers.location.replace('/projects/', ''));
+      const projectDir = getProjectDir(title);
+      const asset = writeIndexedAsset(id, projectDir, relPath, await makePng());
+      return { id, projectDir, asset };
+    }
+
+    function makeEnabledCategory(projectId, projectDir, slug, displayName = 'Renders') {
+      const category = assetCategoryRepo.addProjectCategory({
+        projectId, displayName, directorySlug: slug, displayOrder: 0, enabled: true,
+      });
+      fs.mkdirSync(path.join(projectDir, slug), { recursive: true });
+      return category;
+    }
+
+    // ─── Viewer rendering ──────────────────────────────────────────────
+
+    describe('viewer rendering', () => {
+      it('renders a File actions card with distinct Rename and Move subsections, CSRF fields, and no duplicate H1', async () => {
+        const { id, asset } = await setupProjectWithAsset('Viewer Forms Mutable');
+
+        const res = await agent.get(`/projects/${id}/assets/${asset.id}`).expect(200);
+
+        // One card section and card container.
+        expect(res.text).toContain('class="asset-actions-section"');
+        expect(res.text).toContain('class="asset-actions-card"');
+        expect(res.text).toContain('File actions');
+
+        // Distinct subsection headings.
+        expect(res.text).toContain('<h3>Rename file</h3>');
+        expect(res.text).toContain('<h3>Move file</h3>');
+
+        // Divider between the two groups.
+        expect(res.text).toContain('class="asset-actions-divider"');
+
+        // Both forms present and independent.
+        expect(res.text).toContain(`action="/projects/${id}/assets/${asset.id}/rename"`);
+        expect(res.text).toContain(`action="/projects/${id}/assets/${asset.id}/move"`);
+
+        // No nested forms — verify each form open tag is followed by its own close tag before the next open.
+        const formOpenCount = (res.text.match(/<form\b/g) || []).length;
+        const formCloseCount = (res.text.match(/<\/form>/g) || []).length;
+        expect(formOpenCount).toBe(formCloseCount);
+
+        // No duplicate H1.
+        expect((res.text.match(/<h1\b/g) || []).length).toBe(1);
+
+        // Both forms carry their own CSRF hidden input.
+        const cardHtml = res.text.slice(res.text.indexOf('class="asset-actions-card"'));
+        expect((cardHtml.match(/name="_csrf"/g) || []).length).toBeGreaterThanOrEqual(2);
+      });
+
+      it('the rename input contains the current filename', async () => {
+        const { id, asset } = await setupProjectWithAsset('Viewer Rename Prefill', 'original-name.png');
+        const res = await agent.get(`/projects/${id}/assets/${asset.id}`).expect(200);
+        expect(res.text).toContain('value="original-name.png"');
+      });
+
+      it('the move select contains Uncategorized and enabled project categories, but not disabled ones', async () => {
+        const { id, projectDir, asset } = await setupProjectWithAsset('Viewer Move Select');
+        makeEnabledCategory(id, projectDir, 'renders-enabled', 'Renders Enabled');
+        assetCategoryRepo.addProjectCategory({
+          projectId: id, displayName: 'Archive Disabled', directorySlug: 'archive-disabled', displayOrder: 1, enabled: false,
+        });
+
+        const res = await agent.get(`/projects/${id}/assets/${asset.id}`).expect(200);
+        expect(res.text).toContain('<option value="uncategorized"');
+        expect(res.text).toContain('>Uncategorized</option>');
+        expect(res.text).toContain('Renders Enabled');
+        expect(res.text).not.toContain('Archive Disabled');
+      });
+
+      it('hides the rename/move forms for an archived project', async () => {
+        const { id, asset } = await setupProjectWithAsset('Viewer Forms Archived');
+        await agent.post(`/projects/${id}/archive`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
+
+        const res = await agent.get(`/projects/${id}/assets/${asset.id}`).expect(200);
+        expect(res.text).not.toContain('class="asset-actions-section"');
+      });
+
+      it('hides the rename/move forms for a missing asset', async () => {
+        const { id, projectDir, asset } = await setupProjectWithAsset('Viewer Forms Missing', 'gone.png');
+        fs.rmSync(path.join(projectDir, 'gone.png'));
+        await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
+
+        const res = await agent.get(`/projects/${id}/assets/${asset.id}`).expect(200);
+        expect(res.text).not.toContain('class="asset-actions-section"');
+      });
+    });
+
+    // ─── Rename POST ─────────────────────────────────────────────────────
+
+    describe('POST /projects/:projectId/assets/:assetId/rename', () => {
+      it('renames the file successfully, redirects to the viewer for the same asset ID, and shows a success notice', async () => {
+        const { id, projectDir, asset } = await setupProjectWithAsset('Rename Success', 'old.png');
+
+        const res = await agent
+          .post(`/projects/${id}/assets/${asset.id}/rename`)
+          .send({ filename: 'new.png', _csrf: csrfToken })
+          .type('form')
+          .expect(302);
+
+        const location = new URL(res.headers.location, 'http://localhost');
+        expect(location.pathname).toBe(`/projects/${id}/assets/${asset.id}`);
+        expect(location.searchParams.get('notice')).toBe('asset-renamed');
+        expect(fs.existsSync(path.join(projectDir, 'new.png'))).toBe(true);
+        expect(fs.existsSync(path.join(projectDir, 'old.png'))).toBe(false);
+
+        const res2 = await agent.get(res.headers.location).expect(200);
+        expect(res2.text).toContain('The file was renamed.');
+        expect(res2.text).toContain('value="new.png"');
+      });
+
+      it('preserves supported browser context and strips unknown fields on the redirect', async () => {
+        const { id, asset } = await setupProjectWithAsset('Rename Context', 'old.png');
+
+        const res = await agent
+          .post(`/projects/${id}/assets/${asset.id}/rename`)
+          .send({ filename: 'new.png', sort: 'modified', order: 'desc', junkField: 'strip-me', _csrf: csrfToken })
+          .type('form')
+          .expect(302);
+
+        const location = new URL(res.headers.location, 'http://localhost');
+        expect(location.searchParams.get('sort')).toBe('modified');
+        expect(location.searchParams.get('order')).toBe('desc');
+        expect(location.searchParams.has('junkField')).toBe(false);
+      });
+
+      it('rejects an invalid filename with 422 and preserves the submitted value', async () => {
+        const { id, asset } = await setupProjectWithAsset('Rename Invalid', 'old.png');
+
+        const res = await agent
+          .post(`/projects/${id}/assets/${asset.id}/rename`)
+          .send({ filename: '..', _csrf: csrfToken })
+          .type('form')
+          .expect(422);
+
+        expect(res.text).toContain('Enter a valid filename.');
+        expect(res.text).toContain('value=".."');
+      });
+
+      it('rejects filenames with Win32-forbidden characters with 422', async () => {
+        const { id, asset } = await setupProjectWithAsset('Rename Win32 Forbidden', 'old.png');
+
+        for (const badName of ['foo<bar.png', 'foo>bar.png', 'foo:bar.png', 'foo|bar.png', 'foo?bar.png', 'foo*bar.png']) {
+          const res = await agent
+            .post(`/projects/${id}/assets/${asset.id}/rename`)
+            .send({ filename: badName, _csrf: csrfToken })
+            .type('form')
+            .expect(422);
+          expect(res.text).toContain('Enter a valid filename.');
+        }
+      });
+
+      it('returns 409 on a destination conflict', async () => {
+        const { id, projectDir, asset } = await setupProjectWithAsset('Rename Conflict', 'old.png');
+        writeIndexedAsset(id, projectDir, 'taken.png', await makePng());
+
+        const res = await agent
+          .post(`/projects/${id}/assets/${asset.id}/rename`)
+          .send({ filename: 'taken.png', _csrf: csrfToken })
+          .type('form')
+          .expect(409);
+        expect(res.text).toContain('Destination already exists.');
+      });
+
+      it('returns 409 for an unchanged filename', async () => {
+        const { id, asset } = await setupProjectWithAsset('Rename Unchanged', 'same.png');
+        const res = await agent
+          .post(`/projects/${id}/assets/${asset.id}/rename`)
+          .send({ filename: 'same.png', _csrf: csrfToken })
+          .type('form')
+          .expect(409);
+        expect(res.text).toContain('That filename is unchanged.');
+      });
+
+      it('returns 409 for a case-only rename', async () => {
+        const { id, asset } = await setupProjectWithAsset('Rename Case Only', 'same.png');
+        const res = await agent
+          .post(`/projects/${id}/assets/${asset.id}/rename`)
+          .send({ filename: 'SAME.png', _csrf: csrfToken })
+          .type('form')
+          .expect(409);
+        expect(res.text).toContain('Case-only renames are not supported.');
+      });
+
+      it('returns a controlled 409 when the source file is missing from disk', async () => {
+        const { id, projectDir, asset } = await setupProjectWithAsset('Rename Source Missing', 'ghost.png');
+        fs.rmSync(path.join(projectDir, 'ghost.png'));
+
+        const res = await agent
+          .post(`/projects/${id}/assets/${asset.id}/rename`)
+          .send({ filename: 'new.png', _csrf: csrfToken })
+          .type('form')
+          .expect(409);
+        expect(res.text).toContain('The source file is missing from disk.');
+      });
+
+      it('returns a controlled conflict for an archived project', async () => {
+        const { id, asset } = await setupProjectWithAsset('Rename Archived', 'old.png');
+        await agent.post(`/projects/${id}/archive`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
+
+        const res = await agent
+          .post(`/projects/${id}/assets/${asset.id}/rename`)
+          .send({ filename: 'new.png', _csrf: csrfToken })
+          .type('form')
+          .expect(409);
+        expect(res.text).toContain('This project is archived and read-only.');
+      });
+
+      it('malformed project and asset IDs preserve existing not-found behavior', async () => {
+        const { id, asset } = await setupProjectWithAsset('Rename Malformed IDs', 'old.png');
+        await agent.post(`/projects/abc/assets/${asset.id}/rename`).send({ filename: 'x.png', _csrf: csrfToken }).type('form').expect(404);
+        await agent.post(`/projects/${id}/assets/abc/rename`).send({ filename: 'x.png', _csrf: csrfToken }).type('form').expect(404);
+      });
+
+      it('rejects a request with no CSRF token', async () => {
+        const { id, asset } = await setupProjectWithAsset('Rename No CSRF', 'old.png');
+        await agent.post(`/projects/${id}/assets/${asset.id}/rename`).send({ filename: 'new.png' }).type('form').expect(403);
+      });
+
+      it('returns a controlled 409 when the project operation coordinator is busy', async () => {
+        const stub = {
+          renameAsset: () => { throw new AssetActionError('busy', { code: 'PROJECT_BUSY' }); },
+          moveAsset: () => { throw new AssetActionError('busy', { code: 'PROJECT_BUSY' }); },
+        };
+        const stubApp = buildStubActionApp(stub);
+        const { agent: stubAgent, csrfToken: stubCsrf } = await getDisabledModeCsrf(stubApp, path.join(tmpDir, 'app'));
+        const { id, asset } = await setupProjectWithAsset('Rename Busy', 'old.png');
+
+        const res = await stubAgent
+          .post(`/projects/${id}/assets/${asset.id}/rename`)
+          .send({ filename: 'new.png', _csrf: stubCsrf })
+          .type('form')
+          .expect(409);
+        expect(res.text).toContain('Another project operation is already in progress. Try again.');
+      });
+
+      it('returns an operational status with the recovery-required message for RECOVERY_REQUIRED', async () => {
+        const stub = {
+          renameAsset: () => { throw new AssetActionError('recovery', { code: 'RECOVERY_REQUIRED' }); },
+          moveAsset: () => { throw new AssetActionError('recovery', { code: 'RECOVERY_REQUIRED' }); },
+        };
+        const stubApp = buildStubActionApp(stub);
+        const { agent: stubAgent, csrfToken: stubCsrf } = await getDisabledModeCsrf(stubApp, path.join(tmpDir, 'app'));
+        const { id, asset } = await setupProjectWithAsset('Rename Recovery', 'old.png');
+
+        const res = await stubAgent
+          .post(`/projects/${id}/assets/${asset.id}/rename`)
+          .send({ filename: 'new.png', _csrf: stubCsrf })
+          .type('form')
+          .expect(500);
+        expect(res.text).toContain('The file was moved on disk, but CreatorCrate could not finish updating its records.');
+      });
+
+      it('forwards an unexpected (non-AssetActionError) failure to the existing error middleware', async () => {
+        const stub = {
+          renameAsset: () => { throw new Error('unexpected boom'); },
+          moveAsset: () => { throw new Error('unexpected boom'); },
+        };
+        const stubApp = buildStubActionApp(stub);
+        const { agent: stubAgent, csrfToken: stubCsrf } = await getDisabledModeCsrf(stubApp, path.join(tmpDir, 'app'));
+        const { id, asset } = await setupProjectWithAsset('Rename Unexpected', 'old.png');
+
+        const res = await stubAgent
+          .post(`/projects/${id}/assets/${asset.id}/rename`)
+          .send({ filename: 'new.png', _csrf: stubCsrf })
+          .type('form')
+          .expect(500);
+        expect(res.text).toContain('Something went wrong.');
+        expect(res.text).not.toContain('unexpected boom');
+      });
+    });
+
+    // ─── Move POST ───────────────────────────────────────────────────────
+
+    describe('POST /projects/:projectId/assets/:assetId/move', () => {
+      it('moves the file to an enabled category successfully', async () => {
+        const { id, projectDir, asset } = await setupProjectWithAsset('Move Success Category');
+        const category = makeEnabledCategory(id, projectDir, 'renders-move-success');
+
+        const res = await agent
+          .post(`/projects/${id}/assets/${asset.id}/move`)
+          .send({ destinationCategory: String(category.id), _csrf: csrfToken })
+          .type('form')
+          .expect(302);
+
+        const location = new URL(res.headers.location, 'http://localhost');
+        expect(location.pathname).toBe(`/projects/${id}/assets/${asset.id}`);
+        expect(location.searchParams.get('notice')).toBe('asset-moved');
+
+        const updated = assetRepo.findById(asset.id);
+        expect(updated.category_id).toBe(category.id);
+        expect(fs.existsSync(path.join(projectDir, 'renders-move-success', 'a.png'))).toBe(true);
+      });
+
+      it('moves the file to Uncategorized successfully', async () => {
+        const { id, projectDir, asset } = await setupProjectWithAsset('Move Success Uncategorized');
+        const category = makeEnabledCategory(id, projectDir, 'renders-move-uncat');
+        await agent
+          .post(`/projects/${id}/assets/${asset.id}/move`)
+          .send({ destinationCategory: String(category.id), _csrf: csrfToken })
+          .type('form')
+          .expect(302);
+
+        const res = await agent
+          .post(`/projects/${id}/assets/${asset.id}/move`)
+          .send({ destinationCategory: 'uncategorized', _csrf: csrfToken })
+          .type('form')
+          .expect(302);
+
+        const location = new URL(res.headers.location, 'http://localhost');
+        expect(location.searchParams.get('notice')).toBe('asset-moved');
+        const updated = assetRepo.findById(asset.id);
+        expect(updated.category_id).toBeNull();
+        expect(fs.existsSync(path.join(projectDir, 'a.png'))).toBe(true);
+      });
+
+      it.each(['', '0', '-1', '5.5', '5abc', '007', 'renders', 'null', 'undefined'])(
+        'rejects a malformed destinationCategory value %j with 422 before calling the service',
+        async (value) => {
+          const stub = { renameAsset: () => { throw new Error('should not be called'); }, moveAsset: () => { throw new Error('should not be called'); } };
+          const stubApp = buildStubActionApp(stub);
+          const { agent: stubAgent, csrfToken: stubCsrf } = await getDisabledModeCsrf(stubApp, path.join(tmpDir, 'app'));
+          const { id, asset } = await setupProjectWithAsset(`Move Malformed ${JSON.stringify(value)}`);
+
+          const res = await stubAgent
+            .post(`/projects/${id}/assets/${asset.id}/move`)
+            .send({ destinationCategory: value, _csrf: stubCsrf })
+            .type('form')
+            .expect(422);
+          expect(res.text).toContain('Choose a valid destination.');
+        }
+      );
+
+      it('returns a controlled 409 for a disabled category', async () => {
+        const { id, projectDir, asset } = await setupProjectWithAsset('Move Disabled Category');
+        const category = assetCategoryRepo.addProjectCategory({
+          projectId: id, displayName: 'Disabled', directorySlug: 'disabled-cat', displayOrder: 0, enabled: false,
+        });
+        fs.mkdirSync(path.join(projectDir, 'disabled-cat'), { recursive: true });
+
+        const res = await agent
+          .post(`/projects/${id}/assets/${asset.id}/move`)
+          .send({ destinationCategory: String(category.id), _csrf: csrfToken })
+          .type('form')
+          .expect(409);
+        expect(res.text).toContain('The selected category is disabled or unavailable.');
+      });
+
+      it('does not leak existence of a cross-project or nonexistent category', async () => {
+        const { id: id1, asset } = await setupProjectWithAsset('Move Cross Project A');
+        const otherRes = await createProject('Move Cross Project B');
+        const otherId = Number(otherRes.headers.location.replace('/projects/', ''));
+        const otherProjectDir = getProjectDir('Move Cross Project B');
+        const otherCategory = makeEnabledCategory(otherId, otherProjectDir, 'other-cat');
+
+        const crossRes = await agent
+          .post(`/projects/${id1}/assets/${asset.id}/move`)
+          .send({ destinationCategory: String(otherCategory.id), _csrf: csrfToken })
+          .type('form')
+          .expect(409);
+        expect(crossRes.text).toContain('The selected category is not available for this project.');
+
+        const nonexistentRes = await agent
+          .post(`/projects/${id1}/assets/${asset.id}/move`)
+          .send({ destinationCategory: '999999', _csrf: csrfToken })
+          .type('form')
+          .expect(409);
+        expect(nonexistentRes.text).toContain('The selected category is not available for this project.');
+        // Identical message for both — cross-project existence is never distinguishable.
+        expect(crossRes.text.includes('The selected category is not available for this project.')).toBe(
+          nonexistentRes.text.includes('The selected category is not available for this project.')
+        );
+      });
+
+      it('returns a controlled 409 on a destination conflict', async () => {
+        const { id, projectDir, asset } = await setupProjectWithAsset('Move Conflict', 'a.png');
+        const category = makeEnabledCategory(id, projectDir, 'renders-move-conflict');
+        writeIndexedAsset(id, projectDir, 'renders-move-conflict/a.png', await makePng());
+
+        const res = await agent
+          .post(`/projects/${id}/assets/${asset.id}/move`)
+          .send({ destinationCategory: String(category.id), _csrf: csrfToken })
+          .type('form')
+          .expect(409);
+        expect(res.text).toContain('Destination already exists.');
+      });
+
+      it('returns a controlled 409 when the destination category directory is missing', async () => {
+        const { id, asset } = await setupProjectWithAsset('Move Missing Directory');
+        // Category row without ever creating its real directory on disk.
+        const category = assetCategoryRepo.addProjectCategory({
+          projectId: id, displayName: 'Ghost', directorySlug: 'ghost-dir', displayOrder: 0, enabled: true,
+        });
+
+        const res = await agent
+          .post(`/projects/${id}/assets/${asset.id}/move`)
+          .send({ destinationCategory: String(category.id), _csrf: csrfToken })
+          .type('form')
+          .expect(409);
+        expect(res.text).toContain('The destination directory is unavailable.');
+      });
+
+      it('preserves the submitted destination selection after a controlled failure', async () => {
+        const { id, projectDir, asset } = await setupProjectWithAsset('Move Preserve Selection');
+        const category = assetCategoryRepo.addProjectCategory({
+          projectId: id, displayName: 'Ghost', directorySlug: 'ghost-preserve', displayOrder: 0, enabled: true,
+        });
+
+        const res = await agent
+          .post(`/projects/${id}/assets/${asset.id}/move`)
+          .send({ destinationCategory: String(category.id), _csrf: csrfToken })
+          .type('form')
+          .expect(409);
+        expect(res.text).toContain(`value="${category.id}" selected`);
+      });
+
+      it('preserves supported browser context and strips unknown fields on the redirect', async () => {
+        const { id, projectDir, asset } = await setupProjectWithAsset('Move Context');
+        const category = makeEnabledCategory(id, projectDir, 'renders-move-context');
+
+        const res = await agent
+          .post(`/projects/${id}/assets/${asset.id}/move`)
+          .send({ destinationCategory: String(category.id), presence: 'present', junkField: 'strip-me', _csrf: csrfToken })
+          .type('form')
+          .expect(302);
+
+        const location = new URL(res.headers.location, 'http://localhost');
+        expect(location.searchParams.get('presence')).toBe('present');
+        expect(location.searchParams.has('junkField')).toBe(false);
+      });
+
+      it('rejects a request with no CSRF token', async () => {
+        const { id, projectDir, asset } = await setupProjectWithAsset('Move No CSRF');
+        const category = makeEnabledCategory(id, projectDir, 'renders-move-nocsrf');
+        await agent
+          .post(`/projects/${id}/assets/${asset.id}/move`)
+          .send({ destinationCategory: String(category.id) })
+          .type('form')
+          .expect(403);
+      });
+    });
+
+    // ─── Security / error behavior ───────────────────────────────────────
+
+    describe('security and error behavior', () => {
+      it('never renders raw filesystem paths, errno codes, or SQL messages in a controlled failure', async () => {
+        const { id, projectDir, asset } = await setupProjectWithAsset('Security No Leak', 'ghost.png');
+        fs.rmSync(path.join(projectDir, 'ghost.png'));
+
+        const res = await agent
+          .post(`/projects/${id}/assets/${asset.id}/rename`)
+          .send({ filename: 'new.png', _csrf: csrfToken })
+          .type('form')
+          .expect(409);
+
+        expect(res.text).not.toMatch(/[A-Z]:\\/);
+        expect(res.text).not.toMatch(/\/home\//);
+        expect(res.text).not.toContain(tmpDir);
+        expect(res.text).not.toContain('ENOENT');
+        expect(res.text).not.toContain('SQLITE');
+      });
+
+      it('ignores unknown form fields when resolving the rename destination', async () => {
+        const { id, projectDir, asset } = await setupProjectWithAsset('Security Unknown Fields', 'old.png');
+
+        await agent
+          .post(`/projects/${id}/assets/${asset.id}/rename`)
+          .send({
+            filename: 'new.png',
+            relativePath: '../../outside.png',
+            path: '/etc/passwd',
+            _csrf: csrfToken,
+          })
+          .type('form')
+          .expect(302);
+
+        expect(fs.existsSync(path.join(projectDir, 'new.png'))).toBe(true);
+        expect(fs.existsSync(path.join(projectDir, '..', '..', 'outside.png'))).toBe(false);
+      });
+
+      it('a direct POST cannot bypass the missing-asset capability rule even without visiting the viewer first', async () => {
+        const { id, projectDir, asset } = await setupProjectWithAsset('Security Missing Bypass', 'ghost.png');
+        fs.rmSync(path.join(projectDir, 'ghost.png'));
+        await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
+
+        const res = await agent
+          .post(`/projects/${id}/assets/${asset.id}/rename`)
+          .send({ filename: 'new.png', _csrf: csrfToken })
+          .type('form')
+          .expect(409);
+        expect(res.text).toContain('This asset is missing from the last scan and cannot be renamed or moved.');
+      });
+    });
+
+    // ─── Main browser action integration ─────────────────────────────────
+    describe('main assets-page rename and move-selected', () => {
+      it('renders an eligible list Rename form with the complete canonical context', async () => {
+        const { id, asset } = await setupProjectWithAsset('Main List Rename', 'old.png');
+
+        const res = await agent
+          .get(`/projects/${id}/assets?search=old&extension=.png&presence=present&usage=unused&sort=size&order=desc&page=1&pageSize=50&view=list&unknown=strip-me`)
+          .expect(200);
+        const match = res.text.match(new RegExp(`<form method="post" action="/projects/${id}/assets/${asset.id}/rename"[\\s\\S]*?<\\/form>`));
+
+        expect(match).not.toBeNull();
+        const form = match[0];
+        expect(form).toContain('name="origin" value="assets"');
+        expect(form).toContain('name="category" value="all"');
+        expect(form).toContain('name="search" value="old"');
+        expect(form).toContain('name="extension" value="png"');
+        expect(form).toContain('name="presence" value="present"');
+        expect(form).toContain('name="usage" value="unused"');
+        expect(form).toContain('name="sort" value="size"');
+        expect(form).toContain('name="order" value="desc"');
+        expect(form).toContain('name="page" value="1"');
+        expect(form).toContain('name="pageSize" value="50"');
+        expect(form).toContain('name="view" value="list"');
+        expect(form).toContain('value="old.png"');
+        expect(form).not.toContain('unknown');
+      });
+
+      it('renders an eligible grid Rename form and keeps form ownership valid', async () => {
+        const { id, asset } = await setupProjectWithAsset('Main Grid Rename', 'hero.png');
+
+        const res = await agent.get(`/projects/${id}/assets?view=grid`).expect(200);
+        const card = res.text.match(new RegExp(`<article class="asset-card" data-asset-id="${asset.id}">[\\s\\S]*?<\\/article>`));
+        expect(card).not.toBeNull();
+        expect(card[0]).toContain(`action="/projects/${id}/assets/${asset.id}/rename"`);
+        expect(card[0]).toContain('class="asset-card-rename-form"');
+        expect(card[0]).toContain('name="origin" value="assets"');
+        expect(card[0]).toContain('value="hero.png"');
+        expect((card[0].match(/<form\b/g) || []).length).toBe((card[0].match(/<\/form>/g) || []).length);
+        expect((res.text.match(/<h1\b/g) || []).length).toBe(1);
+
+        const bulkStart = res.text.indexOf('<form id="bulk-select-form"');
+        const gridStart = res.text.indexOf('<ul class="asset-grid">');
+        expect(bulkStart).toBeGreaterThanOrEqual(0);
+        expect(res.text.indexOf('</form>', bulkStart)).toBeLessThan(gridStart);
+        expect(res.text).toMatch(/<input type="checkbox" form="bulk-select-form"[^>]*name="selectedAssetIds"/);
+        expect(res.text).toContain('formaction="/projects/' + id + '/assets/move-selected"');
+      });
+
+      it('hides main-page Rename for missing assets and archived projects', async () => {
+        const missing = await setupProjectWithAsset('Main Missing Rename', 'gone.png');
+        assetRepo.markMissingByProjectIdAndPathNotIn(missing.id, []);
+        const missingRes = await agent.get(`/projects/${missing.id}/assets?view=grid`).expect(200);
+        expect(missingRes.text).not.toContain(`/projects/${missing.id}/assets/${missing.asset.id}/rename`);
+
+        const archived = await setupProjectWithAsset('Main Archived Rename', 'archived.png');
+        await agent.post(`/projects/${archived.id}/archive`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
+        const archivedRes = await agent.get(`/projects/${archived.id}/assets`).expect(200);
+        expect(archivedRes.text).not.toContain(`/projects/${archived.id}/assets/${archived.asset.id}/rename`);
+        expect(archivedRes.text).not.toContain('id="bulk-select-form"');
+      });
+
+      it('renames from the main page back to the browser with normalized full context and a fixed notice', async () => {
+        const { id, projectDir, asset } = await setupProjectWithAsset('Main Rename Success', 'old.png');
+
+        const res = await agent
+          .post(`/projects/${id}/assets/${asset.id}/rename`)
+          .type('form')
+          .send({
+            filename: 'new.png', origin: 'assets', category: 'all', search: 'new', extension: '.png',
+            presence: 'present', usage: 'unused', sort: 'size', order: 'desc', page: '1', pageSize: '50',
+            view: 'grid', unknown: 'strip-me', _csrf: csrfToken,
+          })
+          .expect(302);
+
+        const location = new URL(res.headers.location, 'http://localhost');
+        expect(location.pathname).toBe(`/projects/${id}/assets`);
+        expect(location.searchParams.get('search')).toBe('new');
+        expect(location.searchParams.get('extension')).toBe('png');
+        expect(location.searchParams.get('presence')).toBe('present');
+        expect(location.searchParams.get('usage')).toBe('unused');
+        expect(location.searchParams.get('sort')).toBe('size');
+        expect(location.searchParams.get('order')).toBe('desc');
+        expect(location.searchParams.get('pageSize')).toBe('50');
+        expect(location.searchParams.get('view')).toBe('grid');
+        expect(location.searchParams.has('category')).toBe(false);
+        expect(location.searchParams.has('page')).toBe(false);
+        expect(location.searchParams.has('unknown')).toBe(false);
+        expect(fs.existsSync(path.join(projectDir, 'new.png'))).toBe(true);
+
+        const browser = await agent.get(res.headers.location).expect(200);
+        expect(browser.text).toContain('The file was renamed.');
+        expect(browser.text).not.toContain('asset-preview-section');
+      });
+
+      it('keeps viewer-origin Rename on the viewer route', async () => {
+        const { id, asset } = await setupProjectWithAsset('Explicit Viewer Origin', 'old.png');
+        const res = await agent
+          .post(`/projects/${id}/assets/${asset.id}/rename`)
+          .type('form')
+          .send({ filename: 'new.png', origin: 'viewer', _csrf: csrfToken })
+          .expect(302);
+        expect(new URL(res.headers.location, 'http://localhost').pathname).toBe(`/projects/${id}/assets/${asset.id}`);
+      });
+
+      it('rejects an explicit non-whitelisted Rename origin without redirecting to it', async () => {
+        const { id, asset } = await setupProjectWithAsset('Invalid Rename Origin', 'old.png');
+        const res = await agent
+          .post(`/projects/${id}/assets/${asset.id}/rename`)
+          .type('form')
+          .send({ filename: 'new.png', origin: 'https://evil.example/return', _csrf: csrfToken })
+          .expect(422);
+        expect(res.text).toContain('The requested action origin is not supported.');
+        expect(res.text).not.toContain('https://evil.example/return');
+        expect(fs.existsSync(path.join(getProjectDir('Invalid Rename Origin'), 'old.png'))).toBe(true);
+      });
+
+      it('renders assets-origin invalid filename and destination conflict on the browser without the viewer', async () => {
+        const invalid = await setupProjectWithAsset('Main Rename Invalid', 'old.png');
+        const invalidRes = await agent
+          .post(`/projects/${invalid.id}/assets/${invalid.asset.id}/rename`)
+          .type('form')
+          .send({ filename: '..', origin: 'assets', search: 'old', view: 'grid', _csrf: csrfToken })
+          .expect(422);
+        expect(invalidRes.text).toContain('Enter a valid filename.');
+        expect(invalidRes.text).toContain('value=".."');
+        expect(invalidRes.text).toContain('class="asset-card-rename-form"');
+        expect(invalidRes.text).not.toContain('asset-preview-section');
+
+        const conflict = await setupProjectWithAsset('Main Rename Conflict', 'old.png');
+        writeIndexedAsset(conflict.id, conflict.projectDir, 'taken.png', await makePng());
+        const conflictRes = await agent
+          .post(`/projects/${conflict.id}/assets/${conflict.asset.id}/rename`)
+          .type('form')
+          .send({ filename: 'taken.png', origin: 'assets', _csrf: csrfToken })
+          .expect(409);
+        expect(conflictRes.text).toContain('Destination already exists.');
+        expect(conflictRes.text).toContain(`action="/projects/${conflict.id}/assets/${conflict.asset.id}/rename"`);
+        expect(conflictRes.text).not.toContain('asset-preview-section');
+        expect(conflictRes.text).not.toMatch(/[A-Z]:\\/);
+        expect(conflictRes.text).not.toContain('ENOENT');
+        expect(conflictRes.text).not.toContain('SQLITE');
+      });
+
+      it('enforces CSRF on main-page Rename', async () => {
+        const { id, asset } = await setupProjectWithAsset('Main Rename CSRF', 'old.png');
+        await agent
+          .post(`/projects/${id}/assets/${asset.id}/rename`)
+          .type('form')
+          .send({ filename: 'new.png', origin: 'assets' })
+          .expect(403);
+      });
+
+      it('renders Move selected controls inside the bulk form with enabled categories only', async () => {
+        const { id, projectDir, asset } = await setupProjectWithAsset('Bulk Move Form', 'a.png');
+        const enabled = makeEnabledCategory(id, projectDir, 'bulk-enabled', 'Bulk Enabled');
+        assetCategoryRepo.addProjectCategory({
+          projectId: id, displayName: 'Bulk Disabled', directorySlug: 'bulk-disabled', displayOrder: 1, enabled: false,
+        });
+
+        for (const query of ['', '?view=grid']) {
+          const res = await agent.get(`/projects/${id}/assets${query}`).expect(200);
+          const bulk = res.text.match(/<form id="bulk-select-form"[\s\S]*?<\/form>/);
+          expect(bulk).not.toBeNull();
+          expect(bulk[0]).toContain('>Uncategorized</option>');
+          expect(bulk[0]).toContain(`value="${enabled.id}">Bulk Enabled</option>`);
+          expect(bulk[0]).not.toContain('Bulk Disabled');
+          expect(bulk[0]).toContain('data-bulk-submit');
+          expect(bulk[0]).toContain(`formaction="/projects/${id}/assets/move-selected"`);
+          expect(bulk[0]).toContain('action="/projects/' + id + '/assets/add-to-release"');
+          expect(res.text).toMatch(new RegExp(`<input type="checkbox" form="bulk-select-form"[^>]*name="selectedAssetIds" value="${asset.id}"`));
+          expect((res.text.match(/<h1\b/g) || []).length).toBe(1);
+        }
+      });
+
+      it('rejects empty, malformed, duplicate, cross-project, and unknown selections before mutation', async () => {
+        const own = await setupProjectWithAsset('Bulk Invalid Selection', 'own.png');
+        const foreign = await setupProjectWithAsset('Bulk Foreign Selection', 'foreign.png');
+
+        await agent.post(`/projects/${own.id}/assets/move-selected`).type('form')
+          .send({ destinationCategory: 'uncategorized', _csrf: csrfToken }).expect(422);
+        for (const selectedAssetIds of [['0'], ['-1'], ['5.5'], ['5abc']]) {
+          const res = await agent.post(`/projects/${own.id}/assets/move-selected`).type('form')
+            .send({ selectedAssetIds, destinationCategory: 'uncategorized', _csrf: csrfToken }).expect(422);
+          expect(res.text).toContain('Invalid asset selection.');
+        }
+
+        const duplicate = await agent.post(`/projects/${own.id}/assets/move-selected`).type('form')
+          .send({ selectedAssetIds: [String(own.asset.id), String(own.asset.id)], destinationCategory: 'uncategorized', _csrf: csrfToken }).expect(422);
+        expect(duplicate.text).toContain('One or more selected assets cannot be moved to that destination.');
+        expect(fs.existsSync(path.join(own.projectDir, 'own.png'))).toBe(true);
+
+        const cross = await agent.post(`/projects/${own.id}/assets/move-selected`).type('form')
+          .send({ selectedAssetIds: String(foreign.asset.id), destinationCategory: 'uncategorized', _csrf: csrfToken }).expect(422);
+        expect(cross.text).toContain('One or more selected assets cannot be moved to that destination.');
+        const unknown = await agent.post(`/projects/${own.id}/assets/move-selected`).type('form')
+          .send({ selectedAssetIds: '999999', destinationCategory: 'uncategorized', _csrf: csrfToken }).expect(422);
+        expect(unknown.text).toContain('One or more selected assets cannot be moved to that destination.');
+      });
+
+      it('rejects an invalid destination before invoking the batch service', async () => {
+        const { id, asset } = await setupProjectWithAsset('Bulk Invalid Destination', 'a.png');
+        const stubApp = buildStubActionApp({ moveAssets: () => { throw new Error('service should not run'); } });
+        const { agent: stubAgent, csrfToken: stubCsrf } = await getDisabledModeCsrf(stubApp, path.join(tmpDir, 'app'));
+        const res = await stubAgent.post(`/projects/${id}/assets/move-selected`).type('form')
+          .send({ selectedAssetIds: String(asset.id), destinationCategory: 'not-a-category', _csrf: stubCsrf }).expect(422);
+        expect(res.text).toContain('Choose a valid destination.');
+        expect(res.text).not.toContain('service should not run');
+      });
+
+      it('moves selected assets with normalized full context and reports the moved count', async () => {
+        const { id, projectDir } = await setupProjectWithAsset('Bulk Move Success', 'a.png');
+        const second = writeIndexedAsset(id, projectDir, 'b.png', await makePng());
+        const category = makeEnabledCategory(id, projectDir, 'bulk-target', 'Bulk Target');
+        const res = await agent.post(`/projects/${id}/assets/move-selected`).type('form')
+          .send({
+            selectedAssetIds: [String(assetRepo.findByProjectId(id).find((a) => a.filename === 'a.png').id), String(second.id)],
+            destinationCategory: String(category.id), category: 'all', search: 'a', extension: '.png', presence: 'present',
+            usage: 'unused', sort: 'size', order: 'desc', page: '1', pageSize: '50', view: 'grid', unknown: 'strip-me',
+            path: '../../outside', destinationPath: '/etc/passwd', _csrf: csrfToken,
+          }).expect(302);
+
+        const location = new URL(res.headers.location, 'http://localhost');
+        expect(location.pathname).toBe(`/projects/${id}/assets`);
+        expect(location.searchParams.get('search')).toBe('a');
+        expect(location.searchParams.get('extension')).toBe('png');
+        expect(location.searchParams.get('presence')).toBe('present');
+        expect(location.searchParams.get('usage')).toBe('unused');
+        expect(location.searchParams.get('sort')).toBe('size');
+        expect(location.searchParams.get('order')).toBe('desc');
+        expect(location.searchParams.get('pageSize')).toBe('50');
+        expect(location.searchParams.get('view')).toBe('grid');
+        expect(location.searchParams.get('assets_moved')).toBe('2');
+        expect(location.searchParams.has('unknown')).toBe(false);
+        expect(location.searchParams.has('path')).toBe(false);
+        expect(fs.existsSync(path.join(projectDir, 'bulk-target', 'a.png'))).toBe(true);
+        expect(fs.existsSync(path.join(projectDir, 'bulk-target', 'b.png'))).toBe(true);
+        expect((await agent.get(res.headers.location).expect(200)).text).toContain('Moved 2 assets.');
+      });
+
+      it('returns 409 for database and filesystem destination conflicts without mutation', async () => {
+        const databaseConflict = await setupProjectWithAsset('Bulk DB Conflict', 'a.png');
+        const dbCategory = makeEnabledCategory(databaseConflict.id, databaseConflict.projectDir, 'db-target', 'DB Target');
+        assetRepo.upsert(databaseConflict.id, 'db-target/a.png', {
+          filename: 'a.png', extension: 'png', mimeType: 'image/png', sizeBytes: 1, modifiedAt: null,
+          categoryId: dbCategory.id, nestedPath: '',
+        });
+        const dbRes = await agent.post(`/projects/${databaseConflict.id}/assets/move-selected`).type('form')
+          .send({ selectedAssetIds: String(databaseConflict.asset.id), destinationCategory: String(dbCategory.id), _csrf: csrfToken }).expect(409);
+        expect(dbRes.text).toContain('Destination already exists for one or more selected assets.');
+        expect(fs.existsSync(path.join(databaseConflict.projectDir, 'a.png'))).toBe(true);
+
+        const filesystemConflict = await setupProjectWithAsset('Bulk FS Conflict', 'a.png');
+        const fsCategory = makeEnabledCategory(filesystemConflict.id, filesystemConflict.projectDir, 'fs-target', 'FS Target');
+        fs.writeFileSync(path.join(filesystemConflict.projectDir, 'fs-target', 'a.png'), 'existing');
+        const fsRes = await agent.post(`/projects/${filesystemConflict.id}/assets/move-selected`).type('form')
+          .send({ selectedAssetIds: String(filesystemConflict.asset.id), destinationCategory: String(fsCategory.id), _csrf: csrfToken }).expect(409);
+        expect(fsRes.text).toContain('Destination already exists for one or more selected assets.');
+        expect(fs.readFileSync(path.join(filesystemConflict.projectDir, 'fs-target', 'a.png'), 'utf8')).toBe('existing');
+        expect(fs.existsSync(path.join(filesystemConflict.projectDir, 'a.png'))).toBe(true);
+      });
+
+      it('returns 409 for intra-batch destination conflicts and controls same-location rejection', async () => {
+        const batch = await setupProjectWithAsset('Bulk Duplicate Destination', 'source-a/same.png');
+        const sourceA = assetCategoryRepo.addProjectCategory({ projectId: batch.id, displayName: 'Source A', directorySlug: 'source-a', displayOrder: 0, enabled: true });
+        const sourceB = assetCategoryRepo.addProjectCategory({ projectId: batch.id, displayName: 'Source B', directorySlug: 'source-b', displayOrder: 1, enabled: true });
+        const target = makeEnabledCategory(batch.id, batch.projectDir, 'same-target', 'Same Target');
+        const first = writeIndexedAsset(batch.id, batch.projectDir, 'source-a/same.png', await makePng(), { categoryId: sourceA.id });
+        const second = writeIndexedAsset(batch.id, batch.projectDir, 'source-b/same.png', await makePng(), { categoryId: sourceB.id });
+        const duplicate = await agent.post(`/projects/${batch.id}/assets/move-selected`).type('form')
+          .send({ selectedAssetIds: [String(first.id), String(second.id)], destinationCategory: String(target.id), _csrf: csrfToken }).expect(409);
+        expect(duplicate.text).toContain('Two or more selected assets have the same filename');
+        expect(fs.existsSync(path.join(batch.projectDir, 'source-a', 'same.png'))).toBe(true);
+        expect(fs.existsSync(path.join(batch.projectDir, 'source-b', 'same.png'))).toBe(true);
+
+        const same = await setupProjectWithAsset('Bulk Same Location', 'same-target/same.png');
+        const sameCategory = assetCategoryRepo.addProjectCategory({ projectId: same.id, displayName: 'Same', directorySlug: 'same-target', displayOrder: 0, enabled: true });
+        const sameAsset = writeIndexedAsset(same.id, same.projectDir, 'same-target/same.png', await makePng(), { categoryId: sameCategory.id });
+        const sameRes = await agent.post(`/projects/${same.id}/assets/move-selected`).type('form')
+          .send({ selectedAssetIds: String(sameAsset.id), destinationCategory: String(sameCategory.id), _csrf: csrfToken }).expect(422);
+        expect(sameRes.text).toContain('One or more selected assets cannot be moved to that destination.');
+      });
+
+      it('preserves selection and renders safe partial/recovery failure messages', async () => {
+        const partialStub = {
+          moveAssets: () => {
+            const err = new AssetActionError('partial details', { code: 'BATCH_PARTIAL_FAILURE' });
+            err.batchContext = { movedCount: 1, requestedCount: 2 };
+            throw err;
+          },
+        };
+        const partialApp = buildStubActionApp(partialStub);
+        const { agent: partialAgent, csrfToken: partialCsrf } = await getDisabledModeCsrf(partialApp, path.join(tmpDir, 'app'));
+        const partial = await setupProjectWithAsset('Bulk Partial Failure', 'a.png');
+        const partialRes = await partialAgent.post(`/projects/${partial.id}/assets/move-selected`).type('form')
+          .send({ selectedAssetIds: [String(partial.asset.id), '2'], destinationCategory: 'uncategorized', _csrf: partialCsrf }).expect(500);
+        expect(partialRes.text).toContain('Moved 1 of 2 assets before a failure occurred.');
+        expect(partialRes.text).toContain(`value="${partial.asset.id}"`);
+        expect(partialRes.text).toContain('checked');
+        expect(partialRes.text).not.toContain('partial details');
+        expect(partialRes.text).not.toContain('SQLITE');
+
+        const recoveryStub = {
+          moveAssets: () => {
+            const err = new AssetActionError('recovery details', { code: 'BATCH_RECOVERY_REQUIRED' });
+            err.batchContext = { movedCount: 1, requestedCount: 2 };
+            throw err;
+          },
+        };
+        const recoveryApp = buildStubActionApp(recoveryStub);
+        const { agent: recoveryAgent, csrfToken: recoveryCsrf } = await getDisabledModeCsrf(recoveryApp, path.join(tmpDir, 'app'));
+        const recovery = await setupProjectWithAsset('Bulk Recovery Failure', 'a.png');
+        const recoveryRes = await recoveryAgent.post(`/projects/${recovery.id}/assets/move-selected`).type('form')
+          .send({ selectedAssetIds: [String(recovery.asset.id), '2'], destinationCategory: 'uncategorized', _csrf: recoveryCsrf }).expect(500);
+        expect(recoveryRes.text).toContain('Inspect the project folder before scanning.');
+        expect(recoveryRes.text).not.toContain('recovery details');
+      });
+
+      it('enforces CSRF on Move selected', async () => {
+        const { id, asset } = await setupProjectWithAsset('Bulk Move CSRF', 'a.png');
+        await agent.post(`/projects/${id}/assets/move-selected`).type('form')
+          .send({ selectedAssetIds: String(asset.id), destinationCategory: 'uncategorized' }).expect(403);
+      });
     });
   });
 });

@@ -1268,6 +1268,15 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
       page: currentPage,
     };
 
+    // Phase: asset actions chunk 4 — rename/move form projections. Only
+    // enabled categories are ever valid move destinations; canMutate governs
+    // whether the viewer shows the rename/move forms at all (archived
+    // project or a missing-at-last-scan asset are both read-only).
+    const enabledCategories = projectCategories
+      .filter((c) => c.enabled === 1 || c.enabled === true)
+      .map((c) => ({ id: c.id, displayName: c.display_name }));
+    const canMutate = !project.archived_at && asset.is_present === 1;
+
     return {
       project: summarizeProject(project),
       asset: buildViewerAssetModel(asset, releaseUsage),
@@ -1296,6 +1305,8 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
       previousAssetLink,
       nextAssetLink,
       backToAssetsLink,
+      enabledCategories,
+      canMutate,
     };
   }
 

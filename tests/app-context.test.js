@@ -25,6 +25,9 @@ import { createStaticCredentialProvider, createManagedCredentialProvider } from 
 import { createLoginThrottler } from '../src/auth/login-throttle.js';
 import { ensureAuthEnablement, enableAuthState, readAuthEnablement } from '../src/auth/auth-state.js';
 import { extractCsrfToken } from './helpers/auth.js';
+import { createAssetCategoryRepository } from '../src/data/asset-category-repository.js';
+import { createAssetCategoryService } from '../src/services/asset-category-service.js';
+import { createProjectService } from '../src/services/project-service.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 const APP_NAME = 'CreatorCrate';
@@ -151,6 +154,52 @@ describe('live restore — same-process application context', () => {
 
     await request(appContext.handleRequest).get('/health').expect(200);
   });
+
+  it('rebuilds the asset scanner and asset action service against the restored database, with no stale repository', async () => {
+    // 1. Directly (no HTTP) create a project + real asset file, then index
+    //    it through the APP'S OWN scanner instance (app.locals.assetScanner)
+    //    — exercising the real construction path, not a separately built one.
+    const assetCategoryService = createAssetCategoryService(createAssetCategoryRepository(appContext.db));
+    const projectService = createProjectService(appContext.db, projectsRoot, { assetCategoryService });
+    const project = projectService.create({
+      title: 'Restore Wiring Project', description: '', notes: '', status: 'tbd', priority: 'normal',
+      plannedDate: null, publishedDate: null, patreonUrl: null,
+    });
+    const absProjectDir = path.resolve(projectsRoot, project.project_dir);
+    fs.writeFileSync(path.join(absProjectDir, 'a.png'), 'state-a-bytes');
+    appContext.app.locals.assetScanner.scanProjectAssets(project.id);
+    const [asset] = appContext.app.locals.assetScanner.listProjectAssets(project.id);
+    expect(asset).toBeTruthy();
+
+    // 2. Back up the database (backups are DB-only — project files on disk
+    //    are untouched by backup/restore, so no filesystem mutation happens
+    //    between backup and restore in this test).
+    const backupRes = await request(appContext.handleRequest).post('/settings/backups').expect(302);
+    expect(backupRes.headers.location).toBe('/settings/backups?notice=backup_created');
+    const backupFilename = backupService.listBackups()[0].filename;
+
+    // 3. Restore through the HTTP restore workflow — this closes the
+    //    pre-restore connection and swaps in a new one.
+    const dbBeforeRestore = appContext.db;
+    await request(appContext.handleRequest)
+      .post(`/settings/backups/${backupFilename}/restore`)
+      .expect(302);
+    expect(appContext.db).not.toBe(dbBeforeRestore);
+
+    // 4. The rebuilt scanner/action service on the NEW app instance must
+    //    operate cleanly against the restored database. A stale reference
+    //    to the now-closed pre-restore connection would throw here instead
+    //    (better-sqlite3 throws on any use of a closed database handle).
+    const [restoredAsset] = appContext.app.locals.assetScanner.listProjectAssets(project.id);
+    expect(restoredAsset.id).toBe(asset.id);
+    expect(restoredAsset.filename).toBe('a.png');
+
+    const renamed = appContext.app.locals.assetActionService.renameAsset(project.id, restoredAsset.id, 'still-works.png');
+    expect(renamed.filename).toBe('still-works.png');
+
+    // A rescan against the restored database must also succeed cleanly.
+    expect(() => appContext.app.locals.assetScanner.scanProjectAssets(project.id)).not.toThrow();
+  });
 });
 
 describe('application context — reconstruction failure handling', () => {
@@ -229,6 +278,75 @@ describe('application context — reconstruction failure handling', () => {
     // The initial db was never closed by the context itself (ownership of
     // closing the previous connection belongs to the restore primitive).
     expect(initialDb.closed).toBe(false);
+  });
+});
+
+// ─── Phase: asset actions chunk 3 — coordinator survives reconstruction ──
+
+describe('application context — coordinator persistence across reconstruction', () => {
+  function makeFakeDb(id) {
+    let closed = false;
+    return {
+      id,
+      close() { closed = true; },
+      get closed() { return closed; },
+      prepare() {
+        return { get: () => null, all: () => [], run: () => ({}) };
+      },
+    };
+  }
+
+  it('passes the same projectOperationCoordinator instance to every buildApp call', () => {
+    const initialDb = makeFakeDb('initial');
+    const receivedCoordinators = [];
+    const fakeFactory = (_appDeps, opts) => {
+      receivedCoordinators.push(opts.projectOperationCoordinator);
+      return { db: _appDeps.db };
+    };
+
+    const appContext = createApplicationContext(
+      { appName: APP_NAME, appOpts: {} },
+      initialDb,
+      fakeFactory
+    );
+
+    expect(receivedCoordinators).toHaveLength(1);
+    expect(receivedCoordinators[0]).toBeTruthy();
+
+    appContext.replaceDatabase(makeFakeDb('replacement-1'));
+    appContext.replaceAuthConfig({ fakeAuthConfig: true });
+    appContext.replaceDatabase(makeFakeDb('replacement-2'));
+
+    expect(receivedCoordinators).toHaveLength(4);
+    // Every rebuild — including replaceDatabase (live restore) and
+    // replaceAuthConfig — received the exact same coordinator instance
+    // constructed once at createApplicationContext time.
+    const [first, ...rest] = receivedCoordinators;
+    for (const coordinator of rest) {
+      expect(coordinator).toBe(first);
+    }
+  });
+
+  it('does not let a stray opts.projectOperationCoordinator override the shared instance', () => {
+    const initialDb = makeFakeDb('initial');
+    const receivedCoordinators = [];
+    const fakeFactory = (_appDeps, opts) => {
+      receivedCoordinators.push(opts.projectOperationCoordinator);
+      return {};
+    };
+
+    const impostor = { run: () => { throw new Error('should never be called'); } };
+    const appContext = createApplicationContext(
+      { appName: APP_NAME, appOpts: { projectOperationCoordinator: impostor } },
+      initialDb,
+      fakeFactory
+    );
+
+    // appOpts.projectOperationCoordinator is deliberately ignored — the
+    // context always constructs and threads through its own instance so
+    // scanner/action-service sharing is guaranteed regardless of what a
+    // caller's appOpts happens to contain.
+    expect(receivedCoordinators[0]).not.toBe(impostor);
   });
 });
 

@@ -898,6 +898,89 @@
       .asset-table .asset-actions-cell { text-align: right; }
       .asset-table thead th:last-child { text-align: right; }
 
+      .bulk-toolbar-divider {
+        display: inline-block;
+        width: 1px;
+        height: 1.5rem;
+        background: var(--border);
+        align-self: center;
+        margin: 0 var(--space-sm);
+      }
+      .bulk-move-field {
+        display: flex;
+        align-items: center;
+        gap: var(--space-sm);
+        font-size: 0.875rem;
+        white-space: nowrap;
+      }
+      .bulk-move-field span { color: var(--muted); }
+      .bulk-move-field select {
+        font-size: 0.875rem;
+        padding: 0.25rem 0.5rem;
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+        background: var(--bg);
+        color: var(--text);
+      }
+
+      .row-rename-form {
+        display: inline-flex;
+        align-items: center;
+        gap: var(--space-sm);
+        margin-top: var(--space-sm);
+      }
+      .row-rename-input {
+        font-size: 0.8125rem;
+        padding: 0.2rem 0.4rem;
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+        background: var(--bg);
+        color: var(--text);
+        width: 10rem;
+        min-width: 6rem;
+      }
+      .row-rename-input:focus-visible {
+        outline: 2px solid var(--focus-ring);
+        outline-offset: 1px;
+      }
+      .asset-card-rename-form {
+        display: flex;
+        align-items: center;
+        gap: var(--space-xs);
+        width: 100%;
+        margin-top: var(--space-xs);
+      }
+      .asset-card-rename-input {
+        flex: 1 1 auto;
+        min-width: 0;
+        width: 100%;
+        font-size: 0.8125rem;
+        padding: 0.2rem 0.4rem;
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+        background: var(--bg);
+        color: var(--text);
+      }
+      .asset-card-rename-input:focus-visible {
+        outline: 2px solid var(--focus-ring);
+        outline-offset: 1px;
+      }
+      .asset-action-error {
+        display: block;
+        color: var(--danger);
+        font-size: 0.8125rem;
+        overflow-wrap: anywhere;
+      }
+
+      @media (max-width: 767px) {
+        .bulk-toolbar-divider { display: none; }
+        .bulk-move-field { min-width: 0; }
+        .row-rename-form { flex-wrap: wrap; }
+        .row-rename-input { width: 100%; }
+        .asset-card-rename-form { align-items: stretch; flex-wrap: wrap; }
+        .asset-card-rename-input { flex-basis: 100%; }
+      }
+
       /* ── Asset grid: intrinsic-ratio cards, responsive columns ── */
       .asset-grid {
         list-style: none;
@@ -1140,6 +1223,19 @@
         border-radius: var(--radius-lg);
         padding: var(--space-lg);
       }
+      .asset-actions-section { margin: var(--space-xl) 0; }
+      .asset-actions-section h2 { margin-top: 0; }
+      .asset-actions-card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
+        padding: var(--space-lg);
+      }
+      .asset-action-group { display: flex; flex-direction: column; gap: var(--space-md); }
+      .asset-action-group h3 { margin: 0; font-size: 1rem; font-weight: 600; }
+      .asset-action-description { margin: 0; font-size: 0.875rem; color: var(--muted); }
+      .asset-actions-divider { border: none; border-top: 1px solid var(--border); margin: var(--space-lg) 0; }
+      .asset-action-form { display: flex; flex-direction: column; gap: var(--space-md); }
       .asset-release-usage-section { margin: var(--space-xl) 0; }
       .asset-release-usage-section h2 { margin-top: 0; }
       .asset-release-usage-section,

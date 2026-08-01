@@ -17,6 +17,8 @@ import { createAssetCategoryRepository } from './data/asset-category-repository.
 import { createAssetCategoryService } from './services/asset-category-service.js';
 import { createProjectAssetCategoryService } from './services/project-asset-category-service.js';
 import { createAssetScanner } from './services/asset-scanner.js';
+import { createAssetActionService } from './services/asset-action-service.js';
+import { createProjectOperationCoordinator } from './services/project-operation-coordinator.js';
 import { createReleaseService } from './services/release-service.js';
 import { createWorkflowQueryService } from './services/workflow-query-service.js';
 import { evaluateReleaseReadiness } from './services/release-readiness-policy.js';
@@ -100,7 +102,17 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   const assetCategoryService = opts.assetCategoryService || createAssetCategoryService(assetCategoryRepository);
 
   const projectService = createProjectService(db, projectsRoot, { assetCategoryService });
-  const assetScanner = createAssetScanner(db, projectsRoot, { projectService, assetCategoryService });
+
+  // Phase: asset actions chunk 3 — one process-local coordinator shared by
+  // the scanner and the asset action service so a scan and a rename/move
+  // can never interleave for the same project. app-context.js supplies this
+  // via opts on every rebuild (including live-restore) so the SAME instance
+  // survives reconstruction; this fallback only matters for callers (tests,
+  // ad-hoc scripts) that construct createApp directly without app-context.
+  const projectOperationCoordinator = opts.projectOperationCoordinator || createProjectOperationCoordinator();
+
+  const assetScanner = createAssetScanner(db, projectsRoot, { projectService, assetCategoryService, projectOperationCoordinator });
+  app.locals.assetScanner = assetScanner;
 
   // Phase 2 chunk 2: project-specific category mutations. Reuses the
   // project repository (via projectService.repository) and the asset
@@ -115,6 +127,20 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     projectsRoot,
   });
   app.locals.projectAssetCategoryService = projectAssetCategoryService;
+
+  // Phase: asset actions chunk 3 — rename/move filesystem action service.
+  // Shares projectService.repository / assetScanner.repository (no
+  // duplicate repository construction) and the same coordinator instance
+  // as assetScanner, so a scan and a rename/move for one project can never
+  // interleave. Wired into the asset browser/viewer routes below.
+  const assetActionService = opts.assetActionService || createAssetActionService({
+    projectRepository: projectService.repository,
+    assetRepository: assetScanner.repository,
+    assetCategoryRepository,
+    projectsRoot,
+    projectOperationCoordinator,
+  });
+  app.locals.assetActionService = assetActionService;
 
   const releaseService = opts.releaseService || createReleaseService({ db, evaluateReleaseReadiness });
   const workflowQueryService = opts.workflowQueryService || createWorkflowQueryService({ db, evaluateReleaseReadiness });
@@ -269,7 +295,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     app.use('/projects', createMediaRouter({ mediaService }));
   }
 
-  app.use('/projects', createAssetsRouter({ appName, projectService, assetScanner, workflowQueryService, releaseService }));
+  app.use('/projects', createAssetsRouter({ appName, projectService, assetScanner, workflowQueryService, releaseService, assetActionService }));
 
   // Phase 2 chunk 3: project-specific category routes. The router receives
   // the already-constructed `projectAssetCategoryService` explicitly — it

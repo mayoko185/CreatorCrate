@@ -42,6 +42,18 @@
     {% include "partials/notice.njk" %}
   {% endif %}
 
+  {% if notice %}
+    {% set noticeVariant = "success" %}
+    {% set noticeText = noticeMessage %}
+    {% include "partials/notice.njk" %}
+  {% endif %}
+
+  {% if formError %}
+    {% set noticeVariant = "error" %}
+    {% set noticeText = formError.message %}
+    {% include "partials/notice.njk" %}
+  {% endif %}
+
   <section class="asset-preview-section" aria-labelledby="asset-preview-heading">
     <h2 id="asset-preview-heading">Preview</h2>
     {% if asset.preview.previewable and asset.preview_url %}
@@ -124,6 +136,63 @@
       <dd>{{ asset.missing_since or '—' }}</dd>
     </dl>
   </section>
+
+  {% if canMutate %}
+    <section class="asset-actions-section" aria-labelledby="asset-actions-heading">
+      <h2 id="asset-actions-heading">File actions</h2>
+      <div class="asset-actions-card">
+
+        <div class="asset-action-group">
+          <h3>Rename file</h3>
+          <p class="asset-action-description">Change only the filename. The category and folder stay the same.</p>
+          <form method="post" action="/projects/{{ project.id }}/assets/{{ asset.id }}/rename" class="asset-action-form asset-rename-form">
+            <input type="hidden" name="_csrf" value="{{ _csrf }}">
+            <input type="hidden" name="origin" value="viewer">
+            {% for key in contextFields %}
+              {% if context[key] is not none and context[key] != '' %}
+                <input type="hidden" name="{{ key }}" value="{{ context[key] }}">
+              {% endif %}
+            {% endfor %}
+            <div class="field">
+              <label for="rename-filename">New filename</label>
+              <input type="text" id="rename-filename" name="filename" value="{{ submittedFilename }}" required maxlength="255" autocomplete="off">
+            </div>
+            <div>
+              <button class="button button-primary" type="submit">Rename file</button>
+            </div>
+          </form>
+        </div>
+
+        <hr class="asset-actions-divider">
+
+        <div class="asset-action-group">
+          <h3>Move file</h3>
+          <p class="asset-action-description">Move to a category root or Uncategorized. Nested subfolders are not preserved.</p>
+          <form method="post" action="/projects/{{ project.id }}/assets/{{ asset.id }}/move" class="asset-action-form asset-move-form">
+            <input type="hidden" name="_csrf" value="{{ _csrf }}">
+            {% for key in contextFields %}
+              {% if context[key] is not none and context[key] != '' %}
+                <input type="hidden" name="{{ key }}" value="{{ context[key] }}">
+              {% endif %}
+            {% endfor %}
+            <div class="field">
+              <label for="move-destination">Destination</label>
+              <select id="move-destination" name="destinationCategory">
+                <option value="uncategorized" {% if submittedDestinationCategory == 'uncategorized' %}selected{% endif %}>Uncategorized</option>
+                {% for category in enabledCategories %}
+                  <option value="{{ category.id }}" {% if submittedDestinationCategory == (category.id ~ '') %}selected{% endif %}>{{ category.displayName }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div>
+              <button class="button button-primary" type="submit">Move file</button>
+            </div>
+          </form>
+        </div>
+
+      </div>
+    </section>
+  {% endif %}
 
   <section class="asset-release-usage-section" aria-labelledby="asset-release-usage-heading">
     <h2 id="asset-release-usage-heading">Release usage</h2>

@@ -3,20 +3,7 @@ import path from 'node:path';
 import { resolveProjectDir } from '../storage/project-storage.js';
 import { ProjectNotFoundError } from './project-service.js';
 import { createAssetRepository } from '../data/asset-repository.js';
-
-/**
- * MIME type mapping by file extension.
- * Only known asset types are mapped; everything else is application/octet-stream.
- */
-const EXTENSION_MIME_MAP = {
-  png: 'image/png',
-  webp: 'image/webp',
-  jpg: 'image/jpeg',
-  jpeg: 'image/jpeg',
-  gif: 'image/gif',
-  kra: 'application/x-krita',
-  krz: 'application/x-krita',
-};
+import { mimeFromExtension } from './asset-metadata.js';
 
 /**
  * Files to skip during scanning.
@@ -46,15 +33,6 @@ function categorizeFsError(err) {
   if (err.code === 'ENOENT') return 'enoent';
   if (err.code === 'EACCES' || err.code === 'EPERM') return 'access';
   return 'other';
-}
-
-/**
- * Map a file extension to its MIME type.
- * @param {string} ext - Extension without the leading dot, lowercased
- * @returns {string}
- */
-function mimeFromExtension(ext) {
-  return EXTENSION_MIME_MAP[ext] || 'application/octet-stream';
 }
 
 /**
@@ -255,8 +233,16 @@ function classifyAsset(relativePath, categories) {
  * @param {object} deps
  * @param {import('../services/project-service.js').ProjectService} deps.projectService
  * @param {import('../services/asset-category-service.js')} deps.assetCategoryService
+ * @param {ReturnType<import('./project-operation-coordinator.js').createProjectOperationCoordinator>} deps.projectOperationCoordinator
+ *   Shared per-project lock (Phase: asset actions chunk 3) — also injected
+ *   into the asset action service so a scan and a rename/move can never
+ *   interleave for the same project.
  */
-export function createAssetScanner(db, projectsRoot, { projectService, assetCategoryService }) {
+export function createAssetScanner(db, projectsRoot, { projectService, assetCategoryService, projectOperationCoordinator }) {
+  if (!projectOperationCoordinator) {
+    throw new Error('createAssetScanner requires a projectOperationCoordinator dependency.');
+  }
+
   const repository = createAssetRepository(db);
 
   /**
@@ -268,6 +254,14 @@ export function createAssetScanner(db, projectsRoot, { projectService, assetCate
    * @throws {Error} if the project directory is missing or unsafe
    */
   function scanProjectAssets(projectId) {
+    return projectOperationCoordinator.run(projectId, () => scanProjectAssetsLocked(projectId));
+  }
+
+  // Runs only while projectOperationCoordinator holds this project's lock —
+  // covers project validation, filesystem traversal, and the reconciliation
+  // transaction as a single protected region, so a rename/move can never
+  // begin between traversal and reconciliation.
+  function scanProjectAssetsLocked(projectId) {
     const project = projectService.findById(projectId);
     if (!project) {
       throw new ProjectNotFoundError(projectId);
