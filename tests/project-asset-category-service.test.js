@@ -729,10 +729,67 @@ describe('project asset category service', () => {
       const reordered = service.reorder(project.id, reversedIds);
 
       expect(reordered.map((c) => c.id)).toEqual(reversedIds);
+      expect(reordered.map((c) => c.display_order)).toEqual(reordered.map((_, i) => i));
       const manifest = readManifestSync(absPath);
       expect(manifest.assetCategories.map((c) => c.directorySlug)).toEqual(
         reordered.map((c) => c.directory_slug)
       );
+    });
+
+    it('preserves category metadata, asset assignments, browser preference, and directory identities', () => {
+      const disabled = service.list(project.id)[0];
+      service.setEnabled(project.id, disabled.id, false);
+      const before = service.list(project.id);
+      const assigned = before[1];
+      const asset = assetRepository.upsert(project.id, `${assigned.directory_slug}/assigned.png`, {
+        filename: 'assigned.png', extension: 'png', mimeType: 'image/png',
+        sizeBytes: 1, modifiedAt: null, categoryId: assigned.id,
+      });
+      assetBrowserPreferenceService.setProjectPreference(project.id, `category:${assigned.id}`);
+
+      const metadataBefore = before
+        .map((category) => ({
+          id: category.id,
+          display_name: category.display_name,
+          directory_slug: category.directory_slug,
+          enabled: category.enabled,
+        }))
+        .sort((a, b) => a.id - b.id);
+      const assignmentsBefore = db.prepare(`
+        SELECT id, project_id, category_id, relative_path, filename
+        FROM assets
+        WHERE project_id = ?
+        ORDER BY id
+      `).all(project.id);
+      const preferenceBefore = assetBrowserPreferenceRepository.findProjectPreference(project.id);
+      const directoryIdentitiesBefore = new Map(before.map((category) => {
+        const stats = fs.statSync(path.join(absPath, category.directory_slug));
+        return [category.id, { dev: stats.dev, ino: stats.ino }];
+      }));
+      const orderedIds = [before[2].id, before[0].id, before[4].id, before[1].id, before[3].id];
+
+      const reordered = service.reorder(project.id, orderedIds);
+
+      expect(reordered.map((category) => category.id)).toEqual(orderedIds);
+      expect(reordered.map((category) => category.display_order)).toEqual([0, 1, 2, 3, 4]);
+      expect(reordered.map((category) => ({
+        id: category.id,
+        display_name: category.display_name,
+        directory_slug: category.directory_slug,
+        enabled: category.enabled,
+      })).sort((a, b) => a.id - b.id)).toEqual(metadataBefore);
+      expect(db.prepare(`
+        SELECT id, project_id, category_id, relative_path, filename
+        FROM assets
+        WHERE project_id = ?
+        ORDER BY id
+      `).all(project.id)).toEqual(assignmentsBefore);
+      expect(assetRepository.findById(asset.id).category_id).toBe(assigned.id);
+      expect(assetBrowserPreferenceRepository.findProjectPreference(project.id)).toEqual(preferenceBefore);
+      for (const category of before) {
+        const stats = fs.statSync(path.join(absPath, category.directory_slug));
+        expect({ dev: stats.dev, ino: stats.ino }).toEqual(directoryIdentitiesBefore.get(category.id));
+      }
     });
 
     it('performs no filesystem changes', () => {
@@ -748,6 +805,26 @@ describe('project asset category service', () => {
       const categories = service.list(project.id);
       const ids = categories.map((c) => c.id);
       expect(() => service.reorder(project.id, ids.slice(1))).toThrow();
+      expect(service.list(project.id)).toEqual(categories);
+    });
+
+    it('rejects empty, extra, and wrong-project sequences as validation errors', () => {
+      const categories = service.list(project.id);
+      const ids = categories.map((category) => category.id);
+      const otherProject = projectService.create(validProjectInput({ title: 'Other Reorder Project' }));
+      const [otherCategory] = service.list(otherProject.id);
+
+      expect(() => service.reorder(project.id, [])).toThrow(AssetCategoryValidationError);
+      expect(() => service.reorder(project.id, [...ids.slice(0, -1), 999999])).toThrow(AssetCategoryValidationError);
+      expect(() => service.reorder(project.id, [otherCategory.id, ...ids.slice(1)])).toThrow(AssetCategoryValidationError);
+      expect(service.list(project.id)).toEqual(categories);
+    });
+
+    it('rejects unsafe IDs before touching the project category set', () => {
+      const categories = service.list(project.id);
+      const ids = categories.map((category) => category.id);
+
+      expect(() => service.reorder(project.id, [Number.MAX_SAFE_INTEGER + 1, ...ids.slice(1)])).toThrow(AssetCategoryValidationError);
       expect(service.list(project.id)).toEqual(categories);
     });
 

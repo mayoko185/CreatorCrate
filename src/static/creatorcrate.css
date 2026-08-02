@@ -2597,6 +2597,10 @@
       .category-management-section > .project-form {
         padding: var(--space-md) var(--space-lg) var(--space-lg);
       }
+      .category-management-section > .category-management-form {
+        gap: var(--space-sm);
+        padding: var(--space-md) var(--space-lg) var(--space-md);
+      }
       .category-management-section > .error-summary {
         margin: var(--space-md) var(--space-lg) 0;
       }
@@ -2703,6 +2707,21 @@
         flex-wrap: wrap;
         min-width: 0;
       }
+      .category-management-form > .category-management-action-row {
+        display: flex;
+        align-items: center;
+        justify-content: flex-start;
+        align-self: flex-start;
+        width: max-content;
+        max-width: 100%;
+        /* Flush in the panel's bottom-left corner: cancel the form's left
+           (space-lg) and bottom (space-md) padding so the button hugs the edge. */
+        margin: 0 0 calc(-1 * var(--space-md)) calc(-1 * var(--space-lg));
+      }
+      .category-management-form > .category-management-action-row > .button {
+        flex: 0 0 auto;
+        width: auto;
+      }
       .category-management-enabled .field-error-message {
         display: block;
         margin-top: var(--space-xs);
@@ -2744,170 +2763,307 @@
         margin: var(--space-sm) 0 var(--space-md);
         padding: 0 var(--space-md);
       }
-      .asset-browser-default-section--project .asset-browser-default-form {
-        gap: 0;
+      .asset-browser-default-section .asset-browser-default-form {
+        gap: var(--space-sm);
         padding: var(--space-sm) var(--space-md) var(--space-md);
       }
       .asset-browser-default-control-row {
-        display: grid;
-        grid-template-columns: minmax(0, 1fr) auto;
-        align-items: end;
-        gap: var(--space-md);
-      }
-      .asset-browser-default-control-row .field {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: var(--space-xs);
         min-width: 0;
       }
-      .asset-browser-default-control-row .form-control {
-        width: 100%;
+      .asset-browser-default-field-row {
+        display: flex;
+        align-items: center;
+        flex: 0 1 auto;
+        flex-direction: row;
+        flex-wrap: wrap;
+        gap: var(--space-sm) var(--space-md);
+        width: max-content;
+        max-width: 100%;
+        min-width: 0;
+      }
+      .asset-browser-default-field-row label {
+        flex: 0 0 auto;
+      }
+      .asset-browser-default-field-row .form-control {
+        width: max-content;
+        max-width: 100%;
+        flex: 0 1 auto;
+        min-width: 0;
+      }
+      .asset-browser-default-control-row > .help-text {
+        margin-top: 0;
+        padding: 0;
         max-width: 100%;
       }
       .asset-browser-default-action-row {
-        align-self: end;
-        margin-top: 0;
-      }
-
-      .project-category-management-add > .project-category-management-form {
-        gap: var(--space-md);
-        padding: var(--space-md) var(--space-lg) var(--space-md);
-      }
-      .project-category-management-add .category-management-action-row {
         display: flex;
         align-items: center;
         justify-content: flex-start;
-        margin: 0;
+        align-self: flex-start;
+        width: max-content;
+        max-width: 100%;
+        /* Sit flush in the section's bottom-left corner: cancel the form's
+           left/bottom padding so the button hugs the edge instead of being
+           inset within the padded area. */
+        margin: 0 0 calc(-1 * var(--space-md)) calc(-1 * var(--space-md));
       }
-      .project-category-management-section > .category-management-section-note {
+      .asset-browser-default-action-row > .button {
+        flex: 0 0 auto;
+        width: auto;
+      }
+
+      :is(.project-category-management-section, .settings-category-management-section) > .category-management-section-note {
         margin: 0;
         padding: var(--space-sm) var(--space-md) 0;
         color: var(--muted);
         font-size: 0.875rem;
       }
-      .project-category-management-section .category-management-list {
+      :is(.project-category-management-section, .settings-category-management-section) .category-reorder-form {
+        display: none;
+      }
+      :is(.project-category-management-section, .settings-category-management-section) .category-reorder-list {
+        display: flex;
+        flex-direction: column;
+        gap: var(--space-sm);
+        margin: 0;
         padding: var(--space-xs) var(--space-md) var(--space-md);
       }
-      .project-category-management-section .category-management-table {
-        border-spacing: 0 var(--space-xs);
-      }
-      .project-category-management-section .category-management-table .category-management-row {
+      :is(.project-category-management-section, .settings-category-management-section) .category-management-card {
+        display: flex;
+        align-items: stretch;
+        gap: var(--space-sm);
+        min-width: 0;
+        padding: var(--space-sm);
         background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        cursor: grab;
+        transition: opacity var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast), background var(--transition-fast);
       }
-      .project-category-management-section .category-management-table .category-management-row td {
-        padding: var(--space-xs) var(--space-sm);
-        vertical-align: middle;
-        background: inherit;
+      :is(.project-category-management-section, .settings-category-management-section) .category-management-card :is(a, button, input, select, textarea, form, label, summary, details, [contenteditable="true"], [role="alert"], [aria-live], .help-text, .field-error-message, noscript) {
+        cursor: auto;
       }
-      .project-category-management-section .category-management-table .category-management-row td:first-child {
-        border-radius: var(--radius-md) 0 0 var(--radius-md);
+      :is(.project-category-management-section, .settings-category-management-section) .category-management-card .form-switch-label {
+        cursor: pointer;
       }
-      .project-category-management-section .category-management-table .category-management-row td:last-child {
-        border-radius: 0 var(--radius-md) var(--radius-md) 0;
+      :is(.project-category-management-section, .settings-category-management-section) .category-management-card:hover {
+        background: var(--surface-hover);
       }
-      .project-category-management-section .category-management-name,
-      .project-category-management-section .category-management-slug,
-      .project-category-management-section .category-management-enabled,
-      .project-category-management-section .category-management-actions {
+      :is(.project-category-management-section, .settings-category-management-section) .category-management-card.is-dragging {
+        opacity: 0.55;
+        border-style: dashed;
+        cursor: grabbing;
+      }
+      :is(.project-category-management-section, .settings-category-management-section) .category-management-card.is-drop-before {
+        box-shadow: 0 -3px 0 var(--accent);
+      }
+      :is(.project-category-management-section, .settings-category-management-section) .category-management-card.is-drop-after {
+        box-shadow: 0 3px 0 var(--accent);
+      }
+      :is(.project-category-management-section, .settings-category-management-section) .category-management-card--readonly {
+        opacity: 0.72;
+      }
+      :is(.project-category-management-section, .settings-category-management-section) .category-reorder-handle {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        align-self: flex-start;
+        flex: 0 0 2rem;
+        width: 2rem;
+        min-height: 2rem;
+        padding: 0;
+        color: var(--muted);
+        background: transparent;
+        border: 1px solid transparent;
+        border-radius: var(--radius-sm);
+        cursor: grab;
+        font-size: 1.25rem;
+        line-height: 1;
+      }
+      :is(.project-category-management-section, .settings-category-management-section) .category-reorder-handle:hover {
+        color: var(--text);
+        background: var(--surface-card);
+        border-color: var(--border);
+      }
+      :is(.project-category-management-section, .settings-category-management-section) .category-reorder-handle:active {
+        cursor: grabbing;
+      }
+      :is(.project-category-management-section, .settings-category-management-section) .category-reorder-handle:focus-visible {
+        outline: 2px solid var(--focus-ring);
+        outline-offset: 2px;
+      }
+      :is(.project-category-management-section, .settings-category-management-section) .category-management-card-body {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: var(--space-md);
+        flex: 1 1 auto;
+        min-width: 0;
+      }
+      :is(.project-category-management-section, .settings-category-management-section) .category-management-card-fields {
+        display: grid;
+        grid-template-columns: minmax(0, 1.5fr) minmax(9rem, 1fr);
+        align-items: start;
+        gap: var(--space-md);
+        flex: 1 1 auto;
+        min-width: 0;
+      }
+      :is(.project-category-management-section, .settings-category-management-section) .category-management-card-field,
+      :is(.project-category-management-section, .settings-category-management-section) .category-management-enabled,
+      :is(.project-category-management-section, .settings-category-management-section) .category-management-actions {
         min-width: 0;
         overflow-wrap: anywhere;
         word-break: break-word;
       }
-      .project-category-management-section .category-management-name-value {
+      :is(.project-category-management-section, .settings-category-management-section) .category-management-card-label {
+        display: block;
+        margin-bottom: var(--space-xs);
+        color: var(--muted);
+        font-size: 0.75rem;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+      :is(.project-category-management-section, .settings-category-management-section) .category-management-name-value {
         display: block;
         font-weight: 600;
+        overflow-wrap: anywhere;
+        word-break: break-word;
       }
-      .project-category-management-section .category-name-form {
+      :is(.project-category-management-section, .settings-category-management-section) .category-name-form {
         align-items: center;
         margin-top: 0;
       }
-      .project-category-management-section .category-management-actions {
-        display: table-cell;
+      :is(.project-category-management-section, .settings-category-management-section) .category-management-slug code {
+        display: block;
+        overflow-wrap: anywhere;
+        word-break: break-word;
       }
-      .project-category-management-section .category-management-action-group {
+      :is(.project-category-management-section, .settings-category-management-section) .category-management-card-controls {
         display: flex;
         align-items: center;
         justify-content: flex-end;
+        gap: var(--space-md);
+        flex: 0 0 auto;
+        min-width: 0;
+      }
+      :is(.project-category-management-section, .settings-category-management-section) .category-management-enabled {
+        display: flex;
+        align-items: center;
+        min-width: 8rem;
+      }
+      :is(.project-category-management-section, .settings-category-management-section) .category-management-actions {
+        display: flex;
+        align-items: center;
         gap: var(--space-xs);
+      }
+      :is(.project-category-management-section, .settings-category-management-section) .category-management-enabled .field-error-message {
+        display: block;
+        margin-top: var(--space-xs);
+      }
+      :is(.project-category-management-section, .settings-category-management-section) .category-management-card:focus-within {
+        border-color: var(--border-strong);
+      }
+      .settings-category-management-section .category-details-form {
+        display: flex;
+        align-items: flex-end;
+        gap: var(--space-md);
+        flex: 1 1 auto;
+        min-width: 0;
         flex-wrap: wrap;
+      }
+      .settings-category-management-section .category-details-form .category-management-card-fields {
+        flex: 1 1 auto;
+        min-width: 0;
+      }
+      .settings-category-management-section .category-details-form .category-management-card-field {
+        min-width: 0;
+      }
+      .settings-category-management-section .category-details-form label {
+        display: block;
+        margin-bottom: var(--space-xs);
+        color: var(--muted);
+        font-size: 0.875rem;
+      }
+      .settings-category-management-section .category-details-form input {
+        box-sizing: border-box;
+        width: 100%;
+        max-width: 100%;
+        min-width: 0;
+        padding: var(--space-xs) var(--space-sm);
+        overflow-wrap: anywhere;
+        color: var(--text);
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+      }
+      .settings-category-management-section .category-details-form input:focus-visible {
+        outline: 2px solid var(--focus-ring);
+        outline-offset: 2px;
+      }
+      .settings-category-management-section .category-management-details-actions {
+        display: flex;
+        align-items: center;
+        flex: 0 0 auto;
+        gap: var(--space-xs);
+      }
+      .settings-category-management-section .category-details-form .field-error-message {
+        display: block;
+        margin-top: var(--space-xs);
+        overflow-wrap: anywhere;
       }
 
       @media (max-width: 767px) {
-        .asset-browser-default-control-row {
-          grid-template-columns: 1fr;
-          align-items: start;
+        :is(.project-category-management-section, .settings-category-management-section) .category-management-card-body {
+          align-items: stretch;
+          flex-direction: column;
         }
-        .asset-browser-default-action-row {
-          justify-content: flex-start;
-        }
-        .project-category-management-section .category-management-table,
-        .project-category-management-section .category-management-table tbody,
-        .project-category-management-section .category-management-table tr,
-        .project-category-management-section .category-management-table td {
-          display: block;
-        }
-        .project-category-management-section .category-management-table thead {
-          position: absolute;
-          width: 1px;
-          height: 1px;
-          padding: 0;
-          margin: -1px;
-          overflow: hidden;
-          clip: rect(0 0 0 0);
-          clip-path: inset(50%);
-          white-space: nowrap;
-          border: 0;
-        }
-        .project-category-management-section .category-management-table .category-management-row {
-          margin-bottom: var(--space-sm);
-          border: 1px solid var(--border);
-          border-radius: var(--radius-md);
-        }
-        .project-category-management-section .category-management-table .category-management-row:last-child {
-          margin-bottom: 0;
-        }
-        .project-category-management-section .category-management-table .category-management-row td,
-        .project-category-management-section .category-management-actions {
-          display: grid;
-          grid-template-columns: minmax(7rem, 30%) minmax(0, 1fr);
+        :is(.project-category-management-section, .settings-category-management-section) .category-management-card-fields {
+          grid-template-columns: minmax(0, 1fr);
           gap: var(--space-sm);
-          align-items: center;
-          border: 0;
-          border-radius: 0;
         }
-        .project-category-management-section .category-management-table .category-management-row td::before,
-        .project-category-management-section .category-management-actions::before {
-          content: attr(data-label);
-          color: var(--muted);
-          font-size: 0.75rem;
-          font-weight: 600;
-          letter-spacing: 0.04em;
-          text-transform: uppercase;
+        :is(.project-category-management-section, .settings-category-management-section) .category-management-card-controls {
+          justify-content: flex-start;
+          flex-wrap: wrap;
         }
-        .project-category-management-section .category-management-table .category-management-row td:first-child {
-          border-radius: var(--radius-md) var(--radius-md) 0 0;
+        .settings-category-management-section .category-details-form {
+          align-items: stretch;
+          flex-direction: column;
         }
-        .project-category-management-section .category-management-table .category-management-row td:last-child {
-          border-radius: 0 0 var(--radius-md) var(--radius-md);
-        }
-        .project-category-management-section .category-management-table .category-management-row .num {
-          text-align: left;
-        }
-        .project-category-management-section .category-management-enabled .field-error-message {
-          grid-column: 2;
-          margin-top: 0;
-        }
-        .project-category-management-section .category-management-action-group {
+        .settings-category-management-section .category-management-details-actions {
           justify-content: flex-start;
         }
       }
 
-      .asset-browser-default-section > p {
+      .asset-browser-default-section > .asset-browser-default-description {
         margin: 0;
         padding: var(--space-sm) var(--space-lg) 0;
       }
-      .asset-browser-default-section > .help-text {
-        padding-top: var(--space-sm);
+      .asset-browser-default-section > .asset-browser-default-summary {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--space-sm) var(--space-lg);
+        margin: 0;
+        padding: var(--space-xs) var(--space-lg) 0;
+        color: var(--muted);
+        font-size: 0.875rem;
+      }
+      .asset-browser-default-section .asset-browser-default-summary-label {
+        color: var(--muted);
       }
       .asset-browser-default-section > .notice {
-        margin: var(--space-md) var(--space-lg) 0;
+        margin: var(--space-sm) var(--space-lg) 0;
+      }
+      .asset-browser-default-section > .error-summary {
+        margin: var(--space-sm) var(--space-lg) 0;
+      }
+      .asset-browser-default-section > .asset-browser-default-readonly {
+        margin: var(--space-sm) 0 var(--space-md);
+        padding: 0 var(--space-lg);
       }
 
       @media (max-width: 767px) {

@@ -102,6 +102,20 @@ describe('asset category repository', () => {
       expect(reordered.map((d) => d.display_order)).toEqual([0, 1, 2, 3, 4]);
     });
 
+    it('reorders an arbitrary permutation without colliding with a unique order constraint', () => {
+      const defaults = repository.listDefaults();
+      const orderedIds = [defaults[2].id, defaults[0].id, defaults[4].id, defaults[1].id, defaults[3].id];
+      db.exec(`
+        CREATE UNIQUE INDEX asset_category_defaults_order_unique
+        ON asset_category_defaults(display_order)
+      `);
+
+      const reordered = repository.reorderDefaults(orderedIds);
+
+      expect(reordered.map((d) => d.id)).toEqual(orderedIds);
+      expect(reordered.map((d) => d.display_order)).toEqual([0, 1, 2, 3, 4]);
+    });
+
     it('rejects reorder with missing IDs', () => {
       const defaults = repository.listDefaults();
       const incomplete = defaults.slice(1).map((d) => d.id);
@@ -120,6 +134,64 @@ describe('asset category repository', () => {
       const ids = defaults.map((d) => d.id);
       const withUnknown = [...ids.slice(1), 999999];
       expect(() => repository.reorderDefaults(withUnknown)).toThrow();
+    });
+
+    it('rejects non-positive and unsafe IDs without changing the current order', () => {
+      const defaults = repository.listDefaults();
+      const ids = defaults.map((d) => d.id);
+      const before = repository.listDefaults();
+
+      expect(() => repository.reorderDefaults([0, ...ids.slice(1)])).toThrow();
+      expect(() => repository.reorderDefaults([-1, ...ids.slice(1)])).toThrow();
+      expect(() => repository.reorderDefaults([Number.MAX_SAFE_INTEGER + 1, ...ids.slice(1)])).toThrow();
+
+      expect(repository.listDefaults()).toEqual(before);
+    });
+
+    it('accepts the empty exact set when no global defaults exist', () => {
+      for (const category of repository.listDefaults()) {
+        expect(repository.deleteDefault(category.id)).toBe(true);
+      }
+
+      expect(repository.reorderDefaults([])).toEqual([]);
+    });
+
+    it('rolls back the entire reorder when the final update fails', () => {
+      const before = repository.listDefaults();
+      db.exec(`
+        CREATE TRIGGER fail_global_category_reorder
+        BEFORE UPDATE OF display_order ON asset_category_defaults
+        WHEN OLD.display_order >= 6 AND NEW.display_order = 0
+        BEGIN
+          SELECT RAISE(ABORT, 'forced global reorder failure');
+        END
+      `);
+
+      expect(() => repository.reorderDefaults(before.map((category) => category.id).reverse()))
+        .toThrow(/forced global reorder failure/);
+      expect(repository.listDefaults()).toEqual(before);
+    });
+
+    it('preserves global metadata, the stored default preference, and existing project categories', () => {
+      const project = createProject();
+      repository.copyEnabledDefaultsForProject(project.id);
+      const projectCategoriesBefore = repository.listProjectCategories(project.id);
+      const defaultsBefore = repository.listDefaults();
+      const metadataBefore = defaultsBefore
+        .map(({ id, display_name, directory_slug, enabled }) => ({ id, display_name, directory_slug, enabled }))
+        .sort((a, b) => a.id - b.id);
+      db.prepare('UPDATE app_meta SET value = ? WHERE key = ?')
+        .run('exports', 'asset_browser.default_category');
+
+      repository.reorderDefaults(defaultsBefore.map((category) => category.id).reverse());
+
+      const defaultsAfter = repository.listDefaults();
+      expect(defaultsAfter
+        .map(({ id, display_name, directory_slug, enabled }) => ({ id, display_name, directory_slug, enabled }))
+        .sort((a, b) => a.id - b.id)).toEqual(metadataBefore);
+      expect(db.prepare('SELECT value FROM app_meta WHERE key = ?').pluck()
+        .get('asset_browser.default_category')).toBe('exports');
+      expect(repository.listProjectCategories(project.id)).toEqual(projectCategoriesBefore);
     });
   });
 
@@ -323,6 +395,21 @@ describe('asset category repository', () => {
       expect(reordered.map((c) => c.display_order)).toEqual(reordered.map((_, i) => i));
     });
 
+    it('reorders an arbitrary permutation without colliding with a unique order constraint', () => {
+      const project = createProject();
+      const categories = repository.copyEnabledDefaultsForProject(project.id);
+      const orderedIds = [categories[2].id, categories[0].id, categories[4].id, categories[1].id, categories[3].id];
+      db.exec(`
+        CREATE UNIQUE INDEX project_asset_categories_project_order_unique
+        ON project_asset_categories(project_id, display_order)
+      `);
+
+      const reordered = repository.reorderProjectCategories(project.id, orderedIds);
+
+      expect(reordered.map((c) => c.id)).toEqual(orderedIds);
+      expect(reordered.map((c) => c.display_order)).toEqual([0, 1, 2, 3, 4]);
+    });
+
     it('reorder is exact — rejects missing, duplicate, or unknown IDs', () => {
       const project = createProject();
       const categories = repository.copyEnabledDefaultsForProject(project.id);
@@ -352,6 +439,19 @@ describe('asset category repository', () => {
 
       const after = repository.listProjectCategories(project.id);
       expect(after).toEqual(before);
+    });
+
+    it('rejects unsafe and non-positive IDs without changing the current order', () => {
+      const project = createProject();
+      const categories = repository.copyEnabledDefaultsForProject(project.id);
+      const before = repository.listProjectCategories(project.id);
+      const ids = categories.map((c) => c.id);
+
+      expect(() => repository.reorderProjectCategories(project.id, [0, ...ids.slice(1)])).toThrow();
+      expect(() => repository.reorderProjectCategories(project.id, [-1, ...ids.slice(1)])).toThrow();
+      expect(() => repository.reorderProjectCategories(project.id, [Number.MAX_SAFE_INTEGER + 1, ...ids.slice(1)])).toThrow();
+
+      expect(repository.listProjectCategories(project.id)).toEqual(before);
     });
 
     it('reorder never mutates global defaults', () => {

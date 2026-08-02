@@ -13,7 +13,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createApp } from '../src/app.js';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
-import { STATUS_DIR_MAP } from '../src/storage/project-storage.js';
+import { STATUS_DIR_MAP, resolveProjectDir } from '../src/storage/project-storage.js';
 import { authenticate, AUTH_CONFIG } from './helpers/auth.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
@@ -201,6 +201,22 @@ describe('settings — asset category defaults HTTP', () => {
       expect(res.text).toMatch(/<input\s+type="checkbox"\s+id="global-category-enabled-\d+"[\s\S]*?checked/);
     });
 
+    it('guards each default Delete with a confirmation and marks the details form for in-place save', async () => {
+      ctx = setupTmp();
+      const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
+      const { agent } = await authenticate(app);
+
+      const res = await agent.get('/settings/asset-categories').expect(200);
+      // Every default-delete button must ask for confirmation before deleting.
+      const deleteButtons = res.text.match(/<button[^>]*button-danger[^>]*>\s*Delete\s*<\/button>/g) || [];
+      expect(deleteButtons.length).toBeGreaterThan(0);
+      for (const button of deleteButtons) {
+        expect(button).toContain('data-confirm=');
+      }
+      // The "Save details" form opts into the in-place (no full reload) submit.
+      expect(res.text).toContain('data-category-details-form');
+    });
+
     it('renders defaults in deterministic display_order then id order', async () => {
       ctx = setupTmp();
       const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
@@ -253,7 +269,7 @@ describe('settings — asset category defaults HTTP', () => {
 
       const res = await agent.get('/settings/asset-categories').expect(200);
       expect(res.text).toMatch(/<option value="exports" selected>Exports/);
-      expect(res.text).toContain('Saved setting: <strong>Exports</strong>');
+      expect(res.text).toContain('Saved:</span> <strong>Exports</strong>');
       expect(getGlobalBrowserDefault(ctx.db)).toBe('exports');
     });
 
@@ -267,7 +283,7 @@ describe('settings — asset category defaults HTTP', () => {
       await agent.post(`/settings/asset-categories/${source.id}/disable`).type('form').send({ _csrf: csrfToken }).expect(302);
       const disabled = await agent.get('/settings/asset-categories').expect(200);
       expect(disabled.text).toMatch(/saved global category is disabled/i);
-      expect(disabled.text).toMatch(/Effective behavior for inheriting projects:.*All Categories/i);
+      expect(disabled.text).toMatch(/Effective:<\/span>\s*<strong>All Categories<\/strong>\s*for inheriting projects/i);
       expect(getGlobalBrowserDefault(ctx.db)).toBe('source');
 
       ctx.db.prepare('UPDATE app_meta SET value = ? WHERE key = ?').run('does-not-exist', 'asset_browser.default_category');
@@ -515,6 +531,28 @@ describe('settings — asset category defaults HTTP', () => {
       expect(unchanged.directory_slug).toBe('exports');
     });
 
+    it('rerenders edit validation errors inside the affected card with retained values', async () => {
+      ctx = setupTmp();
+      const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
+      const { agent, csrfToken } = await authenticate(app);
+      const row = ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE directory_slug = ?').get('source');
+
+      const res = await agent.post(`/settings/asset-categories/${row.id}`).type('form')
+        .send({ displayName: '   ', directorySlug: 'bad slug', _csrf: csrfToken })
+        .expect(422);
+
+      const card = res.text.match(
+        new RegExp(`<article\\b[^>]*data-category-id="${row.id}"[\\s\\S]*?<\\/article>`)
+      )?.[0] || '';
+      expect(res.text).toContain('Could not save this category. Fix the fields below and try again.');
+      expect(card).toContain(`id="global-category-${row.id}-display-name-error"`);
+      expect(card).toContain(`id="global-category-${row.id}-directory-slug-error"`);
+      expect(card).toContain('aria-invalid="true"');
+      expect(card).toContain('value="   "');
+      expect(card).toContain('value="bad slug"');
+      expect(card).toContain('>Save details</button>');
+    });
+
     it('leaves already-copied project-owned categories unchanged and performs no filesystem or manifest operation', async () => {
       ctx = setupTmp();
       const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
@@ -636,6 +674,18 @@ describe('settings — asset category defaults HTTP', () => {
   // ─── Reorder ──────────────────────────────────────────────────────────────
 
   describe('reordering', () => {
+    function listGlobalRows() {
+      return ctx.db.prepare(
+        'SELECT * FROM asset_category_defaults ORDER BY display_order ASC, id ASC'
+      ).all();
+    }
+
+    function listProjectRows(projectId) {
+      return ctx.db.prepare(
+        'SELECT * FROM project_asset_categories WHERE project_id = ? ORDER BY id'
+      ).all(projectId);
+    }
+
     it('persists a complete valid reorder as contiguous zero-based positions', async () => {
       ctx = setupTmp();
       const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
@@ -643,14 +693,29 @@ describe('settings — asset category defaults HTTP', () => {
       const ids = ctx.db.prepare('SELECT id FROM asset_category_defaults ORDER BY display_order').all().map((r) => r.id);
       const reversed = [...ids].reverse();
 
-      await agent.post('/settings/asset-categories/reorder').type('form')
-        .send(reversed.map((id) => `order=${id}`).join('&') + `&_csrf=${encodeURIComponent(csrfToken)}`)
-        .set('Content-Type', 'application/x-www-form-urlencoded')
+      const response = await agent.post('/settings/asset-categories/reorder').type('form')
+        .send({ orderedCategoryIds: reversed.join(','), _csrf: csrfToken })
         .expect(302);
+      expect(response.headers.location).toBe('/settings/asset-categories?notice=category_reordered');
 
       const rows = ctx.db.prepare('SELECT id, display_order FROM asset_category_defaults ORDER BY display_order').all();
       expect(rows.map((r) => r.id)).toEqual(reversed);
       expect(rows.map((r) => r.display_order)).toEqual(reversed.map((_, i) => i));
+    });
+
+    it('persists a valid arbitrary order through the single orderedCategoryIds field', async () => {
+      ctx = setupTmp();
+      const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
+      const { agent, csrfToken } = await authenticate(app);
+      const rows = listGlobalRows();
+      const orderedRows = [rows[2], rows[0], rows[4], rows[1], rows[3]];
+
+      await agent.post('/settings/asset-categories/reorder').type('form')
+        .send({ orderedCategoryIds: orderedRows.map((row) => row.id).join(','), _csrf: csrfToken })
+        .expect(302);
+
+      expect(listGlobalRows().map((row) => row.id)).toEqual(orderedRows.map((row) => row.id));
+      expect(listGlobalRows().map((row) => row.display_order)).toEqual([0, 1, 2, 3, 4]);
     });
 
     it('reorders enabled and disabled defaults together', async () => {
@@ -664,8 +729,7 @@ describe('settings — asset category defaults HTTP', () => {
       const reversed = [...ids].reverse();
 
       await agent.post('/settings/asset-categories/reorder').type('form')
-        .send(reversed.map((id) => `order=${id}`).join('&') + `&_csrf=${encodeURIComponent(csrfToken)}`)
-        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send({ orderedCategoryIds: reversed.join(','), _csrf: csrfToken })
         .expect(302);
 
       const rows = ctx.db.prepare('SELECT id FROM asset_category_defaults ORDER BY display_order').all();
@@ -685,10 +749,9 @@ describe('settings — asset category defaults HTTP', () => {
       const malformed = [ids[0], ids[0], ...ids.slice(2)];
 
       const res = await agent.post('/settings/asset-categories/reorder').type('form')
-        .send(malformed.map((id) => `order=${id}`).join('&') + `&_csrf=${encodeURIComponent(csrfToken)}`)
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .expect(302);
-      expect(res.headers.location).toBe('/settings/asset-categories?notice=category_reorder_failed');
+        .send({ orderedCategoryIds: malformed.join(','), _csrf: csrfToken })
+        .expect(422);
+      expect(res.text).toContain('submitted category order is invalid');
       expect(await reorderSnapshot(ctx)).toEqual(before);
     });
 
@@ -701,10 +764,9 @@ describe('settings — asset category defaults HTTP', () => {
       const incomplete = ids.slice(0, ids.length - 1);
 
       const res = await agent.post('/settings/asset-categories/reorder').type('form')
-        .send(incomplete.map((id) => `order=${id}`).join('&') + `&_csrf=${encodeURIComponent(csrfToken)}`)
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .expect(302);
-      expect(res.headers.location).toBe('/settings/asset-categories?notice=category_reorder_failed');
+        .send({ orderedCategoryIds: incomplete.join(','), _csrf: csrfToken })
+        .expect(422);
+      expect(res.text).toContain('submitted category order is invalid');
       expect(await reorderSnapshot(ctx)).toEqual(before);
     });
 
@@ -717,10 +779,9 @@ describe('settings — asset category defaults HTTP', () => {
       const withUnknown = [...ids.slice(1), 999999];
 
       const res = await agent.post('/settings/asset-categories/reorder').type('form')
-        .send(withUnknown.map((id) => `order=${id}`).join('&') + `&_csrf=${encodeURIComponent(csrfToken)}`)
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .expect(302);
-      expect(res.headers.location).toBe('/settings/asset-categories?notice=category_reorder_failed');
+        .send({ orderedCategoryIds: withUnknown.join(','), _csrf: csrfToken })
+        .expect(422);
+      expect(res.text).toContain('submitted category order is invalid');
       expect(await reorderSnapshot(ctx)).toEqual(before);
     });
 
@@ -733,11 +794,76 @@ describe('settings — asset category defaults HTTP', () => {
       const malformed = [...ids.slice(1), 'not-a-number'];
 
       const res = await agent.post('/settings/asset-categories/reorder').type('form')
-        .send(malformed.map((id) => `order=${id}`).join('&') + `&_csrf=${encodeURIComponent(csrfToken)}`)
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .expect(302);
-      expect(res.headers.location).toBe('/settings/asset-categories?notice=category_reorder_failed');
+        .send({ orderedCategoryIds: malformed.join(','), _csrf: csrfToken })
+        .expect(422);
+      expect(res.text).toContain('submitted category order is invalid');
       expect(await reorderSnapshot(ctx)).toEqual(before);
+    });
+
+    it('rejects missing, empty, decimal, partial, non-positive, unsafe, and repeated-field payloads with 422', async () => {
+      ctx = setupTmp();
+      const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
+      const { agent, csrfToken } = await authenticate(app);
+      const ids = listGlobalRows().map((row) => row.id);
+      const tail = ids.slice(1).join(',');
+      const payloads = [
+        {},
+        { orderedCategoryIds: '' },
+        { orderedCategoryIds: `${ids[0]}.5,${tail}` },
+        { orderedCategoryIds: `${ids[0]}abc,${tail}` },
+        { orderedCategoryIds: `0,${tail}` },
+        { orderedCategoryIds: `-1,${tail}` },
+        { orderedCategoryIds: `9007199254740992,${tail}` },
+        { orderedCategoryIds: [String(ids[0]), ...ids.slice(1).map(String)] },
+      ];
+
+      for (const payload of payloads) {
+        const res = await agent.post('/settings/asset-categories/reorder').type('form')
+          .send({ ...payload, _csrf: csrfToken })
+          .expect(422);
+        expect(res.text).toContain('submitted category order is invalid');
+        expect(res.text).not.toContain('9007199254740992');
+      }
+    });
+
+    it('rejects project-owned and stale IDs as invalid exact sets without mutation', async () => {
+      ctx = setupTmp();
+      const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
+      const { agent, csrfToken } = await authenticate(app);
+      const projectId = await createProject(agent, csrfToken, 'Global Reorder Isolation Input');
+      await agent.post(`/projects/${projectId}/asset-categories`).type('form')
+        .send({ displayName: 'Project Only', directorySlug: 'project-only', _csrf: csrfToken })
+        .expect(302);
+
+      const globalIds = listGlobalRows().map((row) => row.id);
+      const projectOwnedId = Math.max(...listProjectRows(projectId).map((row) => row.id));
+      const before = await reorderSnapshot(ctx);
+
+      const projectOwned = await agent.post('/settings/asset-categories/reorder').type('form')
+        .send({ orderedCategoryIds: [projectOwnedId, ...globalIds.slice(1)].join(','), _csrf: csrfToken })
+        .expect(422);
+      expect(projectOwned.text).toContain('submitted category order is invalid');
+      expect(await reorderSnapshot(ctx)).toEqual(before);
+
+      ctx.db.prepare('DELETE FROM asset_category_defaults WHERE id = ?').run(globalIds[0]);
+      const stale = await agent.post('/settings/asset-categories/reorder').type('form')
+        .send({ orderedCategoryIds: globalIds.join(','), _csrf: csrfToken })
+        .expect(422);
+      expect(stale.text).toContain('submitted category order is invalid');
+    });
+
+    it('accepts an empty order after the current global set is empty', async () => {
+      ctx = setupTmp();
+      const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
+      const { agent, csrfToken } = await authenticate(app);
+      ctx.db.prepare('DELETE FROM asset_category_defaults').run();
+
+      const response = await agent.post('/settings/asset-categories/reorder').type('form')
+        .send({ orderedCategoryIds: '', _csrf: csrfToken })
+        .expect(302);
+
+      expect(response.headers.location).toBe('/settings/asset-categories?notice=category_reordered');
+      expect(listGlobalRows()).toEqual([]);
     });
 
     it('rerenders the list in the new deterministic order after a successful reorder', async () => {
@@ -747,17 +873,122 @@ describe('settings — asset category defaults HTTP', () => {
       const ids = ctx.db.prepare('SELECT id FROM asset_category_defaults ORDER BY display_order').all().map((r) => r.id);
       const reversed = [...ids].reverse();
 
-      await agent.post('/settings/asset-categories/reorder').type('form')
-        .send(reversed.map((id) => `order=${id}`).join('&') + `&_csrf=${encodeURIComponent(csrfToken)}`)
-        .set('Content-Type', 'application/x-www-form-urlencoded')
+      const response = await agent.post('/settings/asset-categories/reorder').type('form')
+        .send({ orderedCategoryIds: reversed.join(','), _csrf: csrfToken })
         .expect(302);
+      expect(response.headers.location).toBe('/settings/asset-categories?notice=category_reordered');
 
-      const res = await agent.get('/settings/asset-categories').expect(200);
+      const res = await agent.get(response.headers.location).expect(200);
+      expect(res.text).toContain('Asset category order updated.');
       const thumbnailsIdx = res.text.indexOf('>Thumbnails<');
       const sourceIdx = res.text.indexOf('>Source<');
       expect(thumbnailsIdx).toBeGreaterThan(-1);
       expect(sourceIdx).toBeGreaterThan(-1);
       expect(thumbnailsIdx).toBeLessThan(sourceIdx);
+    });
+
+    it('preserves the global browser default and all existing project state', async () => {
+      ctx = setupTmp();
+      const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
+      const { agent, csrfToken } = await authenticate(app);
+      const projectId = await createProject(agent, csrfToken, 'Global Reorder Project Isolation');
+      const projectCategoriesBefore = listProjectRows(projectId);
+      const assignedCategory = projectCategoriesBefore[1];
+
+      await agent.post(`/projects/${projectId}/asset-categories/default`).type('form')
+        .send({ defaultCategory: `category:${assignedCategory.id}`, _csrf: csrfToken })
+        .expect(302);
+      ctx.db.prepare(`
+        INSERT INTO assets (
+          project_id, category_id, relative_path, nested_path, filename, extension,
+          mime_type, size_bytes, modified_at, is_present, last_seen_at, missing_since
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        projectId,
+        assignedCategory.id,
+        `${assignedCategory.directory_slug}/assigned.png`,
+        '',
+        'assigned.png',
+        'png',
+        'image/png',
+        1,
+        null,
+        1,
+        null,
+        null,
+      );
+
+      const projectPreferenceBefore = getProjectBrowserPreference(ctx.db, projectId);
+      const assetsBefore = ctx.db.prepare(`
+        SELECT id, project_id, category_id, relative_path, nested_path, filename,
+               extension, mime_type, size_bytes, modified_at, is_present
+        FROM assets WHERE project_id = ? ORDER BY id
+      `).all(projectId);
+      const project = ctx.db.prepare('SELECT project_dir FROM projects WHERE id = ?').get(projectId);
+      const projectDir = resolveProjectDir(ctx.projectsRoot, project.project_dir);
+      const filesBefore = fs.readdirSync(projectDir, { recursive: true }).sort();
+      const manifestBefore = fs.readFileSync(path.join(projectDir, 'project.json'), 'utf8');
+      ctx.db.prepare('UPDATE app_meta SET value = ? WHERE key = ?')
+        .run('exports', 'asset_browser.default_category');
+      const globalPreferenceBefore = getGlobalBrowserDefault(ctx.db);
+      const orderedIds = listGlobalRows().map((row) => row.id).reverse();
+
+      await agent.post('/settings/asset-categories/reorder').type('form')
+        .send({ orderedCategoryIds: orderedIds.join(','), _csrf: csrfToken })
+        .expect(302);
+
+      expect(getGlobalBrowserDefault(ctx.db)).toBe(globalPreferenceBefore);
+      expect(listProjectRows(projectId)).toEqual(projectCategoriesBefore);
+      expect(getProjectBrowserPreference(ctx.db, projectId)).toEqual(projectPreferenceBefore);
+      expect(ctx.db.prepare(`
+        SELECT id, project_id, category_id, relative_path, nested_path, filename,
+               extension, mime_type, size_bytes, modified_at, is_present
+        FROM assets WHERE project_id = ? ORDER BY id
+      `).all(projectId)).toEqual(assetsBefore);
+      expect(fs.readdirSync(projectDir, { recursive: true }).sort()).toEqual(filesBefore);
+      expect(fs.readFileSync(path.join(projectDir, 'project.json'), 'utf8')).toBe(manifestBefore);
+    });
+
+    it('calls the injected batch service once for the complete submitted order', async () => {
+      ctx = setupTmp();
+      const fake = makeFakeCategoryService([
+        { id: 41, display_name: 'One', directory_slug: 'one', display_order: 0, enabled: 1 },
+        { id: 42, display_name: 'Two', directory_slug: 'two', display_order: 1, enabled: 1 },
+      ]);
+      const app = createApp(
+        { appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot },
+        { assetCategoryService: fake, authConfig: AUTH_CONFIG }
+      );
+      const { agent, csrfToken } = await authenticate(app);
+
+      await agent.post('/settings/asset-categories/reorder').type('form')
+        .send({ orderedCategoryIds: '42,41', _csrf: csrfToken })
+        .expect(302);
+
+      expect(fake.reorderDefaults).toHaveBeenCalledTimes(1);
+      expect(fake.reorderDefaults).toHaveBeenCalledWith([42, 41]);
+    });
+
+    it('uses a controlled failure notice without exposing unexpected error text', async () => {
+      ctx = setupTmp();
+      const fake = makeFakeCategoryService();
+      fake.reorderDefaults.mockImplementationOnce(() => {
+        throw new Error('private database failure detail');
+      });
+      const app = createApp(
+        { appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot },
+        { assetCategoryService: fake, authConfig: AUTH_CONFIG }
+      );
+      const { agent, csrfToken } = await authenticate(app);
+
+      const response = await agent.post('/settings/asset-categories/reorder').type('form')
+        .send({ orderedCategoryIds: '1', _csrf: csrfToken })
+        .expect(302);
+      expect(response.headers.location).toBe('/settings/asset-categories?notice=category_reorder_failed');
+
+      const page = await agent.get(response.headers.location).expect(200);
+      expect(page.text).toContain('Could not update the order. No changes were made.');
+      expect(page.text).not.toContain('private database failure detail');
     });
 
     it('Move Up/Down controls persist a swap via the same reorder contract', async () => {
@@ -771,6 +1002,38 @@ describe('settings — asset category defaults HTTP', () => {
       const rows = ctx.db.prepare('SELECT directory_slug FROM asset_category_defaults ORDER BY display_order').all();
       expect(rows[0].directory_slug).toBe('exports');
       expect(rows[1].directory_slug).toBe('source');
+    });
+
+    it('Move Down preserves the existing boundary and redirect behavior', async () => {
+      ctx = setupTmp();
+      const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
+      const { agent, csrfToken } = await authenticate(app);
+      const extras = ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE directory_slug = ?').get('extras');
+
+      const response = await agent.post(`/settings/asset-categories/${extras.id}/move-down`)
+        .type('form').send({ _csrf: csrfToken }).expect(302);
+      expect(response.headers.location).toBe('/settings/asset-categories?notice=category_reordered');
+
+      const rows = ctx.db.prepare('SELECT directory_slug FROM asset_category_defaults ORDER BY display_order').all();
+      expect(rows.map((row) => row.directory_slug)).toEqual([
+        'source', 'exports', 'references', 'extras', 'thumbnails',
+      ]);
+    });
+
+    it('Move Up/Move Down at boundaries remain no-op successful moves', async () => {
+      ctx = setupTmp();
+      const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
+      const { agent, csrfToken } = await authenticate(app);
+      const first = ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE directory_slug = ?').get('source');
+      const last = ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE directory_slug = ?').get('thumbnails');
+      const before = listGlobalRows().map((row) => row.id);
+
+      await agent.post(`/settings/asset-categories/${first.id}/move-up`).type('form')
+        .send({ _csrf: csrfToken }).expect(302);
+      await agent.post(`/settings/asset-categories/${last.id}/move-down`).type('form')
+        .send({ _csrf: csrfToken }).expect(302);
+
+      expect(listGlobalRows().map((row) => row.id)).toEqual(before);
     });
   });
 
@@ -842,6 +1105,9 @@ describe('settings — asset category defaults HTTP', () => {
       const { agent } = await authenticate(app);
       await agent.post('/settings/asset-categories').type('form')
         .send({ displayName: 'X', directorySlug: 'x' })
+        .expect(403);
+      await agent.post('/settings/asset-categories/reorder').type('form')
+        .send({ orderedCategoryIds: '1,2,3,4,5' })
         .expect(403);
     });
 

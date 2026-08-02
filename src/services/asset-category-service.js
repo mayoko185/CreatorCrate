@@ -13,6 +13,7 @@ import {
   assertPositiveIntegerId,
   assertStrictBoolean,
 } from './asset-category-validation.js';
+import { AssetCategoryError } from '../data/asset-category-repository.js';
 
 export { AssetCategoryValidationError };
 
@@ -22,6 +23,41 @@ export class AssetCategoryNotFoundError extends Error {
     this.name = 'AssetCategoryNotFoundError';
     this.status = 404;
   }
+}
+
+const REORDER_VALIDATION_CODES = new Set([
+  'INVALID_INPUT',
+  'INVALID_SEQUENCE_LENGTH',
+  'DUPLICATE_ID',
+  'UNKNOWN_ID',
+  'INVALID_ID',
+]);
+
+function invalidReorder(message = 'Global category order must contain every current global category exactly once.') {
+  throw new AssetCategoryValidationError({ orderedCategoryIds: message });
+}
+
+function assertCompleteGlobalReorderSet(orderedIds, categories) {
+  if (!Array.isArray(orderedIds) || orderedIds.some((id) => !Number.isSafeInteger(id) || id <= 0)) {
+    invalidReorder('Global category IDs must be safe positive integers.');
+  }
+
+  if (new Set(orderedIds).size !== orderedIds.length) {
+    invalidReorder('Global category order must not contain duplicate IDs.');
+  }
+
+  if (orderedIds.length !== categories.length) {
+    invalidReorder();
+  }
+
+  const currentIds = new Set(categories.map((category) => category.id));
+  if (orderedIds.some((id) => !currentIds.has(id))) {
+    invalidReorder();
+  }
+}
+
+function isReorderValidationError(err) {
+  return err instanceof AssetCategoryError && REORDER_VALIDATION_CODES.has(err.code);
 }
 
 export function createAssetCategoryService(repository) {
@@ -73,10 +109,17 @@ export function createAssetCategoryService(repository) {
     },
 
     reorderDefaults(orderedIds) {
-      if (!Array.isArray(orderedIds) || orderedIds.some((id) => !Number.isInteger(id) || id <= 0)) {
-        throw new AssetCategoryValidationError({ order: 'Reorder input must be an array of positive integer IDs.' });
+      const categories = repository.listDefaults();
+      assertCompleteGlobalReorderSet(orderedIds, categories);
+
+      try {
+        return repository.reorderDefaults(orderedIds);
+      } catch (err) {
+        if (isReorderValidationError(err)) {
+          invalidReorder();
+        }
+        throw err;
       }
-      return repository.reorderDefaults(orderedIds);
     },
 
     deleteDefault(id) {

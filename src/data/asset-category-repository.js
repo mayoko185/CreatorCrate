@@ -41,10 +41,9 @@ export function createAssetCategoryRepository(db) {
     WHERE id = ?
     RETURNING ${DEFAULT_COLUMNS.join(', ')}
   `);
-  const setDefaultOrderStmt = db.prepare(`
+  const shiftDefaultOrdersStmt = db.prepare(`
     UPDATE asset_category_defaults
-    SET display_order = ?, updated_at = datetime('now')
-    WHERE id = ?
+    SET display_order = display_order + ?
   `);
   const deleteDefaultStmt = db.prepare('DELETE FROM asset_category_defaults WHERE id = ?');
   const findDefaultByIdStmt = db.prepare(`${SELECT_DEFAULTS} WHERE id = ?`);
@@ -88,6 +87,11 @@ export function createAssetCategoryRepository(db) {
     SET display_order = ?, updated_at = datetime('now')
     WHERE project_id = ? AND id = ?
   `);
+  const shiftProjectCategoryOrdersStmt = db.prepare(`
+    UPDATE project_asset_categories
+    SET display_order = display_order + ?
+    WHERE project_id = ?
+  `);
   const deleteProjectCategoryStmt = db.prepare(
     'DELETE FROM project_asset_categories WHERE project_id = ? AND id = ?'
   );
@@ -95,6 +99,10 @@ export function createAssetCategoryRepository(db) {
   const reorderProjectCategoriesTx = db.transaction((projectId, orderedIds) => {
     const current = listProjectCategoriesStmt.all(projectId);
     const currentIds = current.map((row) => row.id);
+
+    if (!Array.isArray(orderedIds)) {
+      throw new AssetCategoryError('Project category reorder input must be an array.', { code: 'INVALID_INPUT' });
+    }
 
     if (orderedIds.length !== currentIds.length) {
       throw new AssetCategoryError(
@@ -105,7 +113,7 @@ export function createAssetCategoryRepository(db) {
 
     const seen = new Set();
     for (const id of orderedIds) {
-      if (!Number.isInteger(id)) {
+      if (!Number.isSafeInteger(id) || id <= 0) {
         throw new AssetCategoryError(`Invalid project category ID: ${id}.`, { code: 'INVALID_ID' });
       }
       if (seen.has(id)) {
@@ -124,11 +132,36 @@ export function createAssetCategoryRepository(db) {
       }
     }
 
-    for (let i = 0; i < orderedIds.length; i++) {
-      const result = setProjectCategoryOrderStmt.run(i, projectId, orderedIds[i]);
-      if (result.changes !== 1) {
+    if (orderedIds.length > 0) {
+      // Move every current position outside the final range first. This keeps
+      // the operation valid if a future schema adds a unique project/order
+      // constraint; direct swaps would otherwise collide during the update.
+      const maxDisplayOrder = Math.max(...current.map((row) => row.display_order));
+      const temporaryOffset = maxDisplayOrder + current.length + 1;
+      const shifted = shiftProjectCategoryOrdersStmt.run(temporaryOffset, projectId);
+      if (shifted.changes !== current.length) {
         throw new AssetCategoryError(
-          `Reorder update for project category ${orderedIds[i]} affected ${result.changes} rows, expected 1.`,
+          `Reorder preparation affected ${shifted.changes} rows, expected ${current.length}.`,
+          { code: 'UPDATE_CHANGES_MISMATCH' }
+        );
+      }
+
+      const whenClauses = orderedIds.map(() => 'WHEN ? THEN ?').join(' ');
+      const setFinalOrderStmt = db.prepare(`
+        UPDATE project_asset_categories
+        SET display_order = CASE id ${whenClauses} ELSE display_order END
+        WHERE project_id = ?
+      `);
+      const finalOrderParams = [];
+      for (let i = 0; i < orderedIds.length; i++) {
+        finalOrderParams.push(orderedIds[i], i);
+      }
+      finalOrderParams.push(projectId);
+
+      const finalized = setFinalOrderStmt.run(...finalOrderParams);
+      if (finalized.changes !== current.length) {
+        throw new AssetCategoryError(
+          `Reorder finalization affected ${finalized.changes} rows, expected ${current.length}.`,
           { code: 'UPDATE_CHANGES_MISMATCH' }
         );
       }
@@ -160,6 +193,10 @@ export function createAssetCategoryRepository(db) {
     const current = listDefaultsStmt.all();
     const currentIds = current.map((row) => row.id);
 
+    if (!Array.isArray(orderedIds)) {
+      throw new AssetCategoryError('Global category reorder input must be an array.', { code: 'INVALID_INPUT' });
+    }
+
     if (orderedIds.length !== currentIds.length) {
       throw new AssetCategoryError(
         `Reorder sequence length ${orderedIds.length} does not match current default count ${currentIds.length}.`,
@@ -169,7 +206,7 @@ export function createAssetCategoryRepository(db) {
 
     const seen = new Set();
     for (const id of orderedIds) {
-      if (!Number.isInteger(id)) {
+      if (!Number.isSafeInteger(id) || id <= 0) {
         throw new AssetCategoryError(`Invalid default category ID: ${id}.`, { code: 'INVALID_ID' });
       }
       if (seen.has(id)) {
@@ -185,11 +222,37 @@ export function createAssetCategoryRepository(db) {
       }
     }
 
-    for (let i = 0; i < orderedIds.length; i++) {
-      const result = setDefaultOrderStmt.run(i, orderedIds[i]);
-      if (result.changes !== 1) {
+    if (orderedIds.length > 0) {
+      // Move every current position outside the final non-negative range
+      // first. This keeps the operation valid if a unique order constraint is
+      // added later; direct swaps could otherwise collide mid-update.
+      const minDisplayOrder = Math.min(...current.map((row) => row.display_order));
+      const temporaryOffset = Math.max(1, current.length + 1 - minDisplayOrder);
+      const shifted = shiftDefaultOrdersStmt.run(temporaryOffset);
+      if (shifted.changes !== current.length) {
         throw new AssetCategoryError(
-          `Reorder update for default ${orderedIds[i]} affected ${result.changes} rows, expected 1.`,
+          `Reorder preparation affected ${shifted.changes} rows, expected ${current.length}.`,
+          { code: 'UPDATE_CHANGES_MISMATCH' }
+        );
+      }
+
+      const whenClauses = orderedIds.map(() => 'WHEN ? THEN ?').join(' ');
+      const idPlaceholders = orderedIds.map(() => '?').join(', ');
+      const setFinalOrderStmt = db.prepare(`
+        UPDATE asset_category_defaults
+        SET display_order = CASE id ${whenClauses} ELSE display_order END
+        WHERE id IN (${idPlaceholders})
+      `);
+      const finalOrderParams = [];
+      for (let i = 0; i < orderedIds.length; i++) {
+        finalOrderParams.push(orderedIds[i], i);
+      }
+      finalOrderParams.push(...orderedIds);
+
+      const finalized = setFinalOrderStmt.run(...finalOrderParams);
+      if (finalized.changes !== current.length) {
+        throw new AssetCategoryError(
+          `Reorder finalization affected ${finalized.changes} rows, expected ${current.length}.`,
           { code: 'UPDATE_CHANGES_MISMATCH' }
         );
       }

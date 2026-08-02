@@ -1,4 +1,4 @@
-{% macro control(id, name, checked, description, describedBy=null, invalid=false, readonly=false) %}
+{% macro control(id, name, checked, description, describedBy=null, invalid=false, readonly=false, autosubmit=false, noscriptFallback=true) %}
   <div class="form-switch{% if readonly %} form-switch--readonly{% endif %}">
     {% if not readonly %}
       <input type="hidden" name="{{ name }}" value="0" tabindex="-1">
@@ -9,6 +9,7 @@
       name="{{ name }}"
       value="1"
       class="form-switch-control"
+      {% if autosubmit %}data-autosubmit{% endif %}
       {% if checked %}checked{% endif %}
       {% if readonly %}disabled{% endif %}
       {% if describedBy %}aria-describedby="{{ describedBy }}"{% endif %}
@@ -19,5 +20,9 @@
       <span class="form-switch-state form-switch-state--off">Disabled</span>
       <span class="sr-only">{{ description }}</span>
     </label>
+    {% if autosubmit %}<span class="sr-only" data-category-enabled-status aria-live="polite" aria-atomic="true"></span>{% endif %}
+    {% if autosubmit and noscriptFallback and not readonly %}
+      <noscript><button type="submit" class="button button-small button-secondary">Save status</button></noscript>
+    {% endif %}
   </div>
 {% endmacro %}

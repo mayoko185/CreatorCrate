@@ -41,7 +41,7 @@
         {% endif %}
         {% set addEnabled = true %}
         {% if addValues.enabled is defined %}{% set addEnabled = addValues.enabled %}{% endif %}
-        <form method="post" action="/settings/asset-categories" class="project-form" novalidate>
+        <form method="post" action="/settings/asset-categories" class="project-form category-management-form" novalidate>
           <input type="hidden" name="_csrf" value="{{ _csrf }}">
           <div class="field-row">
             <div class="field {% if addErrors.displayName %}field-error{% endif %}">
@@ -67,85 +67,99 @@
                 "add-enabled-error" if addErrors.enabled else null,
                 true if addErrors.enabled else false
               ) }}
-              <span class="help-text">New global categories are enabled by default.</span>
               {% if addErrors.enabled %}<span class="field-error-message" id="add-enabled-error">{{ addErrors.enabled }}</span>{% endif %}
             </div>
           </div>
 
-          <div class="form-actions">
+          <div class="form-actions category-management-action-row">
             <button type="submit" class="button button-primary">Add Default</button>
           </div>
         </form>
       </div>
 
-      {% if editingId %}
-        <div class="settings-section" id="edit-category">
-          <h3>Edit default</h3>
-          {% if editErrors.displayName or editErrors.directorySlug %}
-            <div class="error-summary" role="alert" id="edit-category-errors">
-              <p>Could not save this category. Fix the fields below and try again.</p>
-            </div>
-          {% endif %}
-          <form method="post" action="/settings/asset-categories/{{ editingId }}" class="project-form" novalidate>
+      <div class="settings-section category-management-section category-management-list-section settings-category-management-section">
+        <h3>Defaults</h3>
+        {% if editingId and (editErrors.displayName or editErrors.directorySlug) %}
+          <div class="error-summary" role="alert" id="edit-category-errors">
+            <p>Could not save this category. Fix the fields below and try again.</p>
+          </div>
+        {% endif %}
+        {% if categories.length > 0 %}
+          <form id="settings-category-reorder-form" method="post" action="/settings/asset-categories/reorder" class="category-reorder-form" data-category-reorder-form>
             <input type="hidden" name="_csrf" value="{{ _csrf }}">
-            <div class="field-row">
-              <div class="field {% if editErrors.displayName %}field-error{% endif %}">
-                <label for="edit-displayName">Display name <span class="required" aria-label="required">*</span></label>
-                <input type="text" id="edit-displayName" name="displayName" value="{{ editValues.displayName or '' }}" maxlength="100" required{% if editErrors.displayName %} aria-describedby="edit-displayName-error" aria-invalid="true"{% endif %}>
-                {% if editErrors.displayName %}<span class="field-error-message" id="edit-displayName-error">{{ editErrors.displayName }}</span>{% endif %}
-              </div>
-
-              <div class="field {% if editErrors.directorySlug %}field-error{% endif %}">
-                <label for="edit-directorySlug">Directory slug <span class="required" aria-label="required">*</span></label>
-                <input type="text" id="edit-directorySlug" name="directorySlug" value="{{ editValues.directorySlug or '' }}" maxlength="100" required{% if editErrors.directorySlug %} aria-describedby="edit-directorySlug-error" aria-invalid="true"{% endif %}>
-                {% if editErrors.directorySlug %}<span class="field-error-message" id="edit-directorySlug-error">{{ editErrors.directorySlug }}</span>{% endif %}
-              </div>
-            </div>
-
-            <div class="form-actions">
-              <button type="submit" class="button button-primary">Save</button>
-              <a href="/settings/asset-categories" class="button button-secondary">Cancel</a>
-            </div>
+            <input type="hidden" name="orderedCategoryIds" data-category-order-input value="">
           </form>
-        </div>
-      {% endif %}
 
-        <div class="settings-section category-management-section category-management-list-section">
-          <h3>Defaults</h3>
-          {% if categories.length > 0 %}
-          <div class="table-scroll category-management-list" tabindex="0" aria-label="Global asset category defaults">
-            <table class="data-table category-management-table">
-              <thead>
-                <tr>
-                  <th>Position</th>
-                  <th>Display name</th>
-                  <th>Directory slug</th>
-                  <th>Status</th>
-                  <th>Enabled</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {% for category in categories %}
-                  {% set rowEnabled = category.enabled %}
-                  {% set rowEnabledError = null %}
-                  {% if enabledControl and enabledControl.categoryId == category.id %}
-                    {% if enabledControl.submitted is not none %}{% set rowEnabled = enabledControl.submitted %}{% endif %}
-                    {% set rowEnabledError = enabledControl.errorMessage %}
-                  {% endif %}
-                  {% set rowEnabledErrorId = "global-category-" ~ category.id ~ "-enabled-error" %}
-                  <tr class="category-management-row">
-                    <td class="num">{{ loop.index }}</td>
-                    <td class="category-management-name">{{ category.display_name }}</td>
-                    <td class="category-management-slug"><code>{{ category.directory_slug }}</code></td>
-                    <td class="category-management-status">
-                      {% if rowEnabled %}
-                        <span class="status-badge status-badge--success">Enabled</span>
-                      {% else %}
-                        <span class="status-badge status-badge--neutral">Disabled</span>
-                      {% endif %}
-                    </td>
-                    <td class="category-management-enabled">
+          <div
+            class="category-reorder-list"
+            role="list"
+            aria-label="Global asset category defaults"
+            data-category-reorder-list
+            data-reorder-url="/settings/asset-categories/reorder"
+            data-reorder-form-target="settings-category-reorder-form">
+            {% for category in categories %}
+              {% set rowEnabled = category.enabled %}
+              {% set rowEnabledError = null %}
+              {% if enabledControl and enabledControl.categoryId == category.id %}
+                {% if enabledControl.submitted is not none %}{% set rowEnabled = enabledControl.submitted %}{% endif %}
+                {% set rowEnabledError = enabledControl.errorMessage %}
+              {% endif %}
+              {% set rowEnabledErrorId = "global-category-" ~ category.id ~ "-enabled-error" %}
+              {% set rowEditErrors = {} %}
+              {% set rowDisplayName = category.display_name %}
+              {% set rowDirectorySlug = category.directory_slug %}
+              {% if editingId and editingId == category.id %}
+                {% set rowEditErrors = editErrors %}
+                {% set rowDisplayName = editValues.displayName %}
+                {% set rowDirectorySlug = editValues.directorySlug %}
+              {% endif %}
+              {% set rowDisplayNameId = "global-category-" ~ category.id ~ "-display-name" %}
+              {% set rowDisplayNameErrorId = rowDisplayNameId ~ "-error" %}
+              {% set rowDirectorySlugId = "global-category-" ~ category.id ~ "-directory-slug" %}
+              {% set rowDirectorySlugErrorId = rowDirectorySlugId ~ "-error" %}
+              <article
+                class="category-management-card"
+                role="listitem"
+                data-category-id="{{ category.id }}"
+                data-category-label="{{ category.display_name }}"
+                data-category-reorder-item
+                draggable="true"
+                aria-posinset="{{ loop.index }}"
+                aria-setsize="{{ categories.length }}">
+                <button
+                  type="button"
+                  class="category-reorder-handle"
+                  data-category-reorder-handle
+                  draggable="true"
+                  aria-label="Reorder {{ category.display_name }}"
+                  title="Drag to reorder">
+                  <span aria-hidden="true">⠿</span>
+                </button>
+
+                <div class="category-management-card-body">
+                  <form method="post" action="/settings/asset-categories/{{ category.id }}" class="category-details-form" novalidate data-category-details-form>
+                    <input type="hidden" name="_csrf" value="{{ _csrf }}">
+                    <div class="category-management-card-fields">
+                      <div class="category-management-card-field category-management-name{% if rowEditErrors.displayName %} field-error{% endif %}">
+                        <label for="{{ rowDisplayNameId }}">Display name <span class="required" aria-label="required">*</span></label>
+                        <input type="text" id="{{ rowDisplayNameId }}" name="displayName" value="{{ rowDisplayName }}" maxlength="100" required{% if rowEditErrors.displayName %} aria-describedby="{{ rowDisplayNameErrorId }}" aria-invalid="true"{% endif %}>
+                        {% if rowEditErrors.displayName %}<span class="field-error-message" id="{{ rowDisplayNameErrorId }}" role="alert">{{ rowEditErrors.displayName }}</span>{% endif %}
+                      </div>
+
+                      <div class="category-management-card-field category-management-slug{% if rowEditErrors.directorySlug %} field-error{% endif %}">
+                        <label for="{{ rowDirectorySlugId }}">Directory slug <span class="required" aria-label="required">*</span></label>
+                        <input type="text" id="{{ rowDirectorySlugId }}" name="directorySlug" value="{{ rowDirectorySlug }}" maxlength="100" required{% if rowEditErrors.directorySlug %} aria-describedby="{{ rowDirectorySlugErrorId }}" aria-invalid="true"{% endif %}>
+                        {% if rowEditErrors.directorySlug %}<span class="field-error-message" id="{{ rowDirectorySlugErrorId }}" role="alert">{{ rowEditErrors.directorySlug }}</span>{% endif %}
+                      </div>
+                    </div>
+                    <div class="category-management-details-actions">
+                      <button type="submit" class="button button-small button-secondary">Save details</button>
+                      <span class="sr-only" data-category-details-status aria-live="polite" aria-atomic="true"></span>
+                    </div>
+                  </form>
+
+                  <div class="category-management-card-controls">
+                    <div class="category-management-enabled">
                       <form method="post" action="/settings/asset-categories/{{ category.id }}/enabled" class="category-enabled-form">
                         <input type="hidden" name="_csrf" value="{{ _csrf }}">
                         {{ formSwitch.control(
@@ -154,39 +168,27 @@
                           rowEnabled,
                           "Category " ~ category.display_name ~ " enabled state",
                           rowEnabledErrorId if rowEnabledError else null,
-                          true if rowEnabledError else false
+                          true if rowEnabledError else false,
+                          false,
+                          true,
+                          true
                         ) }}
-                        <button type="submit" class="button button-small button-secondary">Save</button>
                       </form>
                       {% if rowEnabledError %}<span class="field-error-message" id="{{ rowEnabledErrorId }}" role="alert">{{ rowEnabledError }}</span>{% endif %}
-                    </td>
-                    <td class="category-management-actions row-actions">
-                      <a class="button button-small button-secondary" href="/settings/asset-categories?edit={{ category.id }}">Edit</a>
+                    </div>
 
-                      {% if not loop.first %}
-                        <form method="post" action="/settings/asset-categories/{{ category.id }}/move-up" class="inline-form">
-                          <input type="hidden" name="_csrf" value="{{ _csrf }}">
-                          <button type="submit" class="button button-small button-secondary" aria-label="Move {{ category.display_name }} up">Move Up</button>
-                        </form>
-                      {% endif %}
-
-                      {% if not loop.last %}
-                        <form method="post" action="/settings/asset-categories/{{ category.id }}/move-down" class="inline-form">
-                          <input type="hidden" name="_csrf" value="{{ _csrf }}">
-                          <button type="submit" class="button button-small button-secondary" aria-label="Move {{ category.display_name }} down">Move Down</button>
-                        </form>
-                      {% endif %}
-
+                    <div class="category-management-actions">
                       <form method="post" action="/settings/asset-categories/{{ category.id }}/delete" class="inline-form">
                         <input type="hidden" name="_csrf" value="{{ _csrf }}">
-                        <button type="submit" class="button button-small button-danger">Delete</button>
+                        <button type="submit" class="button button-small button-danger" data-confirm="Delete this default category? Categories already copied into existing projects are not affected.">Delete</button>
                       </form>
-                    </td>
-                  </tr>
-                {% endfor %}
-              </tbody>
-            </table>
+                    </div>
+                  </div>
+                </div>
+              </article>
+            {% endfor %}
           </div>
+          <div class="category-reorder-live-region sr-only" data-category-reorder-live aria-live="polite" aria-atomic="true"></div>
         {% else %}
           {% set emptyHeading = "No asset category defaults" %}
           {% set emptyDescription = "Add a default above to have it copied into newly created projects." %}

@@ -4,6 +4,9 @@ import { fileURLToPath } from 'node:url';
 import {
   enhancePreview,
   enhancePreviewMedia,
+  enhanceAutoSubmit,
+  enhanceCategoryReorder,
+  enhanceCategoryDetails,
   enhanceAssetSelection,
   enhanceAssetRenames,
   enhanceAssetGridSize,
@@ -125,14 +128,13 @@ describe('static preview enhancement helpers', () => {
     expect(enhancePreviewMedia(scope)).toBe(0);
   });
 
-  it('does not use innerHTML or focus-stealing DOM replacement', () => {
+  it('does not use innerHTML for DOM replacement', () => {
     const source = fs.readFileSync(
       fileURLToPath(new URL('../src/static/creatorcrate.js', import.meta.url)),
       'utf8'
     );
 
     expect(source).not.toMatch(/innerHTML/i);
-    expect(source).not.toMatch(/aria-live|\.focus\(|innerHTML/i);
   });
 
   it('uses only browser-local storage for the presentation preference', () => {
@@ -142,7 +144,8 @@ describe('static preview enhancement helpers', () => {
     );
 
     expect(source).toMatch(/localStorage/);
-    expect(source).not.toMatch(/sessionStorage|fetch\(|XMLHttpRequest/i);
+    expect(source).not.toMatch(/sessionStorage|XMLHttpRequest/i);
+    expect(source).toMatch(/fetch\(/i);
   });
 });
 
@@ -151,16 +154,726 @@ describe('static preview enhancement helpers', () => {
 function makeCheckbox({ checked = false, disabled = false } = {}) {
   const listeners = [];
   return {
+    dataset: {},
     checked,
     disabled,
+    listeners,
     addEventListener(type, handler) {
       listeners.push({ type, handler });
     },
-    dispatch(type) {
-      for (const l of listeners.filter((entry) => entry.type === type)) l.handler();
+    dispatch(type, props = {}) {
+      const event = {
+        type,
+        target: this,
+        defaultPrevented: false,
+        preventDefault() { this.defaultPrevented = true; },
+        ...props,
+      };
+      for (const l of listeners.filter((entry) => entry.type === type)) l.handler(event);
+      return event;
     },
   };
 }
+
+class TestFormData {
+  constructor(form) {
+    this.form = form;
+    const values = {
+      _csrf: [form.csrfToken || 'csrf-token'],
+    };
+    if (form.control) values.enabled = ['0', ...(form.control.checked ? ['1'] : [])];
+    const orderInput = form.querySelector?.('[data-category-order-input]');
+    if (orderInput) values.orderedCategoryIds = [orderInput.value || ''];
+    this.values = values;
+  }
+
+  getAll(name) {
+    return this.values[name] || [];
+  }
+
+  // Iterable of [name, value] pairs so the enhancement's
+  // `new URLSearchParams(new FormData(form))` (urlencoded body) can consume it.
+  *[Symbol.iterator]() {
+    for (const [name, list] of Object.entries(this.values)) {
+      for (const value of list) yield [name, value];
+    }
+  }
+}
+
+async function withBrowserGlobals(fetchImplementation, callback) {
+  const originalFetch = globalThis.fetch;
+  const originalFormData = globalThis.FormData;
+  globalThis.fetch = fetchImplementation;
+  globalThis.FormData = TestFormData;
+  try {
+    return await callback();
+  } finally {
+    globalThis.fetch = originalFetch;
+    globalThis.FormData = originalFormData;
+  }
+}
+
+function flushAsync() {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+function makeEnabledFixture({ action, checked = true } = {}) {
+  const status = { textContent: '' };
+  const attributes = new Map();
+  const form = {
+    action,
+    method: 'post',
+    csrfToken: 'csrf-enabled',
+    control: null,
+    querySelector(selector) {
+      return selector === '[data-category-enabled-status]' ? status : null;
+    },
+    setAttribute(name, value) { attributes.set(name, String(value)); },
+    removeAttribute(name) { attributes.delete(name); },
+    getAttribute(name) { return attributes.get(name) || null; },
+    hasAttribute(name) { return attributes.has(name); },
+    requestSubmitCount: 0,
+    submitCount: 0,
+    requestSubmit() { this.requestSubmitCount += 1; },
+    submit() { this.submitCount += 1; },
+  };
+  const control = makeCheckbox({ checked });
+  control.form = form;
+  form.control = control;
+  return { control, form, status, attributes };
+}
+
+describe('category enabled autosubmit enhancement', () => {
+  it('uses each form action and complete FormData for checked and unchecked changes', async () => {
+    const project = makeEnabledFixture({ action: '/projects/7/asset-categories/11/enabled', checked: true });
+    const settings = makeEnabledFixture({ action: '/settings/asset-categories/12/enabled', checked: false });
+    const calls = [];
+
+    await withBrowserGlobals(async (action, options) => {
+      calls.push({ action, options });
+      return { ok: true };
+    }, async () => {
+      const scope = { querySelectorAll: () => [project.control, settings.control] };
+      enhanceAutoSubmit(scope);
+
+      project.control.checked = false;
+      const projectChange = project.control.dispatch('change');
+      settings.control.checked = true;
+      const settingsChange = settings.control.dispatch('change');
+      await flushAsync();
+
+      expect(projectChange.defaultPrevented).toBe(true);
+      expect(settingsChange.defaultPrevented).toBe(true);
+      expect(calls).toHaveLength(2);
+      expect(calls.map((call) => call.action)).toEqual([
+        '/projects/7/asset-categories/11/enabled',
+        '/settings/asset-categories/12/enabled',
+      ]);
+      expect(calls[0].options.method).toBe('POST');
+      expect(calls[0].options.credentials).toBe('same-origin');
+      expect(calls[0].options.body).toBeInstanceOf(URLSearchParams);
+      expect(calls[0].options.body.getAll('_csrf')).toEqual(['csrf-enabled']);
+      expect(calls[0].options.body.getAll('enabled')).toEqual(['0']);
+      expect(calls[1].options.body.getAll('enabled')).toEqual(['0', '1']);
+      expect(project.form.requestSubmitCount).toBe(0);
+      expect(project.form.submitCount).toBe(0);
+      expect(settings.form.requestSubmitCount).toBe(0);
+      expect(settings.form.submitCount).toBe(0);
+      expect(project.control.checked).toBe(false);
+      expect(settings.control.checked).toBe(true);
+      expect(project.status.textContent).toContain('Disabled status saved.');
+      expect(settings.status.textContent).toContain('Enabled status saved.');
+      expect(project.form.hasAttribute('aria-busy')).toBe(false);
+      expect(settings.form.hasAttribute('aria-busy')).toBe(false);
+    });
+  });
+
+  it('is idempotent, ignores unrelated controls, and keeps each pending form independent', async () => {
+    const first = makeEnabledFixture({ action: '/projects/7/asset-categories/11/enabled', checked: true });
+    const second = makeEnabledFixture({ action: '/settings/asset-categories/12/enabled', checked: true });
+    const unrelated = makeCheckbox({ checked: true });
+    const deferred = [];
+
+    await withBrowserGlobals((action) => new Promise((resolve) => deferred.push({ action, resolve })), async () => {
+      const scope = {
+        querySelectorAll(selector) {
+          expect(selector).toBe('[data-autosubmit]');
+          return [first.control, second.control];
+        },
+      };
+      expect(enhanceAutoSubmit(scope)).toBe(2);
+      expect(enhanceAutoSubmit(scope)).toBe(2);
+      expect(first.control.listeners).toHaveLength(1);
+      expect(second.control.listeners).toHaveLength(1);
+      expect(unrelated.listeners).toHaveLength(0);
+
+      first.control.checked = false;
+      first.control.dispatch('change');
+      await flushAsync();
+      expect(deferred).toHaveLength(1);
+      expect(first.form.hasAttribute('aria-busy')).toBe(true);
+      expect(second.form.hasAttribute('aria-busy')).toBe(false);
+
+      first.control.checked = true;
+      const duplicate = first.control.dispatch('change');
+      expect(duplicate.defaultPrevented).toBe(true);
+      expect(first.control.checked).toBe(false);
+      expect(deferred).toHaveLength(1);
+
+      deferred[0].resolve({ ok: true });
+      await flushAsync();
+      expect(first.form.hasAttribute('aria-busy')).toBe(false);
+      expect(first.control.disabled).toBe(false);
+    });
+  });
+
+  it('restores the previous state and announces a controlled failure for HTTP and network errors', async () => {
+    const httpFailure = makeEnabledFixture({ action: '/settings/asset-categories/12/enabled', checked: true });
+    const networkFailure = makeEnabledFixture({ action: '/projects/7/asset-categories/11/enabled', checked: false });
+    let call = 0;
+
+    await withBrowserGlobals(() => {
+      call += 1;
+      return call === 1 ? Promise.resolve({ ok: false, status: 500 }) : Promise.reject(new Error('secret server detail'));
+    }, async () => {
+      const scope = { querySelectorAll: () => [httpFailure.control, networkFailure.control] };
+      enhanceAutoSubmit(scope);
+
+      httpFailure.control.checked = false;
+      networkFailure.control.checked = true;
+      httpFailure.control.dispatch('change');
+      networkFailure.control.dispatch('change');
+      await flushAsync();
+
+      expect(httpFailure.control.checked).toBe(true);
+      expect(networkFailure.control.checked).toBe(false);
+      expect(httpFailure.status.textContent).toContain('previous status was restored');
+      expect(networkFailure.status.textContent).toContain('previous status was restored');
+      expect(httpFailure.status.textContent).not.toContain('500');
+      expect(networkFailure.status.textContent).not.toContain('secret');
+      expect(httpFailure.form.hasAttribute('aria-busy')).toBe(false);
+      expect(networkFailure.form.hasAttribute('aria-busy')).toBe(false);
+    });
+  });
+});
+
+function makeCategoryNode({ tagName = 'div', attrs = {}, className = '', rect = null } = {}) {
+  const listeners = [];
+  const attributes = new Map();
+  const children = [];
+  const node = {
+    tagName: tagName.toUpperCase(),
+    dataset: {},
+    children,
+    parentElement: null,
+    parentNode: null,
+    ownerDocument: null,
+    listeners,
+    textContent: '',
+    classList: {
+      values: new Set(className.split(/\s+/).filter(Boolean)),
+      add(...names) { names.forEach((name) => this.values.add(name)); },
+      remove(...names) { names.forEach((name) => this.values.delete(name)); },
+      toggle(name, force) {
+        const next = force === undefined ? !this.values.has(name) : force;
+        if (next) this.values.add(name); else this.values.delete(name);
+        return next;
+      },
+      contains(name) { return this.values.has(name); },
+    },
+    addEventListener(type, handler) {
+      listeners.push({ type, handler });
+    },
+    setAttribute(name, value) {
+      const stringValue = String(value);
+      attributes.set(name, stringValue);
+      if (name === 'class') this.classList.values = new Set(stringValue.split(/\s+/).filter(Boolean));
+      if (name.startsWith('data-')) {
+        const key = name.slice(5).replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
+        this.dataset[key] = stringValue;
+      }
+    },
+    getAttribute(name) {
+      return attributes.has(name) ? attributes.get(name) : null;
+    },
+    removeAttribute(name) {
+      attributes.delete(name);
+      if (name.startsWith('data-')) {
+        const key = name.slice(5).replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
+        delete this.dataset[key];
+      }
+    },
+    matches(selector) {
+      return selector.split(',').some((part) => {
+        const trimmed = part.trim();
+        if (trimmed.startsWith('.')) return this.classList.contains(trimmed.slice(1));
+        if (trimmed === 'a' || trimmed === 'button' || trimmed === 'input' || trimmed === 'select'
+          || trimmed === 'textarea' || trimmed === 'form' || trimmed === 'label'
+          || trimmed === 'summary' || trimmed === 'details' || trimmed === 'noscript') {
+          return this.tagName === trimmed.toUpperCase();
+        }
+        const dataMatch = trimmed.match(/^\[data-([\w-]+)\]$/);
+        if (dataMatch) {
+          const key = dataMatch[1].replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
+          return Object.prototype.hasOwnProperty.call(this.dataset, key);
+        }
+        const roleMatch = trimmed.match(/^\[role="([^"]+)"\]$/);
+        if (roleMatch) return this.getAttribute('role') === roleMatch[1];
+        if (trimmed === '[aria-live]') return this.getAttribute('aria-live') !== null;
+        if (trimmed === '[contenteditable]') return this.getAttribute('contenteditable') !== null;
+        const editableMatch = trimmed === '[contenteditable="true"]';
+        return editableMatch && this.getAttribute('contenteditable') === 'true';
+      });
+    },
+    closest(selector) {
+      let current = this;
+      while (current) {
+        if (current.matches(selector)) return current;
+        current = current.parentElement;
+      }
+      return null;
+    },
+    contains(candidate) {
+      if (candidate === this) return true;
+      return children.some((child) => child.contains(candidate));
+    },
+    appendChild(child) {
+      if (child.parentElement) {
+        const previousIndex = child.parentElement.children.indexOf(child);
+        if (previousIndex >= 0) child.parentElement.children.splice(previousIndex, 1);
+      }
+      children.push(child);
+      child.parentElement = this;
+      child.parentNode = this;
+      child.ownerDocument = this.ownerDocument || (this.tagName === 'DOCUMENT' ? this : null);
+      return child;
+    },
+    insertBefore(child, reference) {
+      if (child === reference) return child;
+      if (child.parentElement) {
+        const previousIndex = child.parentElement.children.indexOf(child);
+        if (previousIndex >= 0) child.parentElement.children.splice(previousIndex, 1);
+      }
+      const referenceIndex = children.indexOf(reference);
+      if (referenceIndex < 0) return this.appendChild(child);
+      children.splice(referenceIndex, 0, child);
+      child.parentElement = this;
+      child.parentNode = this;
+      child.ownerDocument = this.ownerDocument;
+      return child;
+    },
+    querySelectorAll(selector) {
+      const descendants = [];
+      const visit = (current) => {
+        current.children.forEach((child) => {
+          if (child.matches(selector)) descendants.push(child);
+          visit(child);
+        });
+      };
+      visit(this);
+      return descendants;
+    },
+    querySelector(selector) {
+      return this.querySelectorAll(selector)[0] || null;
+    },
+    getBoundingClientRect() {
+      return rect || { top: 0, height: 40 };
+    },
+    focus() {
+      if (this.ownerDocument) this.ownerDocument.activeElement = this;
+      this.focused = true;
+    },
+    dispatch(type, props = {}) {
+      const event = {
+        type,
+        target: props.target || this,
+        currentTarget: null,
+        defaultPrevented: false,
+        preventDefault() { this.defaultPrevented = true; },
+        ...props,
+      };
+      let current = this;
+      while (current) {
+        event.currentTarget = current;
+        current.listeners.filter((listener) => listener.type === type)
+          .forEach((listener) => listener.handler(event));
+        current = current.parentElement;
+      }
+      return event;
+    },
+  };
+  Object.entries(attrs).forEach(([name, value]) => node.setAttribute(name, value));
+  return node;
+}
+
+function makeCategoryReorderFixture({
+  action = '/projects/7/asset-categories/reorder',
+  csrfToken = 'csrf-reorder',
+  categoryIds = ['1', '2', '3'],
+} = {}) {
+  const document = makeCategoryNode({ tagName: 'document' });
+  document.ownerDocument = document;
+  document.getElementById = (id) => document.querySelectorAll(`[id="${id}"]`)[0] || null;
+  const section = makeCategoryNode();
+  const form = makeCategoryNode({ tagName: 'form', attrs: { id: 'category-reorder-form', 'data-category-reorder-form': '' } });
+  form.action = action;
+  form.method = 'post';
+  form.csrfToken = csrfToken;
+  const orderInput = makeCategoryNode({ tagName: 'input', attrs: { 'data-category-order-input': '' } });
+  const live = makeCategoryNode({ attrs: { 'data-category-reorder-live': '' } });
+  const list = makeCategoryNode({ attrs: {
+    'data-category-reorder-list': '',
+    'data-reorder-form-target': 'category-reorder-form',
+  } });
+  const items = categoryIds.map((id, index) => {
+    const item = makeCategoryNode({
+      attrs: {
+        'data-category-reorder-item': '',
+        'data-category-id': id,
+        'data-category-label': `Source ${id}`,
+      },
+      rect: { top: index * 50, height: 40 },
+    });
+    const handle = makeCategoryNode({ tagName: 'button', attrs: { 'data-category-reorder-handle': '' } });
+    item.appendChild(handle);
+    item.handle = handle;
+    return item;
+  });
+
+  document.appendChild(section);
+  section.appendChild(form);
+  form.appendChild(orderInput);
+  section.appendChild(list);
+  items.forEach((item) => list.appendChild(item));
+  section.appendChild(live);
+  items.forEach((item) => { item.ownerDocument = document; item.handle.ownerDocument = document; });
+  let submitCount = 0;
+  form.requestSubmit = () => { submitCount += 1; };
+  return {
+    document,
+    section,
+    form,
+    orderInput,
+    live,
+    list,
+    items,
+    get submitCount() { return submitCount; },
+    order() { return list.querySelectorAll('[data-category-reorder-item]').map((item) => item.dataset.categoryId); },
+  };
+}
+
+describe('project category reorder enhancement', () => {
+  it('is scoped and no-ops when the project reorder list is absent', () => {
+    const scope = { querySelectorAll: (selector) => {
+      expect(selector).toBe('[data-category-reorder-list]');
+      return [];
+    } };
+    expect(enhanceCategoryReorder(scope)).toBe(0);
+  });
+
+  it('moves cards on drop with fetch and submits the complete order once, while an unchanged drop does nothing', async () => {
+    const fixture = makeCategoryReorderFixture();
+    const unchanged = makeCategoryReorderFixture();
+    const calls = [];
+
+    await withBrowserGlobals(async (action, options) => {
+      calls.push({ action, options });
+      return { ok: true };
+    }, async () => {
+      expect(enhanceCategoryReorder(fixture.document)).toBe(1);
+      fixture.items[0].dispatch('pointerdown');
+      fixture.items[0].dispatch('dragstart', { dataTransfer: { setData() {} } });
+      fixture.list.dispatch('dragover', { target: fixture.items[2], clientY: 130, dataTransfer: {} });
+      fixture.list.dispatch('drop', { target: fixture.items[2] });
+      await flushAsync();
+
+      expect(fixture.order()).toEqual(['2', '3', '1']);
+      expect(fixture.orderInput.value).toBe('2,3,1');
+      expect(calls).toHaveLength(1);
+      expect(calls[0].action).toBe('/projects/7/asset-categories/reorder');
+      expect(calls[0].options.method).toBe('POST');
+      expect(calls[0].options.body).toBeInstanceOf(URLSearchParams);
+      expect(calls[0].options.body.getAll('_csrf')).toEqual(['csrf-reorder']);
+      expect(calls[0].options.body.getAll('orderedCategoryIds')).toEqual(['2,3,1']);
+      expect(fixture.submitCount).toBe(0);
+      expect(fixture.form.getAttribute('aria-busy')).toBe(null);
+
+      expect(enhanceCategoryReorder(unchanged.document)).toBe(1);
+      unchanged.items[0].dispatch('pointerdown');
+      unchanged.items[0].dispatch('dragstart', { dataTransfer: { setData() {} } });
+      unchanged.list.dispatch('dragover', { target: unchanged.items[1], clientY: 51, dataTransfer: {} });
+      unchanged.list.dispatch('drop', { target: unchanged.items[1] });
+      await flushAsync();
+      expect(unchanged.order()).toEqual(['1', '2', '3']);
+      expect(calls).toHaveLength(1);
+      expect(unchanged.submitCount).toBe(0);
+    });
+  });
+
+  it('keeps Project and Settings reorder endpoints, CSRF sources, and confirmed state independent', async () => {
+    const project = makeCategoryReorderFixture();
+    const settings = makeCategoryReorderFixture({
+      action: '/settings/asset-categories/reorder',
+      csrfToken: 'csrf-settings-reorder',
+      categoryIds: ['41', '42'],
+    });
+    const requests = [];
+
+    await withBrowserGlobals((action, options) => new Promise((resolve) => {
+      requests.push({ action, options, resolve });
+    }), async () => {
+      const scope = {
+        querySelectorAll(selector) {
+          expect(selector).toBe('[data-category-reorder-list]');
+          return [project.list, settings.list];
+        },
+      };
+
+      expect(enhanceCategoryReorder(scope)).toBe(2);
+      project.items[1].handle.dispatch('keydown', { key: 'ArrowUp' });
+      settings.items[0].handle.dispatch('keydown', { key: 'End' });
+      await flushAsync();
+
+      expect(requests).toHaveLength(2);
+      expect(requests.map((request) => request.action)).toEqual([
+        '/projects/7/asset-categories/reorder',
+        '/settings/asset-categories/reorder',
+      ]);
+      expect(requests[0].options.body.getAll('_csrf')).toEqual(['csrf-reorder']);
+      expect(requests[0].options.body.getAll('orderedCategoryIds')).toEqual(['2,1,3']);
+      expect(requests[1].options.body.getAll('_csrf')).toEqual(['csrf-settings-reorder']);
+      expect(requests[1].options.body.getAll('orderedCategoryIds')).toEqual(['42,41']);
+
+      requests[0].resolve({ ok: true });
+      requests[1].resolve({ ok: true });
+      await flushAsync();
+      expect(project.order()).toEqual(['2', '1', '3']);
+      expect(settings.order()).toEqual(['42', '41']);
+
+      project.items[0].handle.dispatch('keydown', { key: 'End' });
+      await flushAsync();
+      expect(requests).toHaveLength(3);
+      requests[2].resolve({ ok: false, status: 409 });
+      await flushAsync();
+
+      expect(project.order()).toEqual(['2', '1', '3']);
+      expect(settings.order()).toEqual(['42', '41']);
+    });
+  });
+
+  it('starts a drag from blank, title, and slug surfaces while the handle remains available', () => {
+    const fixture = makeCategoryReorderFixture();
+    const title = makeCategoryNode({ tagName: 'span' });
+    const slug = makeCategoryNode({ tagName: 'code' });
+    [title, slug].forEach((surface) => fixture.items[0].appendChild(surface));
+    enhanceCategoryReorder(fixture.document);
+
+    for (const target of [fixture.items[0], title, slug]) {
+      fixture.items[0].dispatch('pointerdown', { target });
+      const event = fixture.items[0].dispatch('dragstart', {
+        target,
+        dataTransfer: { setData() {} },
+      });
+      expect(event.defaultPrevented).toBe(false);
+      fixture.items[0].dispatch('dragend');
+    }
+
+    fixture.items[0].dispatch('pointerdown', { target: fixture.items[0].handle });
+    const handleDrag = fixture.items[0].dispatch('dragstart', {
+      target: fixture.items[0].handle,
+      dataTransfer: { setData() {} },
+    });
+    expect(handleDrag.defaultPrevented).toBe(false);
+    expect(fixture.items[0].classList.contains('is-dragging')).toBe(true);
+  });
+
+  it('does not start a drag while category text is selected', () => {
+    const fixture = makeCategoryReorderFixture();
+    const title = makeCategoryNode({ tagName: 'span' });
+    fixture.items[0].appendChild(title);
+    const originalGetSelection = globalThis.getSelection;
+    globalThis.getSelection = () => ({
+      isCollapsed: false,
+      rangeCount: 1,
+      anchorNode: title,
+      focusNode: title,
+    });
+
+    try {
+      enhanceCategoryReorder(fixture.document);
+      fixture.items[0].dispatch('pointerdown', { target: title });
+      const event = fixture.items[0].dispatch('dragstart', {
+        target: title,
+        dataTransfer: { setData() {} },
+      });
+      expect(event.defaultPrevented).toBe(true);
+    } finally {
+      globalThis.getSelection = originalGetSelection;
+    }
+  });
+
+  it('does not start a drag from interactive descendants, selected text, or helper/error content', () => {
+    const fixture = makeCategoryReorderFixture();
+    const input = makeCategoryNode({ tagName: 'input' });
+    const button = makeCategoryNode({ tagName: 'button' });
+    const label = makeCategoryNode({ tagName: 'label' });
+    const link = makeCategoryNode({ tagName: 'a' });
+    const help = makeCategoryNode({ className: 'help-text' });
+    const error = makeCategoryNode({ className: 'field-error-message' });
+    const alert = makeCategoryNode({ attrs: { role: 'alert' } });
+    const live = makeCategoryNode({ attrs: { 'aria-live': 'polite' } });
+    const editable = makeCategoryNode({ attrs: { contenteditable: 'plaintext-only' } });
+    const noscript = makeCategoryNode({ tagName: 'noscript' });
+    [input, button, label, link, help, error, alert, live, editable, noscript]
+      .forEach((control) => fixture.items[0].appendChild(control));
+    enhanceCategoryReorder(fixture.document);
+
+    for (const target of [input, button, label, link, help, error, alert, live, editable, noscript]) {
+      fixture.items[0].dispatch('pointerdown', { target });
+      const event = fixture.items[0].dispatch('dragstart', { target, dataTransfer: { setData() {} } });
+      expect(event.defaultPrevented).toBe(true);
+    }
+  });
+
+  it('starts a drag from a form wrapper and its non-interactive field area (Settings card), but not from the form controls', () => {
+    const fixture = makeCategoryReorderFixture();
+    // Mirrors the Settings card, whose display-name/slug fields are wrapped in a
+    // single <form> (for "Save details"). The form wrapper and its field
+    // container must stay draggable — otherwise the bulk of the card is dead to
+    // drag and only the handle works (the project card, whose fields aren't in a
+    // form, does not have this problem). The actual controls stay excluded.
+    const form = makeCategoryNode({ tagName: 'form' });
+    const fieldArea = makeCategoryNode({ className: 'category-management-card-fields' });
+    const fieldInput = makeCategoryNode({ tagName: 'input' });
+    const saveButton = makeCategoryNode({ tagName: 'button' });
+    fixture.items[0].appendChild(form);
+    form.appendChild(fieldArea);
+    fieldArea.appendChild(fieldInput);
+    form.appendChild(saveButton);
+    enhanceCategoryReorder(fixture.document);
+
+    for (const target of [form, fieldArea]) {
+      fixture.items[0].dispatch('pointerdown', { target });
+      const event = fixture.items[0].dispatch('dragstart', { target, dataTransfer: { setData() {} } });
+      expect(event.defaultPrevented).toBe(false);
+    }
+    for (const target of [fieldInput, saveButton]) {
+      fixture.items[0].dispatch('pointerdown', { target });
+      const event = fixture.items[0].dispatch('dragstart', { target, dataTransfer: { setData() {} } });
+      expect(event.defaultPrevented).toBe(true);
+    }
+  });
+
+  it('supports Arrow Up, Arrow Down, Home, End, boundaries, focus, ARIA, and announcements with fetch', async () => {
+    const cases = [
+      ['ArrowUp', 1, ['2', '1', '3'], '2,1,3', 0],
+      ['ArrowDown', 1, ['1', '3', '2'], '1,3,2', 2],
+      ['Home', 2, ['3', '1', '2'], '3,1,2', 0],
+      ['End', 0, ['2', '3', '1'], '2,3,1', 2],
+    ];
+
+    for (const [key, itemIndex, expectedOrder, expectedPayload, expectedPosition] of cases) {
+      const fixture = makeCategoryReorderFixture();
+      const calls = [];
+      await withBrowserGlobals(async (action, options) => {
+        calls.push({ action, options });
+        return { ok: true };
+      }, async () => {
+        enhanceCategoryReorder(fixture.document);
+        fixture.items[itemIndex].handle.dispatch('keydown', { key });
+        expect(fixture.order()).toEqual(expectedOrder);
+        expect(fixture.orderInput.value).toBe(expectedPayload);
+        expect(fixture.submitCount).toBe(0);
+        expect(fixture.document.activeElement).toBe(fixture.items[itemIndex].handle);
+        expect(fixture.items[itemIndex].getAttribute('aria-posinset')).toBe(String(expectedPosition + 1));
+        expect(fixture.items[itemIndex].getAttribute('aria-setsize')).toBe('3');
+        expect(fixture.live.textContent).toContain(`moved to position ${expectedPosition + 1} of 3`);
+        await flushAsync();
+        expect(calls).toHaveLength(1);
+        expect(calls[0].options.body.getAll('orderedCategoryIds')).toEqual([expectedPayload]);
+        expect(fixture.form.getAttribute('aria-busy')).toBe(null);
+      });
+    }
+
+    const boundary = makeCategoryReorderFixture();
+    enhanceCategoryReorder(boundary.document);
+    boundary.items[0].handle.dispatch('keydown', { key: 'ArrowUp' });
+    boundary.items[2].handle.dispatch('keydown', { key: 'End' });
+    expect(boundary.order()).toEqual(['1', '2', '3']);
+    expect(boundary.submitCount).toBe(0);
+  });
+
+  it('is idempotent and restores the confirmed order, ARIA positions, and keyboard focus after failure', async () => {
+    const fixture = makeCategoryReorderFixture();
+    const calls = [];
+
+    await withBrowserGlobals(async (action, options) => {
+      calls.push({ action, options });
+      return { ok: false, status: 503 };
+    }, async () => {
+      expect(enhanceCategoryReorder(fixture.document)).toBe(1);
+      expect(enhanceCategoryReorder(fixture.document)).toBe(1);
+      expect(fixture.items[1].handle.listeners.filter((listener) => listener.type === 'keydown')).toHaveLength(1);
+      expect(fixture.list.listeners.filter((listener) => listener.type === 'dragover')).toHaveLength(1);
+
+      fixture.items[1].handle.dispatch('keydown', { key: 'ArrowUp' });
+      await flushAsync();
+      expect(calls).toHaveLength(1);
+      expect(fixture.order()).toEqual(['1', '2', '3']);
+      expect(fixture.items[0].getAttribute('aria-posinset')).toBe('1');
+      expect(fixture.items[1].getAttribute('aria-posinset')).toBe('2');
+      expect(fixture.items[1].getAttribute('aria-setsize')).toBe('3');
+      expect(fixture.document.activeElement).toBe(fixture.items[1].handle);
+      expect(fixture.live.textContent).toContain('previous order was restored');
+      expect(fixture.form.getAttribute('aria-busy')).toBe(null);
+      expect(fixture.submitCount).toBe(0);
+    });
+  });
+
+  it('uses a successful response as the confirmed baseline for a later failed reorder', async () => {
+    const fixture = makeCategoryReorderFixture();
+    let call = 0;
+
+    await withBrowserGlobals(() => {
+      call += 1;
+      return call === 1 ? { ok: true } : { ok: false, status: 409 };
+    }, async () => {
+      enhanceCategoryReorder(fixture.document);
+      fixture.items[1].handle.dispatch('keydown', { key: 'ArrowUp' });
+      await flushAsync();
+      expect(fixture.order()).toEqual(['2', '1', '3']);
+
+      fixture.items[2].handle.dispatch('keydown', { key: 'ArrowUp' });
+      await flushAsync();
+      expect(fixture.order()).toEqual(['2', '1', '3']);
+      expect(fixture.items[1].getAttribute('aria-posinset')).toBe('1');
+      expect(fixture.items[0].getAttribute('aria-posinset')).toBe('2');
+      expect(fixture.items[2].getAttribute('aria-posinset')).toBe('3');
+      expect(fixture.live.textContent).toContain('previous order was restored');
+    });
+  });
+
+  it('rejects overlapping keyboard moves until the first response confirms the current order', async () => {
+    const fixture = makeCategoryReorderFixture();
+    const requests = [];
+
+    await withBrowserGlobals(() => new Promise((resolve) => requests.push(resolve)), async () => {
+      enhanceCategoryReorder(fixture.document);
+      fixture.items[1].handle.dispatch('keydown', { key: 'ArrowUp' });
+      await flushAsync();
+      expect(requests).toHaveLength(1);
+
+      fixture.items[1].handle.dispatch('keydown', { key: 'ArrowDown' });
+      expect(fixture.order()).toEqual(['2', '1', '3']);
+      expect(requests).toHaveLength(1);
+
+      requests[0]({ ok: true });
+      await flushAsync();
+      expect(fixture.order()).toEqual(['2', '1', '3']);
+      expect(fixture.form.getAttribute('aria-busy')).toBe(null);
+    });
+  });
+});
 
 function makeControl({ value = '', disabled = false } = {}) {
   const listeners = [];
@@ -214,6 +927,110 @@ function makeAssetSelectionScope(form, cards = []) {
     },
   };
 }
+
+function makeDetailsFixture({ action = '/settings/asset-categories/1' } = {}) {
+  const status = { textContent: '' };
+  const attributes = new Map();
+  const listeners = [];
+  const form = {
+    action,
+    method: 'post',
+    csrfToken: 'csrf-details',
+    dataset: {},
+    submitCount: 0,
+    submit() { this.submitCount += 1; },
+    addEventListener(type, handler) { listeners.push({ type, handler }); },
+    dispatch(type, props = {}) {
+      const event = {
+        type,
+        defaultPrevented: false,
+        preventDefault() { this.defaultPrevented = true; },
+        ...props,
+      };
+      listeners.filter((l) => l.type === type).forEach((l) => l.handler(event));
+      return event;
+    },
+    querySelector(selector) {
+      return selector === '[data-category-details-status]' ? status : null;
+    },
+    setAttribute(name, value) { attributes.set(name, String(value)); },
+    removeAttribute(name) { attributes.delete(name); },
+    getAttribute(name) { return attributes.has(name) ? attributes.get(name) : null; },
+  };
+  return { form, status, attributes };
+}
+
+describe('category details in-place save enhancement', () => {
+  it('is scoped to [data-category-details-form] and no-ops when absent', () => {
+    const scope = {
+      querySelectorAll: (selector) => {
+        expect(selector).toBe('[data-category-details-form]');
+        return [];
+      },
+    };
+    expect(enhanceCategoryDetails(scope)).toBe(0);
+  });
+
+  it('saves in place on a redirected response without navigating, and binds once', async () => {
+    const fixture = makeDetailsFixture({ action: '/settings/asset-categories/9' });
+    const calls = [];
+    await withBrowserGlobals(async (action, options) => {
+      calls.push({ action, options });
+      return { ok: true, redirected: true, status: 200 };
+    }, async () => {
+      const scope = { querySelectorAll: () => [fixture.form] };
+      expect(enhanceCategoryDetails(scope)).toBe(1);
+      expect(enhanceCategoryDetails(scope)).toBe(1);
+
+      const event = fixture.form.dispatch('submit');
+      await flushAsync();
+
+      expect(event.defaultPrevented).toBe(true);
+      expect(calls).toHaveLength(1);
+      expect(calls[0].action).toBe('/settings/asset-categories/9');
+      expect(calls[0].options.method).toBe('POST');
+      expect(calls[0].options.body).toBeInstanceOf(URLSearchParams);
+      expect(calls[0].options.body.getAll('_csrf')).toEqual(['csrf-details']);
+      expect(fixture.form.submitCount).toBe(0);
+      expect(fixture.status.textContent).toBe('Details saved.');
+      expect(fixture.form.getAttribute('aria-busy')).toBe(null);
+    });
+  });
+
+  it('falls back to a native submit when the response is not a redirect (validation error)', async () => {
+    const fixture = makeDetailsFixture();
+    await withBrowserGlobals(async () => ({ ok: false, redirected: false, status: 422 }), async () => {
+      enhanceCategoryDetails({ querySelectorAll: () => [fixture.form] });
+      fixture.form.dispatch('submit');
+      await flushAsync();
+      expect(fixture.form.submitCount).toBe(1);
+    });
+  });
+
+  it('falls back to a native submit on network failure', async () => {
+    const fixture = makeDetailsFixture();
+    await withBrowserGlobals(async () => { throw new Error('offline'); }, async () => {
+      enhanceCategoryDetails({ querySelectorAll: () => [fixture.form] });
+      fixture.form.dispatch('submit');
+      await flushAsync();
+      expect(fixture.form.submitCount).toBe(1);
+    });
+  });
+
+  it('leaves the native submit intact when fetch is unavailable', () => {
+    const fixture = makeDetailsFixture();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = undefined;
+    try {
+      enhanceCategoryDetails({ querySelectorAll: () => [fixture.form] });
+      const event = fixture.form.dispatch('submit');
+      expect(event.defaultPrevented).toBe(false);
+      expect(fixture.form.submitCount).toBe(0);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
 
 describe('page-local asset selection enhancement', () => {
   it('is scoped to [data-asset-selection-form] and no-ops when absent', () => {

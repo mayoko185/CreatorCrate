@@ -55,6 +55,19 @@ function listProjectCategories(db, projectId) {
     .all(projectId);
 }
 
+function hasNestedForms(html) {
+  let depth = 0;
+  for (const tag of html.match(/<\/?form\b[^>]*>/gi) || []) {
+    if (tag.startsWith('</')) {
+      depth -= 1;
+    } else {
+      if (depth > 0) return true;
+      depth += 1;
+    }
+  }
+  return depth !== 0;
+}
+
 function findProjectPreference(db, projectId) {
   return db.prepare(`
     SELECT default_category_mode, default_category_id
@@ -166,7 +179,7 @@ describe('project asset categories — HTTP', () => {
       await agent
         .post(`/projects/${projectId}/asset-categories/reorder`)
         .type('form')
-        .send({ order: ['1', '2'], _csrf: csrfToken })
+        .send({ orderedCategoryIds: '1,2', _csrf: csrfToken })
         .expect(302);
 
       expect(fake.reorder).toHaveBeenCalledWith(projectId, [1, 2]);
@@ -241,7 +254,7 @@ describe('project asset categories — HTTP', () => {
 
       await agent.post(`/projects/${projectId}/asset-categories/default`).type('form').send({ defaultCategory: 'all' }).expect(403);
       await agent.post(`/projects/${projectId}/asset-categories`).type('form').send({ displayName: 'X', directorySlug: 'x' }).expect(403);
-      await agent.post(`/projects/${projectId}/asset-categories/reorder`).type('form').send({ order: [category.id] }).expect(403);
+      await agent.post(`/projects/${projectId}/asset-categories/reorder`).type('form').send({ orderedCategoryIds: String(category.id) }).expect(403);
       await agent.post(`/projects/${projectId}/asset-categories/${category.id}/name`).type('form').send({ displayName: 'X' }).expect(403);
       await agent.post(`/projects/${projectId}/asset-categories/${category.id}/enabled`).type('form').send({ enabled: '0' }).expect(403);
       await agent.post(`/projects/${projectId}/asset-categories/${category.id}/enable`).type('form').send({}).expect(403);
@@ -279,17 +292,55 @@ describe('project asset categories — HTTP', () => {
       await agent.post(`/projects/${projectId}/asset-categories/${first.id}/disable`).type('form').send({ _csrf: csrfToken }).expect(302);
 
       const res = await agent.get(`/projects/${projectId}/asset-categories`).expect(200);
-      const categoriesTable = res.text.match(/<table class="[^"]*\bdata-table\b[^"]*">[\s\S]*?<\/table>/)?.[0] || '';
-      const order = rows.map((r) => categoriesTable.indexOf(`id="name-${r.id}"`));
+      const order = rows.map((r) => res.text.indexOf(`data-category-id="${r.id}"`));
       expect(order).toEqual([...order].sort((a, b) => a - b));
       for (const idx of order) expect(idx).toBeGreaterThan(-1);
       expect(res.text).toContain('Disabled');
       expect(res.text).toContain('Enabled');
-      expect(categoriesTable).not.toContain('<th>Status</th>');
-      expect(categoriesTable).not.toContain('category-management-status');
-      expect(categoriesTable).toContain('>Save status</button>');
+      expect(res.text).not.toContain('<th>Position</th>');
+      expect(res.text).not.toContain('>Move Up</button>');
+      expect(res.text).not.toContain('>Move Down</button>');
+       expect(res.text).toContain('>Save status</button>');
+      expect(res.text).toMatch(/<form method="post" action="\/projects\/\d+\/asset-categories\/\d+\/enabled" class="category-enabled-form">[\s\S]*?data-autosubmit[\s\S]*?<\/form>/);
       expect((res.text.match(/Changing a display name does not rename its directory\./g) || []).length).toBe(1);
       expect(res.text).not.toContain('Changes the label only — the folder on disk is not renamed.');
+    });
+
+    it('renders the complete mutable category card contract without nested forms', async () => {
+      ctx = setupTmp();
+      const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
+      const { agent, csrfToken } = await authenticate(app);
+      const projectId = await createProject(agent, csrfToken, 'Card Markup');
+      const rows = listProjectCategories(ctx.db, projectId);
+
+      const res = await agent.get(`/projects/${projectId}/asset-categories`).expect(200);
+      expect(res.text).toContain('data-category-reorder-list');
+      expect(res.text).toContain(`data-reorder-url="/projects/${projectId}/asset-categories/reorder"`);
+      expect(res.text).toContain('data-category-reorder-form');
+      expect(res.text).toContain('name="orderedCategoryIds"');
+      expect(res.text).toContain('data-category-reorder-live');
+
+      const cards = res.text.match(/<article\b[^>]*data-category-reorder-item[^>]*>[\s\S]*?<\/article>/g) || [];
+      expect(cards).toHaveLength(rows.length);
+      expect(cards.map((card) => card.match(/data-category-id="(\d+)"/)?.[1])).toEqual(rows.map((row) => String(row.id)));
+      for (const [index, card] of cards.entries()) {
+        expect((card.match(/data-category-reorder-handle/g) || []).length).toBe(1);
+        expect(card).toContain(`aria-label="Reorder ${rows[index].display_name}"`);
+        expect(card).toContain(`aria-posinset="${index + 1}"`);
+        expect(card).toContain(`aria-setsize="${rows.length}"`);
+        expect(card).toContain('Save name');
+        expect(card).toContain(`<code>${rows[index].directory_slug}</code>`);
+        expect(card).toContain('data-autosubmit');
+        expect(card).toContain('>Delete</button>');
+         expect(card).toContain('Save status');
+      }
+
+      expect(res.text).not.toContain('<th>Position</th>');
+      expect(res.text).not.toContain('>Move Up</button>');
+      expect(res.text).not.toContain('>Move Down</button>');
+      expect(res.text).not.toContain('category-management-status');
+      expect(hasNestedForms(res.text)).toBe(false);
+      expect((res.text.match(/<form\b/gi) || []).length).toBe((res.text.match(/<\/form>/gi) || []).length);
     });
 
     it('shows an editable display name and a read-only directory slug separately', async () => {
@@ -356,6 +407,11 @@ describe('project asset categories — HTTP', () => {
 
       const res = await agent.get(`/projects/${projectId}/asset-categories`).expect(200);
       expect(res.text).toMatch(/read-only/i);
+      expect(res.text).not.toContain('data-category-reorder-list');
+      expect(res.text).not.toContain('data-category-reorder-form');
+      expect(res.text).not.toContain('data-category-reorder-handle');
+      expect(res.text).not.toContain('data-category-reorder-item');
+      expect(res.text).not.toContain('draggable="true"');
       const [category] = listProjectCategories(ctx.db, projectId);
       expect(res.text).not.toContain(`/projects/${projectId}/asset-categories/${category.id}/delete`);
       expect(res.text).not.toContain(`/projects/${projectId}/asset-categories/${category.id}/name`);
@@ -398,7 +454,7 @@ describe('project asset categories — HTTP', () => {
 
       const res = await agent.get(`/projects/${projectId}/asset-categories`).expect(200);
       const addForm = res.text.match(new RegExp(
-        `<form method="post" action="/projects/${projectId}/asset-categories" class="project-form project-category-management-form"[^>]*>[\\s\\S]*?<\\/form>`
+        `<form method="post" action="/projects/${projectId}/asset-categories" class="[^"]*project-category-management-form[^"]*"[^>]*>[\\s\\S]*?<\\/form>`
       ))?.[0];
 
       expect(addForm).toBeDefined();
@@ -650,7 +706,7 @@ describe('project asset categories — HTTP', () => {
       expect(failRes.text).toContain('Display name is required');
 
       const affectedRow = failRes.text.match(new RegExp(
-        `<tr class="category-management-row">[\\s\\S]*?id="name-${category.id}"[\\s\\S]*?<\\/tr>`
+        `<article\\b[^>]*class="category-management-card"[^>]*data-category-id="${category.id}"[\\s\\S]*?<\\/article>`
       ))?.[0];
       expect(affectedRow).toBeDefined();
       expect(affectedRow).toMatch(new RegExp(`id="name-${category.id}"[^>]*value="\\s{3}"`));
@@ -659,7 +715,7 @@ describe('project asset categories — HTTP', () => {
 
       if (otherCategory) {
         const otherRow = failRes.text.match(new RegExp(
-          `<tr class="category-management-row">[\\s\\S]*?id="name-${otherCategory.id}"[\\s\\S]*?<\\/tr>`
+          `<article\\b[^>]*class="category-management-card"[^>]*data-category-id="${otherCategory.id}"[\\s\\S]*?<\\/article>`
         ))?.[0];
         expect(otherRow).toBeDefined();
         expect(otherRow).toContain(`value="${otherCategory.display_name}"`);
@@ -795,8 +851,29 @@ describe('project asset categories — HTTP', () => {
       const projectId = await createProject(agent, csrfToken, 'Reorder Full');
 
       await agent.post(`/projects/${projectId}/asset-categories/reorder`).type('form')
-        .send({ order: ['3', '1', '2'], _csrf: csrfToken }).expect(302);
+        .send({ orderedCategoryIds: '3,1,2', _csrf: csrfToken }).expect(302);
       expect(fake.reorder).toHaveBeenCalledWith(projectId, [3, 1, 2]);
+    });
+
+    it('persists a valid arbitrary order, redirects with a controlled notice, and renders it on the following GET', async () => {
+      ctx = setupTmp();
+      const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
+      const { agent, csrfToken } = await authenticate(app);
+      const projectId = await createProject(agent, csrfToken, 'Reorder Success');
+      const rows = listProjectCategories(ctx.db, projectId);
+      const orderedRows = [rows[2], rows[0], rows[4], rows[1], rows[3]];
+      const orderedCategoryIds = orderedRows.map((row) => row.id).join(',');
+
+      const res = await agent.post(`/projects/${projectId}/asset-categories/reorder`).type('form')
+        .send({ orderedCategoryIds, _csrf: csrfToken }).expect(302);
+      expect(res.headers.location).toBe(`/projects/${projectId}/asset-categories?notice=category_reordered`);
+      expect(listProjectCategories(ctx.db, projectId).map((row) => row.id)).toEqual(orderedRows.map((row) => row.id));
+      expect(listProjectCategories(ctx.db, projectId).map((row) => row.display_order)).toEqual([0, 1, 2, 3, 4]);
+
+      const page = await agent.get(res.headers.location).expect(200);
+      expect(page.text).toContain('Category order updated.');
+      const positions = orderedRows.map((row) => page.text.indexOf(`id="name-${row.id}"`));
+      expect(positions).toEqual([...positions].sort((a, b) => a - b));
     });
 
     it('duplicate, malformed, and unknown IDs are controlled, not thrown to the client', async () => {
@@ -808,8 +885,102 @@ describe('project asset categories — HTTP', () => {
       const before = listProjectCategories(ctx.db, projectId);
 
       const res = await agent.post(`/projects/${projectId}/asset-categories/reorder`).type('form')
-        .send({ order: [String(category.id), String(category.id), 'not-a-number'], _csrf: csrfToken }).expect(302);
+        .send({ orderedCategoryIds: `${category.id},${category.id},not-a-number`, _csrf: csrfToken }).expect(422);
+      expect(res.text).toContain('submitted category order is invalid');
+      expect(res.text).not.toContain('not-a-number');
+      expect(listProjectCategories(ctx.db, projectId)).toEqual(before);
+    });
+
+    it('rejects missing, empty, decimal, partial, negative, and unsafe payload values with 422', async () => {
+      ctx = setupTmp();
+      const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
+      const { agent, csrfToken } = await authenticate(app);
+      const projectId = await createProject(agent, csrfToken, 'Reorder Strict Input');
+      const [first] = listProjectCategories(ctx.db, projectId);
+      const before = listProjectCategories(ctx.db, projectId);
+      const payloads = [
+        {},
+        { orderedCategoryIds: '' },
+        { orderedCategoryIds: `${first.id}.5` },
+        { orderedCategoryIds: `${first.id}abc` },
+        { orderedCategoryIds: '0' },
+        { orderedCategoryIds: '-1' },
+        { orderedCategoryIds: '9007199254740992' },
+        { orderedCategoryIds: `${first.id}, ${first.id}` },
+      ];
+
+      for (const payload of payloads) {
+        const res = await agent.post(`/projects/${projectId}/asset-categories/reorder`).type('form')
+          .send({ ...payload, _csrf: csrfToken }).expect(422);
+        expect(res.text).toContain('submitted category order is invalid');
+        expect(res.text).not.toContain('9007199254740992');
+      }
+
+      expect(listProjectCategories(ctx.db, projectId)).toEqual(before);
+    });
+
+    it('rejects duplicate, missing, extra, and cross-project IDs with 422 and no mutation', async () => {
+      ctx = setupTmp();
+      const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
+      const { agent, csrfToken } = await authenticate(app);
+      const projectId = await createProject(agent, csrfToken, 'Reorder Exact Set');
+      const otherProjectId = await createProject(agent, csrfToken, 'Reorder Other Project');
+      const ownRows = listProjectCategories(ctx.db, projectId);
+      const otherRows = listProjectCategories(ctx.db, otherProjectId);
+      const ids = ownRows.map((row) => row.id);
+      const invalidOrders = [
+        [...ids.slice(0, -1), ids[0], ids[0]],
+        ids.slice(0, -1),
+        [...ids.slice(0, -1), 999999],
+        [otherRows[0].id, ...ids.slice(1)],
+      ];
+
+      for (const orderedCategoryIds of invalidOrders) {
+        const res = await agent.post(`/projects/${projectId}/asset-categories/reorder`).type('form')
+          .send({ orderedCategoryIds: orderedCategoryIds.join(','), _csrf: csrfToken }).expect(422);
+        expect(res.text).toContain('submitted category order is invalid');
+        expect(res.text).not.toContain('999999');
+      }
+
+      expect(listProjectCategories(ctx.db, projectId)).toEqual(ownRows);
+      expect(listProjectCategories(ctx.db, otherProjectId)).toEqual(otherRows);
+    });
+
+    it('maps an unexpected reorder failure to a controlled notice without exposing raw error text', async () => {
+      ctx = setupTmp();
+      const fake = makeFakeProjectAssetCategoryService();
+      fake.reorder.mockImplementationOnce(() => {
+        throw new Error('internal reorder detail at a private path');
+      });
+      const app = createApp(
+        { appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot },
+        { projectAssetCategoryService: fake, authConfig: AUTH_CONFIG }
+      );
+      const { agent, csrfToken } = await authenticate(app);
+      const projectId = await createProject(agent, csrfToken, 'Reorder Failure');
+
+      const res = await agent.post(`/projects/${projectId}/asset-categories/reorder`).type('form')
+        .send({ orderedCategoryIds: '1', _csrf: csrfToken }).expect(302);
       expect(res.headers.location).toBe(`/projects/${projectId}/asset-categories?notice=category_reorder_failed`);
+
+      const page = await agent.get(res.headers.location).expect(200);
+      expect(page.text).toContain('Could not update the order. No changes were made.');
+      expect(page.text).not.toContain('internal reorder detail');
+    });
+
+    it('returns controlled 409 for an archived project and leaves its order unchanged', async () => {
+      ctx = setupTmp();
+      const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
+      const { agent, csrfToken } = await authenticate(app);
+      const projectId = await createProject(agent, csrfToken, 'Reorder Archived');
+      const before = listProjectCategories(ctx.db, projectId);
+      await agent.post(`/projects/${projectId}/archive`).type('form').send({ _csrf: csrfToken }).expect(302);
+
+      const res = await agent.post(`/projects/${projectId}/asset-categories/reorder`).type('form')
+        .send({ orderedCategoryIds: before.map((row) => row.id).reverse().join(','), _csrf: csrfToken }).expect(409);
+
+      expect(res.text).toMatch(/archived/i);
+      expect(res.text).not.toContain('Category order updated.');
       expect(listProjectCategories(ctx.db, projectId)).toEqual(before);
     });
 

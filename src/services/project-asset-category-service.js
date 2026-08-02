@@ -12,6 +12,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { ProjectNotFoundError } from './project-service.js';
 import { AssetCategoryNotFoundError } from './asset-category-service.js';
+import { AssetCategoryError } from '../data/asset-category-repository.js';
 import {
   AssetCategoryValidationError,
   validateCategoryInput,
@@ -66,6 +67,32 @@ function manifestExists(absPath) {
   } catch {
     return true;
   }
+}
+
+const REORDER_VALIDATION_CODES = new Set([
+  'INVALID_SEQUENCE_LENGTH',
+  'DUPLICATE_ID',
+  'UNKNOWN_ID',
+  'INVALID_ID',
+]);
+
+function invalidReorder(message = 'Category order must contain every current project category exactly once.') {
+  throw new AssetCategoryValidationError({ orderedCategoryIds: message });
+}
+
+function assertCompleteReorderSet(orderedIds, categories) {
+  if (orderedIds.length !== categories.length) {
+    invalidReorder();
+  }
+
+  const currentIds = new Set(categories.map((category) => category.id));
+  if (orderedIds.some((id) => !currentIds.has(id))) {
+    invalidReorder();
+  }
+}
+
+function isReorderValidationError(err) {
+  return err instanceof AssetCategoryError && REORDER_VALIDATION_CODES.has(err.code);
 }
 
 /**
@@ -343,7 +370,6 @@ export function createProjectAssetCategoryService({
       requireCategory(projectId, categoryId);
 
       const absPath = resolveProjectAbsPath(project);
-
       const priorManifestExisted = manifestExists(absPath);
       const categoriesBefore = assetCategoryRepository.listProjectCategories(projectId);
       let publishedManifestIdentity = null;
@@ -458,24 +484,27 @@ export function createProjectAssetCategoryService({
      */
     reorder(projectId, orderedIds) {
       // Validate every argument before any repository/filesystem lookup.
-      // Full-set completeness against the project's actual categories still
-      // has to happen inside the repository transaction (it needs the
-      // current row set), but shape (array of positive integers) and
-      // in-array duplicates are pure checks that never require a lookup.
+      // Full-set completeness is checked against the current rows before any
+      // filesystem work and rechecked inside the repository transaction.
       assertPositiveIntegerId(projectId, 'projectId');
-      if (!Array.isArray(orderedIds) || orderedIds.some((id) => !Number.isInteger(id) || id <= 0)) {
-        throw new AssetCategoryValidationError({ order: 'Reorder input must be an array of positive integer IDs.' });
+      if (!Array.isArray(orderedIds) || orderedIds.some((id) => !Number.isSafeInteger(id) || id <= 0)) {
+        throw new AssetCategoryValidationError({
+          orderedCategoryIds: 'Reorder input must be an array of safe positive integer IDs.',
+        });
       }
       if (new Set(orderedIds).size !== orderedIds.length) {
-        throw new AssetCategoryValidationError({ order: 'Reorder input must not contain duplicate IDs.' });
+        throw new AssetCategoryValidationError({
+          orderedCategoryIds: 'Reorder input must not contain duplicate IDs.',
+        });
       }
 
       const project = requireMutableProject(projectId);
 
-      const absPath = resolveProjectAbsPath(project);
-
-      const priorManifestExisted = manifestExists(absPath);
       const categoriesBefore = assetCategoryRepository.listProjectCategories(projectId);
+      assertCompleteReorderSet(orderedIds, categoriesBefore);
+
+      const absPath = resolveProjectAbsPath(project);
+      const priorManifestExisted = manifestExists(absPath);
       let publishedManifestIdentity = null;
 
       const runReorder = db.transaction(() => {
@@ -494,6 +523,11 @@ export function createProjectAssetCategoryService({
           absPath, project, categoriesBefore, priorManifestExisted,
           publishedIdentity: publishedManifestIdentity, projectId, mutationLabel: 'reorder',
         });
+        if (isReorderValidationError(err)) {
+          throw new AssetCategoryValidationError({
+            orderedCategoryIds: 'Category order must contain every current project category exactly once.',
+          });
+        }
         throw err;
       }
     },

@@ -79,7 +79,7 @@ describe('asset category service', () => {
         service.addDefault({ displayName: 'Raw', directorySlug: 'raw' });
         service.editDefault(1, { displayName: 'Source', directorySlug: 'source' });
         service.setDefaultEnabled(1, false);
-        service.reorderDefaults([1]);
+        service.reorderDefaults([]);
         service.deleteDefault(1);
         service.listProjectCategories(1);
         service.copyDefaultsForProject(1);
@@ -259,10 +259,40 @@ describe('asset category service', () => {
     });
 
     it('delegates a valid reorder to the repository', () => {
-      const repo = makeFakeRepository();
+      const repo = makeFakeRepository({
+        listDefaults: vi.fn(() => [
+          { id: 1, display_name: 'Source', directory_slug: 'source', display_order: 0, enabled: 1 },
+          { id: 2, display_name: 'Exports', directory_slug: 'exports', display_order: 1, enabled: 1 },
+          { id: 3, display_name: 'Extras', directory_slug: 'extras', display_order: 2, enabled: 1 },
+        ]),
+      });
       const service = createAssetCategoryService(repo);
       service.reorderDefaults([3, 1, 2]);
       expect(repo.reorderDefaults).toHaveBeenCalledWith([3, 1, 2]);
+    });
+
+    it('rejects duplicate, missing, and extra IDs as one exact-set contract', () => {
+      const categories = [
+        { id: 1, display_name: 'Source', directory_slug: 'source', display_order: 0, enabled: 1 },
+        { id: 2, display_name: 'Exports', directory_slug: 'exports', display_order: 1, enabled: 1 },
+        { id: 3, display_name: 'Extras', directory_slug: 'extras', display_order: 2, enabled: 1 },
+      ];
+      const repo = makeFakeRepository({ listDefaults: vi.fn(() => categories) });
+      const service = createAssetCategoryService(repo);
+
+      for (const orderedIds of [[1, 1, 3], [1, 2], [1, 2, 9000]]) {
+        expect(() => service.reorderDefaults(orderedIds)).toThrow(AssetCategoryValidationError);
+      }
+
+      expect(repo.reorderDefaults).not.toHaveBeenCalled();
+    });
+
+    it('accepts an empty order only when the loaded global set is empty', () => {
+      const repo = makeFakeRepository({ listDefaults: vi.fn(() => []) });
+      const service = createAssetCategoryService(repo);
+
+      expect(service.reorderDefaults([])).toEqual([]);
+      expect(repo.reorderDefaults).toHaveBeenCalledWith([]);
     });
 
     it('delegates copying defaults for a project to the repository', () => {
@@ -435,6 +465,7 @@ describe('asset category service', () => {
       expect(() => service.reorderDefaults([1, 0, 2])).toThrow(AssetCategoryValidationError);
       expect(() => service.reorderDefaults([1, -2, 3])).toThrow(AssetCategoryValidationError);
       expect(() => service.reorderDefaults([1, 1.5, 3])).toThrow(AssetCategoryValidationError);
+      expect(() => service.reorderDefaults([1, Number.MAX_SAFE_INTEGER + 1, 3])).toThrow(AssetCategoryValidationError);
       expect(repo.reorderDefaults).not.toHaveBeenCalled();
     });
   });

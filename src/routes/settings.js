@@ -53,6 +53,10 @@ const NOTICES = {
   category_disabled: { variant: 'success', text: 'Asset category default disabled.' },
   category_deleted: { variant: 'success', text: 'Asset category default deleted.' },
   category_reordered: { variant: 'success', text: 'Asset category order updated.' },
+  category_reorder_invalid: {
+    variant: 'error',
+    text: 'The submitted category order is invalid. Submit every global category exactly once.',
+  },
   category_reorder_failed: {
     variant: 'error',
     text: 'Could not update the order. No changes were made.',
@@ -109,10 +113,36 @@ function isDuplicateSlugError(err) {
   );
 }
 
-function parseOrderIds(raw) {
-  if (raw === undefined || raw === null) return [];
-  const values = Array.isArray(raw) ? raw : [raw];
-  return values.map((v) => Number(v));
+/**
+ * Parse the batch reorder form contract: one `orderedCategoryIds` field whose
+ * value is a comma-separated list of canonical positive integer IDs. An empty
+ * string represents the complete empty set; a missing field is invalid.
+ */
+function parseOrderedCategoryIds(raw) {
+  if (raw === undefined || raw === null) {
+    throw new AssetCategoryValidationError({
+      orderedCategoryIds: 'Submit the complete ordered category ID list.',
+    });
+  }
+  if (Array.isArray(raw) || typeof raw !== 'string') {
+    throw new AssetCategoryValidationError({
+      orderedCategoryIds: 'Category IDs must be submitted as one comma-separated value.',
+    });
+  }
+  if (raw === '') return [];
+  if (!/^[1-9]\d*(?:,[1-9]\d*)*$/.test(raw)) {
+    throw new AssetCategoryValidationError({
+      orderedCategoryIds: 'Category IDs must be canonical positive integers separated by commas.',
+    });
+  }
+
+  const ids = raw.split(',').map((value) => Number(value));
+  if (ids.some((id) => !Number.isSafeInteger(id) || id <= 0)) {
+    throw new AssetCategoryValidationError({
+      orderedCategoryIds: 'Category IDs must be safe positive integers.',
+    });
+  }
+  return ids;
 }
 
 // Full order array with the given id swapped one position toward `direction`.
@@ -477,19 +507,22 @@ export function createSettingsRouter({
     }
   });
 
-  // Single reorder mutation, used both by the explicit "move" buttons
-  // (which submit a full precomputed order) and directly postable with an
-  // arbitrary ID set — either way it always goes through the service/
-  // repository's complete transactional reorder contract, so a rejected
-  // reorder never partially mutates positions. Registered before the
-  // generic '/asset-categories/:id' route below so the literal "reorder"
-  // segment is never captured as an :id param.
+  // Complete-set reorder mutation. Registered before the generic
+  // '/asset-categories/:id' route below so the literal "reorder" segment is
+  // never captured as an :id param. The existing Move Up/Move Down routes
+  // below use the same service operation after building their full order.
   router.post('/asset-categories/reorder', (req, res) => {
     try {
-      const orderedIds = parseOrderIds(req.body?.order);
+      const orderedIds = parseOrderedCategoryIds(req.body?.orderedCategoryIds);
       assetCategoryService.reorderDefaults(orderedIds);
       res.redirect('/settings/asset-categories?notice=category_reordered');
-    } catch {
+    } catch (err) {
+      if (err instanceof AssetCategoryValidationError) {
+        return renderCategoriesPage(res, {
+          status: 422,
+          notice: resolveNotice('category_reorder_invalid'),
+        });
+      }
       res.redirect('/settings/asset-categories?notice=category_reorder_failed');
     }
   });

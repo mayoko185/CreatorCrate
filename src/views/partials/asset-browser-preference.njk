@@ -33,7 +33,7 @@
           {% endfor %}
         {% endif %}
         <div class="asset-browser-default-control-row">
-          <div class="field">
+          <div class="field asset-browser-default-field-row">
             <label for="{{ controlId }}">Default category</label>
             <select id="{{ controlId }}" name="defaultCategory" class="form-control"
                     aria-describedby="{{ controlId }}-help{% if model.errorMessage %} {{ controlId }}-error{% endif %}"
@@ -51,9 +51,9 @@
               {% endfor %}
             </select>
           </div>
-          <div class="form-actions asset-browser-default-action-row">
-            <button type="submit" class="button button-primary">Save default</button>
-          </div>
+        </div>
+        <div class="form-actions asset-browser-default-action-row">
+          <button type="submit" class="button button-primary">Save default</button>
         </div>
       </form>
     {% endif %}
@@ -63,10 +63,9 @@
 {% macro global(model, action, controlId, csrf) %}
   <section class="settings-section asset-browser-default-section" aria-labelledby="{{ controlId }}-heading">
     <h3 id="{{ controlId }}-heading">Asset browser default</h3>
-    <p id="{{ controlId }}-help">
-      This applies only to projects set to <strong>Inherit global default</strong>.
-      It does not recopy or mutate project categories. Each inheriting project resolves this global slug
-      against its own enabled categories; unavailable matches fall back to All Categories.
+    <p class="asset-browser-default-description" id="{{ controlId }}-help">
+      For projects set to <strong>Inherit global default</strong>. This does not recopy project categories;
+      unavailable matches fall back to <strong>All Categories</strong>.
     </p>
 
     {% if model.warning %}
@@ -81,30 +80,36 @@
       </div>
     {% endif %}
 
-    <p class="help-text">
-      Saved setting: <strong>{{ model.storedLabel }}</strong>.
-      {% if model.fallback %}Effective behavior for inheriting projects: <strong>All Categories</strong>.{% endif %}
+    <p class="asset-browser-default-summary">
+      <span><span class="asset-browser-default-summary-label">Saved:</span> <strong>{{ model.storedLabel }}</strong></span>
+      {% if model.fallback %}
+        <span><span class="asset-browser-default-summary-label">Effective:</span> <strong>All Categories</strong> for inheriting projects</span>
+      {% endif %}
     </p>
 
-    <form method="post" action="{{ action }}" class="project-form" novalidate>
+    <form method="post" action="{{ action }}" class="project-form asset-browser-default-form" novalidate>
       <input type="hidden" name="_csrf" value="{{ csrf }}">
-      <label for="{{ controlId }}">Default category</label>
-      <select id="{{ controlId }}" name="defaultCategory"
-              aria-describedby="{{ controlId }}-help{% if model.errorMessage %} {{ controlId }}-error{% endif %}"
-              {% if model.errorMessage %}aria-invalid="true"{% endif %} required>
-        {% if model.selectionPlaceholder %}
-          <option value="{{ model.selectionPlaceholder.value }}" disabled{% if not model.submittedOption %} selected{% endif %}>{{ model.selectionPlaceholder.label }}</option>
-        {% endif %}
-        {% if model.submittedOption %}
-          <option value="{{ model.submittedOption.value }}" selected>{{ model.submittedOption.label }}</option>
-        {% endif %}
-        <option value="all"{% if model.selectedValue == 'all' %} selected{% endif %}>All Categories</option>
-        {% for category in model.enabledCategories %}
-          <option value="{{ category.directorySlug }}"{% if model.selectedValue == category.directorySlug %} selected{% endif %}>{{ category.displayName }}</option>
-        {% endfor %}
-      </select>
-      <span class="help-text">Category labels are shown here; the stable directory slug is stored.</span>
-      <div class="form-actions">
+      <div class="asset-browser-default-control-row">
+        <div class="field asset-browser-default-field-row">
+          <label for="{{ controlId }}">Default category</label>
+          <select id="{{ controlId }}" name="defaultCategory" class="form-control"
+                  aria-describedby="{{ controlId }}-help{% if model.errorMessage %} {{ controlId }}-error{% endif %}"
+                  {% if model.errorMessage %}aria-invalid="true"{% endif %} required>
+            {% if model.selectionPlaceholder %}
+              <option value="{{ model.selectionPlaceholder.value }}" disabled{% if not model.submittedOption %} selected{% endif %}>{{ model.selectionPlaceholder.label }}</option>
+            {% endif %}
+            {% if model.submittedOption %}
+              <option value="{{ model.submittedOption.value }}" selected>{{ model.submittedOption.label }}</option>
+            {% endif %}
+            <option value="all"{% if model.selectedValue == 'all' %} selected{% endif %}>All Categories</option>
+            {% for category in model.enabledCategories %}
+              <option value="{{ category.directorySlug }}"{% if model.selectedValue == category.directorySlug %} selected{% endif %}>{{ category.displayName }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <span class="help-text">Category labels are shown here; the stable directory slug is stored.</span>
+      </div>
+      <div class="form-actions asset-browser-default-action-row">
         <button type="submit" class="button button-primary">Save default</button>
       </div>
     </form>

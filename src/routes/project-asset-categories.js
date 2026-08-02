@@ -20,6 +20,10 @@ const NOTICES = {
   category_disabled: { variant: 'success', text: 'Category disabled. Its existing files were not touched.' },
   category_deleted: { variant: 'success', text: 'Category deleted.' },
   category_reordered: { variant: 'success', text: 'Category order updated.' },
+  category_reorder_invalid: {
+    variant: 'error',
+    text: 'The submitted category order is invalid. Submit every project category exactly once.',
+  },
   category_reorder_failed: { variant: 'error', text: 'Could not update the order. No changes were made.' },
   category_mutation_failed: { variant: 'error', text: 'Could not save the category. Please try again.' },
   category_archived: { variant: 'warning', text: 'This project is archived and cannot be modified.' },
@@ -54,10 +58,36 @@ function isArchivedProject(project) {
   return Boolean(project?.archived_at || project?.status === 'archived');
 }
 
-function parseOrderIds(raw) {
-  if (raw === undefined || raw === null) return [];
-  const values = Array.isArray(raw) ? raw : [raw];
-  return values.map((v) => Number(v));
+/**
+ * Parse the batch reorder form contract: one `orderedCategoryIds` field whose
+ * value is a comma-separated list of canonical positive integer IDs. An empty
+ * string represents the complete empty set; a missing field is invalid.
+ */
+function parseOrderedCategoryIds(raw) {
+  if (raw === undefined || raw === null) {
+    throw new AssetCategoryValidationError({
+      orderedCategoryIds: 'Submit the complete ordered category ID list.',
+    });
+  }
+  if (Array.isArray(raw) || typeof raw !== 'string') {
+    throw new AssetCategoryValidationError({
+      orderedCategoryIds: 'Category IDs must be submitted as one comma-separated value.',
+    });
+  }
+  if (raw === '') return [];
+  if (!/^[1-9]\d*(?:,[1-9]\d*)*$/.test(raw)) {
+    throw new AssetCategoryValidationError({
+      orderedCategoryIds: 'Category IDs must be canonical positive integers separated by commas.',
+    });
+  }
+
+  const ids = raw.split(',').map((value) => Number(value));
+  if (ids.some((id) => !Number.isSafeInteger(id) || id <= 0)) {
+    throw new AssetCategoryValidationError({
+      orderedCategoryIds: 'Category IDs must be safe positive integers.',
+    });
+  }
+  return ids;
 }
 
 // Full order array with the given id swapped one position toward `direction`.
@@ -244,15 +274,27 @@ export function createProjectAssetCategoriesRouter({
   router.post('/:projectId/asset-categories/reorder', (req, res, next) => {
     const project = loadProjectOr404(req, res, next);
     if (!project) return;
+    if (isArchivedProject(project)) {
+      return renderPage(res, project, {
+        status: 409,
+        notice: resolveNotice('category_archived'),
+      });
+    }
 
     try {
-      const orderedIds = parseOrderIds(req.body?.order);
+      const orderedIds = parseOrderedCategoryIds(req.body?.orderedCategoryIds);
       projectAssetCategoryService.reorder(project.id, orderedIds);
       res.redirect(`/projects/${project.id}/asset-categories?notice=category_reordered`);
     } catch (err) {
       if (err instanceof ProjectNotFoundError) return next(createNotFound());
       if (err instanceof ProjectArchivedError) {
         return renderPage(res, project, { status: 409, notice: resolveNotice('category_archived') });
+      }
+      if (err instanceof AssetCategoryValidationError) {
+        return renderPage(res, project, {
+          status: 422,
+          notice: resolveNotice('category_reorder_invalid'),
+        });
       }
       res.redirect(`/projects/${project.id}/asset-categories?notice=category_reorder_failed`);
     }
