@@ -5,6 +5,7 @@ import {
   STATUSES,
   WORKFLOW_STATUSES,
   PRIORITIES,
+  DEFAULT_PRIORITY,
 } from '../services/project-service.js';
 
 const SORT_OPTIONS = ['updated', 'created', 'title'];
@@ -55,7 +56,7 @@ export function createProjectsRouter({ appName, projectService, workflowQuerySer
     res.render('projects/form.njk', {
       appName,
       project: null,
-      values: req.query || {},
+      values: createFormValues(req.query || {}),
       errors: {},
       statuses: WORKFLOW_STATUSES,
       priorities: PRIORITIES,
@@ -74,7 +75,7 @@ export function createProjectsRouter({ appName, projectService, workflowQuerySer
         res.status(422).render('projects/form.njk', {
           appName,
           project: null,
-          values: req.body,
+          values: createFormValues(req.body),
           errors: err.errors,
           statuses: WORKFLOW_STATUSES,
           priorities: PRIORITIES,
@@ -87,7 +88,7 @@ export function createProjectsRouter({ appName, projectService, workflowQuerySer
       res.status(500).render('projects/form.njk', {
         appName,
         project: null,
-        values: req.body,
+        values: createFormValues(req.body),
         errors: { general: 'Project creation failed. Please try again.' },
         statuses: WORKFLOW_STATUSES,
         priorities: PRIORITIES,
@@ -250,6 +251,13 @@ function parseProjectInput(body) {
     plannedDate: body.plannedDate || null,
     publishedDate: body.publishedDate || null,
     patreonUrl: body.patreonUrl || null,
+  };
+}
+
+function createFormValues(values) {
+  return {
+    ...values,
+    priority: values.priority === undefined ? DEFAULT_PRIORITY : values.priority,
   };
 }
 

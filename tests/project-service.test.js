@@ -122,8 +122,13 @@ describe('project service', () => {
     expect(() => service.create(validInput({ status: 'banana' }))).toThrow(ProjectValidationError);
   });
 
-  it('rejects an invalid priority', () => {
-    expect(() => service.create(validInput({ priority: 'urgent' }))).toThrow(ProjectValidationError);
+  it.each(['', null, 'urgent'])('rejects an invalid priority %j', (priority) => {
+    expect(() => service.create(validInput({ priority }))).toThrow(ProjectValidationError);
+  });
+
+  it.each(['low', 'normal', 'high'])('preserves explicit %s priority on create', (priority) => {
+    const project = service.create(validInput({ title: `Explicit ${priority}`, priority }));
+    expect(project.priority).toBe(priority);
   });
 
   it.each([
@@ -206,6 +211,15 @@ describe('project service', () => {
     expect(() => service.update(999, validInput())).toThrow(ProjectNotFoundError);
   });
 
+  it('does not default an omitted priority during update', () => {
+    const created = service.create(validInput({ title: 'Strict Update Priority', priority: 'high' }));
+    const input = validInput({ title: 'Strict Update Priority', status: 'planned' });
+    delete input.priority;
+
+    expect(() => service.update(created.id, input)).toThrow(ProjectValidationError);
+    expect(service.findById(created.id).priority).toBe('high');
+  });
+
   it('archives an existing project', () => {
     const created = service.create(validInput());
     const archived = service.archive(created.id);
@@ -225,6 +239,18 @@ describe('project service', () => {
       const relPath = buildProjectRelPath(project.status, dirName);
       return { dirName, relPath, absPath: resolveProjectDir(projectsRoot, relPath) };
     }
+
+    it('defaults omitted create priority to normal in the database and manifest', () => {
+      const input = validInput({ title: 'Default Priority' });
+      delete input.priority;
+
+      const project = service.create(input);
+      expect(project.priority).toBe('normal');
+      expect(service.findById(project.id).priority).toBe('normal');
+
+      const { absPath } = getProjectDir(project);
+      expect(readManifestSync(absPath).priority).toBe('normal');
+    });
 
     it('creates a database record and project directory', () => {
       const project = service.create(validInput({ title: 'FS Test' }));

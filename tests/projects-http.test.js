@@ -83,6 +83,8 @@ describe('project HTTP workflow', () => {
     expect(res.text).toContain('Create Project');
     expect(res.text).toContain('Title');
     expect(res.text).not.toContain('value="archived"');
+    expect(res.text).toContain('<option value="normal" selected>Normal</option>');
+    expect(res.text).not.toContain('<option value="low" selected>Low</option>');
   });
 
   it('valid create request redirects to detail', async () => {
@@ -97,6 +99,55 @@ describe('project HTTP workflow', () => {
         .send('_csrf=' + encodeURIComponent(csrfToken))
       .expect(302);
     expect(res.headers.location).toMatch(/^\/projects\/\d+$/);
+  });
+
+  it('omitted create priority defaults to normal in the database and manifest', async () => {
+    const res = await agent
+      .post('/projects')
+      .send('title=Default+Priority')
+      .send('status=tbd')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .expect(302);
+
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const row = db.prepare('SELECT priority, project_dir FROM projects WHERE id = ?').get(id);
+    expect(row.priority).toBe('normal');
+
+    const manifest = readManifestSync(resolveProjectDir(projectsRoot, row.project_dir));
+    expect(manifest.priority).toBe('normal');
+  });
+
+  it.each(['low', 'high'])('explicit %s priority remains unchanged on create', async (priority) => {
+    const res = await agent
+      .post('/projects')
+      .send(`title=Explicit+${priority}`)
+      .send('status=tbd')
+      .send(`priority=${priority}`)
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .expect(302);
+
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const row = db.prepare('SELECT priority, project_dir FROM projects WHERE id = ?').get(id);
+    expect(row.priority).toBe(priority);
+
+    const manifest = readManifestSync(resolveProjectDir(projectsRoot, row.project_dir));
+    expect(manifest.priority).toBe(priority);
+  });
+
+  it.each(['', 'urgent'])('invalid create priority %j returns a controlled validation error', async (priority) => {
+    const res = await agent
+      .post('/projects')
+      .send(`title=Invalid+Priority+${priority || 'Empty'}`)
+      .send('status=tbd')
+      .send(`priority=${encodeURIComponent(priority)}`)
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .expect(422);
+
+    expect(res.text).toContain('Priority must be one of');
+    expect(res.text).not.toContain('<option value="normal" selected>Normal</option>');
   });
 
   it('invalid create request rerenders with values and errors', async () => {
@@ -247,6 +298,35 @@ describe('project HTTP workflow', () => {
     expect(res.text).toContain('Status and scheduling');
     expect(res.text).toContain('Links');
     expect(res.text).toContain(`href="${createRes.headers.location}"`);
+  });
+
+  it('editing an existing high-priority project does not reset it to normal', async () => {
+    const createRes = await agent
+      .post('/projects')
+      .send('title=High+Priority+Edit')
+      .send('status=tbd')
+      .send('priority=high')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .expect(302);
+    const location = createRes.headers.location;
+
+    const edit = await agent.get(`${location}/edit`).expect(200);
+    expect(edit.text).toContain('<option value="high" selected>High</option>');
+    expect(edit.text).not.toContain('<option value="normal" selected>Normal</option>');
+
+    await agent
+      .post(location)
+      .send('title=High+Priority+Edit')
+      .send('status=planned')
+      .send('priority=high')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .expect(302);
+
+    const id = Number(location.replace('/projects/', ''));
+    const row = db.prepare('SELECT priority FROM projects WHERE id = ?').get(id);
+    expect(row.priority).toBe('high');
   });
 
   it('missing project returns 404', async () => {

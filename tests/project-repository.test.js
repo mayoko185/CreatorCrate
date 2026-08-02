@@ -29,7 +29,7 @@ describe('project repository', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('creates a project with default status and priority', () => {
+  it('creates a project with explicitly supplied status and priority', () => {
     const project = repository.create(sampleProject({ title: 'Sunset Sketch' }));
     expect(project.title).toBe('Sunset Sketch');
     expect(project.status).toBe('tbd');

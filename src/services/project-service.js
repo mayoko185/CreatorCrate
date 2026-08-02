@@ -24,7 +24,7 @@ import {
   MANIFEST_FILENAME,
 } from '../storage/manifest.js';
 
-export { STATUSES, WORKFLOW_STATUSES, PRIORITIES };
+export { STATUSES, WORKFLOW_STATUSES, PRIORITIES, DEFAULT_PRIORITY };
 
 export class ProjectValidationError extends Error {
   constructor(errors) {
@@ -46,6 +46,7 @@ const TITLE_MIN = 1;
 const TITLE_MAX = 200;
 const DESCRIPTION_MAX = 4000;
 const NOTES_MAX = 10000;
+const DEFAULT_PRIORITY = 'normal';
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -303,7 +304,11 @@ export function createProjectService(
     repository,
 
     create(input) {
-      const normalized = validate(input);
+      const normalizedInput = {
+        ...input,
+        priority: input.priority === undefined ? DEFAULT_PRIORITY : input.priority,
+      };
+      const normalized = validate(normalizedInput);
 
       let project;
       let relPath;
