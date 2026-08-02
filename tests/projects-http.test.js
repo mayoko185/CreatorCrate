@@ -19,6 +19,11 @@ import {
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 
+function extractProjectCard(html, projectId) {
+  const cards = html.match(/<article\b[^>]*data-project-card[^>]*>[\s\S]*?<\/article>/g) || [];
+  return cards.find((card) => card.includes(`data-project-card-link href="/projects/${projectId}"`)) || '';
+}
+
 describe('project HTTP workflow', () => {
   let db;
   let app;
@@ -49,6 +54,34 @@ describe('project HTTP workflow', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
+  async function createProject({ title, status = 'tbd', priority = 'normal', plannedDate, publishedDate }) {
+    const fields = new URLSearchParams({
+      title,
+      status,
+      priority,
+      _csrf: csrfToken,
+    });
+    if (plannedDate) fields.set('plannedDate', plannedDate);
+    if (publishedDate) fields.set('publishedDate', publishedDate);
+
+    const res = await agent
+      .post('/projects')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .send(fields.toString())
+      .expect(302);
+    return Number(res.headers.location.replace('/projects/', ''));
+  }
+
+  function seedPrimaryImage(projectId, filename = 'cover.png') {
+    const project = db.prepare('SELECT project_dir FROM projects WHERE id = ?').get(projectId);
+    const projectDir = resolveProjectDir(projectsRoot, project.project_dir);
+    fs.writeFileSync(path.join(projectDir, filename), 'content');
+    app.locals.assetScanner.scanProjectAssets(projectId);
+    const asset = app.locals.assetScanner.repository.findByProjectId(projectId)[0];
+    app.locals.projectPrimaryImageService.setPrimaryImage(projectId, asset.id);
+    return asset;
+  }
+
   it('dashboard renders counts and a new project action', async () => {
     const res = await agent.get('/').expect(200);
     expect(res.text).toContain('CreatorCrate');
@@ -78,27 +111,80 @@ describe('project HTTP workflow', () => {
     expect(res.text).toContain('No projects yet');
   });
 
-  it('keeps Projects HTML unchanged when a primary-image model is available', async () => {
-    const createRes = await agent
-      .post('/projects')
-      .send('title=Primary+List+Markup')
-      .send('status=tbd')
-      .send('priority=normal')
-      .set('Content-Type', 'application/x-www-form-urlencoded')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-      .expect(302);
-    const projectId = Number(createRes.headers.location.replace('/projects/', ''));
-    const project = db.prepare('SELECT project_dir FROM projects WHERE id = ?').get(projectId);
-    const projectDir = resolveProjectDir(projectsRoot, project.project_dir);
-    fs.writeFileSync(path.join(projectDir, 'cover.png'), 'content');
-    app.locals.assetScanner.scanProjectAssets(projectId);
-    const asset = app.locals.assetScanner.repository.findByProjectId(projectId)[0];
+  it('renders one semantic project card per row with primary-image states and retained metadata', async () => {
+    const availableId = await createProject({
+      title: 'Available Primary Image',
+      status: 'ready',
+      priority: 'high',
+      plannedDate: '2026-09-01',
+      publishedDate: '2026-10-01',
+    });
+    const noneId = await createProject({
+      title: 'No Image Missing Dates',
+      status: 'tbd',
+      priority: 'low',
+    });
+    const unavailableId = await createProject({
+      title: 'Unavailable Primary Image',
+      status: 'planned',
+      priority: 'normal',
+    });
 
-    const before = await agent.get('/projects').expect(200);
-    app.locals.projectPrimaryImageService.setPrimaryImage(projectId, asset.id);
-    const after = await agent.get('/projects').expect(200);
+    seedPrimaryImage(availableId);
+    const unavailableAsset = seedPrimaryImage(unavailableId, 'unavailable.png');
+    db.prepare('UPDATE assets SET is_present = 0 WHERE id = ?').run(unavailableAsset.id);
 
-    expect(after.text).toBe(before.text);
+    const res = await agent.get('/projects').expect(200);
+    const availableCard = extractProjectCard(res.text, availableId);
+    const noneCard = extractProjectCard(res.text, noneId);
+    const unavailableCard = extractProjectCard(res.text, unavailableId);
+
+    expect(res.text).toContain('<ul class="project-grid">');
+    expect(res.text).not.toContain('<table class="data-table">');
+    expect(res.text.match(/<li class="project-grid-item">/g)).toHaveLength(3);
+    expect(res.text.match(/<article class="project-card[^"]*" data-project-card>/g)).toHaveLength(3);
+
+    expect(availableCard).toContain(`data-project-card-link href="/projects/${availableId}">Available Primary Image</a>`);
+    expect(availableCard).toMatch(
+      /<img class="project-card-media-image" data-preview-image src="\/projects\/\d+\/assets\/\d+\/preview\?v=[0-9a-f]+" alt="Preview of cover\.png" loading="lazy" decoding="async">/
+    );
+    expect(availableCard).toContain('data-preview-enhancement');
+    expect(availableCard).toContain('data-preview-fallback');
+    expect(availableCard).not.toContain('/original');
+    expect(availableCard).not.toContain('/thumbnail');
+
+    expect(noneCard).toContain('data-primary-image-state="none"');
+    expect(noneCard).toContain('No image');
+    expect(noneCard).not.toContain('<img');
+
+    expect(unavailableCard).toContain('data-primary-image-state="unavailable"');
+    expect(unavailableCard).toContain('Image unavailable');
+    expect(unavailableCard).not.toContain('<img');
+
+    const availableRow = db.prepare('SELECT updated_at FROM projects WHERE id = ?').get(availableId);
+    expect(availableCard).toMatch(/<dt>Status<\/dt>\s*<dd>[\s\S]*Ready[\s\S]*<\/dd>/);
+    expect(availableCard).toMatch(/<dt>Priority<\/dt>\s*<dd>High<\/dd>/);
+    expect(availableCard).toContain(`<dt>Updated</dt>`);
+    expect(availableCard).toContain(availableRow.updated_at);
+    expect(availableCard).toMatch(/<dt>Planned<\/dt>\s*<dd>2026-09-01<\/dd>/);
+    expect(availableCard).toMatch(/<dt>Published<\/dt>\s*<dd>2026-10-01<\/dd>/);
+    expect(noneCard).toMatch(/<dt>Planned<\/dt>\s*<dd>—<\/dd>/);
+    expect(noneCard).toMatch(/<dt>Published<\/dt>\s*<dd>—<\/dd>/);
+  });
+
+  it('serves scoped responsive project-card presentation contracts', async () => {
+    const page = await agent.get('/projects').expect(200);
+    const css = (await agent.get('/creatorcrate.css').expect(200)).text;
+
+    expect(page.text).toContain('<link rel="stylesheet" href="/creatorcrate.css">');
+    expect(css).toMatch(/\.project-grid\s*\{[\s\S]*?display:\s*grid;[\s\S]*?grid-template-columns:\s*repeat\(auto-fit,\s*minmax\(min\(100%,\s*17rem\),\s*1fr\)\)/);
+    expect(css).toMatch(/\.project-card-media-image\s*\{[^}]*width:\s*100%;[^}]*height:\s*auto;/);
+    expect(css).not.toMatch(/\.project-card[^{}]*\{[^}]*aspect-ratio\s*:/);
+    expect(css).not.toMatch(/\.project-card[^{}]*\{[^}]*object-fit\s*:\s*cover/);
+    expect(css).toMatch(/\.project-card-link\s*\{[^}]*overflow-wrap:\s*anywhere/);
+    expect(css).toMatch(/\.project-card-meta dd\s*\{[^}]*overflow-wrap:\s*anywhere/);
+    expect(css).toMatch(/@media\s*\(max-width:\s*540px\)\s*\{\s*\.project-card-meta\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\)/);
+    expect(css).toMatch(/\.project-card:focus-within\s*\{[\s\S]*?outline:\s*2px solid var\(--focus-ring\)[\s\S]*?transform:\s*scale\(1\.01\)/);
   });
 
   it('new-project form renders', async () => {
@@ -408,6 +494,7 @@ describe('project HTTP workflow', () => {
 
     const archivedList = await agent.get('/projects?status=archived').expect(200);
     expect(archivedList.text).toContain('Filter Archive');
+    expect(archivedList.text).toContain('class="project-card project-card--archived" data-project-card');
 
     const dashboard = await agent.get('/').expect(200);
     expect(dashboard.text).toContain('<span class="count">1</span> Archived');
@@ -437,6 +524,23 @@ describe('project HTTP workflow', () => {
     const status = await agent.get('/projects?status=ready').expect(200);
     expect(status.text).toContain('Beta One');
     expect(status.text).not.toContain('Searchable Alpha');
+  });
+
+  it('project list preserves title sort ordering in the card grid', async () => {
+    const zetaId = await createProject({ title: 'Sort Zeta' });
+    const alphaId = await createProject({ title: 'Sort Alpha' });
+
+    const ascending = await agent.get('/projects?sort=title&order=asc').expect(200);
+    const alphaPosition = ascending.text.indexOf(`data-project-card-link href="/projects/${alphaId}"`);
+    const zetaPosition = ascending.text.indexOf(`data-project-card-link href="/projects/${zetaId}"`);
+    expect(alphaPosition).toBeGreaterThan(-1);
+    expect(zetaPosition).toBeGreaterThan(-1);
+    expect(alphaPosition).toBeLessThan(zetaPosition);
+
+    const descending = await agent.get('/projects?sort=title&order=desc').expect(200);
+    const descendingAlphaPosition = descending.text.indexOf(`data-project-card-link href="/projects/${alphaId}"`);
+    const descendingZetaPosition = descending.text.indexOf(`data-project-card-link href="/projects/${zetaId}"`);
+    expect(descendingZetaPosition).toBeLessThan(descendingAlphaPosition);
   });
 
   it('project list still filters by status', async () => {
@@ -492,9 +596,11 @@ describe('project HTTP workflow', () => {
 
     const page1 = await agent.get('/projects?page=1').expect(200);
     expect(page1.text).toContain('Page 1 of 2');
+    expect(page1.text).toContain('href="/projects?page=2"');
 
     const huge = await agent.get('/projects?page=999').expect(200);
     expect(huge.text).toContain('Page 2 of 2');
+    expect(huge.text).toContain('href="/projects?page=1"');
   });
 
   it('unknown routes still return safe 404', async () => {

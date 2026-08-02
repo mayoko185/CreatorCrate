@@ -299,6 +299,7 @@ function buildPageUrl(req) {
       }
     }
     const search = new URLSearchParams(query).toString();
-    return search ? `${req.path}?${search}` : req.path;
+    const pathname = req.baseUrl || req.path;
+    return search ? `${pathname}?${search}` : pathname;
   };
 }

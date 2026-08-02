@@ -1,6 +1,22 @@
 const PREVIEW_ROOT_SELECTOR = '[data-preview-enhancement]';
 const PREVIEW_IMAGE_SELECTOR = '[data-preview-image]';
 const PREVIEW_FALLBACK_SELECTOR = '[data-preview-fallback]';
+const PROJECT_CARD_SELECTOR = '[data-project-card]';
+const PROJECT_CARD_LINK_SELECTOR = '[data-project-card-link]';
+const PROJECT_CARD_INTERACTIVE_SELECTOR = [
+  'a',
+  'button',
+  'form',
+  'input',
+  'select',
+  'textarea',
+  'label',
+  'details',
+  'summary',
+  '[contenteditable]',
+  '[role="button"]',
+  '[tabindex]',
+].join(', ');
 
 function setPreviewState(root, state) {
   if (!root) return;
@@ -75,6 +91,30 @@ export function enhancePreviewMedia(scope = globalThis.document) {
   const roots = scope.querySelectorAll(PREVIEW_ROOT_SELECTOR);
   roots.forEach((root) => enhancePreview(root));
   return roots.length;
+}
+
+export function enhanceProjectCards(scope = globalThis.document) {
+  if (!scope || typeof scope.querySelectorAll !== 'function') return 0;
+
+  const cards = scope.querySelectorAll(PROJECT_CARD_SELECTOR);
+  cards.forEach((card) => {
+    if (isEnhancementBound(card, 'projectCardBound')) return;
+
+    const link = card.querySelector?.(PROJECT_CARD_LINK_SELECTOR);
+    if (!link || typeof link.click !== 'function') return;
+
+    markEnhancementBound(card, 'projectCardBound');
+    card.addEventListener('click', (event) => {
+      if (event.defaultPrevented || event.button !== 0
+        || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+
+      const interactive = event.target?.closest?.(PROJECT_CARD_INTERACTIVE_SELECTOR);
+      if (interactive && (typeof card.contains !== 'function' || card.contains(interactive))) return;
+
+      link.click();
+    });
+  });
+  return cards.length;
 }
 
 export function enhanceAutoSubmit(scope = globalThis.document) {
@@ -890,6 +930,7 @@ export function enhanceAssetGridSize(scope = globalThis.document) {
 if (typeof document !== 'undefined') {
   const run = () => {
     enhancePreviewMedia(document);
+    enhanceProjectCards(document);
     enhanceAutoSubmit(document);
     enhanceCategoryReorder(document);
     enhanceCategoryDetails(document);

@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import {
   enhancePreview,
   enhancePreviewMedia,
+  enhanceProjectCards,
   enhanceAutoSubmit,
   enhanceCategoryReorder,
   enhanceCategoryDetails,
@@ -43,6 +44,97 @@ function makeElement(props = {}) {
     },
   };
   return element;
+}
+
+function makeProjectDomNode({ tagName = 'div', parent = null, attributes = {} } = {}) {
+  const listeners = [];
+  const node = {
+    tagName: tagName.toUpperCase(),
+    parentElement: parent,
+    parentNode: parent,
+    attributes,
+    dataset: {},
+    listeners,
+    matches(selector) {
+      return selector.split(',').some((part) => {
+        const candidate = part.trim().toLowerCase();
+        if (candidate === this.tagName.toLowerCase()) return true;
+        if (candidate === '[contenteditable]') return Object.hasOwn(attributes, 'contenteditable');
+        if (candidate === '[role="button"]') return attributes.role === 'button';
+        if (candidate === '[tabindex]') return Object.hasOwn(attributes, 'tabindex');
+        return false;
+      });
+    },
+    closest(selector) {
+      let current = this;
+      while (current) {
+        if (current.matches(selector)) return current;
+        current = current.parentElement;
+      }
+      return null;
+    },
+    contains(candidate) {
+      let current = candidate;
+      while (current) {
+        if (current === this) return true;
+        current = current.parentElement;
+      }
+      return false;
+    },
+    addEventListener(type, handler) {
+      listeners.push({ type, handler });
+    },
+    dispatch(type, props = {}) {
+      const event = {
+        type,
+        target: this,
+        button: 0,
+        defaultPrevented: false,
+        preventDefault() { this.defaultPrevented = true; },
+        ...props,
+      };
+      for (const listener of listeners.filter((entry) => entry.type === type)) {
+        listener.handler(event);
+      }
+      return event;
+    },
+  };
+  return node;
+}
+
+function makeProjectCardFixture() {
+  const card = makeProjectDomNode({ tagName: 'article' });
+  const link = makeProjectDomNode({ tagName: 'a', parent: card });
+  const metadataRow = makeProjectDomNode({ tagName: 'div', parent: card });
+  const metadataValue = makeProjectDomNode({ tagName: 'span', parent: metadataRow });
+  const blank = makeProjectDomNode({ tagName: 'div', parent: card });
+  const secondaryLink = makeProjectDomNode({ tagName: 'a', parent: card });
+  const button = makeProjectDomNode({ tagName: 'button', parent: card });
+  const form = makeProjectDomNode({ tagName: 'form', parent: card });
+  const input = makeProjectDomNode({ tagName: 'input', parent: form });
+  const select = makeProjectDomNode({ tagName: 'select', parent: card });
+  const label = makeProjectDomNode({ tagName: 'label', parent: card });
+  const details = makeProjectDomNode({ tagName: 'details', parent: card });
+  const summary = makeProjectDomNode({ tagName: 'summary', parent: details });
+  let linkActivations = 0;
+
+  link.click = () => {
+    linkActivations += 1;
+  };
+  card.querySelector = (selector) => (
+    selector === '[data-project-card-link]' ? link : null
+  );
+
+  return {
+    card,
+    link,
+    blank,
+    metadataValue,
+    interactive: [secondaryLink, button, form, input, select, label, details, summary],
+    get linkActivations() {
+      return linkActivations;
+    },
+  };
 }
 
 function makePreview({ complete = false, naturalWidth = 0, src = '/thumbnail.webp' } = {}) {
@@ -146,6 +238,72 @@ describe('static preview enhancement helpers', () => {
     expect(source).toMatch(/localStorage/);
     expect(source).not.toMatch(/sessionStorage|XMLHttpRequest/i);
     expect(source).toMatch(/fetch\(/i);
+  });
+});
+
+describe('project card navigation enhancement', () => {
+  function makeScope(cards) {
+    return {
+      querySelectorAll(selector) {
+        expect(selector).toBe('[data-project-card]');
+        return cards;
+      },
+    };
+  }
+
+  it('activates the real project link from blank space and ordinary metadata once', () => {
+    const fixture = makeProjectCardFixture();
+
+    expect(enhanceProjectCards(makeScope([fixture.card]))).toBe(1);
+
+    fixture.card.dispatch('click', { target: fixture.blank });
+    expect(fixture.linkActivations).toBe(1);
+
+    fixture.card.dispatch('click', { target: fixture.metadataValue });
+    expect(fixture.linkActivations).toBe(2);
+
+    fixture.card.dispatch('click', { target: fixture.link });
+    expect(fixture.linkActivations).toBe(2);
+  });
+
+  it('does not navigate for secondary links, buttons, forms, or controls', () => {
+    const fixture = makeProjectCardFixture();
+    enhanceProjectCards(makeScope([fixture.card]));
+
+    for (const target of fixture.interactive) {
+      fixture.card.dispatch('click', { target });
+    }
+
+    expect(fixture.linkActivations).toBe(0);
+  });
+
+  it('ignores modified clicks and non-primary mouse buttons', () => {
+    const fixture = makeProjectCardFixture();
+    enhanceProjectCards(makeScope([fixture.card]));
+
+    fixture.card.dispatch('click', { target: fixture.blank, metaKey: true });
+    fixture.card.dispatch('click', { target: fixture.blank, ctrlKey: true });
+    fixture.card.dispatch('click', { target: fixture.blank, shiftKey: true });
+    fixture.card.dispatch('click', { target: fixture.blank, altKey: true });
+    fixture.card.dispatch('click', { target: fixture.blank, button: 1 });
+    fixture.card.dispatch('click', { target: fixture.blank, button: 2 });
+
+    expect(fixture.linkActivations).toBe(0);
+  });
+
+  it('is idempotent and safely handles pages without project cards', () => {
+    const fixture = makeProjectCardFixture();
+    const scope = makeScope([fixture.card]);
+
+    expect(enhanceProjectCards(scope)).toBe(1);
+    expect(enhanceProjectCards(scope)).toBe(1);
+    expect(fixture.card.listeners.filter((listener) => listener.type === 'click')).toHaveLength(1);
+
+    fixture.card.dispatch('click', { target: fixture.blank });
+    expect(fixture.linkActivations).toBe(1);
+
+    expect(enhanceProjectCards(makeScope([]))).toBe(0);
+    expect(() => enhanceProjectCards(null)).not.toThrow();
   });
 });
 
