@@ -64,6 +64,7 @@ export function createProjectPrimaryImageService({
   projectRepository,
   assetRepository,
   projectPrimaryImageRepository,
+  previewProbe,
 } = {}) {
   if (!db || typeof db.transaction !== 'function') {
     throw new Error('createProjectPrimaryImageService requires a db dependency.');
@@ -106,7 +107,14 @@ export function createProjectPrimaryImageService({
     return asset;
   }
 
-  function requireEligiblePresentAsset(projectId, assetId) {
+  function unsupportedAsset(assetId, cause) {
+    return new ProjectPrimaryImageError(
+      `Asset ${assetId} is not supported as a primary image.`,
+      { code: PRIMARY_IMAGE_ERROR_CODES.ASSET_UNSUPPORTED, cause }
+    );
+  }
+
+  function requireEligiblePresentAsset(projectId, assetId, { kritaQuality = null } = {}) {
     const asset = requireOwnedAsset(projectId, assetId);
     if (asset.is_present !== 1 && asset.is_present !== true) {
       throw new ProjectPrimaryImageError(
@@ -115,13 +123,21 @@ export function createProjectPrimaryImageService({
       );
     }
 
-    if (!classifyPreviewable(asset).supported) {
-      throw new ProjectPrimaryImageError(
-        `Asset ${assetId} is not supported as a primary image.`,
-        { code: PRIMARY_IMAGE_ERROR_CODES.ASSET_UNSUPPORTED }
-      );
+    const classification = classifyPreviewable(asset);
+    if (!classification.supported) {
+      throw unsupportedAsset(assetId);
     }
-    return asset;
+    if (classification.kind === 'image') {
+      return asset;
+    }
+    if (
+      classification.kind === 'krita'
+      && classification.extension === 'kra'
+      && kritaQuality === 'merged'
+    ) {
+      return asset;
+    }
+    throw unsupportedAsset(assetId);
   }
 
   function databaseFailure(err) {
@@ -132,15 +148,69 @@ export function createProjectPrimaryImageService({
     );
   }
 
-  const setPrimaryImageTx = db.transaction((projectId, assetId) => {
+  const setPrimaryImageTx = db.transaction((projectId, assetId, kritaQuality = null) => {
     requireMutableProject(projectId);
-    const asset = requireEligiblePresentAsset(projectId, assetId);
+    const asset = requireEligiblePresentAsset(projectId, assetId, { kritaQuality });
     const stored = primaryImages.setPrimaryImage(projectId, asset.id);
     if (!stored || stored.project_id !== projectId || stored.asset_id !== assetId) {
       throw new Error('Primary image repository returned an invalid selection.');
     }
     return stored;
   });
+
+  function setPrimaryImage(projectId, assetId) {
+    assertCanonicalPositiveId(projectId, 'projectId');
+    assertCanonicalPositiveId(assetId, 'assetId');
+
+    const project = requireMutableProject(projectId);
+    const asset = requireOwnedAsset(projectId, assetId);
+    if (asset.is_present !== 1 && asset.is_present !== true) {
+      // Preserve the domain-specific missing-asset error and avoid probing a
+      // path that the authoritative asset record already says is absent.
+      return setPrimaryImageTx(projectId, assetId);
+    }
+    const classification = classifyPreviewable(asset);
+    const isMergedKraCandidate = classification.supported
+      && classification.kind === 'krita'
+      && classification.extension === 'kra';
+
+    if (!isMergedKraCandidate) {
+      return setPrimaryImageTx(projectId, assetId);
+    }
+
+    if (typeof previewProbe !== 'function') {
+      throw unsupportedAsset(assetId);
+    }
+
+    const acceptMerged = (result) => {
+      if (result?.quality !== 'merged') {
+        throw unsupportedAsset(assetId);
+      }
+      try {
+        return setPrimaryImageTx(projectId, assetId, 'merged');
+      } catch (err) {
+        throw databaseFailure(err);
+      }
+    };
+
+    const mapProbeFailure = (err) => {
+      if (err instanceof ProjectPrimaryImageError) throw err;
+      throw unsupportedAsset(assetId, err);
+    };
+
+    try {
+      const result = previewProbe(project, asset);
+      if (result && typeof result.then === 'function') {
+        // Keep probe failures distinct from the commit transaction: an
+        // unexpected extractor error is unsupported, while a database error
+        // remains the existing database error after the probe succeeds.
+        return Promise.resolve(result).then(acceptMerged, mapProbeFailure);
+      }
+      return acceptMerged(result);
+    } catch (err) {
+      throw err instanceof ProjectPrimaryImageError ? err : unsupportedAsset(assetId, err);
+    }
+  }
 
   const clearPrimaryImageTx = db.transaction((projectId, expectedAssetId) => {
     requireMutableProject(projectId);
@@ -188,10 +258,8 @@ export function createProjectPrimaryImageService({
      * @returns {{project_id: number, asset_id: number}}
      */
     setPrimaryImage(projectId, assetId) {
-      assertCanonicalPositiveId(projectId, 'projectId');
-      assertCanonicalPositiveId(assetId, 'assetId');
       try {
-        return setPrimaryImageTx(projectId, assetId);
+        return setPrimaryImage(projectId, assetId);
       } catch (err) {
         throw databaseFailure(err);
       }

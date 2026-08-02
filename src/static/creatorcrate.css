@@ -1298,6 +1298,25 @@
         width: 100%;
         height: auto;
       }
+      /* Krita derivatives may contain only a small embedded preview. Keep
+         those previews intrinsic while ordinary image cards retain their
+         existing full-width treatment. */
+      .asset-media--krita {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .asset-media--krita .asset-thumb-image,
+      .asset-media--krita .asset-card-thumb,
+      .asset-media--krita .asset-preview-image {
+        width: auto;
+        max-width: 100%;
+        height: auto;
+      }
+      .asset-media--krita .asset-thumb-image {
+        max-height: 100%;
+        object-fit: contain;
+      }
       .asset-card-placeholder {
         display: flex;
         align-items: center;
@@ -1990,6 +2009,18 @@
       .project-card-media-image {
         display: block;
         width: 100%;
+        height: auto;
+      }
+      /* Krita previews are already bounded derivatives; preserve their
+         intrinsic ratio instead of stretching them to the card width. */
+      .project-card--grid .project-card-media--krita {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .project-card--grid .project-card-media-image--krita {
+        width: auto;
+        max-width: 100%;
         height: auto;
       }
       .project-card-media--image [data-preview-fallback] {

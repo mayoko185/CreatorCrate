@@ -905,6 +905,8 @@ describe('asset scanner', () => {
       expect(getPrimaryImageModel(project.id)).toEqual({
         selectedAssetId: asset.id,
         state: 'unavailable',
+        kind: 'image',
+        mediaModifier: null,
         previewUrl: null,
         thumbnailUrl: null,
         revision: null,

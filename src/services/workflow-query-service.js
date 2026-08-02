@@ -211,15 +211,21 @@ function buildPreviewAltText(asset) {
 }
 
 /**
- * Shared primary-image eligibility predicate for read models and the asset
- * viewer. Presence and preview classification are both required; no cache or
- * derivative generation is performed here.
+ * Shared static primary-image eligibility predicate for ordinary images and
+ * the asset viewer. KRA eligibility is intentionally opt-in via the confirmed
+ * merged quality so list queries never probe archives.
  *
  * @param {object|null|undefined} asset
+ * @param {{ kritaQuality?: string }} [options]
  * @returns {boolean}
  */
-export function isPrimaryImageAssetUsable(asset) {
-  return Boolean(asset && asset.is_present) && classifyPreviewable(asset).supported;
+export function isPrimaryImageAssetUsable(asset, { kritaQuality = null } = {}) {
+  const classification = asset ? classifyPreviewable(asset) : null;
+  if (!asset || !asset.is_present || classification?.supported !== true) return false;
+  if (classification.kind === 'image') return true;
+  return classification.kind === 'krita'
+    && classification.extension === 'kra'
+    && kritaQuality === 'merged';
 }
 
 /**
@@ -451,6 +457,8 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness, proje
     return {
       selectedAssetId: null,
       state: 'none',
+      kind: null,
+      mediaModifier: null,
       previewUrl: null,
       thumbnailUrl: null,
       revision: null,
@@ -463,10 +471,19 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness, proje
     if (selectedAssetId === null) return buildEmptyPrimaryImageModel();
 
     const ownedAsset = asset && asset.project_id === projectId ? asset : null;
-    if (!isPrimaryImageAssetUsable(ownedAsset)) {
+    const classification = ownedAsset ? classifyPreviewable(ownedAsset) : null;
+    const kind = classification?.kind ?? null;
+    const mediaModifier = kind === 'krita' ? 'krita' : null;
+    const supportedPrimaryKind = classification?.supported === true
+      && (classification.kind === 'image'
+        || (classification.kind === 'krita' && classification.extension === 'kra'));
+
+    if (!ownedAsset || !ownedAsset.is_present || !supportedPrimaryKind) {
       return {
         selectedAssetId,
         state: 'unavailable',
+        kind,
+        mediaModifier,
         previewUrl: null,
         thumbnailUrl: null,
         revision: null,
@@ -478,6 +495,8 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness, proje
     return {
       selectedAssetId,
       state: 'available',
+      kind,
+      mediaModifier,
       previewUrl: preview.urls.preview,
       thumbnailUrl: preview.urls.thumbnail,
       revision: preview.revision,
@@ -997,6 +1016,7 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness, proje
       return {
         state: 'missing',
         previewable: false,
+        kind: null,
         sourceMetadataValid: false,
         revision: null,
         urls: { thumbnail: null, preview: null },
@@ -1008,6 +1028,7 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness, proje
       return {
         state: 'unsupported',
         previewable: false,
+        kind: null,
         sourceMetadataValid: false,
         revision: null,
         urls: { thumbnail: null, preview: null },
@@ -1019,6 +1040,7 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness, proje
     return {
       state: 'previewable',
       previewable: true,
+      kind: classification.kind,
       sourceMetadataValid: revision !== null,
       revision,
       urls,
@@ -1028,7 +1050,7 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness, proje
   function buildOriginalUrl(asset) {
     if (!asset.is_present) return null;
     const classification = classifyPreviewable(asset);
-    if (!classification.supported) return null;
+    if (!classification.supported || classification.kind !== 'image') return null;
     return `/projects/${asset.project_id}/assets/${asset.id}/original`;
   }
 
@@ -1399,7 +1421,7 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness, proje
       previewAltText: buildPreviewAltText(asset),
       isPreviewable: asset.preview.previewable,
       hasThumbnail: Boolean(asset.thumbnail_url),
-      originalEligible: asset.preview.previewable,
+      originalEligible: asset.preview.kind === 'image',
       ...buildAssetRowPresentation(asset),
       // Override buildAssetRowPresentation's bare default with the canonical
       // viewer URL for the browser's own normalized+clamped context — the

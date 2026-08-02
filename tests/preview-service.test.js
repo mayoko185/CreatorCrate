@@ -29,12 +29,14 @@ import {
 import {
   createPreviewService,
   PreviewError,
+  PreviewGenerationError,
   PreviewNotFoundError,
   classifyPreviewable,
   THUMBNAIL_MAX,
   PREVIEW_MAX,
   _lockCountForTests,
 } from '../src/services/preview-service.js';
+import { makeZip } from './helpers/zip-fixture.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 
@@ -126,6 +128,25 @@ function writeProjectFile(projectAbs, relPath, buffer) {
   fs.mkdirSync(path.dirname(target), { recursive: true });
   fs.writeFileSync(target, buffer);
   return target;
+}
+
+function makeKritaArchive({ merged = null, preview = null, deflated = false } = {}) {
+  const entries = [];
+  if (preview) {
+    entries.push({
+      name: 'preview.png',
+      data: preview,
+      ...(deflated ? { compression: 'deflate' } : {}),
+    });
+  }
+  if (merged) {
+    entries.push({
+      name: 'mergedimage.png',
+      data: merged,
+      ...(deflated ? { compression: 'deflate' } : {}),
+    });
+  }
+  return makeZip(entries);
 }
 
 // ─── Test harness ────────────────────────────────────────────────────────
@@ -568,26 +589,188 @@ describe('preview-service image correctness', () => {
 
   // ── Unsupported / corrupt ───────────────────────────────────────────
 
-  it('returns unsupported for a Krita (.kra) asset', async () => {
-    const { project, absPath } = h.createProject('Krita Project');
-    fs.writeFileSync(path.join(absPath, 'draw.kra'), Buffer.from('fake-krita'));
+  it('generates a KRA preview from mergedimage.png even when preview.png appears first', async () => {
+    const { project, absPath } = h.createProject('KRA Merged Project');
+    const merged = await makePng(2000, 1000);
+    const thumbnail = await makePng(320, 160);
+    writeProjectFile(
+      absPath,
+      'draw.kra',
+      makeKritaArchive({ merged, preview: thumbnail, deflated: true })
+    );
+    const asset = h.indexAsset(project, 'draw.kra');
+
+    const r = await h.service.getPreview(project.id, asset.id);
+
+    expect(r.status).toBe('ready');
+    expect(r.quality).toBe('merged');
+    expect(r.width).toBe(1600);
+    expect(r.height).toBe(800);
+    expect(r.path.startsWith(h.previewRoot)).toBe(true);
+    expect(fs.existsSync(path.join(absPath, 'mergedimage.png'))).toBe(false);
+    expect(fs.existsSync(path.join(absPath, 'preview.png'))).toBe(false);
+
+    const sh = await sharp();
+    const meta = await sh(fs.readFileSync(r.path)).metadata();
+    expect(meta.format).toBe('webp');
+    expect(meta.width).toBe(1600);
+    expect(meta.height).toBe(800);
+    expect(readMetaFile(publishedFile(h, project.id, asset.id, META_FILENAME)).meta.source.previewQuality)
+      .toBe('merged');
+  });
+
+  it('generates a KRA thumbnail from the merged preview', async () => {
+    const { project, absPath } = h.createProject('KRA Thumbnail Project');
+    const merged = await makePng(2000, 1000);
+    writeProjectFile(absPath, 'draw.kra', makeKritaArchive({ merged }));
     const asset = h.indexAsset(project, 'draw.kra');
 
     const r = await h.service.getThumbnail(project.id, asset.id);
-    expect(r.status).toBe('unsupported');
-    expect(r.cacheState).toBe('unsupported-format');
-    // No cache should have been written: no pointer, no revision directory.
-    expect(readCurrentPointer(h.previewRoot, project.id, asset.id).ok).toBe(false);
-    expect(resolvePublishedDir(h.previewRoot, project.id, asset.id)).toBeNull();
+
+    expect(r.status).toBe('ready');
+    expect(r.quality).toBe('merged');
+    expect(r.width).toBe(256);
+    expect(r.height).toBe(128);
   });
 
-  it('returns unsupported for a Krita .krz asset', async () => {
-    const { project, absPath } = h.createProject('Krz Project');
-    fs.writeFileSync(path.join(absPath, 'draw.krz'), Buffer.from('fake-krz'));
+  it('generates preview-only KRA derivatives without server enlargement', async () => {
+    const { project, absPath } = h.createProject('KRA Fallback Project');
+    const preview = await makePng(320, 180);
+    writeProjectFile(absPath, 'fallback.kra', makeKritaArchive({ preview }));
+    const asset = h.indexAsset(project, 'fallback.kra');
+
+    const previewResult = await h.service.getPreview(project.id, asset.id);
+    const thumbnailResult = await h.service.getThumbnail(project.id, asset.id);
+
+    expect(previewResult.status).toBe('ready');
+    expect(previewResult.quality).toBe('thumbnail');
+    expect(previewResult.width).toBe(320);
+    expect(previewResult.height).toBe(180);
+    expect(thumbnailResult.quality).toBe('thumbnail');
+    expect(thumbnailResult.width).toBe(256);
+    expect(thumbnailResult.height).toBe(144);
+  });
+
+  it('generates KRZ derivatives from preview.png without server enlargement', async () => {
+    const { project, absPath } = h.createProject('KRZ Project');
+    const preview = await makePng(320, 180);
+    writeProjectFile(
+      absPath,
+      'draw.krz',
+      makeKritaArchive({ merged: Buffer.from('ignored merged entry'), preview })
+    );
     const asset = h.indexAsset(project, 'draw.krz');
 
     const r = await h.service.getPreview(project.id, asset.id);
-    expect(r.status).toBe('unsupported');
+
+    expect(r.status).toBe('ready');
+    expect(r.quality).toBe('thumbnail');
+    expect(r.width).toBe(320);
+    expect(r.height).toBe(180);
+  });
+
+  it('maps corrupt archives to a controlled preview-generation failure', async () => {
+    const { project, absPath } = h.createProject('Corrupt KRA Project');
+    fs.writeFileSync(path.join(absPath, 'broken.kra'), Buffer.from('not a zip'));
+    const asset = h.indexAsset(project, 'broken.kra');
+
+    await expect(h.service.getPreview(project.id, asset.id)).rejects.toMatchObject({
+      name: 'PreviewGenerationError',
+      message: 'Embedded preview unavailable.',
+    });
+  });
+
+  it('maps an absent embedded preview to a controlled failure', async () => {
+    const { project, absPath } = h.createProject('Absent KRA Project');
+    writeProjectFile(
+      absPath,
+      'absent.kra',
+      makeZip([{ name: 'maindoc.xml', data: Buffer.from('<doc/>') }])
+    );
+    const asset = h.indexAsset(project, 'absent.kra');
+
+    await expect(h.service.getPreview(project.id, asset.id)).rejects.toBeInstanceOf(
+      PreviewGenerationError
+    );
+  });
+
+  it('maps a corrupt embedded PNG to a controlled failure without archive details', async () => {
+    const { project, absPath } = h.createProject('Corrupt Embedded PNG');
+    writeProjectFile(
+      absPath,
+      'broken-preview.kra',
+      makeKritaArchive({ preview: Buffer.from('not a png') })
+    );
+    const asset = h.indexAsset(project, 'broken-preview.kra');
+
+    await expect(h.service.getPreview(project.id, asset.id)).rejects.toMatchObject({
+      name: 'PreviewGenerationError',
+      message: 'Source image cannot be decoded.',
+    });
+  });
+
+  it('uses the cache on a warm KRA request without re-extracting the source', async () => {
+    const { project, absPath } = h.createProject('KRA Cache Project');
+    const preview = await makePng(640, 360);
+    writeProjectFile(absPath, 'cached.kra', makeKritaArchive({ preview }));
+    const asset = h.indexAsset(project, 'cached.kra');
+
+    const first = await h.service.getPreview(project.id, asset.id);
+    fs.rmSync(path.join(absPath, 'cached.kra'));
+    const second = await h.service.getPreview(project.id, asset.id);
+
+    expect(first.cacheState).toBe('regenerated');
+    expect(first.quality).toBe('thumbnail');
+    expect(second.cacheState).toBe('fresh');
+    expect(second.quality).toBe('thumbnail');
+    expect(second.path).toBe(first.path);
+  });
+
+  it('regenerates a KRA derivative when recorded size or mtime changes', async () => {
+    const { project, absPath } = h.createProject('KRA Revision Project');
+    const firstPreview = await makePng(640, 360);
+    writeProjectFile(absPath, 'revision.kra', makeKritaArchive({ preview: firstPreview }));
+    const asset = h.indexAsset(project, 'revision.kra');
+    const first = await h.service.getPreview(project.id, asset.id);
+
+    const nextPreview = await makePng(800, 400, { r: 10, g: 20, b: 30 });
+    const nextArchive = makeKritaArchive({ preview: nextPreview });
+    writeProjectFile(absPath, 'revision.kra', nextArchive);
+    const updated = h.assetRepo.upsert(project.id, 'revision.kra', {
+      filename: 'revision.kra',
+      extension: 'kra',
+      mimeType: 'application/x-krita',
+      sizeBytes: nextArchive.length,
+      modifiedAt: '2026-08-02 12:00:00',
+    });
+
+    const second = await h.service.getPreview(project.id, asset.id);
+
+    expect(updated.id).toBe(asset.id);
+    expect(second.cacheState).toBe('regenerated');
+    expect(second.revision).not.toBe(first.revision);
+    expect(second.width).toBe(800);
+    expect(second.height).toBe(400);
+  });
+
+  it('keeps concurrent KRA requests serialized by the existing per-asset lock', async () => {
+    const { project, absPath } = h.createProject('Concurrent KRA Project');
+    const preview = await makePng(640, 360);
+    writeProjectFile(absPath, 'concurrent.kra', makeKritaArchive({ preview }));
+    const asset = h.indexAsset(project, 'concurrent.kra');
+    let stagingCount = 0;
+    const service = makeHookedService(h, {
+      onStagingCreated: () => { stagingCount += 1; },
+    });
+
+    const [first, second] = await Promise.all([
+      service.getPreview(project.id, asset.id),
+      service.getPreview(project.id, asset.id),
+    ]);
+
+    expect(stagingCount).toBe(1);
+    expect(first.revision).toBe(second.revision);
+    expect(_lockCountForTests()).toBe(0);
   });
 
   it('returns unsupported for an unknown binary format with a fake image MIME', async () => {
@@ -696,14 +879,14 @@ describe('preview-service service contract', () => {
     expect(d.revision).toMatch(/^[0-9a-f]{16}$/);
   });
 
-  it('getOriginalDescriptor returns unsupported for a Krita asset', async () => {
+  it('getOriginalDescriptor classifies a Krita asset as previewable', async () => {
     const { project, absPath } = h.createProject('Desc Krita');
     fs.writeFileSync(path.join(absPath, 'k.kra'), Buffer.from('x'));
     const asset = h.indexAsset(project, 'k.kra');
 
     const d = h.service.getOriginalDescriptor(project.id, asset.id);
     expect(d.status).toBe('unsupported');
-    expect(d.previewable).toBe(false);
+    expect(d.previewable).toBe(true);
     expect(d.revision).toMatch(/^[0-9a-f]{16}$/);
   });
 
@@ -1693,7 +1876,12 @@ describe('preview-service failure preservation (forced failures per stage)', () 
 
 describe('classifyPreviewable', () => {
   it('supports png with image/png', () => {
-    expect(classifyPreviewable({ extension: 'png', mime_type: 'image/png' }).supported).toBe(true);
+    expect(classifyPreviewable({ extension: 'png', mime_type: 'image/png' })).toMatchObject({
+      supported: true,
+      kind: 'image',
+      extension: 'png',
+      mimeType: 'image/png',
+    });
   });
 
   it('supports jpg/jpeg case-insensitively', () => {
@@ -1706,9 +1894,24 @@ describe('classifyPreviewable', () => {
     expect(classifyPreviewable({ extension: 'gif', mime_type: 'image/gif' }).supported).toBe(true);
   });
 
-  it('rejects krita extensions regardless of MIME', () => {
-    expect(classifyPreviewable({ extension: 'kra', mime_type: 'application/x-krita' }).supported).toBe(false);
-    expect(classifyPreviewable({ extension: 'krz', mime_type: 'application/x-krita' }).supported).toBe(false);
+  it('supports matching KRA and KRZ records as Krita documents', () => {
+    expect(classifyPreviewable({ extension: 'kra', mime_type: 'application/x-krita' })).toMatchObject({
+      supported: true,
+      kind: 'krita',
+      extension: 'kra',
+      mimeType: 'application/x-krita',
+    });
+    expect(classifyPreviewable({ extension: 'krz', mime_type: 'application/x-krita' })).toMatchObject({
+      supported: true,
+      kind: 'krita',
+      extension: 'krz',
+      mimeType: 'application/x-krita',
+    });
+  });
+
+  it('rejects mismatched or generic Krita MIME values', () => {
+    expect(classifyPreviewable({ extension: 'kra', mime_type: 'image/png' }).supported).toBe(false);
+    expect(classifyPreviewable({ extension: 'krz', mime_type: 'application/octet-stream' }).supported).toBe(false);
   });
 
   it('rejects unknown extensions', () => {

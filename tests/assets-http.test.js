@@ -18,6 +18,7 @@ import { buildAssetRevisionToken } from '../src/services/preview-service.js';
 import { ensureAuthEnablement } from '../src/auth/auth-state.js';
 import { AssetActionError } from '../src/services/asset-action-service.js';
 import { getDisabledModeCsrf } from './helpers/auth.js';
+import { makeZip } from './helpers/zip-fixture.js';
 import slugify from '@sindresorhus/slugify';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
@@ -95,6 +96,13 @@ describe('asset browser HTTP workflow', () => {
       sizeBytes: options.sizeBytes ?? buffer.length,
       modifiedAt: options.modifiedAt ?? '2026-07-28 10:00:00',
     });
+  }
+
+  function makeKritaArchive({ merged = null, preview = null } = {}) {
+    const entries = [];
+    if (preview) entries.push({ name: 'preview.png', data: preview, compression: 'deflate' });
+    if (merged) entries.push({ name: 'mergedimage.png', data: merged, compression: 'deflate' });
+    return makeZip(entries);
   }
 
   async function setupOrderedImageAssets(projectTitle) {
@@ -1765,14 +1773,14 @@ describe('asset browser HTTP workflow', () => {
     expectNoAnchor(res2.text, 'asset-viewer-original');
   });
 
-  it('renders unsupported assets without preview or original links', async () => {
+  it('renders MIME-mismatched Krita assets without preview or original links', async () => {
     const res = await createProject('Viewer Unsupported');
     const id = Number(res.headers.location.replace('/projects/', ''));
     const projectDir = getProjectDir('Viewer Unsupported');
     if (!projectDir) throw new Error('projectDir not found for Viewer Unsupported');
     const asset = writeIndexedAsset(id, projectDir, 'source.kra', 'krita bytes', {
       extension: 'kra',
-      mimeType: 'application/x-krita',
+      mimeType: 'image/png',
     });
 
     const res2 = await agent
@@ -2046,13 +2054,13 @@ describe('asset browser HTTP workflow', () => {
     expect((res2.text.match(/data-preview-fallback/g) || []).length).toBe(1);
   });
 
-  it('does not add image-loading behavior for unsupported assets in the browser table', async () => {
+  it('does not add image-loading behavior for unsupported binary assets in the browser table', async () => {
     const res = await createProject('PhaseC No Preview Hooks');
     const id = Number(res.headers.location.replace('/projects/', ''));
     const projectDir = getProjectDir('PhaseC No Preview Hooks');
-    writeIndexedAsset(id, projectDir, 'source.kra', 'kra bytes', {
-      extension: 'kra',
-      mimeType: 'application/x-krita',
+    writeIndexedAsset(id, projectDir, 'source.bin', 'binary bytes', {
+      extension: 'bin',
+      mimeType: 'application/octet-stream',
     });
 
     const res2 = await agent.get(`/projects/${id}/assets?view=list`).expect(200);
@@ -2060,7 +2068,7 @@ describe('asset browser HTTP workflow', () => {
     expect(res2.text).not.toContain('data-preview-enhancement');
     expect(res2.text).not.toContain('data-preview-image');
     expect(res2.text).not.toContain('data-preview-fallback');
-    expect(res2.text).toContain('KRA');
+    expect(res2.text).toContain('BIN');
   });
 
   it('renders reduced-motion coverage for preview image transitions', async () => {
@@ -2106,6 +2114,24 @@ describe('asset browser HTTP workflow', () => {
       .get(`/projects/${id}/assets/${asset.id}`)
       .expect(200);
     expect(await readStylesheetSource(res2.text)).toMatch(/\.asset-preview-image\s*\{[^}]*object-fit:\s*contain/);
+  });
+
+  it('scopes intrinsic, centered, non-cover sizing to Krita media only', async () => {
+    const res = await createProject('PhaseG2 Krita CSS');
+    const id = res.headers.location.replace('/projects/', '');
+    const browser = await agent.get(`/projects/${id}/assets`).expect(200);
+    const style = await readStylesheetSource(browser.text);
+
+    expect(style).toMatch(/\.asset-media--krita\s*\{[^}]*display:\s*flex[^}]*align-items:\s*center[^}]*justify-content:\s*center/);
+    expect(style).toMatch(/\.asset-media--krita \.asset-thumb-image,[\s\S]*?\.asset-media--krita \.asset-preview-image\s*\{[^}]*width:\s*auto[^}]*max-width:\s*100%[^}]*height:\s*auto/);
+    expect(style).toMatch(/\.asset-media--krita \.asset-thumb-image\s*\{[^}]*max-height:\s*100%/);
+    expect(style).toMatch(/\.asset-media--krita \.asset-thumb-image\s*\{[^}]*object-fit:\s*contain/);
+
+    const scopedRules = [...style.matchAll(/\.asset-media--krita[^{}]*\{[^}]*\}/g)]
+      .map((match) => match[0])
+      .join('\n');
+    expect(scopedRules).not.toMatch(/object-fit:\s*cover/);
+    expect(scopedRules).not.toMatch(/(?:^|[;\s])width:\s*100%/);
   });
 
   it('makes the native hidden attribute authoritative over preview display rules', async () => {
@@ -2397,8 +2423,8 @@ describe('asset browser HTTP workflow', () => {
     const id = Number(res.headers.location.replace('/projects/', ''));
     const projectDir = getProjectDir('Grid Media Placeholders');
     const missing = writeIndexedAsset(id, projectDir, 'missing.png', await makePng());
-    writeIndexedAsset(id, projectDir, 'source.kra', Buffer.from('kra'), {
-      extension: 'kra', mimeType: 'application/x-krita',
+    writeIndexedAsset(id, projectDir, 'source.bin', Buffer.from('binary'), {
+      extension: 'bin', mimeType: 'application/octet-stream',
     });
     await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
     fs.rmSync(path.join(projectDir, 'missing.png'));
@@ -2413,7 +2439,7 @@ describe('asset browser HTTP workflow', () => {
     expect(missingCard).toMatch(/<div class="asset-card-media">\s*<span class="asset-card-placeholder asset-card-placeholder-missing">Missing at last scan<\/span>\s*<\/div>/);
     expect(missingCard).not.toContain('asset-card-media-link');
     expect(unsupportedCard).toBeDefined();
-    expect(unsupportedCard).toMatch(/<div class="asset-card-media">\s*<span class="asset-card-placeholder">KRA — preview not supported<\/span>\s*<\/div>/);
+    expect(unsupportedCard).toMatch(/<div class="asset-card-media">\s*<span class="asset-card-placeholder">BIN — preview not supported<\/span>\s*<\/div>/);
     expect(unsupportedCard).not.toContain('asset-card-media-link');
   });
 
@@ -2430,6 +2456,62 @@ describe('asset browser HTTP workflow', () => {
     const list = await agent.get(`/projects/${id}/assets?view=list`).expect(200);
     expect(list.text).toMatch(new RegExp(`<img class="asset-thumb-image"[^>]*src="/projects/${id}/assets/${asset.id}/thumbnail\\?v=`));
     expect(list.text).not.toMatch(new RegExp(`<img class="asset-thumb-image"[^>]*src="[^"]+/preview`));
+  });
+
+  it('renders valid KRA and KRZ previews in Grid, List, and the viewer without original links', async () => {
+    const res = await createProject('Krita Asset Presentation');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('Krita Asset Presentation');
+    const merged = await makePng(2000, 1000);
+    const preview = await makePng(320, 180);
+    const kra = writeIndexedAsset(id, projectDir, 'scene.kra', makeKritaArchive({ merged, preview }));
+    const krz = writeIndexedAsset(id, projectDir, 'scene.krz', makeKritaArchive({ preview }));
+
+    const grid = await agent.get(`/projects/${id}/assets?pageSize=100`).expect(200);
+    for (const asset of [kra, krz]) {
+      const card = grid.text.match(new RegExp(`<article class="asset-card[\\s\\S]*?data-asset-id="${asset.id}"[\\s\\S]*?<\\/article>`))?.[0];
+      expect(card).toBeDefined();
+      expect(card).toContain('class="asset-card-media asset-media--krita" data-preview-enhancement');
+      expect(card).toMatch(new RegExp(`class="asset-card-thumb"[^>]*src="/projects/${id}/assets/${asset.id}/preview\\?v=`));
+      expect(card).toContain(`/projects/${id}/assets/${asset.id}`);
+    }
+
+    const list = await agent.get(`/projects/${id}/assets?view=list&pageSize=100`).expect(200);
+    for (const asset of [kra, krz]) {
+      const row = list.text.match(new RegExp(`<tr[^>]*>[\\s\\S]*?${asset.filename}[\\s\\S]*?<\\/tr>`))?.[0];
+      expect(row).toBeDefined();
+      expect(row).toContain('class="asset-thumb asset-media--krita" data-preview-enhancement');
+      expect(row).toMatch(new RegExp(`class="asset-thumb-image"[^>]*src="/projects/${id}/assets/${asset.id}/thumbnail\\?v=`));
+      expect(row).not.toContain('width="48"');
+      expect(row).not.toContain('height="48"');
+    }
+
+    for (const asset of [kra, krz]) {
+      const viewer = await agent.get(`/projects/${id}/assets/${asset.id}`).expect(200);
+      const previewSection = previewSectionHtml(viewer.text);
+      expect(previewSection).toContain('class="asset-preview-frame asset-media--krita" data-preview-enhancement');
+      expect(previewSection).toContain(`/projects/${id}/assets/${asset.id}/preview?v=`);
+      expectNoAnchor(viewer.text, 'asset-viewer-original');
+    }
+  });
+
+  it('keeps classified Krita preview markup when extraction later fails, for the existing runtime fallback', async () => {
+    const res = await createProject('Krita Runtime Fallback');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('Krita Runtime Fallback');
+    const asset = writeIndexedAsset(id, projectDir, 'broken.kra', Buffer.from('not a zip'), {
+      extension: 'kra', mimeType: 'application/x-krita',
+    });
+
+    const viewer = await agent.get(`/projects/${id}/assets/${asset.id}`).expect(200);
+    const previewSection = previewSectionHtml(viewer.text);
+    expect(previewSection).toContain('data-preview-enhancement data-preview-state="loading"');
+    expect(previewSection).toContain('data-preview-image');
+    expect(previewSection).toContain('data-preview-fallback hidden');
+    expect(previewSection).toContain(`/projects/${id}/assets/${asset.id}/preview?v=`);
+
+    const failed = await agent.get(`/projects/${id}/assets/${asset.id}/preview`).expect(503);
+    expect(failed.text).toBe('Preview unavailable');
   });
 
   it('submits only the basename in the List rename form while displaying the extension suffix', async () => {
@@ -3387,6 +3469,19 @@ describe('asset browser HTTP workflow', () => {
       return { id, projectDir, asset };
     }
 
+    async function setupProjectWithKrita(title, extension, entries) {
+      const res = await createProject(title);
+      const id = Number(res.headers.location.replace('/projects/', ''));
+      const projectDir = getProjectDir(title);
+      const asset = writeIndexedAsset(
+        id,
+        projectDir,
+        `source.${extension}`,
+        makeKritaArchive(entries),
+      );
+      return { id, projectDir, asset };
+    }
+
     function makeEnabledCategory(projectId, projectDir, slug, displayName = 'Renders') {
       const category = assetCategoryRepo.addProjectCategory({
         projectId, displayName, directorySlug: slug, displayOrder: 0, enabled: true,
@@ -3545,6 +3640,54 @@ describe('asset browser HTTP workflow', () => {
         await agent.post(`/projects/${missing.id}/scan`).send({ _csrf: csrfToken }).type('form').expect(302);
         const missingRes = await agent.get(`/projects/${missing.id}/assets/${missing.asset.id}`).expect(200);
         expect(missingRes.text).not.toContain('>Set as primary image</button>');
+      });
+
+      it('shows Set and accepts POST only for a merged KRA, not preview-only KRA or KRZ', async () => {
+        const merged = await setupProjectWithKrita(
+          'Primary Viewer Merged KRA',
+          'kra',
+          { merged: Buffer.from('merged-preview') },
+        );
+        const mergedViewer = await agent.get(`/projects/${merged.id}/assets/${merged.asset.id}`).expect(200);
+        expect(mergedViewer.text).toContain('>Set as primary image</button>');
+
+        await agent
+          .post(`/projects/${merged.id}/assets/${merged.asset.id}/primary-image`)
+          .type('form')
+          .send({ _csrf: csrfToken })
+          .expect(302);
+        const mergedSelected = await agent.get(`/projects/${merged.id}/assets/${merged.asset.id}`).expect(200);
+        expect(mergedSelected.text).toContain('<p class="asset-primary-image-status">Primary image</p>');
+        expect(mergedSelected.text).toContain('>Remove primary image</button>');
+
+        const previewOnly = await setupProjectWithKrita(
+          'Primary Viewer Preview Only KRA',
+          'kra',
+          { preview: Buffer.from('thumbnail-preview') },
+        );
+        const previewOnlyViewer = await agent.get(`/projects/${previewOnly.id}/assets/${previewOnly.asset.id}`).expect(200);
+        expect(previewOnlyViewer.text).not.toContain('>Set as primary image</button>');
+        const previewOnlyPost = await agent
+          .post(`/projects/${previewOnly.id}/assets/${previewOnly.asset.id}/primary-image`)
+          .type('form')
+          .send({ _csrf: csrfToken })
+          .expect(422);
+        expect(previewOnlyPost.text).toContain('This asset type cannot be selected as the primary image.');
+        expect(previewOnlyPost.text).not.toContain('preview.png');
+        expect(previewOnlyPost.text).not.toContain(tmpDir);
+
+        const krz = await setupProjectWithKrita(
+          'Primary Viewer KRZ',
+          'krz',
+          { preview: Buffer.from('thumbnail-preview') },
+        );
+        const krzViewer = await agent.get(`/projects/${krz.id}/assets/${krz.asset.id}`).expect(200);
+        expect(krzViewer.text).not.toContain('>Set as primary image</button>');
+        await agent
+          .post(`/projects/${krz.id}/assets/${krz.asset.id}/primary-image`)
+          .type('form')
+          .send({ _csrf: csrfToken })
+          .expect(422);
       });
 
       it('renders archived primary state without any primary-image mutation form', async () => {

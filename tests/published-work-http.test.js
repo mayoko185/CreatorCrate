@@ -8,6 +8,7 @@ import { ensureAuthEnablement } from '../src/auth/auth-state.js';
 import { getDisabledModeCsrf } from './helpers/auth.js';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { STATUS_DIR_MAP, resolveProjectDir } from '../src/storage/project-storage.js';
+import { makeZip } from './helpers/zip-fixture.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 
@@ -26,6 +27,7 @@ describe('Published Work HTTP route (Phase 2B)', () => {
   let app;
   let tmpDir;
   let projectsRoot;
+  let previewRoot;
   let appDataRoot;
   let agent;
   let csrfToken;
@@ -33,6 +35,7 @@ describe('Published Work HTTP route (Phase 2B)', () => {
   beforeEach(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-pubwork-'));
     projectsRoot = path.join(tmpDir, 'projects');
+    previewRoot = path.join(tmpDir, 'previews');
     fs.mkdirSync(projectsRoot, { recursive: true });
     for (const dir of Object.values(STATUS_DIR_MAP)) {
       fs.mkdirSync(path.join(projectsRoot, dir), { recursive: true });
@@ -43,7 +46,7 @@ describe('Published Work HTTP route (Phase 2B)', () => {
     db = openDatabase(dbPath);
     runMigrations(db, MIGRATIONS_DIR);
     const { csrfPepper } = ensureAuthEnablement(appDataRoot);
-    app = createApp({ appName: 'CreatorCrate', db, projectsRoot }, { appDataRoot, authState: { csrfPepper } });
+    app = createApp({ appName: 'CreatorCrate', db, projectsRoot, previewRoot }, { appDataRoot, authState: { csrfPepper } });
     ({ agent, csrfToken } = await getDisabledModeCsrf(app, appDataRoot));
   });
 
@@ -107,6 +110,19 @@ describe('Published Work HTTP route (Phase 2B)', () => {
     app.locals.assetScanner.scanProjectAssets(id);
     const asset = app.locals.assetScanner.repository.findByProjectId(id)[0];
     app.locals.projectPrimaryImageService.setPrimaryImage(id, asset.id);
+    return asset;
+  }
+
+  async function seedMergedKra(projectId) {
+    const id = Number(projectId);
+    const project = db.prepare('SELECT project_dir FROM projects WHERE id = ?').get(id);
+    const projectDir = resolveProjectDir(projectsRoot, project.project_dir);
+    fs.writeFileSync(path.join(projectDir, 'cover.kra'), makeZip([
+      { name: 'mergedimage.png', data: Buffer.from('merged-preview') },
+    ]));
+    app.locals.assetScanner.scanProjectAssets(id);
+    const asset = app.locals.assetScanner.repository.findByProjectId(id)[0];
+    await app.locals.projectPrimaryImageService.setPrimaryImage(id, asset.id);
     return asset;
   }
 
@@ -277,6 +293,26 @@ describe('Published Work HTTP route (Phase 2B)', () => {
     expect(noneListCard).not.toContain('<img');
     expect(unavailableListCard).toContain('data-primary-image-state="unavailable"');
     expect(unavailableListCard).not.toContain('<img');
+  });
+
+  it('renders a selected merged KRA through the shared Published card modifier', async () => {
+    const projectId = await createProject('Published Merged KRA', {
+      status: 'published',
+      publishedDate: '2026-02-20',
+    });
+    const asset = await seedMergedKra(projectId);
+
+    const grid = await agent.get('/releases').expect(200);
+    const gridCard = extractProjectCard(grid.text, projectId);
+    expect(gridCard).toContain('project-card-media--krita');
+    expect(gridCard).toContain(`src="/projects/${projectId}/assets/${asset.id}/preview?v=`);
+    expect(gridCard).not.toContain('/original');
+
+    const list = await agent.get('/releases?view=list').expect(200);
+    const listCard = extractProjectCard(list.text, projectId);
+    expect(listCard).toContain('project-card-media--krita');
+    expect(listCard).toContain(`src="/projects/${projectId}/assets/${asset.id}/thumbnail?v=`);
+    expect(listCard).not.toContain('/original');
   });
 
   it('normalizes Published view state and preserves allowed query values', async () => {

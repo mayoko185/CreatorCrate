@@ -611,9 +611,9 @@ describe('readSourceBytes through the preview service', () => {
 
   it('unsupported source opens zero source descriptors', async () => {
     const { project, absPath } = h.createProject('Unsupported Source');
-    writeProjectFile(absPath, 'design.kra', Buffer.from('not-previewable'));
-    const asset = h.indexAsset(project, 'design.kra', {
-      mimeType: 'application/x-krita',
+    writeProjectFile(absPath, 'design.bin', Buffer.from('not-previewable'));
+    const asset = h.indexAsset(project, 'design.bin', {
+      mimeType: 'application/octet-stream',
       sizeBytes: 15,
     });
 

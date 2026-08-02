@@ -7,8 +7,8 @@
   <li class="{% if variant == 'list' %}project-list-item{% else %}project-grid-item{% endif %}">
     <article class="project-card project-card--{{ variant }}{% if project.archived_at %} project-card--archived{% endif %}" data-project-card>
       {% if project.primaryImage.state == 'available' %}
-        <div class="project-card-media project-card-media--image" data-preview-enhancement data-preview-state="loading">
-          <img class="project-card-media-image{% if variant == 'list' %} project-card-media-image--list{% endif %}" data-preview-image src="{{ imageUrl }}" alt="{{ project.primaryImage.alt }}" loading="lazy" decoding="async">
+        <div class="project-card-media project-card-media--image{% if project.primaryImage.mediaModifier %} project-card-media--{{ project.primaryImage.mediaModifier }}{% endif %}" data-preview-enhancement data-preview-state="loading">
+          <img class="project-card-media-image{% if variant == 'list' %} project-card-media-image--list{% endif %}{% if project.primaryImage.mediaModifier %} project-card-media-image--{{ project.primaryImage.mediaModifier }}{% endif %}" data-preview-image src="{{ imageUrl }}" alt="{{ project.primaryImage.alt }}" loading="lazy" decoding="async">
           <span class="project-card-media-fallback" data-preview-fallback hidden>Image unavailable</span>
         </div>
       {% elif project.primaryImage.state == 'unavailable' %}

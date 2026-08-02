@@ -165,12 +165,25 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     : null);
   app.locals.assetActionService = assetActionService;
 
+  // Phase 10.1C: construct one app-scoped preview service before primary-image
+  // dependencies so KRA eligibility probes share its descriptor safety and
+  // per-asset lock state. Rootless applications keep the probe unavailable.
+  const previewService =
+    opts.previewService ||
+    (previewRoot
+      ? createPreviewService({ db, projectsRoot, previewRoot })
+      : null);
+
+  app.locals.previewRoot = previewRoot;
+  app.locals.previewService = previewService;
+
   const projectPrimaryImageRepository = createProjectPrimaryImageRepository(db);
   const projectPrimaryImageService = createProjectPrimaryImageService({
     db,
     projectRepository: projectService.repository,
     assetRepository: assetScanner.repository,
     projectPrimaryImageRepository,
+    previewProbe: previewService?.inspectKritaPreviewSource,
   });
   app.locals.projectPrimaryImageRepository = projectPrimaryImageRepository;
   app.locals.projectPrimaryImageService = projectPrimaryImageService;
@@ -182,30 +195,14 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     projectPrimaryImageRepository,
   });
 
-  // Phase 10.1A: preview root is passed explicitly so later services can
-  // resolve preview paths without reading the environment or globals.
-  app.locals.previewRoot = previewRoot;
-
-  // Phase 10.1C: construct the preview + media services per createApp call
-  // (no hidden singleton). Tests may inject stubs via opts.previewService /
-  // opts.mediaService to keep createApp testable with temporary roots and
-  // stubbed services. Production construction uses the configured
-  // PROJECTS_ROOT, configured preview root, project repository, asset
-  // repository, storage helper (openAssetFile), and Sharp media processor
-  // (via the preview service).
-  const previewService =
-    opts.previewService ||
-    (previewRoot
-      ? createPreviewService({ db, projectsRoot, previewRoot })
-      : null);
-
+  // Phase 10.1C: media service reuses the exact preview service instance
+  // above, including its locks and cache state.
   const mediaService =
     opts.mediaService ||
     (previewService && previewRoot && projectsRoot
       ? createMediaService({ previewService, projectsRoot, previewRoot })
       : null);
 
-  app.locals.previewService = previewService;
   app.locals.mediaService = mediaService;
 
   // Phase 11.2: backup/restore. `databasePath`/`appDataRoot` default to the
@@ -347,6 +344,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
       assetActionService,
       assetBrowserPreferenceService,
       projectPrimaryImageService,
+      previewProbe: previewService?.inspectKritaPreviewSource,
     }));
   }
 

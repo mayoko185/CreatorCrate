@@ -47,6 +47,7 @@ import { createWorkflowQueryService } from '../src/services/workflow-query-servi
 import { evaluateReleaseReadiness } from '../src/services/release-readiness-policy.js';
 import { Readable } from 'node:stream';
 import http from 'node:http';
+import { makeZip } from './helpers/zip-fixture.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 
@@ -87,6 +88,13 @@ function writeProjectFile(projectAbs, relPath, buffer) {
   fs.mkdirSync(path.dirname(target), { recursive: true });
   fs.writeFileSync(target, buffer);
   return target;
+}
+
+function makeKritaArchive({ merged = null, preview = null } = {}) {
+  const entries = [];
+  if (preview) entries.push({ name: 'preview.png', data: preview, compression: 'deflate' });
+  if (merged) entries.push({ name: 'mergedimage.png', data: merged, compression: 'deflate' });
+  return makeZip(entries);
 }
 
 // ─── Harness ──────────────────────────────────────────────────────────────
@@ -261,6 +269,67 @@ describe('media routes — successful behavior', () => {
     expect(meta.format).toBe('webp');
   });
 
+  it('serves merged KRA preview and thumbnail derivatives from the application cache', async () => {
+    const { project, absPath } = h.createProject('KRA HTTP Merged');
+    const merged = await makePng(2000, 1000);
+    const thumbnail = await makePng(320, 160);
+    writeProjectFile(absPath, 'draw.kra', makeKritaArchive({ merged, preview: thumbnail }));
+    const asset = h.indexAsset(project, 'draw.kra');
+
+    const preview = await request(h.app)
+      .get(`/projects/${project.id}/assets/${asset.id}/preview`)
+      .expect(200);
+    const thumb = await request(h.app)
+      .get(`/projects/${project.id}/assets/${asset.id}/thumbnail`)
+      .expect(200);
+
+    for (const response of [preview, thumb]) {
+      expect(response.headers['content-type']).toBe('image/webp');
+      expect(response.headers['x-content-type-options']).toBe('nosniff');
+      expect(response.headers['cache-control']).toBe('private, max-age=0, must-revalidate');
+    }
+
+    const sh = await sharp();
+    await expect(sh(preview.body).metadata()).resolves.toMatchObject({
+      format: 'webp', width: 1600, height: 800,
+    });
+    await expect(sh(thumb.body).metadata()).resolves.toMatchObject({
+      format: 'webp', width: 256, height: 128,
+    });
+
+    expect(fs.existsSync(path.join(absPath, 'mergedimage.png'))).toBe(false);
+    expect(fs.existsSync(path.join(absPath, 'preview.png'))).toBe(false);
+    const cacheDir = resolvePublishedDir(h.previewRoot, project.id, asset.id);
+    expect(cacheDir).not.toBeNull();
+    expect(cacheDir.startsWith(path.resolve(h.previewRoot))).toBe(true);
+
+    const revision = h.previewService.getOriginalDescriptor(project.id, asset.id).revision;
+    const versioned = await request(h.app)
+      .get(`/projects/${project.id}/assets/${asset.id}/preview?v=${revision}`)
+      .expect(200);
+    expect(versioned.headers['cache-control']).toBe('private, max-age=31536000, immutable');
+    expect(versioned.headers.etag).toContain(revision);
+  });
+
+  it('serves preview-only KRA and KRZ documents through the same WebP derivative pipeline', async () => {
+    const { project, absPath } = h.createProject('Krita HTTP Preview Only');
+    const preview = await makePng(320, 180);
+    writeProjectFile(absPath, 'fallback.kra', makeKritaArchive({ preview }));
+    writeProjectFile(absPath, 'compressed.krz', makeKritaArchive({ preview }));
+    const kra = h.indexAsset(project, 'fallback.kra');
+    const krz = h.indexAsset(project, 'compressed.krz');
+
+    for (const asset of [kra, krz]) {
+      const response = await request(h.app)
+        .get(`/projects/${project.id}/assets/${asset.id}/preview`)
+        .expect(200);
+      expect(response.headers['content-type']).toBe('image/webp');
+      await expect((await sharp())(response.body).metadata()).resolves.toMatchObject({
+        format: 'webp', width: 320, height: 180,
+      });
+    }
+  });
+
   it('serves an inline PNG original with exact MIME and disposition', async () => {
     const { project, absPath } = h.createProject('PNG Original');
     const buf = await makePng(200, 150);
@@ -322,10 +391,10 @@ describe('media routes — successful behavior', () => {
     expect(res.body.equals(buf)).toBe(true);
   });
 
-  it('Krita original uses the documented non-inline contract (415)', async () => {
-    const { project, absPath } = h.createProject('Krita Original');
-    fs.writeFileSync(path.join(absPath, 'draw.kra'), Buffer.from('fake-krita'));
-    const asset = h.indexAsset(project, 'draw.kra');
+  it.each(['kra', 'krz'])('Krita .%s original uses the documented non-inline contract (415)', async (extension) => {
+    const { project, absPath } = h.createProject(`Krita Original ${extension}`);
+    fs.writeFileSync(path.join(absPath, `draw.${extension}`), Buffer.from('fake-krita'));
+    const asset = h.indexAsset(project, `draw.${extension}`);
 
     const res = await request(h.app)
       .get(`/projects/${project.id}/assets/${asset.id}/original`)
@@ -333,6 +402,7 @@ describe('media routes — successful behavior', () => {
 
     expect(res.headers['cache-control']).toBe('no-store');
     expect(res.headers['x-content-type-options']).toBe('nosniff');
+    expect(res.text).toBe('Unsupported media type');
   });
 
   it('unknown extension original uses the non-inline contract (415)', async () => {
@@ -495,8 +565,8 @@ describe('media routes — cache behavior', () => {
 
   it('unsupported preview returns 415 with no-store', async () => {
     const { project, absPath } = h.createProject('Unsupported Cache');
-    fs.writeFileSync(path.join(absPath, 'draw.kra'), Buffer.from('fake-krita'));
-    const asset = h.indexAsset(project, 'draw.kra');
+    fs.writeFileSync(path.join(absPath, 'draw.bin'), Buffer.from('unknown binary'));
+    const asset = h.indexAsset(project, 'draw.bin');
 
     const res = await request(h.app)
       .get(`/projects/${project.id}/assets/${asset.id}/thumbnail`)
@@ -507,14 +577,67 @@ describe('media routes — cache behavior', () => {
 
   it('unsupported preview also returns no-store for the preview route', async () => {
     const { project, absPath } = h.createProject('Unsupported Preview Cache');
-    fs.writeFileSync(path.join(absPath, 'draw2.kra'), Buffer.from('fake-krita'));
-    const asset = h.indexAsset(project, 'draw2.kra');
+    fs.writeFileSync(path.join(absPath, 'draw2.bin'), Buffer.from('unknown binary'));
+    const asset = h.indexAsset(project, 'draw2.bin');
 
     const res = await request(h.app)
       .get(`/projects/${project.id}/assets/${asset.id}/preview`)
       .expect(415);
 
     expect(res.headers['cache-control']).toBe('no-store');
+  });
+});
+
+describe('media routes — controlled Krita extraction failures', () => {
+  let h;
+
+  beforeEach(() => {
+    h = makeHarness();
+  });
+
+  afterEach(() => h.cleanup());
+
+  it.each([
+    ['malformed archive', Buffer.from('not a zip')],
+    ['preview-less archive', makeZip([{ name: 'maindoc.xml', data: Buffer.from('<doc/>') }])],
+    ['corrupt embedded PNG', makeKritaArchive({ preview: Buffer.from('not a png') })],
+    ['encrypted embedded PNG', makeZip([{ name: 'preview.png', data: Buffer.from('encrypted'), flags: 0x801 }])],
+    ['oversized embedded PNG', makeZip([{
+      name: 'preview.png',
+      data: Buffer.from('small'),
+      uncompressedSize: 256 * 1024 * 1024 + 1,
+      localUncompressedSize: 256 * 1024 * 1024 + 1,
+    }])],
+  ])('maps %s to a controlled unavailable response without internal details', async (_label, archive) => {
+    const { project, absPath } = h.createProject(`Krita Failure ${_label}`);
+    writeProjectFile(absPath, 'broken.kra', archive);
+    const asset = h.indexAsset(project, 'broken.kra');
+
+    const response = await request(h.app)
+      .get(`/projects/${project.id}/assets/${asset.id}/preview`)
+      .expect(503);
+
+    expect(response.text).toBe('Preview unavailable');
+    expect(response.headers['cache-control']).toBe('no-store');
+    expect(response.headers['x-content-type-options']).toBe('nosniff');
+    for (const detail of ['broken.kra', 'preview.png', 'yauzl', 'Sharp', h.projectsRoot]) {
+      expect(response.text).not.toContain(detail);
+    }
+    expect(resolvePublishedDir(h.previewRoot, project.id, asset.id)).toBeNull();
+  });
+
+  it('keeps missing-source 404 behavior distinct from unavailable generation', async () => {
+    const { project, absPath } = h.createProject('Krita Missing Source');
+    writeProjectFile(absPath, 'gone.kra', makeKritaArchive({ preview: Buffer.from('not a png') }));
+    const asset = h.indexAsset(project, 'gone.kra');
+    fs.rmSync(path.join(absPath, 'gone.kra'));
+
+    const response = await request(h.app)
+      .get(`/projects/${project.id}/assets/${asset.id}/preview`)
+      .expect(404);
+
+    expect(response.text).toBe('Not found');
+    expect(response.text).not.toContain('Preview unavailable');
   });
 });
 

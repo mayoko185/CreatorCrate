@@ -47,14 +47,13 @@
     <td class="asset-thumb-cell">
       {% if asset.hasThumbnail %}
         <a class="asset-thumb-link" href="{{ asset.viewerUrl }}" aria-label="View details for {{ asset.filename }}">
-          <span class="asset-thumb" data-preview-enhancement data-preview-state="loading">
+          <span class="asset-thumb{% if asset.preview.kind == 'krita' %} asset-media--krita{% endif %}" data-preview-enhancement data-preview-state="loading">
             <img class="asset-thumb-image"
                  src="{{ asset.thumbnail_url }}"
                  alt=""
                  loading="lazy"
                  decoding="async"
-                 width="48"
-                 height="48"
+                 {% if asset.preview.kind != 'krita' %}width="48" height="48"{% endif %}
                  data-preview-image>
             <span class="asset-thumb-fallback" data-preview-fallback hidden>{{ asset.typeLabel }}</span>
           </span>
@@ -153,7 +152,7 @@
          </a>
       </div>
 
-      <div class="asset-card-media"{% if asset.hasThumbnail %} data-preview-enhancement data-preview-state="loading"{% endif %}>
+      <div class="asset-card-media{% if asset.preview.kind == 'krita' %} asset-media--krita{% endif %}"{% if asset.hasThumbnail %} data-preview-enhancement data-preview-state="loading"{% endif %}>
         {% if asset.hasThumbnail %}
           <a class="asset-card-media-link" href="{{ asset.viewerUrl }}" aria-label="View details for {{ asset.filename }}">
             <img class="asset-card-thumb"

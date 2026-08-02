@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -122,6 +122,83 @@ describe('project primary-image service', () => {
     expect(primaryImageRepository.findByProjectId(project.id)).toBeUndefined();
   });
 
+  it('accepts a present KRA only after the preview probe confirms merged quality', async () => {
+    const asset = createAsset(project.id, 'cover.kra', 'kra', 'application/x-krita');
+    const previewProbe = vi.fn().mockResolvedValue({ quality: 'merged', entryName: 'mergedimage.png' });
+    const probedService = createProjectPrimaryImageService({
+      db,
+      projectRepository,
+      assetRepository,
+      projectPrimaryImageRepository: primaryImageRepository,
+      previewProbe,
+    });
+
+    await expect(probedService.setPrimaryImage(project.id, asset.id)).resolves.toEqual({
+      project_id: project.id,
+      asset_id: asset.id,
+    });
+    expect(previewProbe).toHaveBeenCalledWith(
+      expect.objectContaining({ id: project.id }),
+      expect.objectContaining({ id: asset.id, extension: 'kra' }),
+    );
+  });
+
+  it.each([
+    ['preview-only KRA', 'thumbnail'],
+    ['corrupt KRA', null],
+  ])('rejects a KRA when its probe reports %s', async (_label, quality) => {
+    const asset = createAsset(project.id, 'cover.kra', 'kra', 'application/x-krita');
+    const previewProbe = vi.fn().mockResolvedValue({ quality });
+    const probedService = createProjectPrimaryImageService({
+      db,
+      projectRepository,
+      assetRepository,
+      projectPrimaryImageRepository: primaryImageRepository,
+      previewProbe,
+    });
+
+    await expect(probedService.setPrimaryImage(project.id, asset.id)).rejects.toMatchObject({
+      code: PRIMARY_IMAGE_ERROR_CODES.ASSET_UNSUPPORTED,
+    });
+    expect(primaryImageRepository.findByProjectId(project.id)).toBeUndefined();
+  });
+
+  it('maps an unexpected probe failure to the controlled unsupported error', async () => {
+    const asset = createAsset(project.id, 'cover.kra', 'kra', 'application/x-krita');
+    const previewProbe = vi.fn().mockRejectedValue(new Error('C:\\secret\\document.kra: malformed ZIP'));
+    const probedService = createProjectPrimaryImageService({
+      db,
+      projectRepository,
+      assetRepository,
+      projectPrimaryImageRepository: primaryImageRepository,
+      previewProbe,
+    });
+
+    const error = await probedService.setPrimaryImage(project.id, asset.id).catch((err) => err);
+    expect(error).toMatchObject({ code: PRIMARY_IMAGE_ERROR_CODES.ASSET_UNSUPPORTED });
+    expect(error.message).not.toContain('secret');
+    expect(error.message).not.toContain('ZIP');
+    expect(primaryImageRepository.findByProjectId(project.id)).toBeUndefined();
+  });
+
+  it('never probes KRZ assets', () => {
+    const asset = createAsset(project.id, 'cover.krz', 'krz', 'application/x-krita');
+    const previewProbe = vi.fn().mockResolvedValue({ quality: 'merged' });
+    const probedService = createProjectPrimaryImageService({
+      db,
+      projectRepository,
+      assetRepository,
+      projectPrimaryImageRepository: primaryImageRepository,
+      previewProbe,
+    });
+
+    expectCode(
+      () => probedService.setPrimaryImage(project.id, asset.id),
+      PRIMARY_IMAGE_ERROR_CODES.ASSET_UNSUPPORTED,
+    );
+    expect(previewProbe).not.toHaveBeenCalled();
+  });
+
   it('rejects a missing asset as a new selection', () => {
     const asset = createAsset(project.id, 'missing.png');
     assetRepository.markAllMissing(project.id);
@@ -131,6 +208,25 @@ describe('project primary-image service', () => {
       PRIMARY_IMAGE_ERROR_CODES.ASSET_MISSING,
     );
     expect(primaryImageRepository.findByProjectId(project.id)).toBeUndefined();
+  });
+
+  it('rejects a missing KRA before probing its source', () => {
+    const asset = createAsset(project.id, 'missing.kra', 'kra', 'application/x-krita');
+    assetRepository.markAllMissing(project.id);
+    const previewProbe = vi.fn();
+    const probedService = createProjectPrimaryImageService({
+      db,
+      projectRepository,
+      assetRepository,
+      projectPrimaryImageRepository: primaryImageRepository,
+      previewProbe,
+    });
+
+    expectCode(
+      () => probedService.setPrimaryImage(project.id, asset.id),
+      PRIMARY_IMAGE_ERROR_CODES.ASSET_MISSING,
+    );
+    expect(previewProbe).not.toHaveBeenCalled();
   });
 
   it('rejects an asset owned by another project', () => {

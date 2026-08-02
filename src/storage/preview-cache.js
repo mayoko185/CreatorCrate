@@ -253,6 +253,7 @@ export function buildRevisionToken({ projectId, assetId, relativePath, size, mti
  * @param {Object} input.preview            - { width, height, bytes, format }
  * @param {boolean} [input.animated]        - Whether derivatives preserved animation.
  * @param {number} [input.frameCount]       - Frame count when animated.
+ * @param {'merged'|'thumbnail'} [input.sourceQuality] - Embedded Krita preview quality.
  * @returns {object} Plain object to JSON.stringify.
  */
 export function serializeMeta({
@@ -266,6 +267,7 @@ export function serializeMeta({
   preview,
   animated,
   frameCount,
+  sourceQuality,
 }) {
   const meta = {
     schemaVersion: CACHE_SCHEMA_VERSION,
@@ -293,6 +295,7 @@ export function serializeMeta({
   };
   if (animated != null) meta.animated = animated;
   if (frameCount != null) meta.frameCount = frameCount;
+  if (sourceQuality != null) meta.source.previewQuality = sourceQuality;
   return meta;
 }
 
@@ -328,6 +331,13 @@ export function parseMeta(content) {
   requireString(source, 'relativePath');
   requireNumber(source, 'size');
   requireString(source, 'mtime');
+  if (
+    source.previewQuality != null &&
+    source.previewQuality !== 'merged' &&
+    source.previewQuality !== 'thumbnail'
+  ) {
+    throw new Error('meta.json source preview quality is invalid.');
+  }
 
   requireString(parsed, 'generatedAt');
 

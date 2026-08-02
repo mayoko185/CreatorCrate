@@ -7,6 +7,7 @@ import {
   buildCanonicalAssetBrowserQuery,
   isPrimaryImageAssetUsable,
 } from '../services/workflow-query-service.js';
+import { classifyPreviewable } from '../services/preview-service.js';
 
 const ASSET_BROWSER_QUERY_KEYS = ['category', 'search', 'extension', 'presence', 'usage', 'sort', 'order', 'page', 'pageSize', 'view'];
 
@@ -43,6 +44,8 @@ const ASSET_RENAME_ORIGINS = new Set(['assets', 'viewer']);
  * @param {ReturnType<import('../services/project-primary-image-service.js').createProjectPrimaryImageService>} deps.projectPrimaryImageService
  *   Application-scoped primary-image service used by the viewer and its
  *   mutation routes.
+ * @param {Function} [deps.previewProbe]
+ *   Application-scoped bounded Krita preview probe used only by the viewer.
  */
 export function createAssetsRouter({
   appName,
@@ -53,6 +56,7 @@ export function createAssetsRouter({
   assetActionService,
   assetBrowserPreferenceService,
   projectPrimaryImageService,
+  previewProbe,
 } = {}) {
   if (!assetBrowserPreferenceService || typeof assetBrowserPreferenceService.resolveEffectiveCategory !== 'function') {
     throw new Error('createAssetsRouter requires an assetBrowserPreferenceService dependency.');
@@ -143,7 +147,7 @@ export function createAssetsRouter({
   });
 
   // GET /projects/:projectId/assets/:assetId — Minimal asset viewer page
-  router.get('/:projectId/assets/:assetId', (req, res, next) => {
+  router.get('/:projectId/assets/:assetId', async (req, res, next) => {
     try {
       const projectId = parseId(req.params.projectId);
       const assetId = parseId(req.params.assetId);
@@ -163,11 +167,13 @@ export function createAssetsRouter({
         return handlePrimaryImageFailure(err, { next });
       }
 
+      const viewerEligibility = await probePrimaryImageViewerEligibility(data, previewProbe);
+
       const notice = ASSET_ACTION_NOTICE_CODES.has(req.query.notice) ? req.query.notice : null;
 
       res.render('projects/asset-viewer.njk', {
         appName,
-        ...buildAssetViewerRenderModel(data, buildPrimaryImageViewerState(data, primaryImage)),
+        ...buildAssetViewerRenderModel(data, buildPrimaryImageViewerState(data, primaryImage, viewerEligibility)),
         notice,
         noticeMessage: notice ? ASSET_ACTION_NOTICE_MESSAGES[notice] : null,
       });
@@ -178,7 +184,7 @@ export function createAssetsRouter({
 
   // POST /projects/:projectId/assets/:assetId/primary-image — Set the
   // displayed eligible asset as the project's retained primary image.
-  router.post('/:projectId/assets/:assetId/primary-image', (req, res, next) => {
+  router.post('/:projectId/assets/:assetId/primary-image', async (req, res, next) => {
     try {
       const projectId = parseId(req.params.projectId);
       const assetId = parseId(req.params.assetId);
@@ -187,7 +193,7 @@ export function createAssetsRouter({
       }
 
       try {
-        projectPrimaryImageService.setPrimaryImage(projectId, assetId);
+        await projectPrimaryImageService.setPrimaryImage(projectId, assetId);
       } catch (err) {
         return handlePrimaryImageFailure(err, { next });
       }
@@ -930,16 +936,42 @@ function parseDestinationCategoryField(raw) {
   return { ok: true, value: id };
 }
 
-function buildPrimaryImageViewerState(data, selectedAsset) {
+async function probePrimaryImageViewerEligibility(data, previewProbe) {
+  if (isPrimaryImageAssetUsable(data.asset)) return true;
+
+  const projectIsArchived = Boolean(data.project.archived_at) || data.project.status === 'archived';
+  const classification = classifyPreviewable(data.asset);
+  if (
+    projectIsArchived
+    || !data.asset?.is_present
+    || !classification.supported
+    || classification.kind !== 'krita'
+    || classification.extension !== 'kra'
+    || typeof previewProbe !== 'function'
+  ) {
+    return false;
+  }
+
+  try {
+    const result = await previewProbe(data.project, data.asset);
+    return result?.quality === 'merged';
+  } catch {
+    // Viewer eligibility is a presentation hint. A probe failure must not
+    // expose archive or filesystem details or make the viewer fail closed.
+    return false;
+  }
+}
+
+function buildPrimaryImageViewerState(data, selectedAsset, isEligiblePresentImage = isPrimaryImageAssetUsable(data.asset)) {
   const projectIsArchived = Boolean(data.project.archived_at) || data.project.status === 'archived';
   const assetBelongsToProject = data.asset.project_id === data.project.id;
   const isPrimaryImage = Boolean(selectedAsset && selectedAsset.id === data.asset.id);
-  const isEligiblePresentImage = assetBelongsToProject && isPrimaryImageAssetUsable(data.asset);
+  const isEligible = assetBelongsToProject && isEligiblePresentImage;
 
   return {
     isPrimaryImage,
-    isPrimaryImageAvailable: isPrimaryImage && isEligiblePresentImage,
-    canSetAsPrimaryImage: !projectIsArchived && !isPrimaryImage && isEligiblePresentImage,
+    isPrimaryImageAvailable: isPrimaryImage && isEligible,
+    canSetAsPrimaryImage: !projectIsArchived && !isPrimaryImage && isEligible,
     canRemovePrimaryImage: !projectIsArchived && isPrimaryImage,
   };
 }

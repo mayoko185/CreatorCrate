@@ -16,6 +16,7 @@ import {
   buildProjectRelPath,
   resolveProjectDir,
 } from '../src/storage/project-storage.js';
+import { makeZip } from './helpers/zip-fixture.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 
@@ -29,12 +30,14 @@ describe('project HTTP workflow', () => {
   let app;
   let tmpDir;
   let projectsRoot;
+  let previewRoot;
   let agent;
   let csrfToken;
 
   beforeEach(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-http-'));
     projectsRoot = path.join(tmpDir, 'projects');
+    previewRoot = path.join(tmpDir, 'previews');
     fs.mkdirSync(projectsRoot, { recursive: true });
     for (const dir of Object.values(STATUS_DIR_MAP)) {
       fs.mkdirSync(path.join(projectsRoot, dir), { recursive: true });
@@ -45,7 +48,7 @@ describe('project HTTP workflow', () => {
     const appDataRoot = path.join(tmpDir, 'app');
     fs.mkdirSync(appDataRoot, { recursive: true });
     const { csrfPepper } = ensureAuthEnablement(appDataRoot);
-    app = createApp({ appName: 'CreatorCrate', db, projectsRoot }, { appDataRoot, authState: { csrfPepper } });
+    app = createApp({ appName: 'CreatorCrate', db, projectsRoot, previewRoot }, { appDataRoot, authState: { csrfPepper } });
     ({ agent, csrfToken } = await getDisabledModeCsrf(app, appDataRoot));
   });
 
@@ -79,6 +82,18 @@ describe('project HTTP workflow', () => {
     app.locals.assetScanner.scanProjectAssets(projectId);
     const asset = app.locals.assetScanner.repository.findByProjectId(projectId)[0];
     app.locals.projectPrimaryImageService.setPrimaryImage(projectId, asset.id);
+    return asset;
+  }
+
+  async function seedMergedKra(projectId) {
+    const project = db.prepare('SELECT project_dir FROM projects WHERE id = ?').get(projectId);
+    const projectDir = resolveProjectDir(projectsRoot, project.project_dir);
+    fs.writeFileSync(path.join(projectDir, 'cover.kra'), makeZip([
+      { name: 'mergedimage.png', data: Buffer.from('merged-preview') },
+    ]));
+    app.locals.assetScanner.scanProjectAssets(projectId);
+    const asset = app.locals.assetScanner.repository.findByProjectId(projectId)[0];
+    await app.locals.projectPrimaryImageService.setPrimaryImage(projectId, asset.id);
     return asset;
   }
 
@@ -218,6 +233,23 @@ describe('project HTTP workflow', () => {
     expect(css).toMatch(/@media\s*\(hover:\s*none\)\s*\{[\s\S]*?\.project-card--grid \.project-card-details\s*\{[\s\S]*?display:\s*flex;/);
     expect(css).toMatch(/\.project-card--list \.project-card-media-image\s*\{[\s\S]*?width:\s*auto;[\s\S]*?height:\s*auto;[\s\S]*?max-width:\s*4rem;[\s\S]*?max-height:\s*4rem;/);
     expect(css).not.toMatch(/\.project-card--list \.project-card-media-image\s*\{[^}]*object-fit\s*:\s*cover/);
+  });
+
+  it('renders a selected merged KRA with intrinsic grid presentation and derivative URLs', async () => {
+    const projectId = await createProject({ title: 'Merged KRA Project', status: 'ready' });
+    const asset = await seedMergedKra(projectId);
+
+    const grid = await agent.get('/projects').expect(200);
+    const gridCard = extractProjectCard(grid.text, projectId);
+    expect(gridCard).toContain('project-card-media--krita');
+    expect(gridCard).toContain(`src="/projects/${projectId}/assets/${asset.id}/preview?v=`);
+    expect(gridCard).not.toContain('/original');
+
+    const list = await agent.get('/projects?view=list').expect(200);
+    const listCard = extractProjectCard(list.text, projectId);
+    expect(listCard).toContain('project-card-media--krita');
+    expect(listCard).toContain(`src="/projects/${projectId}/assets/${asset.id}/thumbnail?v=`);
+    expect(listCard).not.toContain('/original');
   });
 
   it('defaults to Created descending while explicit Updated remains available', async () => {

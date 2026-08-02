@@ -2,6 +2,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { openAssetFile, closeAssetFile } from '../storage/asset-file.js';
 import {
+  extractKritaPreview,
+  KritaPreviewExtractionError,
+} from '../storage/krita-preview-extractor.js';
+import {
   THUMBNAIL_FILENAME,
   PREVIEW_FILENAME,
   META_FILENAME,
@@ -25,12 +29,16 @@ import {
 
 // ─── Format allowlist ────────────────────────────────────────────────────
 //
-// Only formats explicitly verified to work with the Sharp pipeline are
-// previewable. Unknown binary formats (Krita, PSD, arbitrary blobs) are NOT
-// decoded even when the database MIME type happens to look like an image;
-// the extension AND recorded MIME must both be on the allowlist.
+// Only formats explicitly verified to work with the preview pipeline are
+// previewable. The extension AND recorded MIME must both be on the allowlist;
+// the MIME value is never trusted alone.
 
-const SUPPORTED_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif']);
+const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif']);
+const KRITA_EXTENSIONS = new Set(['kra', 'krz']);
+const SUPPORTED_EXTENSIONS = new Set([
+  ...IMAGE_EXTENSIONS,
+  ...KRITA_EXTENSIONS,
+]);
 
 const EXTENSION_TO_MIME = {
   png: 'image/png',
@@ -38,6 +46,8 @@ const EXTENSION_TO_MIME = {
   jpeg: 'image/jpeg',
   webp: 'image/webp',
   gif: 'image/gif',
+  kra: 'application/x-krita',
+  krz: 'application/x-krita',
 };
 
 const SUPPORTED_MIMES = new Set(Object.values(EXTENSION_TO_MIME));
@@ -48,15 +58,20 @@ const SUPPORTED_MIMES = new Set(Object.values(EXTENSION_TO_MIME));
  * mismatch yields unsupported.
  *
  * @param {{ extension: string, mime_type: string }} asset
- * @returns {{ supported: boolean, extension: string, mimeType: string }}
+ * @returns {{ supported: boolean, kind: 'image'|'krita'|null, extension: string, mimeType: string, mime: string }}
  */
 export function classifyPreviewable(asset) {
   const ext = String(asset.extension || '').toLowerCase();
   const mime = String(asset.mime_type || '').toLowerCase();
+  const kind = KRITA_EXTENSIONS.has(ext)
+    ? 'krita'
+    : IMAGE_EXTENSIONS.has(ext)
+      ? 'image'
+      : null;
   const extSupported = SUPPORTED_EXTENSIONS.has(ext);
   const mimeSupported = SUPPORTED_MIMES.has(mime);
   const supported = extSupported && mimeSupported && EXTENSION_TO_MIME[ext] === mime;
-  return { supported, extension: ext, mimeType: mime };
+  return { supported, kind, extension: ext, mimeType: mime, mime };
 }
 
 // ─── Service errors ──────────────────────────────────────────────────────
@@ -410,10 +425,12 @@ export function createPreviewService({ db, projectsRoot, previewRoot, _hooks } =
     const { project, asset } = loadProjectAndAsset(projectId, assetId);
     const ctx = sourceContext(asset);
     const revision = buildAssetRevision(asset)?.revision ?? null;
-    const { supported, mimeType } = classifyPreviewable(asset);
+    const classification = classifyPreviewable(asset);
+    const { supported, mimeType } = classification;
+    const originalSupported = supported && classification.kind === 'image';
 
     return {
-      status: supported ? 'ready' : 'unsupported',
+      status: originalSupported ? 'ready' : 'unsupported',
       projectId: asset.project_id,
       assetId: asset.id,
       projectDir: project.project_dir,
@@ -426,6 +443,67 @@ export function createPreviewService({ db, projectsRoot, previewRoot, _hooks } =
       revision,
       previewable: supported,
     };
+  }
+
+  /**
+   * Inspect one KRA source for primary-image eligibility without generating or
+   * publishing a derivative. The existing extractor remains the single ZIP
+   * reader; only its bounded embedded-preview result is used here.
+   *
+   * @param {object} project - already-authorized project record
+   * @param {object} asset - already-authorized asset record
+   * @returns {Promise<{ quality: 'merged'|'thumbnail'|null, entryName?: string }>}
+   */
+  async function inspectKritaPreviewSource(project, asset) {
+    const projectId = typeof project === 'object' ? project?.id : project;
+    const assetId = asset?.id;
+    if (!Number.isInteger(projectId) || !Number.isInteger(assetId)) {
+      return { quality: null };
+    }
+
+    // Re-read both records inside the per-asset lock so a POST cannot probe a
+    // stale path or project summary after a scan/rename has changed the DB.
+    const projectRecord = projectRepo.findById(projectId);
+    const currentAsset = assetRepo.findById(assetId);
+    if (
+      !projectRecord
+      || !projectRecord.project_dir
+      || !currentAsset
+      || currentAsset.project_id !== projectRecord.id
+      || !currentAsset.is_present
+      || !projectsRoot
+    ) {
+      return { quality: null };
+    }
+
+    const classification = classifyPreviewable(currentAsset);
+    if (
+      !classification.supported
+      || classification.kind !== 'krita'
+      || classification.extension !== 'kra'
+    ) {
+      return { quality: null };
+    }
+
+    const opened = openAssetFile(projectsRoot, projectRecord.project_dir, currentAsset.relative_path);
+    try {
+      try {
+        const extracted = await extractKritaPreview(opened, {
+          extension: classification.extension,
+        });
+        return {
+          quality: extracted.quality,
+          entryName: extracted.entryName,
+        };
+      } catch (err) {
+        if (err instanceof KritaPreviewExtractionError) {
+          return { quality: null };
+        }
+        throw err;
+      }
+    } finally {
+      closeAssetFile(opened);
+    }
   }
 
   // ── Cache validation helpers ────────────────────────────────────────
@@ -544,6 +622,49 @@ export function createPreviewService({ db, projectsRoot, previewRoot, _hooks } =
       // cause us to read a different file.
       const buffer = fs.readFileSync(opened.handle);
       return { buffer, mtime };
+    } finally {
+      closeAssetFile(opened);
+    }
+  }
+
+  /**
+   * Read the bytes that Sharp should use for a derivative. Ordinary images
+   * retain the existing descriptor-backed byte path; Krita documents yield a
+   * bounded embedded PNG while the same validated descriptor remains open.
+   *
+   * @param {object} project
+   * @param {object} asset
+   * @param {{ kind: 'image'|'krita'|null, extension: string }} classification
+   * @returns {Promise<{ buffer: Buffer, mtime: Date, quality?: 'merged'|'thumbnail' }>}
+   */
+  async function readSourceForDerivative(project, asset, classification) {
+    if (classification.kind !== 'krita') {
+      return readSourceBytes(project, asset);
+    }
+
+    const opened = openAssetFile(
+      projectsRoot,
+      project.project_dir,
+      asset.relative_path
+    );
+    try {
+      let extracted;
+      try {
+        extracted = await extractKritaPreview(opened, {
+          extension: classification.extension,
+        });
+      } catch (err) {
+        if (err instanceof KritaPreviewExtractionError) {
+          throw new PreviewGenerationError('Embedded preview unavailable.');
+        }
+        throw err;
+      }
+
+      return {
+        buffer: extracted.bytes,
+        mtime: opened.stat.mtime,
+        quality: extracted.quality,
+      };
     } finally {
       closeAssetFile(opened);
     }
@@ -675,6 +796,7 @@ export function createPreviewService({ db, projectsRoot, previewRoot, _hooks } =
       staged.source.size !== meta.source.size ||
       staged.source.mtime !== meta.source.mtime ||
       staged.source.relativePath !== meta.source.relativePath ||
+      staged.source.previewQuality !== meta.source.previewQuality ||
       staged.animated !== meta.animated ||
       staged.frameCount !== meta.frameCount
     ) {
@@ -741,6 +863,7 @@ export function createPreviewService({ db, projectsRoot, previewRoot, _hooks } =
     for (let attempt = 0; attempt < 2; attempt++) {
       // Reload authoritative project + asset inside the lock for THIS attempt.
       const { project, asset } = loadProjectAndAsset(projectId, assetId);
+      const classification = classifyPreviewable(asset);
       const revisionNow = buildAssetRevision(asset);
       if (!revisionNow) {
         throw new PreviewNotFoundError('Asset source metadata is unavailable.');
@@ -756,7 +879,8 @@ export function createPreviewService({ db, projectsRoot, previewRoot, _hooks } =
       // failure path knows which directory to remove.
       let renamedTo = null;
       try {
-        const { buffer: sourceBuffer } = readSourceBytes(project, asset);
+        const source = await readSourceForDerivative(project, asset, classification);
+        const { buffer: sourceBuffer, quality: sourceQuality } = source;
         let sourceAnimated;
         try {
           const sh = await sharp();
@@ -821,6 +945,7 @@ export function createPreviewService({ db, projectsRoot, previewRoot, _hooks } =
           generatedAt,
           thumbnail: thumbMeta,
           preview: previewMeta,
+          sourceQuality,
           animated: previewVal.info.animated,
           frameCount: previewVal.info.frameCount,
         });
@@ -948,6 +1073,7 @@ export function createPreviewService({ db, projectsRoot, previewRoot, _hooks } =
           generatedAt: meta.generatedAt,
           cacheState: 'fresh',
           animated: kind === 'preview' && meta.animated === true,
+          quality: meta.source.previewQuality ?? null,
         };
       }
 
@@ -969,6 +1095,7 @@ export function createPreviewService({ db, projectsRoot, previewRoot, _hooks } =
         generatedAt: meta.generatedAt,
         cacheState: 'regenerated',
         animated: kind === 'preview' && meta.animated === true,
+        quality: meta.source.previewQuality ?? null,
       };
     });
   }
@@ -979,6 +1106,14 @@ export function createPreviewService({ db, projectsRoot, previewRoot, _hooks } =
     getPreview: (projectId, assetId, requestedRevision) =>
       getDerivative('preview', projectId, assetId, requestedRevision),
     getOriginalDescriptor,
+    inspectKritaPreviewSource: (project, asset) => {
+      const projectId = typeof project === 'object' ? project?.id : project;
+      const assetId = asset?.id;
+      if (!Number.isInteger(projectId) || !Number.isInteger(assetId)) {
+        return Promise.resolve({ quality: null });
+      }
+      return withLock(projectId, assetId, () => inspectKritaPreviewSource(project, asset));
+    },
 
     // Exposed for tests / inspection. Not part of the public route contract.
     _classifyPreviewable: classifyPreviewable,

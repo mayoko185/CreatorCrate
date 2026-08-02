@@ -210,6 +210,8 @@ describe('workflow query service', () => {
       expect(getProjectRow(project.id).primaryImage).toEqual({
         selectedAssetId: null,
         state: 'none',
+        kind: null,
+        mediaModifier: null,
         previewUrl: null,
         thumbnailUrl: null,
         revision: null,
@@ -266,6 +268,8 @@ describe('workflow query service', () => {
       expect(primaryImage).toEqual({
         selectedAssetId: asset.id,
         state: 'unavailable',
+        kind: 'image',
+        mediaModifier: null,
         previewUrl: null,
         thumbnailUrl: null,
         revision: null,
@@ -274,7 +278,7 @@ describe('workflow query service', () => {
       expect(primaryImageRepository.findByProjectId(project.id)).toEqual(selection);
     });
 
-    it('returns an unsupported retained selection as unavailable', () => {
+    it('keeps a present selected KRA format-available without probing during listing', () => {
       const project = insertProject(db, { title: 'Unsupported Primary Selection' });
       const asset = insertAsset(db, {
         projectId: project.id,
@@ -286,12 +290,11 @@ describe('workflow query service', () => {
       });
       primaryImageRepository.setPrimaryImage(project.id, asset.id);
 
-      expect(getProjectRow(project.id).primaryImage).toEqual({
+      expect(getProjectRow(project.id).primaryImage).toMatchObject({
         selectedAssetId: asset.id,
-        state: 'unavailable',
-        previewUrl: null,
-        thumbnailUrl: null,
-        revision: null,
+        state: 'available',
+        kind: 'krita',
+        mediaModifier: 'krita',
         alt: 'Preview of source.kra',
       });
     });
@@ -420,9 +423,9 @@ describe('workflow query service', () => {
       });
       const unsupportedAsset = insertAsset(db, {
         projectId: unsupported.id,
-        relativePath: 'source.kra',
-        filename: 'source.kra',
-        extension: 'kra',
+        relativePath: 'source.krz',
+        filename: 'source.krz',
+        extension: 'krz',
         mimeType: 'application/x-krita',
         modifiedAt: '2026-08-02T12:00:00.000Z',
       });
@@ -436,6 +439,8 @@ describe('workflow query service', () => {
       expect(byId.get(none.id)).toEqual({
         selectedAssetId: null,
         state: 'none',
+        kind: null,
+        mediaModifier: null,
         previewUrl: null,
         thumbnailUrl: null,
         revision: null,
@@ -444,6 +449,8 @@ describe('workflow query service', () => {
       expect(byId.get(available.id)).toMatchObject({
         selectedAssetId: availableAsset.id,
         state: 'available',
+        kind: 'image',
+        mediaModifier: null,
         previewUrl: `/projects/${available.id}/assets/${availableAsset.id}/preview?v=${byId.get(available.id).revision}`,
         alt: 'Preview of cover.png',
       });
@@ -452,6 +459,8 @@ describe('workflow query service', () => {
       expect(byId.get(missing.id)).toEqual({
         selectedAssetId: missingAsset.id,
         state: 'unavailable',
+        kind: 'image',
+        mediaModifier: null,
         previewUrl: null,
         thumbnailUrl: null,
         revision: null,
@@ -460,10 +469,12 @@ describe('workflow query service', () => {
       expect(byId.get(unsupported.id)).toEqual({
         selectedAssetId: unsupportedAsset.id,
         state: 'unavailable',
+        kind: 'krita',
+        mediaModifier: 'krita',
         previewUrl: null,
         thumbnailUrl: null,
         revision: null,
-        alt: 'Preview of source.kra',
+         alt: 'Preview of source.krz',
       });
       expect(primaryImageRepository.findByProjectId(missing.id)).toEqual({
         project_id: missing.id,
@@ -3368,7 +3379,7 @@ describe('workflow query service', () => {
       });
     });
 
-    it('classifies previewable, unsupported, and missing assets without generating previews', () => {
+    it('classifies valid Krita, unsupported MIME, and missing assets without generating previews', () => {
       const project = insertProject(db, { title: 'Preview States' });
       insertAsset(db, {
         projectId: project.id,
@@ -3392,6 +3403,26 @@ describe('workflow query service', () => {
       });
       insertAsset(db, {
         projectId: project.id,
+        relativePath: 'source.krz',
+        filename: 'source.krz',
+        extension: 'krz',
+        mimeType: 'application/x-krita',
+        sizeBytes: 100,
+        modifiedAt: '2026-07-28T12:00:00.000Z',
+        isPresent: 1,
+      });
+      insertAsset(db, {
+        projectId: project.id,
+        relativePath: 'mismatch.kra',
+        filename: 'mismatch.kra',
+        extension: 'kra',
+        mimeType: 'image/png',
+        sizeBytes: 100,
+        modifiedAt: '2026-07-28T12:00:00.000Z',
+        isPresent: 1,
+      });
+      insertAsset(db, {
+        projectId: project.id,
         relativePath: 'missing.png',
         filename: 'missing.png',
         extension: 'png',
@@ -3406,9 +3437,17 @@ describe('workflow query service', () => {
 
       expect(byName['present.png'].preview_state).toBe('previewable');
       expect(byName['present.png'].displayFilename).toBe('present');
-      expect(byName['source.kra'].preview_state).toBe('unsupported');
+      expect(byName['source.kra'].preview_state).toBe('previewable');
+      expect(byName['source.kra'].preview.kind).toBe('krita');
+      expect(byName['source.kra'].preview_revision).toMatch(/^[a-f0-9]{16}$/);
+      expect(byName['source.kra'].thumbnail_url).toContain('/thumbnail?v=');
+      expect(byName['source.kra'].preview_url).toContain('/preview?v=');
+      expect(byName['source.kra'].originalEligible).toBe(false);
+      expect(byName['source.krz'].preview_state).toBe('previewable');
+      expect(byName['source.krz'].preview.kind).toBe('krita');
+      expect(byName['source.krz'].originalEligible).toBe(false);
+      expect(byName['mismatch.kra'].preview_state).toBe('unsupported');
       expect(byName['missing.png'].preview_state).toBe('missing');
-      expect(byName['source.kra'].preview_revision).toBeNull();
       expect(byName['missing.png'].thumbnail_url).toBeNull();
     });
 
@@ -4311,13 +4350,15 @@ describe('workflow query service', () => {
       expect(result.asset.id).toBe(asset.id);
     });
 
-    it('preserves missing and unsupported asset metadata while omitting invalid media URLs', () => {
+    it('preserves missing, Krita, and unsupported asset metadata while omitting invalid original URLs', () => {
       const project = insertProject(db, { title: 'Viewer Media States' });
       const missing = addViewerAsset(project, 'missing.png', { extension: 'png', mimeType: 'image/png', isPresent: 0 });
-      const unsupported = addViewerAsset(project, 'source.kra', { extension: 'kra', mimeType: 'application/x-krita' });
+      const krita = addViewerAsset(project, 'source.kra', { extension: 'kra', mimeType: 'application/x-krita' });
+      const unsupported = addViewerAsset(project, 'mismatch.kra', { extension: 'kra', mimeType: 'image/png' });
       const supported = addViewerAsset(project, 'render.png', { extension: 'png', mimeType: 'image/png' });
 
       const missingResult = service.getProjectAssetViewer(project.id, missing.id);
+      const kritaResult = service.getProjectAssetViewer(project.id, krita.id);
       const unsupportedResult = service.getProjectAssetViewer(project.id, unsupported.id);
       const supportedResult = service.getProjectAssetViewer(project.id, supported.id);
 
@@ -4328,6 +4369,12 @@ describe('workflow query service', () => {
         preview_state: 'missing',
         thumbnail_url: null,
         preview_url: null,
+        original_url: null,
+      });
+      expect(kritaResult.asset).toMatchObject({
+        id: krita.id,
+        preview_state: 'previewable',
+        preview: { kind: 'krita', previewable: true },
         original_url: null,
       });
       expect(unsupportedResult.asset).toMatchObject({

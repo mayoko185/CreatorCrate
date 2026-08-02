@@ -57,7 +57,7 @@
   <section class="asset-preview-section" aria-labelledby="asset-preview-heading">
     <h2 id="asset-preview-heading">Preview</h2>
     {% if asset.preview.previewable and asset.preview_url %}
-      <figure class="asset-preview-frame" data-preview-enhancement data-preview-state="loading">
+      <figure class="asset-preview-frame{% if asset.preview.kind == 'krita' %} asset-media--krita{% endif %}" data-preview-enhancement data-preview-state="loading">
         <img class="asset-preview-image" src="{{ asset.preview_url }}" alt="{{ asset.previewAltText }}" data-preview-image>
         <p class="asset-preview-placeholder asset-preview-fallback" data-preview-fallback hidden>Preview unavailable</p>
       </figure>
