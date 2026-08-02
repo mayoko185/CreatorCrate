@@ -20,7 +20,7 @@ const PAGE_SIZE = 25;
 // any of these is a stale bookmark/link to the old release-record list, not
 // a request for the Published Work page — redirect it, preserving every
 // query parameter as-is.
-const RELEASE_MANAGEMENT_PARAMS = ['view', 'project', 'status', 'schedule', 'readiness', 'includeArchived'];
+const RELEASE_MANAGEMENT_PARAMS = ['project', 'status', 'schedule', 'readiness', 'includeArchived'];
 
 const PUBLISHED_SORT_OPTIONS = ['published', 'title', 'updated'];
 const PUBLISHED_PAGE_SIZE = 25;
@@ -34,14 +34,13 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
   // projects (Phase 2B). Requests that clearly target the old release-record
   // list/board are redirected to /release-management instead.
   router.get('/', (req, res, next) => {
-    const targetsReleaseManagement = RELEASE_MANAGEMENT_PARAMS.some(
-      (key) => req.query[key] !== undefined
-    );
+    const targetsReleaseManagement = req.query.view === 'board'
+      || RELEASE_MANAGEMENT_PARAMS.some((key) => req.query[key] !== undefined);
     if (targetsReleaseManagement) {
       const queryString = req.url.includes('?') ? req.url.slice(req.url.indexOf('?')) : '';
       return res.redirect(`/release-management${queryString}`);
     }
-    handlePublishedWork(req, res, next, { appName, projectService });
+    handlePublishedWork(req, res, next, { appName, projectService, workflowQueryService });
   });
 
   // GET /releases/calendar — Phase 2D: compatibility redirect. The
@@ -880,23 +879,35 @@ function parsePublishedQuery(raw) {
   const search = typeof raw.search === 'string' ? raw.search.trim() : '';
   const sortBy = PUBLISHED_SORT_OPTIONS.includes(raw.sort) ? raw.sort : 'published';
   const order = raw.order === 'asc' ? 'asc' : 'desc';
+  const view = raw.view === 'list' ? 'list' : 'grid';
 
   let page = Number.parseInt(raw.page, 10);
   if (!Number.isInteger(page) || page < 1) {
     page = 1;
   }
 
-  return { search, sortBy, order, page };
+  return { search, sortBy, order, page, view };
 }
 
-function buildPublishedPageUrl(req) {
+function buildPublishedPageUrl(req, parsedQuery, currentPage) {
   const rawPath = req.baseUrl + req.path;
   const cleanPath = rawPath.length > 1 && rawPath.endsWith('/') ? rawPath.slice(0, -1) : rawPath;
+  const baseQuery = {};
+  if (parsedQuery.search) baseQuery.search = parsedQuery.search;
+  if (PUBLISHED_SORT_OPTIONS.includes(req.query.sort)) baseQuery.sort = parsedQuery.sortBy;
+  if (req.query.order === 'asc' || req.query.order === 'desc') baseQuery.order = parsedQuery.order;
+  if (parsedQuery.view === 'list') baseQuery.view = 'list';
+  if (currentPage > 1) baseQuery.page = String(currentPage);
+
   return function pageUrl(overrides) {
-    const query = { ...req.query };
+    const query = { ...baseQuery };
     for (const [key, value] of Object.entries(overrides)) {
+      if (!['search', 'sort', 'order', 'page', 'view'].includes(key)) continue;
       if (value === undefined || value === null || value === '' || (key === 'page' && value == 1)) {
         delete query[key];
+      } else if (key === 'view') {
+        if (value === 'list') query.view = 'list';
+        else delete query.view;
       } else {
         query[key] = String(value);
       }
@@ -913,21 +924,31 @@ function buildPublishedPageUrl(req) {
  * @param {import('express').Request} req
  * @param {import('express').Response} res
  * @param {import('express').NextFunction} next
- * @param {object} deps - { appName, projectService }
+ * @param {object} deps - { appName, projectService, workflowQueryService }
  */
-function handlePublishedWork(req, res, next, { appName, projectService }) {
+function handlePublishedWork(req, res, next, { appName, projectService, workflowQueryService }) {
   try {
     const parsed = parsePublishedQuery(req.query);
     const baseOptions = { search: parsed.search, sortBy: parsed.sortBy, order: parsed.order };
 
-    const { total } = projectService.listPublished({ ...baseOptions, limit: 0 });
+    const pageResult = workflowQueryService.getPublishedProjectList({
+      ...baseOptions,
+      limit: PUBLISHED_PAGE_SIZE,
+      offset: (parsed.page - 1) * PUBLISHED_PAGE_SIZE,
+    });
+    const { total } = pageResult;
     const { total: totalPublished } = projectService.listPublished({ limit: 0 });
     const pageCount = Math.max(1, Math.ceil(total / PUBLISHED_PAGE_SIZE));
     const currentPage = Math.min(parsed.page, pageCount);
-    const offset = (currentPage - 1) * PUBLISHED_PAGE_SIZE;
-    const { rows } = projectService.listPublished({ ...baseOptions, limit: PUBLISHED_PAGE_SIZE, offset });
+    const rows = currentPage === parsed.page
+      ? pageResult.rows
+      : workflowQueryService.getPublishedProjectList({
+        ...baseOptions,
+        limit: PUBLISHED_PAGE_SIZE,
+        offset: (currentPage - 1) * PUBLISHED_PAGE_SIZE,
+      }).rows;
 
-    const pageUrl = buildPublishedPageUrl(req);
+    const pageUrl = buildPublishedPageUrl(req, parsed, currentPage);
 
     res.render('releases/published.njk', {
       appName,
@@ -943,7 +964,9 @@ function handlePublishedWork(req, res, next, { appName, projectService }) {
         search: parsed.search,
         sort: parsed.sortBy,
         order: parsed.order,
+        view: parsed.view,
       },
+      view: parsed.view,
       sortOptions: PUBLISHED_SORT_OPTIONS,
     });
   } catch (err) {

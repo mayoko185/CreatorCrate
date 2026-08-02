@@ -7,9 +7,14 @@ import { createApp } from '../src/app.js';
 import { ensureAuthEnablement } from '../src/auth/auth-state.js';
 import { getDisabledModeCsrf } from './helpers/auth.js';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
-import { STATUS_DIR_MAP } from '../src/storage/project-storage.js';
+import { STATUS_DIR_MAP, resolveProjectDir } from '../src/storage/project-storage.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
+
+function extractProjectCard(html, projectId) {
+  const cards = html.match(/<article\b[^>]*data-project-card[^>]*>[\s\S]*?<\/article>/g) || [];
+  return cards.find((card) => card.includes(`data-project-card-link href="/projects/${projectId}"`)) || '';
+}
 
 // Phase 2B: GET /releases is now the "Published Work" page — a project-derived
 // listing of published projects, requiring no release record. This suite
@@ -94,10 +99,24 @@ describe('Published Work HTTP route (Phase 2B)', () => {
     return res.headers.location;
   }
 
+  function seedPrimaryImage(projectId, filename = 'cover.png') {
+    const id = Number(projectId);
+    const project = db.prepare('SELECT project_dir FROM projects WHERE id = ?').get(id);
+    const projectDir = resolveProjectDir(projectsRoot, project.project_dir);
+    fs.writeFileSync(path.join(projectDir, filename), 'content');
+    app.locals.assetScanner.scanProjectAssets(id);
+    const asset = app.locals.assetScanner.repository.findByProjectId(id)[0];
+    app.locals.projectPrimaryImageService.setPrimaryImage(id, asset.id);
+    return asset;
+  }
+
   // ─── Page identity ──────────────────────────────────────────────────────
 
-  it('renders the Published Work heading, not the release-record list', async () => {
+  it('renders the Published heading and explicit document title while retaining shell navigation', async () => {
     const res = await agent.get('/releases').expect(200);
+    expect(res.text).toContain('<title>Published – CreatorCrate</title>');
+    expect(res.text).toContain('<h1 class="app-section-title">Published</h1>');
+    expect(res.text).not.toContain('<h1 class="app-section-title">Published Work</h1>');
     expect(res.text).toContain('Published Work');
     expect(res.text).toContain('Projects published through CreatorCrate.');
   });
@@ -173,10 +192,115 @@ describe('Published Work HTTP route (Phase 2B)', () => {
       publishedDate: '2026-01-10',
       patreonUrl: 'https://www.patreon.com/creator',
     });
-    await createProject('No Patreon Project', { status: 'published', publishedDate: '2026-01-11' });
+    const noPatreonId = await createProject('No Patreon Project', { status: 'published', publishedDate: '2026-01-11' });
 
     const res = await agent.get('/releases').expect(200);
-    expect(res.text).toContain('href="https://www.patreon.com/creator"');
+    const noPatreonCard = extractProjectCard(res.text, noPatreonId);
+    expect(res.text).toContain('href="https://www.patreon.com/creator" target="_blank" rel="noopener noreferrer">Patreon</a>');
+    expect(noPatreonCard).toMatch(/<dt>Patreon<\/dt>\s*<dd>\s*—\s*<\/dd>/);
+    expect(noPatreonCard).not.toContain('target="_blank"');
+  });
+
+  it('renders shared responsive cards with primary-image states and Published metadata', async () => {
+    const longDescription = `${'Long description marker '.repeat(20)}END MARKER`;
+    const availableId = await createProject('Published Card With A Long Title That Wraps On Small Screens', {
+      status: 'published',
+      publishedDate: '2026-02-10',
+      patreonUrl: 'https://www.patreon.com/card',
+      description: longDescription,
+    });
+    const noneId = await createProject('Published Card Without An Image', { status: 'published' });
+    const unavailableId = await createProject('Published Card With An Unavailable Image', {
+      status: 'published',
+      publishedDate: '2026-02-12',
+    });
+
+    seedPrimaryImage(availableId);
+    const unavailableAsset = seedPrimaryImage(unavailableId, 'unavailable.png');
+    db.prepare('UPDATE assets SET is_present = 0 WHERE id = ?').run(unavailableAsset.id);
+
+    const res = await agent.get('/releases').expect(200);
+    const availableCard = extractProjectCard(res.text, availableId);
+    const noneCard = extractProjectCard(res.text, noneId);
+    const unavailableCard = extractProjectCard(res.text, unavailableId);
+
+    expect(res.text).toContain('<ul class="project-grid">');
+    expect(res.text).not.toContain('<table class="data-table">');
+    expect(res.text.match(/<li class="project-grid-item">/g)).toHaveLength(3);
+    expect(res.text.match(/<article class="project-card[^\"]*" data-project-card>/g)).toHaveLength(3);
+
+    expect(availableCard).toContain(`data-project-card-link href="/projects/${availableId}">Published Card With A Long Title That Wraps On Small Screens</a>`);
+    expect(availableCard).toMatch(
+      /<img class="project-card-media-image" data-preview-image src="\/projects\/\d+\/assets\/\d+\/preview\?v=[0-9a-f]+" alt="Preview of cover\.png" loading="lazy" decoding="async">/
+    );
+    expect(availableCard).toContain('data-preview-enhancement');
+    expect(availableCard).toContain('data-preview-fallback');
+    expect(availableCard).not.toContain('/original');
+    expect(availableCard).not.toContain('/thumbnail');
+
+    expect(noneCard).toContain('data-primary-image-state="none"');
+    expect(noneCard).toContain('No image');
+    expect(noneCard).not.toContain('<img');
+
+    expect(unavailableCard).toContain('data-primary-image-state="unavailable"');
+    expect(unavailableCard).toContain('Image unavailable');
+    expect(unavailableCard).not.toContain('<img');
+
+    const descriptionMatch = availableCard.match(/<p class="project-card-description">([^<]*)<\/p>/);
+    expect(descriptionMatch).not.toBeNull();
+    expect(descriptionMatch[1].length).toBeLessThanOrEqual(140);
+    expect(descriptionMatch[1]).toContain('Long description marker');
+    expect(descriptionMatch[1]).not.toContain('END MARKER');
+    expect(availableCard).toMatch(/<dt>Status<\/dt>\s*<dd>[\s\S]*Published[\s\S]*<\/dd>/);
+    expect(availableCard).toContain('<dt>Published</dt>');
+    expect(availableCard).toContain('2026-02-10');
+    expect(availableCard).toContain('href="https://www.patreon.com/card" target="_blank" rel="noopener noreferrer">Patreon</a>');
+    expect(noneCard).toMatch(/<dt>Published<\/dt>\s*<dd>Not recorded<\/dd>/);
+    expect(noneCard).not.toContain('target="_blank"');
+
+    const list = await agent.get('/releases?view=list').expect(200);
+    const availableListCard = extractProjectCard(list.text, availableId);
+    const noneListCard = extractProjectCard(list.text, noneId);
+    const unavailableListCard = extractProjectCard(list.text, unavailableId);
+    expect(list.text).toContain('<ul class="project-list">');
+    expect(availableListCard).toContain('class="project-card project-card--list"');
+    expect(availableListCard).toMatch(
+      /<img class="project-card-media-image project-card-media-image--list" data-preview-image src="\/projects\/\d+\/assets\/\d+\/thumbnail\?v=[0-9a-f]+"/
+    );
+    expect(availableListCard).not.toContain('/preview');
+    expect(availableListCard).not.toContain('/original');
+    expect(availableListCard).toContain('<p class="project-card-description">');
+    expect(availableListCard).toContain('<dt>Status</dt>');
+    expect(availableListCard).toContain('<dt>Published</dt>');
+    expect(availableListCard).toContain('href="https://www.patreon.com/card" target="_blank" rel="noopener noreferrer">Patreon</a>');
+    expect(noneListCard).toContain('No description');
+    expect(noneListCard).not.toContain('<img');
+    expect(unavailableListCard).toContain('data-primary-image-state="unavailable"');
+    expect(unavailableListCard).not.toContain('<img');
+  });
+
+  it('normalizes Published view state and preserves allowed query values', async () => {
+    for (let i = 0; i < 26; i += 1) {
+      await createProject(`Published View State ${String(i).padStart(2, '0')}`, {
+        status: 'published',
+        publishedDate: '2026-01-01',
+      });
+    }
+
+    const list = await agent.get('/releases?search=Published+View&sort=title&order=asc&view=list&unknown=discarded').expect(200);
+    expect(list.text).toContain('<ul class="project-list">');
+    expect(list.text).toContain('name="view" value="list"');
+    expect(list.text).toContain('href="/releases?search=Published+View&amp;sort=title&amp;order=asc"');
+    expect(list.text).toContain('href="/releases?search=Published+View&amp;sort=title&amp;order=asc&amp;view=list"');
+    expect(list.text).toContain('href="/releases?search=Published+View&amp;sort=title&amp;order=asc&amp;view=list&amp;page=2"');
+    expect(list.text).not.toContain('unknown=discarded');
+
+    const invalid = await agent.get('/releases?view=invalid&unknown=discarded').expect(200);
+    expect(invalid.text).toContain('<ul class="project-grid">');
+    expect(invalid.text).not.toContain('view=invalid');
+    expect(invalid.text).not.toContain('unknown=discarded');
+    expect(invalid.text).toContain('href="/releases?view=list"');
+    expect(invalid.text).toContain('href="/releases"');
   });
 
   it('release-record title, readiness, and asset fields do not appear', async () => {
@@ -334,6 +458,22 @@ describe('Published Work HTTP route (Phase 2B)', () => {
     const page2 = await agent.get('/releases?sort=title&order=asc&page=2').expect(200);
     expect(page2.text).toContain('Pub Page 29');
     expect(page2.text).not.toContain('Pub Page 00');
+  });
+
+  it('clamps an out-of-range page and preserves normalized pagination links', async () => {
+    for (let i = 0; i < 26; i++) {
+      const padded = String(i).padStart(2, '0');
+      await createProject(`Clamp Page ${padded}`, { status: 'published', publishedDate: '2026-01-01' });
+    }
+
+    const res = await agent.get('/releases?sort=title&order=asc&page=99').expect(200);
+    expect(res.text).toContain('Page 2 of 2');
+    expect(res.text).toContain('Clamp Page 25');
+    expect(res.text).not.toContain('Clamp Page 00');
+
+    const previousMatch = res.text.match(/<a\s[^>]*href="(\/releases\?[^\"]*)"[^>]*>Previous<\/a>/);
+    expect(previousMatch).not.toBeNull();
+    expect(previousMatch[1]).toBe('/releases?sort=title&amp;order=asc');
   });
 
   it('pagination preserves Published Work query parameters', async () => {

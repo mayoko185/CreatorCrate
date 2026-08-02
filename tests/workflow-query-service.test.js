@@ -87,6 +87,7 @@ function insertAsset(db, {
 function instrumentStatementExecution(db) {
   const originalPrepare = db.prepare.bind(db);
   let executions = 0;
+  const statements = [];
 
   function wrapStatement(statement) {
     return new Proxy(statement, {
@@ -106,7 +107,10 @@ function instrumentStatementExecution(db) {
     });
   }
 
-  db.prepare = (...args) => wrapStatement(originalPrepare(...args));
+  db.prepare = (...args) => {
+    statements.push(String(args[0]));
+    return wrapStatement(originalPrepare(...args));
+  };
 
   return {
     reset() {
@@ -114,6 +118,9 @@ function instrumentStatementExecution(db) {
     },
     count() {
       return executions;
+    },
+    statements() {
+      return [...statements];
     },
   };
 }
@@ -339,6 +346,178 @@ describe('workflow query service', () => {
   });
 
   // ─── getDashboardData: releases needing attention ───────────────────
+
+  // ─── getPublishedProjectList — published primary-image projection ──────
+  describe('getPublishedProjectList — published primary-image projection', () => {
+    it('preserves published membership, filtering, ordering, and totals', () => {
+      const later = insertProject(db, {
+        title: 'Later Published Project',
+        status: 'published',
+        publishedDate: '2026-06-01',
+      });
+      const earlier = insertProject(db, {
+        title: 'Earlier Published Project',
+        status: 'published',
+        publishedDate: '2026-01-01',
+      });
+      const draft = insertProject(db, { title: 'Draft Project', status: 'in-progress' });
+      const archived = insertProject(db, {
+        title: 'Archived Published Project',
+        status: 'published',
+        publishedDate: '2026-05-01',
+        archivedAt: '2026-07-01 00:00:00',
+      });
+      db.prepare('UPDATE projects SET description = ? WHERE id = ?')
+        .run('distinctive published marker', later.id);
+
+      const result = service.getPublishedProjectList({
+        sortBy: 'published',
+        order: 'desc',
+        limit: 25,
+        offset: 0,
+      });
+
+      expect(result.total).toBe(2);
+      expect(result.rows.map((project) => project.id)).toEqual([later.id, earlier.id]);
+      expect(result.rows.every((project) => project.status === 'published')).toBe(true);
+      expect(result.rows.some((project) => project.id === draft.id)).toBe(false);
+      expect(result.rows.some((project) => project.id === archived.id)).toBe(false);
+
+      const filtered = service.getPublishedProjectList({
+        search: 'distinctive published',
+        sortBy: 'title',
+        order: 'asc',
+        limit: 25,
+        offset: 0,
+      });
+      expect(filtered.total).toBe(1);
+      expect(filtered.rows.map((project) => project.id)).toEqual([later.id]);
+    });
+
+    it('attaches stable none, available, and unavailable models without mutating retained selections', () => {
+      const none = insertProject(db, { title: 'Published None', status: 'published' });
+      const available = insertProject(db, { title: 'Published Available', status: 'published' });
+      const missing = insertProject(db, { title: 'Published Missing', status: 'published' });
+      const unsupported = insertProject(db, { title: 'Published Unsupported', status: 'published' });
+
+      const availableAsset = insertAsset(db, {
+        projectId: available.id,
+        relativePath: 'cover.png',
+        filename: 'cover.png',
+        extension: 'png',
+        mimeType: 'image/png',
+        sizeBytes: 2048,
+        modifiedAt: '2026-08-02T12:00:00.000Z',
+      });
+      const missingAsset = insertAsset(db, {
+        projectId: missing.id,
+        relativePath: 'missing.png',
+        filename: 'missing.png',
+        extension: 'png',
+        mimeType: 'image/png',
+        modifiedAt: '2026-08-02T12:00:00.000Z',
+        isPresent: 0,
+      });
+      const unsupportedAsset = insertAsset(db, {
+        projectId: unsupported.id,
+        relativePath: 'source.kra',
+        filename: 'source.kra',
+        extension: 'kra',
+        mimeType: 'application/x-krita',
+        modifiedAt: '2026-08-02T12:00:00.000Z',
+      });
+      primaryImageRepository.setPrimaryImage(available.id, availableAsset.id);
+      primaryImageRepository.setPrimaryImage(missing.id, missingAsset.id);
+      primaryImageRepository.setPrimaryImage(unsupported.id, unsupportedAsset.id);
+
+      const result = service.getPublishedProjectList({ sortBy: 'title', order: 'asc', limit: 25, offset: 0 });
+      const byId = new Map(result.rows.map((project) => [project.id, project.primaryImage]));
+
+      expect(byId.get(none.id)).toEqual({
+        selectedAssetId: null,
+        state: 'none',
+        previewUrl: null,
+        thumbnailUrl: null,
+        revision: null,
+        alt: null,
+      });
+      expect(byId.get(available.id)).toMatchObject({
+        selectedAssetId: availableAsset.id,
+        state: 'available',
+        previewUrl: `/projects/${available.id}/assets/${availableAsset.id}/preview?v=${byId.get(available.id).revision}`,
+        alt: 'Preview of cover.png',
+      });
+      expect(byId.get(available.id).previewUrl).not.toContain('/original');
+      expect(byId.get(available.id).previewUrl).not.toContain('/thumbnail');
+      expect(byId.get(missing.id)).toEqual({
+        selectedAssetId: missingAsset.id,
+        state: 'unavailable',
+        previewUrl: null,
+        thumbnailUrl: null,
+        revision: null,
+        alt: 'Preview of missing.png',
+      });
+      expect(byId.get(unsupported.id)).toEqual({
+        selectedAssetId: unsupportedAsset.id,
+        state: 'unavailable',
+        previewUrl: null,
+        thumbnailUrl: null,
+        revision: null,
+        alt: 'Preview of source.kra',
+      });
+      expect(primaryImageRepository.findByProjectId(missing.id)).toEqual({
+        project_id: missing.id,
+        asset_id: missingAsset.id,
+      });
+    });
+
+    it('enriches only current-page IDs with one selection batch and one asset batch', () => {
+      const projects = ['A', 'B', 'C'].map((letter) => insertProject(db, {
+        title: `Published Page ${letter}`,
+        status: 'published',
+      }));
+      for (const project of projects) {
+        const asset = insertAsset(db, {
+          projectId: project.id,
+          relativePath: `${project.title}.png`,
+          filename: `${project.title}.png`,
+          extension: 'png',
+          mimeType: 'image/png',
+          modifiedAt: '2026-08-02T12:00:00.000Z',
+        });
+        primaryImageRepository.setPrimaryImage(project.id, asset.id);
+      }
+
+      const findBatch = vi.spyOn(primaryImageRepository, 'findByProjectIds');
+      const counter = instrumentStatementExecution(db);
+      const result = service.getPublishedProjectList({
+        sortBy: 'title',
+        order: 'asc',
+        limit: 1,
+        offset: 1,
+      });
+
+      expect(result.total).toBe(3);
+      expect(result.rows).toHaveLength(1);
+      expect(result.rows[0].title).toBe('Published Page B');
+      expect(result.rows[0].primaryImage.state).toBe('available');
+      expect(findBatch).toHaveBeenCalledTimes(1);
+      expect(findBatch).toHaveBeenCalledWith([projects[1].id]);
+      expect(counter.count()).toBe(4);
+      expect(counter.statements().filter((sql) => sql.includes('project_primary_images'))).toHaveLength(1);
+      expect(counter.statements().filter((sql) => /\bFROM assets\b/.test(sql))).toHaveLength(1);
+      findBatch.mockRestore();
+    });
+
+    it('does not issue image lookups for an empty published page', () => {
+      const counter = instrumentStatementExecution(db);
+      const result = service.getPublishedProjectList({ limit: 25, offset: 0 });
+
+      expect(result).toEqual({ rows: [], total: 0 });
+      expect(counter.statements().filter((sql) => sql.includes('project_primary_images'))).toHaveLength(0);
+      expect(counter.statements().filter((sql) => /\bFROM assets\b/.test(sql))).toHaveLength(0);
+    });
+  });
 
   describe('getDashboardData — releases needing attention', () => {
     it('overdue releases appear in the overdue section', () => {

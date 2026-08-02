@@ -152,6 +152,9 @@ describe('project HTTP workflow', () => {
     expect(availableCard).toContain('data-preview-fallback');
     expect(availableCard).not.toContain('/original');
     expect(availableCard).not.toContain('/thumbnail');
+    expect(availableCard).toMatch(
+      /<h2 class="project-card-title">\s*<a class="project-card-link"[^>]*>Available Primary Image<\/a>\s*<\/h2>\s*<div class="project-card-details">/
+    );
 
     expect(noneCard).toContain('data-primary-image-state="none"');
     expect(noneCard).toContain('No image');
@@ -170,6 +173,28 @@ describe('project HTTP workflow', () => {
     expect(availableCard).toMatch(/<dt>Published<\/dt>\s*<dd>2026-10-01<\/dd>/);
     expect(noneCard).toMatch(/<dt>Planned<\/dt>\s*<dd>—<\/dd>/);
     expect(noneCard).toMatch(/<dt>Published<\/dt>\s*<dd>—<\/dd>/);
+
+    const list = await agent.get('/projects?view=list').expect(200);
+    const availableListCard = extractProjectCard(list.text, availableId);
+    const noneListCard = extractProjectCard(list.text, noneId);
+    const unavailableListCard = extractProjectCard(list.text, unavailableId);
+    expect(list.text).toContain('<ul class="project-list">');
+    expect(list.text).not.toContain('<ul class="project-grid">');
+    expect(availableListCard).toContain('class="project-card project-card--list"');
+    expect(availableListCard).toMatch(
+      /<img class="project-card-media-image project-card-media-image--list" data-preview-image src="\/projects\/\d+\/assets\/\d+\/thumbnail\?v=[0-9a-f]+"/
+    );
+    expect(availableListCard).not.toContain('/preview');
+    expect(availableListCard).not.toContain('/original');
+    expect(availableListCard).toContain('<dt>Status</dt>');
+    expect(availableListCard).toContain('<dt>Priority</dt>');
+    expect(availableListCard).toContain('<dt>Updated</dt>');
+    expect(availableListCard).toContain('<dt>Planned</dt>');
+    expect(availableListCard).toContain('<dt>Published</dt>');
+    expect(noneListCard).not.toContain('<img');
+    expect(noneListCard).toContain('data-primary-image-state="none"');
+    expect(unavailableListCard).not.toContain('<img');
+    expect(unavailableListCard).toContain('data-primary-image-state="unavailable"');
   });
 
   it('serves scoped responsive project-card presentation contracts', async () => {
@@ -182,9 +207,57 @@ describe('project HTTP workflow', () => {
     expect(css).not.toMatch(/\.project-card[^{}]*\{[^}]*aspect-ratio\s*:/);
     expect(css).not.toMatch(/\.project-card[^{}]*\{[^}]*object-fit\s*:\s*cover/);
     expect(css).toMatch(/\.project-card-link\s*\{[^}]*overflow-wrap:\s*anywhere/);
+    expect(css).toMatch(/\.project-card \.project-card-link,\s*\.project-card \.project-card-link:visited\s*\{[^}]*color:\s*#fff;/);
+    expect(css).not.toMatch(/\.project-card--archived \.project-card-link\s*\{[^}]*color:\s*var\(--muted\)/);
     expect(css).toMatch(/\.project-card-meta dd\s*\{[^}]*overflow-wrap:\s*anywhere/);
-    expect(css).toMatch(/@media\s*\(max-width:\s*540px\)\s*\{\s*\.project-card-meta\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\)/);
+    expect(css).toMatch(/@media\s*\(max-width:\s*540px\)\s*\{[\s\S]*?\.project-card-meta\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\)/);
     expect(css).toMatch(/\.project-card:focus-within\s*\{[\s\S]*?outline:\s*2px solid var\(--focus-ring\)[\s\S]*?transform:\s*scale\(1\.01\)/);
+    expect(css).toMatch(/\.project-card--grid \.project-card-media\s*\{[\s\S]*?margin:\s*var\(--space-sm\) var\(--space-sm\) 0;/);
+    expect(css).toMatch(/\.project-card--grid \.project-card-details\s*\{[\s\S]*?display:\s*none;/);
+    expect(css).toMatch(/\.project-card--grid:hover \.project-card-details,[\s\S]*?\.project-card--grid:focus-within \.project-card-details\s*\{[\s\S]*?display:\s*flex;/);
+    expect(css).toMatch(/@media\s*\(hover:\s*none\)\s*\{[\s\S]*?\.project-card--grid \.project-card-details\s*\{[\s\S]*?display:\s*flex;/);
+    expect(css).toMatch(/\.project-card--list \.project-card-media-image\s*\{[\s\S]*?width:\s*auto;[\s\S]*?height:\s*auto;[\s\S]*?max-width:\s*4rem;[\s\S]*?max-height:\s*4rem;/);
+    expect(css).not.toMatch(/\.project-card--list \.project-card-media-image\s*\{[^}]*object-fit\s*:\s*cover/);
+  });
+
+  it('defaults to Created descending while explicit Updated remains available', async () => {
+    const olderCreatedId = await createProject({ title: 'Older Created Project' });
+    const newerCreatedId = await createProject({ title: 'Newer Created Project' });
+    db.prepare("UPDATE projects SET created_at = '2026-01-01 00:00:00', updated_at = '2026-03-01 00:00:00' WHERE id = ?")
+      .run(olderCreatedId);
+    db.prepare("UPDATE projects SET created_at = '2026-02-01 00:00:00', updated_at = '2026-01-01 00:00:00' WHERE id = ?")
+      .run(newerCreatedId);
+
+    const created = await agent.get('/projects').expect(200);
+    expect(created.text).toContain('<option value="created" selected>Created</option>');
+    expect(created.text.indexOf(`data-project-card-link href="/projects/${newerCreatedId}"`))
+      .toBeLessThan(created.text.indexOf(`data-project-card-link href="/projects/${olderCreatedId}"`));
+
+    const updated = await agent.get('/projects?sort=updated&order=asc').expect(200);
+    expect(updated.text).toContain('<option value="updated" selected>Updated</option>');
+    expect(updated.text.indexOf(`data-project-card-link href="/projects/${newerCreatedId}"`))
+      .toBeLessThan(updated.text.indexOf(`data-project-card-link href="/projects/${olderCreatedId}"`));
+  });
+
+  it('normalizes project view state and preserves allowed query values', async () => {
+    for (let i = 0; i < 26; i += 1) {
+      await createProject({ title: `View State ${String(i).padStart(2, '0')}`, status: 'planned' });
+    }
+
+    const list = await agent.get('/projects?search=View+State&status=planned&sort=title&order=asc&view=list&unknown=discarded').expect(200);
+    expect(list.text).toContain('<ul class="project-list">');
+    expect(list.text).toContain('name="view" value="list"');
+    expect(list.text).toContain('href="/projects?search=View+State&amp;status=planned&amp;sort=title&amp;order=asc"');
+    expect(list.text).toContain('href="/projects?search=View+State&amp;status=planned&amp;sort=title&amp;order=asc&amp;view=list"');
+    expect(list.text).toContain('href="/projects?search=View+State&amp;status=planned&amp;sort=title&amp;order=asc&amp;view=list&amp;page=2"');
+    expect(list.text).not.toContain('unknown=discarded');
+
+    const invalid = await agent.get('/projects?view=invalid&unknown=discarded').expect(200);
+    expect(invalid.text).toContain('<ul class="project-grid">');
+    expect(invalid.text).not.toContain('view=invalid');
+    expect(invalid.text).not.toContain('unknown=discarded');
+    expect(invalid.text).toContain('href="/projects?view=list"');
+    expect(invalid.text).toContain('href="/projects"');
   });
 
   it('new-project form renders', async () => {
@@ -494,7 +567,7 @@ describe('project HTTP workflow', () => {
 
     const archivedList = await agent.get('/projects?status=archived').expect(200);
     expect(archivedList.text).toContain('Filter Archive');
-    expect(archivedList.text).toContain('class="project-card project-card--archived" data-project-card');
+    expect(archivedList.text).toContain('class="project-card project-card--grid project-card--archived" data-project-card');
 
     const dashboard = await agent.get('/').expect(200);
     expect(dashboard.text).toContain('<span class="count">1</span> Archived');

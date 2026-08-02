@@ -530,6 +530,22 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness, proje
     };
   }
 
+  /**
+   * Compose the Published page's project list without changing the
+   * published-project repository semantics. Filtering, ordering, pagination,
+   * and totals happen in listPublished; only the returned page is enriched.
+   *
+   * @param {object} [options] - published-project repository list options
+   * @returns {{ rows: Array, total: number }}
+   */
+  function getPublishedProjectList(options = {}) {
+    const result = projectRepository.listPublished(options);
+    return {
+      ...result,
+      rows: attachPrimaryImages(result.rows),
+    };
+  }
+
   // ─── Phase 6C: Release Planning Views ─────────────────────────────────
 
   /**
@@ -1677,6 +1693,7 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness, proje
     getDashboardData,
     getProjectWorkspace,
     getProjectList,
+    getPublishedProjectList,
     getReleaseList,
     getReleaseBoard,
     getProjectCalendar,

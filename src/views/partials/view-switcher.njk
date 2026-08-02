@@ -1,0 +1,8 @@
+{% macro render(currentView, pageUrl, ariaLabel) %}
+  <nav class="view-switcher" aria-label="{{ ariaLabel }}">
+    <a class="view-switcher-option" href="{{ pageUrl({ view: 'grid' }) }}"
+       {% if currentView == 'grid' %}aria-current="page"{% endif %}>Grid</a>
+    <a class="view-switcher-option" href="{{ pageUrl({ view: 'list' }) }}"
+       {% if currentView == 'list' %}aria-current="page"{% endif %}>List</a>
+  </nav>
+{% endmacro %}

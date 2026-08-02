@@ -102,13 +102,25 @@ function makeProjectDomNode({ tagName = 'div', parent = null, attributes = {} } 
   return node;
 }
 
-function makeProjectCardFixture() {
-  const card = makeProjectDomNode({ tagName: 'article' });
+function makeProjectCardFixture({ variant = 'grid' } = {}) {
+  const card = makeProjectDomNode({
+    tagName: 'article',
+    attributes: { class: `project-card project-card--${variant}` },
+  });
   const link = makeProjectDomNode({ tagName: 'a', parent: card });
   const metadataRow = makeProjectDomNode({ tagName: 'div', parent: card });
   const metadataValue = makeProjectDomNode({ tagName: 'span', parent: metadataRow });
   const blank = makeProjectDomNode({ tagName: 'div', parent: card });
   const secondaryLink = makeProjectDomNode({ tagName: 'a', parent: card });
+  const patreonLink = makeProjectDomNode({
+    tagName: 'a',
+    parent: card,
+    attributes: {
+      href: 'https://www.patreon.com/creator',
+      target: '_blank',
+      rel: 'noopener noreferrer',
+    },
+  });
   const button = makeProjectDomNode({ tagName: 'button', parent: card });
   const form = makeProjectDomNode({ tagName: 'form', parent: card });
   const input = makeProjectDomNode({ tagName: 'input', parent: form });
@@ -130,6 +142,7 @@ function makeProjectCardFixture() {
     link,
     blank,
     metadataValue,
+    patreonLink,
     interactive: [secondaryLink, button, form, input, select, label, details, summary],
     get linkActivations() {
       return linkActivations;
@@ -266,6 +279,18 @@ describe('project card navigation enhancement', () => {
     expect(fixture.linkActivations).toBe(2);
   });
 
+  it('activates blank space and metadata in a list row while keeping Patreon independent', () => {
+    const fixture = makeProjectCardFixture({ variant: 'list' });
+    enhanceProjectCards(makeScope([fixture.card]));
+
+    fixture.card.dispatch('click', { target: fixture.blank });
+    fixture.card.dispatch('click', { target: fixture.metadataValue });
+    const patreonEvent = fixture.card.dispatch('click', { target: fixture.patreonLink });
+
+    expect(fixture.linkActivations).toBe(2);
+    expect(patreonEvent.defaultPrevented).toBe(false);
+  });
+
   it('does not navigate for secondary links, buttons, forms, or controls', () => {
     const fixture = makeProjectCardFixture();
     enhanceProjectCards(makeScope([fixture.card]));
@@ -274,6 +299,16 @@ describe('project card navigation enhancement', () => {
       fixture.card.dispatch('click', { target });
     }
 
+    expect(fixture.linkActivations).toBe(0);
+  });
+
+  it('leaves a Patreon anchor native and independent from project navigation', () => {
+    const fixture = makeProjectCardFixture();
+    enhanceProjectCards(makeScope([fixture.card]));
+
+    const event = fixture.card.dispatch('click', { target: fixture.patreonLink });
+
+    expect(event.defaultPrevented).toBe(false);
     expect(fixture.linkActivations).toBe(0);
   });
 
@@ -292,15 +327,19 @@ describe('project card navigation enhancement', () => {
   });
 
   it('is idempotent and safely handles pages without project cards', () => {
-    const fixture = makeProjectCardFixture();
-    const scope = makeScope([fixture.card]);
+    const gridFixture = makeProjectCardFixture({ variant: 'grid' });
+    const listFixture = makeProjectCardFixture({ variant: 'list' });
+    const scope = makeScope([gridFixture.card, listFixture.card]);
 
-    expect(enhanceProjectCards(scope)).toBe(1);
-    expect(enhanceProjectCards(scope)).toBe(1);
-    expect(fixture.card.listeners.filter((listener) => listener.type === 'click')).toHaveLength(1);
+    expect(enhanceProjectCards(scope)).toBe(2);
+    expect(enhanceProjectCards(scope)).toBe(2);
+    expect(gridFixture.card.listeners.filter((listener) => listener.type === 'click')).toHaveLength(1);
+    expect(listFixture.card.listeners.filter((listener) => listener.type === 'click')).toHaveLength(1);
 
-    fixture.card.dispatch('click', { target: fixture.blank });
-    expect(fixture.linkActivations).toBe(1);
+    gridFixture.card.dispatch('click', { target: gridFixture.blank });
+    listFixture.card.dispatch('click', { target: listFixture.blank });
+    expect(gridFixture.linkActivations).toBe(1);
+    expect(listFixture.linkActivations).toBe(1);
 
     expect(enhanceProjectCards(makeScope([]))).toBe(0);
     expect(() => enhanceProjectCards(null)).not.toThrow();

@@ -9,6 +9,7 @@ import {
 } from '../services/project-service.js';
 
 const SORT_OPTIONS = ['updated', 'created', 'title'];
+const VIEW_OPTIONS = ['grid', 'list'];
 const PAGE_SIZE = 25;
 
 export function createProjectsRouter({ appName, projectService, workflowQueryService }) {
@@ -23,7 +24,7 @@ export function createProjectsRouter({ appName, projectService, workflowQuerySer
       const currentPage = Math.min(parsedQuery.page, pageCount);
       const offset = (currentPage - 1) * PAGE_SIZE;
       const { rows } = workflowQueryService.getProjectList({ ...parsedQuery, offset, limit: PAGE_SIZE });
-      const pageUrl = buildPageUrl(req);
+      const pageUrl = buildPageUrl(req, parsedQuery, currentPage);
       const filtersActive = Boolean(parsedQuery.search || parsedQuery.status);
 
       res.render('projects/index.njk', {
@@ -42,7 +43,9 @@ export function createProjectsRouter({ appName, projectService, workflowQuerySer
           status: parsedQuery.status,
           sort: parsedQuery.sortBy,
           order: parsedQuery.order,
+          view: parsedQuery.view,
         },
+        view: parsedQuery.view,
         statuses: STATUSES,
         priorities: PRIORITIES,
         sortOptions: SORT_OPTIONS,
@@ -219,8 +222,9 @@ export function createProjectsRouter({ appName, projectService, workflowQuerySer
 function parseListQuery(raw) {
   const status = STATUSES.includes(raw.status) ? raw.status : undefined;
   const search = typeof raw.search === 'string' ? raw.search.trim() : '';
-  const sortBy = SORT_OPTIONS.includes(raw.sort) ? raw.sort : 'updated';
+  const sortBy = SORT_OPTIONS.includes(raw.sort) ? raw.sort : 'created';
   const order = raw.order === 'asc' ? 'asc' : 'desc';
+  const view = VIEW_OPTIONS.includes(raw.view) ? raw.view : 'grid';
 
   let page = Number.parseInt(raw.page, 10);
   if (!Number.isInteger(page) || page < 1) {
@@ -234,6 +238,7 @@ function parseListQuery(raw) {
     search,
     sortBy,
     order,
+    view,
     page,
     includeArchived,
     limit: PAGE_SIZE,
@@ -288,12 +293,24 @@ function projectToFormValues(project) {
   };
 }
 
-function buildPageUrl(req) {
+function buildPageUrl(req, parsedQuery, currentPage) {
+  const baseQuery = {};
+  if (parsedQuery.search) baseQuery.search = parsedQuery.search;
+  if (parsedQuery.status) baseQuery.status = parsedQuery.status;
+  if (SORT_OPTIONS.includes(req.query.sort)) baseQuery.sort = parsedQuery.sortBy;
+  if (req.query.order === 'asc' || req.query.order === 'desc') baseQuery.order = parsedQuery.order;
+  if (parsedQuery.view === 'list') baseQuery.view = 'list';
+  if (currentPage > 1) baseQuery.page = String(currentPage);
+
   return function pageUrl(overrides) {
-    const query = { ...req.query };
+    const query = { ...baseQuery };
     for (const [key, value] of Object.entries(overrides)) {
+      if (!['search', 'status', 'sort', 'order', 'page', 'view'].includes(key)) continue;
       if (value === undefined || value === null || value === '') {
         delete query[key];
+      } else if (key === 'view') {
+        if (value === 'list') query.view = 'list';
+        else delete query.view;
       } else {
         query[key] = String(value);
       }

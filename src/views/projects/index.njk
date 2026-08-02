@@ -1,5 +1,7 @@
 {% extends "layout.njk" %}
 {% import "partials/page-heading.njk" as pageHeading %}
+{% import "partials/project-card.njk" as projectCard %}
+{% import "partials/view-switcher.njk" as viewSwitcher %}
 
 {% set page_title = "Projects" %}
 
@@ -8,7 +10,12 @@
     <a class="button button-primary" href="/projects/new">New Project</a>
   {% endcall %}
 
+  {{ viewSwitcher.render(view, pageUrl, "Project display") }}
+
   <form class="filters" method="get" action="/projects">
+    {% if view == 'list' %}
+      <input type="hidden" name="view" value="list">
+    {% endif %}
     <div class="field">
       <label for="search">Search</label>
       <input type="search" id="search" name="search" value="{{ query.search or '' }}">
@@ -28,7 +35,7 @@
       <label for="sort">Sort</label>
       <select id="sort" name="sort">
         {% for opt in sortOptions %}
-          <option value="{{ opt }}" {% if query.sort == opt or (not query.sort and opt == 'updated') %}selected{% endif %}>{{ opt | replace('-', ' ') | title }}</option>
+          <option value="{{ opt }}" {% if query.sort == opt or (not query.sort and opt == 'created') %}selected{% endif %}>{{ opt | replace('-', ' ') | title }}</option>
         {% endfor %}
       </select>
     </div>
@@ -48,55 +55,32 @@
   <p class="results-meta">{{ total }} project{% if total != 1 %}s{% endif %} found</p>
 
   {% if projects.length > 0 %}
-    <ul class="project-grid">
+    <ul class="{% if view == 'list' %}project-list{% else %}project-grid{% endif %}">
       {% for project in projects %}
-        <li class="project-grid-item">
-          <article class="project-card{% if project.archived_at %} project-card--archived{% endif %}" data-project-card>
-            {% if project.primaryImage.state == 'available' %}
-              <div class="project-card-media project-card-media--image" data-preview-enhancement data-preview-state="loading">
-                <img class="project-card-media-image" data-preview-image src="{{ project.primaryImage.previewUrl }}" alt="{{ project.primaryImage.alt }}" loading="lazy" decoding="async">
-                <span class="project-card-media-fallback" data-preview-fallback hidden>Image unavailable</span>
-              </div>
-            {% elif project.primaryImage.state == 'unavailable' %}
-              <div class="project-card-media project-card-media--fallback" data-primary-image-state="unavailable">
-                <span>Image unavailable</span>
-              </div>
-            {% else %}
-              <div class="project-card-media project-card-media--fallback" data-primary-image-state="none">
-                <span>No image</span>
-              </div>
-            {% endif %}
-
-            <div class="project-card-body">
-              <h2 class="project-card-title">
-                <a class="project-card-link" data-project-card-link href="/projects/{{ project.id }}">{{ project.title }}</a>
-              </h2>
-
-              <dl class="project-card-metadata">
-                <div class="project-card-meta">
-                  <dt>Status</dt>
-                  <dd>{% set status = project.status %}{% include "partials/status-badge.njk" %}</dd>
-                </div>
-                <div class="project-card-meta">
-                  <dt>Priority</dt>
-                  <dd>{{ project.priority | title }}</dd>
-                </div>
-                <div class="project-card-meta project-card-meta--date">
-                  <dt>Updated</dt>
-                  <dd>{{ project.updated_at }}</dd>
-                </div>
-                <div class="project-card-meta project-card-meta--date">
-                  <dt>Planned</dt>
-                  <dd>{{ project.planned_date or '—' }}</dd>
-                </div>
-                <div class="project-card-meta project-card-meta--date">
-                  <dt>Published</dt>
-                  <dd>{{ project.published_date or '—' }}</dd>
-                </div>
-              </dl>
+        {% call projectCard.render(project, view) %}
+          <dl class="project-card-metadata">
+            <div class="project-card-meta">
+              <dt>Status</dt>
+              <dd>{% set status = project.status %}{% include "partials/status-badge.njk" %}</dd>
             </div>
-          </article>
-        </li>
+            <div class="project-card-meta">
+              <dt>Priority</dt>
+              <dd>{{ project.priority | title }}</dd>
+            </div>
+            <div class="project-card-meta project-card-meta--date">
+              <dt>Updated</dt>
+              <dd>{{ project.updated_at }}</dd>
+            </div>
+            <div class="project-card-meta project-card-meta--date">
+              <dt>Planned</dt>
+              <dd>{{ project.planned_date or '—' }}</dd>
+            </div>
+            <div class="project-card-meta project-card-meta--date">
+              <dt>Published</dt>
+              <dd>{{ project.published_date or '—' }}</dd>
+            </div>
+          </dl>
+        {% endcall %}
       {% endfor %}
     </ul>
 
