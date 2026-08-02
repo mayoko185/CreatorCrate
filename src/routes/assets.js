@@ -2,7 +2,11 @@ import express from 'express';
 import { ProjectNotFoundError } from '../services/project-service.js';
 import { ReleaseValidationError } from '../services/release-service.js';
 import { UNCATEGORIZED } from '../services/asset-action-service.js';
-import { buildCanonicalAssetBrowserQuery } from '../services/workflow-query-service.js';
+import { PRIMARY_IMAGE_ERROR_CODES } from '../services/project-primary-image-service.js';
+import {
+  buildCanonicalAssetBrowserQuery,
+  isPrimaryImageAssetUsable,
+} from '../services/workflow-query-service.js';
 
 const ASSET_BROWSER_QUERY_KEYS = ['category', 'search', 'extension', 'presence', 'usage', 'sort', 'order', 'page', 'pageSize', 'view'];
 
@@ -36,6 +40,9 @@ const ASSET_RENAME_ORIGINS = new Set(['assets', 'viewer']);
  * @param {ReturnType<import('../services/asset-browser-preference-service.js').createAssetBrowserPreferenceService>} deps.assetBrowserPreferenceService
  *   Application-scoped preference service used only for bare Assets-page
  *   default resolution.
+ * @param {ReturnType<import('../services/project-primary-image-service.js').createProjectPrimaryImageService>} deps.projectPrimaryImageService
+ *   Application-scoped primary-image service used by the viewer and its
+ *   mutation routes.
  */
 export function createAssetsRouter({
   appName,
@@ -45,9 +52,15 @@ export function createAssetsRouter({
   releaseService,
   assetActionService,
   assetBrowserPreferenceService,
+  projectPrimaryImageService,
 } = {}) {
   if (!assetBrowserPreferenceService || typeof assetBrowserPreferenceService.resolveEffectiveCategory !== 'function') {
     throw new Error('createAssetsRouter requires an assetBrowserPreferenceService dependency.');
+  }
+  if (!projectPrimaryImageService || typeof projectPrimaryImageService.getPrimaryImage !== 'function'
+    || typeof projectPrimaryImageService.setPrimaryImage !== 'function'
+    || typeof projectPrimaryImageService.clearPrimaryImage !== 'function') {
+    throw new Error('createAssetsRouter requires a projectPrimaryImageService dependency.');
   }
 
   const router = express.Router({ mergeParams: true });
@@ -143,14 +156,77 @@ export function createAssetsRouter({
         return next(createNotFound());
       }
 
+      let primaryImage;
+      try {
+        primaryImage = projectPrimaryImageService.getPrimaryImage(projectId);
+      } catch (err) {
+        return handlePrimaryImageFailure(err, { next });
+      }
+
       const notice = ASSET_ACTION_NOTICE_CODES.has(req.query.notice) ? req.query.notice : null;
 
       res.render('projects/asset-viewer.njk', {
         appName,
-        ...buildAssetViewerRenderModel(data),
+        ...buildAssetViewerRenderModel(data, buildPrimaryImageViewerState(data, primaryImage)),
         notice,
         noticeMessage: notice ? ASSET_ACTION_NOTICE_MESSAGES[notice] : null,
       });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // POST /projects/:projectId/assets/:assetId/primary-image — Set the
+  // displayed eligible asset as the project's retained primary image.
+  router.post('/:projectId/assets/:assetId/primary-image', (req, res, next) => {
+    try {
+      const projectId = parseId(req.params.projectId);
+      const assetId = parseId(req.params.assetId);
+      if (projectId === null || assetId === null) {
+        return next(createNotFound());
+      }
+
+      try {
+        projectPrimaryImageService.setPrimaryImage(projectId, assetId);
+      } catch (err) {
+        return handlePrimaryImageFailure(err, { next });
+      }
+
+      res.redirect(buildAssetViewerRedirectUrl(
+        workflowQueryService,
+        projectId,
+        assetId,
+        req.body,
+        { notice: 'primary-image-set' },
+      ));
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // POST /projects/:projectId/assets/:assetId/primary-image/remove — Remove
+  // only the selection that still points at the displayed asset.
+  router.post('/:projectId/assets/:assetId/primary-image/remove', (req, res, next) => {
+    try {
+      const projectId = parseId(req.params.projectId);
+      const assetId = parseId(req.params.assetId);
+      if (projectId === null || assetId === null) {
+        return next(createNotFound());
+      }
+
+      try {
+        projectPrimaryImageService.clearPrimaryImage(projectId, assetId);
+      } catch (err) {
+        return handlePrimaryImageFailure(err, { next });
+      }
+
+      res.redirect(buildAssetViewerRedirectUrl(
+        workflowQueryService,
+        projectId,
+        assetId,
+        req.body,
+        { notice: 'primary-image-removed' },
+      ));
     } catch (err) {
       next(err);
     }
@@ -177,7 +253,7 @@ export function createAssetsRouter({
 
       if (origin === null) {
         return handleAssetActionFailure({ code: 'INVALID_ORIGIN' }, {
-          appName, workflowQueryService, req, res, next,
+          appName, workflowQueryService, projectPrimaryImageService, req, res, next,
           project, projectId, assetId, action: 'rename', origin: 'viewer',
           submittedFilename: typeof filename === 'string' ? filename : '',
         });
@@ -190,7 +266,7 @@ export function createAssetsRouter({
           : assetActionService.renameAsset(projectId, assetId, filename);
       } catch (err) {
         return handleAssetActionFailure(err, {
-          appName, workflowQueryService, req, res, next,
+          appName, workflowQueryService, projectPrimaryImageService, req, res, next,
           project, projectId, assetId, action: 'rename', origin,
           submittedFilename: typeof filename === 'string' ? filename : '',
         });
@@ -224,7 +300,7 @@ export function createAssetsRouter({
 
       if (!parsedDestination.ok) {
         return handleAssetActionFailure({ code: 'DESTINATION_CATEGORY_MALFORMED' }, {
-          appName, workflowQueryService, req, res, next,
+          appName, workflowQueryService, projectPrimaryImageService, req, res, next,
           projectId, assetId, action: 'move',
           submittedDestinationCategory,
         });
@@ -235,7 +311,7 @@ export function createAssetsRouter({
         moved = assetActionService.moveAsset(projectId, assetId, parsedDestination.value);
       } catch (err) {
         return handleAssetActionFailure(err, {
-          appName, workflowQueryService, req, res, next,
+          appName, workflowQueryService, projectPrimaryImageService, req, res, next,
           projectId, assetId, action: 'move',
           submittedDestinationCategory,
         });
@@ -661,12 +737,56 @@ function createNotFound() {
 
 // ─── Phase: asset actions chunk 4 — rename/move HTTP integration ─────────
 
-const ASSET_ACTION_NOTICE_CODES = new Set(['asset-renamed', 'asset-moved']);
+const ASSET_ACTION_NOTICE_CODES = new Set([
+  'asset-renamed',
+  'asset-moved',
+  'primary-image-set',
+  'primary-image-removed',
+]);
 
 const ASSET_ACTION_NOTICE_MESSAGES = {
   'asset-renamed': 'The file was renamed.',
   'asset-moved': 'The file was moved.',
+  'primary-image-set': 'The primary image was set.',
+  'primary-image-removed': 'The primary image was removed.',
 };
+
+const PRIMARY_IMAGE_ERROR_STATUS = Object.freeze({
+  [PRIMARY_IMAGE_ERROR_CODES.INVALID_ID]: 404,
+  [PRIMARY_IMAGE_ERROR_CODES.PROJECT_NOT_FOUND]: 404,
+  [PRIMARY_IMAGE_ERROR_CODES.PROJECT_ARCHIVED]: 409,
+  [PRIMARY_IMAGE_ERROR_CODES.ASSET_NOT_FOUND]: 404,
+  [PRIMARY_IMAGE_ERROR_CODES.ASSET_MISSING]: 409,
+  [PRIMARY_IMAGE_ERROR_CODES.ASSET_UNSUPPORTED]: 422,
+  [PRIMARY_IMAGE_ERROR_CODES.STALE_CLEAR]: 409,
+  [PRIMARY_IMAGE_ERROR_CODES.DATABASE_ERROR]: 500,
+});
+
+const PRIMARY_IMAGE_ERROR_MESSAGES = Object.freeze({
+  [PRIMARY_IMAGE_ERROR_CODES.PROJECT_ARCHIVED]: 'This project is archived and read-only.',
+  [PRIMARY_IMAGE_ERROR_CODES.ASSET_MISSING]: 'This asset is missing from the last scan and cannot be selected as the primary image.',
+  [PRIMARY_IMAGE_ERROR_CODES.ASSET_UNSUPPORTED]: 'This asset type cannot be selected as the primary image.',
+  [PRIMARY_IMAGE_ERROR_CODES.STALE_CLEAR]: 'The primary image changed before it could be removed.',
+  [PRIMARY_IMAGE_ERROR_CODES.DATABASE_ERROR]: 'The primary image operation could not be completed. Please try again.',
+});
+
+function handlePrimaryImageFailure(err, { next }) {
+  const code = err && err.code;
+  const status = code ? PRIMARY_IMAGE_ERROR_STATUS[code] : undefined;
+
+  if (status === undefined) {
+    return next(err);
+  }
+  if (status === 404) {
+    return next(createNotFound());
+  }
+
+  const controlled = new Error(
+    PRIMARY_IMAGE_ERROR_MESSAGES[code] || 'The primary image operation could not be completed. Please try again.'
+  );
+  controlled.status = status;
+  return next(controlled);
+}
 
 // ─── Phase: asset list actions — batch move ──────────────────────────────
 
@@ -810,6 +930,20 @@ function parseDestinationCategoryField(raw) {
   return { ok: true, value: id };
 }
 
+function buildPrimaryImageViewerState(data, selectedAsset) {
+  const projectIsArchived = Boolean(data.project.archived_at) || data.project.status === 'archived';
+  const assetBelongsToProject = data.asset.project_id === data.project.id;
+  const isPrimaryImage = Boolean(selectedAsset && selectedAsset.id === data.asset.id);
+  const isEligiblePresentImage = assetBelongsToProject && isPrimaryImageAssetUsable(data.asset);
+
+  return {
+    isPrimaryImage,
+    isPrimaryImageAvailable: isPrimaryImage && isEligiblePresentImage,
+    canSetAsPrimaryImage: !projectIsArchived && !isPrimaryImage && isEligiblePresentImage,
+    canRemovePrimaryImage: !projectIsArchived && isPrimaryImage,
+  };
+}
+
 /**
  * Shared render-model fields for the asset viewer — used by the GET route
  * and by every controlled-failure re-render, so both stay in sync as the
@@ -864,6 +998,7 @@ function buildAssetViewerRenderModel(data, overrides = {}) {
  * @param {object} ctx
  * @param {string} ctx.appName
  * @param {import('../services/workflow-query-service.js').WorkflowQueryService} ctx.workflowQueryService
+ * @param {ReturnType<import('../services/project-primary-image-service.js').createProjectPrimaryImageService>} ctx.projectPrimaryImageService
  * @param {import('express').Request} ctx.req
  * @param {import('express').Response} ctx.res
  * @param {import('express').NextFunction} ctx.next
@@ -876,7 +1011,7 @@ function buildAssetViewerRenderModel(data, overrides = {}) {
  * @param {string} [ctx.submittedDestinationCategory]
  */
 function handleAssetActionFailure(err, {
-  appName, workflowQueryService, req, res, next,
+  appName, workflowQueryService, projectPrimaryImageService, req, res, next,
   project, projectId, assetId, action, origin = 'viewer',
   submittedFilename, submittedDestinationCategory,
 }) {
@@ -899,8 +1034,15 @@ function handleAssetActionFailure(err, {
   }
 
   let data;
+  let primaryImageState;
   try {
     data = workflowQueryService.getProjectAssetViewer(projectId, assetId, req.body);
+    if (data) {
+      primaryImageState = buildPrimaryImageViewerState(
+        data,
+        projectPrimaryImageService.getPrimaryImage(projectId),
+      );
+    }
   } catch (renderErr) {
     return next(renderErr);
   }
@@ -916,7 +1058,7 @@ function handleAssetActionFailure(err, {
 
   res.status(status).render('projects/asset-viewer.njk', {
     appName,
-    ...buildAssetViewerRenderModel(data, overrides),
+    ...buildAssetViewerRenderModel(data, { ...primaryImageState, ...overrides }),
   });
 }
 

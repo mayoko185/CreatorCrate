@@ -18,6 +18,9 @@ const dependencyInstrumentation = vi.hoisted(() => ({
   projectServices: [],
   preferenceServices: [],
   projectAssetCategoryServices: [],
+  primaryImageRepositories: [],
+  primaryImageServices: [],
+  workflowQueryServices: [],
   assetRouters: [],
   projectAssetCategoryRouters: [],
   settingsRouters: [],
@@ -66,6 +69,42 @@ vi.mock('../src/services/project-asset-category-service.js', async (importOrigin
     createProjectAssetCategoryService(...args) {
       const service = actual.createProjectAssetCategoryService(...args);
       dependencyInstrumentation.projectAssetCategoryServices.push({ args, service });
+      return service;
+    },
+  };
+});
+
+vi.mock('../src/data/project-primary-image-repository.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    createProjectPrimaryImageRepository(...args) {
+      const repository = actual.createProjectPrimaryImageRepository(...args);
+      dependencyInstrumentation.primaryImageRepositories.push({ args, repository });
+      return repository;
+    },
+  };
+});
+
+vi.mock('../src/services/project-primary-image-service.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    createProjectPrimaryImageService(...args) {
+      const service = actual.createProjectPrimaryImageService(...args);
+      dependencyInstrumentation.primaryImageServices.push({ args, service });
+      return service;
+    },
+  };
+});
+
+vi.mock('../src/services/workflow-query-service.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    createWorkflowQueryService(...args) {
+      const service = actual.createWorkflowQueryService(...args);
+      dependencyInstrumentation.workflowQueryServices.push({ args, service });
       return service;
     },
   };
@@ -179,6 +218,30 @@ describe('app construction — asset actions chunk 3 wiring', () => {
     expect(typeof app.locals.assetBrowserPreferenceService.resolveEffectiveCategory).toBe('function');
   });
 
+  it('constructs one shared primary-image repository and service from the application database', () => {
+    const app = buildApp();
+
+    expect(dependencyInstrumentation.primaryImageRepositories).toHaveLength(1);
+    expect(dependencyInstrumentation.primaryImageServices).toHaveLength(1);
+    expect(dependencyInstrumentation.workflowQueryServices).toHaveLength(1);
+
+    const { args: repositoryArgs, repository } = dependencyInstrumentation.primaryImageRepositories[0];
+    const { args: serviceArgs, service } = dependencyInstrumentation.primaryImageServices[0];
+    const projectService = dependencyInstrumentation.projectServices[0].service;
+
+    expect(repositoryArgs[0]).toBe(db);
+    expect(serviceArgs[0]).toEqual(expect.objectContaining({
+      db,
+      projectRepository: projectService.repository,
+      assetRepository: app.locals.assetScanner.repository,
+      projectPrimaryImageRepository: repository,
+    }));
+    expect(app.locals.projectPrimaryImageRepository).toBe(repository);
+    expect(app.locals.projectPrimaryImageService).toBe(service);
+    expect(dependencyInstrumentation.workflowQueryServices[0].args[0].projectPrimaryImageRepository).toBe(repository);
+    expect(dependencyInstrumentation.assetRouters[0].args[0].projectPrimaryImageService).toBe(service);
+  });
+
   it('omits the Assets router when filesystem roots are unavailable', () => {
     const app = createApp(
       { appName: 'CreatorCrate', db },
@@ -190,6 +253,8 @@ describe('app construction — asset actions chunk 3 wiring', () => {
     expect(dependencyInstrumentation.settingsRouters).toHaveLength(1);
     expect(app.locals.assetActionService).toBeNull();
     expect(app.locals.projectAssetCategoryService).toBeNull();
+    expect(app.locals.projectPrimaryImageService).toBeTruthy();
+    expect(typeof app.locals.projectPrimaryImageService.getPrimaryImage).toBe('function');
   });
 
   it('constructs the rooted Assets router once with non-null dependencies', () => {
@@ -205,6 +270,7 @@ describe('app construction — asset actions chunk 3 wiring', () => {
     expect(dependencies.releaseService).toBeTruthy();
     expect(dependencies.assetActionService).toBe(app.locals.assetActionService);
     expect(dependencies.assetBrowserPreferenceService).toBe(app.locals.assetBrowserPreferenceService);
+    expect(dependencies.projectPrimaryImageService).toBe(app.locals.projectPrimaryImageService);
   });
 
   it('fails clearly when the Assets router preference dependency is absent', () => {

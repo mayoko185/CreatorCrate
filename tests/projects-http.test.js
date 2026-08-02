@@ -78,6 +78,29 @@ describe('project HTTP workflow', () => {
     expect(res.text).toContain('No projects yet');
   });
 
+  it('keeps Projects HTML unchanged when a primary-image model is available', async () => {
+    const createRes = await agent
+      .post('/projects')
+      .send('title=Primary+List+Markup')
+      .send('status=tbd')
+      .send('priority=normal')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .expect(302);
+    const projectId = Number(createRes.headers.location.replace('/projects/', ''));
+    const project = db.prepare('SELECT project_dir FROM projects WHERE id = ?').get(projectId);
+    const projectDir = resolveProjectDir(projectsRoot, project.project_dir);
+    fs.writeFileSync(path.join(projectDir, 'cover.png'), 'content');
+    app.locals.assetScanner.scanProjectAssets(projectId);
+    const asset = app.locals.assetScanner.repository.findByProjectId(projectId)[0];
+
+    const before = await agent.get('/projects').expect(200);
+    app.locals.projectPrimaryImageService.setPrimaryImage(projectId, asset.id);
+    const after = await agent.get('/projects').expect(200);
+
+    expect(after.text).toBe(before.text);
+  });
+
   it('new-project form renders', async () => {
     const res = await agent.get('/projects/new').expect(200);
     expect(res.text).toContain('Create Project');

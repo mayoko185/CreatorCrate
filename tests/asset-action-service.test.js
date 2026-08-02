@@ -20,6 +20,10 @@ import { createAssetCategoryService } from '../src/services/asset-category-servi
 import { createProjectRepository } from '../src/data/project-repository.js';
 import { createProjectService } from '../src/services/project-service.js';
 import { createProjectAssetCategoryService } from '../src/services/project-asset-category-service.js';
+import { createProjectPrimaryImageRepository } from '../src/data/project-primary-image-repository.js';
+import { createProjectPrimaryImageService } from '../src/services/project-primary-image-service.js';
+import { createWorkflowQueryService } from '../src/services/workflow-query-service.js';
+import { evaluateReleaseReadiness } from '../src/services/release-readiness-policy.js';
 import {
   createAssetActionService,
   AssetActionError,
@@ -69,6 +73,9 @@ describe('asset action service', () => {
   let db;
   let projectRepository;
   let assetRepository;
+  let primaryImageRepository;
+  let primaryImageService;
+  let workflowQueryService;
   let assetCategoryRepository;
   let assetBrowserPreferenceRepository;
   let projectService;
@@ -163,6 +170,18 @@ describe('asset action service', () => {
     actionService = createAssetActionService({
       projectRepository, assetRepository, assetCategoryRepository, projectsRoot, projectOperationCoordinator,
     });
+    primaryImageRepository = createProjectPrimaryImageRepository(db);
+    primaryImageService = createProjectPrimaryImageService({
+      db,
+      projectRepository,
+      assetRepository,
+      projectPrimaryImageRepository: primaryImageRepository,
+    });
+    workflowQueryService = createWorkflowQueryService({
+      db,
+      evaluateReleaseReadiness,
+      projectPrimaryImageRepository: primaryImageRepository,
+    });
 
     project = projectService.create(validProjectInput());
     absPath = resolveProjectDir(projectsRoot, project.project_dir);
@@ -202,6 +221,57 @@ describe('asset action service', () => {
       const asset = createAsset('old.png');
       const result = actionService.renameAsset(project.id, asset.id, 'new.png');
       expect(result.id).toBe(asset.id);
+    });
+
+    it('preserves the primary selection across native rename and move while refreshing the query revision', () => {
+      const sourcePath = writeFile('old.png', 'content');
+      const sourceStats = fs.statSync(sourcePath);
+      const asset = createAsset('old.png', {
+        extension: 'png',
+        mimeType: 'image/png',
+        sizeBytes: sourceStats.size,
+        modifiedAt: sourceStats.mtime.toISOString(),
+      });
+      primaryImageService.setPrimaryImage(project.id, asset.id);
+      const renders = createEnabledCategory('Renders', 'renders');
+
+      const getPrimaryImage = () => workflowQueryService.getProjectList({ limit: 25, offset: 0 })
+        .rows.find((row) => row.id === project.id).primaryImage;
+      const before = getPrimaryImage();
+      const setSpy = vi.spyOn(primaryImageRepository, 'setPrimaryImage');
+      const clearSpy = vi.spyOn(primaryImageRepository, 'clearPrimaryImageIfMatches');
+
+      const renamed = actionService.renameAsset(project.id, asset.id, 'renamed.png');
+      const afterRename = getPrimaryImage();
+
+      expect(renamed.id).toBe(asset.id);
+      expect(afterRename).toMatchObject({
+        selectedAssetId: asset.id,
+        state: 'available',
+      });
+      expect(afterRename.previewUrl).toBe(
+        `/projects/${project.id}/assets/${asset.id}/preview?v=${afterRename.revision}`
+      );
+      expect(afterRename.revision).not.toBe(before.revision);
+
+      const moved = actionService.moveAsset(project.id, asset.id, renders.id);
+      const afterMove = getPrimaryImage();
+
+      expect(moved).toMatchObject({ id: asset.id, relative_path: 'renders/renamed.png' });
+      expect(afterMove).toMatchObject({
+        selectedAssetId: asset.id,
+        state: 'available',
+      });
+      expect(afterMove.previewUrl).toBe(
+        `/projects/${project.id}/assets/${asset.id}/preview?v=${afterMove.revision}`
+      );
+      expect(afterMove.revision).not.toBe(afterRename.revision);
+      expect(primaryImageRepository.findByProjectId(project.id)).toEqual({
+        project_id: project.id,
+        asset_id: asset.id,
+      });
+      expect(setSpy).not.toHaveBeenCalled();
+      expect(clearSpy).not.toHaveBeenCalled();
     });
 
     it('updates extension and MIME type when the extension changes', () => {

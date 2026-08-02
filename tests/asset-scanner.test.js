@@ -11,6 +11,10 @@ import { createAssetBrowserPreferenceRepository } from '../src/data/asset-browse
 import { createAssetCategoryService } from '../src/services/asset-category-service.js';
 import { createProjectService, ProjectNotFoundError } from '../src/services/project-service.js';
 import { createAssetScanner } from '../src/services/asset-scanner.js';
+import { createProjectPrimaryImageRepository } from '../src/data/project-primary-image-repository.js';
+import { createProjectPrimaryImageService } from '../src/services/project-primary-image-service.js';
+import { createWorkflowQueryService } from '../src/services/workflow-query-service.js';
+import { evaluateReleaseReadiness } from '../src/services/release-readiness-policy.js';
 import { createProjectOperationCoordinator, ProjectOperationError } from '../src/services/project-operation-coordinator.js';
 import {
   formatProjectDirName,
@@ -26,6 +30,9 @@ describe('asset scanner', () => {
   let projectService;
   let projectRepo;
   let assetScanner;
+  let primaryImageRepository;
+  let primaryImageService;
+  let workflowQueryService;
   let projectsRoot;
   let projectOperationCoordinator;
 
@@ -52,6 +59,11 @@ describe('asset scanner', () => {
     return { project, absPath, relPath };
   }
 
+  function getPrimaryImageModel(projectId) {
+    return workflowQueryService.getProjectList({ limit: 25, offset: 0 }).rows
+      .find((row) => row.id === projectId).primaryImage;
+  }
+
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-scanner-'));
     projectsRoot = path.join(tmpDir, 'projects');
@@ -71,6 +83,18 @@ describe('asset scanner', () => {
     });
     projectOperationCoordinator = createProjectOperationCoordinator();
     assetScanner = createAssetScanner(db, projectsRoot, { projectService, assetCategoryService, projectOperationCoordinator });
+    primaryImageRepository = createProjectPrimaryImageRepository(db);
+    primaryImageService = createProjectPrimaryImageService({
+      db,
+      projectRepository: projectRepo,
+      assetRepository: assetScanner.repository,
+      projectPrimaryImageRepository: primaryImageRepository,
+    });
+    workflowQueryService = createWorkflowQueryService({
+      db,
+      evaluateReleaseReadiness,
+      projectPrimaryImageRepository: primaryImageRepository,
+    });
   });
 
   afterEach(() => {
@@ -852,6 +876,82 @@ describe('asset scanner', () => {
       const newRow = assetScanner.repository.findByProjectIdAndPath(project.id, 'new-name.png');
       expect(newRow.is_present).toBe(1);
       expect(newRow.id).not.toBe(original.id);
+    });
+
+    it('retains a selected row through missing and same-path restoration while the query model reactivates it', () => {
+      const { project, absPath } = createProjectWithDir('Primary Restore Lifecycle');
+      const assetPath = path.join(absPath, 'cover.png');
+      fs.writeFileSync(assetPath, 'content');
+      assetScanner.scanProjectAssets(project.id);
+      const asset = assetScanner.repository.findByProjectIdAndPath(project.id, 'cover.png');
+      primaryImageService.setPrimaryImage(project.id, asset.id);
+
+      expect(getPrimaryImageModel(project.id)).toMatchObject({
+        selectedAssetId: asset.id,
+        state: 'available',
+      });
+
+      fs.rmSync(assetPath);
+      assetScanner.scanProjectAssets(project.id);
+
+      expect(assetScanner.repository.findById(asset.id)).toMatchObject({
+        id: asset.id,
+        is_present: 0,
+      });
+      expect(primaryImageRepository.findByProjectId(project.id)).toEqual({
+        project_id: project.id,
+        asset_id: asset.id,
+      });
+      expect(getPrimaryImageModel(project.id)).toEqual({
+        selectedAssetId: asset.id,
+        state: 'unavailable',
+        previewUrl: null,
+        thumbnailUrl: null,
+        revision: null,
+        alt: 'Preview of cover.png',
+      });
+
+      fs.writeFileSync(assetPath, 'restored content');
+      assetScanner.scanProjectAssets(project.id);
+
+      const restored = assetScanner.repository.findByProjectIdAndPath(project.id, 'cover.png');
+      expect(restored.id).toBe(asset.id);
+      expect(restored.is_present).toBe(1);
+      expect(getPrimaryImageModel(project.id)).toMatchObject({
+        selectedAssetId: asset.id,
+        state: 'available',
+      });
+      expect(getPrimaryImageModel(project.id).previewUrl).toContain(
+        `/projects/${project.id}/assets/${asset.id}/preview?v=`
+      );
+    });
+
+    it('keeps an external rename selected on the old unavailable row without transferring primary state', () => {
+      const { project, absPath } = createProjectWithDir('Primary External Move Lifecycle');
+      const oldPath = path.join(absPath, 'old-name.png');
+      fs.writeFileSync(oldPath, 'content');
+      assetScanner.scanProjectAssets(project.id);
+      const original = assetScanner.repository.findByProjectIdAndPath(project.id, 'old-name.png');
+      primaryImageService.setPrimaryImage(project.id, original.id);
+
+      fs.renameSync(oldPath, path.join(absPath, 'new-name.png'));
+      assetScanner.scanProjectAssets(project.id);
+
+      const oldRow = assetScanner.repository.findByProjectIdAndPath(project.id, 'old-name.png');
+      const newRow = assetScanner.repository.findByProjectIdAndPath(project.id, 'new-name.png');
+      expect(oldRow).toMatchObject({ id: original.id, is_present: 0 });
+      expect(newRow).toMatchObject({ is_present: 1 });
+      expect(newRow.id).not.toBe(original.id);
+      expect(primaryImageRepository.findByProjectId(project.id)).toEqual({
+        project_id: project.id,
+        asset_id: original.id,
+      });
+      expect(getPrimaryImageModel(project.id)).toMatchObject({
+        selectedAssetId: original.id,
+        state: 'unavailable',
+        previewUrl: null,
+        thumbnailUrl: null,
+      });
     });
 
     it('does not write project.json while scanning', () => {

@@ -1520,6 +1520,8 @@
       }
       .asset-actions-section { margin: var(--space-xl) 0; }
       .asset-actions-section h2 { margin-top: 0; }
+      .asset-primary-image-section { margin: var(--space-xl) 0; }
+      .asset-primary-image-section h2 { margin-top: 0; }
       .asset-actions-card {
         background: var(--surface);
         border: 1px solid var(--border);

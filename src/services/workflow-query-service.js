@@ -29,6 +29,7 @@ import { createReleaseRepository, RELEASE_STATUSES } from '../data/release-repos
 import { createProjectRepository } from '../data/project-repository.js';
 import { createAssetRepository } from '../data/asset-repository.js';
 import { createAssetCategoryRepository } from '../data/asset-category-repository.js';
+import { createProjectPrimaryImageRepository } from '../data/project-primary-image-repository.js';
 import { classifyPreviewable, buildAssetRevisionToken } from './preview-service.js';
 import { getLocalTodayIso } from '../util/date.js';
 
@@ -210,6 +211,18 @@ function buildPreviewAltText(asset) {
 }
 
 /**
+ * Shared primary-image eligibility predicate for read models and the asset
+ * viewer. Presence and preview classification are both required; no cache or
+ * derivative generation is performed here.
+ *
+ * @param {object|null|undefined} asset
+ * @returns {boolean}
+ */
+export function isPrimaryImageAssetUsable(asset) {
+  return Boolean(asset && asset.is_present) && classifyPreviewable(asset).supported;
+}
+
+/**
  * Group an ordered list of releases by their planned_date. Returns an array
  * of `{ plannedDate, releases }` objects, preserving the order in which each
  * date first appears. Releases without a planned_date are dropped (this
@@ -238,11 +251,12 @@ function groupByDate(releases) {
  *   function injected for Phase 7A read-service composition. When omitted,
  *   the service still works but getReleaseReadiness will throw a clear error.
  */
-export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
+export function createWorkflowQueryService({ db, evaluateReleaseReadiness, projectPrimaryImageRepository }) {
   const projectRepository = createProjectRepository(db);
   const releaseRepository = createReleaseRepository(db);
   const assetRepository = createAssetRepository(db);
   const assetCategoryRepository = createAssetCategoryRepository(db);
+  const primaryImageRepository = projectPrimaryImageRepository ?? createProjectPrimaryImageRepository(db);
 
   /**
    * Compose the dashboard view-model. Returns an object with all sections
@@ -430,6 +444,89 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
         missing: assetMissing,
         missingByReleases: assetMissingByReleases,
       },
+    };
+  }
+
+  function buildEmptyPrimaryImageModel() {
+    return {
+      selectedAssetId: null,
+      state: 'none',
+      previewUrl: null,
+      thumbnailUrl: null,
+      revision: null,
+      alt: null,
+    };
+  }
+
+  function buildPrimaryImageModel(projectId, selection, asset) {
+    const selectedAssetId = selection?.asset_id ?? null;
+    if (selectedAssetId === null) return buildEmptyPrimaryImageModel();
+
+    const ownedAsset = asset && asset.project_id === projectId ? asset : null;
+    if (!isPrimaryImageAssetUsable(ownedAsset)) {
+      return {
+        selectedAssetId,
+        state: 'unavailable',
+        previewUrl: null,
+        thumbnailUrl: null,
+        revision: null,
+        alt: ownedAsset ? buildPreviewAltText(ownedAsset) : null,
+      };
+    }
+
+    const preview = buildAssetPreviewModel(ownedAsset);
+    return {
+      selectedAssetId,
+      state: 'available',
+      previewUrl: preview.urls.preview,
+      thumbnailUrl: preview.urls.thumbnail,
+      revision: preview.revision,
+      alt: buildPreviewAltText(ownedAsset),
+    };
+  }
+
+  function attachPrimaryImages(projects) {
+    if (!Array.isArray(projects) || projects.length === 0) return [];
+
+    const projectIds = projects.map((project) => project.id);
+    const selections = primaryImageRepository.findByProjectIds(projectIds);
+    const selectionByProjectId = new Map(
+      selections.map((selection) => [selection.project_id, selection])
+    );
+    const selectedAssetIds = [...new Set(
+      selections.map((selection) => selection.asset_id).filter((assetId) => assetId != null)
+    )];
+    const selectedAssets = selectedAssetIds.length > 0
+      ? assetRepository.findByIds(selectedAssetIds)
+      : [];
+    const assetById = new Map(selectedAssets.map((asset) => [asset.id, asset]));
+
+    return projects.map((project) => {
+      const selection = selectionByProjectId.get(project.id);
+      return {
+        ...project,
+        primaryImage: buildPrimaryImageModel(
+          project.id,
+          selection,
+          selection ? assetById.get(selection.asset_id) : null,
+        ),
+      };
+    });
+  }
+
+  /**
+   * Project-list read model foundation. Repository pagination and filtering
+   * happen first; only the returned page rows receive primary-image data.
+   * Reads retain unavailable selections and never mutate primary-image state.
+   *
+   * @param {object} [options] - project repository list options
+   * @returns {{ rows: Array, total: number }}
+   */
+  function getProjectList(options = {}) {
+    const result = projectRepository.list(options);
+    return {
+      ...result,
+      rows: attachPrimaryImages(result.rows),
     };
   }
 
@@ -1579,6 +1676,7 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness }) {
   return {
     getDashboardData,
     getProjectWorkspace,
+    getProjectList,
     getReleaseList,
     getReleaseBoard,
     getProjectCalendar,

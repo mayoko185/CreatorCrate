@@ -22,7 +22,7 @@ export function createProjectsRouter({ appName, projectService, workflowQuerySer
       const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
       const currentPage = Math.min(parsedQuery.page, pageCount);
       const offset = (currentPage - 1) * PAGE_SIZE;
-      const { rows } = projectService.list({ ...parsedQuery, offset, limit: PAGE_SIZE });
+      const { rows } = workflowQueryService.getProjectList({ ...parsedQuery, offset, limit: PAGE_SIZE });
       const pageUrl = buildPageUrl(req);
       const filtersActive = Boolean(parsedQuery.search || parsedQuery.status);
 

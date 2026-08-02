@@ -11,6 +11,7 @@ import {
 import { evaluateReleaseReadiness } from '../src/services/release-readiness-policy.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
 import { createAssetCategoryRepository } from '../src/data/asset-category-repository.js';
+import { createProjectPrimaryImageRepository } from '../src/data/project-primary-image-repository.js';
 import { createReleaseRepository } from '../src/data/release-repository.js';
 import { getLocalTodayIso } from '../src/util/date.js';
 import { buildRevisionToken } from '../src/storage/preview-cache.js';
@@ -131,6 +132,7 @@ describe('workflow query service', () => {
   let db;
   let tmpDir;
   let service;
+  let primaryImageRepository;
   let today;
 
   beforeEach(() => {
@@ -138,7 +140,12 @@ describe('workflow query service', () => {
     const dbPath = path.join(tmpDir, 'test.db');
     db = openDatabase(dbPath);
     runMigrations(db, MIGRATIONS_DIR);
-    service = createWorkflowQueryService({ db, evaluateReleaseReadiness });
+    primaryImageRepository = createProjectPrimaryImageRepository(db);
+    service = createWorkflowQueryService({
+      db,
+      evaluateReleaseReadiness,
+      projectPrimaryImageRepository: primaryImageRepository,
+    });
     today = getLocalTodayIso();
   });
 
@@ -179,6 +186,155 @@ describe('workflow query service', () => {
 
     it('does not throw for an empty database', () => {
       expect(() => service.getDashboardData()).not.toThrow();
+    });
+  });
+
+  // ─── getProjectList — primary-image projection ────────────────────────
+
+  describe('getProjectList — primary-image projection', () => {
+    function getProjectRow(projectId, options = {}) {
+      return service.getProjectList({ limit: 25, offset: 0, ...options }).rows
+        .find((row) => row.id === projectId);
+    }
+
+    it('returns a stable none model when no selection exists', () => {
+      const project = insertProject(db, { title: 'No Primary Selection' });
+
+      expect(getProjectRow(project.id).primaryImage).toEqual({
+        selectedAssetId: null,
+        state: 'none',
+        previewUrl: null,
+        thumbnailUrl: null,
+        revision: null,
+        alt: null,
+      });
+    });
+
+    it('returns an available selection with versioned bounded preview URLs', () => {
+      const project = insertProject(db, { title: 'Available Primary Selection' });
+      const asset = insertAsset(db, {
+        projectId: project.id,
+        relativePath: 'cover.png',
+        filename: 'cover.png',
+        extension: 'png',
+        mimeType: 'image/png',
+        sizeBytes: 2048,
+        modifiedAt: '2026-08-02T12:00:00.000Z',
+      });
+      primaryImageRepository.setPrimaryImage(project.id, asset.id);
+
+      const primaryImage = getProjectRow(project.id).primaryImage;
+
+      expect(primaryImage).toMatchObject({
+        selectedAssetId: asset.id,
+        state: 'available',
+        revision: expect.any(String),
+        alt: 'Preview of cover.png',
+      });
+      expect(primaryImage.previewUrl).toBe(
+        `/projects/${project.id}/assets/${asset.id}/preview?v=${primaryImage.revision}`
+      );
+      expect(primaryImage.thumbnailUrl).toBe(
+        `/projects/${project.id}/assets/${asset.id}/thumbnail?v=${primaryImage.revision}`
+      );
+      expect(primaryImage.previewUrl).not.toContain('/original');
+      expect(primaryImage).not.toHaveProperty('originalUrl');
+    });
+
+    it('retains a missing selection as unavailable without mutating the stored row', () => {
+      const project = insertProject(db, { title: 'Missing Primary Selection' });
+      const asset = insertAsset(db, {
+        projectId: project.id,
+        relativePath: 'missing.png',
+        filename: 'missing.png',
+        extension: 'png',
+        mimeType: 'image/png',
+        modifiedAt: '2026-08-02T12:00:00.000Z',
+      });
+      const selection = primaryImageRepository.setPrimaryImage(project.id, asset.id);
+      db.prepare('UPDATE assets SET is_present = 0, missing_since = datetime(\'now\') WHERE id = ?').run(asset.id);
+
+      const primaryImage = getProjectRow(project.id).primaryImage;
+
+      expect(primaryImage).toEqual({
+        selectedAssetId: asset.id,
+        state: 'unavailable',
+        previewUrl: null,
+        thumbnailUrl: null,
+        revision: null,
+        alt: 'Preview of missing.png',
+      });
+      expect(primaryImageRepository.findByProjectId(project.id)).toEqual(selection);
+    });
+
+    it('returns an unsupported retained selection as unavailable', () => {
+      const project = insertProject(db, { title: 'Unsupported Primary Selection' });
+      const asset = insertAsset(db, {
+        projectId: project.id,
+        relativePath: 'source.kra',
+        filename: 'source.kra',
+        extension: 'kra',
+        mimeType: 'application/x-krita',
+        modifiedAt: '2026-08-02T12:00:00.000Z',
+      });
+      primaryImageRepository.setPrimaryImage(project.id, asset.id);
+
+      expect(getProjectRow(project.id).primaryImage).toEqual({
+        selectedAssetId: asset.id,
+        state: 'unavailable',
+        previewUrl: null,
+        thumbnailUrl: null,
+        revision: null,
+        alt: 'Preview of source.kra',
+      });
+    });
+
+    it('enriches only the current page through one selection batch and one asset batch', () => {
+      const projects = ['A', 'B', 'C'].map((letter) => insertProject(db, { title: `Primary Page ${letter}` }));
+      for (const project of projects) {
+        const asset = insertAsset(db, {
+          projectId: project.id,
+          relativePath: `${project.title}.png`,
+          filename: `${project.title}.png`,
+          extension: 'png',
+          mimeType: 'image/png',
+          modifiedAt: '2026-08-02T12:00:00.000Z',
+        });
+        primaryImageRepository.setPrimaryImage(project.id, asset.id);
+      }
+
+      const findBatch = vi.spyOn(primaryImageRepository, 'findByProjectIds');
+      const counter = instrumentStatementExecution(db);
+      const pagedService = createWorkflowQueryService({
+        db,
+        evaluateReleaseReadiness,
+        projectPrimaryImageRepository: primaryImageRepository,
+      });
+      findBatch.mockClear();
+      counter.reset();
+
+      const result = pagedService.getProjectList({
+        sortBy: 'title',
+        order: 'asc',
+        limit: 1,
+        offset: 1,
+      });
+
+      expect(result.total).toBe(3);
+      expect(result.rows).toHaveLength(1);
+      expect(result.rows[0].title).toBe('Primary Page B');
+      expect(result.rows[0].primaryImage.selectedAssetId).not.toBeNull();
+      expect(findBatch).toHaveBeenCalledTimes(1);
+      expect(findBatch).toHaveBeenCalledWith([projects[1].id]);
+      expect(counter.count()).toBe(4);
+      findBatch.mockRestore();
+    });
+
+    it('handles an empty project page without issuing asset lookups', () => {
+      expect(service.getProjectList({ limit: 25, offset: 0 })).toEqual({
+        rows: [],
+        total: 0,
+      });
     });
   });
 

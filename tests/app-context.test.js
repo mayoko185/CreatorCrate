@@ -175,6 +175,8 @@ describe('live restore — same-process application context', () => {
     const [asset] = appContext.app.locals.assetScanner.listProjectAssets(project.id);
     expect(asset).toBeTruthy();
     const preferenceServiceBeforeRestore = appContext.app.locals.assetBrowserPreferenceService;
+    const primaryImageServiceBeforeRestore = appContext.app.locals.projectPrimaryImageService;
+    primaryImageServiceBeforeRestore.setPrimaryImage(project.id, asset.id);
     expect(preferenceServiceBeforeRestore.getProjectPreference(project.id)).toEqual({
       mode: 'inherit',
       categoryId: null,
@@ -210,6 +212,13 @@ describe('live restore — same-process application context', () => {
     expect(preferenceServiceAfterRestore.getProjectPreference(project.id)).toEqual({
       mode: 'inherit',
       categoryId: null,
+    });
+
+    const primaryImageServiceAfterRestore = appContext.app.locals.projectPrimaryImageService;
+    expect(primaryImageServiceAfterRestore).not.toBe(primaryImageServiceBeforeRestore);
+    expect(primaryImageServiceAfterRestore.getPrimaryImage(project.id)).toMatchObject({
+      id: asset.id,
+      project_id: project.id,
     });
 
     const renamed = appContext.app.locals.assetActionService.renameAsset(project.id, restoredAsset.id, 'still-works.png');

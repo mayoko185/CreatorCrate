@@ -3470,6 +3470,326 @@ describe('asset browser HTTP workflow', () => {
       });
     });
 
+    // ─── Primary image viewer state ─────────────────────────────────────
+    describe('primary image viewer state', () => {
+      it('renders Set as primary image for an eligible present image', async () => {
+        const { id, asset } = await setupProjectWithAsset('Primary Viewer Eligible', 'eligible.png');
+
+        const res = await agent.get(`/projects/${id}/assets/${asset.id}`).expect(200);
+
+        expect(res.text).toContain(`action="/projects/${id}/assets/${asset.id}/primary-image"`);
+        expect(res.text).toContain('>Set as primary image</button>');
+        expect(res.text).not.toContain('>Remove primary image</button>');
+      });
+
+      it('renders the current available primary state and Remove action', async () => {
+        const { id, asset } = await setupProjectWithAsset('Primary Viewer Selected', 'selected.png');
+        await agent
+          .post(`/projects/${id}/assets/${asset.id}/primary-image`)
+          .type('form')
+          .send({ _csrf: csrfToken })
+          .expect(302);
+
+        const res = await agent.get(`/projects/${id}/assets/${asset.id}`).expect(200);
+
+        expect(res.text).toContain('<p class="asset-primary-image-status">Primary image</p>');
+        expect(res.text).toContain(`action="/projects/${id}/assets/${asset.id}/primary-image/remove"`);
+        expect(res.text).toContain('>Remove primary image</button>');
+        expect(res.text).not.toContain('>Set as primary image</button>');
+      });
+
+      it('retains a missing selected asset and renders its unavailable state with Remove', async () => {
+        const { id, projectDir, asset } = await setupProjectWithAsset('Primary Viewer Missing', 'missing.png');
+        await agent
+          .post(`/projects/${id}/assets/${asset.id}/primary-image`)
+          .type('form')
+          .send({ _csrf: csrfToken })
+          .expect(302);
+
+        fs.rmSync(path.join(projectDir, 'missing.png'));
+        await agent.post(`/projects/${id}/scan`).send({ _csrf: csrfToken }).type('form').expect(302);
+
+        const res = await agent.get(`/projects/${id}/assets/${asset.id}`).expect(200);
+
+        expect(res.text).toContain('Primary image — unavailable until restored');
+        expect(res.text).toContain(`action="/projects/${id}/assets/${asset.id}/primary-image/remove"`);
+        expect(res.text).toContain('>Remove primary image</button>');
+        expect(res.text).not.toContain('>Set as primary image</button>');
+      });
+
+      it('retains a selected asset that becomes unsupported and keeps Remove available', async () => {
+        const { id, asset } = await setupProjectWithAsset('Primary Viewer Reclassified', 'reclassified.png');
+        await agent
+          .post(`/projects/${id}/assets/${asset.id}/primary-image`)
+          .type('form')
+          .send({ _csrf: csrfToken })
+          .expect(302);
+        db.prepare(
+          'UPDATE assets SET extension = ?, mime_type = ? WHERE id = ?'
+        ).run('kra', 'application/x-krita', asset.id);
+
+        const res = await agent.get(`/projects/${id}/assets/${asset.id}`).expect(200);
+
+        expect(res.text).toContain('Primary image — unavailable until restored');
+        expect(res.text).toContain(`action="/projects/${id}/assets/${asset.id}/primary-image/remove"`);
+        expect(res.text).not.toContain('>Set as primary image</button>');
+      });
+
+      it('renders no Set action for unsupported or missing non-primary assets', async () => {
+        const unsupported = await setupProjectWithAsset('Primary Viewer Unsupported', 'source.kra');
+        const unsupportedRes = await agent.get(`/projects/${unsupported.id}/assets/${unsupported.asset.id}`).expect(200);
+        expect(unsupportedRes.text).not.toContain('>Set as primary image</button>');
+
+        const missing = await setupProjectWithAsset('Primary Viewer Ineligible Missing', 'gone.png');
+        fs.rmSync(path.join(missing.projectDir, 'gone.png'));
+        await agent.post(`/projects/${missing.id}/scan`).send({ _csrf: csrfToken }).type('form').expect(302);
+        const missingRes = await agent.get(`/projects/${missing.id}/assets/${missing.asset.id}`).expect(200);
+        expect(missingRes.text).not.toContain('>Set as primary image</button>');
+      });
+
+      it('renders archived primary state without any primary-image mutation form', async () => {
+        const { id, asset } = await setupProjectWithAsset('Primary Viewer Archived', 'archived.png');
+        await agent
+          .post(`/projects/${id}/assets/${asset.id}/primary-image`)
+          .type('form')
+          .send({ _csrf: csrfToken })
+          .expect(302);
+        await agent.post(`/projects/${id}/archive`).send({ _csrf: csrfToken }).type('form').expect(302);
+
+        const res = await agent.get(`/projects/${id}/assets/${asset.id}`).expect(200);
+
+        expect(res.text).toContain('<p class="asset-primary-image-status">Primary image</p>');
+        expect(res.text).not.toContain(`action="/projects/${id}/assets/${asset.id}/primary-image"`);
+        expect(res.text).not.toContain(`action="/projects/${id}/assets/${asset.id}/primary-image/remove"`);
+        expect(res.text).not.toContain(`action="/projects/${id}/assets/${asset.id}/rename"`);
+        expect(res.text).not.toContain(`action="/projects/${id}/assets/${asset.id}/move"`);
+      });
+    });
+
+    // ─── Primary image Set POST ─────────────────────────────────────────
+    describe('POST /projects/:projectId/assets/:assetId/primary-image', () => {
+      it('sets and replaces the selection, preserves normalized context, and ignores returnUrl', async () => {
+        const first = await setupProjectWithAsset('Primary Set Success', 'first.png');
+        const second = writeIndexedAsset(first.id, first.projectDir, 'second.png', await makePng());
+
+        const setFirst = await agent
+          .post(`/projects/${first.id}/assets/${first.asset.id}/primary-image`)
+          .type('form')
+          .send({
+            category: 'all',
+            search: 'first',
+            extension: '.PNG',
+            presence: 'present',
+            usage: 'unused',
+            sort: 'modified',
+            order: 'desc',
+            page: '1',
+            pageSize: '10',
+            view: 'list',
+            returnUrl: 'https://attacker.invalid/elsewhere',
+            _csrf: csrfToken,
+          })
+          .expect(302);
+
+        const firstLocation = new URL(setFirst.headers.location, 'http://localhost');
+        expect(firstLocation.pathname).toBe(`/projects/${first.id}/assets/${first.asset.id}`);
+        expect(firstLocation.searchParams.get('category')).toBe('all');
+        expect(firstLocation.searchParams.get('search')).toBe('first');
+        expect(firstLocation.searchParams.get('extension')).toBe('png');
+        expect(firstLocation.searchParams.get('presence')).toBe('present');
+        expect(firstLocation.searchParams.get('usage')).toBe('unused');
+        expect(firstLocation.searchParams.get('sort')).toBe('modified');
+        expect(firstLocation.searchParams.get('order')).toBe('desc');
+        expect(firstLocation.searchParams.get('pageSize')).toBe('10');
+        expect(firstLocation.searchParams.get('view')).toBe('list');
+        expect(firstLocation.searchParams.get('notice')).toBe('primary-image-set');
+        expect(firstLocation.searchParams.has('returnUrl')).toBe(false);
+        expect(app.locals.projectPrimaryImageService.getPrimaryImage(first.id).id).toBe(first.asset.id);
+
+        await agent
+          .post(`/projects/${first.id}/assets/${second.id}/primary-image`)
+          .type('form')
+          .send({ _csrf: csrfToken })
+          .expect(302);
+        expect(app.locals.projectPrimaryImageService.getPrimaryImage(first.id).id).toBe(second.id);
+      });
+
+      it('rejects cross-project, missing, unsupported, and archived selections with controlled statuses', async () => {
+        const owner = await setupProjectWithAsset('Primary Set Owner', 'owner.png');
+        const other = await setupProjectWithAsset('Primary Set Other', 'other.png');
+
+        await agent
+          .post(`/projects/${owner.id}/assets/${other.asset.id}/primary-image`)
+          .type('form')
+          .send({ _csrf: csrfToken })
+          .expect(404);
+
+        const missing = await setupProjectWithAsset('Primary Set Missing', 'missing.png');
+        fs.rmSync(path.join(missing.projectDir, 'missing.png'));
+        await agent.post(`/projects/${missing.id}/scan`).send({ _csrf: csrfToken }).type('form').expect(302);
+        const missingRes = await agent
+          .post(`/projects/${missing.id}/assets/${missing.asset.id}/primary-image`)
+          .type('form')
+          .send({ _csrf: csrfToken })
+          .expect(409);
+        expect(missingRes.text).toContain('cannot be selected as the primary image');
+        expect(missingRes.text).not.toContain('Asset ' + missing.asset.id);
+
+        const unsupported = await setupProjectWithAsset('Primary Set Unsupported', 'source.kra');
+        const unsupportedRes = await agent
+          .post(`/projects/${unsupported.id}/assets/${unsupported.asset.id}/primary-image`)
+          .type('form')
+          .send({ _csrf: csrfToken })
+          .expect(422);
+        expect(unsupportedRes.text).toContain('This asset type cannot be selected as the primary image.');
+
+        const archived = await setupProjectWithAsset('Primary Set Archived', 'archived.png');
+        await agent.post(`/projects/${archived.id}/archive`).send({ _csrf: csrfToken }).type('form').expect(302);
+        const archivedRes = await agent
+          .post(`/projects/${archived.id}/assets/${archived.asset.id}/primary-image`)
+          .type('form')
+          .send({ _csrf: csrfToken })
+          .expect(409);
+        expect(archivedRes.text).toContain('This project is archived and read-only.');
+      });
+
+      it('rejects a missing CSRF token before changing the selection', async () => {
+        const { id, asset } = await setupProjectWithAsset('Primary Set CSRF', 'csrf.png');
+
+        await agent
+          .post(`/projects/${id}/assets/${asset.id}/primary-image`)
+          .type('form')
+          .send({})
+          .expect(403);
+        expect(app.locals.projectPrimaryImageService.getPrimaryImage(id)).toBeUndefined();
+      });
+
+      it('hides unexpected primary-image failures behind the generic 500 page', async () => {
+        const { id, asset } = await setupProjectWithAsset('Primary Set Unexpected', 'unexpected.png');
+        app.locals.projectPrimaryImageService.setPrimaryImage = () => {
+          throw new Error('primary image database secret');
+        };
+
+        const res = await agent
+          .post(`/projects/${id}/assets/${asset.id}/primary-image`)
+          .type('form')
+          .send({ _csrf: csrfToken })
+          .expect(500);
+
+        expect(res.text).toContain('Something went wrong.');
+        expect(res.text).not.toContain('primary image database secret');
+      });
+    });
+
+    // ─── Primary image Remove POST ──────────────────────────────────────
+    describe('POST /projects/:projectId/assets/:assetId/primary-image/remove', () => {
+      it('clears the current selection with a canonical context-preserving redirect and notice', async () => {
+        const { id, asset } = await setupProjectWithAsset('Primary Remove Success', 'selected.png');
+        await agent
+          .post(`/projects/${id}/assets/${asset.id}/primary-image`)
+          .type('form')
+          .send({ _csrf: csrfToken })
+          .expect(302);
+
+        const removed = await agent
+          .post(`/projects/${id}/assets/${asset.id}/primary-image/remove`)
+          .type('form')
+          .send({ category: 'all', sort: 'modified', order: 'desc', returnUrl: '/unsafe', _csrf: csrfToken })
+          .expect(302);
+
+        const location = new URL(removed.headers.location, 'http://localhost');
+        expect(location.pathname).toBe(`/projects/${id}/assets/${asset.id}`);
+        expect(location.searchParams.get('category')).toBe('all');
+        expect(location.searchParams.get('sort')).toBe('modified');
+        expect(location.searchParams.get('order')).toBe('desc');
+        expect(location.searchParams.get('notice')).toBe('primary-image-removed');
+        expect(location.searchParams.has('returnUrl')).toBe(false);
+        expect(app.locals.projectPrimaryImageService.getPrimaryImage(id)).toBeUndefined();
+
+        const viewer = await agent.get(removed.headers.location).expect(200);
+        expect(viewer.text).toContain('The primary image was removed.');
+        expect(viewer.text).toContain('>Set as primary image</button>');
+      });
+
+      it('returns a controlled conflict for stale removal and preserves the newer selection', async () => {
+        const first = await setupProjectWithAsset('Primary Remove Stale', 'first.png');
+        const second = writeIndexedAsset(first.id, first.projectDir, 'second.png', await makePng());
+        await agent
+          .post(`/projects/${first.id}/assets/${first.asset.id}/primary-image`)
+          .type('form')
+          .send({ _csrf: csrfToken })
+          .expect(302);
+        await agent
+          .post(`/projects/${first.id}/assets/${second.id}/primary-image`)
+          .type('form')
+          .send({ _csrf: csrfToken })
+          .expect(302);
+
+        const stale = await agent
+          .post(`/projects/${first.id}/assets/${first.asset.id}/primary-image/remove`)
+          .type('form')
+          .send({ _csrf: csrfToken })
+          .expect(409);
+
+        expect(stale.text).toContain('The primary image changed before it could be removed.');
+        expect(stale.text).not.toContain('no longer matches asset ' + first.asset.id);
+        expect(app.locals.projectPrimaryImageService.getPrimaryImage(first.id).id).toBe(second.id);
+      });
+
+      it('removes a selected asset after it becomes missing', async () => {
+        const { id, projectDir, asset } = await setupProjectWithAsset('Primary Remove Missing', 'missing.png');
+        await agent
+          .post(`/projects/${id}/assets/${asset.id}/primary-image`)
+          .type('form')
+          .send({ _csrf: csrfToken })
+          .expect(302);
+        fs.rmSync(path.join(projectDir, 'missing.png'));
+        await agent.post(`/projects/${id}/scan`).send({ _csrf: csrfToken }).type('form').expect(302);
+
+        await agent
+          .post(`/projects/${id}/assets/${asset.id}/primary-image/remove`)
+          .type('form')
+          .send({ _csrf: csrfToken })
+          .expect(302);
+        expect(app.locals.projectPrimaryImageService.getPrimaryImage(id)).toBeUndefined();
+      });
+
+      it('rejects removal from an archived project and preserves the selection', async () => {
+        const { id, asset } = await setupProjectWithAsset('Primary Remove Archived', 'archived.png');
+        await agent
+          .post(`/projects/${id}/assets/${asset.id}/primary-image`)
+          .type('form')
+          .send({ _csrf: csrfToken })
+          .expect(302);
+        await agent.post(`/projects/${id}/archive`).send({ _csrf: csrfToken }).type('form').expect(302);
+
+        const res = await agent
+          .post(`/projects/${id}/assets/${asset.id}/primary-image/remove`)
+          .type('form')
+          .send({ _csrf: csrfToken })
+          .expect(409);
+
+        expect(res.text).toContain('This project is archived and read-only.');
+        expect(app.locals.projectPrimaryImageService.getPrimaryImage(id).id).toBe(asset.id);
+      });
+
+      it('rejects removal without CSRF', async () => {
+        const { id, asset } = await setupProjectWithAsset('Primary Remove CSRF', 'csrf.png');
+        await agent
+          .post(`/projects/${id}/assets/${asset.id}/primary-image`)
+          .type('form')
+          .send({ _csrf: csrfToken })
+          .expect(302);
+
+        await agent
+          .post(`/projects/${id}/assets/${asset.id}/primary-image/remove`)
+          .type('form')
+          .send({})
+          .expect(403);
+        expect(app.locals.projectPrimaryImageService.getPrimaryImage(id).id).toBe(asset.id);
+      });
+    });
+
     // ─── Rename POST ─────────────────────────────────────────────────────
 
     describe('POST /projects/:projectId/assets/:assetId/rename', () => {

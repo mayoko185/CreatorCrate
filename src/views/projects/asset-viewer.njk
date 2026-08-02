@@ -137,6 +137,48 @@
     </dl>
   </section>
 
+  {% if isPrimaryImage or canSetAsPrimaryImage %}
+    <section class="asset-primary-image-section" aria-labelledby="asset-primary-image-heading">
+      <h2 id="asset-primary-image-heading">Primary image</h2>
+      <div class="asset-actions-card">
+        <div class="asset-action-group">
+          {% if isPrimaryImage %}
+            {% if isPrimaryImageAvailable %}
+              <p class="asset-primary-image-status">Primary image</p>
+            {% else %}
+              <p class="asset-primary-image-status">Primary image — unavailable until restored</p>
+            {% endif %}
+            {% if canRemovePrimaryImage %}
+              <form method="post" action="/projects/{{ project.id }}/assets/{{ asset.id }}/primary-image/remove" class="asset-action-form asset-primary-image-remove-form">
+                <input type="hidden" name="_csrf" value="{{ _csrf }}">
+                {% for key in contextFields %}
+                  {% if context[key] is not none and context[key] != '' %}
+                    <input type="hidden" name="{{ key }}" value="{{ context[key] }}">
+                  {% endif %}
+                {% endfor %}
+                <div>
+                  <button class="button button-danger" type="submit">Remove primary image</button>
+                </div>
+              </form>
+            {% endif %}
+          {% else %}
+            <form method="post" action="/projects/{{ project.id }}/assets/{{ asset.id }}/primary-image" class="asset-action-form asset-primary-image-set-form">
+              <input type="hidden" name="_csrf" value="{{ _csrf }}">
+              {% for key in contextFields %}
+                {% if context[key] is not none and context[key] != '' %}
+                  <input type="hidden" name="{{ key }}" value="{{ context[key] }}">
+                {% endif %}
+              {% endfor %}
+              <div>
+                <button class="button button-primary" type="submit">Set as primary image</button>
+              </div>
+            </form>
+          {% endif %}
+        </div>
+      </div>
+    </section>
+  {% endif %}
+
   {% if canMutate %}
     <section class="asset-actions-section" aria-labelledby="asset-actions-heading">
       <h2 id="asset-actions-heading">File actions</h2>

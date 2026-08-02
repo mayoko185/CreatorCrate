@@ -16,10 +16,12 @@ import { createProjectService } from './services/project-service.js';
 import { createAssetCategoryRepository } from './data/asset-category-repository.js';
 import { createAssetCategoryService } from './services/asset-category-service.js';
 import { createAssetBrowserPreferenceRepository } from './data/asset-browser-preference-repository.js';
+import { createProjectPrimaryImageRepository } from './data/project-primary-image-repository.js';
 import { createAssetBrowserPreferenceService } from './services/asset-browser-preference-service.js';
 import { createProjectAssetCategoryService } from './services/project-asset-category-service.js';
 import { createAssetScanner } from './services/asset-scanner.js';
 import { createAssetActionService } from './services/asset-action-service.js';
+import { createProjectPrimaryImageService } from './services/project-primary-image-service.js';
 import { createProjectOperationCoordinator } from './services/project-operation-coordinator.js';
 import { createReleaseService } from './services/release-service.js';
 import { createWorkflowQueryService } from './services/workflow-query-service.js';
@@ -163,8 +165,22 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     : null);
   app.locals.assetActionService = assetActionService;
 
+  const projectPrimaryImageRepository = createProjectPrimaryImageRepository(db);
+  const projectPrimaryImageService = createProjectPrimaryImageService({
+    db,
+    projectRepository: projectService.repository,
+    assetRepository: assetScanner.repository,
+    projectPrimaryImageRepository,
+  });
+  app.locals.projectPrimaryImageRepository = projectPrimaryImageRepository;
+  app.locals.projectPrimaryImageService = projectPrimaryImageService;
+
   const releaseService = opts.releaseService || createReleaseService({ db, evaluateReleaseReadiness });
-  const workflowQueryService = opts.workflowQueryService || createWorkflowQueryService({ db, evaluateReleaseReadiness });
+  const workflowQueryService = opts.workflowQueryService || createWorkflowQueryService({
+    db,
+    evaluateReleaseReadiness,
+    projectPrimaryImageRepository,
+  });
 
   // Phase 10.1A: preview root is passed explicitly so later services can
   // resolve preview paths without reading the environment or globals.
@@ -330,6 +346,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
       releaseService,
       assetActionService,
       assetBrowserPreferenceService,
+      projectPrimaryImageService,
     }));
   }
 
