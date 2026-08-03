@@ -14,6 +14,7 @@ import { createReleaseRepository } from '../src/data/release-repository.js';
 import { createReleaseService } from '../src/services/release-service.js';
 import { getLocalTodayIso } from '../src/util/date.js';
 import { evaluateReleaseReadiness } from '../src/services/release-readiness-policy.js';
+import { PAGE_DEFAULT_DEFINITIONS } from '../src/services/page-defaults-service.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 
@@ -25,6 +26,12 @@ function countTags(html, tag) {
 function hasClass(html, className) {
   const re = new RegExp(`class="[^"]*\\b${className}\\b[^"]*"`);
   return re.test(html);
+}
+
+function selectedOptionValue(html, selectId) {
+  const select = html.match(new RegExp(`<select id="${selectId}"[\\s\\S]*?</select>`))?.[0];
+  if (!select) throw new Error(`Select ${selectId} was not rendered.`);
+  return select.match(/<option value="([^"]+)"\s+selected(?:\s|>)/)?.[1];
 }
 
 /**
@@ -620,6 +627,103 @@ describe('release HTTP workflow', () => {
     const res = await agent.get('/releases/new').expect(200);
     expect(res.text).toContain('Create Release');
     expect(res.text).toContain('New Release Test');
+    expect(selectedOptionValue(res.text, 'status')).toBe('idea');
+  });
+
+  it('new-release form uses a valid saved status, while a valid explicit status takes precedence', async () => {
+    const projRes = await agent
+      .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .send('title=Saved+New+Release+Default')
+      .send('status=tbd')
+      .send('priority=normal')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+    const projectId = projRes.headers.location.replace('/projects/', '');
+
+    app.locals.pageDefaultsService.saveDefault('new_release', 'status', 'ready');
+
+    const saved = await agent.get(`/releases/new?projectId=${projectId}`).expect(200);
+    expect(selectedOptionValue(saved.text, 'status')).toBe('ready');
+
+    const explicit = await agent.get(`/releases/new?projectId=${projectId}&status=planned`).expect(200);
+    expect(selectedOptionValue(explicit.text, 'status')).toBe('planned');
+  });
+
+  it('new-release form uses idea when the saved status is missing or invalid', async () => {
+    const projRes = await agent
+      .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .send('title=Fallback+New+Release+Default')
+      .send('status=tbd')
+      .send('priority=normal')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+    const projectId = projRes.headers.location.replace('/projects/', '');
+
+    const missing = await agent.get(`/releases/new?projectId=${projectId}`).expect(200);
+    expect(selectedOptionValue(missing.text, 'status')).toBe('idea');
+
+    const key = PAGE_DEFAULT_DEFINITIONS.new_release.status.key;
+    db.prepare(`
+      INSERT INTO app_meta (key, value)
+      VALUES (?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value
+    `).run(key, 'cancelled');
+
+    const invalid = await agent.get(`/releases/new?projectId=${projectId}`).expect(200);
+    expect(selectedOptionValue(invalid.text, 'status')).toBe('idea');
+    expect(db.prepare('SELECT value FROM app_meta WHERE key = ?').get(key).value).toBe('cancelled');
+  });
+
+  it('failed create preserves the submitted status instead of reseeding the saved default', async () => {
+    const projRes = await agent
+      .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .send('title=Failed+Create+Status')
+      .send('status=tbd')
+      .send('priority=normal')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+    const projectId = projRes.headers.location.replace('/projects/', '');
+    app.locals.pageDefaultsService.saveDefault('new_release', 'status', 'ready');
+
+    const res = await agent
+      .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .send(`projectId=${projectId}`)
+      .send('title=')
+      .send('status=planned')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(422);
+
+    expect(selectedOptionValue(res.text, 'status')).toBe('planned');
+    expect(selectedOptionValue(res.text, 'status')).not.toBe('ready');
+  });
+
+  it('successful create persists the submitted status even when the saved default differs', async () => {
+    const projRes = await agent
+      .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .send('title=Successful+Create+Status')
+      .send('status=tbd')
+      .send('priority=normal')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+    const projectId = projRes.headers.location.replace('/projects/', '');
+    app.locals.pageDefaultsService.saveDefault('new_release', 'status', 'ready');
+
+    const res = await agent
+      .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .send(`projectId=${projectId}`)
+      .send('title=Submitted+Release+Status')
+      .send('status=idea')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+
+    const releaseId = Number(res.headers.location.replace('/releases/', ''));
+    expect(releaseRepository.findById(releaseId).status).toBe('idea');
   });
 
   it('valid create request redirects to detail', async () => {
@@ -929,7 +1033,7 @@ describe('release HTTP workflow', () => {
 
         expect(res.text).not.toMatch(/href="\/projects\/[^"]*"[^>]*>Cancel<\/a>/);
         expect(res.text).toContain('<a class="button button-secondary" href="/release-management">Cancel</a>');
-        expect(res.text).not.toMatch(/<option value="[^"]+" selected>/);
+        expect(selectedOptionValue(res.text, 'projectId')).toBeUndefined();
         expect(res.text).not.toContain('Something went wrong');
       });
     });
@@ -953,7 +1057,7 @@ describe('release HTTP workflow', () => {
 
       expect(res.text).not.toMatch(/href="\/projects\/[^"]*"[^>]*>Cancel<\/a>/);
       expect(res.text).toContain('<a class="button button-secondary" href="/release-management">Cancel</a>');
-      expect(res.text).not.toMatch(/<option value="[^"]+" selected>/);
+      expect(selectedOptionValue(res.text, 'projectId')).toBeUndefined();
     });
 
     it('create form Cancel does not build an unsafe href from a malformed projectId', async () => {
@@ -991,7 +1095,7 @@ describe('release HTTP workflow', () => {
 
       expect(res.text).not.toMatch(/href="\/projects\/[^"]*"[^>]*>Cancel<\/a>/);
       expect(res.text).toContain('<a class="button button-secondary" href="/release-management">Cancel</a>');
-      expect(res.text).not.toMatch(/<option value="[^"]+" selected>/);
+      expect(selectedOptionValue(res.text, 'projectId')).toBeUndefined();
     });
 
     it('archived projectId is not accepted as active release-creation context', async () => {
@@ -1113,7 +1217,7 @@ describe('release HTTP workflow', () => {
 
       expect(res.text).not.toContain(`value="${inconsistentId}"`);
       expect(res.text).not.toContain('Inconsistent Archived Row');
-      expect(res.text).not.toMatch(/<option value="[^"]+" selected>/);
+      expect(selectedOptionValue(res.text, 'projectId')).toBeUndefined();
       expect(res.text).not.toContain(`href="/projects/${inconsistentId}"`);
       expect(res.text).toContain('<a class="button button-secondary" href="/release-management">Cancel</a>');
     });
@@ -1223,7 +1327,7 @@ describe('release HTTP workflow', () => {
 
       expect(res.text).not.toContain(`value="${archivedBeyondId}"`);
       expect(res.text).not.toContain('Archived Beyond Target');
-      expect(res.text).not.toMatch(/<option value="[^"]+" selected>/);
+      expect(selectedOptionValue(res.text, 'projectId')).toBeUndefined();
       expect(res.text).toContain('<a class="button button-secondary" href="/release-management">Cancel</a>');
     });
 
@@ -1235,7 +1339,7 @@ describe('release HTTP workflow', () => {
 
       const res = await agent.get('/releases/new?projectId=999999').expect(200);
 
-      expect(res.text).not.toMatch(/<option value="[^"]+" selected>/);
+      expect(selectedOptionValue(res.text, 'projectId')).toBeUndefined();
       expect(res.text).toContain('<a class="button button-secondary" href="/release-management">Cancel</a>');
     });
 
@@ -1257,7 +1361,7 @@ describe('release HTTP workflow', () => {
 
         const res = await agent.get(`/releases/new?projectId=${rawValue}`).expect(200);
 
-        expect(res.text).not.toMatch(/<option value="[^"]+" selected>/);
+        expect(selectedOptionValue(res.text, 'projectId')).toBeUndefined();
         expect(res.text).not.toContain(`/projects/${rawValue}`);
         expect(res.text).toContain('<a class="button button-secondary" href="/release-management">Cancel</a>');
         expect(res.text).not.toContain('Something went wrong');
@@ -1437,6 +1541,66 @@ describe('release HTTP workflow', () => {
 
     const res = await agent.get(`${createRes.headers.location}/edit`).expect(200);
     expect(res.text).toContain('Releases — Edit Before Edit');
+  });
+
+  it('existing release editing keeps its stored status instead of using the New Release default', async () => {
+    const projRes = await agent
+      .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .send('title=Existing+Release+Status')
+      .send('status=tbd')
+      .send('priority=normal')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+    const projectId = projRes.headers.location.replace('/projects/', '');
+
+    const createRes = await agent
+      .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .send(`projectId=${projectId}`)
+      .send('title=Stored+Release+Status')
+      .send('status=planned')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+    app.locals.pageDefaultsService.saveDefault('new_release', 'status', 'ready');
+
+    const res = await agent.get(`${createRes.headers.location}/edit`).expect(200);
+    expect(selectedOptionValue(res.text, 'status')).toBe('planned');
+    expect(selectedOptionValue(res.text, 'status')).not.toBe('ready');
+  });
+
+  it('failed existing-release edits preserve the submitted status instead of using the New Release default', async () => {
+    const projRes = await agent
+      .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .send('title=Failed+Edit+Status')
+      .send('status=tbd')
+      .send('priority=normal')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+    const projectId = projRes.headers.location.replace('/projects/', '');
+
+    const createRes = await agent
+      .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .send(`projectId=${projectId}`)
+      .send('title=Editable+Release+Status')
+      .send('status=idea')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+    const releaseId = createRes.headers.location.replace('/releases/', '');
+    app.locals.pageDefaultsService.saveDefault('new_release', 'status', 'ready');
+
+    const res = await agent
+      .post(`/releases/${releaseId}`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .send('title=')
+      .send('status=drafting')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(422);
+
+    expect(selectedOptionValue(res.text, 'status')).toBe('drafting');
+    expect(selectedOptionValue(res.text, 'status')).not.toBe('ready');
   });
 
   it('valid update redirects to detail', async () => {

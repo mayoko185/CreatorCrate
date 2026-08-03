@@ -14,9 +14,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const dependencyInstrumentation = vi.hoisted(() => ({
+  appMetaRepositories: [],
   preferenceRepositories: [],
   projectServices: [],
   preferenceServices: [],
+  pageDefaultsServices: [],
   projectAssetCategoryServices: [],
   primaryImageRepositories: [],
   primaryImageServices: [],
@@ -34,6 +36,18 @@ vi.mock('../src/data/asset-browser-preference-repository.js', async (importOrigi
     createAssetBrowserPreferenceRepository(...args) {
       const repository = actual.createAssetBrowserPreferenceRepository(...args);
       dependencyInstrumentation.preferenceRepositories.push({ args, repository });
+      return repository;
+    },
+  };
+});
+
+vi.mock('../src/data/app-meta-repository.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    createAppMetaRepository(...args) {
+      const repository = actual.createAppMetaRepository(...args);
+      dependencyInstrumentation.appMetaRepositories.push({ args, repository });
       return repository;
     },
   };
@@ -58,6 +72,18 @@ vi.mock('../src/services/asset-browser-preference-service.js', async (importOrig
     createAssetBrowserPreferenceService(...args) {
       const service = actual.createAssetBrowserPreferenceService(...args);
       dependencyInstrumentation.preferenceServices.push({ args, service });
+      return service;
+    },
+  };
+});
+
+vi.mock('../src/services/page-defaults-service.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    createPageDefaultsService(...args) {
+      const service = actual.createPageDefaultsService(...args);
+      dependencyInstrumentation.pageDefaultsServices.push({ args, service });
       return service;
     },
   };
@@ -229,6 +255,47 @@ describe('app construction — asset actions chunk 3 wiring', () => {
     expect(app.locals.assetBrowserPreferenceService).toBeTruthy();
     expect(typeof app.locals.assetBrowserPreferenceService.getProjectPreference).toBe('function');
     expect(typeof app.locals.assetBrowserPreferenceService.resolveEffectiveCategory).toBe('function');
+  });
+
+  it('constructs one shared app-meta repository and page-defaults service without route wiring', () => {
+    const app = buildApp();
+
+    expect(dependencyInstrumentation.appMetaRepositories).toHaveLength(1);
+    expect(dependencyInstrumentation.pageDefaultsServices).toHaveLength(1);
+
+    const { args: appMetaRepositoryArgs, repository: appMetaRepository } =
+      dependencyInstrumentation.appMetaRepositories[0];
+    const { args: preferenceRepositoryArgs } = dependencyInstrumentation.preferenceRepositories[0];
+    const { args: pageDefaultsServiceArgs, service } = dependencyInstrumentation.pageDefaultsServices[0];
+
+    expect(appMetaRepositoryArgs[0]).toBe(db);
+    expect(preferenceRepositoryArgs[1]).toEqual({ appMetaRepository });
+    expect(pageDefaultsServiceArgs[0]).toEqual({ appMetaRepository });
+    expect(app.locals.pageDefaultsService).toBe(service);
+    expect(dependencyInstrumentation.settingsRouters[0].args[0].pageDefaultsService).toBeUndefined();
+  });
+
+  it('preserves existing service overrides while accepting app-scoped metadata/default overrides', () => {
+    const appMetaRepository = {
+      getValue: () => undefined,
+      setValue: () => undefined,
+    };
+    const pageDefaultsService = { resolve: () => 'grid' };
+    const assetBrowserPreferenceService = {
+      getProjectPreference: () => ({ mode: 'inherit', categoryId: null }),
+      resolveEffectiveCategory: () => null,
+    };
+
+    const app = buildApp({ appMetaRepository, pageDefaultsService, assetBrowserPreferenceService });
+
+    expect(dependencyInstrumentation.appMetaRepositories).toHaveLength(0);
+    expect(dependencyInstrumentation.pageDefaultsServices).toHaveLength(0);
+    expect(dependencyInstrumentation.preferenceServices).toHaveLength(0);
+    expect(app.locals.pageDefaultsService).toBe(pageDefaultsService);
+    expect(app.locals.assetBrowserPreferenceService).toBe(assetBrowserPreferenceService);
+    expect(dependencyInstrumentation.preferenceRepositories).toHaveLength(1);
+    expect(dependencyInstrumentation.preferenceRepositories[0].args[1])
+      .toEqual({ appMetaRepository });
   });
 
   it('constructs one shared primary-image repository and service from the application database', () => {

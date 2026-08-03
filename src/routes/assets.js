@@ -11,6 +11,13 @@ import {
 import { buildAssetRevisionToken, classifyPreviewable } from '../services/preview-service.js';
 
 const ASSET_BROWSER_QUERY_KEYS = ['category', 'search', 'extension', 'presence', 'usage', 'sort', 'order', 'page', 'pageSize', 'view'];
+const ASSET_PAGE_DEFAULTS_PAGE = 'projectAssets';
+const ASSET_PRESENTATION_OPTIONS = Object.freeze([
+  Object.freeze({ key: 'view', option: 'view' }),
+  Object.freeze({ key: 'sort', option: 'sort' }),
+  Object.freeze({ key: 'order', option: 'order' }),
+  Object.freeze({ key: 'pageSize', option: 'pageSize' }),
+]);
 
 // The complete set of hidden fields the browser's filter/scan/bulk forms
 // round-trip so a POST can rebuild the exact same normalized GET context.
@@ -164,10 +171,16 @@ export function createAssetsRouter({
         return next(createNotFound());
       }
 
+      const pageDefaultsService = getPageDefaultsService(req);
+      const rawQuery = req.query && typeof req.query === 'object' ? req.query : {};
+      const presentation = resolveAssetBrowserPresentation(rawQuery, pageDefaultsService);
+
       // Only a completely bare parsed query may activate the configured
-      // default. Any query key — including unknown, invalid, notice, or
-      // pagination input — deliberately blocks default resolution.
-      if (isBareAssetBrowserRequest(req.query)) {
+      // category preference. Any query key — including unknown, invalid,
+      // notice, or pagination input — deliberately blocks category
+      // preference resolution, while omitted presentation options still use
+      // their saved defaults below.
+      if (isBareAssetBrowserRequest(rawQuery)) {
         const resolution = assetBrowserPreferenceService.resolveEffectiveCategory(id);
         const effective = resolution && resolution.effective;
         if (!effective || (effective.kind !== 'all' && effective.kind !== 'category')) {
@@ -178,11 +191,30 @@ export function createAssetsRouter({
           if (!Number.isSafeInteger(categoryId) || categoryId <= 0) {
             throw new Error('assetBrowserPreferenceService returned an invalid effective category ID.');
           }
-          return res.redirect(buildDefaultCategoryUrl(id, categoryId));
+          return res.redirect(buildAssetDefaultsRedirectUrl(
+            id,
+            categoryId,
+            presentation,
+            pageDefaultsService,
+          ));
+        }
+
+        if (hasNonFallbackAssetPresentation(presentation, pageDefaultsService)) {
+          return res.redirect(buildAssetDefaultsRedirectUrl(
+            id,
+            null,
+            presentation,
+            pageDefaultsService,
+          ));
         }
       }
 
-      const data = buildAssetsPageData(workflowQueryService, id, project, req.query);
+      const data = buildAssetBrowserPageData(
+        workflowQueryService,
+        id,
+        project,
+        presentation,
+      );
 
       // Pass scan result params to template only if they are valid scan outputs.
       const query = {};
@@ -225,7 +257,7 @@ export function createAssetsRouter({
 
       res.render('projects/assets.njk', {
         appName,
-        ...buildBrowserRenderModel(project, data),
+        ...buildBrowserRenderModel(project, data, pageDefaultsService),
         query,
         error,
         archivedError,
@@ -245,6 +277,7 @@ export function createAssetsRouter({
   // membership and category state.
   router.post('/:projectId/assets/auto-rename/preview', (req, res, next) => {
     try {
+      const pageDefaultsService = getPageDefaultsService(req);
       const projectId = parseId(req.params.projectId);
       if (projectId === null) return next(createNotFound());
 
@@ -262,6 +295,7 @@ export function createAssetsRouter({
           res,
           next,
           workflowQueryService,
+          pageDefaultsService,
           status: AUTO_RENAME_ERROR_STATUS[AUTO_RENAME_ERROR_CODES.CATEGORY_REQUIRED],
           message: AUTO_RENAME_PREVIEW_MESSAGES[AUTO_RENAME_ERROR_CODES.CATEGORY_REQUIRED],
           returnContext: buildAutoRenameReturnContext(body),
@@ -278,6 +312,7 @@ export function createAssetsRouter({
           res,
           next,
           workflowQueryService,
+          pageDefaultsService,
           status: AUTO_RENAME_ERROR_STATUS[AUTO_RENAME_ERROR_CODES.ORDER_INVALID],
           message: AUTO_RENAME_PREVIEW_MESSAGES[AUTO_RENAME_ERROR_CODES.ORDER_INVALID],
           returnContext: buildAutoRenameReturnContext({
@@ -302,7 +337,13 @@ export function createAssetsRouter({
           project,
           plan: buildAutoRenamePlanRenderModel(plan),
           context,
-          cancelUrl: buildAssetsRedirectUrl(workflowQueryService, projectId, context),
+          cancelUrl: buildAssetsRedirectUrl(
+            workflowQueryService,
+            projectId,
+            context,
+            {},
+            pageDefaultsService,
+          ),
         });
       } catch (err) {
         return handleAutoRenameFailure(err, {
@@ -314,6 +355,7 @@ export function createAssetsRouter({
           res,
           next,
           workflowQueryService,
+          pageDefaultsService,
           returnContext: buildAutoRenameReturnContext({
             ...body,
             categoryId: String(categoryId),
@@ -331,6 +373,7 @@ export function createAssetsRouter({
   // request.
   router.post('/:projectId/assets/auto-rename/apply', (req, res, next) => {
     try {
+      const pageDefaultsService = getPageDefaultsService(req);
       const projectId = parseId(req.params.projectId);
       if (projectId === null) return next(createNotFound());
 
@@ -355,15 +398,22 @@ export function createAssetsRouter({
           res,
           next,
           workflowQueryService,
+          pageDefaultsService,
           returnContext: buildAutoRenameReturnContext(body),
         });
       }
 
-      return res.redirect(buildAssetsRedirectUrl(workflowQueryService, projectId, buildAutoRenameReturnContext(body), {
-        notice: 'auto-rename-success',
-        auto_rename_renamed: result.renamed,
-        auto_rename_unchanged: result.unchanged,
-      }));
+      return res.redirect(buildAssetsRedirectUrl(
+        workflowQueryService,
+        projectId,
+        buildAutoRenameReturnContext(body),
+        {
+          notice: 'auto-rename-success',
+          auto_rename_renamed: result.renamed,
+          auto_rename_unchanged: result.unchanged,
+        },
+        pageDefaultsService,
+      ));
     } catch (err) {
       next(err);
     }
@@ -467,6 +517,7 @@ export function createAssetsRouter({
   // complete-filename action contract.
   router.post('/:projectId/assets/:assetId/rename', (req, res, next) => {
     try {
+      const pageDefaultsService = getPageDefaultsService(req);
       const projectId = parseId(req.params.projectId);
       const assetId = parseId(req.params.assetId);
       if (projectId === null || assetId === null) {
@@ -483,6 +534,7 @@ export function createAssetsRouter({
       if (origin === null) {
         return handleAssetActionFailure({ code: 'INVALID_ORIGIN' }, {
           appName, workflowQueryService, projectPrimaryImageService, req, res, next,
+          pageDefaultsService,
           project, projectId, assetId, action: 'rename', origin: 'viewer',
           submittedFilename: typeof filename === 'string' ? filename : '',
         });
@@ -496,13 +548,20 @@ export function createAssetsRouter({
       } catch (err) {
         return handleAssetActionFailure(err, {
           appName, workflowQueryService, projectPrimaryImageService, req, res, next,
+          pageDefaultsService,
           project, projectId, assetId, action: 'rename', origin,
           submittedFilename: typeof filename === 'string' ? filename : '',
         });
       }
 
       const redirectUrl = origin === 'assets'
-        ? buildAssetsRedirectUrl(workflowQueryService, projectId, req.body, { notice: 'asset-renamed' })
+        ? buildAssetsRedirectUrl(
+          workflowQueryService,
+          projectId,
+          req.body,
+          { notice: 'asset-renamed' },
+          pageDefaultsService,
+        )
         : buildAssetViewerRedirectUrl(workflowQueryService, projectId, renamed.id, req.body, { notice: 'asset-renamed' });
       res.redirect(redirectUrl);
     } catch (err) {
@@ -555,6 +614,7 @@ export function createAssetsRouter({
   // POST /projects/:id/scan — Trigger a manual scan
   router.post('/:id/scan', (req, res, next) => {
     try {
+      const pageDefaultsService = getPageDefaultsService(req);
       const id = parseId(req.params.id);
       if (id === null) {
         return next(createNotFound());
@@ -568,7 +628,13 @@ export function createAssetsRouter({
         return next(createNotFound());
       }
       if (project.archived_at) {
-        return res.redirect(buildAssetsRedirectUrl(workflowQueryService, id, req.body, { scan_error: 'archived' }));
+        return res.redirect(buildAssetsRedirectUrl(
+          workflowQueryService,
+          id,
+          req.body,
+          { scan_error: 'archived' },
+          pageDefaultsService,
+        ));
       }
 
       const result = assetScanner.scanProjectAssets(id);
@@ -576,13 +642,19 @@ export function createAssetsRouter({
       // Scanner field is `removed`; the user-facing label is `Missing` —
       // CreatorCrate never deletes files merely because a scan no longer
       // finds them, so the redirect/template vocabulary avoids "removed".
-      res.redirect(buildAssetsRedirectUrl(workflowQueryService, id, req.body, {
-        scan_result: 'ok',
-        added: result.added,
-        updated: result.updated,
-        missing: result.removed,
-        total: result.total,
-      }));
+      res.redirect(buildAssetsRedirectUrl(
+        workflowQueryService,
+        id,
+        req.body,
+        {
+          scan_result: 'ok',
+          added: result.added,
+          updated: result.updated,
+          missing: result.removed,
+          total: result.total,
+        },
+        pageDefaultsService,
+      ));
     } catch (err) {
       if (err instanceof ProjectNotFoundError) {
         return next(createNotFound());
@@ -593,7 +665,14 @@ export function createAssetsRouter({
       if (id === null) {
         return res.redirect('/projects');
       }
-      res.redirect(buildAssetsRedirectUrl(workflowQueryService, id, req.body, { scan_error: 'filesystem' }));
+      const pageDefaultsService = getPageDefaultsService(req);
+      res.redirect(buildAssetsRedirectUrl(
+        workflowQueryService,
+        id,
+        req.body,
+        { scan_error: 'filesystem' },
+        pageDefaultsService,
+      ));
     }
   });
 
@@ -604,6 +683,7 @@ export function createAssetsRouter({
   // rules.
   router.post('/:id/assets/add-to-release', (req, res, next) => {
     try {
+      const pageDefaultsService = getPageDefaultsService(req);
       const id = parseId(req.params.id);
       if (id === null) {
         return next(createNotFound());
@@ -623,10 +703,16 @@ export function createAssetsRouter({
 
       const result = releaseService.addAssetsToRelease(submittedReleaseId, id, normalizedSelection.ids);
 
-      res.redirect(buildAssetsRedirectUrl(workflowQueryService, id, req.body, {
-        bulk_added: result.added,
-        bulk_already: result.alreadyAssociated,
-      }));
+      res.redirect(buildAssetsRedirectUrl(
+        workflowQueryService,
+        id,
+        req.body,
+        {
+          bulk_added: result.added,
+          bulk_already: result.alreadyAssociated,
+        },
+        pageDefaultsService,
+      ));
     } catch (err) {
       const id = parseId(req.params.id);
       if (id === null) {
@@ -650,7 +736,9 @@ export function createAssetsRouter({
 
       if (status !== null) {
         try {
-          const data = workflowQueryService.getProjectAssetBrowser(id, req.body);
+          const pageDefaultsService = getPageDefaultsService(req);
+          const presentation = resolveAssetBrowserPresentation(req.body, pageDefaultsService);
+          const data = buildAssetBrowserPageData(workflowQueryService, id, project, presentation);
           if (!data) return next(createNotFound());
 
           const normalizedSelection = normalizeSelectedAssetIds(req.body.selectedAssetIds);
@@ -658,7 +746,7 @@ export function createAssetsRouter({
 
           return res.status(status).render('projects/assets.njk', {
             appName,
-            ...buildBrowserRenderModel(project, data),
+            ...buildBrowserRenderModel(project, data, pageDefaultsService),
             query: {},
             error: null,
             archivedError: null,
@@ -682,6 +770,7 @@ export function createAssetsRouter({
   // one project lock. The route only extracts and type-checks form fields.
   router.post('/:id/assets/move-selected', (req, res, next) => {
     try {
+      const pageDefaultsService = getPageDefaultsService(req);
       const id = parseId(req.params.id);
       if (id === null) return next(createNotFound());
 
@@ -694,11 +783,12 @@ export function createAssetsRouter({
 
       const renderMoveError = (status, message, selectedIds = []) => {
         try {
-          const data = workflowQueryService.getProjectAssetBrowser(id, req.body);
+          const presentation = resolveAssetBrowserPresentation(req.body, pageDefaultsService);
+          const data = buildAssetBrowserPageData(workflowQueryService, id, project, presentation);
           if (!data) return next(createNotFound());
           return res.status(status).render('projects/assets.njk', {
             appName,
-            ...buildBrowserRenderModel(project, data),
+            ...buildBrowserRenderModel(project, data, pageDefaultsService),
             query: {},
             error: null,
             archivedError: null,
@@ -745,9 +835,13 @@ export function createAssetsRouter({
         return renderMoveError(status, describeBatchMoveError(err), normalizedSelection.ids);
       }
 
-      res.redirect(buildAssetsRedirectUrl(workflowQueryService, id, req.body, {
-        assets_moved: result.movedCount,
-      }));
+      res.redirect(buildAssetsRedirectUrl(
+        workflowQueryService,
+        id,
+        req.body,
+        { assets_moved: result.movedCount },
+        pageDefaultsService,
+      ));
     } catch (err) {
       next(err);
     }
@@ -764,12 +858,118 @@ function parseId(value) {
   return id;
 }
 
+function getPageDefaultsService(req) {
+  const service = req.app?.locals?.pageDefaultsService;
+  if (!service) {
+    throw new Error('Project Assets requires app.locals.pageDefaultsService.');
+  }
+  return service;
+}
+
 function isBareAssetBrowserRequest(query) {
   return Boolean(query && typeof query === 'object' && Object.keys(query).length === 0);
 }
 
-function buildDefaultCategoryUrl(projectId, categoryId) {
-  return `/projects/${projectId}/assets?category=${encodeURIComponent(String(categoryId))}`;
+function parseAssetBrowserPageSize(value, fallback) {
+  if (value === undefined || value === null) return Number(fallback);
+  const normalized = String(value);
+  if (!/^[1-9]\d*$/.test(normalized)) return Number(fallback);
+  const parsed = Number(normalized);
+  if (!Number.isSafeInteger(parsed) || parsed < 1) return Number(fallback);
+  return Math.min(parsed, 100);
+}
+
+function resolveAssetBrowserPresentation(rawQuery, pageDefaultsService) {
+  const safeRawQuery = rawQuery && typeof rawQuery === 'object' ? rawQuery : {};
+  const query = { ...safeRawQuery };
+  const saved = {};
+  const forceFallback = {};
+
+  for (const { key, option } of ASSET_PRESENTATION_OPTIONS) {
+    const fallback = pageDefaultsService.getFallback(ASSET_PAGE_DEFAULTS_PAGE, option);
+    const savedValue = pageDefaultsService.resolve(ASSET_PAGE_DEFAULTS_PAGE, option);
+    const isExplicit = Object.hasOwn(safeRawQuery, key);
+    const explicitValue = safeRawQuery[key];
+    const resolvedValue = key === 'pageSize'
+      ? (isExplicit
+        ? parseAssetBrowserPageSize(explicitValue, fallback)
+        : Number(savedValue))
+      : (isExplicit
+        ? pageDefaultsService.resolve(ASSET_PAGE_DEFAULTS_PAGE, option, explicitValue)
+        : savedValue);
+
+    saved[key] = savedValue;
+    forceFallback[key] = isExplicit
+      && String(resolvedValue) === String(fallback)
+      && String(savedValue) !== String(fallback);
+
+    if (!isExplicit && String(savedValue) !== String(fallback)) {
+      query[key] = String(savedValue);
+    }
+  }
+
+  return {
+    query,
+    saved,
+    forceFallback,
+  };
+}
+
+function hasNonFallbackAssetPresentation(presentation, pageDefaultsService) {
+  return ASSET_PRESENTATION_OPTIONS.some(({ key, option }) => (
+    String(presentation.saved[key]) !== String(pageDefaultsService.getFallback(ASSET_PAGE_DEFAULTS_PAGE, option))
+  ));
+}
+
+function buildAssetDefaultsRedirectUrl(projectId, categoryId, presentation, pageDefaultsService) {
+  const context = {
+    category: categoryId === null ? 'all' : String(categoryId),
+    categoryWasSupplied: categoryId !== null,
+    categorySelection: categoryId === null ? undefined : 'explicit-specific',
+    queryWasNonBare: false,
+    sort: presentation.saved.sort,
+    order: presentation.saved.order,
+    page: 1,
+    pageSize: presentation.saved.pageSize,
+    view: presentation.saved.view,
+  };
+  const query = buildCanonicalAssetBrowserQuery(context, 1);
+  appendForcedAssetPresentationQuery(query, context, presentation, {}, pageDefaultsService);
+  const search = new URLSearchParams(query).toString();
+  return search ? `/projects/${projectId}/assets?${search}` : `/projects/${projectId}/assets`;
+}
+
+function appendForcedAssetPresentationQuery(
+  query,
+  context,
+  presentation,
+  overrides,
+  pageDefaultsService,
+) {
+  if (!pageDefaultsService) return;
+
+  const metadata = presentation || context?.assetPresentation || {};
+  const rawOverrides = overrides && typeof overrides === 'object' ? overrides : {};
+
+  for (const { key, option } of ASSET_PRESENTATION_OPTIONS) {
+    const fallback = pageDefaultsService.getFallback(ASSET_PAGE_DEFAULTS_PAGE, option);
+    const saved = metadata.saved?.[key] ?? pageDefaultsService.resolve(ASSET_PAGE_DEFAULTS_PAGE, option);
+    const hasOverride = Object.hasOwn(rawOverrides, key);
+    const value = hasOverride ? rawOverrides[key] : context?.[key];
+    const shouldPreserveExplicitFallback = metadata.forceFallback?.[key] === true;
+    const shouldPreserveOverride = hasOverride;
+
+    if ((!shouldPreserveExplicitFallback && !shouldPreserveOverride)
+      || value === undefined
+      || value === null
+      || value === '') {
+      continue;
+    }
+
+    if (String(value) === String(fallback) && String(saved) !== String(fallback)) {
+      query[key] = String(value);
+    }
+  }
 }
 
 function parseRenameOrigin(raw) {
@@ -786,10 +986,17 @@ function parseRenameOrigin(raw) {
  * not `/projects/:id/assets`, so the generated links must always point back
  * at the canonical browser path regardless of which route is rendering.
  */
-function buildAssetsPageUrl(projectId, allowedParams) {
+function buildAssetsPageUrl(projectId, allowedParams, pageDefaultsService) {
   const basePath = `/projects/${projectId}/assets`;
   return function pageUrl(overrides = {}) {
     const query = buildCanonicalAssetBrowserQuery(allowedParams, allowedParams.page, overrides);
+    appendForcedAssetPresentationQuery(
+      query,
+      allowedParams,
+      allowedParams.assetPresentation,
+      overrides,
+      pageDefaultsService,
+    );
     const search = new URLSearchParams(query).toString();
     return search ? `${basePath}?${search}` : basePath;
   };
@@ -800,12 +1007,13 @@ function buildAssetsPageUrl(projectId, allowedParams) {
  * that re-renders the same template (e.g. bulk-add or asset-action failure).
  * Centralizing this keeps both call sites in sync as the browser model grows.
  */
-function buildBrowserRenderModel(project, data) {
+function buildBrowserRenderModel(project, data, pageDefaultsService) {
   const context = {
     ...(data.context || data.filters),
     page: data.page,
     pageSize: data.pageSize,
   };
+  const presentation = context.assetPresentation || null;
 
   return {
     project,
@@ -833,12 +1041,34 @@ function buildBrowserRenderModel(project, data) {
     renameFailure: null,
     submittedSelectedAssetIds: [],
     submittedReleaseId: null,
+    preserveViewQuery: Boolean(presentation?.forceFallback?.view),
+    preserveSortQuery: Boolean(presentation?.forceFallback?.sort),
+    preserveOrderQuery: Boolean(presentation?.forceFallback?.order),
+    preservePageSizeQuery: Boolean(presentation?.forceFallback?.pageSize),
     // Flat context + field allowlist so the scan and bulk-add forms can
     // render their hidden context-preservation fields with one loop instead
     // of hardcoding each key.
     context,
     contextFields: data.contextFields || ASSET_BROWSER_CONTEXT_FIELDS,
-    pageUrl: buildAssetsPageUrl(project.id, context),
+    pageUrl: buildAssetsPageUrl(project.id, context, pageDefaultsService),
+  };
+}
+
+function buildAssetBrowserPageData(
+  workflowQueryService,
+  projectId,
+  project,
+  presentation,
+) {
+  const data = buildAssetsPageData(workflowQueryService, projectId, project, presentation.query);
+  if (!data) return data;
+
+  return {
+    ...data,
+    context: {
+      ...(data.context || data.filters),
+      assetPresentation: presentation,
+    },
   };
 }
 
@@ -858,8 +1088,18 @@ function buildBrowserRenderModel(project, data) {
  * @param {object} [extraQuery] - additional flat string/number query params
  *   (e.g. scan_result, added, updated, missing, total, bulk_added, bulk_already)
  */
-function buildCanonicalContextQuery(workflowQueryService, projectId, rawContext, extraQuery = {}) {
-  const contextResult = workflowQueryService.getProjectAssetBrowserContext(projectId, rawContext);
+function buildCanonicalContextQuery(
+  workflowQueryService,
+  projectId,
+  rawContext,
+  extraQuery = {},
+  pageDefaultsService = null,
+) {
+  const presentation = pageDefaultsService
+    ? resolveAssetBrowserPresentation(rawContext, pageDefaultsService)
+    : null;
+  const normalizedRawContext = presentation ? presentation.query : rawContext;
+  const contextResult = workflowQueryService.getProjectAssetBrowserContext(projectId, normalizedRawContext);
   const context = contextResult
     ? (contextResult.context || contextResult.filters)
     : {
@@ -879,6 +1119,7 @@ function buildCanonicalContextQuery(workflowQueryService, projectId, rawContext,
     };
 
   const query = buildCanonicalAssetBrowserQuery(context, context.page);
+  appendForcedAssetPresentationQuery(query, context, presentation, {}, pageDefaultsService);
   for (const [key, value] of Object.entries(extraQuery)) {
     if (value === undefined || value === null || value === '') continue;
     query[key] = String(value);
@@ -886,8 +1127,20 @@ function buildCanonicalContextQuery(workflowQueryService, projectId, rawContext,
   return query;
 }
 
-function buildAssetsRedirectUrl(workflowQueryService, projectId, rawContext, extraQuery = {}) {
-  const query = buildCanonicalContextQuery(workflowQueryService, projectId, rawContext, extraQuery);
+function buildAssetsRedirectUrl(
+  workflowQueryService,
+  projectId,
+  rawContext,
+  extraQuery = {},
+  pageDefaultsService = null,
+) {
+  const query = buildCanonicalContextQuery(
+    workflowQueryService,
+    projectId,
+    rawContext,
+    extraQuery,
+    pageDefaultsService,
+  );
   const search = new URLSearchParams(query).toString();
   return search ? `/projects/${projectId}/assets?${search}` : `/projects/${projectId}/assets`;
 }
@@ -1116,6 +1369,7 @@ function renderAutoRenameBrowserError({
   res,
   next,
   workflowQueryService,
+  pageDefaultsService,
   status,
   message,
   returnContext,
@@ -1124,7 +1378,8 @@ function renderAutoRenameBrowserError({
 
   let data;
   try {
-    data = buildAssetsPageData(workflowQueryService, projectId, project, returnContext || {});
+    const presentation = resolveAssetBrowserPresentation(returnContext || {}, pageDefaultsService);
+    data = buildAssetBrowserPageData(workflowQueryService, projectId, project, presentation);
   } catch {
     const fallback = new Error('Auto Rename could not be completed. Please try again.');
     fallback.status = 500;
@@ -1134,7 +1389,7 @@ function renderAutoRenameBrowserError({
 
   return res.status(status).render('projects/assets.njk', {
     appName,
-    ...buildBrowserRenderModel(project, data),
+    ...buildBrowserRenderModel(project, data, pageDefaultsService),
     query: {},
     error: null,
     archivedError: null,
@@ -1157,6 +1412,7 @@ function handleAutoRenameFailure(err, {
   res,
   next,
   workflowQueryService,
+  pageDefaultsService,
   returnContext,
 }) {
   const code = err && err.code;
@@ -1177,6 +1433,7 @@ function handleAutoRenameFailure(err, {
     res,
     next,
     workflowQueryService,
+    pageDefaultsService,
     status: status || 500,
     message,
     returnContext,
@@ -1650,6 +1907,7 @@ function buildAssetViewerRenderModel(data, overrides = {}) {
  */
 function handleAssetActionFailure(err, {
   appName, workflowQueryService, projectPrimaryImageService, req, res, next,
+  pageDefaultsService,
   project, projectId, assetId, action, origin = 'viewer',
   submittedFilename, submittedDestinationCategory,
 }) {
@@ -1663,6 +1921,7 @@ function handleAssetActionFailure(err, {
   if (origin === 'assets') {
     return handleAssetBrowserActionFailure(err, {
       appName, workflowQueryService, req, res, next,
+      pageDefaultsService,
       project, projectId, assetId, action, submittedFilename,
     });
   }
@@ -1702,6 +1961,7 @@ function handleAssetActionFailure(err, {
 
 function handleAssetBrowserActionFailure(err, {
   appName, workflowQueryService, req, res, next,
+  pageDefaultsService,
   project, projectId, assetId, action, submittedFilename,
 }) {
   const code = err && err.code;
@@ -1716,7 +1976,8 @@ function handleAssetBrowserActionFailure(err, {
 
   let data;
   try {
-    data = workflowQueryService.getProjectAssetBrowser(projectId, req.body);
+    const presentation = resolveAssetBrowserPresentation(req.body, pageDefaultsService);
+    data = buildAssetBrowserPageData(workflowQueryService, projectId, project, presentation);
   } catch (renderErr) {
     return next(renderErr);
   }
@@ -1726,7 +1987,7 @@ function handleAssetBrowserActionFailure(err, {
 
   return res.status(status).render('projects/assets.njk', {
     appName,
-    ...buildBrowserRenderModel(project, data),
+    ...buildBrowserRenderModel(project, data, pageDefaultsService),
     query: {},
     error: null,
     archivedError: null,

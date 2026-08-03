@@ -8,6 +8,7 @@ import { ensureAuthEnablement } from '../src/auth/auth-state.js';
 import { getDisabledModeCsrf } from './helpers/auth.js';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { STATUS_DIR_MAP, resolveProjectDir } from '../src/storage/project-storage.js';
+import { PAGE_DEFAULT_DEFINITIONS } from '../src/services/page-defaults-service.js';
 import { makeZip } from './helpers/zip-fixture.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
@@ -102,6 +103,19 @@ describe('Published Work HTTP route (Phase 2B)', () => {
     return res.headers.location;
   }
 
+  function savePublishedDefault(option, value) {
+    return app.locals.pageDefaultsService.saveDefault('publishedWork', option, value);
+  }
+
+  function writeStoredPublishedDefault(option, value) {
+    const key = PAGE_DEFAULT_DEFINITIONS.publishedWork[option].key;
+    db.prepare(`
+      INSERT INTO app_meta (key, value)
+      VALUES (?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value
+    `).run(key, value);
+  }
+
   function seedPrimaryImage(projectId, filename = 'cover.png') {
     const id = Number(projectId);
     const project = db.prepare('SELECT project_dir FROM projects WHERE id = ?').get(id);
@@ -135,6 +149,133 @@ describe('Published Work HTTP route (Phase 2B)', () => {
     expect(res.text).not.toContain('<h1 class="app-section-title">Published Work</h1>');
     expect(res.text).toContain('Published Work');
     expect(res.text).toContain('Projects published through CreatorCrate.');
+  });
+
+  it('redirects a bare request to valid saved Published Work defaults', async () => {
+    savePublishedDefault('view', 'list');
+    savePublishedDefault('sort', 'title');
+    savePublishedDefault('order', 'asc');
+
+    const redirect = await agent.get('/releases').expect(302);
+    expect(redirect.headers.location).toBe('/releases?sort=title&order=asc&view=list');
+
+    const rendered = await agent.get(redirect.headers.location).expect(200);
+    expect(rendered.text).toContain('aria-current="page">List</a>');
+    expect(rendered.text).toContain('<input type="hidden" name="view" value="list">');
+    expect(rendered.text).toContain('<option value="title" selected>Title</option>');
+    expect(rendered.text).toContain('<option value="asc" selected>Asc</option>');
+  });
+
+  it('uses application fallbacks when Published Work defaults are missing', async () => {
+    const res = await agent.get('/releases').expect(200);
+
+    expect(res.headers.location).toBeUndefined();
+    expect(res.text).toContain('aria-current="page">Grid</a>');
+    expect(res.text).not.toContain('<input type="hidden" name="view"');
+    expect(res.text).toContain('<option value="published" selected>Published</option>');
+    expect(res.text).toContain('<option value="desc" selected>Desc</option>');
+  });
+
+  it('uses application fallbacks when stored Published Work defaults are invalid', async () => {
+    writeStoredPublishedDefault('view', 'board');
+    writeStoredPublishedDefault('sort', 'created');
+    writeStoredPublishedDefault('order', 'forwards');
+
+    const res = await agent.get('/releases').expect(200);
+
+    expect(res.headers.location).toBeUndefined();
+    expect(res.text).toContain('aria-current="page">Grid</a>');
+    expect(res.text).toContain('<option value="published" selected>Published</option>');
+    expect(res.text).toContain('<option value="desc" selected>Desc</option>');
+  });
+
+  it('gives valid explicit values precedence while resolving omitted options from saved defaults', async () => {
+    savePublishedDefault('view', 'list');
+    savePublishedDefault('sort', 'title');
+    savePublishedDefault('order', 'asc');
+
+    const res = await agent.get('/releases?view=grid&sort=published').expect(200);
+
+    expect(res.headers.location).toBeUndefined();
+    expect(res.text).toContain('aria-current="page">Grid</a>');
+    expect(res.text).toContain('<input type="hidden" name="view" value="grid">');
+    expect(res.text).toContain('<option value="published" selected>Published</option>');
+    expect(res.text).toContain('<option value="asc" selected>Asc</option>');
+    expect(res.text).toContain('href="/releases?sort=published&amp;order=asc&amp;view=grid"');
+  });
+
+  it('keeps invalid explicit values on application fallbacks instead of saved defaults', async () => {
+    savePublishedDefault('view', 'list');
+    savePublishedDefault('sort', 'title');
+    savePublishedDefault('order', 'asc');
+
+    const res = await agent.get('/releases?view=invalid&sort=invalid&order=invalid').expect(200);
+
+    expect(res.headers.location).toBeUndefined();
+    expect(res.text).toContain('aria-current="page">Grid</a>');
+    expect(res.text).toContain('<input type="hidden" name="view" value="grid">');
+    expect(res.text).toContain('<option value="published" selected>Published</option>');
+    expect(res.text).toContain('<option value="desc" selected>Desc</option>');
+    expect(res.text).not.toContain('sort=invalid');
+    expect(res.text).not.toContain('order=invalid');
+    expect(res.text).not.toContain('view=invalid');
+  });
+
+  it('canonicalizes saved defaults while preserving search, pagination, and effective control URLs', async () => {
+    savePublishedDefault('view', 'list');
+    savePublishedDefault('sort', 'title');
+    savePublishedDefault('order', 'asc');
+
+    for (let i = 0; i < 26; i += 1) {
+      await createProject(`Canonical Published ${String(i).padStart(2, '0')}`, {
+        status: 'published',
+        publishedDate: '2026-01-01',
+      });
+    }
+
+    const redirect = await agent
+      .get('/releases?search=Canonical+Published&page=99&unknown=discarded')
+      .expect(302);
+    expect(redirect.headers.location)
+      .toBe('/releases?search=Canonical+Published&sort=title&order=asc&view=list&page=2');
+
+    const pageTwo = await agent.get(redirect.headers.location).expect(200);
+    expect(pageTwo.text).toContain('Page 2 of 2');
+    expect(pageTwo.text).toContain('Canonical Published 25');
+    expect(pageTwo.text).not.toContain('unknown=discarded');
+    expect(pageTwo.text).toContain(
+      'href="/releases?search=Canonical+Published&amp;sort=title&amp;order=asc&amp;view=list"'
+    );
+
+    const pageOne = await agent
+      .get('/releases?search=Canonical+Published&sort=title&order=asc&view=list')
+      .expect(200);
+    expect(pageOne.text).toContain(
+      'href="/releases?search=Canonical+Published&amp;sort=title&amp;order=asc&amp;view=list&amp;page=2"'
+    );
+    expect(pageOne.text).toContain(
+      'href="/releases?search=Canonical+Published&amp;sort=title&amp;order=asc&amp;view=grid"'
+    );
+    expect(pageOne.text).toContain(
+      'href="/releases?search=Canonical+Published&amp;sort=title&amp;order=asc&amp;view=list"'
+    );
+    expect(pageOne.text).toContain('<option value="title" selected>Title</option>');
+    expect(pageOne.text).toContain('<option value="asc" selected>Asc</option>');
+    expect(pageOne.text).toContain('href="/releases">Reset Search</a>');
+    expect(pageOne.text).not.toContain('unknown=discarded');
+  });
+
+  it('does not redirect when saved Published Work defaults equal application fallbacks', async () => {
+    savePublishedDefault('view', 'grid');
+    savePublishedDefault('sort', 'published');
+    savePublishedDefault('order', 'desc');
+
+    const res = await agent.get('/releases').expect(200);
+
+    expect(res.headers.location).toBeUndefined();
+    expect(res.text).toContain('aria-current="page">Grid</a>');
+    expect(res.text).toContain('<option value="published" selected>Published</option>');
+    expect(res.text).toContain('<option value="desc" selected>Desc</option>');
   });
 
   // ─── Membership ─────────────────────────────────────────────────────────
@@ -595,6 +736,18 @@ describe('Published Work HTTP route (Phase 2B)', () => {
   // ─── Neighboring routes remain unchanged ───────────────────────────────
 
   describe('unaffected release-record routes', () => {
+    it('Release Management keeps its own list fallbacks when Published Work defaults are saved', async () => {
+      savePublishedDefault('view', 'list');
+      savePublishedDefault('sort', 'title');
+      savePublishedDefault('order', 'asc');
+
+      const res = await agent.get('/release-management').expect(200);
+
+      expect(res.headers.location).toBeUndefined();
+      expect(res.text).toContain('<option value="updated" selected>Updated</option>');
+      expect(res.text).toContain('<option value="desc" selected>Desc</option>');
+    });
+
     it('/calendar remains 200 and project-backed', async () => {
       const res = await agent.get('/calendar').expect(200);
       expect(res.text).toContain('calendar');

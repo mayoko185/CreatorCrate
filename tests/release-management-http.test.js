@@ -8,8 +8,15 @@ import { ensureAuthEnablement } from '../src/auth/auth-state.js';
 import { getDisabledModeCsrf } from './helpers/auth.js';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { STATUS_DIR_MAP } from '../src/storage/project-storage.js';
+import { PAGE_DEFAULT_DEFINITIONS } from '../src/services/page-defaults-service.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
+
+function selectedOptionValue(html, selectId) {
+  const select = html.match(new RegExp(`<select id="${selectId}"[\\s\\S]*?</select>`))?.[0];
+  if (!select) throw new Error(`Select ${selectId} was not rendered.`);
+  return select.match(/<option value="([^"]+)"\s+selected(?:\s|>)/)?.[1];
+}
 
 // Phase 2A: GET /release-management reuses the exact same list/board handler
 // as GET /releases (handleReleaseListOrBoard in src/routes/releases.js), so
@@ -74,6 +81,19 @@ describe('release-management HTTP route (Phase 2A)', () => {
     return res.headers.location; // /releases/:id
   }
 
+  function saveReleaseManagementDefault(option, value) {
+    return app.locals.pageDefaultsService.saveDefault('releaseManagement', option, value);
+  }
+
+  function writeStoredReleaseManagementDefault(option, value) {
+    const key = PAGE_DEFAULT_DEFINITIONS.releaseManagement[option].key;
+    db.prepare(`
+      INSERT INTO app_meta (key, value)
+      VALUES (?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value
+    `).run(key, value);
+  }
+
   it('GET /release-management renders the release-record list', async () => {
     const projectId = await createProject('Mgmt List Project');
     await createRelease(projectId, 'Mgmt List Release', 'idea');
@@ -90,6 +110,92 @@ describe('release-management HTTP route (Phase 2A)', () => {
     const res = await agent.get('/release-management?view=board').expect(200);
     expect(res.text).toContain('board-container');
     expect(res.text).toContain('Mgmt Board Release');
+  });
+
+  it('bare Release Management requests canonicalize valid saved non-fallback defaults', async () => {
+    saveReleaseManagementDefault('view', 'board');
+    saveReleaseManagementDefault('sort', 'title');
+    saveReleaseManagementDefault('order', 'asc');
+
+    const redirect = await agent.get('/release-management').expect(302);
+    expect(redirect.headers.location)
+      .toBe('/release-management?view=board&sort=title&order=asc');
+
+    const rendered = await agent.get(redirect.headers.location).expect(200);
+    expect(rendered.text).toContain('board-container');
+    expect(rendered.text).toContain('<input type="hidden" name="sort" value="title">');
+    expect(rendered.text).toContain('<input type="hidden" name="order" value="asc">');
+  });
+
+  it('does not redirect for missing, fallback-equivalent, or invalid stored values', async () => {
+    const missing = await agent.get('/release-management').expect(200);
+    expect(missing.headers.location).toBeUndefined();
+
+    saveReleaseManagementDefault('view', 'list');
+    saveReleaseManagementDefault('sort', 'updated');
+    saveReleaseManagementDefault('order', 'desc');
+    const fallback = await agent.get('/release-management').expect(200);
+    expect(fallback.headers.location).toBeUndefined();
+
+    writeStoredReleaseManagementDefault('view', 'grid');
+    writeStoredReleaseManagementDefault('sort', 'published');
+    writeStoredReleaseManagementDefault('order', 'forwards');
+    const invalid = await agent.get('/release-management').expect(200);
+    expect(invalid.headers.location).toBeUndefined();
+    expect(invalid.text).toContain('<option value="updated" selected>Updated</option>');
+    expect(invalid.text).toContain('<option value="desc" selected>Desc</option>');
+    expect(invalid.text).not.toContain('board-container');
+  });
+
+  it('valid explicit values override saved defaults', async () => {
+    saveReleaseManagementDefault('view', 'board');
+    saveReleaseManagementDefault('sort', 'title');
+    saveReleaseManagementDefault('order', 'asc');
+
+    const res = await agent
+      .get('/release-management?view=list&sort=updated&order=desc')
+      .expect(200);
+
+    expect(res.headers.location).toBeUndefined();
+    expect(res.text).not.toContain('board-container');
+    expect(selectedOptionValue(res.text, 'list-sort')).toBe('updated');
+    expect(selectedOptionValue(res.text, 'list-order')).toBe('desc');
+    expect(res.text).toContain('<input type="hidden" name="view" value="list">');
+  });
+
+  it('omitted presentation options use saved defaults when a filter or another option is explicit', async () => {
+    saveReleaseManagementDefault('view', 'board');
+    saveReleaseManagementDefault('sort', 'title');
+    saveReleaseManagementDefault('order', 'asc');
+
+    const res = await agent
+      .get('/release-management?view=list&status=idea')
+      .expect(200);
+
+    expect(res.text).not.toContain('board-container');
+    expect(selectedOptionValue(res.text, 'list-sort')).toBe('title');
+    expect(selectedOptionValue(res.text, 'list-order')).toBe('asc');
+    expect(res.text).toContain('<select id="list-status" name="status">');
+  });
+
+  it('explicit invalid presentation values use route fallbacks instead of saved defaults', async () => {
+    saveReleaseManagementDefault('view', 'board');
+    saveReleaseManagementDefault('sort', 'title');
+    saveReleaseManagementDefault('order', 'asc');
+
+    const res = await agent
+      .get('/release-management?view=grid&sort=published&order=forwards')
+      .expect(200);
+
+    expect(res.headers.location).toBeUndefined();
+    expect(res.text).not.toContain('board-container');
+    expect(selectedOptionValue(res.text, 'list-sort')).toBe('updated');
+    expect(selectedOptionValue(res.text, 'list-order')).toBe('desc');
+    expect(res.text).toContain('<input type="hidden" name="view" value="list">');
+    expect(res.text).toContain('sort=updated');
+    expect(res.text).toContain('order=desc');
+    expect(res.text).not.toContain('sort=published');
+    expect(res.text).not.toContain('order=forwards');
   });
 
   it('project filtering works with project=<id>', async () => {
@@ -202,6 +308,69 @@ describe('release-management HTTP route (Phase 2A)', () => {
     expect(prevMatch[1]).not.toContain('page=');
   });
 
+  it('preserves filters, page size, and effective presentation values across pagination, switching, and clear links', async () => {
+    saveReleaseManagementDefault('view', 'list');
+    saveReleaseManagementDefault('sort', 'title');
+    saveReleaseManagementDefault('order', 'asc');
+
+    const projectId = await createProject('Mgmt Defaults Context Project');
+    for (let i = 0; i < 30; i++) {
+      await createRelease(projectId, `Mgmt Defaults Context Release ${String(i).padStart(2, '0')}`);
+    }
+
+    const res = await agent
+      .get(`/release-management?project=${projectId}&status=idea&schedule=unscheduled&readiness=all&includeArchived=1&page=2&pageSize=10&view=list`)
+      .expect(200);
+
+    expect(res.text).toContain('Page 2 of 3');
+    expect(selectedOptionValue(res.text, 'list-sort')).toBe('title');
+    expect(selectedOptionValue(res.text, 'list-order')).toBe('asc');
+    expect(res.text).toContain('<input type="hidden" name="view" value="list">');
+    expect(res.text).toContain('<input type="hidden" name="pageSize" value="10">');
+
+    const boardHref = res.text.match(/<a class="view-switcher-option" href="([^"]+)"[^>]*>Board<\/a>/)?.[1];
+    expect(boardHref).toBeDefined();
+    const boardUrl = new URL(boardHref.replace(/&amp;/g, '&'), 'http://localhost');
+    expect(boardUrl.searchParams.get('view')).toBe('board');
+    expect(boardUrl.searchParams.get('project')).toBe(projectId);
+    expect(boardUrl.searchParams.get('status')).toBe('idea');
+    expect(boardUrl.searchParams.get('schedule')).toBe('unscheduled');
+    expect(boardUrl.searchParams.get('includeArchived')).toBe('1');
+    expect(boardUrl.searchParams.get('sort')).toBe('title');
+    expect(boardUrl.searchParams.get('order')).toBe('asc');
+    expect(boardUrl.searchParams.get('pageSize')).toBe('10');
+    expect(boardUrl.searchParams.has('page')).toBe(false);
+
+    const clearHref = res.text.match(/<a class="button button-secondary" href="([^"]+)">Clear<\/a>/)?.[1];
+    expect(clearHref).toBeDefined();
+    const clearUrl = new URL(clearHref.replace(/&amp;/g, '&'), 'http://localhost');
+    expect(clearUrl.searchParams.get('view')).toBe('list');
+    expect(clearUrl.searchParams.get('sort')).toBe('title');
+    expect(clearUrl.searchParams.get('order')).toBe('asc');
+    expect(clearUrl.searchParams.get('pageSize')).toBe('10');
+    expect(clearUrl.searchParams.has('project')).toBe(false);
+    expect(clearUrl.searchParams.has('status')).toBe(false);
+    expect(clearUrl.searchParams.has('schedule')).toBe(false);
+    expect(clearUrl.searchParams.has('includeArchived')).toBe(false);
+    expect(clearUrl.searchParams.has('page')).toBe(false);
+
+    const board = await agent.get(boardUrl.pathname + boardUrl.search).expect(200);
+    expect(board.text).toContain('board-container');
+    expect(board.text).toContain('<input type="hidden" name="sort" value="title">');
+    expect(board.text).toContain('<input type="hidden" name="order" value="asc">');
+    expect(board.text).toContain('<input type="hidden" name="pageSize" value="10">');
+
+    const listHref = board.text.match(/<a class="view-switcher-option" href="([^"]+)"[^>]*>List<\/a>/)?.[1];
+    expect(listHref).toBeDefined();
+    const listUrl = new URL(listHref.replace(/&amp;/g, '&'), 'http://localhost');
+    expect(listUrl.searchParams.get('view')).toBe('list');
+    expect(listUrl.searchParams.get('project')).toBe(projectId);
+    expect(listUrl.searchParams.get('sort')).toBe('title');
+    expect(listUrl.searchParams.get('order')).toBe('asc');
+    expect(listUrl.searchParams.get('pageSize')).toBe('10');
+    expect(listUrl.searchParams.has('page')).toBe(false);
+  });
+
   it('list/board view switching stays under /release-management', async () => {
     const res = await agent.get('/release-management').expect(200);
     const boardMatch = res.text.match(/<a class="view-switcher-option" href="([^"]+)"[^>]*>Board<\/a>/);
@@ -240,6 +409,19 @@ describe('release-management HTTP route (Phase 2A)', () => {
   it('GET /releases?view=board redirects to /release-management?view=board preserving query params', async () => {
     const res = await agent.get('/releases?view=board&sort=title').expect(302);
     expect(res.headers.location).toBe('/release-management?view=board&sort=title');
+  });
+
+  it('Release Management defaults do not affect Published Work at /releases', async () => {
+    saveReleaseManagementDefault('view', 'board');
+    saveReleaseManagementDefault('sort', 'title');
+    saveReleaseManagementDefault('order', 'asc');
+
+    const res = await agent.get('/releases').expect(200);
+
+    expect(res.headers.location).toBeUndefined();
+    expect(res.text).toContain('Projects published through CreatorCrate.');
+    expect(res.text).not.toContain('board-container');
+    expect(res.text).toContain('<option value="published" selected>Published</option>');
   });
 
   it('/release-management does not expose the mutation-route surface', async () => {

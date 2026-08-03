@@ -60,6 +60,24 @@
   </section>
 {% endmacro %}
 
+{% macro globalControl(model, controlId, fieldName) %}
+  <label for="{{ controlId }}">Default category</label>
+  <select id="{{ controlId }}" name="{{ fieldName }}" class="form-control"
+          aria-describedby="{{ controlId }}-help{% if model.errorMessage %} {{ controlId }}-error{% endif %}"
+          {% if model.errorMessage %}aria-invalid="true"{% endif %} required>
+    {% if model.selectionPlaceholder %}
+      <option value="{{ model.selectionPlaceholder.value }}" disabled{% if not model.submittedOption %} selected{% endif %}>{{ model.selectionPlaceholder.label }}</option>
+    {% endif %}
+    {% if model.submittedOption %}
+      <option value="{{ model.submittedOption.value }}" selected>{{ model.submittedOption.label }}</option>
+    {% endif %}
+    <option value="all"{% if model.selectedValue == 'all' %} selected{% endif %}>All Categories</option>
+    {% for category in model.enabledCategories %}
+      <option value="{{ category.directorySlug }}"{% if model.selectedValue == category.directorySlug %} selected{% endif %}>{{ category.displayName }}</option>
+    {% endfor %}
+  </select>
+{% endmacro %}
+
 {% macro global(model, action, controlId, csrf) %}
   <section class="settings-section asset-browser-default-section" aria-labelledby="{{ controlId }}-heading">
     <h3 id="{{ controlId }}-heading">Asset browser default</h3>
@@ -91,21 +109,7 @@
       <input type="hidden" name="_csrf" value="{{ csrf }}">
       <div class="asset-browser-default-control-row">
         <div class="field asset-browser-default-field-row">
-          <label for="{{ controlId }}">Default category</label>
-          <select id="{{ controlId }}" name="defaultCategory" class="form-control"
-                  aria-describedby="{{ controlId }}-help{% if model.errorMessage %} {{ controlId }}-error{% endif %}"
-                  {% if model.errorMessage %}aria-invalid="true"{% endif %} required>
-            {% if model.selectionPlaceholder %}
-              <option value="{{ model.selectionPlaceholder.value }}" disabled{% if not model.submittedOption %} selected{% endif %}>{{ model.selectionPlaceholder.label }}</option>
-            {% endif %}
-            {% if model.submittedOption %}
-              <option value="{{ model.submittedOption.value }}" selected>{{ model.submittedOption.label }}</option>
-            {% endif %}
-            <option value="all"{% if model.selectedValue == 'all' %} selected{% endif %}>All Categories</option>
-            {% for category in model.enabledCategories %}
-              <option value="{{ category.directorySlug }}"{% if model.selectedValue == category.directorySlug %} selected{% endif %}>{{ category.displayName }}</option>
-            {% endfor %}
-          </select>
+          {{ globalControl(model, controlId, "defaultCategory") }}
         </div>
         <span class="help-text">Category labels are shown here; the stable directory slug is stored.</span>
       </div>

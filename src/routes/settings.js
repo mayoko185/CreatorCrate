@@ -10,6 +10,10 @@ import {
 import { AssetCategoryValidationError as PreferenceValidationError } from '../services/asset-browser-preference-service.js';
 import { buildGlobalAssetBrowserPreferenceModel } from '../services/asset-browser-preference-presenter.js';
 import { parseEnabledField } from '../services/asset-category-validation.js';
+import {
+  PageDefaultValidationError,
+  PAGE_DEFAULT_DEFINITIONS,
+} from '../services/page-defaults-service.js';
 
 function createNotFound() {
   const err = new Error('Not found');
@@ -66,10 +70,218 @@ const NOTICES = {
     text: 'Could not save the asset category default. Please try again.',
   },
   global_default_saved: { variant: 'success', text: 'Global asset-browser default saved.' },
+  defaults_saved: { variant: 'success', text: 'Page defaults saved successfully.' },
 };
 
 function resolveNotice(code) {
   return Object.prototype.hasOwnProperty.call(NOTICES, code) ? NOTICES[code] : null;
+}
+
+const PAGE_DEFAULT_SECTIONS = Object.freeze([
+  Object.freeze({ page: 'new_project', title: 'New Projects' }),
+  Object.freeze({ page: 'new_release', title: 'New Releases' }),
+  Object.freeze({ page: 'projects', title: 'Projects' }),
+  Object.freeze({ page: 'publishedWork', title: 'Published Work' }),
+  Object.freeze({ page: 'releaseManagement', title: 'Release Management' }),
+  Object.freeze({ page: 'projectAssets', title: 'Project Assets' }),
+]);
+
+const PROJECT_ASSET_CATEGORY_FIELD = 'defaultCategory';
+
+const DEFAULT_OPTION_LABELS = Object.freeze({
+  view: 'Default view',
+  sort: 'Default sort',
+  order: 'Default order',
+  pageSize: 'Assets per page',
+  status: 'New project status',
+  priority: 'New project priority',
+  new_release: Object.freeze({ status: 'Default status' }),
+});
+
+const DEFAULT_VALUE_LABELS = Object.freeze({
+  new_project: Object.freeze({
+    status: Object.freeze({
+      tbd: 'TBD',
+      planned: 'Planned',
+      'in-progress': 'In progress',
+      ready: 'Ready',
+      published: 'Published',
+    }),
+    priority: Object.freeze({ low: 'Low', normal: 'Normal', high: 'High' }),
+  }),
+  new_release: Object.freeze({
+    status: Object.freeze({ idea: 'Idea', planned: 'Planned', drafting: 'Drafting', ready: 'Ready' }),
+  }),
+  projects: Object.freeze({
+    view: Object.freeze({ grid: 'Grid', list: 'List' }),
+    sort: Object.freeze({ updated: 'Recently updated', created: 'Recently created', title: 'Title' }),
+    order: Object.freeze({ asc: 'Ascending', desc: 'Descending' }),
+  }),
+  publishedWork: Object.freeze({
+    view: Object.freeze({ grid: 'Grid', list: 'List' }),
+    sort: Object.freeze({ published: 'Published date', title: 'Title', updated: 'Recently updated' }),
+    order: Object.freeze({ asc: 'Ascending', desc: 'Descending' }),
+  }),
+  releaseManagement: Object.freeze({
+    view: Object.freeze({ list: 'List', board: 'Board' }),
+    sort: Object.freeze({ updated: 'Updated', created: 'Created', planned: 'Planned', title: 'Title' }),
+    order: Object.freeze({ asc: 'Asc', desc: 'Desc' }),
+  }),
+  projectAssets: Object.freeze({
+    view: Object.freeze({ grid: 'Grid', list: 'List' }),
+    sort: Object.freeze({
+      filename: 'Filename',
+      modified: 'Modified date',
+      size: 'File size',
+      category: 'Category & location',
+    }),
+    order: Object.freeze({ asc: 'Ascending', desc: 'Descending' }),
+    pageSize: Object.freeze({ 10: '10', 25: '25', 50: '50', 100: '100' }),
+  }),
+});
+
+function pageDefaultFieldName(page, option) {
+  return `${page}${option.charAt(0).toUpperCase()}${option.slice(1)}`;
+}
+
+function defaultValueLabel(page, option, value) {
+  return DEFAULT_VALUE_LABELS[page][option][value] || value;
+}
+
+function readSubmittedPageDefaults(body) {
+  const rawBody = body && typeof body === 'object' ? body : {};
+  const values = Object.fromEntries(
+    PAGE_DEFAULT_SECTIONS.map(({ page }) => [
+      page,
+      Object.fromEntries(
+        Object.keys(PAGE_DEFAULT_DEFINITIONS[page]).map((option) => [
+          option,
+          rawBody[pageDefaultFieldName(page, option)],
+        ])
+      ),
+    ])
+  );
+  return {
+    ...values,
+    [PROJECT_ASSET_CATEGORY_FIELD]: rawBody[PROJECT_ASSET_CATEGORY_FIELD],
+  };
+}
+
+function getPageDefaultsService(req) {
+  const service = req.app?.locals?.pageDefaultsService;
+  if (!service) {
+    throw new Error('Settings Defaults requires app.locals.pageDefaultsService.');
+  }
+  return service;
+}
+
+function buildDefaultsPageModel(service, {
+  assetBrowserPreferenceService,
+  assetCategoryService,
+  submittedValues = null,
+  errors = {},
+  preferenceError = null,
+} = {}) {
+  const hasSubmittedValues = submittedValues !== null;
+  const assetBrowserPreference = buildGlobalAssetBrowserPreferenceModel({
+    preferenceService: assetBrowserPreferenceService,
+    categories: assetCategoryService.listDefaults(),
+    submittedValue: hasSubmittedValues ? submittedValues[PROJECT_ASSET_CATEGORY_FIELD] : undefined,
+    error: preferenceError,
+  });
+  const sections = PAGE_DEFAULT_SECTIONS.map(({ page, title }) => ({
+    page,
+    title,
+    fields: Object.keys(PAGE_DEFAULT_DEFINITIONS[page]).map((option) => {
+      const definition = PAGE_DEFAULT_DEFINITIONS[page][option];
+      const name = pageDefaultFieldName(page, option);
+      const savedValue = service.getSavedDefault(page, option);
+      const fallbackValue = service.getFallback(page, option);
+      const effectiveValue = service.resolve(page, option);
+      const submittedValue = hasSubmittedValues
+        ? submittedValues[page]?.[option]
+        : effectiveValue;
+      const error = errors[name] || null;
+      const showSubmittedValue = hasSubmittedValues
+        && Boolean(error)
+        && typeof submittedValue === 'string'
+        && !definition.values.includes(submittedValue);
+
+      return {
+        id: name,
+        name,
+        label: DEFAULT_OPTION_LABELS[page]?.[option] ?? DEFAULT_OPTION_LABELS[option],
+        options: definition.values.map((value) => ({
+          value,
+          label: defaultValueLabel(page, option, value),
+        })),
+        selectedValue: submittedValue,
+        savedLabel: savedValue === undefined ? null : defaultValueLabel(page, option, savedValue),
+        fallbackLabel: defaultValueLabel(page, option, fallbackValue),
+        usesFallback: savedValue === undefined,
+        error,
+        showSubmittedValue,
+        submittedOptionValue: showSubmittedValue ? submittedValue : null,
+        submittedDisplayValue: Array.isArray(submittedValue)
+          ? submittedValue.join(', ')
+          : submittedValue,
+      };
+    }),
+  }));
+
+  const errorMessages = [...Object.values(errors)];
+  if (assetBrowserPreference.errorMessage) {
+    errorMessages.push(assetBrowserPreference.errorMessage);
+  }
+
+  return {
+    sections,
+    assetBrowserPreference,
+    hasErrors: errorMessages.length > 0,
+    errorMessages,
+  };
+}
+
+function validateSubmittedPageDefaults(service, submittedValues) {
+  const errors = {};
+  const validatedValues = {};
+
+  for (const { page } of PAGE_DEFAULT_SECTIONS) {
+    try {
+      validatedValues[page] = service.validatePageDefaults(page, submittedValues[page]);
+    } catch (err) {
+      if (!(err instanceof PageDefaultValidationError)) throw err;
+      for (const [option, message] of Object.entries(err.errors || {})) {
+        errors[pageDefaultFieldName(page, option)] = message;
+      }
+    }
+  }
+
+  return { errors, validatedValues };
+}
+
+function renderDefaultsPage(req, res, {
+  appName,
+  assetBrowserPreferenceService,
+  assetCategoryService,
+  status = 200,
+  notice = null,
+  submittedValues = null,
+  errors = {},
+  preferenceError = null,
+} = {}) {
+  const service = getPageDefaultsService(req);
+  res.status(status).render('settings/defaults.njk', {
+    appName,
+    notice,
+    ...buildDefaultsPageModel(service, {
+      assetBrowserPreferenceService,
+      assetCategoryService,
+      submittedValues,
+      errors,
+      preferenceError,
+    }),
+  });
 }
 
 /**
@@ -216,6 +428,64 @@ export function createSettingsRouter({
       backups,
       notice: resolveNotice(req.query.notice),
     });
+  });
+
+  router.get('/defaults', (req, res) => {
+    renderDefaultsPage(req, res, {
+      appName,
+      assetBrowserPreferenceService,
+      assetCategoryService,
+      notice: resolveNotice(req.query.notice),
+    });
+  });
+
+  router.post('/defaults', (req, res, next) => {
+    const submittedValues = readSubmittedPageDefaults(req.body);
+    const service = getPageDefaultsService(req);
+    let validation;
+    try {
+      validation = validateSubmittedPageDefaults(service, submittedValues);
+    } catch (err) {
+      return next(err);
+    }
+
+    if (Object.keys(validation.errors).length > 0) {
+      renderDefaultsPage(req, res, {
+        appName,
+        assetBrowserPreferenceService,
+        assetCategoryService,
+        status: 422,
+        submittedValues,
+        errors: validation.errors,
+      });
+      return;
+    }
+
+    try {
+      db.transaction(() => {
+        assetBrowserPreferenceService.setGlobalPreference(submittedValues[PROJECT_ASSET_CATEGORY_FIELD]);
+        for (const { page } of PAGE_DEFAULT_SECTIONS) {
+          for (const option of Object.keys(PAGE_DEFAULT_DEFINITIONS[page])) {
+            service.saveDefault(page, option, validation.validatedValues[page][option]);
+          }
+        }
+      })();
+    } catch (err) {
+      if (err instanceof PreferenceValidationError) {
+        renderDefaultsPage(req, res, {
+          appName,
+          assetBrowserPreferenceService,
+          assetCategoryService,
+          status: 422,
+          submittedValues,
+          preferenceError: err,
+        });
+        return;
+      }
+      return next(err);
+    }
+
+    res.redirect('/settings/defaults?notice=defaults_saved');
   });
 
   if (authService) {

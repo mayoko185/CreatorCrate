@@ -14,6 +14,7 @@ import {
 
 const SORT_OPTIONS = ['updated', 'created', 'planned', 'title'];
 const PAGE_SIZE = 25;
+const RELEASE_MANAGEMENT_PAGE_DEFAULTS = 'releaseManagement';
 
 // Phase 2B: query parameters that unambiguously target the release-record
 // list/board (now at /release-management). A GET /releases request carrying
@@ -55,12 +56,14 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
   // GET /releases/new — Create form (requires project selection)
   router.get('/new', (req, res, next) => {
     try {
+      const pageDefaultsService = getPageDefaultsService(req);
+      const values = buildNewReleaseFormValues(req.query, pageDefaultsService);
       const context = buildReleaseFormProjectContext(req.query.projectId, projectService);
       if (context.projects.length === 0) {
         return res.status(422).render('releases/form.njk', {
           appName,
           release: null,
-          values: req.query || {},
+          values,
           errors: { general: 'No active projects found. Create a project first.' },
           statuses: RELEASE_STATUSES,
           activeStatuses: ACTIVE_RELEASE_STATUSES,
@@ -74,7 +77,7 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
       res.render('releases/form.njk', {
         appName,
         release: null,
-        values: req.query || {},
+        values,
         errors: {},
         statuses: RELEASE_STATUSES,
         activeStatuses: ACTIVE_RELEASE_STATUSES,
@@ -816,25 +819,36 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
  */
 function handleReleaseListOrBoard(req, res, next, { appName, workflowQueryService }) {
   try {
-    const view = req.query.view === 'board' ? 'board' : 'list';
-    const normalizedFilters = workflowQueryService.normalizeListFilters(req.query);
-    // Build query from normalized filters only — no raw req.query values
-    const query = {};
-    query.view = view;
-    if (normalizedFilters.projectId !== null) query.project = String(normalizedFilters.projectId);
-    if (normalizedFilters.status !== null) query.status = normalizedFilters.status;
-    if (normalizedFilters.schedule !== null) query.schedule = normalizedFilters.schedule;
-    if (normalizedFilters.includeArchived) query.includeArchived = '1';
-    if (normalizedFilters.sortBy !== 'updated') query.sort = normalizedFilters.sortBy;
-    if (normalizedFilters.order !== 'desc') query.order = normalizedFilters.order;
-    if (normalizedFilters.page > 1) query.page = String(normalizedFilters.page);
-    if (normalizedFilters.pageSize !== 25) query.pageSize = String(normalizedFilters.pageSize);
-    if (normalizedFilters.readiness !== 'all') query.readiness = normalizedFilters.readiness;
-    const pageUrl = buildPageUrl(req, query);
+    const pageDefaultsService = getReleaseManagementPageDefaultsService(req);
+    const rawQuery = req.query && typeof req.query === 'object' ? req.query : {};
+    const presentation = resolveReleaseManagementPresentation(rawQuery, pageDefaultsService);
+    const effectiveQuery = {
+      ...rawQuery,
+      sort: presentation.sort,
+      order: presentation.order,
+    };
+    const normalizedFilters = workflowQueryService.normalizeListFilters(effectiveQuery);
     const basePath = req.baseUrl;
 
-    if (view === 'board') {
-      const { columns, today } = workflowQueryService.getReleaseBoard(req.query);
+    if (presentation.view === 'board') {
+      const { columns, today } = workflowQueryService.getReleaseBoard(effectiveQuery);
+      const urlQuery = buildReleaseManagementUrlQuery(rawQuery, normalizedFilters, presentation);
+      if (shouldRedirectToSavedReleaseManagementDefaults(rawQuery, presentation)) {
+        return res.redirect(buildPageUrl(req, urlQuery)({}));
+      }
+      const pageUrl = buildPageUrl(req, urlQuery);
+      const query = buildReleaseManagementRenderQuery(normalizedFilters, presentation);
+      const clearUrl = buildPageUrl(
+        req,
+        buildReleaseManagementUrlQuery(
+          rawQuery,
+          normalizedFilters,
+          presentation,
+          normalizedFilters.page,
+          { includeImplicitView: false },
+        ),
+      )(buildReleaseManagementClearOverrides());
+
       return res.render('releases/index.njk', {
         appName,
         view: 'board',
@@ -843,12 +857,29 @@ function handleReleaseListOrBoard(req, res, next, { appName, workflowQueryServic
         query,
         statuses: RELEASE_STATUSES,
         pageUrl,
+        clearUrl,
         basePath,
       });
     }
 
     // List view
-    const { releases, total, page, pageSize, pageCount, today, hasAnyReleases } = workflowQueryService.getReleaseList(req.query);
+    const { releases, total, page, pageSize, pageCount, today, hasAnyReleases } = workflowQueryService.getReleaseList(effectiveQuery);
+    const urlQuery = buildReleaseManagementUrlQuery(rawQuery, normalizedFilters, presentation, page);
+    if (shouldRedirectToSavedReleaseManagementDefaults(rawQuery, presentation)) {
+      return res.redirect(buildPageUrl(req, urlQuery)({}));
+    }
+    const pageUrl = buildPageUrl(req, urlQuery);
+    const query = buildReleaseManagementRenderQuery(normalizedFilters, presentation, page);
+    const clearUrl = buildPageUrl(
+      req,
+      buildReleaseManagementUrlQuery(
+        rawQuery,
+        normalizedFilters,
+        presentation,
+        page,
+        { includeImplicitView: false },
+      ),
+    )(buildReleaseManagementClearOverrides());
 
     res.render('releases/index.njk', {
       appName,
@@ -861,6 +892,7 @@ function handleReleaseListOrBoard(req, res, next, { appName, workflowQueryServic
       today,
       hasAnyReleases,
       pageUrl,
+      clearUrl,
       query,
       statuses: RELEASE_STATUSES,
       sortOptions: SORT_OPTIONS,
@@ -871,17 +903,132 @@ function handleReleaseListOrBoard(req, res, next, { appName, workflowQueryServic
   }
 }
 
+function getReleaseManagementPageDefaultsService(req) {
+  const service = req.app?.locals?.pageDefaultsService;
+  if (!service) {
+    throw new Error('Release Management requires app.locals.pageDefaultsService.');
+  }
+  return service;
+}
+
+function resolveReleaseManagementPresentation(rawQuery, pageDefaultsService) {
+  const query = rawQuery && typeof rawQuery === 'object' ? rawQuery : {};
+  const presentation = {};
+
+  for (const option of ['view', 'sort', 'order']) {
+    const fallback = pageDefaultsService.getFallback(RELEASE_MANAGEMENT_PAGE_DEFAULTS, option);
+    const savedValue = pageDefaultsService.resolve(RELEASE_MANAGEMENT_PAGE_DEFAULTS, option);
+    const explicit = Object.hasOwn(query, option);
+    const explicitValue = query[option] === undefined ? null : query[option];
+    const value = explicit
+      ? pageDefaultsService.resolve(RELEASE_MANAGEMENT_PAGE_DEFAULTS, option, explicitValue)
+      : savedValue;
+
+    presentation[option] = {
+      value,
+      fallback,
+      savedValue,
+      explicit,
+    };
+  }
+
+  return {
+    view: presentation.view.value,
+    sort: presentation.sort.value,
+    order: presentation.order.value,
+    options: presentation,
+  };
+}
+
+function shouldIncludeReleaseManagementOption(rawQuery, presentation, option) {
+  const setting = presentation.options[option];
+  const explicitValue = rawQuery[option];
+  return setting.value !== setting.fallback
+    || (setting.explicit && setting.savedValue !== setting.fallback)
+    || (option === 'view' && setting.explicit && explicitValue === setting.value);
+}
+
+function buildReleaseManagementUrlQuery(
+  rawQuery,
+  normalizedFilters,
+  presentation,
+  currentPage = normalizedFilters.page,
+  { includeImplicitView = true } = {},
+) {
+  const query = {};
+
+  if (normalizedFilters.projectId !== null) query.project = String(normalizedFilters.projectId);
+  if (normalizedFilters.status !== null) query.status = normalizedFilters.status;
+  if (normalizedFilters.schedule !== null) query.schedule = normalizedFilters.schedule;
+  if (normalizedFilters.includeArchived) query.includeArchived = '1';
+  if (includeImplicitView || shouldIncludeReleaseManagementOption(rawQuery, presentation, 'view')) {
+    query.view = presentation.view;
+  }
+  if (shouldIncludeReleaseManagementOption(rawQuery, presentation, 'sort')) {
+    query.sort = presentation.sort;
+  }
+  if (shouldIncludeReleaseManagementOption(rawQuery, presentation, 'order')) {
+    query.order = presentation.order;
+  }
+  if (currentPage > 1) query.page = String(currentPage);
+  if (normalizedFilters.pageSize !== PAGE_SIZE) query.pageSize = String(normalizedFilters.pageSize);
+  if (normalizedFilters.readiness !== 'all') query.readiness = normalizedFilters.readiness;
+
+  return query;
+}
+
+function buildReleaseManagementRenderQuery(normalizedFilters, presentation, currentPage = normalizedFilters.page) {
+  return {
+    view: presentation.view,
+    project: normalizedFilters.projectId === null ? undefined : String(normalizedFilters.projectId),
+    status: normalizedFilters.status || undefined,
+    schedule: normalizedFilters.schedule || undefined,
+    includeArchived: normalizedFilters.includeArchived ? '1' : undefined,
+    sort: presentation.sort,
+    order: presentation.order,
+    page: currentPage > 1 ? String(currentPage) : undefined,
+    pageSize: String(normalizedFilters.pageSize),
+    readiness: normalizedFilters.readiness,
+  };
+}
+
+function buildReleaseManagementClearOverrides() {
+  return {
+    project: null,
+    status: null,
+    schedule: null,
+    readiness: null,
+    includeArchived: null,
+    page: null,
+  };
+}
+
+function hasReleaseManagementPresentationQuery(rawQuery) {
+  return ['view', 'sort', 'order'].some((option) => Object.hasOwn(rawQuery, option));
+}
+
+function shouldRedirectToSavedReleaseManagementDefaults(rawQuery, presentation) {
+  if (hasReleaseManagementPresentationQuery(rawQuery)) return false;
+
+  return ['view', 'sort', 'order'].some((option) => {
+    const setting = presentation.options[option];
+    return setting.value !== setting.fallback;
+  });
+}
+
 /**
  * Parse and normalize GET /releases (Published Work) query parameters.
  * @param {Object} raw - req.query
  */
-function parsePublishedQuery(raw) {
-  const search = typeof raw.search === 'string' ? raw.search.trim() : '';
-  const sortBy = PUBLISHED_SORT_OPTIONS.includes(raw.sort) ? raw.sort : 'published';
-  const order = raw.order === 'asc' ? 'asc' : 'desc';
-  const view = raw.view === 'list' ? 'list' : 'grid';
+function parsePublishedQuery(raw, pageDefaultsService) {
+  const rawQuery = raw && typeof raw === 'object' ? raw : {};
+  const defaults = pageDefaultsService.resolvePageDefaults('publishedWork', rawQuery);
+  const search = typeof rawQuery.search === 'string' ? rawQuery.search.trim() : '';
+  const sortBy = defaults.sort;
+  const order = defaults.order;
+  const view = defaults.view;
 
-  let page = Number.parseInt(raw.page, 10);
+  let page = Number.parseInt(rawQuery.page, 10);
   if (!Number.isInteger(page) || page < 1) {
     page = 1;
   }
@@ -889,14 +1036,39 @@ function parsePublishedQuery(raw) {
   return { search, sortBy, order, page, view };
 }
 
-function buildPublishedPageUrl(req, parsedQuery, currentPage) {
+function buildPublishedPageUrl(req, parsedQuery, currentPage, pageDefaultsService) {
   const rawPath = req.baseUrl + req.path;
   const cleanPath = rawPath.length > 1 && rawPath.endsWith('/') ? rawPath.slice(0, -1) : rawPath;
+  const rawQuery = req.query && typeof req.query === 'object' ? req.query : {};
+  const fallbackSort = pageDefaultsService.getFallback('publishedWork', 'sort');
+  const fallbackOrder = pageDefaultsService.getFallback('publishedWork', 'order');
+  const fallbackView = pageDefaultsService.getFallback('publishedWork', 'view');
+  const defaultSort = pageDefaultsService.resolve('publishedWork', 'sort');
+  const defaultOrder = pageDefaultsService.resolve('publishedWork', 'order');
+  const defaultView = pageDefaultsService.resolve('publishedWork', 'view');
   const baseQuery = {};
   if (parsedQuery.search) baseQuery.search = parsedQuery.search;
-  if (PUBLISHED_SORT_OPTIONS.includes(req.query.sort)) baseQuery.sort = parsedQuery.sortBy;
-  if (req.query.order === 'asc' || req.query.order === 'desc') baseQuery.order = parsedQuery.order;
-  if (parsedQuery.view === 'list') baseQuery.view = 'list';
+  if (
+    parsedQuery.sortBy !== fallbackSort
+    || PUBLISHED_SORT_OPTIONS.includes(rawQuery.sort)
+    || (Object.hasOwn(rawQuery, 'sort') && defaultSort !== fallbackSort)
+  ) {
+    baseQuery.sort = parsedQuery.sortBy;
+  }
+  if (
+    parsedQuery.order !== fallbackOrder
+    || rawQuery.order === 'asc'
+    || rawQuery.order === 'desc'
+    || (Object.hasOwn(rawQuery, 'order') && defaultOrder !== fallbackOrder)
+  ) {
+    baseQuery.order = parsedQuery.order;
+  }
+  if (
+    parsedQuery.view !== fallbackView
+    || (Object.hasOwn(rawQuery, 'view') && defaultView !== fallbackView)
+  ) {
+    baseQuery.view = parsedQuery.view;
+  }
   if (currentPage > 1) baseQuery.page = String(currentPage);
 
   return function pageUrl(overrides) {
@@ -907,6 +1079,7 @@ function buildPublishedPageUrl(req, parsedQuery, currentPage) {
         delete query[key];
       } else if (key === 'view') {
         if (value === 'list') query.view = 'list';
+        else if (value === 'grid' && defaultView !== fallbackView) query.view = 'grid';
         else delete query.view;
       } else {
         query[key] = String(value);
@@ -915,6 +1088,52 @@ function buildPublishedPageUrl(req, parsedQuery, currentPage) {
     const search = new URLSearchParams(query).toString();
     return search ? `${cleanPath}?${search}` : cleanPath;
   };
+}
+
+function getPageDefaultsService(req) {
+  const service = req.app?.locals?.pageDefaultsService;
+  if (!service) {
+    throw new Error('Published Work requires app.locals.pageDefaultsService.');
+  }
+  return service;
+}
+
+function buildNewReleaseFormValues(rawQuery, pageDefaultsService) {
+  const query = rawQuery && typeof rawQuery === 'object' && !Array.isArray(rawQuery)
+    ? rawQuery
+    : {};
+  const explicitStatus = typeof query.status === 'string' && ACTIVE_RELEASE_STATUSES.includes(query.status)
+    ? query.status
+    : null;
+
+  return {
+    ...query,
+    status: explicitStatus
+      ?? pageDefaultsService.getSavedDefault('new_release', 'status')
+      ?? pageDefaultsService.getFallback('new_release', 'status'),
+  };
+}
+
+function hasPublishedPresentationQuery(raw) {
+  const rawQuery = raw && typeof raw === 'object' ? raw : {};
+  return ['view', 'sort', 'order'].some((key) => Object.hasOwn(rawQuery, key));
+}
+
+function shouldRedirectToSavedPublishedDefaults(raw, parsedQuery, pageDefaultsService) {
+  if (hasPublishedPresentationQuery(raw)) return false;
+
+  return parsedQuery.view !== pageDefaultsService.getFallback('publishedWork', 'view')
+    || parsedQuery.sortBy !== pageDefaultsService.getFallback('publishedWork', 'sort')
+    || parsedQuery.order !== pageDefaultsService.getFallback('publishedWork', 'order');
+}
+
+function shouldPreservePublishedViewQuery(raw, parsedQuery, pageDefaultsService) {
+  if (parsedQuery.view === 'list') return true;
+
+  const rawQuery = raw && typeof raw === 'object' ? raw : {};
+  return Object.hasOwn(rawQuery, 'view')
+    && parsedQuery.view === pageDefaultsService.getFallback('publishedWork', 'view')
+    && pageDefaultsService.resolve('publishedWork', 'view') !== pageDefaultsService.getFallback('publishedWork', 'view');
 }
 
 /**
@@ -928,7 +1147,8 @@ function buildPublishedPageUrl(req, parsedQuery, currentPage) {
  */
 function handlePublishedWork(req, res, next, { appName, projectService, workflowQueryService }) {
   try {
-    const parsed = parsePublishedQuery(req.query);
+    const pageDefaultsService = getPageDefaultsService(req);
+    const parsed = parsePublishedQuery(req.query, pageDefaultsService);
     const baseOptions = { search: parsed.search, sortBy: parsed.sortBy, order: parsed.order };
 
     const pageResult = workflowQueryService.getPublishedProjectList({
@@ -940,6 +1160,10 @@ function handlePublishedWork(req, res, next, { appName, projectService, workflow
     const { total: totalPublished } = projectService.listPublished({ limit: 0 });
     const pageCount = Math.max(1, Math.ceil(total / PUBLISHED_PAGE_SIZE));
     const currentPage = Math.min(parsed.page, pageCount);
+    if (shouldRedirectToSavedPublishedDefaults(req.query, parsed, pageDefaultsService)) {
+      const canonicalUrl = buildPublishedPageUrl(req, parsed, currentPage, pageDefaultsService)({});
+      return res.redirect(canonicalUrl);
+    }
     const rows = currentPage === parsed.page
       ? pageResult.rows
       : workflowQueryService.getPublishedProjectList({
@@ -948,7 +1172,7 @@ function handlePublishedWork(req, res, next, { appName, projectService, workflow
         offset: (currentPage - 1) * PUBLISHED_PAGE_SIZE,
       }).rows;
 
-    const pageUrl = buildPublishedPageUrl(req, parsed, currentPage);
+    const pageUrl = buildPublishedPageUrl(req, parsed, currentPage, pageDefaultsService);
 
     res.render('releases/published.njk', {
       appName,
@@ -967,6 +1191,7 @@ function handlePublishedWork(req, res, next, { appName, projectService, workflow
         view: parsed.view,
       },
       view: parsed.view,
+      preserveViewQuery: shouldPreservePublishedViewQuery(req.query, parsed, pageDefaultsService),
       sortOptions: PUBLISHED_SORT_OPTIONS,
     });
   } catch (err) {

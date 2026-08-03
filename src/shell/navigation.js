@@ -92,6 +92,7 @@ const NAVIGATION_ITEMS = [
       '/settings/backups/:filename/delete',
       '/settings/security',
       '/settings/security/disable',
+      '/settings/defaults',
     ],
   },
 ];

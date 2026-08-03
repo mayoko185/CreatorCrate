@@ -16,6 +16,7 @@ import {
   buildProjectRelPath,
   resolveProjectDir,
 } from '../src/storage/project-storage.js';
+import { PAGE_DEFAULT_DEFINITIONS } from '../src/services/page-defaults-service.js';
 import { makeZip } from './helpers/zip-fixture.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
@@ -79,6 +80,32 @@ describe('project HTTP workflow', () => {
     return Number(res.headers.location.replace('/projects/', ''));
   }
 
+  function saveProjectDefault(option, value) {
+    return app.locals.pageDefaultsService.saveDefault('projects', option, value);
+  }
+
+  function writeStoredProjectDefault(option, value) {
+    const key = PAGE_DEFAULT_DEFINITIONS.projects[option].key;
+    db.prepare(`
+      INSERT INTO app_meta (key, value)
+      VALUES (?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value
+    `).run(key, value);
+  }
+
+  function saveNewProjectDefault(option, value) {
+    return app.locals.pageDefaultsService.saveDefault('new_project', option, value);
+  }
+
+  function writeStoredNewProjectDefault(option, value) {
+    const key = PAGE_DEFAULT_DEFINITIONS.new_project[option].key;
+    db.prepare(`
+      INSERT INTO app_meta (key, value)
+      VALUES (?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value
+    `).run(key, value);
+  }
+
   function seedPrimaryImage(projectId, filename = 'cover.png') {
     const project = db.prepare('SELECT project_dir FROM projects WHERE id = ?').get(projectId);
     const projectDir = resolveProjectDir(projectsRoot, project.project_dir);
@@ -124,10 +151,79 @@ describe('project HTTP workflow', () => {
     expect(res.text).toContain('<span class="count">1</span> Archived');
   });
 
-  it('project list renders', async () => {
+  it('project list renders with application fallbacks and no canonical redirect when defaults are absent', async () => {
     const res = await agent.get('/projects').expect(200);
     expect(res.text).toContain('Projects');
     expect(res.text).toContain('No projects yet');
+    expect(res.text).not.toContain('<input type="hidden" name="view"');
+    expect(res.text).toContain('href="/projects?view=list"');
+    expect(res.text).toContain('<option value="created" selected>Created</option>');
+    expect(res.text).toContain('<option value="desc" selected>Desc</option>');
+  });
+
+  it('redirects a bare request to valid saved non-fallback Projects defaults', async () => {
+    saveProjectDefault('view', 'list');
+    saveProjectDefault('sort', 'title');
+    saveProjectDefault('order', 'asc');
+
+    const redirect = await agent.get('/projects').expect(302);
+    expect(redirect.headers.location).toBe('/projects?sort=title&order=asc&view=list');
+
+    const rendered = await agent.get(redirect.headers.location).expect(200);
+    expect(rendered.text).toContain('<input type="hidden" name="view" value="list">');
+    expect(rendered.text).toContain('<option value="title" selected>Title</option>');
+    expect(rendered.text).toContain('<option value="asc" selected>Asc</option>');
+  });
+
+  it('uses application fallbacks for invalid stored Projects defaults', async () => {
+    writeStoredProjectDefault('view', 'board');
+    writeStoredProjectDefault('sort', 'published');
+    writeStoredProjectDefault('order', 'forwards');
+
+    const res = await agent.get('/projects').expect(200);
+    expect(res.text).not.toContain('<input type="hidden" name="view"');
+    expect(res.text).toContain('href="/projects?view=list"');
+    expect(res.text).toContain('<option value="created" selected>Created</option>');
+    expect(res.text).toContain('<option value="desc" selected>Desc</option>');
+    expect(res.headers.location).toBeUndefined();
+  });
+
+  it('gives valid explicit values precedence while resolving omitted options from saved defaults', async () => {
+    saveProjectDefault('view', 'list');
+    saveProjectDefault('sort', 'title');
+    saveProjectDefault('order', 'asc');
+
+    const res = await agent.get('/projects?view=grid&sort=updated').expect(200);
+    expect(res.text).not.toContain('<ul class="project-list">');
+    expect(res.text).toContain('<option value="updated" selected>Updated</option>');
+    expect(res.text).toContain('<option value="asc" selected>Asc</option>');
+    expect(res.text).toContain('<input type="hidden" name="view" value="grid">');
+    expect(res.text).toContain('href="/projects?sort=updated&amp;order=asc&amp;view=grid"');
+  });
+
+  it('keeps invalid explicit presentation values on application fallbacks instead of saved values', async () => {
+    saveProjectDefault('view', 'list');
+    saveProjectDefault('sort', 'title');
+    saveProjectDefault('order', 'asc');
+
+    const res = await agent.get('/projects?view=invalid&sort=invalid&order=invalid').expect(200);
+    expect(res.text).toContain('<input type="hidden" name="view" value="grid">');
+    expect(res.text).toContain('<option value="created" selected>Created</option>');
+    expect(res.text).toContain('<option value="desc" selected>Desc</option>');
+    expect(res.text).not.toContain('sort=invalid');
+    expect(res.text).not.toContain('order=invalid');
+    expect(res.text).not.toContain('view=invalid');
+  });
+
+  it('does not redirect when saved values equal the application fallbacks', async () => {
+    saveProjectDefault('view', 'grid');
+    saveProjectDefault('sort', 'created');
+    saveProjectDefault('order', 'desc');
+
+    const res = await agent.get('/projects').expect(200);
+    expect(res.headers.location).toBeUndefined();
+    expect(res.text).toContain('<option value="created" selected>Created</option>');
+    expect(res.text).toContain('<option value="desc" selected>Desc</option>');
   });
 
   it('renders one semantic project card per row with primary-image states and retained metadata', async () => {
@@ -296,6 +392,44 @@ describe('project HTTP workflow', () => {
     expect(invalid.text).toContain('href="/projects"');
   });
 
+  it('preserves filters, pagination, and effective saved settings through canonical URLs and links', async () => {
+    saveProjectDefault('view', 'list');
+    saveProjectDefault('sort', 'title');
+    saveProjectDefault('order', 'asc');
+
+    for (let i = 0; i < 26; i += 1) {
+      await createProject({ title: `Canonical Project ${String(i).padStart(2, '0')}`, status: 'planned' });
+    }
+
+    const redirect = await agent
+      .get('/projects?search=Canonical+Project&status=planned&page=2&unknown=discarded')
+      .expect(302);
+    expect(redirect.headers.location)
+      .toBe('/projects?search=Canonical+Project&status=planned&sort=title&order=asc&view=list&page=2');
+
+    const pageTwo = await agent.get(redirect.headers.location).expect(200);
+    expect(pageTwo.text).toContain('<ul class="project-list">');
+    expect(pageTwo.text).toContain('Canonical Project 25');
+    expect(pageTwo.text).not.toContain('unknown=discarded');
+    expect(pageTwo.text).toContain(
+      'href="/projects?search=Canonical+Project&amp;status=planned&amp;sort=title&amp;order=asc&amp;view=list&amp;page=1"'
+    );
+
+    const pageOne = await agent
+      .get('/projects?search=Canonical+Project&status=planned&sort=title&order=asc&view=list')
+      .expect(200);
+    expect(pageOne.text).toContain(
+      'href="/projects?search=Canonical+Project&amp;status=planned&amp;sort=title&amp;order=asc&amp;view=list&amp;page=2"'
+    );
+    expect(pageOne.text).toContain(
+      'href="/projects?search=Canonical+Project&amp;status=planned&amp;sort=title&amp;order=asc&amp;view=grid"'
+    );
+    expect(pageOne.text).toContain('<input type="hidden" name="view" value="list">');
+    expect(pageOne.text).toContain('<option value="title" selected>Title</option>');
+    expect(pageOne.text).toContain('<option value="asc" selected>Asc</option>');
+    expect(pageOne.text).not.toContain('unknown=discarded');
+  });
+
   it('new-project form renders', async () => {
     const res = await agent.get('/projects/new').expect(200);
     expect(res.text).toContain('Create Project');
@@ -303,6 +437,88 @@ describe('project HTTP workflow', () => {
     expect(res.text).not.toContain('value="archived"');
     expect(res.text).toContain('<option value="normal" selected>Normal</option>');
     expect(res.text).not.toContain('<option value="low" selected>Low</option>');
+  });
+
+  it('new-project form seeds valid saved New Project status and priority defaults', async () => {
+    saveNewProjectDefault('status', 'ready');
+    saveNewProjectDefault('priority', 'high');
+
+    const res = await agent.get('/projects/new').expect(200);
+
+    expect(res.text).toContain('<option value="ready" selected>Ready</option>');
+    expect(res.text).not.toContain('<option value="tbd" selected>Tbd</option>');
+    expect(res.text).toContain('<option value="high" selected>High</option>');
+    expect(res.text).not.toContain('<option value="normal" selected>Normal</option>');
+  });
+
+  it('new-project form uses tbd/normal fallbacks when no defaults are saved', async () => {
+    const res = await agent.get('/projects/new').expect(200);
+
+    expect(res.text).toContain('<option value="tbd" selected>Tbd</option>');
+    expect(res.text).toContain('<option value="normal" selected>Normal</option>');
+    expect(res.text).not.toContain('<option value="ready" selected>Ready</option>');
+    expect(res.text).not.toContain('<option value="high" selected>High</option>');
+  });
+
+  it('new-project form falls back to tbd/normal when stored defaults are invalid', async () => {
+    writeStoredNewProjectDefault('status', 'archived');
+    writeStoredNewProjectDefault('priority', 'urgent');
+
+    const res = await agent.get('/projects/new').expect(200);
+
+    expect(res.text).toContain('<option value="tbd" selected>Tbd</option>');
+    expect(res.text).toContain('<option value="normal" selected>Normal</option>');
+  });
+
+  it('rejected create submission preserves submitted status/priority over saved defaults', async () => {
+    saveNewProjectDefault('status', 'ready');
+    saveNewProjectDefault('priority', 'high');
+
+    const res = await agent
+      .post('/projects')
+      .send('title=')
+      .send('status=in-progress')
+      .send('priority=low')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .expect(422);
+
+    expect(res.text).toContain('<option value="in-progress" selected>In Progress</option>');
+    expect(res.text).toContain('<option value="low" selected>Low</option>');
+    expect(res.text).not.toContain('<option value="ready" selected>Ready</option>');
+    expect(res.text).not.toContain('<option value="high" selected>High</option>');
+  });
+
+  it('successful create uses submitted status/priority, not saved defaults', async () => {
+    saveNewProjectDefault('status', 'ready');
+    saveNewProjectDefault('priority', 'high');
+
+    const res = await agent
+      .post('/projects')
+      .send('title=Submitted+Wins')
+      .send('status=planned')
+      .send('priority=low')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .expect(302);
+
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const project = db.prepare('SELECT status, priority FROM projects WHERE id = ?').get(id);
+    expect(project.status).toBe('planned');
+    expect(project.priority).toBe('low');
+  });
+
+  it('edit form shows stored project values even when New Project defaults differ', async () => {
+    saveNewProjectDefault('status', 'ready');
+    saveNewProjectDefault('priority', 'high');
+    const id = await createProject({ title: 'Editable', status: 'in-progress', priority: 'low' });
+
+    const res = await agent.get(`/projects/${id}/edit`).expect(200);
+
+    expect(res.text).toContain('<option value="in-progress" selected>In Progress</option>');
+    expect(res.text).toContain('<option value="low" selected>Low</option>');
+    expect(res.text).not.toContain('<option value="ready" selected>Ready</option>');
+    expect(res.text).not.toContain('<option value="high" selected>High</option>');
   });
 
   it('valid create request redirects to detail', async () => {

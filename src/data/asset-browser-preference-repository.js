@@ -1,3 +1,5 @@
+import { createAppMetaRepository } from './app-meta-repository.js';
+
 export const PROJECT_PREFERENCE_MODES = Object.freeze(['inherit', 'all', 'category']);
 export const GLOBAL_DEFAULT_KEY = 'asset_browser.default_category';
 
@@ -22,7 +24,7 @@ const SELECT_PROJECT_PREFERENCE = `
  * a disabled reference can be retained and a later category deletion can be
  * reset explicitly in the caller's transaction.
  */
-export function createAssetBrowserPreferenceRepository(db) {
+export function createAssetBrowserPreferenceRepository(db, { appMetaRepository } = {}) {
   const findProjectPreferenceStmt = db.prepare(
     `${SELECT_PROJECT_PREFERENCE} WHERE project_id = ?`
   );
@@ -50,15 +52,7 @@ export function createAssetBrowserPreferenceRepository(db) {
       AND default_category_mode = 'category'
       AND default_category_id = ?
   `);
-  const getGlobalDefaultStmt = db.prepare(
-    'SELECT value FROM app_meta WHERE key = ?'
-  );
-  const setGlobalDefaultStmt = db.prepare(`
-    INSERT INTO app_meta (key, value)
-    VALUES (?, ?)
-    ON CONFLICT(key) DO UPDATE SET value = excluded.value
-    RETURNING value
-  `);
+  const sharedAppMetaRepository = appMetaRepository ?? createAppMetaRepository(db);
 
   return {
     /** @returns {object|undefined} */
@@ -98,12 +92,11 @@ export function createAssetBrowserPreferenceRepository(db) {
      * malformed values are returned unchanged for service-level resolution.
      */
     getGlobalDefault() {
-      const row = getGlobalDefaultStmt.get(GLOBAL_DEFAULT_KEY);
-      return row ? row.value : 'all';
+      return sharedAppMetaRepository.getValue(GLOBAL_DEFAULT_KEY) ?? 'all';
     },
 
     setGlobalDefault(value) {
-      return setGlobalDefaultStmt.get(GLOBAL_DEFAULT_KEY, value).value;
+      return sharedAppMetaRepository.setValue(GLOBAL_DEFAULT_KEY, value);
     },
   };
 }

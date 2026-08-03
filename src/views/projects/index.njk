@@ -13,8 +13,8 @@
   {{ viewSwitcher.render(view, pageUrl, "Project display") }}
 
   <form class="filters" method="get" action="/projects">
-    {% if view == 'list' %}
-      <input type="hidden" name="view" value="list">
+    {% if view == 'list' or preserveViewQuery %}
+      <input type="hidden" name="view" value="{{ view }}">
     {% endif %}
     <div class="field">
       <label for="search">Search</label>

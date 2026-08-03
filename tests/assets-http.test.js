@@ -17,6 +17,7 @@ import { createAssetBrowserPreferenceRepository } from '../src/data/asset-browse
 import { buildAssetRevisionToken } from '../src/services/preview-service.js';
 import { ensureAuthEnablement } from '../src/auth/auth-state.js';
 import { AssetActionError } from '../src/services/asset-action-service.js';
+import { PAGE_DEFAULT_DEFINITIONS } from '../src/services/page-defaults-service.js';
 import { getDisabledModeCsrf } from './helpers/auth.js';
 import { makeZip } from './helpers/zip-fixture.js';
 import slugify from '@sindresorhus/slugify';
@@ -103,6 +104,19 @@ describe('asset browser HTTP workflow', () => {
     if (preview) entries.push({ name: 'preview.png', data: preview, compression: 'deflate' });
     if (merged) entries.push({ name: 'mergedimage.png', data: merged, compression: 'deflate' });
     return makeZip(entries);
+  }
+
+  function saveAssetDefault(option, value) {
+    return app.locals.pageDefaultsService.saveDefault('projectAssets', option, value);
+  }
+
+  function writeStoredAssetDefault(option, value) {
+    const key = PAGE_DEFAULT_DEFINITIONS.projectAssets[option].key;
+    db.prepare(`
+      INSERT INTO app_meta (key, value)
+      VALUES (?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value
+    `).run(key, value);
   }
 
   async function setupOrderedImageAssets(projectTitle) {
@@ -371,6 +385,138 @@ describe('asset browser HTTP workflow', () => {
       expect(response.headers.location).toBe(`/projects/${project.id}/assets?category=77`);
       expect(preferenceService.resolveEffectiveCategory).toHaveBeenCalledWith(project.id);
       expect(fullBrowserQuery).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('saved Project Assets presentation defaults', () => {
+    it('combines saved category and all four saved presentation defaults in one canonical redirect', async () => {
+      const res = await createProject('Saved Assets Defaults Combined');
+      const id = Number(res.headers.location.replace('/projects/', ''));
+      const [category] = assetCategoryRepo.listProjectCategories(id);
+      assetBrowserPreferenceRepo.upsertProjectPreference(id, 'category', category.id);
+      saveAssetDefault('view', 'list');
+      saveAssetDefault('sort', 'category');
+      saveAssetDefault('order', 'desc');
+      saveAssetDefault('pageSize', '50');
+
+      const redirect = await agent.get(`/projects/${id}/assets`).expect(302);
+
+      expect(redirect.headers.location)
+        .toBe(`/projects/${id}/assets?category=${category.id}&sort=category&order=desc&pageSize=50&view=list`);
+      expect(redirect.headers.location).not.toContain('category=' + category.id + '&category=');
+
+      const canonical = await agent.get(redirect.headers.location).expect(200);
+      expect(canonical.headers.location).toBeUndefined();
+      expect(canonical.text).toContain('Assets — Saved Assets Defaults Combined');
+    });
+
+    it('preserves the existing bare behavior when saved presentation values are absent', async () => {
+      const res = await createProject('Saved Assets Defaults Absent');
+      const id = Number(res.headers.location.replace('/projects/', ''));
+
+      const response = await agent.get(`/projects/${id}/assets`).expect(200);
+
+      expect(response.headers.location).toBeUndefined();
+      expect(response.text).toContain('Grid');
+      expect(response.text).toContain('value="filename" selected');
+      expect(response.text).toContain('value="asc" selected');
+      expect(response.text).toContain('<input type="hidden" name="pageSize" value="25">');
+    });
+
+    it('does not redirect when saved values equal application fallbacks', async () => {
+      saveAssetDefault('view', 'grid');
+      saveAssetDefault('sort', 'filename');
+      saveAssetDefault('order', 'asc');
+      saveAssetDefault('pageSize', '25');
+
+      const res = await createProject('Saved Assets Defaults Fallbacks');
+      const id = Number(res.headers.location.replace('/projects/', ''));
+      const response = await agent.get(`/projects/${id}/assets`).expect(200);
+
+      expect(response.headers.location).toBeUndefined();
+      expect(response.text).toContain('value="filename" selected');
+      expect(response.text).toContain('value="asc" selected');
+      expect(response.text).toContain('<input type="hidden" name="pageSize" value="25">');
+    });
+
+    it('uses application fallbacks for invalid stored values without redirecting or rewriting storage', async () => {
+      writeStoredAssetDefault('view', 'board');
+      writeStoredAssetDefault('sort', 'published');
+      writeStoredAssetDefault('order', 'forwards');
+      writeStoredAssetDefault('pageSize', '20');
+
+      const res = await createProject('Saved Assets Defaults Invalid Storage');
+      const id = Number(res.headers.location.replace('/projects/', ''));
+      const response = await agent.get(`/projects/${id}/assets`).expect(200);
+
+      expect(response.headers.location).toBeUndefined();
+      expect(response.text).toContain('value="filename" selected');
+      expect(response.text).toContain('value="asc" selected');
+      expect(response.text).toContain('<input type="hidden" name="pageSize" value="25">');
+      expect(response.text).toContain('href="/projects/' + id + '/assets?view=list"');
+      expect(db.prepare('SELECT value FROM app_meta WHERE key = ?').get(PAGE_DEFAULT_DEFINITIONS.projectAssets.view.key).value)
+        .toBe('board');
+    });
+
+    it('gives valid explicit values precedence and keeps omitted values on saved defaults', async () => {
+      saveAssetDefault('view', 'list');
+      saveAssetDefault('sort', 'category');
+      saveAssetDefault('order', 'desc');
+      saveAssetDefault('pageSize', '50');
+
+      const res = await createProject('Saved Assets Defaults Explicit');
+      const id = Number(res.headers.location.replace('/projects/', ''));
+      const response = await agent
+        .get(`/projects/${id}/assets?view=grid&sort=filename&order=asc&pageSize=10&search=hero`)
+        .expect(200);
+
+      expect(response.headers.location).toBeUndefined();
+      expect(response.text).toContain('value="hero"');
+      expect(response.text).toContain('value="filename" selected');
+      expect(response.text).toContain('value="asc" selected');
+      expect(response.text).toContain('<input type="hidden" name="pageSize" value="10">');
+      expect(response.text).not.toContain('<div class="asset-auto-rename-surface"');
+    });
+
+    it('uses saved presentation defaults when filters are explicit but presentation options are omitted', async () => {
+      saveAssetDefault('view', 'list');
+      saveAssetDefault('sort', 'category');
+      saveAssetDefault('order', 'desc');
+      saveAssetDefault('pageSize', '50');
+
+      const res = await createProject('Saved Assets Defaults Omitted With Filters');
+      const id = Number(res.headers.location.replace('/projects/', ''));
+      const response = await agent
+        .get(`/projects/${id}/assets?search=hero&presence=present&usage=unused`)
+        .expect(200);
+
+      expect(response.headers.location).toBeUndefined();
+      expect(response.text).toContain('value="hero"');
+      expect(response.text).toContain('value="category" selected');
+      expect(response.text).toContain('value="desc" selected');
+      expect(response.text).toContain('<input type="hidden" name="pageSize" value="50">');
+      expect(response.text).toContain('<input type="hidden" name="view" value="list">');
+    });
+
+    it('uses current route fallbacks for explicitly invalid values instead of saved values', async () => {
+      saveAssetDefault('view', 'list');
+      saveAssetDefault('sort', 'category');
+      saveAssetDefault('order', 'desc');
+      saveAssetDefault('pageSize', '50');
+
+      const res = await createProject('Saved Assets Defaults Invalid Query');
+      const id = Number(res.headers.location.replace('/projects/', ''));
+      const response = await agent
+        .get(`/projects/${id}/assets?view=board&sort=published&order=forwards&pageSize=twenty`)
+        .expect(200);
+
+      expect(response.headers.location).toBeUndefined();
+      expect(response.text).toContain('value="filename" selected');
+      expect(response.text).toContain('value="asc" selected');
+      expect(response.text).toContain('<input type="hidden" name="pageSize" value="25">');
+      expect(response.text).toContain('<input type="hidden" name="view" value="grid">');
+      expect(response.text).not.toContain('sort=published');
+      expect(response.text).not.toContain('order=forwards');
     });
   });
 
@@ -1503,6 +1649,74 @@ describe('asset browser HTTP workflow', () => {
     expect(submittedUrl.searchParams.get('pageSize')).toBe('25');
     expect(submittedUrl.searchParams.has('page')).toBe(false);
     expect(submittedUrl.searchParams.has('view')).toBe(false);
+  });
+
+  it('round-trips saved presentation values through filters, pagination, page size, view, and clear-filter links', async () => {
+    saveAssetDefault('view', 'list');
+    saveAssetDefault('sort', 'category');
+    saveAssetDefault('order', 'desc');
+    saveAssetDefault('pageSize', '50');
+
+    const res = await createProject('Saved Assets Control Context');
+    const id = res.headers.location.replace('/projects/', '');
+    const projectDir = getProjectDir('Saved Assets Control Context');
+    if (!projectDir) throw new Error('projectDir not found for Saved Assets Control Context');
+
+    for (let i = 0; i < 35; i++) {
+      fs.writeFileSync(path.join(projectDir, `filtered-${String(i).padStart(2, '0')}.png`), `c${i}`);
+    }
+    await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
+
+    const response = await agent
+      .get(`/projects/${id}/assets?search=filtered&extension=.PNG&presence=present&usage=unused&pageSize=10`)
+      .expect(200);
+
+    expect(response.text).toContain('<table class="data-table asset-table">');
+    expect(response.text).toContain('value="category" selected');
+    expect(response.text).toContain('value="desc" selected');
+    expect(response.text).toContain('value="10" selected');
+    expect(response.text).toContain('<input type="hidden" name="pageSize" value="10">');
+    expect(response.text).toContain('<input type="hidden" name="view" value="list">');
+
+    const nextMatch = response.text.match(/<a href="([^"]+)" class="pagination-next">Next/);
+    expect(nextMatch).not.toBeNull();
+    const nextUrl = new URL(decodeHtmlHref(nextMatch[1]), 'http://localhost');
+    expect(nextUrl.searchParams.get('search')).toBe('filtered');
+    expect(nextUrl.searchParams.get('extension')).toBe('png');
+    expect(nextUrl.searchParams.get('presence')).toBe('present');
+    expect(nextUrl.searchParams.get('usage')).toBe('unused');
+    expect(nextUrl.searchParams.get('sort')).toBe('category');
+    expect(nextUrl.searchParams.get('order')).toBe('desc');
+    expect(nextUrl.searchParams.get('page')).toBe('2');
+    expect(nextUrl.searchParams.get('pageSize')).toBe('10');
+    expect(nextUrl.searchParams.get('view')).toBe('list');
+
+    const pageSizeForm = response.text.match(/<form class="page-size-form"[\s\S]*?<\/form>/)?.[0];
+    expect(pageSizeForm).toBeDefined();
+    expect(pageSizeForm).toContain('<input type="hidden" name="sort" value="category">');
+    expect(pageSizeForm).toContain('<input type="hidden" name="order" value="desc">');
+    expect(pageSizeForm).toContain('<input type="hidden" name="view" value="list">');
+
+    const gridHref = response.text.match(/<a class="view-switcher-option" href="([^"]+)"[\s\S]*?>Grid<\/a>/)?.[1];
+    expect(gridHref).toBeDefined();
+    const gridUrl = new URL(decodeHtmlHref(gridHref), 'http://localhost');
+    expect(gridUrl.searchParams.get('view')).toBe('grid');
+    expect(gridUrl.searchParams.get('sort')).toBe('category');
+    expect(gridUrl.searchParams.get('order')).toBe('desc');
+    expect(gridUrl.searchParams.get('pageSize')).toBe('10');
+
+    const resetHref = response.text.match(/<a class="button button-secondary" href="([^"]+)">Reset<\/a>/)?.[1];
+    expect(resetHref).toBeDefined();
+    const resetUrl = new URL(decodeHtmlHref(resetHref), 'http://localhost');
+    expect(resetUrl.searchParams.get('category')).toBe('all');
+    expect(resetUrl.searchParams.get('sort')).toBe('filename');
+    expect(resetUrl.searchParams.get('order')).toBe('asc');
+    expect(resetUrl.searchParams.get('pageSize')).toBe('25');
+    expect(resetUrl.searchParams.get('view')).toBe('list');
+    expect(resetUrl.searchParams.has('search')).toBe(false);
+    expect(resetUrl.searchParams.has('extension')).toBe(false);
+    expect(resetUrl.searchParams.has('presence')).toBe(false);
+    expect(resetUrl.searchParams.has('usage')).toBe(false);
   });
 
   // ─── Last seen and missing-since dates (viewer page) ───────────
@@ -4501,6 +4715,31 @@ describe('asset browser HTTP workflow', () => {
         const browser = await agent.get(res.headers.location).expect(200);
         expect(browser.text).toContain('The file was renamed.');
         expect(browser.text).not.toContain('asset-preview-section');
+      });
+
+      it('preserves saved presentation values when an Assets-origin action submits omitted context fields', async () => {
+        saveAssetDefault('view', 'list');
+        saveAssetDefault('sort', 'category');
+        saveAssetDefault('order', 'desc');
+        saveAssetDefault('pageSize', '50');
+
+        const { id, asset } = await setupProjectWithAsset('Main Rename Saved Context', 'old.png');
+        const res = await agent
+          .post(`/projects/${id}/assets/${asset.id}/rename`)
+          .type('form')
+          .send({
+            filename: 'new', origin: 'assets', category: 'all', search: 'old', extension: '.png',
+            presence: 'present', usage: 'unused', _csrf: csrfToken,
+          })
+          .expect(302);
+
+        const location = new URL(res.headers.location, 'http://localhost');
+        expect(location.pathname).toBe(`/projects/${id}/assets`);
+        expect(location.searchParams.get('sort')).toBe('category');
+        expect(location.searchParams.get('order')).toBe('desc');
+        expect(location.searchParams.get('pageSize')).toBe('50');
+        expect(location.searchParams.get('view')).toBe('list');
+        expect(location.searchParams.get('notice')).toBe('asset-renamed');
       });
 
       it('keeps viewer-origin Rename on the viewer route', async () => {

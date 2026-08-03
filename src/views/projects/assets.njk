@@ -451,8 +451,11 @@
 
       {% if not completeCategorySurface %}
         <form class="filters" method="get" action="/projects/{{ project.id }}/assets">
-        {% if filters.view == 'list' %}
+        {% if filters.view == 'list' or preserveViewQuery %}
           <input type="hidden" name="view" value="{{ filters.view }}">
+        {% endif %}
+        {% if pageSize != 25 or preservePageSizeQuery %}
+          <input type="hidden" name="pageSize" value="{{ pageSize }}">
         {% endif %}
         <div class="field">
           <label for="search">Search</label>
@@ -718,13 +721,13 @@
             {% if filters.usage != 'all' %}
               <input type="hidden" name="usage" value="{{ filters.usage }}">
             {% endif %}
-            {% if filters.sort != 'filename' %}
+            {% if filters.sort != 'filename' or preserveSortQuery %}
               <input type="hidden" name="sort" value="{{ filters.sort }}">
             {% endif %}
-            {% if filters.order != 'asc' %}
+            {% if filters.order != 'asc' or preserveOrderQuery %}
               <input type="hidden" name="order" value="{{ filters.order }}">
             {% endif %}
-            {% if filters.view == 'list' %}
+            {% if filters.view == 'list' or preserveViewQuery %}
               <input type="hidden" name="view" value="{{ filters.view }}">
             {% endif %}
             <button class="button button-small" type="submit">Apply</button>

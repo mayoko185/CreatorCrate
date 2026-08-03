@@ -16,8 +16,10 @@ import { createProjectService } from './services/project-service.js';
 import { createAssetCategoryRepository } from './data/asset-category-repository.js';
 import { createAssetCategoryService } from './services/asset-category-service.js';
 import { createAssetBrowserPreferenceRepository } from './data/asset-browser-preference-repository.js';
+import { createAppMetaRepository } from './data/app-meta-repository.js';
 import { createProjectPrimaryImageRepository } from './data/project-primary-image-repository.js';
 import { createAssetBrowserPreferenceService } from './services/asset-browser-preference-service.js';
+import { createPageDefaultsService } from './services/page-defaults-service.js';
 import { createProjectAssetCategoryService } from './services/project-asset-category-service.js';
 import { createAssetScanner } from './services/asset-scanner.js';
 import { createAssetActionService } from './services/asset-action-service.js';
@@ -103,10 +105,15 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   // receives the repository, and projectService receives the already-built
   // service. Nothing downstream constructs its own repository. The same
   // instance is what a future Settings router will receive too.
+  const appMetaRepository = opts.appMetaRepository || createAppMetaRepository(db);
   const assetCategoryRepository = opts.assetCategoryRepository || createAssetCategoryRepository(db);
   const assetCategoryService = opts.assetCategoryService || createAssetCategoryService(assetCategoryRepository);
   const assetBrowserPreferenceRepository =
-    opts.assetBrowserPreferenceRepository || createAssetBrowserPreferenceRepository(db);
+    opts.assetBrowserPreferenceRepository || createAssetBrowserPreferenceRepository(db, { appMetaRepository });
+
+  const pageDefaultsService =
+    opts.pageDefaultsService || createPageDefaultsService({ appMetaRepository });
+  app.locals.pageDefaultsService = pageDefaultsService;
 
   const projectService = createProjectService(db, projectsRoot, {
     assetCategoryService,

@@ -5,7 +5,7 @@
     {% set activeSettingsSection = "overview" %}
     {% include "partials/settings-nav.njk" %}
 
-  activeSettingsSection: "overview" | "security" | "backups" | "asset-categories"
+  activeSettingsSection: "overview" | "security" | "backups" | "defaults" | "asset-categories"
   Works on both desktop (vertical list) and mobile (horizontal scroll) via
   CSS only — no JavaScript.
 #}
@@ -13,5 +13,6 @@
   <a href="/settings"{% if activeSettingsSection == "overview" %} aria-current="page"{% endif %}>Overview</a>
   <a href="/settings/security"{% if activeSettingsSection == "security" %} aria-current="page"{% endif %}>Security</a>
   <a href="/settings/backups"{% if activeSettingsSection == "backups" %} aria-current="page"{% endif %}>Backups</a>
+  <a href="/settings/defaults"{% if activeSettingsSection == "defaults" %} aria-current="page"{% endif %}>Defaults</a>
   <a href="/settings/asset-categories"{% if activeSettingsSection == "asset-categories" %} aria-current="page"{% endif %}>Asset Categories</a>
 </nav>

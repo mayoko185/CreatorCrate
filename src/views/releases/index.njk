@@ -18,6 +18,11 @@
     <div class="board-filters">
       <form method="get" action="{{ basePath }}">
         <input type="hidden" name="view" value="board">
+        <input type="hidden" name="sort" value="{{ query.sort }}">
+        <input type="hidden" name="order" value="{{ query.order }}">
+        {% if query.pageSize != 25 %}
+          <input type="hidden" name="pageSize" value="{{ query.pageSize }}">
+        {% endif %}
         <div class="field">
           <label for="board-project">Project</label>
           <input type="text" id="board-project" name="project" value="{{ query.project or '' }}" placeholder="Project ID">
@@ -57,7 +62,7 @@
         </div>
 
         <button class="button" type="submit">Filter</button>
-        <a class="button button-secondary" href="{{ basePath }}?view=board">Clear</a>
+        <a class="button button-secondary" href="{{ clearUrl }}">Clear</a>
       </form>
     </div>
 
@@ -116,6 +121,10 @@
   {% else %}
     {# ─── List View ─── #}
     <form class="filters" method="get" action="{{ basePath }}">
+      <input type="hidden" name="view" value="{{ query.view }}">
+      {% if query.pageSize != 25 %}
+        <input type="hidden" name="pageSize" value="{{ query.pageSize }}">
+      {% endif %}
       <div class="field">
         <label for="list-project">Project</label>
         <input type="text" id="list-project" name="project" value="{{ query.project or '' }}" placeholder="Project ID">
@@ -171,7 +180,7 @@
       </div>
 
       <button class="button" type="submit">Filter</button>
-      <a class="button button-secondary" href="{{ basePath }}">Clear</a>
+      <a class="button button-secondary" href="{{ clearUrl }}">Clear</a>
     </form>
 
     <p class="results-meta">{{ total }} release{% if total != 1 %}s{% endif %} found</p>
@@ -254,7 +263,7 @@
       {% if releaseFiltersActive and hasAnyReleases %}
         {% set emptyHeading = "No releases match the current filters" %}
         {% set emptyDescription = "Reset the filters to return to the full release list." %}
-        {% set emptyActionUrl = basePath %}
+        {% set emptyActionUrl = clearUrl %}
         {% set emptyActionLabel = "Reset Filters" %}
       {% else %}
         {% set emptyHeading = "No releases yet" %}

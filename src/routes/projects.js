@@ -17,14 +17,19 @@ export function createProjectsRouter({ appName, projectService, workflowQuerySer
 
   router.get('/', (req, res, next) => {
     try {
-      const parsedQuery = parseListQuery(req.query);
+      const pageDefaultsService = getPageDefaultsService(req);
+      const parsedQuery = parseListQuery(req.query, pageDefaultsService);
       const { total } = projectService.list({ ...parsedQuery, limit: 0 });
       const { total: totalProjects } = projectService.list({ includeArchived: true, limit: 0 });
       const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
       const currentPage = Math.min(parsedQuery.page, pageCount);
+      if (shouldRedirectToSavedDefaults(req.query, parsedQuery, pageDefaultsService)) {
+        return res.redirect(buildSavedDefaultsUrl(req, parsedQuery, currentPage, pageDefaultsService));
+      }
+
       const offset = (currentPage - 1) * PAGE_SIZE;
       const { rows } = workflowQueryService.getProjectList({ ...parsedQuery, offset, limit: PAGE_SIZE });
-      const pageUrl = buildPageUrl(req, parsedQuery, currentPage);
+      const pageUrl = buildPageUrl(req, parsedQuery, currentPage, pageDefaultsService);
       const filtersActive = Boolean(parsedQuery.search || parsedQuery.status);
 
       res.render('projects/index.njk', {
@@ -38,6 +43,7 @@ export function createProjectsRouter({ appName, projectService, workflowQuerySer
         pageSize: PAGE_SIZE,
         pageCount,
         pageUrl,
+        preserveViewQuery: shouldPreserveViewQuery(req.query, parsedQuery, pageDefaultsService),
         query: {
           search: parsedQuery.search,
           status: parsedQuery.status,
@@ -59,7 +65,7 @@ export function createProjectsRouter({ appName, projectService, workflowQuerySer
     res.render('projects/form.njk', {
       appName,
       project: null,
-      values: createFormValues(req.query || {}),
+      values: createNewProjectFormValues(req.query || {}, getPageDefaultsService(req)),
       errors: {},
       statuses: WORKFLOW_STATUSES,
       priorities: PRIORITIES,
@@ -219,14 +225,24 @@ export function createProjectsRouter({ appName, projectService, workflowQuerySer
   return router;
 }
 
-function parseListQuery(raw) {
-  const status = STATUSES.includes(raw.status) ? raw.status : undefined;
-  const search = typeof raw.search === 'string' ? raw.search.trim() : '';
-  const sortBy = SORT_OPTIONS.includes(raw.sort) ? raw.sort : 'created';
-  const order = raw.order === 'asc' ? 'asc' : 'desc';
-  const view = VIEW_OPTIONS.includes(raw.view) ? raw.view : 'grid';
+function getPageDefaultsService(req) {
+  const service = req.app?.locals?.pageDefaultsService;
+  if (!service) {
+    throw new Error('Projects list requires app.locals.pageDefaultsService.');
+  }
+  return service;
+}
 
-  let page = Number.parseInt(raw.page, 10);
+function parseListQuery(raw, pageDefaultsService) {
+  const rawQuery = raw && typeof raw === 'object' ? raw : {};
+  const resolvedPresentation = pageDefaultsService.resolvePageDefaults('projects', rawQuery);
+  const status = STATUSES.includes(rawQuery.status) ? rawQuery.status : undefined;
+  const search = typeof rawQuery.search === 'string' ? rawQuery.search.trim() : '';
+  const sortBy = resolvedPresentation.sort;
+  const order = resolvedPresentation.order;
+  const view = resolvedPresentation.view;
+
+  let page = Number.parseInt(rawQuery.page, 10);
   if (!Number.isInteger(page) || page < 1) {
     page = 1;
   }
@@ -246,6 +262,23 @@ function parseListQuery(raw) {
   };
 }
 
+function hasPresentationQuery(raw) {
+  const rawQuery = raw && typeof raw === 'object' ? raw : {};
+  return ['view', 'sort', 'order'].some((option) => Object.hasOwn(rawQuery, option));
+}
+
+function shouldRedirectToSavedDefaults(raw, parsedQuery, pageDefaultsService) {
+  if (hasPresentationQuery(raw)) return false;
+
+  return parsedQuery.view !== pageDefaultsService.getFallback('projects', 'view')
+    || parsedQuery.sortBy !== pageDefaultsService.getFallback('projects', 'sort')
+    || parsedQuery.order !== pageDefaultsService.getFallback('projects', 'order');
+}
+
+function buildSavedDefaultsUrl(req, parsedQuery, currentPage, pageDefaultsService) {
+  return buildPageUrlString(req, buildCanonicalPageQuery(req, parsedQuery, currentPage, pageDefaultsService));
+}
+
 function parseProjectInput(body) {
   return {
     title: body.title,
@@ -263,6 +296,19 @@ function createFormValues(values) {
   return {
     ...values,
     priority: values.priority === undefined ? DEFAULT_PRIORITY : values.priority,
+  };
+}
+
+// New-project initial values only. Saved New Project status/priority defaults
+// seed the first render; a saved value that is missing, invalid, or obsolete
+// falls back to the service's application fallback. Any status/priority carried
+// on the query string takes precedence over the saved default. This path is
+// never used for submission re-rendering, so submitted values are unaffected.
+function createNewProjectFormValues(query, pageDefaultsService) {
+  return {
+    ...createFormValues(query),
+    status: pageDefaultsService.resolve('new_project', 'status', query.status),
+    priority: pageDefaultsService.resolve('new_project', 'priority', query.priority),
   };
 }
 
@@ -293,14 +339,10 @@ function projectToFormValues(project) {
   };
 }
 
-function buildPageUrl(req, parsedQuery, currentPage) {
-  const baseQuery = {};
-  if (parsedQuery.search) baseQuery.search = parsedQuery.search;
-  if (parsedQuery.status) baseQuery.status = parsedQuery.status;
-  if (SORT_OPTIONS.includes(req.query.sort)) baseQuery.sort = parsedQuery.sortBy;
-  if (req.query.order === 'asc' || req.query.order === 'desc') baseQuery.order = parsedQuery.order;
-  if (parsedQuery.view === 'list') baseQuery.view = 'list';
-  if (currentPage > 1) baseQuery.page = String(currentPage);
+function buildPageUrl(req, parsedQuery, currentPage, pageDefaultsService) {
+  const baseQuery = buildCanonicalPageQuery(req, parsedQuery, currentPage, pageDefaultsService);
+  const fallbackView = pageDefaultsService.getFallback('projects', 'view');
+  const defaultView = pageDefaultsService.resolve('projects', 'view');
 
   return function pageUrl(overrides) {
     const query = { ...baseQuery };
@@ -310,13 +352,68 @@ function buildPageUrl(req, parsedQuery, currentPage) {
         delete query[key];
       } else if (key === 'view') {
         if (value === 'list') query.view = 'list';
+        else if (value === 'grid' && defaultView !== fallbackView) query.view = 'grid';
         else delete query.view;
       } else {
         query[key] = String(value);
       }
     }
-    const search = new URLSearchParams(query).toString();
-    const pathname = req.baseUrl || req.path;
-    return search ? `${pathname}?${search}` : pathname;
+    return buildPageUrlString(req, query);
   };
+}
+
+function buildCanonicalPageQuery(req, parsedQuery, currentPage, pageDefaultsService) {
+  const rawQuery = req.query && typeof req.query === 'object' ? req.query : {};
+  const query = {};
+  const fallbackSort = pageDefaultsService.getFallback('projects', 'sort');
+  const fallbackOrder = pageDefaultsService.getFallback('projects', 'order');
+  const fallbackView = pageDefaultsService.getFallback('projects', 'view');
+  const defaultSort = pageDefaultsService.resolve('projects', 'sort');
+  const defaultOrder = pageDefaultsService.resolve('projects', 'order');
+  const defaultView = pageDefaultsService.resolve('projects', 'view');
+
+  if (parsedQuery.search) query.search = parsedQuery.search;
+  if (parsedQuery.status) query.status = parsedQuery.status;
+
+  if (
+    parsedQuery.sortBy !== fallbackSort
+    || SORT_OPTIONS.includes(rawQuery.sort)
+    || (Object.hasOwn(rawQuery, 'sort') && defaultSort !== fallbackSort)
+  ) {
+    query.sort = parsedQuery.sortBy;
+  }
+
+  if (
+    parsedQuery.order !== fallbackOrder
+    || rawQuery.order === 'asc'
+    || rawQuery.order === 'desc'
+    || (Object.hasOwn(rawQuery, 'order') && defaultOrder !== fallbackOrder)
+  ) {
+    query.order = parsedQuery.order;
+  }
+
+  if (
+    parsedQuery.view !== fallbackView
+    || (Object.hasOwn(rawQuery, 'view') && defaultView !== fallbackView)
+  ) {
+    query.view = parsedQuery.view;
+  }
+
+  if (currentPage > 1) query.page = String(currentPage);
+  return query;
+}
+
+function buildPageUrlString(req, query) {
+  const search = new URLSearchParams(query).toString();
+  const pathname = req.baseUrl || req.path;
+  return search ? `${pathname}?${search}` : pathname;
+}
+
+function shouldPreserveViewQuery(raw, parsedQuery, pageDefaultsService) {
+  if (parsedQuery.view === 'list') return true;
+
+  const rawQuery = raw && typeof raw === 'object' ? raw : {};
+  return Object.hasOwn(rawQuery, 'view')
+    && parsedQuery.view === pageDefaultsService.getFallback('projects', 'view')
+    && pageDefaultsService.resolve('projects', 'view') !== pageDefaultsService.getFallback('projects', 'view');
 }
