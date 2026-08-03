@@ -6,6 +6,7 @@ import { createIndexRouter } from './routes/index.js';
 import { createHealthRouter } from './routes/health.js';
 import { createProjectsRouter } from './routes/projects.js';
 import { createAssetsRouter } from './routes/assets.js';
+import { createAssetLibraryRouter } from './routes/asset-library.js';
 import { createProjectAssetCategoriesRouter } from './routes/project-asset-categories.js';
 import { createReleasesRouter } from './routes/releases.js';
 import { createReleaseManagementRouter } from './routes/release-management.js';
@@ -348,6 +349,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   app.use('/', createIndexRouter({ appName, workflowQueryService }));
   app.use('/health', createHealthRouter({ db, maintenanceState }));
   app.use('/projects', createProjectsRouter({ appName, projectService, workflowQueryService }));
+  app.use('/assets', createAssetLibraryRouter({ appName, workflowQueryService }));
 
   // Media routes stay before the asset browser/viewer router. The media
   // routes have four path segments under /projects; the viewer route has

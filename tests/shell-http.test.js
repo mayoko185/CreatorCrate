@@ -118,12 +118,14 @@ describe('application shell — navigation model', () => {
   describe('destinations', () => {
     it('renders only existing top-level destinations', async () => {
       const res = await agent.get('/').expect(200);
-      expect(navHrefs(res.text)).toEqual(['/', '/projects', '/releases', '/calendar', '/settings']);
+      expect(navHrefs(res.text)).toEqual([
+        '/', '/projects', '/assets', '/releases', '/calendar', '/settings',
+      ]);
     });
 
     it('renders a decorative icon for every nav item', async () => {
       const res = await agent.get('/').expect(200);
-      expect(countNavIcons(res.text)).toBe(5);
+      expect(countNavIcons(res.text)).toBe(6);
       expect(res.text).toContain('aria-hidden="true"');
     });
   });
@@ -162,6 +164,29 @@ describe('application shell — navigation model', () => {
       const res = await agent.get(`/projects/${projectId}/assets/${assetId}`)
         .expect(200);
       expect(activeNavKeys(res.text)).toEqual(['projects']);
+    });
+  });
+
+  describe('active state — cross-project Asset Viewer', () => {
+    it('marks Asset Viewer active on /assets and query-string requests', async () => {
+      for (const url of ['/assets', '/assets?view=list']) {
+        const res = await agent.get(url).expect(200);
+        expect(activeNavKeys(res.text)).toEqual(['assets']);
+        expect(countActive(res.text)).toBe(1);
+      }
+    });
+
+    it('does not capture project-scoped asset or category routes', async () => {
+      const routes = [
+        `/projects/${projectId}/assets`,
+        `/projects/${projectId}/assets/${assetId}`,
+        `/projects/${projectId}/asset-categories`,
+      ];
+
+      for (const url of routes) {
+        const res = await agent.get(url).expect(200);
+        expect(activeNavKeys(res.text)).not.toContain('assets');
+      }
     });
   });
 

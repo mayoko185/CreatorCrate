@@ -1,11 +1,16 @@
 import { WORKFLOW_STATUSES, PRIORITIES } from '../data/project-repository.js';
 import { ACTIVE_RELEASE_STATUSES } from '../data/release-repository.js';
+import {
+  ASSET_LIBRARY_DEFAULTS,
+  ASSET_LIBRARY_PAGE_SIZE_VALUES,
+} from '../routes/asset-library-query.js';
 import { DEFAULT_PRIORITY } from './project-service.js';
 
 const PROJECTS = 'projects';
 const PUBLISHED_WORK = 'publishedWork';
 const RELEASE_MANAGEMENT = 'releaseManagement';
 const PROJECT_ASSETS = 'projectAssets';
+const ASSET_VIEWER = 'assetViewer';
 const NEW_PROJECT = 'new_project';
 const NEW_RELEASE = 'new_release';
 
@@ -38,6 +43,20 @@ export const PAGE_DEFAULT_DEFINITIONS = Object.freeze({
     sort: definition('page_defaults.project_assets.sort', ['filename', 'modified', 'size', 'category'], 'filename'),
     order: definition('page_defaults.project_assets.order', ['asc', 'desc'], 'asc'),
     pageSize: definition('page_defaults.project_assets.page_size', ['10', '25', '50', '100'], '25'),
+  }),
+  [ASSET_VIEWER]: Object.freeze({
+    view: definition('page_defaults.asset_viewer.view', ['grid', 'list'], ASSET_LIBRARY_DEFAULTS.view),
+    sort: definition(
+      'page_defaults.asset_viewer.sort',
+      ['filename', 'modified', 'size', 'category', 'project'],
+      ASSET_LIBRARY_DEFAULTS.sort,
+    ),
+    order: definition('page_defaults.asset_viewer.order', ['asc', 'desc'], ASSET_LIBRARY_DEFAULTS.order),
+    pageSize: definition(
+      'page_defaults.asset_viewer.page_size',
+      ASSET_LIBRARY_PAGE_SIZE_VALUES.map(String),
+      String(ASSET_LIBRARY_DEFAULTS.pageSize),
+    ),
   }),
   [NEW_PROJECT]: Object.freeze({
     status: definition('page_defaults.new_project.status', WORKFLOW_STATUSES, WORKFLOW_STATUSES[0]),

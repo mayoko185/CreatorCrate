@@ -46,6 +46,10 @@ describe('page defaults service', () => {
     expect(service.resolve('projectAssets', 'sort')).toBe('filename');
     expect(service.resolve('projectAssets', 'order')).toBe('asc');
     expect(service.resolve('projectAssets', 'pageSize')).toBe('25');
+    expect(service.resolve('assetViewer', 'view')).toBe('grid');
+    expect(service.resolve('assetViewer', 'sort')).toBe('filename');
+    expect(service.resolve('assetViewer', 'order')).toBe('asc');
+    expect(service.resolve('assetViewer', 'pageSize')).toBe('25');
     expect(service.resolve('new_project', 'status')).toBe('tbd');
     expect(service.resolve('new_project', 'priority')).toBe('normal');
     expect(service.resolve('new_release', 'status')).toBe('idea');
@@ -70,6 +74,31 @@ describe('page defaults service', () => {
       },
       pageSize: {
         key: 'page_defaults.project_assets.page_size',
+        values: ['10', '25', '50', '100'],
+        fallback: '25',
+      },
+    });
+  });
+
+  it('defines the exact Asset Viewer option allowlists, keys, and fallbacks', () => {
+    expect(PAGE_DEFAULT_DEFINITIONS.assetViewer).toEqual({
+      view: {
+        key: 'page_defaults.asset_viewer.view',
+        values: ['grid', 'list'],
+        fallback: 'grid',
+      },
+      sort: {
+        key: 'page_defaults.asset_viewer.sort',
+        values: ['filename', 'modified', 'size', 'category', 'project'],
+        fallback: 'filename',
+      },
+      order: {
+        key: 'page_defaults.asset_viewer.order',
+        values: ['asc', 'desc'],
+        fallback: 'asc',
+      },
+      pageSize: {
+        key: 'page_defaults.asset_viewer.page_size',
         values: ['10', '25', '50', '100'],
         fallback: '25',
       },
@@ -173,6 +202,20 @@ describe('page defaults service', () => {
     });
   });
 
+  it('accepts valid Asset Viewer saved values, including project sorting', () => {
+    repository.setValue(PAGE_DEFAULT_DEFINITIONS.assetViewer.view.key, 'list');
+    repository.setValue(PAGE_DEFAULT_DEFINITIONS.assetViewer.sort.key, 'project');
+    repository.setValue(PAGE_DEFAULT_DEFINITIONS.assetViewer.order.key, 'desc');
+    repository.setValue(PAGE_DEFAULT_DEFINITIONS.assetViewer.pageSize.key, '100');
+
+    expect(service.resolvePageDefaults('assetViewer')).toEqual({
+      view: 'list',
+      sort: 'project',
+      order: 'desc',
+      pageSize: '100',
+    });
+  });
+
   it('lets a valid explicit value override the saved value', () => {
     repository.setValue(PAGE_DEFAULT_DEFINITIONS.projects.sort.key, 'title');
 
@@ -266,12 +309,38 @@ describe('page defaults service', () => {
     }
   });
 
+  it('uses Asset Viewer fallbacks for invalid stored values without rewriting them', () => {
+    const invalidValues = {
+      view: 'board',
+      sort: 'title',
+      order: 'forwards',
+      pageSize: '20',
+    };
+    for (const [option, value] of Object.entries(invalidValues)) {
+      repository.setValue(PAGE_DEFAULT_DEFINITIONS.assetViewer[option].key, value);
+    }
+
+    expect(service.resolvePageDefaults('assetViewer')).toEqual({
+      view: 'grid',
+      sort: 'filename',
+      order: 'asc',
+      pageSize: '25',
+    });
+    for (const [option, value] of Object.entries(invalidValues)) {
+      expect(repository.getValue(PAGE_DEFAULT_DEFINITIONS.assetViewer[option].key)).toBe(value);
+      expect(service.getSavedDefault('assetViewer', option)).toBeUndefined();
+    }
+  });
+
   it('rejects a value that belongs to another page allowlist', () => {
     expect(() => service.saveDefault('projects', 'sort', 'published'))
       .toThrow(PageDefaultValidationError);
     expect(() => service.saveDefault('projects', 'view', 'published'))
       .toThrow(PageDefaultValidationError);
     expect(() => service.saveDefault('projectAssets', 'sort', 'title'))
+      .toThrow(PageDefaultValidationError);
+    expect(service.saveDefault('assetViewer', 'sort', 'project')).toBe('project');
+    expect(() => service.saveDefault('projectAssets', 'sort', 'project'))
       .toThrow(PageDefaultValidationError);
     expect(() => service.saveDefault('projectAssets', 'pageSize', '20'))
       .toThrow(PageDefaultValidationError);
@@ -353,6 +422,18 @@ describe('page defaults service', () => {
       sort: 'modified',
       order: 'desc',
       pageSize: '50',
+    });
+
+    expect(service.validatePageDefaults('assetViewer', {
+      view: 'list',
+      sort: 'project',
+      order: 'desc',
+      pageSize: '100',
+    })).toEqual({
+      view: 'list',
+      sort: 'project',
+      order: 'desc',
+      pageSize: '100',
     });
   });
 });

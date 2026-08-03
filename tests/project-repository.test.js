@@ -158,6 +158,24 @@ describe('project repository', () => {
     expect(list.rows.map((p) => p.id)).not.toContain(active.id);
   });
 
+  it('lists complete active asset-filter options with only ID and title', () => {
+    const beta = repository.create(sampleProject({ title: 'Beta Option' }));
+    const alpha = repository.create(sampleProject({ title: 'Alpha Option' }));
+    const archived = repository.create(sampleProject({ title: 'Archived Option' }));
+    const statusOnlyArchived = repository.create(sampleProject({
+      title: 'Status Only Archived Option',
+      status: 'archived',
+    }));
+    repository.archive(archived.id);
+
+    const options = repository.listActiveAssetFilterOptions();
+    expect(options).toEqual([
+      { id: alpha.id, title: 'Alpha Option' },
+      { id: beta.id, title: 'Beta Option' },
+    ]);
+    expect(options.map((option) => option.id)).not.toContain(statusOnlyArchived.id);
+  });
+
   describe('project_dir', () => {
     it('defaults to null for new projects', () => {
       const project = repository.create(sampleProject({ title: 'Dir Test' }));

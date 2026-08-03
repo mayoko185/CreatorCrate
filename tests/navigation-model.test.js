@@ -24,9 +24,11 @@ function activeKeys(path, opts = {}) {
 describe('navigation model — destinations', () => {
   it('exposes only destinations that resolve to real page routes', () => {
     const { navigation } = buildShellModel({ appName: APP_NAME, path: '/' });
-    // Dashboard, Projects, Published Work, Calendar, Settings. No Health
+    // Dashboard, Projects, Asset Viewer, Published Work, Calendar, Settings. No Health
     // (JSON-only), no dead links.
-    expect(navigation.map((n) => n.href)).toEqual(['/', '/projects', '/releases', '/calendar', '/settings']);
+    expect(navigation.map((n) => n.href)).toEqual([
+      '/', '/projects', '/assets', '/releases', '/calendar', '/settings',
+    ]);
   });
 
   it('every navigation item has a stable key, label, href, and icon', () => {
@@ -69,10 +71,11 @@ describe('navigation model — Phase 2E: dedicated Calendar item', () => {
     expect(item.href).toBe('/releases');
   });
 
-  it('item order is exactly Dashboard, Projects, Published Work, Calendar, Settings', () => {
+  it('item order is exactly Dashboard, Projects, Asset Viewer, Published Work, Calendar, Settings', () => {
     expect(NAVIGATION_ITEMS.map((i) => i.label)).toEqual([
       'Dashboard',
       'Projects',
+      'Asset Viewer',
       'Published Work',
       'Calendar',
       'Settings',
@@ -86,6 +89,30 @@ describe('navigation model — Phase 2E: dedicated Calendar item', () => {
     const settingsIdx = keys.indexOf('settings');
     expect(calendarIdx).toBe(releasesIdx + 1);
     expect(settingsIdx).toBe(calendarIdx + 1);
+  });
+});
+
+describe('navigation model — Asset Viewer active state', () => {
+  it('has one exact /assets destination with the assets icon', () => {
+    const item = NAVIGATION_ITEMS.find((i) => i.key === 'assets');
+    expect(item).toMatchObject({
+      label: 'Asset Viewer',
+      href: '/assets',
+      icon: 'assets',
+      matches: ['/assets'],
+    });
+  });
+
+  it('is active on /assets with or without a query string', () => {
+    expect(activeKeys('/assets')).toEqual(['assets']);
+    expect(activeKeys('/assets?view=list')).toEqual(['assets']);
+  });
+
+  it('does not capture project-scoped asset routes or unrelated asset paths', () => {
+    expect(activeKeys('/assets/preview')).toEqual([]);
+    expect(activeKeys('/projects/42/assets')).toEqual(['projects']);
+    expect(activeKeys('/projects/42/assets/7')).toEqual(['projects']);
+    expect(activeKeys('/projects/42/asset-categories')).not.toContain('assets');
   });
 });
 
@@ -228,6 +255,8 @@ describe('navigation model — active-count invariants', () => {
       '/projects/1/edit',
       '/projects/1/assets',
       '/projects/1/assets/2',
+      '/assets',
+      '/assets?view=list',
       '/releases',
       '/calendar',
       '/release-management',
@@ -261,6 +290,7 @@ describe('navigation model — active-count invariants', () => {
 describe('navigation model — active section (header source)', () => {
   it('exposes the active item label as activeSection', () => {
     expect(buildShellModel({ appName: APP_NAME, path: '/projects' }).activeSection).toBe('Projects');
+    expect(buildShellModel({ appName: APP_NAME, path: '/assets' }).activeSection).toBe('Asset Viewer');
     expect(buildShellModel({ appName: APP_NAME, path: '/releases/3/edit' }).activeSection).toBe('Published Work');
     expect(buildShellModel({ appName: APP_NAME, path: '/calendar' }).activeSection).toBe('Calendar');
     expect(buildShellModel({ appName: APP_NAME, path: '/' }).activeSection).toBe('Dashboard');

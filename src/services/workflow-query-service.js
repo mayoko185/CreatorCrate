@@ -56,6 +56,31 @@ const ASSET_BROWSER_MAX_PAGE_SIZE = 100;
 const ASSET_BROWSER_SEARCH_MAX_LENGTH = 128;
 const ASSET_BROWSER_ORDERING = 'a.filename COLLATE NOCASE ASC, a.id ASC';
 
+const ASSET_LIBRARY_SORT_OPTIONS = Object.freeze([
+  { value: 'filename', label: 'Filename' },
+  { value: 'modified', label: 'Modified' },
+  { value: 'size', label: 'Size' },
+  { value: 'category', label: 'Category' },
+  { value: 'project', label: 'Project' },
+]);
+
+const ASSET_LIBRARY_PRESENCE_OPTIONS = Object.freeze([
+  { value: 'all', label: 'All assets' },
+  { value: 'present', label: 'Present' },
+  { value: 'missing', label: 'Missing' },
+]);
+
+const ASSET_LIBRARY_USAGE_OPTIONS = Object.freeze([
+  { value: 'all', label: 'All assets' },
+  { value: 'used', label: 'Used in releases' },
+  { value: 'unused', label: 'Not used in releases' },
+]);
+
+const ASSET_LIBRARY_VIEW_OPTIONS = Object.freeze([
+  { value: 'grid', label: 'Grid' },
+  { value: 'list', label: 'List' },
+]);
+
 /**
  * Canonical asset-browser/viewer query context keys, including `view`
  * (list/grid presentation) so it round-trips through every generated
@@ -176,6 +201,49 @@ function defaultToday() {
 
 function mergeLimits(options) {
   return { ...DEFAULT_LIMITS, ...(options?.limits || {}) };
+}
+
+function buildSelectedOptions(definitions, selectedValue) {
+  return definitions.map(({ value, label }) => ({
+    value,
+    label,
+    selected: value === selectedValue,
+  }));
+}
+
+function compareProjectOptions(left, right) {
+  const leftTitle = left.title.toLowerCase();
+  const rightTitle = right.title.toLowerCase();
+  if (leftTitle < rightTitle) return -1;
+  if (leftTitle > rightTitle) return 1;
+  return left.id - right.id;
+}
+
+function buildAssetLibraryCategoryOptions(defaults, selectedValue) {
+  const enabledCategories = defaults
+    .filter((category) => category.enabled === 1 || category.enabled === true)
+    .slice()
+    .sort((left, right) => (
+      left.display_order - right.display_order || left.id - right.id
+    ));
+
+  return [
+    {
+      value: 'all',
+      label: 'All categories',
+      selected: selectedValue === 'all',
+    },
+    {
+      value: 'uncategorized',
+      label: 'Uncategorized',
+      selected: selectedValue === 'uncategorized',
+    },
+    ...enabledCategories.map((category) => ({
+      value: category.directory_slug,
+      label: category.display_name,
+      selected: category.directory_slug === selectedValue,
+    })),
+  ];
 }
 
 function isLeapYear(year) {
@@ -578,6 +646,148 @@ export function createWorkflowQueryService({
     return {
       ...result,
       rows: attachPrimaryImages(result.rows),
+    };
+  }
+
+  /**
+   * Compose the read-only cross-project Asset Viewer page model.
+   *
+   * The input is the route's normalized query state. This method deliberately
+   * does not parse or canonicalize raw query values; it only computes the
+   * page offset, loads the bounded asset page, and composes complete filter
+   * option lists from their unpaged sources.
+   *
+   * @param {object} [input]
+   * @param {number|null} [input.projectId]
+   * @param {'all'|'uncategorized'|string} [input.category='all']
+   * @param {string|null} [input.search]
+   * @param {string|null} [input.extension]
+   * @param {'all'|'present'|'missing'} [input.presence='all']
+   * @param {'all'|'used'|'unused'} [input.usage='all']
+   * @param {'filename'|'modified'|'size'|'category'|'project'} [input.sort='filename']
+   * @param {'asc'|'desc'} [input.order='asc']
+   * @param {number} [input.page=1]
+   * @param {number} [input.pageSize=25]
+   * @param {'grid'|'list'} [input.view='grid']
+   * @returns {{
+   *   assets: Array,
+   *   total: number,
+   *   page: number,
+   *   pageSize: number,
+   *   pageCount: number,
+   *   hasPreviousPage: boolean,
+   *   hasNextPage: boolean,
+   *   hasAnyAssets: boolean,
+   *   filters: object,
+   *   presentation: { view: 'grid'|'list' },
+   *   context: object,
+   *   projectOptions: Array<{ id: number, title: string }>,
+   *   categoryOptions: Array<{ value: string, label: string, selected: boolean }>,
+   *   extensionOptions: Array<{ value: string, label: string, selected: boolean }>,
+   *   presenceOptions: Array<{ value: string, label: string, selected: boolean }>,
+   *   usageOptions: Array<{ value: string, label: string, selected: boolean }>,
+   *   sortOptions: Array<{ value: string, label: string, selected: boolean }>,
+   *   viewOptions: Array<{ value: string, label: string, selected: boolean }>,
+   * }}
+   */
+  function getAssetLibraryPage(input = {}) {
+    const projectId = input.projectId ?? null;
+    const category = input.category ?? 'all';
+    const search = input.search ?? null;
+    const extension = input.extension ?? null;
+    const presence = input.presence ?? 'all';
+    const usage = input.usage ?? 'all';
+    const sort = input.sort ?? 'filename';
+    const order = input.order ?? 'asc';
+    const requestedPage = input.page ?? 1;
+    const pageSize = input.pageSize ?? ASSET_BROWSER_DEFAULT_PAGE_SIZE;
+    const view = input.view ?? 'grid';
+
+    const filters = {
+      projectId,
+      category,
+      search,
+      extension,
+      presence,
+      usage,
+      sort,
+      order,
+      view,
+    };
+    const repositoryFilters = {
+      projectId,
+      category,
+      search,
+      extension,
+      presence,
+      usage,
+      sort,
+      order,
+    };
+
+    const hasAnyAssets = assetRepository.countAllAssets() > 0;
+    const total = assetRepository.countAllAssets(repositoryFilters);
+    const pageCount = Math.max(1, Math.ceil(total / pageSize));
+    const page = Math.min(requestedPage, pageCount);
+    const offset = (page - 1) * pageSize;
+    const assets = assetRepository.findAllAssets({
+      ...repositoryFilters,
+      limit: pageSize,
+      offset,
+    }).map((asset) => {
+      const preview = buildAssetPreviewModel(asset);
+      return {
+        ...asset,
+        preview,
+        preview_state: preview.state,
+        preview_revision: preview.revision,
+        thumbnail_url: preview.urls.thumbnail,
+        preview_url: preview.urls.preview,
+        previewAltText: buildPreviewAltText(asset),
+        isPreviewable: preview.previewable,
+        hasThumbnail: Boolean(preview.urls.thumbnail),
+      };
+    });
+
+    // This is intentionally an unpaged project-option query: it is the
+    // filter control's complete source, not the current asset page.
+    const projectOptions = projectRepository
+      .listActiveAssetFilterOptions()
+      .map((project) => ({ id: project.id, title: project.title }))
+      .sort(compareProjectOptions);
+
+    const categoryOptions = buildAssetLibraryCategoryOptions(
+      assetCategoryRepository.listDefaults(),
+      category,
+    );
+    const extensionOptions = assetRepository
+      .listAllAssetExtensions({ projectId })
+      .map((value) => ({ value, label: value, selected: value === extension }));
+    const presenceOptions = buildSelectedOptions(ASSET_LIBRARY_PRESENCE_OPTIONS, presence);
+    const usageOptions = buildSelectedOptions(ASSET_LIBRARY_USAGE_OPTIONS, usage);
+    const sortOptions = buildSelectedOptions(ASSET_LIBRARY_SORT_OPTIONS, sort);
+    const viewOptions = buildSelectedOptions(ASSET_LIBRARY_VIEW_OPTIONS, view);
+    const context = { ...filters, page, pageSize };
+
+    return {
+      assets,
+      total,
+      page,
+      pageSize,
+      pageCount,
+      hasPreviousPage: page > 1,
+      hasNextPage: page < pageCount,
+      hasAnyAssets,
+      filters,
+      presentation: { view },
+      context,
+      projectOptions,
+      categoryOptions,
+      extensionOptions,
+      presenceOptions,
+      usageOptions,
+      sortOptions,
+      viewOptions,
     };
   }
 
@@ -1896,6 +2106,7 @@ export function createWorkflowQueryService({
     getProjectWorkspace,
     getProjectList,
     getPublishedProjectList,
+    getAssetLibraryPage,
     getReleaseList,
     getReleaseBoard,
     getProjectCalendar,

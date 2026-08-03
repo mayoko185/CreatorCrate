@@ -87,6 +87,12 @@ export function createProjectRepository(db) {
   const countArchived = db.prepare(`
     SELECT COUNT(*) AS c FROM projects WHERE archived_at IS NOT NULL
   `);
+  const listActiveAssetFilterOptionsStmt = db.prepare(`
+    SELECT id, title
+    FROM projects
+    WHERE archived_at IS NULL AND status <> 'archived'
+    ORDER BY title COLLATE NOCASE ASC, id ASC
+  `);
   const findCalendarRangeStmt = db.prepare(`
     SELECT * FROM (
       SELECT ${COLUMNS.join(', ')},
@@ -235,6 +241,16 @@ export function createProjectRepository(db) {
       }
       counts.archived = countArchived.pluck().get();
       return counts;
+    },
+
+    /**
+     * Return the complete active-project option source for the cross-project
+     * asset filter. This is deliberately unpaged and returns only the fields
+     * needed by the filter control.
+     * @returns {Array<{ id: number, title: string }>}
+     */
+    listActiveAssetFilterOptions() {
+      return listActiveAssetFilterOptionsStmt.all();
     },
 
     /**

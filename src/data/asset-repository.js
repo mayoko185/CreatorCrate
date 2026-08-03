@@ -42,13 +42,22 @@ function buildOrderClause(sortBy, order) {
  * last) independent of the requested direction, so toggling asc/desc never
  * moves missing-value rows to the top.
  *
- * @param {'filename'|'modified'|'size'|'category'} sortBy
+ * The project sort is opt-in for the cross-project browser. Keeping it out of
+ * the default helper path preserves the existing project-scoped fallback for
+ * unknown sort values.
+ *
+ * @param {'filename'|'modified'|'size'|'category'|'project'} sortBy
  * @param {'asc'|'desc'} order
+ * @param {object} [options]
+ * @param {boolean} [options.includeProjectSort]
  * @returns {string} a full `ORDER BY ...` clause
  */
-function buildAssetBrowserOrderClause(sortBy, order) {
+function buildAssetBrowserOrderClause(sortBy, order, { includeProjectSort = false } = {}) {
   const dir = order === 'desc' ? 'DESC' : 'ASC';
 
+  if (includeProjectSort && sortBy === 'project') {
+    return `ORDER BY p.title COLLATE NOCASE ${dir}, p.id ASC, a.id ASC`;
+  }
   if (sortBy === 'modified') {
     return `ORDER BY (a.modified_at IS NULL) ASC, a.modified_at ${dir}, a.id ASC`;
   }
@@ -63,10 +72,28 @@ function buildAssetBrowserOrderClause(sortBy, order) {
 
 const CATEGORY_JOIN = 'LEFT JOIN project_asset_categories c ON c.project_id = a.project_id AND c.id = a.category_id';
 
-const ASSET_BROWSER_CATEGORY_COLUMNS = `
-          c.display_name AS category_display_name,
-          c.enabled AS category_enabled,
-          c.display_order AS category_display_order,`;
+function buildAssetBrowserSelectColumns({ includeCategorySlug = false } = {}) {
+  return [
+    'a.id',
+    'a.project_id',
+    'a.category_id',
+    'a.relative_path',
+    'a.nested_path',
+    'a.filename',
+    'a.extension',
+    'a.mime_type',
+    'a.size_bytes',
+    'a.modified_at',
+    'a.is_present',
+    'a.last_seen_at',
+    'a.missing_since',
+    'c.display_name AS category_display_name',
+    ...(includeCategorySlug ? ['c.directory_slug AS category_directory_slug'] : []),
+    'c.enabled AS category_enabled',
+    'c.display_order AS category_display_order',
+    '(SELECT COUNT(DISTINCT ra.release_id) FROM release_assets ra JOIN releases r ON r.id = ra.release_id WHERE ra.asset_id = a.id AND r.project_id = a.project_id) AS release_usage_count',
+  ].join(',\n          ');
+}
 
 const QUALIFIED_ASSET_COLUMNS = ASSET_COLUMNS.map((column) => `a.${column}`).join(', ');
 const AUTO_RENAME_CATEGORY_COLUMNS = [
@@ -80,6 +107,102 @@ const AUTO_RENAME_CATEGORY_COLUMNS = [
 
 function escapeLike(value) {
   return value.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
+}
+
+function buildSharedAssetBrowserConditions(filters = {}) {
+  const conditions = [];
+  const params = [];
+
+  if (filters.search) {
+    conditions.push(`(a.filename COLLATE NOCASE LIKE ? ESCAPE '\\' OR a.relative_path COLLATE NOCASE LIKE ? ESCAPE '\\')`);
+    const term = `%${escapeLike(filters.search)}%`;
+    params.push(term, term);
+  }
+
+  if (filters.extension) {
+    conditions.push('LOWER(a.extension) = ?');
+    params.push(filters.extension);
+  }
+
+  if (filters.presence === 'present') {
+    conditions.push('a.is_present = 1');
+  } else if (filters.presence === 'missing') {
+    conditions.push('a.is_present = 0');
+  }
+  // 'all' = no presence restriction
+
+  if (filters.usage === 'used') {
+    conditions.push('EXISTS (SELECT 1 FROM release_assets ra JOIN releases r ON r.id = ra.release_id WHERE ra.asset_id = a.id AND r.project_id = a.project_id)');
+  } else if (filters.usage === 'unused') {
+    conditions.push('NOT EXISTS (SELECT 1 FROM release_assets ra JOIN releases r ON r.id = ra.release_id WHERE ra.asset_id = a.id AND r.project_id = a.project_id)');
+  }
+  // 'all' = no usage restriction
+
+  return { conditions, params };
+}
+
+function appendProjectAssetCategoryCondition(conditions, params, category) {
+  if (category === 'uncategorized') {
+    conditions.push('a.category_id IS NULL');
+  } else if (typeof category === 'number') {
+    conditions.push('a.category_id = ?');
+    params.push(category);
+  }
+  // 'all' / undefined = no category restriction
+}
+
+function appendGlobalAssetCategoryCondition(conditions, params, category) {
+  if (category === 'uncategorized') {
+    conditions.push('a.category_id IS NULL');
+    return;
+  }
+
+  if (category === undefined || category === null || category === '' || category === 'all') {
+    return;
+  }
+
+  if (typeof category === 'string') {
+    conditions.push(`EXISTS (
+      SELECT 1
+      FROM project_asset_categories category_filter
+      WHERE category_filter.project_id = a.project_id
+        AND category_filter.id = a.category_id
+        AND category_filter.directory_slug COLLATE NOCASE = ?
+    )`);
+    params.push(category);
+    return;
+  }
+
+  // Numeric project-local category IDs are not a stable cross-project
+  // identity. An unsupported category value must not silently mean "all".
+  conditions.push('1 = 0');
+}
+
+function buildProjectAssetBrowserConditions(projectId, filters = {}) {
+  const { conditions, params } = buildSharedAssetBrowserConditions(filters);
+  conditions.unshift('a.project_id = ?');
+  params.unshift(projectId);
+  appendProjectAssetCategoryCondition(conditions, params, filters.category);
+  return { conditions, params };
+}
+
+function buildAllAssetBrowserConditions(filters = {}) {
+  const { conditions, params } = buildSharedAssetBrowserConditions(filters);
+  const projectId = filters.projectId ?? filters.project_id;
+
+  // Active project browsing excludes either archive indicator. Normal archive
+  // operations set both; checking both also avoids exposing transient
+  // status-only archived rows in a read-only active browser.
+  conditions.push('p.archived_at IS NULL', 'p.status <> ?');
+  params.push('archived');
+
+  if (projectId !== undefined && projectId !== null) {
+    conditions.push('a.project_id = ?');
+    params.push(projectId);
+  }
+
+  appendGlobalAssetCategoryCondition(conditions, params, filters.category);
+  return { conditions, params };
 }
 
 // Detects a UNIQUE(project_id, relative_path) violation (idx_assets_project_path)
@@ -869,6 +992,32 @@ export function createAssetRepository(db) {
       return this.getExtensions(projectId);
     },
 
+    /**
+     * Stable extension choices for the cross-project asset browser. The
+     * optional project scope follows the same active-project semantics as
+     * findAllAssets, while the unscoped form covers every active project.
+     * @param {{ projectId?: number|null }} [filters]
+     * @returns {string[]}
+     */
+    listAllAssetExtensions({ projectId } = {}) {
+      const conditions = ['p.archived_at IS NULL', 'p.status <> ?', 'a.extension <> ?'];
+      const params = ['archived', ''];
+
+      if (projectId !== undefined && projectId !== null) {
+        conditions.push('a.project_id = ?');
+        params.push(projectId);
+      }
+
+      const sql = `
+        SELECT DISTINCT LOWER(a.extension) AS extension
+        FROM assets a
+        JOIN projects p ON p.id = a.project_id
+        WHERE ${conditions.join(' AND ')}
+        ORDER BY extension COLLATE NOCASE ASC
+      `;
+      return db.prepare(sql).pluck().all(...params);
+    },
+
     // ─── Phase 6D: Asset Browser Queries ──────────────────────────────────
 
     /**
@@ -885,44 +1034,8 @@ export function createAssetRepository(db) {
      * @param {'all'|'uncategorized'|number} [filters.category]
      * @returns {{ conditions: string[], params: any[] }}
      */
-    _buildAssetBrowserConditions(projectId, filters) {
-      const conditions = ['a.project_id = ?'];
-      const params = [projectId];
-
-      if (filters.search) {
-        conditions.push(`(a.filename COLLATE NOCASE LIKE ? ESCAPE '\\' OR a.relative_path COLLATE NOCASE LIKE ? ESCAPE '\\')`);
-        const term = `%${escapeLike(filters.search)}%`;
-        params.push(term, term);
-      }
-
-      if (filters.extension) {
-        conditions.push('LOWER(a.extension) = ?');
-        params.push(filters.extension);
-      }
-
-      if (filters.presence === 'present') {
-        conditions.push('a.is_present = 1');
-      } else if (filters.presence === 'missing') {
-        conditions.push('a.is_present = 0');
-      }
-      // 'all' = no presence restriction
-
-      if (filters.usage === 'used') {
-        conditions.push('EXISTS (SELECT 1 FROM release_assets ra JOIN releases r ON r.id = ra.release_id WHERE ra.asset_id = a.id AND r.project_id = a.project_id)');
-      } else if (filters.usage === 'unused') {
-        conditions.push('NOT EXISTS (SELECT 1 FROM release_assets ra JOIN releases r ON r.id = ra.release_id WHERE ra.asset_id = a.id AND r.project_id = a.project_id)');
-      }
-      // 'all' = no usage restriction
-
-      if (filters.category === 'uncategorized') {
-        conditions.push('a.category_id IS NULL');
-      } else if (typeof filters.category === 'number') {
-        conditions.push('a.category_id = ?');
-        params.push(filters.category);
-      }
-      // 'all' / undefined = no category restriction
-
-      return { conditions, params };
+     _buildAssetBrowserConditions(projectId, filters) {
+      return buildProjectAssetBrowserConditions(projectId, filters);
     },
 
     /**
@@ -959,20 +1072,7 @@ export function createAssetRepository(db) {
 
       const sql = `
         SELECT
-          a.id,
-          a.project_id,
-          a.category_id,
-          a.relative_path,
-          a.nested_path,
-          a.filename,
-          a.extension,
-          a.mime_type,
-          a.size_bytes,
-          a.modified_at,
-          a.is_present,
-          a.last_seen_at,
-          a.missing_since,${ASSET_BROWSER_CATEGORY_COLUMNS}
-          (SELECT COUNT(DISTINCT ra.release_id) FROM release_assets ra JOIN releases r ON r.id = ra.release_id WHERE ra.asset_id = a.id AND r.project_id = a.project_id) AS release_usage_count
+          ${buildAssetBrowserSelectColumns()}
         FROM assets a
         ${CATEGORY_JOIN}
         WHERE ${conditions.join(' AND ')}
@@ -981,6 +1081,65 @@ export function createAssetRepository(db) {
       `;
 
       return db.prepare(sql).all(...params, pageSize, offset);
+    },
+
+    /**
+     * Paginated asset list across active projects for the future global asset
+     * browser. Category filters use project-category directory slugs, not
+     * project-local numeric category IDs.
+     *
+     * @param {object} [filters]
+     * @param {number} [filters.projectId]
+     * @param {string|null} [filters.search]
+     * @param {string|null} [filters.extension]
+     * @param {'all'|'present'|'missing'} [filters.presence='all']
+     * @param {'all'|'used'|'unused'} [filters.usage='all']
+     * @param {'all'|'uncategorized'|string} [filters.category='all']
+     * @param {'filename'|'modified'|'size'|'category'|'project'} [filters.sort='filename']
+     * @param {'asc'|'desc'} [filters.order='asc']
+     * @param {number} [filters.limit=25]
+     * @param {number} [filters.offset=0]
+     * @returns {Array}
+     */
+    findAllAssets(filters = {}) {
+      const sort = filters.sort ?? filters.sortBy ?? 'filename';
+      const order = filters.order ?? 'asc';
+      const limit = filters.limit ?? 25;
+      const offset = filters.offset ?? 0;
+      const { conditions, params } = buildAllAssetBrowserConditions(filters);
+
+      const sql = `
+        SELECT
+          ${buildAssetBrowserSelectColumns({ includeCategorySlug: true })},
+          p.title AS project_title
+        FROM assets a
+        JOIN projects p ON p.id = a.project_id
+        ${CATEGORY_JOIN}
+        WHERE ${conditions.join(' AND ')}
+        ${buildAssetBrowserOrderClause(sort, order, { includeProjectSort: true })}
+        LIMIT ? OFFSET ?
+      `;
+
+      return db.prepare(sql).all(...params, limit, offset);
+    },
+
+    /**
+     * Count assets using the exact filtering predicates as findAllAssets.
+     * Active-project scope and category/usage predicates are expressed
+     * without multiplying rows, so the count cannot inflate from joins.
+     *
+     * @param {object} [filters]
+     * @returns {number}
+     */
+    countAllAssets(filters = {}) {
+      const { conditions, params } = buildAllAssetBrowserConditions(filters);
+      const sql = `
+        SELECT COUNT(*) AS c
+        FROM assets a
+        JOIN projects p ON p.id = a.project_id
+        WHERE ${conditions.join(' AND ')}
+      `;
+      return db.prepare(sql).get(...params).c;
     },
 
     /**
@@ -1037,20 +1196,7 @@ export function createAssetRepository(db) {
           SELECT COUNT(*) AS total FROM filtered
         )
         SELECT
-          a.id,
-          a.project_id,
-          a.category_id,
-          a.relative_path,
-          a.nested_path,
-          a.filename,
-          a.extension,
-          a.mime_type,
-          a.size_bytes,
-          a.modified_at,
-          a.is_present,
-          a.last_seen_at,
-          a.missing_since,${ASSET_BROWSER_CATEGORY_COLUMNS}
-          (SELECT COUNT(DISTINCT ra.release_id) FROM release_assets ra JOIN releases r ON r.id = ra.release_id WHERE ra.asset_id = a.id AND r.project_id = a.project_id) AS release_usage_count,
+          ${buildAssetBrowserSelectColumns()},
           f.filtered_position,
           f.previous_asset_id,
           f.next_asset_id,

@@ -52,6 +52,13 @@ const NAVIGATION_ITEMS = [
     ],
   },
   {
+    key: 'assets',
+    label: 'Asset Viewer',
+    href: '/assets',
+    icon: 'assets',
+    matches: ['/assets'],
+  },
+  {
     key: 'releases',
     label: 'Published Work',
     href: '/releases',

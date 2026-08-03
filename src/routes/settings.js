@@ -84,6 +84,7 @@ const PAGE_DEFAULT_SECTIONS = Object.freeze([
   Object.freeze({ page: 'publishedWork', title: 'Published Work' }),
   Object.freeze({ page: 'releaseManagement', title: 'Release Management' }),
   Object.freeze({ page: 'projectAssets', title: 'Project Assets' }),
+  Object.freeze({ page: 'assetViewer', title: 'Asset Viewer' }),
 ]);
 
 const PROJECT_ASSET_CATEGORY_FIELD = 'defaultCategory';
@@ -93,6 +94,12 @@ const DEFAULT_OPTION_LABELS = Object.freeze({
   sort: 'Default sort',
   order: 'Default order',
   pageSize: 'Assets per page',
+  assetViewer: Object.freeze({
+    view: 'Default view',
+    sort: 'Default sort',
+    order: 'Default order',
+    pageSize: 'Default page size',
+  }),
   status: 'New project status',
   priority: 'New project priority',
   new_release: Object.freeze({ status: 'Default status' }),
@@ -134,6 +141,18 @@ const DEFAULT_VALUE_LABELS = Object.freeze({
       modified: 'Modified date',
       size: 'File size',
       category: 'Category & location',
+    }),
+    order: Object.freeze({ asc: 'Ascending', desc: 'Descending' }),
+    pageSize: Object.freeze({ 10: '10', 25: '25', 50: '50', 100: '100' }),
+  }),
+  assetViewer: Object.freeze({
+    view: Object.freeze({ grid: 'Grid', list: 'List' }),
+    sort: Object.freeze({
+      filename: 'Filename',
+      modified: 'Modified',
+      size: 'Size',
+      category: 'Category',
+      project: 'Project',
     }),
     order: Object.freeze({ asc: 'Ascending', desc: 'Descending' }),
     pageSize: Object.freeze({ 10: '10', 25: '25', 50: '50', 100: '100' }),

@@ -1019,6 +1019,299 @@ describe('asset repository', () => {
     });
   });
 
+  describe('findAllAssets and countAllAssets', () => {
+    function insertCategory(forProjectId, {
+      displayName,
+      directorySlug,
+      displayOrder = 0,
+      enabled = 1,
+    }) {
+      return db.prepare(`
+        INSERT INTO project_asset_categories (project_id, display_name, directory_slug, display_order, enabled)
+        VALUES (?, ?, ?, ?, ?)
+        RETURNING *
+      `).get(forProjectId, displayName, directorySlug, displayOrder, enabled);
+    }
+
+    function addAsset(forProjectId, relativePath, overrides = {}) {
+      return assetRepo.upsert(forProjectId, relativePath, {
+        filename: overrides.filename ?? relativePath.split('/').pop(),
+        extension: overrides.extension ?? 'png',
+        mimeType: overrides.mimeType ?? 'image/png',
+        sizeBytes: overrides.sizeBytes ?? 100,
+        modifiedAt: overrides.modifiedAt ?? null,
+        categoryId: overrides.categoryId ?? null,
+        nestedPath: overrides.nestedPath ?? '',
+      });
+    }
+
+    it('lists assets across active projects with project and browser context', () => {
+      const other = createProject('Other Project');
+      const category = insertCategory(projectId, {
+        displayName: 'Source Files',
+        directorySlug: 'source',
+        displayOrder: 2,
+      });
+      const categorized = addAsset(projectId, 'source/alpha.png', { categoryId: category.id });
+      const uncategorized = addAsset(other.id, 'beta.jpg', { extension: 'jpg' });
+
+      const rows = assetRepo.findAllAssets({ limit: 10 });
+
+      expect(rows.map((row) => row.id)).toEqual([categorized.id, uncategorized.id]);
+      expect(rows.find((row) => row.id === categorized.id)).toMatchObject({
+        project_id: projectId,
+        project_title: 'Test Project',
+        category_id: category.id,
+        category_display_name: 'Source Files',
+        category_directory_slug: 'source',
+        category_enabled: 1,
+        category_display_order: 2,
+        is_present: 1,
+        release_usage_count: 0,
+      });
+      expect(rows.find((row) => row.id === uncategorized.id)).toMatchObject({
+        project_id: other.id,
+        project_title: 'Other Project',
+        category_id: null,
+        category_display_name: null,
+        category_directory_slug: null,
+        category_enabled: null,
+        category_display_order: null,
+        release_usage_count: 0,
+      });
+    });
+
+    it('narrows the global list and count by project ID', () => {
+      const other = createProject('Other Project');
+      addAsset(projectId, 'mine.png');
+      addAsset(other.id, 'theirs.png');
+
+      const rows = assetRepo.findAllAssets({ projectId: other.id, limit: 10 });
+
+      expect(rows).toHaveLength(1);
+      expect(rows[0].project_id).toBe(other.id);
+      expect(assetRepo.countAllAssets({ projectId: other.id })).toBe(1);
+    });
+
+    it('searches filename and relative path across project boundaries', () => {
+      const other = createProject('Other Project');
+      addAsset(projectId, 'renders/sunset/final.png', { filename: 'final.png' });
+      addAsset(other.id, 'exports/SUNSET-cover.jpg', { filename: 'SUNSET-cover.jpg', extension: 'jpg' });
+      addAsset(other.id, 'exports/daylight.jpg', { filename: 'daylight.jpg', extension: 'jpg' });
+
+      const rows = assetRepo.findAllAssets({ search: 'sunset', limit: 10 });
+
+      expect(rows.map((row) => row.filename)).toEqual(['final.png', 'SUNSET-cover.jpg']);
+      expect(assetRepo.countAllAssets({ search: 'sunset' })).toBe(2);
+    });
+
+    it('filters by extension across projects', () => {
+      const other = createProject('Other Project');
+      addAsset(projectId, 'one.PNG', { filename: 'one.PNG', extension: 'PNG' });
+      addAsset(other.id, 'two.jpg', { filename: 'two.jpg', extension: 'jpg' });
+
+      const rows = assetRepo.findAllAssets({ extension: 'png', limit: 10 });
+
+      expect(rows.map((row) => row.filename)).toEqual(['one.PNG']);
+      expect(assetRepo.countAllAssets({ extension: 'png' })).toBe(1);
+    });
+
+    it('filters by presence across projects', () => {
+      const other = createProject('Other Project');
+      const present = addAsset(projectId, 'present.png');
+      const missing = addAsset(projectId, 'missing.png');
+      const otherMissing = addAsset(other.id, 'other-missing.png');
+      assetRepo.markMissingByProjectIdAndPathNotIn(projectId, ['present.png']);
+      assetRepo.markAllMissing(other.id);
+
+      const rows = assetRepo.findAllAssets({ presence: 'missing', limit: 10 });
+
+      expect(rows.map((row) => row.id)).toEqual([missing.id, otherMissing.id]);
+      expect(rows.every((row) => row.is_present === 0)).toBe(true);
+      expect(assetRepo.countAllAssets({ presence: 'present' })).toBe(1);
+      expect(present.id).not.toBe(missing.id);
+    });
+
+    it('filters release usage without duplicating assets and counts distinct releases', () => {
+      const used = addAsset(projectId, 'used.png');
+      addAsset(projectId, 'unused.png');
+      const releaseOne = insertRelease(db, { projectId, title: 'Release One' });
+      const releaseTwo = insertRelease(db, { projectId, title: 'Release Two' });
+      linkAssetToRelease(db, { releaseId: releaseOne.id, assetId: used.id });
+      linkAssetToRelease(db, { releaseId: releaseTwo.id, assetId: used.id });
+
+      const usedRows = assetRepo.findAllAssets({ usage: 'used', limit: 10 });
+      const unusedRows = assetRepo.findAllAssets({ usage: 'unused', limit: 10 });
+
+      expect(usedRows).toHaveLength(1);
+      expect(usedRows[0]).toMatchObject({ id: used.id, release_usage_count: 2 });
+      expect(unusedRows).toHaveLength(1);
+      expect(unusedRows[0].filename).toBe('unused.png');
+      expect(assetRepo.countAllAssets({ usage: 'used' })).toBe(1);
+    });
+
+    it('filters categories by stable project-category slug and all includes uncategorized assets', () => {
+      const other = createProject('Other Project');
+      const source = insertCategory(projectId, {
+        displayName: 'Source Files',
+        directorySlug: 'source',
+      });
+      const otherSource = insertCategory(other.id, {
+        displayName: 'Imported Source',
+        directorySlug: 'source',
+      });
+      const sameNameDifferentSlug = insertCategory(other.id, {
+        displayName: 'Source Files',
+        directorySlug: 'references',
+      });
+      const first = addAsset(projectId, 'source/first.png', { categoryId: source.id });
+      const second = addAsset(other.id, 'source/second.png', { categoryId: otherSource.id });
+      const differentSlug = addAsset(other.id, 'references/third.png', {
+        categoryId: sameNameDifferentSlug.id,
+      });
+      const uncategorized = addAsset(projectId, 'root.png');
+
+      const sourceRows = assetRepo.findAllAssets({ category: 'source', limit: 10 });
+      const allRows = assetRepo.findAllAssets({ category: 'all', limit: 10 });
+      const uncategorizedRows = assetRepo.findAllAssets({ category: 'uncategorized', limit: 10 });
+
+      expect(sourceRows.map((row) => row.id)).toEqual([first.id, second.id]);
+      expect(sourceRows.every((row) => row.category_directory_slug === 'source')).toBe(true);
+      expect(allRows.map((row) => row.id)).toEqual([
+        first.id,
+        uncategorized.id,
+        second.id,
+        differentSlug.id,
+      ]);
+      expect(uncategorizedRows.map((row) => row.id)).toEqual([uncategorized.id]);
+      expect(assetRepo.findAllAssets({ category: source.id, limit: 10 })).toEqual([]);
+      expect(assetRepo.countAllAssets({ category: 'all' })).toBe(4);
+    });
+
+    it('orders every supported sort deterministically, including project sort', () => {
+      const alphaProject = createProject('Alpha Project');
+      const zetaProject = createProject('Zeta Project');
+      const alphaCategory = insertCategory(alphaProject.id, {
+        displayName: 'Alpha Category',
+        directorySlug: 'alpha',
+        displayOrder: 2,
+      });
+      const zetaCategory = insertCategory(zetaProject.id, {
+        displayName: 'Zeta Category',
+        directorySlug: 'zeta',
+        displayOrder: 1,
+      });
+
+      const alphaSame = addAsset(alphaProject.id, 'nested/same.txt', {
+        filename: 'same.txt',
+        extension: 'txt',
+        sizeBytes: 10,
+        modifiedAt: '2026-01-01T00:00:00.000Z',
+        categoryId: alphaCategory.id,
+      });
+      const zetaSame = addAsset(zetaProject.id, 'nested/same.txt', {
+        filename: 'same.txt',
+        extension: 'txt',
+        sizeBytes: 20,
+        modifiedAt: '2026-02-01T00:00:00.000Z',
+        categoryId: zetaCategory.id,
+      });
+      const alphaUncategorized = addAsset(alphaProject.id, 'A.png', {
+        filename: 'A.png',
+        sizeBytes: 20,
+        modifiedAt: '2026-03-01T00:00:00.000Z',
+      });
+      const zetaLast = addAsset(zetaProject.id, 'z.png', {
+        filename: 'z.png',
+        sizeBytes: 30,
+        modifiedAt: null,
+        categoryId: zetaCategory.id,
+      });
+
+      const expected = {
+        filename: [alphaUncategorized, alphaSame, zetaSame, zetaLast],
+        modified: [alphaSame, zetaSame, alphaUncategorized, zetaLast],
+        size: [alphaSame, zetaSame, alphaUncategorized, zetaLast],
+        category: [zetaSame, zetaLast, alphaSame, alphaUncategorized],
+        project: [alphaSame, alphaUncategorized, zetaSame, zetaLast],
+      };
+
+      for (const [sort, assets] of Object.entries(expected)) {
+        const firstRun = assetRepo.findAllAssets({ sort, order: 'asc', limit: 10 });
+        const secondRun = assetRepo.findAllAssets({ sort, order: 'asc', limit: 10 });
+        const expectedIds = assets.map((asset) => asset.id);
+
+        expect(firstRun.map((row) => row.id), sort).toEqual(expectedIds);
+        expect(secondRun.map((row) => row.id), sort).toEqual(expectedIds);
+      }
+    });
+
+    it('paginates after sorting and keeps count independent of pagination', () => {
+      const other = createProject('Other Project');
+      addAsset(projectId, 'charlie.png', { filename: 'charlie.png' });
+      addAsset(other.id, 'alpha.png', { filename: 'alpha.png' });
+      addAsset(projectId, 'delta.png', { filename: 'delta.png' });
+      addAsset(other.id, 'bravo.png', { filename: 'bravo.png' });
+
+      const page = assetRepo.findAllAssets({ sort: 'filename', order: 'asc', limit: 2, offset: 1 });
+
+      expect(page.map((row) => row.filename)).toEqual(['bravo.png', 'charlie.png']);
+      expect(assetRepo.countAllAssets()).toBe(4);
+    });
+
+    it('keeps count equal to an unpaged filtered listing total', () => {
+      const category = insertCategory(projectId, {
+        displayName: 'Source',
+        directorySlug: 'source',
+      });
+      addAsset(projectId, 'source/match.png', { categoryId: category.id });
+      addAsset(projectId, 'source/missing.png', { categoryId: category.id });
+      addAsset(projectId, 'source/other.jpg', { categoryId: category.id, extension: 'jpg' });
+      assetRepo.markMissingByProjectIdAndPathNotIn(projectId, ['source/match.png', 'source/other.jpg']);
+
+      const filters = {
+        projectId,
+        category: 'source',
+        search: 'match',
+        extension: 'png',
+        presence: 'present',
+        usage: 'unused',
+      };
+      const rows = assetRepo.findAllAssets({ ...filters, limit: 100, offset: 0 });
+
+      expect(assetRepo.countAllAssets(filters)).toBe(rows.length);
+      expect(rows).toHaveLength(1);
+    });
+
+    it('excludes projects archived by either archive indicator from active browsing', () => {
+      const active = createProject('Active Assets');
+      const archived = createProject('Archived Assets');
+      const statusOnlyArchived = createProject('Status Only Archived Assets', { status: 'archived' });
+      projectRepo.archive(archived.id);
+      const activeAsset = addAsset(active.id, 'active.png');
+      addAsset(archived.id, 'archived.png');
+      addAsset(statusOnlyArchived.id, 'status-only-archived.png');
+
+      const rows = assetRepo.findAllAssets({ limit: 100 });
+
+      expect(rows.map((row) => row.id)).toEqual([activeAsset.id]);
+      expect(assetRepo.countAllAssets()).toBe(1);
+      expect(assetRepo.findAllAssets({ projectId: archived.id, limit: 100 })).toEqual([]);
+    });
+
+    it('lists normalized extensions across active projects and selected active scope', () => {
+      const other = createProject('Extension Other');
+      const archived = createProject('Extension Archived', { status: 'archived' });
+      projectRepo.archive(archived.id);
+      addAsset(projectId, 'one.PNG', { extension: 'PNG' });
+      addAsset(other.id, 'two.jpg', { extension: 'jpg' });
+      addAsset(archived.id, 'three.kra', { extension: 'kra' });
+
+      expect(assetRepo.listAllAssetExtensions()).toEqual(['jpg', 'png']);
+      expect(assetRepo.listAllAssetExtensions({ projectId: other.id })).toEqual(['jpg']);
+    });
+  });
+
   describe('findProjectAssetViewerContext', () => {
     function addViewerAsset(relativePath, overrides = {}) {
       return assetRepo.upsert(projectId, relativePath, {

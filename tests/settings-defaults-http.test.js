@@ -26,6 +26,10 @@ const VALID_DEFAULTS = {
   projectAssetsSort: 'category',
   projectAssetsOrder: 'asc',
   projectAssetsPageSize: '50',
+  assetViewerView: 'list',
+  assetViewerSort: 'project',
+  assetViewerOrder: 'desc',
+  assetViewerPageSize: '100',
   new_projectStatus: 'ready',
   new_projectPriority: 'high',
   new_releaseStatus: 'drafting',
@@ -101,9 +105,10 @@ describe('settings — page defaults HTTP', () => {
     expect(res.text).toContain('<h2>Published Work</h2>');
     expect(res.text).toContain('<h2>Release Management</h2>');
     expect(res.text).toContain('<h2>Project Assets</h2>');
+    expect(res.text).toContain('<h2>Asset Viewer</h2>');
     expect(res.text).toContain('These defaults apply only to new projects. Changing them does not modify existing projects.');
     expect(res.text).toContain('This default applies only to newly created release records. Changing it does not modify existing releases.');
-    expect((res.text.match(/<select /g) || [])).toHaveLength(17);
+    expect((res.text.match(/<select /g) || [])).toHaveLength(21);
     for (const id of [
       'new_projectStatus',
       'new_projectPriority',
@@ -121,9 +126,22 @@ describe('settings — page defaults HTTP', () => {
       'projectAssetsSort',
       'projectAssetsOrder',
       'projectAssetsPageSize',
+      'assetViewerView',
+      'assetViewerSort',
+      'assetViewerOrder',
+      'assetViewerPageSize',
     ]) {
+      expect((res.text.match(new RegExp(`id="${id}"`, 'g')) || [])).toHaveLength(1);
       expect(res.text).toContain(`id="${id}" name="${id}"`);
     }
+    expect(res.text).toContain('<label for="assetViewerView">Default view</label>');
+    expect(res.text).toContain('<label for="assetViewerSort">Default sort</label>');
+    expect(res.text).toContain('<label for="assetViewerOrder">Default order</label>');
+    expect(res.text).toContain('<label for="assetViewerPageSize">Default page size</label>');
+    expect(res.text).toContain('<option value="project">Project</option>');
+    expect(res.text).toContain('<option value="modified">Modified</option>');
+    expect(res.text).toContain('<option value="size">Size</option>');
+    expect(res.text).toContain('<option value="category">Category</option>');
     expect(res.text).toContain('id="project-assets-default-category" name="defaultCategory"');
 
     expect(activeNavKeys(res.text)).toEqual(['settings']);
@@ -146,11 +164,15 @@ describe('settings — page defaults HTTP', () => {
     expect(selectedValue(res.text, 'projectAssetsSort')).toBe('filename');
     expect(selectedValue(res.text, 'projectAssetsOrder')).toBe('asc');
     expect(selectedValue(res.text, 'projectAssetsPageSize')).toBe('25');
+    expect(selectedValue(res.text, 'assetViewerView')).toBe('grid');
+    expect(selectedValue(res.text, 'assetViewerSort')).toBe('filename');
+    expect(selectedValue(res.text, 'assetViewerOrder')).toBe('asc');
+    expect(selectedValue(res.text, 'assetViewerPageSize')).toBe('25');
     expect(selectedValue(res.text, 'new_projectStatus')).toBe('tbd');
     expect(selectedValue(res.text, 'new_projectPriority')).toBe('normal');
     expect(selectedValue(res.text, 'new_releaseStatus')).toBe('idea');
     expect(selectedValue(res.text, 'project-assets-default-category')).toBe('all');
-    expect((res.text.match(/Application fallback:/g) || [])).toHaveLength(16);
+    expect((res.text.match(/Application fallback:/g) || [])).toHaveLength(20);
     expect(res.text).toContain('<label for="new_releaseStatus">Default status</label>');
     expect(res.text).toContain('<label for="releaseManagementView">Default view</label>');
     expect(res.text).toContain('<option value="board">Board</option>');
@@ -174,6 +196,10 @@ describe('settings — page defaults HTTP', () => {
     writeMeta(db, defaultKey('projectAssets', 'sort'), 'published');
     writeMeta(db, defaultKey('projectAssets', 'order'), 'forwards');
     writeMeta(db, defaultKey('projectAssets', 'pageSize'), '20');
+    writeMeta(db, defaultKey('assetViewer', 'view'), 'board');
+    writeMeta(db, defaultKey('assetViewer', 'sort'), 'title');
+    writeMeta(db, defaultKey('assetViewer', 'order'), 'forwards');
+    writeMeta(db, defaultKey('assetViewer', 'pageSize'), '20');
     writeMeta(db, defaultKey('new_project', 'status'), 'cancelled');
     writeMeta(db, defaultKey('new_project', 'priority'), 'urgent');
     writeMeta(db, defaultKey('new_release', 'status'), 'cancelled');
@@ -194,12 +220,16 @@ describe('settings — page defaults HTTP', () => {
     expect(selectedValue(res.text, 'projectAssetsSort')).toBe('filename');
     expect(selectedValue(res.text, 'projectAssetsOrder')).toBe('asc');
     expect(selectedValue(res.text, 'projectAssetsPageSize')).toBe('25');
+    expect(selectedValue(res.text, 'assetViewerView')).toBe('grid');
+    expect(selectedValue(res.text, 'assetViewerSort')).toBe('filename');
+    expect(selectedValue(res.text, 'assetViewerOrder')).toBe('asc');
+    expect(selectedValue(res.text, 'assetViewerPageSize')).toBe('25');
     expect(selectedValue(res.text, 'new_projectStatus')).toBe('tbd');
     expect(selectedValue(res.text, 'new_projectPriority')).toBe('normal');
     expect(selectedValue(res.text, 'new_releaseStatus')).toBe('idea');
     expect(res.text).toContain('Category &quot;does-not-exist&quot; (unavailable)');
     expect(res.text).toContain('Effective:</span> <strong>All Categories</strong>');
-    expect((res.text.match(/Application fallback:/g) || [])).toHaveLength(13);
+    expect((res.text.match(/Application fallback:/g) || [])).toHaveLength(17);
     expect(res.text).not.toContain('not-a-project-sort');
     expect(res.text).not.toContain('not-a-view');
     expect(res.text).not.toContain('not-an-order');
@@ -207,6 +237,7 @@ describe('settings — page defaults HTTP', () => {
     expect(res.text).not.toContain('value="published" selected');
     expect(res.text).not.toContain('value="forwards"');
     expect(res.text).not.toContain('value="20"');
+    expect(res.text).not.toMatch(/<select id="assetViewerSort"[\s\S]*?value="title" selected/);
     expect(res.text).not.toContain('value="cancelled"');
     expect(res.text).not.toContain('value="urgent"');
   });
@@ -249,6 +280,10 @@ describe('settings — page defaults HTTP', () => {
     expect(readMeta(db, defaultKey('projectAssets', 'sort'))).toBe('category');
     expect(readMeta(db, defaultKey('projectAssets', 'order'))).toBe('asc');
     expect(readMeta(db, defaultKey('projectAssets', 'pageSize'))).toBe('50');
+    expect(readMeta(db, defaultKey('assetViewer', 'view'))).toBe('list');
+    expect(readMeta(db, defaultKey('assetViewer', 'sort'))).toBe('project');
+    expect(readMeta(db, defaultKey('assetViewer', 'order'))).toBe('desc');
+    expect(readMeta(db, defaultKey('assetViewer', 'pageSize'))).toBe('100');
     expect(readMeta(db, defaultKey('new_project', 'status'))).toBe('ready');
     expect(readMeta(db, defaultKey('new_project', 'priority'))).toBe('high');
     expect(readMeta(db, defaultKey('new_release', 'status'))).toBe('drafting');
@@ -266,6 +301,10 @@ describe('settings — page defaults HTTP', () => {
     expect(selectedValue(redirected.text, 'releaseManagementSort')).toBe('planned');
     expect(selectedValue(redirected.text, 'releaseManagementOrder')).toBe('asc');
     expect(selectedValue(redirected.text, 'projectAssetsPageSize')).toBe('50');
+    expect(selectedValue(redirected.text, 'assetViewerView')).toBe('list');
+    expect(selectedValue(redirected.text, 'assetViewerSort')).toBe('project');
+    expect(selectedValue(redirected.text, 'assetViewerOrder')).toBe('desc');
+    expect(selectedValue(redirected.text, 'assetViewerPageSize')).toBe('100');
     expect(selectedValue(redirected.text, 'new_projectStatus')).toBe('ready');
     expect(selectedValue(redirected.text, 'new_projectPriority')).toBe('high');
     expect(selectedValue(redirected.text, 'new_releaseStatus')).toBe('drafting');
@@ -429,6 +468,58 @@ describe('settings — page defaults HTTP', () => {
       }
     }
     expect(readMeta(db, 'asset_browser.default_category')).toBe(VALID_DEFAULTS.defaultCategory);
+  });
+
+  it('rejects an invalid Asset Viewer value before partially saving any Defaults values', async () => {
+    writeMeta(db, 'unrelated.preference', 'preserve-me');
+
+    await agent
+      .post('/settings/defaults')
+      .type('form')
+      .send({ ...VALID_DEFAULTS, _csrf: csrfToken })
+      .expect(302);
+
+    const res = await agent
+      .post('/settings/defaults')
+      .type('form')
+      .send({
+        ...VALID_DEFAULTS,
+        projectsView: 'grid',
+        projectsSort: 'created',
+        projectsOrder: 'desc',
+        publishedWorkView: 'grid',
+        publishedWorkSort: 'published',
+        publishedWorkOrder: 'desc',
+        releaseManagementView: 'list',
+        releaseManagementSort: 'updated',
+        releaseManagementOrder: 'desc',
+        projectAssetsView: 'grid',
+        projectAssetsSort: 'filename',
+        projectAssetsOrder: 'desc',
+        projectAssetsPageSize: '10',
+        assetViewerView: 'grid',
+        assetViewerSort: 'title',
+        assetViewerOrder: 'asc',
+        assetViewerPageSize: '10',
+        new_projectStatus: 'tbd',
+        new_projectPriority: 'low',
+        new_releaseStatus: 'idea',
+        defaultCategory: 'all',
+        _csrf: csrfToken,
+      })
+      .expect(422);
+
+    expect(res.text).toContain('assetViewer.sort');
+    expect(res.text).toContain('Submitted value: title');
+    for (const [page, options] of Object.entries(PAGE_DEFAULT_DEFINITIONS)) {
+      for (const option of Object.keys(options)) {
+        expect(readMeta(db, defaultKey(page, option))).toBe(
+          VALID_DEFAULTS[`${page}${option.charAt(0).toUpperCase()}${option.slice(1)}`]
+        );
+      }
+    }
+    expect(readMeta(db, 'asset_browser.default_category')).toBe(VALID_DEFAULTS.defaultCategory);
+    expect(readMeta(db, 'unrelated.preference')).toBe('preserve-me');
   });
 
   it('requires CSRF for the defaults mutation', async () => {

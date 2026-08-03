@@ -215,8 +215,12 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
   describe('centralized navigation reused', () => {
     it('mobile nav renders the same destinations as desktop', async () => {
       const res = await agent.get('/').expect(200);
-      expect(mobileNavHrefs(res.text)).toEqual(['/', '/projects', '/releases', '/calendar', '/settings']);
-      expect(desktopNavHrefs(res.text)).toEqual(['/', '/projects', '/releases', '/calendar', '/settings']);
+      expect(mobileNavHrefs(res.text)).toEqual([
+        '/', '/projects', '/assets', '/releases', '/calendar', '/settings',
+      ]);
+      expect(desktopNavHrefs(res.text)).toEqual([
+        '/', '/projects', '/assets', '/releases', '/calendar', '/settings',
+      ]);
     });
 
     it('mobile and desktop link hrefs are identical', async () => {
@@ -224,10 +228,10 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
       expect(mobileNavHrefs(res.text)).toEqual(desktopNavHrefs(res.text));
     });
 
-    it('exactly five items in each nav (no duplicated routes)', async () => {
+    it('exactly six items in each nav (no duplicated routes)', async () => {
       const res = await agent.get('/').expect(200);
-      expect(mobileNavHrefs(res.text)).toHaveLength(5);
-      expect(desktopNavHrefs(res.text)).toHaveLength(5);
+      expect(mobileNavHrefs(res.text)).toHaveLength(6);
+      expect(desktopNavHrefs(res.text)).toHaveLength(6);
     });
 
     it('renders exactly one Calendar link in the mobile nav', async () => {
@@ -266,6 +270,13 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
       expect(mobileActiveKeys(res.text)).toEqual(['projects']);
     });
 
+    it('marks Asset Viewer active on /assets and query-string requests', async () => {
+      for (const url of ['/assets', '/assets?view=list']) {
+        const res = await agent.get(url).expect(200);
+        expect(mobileActiveKeys(res.text)).toEqual(['assets']);
+      }
+    });
+
     it('marks Published Work active on the release list', async () => {
       const res = await agent.get('/releases').expect(200);
       expect(mobileActiveKeys(res.text)).toEqual(['releases']);
@@ -287,7 +298,7 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
     });
 
     it('exactly one mobile item is active on representative pages', async () => {
-      for (const url of ['/', '/projects', '/releases', '/calendar', '/release-management']) {
+      for (const url of ['/', '/projects', '/assets', '/releases', '/calendar', '/release-management']) {
         const res = await agent.get(url).expect(200);
         expect(mobileActiveKeys(res.text)).toHaveLength(1);
       }
