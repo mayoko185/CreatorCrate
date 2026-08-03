@@ -5,11 +5,16 @@
 
 {% block content %}
   {% if not project.archived_at %}
-    {% call pageHeading.render("Project status, dates, and Patreon link govern publication — release records below are optional.", project.status) %}
+    {% call pageHeading.render("Project status, dates, and project link govern publication — release records below are optional.", project.status) %}
       <a class="button" href="/projects/{{ project.id }}/edit">Edit project</a>
+      <a class="button" href="/projects/{{ project.id }}/assets">View Assets</a>
+      <a class="button button-secondary" href="/projects/{{ project.id }}/asset-categories">Asset Categories</a>
     {% endcall %}
   {% else %}
-    {{ pageHeading.render("This project is archived and read-only.", "archived") }}
+    {% call pageHeading.render("This project is archived and read-only.", "archived") %}
+      <a class="button" href="/projects/{{ project.id }}/assets">View Assets</a>
+      <a class="button button-secondary" href="/projects/{{ project.id }}/asset-categories">Asset Categories</a>
+    {% endcall %}
   {% endif %}
 
   {% if project.archived_at %}
@@ -18,17 +23,11 @@
     {% include "partials/notice.njk" %}
   {% endif %}
 
-  {# ─── Primary actions ────────────────────────────────────────────── #}
-  <section class="workflow-actions">
-    <a class="button" href="/projects/{{ project.id }}/assets">View Assets</a>
-    <a class="button button-secondary" href="/projects/{{ project.id }}/asset-categories">Asset Categories</a>
-  </section>
-
   {# ─── Project summary / publication ─────────────────────────────── #}
   <section class="project-summary">
     <h2>Publication</h2>
     <p class="help-text">
-      This project's status, target date, published date, and Patreon URL are what the Calendar and
+      This project's status, target date, published date, and project link are what the Calendar and
       Published Work page read from. Editing the project — not creating a release record — is how you publish it.
     </p>
     <dl class="detail-list">
@@ -57,8 +56,8 @@
       {% endif %}
 
       {% if project.patreon_url %}
-        <dt>Patreon URL</dt>
-        <dd><a href="{{ project.patreon_url }}" target="_blank" rel="noopener">{{ project.patreon_url }}</a> <small>(project page)</small></dd>
+        <dt>Project link</dt>
+        <dd><a href="{{ project.patreon_url }}" target="_blank" rel="noopener">{{ project.patreon_url }}</a> <small>(project link)</small></dd>
       {% endif %}
 
       <dt>Created</dt>

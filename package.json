@@ -1,7 +1,7 @@
 {
   "name": "creatorcrate",
   "version": "0.1.0",
-  "description": "Self-hosted web application for organizing Patreon art projects and files",
+  "description": "Self-hosted web application for organizing art projects and files",
   "type": "module",
   "engines": {
     "node": ">=22.0.0"

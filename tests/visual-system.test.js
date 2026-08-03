@@ -387,8 +387,16 @@ describe('Phase 10.6B: Visual-polish hardening', () => {
     it('notices use consistent spacing tokens', async () => {
       const res = await request(app).get('/').expect(200);
       const css = await extractStyle(app, res.text);
-      expect(css).toMatch(/\.notice\s*\{[^}]*padding:\s*var\(--space-lg\)\s+var\(--space-xl\)/);
+      expect(css).toMatch(/\.notice\s*\{[^}]*padding:\s*var\(--space-sm\)\s+var\(--space-md\)/);
+      expect(css).toMatch(/\.notice\s*\{[^}]*font-size:\s*0\.875rem/);
       expect(css).toMatch(/\.notice\s*\{[^}]*margin-bottom:\s*var\(--space-lg\)/);
+    });
+
+    it('disabled-authentication banners use compact notification sizing', async () => {
+      const res = await request(app).get('/').expect(200);
+      const css = await extractStyle(app, res.text);
+      expect(css).toMatch(/\.auth-disabled-banner\s*\{[^}]*padding:\s*var\(--space-sm\)\s+var\(--space-md\)/);
+      expect(css).toMatch(/\.auth-disabled-banner p\s*\{[^}]*font-size:\s*0\.875rem/);
     });
 
     it('destructive sections use spacing tokens', async () => {

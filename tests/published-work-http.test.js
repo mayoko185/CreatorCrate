@@ -128,9 +128,9 @@ describe('Published Work HTTP route (Phase 2B)', () => {
 
   // ─── Page identity ──────────────────────────────────────────────────────
 
-  it('renders the Published heading and explicit document title while retaining shell navigation', async () => {
+  it('uses the Published heading for the document title while retaining shell navigation', async () => {
     const res = await agent.get('/releases').expect(200);
-    expect(res.text).toContain('<title>Published – CreatorCrate</title>');
+    expect(res.text).toContain('<title>CreatorCrate — Published</title>');
     expect(res.text).toContain('<h1 class="app-section-title">Published</h1>');
     expect(res.text).not.toContain('<h1 class="app-section-title">Published Work</h1>');
     expect(res.text).toContain('Published Work');
@@ -202,7 +202,7 @@ describe('Published Work HTTP route (Phase 2B)', () => {
     expect(res.text).toContain('Not recorded');
   });
 
-  it('Patreon URL renders only when present', async () => {
+  it('project link renders only when present', async () => {
     await createProject('Patreon Project', {
       status: 'published',
       publishedDate: '2026-01-10',
@@ -212,8 +212,8 @@ describe('Published Work HTTP route (Phase 2B)', () => {
 
     const res = await agent.get('/releases').expect(200);
     const noPatreonCard = extractProjectCard(res.text, noPatreonId);
-    expect(res.text).toContain('href="https://www.patreon.com/creator" target="_blank" rel="noopener noreferrer">Patreon</a>');
-    expect(noPatreonCard).toMatch(/<dt>Patreon<\/dt>\s*<dd>\s*—\s*<\/dd>/);
+    expect(res.text).toContain('href="https://www.patreon.com/creator" target="_blank" rel="noopener noreferrer">Project link</a>');
+    expect(noPatreonCard).toMatch(/<dt>Project link<\/dt>\s*<dd>\s*—\s*<\/dd>/);
     expect(noPatreonCard).not.toContain('target="_blank"');
   });
 
@@ -270,7 +270,7 @@ describe('Published Work HTTP route (Phase 2B)', () => {
     expect(availableCard).toMatch(/<dt>Status<\/dt>\s*<dd>[\s\S]*Published[\s\S]*<\/dd>/);
     expect(availableCard).toContain('<dt>Published</dt>');
     expect(availableCard).toContain('2026-02-10');
-    expect(availableCard).toContain('href="https://www.patreon.com/card" target="_blank" rel="noopener noreferrer">Patreon</a>');
+    expect(availableCard).toContain('href="https://www.patreon.com/card" target="_blank" rel="noopener noreferrer">Project link</a>');
     expect(noneCard).toMatch(/<dt>Published<\/dt>\s*<dd>Not recorded<\/dd>/);
     expect(noneCard).not.toContain('target="_blank"');
 
@@ -288,7 +288,7 @@ describe('Published Work HTTP route (Phase 2B)', () => {
     expect(availableListCard).toContain('<p class="project-card-description">');
     expect(availableListCard).toContain('<dt>Status</dt>');
     expect(availableListCard).toContain('<dt>Published</dt>');
-    expect(availableListCard).toContain('href="https://www.patreon.com/card" target="_blank" rel="noopener noreferrer">Patreon</a>');
+    expect(availableListCard).toContain('href="https://www.patreon.com/card" target="_blank" rel="noopener noreferrer">Project link</a>');
     expect(noneListCard).toContain('No description');
     expect(noneListCard).not.toContain('<img');
     expect(unavailableListCard).toContain('data-primary-image-state="unavailable"');

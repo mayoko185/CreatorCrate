@@ -1,9 +1,11 @@
+{% set currentPageHeading = page_title or shell.activeSection or shell.appName or appName %}
+{% set hasPageHeading = page_title or shell.activeSection %}
 <!DOCTYPE html>
 <html lang="en">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>{% block title %}{{ shell.pageTitle or appName }}{% endblock %}</title>
+    <title>{% block title %}CreatorCrate{% if hasPageHeading %} — {{ currentPageHeading }}{% endif %}{% endblock %}</title>
     <link rel="stylesheet" href="/creatorcrate.css">
     <link rel="icon" type="image/svg+xml" href="/logo.svg">
     <script type="module" src="/creatorcrate.js"></script>
@@ -47,7 +49,7 @@
         <summary class="mobile-nav-summary">
           <img src="/logo.svg" alt="" class="mobile-nav-logo">
           <span class="mobile-nav-brand">{{ shell.appName or appName }}</span>
-          <span class="mobile-nav-section">{{ page_title or shell.activeSection or shell.appName or appName }}</span>
+          <span class="mobile-nav-section">{{ currentPageHeading }}</span>
           <span class="mobile-nav-toggle">Menu</span>
         </summary>
         <nav class="mobile-nav-primary" aria-label="Primary">
@@ -78,9 +80,9 @@
              shell is hidden (login.njk), skip the h1 so login's own
              standalone heading stays the only one on the page. #}
           {% if shellVisible %}
-            <h1 class="app-section-title">{{ page_title or shell.activeSection or shell.appName or appName }}</h1>
+            <h1 class="app-section-title">{{ currentPageHeading }}</h1>
           {% else %}
-            <p class="app-section-title">{{ page_title or shell.activeSection or shell.appName or appName }}</p>
+            <p class="app-section-title">{{ currentPageHeading }}</p>
           {% endif %}
         </header>
 
@@ -96,7 +98,7 @@
           {% block content %}{% endblock %}
         </main>
 
-        <footer>CreatorCrate — self-hosted Patreon project organizer</footer>
+        <footer>CreatorCrate — self-hosted art project organizer</footer>
       </div>
     </div>
   </body>

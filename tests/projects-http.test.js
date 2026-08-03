@@ -25,6 +25,10 @@ function extractProjectCard(html, projectId) {
   return cards.find((card) => card.includes(`data-project-card-link href="/projects/${projectId}"`)) || '';
 }
 
+function extractPageHeadingActions(html) {
+  return html.match(/<div class="page-heading-actions">([\s\S]*?)<\/div>/)?.[1] || '';
+}
+
 describe('project HTTP workflow', () => {
   let db;
   let app;
@@ -374,11 +378,11 @@ describe('project HTTP workflow', () => {
       .send('priority=high')
       .send('plannedDate=2026-08-01')
       .send('publishedDate=2026-08-15')
-      .send('patreonUrl=http://example.com/not-patreon')
+      .send('patreonUrl=example.com/not-patreon')
       .set('Content-Type', 'application/x-www-form-urlencoded')
         .send('_csrf=' + encodeURIComponent(csrfToken))
       .expect(422);
-    expect(res.text).toContain('Patreon URL must be a valid https://patreon.com link.');
+    expect(res.text).toContain('Project link must be a valid absolute HTTP or HTTPS URL.');
     expect(res.text).toContain('value="Create Preserves"');
     expect(res.text).toContain('A');
     expect(res.text).toContain('Create notes');
@@ -386,7 +390,7 @@ describe('project HTTP workflow', () => {
     expect(res.text).toContain('<option value="high" selected>High</option>');
     expect(res.text).toContain('value="2026-08-01"');
     expect(res.text).toContain('value="2026-08-15"');
-    expect(res.text).toContain('value="http://example.com/not-patreon"');
+    expect(res.text).toContain('value="example.com/not-patreon"');
     expect(res.text).toContain('Basic information');
     expect(res.text).toContain('Status and scheduling');
     expect(res.text).toContain('Links');
@@ -406,7 +410,7 @@ describe('project HTTP workflow', () => {
     expect(res.text).toContain('Direct Archive');
   });
 
-  it('project detail renders', async () => {
+  it('active project detail places project actions in the page heading', async () => {
     const createRes = await agent
       .post('/projects')
       .send('title=Detail+Project')
@@ -416,9 +420,45 @@ describe('project HTTP workflow', () => {
         .send('_csrf=' + encodeURIComponent(csrfToken));
     const location = createRes.headers.location;
     const res = await agent.get(location).expect(200);
+    const headingActions = extractPageHeadingActions(res.text);
+
     expect(res.text).toContain('Detail Project');
-    expect(res.text).toContain('Edit');
-    expect(res.text).toContain(`${location}/asset-categories`);
+    expect(headingActions).toContain(`href="${location}/edit">Edit project</a>`);
+    expect(headingActions).toContain(`href="${location}/assets">View Assets</a>`);
+    expect(headingActions).toContain(`href="${location}/asset-categories">Asset Categories</a>`);
+    expect((headingActions.match(/<a\b/g) || [])).toHaveLength(3);
+    expect(res.text).not.toMatch(
+      new RegExp(`<section class="workflow-actions">\\s*<a[^>]+href="${location}/assets"`),
+    );
+  });
+
+  it('archived project detail keeps read-safe actions in the page heading without Edit', async () => {
+    const createRes = await agent
+      .post('/projects')
+      .send('title=Archived+Detail+Project')
+      .send('status=tbd')
+      .send('priority=normal')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .expect(302);
+    const location = createRes.headers.location;
+
+    await agent
+      .post(`${location}/archive`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .expect(302);
+
+    const res = await agent.get(location).expect(200);
+    const headingActions = extractPageHeadingActions(res.text);
+
+    expect(headingActions).toContain(`href="${location}/assets">View Assets</a>`);
+    expect(headingActions).toContain(`href="${location}/asset-categories">Asset Categories</a>`);
+    expect(headingActions).not.toContain(`href="${location}/edit">Edit project</a>`);
+    expect(res.text).not.toContain('Edit project');
+    expect((headingActions.match(/<a\b/g) || [])).toHaveLength(2);
+    expect(res.text).not.toMatch(
+      new RegExp(`<section class="workflow-actions">\\s*<a[^>]+href="${location}/assets"`),
+    );
   });
 
   it('edit form renders', async () => {
@@ -494,12 +534,12 @@ describe('project HTTP workflow', () => {
       .send('priority=low')
       .send('plannedDate=2026-10-01')
       .send('publishedDate=2026-10-15')
-      .send('patreonUrl=http://example.com/not-patreon')
+      .send('patreonUrl=example.com/not-patreon')
       .set('Content-Type', 'application/x-www-form-urlencoded')
         .send('_csrf=' + encodeURIComponent(csrfToken))
       .expect(422);
 
-    expect(res.text).toContain('Patreon URL must be a valid https://patreon.com link.');
+    expect(res.text).toContain('Project link must be a valid absolute HTTP or HTTPS URL.');
     expect(res.text).toContain('value="Edit Preserves Submitted"');
     expect(res.text).toContain('Submitted description');
     expect(res.text).toContain('Submitted notes');
@@ -507,7 +547,7 @@ describe('project HTTP workflow', () => {
     expect(res.text).toContain('<option value="low" selected>Low</option>');
     expect(res.text).toContain('value="2026-10-01"');
     expect(res.text).toContain('value="2026-10-15"');
-    expect(res.text).toContain('value="http://example.com/not-patreon"');
+    expect(res.text).toContain('value="example.com/not-patreon"');
     expect(res.text).toContain('Basic information');
     expect(res.text).toContain('Status and scheduling');
     expect(res.text).toContain('Links');
@@ -1598,11 +1638,12 @@ describe('project HTTP workflow', () => {
       expect(container).toMatch(/<input[^>]*id="publishedDate"[^>]*>/);
     });
 
-    it('project form shows help text for Patreon URL in the correct field container', async () => {
+    it('project form shows generic project-link help text in the correct field container', async () => {
       const res = await agent.get('/projects/new').expect(200);
       const container = getFieldContainer(res.text, 'patreonUrl');
       expect(container).not.toBeNull();
-      expect(container).toContain("Link to the project's Patreon page");
+      expect(container).toContain('<label for="patreonUrl">Project link</label>');
+      expect(container).toContain('Optional absolute HTTP or HTTPS URL for this project.');
       expect(container).toMatch(/<input[^>]*id="patreonUrl"[^>]*>/);
     });
 
@@ -1630,10 +1671,10 @@ describe('project HTTP workflow', () => {
       const publishedDt = res.text.match(/<dt>Published date<\/dt>\s*<dd>[^<]*(?:<small>\(project published\)<\/small>)[^<]*<\/dd>/);
       expect(publishedDt).not.toBeNull();
 
-      // Patreon URL: <dt>Patreon URL</dt> ... <small>(project page)</small>
+      // Project link: <dt>Project link</dt> ... <small>(project link)</small>
       // Bounded pattern: cannot cross </dd>, <dt>, or opening <dd>
-      const patreonDt = res.text.match(/<dt>Patreon URL<\/dt>\s*<dd>(?:(?!<\/dd>)(?!<dt>)(?!<dd>).)*<small>\(project page\)<\/small>(?:(?!<\/dd>)(?!<dt>)(?!<dd>).)*<\/dd>/);
-      expect(patreonDt).not.toBeNull();
+      const projectLinkDt = res.text.match(/<dt>Project link<\/dt>\s*<dd>(?:(?!<\/dd>)(?!<dt>)(?!<dd>).)*<small>\(project link\)<\/small>(?:(?!<\/dd>)(?!<dt>)(?!<dd>).)*<\/dd>/);
+      expect(projectLinkDt).not.toBeNull();
     });
   });
 

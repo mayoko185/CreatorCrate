@@ -3,8 +3,6 @@
 
 {% set page_title = "Assets — " ~ project.title ~ " — " ~ asset.filename %}
 
-{% block title %}{{ asset.filename }} — {{ appName }}{% endblock %}
-
 {% block content %}
   {% if asset.missing %}
     {% set viewerBadgeStatus = "missing" %}

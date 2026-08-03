@@ -2056,7 +2056,8 @@
 
       /* ── Notice variants ── */
       .notice {
-        padding: var(--space-lg) var(--space-xl);
+        padding: var(--space-sm) var(--space-md);
+        font-size: 0.875rem;
         background: var(--surface);
         border-left: 4px solid var(--accent);
         border-radius: 0 var(--radius-lg) var(--radius-lg) 0;
@@ -2087,7 +2088,7 @@
         align-items: center;
         flex-wrap: wrap;
         gap: var(--space-md);
-        padding: var(--space-md) var(--space-lg);
+        padding: var(--space-sm) var(--space-md);
         background: rgba(251, 113, 133, 0.1);
         border: 1px solid rgba(251, 113, 133, 0.35);
         border-radius: var(--radius-lg);
@@ -2103,6 +2104,7 @@
         margin: 0;
         flex: 1 1 auto;
         min-width: 12rem;
+        font-size: 0.875rem;
       }
 
       /* ── Empty states ── */

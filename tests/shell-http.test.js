@@ -216,7 +216,22 @@ describe('application shell — navigation model', () => {
   describe('page-title and heading contract', () => {
     it('the document title is present and correct on the dashboard', async () => {
       const res = await agent.get('/').expect(200);
-      expect(res.text).toContain(`<title>${APP_NAME}</title>`);
+      expect(res.text).toContain(`<title>${APP_NAME} — Dashboard</title>`);
+    });
+
+    it('uses the rendered heading for dynamic, settings, and not-found titles', async () => {
+      const cases = [
+        { path: `/projects/${projectId}`, status: 200, heading: 'Projects — Shell Test Project' },
+        { path: releaseLocation, status: 200, heading: 'Releases — Shell Test Release' },
+        { path: '/settings/security', status: 200, heading: 'Settings — Security' },
+        { path: '/projects/999999', status: 404, heading: 'Error 404' },
+      ];
+
+      for (const { path, status, heading } of cases) {
+        const res = await agent.get(path).expect(status);
+        expect(res.text).toContain(`<title>${APP_NAME} — ${heading}</title>`);
+        expect(res.text).toContain(`<h1 class="app-section-title">${heading}</h1>`);
+      }
     });
 
     it('the compact header title is the page\'s sole <h1> (no duplicate page heading)', async () => {
@@ -231,12 +246,12 @@ describe('application shell — navigation model', () => {
       expect(countH1(res.text)).toBe(1);
     });
 
-    it('asset viewer customizes the document title via its title block', async () => {
+    it('uses the asset viewer heading for the document title', async () => {
       const res = await agent.get(`/projects/${projectId}/assets/${assetId}`)
         .expect(200);
-      // Separator-agnostic: title must include the filename and the app name,
-      // and must not collapse to the bare app-name default.
-      expect(res.text).toMatch(/<title>[^<]*cover\.png[^<]*CreatorCrate<\/title>/);
+      expect(res.text).toContain(
+        `<title>${APP_NAME} — Assets — Shell Test Project — cover.png</title>`,
+      );
       expect(res.text).not.toContain('<title>CreatorCrate</title>');
       expect(countH1(res.text)).toBe(1);
     });

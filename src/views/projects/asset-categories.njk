@@ -5,8 +5,6 @@
 
 {% set page_title = "Projects — " ~ project.title ~ " — Asset Categories" %}
 
-{% block title %}Asset Categories – {{ project.title }} – {{ appName }}{% endblock %}
-
 {% block content %}
   {% if project.archived_at %}
     {% call pageHeading.render("These categories belong only to this project and do not affect the global Settings defaults.", "archived") %}

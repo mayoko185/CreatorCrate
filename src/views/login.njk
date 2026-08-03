@@ -1,9 +1,9 @@
 {% extends "layout.njk" %}
 
-{% block title %}Log in — {{ appName }}{% endblock %}
+{% set page_title = "Log in" %}
 
 {% block content %}
-  <h1>Log in</h1>
+  <h1>{{ page_title }}</h1>
 
   {% if notice %}
     {% set noticeVariant = notice.variant %}

@@ -101,6 +101,7 @@ describe('authenticated app — login/logout/CSRF/routes', () => {
     it('renders the login page with exactly one <h1>', async () => {
       const res = await request(app).get('/login').expect(200);
       expect(countH1(res.text)).toBe(1);
+      expect(res.text).toContain('<title>CreatorCrate — Log in</title>');
       expect(res.text).toContain('Log in');
     });
 

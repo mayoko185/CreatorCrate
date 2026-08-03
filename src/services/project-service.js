@@ -23,6 +23,7 @@ import {
   validateManifestV2,
   MANIFEST_FILENAME,
 } from '../storage/manifest.js';
+import { isValidWebUrl } from '../util/url.js';
 
 export { STATUSES, WORKFLOW_STATUSES, PRIORITIES, DEFAULT_PRIORITY };
 
@@ -65,16 +66,6 @@ function isValidDate(value) {
   if (month < 1 || month > 12 || day < 1) return false;
   const daysInMonth = [31, isLeapYear(year) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
   return day <= daysInMonth[month - 1];
-}
-
-function isValidPatreonUrl(value) {
-  if (!value) return true;
-  try {
-    const url = new URL(value);
-    return url.protocol === 'https:' && /^([^.]+\.)?patreon\.com$/i.test(url.hostname);
-  } catch {
-    return false;
-  }
 }
 
 /**
@@ -144,8 +135,8 @@ export function createProjectService(
     }
 
     const patreonUrl = input.patreonUrl || null;
-    if (!isValidPatreonUrl(patreonUrl)) {
-      errors.patreonUrl = 'Patreon URL must be a valid https://patreon.com link.';
+    if (!isValidWebUrl(patreonUrl)) {
+      errors.patreonUrl = 'Project link must be a valid absolute HTTP or HTTPS URL.';
     }
 
     if (Object.keys(errors).length > 0) {

@@ -5,8 +5,6 @@
 
 {% set page_title = "Published" %}
 
-{% block title %}Published – {{ appName }}{% endblock %}
-
 {% block content %}
   {{ pageHeading.render("Projects published through CreatorCrate.") }}
 
@@ -60,10 +58,10 @@
               <dd>{{ project.published_date or 'Not recorded' }}</dd>
             </div>
             <div class="project-card-meta">
-              <dt>Patreon</dt>
+              <dt>Project link</dt>
               <dd>
                 {% if project.patreon_url %}
-                  <a href="{{ project.patreon_url }}" target="_blank" rel="noopener noreferrer">Patreon</a>
+                  <a href="{{ project.patreon_url }}" target="_blank" rel="noopener noreferrer">Project link</a>
                 {% else %}
                   —
                 {% endif %}

@@ -142,7 +142,7 @@ The Compose service has a built-in health check against `http://localhost:3000/h
 - It indexes files that you manage on disk; it is not a cloud storage or synchronization service.
 - Authentication does not replace network controls or TLS.
 - Managed SQLite backups are not full-system backups.
-- CreatorCrate does not synchronize with the Patreon API.
+- CreatorCrate does not synchronize with external publishing platforms.
 
 ## Contributing
 

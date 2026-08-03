@@ -208,7 +208,7 @@ describe('release HTTP workflow', () => {
       expect(container).toMatch(/<input[^>]*id="publishedDate"[^>]*>/);
     });
 
-    it('release form shows help text for Patreon URL in the correct field container', async () => {
+    it('release form shows generic release-link help text in the correct field container', async () => {
       const projRes = await agent
         .post('/projects')
       .send('_csrf=' + encodeURIComponent(csrfToken))
@@ -222,8 +222,34 @@ describe('release HTTP workflow', () => {
       const res = await agent.get(`/releases/new?projectId=${projectId}`).expect(200);
       const container = getFieldContainer(res.text, 'patreonUrl');
       expect(container).not.toBeNull();
-      expect(container).toContain('Link to this release on Patreon');
+      expect(container).toContain('<label for="patreonUrl">Release link</label>');
+      expect(container).toContain('Optional absolute HTTP or HTTPS URL for this release.');
       expect(container).toMatch(/<input[^>]*id="patreonUrl"[^>]*>/);
+    });
+
+    it('release form exposes generic HTTP(S) validation errors', async () => {
+      const projRes = await agent
+        .post('/projects')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .send('title=Release+Validation+Project')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectId = projRes.headers.location.replace('/projects/', '');
+
+      const res = await agent
+        .post('/releases')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .send(`projectId=${projectId}`)
+        .send('title=Invalid+Release+Link')
+        .send('status=idea')
+        .send('patreonUrl=ftp%3A%2F%2Fexample.com%2Frelease')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(422);
+
+      expect(res.text).toContain('Release link must be a valid absolute HTTP or HTTPS URL.');
+      expect(res.text).not.toContain('Patreon URL must be a valid https://patreon.com link.');
     });
 
     it('release detail shows context labels in the correct dt/dd pairs', async () => {
@@ -260,10 +286,10 @@ describe('release HTTP workflow', () => {
       const publishedDt = res.text.match(/<dt>Published date<\/dt>\s*<dd>[^<]*(?:<small>\(release published\)<\/small>)[^<]*<\/dd>/);
       expect(publishedDt).not.toBeNull();
 
-      // Patreon URL: <dt>Patreon URL</dt> ... <small>(release link)</small>
+      // Release link: <dt>Release link</dt> ... <small>(release link)</small>
       // Bounded pattern: cannot cross </dd>, <dt>, or opening <dd>
-      const patreonDt = res.text.match(/<dt>Patreon URL<\/dt>\s*<dd>(?:(?!<\/dd>)(?!<dt>)(?!<dd>).)*<small>\(release link\)<\/small>(?:(?!<\/dd>)(?!<dt>)(?!<dd>).)*<\/dd>/);
-      expect(patreonDt).not.toBeNull();
+      const releaseLinkDt = res.text.match(/<dt>Release link<\/dt>\s*<dd>(?:(?!<\/dd>)(?!<dt>)(?!<dd>).)*<small>\(release link\)<\/small>(?:(?!<\/dd>)(?!<dt>)(?!<dd>).)*<\/dd>/);
+      expect(releaseLinkDt).not.toBeNull();
     });
   });
 

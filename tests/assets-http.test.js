@@ -1558,7 +1558,7 @@ describe('asset browser HTTP workflow', () => {
       .expect(200);
 
     expect(res2.headers['content-type']).toMatch(/html/);
-    expect(res2.text).toContain('<title>hero.png — CreatorCrate</title>');
+    expect(res2.text).toContain('<title>CreatorCrate — Assets — Viewer Previewable — hero.png</title>');
     expect(res2.text).toContain('class="page-heading"');
     expect(res2.text).toContain('<h1 class="app-section-title">Assets — Viewer Previewable — hero.png</h1>');
     expect(res2.text).toContain('Asset preview, metadata, and release usage.');
@@ -1980,7 +1980,7 @@ describe('asset browser HTTP workflow', () => {
       .get(`/projects/${id}/assets/${asset.id}`)
       .expect(200);
 
-    expect(res2.text).toContain(`<title>${filename} — CreatorCrate</title>`);
+    expect(res2.text).toContain(`<title>CreatorCrate — Assets — Viewer Long Content — ${filename}</title>`);
     expect(res2.text).toContain(`<h1 class="app-section-title">Assets — Viewer Long Content — ${filename}</h1>`);
     expect(res2.text).toContain(`<code>${relativePath}</code>`);
     expect(res2.text).toContain('<code>application/vnd.example.extremely-long-mime-type</code>');

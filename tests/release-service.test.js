@@ -156,35 +156,40 @@ describe('release service', () => {
       }).toThrow(ReleaseValidationError);
     });
 
-    it('rejects invalid patreon_url', () => {
+    it.each([
+      { url: 'https://example.com/release', label: 'non-Patreon HTTPS URL' },
+      { url: 'http://example.com/release', label: 'HTTP URL' },
+      { url: 'https://patreon.com/user', label: 'Patreon URL' },
+      { url: 'https://mysite.patreon.com/user', label: 'Patreon subdomain URL' },
+    ])('accepts a valid $label', ({ url }) => {
+      const release = service.createRelease(projectId, validInput({ patreonUrl: url }));
+      expect(release.patreon_url).toBe(url);
+    });
+
+    it.each([
+      { url: 'not-a-url', label: 'URL without a protocol' },
+      { url: 'javascript:alert(1)', label: 'unsafe protocol' },
+      { url: 'ftp://example.com/release', label: 'unsupported protocol' },
+      { url: 'https://[invalid', label: 'malformed URL' },
+    ])('rejects a $label', ({ url }) => {
       expect(() => {
-        service.createRelease(projectId, validInput({ patreonUrl: 'not-a-url' }));
-      }).toThrow(ReleaseValidationError);
-      expect(() => {
-        service.createRelease(projectId, validInput({ patreonUrl: 'http://patreon.com/user' }));
-      }).toThrow(ReleaseValidationError);
-      expect(() => {
-        service.createRelease(projectId, validInput({ patreonUrl: 'https://google.com/user' }));
+        service.createRelease(projectId, validInput({ patreonUrl: url }));
       }).toThrow(ReleaseValidationError);
     });
 
-    it('accepts valid patreon_url', () => {
-      const release = service.createRelease(projectId, validInput({
-        patreonUrl: 'https://patreon.com/user',
-      }));
-      expect(release.patreon_url).toBe('https://patreon.com/user');
-    });
-
-    it('accepts valid subdomain patreon_url', () => {
-      const release = service.createRelease(projectId, validInput({
-        patreonUrl: 'https://mysite.patreon.com/user',
-      }));
-      expect(release.patreon_url).toBe('https://mysite.patreon.com/user');
-    });
-
-    it('accepts null patreon_url', () => {
-      const release = service.createRelease(projectId, validInput({ patreonUrl: null }));
+    it('allows an empty optional release link', () => {
+      const release = service.createRelease(projectId, validInput({ patreonUrl: '' }));
       expect(release.patreon_url).toBeNull();
+    });
+
+    it('validates the release link on update', () => {
+      const created = service.createRelease(projectId, validInput());
+      const updated = service.updateRelease(created.id, validInput({ patreonUrl: 'http://example.com/edit' }));
+      expect(updated.patreon_url).toBe('http://example.com/edit');
+
+      expect(() => service.updateRelease(created.id, validInput({ patreonUrl: 'file:///tmp/release' }))).toThrow(
+        ReleaseValidationError
+      );
     });
 
     it('rejects description exceeding max length', () => {

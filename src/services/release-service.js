@@ -2,6 +2,7 @@ import { createReleaseRepository, RELEASE_STATUSES, ACTIVE_RELEASE_STATUSES, REL
 import { createProjectRepository } from '../data/project-repository.js';
 import { createAssetRepository } from '../data/asset-repository.js';
 import { getLocalTodayIso } from '../util/date.js';
+import { isValidWebUrl } from '../util/url.js';
 
 export { RELEASE_STATUSES, ACTIVE_RELEASE_STATUSES };
 
@@ -161,16 +162,6 @@ function parseStrictPositiveInt(value) {
   return num;
 }
 
-function isValidPatreonUrl(value) {
-  if (!value) return true;
-  try {
-    const url = new URL(value);
-    return url.protocol === 'https:' && /^([^.]+\.)?patreon\.com$/i.test(url.hostname);
-  } catch {
-    return false;
-  }
-}
-
 export function createReleaseService({ db, evaluateReleaseReadiness }) {
   const repository = createReleaseRepository(db);
   const projectRepository = createProjectRepository(db);
@@ -217,8 +208,8 @@ export function createReleaseService({ db, evaluateReleaseReadiness }) {
     }
 
     const patreonUrl = input.patreonUrl || null;
-    if (!isValidPatreonUrl(patreonUrl)) {
-      errors.patreonUrl = 'Patreon URL must be a valid https://patreon.com link.';
+    if (!isValidWebUrl(patreonUrl)) {
+      errors.patreonUrl = 'Release link must be a valid absolute HTTP or HTTPS URL.';
     }
 
     if (Object.keys(errors).length > 0) {

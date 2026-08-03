@@ -162,11 +162,36 @@ describe('project service', () => {
     expect(project.published_date).toBeNull();
   });
 
-  it('rejects an invalid Patreon URL', () => {
-    expect(() => service.create(validInput({ patreonUrl: 'http://patreon.com/foo' }))).toThrow(
-      ProjectValidationError
-    );
-    expect(() => service.create(validInput({ patreonUrl: 'https://example.com' }))).toThrow(
+  it.each([
+    { url: 'https://example.com/creator', label: 'non-Patreon HTTPS URL' },
+    { url: 'http://example.com/creator', label: 'HTTP URL' },
+    { url: 'https://patreon.com/creator', label: 'Patreon URL' },
+    { url: 'https://mysite.patreon.com/creator', label: 'Patreon subdomain URL' },
+  ])('accepts a valid $label', ({ url }) => {
+    const project = service.create(validInput({ patreonUrl: url }));
+    expect(project.patreon_url).toBe(url);
+  });
+
+  it.each([
+    { url: 'example.com/creator', label: 'URL without a protocol' },
+    { url: 'javascript:alert(1)', label: 'unsafe protocol' },
+    { url: 'ftp://example.com/creator', label: 'unsupported protocol' },
+    { url: 'https://[invalid', label: 'malformed URL' },
+  ])('rejects a $label', ({ url }) => {
+    expect(() => service.create(validInput({ patreonUrl: url }))).toThrow(ProjectValidationError);
+  });
+
+  it('allows an empty optional project link', () => {
+    const project = service.create(validInput({ patreonUrl: '' }));
+    expect(project.patreon_url).toBeNull();
+  });
+
+  it('validates the project link on update', () => {
+    const created = service.create(validInput());
+    const updated = service.update(created.id, validInput({ patreonUrl: 'http://example.com/edit' }));
+    expect(updated.patreon_url).toBe('http://example.com/edit');
+
+    expect(() => service.update(created.id, validInput({ patreonUrl: 'file:///tmp/project' }))).toThrow(
       ProjectValidationError
     );
   });
