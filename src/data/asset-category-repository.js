@@ -65,6 +65,9 @@ export function createAssetCategoryRepository(db) {
   const findProjectCategoryByIdStmt = db.prepare(
     `${SELECT_PROJECT_CATEGORIES} WHERE project_id = ? AND id = ?`
   );
+  const findProjectCategoryByIdAnyProjectStmt = db.prepare(
+    `${SELECT_PROJECT_CATEGORIES} WHERE id = ?`
+  );
   const insertProjectCategoryWithEnabledStmt = db.prepare(`
     INSERT INTO project_asset_categories (project_id, display_name, directory_slug, display_order, enabled)
     VALUES (?, ?, ?, ?, ?)
@@ -329,6 +332,15 @@ export function createAssetCategoryRepository(db) {
      */
     findProjectCategoryById(projectId, categoryId) {
       return findProjectCategoryByIdStmt.get(projectId, categoryId);
+    },
+
+    /**
+     * Find a project-owned category by its globally unique row ID without
+     * applying a project scope. This is read-only ownership diagnostics for
+     * callers that must distinguish a missing category from a foreign one.
+     */
+    findProjectCategoryByIdAnyProject(categoryId) {
+      return findProjectCategoryByIdAnyProjectStmt.get(categoryId);
     },
 
     /**

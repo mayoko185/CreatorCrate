@@ -29,9 +29,19 @@
   {% endif %}
 {% endmacro %}
 
-{% macro assetRow(asset, isArchived, submittedSelectedAssetIds, project, context, contextFields, renameFailure, _csrf) %}
+{% macro assetRow(asset, isArchived, submittedSelectedAssetIds, project, context, contextFields, renameFailure, _csrf, autoRenameSurface, autoRenameInitialIndex, autoRenameTotal) %}
   {% set renameAttempt = renameFailure and renameFailure.assetId == asset.id %}
-  <tr{% if not asset.is_present %} class="is-missing"{% endif %}>
+  <tr{% if not asset.is_present %} class="is-missing"{% endif %}{% if autoRenameSurface %}
+      data-auto-rename-asset
+      data-auto-rename-asset-id="{{ asset.id }}"
+      data-auto-rename-initial-index="{{ autoRenameInitialIndex }}"
+      draggable="true"
+      tabindex="0"
+      aria-grabbed="false"
+      aria-posinset="{{ autoRenameInitialIndex + 1 }}"
+      aria-setsize="{{ autoRenameTotal }}"
+      aria-label="Reorder {{ asset.filename }}"
+      aria-describedby="auto-rename-instructions"{% endif %}>
     {% if not isArchived %}
       <td class="asset-select-cell">
         {% if asset.is_present %}
@@ -42,6 +52,11 @@
         {% else %}
           <input type="checkbox" disabled aria-label="{{ asset.filename }} is missing at last scan and cannot be selected">
         {% endif %}
+      </td>
+    {% endif %}
+    {% if autoRenameSurface %}
+      <td class="asset-auto-rename-order-cell">
+        <span class="auto-rename-order-indicator" data-auto-rename-order-indicator>{{ autoRenameInitialIndex + 1 }} of {{ autoRenameTotal }}</span>
       </td>
     {% endif %}
     <td class="asset-thumb-cell">
@@ -115,11 +130,21 @@
   </tr>
 {% endmacro %}
 
-{% macro assetCard(asset, isArchived, submittedSelectedAssetIds, project, context, contextFields, renameFailure, _csrf) %}
+{% macro assetCard(asset, isArchived, submittedSelectedAssetIds, project, context, contextFields, renameFailure, _csrf, autoRenameSurface, autoRenameInitialIndex, autoRenameTotal) %}
   {% set renameAttempt = renameFailure and renameFailure.assetId == asset.id %}
-  <li class="asset-grid-item{% if not asset.is_present %} is-missing{% endif %}">
+  <li class="asset-grid-item{% if not asset.is_present %} is-missing{% endif %}"{% if autoRenameSurface %}
+      data-auto-rename-asset
+      data-auto-rename-asset-id="{{ asset.id }}"
+      data-auto-rename-initial-index="{{ autoRenameInitialIndex }}"
+      draggable="true"
+      tabindex="0"
+      aria-grabbed="false"
+      aria-posinset="{{ autoRenameInitialIndex + 1 }}"
+      aria-setsize="{{ autoRenameTotal }}"
+      aria-label="Reorder {{ asset.filename }}"
+      aria-describedby="auto-rename-instructions"{% endif %}>
     <article class="asset-card{% if (asset.id ~ '') in submittedSelectedAssetIds %} is-selected{% endif %}"
-              data-asset-id="{{ asset.id }}" role="option" aria-selected="{% if (asset.id ~ '') in submittedSelectedAssetIds %}true{% else %}false{% endif %}"{% if not isArchived and asset.is_present %} data-asset-selectable-card tabindex="0"
+              data-asset-id="{{ asset.id }}" role="option" aria-selected="{% if (asset.id ~ '') in submittedSelectedAssetIds %}true{% else %}false{% endif %}"{% if not isArchived and asset.is_present %} data-asset-selectable-card{% if not autoRenameSurface %} tabindex="0"{% endif %}
               aria-label="Toggle selection for {{ asset.filename }}"{% endif %}>
       <div class="asset-card-top">
         {% if not isArchived %}
@@ -137,6 +162,9 @@
               <span class="asset-selection-control-mark" aria-hidden="true">✓</span>
             </label>
           {% endif %}
+        {% endif %}
+        {% if autoRenameSurface %}
+          <span class="auto-rename-order-indicator" data-auto-rename-order-indicator>{{ autoRenameInitialIndex + 1 }} of {{ autoRenameTotal }}</span>
         {% endif %}
         {% if asset.is_present %}
           <span class="asset-indicator asset-icon-control asset-tooltip asset-tooltip--left asset-indicator--present" role="img" tabindex="0"
@@ -283,6 +311,18 @@
     {% include "partials/notice.njk" %}
   {% endif %}
 
+  {% if autoRenameNotice %}
+    {% set noticeVariant = "success" %}
+    {% set noticeText = autoRenameNotice.message %}
+    {% include "partials/notice.njk" %}
+  {% endif %}
+
+  {% if autoRenameError %}
+    {% set noticeVariant = "error" %}
+    {% set noticeText = autoRenameError.message %}
+    {% include "partials/notice.njk" %}
+  {% endif %}
+
   {% if bulkMoveError %}
     {% set noticeVariant = "danger" %}
     {% set noticeText = bulkMoveError.message %}
@@ -302,9 +342,13 @@
   {% endif %}
 
   <p class="results-meta">
-    {{ total }} asset{% if total != 1 %}s{% endif %} found
-    {% if filters.search or filters.extension or filters.presence != 'all' or filters.usage != 'all' or filters.category != 'all' %}
-      (filtered)
+    {% if completeCategorySurface %}
+      {{ total }} asset{% if total != 1 %}s{% endif %} in the complete {{ autoRenameCategory.displayName if autoRenameCategory else filters.category }} category
+    {% else %}
+      {{ total }} asset{% if total != 1 %}s{% endif %} found
+      {% if filters.search or filters.extension or filters.presence != 'all' or filters.usage != 'all' or filters.category != 'all' %}
+        (filtered)
+      {% endif %}
     {% endif %}
   </p>
 
@@ -405,7 +449,8 @@
         </div>
       {% endif %}
 
-      <form class="filters" method="get" action="/projects/{{ project.id }}/assets">
+      {% if not completeCategorySurface %}
+        <form class="filters" method="get" action="/projects/{{ project.id }}/assets">
         {% if filters.view == 'list' %}
           <input type="hidden" name="view" value="{{ filters.view }}">
         {% endif %}
@@ -476,62 +521,134 @@
 
         <button class="button" type="submit">Filter</button>
         <a class="button button-secondary" href="{{ pageUrl({ search: '', extension: '', presence: 'all', usage: 'all', category: 'all', sort: 'filename', order: 'asc', page: 1, pageSize: 25 }) }}">Reset</a>
-      </form>
+        </form>
+      {% endif %}
 
       {% if assets.length > 0 %}
-        {% if not isArchived %}
-          {# bulk-select-form wraps only the toolbar. Checkboxes in the table
-             below are associated via form="bulk-select-form" so that per-row
-             rename forms can live inside the table without nesting issues.
-             The Move button uses formaction to submit to move-selected while
-             still carrying the checked selectedAssetIds. #}
-          <form id="bulk-select-form" method="post" action="/projects/{{ project.id }}/assets/add-to-release" class="bulk-select-form" data-asset-selection-form>
-            <input type="hidden" name="_csrf" value="{{ _csrf }}">
-            {% for key in contextFields %}
-              {% if context[key] is not none and context[key] != '' %}
-                <input type="hidden" name="{{ key }}" value="{{ context[key] }}">
-              {% endif %}
-            {% endfor %}
+        {% if completeCategorySurface %}
+          <section class="asset-auto-rename-surface" data-auto-rename-surface data-auto-rename-view="{{ filters.view }}"
+                   aria-labelledby="auto-rename-surface-heading">
+            <h2 id="auto-rename-surface-heading">{{ autoRenameCategory.displayName }} assets</h2>
+            <p id="auto-rename-instructions" class="sr-only">
+              Focus an asset card or row and press Space or Enter to grab it. Use the arrow keys to reorder it, Space or Enter to commit, or Escape to cancel.
+            </p>
+            {% if autoRenameSurface and autoRenameCategory %}
+              <div class="asset-actions-panel" data-asset-actions-panel>
+                <div class="asset-actions-category-row">
+                  <div class="asset-actions-category-copy">
+                    <span class="asset-actions-label">Category order</span>
+                    <span class="asset-actions-helper">Drag assets to change their filename order</span>
+                  </div>
+                  <form method="post" action="/projects/{{ project.id }}/assets/auto-rename/preview"
+                        class="auto-rename-assets-form" data-auto-rename-form>
+                    <input type="hidden" name="_csrf" value="{{ _csrf }}">
+                    <input type="hidden" name="categoryId" value="{{ autoRenameCategory.categoryId }}">
+                    <input type="hidden" name="orderedAssetIds" value="{{ autoRenameCategory.orderedAssetIdsJson }}"
+                           data-auto-rename-order-input>
+                    <input type="hidden" name="view" value="{{ filters.view }}">
+                    <button type="submit" class="button button-primary" data-auto-rename-submit disabled aria-disabled="true">Auto Rename</button>
+                    <div class="auto-rename-live-region sr-only" data-auto-rename-live aria-live="polite" aria-atomic="true"></div>
+                  </form>
+                </div>
+                {% if not isArchived %}
+                  {# Checkboxes below are associated via form="bulk-select-form"
+                     so per-row rename forms can remain outside this form. #}
+                  <form id="bulk-select-form" method="post" action="/projects/{{ project.id }}/assets/add-to-release" class="bulk-select-form" data-asset-selection-form>
+                    <input type="hidden" name="_csrf" value="{{ _csrf }}">
+                    {% for key in contextFields %}
+                      {% if context[key] is not none and context[key] != '' %}
+                        <input type="hidden" name="{{ key }}" value="{{ context[key] }}">
+                      {% endif %}
+                    {% endfor %}
 
-            <p class="selection-scope-note">Selection applies to this page.</p>
+                    <span class="asset-actions-selection-label">Selected assets</span>
+                    <div class="asset-selection-controls">
+                      <button type="button" class="button button-small" data-select-all>Select all visible</button>
+                      <button type="button" class="button button-small button-secondary" data-clear-selection>Clear selection</button>
+                      <span class="selected-count" data-selected-count>0 selected</span>
 
-            <div class="bulk-toolbar">
-              <button type="button" class="button button-small" data-select-all>Select all visible</button>
-              <button type="button" class="button button-small button-secondary" data-clear-selection>Clear selection</button>
-              <span class="selected-count" data-selected-count>0 selected</span>
+                      <label class="field bulk-release-field">
+                        <span>Add to release</span>
+                        <select name="releaseId" data-release-select>
+                          <option value="">Select a release…</option>
+                          {% for target in releaseTargets %}
+                            <option value="{{ target.id }}"{% if submittedReleaseId == (target.id ~ '') %} selected{% endif %}>{{ target.title }}</option>
+                          {% endfor %}
+                        </select>
+                      </label>
+                      <button type="submit" class="button button-primary" data-bulk-submit>Add selected to release</button>
 
-              <label class="field bulk-release-field">
-                <span>Add to release</span>
-                <select name="releaseId" data-release-select>
-                  <option value="">Select a release…</option>
-                  {% for target in releaseTargets %}
-                    <option value="{{ target.id }}"{% if submittedReleaseId == (target.id ~ '') %} selected{% endif %}>{{ target.title }}</option>
-                  {% endfor %}
-                </select>
-              </label>
-              <button type="submit" class="button button-primary" data-bulk-submit>Add selected to release</button>
+                      <span class="asset-actions-divider" aria-hidden="true"></span>
 
-              <span class="bulk-toolbar-divider" aria-hidden="true"></span>
+                      <label class="field bulk-move-field">
+                        <span>Move selected to</span>
+                        <select name="destinationCategory">
+                          <option value="uncategorized">Uncategorized</option>
+                          {% for cat in categoryNavigation.enabled %}
+                            <option value="{{ cat.id }}">{{ cat.displayName }}</option>
+                          {% endfor %}
+                        </select>
+                      </label>
+                      <button type="submit" class="button"
+                              formaction="/projects/{{ project.id }}/assets/move-selected">Move selected</button>
+                    </div>
+                    <p class="selection-scope-note">Selection applies to this page.</p>
+                  </form>
+                {% endif %}
+              </div>
+            {% endif %}
+        {% endif %}
 
-              <label class="field bulk-move-field">
-                <span>Move selected to</span>
-                <select name="destinationCategory">
-                  <option value="uncategorized">Uncategorized</option>
-                  {% for cat in categoryNavigation.enabled %}
-                    <option value="{{ cat.id }}">{{ cat.displayName }}</option>
-                  {% endfor %}
-                </select>
-              </label>
-              <button type="submit" class="button"
-                      formaction="/projects/{{ project.id }}/assets/move-selected">Move selected</button>
-            </div>
-          </form>
+        {% if not completeCategorySurface and not isArchived %}
+          <div class="asset-actions-panel asset-actions-panel--selection-only" data-asset-actions-panel>
+            <form id="bulk-select-form" method="post" action="/projects/{{ project.id }}/assets/add-to-release" class="bulk-select-form" data-asset-selection-form>
+              <input type="hidden" name="_csrf" value="{{ _csrf }}">
+              {% for key in contextFields %}
+                {% if context[key] is not none and context[key] != '' %}
+                  <input type="hidden" name="{{ key }}" value="{{ context[key] }}">
+                {% endif %}
+              {% endfor %}
+
+              <span class="asset-actions-selection-label">Selected assets</span>
+              <div class="asset-selection-controls">
+                <button type="button" class="button button-small" data-select-all>Select all visible</button>
+                <button type="button" class="button button-small button-secondary" data-clear-selection>Clear selection</button>
+                <span class="selected-count" data-selected-count>0 selected</span>
+
+                <label class="field bulk-release-field">
+                  <span>Add to release</span>
+                  <select name="releaseId" data-release-select>
+                    <option value="">Select a release…</option>
+                    {% for target in releaseTargets %}
+                      <option value="{{ target.id }}"{% if submittedReleaseId == (target.id ~ '') %} selected{% endif %}>{{ target.title }}</option>
+                    {% endfor %}
+                  </select>
+                </label>
+                <button type="submit" class="button button-primary" data-bulk-submit>Add selected to release</button>
+
+                <span class="asset-actions-divider" aria-hidden="true"></span>
+
+                <label class="field bulk-move-field">
+                  <span>Move selected to</span>
+                  <select name="destinationCategory">
+                    <option value="uncategorized">Uncategorized</option>
+                    {% for cat in categoryNavigation.enabled %}
+                      <option value="{{ cat.id }}">{{ cat.displayName }}</option>
+                    {% endfor %}
+                  </select>
+                </label>
+                <button type="submit" class="button"
+                        formaction="/projects/{{ project.id }}/assets/move-selected">Move selected</button>
+              </div>
+              <p class="selection-scope-note">Selection applies to this page.</p>
+            </form>
+          </div>
         {% endif %}
 
         {% if filters.view == 'grid' %}
           <ul class="asset-grid" role="listbox" aria-label="Assets">
             {% for asset in assets %}
-               {{ assetCard(asset, isArchived, submittedSelectedAssetIds, project, context, contextFields, renameFailure, _csrf) }}
+             {{ assetCard(asset, isArchived, submittedSelectedAssetIds, project, context, contextFields, renameFailure, _csrf, autoRenameSurface, loop.index0, assets.length) }}
             {% endfor %}
           </ul>
         {% else %}
@@ -539,7 +656,8 @@
             <table class="data-table asset-table">
               <thead>
                 <tr>
-                  {% if not isArchived %}<th scope="col"><span class="sr-only">Select</span></th>{% endif %}
+                   {% if not isArchived %}<th scope="col"><span class="sr-only">Select</span></th>{% endif %}
+                  {% if autoRenameSurface %}<th scope="col">Order</th>{% endif %}
                   <th scope="col">Preview</th>
                   <th scope="col">File</th>
                   <th scope="col">Category</th>
@@ -551,15 +669,19 @@
               </thead>
               <tbody>
                 {% for asset in assets %}
-                   {{ assetRow(asset, isArchived, submittedSelectedAssetIds, project, context, contextFields, renameFailure, _csrf) }}
+                   {{ assetRow(asset, isArchived, submittedSelectedAssetIds, project, context, contextFields, renameFailure, _csrf, autoRenameSurface, loop.index0, assets.length) }}
                 {% endfor %}
               </tbody>
             </table>
           </div>
         {% endif %}
 
-        {# Pagination #}
-        {% if pageCount > 1 %}
+        {% if completeCategorySurface %}
+          </section>
+        {% endif %}
+
+         {# Pagination #}
+         {% if not completeCategorySurface and pageCount > 1 %}
           <nav class="pagination" aria-label="Asset list pages">
             {% if page > 1 %}
               <a href="{{ pageUrl({ page: page - 1 }) }}" class="pagination-prev">← Prev</a>

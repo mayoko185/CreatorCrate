@@ -375,6 +375,31 @@ describe('application context — coordinator persistence across reconstruction'
     // caller's appOpts happens to contain.
     expect(receivedCoordinators[0]).not.toBe(impostor);
   });
+
+  it('passes one signing key to every app rebuild and accepts a deterministic injected key', () => {
+    const initialDb = makeFakeDb('initial');
+    const receivedKeys = [];
+    const injectedKey = Buffer.from('deterministic-auto-rename-context-key');
+    const fakeFactory = (_appDeps, opts) => {
+      receivedKeys.push(opts.autoRenameSigningKey);
+      return {};
+    };
+
+    const appContext = createApplicationContext(
+      { appName: APP_NAME, appOpts: { autoRenameSigningKey: injectedKey } },
+      initialDb,
+      fakeFactory
+    );
+
+    appContext.replaceDatabase(makeFakeDb('replacement-1'));
+    appContext.replaceAuthConfig({ enabled: true });
+
+    expect(receivedKeys).toHaveLength(3);
+    for (const key of receivedKeys) {
+      expect(Buffer.isBuffer(key)).toBe(true);
+      expect(key.equals(injectedKey)).toBe(true);
+    }
+  });
 });
 
 // ─── Phase 12.1: authentication + live restore ──────────────────────────

@@ -29,7 +29,12 @@ import { createReleaseRepository, RELEASE_STATUSES } from '../data/release-repos
 import { createProjectRepository } from '../data/project-repository.js';
 import { createAssetRepository } from '../data/asset-repository.js';
 import { createAssetCategoryRepository } from '../data/asset-category-repository.js';
+import { createAssetBrowserPreferenceRepository } from '../data/asset-browser-preference-repository.js';
 import { createProjectPrimaryImageRepository } from '../data/project-primary-image-repository.js';
+import {
+  AUTO_RENAME_UNAVAILABLE_REASONS,
+  createAssetBrowserPreferenceService,
+} from './asset-browser-preference-service.js';
 import { classifyPreviewable, buildAssetRevisionToken } from './preview-service.js';
 import { getLocalTodayIso } from '../util/date.js';
 
@@ -257,12 +262,23 @@ function groupByDate(releases) {
  *   function injected for Phase 7A read-service composition. When omitted,
  *   the service still works but getReleaseReadiness will throw a clear error.
  */
-export function createWorkflowQueryService({ db, evaluateReleaseReadiness, projectPrimaryImageRepository }) {
+export function createWorkflowQueryService({
+  db,
+  evaluateReleaseReadiness,
+  projectPrimaryImageRepository,
+  assetBrowserPreferenceService: injectedAssetBrowserPreferenceService,
+}) {
   const projectRepository = createProjectRepository(db);
   const releaseRepository = createReleaseRepository(db);
   const assetRepository = createAssetRepository(db);
   const assetCategoryRepository = createAssetCategoryRepository(db);
   const primaryImageRepository = projectPrimaryImageRepository ?? createProjectPrimaryImageRepository(db);
+  const assetBrowserPreferenceService = injectedAssetBrowserPreferenceService
+    ?? createAssetBrowserPreferenceService({
+      preferenceRepository: createAssetBrowserPreferenceRepository(db),
+      projectRepository,
+      assetCategoryRepository,
+    });
 
   /**
    * Compose the dashboard view-model. Returns an object with all sections
@@ -1453,6 +1469,170 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness, proje
     };
   }
 
+  function buildAutoRenameAssetCategoryModel(asset) {
+    if (
+      asset.category_id === null
+      || asset.category_id === undefined
+      || asset.category_record_id === null
+      || asset.category_record_id === undefined
+      || asset.category_display_name == null
+    ) return null;
+
+    return {
+      id: asset.category_id,
+      displayName: asset.category_display_name,
+      directorySlug: asset.category_directory_slug ?? null,
+      enabled: Boolean(asset.category_enabled),
+      displayOrder: asset.category_display_order ?? null,
+    };
+  }
+
+  function buildAutoRenameCategoryAssetModel(projectId, categoryId, view, asset, releaseUsage) {
+    const category = buildAutoRenameAssetCategoryModel(asset);
+    const preview = buildAssetPreviewModel(asset);
+    const base = {
+      id: asset.id,
+      project_id: asset.project_id,
+      relative_path: asset.relative_path,
+      nested_path: asset.nested_path,
+      category_id: asset.category_id,
+      category,
+      category_record_id: asset.category_record_id,
+      category_project_id: asset.category_project_id,
+      category_display_name: asset.category_display_name,
+      category_directory_slug: asset.category_directory_slug,
+      category_enabled: asset.category_enabled,
+      filename: asset.filename,
+      extension: asset.extension,
+      mime_type: asset.mime_type,
+      size_bytes: asset.size_bytes,
+      modified_at: asset.modified_at,
+      is_present: asset.is_present,
+      presence_state: asset.is_present ? 'present' : 'missing',
+      last_seen_at: asset.last_seen_at,
+      missing_since: asset.missing_since,
+      created_at: asset.created_at,
+      updated_at: asset.updated_at,
+      release_usage_count: asset.release_usage_count ?? releaseUsage.length,
+      release_usage: releaseUsage,
+      preview,
+    };
+
+    return {
+      ...base,
+      preview_state: preview.state,
+      preview_revision: preview.revision,
+      thumbnail_url: preview.urls.thumbnail,
+      preview_url: preview.urls.preview,
+      formattedSize: formatFileSize(asset.size_bytes),
+      previewAltText: buildPreviewAltText(asset),
+      isPreviewable: preview.previewable,
+      hasThumbnail: Boolean(preview.urls.thumbnail),
+      originalEligible: preview.kind === 'image',
+      ...buildAssetRowPresentation(base),
+      viewerUrl: buildProjectAssetViewerUrl(projectId, asset.id, { category: categoryId, view }),
+    };
+  }
+
+  function buildUnavailableAutoRenameCategoryModel(view, resolution) {
+    return {
+      effectiveCategory: null,
+      assets: [],
+      orderedAssetIds: [],
+      total: 0,
+      view,
+      autoRenameAvailable: false,
+      autoRenameUnavailableReason: resolution.autoRenameUnavailableReason,
+    };
+  }
+
+  /**
+   * Complete, unpaged Assets-browser surface for exactly one effective
+   * concrete category. Ordinary search, extension, presence, usage, sorting,
+   * and pagination inputs are intentionally ignored; only `view` remains as
+   * presentation state.
+   *
+   * @param {number} projectId
+   * @param {Object} [rawQuery]
+   * @returns {null | {
+   *   effectiveCategory: { id: number, displayName: string, directorySlug: string, enabled: boolean }|null,
+   *   assets: Array,
+   *   orderedAssetIds: number[],
+   *   total: number,
+   *   view: 'list'|'grid',
+   *   autoRenameAvailable: boolean,
+   *   autoRenameUnavailableReason?: string,
+   * }}
+   */
+  function getProjectAutoRenameCategory(projectId, rawQuery = {}) {
+    const project = projectRepository.findById(projectId);
+    if (!project) return null;
+
+    const safeRawQuery = rawQuery && typeof rawQuery === 'object' ? rawQuery : {};
+    const view = normalizeAssetBrowserView(safeRawQuery.view);
+    const resolution = Object.prototype.hasOwnProperty.call(safeRawQuery, 'category')
+      ? assetBrowserPreferenceService.resolveEffectiveCategory(projectId, {
+        explicitCategory: safeRawQuery.category,
+      })
+      : assetBrowserPreferenceService.resolveEffectiveCategory(projectId);
+
+    if (
+      resolution?.autoRenameAvailable === false
+      || resolution.effective?.kind !== 'category'
+      || !resolution.effective.category
+    ) {
+      return buildUnavailableAutoRenameCategoryModel(view, resolution || {
+        autoRenameUnavailableReason: 'no-concrete-default',
+      });
+    }
+
+    const category = resolution.effective.category;
+    const effectiveCategory = {
+      id: category.id,
+      displayName: category.display_name,
+      directorySlug: category.directory_slug,
+      enabled: Boolean(category.enabled),
+    };
+    const rows = assetRepository.findProjectAssetsByCategoryInBrowserOrder(projectId, category.id);
+    if (rows.length === 0) {
+      return {
+        effectiveCategory,
+        assets: [],
+        orderedAssetIds: [],
+        total: 0,
+        view,
+        autoRenameAvailable: false,
+        autoRenameUnavailableReason: AUTO_RENAME_UNAVAILABLE_REASONS.EMPTY,
+      };
+    }
+    const assetIds = rows.map((asset) => asset.id);
+    const usageDetails = assetIds.length > 0
+      ? releaseRepository.findReleaseUsageForAssetIds(projectId, assetIds)
+      : [];
+    const usageByAssetId = new Map();
+    for (const detail of usageDetails) {
+      if (!usageByAssetId.has(detail.asset_id)) usageByAssetId.set(detail.asset_id, []);
+      usageByAssetId.get(detail.asset_id).push(detail);
+    }
+
+    const assets = rows.map((asset) => buildAutoRenameCategoryAssetModel(
+      projectId,
+      category.id,
+      view,
+      asset,
+      usageByAssetId.get(asset.id) || [],
+    ));
+
+    return {
+      effectiveCategory,
+      assets,
+      orderedAssetIds: assets.map((asset) => asset.id),
+      total: assets.length,
+      view,
+      autoRenameAvailable: true,
+    };
+  }
+
   /**
    * Lightweight canonical-context normalizer for the asset browser. Used by
    * routes that need to rebuild a normalized `/projects/:id/assets` URL
@@ -1720,6 +1900,7 @@ export function createWorkflowQueryService({ db, evaluateReleaseReadiness, proje
     getReleaseBoard,
     getProjectCalendar,
     getProjectAssetBrowser,
+    getProjectAutoRenameCategory,
     getProjectAssetBrowserContext,
     getProjectAssetViewer,
     getReleaseReadiness,

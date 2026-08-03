@@ -10,6 +10,7 @@ import { createProjectRepository } from '../src/data/project-repository.js';
 import {
   createAssetBrowserPreferenceService,
   AssetCategoryValidationError,
+  AUTO_RENAME_UNAVAILABLE_REASONS,
   PREFERENCE_FALLBACK_REASONS,
 } from '../src/services/asset-browser-preference-service.js';
 
@@ -140,6 +141,109 @@ describe('asset-browser preference service', () => {
         fallbackReason: null,
       });
     });
+
+    it('uses an explicit enabled category and lets it override the stored default', () => {
+      const { project, categories } = createProject('Explicit Category');
+      service.setProjectPreference(project.id, `category:${categories[1].id}`);
+
+      const resolution = service.resolveEffectiveCategory(project.id, {
+        explicitCategory: categories[0].id,
+      });
+
+      expect(resolution).toMatchObject({
+        storedMode: 'category',
+        storedCategoryId: categories[1].id,
+        effective: { kind: 'category', category: categories[0] },
+        autoRenameAvailable: true,
+        autoRenameUnavailableReason: null,
+      });
+    });
+
+    it('uses the existing concrete project default when no explicit category is supplied', () => {
+      const { project, categories } = createProject('Default Category');
+      service.setProjectPreference(project.id, `category:${categories[1].id}`);
+
+      expect(service.resolveEffectiveCategory(project.id)).toMatchObject({
+        effective: { kind: 'category', category: categories[1] },
+        autoRenameAvailable: true,
+        autoRenameUnavailableReason: null,
+      });
+    });
+
+    it.each([
+      ['all', AUTO_RENAME_UNAVAILABLE_REASONS.ALL],
+      ['uncategorized', AUTO_RENAME_UNAVAILABLE_REASONS.UNCATEGORIZED],
+    ])('marks explicit %s unavailable without falling back', (value, reason) => {
+      const { project, categories } = createProject(`Unsupported ${value}`);
+      service.setProjectPreference(project.id, `category:${categories[0].id}`);
+
+      expect(service.resolveEffectiveCategory(project.id, { explicitCategory: value })).toMatchObject({
+        effective: { kind: 'all', category: null },
+        autoRenameAvailable: false,
+        autoRenameUnavailableReason: reason,
+      });
+    });
+
+    it('marks a missing concrete default unavailable without inventing a replacement', () => {
+      const { project } = createProject('No Concrete Default');
+      service.setProjectPreference(project.id, 'inherit');
+      preferenceRepository.setGlobalDefault('all');
+
+      expect(service.resolveEffectiveCategory(project.id)).toMatchObject({
+        effective: { kind: 'all', category: null },
+        autoRenameAvailable: false,
+        autoRenameUnavailableReason: AUTO_RENAME_UNAVAILABLE_REASONS.ALL,
+      });
+    });
+
+    it('controls missing and deleted explicit categories', () => {
+      const { project, categories } = createProject('Missing Explicit Category');
+      const missingCategoryId = categories[0].id;
+      db.prepare('DELETE FROM project_asset_categories WHERE project_id = ? AND id = ?')
+        .run(project.id, missingCategoryId);
+
+      expect(service.resolveEffectiveCategory(project.id, { explicitCategory: missingCategoryId })).toMatchObject({
+        effective: { kind: 'all', category: null },
+        autoRenameAvailable: false,
+        autoRenameUnavailableReason: AUTO_RENAME_UNAVAILABLE_REASONS.MISSING,
+      });
+    });
+
+    it('controls disabled explicit categories', () => {
+      const { project, categories } = createProject('Disabled Explicit Category');
+      setProjectCategoryEnabled(project.id, categories[0].id, false);
+
+      expect(service.resolveEffectiveCategory(project.id, { explicitCategory: categories[0].id })).toMatchObject({
+        effective: { kind: 'all', category: null },
+        autoRenameAvailable: false,
+        autoRenameUnavailableReason: AUTO_RENAME_UNAVAILABLE_REASONS.DISABLED,
+      });
+    });
+
+    it('controls cross-project explicit categories', () => {
+      const owner = createProject('Explicit Owner');
+      const foreign = createProject('Explicit Foreign');
+
+      expect(service.resolveEffectiveCategory(owner.project.id, {
+        explicitCategory: foreign.categories[0].id,
+      })).toMatchObject({
+        effective: { kind: 'all', category: null },
+        autoRenameAvailable: false,
+        autoRenameUnavailableReason: AUTO_RENAME_UNAVAILABLE_REASONS.CROSS_PROJECT,
+      });
+    });
+
+    it.each([0, -1, '0', '1.5', '+1', 'category:1', null])
+      ('controls invalid explicit category ID %p without falling back', (value) => {
+        const { project, categories } = createProject('Invalid Explicit Category');
+        service.setProjectPreference(project.id, `category:${categories[0].id}`);
+
+        expect(service.resolveEffectiveCategory(project.id, { explicitCategory: value })).toMatchObject({
+          effective: { kind: 'all', category: null },
+          autoRenameAvailable: false,
+          autoRenameUnavailableReason: AUTO_RENAME_UNAVAILABLE_REASONS.INVALID,
+        });
+      });
 
     it('falls back from a disabled specific category while retaining the stored preference', () => {
       const { project, categories } = createProject();

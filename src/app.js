@@ -21,6 +21,7 @@ import { createAssetBrowserPreferenceService } from './services/asset-browser-pr
 import { createProjectAssetCategoryService } from './services/project-asset-category-service.js';
 import { createAssetScanner } from './services/asset-scanner.js';
 import { createAssetActionService } from './services/asset-action-service.js';
+import { createAutoRenameService } from './services/auto-rename-service.js';
 import { createProjectPrimaryImageService } from './services/project-primary-image-service.js';
 import { createProjectOperationCoordinator } from './services/project-operation-coordinator.js';
 import { createReleaseService } from './services/release-service.js';
@@ -165,6 +166,25 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     : null);
   app.locals.assetActionService = assetActionService;
 
+  // Phase H3: Auto Rename is one application-scoped service per rooted app
+  // build. It reuses the already-constructed project repository, asset
+  // repository, and operation coordinator; no database connection or lock is
+  // created here. app-context.js supplies one signing key across rebuilds so
+  // a live database replacement does not invalidate an otherwise active
+  // application context. Direct createApp callers may inject either the
+  // service or a deterministic signing key for tests.
+  const autoRenameService = projectsRoot
+    ? (opts.autoRenameService || createAutoRenameService({
+      projectRepository: projectService.repository,
+      assetRepository: assetScanner.repository,
+      assetCategoryRepository,
+      projectsRoot,
+      projectOperationCoordinator,
+      signingKey: opts.autoRenameSigningKey,
+    }))
+    : null;
+  app.locals.autoRenameService = autoRenameService;
+
   // Phase 10.1C: construct one app-scoped preview service before primary-image
   // dependencies so KRA eligibility probes share its descriptor safety and
   // per-asset lock state. Rootless applications keep the probe unavailable.
@@ -193,6 +213,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     db,
     evaluateReleaseReadiness,
     projectPrimaryImageRepository,
+    assetBrowserPreferenceService,
   });
 
   // Phase 10.1C: media service reuses the exact preview service instance
@@ -343,6 +364,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
       releaseService,
       assetActionService,
       assetBrowserPreferenceService,
+      autoRenameService,
       projectPrimaryImageService,
       previewProbe: previewService?.inspectKritaPreviewSource,
     }));

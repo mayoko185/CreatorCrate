@@ -68,6 +68,16 @@ const ASSET_BROWSER_CATEGORY_COLUMNS = `
           c.enabled AS category_enabled,
           c.display_order AS category_display_order,`;
 
+const QUALIFIED_ASSET_COLUMNS = ASSET_COLUMNS.map((column) => `a.${column}`).join(', ');
+const AUTO_RENAME_CATEGORY_COLUMNS = [
+  'c.id AS category_record_id',
+  'c.project_id AS category_project_id',
+  'c.display_name AS category_display_name',
+  'c.directory_slug AS category_directory_slug',
+  'c.display_order AS category_display_order',
+  'c.enabled AS category_enabled',
+].join(', ');
+
 function escapeLike(value) {
   return value.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
 }
@@ -293,6 +303,103 @@ export function createAssetRepository(db) {
     SELECT COUNT(*) AS c FROM assets WHERE project_id = ?
   `);
 
+  function executeAssetLocationUpdate(projectId, assetId, expectedOldRelativePath, data) {
+    let updated;
+    try {
+      updated = updateAssetLocationStmt.get(
+        data.relativePath,
+        data.filename,
+        data.extension,
+        data.mimeType,
+        data.categoryId ?? null,
+        data.nestedPath ?? '',
+        data.sizeBytes,
+        data.modifiedAt || null,
+        projectId,
+        assetId,
+        expectedOldRelativePath,
+      );
+    } catch (err) {
+      if (isAssetPathUniqueConstraintError(err)) {
+        const conflict = new Error('Asset location update destination conflicts with another row.');
+        conflict.code = 'DESTINATION_CONFLICT';
+        throw conflict;
+      }
+      throw err;
+    }
+
+    if (!updated) {
+      const missing = new Error('Asset location update did not match the expected row.');
+      missing.code = 'NOT_FOUND';
+      throw missing;
+    }
+
+    return updated;
+  }
+
+  // SQLite checks the UNIQUE(project_id, relative_path) index immediately.
+  // Stage every changed row through a unique temporary path first so swaps and
+  // cycles can commit as one transaction without exposing an intermediate
+  // database state to callers.
+  const updateAssetLocationsTx = db.transaction((projectId, updates) => {
+    if (!Array.isArray(updates)) {
+      throw new TypeError('Asset location updates must be an array.');
+    }
+
+    for (const update of updates) {
+      if (update.expectedDatabaseFilename === undefined) continue;
+      const current = findByIdStmt.get(update.assetId);
+      const matches = current
+        && current.project_id === projectId
+        && current.relative_path === update.expectedOldRelativePath
+        && current.filename === update.expectedDatabaseFilename
+        && current.category_id === (update.expectedDatabaseCategoryId ?? null)
+        && (current.nested_path ?? '') === (update.expectedDatabaseNestedPath ?? '')
+        && current.size_bytes === update.expectedDatabaseSizeBytes
+        && current.modified_at === (update.expectedDatabaseModifiedAt || null)
+        && (current.is_present === 1 || current.is_present === true) === Boolean(update.expectedDatabasePresent);
+      if (!matches) {
+        const stale = new Error('Asset database state no longer matches the signed plan.');
+        stale.code = 'STALE_STATE';
+        throw stale;
+      }
+    }
+
+    for (const update of updates) {
+      executeAssetLocationUpdate(
+        projectId,
+        update.assetId,
+        update.expectedOldRelativePath,
+        {
+          relativePath: update.temporaryRelativePath,
+          filename: update.temporaryFilename,
+          extension: update.temporaryExtension,
+          mimeType: update.temporaryMimeType,
+          categoryId: update.categoryId,
+          nestedPath: update.temporaryNestedPath,
+          sizeBytes: update.sizeBytes,
+          modifiedAt: update.modifiedAt,
+        },
+      );
+    }
+
+    return updates.map((update) => executeAssetLocationUpdate(
+      projectId,
+      update.assetId,
+      update.temporaryRelativePath,
+      {
+        relativePath: update.relativePath,
+        filename: update.filename,
+        extension: update.extension,
+        mimeType: update.mimeType,
+        categoryId: update.categoryId,
+        nestedPath: update.nestedPath,
+        sizeBytes: update.sizeBytes,
+        modifiedAt: update.modifiedAt,
+      },
+    ));
+  });
+
   const totalCountStmt = db.prepare(`
     SELECT COUNT(*) AS c FROM assets
   `);
@@ -334,6 +441,63 @@ export function createAssetRepository(db) {
       const placeholders = unique.map(() => '?').join(',');
       const sql = `SELECT ${ASSET_COLUMNS.join(', ')} FROM assets WHERE id IN (${placeholders})`;
       return db.prepare(sql).all(...unique);
+    },
+
+    /**
+     * Find the selected assets for one project in the exact default order used
+     * by the asset browser. The order expression is deliberately shared with
+     * the browser page/viewer queries rather than reproduced by a service.
+     *
+     * @param {number} projectId
+     * @param {number[]} ids
+     * @returns {import('./asset-repository.js').AssetRecord[]}
+     */
+    findProjectAssetsByIdsInBrowserOrder(projectId, ids) {
+      if (!Array.isArray(ids) || ids.length === 0) return [];
+      const unique = [...new Set(ids)];
+      const placeholders = unique.map(() => '?').join(',');
+      const sql = `
+        SELECT ${QUALIFIED_ASSET_COLUMNS}, ${AUTO_RENAME_CATEGORY_COLUMNS}
+        FROM assets a
+        ${CATEGORY_JOIN}
+        WHERE a.project_id = ? AND a.id IN (${placeholders})
+        ${buildAssetBrowserOrderClause('filename', 'asc')}
+      `;
+      return db.prepare(sql).all(projectId, ...unique);
+    },
+
+    /**
+     * Find every indexed asset in one exact project-owned category, in the
+     * canonical default Assets-browser order. This intentionally has no
+     * filters, LIMIT, or OFFSET: Auto Rename must receive the complete
+     * category membership rather than a browser subset.
+     *
+     * @param {number} projectId
+     * @param {number} categoryId
+     * @returns {import('./asset-repository.js').AssetRecord[]}
+     */
+    findProjectAssetsByCategoryInBrowserOrder(projectId, categoryId) {
+      if (
+        !Number.isSafeInteger(projectId)
+        || projectId <= 0
+        || !Number.isSafeInteger(categoryId)
+        || categoryId <= 0
+      ) return [];
+
+      const sql = `
+        SELECT
+          ${QUALIFIED_ASSET_COLUMNS},
+          ${AUTO_RENAME_CATEGORY_COLUMNS},
+          (SELECT COUNT(DISTINCT ra.release_id)
+           FROM release_assets ra
+           JOIN releases r ON r.id = ra.release_id
+           WHERE ra.asset_id = a.id AND r.project_id = a.project_id) AS release_usage_count
+        FROM assets a
+        ${CATEGORY_JOIN}
+        WHERE a.project_id = ? AND a.category_id = ?
+        ${buildAssetBrowserOrderClause('filename', 'asc')}
+      `;
+      return db.prepare(sql).all(projectId, categoryId);
     },
 
     /**
@@ -436,6 +600,41 @@ export function createAssetRepository(db) {
       }
 
       return { ok: true, asset: updated };
+    },
+
+    /**
+     * Update several asset locations atomically, staging through temporary
+     * relative paths so selected-source swaps and cycles do not violate the
+     * immediate UNIQUE(project_id, relative_path) index.
+     *
+     * @param {number} projectId
+     * @param {Array<{
+     *   assetId: number,
+     *   expectedOldRelativePath: string,
+     *   temporaryRelativePath: string,
+     *   temporaryFilename: string,
+     *   temporaryExtension: string,
+     *   temporaryMimeType: string,
+     *   temporaryNestedPath: string,
+     *   relativePath: string,
+     *   filename: string,
+     *   extension: string,
+     *   mimeType: string,
+     *   categoryId: number|null,
+     *   nestedPath: string,
+     *   sizeBytes: number,
+     *   modifiedAt: string|null,
+     *   expectedDatabaseFilename: string,
+     *   expectedDatabaseCategoryId: number|null,
+     *   expectedDatabaseNestedPath: string,
+     *   expectedDatabaseSizeBytes: number,
+     *   expectedDatabaseModifiedAt: string|null,
+     *   expectedDatabasePresent: boolean,
+     * }>} updates
+     * @returns {import('./asset-repository.js').AssetRecord[]}
+     */
+    updateAssetLocations(projectId, updates) {
+      return updateAssetLocationsTx(projectId, updates);
     },
 
     /**
@@ -940,6 +1139,12 @@ export function createAssetRepository(db) {
  * @property {number} id
  * @property {number} project_id
  * @property {number|null} category_id
+ * @property {number|null} [category_record_id]
+ * @property {number|null} [category_project_id]
+ * @property {string|null} [category_display_name]
+ * @property {string|null} [category_directory_slug]
+ * @property {number|null} [category_display_order]
+ * @property {number|null} [category_enabled]
  * @property {string} relative_path
  * @property {string} nested_path
  * @property {string} filename

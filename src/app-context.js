@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import { createApp } from './app.js';
 import { closeDatabase } from './db.js';
 import { createProjectOperationCoordinator } from './services/project-operation-coordinator.js';
@@ -47,6 +48,13 @@ export function createApplicationContext(
   // after that candidate has already been proven to build successfully.
   let activeAppOpts = { ...appOpts };
 
+  // Phase H3: keep one opaque signing key for this mutable application
+  // context. Rebuilding the app against a replacement database must create
+  // repositories/services for that database, but it must not create a new
+  // Auto Rename signing identity during the same application lifetime.
+  const autoRenameSigningKey = activeAppOpts.autoRenameSigningKey
+    ?? crypto.randomBytes(32);
+
   // Phase: asset actions chunk 3 — constructed exactly once per application
   // context (i.e. once per process, since server.js creates exactly one
   // context) and threaded through every buildApp call below, including
@@ -61,7 +69,13 @@ export function createApplicationContext(
   function buildApp(db, opts) {
     return appFactory(
       { appName, db, projectsRoot, previewRoot },
-      { ...opts, projectOperationCoordinator, onDatabaseReplaced: replaceDatabase, onAuthConfigReplaced: replaceAuthConfig }
+      {
+        ...opts,
+        autoRenameSigningKey,
+        projectOperationCoordinator,
+        onDatabaseReplaced: replaceDatabase,
+        onAuthConfigReplaced: replaceAuthConfig,
+      }
     );
   }
 

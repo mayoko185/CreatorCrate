@@ -11,6 +11,7 @@ import {
 import { evaluateReleaseReadiness } from '../src/services/release-readiness-policy.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
 import { createAssetCategoryRepository } from '../src/data/asset-category-repository.js';
+import { createAssetBrowserPreferenceRepository } from '../src/data/asset-browser-preference-repository.js';
 import { createProjectPrimaryImageRepository } from '../src/data/project-primary-image-repository.js';
 import { createReleaseRepository } from '../src/data/release-repository.js';
 import { getLocalTodayIso } from '../src/util/date.js';
@@ -140,6 +141,7 @@ describe('workflow query service', () => {
   let tmpDir;
   let service;
   let primaryImageRepository;
+  let preferenceRepository;
   let today;
 
   beforeEach(() => {
@@ -148,6 +150,7 @@ describe('workflow query service', () => {
     db = openDatabase(dbPath);
     runMigrations(db, MIGRATIONS_DIR);
     primaryImageRepository = createProjectPrimaryImageRepository(db);
+    preferenceRepository = createAssetBrowserPreferenceRepository(db);
     service = createWorkflowQueryService({
       db,
       evaluateReleaseReadiness,
@@ -3993,6 +3996,234 @@ describe('workflow query service', () => {
           expect(countActive(nav)).toBeLessThanOrEqual(1);
         }
       });
+    });
+  });
+
+  describe('getProjectAutoRenameCategory', () => {
+    function addCategory(projectId, displayName, directorySlug, displayOrder = 0, enabled = true) {
+      return createAssetCategoryRepository(db).addProjectCategory({
+        projectId,
+        displayName,
+        directorySlug,
+        displayOrder,
+        enabled,
+      });
+    }
+
+    function addAsset(assetRepository, projectId, categoryId, relativePath, overrides = {}) {
+      const filename = relativePath.split('/').pop();
+      const extension = filename.includes('.') ? filename.split('.').pop().toLowerCase() : '';
+      return assetRepository.upsert(projectId, relativePath, {
+        filename,
+        extension,
+        mimeType: extension === 'png' ? 'image/png' : 'application/octet-stream',
+        sizeBytes: 10,
+        modifiedAt: '2026-08-02T12:00:00.000Z',
+        categoryId,
+        nestedPath: relativePath.includes('/') ? relativePath.slice(0, relativePath.lastIndexOf('/')) : '',
+        ...overrides,
+      });
+    }
+
+    it('returns every effective-category asset once in canonical order, independent of filters and pagination', () => {
+      const assetRepository = createAssetRepository(db);
+      const project = insertProject(db, { title: 'Auto Rename Complete Category' });
+      const category = addCategory(project.id, 'Renders', 'renders', 0);
+      const otherCategory = addCategory(project.id, 'Exports', 'exports', 1);
+      preferenceRepository.upsertProjectPreference(project.id, 'category', category.id);
+
+      const categoryAssets = [];
+      for (let index = 0; index < 30; index++) {
+        const filename = index === 0
+          ? 'file10.png'
+          : index === 1
+            ? 'File2.png'
+            : index === 2
+              ? 'file2.png'
+              : `asset-${String(index).padStart(2, '0')}.png`;
+        categoryAssets.push(addAsset(assetRepository, project.id, category.id, `renders/${index}-${filename}`, {
+          filename,
+        }));
+      }
+      const missing = categoryAssets[29];
+      db.prepare('UPDATE assets SET is_present = 0, missing_since = datetime(\'now\') WHERE id = ?')
+        .run(missing.id);
+      addAsset(assetRepository, project.id, otherCategory.id, 'exports/other.kra', {
+        mimeType: 'application/x-krita',
+      });
+      const release = insertRelease(db, { projectId: project.id, title: 'Used Asset' });
+      linkAssetToRelease(db, { releaseId: release.id, assetId: categoryAssets[0].id });
+
+      const expectedRows = assetRepository.findProjectAssetsByCategoryInBrowserOrder(project.id, category.id);
+      const normalPage = service.getProjectAssetBrowser(project.id, {
+        category: String(category.id),
+        pageSize: 25,
+      });
+
+      const readFileSpy = vi.spyOn(fs, 'readFileSync');
+      const lstatSpy = vi.spyOn(fs, 'lstatSync');
+      const readdirSpy = vi.spyOn(fs, 'readdirSync');
+      try {
+        const result = service.getProjectAutoRenameCategory(project.id, {
+          category: String(category.id),
+          search: 'does-not-match',
+          extension: '.kra',
+          presence: 'missing',
+          usage: 'used',
+          sort: 'size',
+          order: 'desc',
+          page: '99',
+          pageSize: '1',
+          view: 'list',
+        });
+
+        expect(normalPage.assets).toHaveLength(25);
+        expect(result).toMatchObject({
+          effectiveCategory: {
+            id: category.id,
+            displayName: 'Renders',
+            directorySlug: 'renders',
+            enabled: true,
+          },
+          total: 30,
+          view: 'list',
+          autoRenameAvailable: true,
+        });
+        expect(result.assets).toHaveLength(30);
+        expect(result.orderedAssetIds).toEqual(expectedRows.map((asset) => asset.id));
+        expect(result.assets.map((asset) => asset.id)).toEqual(result.orderedAssetIds);
+        expect(new Set(result.orderedAssetIds).size).toBe(30);
+        expect(result.assets.some((asset) => asset.id === missing.id)).toBe(true);
+        expect(result).not.toHaveProperty('page');
+        expect(result).not.toHaveProperty('pageSize');
+        expect(result).not.toHaveProperty('pageCount');
+        expect(result.assets.every((asset) => (
+          asset.project_id === project.id
+          && asset.category_id === category.id
+          && asset.category.directorySlug === 'renders'
+        ))).toBe(true);
+        expect(result.assets.find((asset) => asset.id === categoryAssets[0].id)).toMatchObject({
+          relative_path: expect.any(String),
+          nested_path: 'renders',
+          filename: expect.any(String),
+          extension: 'png',
+          mime_type: 'image/png',
+          size_bytes: 10,
+          is_present: 1,
+          release_usage_count: 1,
+          release_usage: [expect.objectContaining({ release_id: release.id })],
+          category: {
+            id: category.id,
+            displayName: 'Renders',
+            directorySlug: 'renders',
+            enabled: true,
+          },
+          preview_state: 'previewable',
+        });
+        expect(readFileSpy).not.toHaveBeenCalled();
+        expect(lstatSpy).not.toHaveBeenCalled();
+        expect(readdirSpy).not.toHaveBeenCalled();
+      } finally {
+        readFileSpy.mockRestore();
+        lstatSpy.mockRestore();
+        readdirSpy.mockRestore();
+      }
+    });
+
+    it('uses a concrete default when category is absent and lets an explicit category override it', () => {
+      const assetRepository = createAssetRepository(db);
+      const project = insertProject(db, { title: 'Auto Rename Effective Category' });
+      const defaultCategory = addCategory(project.id, 'Default', 'default', 0);
+      const explicitCategory = addCategory(project.id, 'Explicit', 'explicit', 1);
+      preferenceRepository.upsertProjectPreference(project.id, 'category', defaultCategory.id);
+      addAsset(assetRepository, project.id, defaultCategory.id, 'default/a.png');
+      addAsset(assetRepository, project.id, explicitCategory.id, 'explicit/b.png');
+
+      const fromDefault = service.getProjectAutoRenameCategory(project.id, { view: 'grid' });
+      const fromExplicit = service.getProjectAutoRenameCategory(project.id, {
+        category: String(explicitCategory.id),
+        view: 'grid',
+      });
+
+      expect(fromDefault.effectiveCategory).toMatchObject({
+        id: defaultCategory.id,
+        displayName: 'Default',
+        directorySlug: 'default',
+        enabled: true,
+      });
+      expect(fromDefault.assets.map((asset) => asset.category_id)).toEqual([defaultCategory.id]);
+      expect(fromExplicit.effectiveCategory).toMatchObject({
+        id: explicitCategory.id,
+        displayName: 'Explicit',
+        directorySlug: 'explicit',
+        enabled: true,
+      });
+      expect(fromExplicit.assets.map((asset) => asset.category_id)).toEqual([explicitCategory.id]);
+    });
+
+    it.each(['all', 'uncategorized'])('returns an unavailable model for explicit %s', (category) => {
+      const project = insertProject(db, { title: `Auto Rename ${category}` });
+      const concreteCategory = addCategory(project.id, 'Concrete', 'concrete', 0);
+      preferenceRepository.upsertProjectPreference(project.id, 'category', concreteCategory.id);
+
+      const result = service.getProjectAutoRenameCategory(project.id, {
+        category,
+        view: 'list',
+        page: '2',
+        pageSize: '1',
+      });
+
+      expect(result).toMatchObject({
+        effectiveCategory: null,
+        assets: [],
+        orderedAssetIds: [],
+        total: 0,
+        view: 'list',
+        autoRenameAvailable: false,
+        autoRenameUnavailableReason: category,
+      });
+      expect(result).not.toHaveProperty('page');
+      expect(result).not.toHaveProperty('pageSize');
+    });
+
+    it('returns an unavailable model when no concrete default category exists', () => {
+      const project = insertProject(db, { title: 'Auto Rename No Default' });
+      preferenceRepository.upsertProjectPreference(project.id, 'inherit', null);
+      preferenceRepository.setGlobalDefault('all');
+
+      expect(service.getProjectAutoRenameCategory(project.id)).toMatchObject({
+        effectiveCategory: null,
+        assets: [],
+        orderedAssetIds: [],
+        total: 0,
+        view: 'grid',
+        autoRenameAvailable: false,
+        autoRenameUnavailableReason: 'all',
+      });
+    });
+
+    it('preserves ordinary paginated filtered browser behavior separately', () => {
+      const assetRepository = createAssetRepository(db);
+      const project = insertProject(db, { title: 'Normal Browser Regression' });
+      addAsset(assetRepository, project.id, null, 'keep/a.png');
+      addAsset(assetRepository, project.id, null, 'keep/b.png');
+      addAsset(assetRepository, project.id, null, 'other/c.png');
+
+      const result = service.getProjectAssetBrowser(project.id, {
+        search: 'keep',
+        extension: '.png',
+        presence: 'present',
+        usage: 'unused',
+        page: '2',
+        pageSize: '1',
+      });
+
+      expect(result.total).toBe(2);
+      expect(result.page).toBe(2);
+      expect(result.pageSize).toBe(1);
+      expect(result.pageCount).toBe(2);
+      expect(result.assets).toHaveLength(1);
+      expect(result.assets[0].relative_path).toBe('keep/b.png');
     });
   });
 

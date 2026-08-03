@@ -3,11 +3,12 @@ import { ProjectNotFoundError } from '../services/project-service.js';
 import { ReleaseValidationError } from '../services/release-service.js';
 import { UNCATEGORIZED } from '../services/asset-action-service.js';
 import { PRIMARY_IMAGE_ERROR_CODES } from '../services/project-primary-image-service.js';
+import { AUTO_RENAME_ERROR_CODES } from '../services/auto-rename-service.js';
 import {
   buildCanonicalAssetBrowserQuery,
   isPrimaryImageAssetUsable,
 } from '../services/workflow-query-service.js';
-import { classifyPreviewable } from '../services/preview-service.js';
+import { buildAssetRevisionToken, classifyPreviewable } from '../services/preview-service.js';
 
 const ASSET_BROWSER_QUERY_KEYS = ['category', 'search', 'extension', 'presence', 'usage', 'sort', 'order', 'page', 'pageSize', 'view'];
 
@@ -19,6 +20,78 @@ const ASSET_BROWSER_QUERY_KEYS = ['category', 'search', 'extension', 'presence',
 const ASSET_BROWSER_CONTEXT_FIELDS = ASSET_BROWSER_QUERY_KEYS;
 const ASSET_RENAME_ORIGINS = new Set(['assets', 'viewer']);
 
+const AUTO_RENAME_ERROR_STATUS = Object.freeze({
+  [AUTO_RENAME_ERROR_CODES.INVALID_PROJECT_ID]: 404,
+  [AUTO_RENAME_ERROR_CODES.PROJECT_NOT_FOUND]: 404,
+  [AUTO_RENAME_ERROR_CODES.PROJECT_ARCHIVED]: 409,
+  [AUTO_RENAME_ERROR_CODES.CATEGORY_REQUIRED]: 422,
+  [AUTO_RENAME_ERROR_CODES.CATEGORY_INVALID]: 422,
+  [AUTO_RENAME_ERROR_CODES.CATEGORY_DISABLED]: 409,
+  [AUTO_RENAME_ERROR_CODES.CATEGORY_EMPTY]: 422,
+  [AUTO_RENAME_ERROR_CODES.ORDER_INVALID]: 422,
+  [AUTO_RENAME_ERROR_CODES.PROJECT_BUSY]: 409,
+  [AUTO_RENAME_ERROR_CODES.PROJECT_DIRECTORY_UNSAFE]: 500,
+  [AUTO_RENAME_ERROR_CODES.DATABASE_ERROR]: 500,
+  [AUTO_RENAME_ERROR_CODES.FILESYSTEM_INSPECTION_FAILED]: 500,
+  [AUTO_RENAME_ERROR_CODES.FILESYSTEM_OPERATION_FAILED]: 500,
+  [AUTO_RENAME_ERROR_CODES.SIGNING_FAILED]: 500,
+  [AUTO_RENAME_ERROR_CODES.INVALID_TOKEN]: 409,
+  [AUTO_RENAME_ERROR_CODES.STALE_PLAN]: 409,
+  [AUTO_RENAME_ERROR_CODES.PLAN_BLOCKED]: 409,
+  [AUTO_RENAME_ERROR_CODES.NO_CHANGES]: 409,
+  [AUTO_RENAME_ERROR_CODES.AUTO_RENAME_FAILED]: 500,
+  [AUTO_RENAME_ERROR_CODES.AUTO_RENAME_RECOVERY_REQUIRED]: 500,
+});
+
+const AUTO_RENAME_PREVIEW_MESSAGES = Object.freeze({
+  [AUTO_RENAME_ERROR_CODES.CATEGORY_REQUIRED]: 'Choose one concrete category before previewing Auto Rename.',
+  [AUTO_RENAME_ERROR_CODES.CATEGORY_INVALID]: 'The selected Auto Rename category is invalid or unavailable.',
+  [AUTO_RENAME_ERROR_CODES.CATEGORY_DISABLED]: 'The selected category is disabled and cannot be renamed.',
+  [AUTO_RENAME_ERROR_CODES.CATEGORY_EMPTY]: 'The selected category contains no assets to rename.',
+  [AUTO_RENAME_ERROR_CODES.ORDER_INVALID]: 'The submitted Auto Rename order must contain every category asset exactly once.',
+  [AUTO_RENAME_ERROR_CODES.PROJECT_ARCHIVED]: 'This project is archived and read-only.',
+  [AUTO_RENAME_ERROR_CODES.PROJECT_BUSY]: 'Another project operation is already in progress. Try again.',
+  [AUTO_RENAME_ERROR_CODES.PROJECT_DIRECTORY_UNSAFE]: 'Auto Rename preview could not access the project directory. Please try again.',
+  [AUTO_RENAME_ERROR_CODES.DATABASE_ERROR]: 'Auto Rename preview could not be generated. Please try again.',
+  [AUTO_RENAME_ERROR_CODES.FILESYSTEM_INSPECTION_FAILED]: 'Auto Rename preview could not inspect the project files. Please try again.',
+  [AUTO_RENAME_ERROR_CODES.FILESYSTEM_OPERATION_FAILED]: 'Auto Rename preview could not inspect the project files. Please try again.',
+  [AUTO_RENAME_ERROR_CODES.SIGNING_FAILED]: 'Auto Rename preview could not be generated. Please try again.',
+});
+
+const AUTO_RENAME_APPLY_MESSAGES = Object.freeze({
+  [AUTO_RENAME_ERROR_CODES.CATEGORY_REQUIRED]: 'The Auto Rename category is no longer available. Review the category again.',
+  [AUTO_RENAME_ERROR_CODES.CATEGORY_INVALID]: 'The Auto Rename category is no longer available. Review the category again.',
+  [AUTO_RENAME_ERROR_CODES.CATEGORY_DISABLED]: 'The Auto Rename category is now disabled. Review the category again.',
+  [AUTO_RENAME_ERROR_CODES.CATEGORY_EMPTY]: 'The Auto Rename category is now empty. Review the category again.',
+  [AUTO_RENAME_ERROR_CODES.ORDER_INVALID]: 'The Auto Rename preview order is no longer current. Review the category again.',
+  [AUTO_RENAME_ERROR_CODES.PROJECT_ARCHIVED]: 'This project is archived and read-only.',
+  [AUTO_RENAME_ERROR_CODES.PROJECT_BUSY]: 'Another project operation is already in progress. Try again.',
+  [AUTO_RENAME_ERROR_CODES.PROJECT_DIRECTORY_UNSAFE]: 'Auto Rename could not be applied. Please try again.',
+  [AUTO_RENAME_ERROR_CODES.DATABASE_ERROR]: 'Auto Rename could not be applied. Please try again.',
+  [AUTO_RENAME_ERROR_CODES.FILESYSTEM_INSPECTION_FAILED]: 'Auto Rename could not be applied. Please try again.',
+  [AUTO_RENAME_ERROR_CODES.FILESYSTEM_OPERATION_FAILED]: 'Auto Rename could not be applied. Please try again.',
+  [AUTO_RENAME_ERROR_CODES.SIGNING_FAILED]: 'Auto Rename could not be applied. Please try again.',
+  [AUTO_RENAME_ERROR_CODES.INVALID_TOKEN]: 'The rename preview is no longer current. Review the selected files again.',
+  [AUTO_RENAME_ERROR_CODES.STALE_PLAN]: 'The rename preview is no longer current. Review the selected files again.',
+  [AUTO_RENAME_ERROR_CODES.PLAN_BLOCKED]: 'Auto Rename could not be applied because one or more files are blocked.',
+  [AUTO_RENAME_ERROR_CODES.NO_CHANGES]: 'Auto Rename has no changes to apply.',
+  [AUTO_RENAME_ERROR_CODES.AUTO_RENAME_FAILED]: 'Auto Rename failed. No files were renamed.',
+  [AUTO_RENAME_ERROR_CODES.AUTO_RENAME_RECOVERY_REQUIRED]: 'Auto Rename could not fully restore the project files. Review the project directory before trying again.',
+});
+
+const AUTO_RENAME_BLOCK_REASON_MESSAGES = Object.freeze({
+  missing: 'The file is missing at the last scan or is not present on disk.',
+  'unsupported-source': 'The source is not a regular file that can be renamed safely.',
+  'invalid-name': 'The generated filename is not safe for this project.',
+  uncategorized: 'The asset is not assigned to a category.',
+  'category-unavailable': 'The assigned category is no longer available for this project.',
+  'category-disabled': 'The assigned category is disabled.',
+  'invalid-category': 'The assigned category cannot be used for safe file naming.',
+  'duplicate-destination': 'Multiple selected assets would receive the same destination.',
+  'database-conflict': 'The generated destination is already recorded for another asset.',
+  'case-conflict': 'The generated destination conflicts with an existing path.',
+  'filesystem-conflict': 'The generated destination is occupied on disk.',
+});
 /**
  * Create an assets router mounted at /projects.
  *
@@ -28,6 +101,8 @@ const ASSET_RENAME_ORIGINS = new Set(['assets', 'viewer']);
  *   POST /projects/:id/scan  — Trigger a manual scan
  *   POST /projects/:id/assets/add-to-release — Bulk-add selected present assets to one release
  *   POST /projects/:id/assets/move-selected — Batch-move selected present assets to a category
+ *   POST /projects/:projectId/assets/auto-rename/preview — Preview Auto Rename
+ *   POST /projects/:projectId/assets/auto-rename/apply — Apply a signed Auto Rename plan
  *
  * @param {object} deps
  * @param {string} deps.appName
@@ -44,6 +119,8 @@ const ASSET_RENAME_ORIGINS = new Set(['assets', 'viewer']);
  * @param {ReturnType<import('../services/project-primary-image-service.js').createProjectPrimaryImageService>} deps.projectPrimaryImageService
  *   Application-scoped primary-image service used by the viewer and its
  *   mutation routes.
+ * @param {ReturnType<import('../services/auto-rename-service.js').createAutoRenameService>} deps.autoRenameService
+ *   Application-scoped Auto Rename planner/executor.
  * @param {Function} [deps.previewProbe]
  *   Application-scoped bounded Krita preview probe used only by the viewer.
  */
@@ -55,6 +132,7 @@ export function createAssetsRouter({
   releaseService,
   assetActionService,
   assetBrowserPreferenceService,
+  autoRenameService,
   projectPrimaryImageService,
   previewProbe,
 } = {}) {
@@ -65,6 +143,10 @@ export function createAssetsRouter({
     || typeof projectPrimaryImageService.setPrimaryImage !== 'function'
     || typeof projectPrimaryImageService.clearPrimaryImage !== 'function') {
     throw new Error('createAssetsRouter requires a projectPrimaryImageService dependency.');
+  }
+  if (!autoRenameService || typeof autoRenameService.buildPlan !== 'function'
+    || typeof autoRenameService.applyPlan !== 'function') {
+    throw new Error('createAssetsRouter requires an autoRenameService dependency.');
   }
 
   const router = express.Router({ mergeParams: true });
@@ -100,7 +182,7 @@ export function createAssetsRouter({
         }
       }
 
-      const data = workflowQueryService.getProjectAssetBrowser(id, req.query);
+      const data = buildAssetsPageData(workflowQueryService, id, project, req.query);
 
       // Pass scan result params to template only if they are valid scan outputs.
       const query = {};
@@ -118,6 +200,16 @@ export function createAssetsRouter({
       const archivedError = req.query.scan_error === 'archived' ? true : null;
       const assetActionNotice = req.query.notice === 'asset-renamed'
         ? { message: ASSET_ACTION_NOTICE_MESSAGES['asset-renamed'] }
+        : null;
+      const autoRenameNotice = req.query.notice === 'auto-rename-success'
+        && isSmallNonNegativeInt(req.query.auto_rename_renamed)
+        && isSmallNonNegativeInt(req.query.auto_rename_unchanged)
+        ? {
+          message: describeAutoRenameSuccess(
+            Number(req.query.auto_rename_renamed),
+            Number(req.query.auto_rename_unchanged),
+          ),
+        }
         : null;
 
       // Bulk release-association result notice, set only after a valid
@@ -140,7 +232,138 @@ export function createAssetsRouter({
         bulkNotice,
         moveNotice,
         assetActionNotice,
+        autoRenameNotice,
       });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // POST /projects/:projectId/assets/auto-rename/preview — Build a signed,
+  // read-only plan for one complete concrete category. The order is supplied
+  // as one strict JSON array and the service remains authoritative for
+  // membership and category state.
+  router.post('/:projectId/assets/auto-rename/preview', (req, res, next) => {
+    try {
+      const projectId = parseId(req.params.projectId);
+      if (projectId === null) return next(createNotFound());
+
+      const project = projectService.findById(projectId);
+      if (!project) return next(createNotFound());
+
+      const body = req.body || {};
+      const categoryId = parseCanonicalPositiveId(body.categoryId);
+      if (categoryId === null) {
+        return renderAutoRenameBrowserError({
+          appName,
+          project,
+          projectId,
+          req,
+          res,
+          next,
+          workflowQueryService,
+          status: AUTO_RENAME_ERROR_STATUS[AUTO_RENAME_ERROR_CODES.CATEGORY_REQUIRED],
+          message: AUTO_RENAME_PREVIEW_MESSAGES[AUTO_RENAME_ERROR_CODES.CATEGORY_REQUIRED],
+          returnContext: buildAutoRenameReturnContext(body),
+        });
+      }
+
+      const parsedOrder = parseStrictAutoRenameOrder(body.orderedAssetIds);
+      if (!parsedOrder.valid) {
+        return renderAutoRenameBrowserError({
+          appName,
+          project,
+          projectId,
+          req,
+          res,
+          next,
+          workflowQueryService,
+          status: AUTO_RENAME_ERROR_STATUS[AUTO_RENAME_ERROR_CODES.ORDER_INVALID],
+          message: AUTO_RENAME_PREVIEW_MESSAGES[AUTO_RENAME_ERROR_CODES.ORDER_INVALID],
+          returnContext: buildAutoRenameReturnContext({
+            ...body,
+            categoryId: String(categoryId),
+          }),
+        });
+      }
+
+      try {
+        const plan = autoRenameService.buildPlan({
+          projectId,
+          categoryId,
+          orderedAssetIds: parsedOrder.ids,
+        });
+        const context = buildAutoRenameReturnContext({
+          ...body,
+          categoryId: String(categoryId),
+        });
+        return res.render('projects/auto-rename-confirm.njk', {
+          appName,
+          project,
+          plan: buildAutoRenamePlanRenderModel(plan),
+          context,
+          cancelUrl: buildAssetsRedirectUrl(workflowQueryService, projectId, context),
+        });
+      } catch (err) {
+        return handleAutoRenameFailure(err, {
+          operation: 'preview',
+          appName,
+          project,
+          projectId,
+          req,
+          res,
+          next,
+          workflowQueryService,
+          returnContext: buildAutoRenameReturnContext({
+            ...body,
+            categoryId: String(categoryId),
+          }),
+        });
+      }
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // POST /projects/:projectId/assets/auto-rename/apply — Apply only the
+  // server-recomputed plan represented by the opaque signed token. The route
+  // deliberately extracts no destination path or proposed filename from the
+  // request.
+  router.post('/:projectId/assets/auto-rename/apply', (req, res, next) => {
+    try {
+      const projectId = parseId(req.params.projectId);
+      if (projectId === null) return next(createNotFound());
+
+      const project = projectService.findById(projectId);
+      if (!project) return next(createNotFound());
+
+      const body = req.body || {};
+      const token = typeof body.planToken === 'string'
+        ? body.planToken
+        : null;
+
+      let result;
+      try {
+        result = autoRenameService.applyPlan(projectId, token);
+      } catch (err) {
+        return handleAutoRenameFailure(err, {
+          operation: 'apply',
+          appName,
+          project,
+          projectId,
+          req,
+          res,
+          next,
+          workflowQueryService,
+          returnContext: buildAutoRenameReturnContext(body),
+        });
+      }
+
+      return res.redirect(buildAssetsRedirectUrl(workflowQueryService, projectId, buildAutoRenameReturnContext(body), {
+        notice: 'auto-rename-success',
+        auto_rename_renamed: result.renamed,
+        auto_rename_unchanged: result.unchanged,
+      }));
     } catch (err) {
       next(err);
     }
@@ -602,6 +825,11 @@ function buildBrowserRenderModel(project, data) {
     bulkMoveError: null,
     moveNotice: null,
     assetActionNotice: null,
+    autoRenameNotice: null,
+    autoRenameError: null,
+    completeCategorySurface: Boolean(data.completeCategorySurface),
+    autoRenameSurface: Boolean(data.autoRenameSurface),
+    autoRenameCategory: data.autoRenameCategory || null,
     renameFailure: null,
     submittedSelectedAssetIds: [],
     submittedReleaseId: null,
@@ -609,7 +837,7 @@ function buildBrowserRenderModel(project, data) {
     // render their hidden context-preservation fields with one loop instead
     // of hardcoding each key.
     context,
-    contextFields: ASSET_BROWSER_CONTEXT_FIELDS,
+    contextFields: data.contextFields || ASSET_BROWSER_CONTEXT_FIELDS,
     pageUrl: buildAssetsPageUrl(project.id, context),
   };
 }
@@ -662,6 +890,297 @@ function buildAssetsRedirectUrl(workflowQueryService, projectId, rawContext, ext
   const query = buildCanonicalContextQuery(workflowQueryService, projectId, rawContext, extraQuery);
   const search = new URLSearchParams(query).toString();
   return search ? `/projects/${projectId}/assets?${search}` : `/projects/${projectId}/assets`;
+}
+
+function parseCanonicalPositiveId(raw) {
+  if (typeof raw !== 'string' || !/^[1-9]\d*$/.test(raw)) return null;
+  const id = Number(raw);
+  return Number.isSafeInteger(id) && id > 0 ? id : null;
+}
+
+function parseStrictAutoRenameOrder(raw) {
+  if (typeof raw !== 'string' || raw.length === 0) return { valid: false, ids: [] };
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { valid: false, ids: [] };
+  }
+  if (!Array.isArray(parsed) || parsed.length === 0) return { valid: false, ids: [] };
+
+  const ids = [];
+  const seen = new Set();
+  for (const value of parsed) {
+    if (!Number.isSafeInteger(value) || value <= 0 || seen.has(value)) {
+      return { valid: false, ids: [] };
+    }
+    seen.add(value);
+    ids.push(value);
+  }
+  return { valid: true, ids };
+}
+
+function buildAutoRenameReturnContext(rawContext = {}) {
+  const context = {};
+  const categoryId = parseCanonicalPositiveId(rawContext.categoryId);
+  if (categoryId !== null) context.category = String(categoryId);
+  if (rawContext.view === 'list' || rawContext.view === 'grid') context.view = rawContext.view;
+  return context;
+}
+
+function safeDisplayRelativePath(value) {
+  if (typeof value !== 'string' || value.length === 0) return '—';
+  if (
+    value.startsWith('/')
+    || value.startsWith('\\')
+    || /^[A-Za-z]:[\\/]/.test(value)
+    || value.split(/[\\/]/).some((segment) => segment === '..')
+    || /[\u0000-\u001f\u007f]/u.test(value)
+  ) {
+    return 'Unavailable';
+  }
+  return value;
+}
+
+function safeDisplayOptionalRelativePath(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const display = safeDisplayRelativePath(value);
+  return display === '—' ? null : display;
+}
+
+function safeDisplayFilename(value) {
+  if (typeof value !== 'string' || value.length === 0) return '—';
+  if (
+    value.includes('/')
+    || value.includes('\\')
+    || value === '.'
+    || value === '..'
+    || /[\u0000-\u001f\u007f]/u.test(value)
+  ) {
+    return 'Unavailable';
+  }
+  return value;
+}
+
+function extensionFromFilename(filename) {
+  if (typeof filename !== 'string') return '';
+  const dot = filename.lastIndexOf('.');
+  return dot > 0 && dot < filename.length - 1 ? filename.slice(dot + 1).toLowerCase() : '';
+}
+
+function buildAutoRenameItemPreviewModel(projectId, item) {
+  const extension = typeof item.extension === 'string' && item.extension.length > 0
+    ? item.extension.toLowerCase()
+    : extensionFromFilename(item.currentFilename);
+  const typeLabel = extension ? extension.toUpperCase() : 'File';
+  const present = item.presenceState === 'present'
+    || item.isPresent === true
+    || item.is_present === 1
+    || item.is_present === true;
+
+  if (!present || item.reason === 'missing' || item.reason === 'unsupported-source') {
+    return {
+      thumbnailUrl: null,
+      previewKind: null,
+      previewState: 'missing',
+      previewRevision: null,
+      typeLabel,
+    };
+  }
+
+  const classification = classifyPreviewable({
+    extension,
+    mime_type: item.mimeType ?? item.mime_type,
+  });
+  if (!classification.supported) {
+    return {
+      thumbnailUrl: null,
+      previewKind: null,
+      previewState: 'unsupported',
+      previewRevision: null,
+      typeLabel,
+    };
+  }
+
+  const revision = buildAssetRevisionToken({
+    project_id: projectId,
+    id: item.assetId,
+    relative_path: item.currentRelativePath,
+    size_bytes: item.sizeBytes ?? item.size_bytes,
+    modified_at: item.modifiedAt ?? item.modified_at,
+  });
+  const query = revision ? new URLSearchParams({ v: revision }).toString() : null;
+
+  return {
+    thumbnailUrl: query
+      ? `/projects/${projectId}/assets/${item.assetId}/thumbnail?${query}`
+      : null,
+    previewKind: classification.kind,
+    previewState: 'previewable',
+    previewRevision: revision,
+    typeLabel,
+  };
+}
+
+function categoryGroupKey(item) {
+  if (Number.isSafeInteger(item.categoryId) && item.categoryId > 0) {
+    return `category:${item.categoryId}`;
+  }
+  return item.reason === 'uncategorized' ? 'uncategorized' : 'unavailable-category';
+}
+
+function categoryGroupLabel(item) {
+  if (typeof item.categoryDisplayName === 'string' && item.categoryDisplayName.length > 0) {
+    return item.categoryDisplayName;
+  }
+  if (item.reason === 'uncategorized') return 'Uncategorized';
+  return 'Unavailable category';
+}
+
+export function buildAutoRenamePlanRenderModel(plan) {
+  const sourceItems = Array.isArray(plan?.items) ? plan.items : [];
+  const sourceItemsById = new Map(sourceItems.map((item) => [item.assetId, item]));
+  const items = sourceItems.map((item) => {
+    const blockedReason = item.status === 'blocked'
+      ? (AUTO_RENAME_BLOCK_REASON_MESSAGES[item.reason] || 'This asset cannot be renamed safely.')
+      : null;
+    const preview = buildAutoRenameItemPreviewModel(plan.projectId, item);
+    return {
+      assetId: item.assetId,
+      categoryId: item.categoryId ?? null,
+      categoryDisplayName: item.categoryDisplayName ?? null,
+      categoryDirectorySlug: safeDisplayOptionalRelativePath(item.categoryDirectorySlug),
+      currentRelativePath: safeDisplayRelativePath(item.currentRelativePath),
+      proposedRelativePath: safeDisplayRelativePath(item.proposedRelativePath),
+      currentFilename: safeDisplayFilename(item.currentFilename),
+      proposedFilename: safeDisplayFilename(item.proposedFilename),
+      status: item.status,
+      statusLabel: item.status === 'rename'
+        ? 'Rename'
+        : item.status === 'unchanged'
+          ? 'Unchanged'
+          : 'Blocked',
+      blockedReason,
+      // Keep the existing confirmation template compatible until chunk 4
+      // switches it to the grouped model's explicit blockedReason field.
+      reason: blockedReason,
+      thumbnailUrl: preview.thumbnailUrl,
+      previewKind: preview.previewKind,
+      previewState: preview.previewState,
+      previewRevision: preview.previewRevision,
+      typeLabel: preview.typeLabel,
+    };
+  });
+
+  const groupsByKey = new Map();
+  for (const item of items) {
+    const sourceItem = sourceItemsById.get(item.assetId) || {};
+    const key = categoryGroupKey(sourceItem);
+    if (!groupsByKey.has(key)) {
+      groupsByKey.set(key, {
+        categoryId: item.categoryId,
+        categoryDisplayName: categoryGroupLabel(sourceItem),
+        categoryDirectorySlug: item.categoryDirectorySlug,
+        items: [],
+      });
+    }
+    const group = groupsByKey.get(key);
+    group.items.push({
+      ...item,
+      position: group.items.length + 1,
+      groupSize: 0,
+    });
+  }
+
+  const categoryGroups = [...groupsByKey.values()].map((group) => ({
+    ...group,
+    items: group.items.map((item) => ({ ...item, groupSize: group.items.length })),
+  }));
+
+  return {
+    ...(plan || {}),
+    orderedAssetIds: Array.isArray(plan?.orderedAssetIds)
+      ? [...plan.orderedAssetIds]
+      : items.map((item) => item.assetId),
+    items,
+    categoryGroups,
+  };
+}
+
+function renderAutoRenameBrowserError({
+  appName,
+  project,
+  projectId,
+  req,
+  res,
+  next,
+  workflowQueryService,
+  status,
+  message,
+  returnContext,
+}) {
+  if (status === 404) return next(createNotFound());
+
+  let data;
+  try {
+    data = buildAssetsPageData(workflowQueryService, projectId, project, returnContext || {});
+  } catch {
+    const fallback = new Error('Auto Rename could not be completed. Please try again.');
+    fallback.status = 500;
+    return next(fallback);
+  }
+  if (!data) return next(createNotFound());
+
+  return res.status(status).render('projects/assets.njk', {
+    appName,
+    ...buildBrowserRenderModel(project, data),
+    query: {},
+    error: null,
+    archivedError: null,
+    bulkNotice: null,
+    moveNotice: null,
+    assetActionNotice: null,
+    autoRenameNotice: null,
+    autoRenameError: { message },
+    submittedSelectedAssetIds: [],
+    submittedReleaseId: null,
+  });
+}
+
+function handleAutoRenameFailure(err, {
+  operation,
+  appName,
+  project,
+  projectId,
+  req,
+  res,
+  next,
+  workflowQueryService,
+  returnContext,
+}) {
+  const code = err && err.code;
+  const status = code ? AUTO_RENAME_ERROR_STATUS[code] : undefined;
+  if (status === 404) return next(createNotFound());
+
+  const messages = operation === 'preview' ? AUTO_RENAME_PREVIEW_MESSAGES : AUTO_RENAME_APPLY_MESSAGES;
+  const message = messages[code]
+    || (operation === 'preview'
+      ? 'Auto Rename preview could not be generated. Please try again.'
+      : 'Auto Rename could not be applied. Please try again.');
+
+  return renderAutoRenameBrowserError({
+    appName,
+    project,
+    projectId,
+    req,
+    res,
+    next,
+    workflowQueryService,
+    status: status || 500,
+    message,
+    returnContext,
+  });
 }
 
 /**
@@ -756,6 +1275,12 @@ const ASSET_ACTION_NOTICE_MESSAGES = {
   'primary-image-set': 'The primary image was set.',
   'primary-image-removed': 'The primary image was removed.',
 };
+
+function describeAutoRenameSuccess(renamed, unchanged) {
+  const renamedLabel = `asset${renamed === 1 ? '' : 's'}`;
+  const unchangedLabel = `asset${unchanged === 1 ? '' : 's'}`;
+  return `Renamed ${renamed} ${renamedLabel}. Skipped ${unchanged} unchanged ${unchangedLabel}.`;
+}
 
 const PRIMARY_IMAGE_ERROR_STATUS = Object.freeze({
   [PRIMARY_IMAGE_ERROR_CODES.INVALID_ID]: 404,
@@ -973,6 +1498,87 @@ function buildPrimaryImageViewerState(data, selectedAsset, isEligiblePresentImag
     isPrimaryImageAvailable: isPrimaryImage && isEligible,
     canSetAsPrimaryImage: !projectIsArchived && !isPrimaryImage && isEligible,
     canRemovePrimaryImage: !projectIsArchived && isPrimaryImage,
+  };
+}
+
+/**
+ * Build the Assets-page model without allowing browser subset filters to
+ * narrow a concrete category ordering surface. The ordinary browser query is
+ * used only for shell metadata; displayed assets and pagination come from
+ * the complete-category model.
+ */
+function buildAssetsPageData(workflowQueryService, projectId, project, rawQuery = {}) {
+  const hasExplicitCategory = Object.prototype.hasOwnProperty.call(rawQuery || {}, 'category');
+  if (
+    hasExplicitCategory
+    && (
+      rawQuery.category === 'all'
+      || rawQuery.category === 'uncategorized'
+      || parseCanonicalPositiveId(rawQuery.category) === null
+    )
+  ) {
+    const ordinary = workflowQueryService.getProjectAssetBrowser(projectId, rawQuery);
+    return ordinary
+      ? { ...ordinary, completeCategorySurface: false, autoRenameSurface: false, autoRenameCategory: null }
+      : ordinary;
+  }
+
+  const categorySurface = workflowQueryService.getProjectAutoRenameCategory(projectId, rawQuery);
+  const category = categorySurface?.effectiveCategory;
+  const canRenderCompleteCategory = Boolean(category && !project.archived_at && categorySurface);
+
+  if (!canRenderCompleteCategory) {
+    const ordinary = workflowQueryService.getProjectAssetBrowser(projectId, rawQuery);
+    return ordinary
+      ? { ...ordinary, completeCategorySurface: false, autoRenameSurface: false, autoRenameCategory: null }
+      : ordinary;
+  }
+
+  const safeCategoryQuery = {
+    category: String(category.id),
+    view: categorySurface.view,
+  };
+  const shell = workflowQueryService.getProjectAssetBrowser(projectId, safeCategoryQuery);
+  if (!shell) return shell;
+
+  const completeContext = {
+    category: String(category.id),
+    view: categorySurface.view,
+  };
+  const autoRenameAvailable = categorySurface.total > 0;
+
+  return {
+    ...shell,
+    assets: categorySurface.assets,
+    total: categorySurface.total,
+    page: 1,
+    pageSize: shell.pageSize,
+    pageCount: 1,
+    filters: {
+      ...shell.filters,
+      search: null,
+      extension: null,
+      presence: 'all',
+      usage: 'all',
+      sort: 'filename',
+      order: 'asc',
+      category: category.id,
+      view: categorySurface.view,
+    },
+    context: completeContext,
+    contextFields: ['category', 'view'],
+    emptyState: categorySurface.total > 0 ? null : shell.emptyState,
+    completeCategorySurface: true,
+    autoRenameSurface: autoRenameAvailable,
+    autoRenameCategory: autoRenameAvailable
+      ? {
+        ...categorySurface,
+        categoryId: category.id,
+        displayName: category.displayName,
+        directorySlug: category.directorySlug,
+        orderedAssetIdsJson: JSON.stringify(categorySurface.orderedAssetIds),
+      }
+      : null,
   };
 }
 

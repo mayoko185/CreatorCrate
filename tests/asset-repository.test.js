@@ -544,6 +544,181 @@ describe('asset repository', () => {
 
   // ─── Phase 6D: Asset Browser Queries ─────────────────────────────────
 
+  describe('findProjectAssetsByIdsInBrowserOrder', () => {
+    function insertCategory(displayName, directorySlug, enabled = 1) {
+      return db.prepare(`
+        INSERT INTO project_asset_categories (project_id, display_name, directory_slug, display_order, enabled)
+        VALUES (?, ?, ?, ?, ?)
+        RETURNING *
+      `).get(projectId, displayName, directorySlug, 0, enabled);
+    }
+
+    it('returns joined category state in canonical filename order and retains a deleted-category row', () => {
+      const source = insertCategory('Source Display', 'source', 1);
+      const disabled = insertCategory('Disabled Display', 'disabled', 0);
+      const deleted = insertCategory('Deleted Display', 'deleted', 1);
+      const first = assetRepo.upsert(projectId, 'z.png', {
+        filename: 'z.png', extension: 'png', mimeType: 'image/png', sizeBytes: 1, modifiedAt: null,
+        categoryId: source.id,
+      });
+      const second = assetRepo.upsert(projectId, 'a.png', {
+        filename: 'a.png', extension: 'png', mimeType: 'image/png', sizeBytes: 1, modifiedAt: null,
+        categoryId: disabled.id,
+      });
+      const uncategorized = assetRepo.upsert(projectId, 'm.png', {
+        filename: 'm.png', extension: 'png', mimeType: 'image/png', sizeBytes: 1, modifiedAt: null,
+      });
+      const deletedAsset = assetRepo.upsert(projectId, 'd.png', {
+        filename: 'd.png', extension: 'png', mimeType: 'image/png', sizeBytes: 1, modifiedAt: null,
+        categoryId: deleted.id,
+      });
+
+      db.exec('PRAGMA foreign_keys = OFF');
+      db.prepare('DELETE FROM project_asset_categories WHERE id = ?').run(deleted.id);
+      db.exec('PRAGMA foreign_keys = ON');
+
+      const rows = assetRepo.findProjectAssetsByIdsInBrowserOrder(projectId, [first.id, uncategorized.id, deletedAsset.id, second.id]);
+      expect(rows.map((row) => row.filename)).toEqual(['a.png', 'd.png', 'm.png', 'z.png']);
+      expect(rows.find((row) => row.id === first.id)).toMatchObject({
+        category_id: source.id,
+        category_record_id: source.id,
+        category_project_id: projectId,
+        category_display_name: 'Source Display',
+        category_directory_slug: 'source',
+        category_enabled: 1,
+      });
+      expect(rows.find((row) => row.id === second.id)).toMatchObject({
+        category_record_id: disabled.id,
+        category_directory_slug: 'disabled',
+        category_enabled: 0,
+      });
+      expect(rows.find((row) => row.id === uncategorized.id)).toMatchObject({
+        category_id: null,
+        category_record_id: null,
+        category_directory_slug: null,
+        category_enabled: null,
+      });
+      expect(rows.find((row) => row.id === deletedAsset.id)).toMatchObject({
+        category_id: deleted.id,
+        category_record_id: null,
+        category_directory_slug: null,
+        category_enabled: null,
+      });
+    });
+  });
+
+  describe('findProjectAssetsByCategoryInBrowserOrder', () => {
+    function insertCategoryFor(targetProjectId, displayName, directorySlug, displayOrder, enabled = 1) {
+      return db.prepare(`
+        INSERT INTO project_asset_categories (project_id, display_name, directory_slug, display_order, enabled)
+        VALUES (?, ?, ?, ?, ?)
+        RETURNING *
+      `).get(targetProjectId, displayName, directorySlug, displayOrder, enabled);
+    }
+
+    it('returns a complete exact category without pagination, reuses canonical order, and preserves row metadata', () => {
+      const category = insertCategoryFor(projectId, 'Rename Category', 'rename-category', 3, 1);
+      const otherCategory = insertCategoryFor(projectId, 'Other Category', 'other-category', 4, 1);
+      const foreignProject = createProject('Foreign Category Project');
+      const foreignCategory = insertCategoryFor(foreignProject.id, 'Foreign Category', 'foreign-category', 0, 1);
+
+      const categoryAssets = [];
+      for (let index = 0; index < 30; index++) {
+        const filename = index === 0
+          ? 'file-10.png'
+          : index === 1
+            ? 'file-2.png'
+            : index === 2
+              ? 'same.png'
+              : index === 3
+                ? 'same.png'
+                : `asset-${String(index).padStart(2, '0')}.png`;
+        const directory = index === 2 ? 'first' : index === 3 ? 'second' : 'category';
+        categoryAssets.push(assetRepo.upsert(projectId, `${directory}/${index}-${filename}`, {
+          filename,
+          extension: 'png',
+          mimeType: 'image/png',
+          sizeBytes: index + 1,
+          modifiedAt: null,
+          categoryId: category.id,
+          nestedPath: directory,
+        }));
+      }
+      const excludedCategoryAsset = assetRepo.upsert(projectId, 'other/other.png', {
+        filename: 'other.png',
+        extension: 'png',
+        mimeType: 'image/png',
+        sizeBytes: 1,
+        modifiedAt: null,
+        categoryId: otherCategory.id,
+        nestedPath: 'other',
+      });
+      const foreignAsset = assetRepo.upsert(foreignProject.id, 'foreign/asset.png', {
+        filename: 'asset.png',
+        extension: 'png',
+        mimeType: 'image/png',
+        sizeBytes: 1,
+        modifiedAt: null,
+        categoryId: foreignCategory.id,
+        nestedPath: 'foreign',
+      });
+
+      const complete = assetRepo.findProjectAssetsByCategoryInBrowserOrder(projectId, category.id);
+      const firstPage = assetRepo.findProjectAssetPage(projectId, {
+        category: category.id,
+        page: 1,
+        pageSize: 25,
+      });
+      const secondPage = assetRepo.findProjectAssetPage(projectId, {
+        category: category.id,
+        page: 2,
+        pageSize: 25,
+      });
+
+      expect(complete).toHaveLength(30);
+      expect(new Set(complete.map((asset) => asset.id)).size).toBe(30);
+      expect(complete.map((asset) => asset.id)).toEqual([
+        ...firstPage,
+        ...secondPage,
+      ].map((asset) => asset.id));
+      expect(complete.map((asset) => asset.id)).not.toContain(excludedCategoryAsset.id);
+      expect(complete.map((asset) => asset.id)).not.toContain(foreignAsset.id);
+      expect(complete.every((asset) => (
+        asset.project_id === projectId && asset.category_id === category.id
+      ))).toBe(true);
+
+      const sameFilenameIds = complete
+        .filter((asset) => asset.filename === 'same.png')
+        .map((asset) => asset.id);
+      expect(sameFilenameIds).toEqual([...sameFilenameIds].sort((left, right) => left - right));
+
+      expect(complete[0]).toMatchObject({
+        id: expect.any(Number),
+        project_id: projectId,
+        category_id: category.id,
+        relative_path: expect.any(String),
+        nested_path: expect.any(String),
+        filename: expect.any(String),
+        extension: 'png',
+        mime_type: 'image/png',
+        size_bytes: expect.any(Number),
+        modified_at: null,
+        is_present: 1,
+        last_seen_at: expect.any(String),
+        missing_since: null,
+        created_at: expect.any(String),
+        updated_at: expect.any(String),
+        category_record_id: category.id,
+        category_project_id: projectId,
+        category_display_name: 'Rename Category',
+        category_directory_slug: 'rename-category',
+        category_display_order: 3,
+        category_enabled: 1,
+        release_usage_count: 0,
+      });
+    });
+  });
+
   /**
    * Helper: insert a release directly.
    */

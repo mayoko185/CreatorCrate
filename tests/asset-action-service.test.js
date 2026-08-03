@@ -960,12 +960,30 @@ describe('asset action service', () => {
       const destPath = path.join(absPath, 'b.png');
 
       const realRenameSync = fs.renameSync.bind(fs);
+      const realLstatSync = fs.lstatSync.bind(fs);
+      let forwardMoveCompleted = false;
+      let renameCalls = 0;
+      const lstatSpy = vi.spyOn(fs, 'lstatSync').mockImplementation((target, ...args) => {
+        const stats = realLstatSync(target, ...args);
+        if (!forwardMoveCompleted || target !== destPath) return stats;
+
+        // Filesystems may reuse the deleted destination's inode immediately;
+        // force the replacement to have a distinct identity for this test.
+        return {
+          ...stats,
+          ino: typeof stats.ino === 'number' ? stats.ino + 1 : 1,
+          isSymbolicLink: stats.isSymbolicLink.bind(stats),
+          isFile: stats.isFile.bind(stats),
+        };
+      });
       const renameSpy = vi.spyOn(fs, 'renameSync').mockImplementationOnce((src, dest) => {
+        renameCalls++;
         realRenameSync(src, dest);
         // Simulate an external actor replacing the destination the instant
         // after our own rename completes, before verification runs.
         fs.rmSync(dest, { force: true });
         fs.writeFileSync(dest, 'replaced-by-someone-else');
+        forwardMoveCompleted = true;
       });
 
       try {
@@ -973,6 +991,9 @@ describe('asset action service', () => {
         expect.unreachable();
       } catch (err) {
         expect(err.code).toBe('RECOVERY_REQUIRED');
+      } finally {
+        lstatSpy.mockRestore();
+        renameSpy.mockRestore();
       }
 
       // The replacement destination content must not have been overwritten.
@@ -980,8 +1001,7 @@ describe('asset action service', () => {
       // Nothing was recreated at the source path.
       expect(fs.existsSync(path.join(absPath, 'a.png'))).toBe(false);
       // renameSync was called exactly once.
-      expect(renameSpy).toHaveBeenCalledTimes(1);
-      renameSpy.mockRestore();
+      expect(renameCalls).toBe(1);
     });
   });
 

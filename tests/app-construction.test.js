@@ -20,6 +20,7 @@ const dependencyInstrumentation = vi.hoisted(() => ({
   projectAssetCategoryServices: [],
   primaryImageRepositories: [],
   primaryImageServices: [],
+  autoRenameServices: [],
   workflowQueryServices: [],
   assetRouters: [],
   projectAssetCategoryRouters: [],
@@ -93,6 +94,18 @@ vi.mock('../src/services/project-primary-image-service.js', async (importOrigina
     createProjectPrimaryImageService(...args) {
       const service = actual.createProjectPrimaryImageService(...args);
       dependencyInstrumentation.primaryImageServices.push({ args, service });
+      return service;
+    },
+  };
+});
+
+vi.mock('../src/services/auto-rename-service.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    createAutoRenameService(...args) {
+      const service = actual.createAutoRenameService(...args);
+      dependencyInstrumentation.autoRenameServices.push({ args, service });
       return service;
     },
   };
@@ -240,6 +253,39 @@ describe('app construction — asset actions chunk 3 wiring', () => {
     expect(app.locals.projectPrimaryImageService).toBe(service);
     expect(dependencyInstrumentation.workflowQueryServices[0].args[0].projectPrimaryImageRepository).toBe(repository);
     expect(dependencyInstrumentation.assetRouters[0].args[0].projectPrimaryImageService).toBe(service);
+  });
+
+  it('constructs one app-scoped Auto Rename service from shared repositories and injects it into Assets', () => {
+    const coordinator = createProjectOperationCoordinator();
+    const app = buildApp({
+      projectOperationCoordinator: coordinator,
+      autoRenameSigningKey: Buffer.from('app-construction-auto-rename-key'),
+    });
+
+    expect(dependencyInstrumentation.autoRenameServices).toHaveLength(1);
+    const { args, service } = dependencyInstrumentation.autoRenameServices[0];
+    expect(args[0]).toEqual(expect.objectContaining({
+      projectRepository: dependencyInstrumentation.projectServices[0].service.repository,
+      assetRepository: app.locals.assetScanner.repository,
+      assetCategoryRepository: dependencyInstrumentation.preferenceServices[0].args[0].assetCategoryRepository,
+      projectsRoot,
+      projectOperationCoordinator: coordinator,
+      signingKey: Buffer.from('app-construction-auto-rename-key'),
+    }));
+    expect(app.locals.autoRenameService).toBe(service);
+    expect(dependencyInstrumentation.assetRouters[0].args[0].autoRenameService).toBe(service);
+  });
+
+  it('accepts an injected Auto Rename service without constructing a replacement', () => {
+    const injected = {
+      buildPlan: () => {},
+      applyPlan: () => {},
+    };
+    const app = buildApp({ autoRenameService: injected });
+
+    expect(dependencyInstrumentation.autoRenameServices).toHaveLength(0);
+    expect(app.locals.autoRenameService).toBe(injected);
+    expect(dependencyInstrumentation.assetRouters[0].args[0].autoRenameService).toBe(injected);
   });
 
   it('omits the Assets router when filesystem roots are unavailable', () => {

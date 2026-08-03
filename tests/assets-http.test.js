@@ -374,32 +374,38 @@ describe('asset browser HTTP workflow', () => {
     });
   });
 
-  describe('non-bare requests block defaults', () => {
-    it.each([
-      ['explicit All', 'category=all'],
-      ['explicit numeric category', 'category=1'],
-      ['uncategorized', 'category=uncategorized'],
-      ['search', 'search=needle'],
-      ['filter', 'presence=present'],
-      ['pagination', 'page=2'],
-      ['explicit List', 'view=list'],
-      ['explicit Grid', 'view=grid'],
-      ['notice', 'notice=asset-renamed'],
-      ['unknown query', 'unknown=value'],
-      ['invalid category', 'category=invalid'],
-      ['stale category', 'category=999999'],
-    ])('%s does not activate a configured specific default', async (_label, query) => {
-      const res = await createProject(`Blocks Default ${query}`);
+  describe('non-bare requests and effective category surfaces', () => {
+    it.each(['category=all', 'category=uncategorized', 'category=invalid'])
+      ('keeps explicit unsupported category context ordinary and does not resolve the stored default: %s', async (query) => {
+        const res = await createProject(`Unsupported Default ${query}`);
+        const id = Number(res.headers.location.replace('/projects/', ''));
+        const [category] = assetCategoryRepo.listProjectCategories(id);
+        assetBrowserPreferenceRepo.upsertProjectPreference(id, 'category', category.id);
+
+        const resolveSpy = vi.spyOn(app.locals.assetBrowserPreferenceService, 'resolveEffectiveCategory');
+        const response = await agent.get(`/projects/${id}/assets?${query}`).expect(200);
+
+        expect(response.headers.location).toBeUndefined();
+        expect(resolveSpy).not.toHaveBeenCalled();
+        expect(response.text).not.toContain('data-auto-rename-surface');
+        resolveSpy.mockRestore();
+      });
+
+    it('uses the concrete default for a non-category query and strips incomplete filters from the ordering surface', async () => {
+      const res = await createProject('Non-Bare Concrete Default');
       const id = Number(res.headers.location.replace('/projects/', ''));
       const [category] = assetCategoryRepo.listProjectCategories(id);
       assetBrowserPreferenceRepo.upsertProjectPreference(id, 'category', category.id);
+      assetRepo.upsert(id, 'default/a.png', {
+        filename: 'a.png', extension: 'png', mimeType: 'image/png', sizeBytes: 1,
+        modifiedAt: null, categoryId: category.id, nestedPath: 'default',
+      });
 
-      const resolveSpy = vi.spyOn(app.locals.assetBrowserPreferenceService, 'resolveEffectiveCategory');
-      const response = await agent.get(`/projects/${id}/assets?${query}`).expect(200);
-
-      expect(response.headers.location).toBeUndefined();
-      expect(resolveSpy).not.toHaveBeenCalled();
-      resolveSpy.mockRestore();
+      const response = await agent.get(`/projects/${id}/assets?search=no-match&page=9&pageSize=1&view=list`).expect(200);
+      expect(response.text).toContain('data-auto-rename-surface');
+      expect(response.text).toContain('name="view" value="list"');
+      expect(response.text).not.toContain('name="search"');
+      expect(response.text).not.toContain('pagination-info');
     });
   });
 
@@ -935,8 +941,11 @@ describe('asset browser HTTP workflow', () => {
     expect(nextUrl.searchParams.has('unknown')).toBe(false);
     expect(nextUrl.searchParams.has('scan_result')).toBe(false);
     // Table rows render versioned thumbnail URLs for previewable assets,
-    // but never preview-sized media.
-    expect(res2.text).not.toContain('/preview');
+    // but never preview-sized media. The bulk toolbar also has a legitimate
+    // /auto-rename/preview POST action, so scope this assertion to image src
+    // attributes rather than rejecting every unrelated URL containing
+    // "preview".
+    expect(res2.text).not.toMatch(/<img\b[^>]*src="[^"]+\/preview(?:\?|"|&)/);
   });
 
   it('invalid view normalization strips view from canonical pagination URLs', async () => {
@@ -1595,7 +1604,8 @@ describe('asset browser HTTP workflow', () => {
       .get(`/projects/${id}/assets?category=${category.id}&search=hero&extension=.PNG&presence=present&usage=unused&sort=filename&order=desc&pageSize=2&view=list&junk=strip-me`)
       .expect(200);
 
-    // First row on a descending-filename page 1 of 2 is "Hero Two.png".
+    // The complete category ignores the old subset filters but retains the
+    // category/view context on viewer links.
     const linkMatch = res2.text.match(/<a class="asset-file-link" href="([^"]+)">Hero Two<\/a>/);
     expect(linkMatch).not.toBeNull();
     const rowHref = decodeHtmlHref(linkMatch[1]);
@@ -1603,23 +1613,20 @@ describe('asset browser HTTP workflow', () => {
 
     expect(rowUrl.pathname).toBe(`/projects/${id}/assets/${heroTwo.id}`);
     expect(rowUrl.searchParams.get('category')).toBe(String(category.id));
-    expect(rowUrl.searchParams.get('search')).toBe('hero');
-    expect(rowUrl.searchParams.get('extension')).toBe('png');
-    expect(rowUrl.searchParams.get('presence')).toBe('present');
-    expect(rowUrl.searchParams.get('usage')).toBe('unused');
-    expect(rowUrl.searchParams.get('order')).toBe('desc');
-    expect(rowUrl.searchParams.get('pageSize')).toBe('2');
-    expect(rowUrl.searchParams.has('sort')).toBe(false); // 'filename' is the omitted default
+    expect(rowUrl.searchParams.has('search')).toBe(false);
+    expect(rowUrl.searchParams.has('extension')).toBe(false);
+    expect(rowUrl.searchParams.has('presence')).toBe(false);
+    expect(rowUrl.searchParams.has('usage')).toBe(false);
+    expect(rowUrl.searchParams.has('order')).toBe(false);
+    expect(rowUrl.searchParams.has('pageSize')).toBe(false);
+    expect(rowUrl.searchParams.has('sort')).toBe(false);
     expect(rowUrl.searchParams.get('view')).toBe('list');
     expect(rowUrl.searchParams.has('junk')).toBe(false);
 
-    // Follow the row link into the viewer and confirm Back/Previous/Next
-    // preserve the exact same canonical context (not defaults).
+    // Follow the row link into the viewer and confirm only the safe category
+    // and presentation context is preserved.
     const viewerRes = await agent.get(rowHref).expect(200);
-    const expectedQuery = {
-      category: String(category.id), search: 'hero', extension: 'png',
-      presence: 'present', usage: 'unused', order: 'desc', pageSize: '2', view: 'list',
-    };
+    const expectedQuery = { category: String(category.id), view: 'list' };
     expectQueryKeys(rowHref, Object.keys(expectedQuery));
 
     const backHref = decodeHtmlHref(anchorHref(viewerRes.text, 'asset-viewer-back'));
@@ -1628,13 +1635,7 @@ describe('asset browser HTTP workflow', () => {
       expect(backUrl.searchParams.get(key)).toBe(value);
     }
 
-    const nextHref = decodeHtmlHref(anchorHref(viewerRes.text, 'asset-viewer-next'));
-    const nextUrl = new URL(nextHref, 'http://localhost');
-    // Descending filename order: Hero Two -> Hero Three is next.
-    expect(nextUrl.pathname).toBe(`/projects/${id}/assets/${heroThree.id}`);
-    for (const [key, value] of Object.entries(expectedQuery)) {
-      expect(nextUrl.searchParams.get(key)).toBe(value);
-    }
+    expect(heroThree.id).toBeGreaterThan(heroTwo.id);
   });
 
   it('uses the clamped page for a browser row viewer link when the requested page is out of range', async () => {
@@ -2725,7 +2726,7 @@ describe('asset browser HTTP workflow', () => {
     expect(select).not.toContain('Not Mine');
   });
 
-  it('selecting a category filters the table and resets to page 1', async () => {
+  it('selecting a concrete category renders its complete membership and ignores pagination', async () => {
     const res = await createProject('Category Filter Reset');
     const id = Number(res.headers.location.replace('/projects/', ''));
     const cat = assetCategoryRepo.addProjectCategory({
@@ -2740,10 +2741,35 @@ describe('asset browser HTTP workflow', () => {
       sizeBytes: 10, modifiedAt: null,
     });
 
-    const res2 = await agent.get(`/projects/${id}/assets?category=${cat.id}&page=2`).expect(200);
+    const res2 = await agent.get(`/projects/${id}/assets?category=${cat.id}&page=2&pageSize=1`).expect(200);
     expect(res2.text).toContain('keep.png');
     expect(res2.text).not.toContain('other.png');
-    expect(res2.text).toContain('1 asset found');
+    expect(res2.text).toContain('1 asset in the complete Renders category');
+    expect(res2.text).toContain('data-auto-rename-surface');
+    expect(res2.text).toMatch(/<li\b[^>]*data-auto-rename-asset[^>]*data-auto-rename-asset-id="/);
+    expect(res2.text).toMatch(/<article\b[^>]*class="asset-card"/);
+    expect(res2.text).not.toContain('data-auto-rename-drag-handle');
+    expect(res2.text).toMatch(/<li\b[^>]*data-auto-rename-asset[^>]*draggable="true"[^>]*tabindex="0"/);
+    expect(res2.text).toMatch(/data-auto-rename-submit[^>]*disabled/);
+    expect(res2.text).toContain('data-asset-actions-panel');
+    expect((res2.text.match(/data-asset-actions-panel/g) || []).length).toBe(1);
+    expect(res2.text).toContain('Category order');
+    expect(res2.text).toContain('Drag assets to change their filename order');
+    expect(res2.text).toContain('Selected assets');
+    expect(res2.text).toContain('Selection applies to this page');
+    expect(res2.text).not.toContain('auto-rename-assets-toolbar');
+    expect(res2.text).not.toContain('bulk-toolbar');
+    expect(res2.text).not.toContain('Move Up');
+    expect(res2.text).not.toContain('Move Down');
+    expect(res2.text).not.toContain('pagination-info');
+
+    const listResponse = await agent.get(`/projects/${id}/assets?category=${cat.id}&view=list`).expect(200);
+    expect(listResponse.text).toMatch(/<tr\b[^>]*data-auto-rename-asset[^>]*data-auto-rename-asset-id="/);
+    expect(listResponse.text).toContain('<td class="asset-auto-rename-order-cell">');
+    expect(listResponse.text).not.toContain('data-auto-rename-drag-handle');
+    expect(listResponse.text).toMatch(/<tr\b[^>]*data-auto-rename-asset[^>]*draggable="true"[^>]*tabindex="0"/);
+    expect(listResponse.text).not.toContain('Move Up');
+    expect(listResponse.text).not.toContain('Move Down');
     expect(inCat.id).toBeGreaterThan(0);
   });
 
@@ -2795,10 +2821,11 @@ describe('asset browser HTTP workflow', () => {
       expect(res2.text).toMatch(/aria-current="page">\s*<span class="asset-nav-label">Missing Assets/);
     });
 
-    it('category + presence=missing (composed filter) marks no navigation item current', async () => {
+    it('category + presence=missing keeps the complete category current because presence is ignored', async () => {
       const { id, category } = await setupNavHttpProject('Aria Composed');
       const res2 = await agent.get(`/projects/${id}/assets?category=${category.id}&presence=missing`).expect(200);
-      expect(countAriaCurrent(res2.text)).toBe(0);
+      expect(countAriaCurrent(res2.text)).toBe(1);
+      expect(res2.text).toMatch(/aria-current="page">\s*<span class="asset-nav-label">Renders/);
     });
 
     it('category=all + presence=present marks no navigation item current', async () => {

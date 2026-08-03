@@ -20,6 +20,17 @@ export const PREFERENCE_FALLBACK_REASONS = Object.freeze({
   GLOBAL_PROJECT_CATEGORY_DISABLED: 'global-project-category-disabled',
 });
 
+export const AUTO_RENAME_UNAVAILABLE_REASONS = Object.freeze({
+  ALL: 'all',
+  UNCATEGORIZED: 'uncategorized',
+  MISSING: 'missing',
+  DISABLED: 'disabled',
+  CROSS_PROJECT: 'cross-project',
+  INVALID: 'invalid',
+  NO_CONCRETE_DEFAULT: 'no-concrete-default',
+  EMPTY: 'empty',
+});
+
 function isEnabled(row) {
   return row?.enabled === 1 || row?.enabled === true;
 }
@@ -57,7 +68,34 @@ function isMalformedGlobalValue(value) {
   return typeof value !== 'string' || value.length === 0 || validateDirectorySlug(value) !== null;
 }
 
-function makeResolution(projectId, preference, effectiveCategory, fallback, fallbackReason) {
+function defaultAutoRenameUnavailableReason(fallbackReason) {
+  if (!fallbackReason) return AUTO_RENAME_UNAVAILABLE_REASONS.ALL;
+  if (
+    fallbackReason === PREFERENCE_FALLBACK_REASONS.PROJECT_CATEGORY_DISABLED
+    || fallbackReason === PREFERENCE_FALLBACK_REASONS.GLOBAL_CATEGORY_DISABLED
+    || fallbackReason === PREFERENCE_FALLBACK_REASONS.GLOBAL_PROJECT_CATEGORY_DISABLED
+  ) return AUTO_RENAME_UNAVAILABLE_REASONS.DISABLED;
+  if (
+    fallbackReason === PREFERENCE_FALLBACK_REASONS.PROJECT_CATEGORY_MISSING
+    || fallbackReason === PREFERENCE_FALLBACK_REASONS.GLOBAL_CATEGORY_MISSING
+    || fallbackReason === PREFERENCE_FALLBACK_REASONS.GLOBAL_CATEGORY_NOT_IN_PROJECT
+  ) return AUTO_RENAME_UNAVAILABLE_REASONS.MISSING;
+  if (
+    fallbackReason === PREFERENCE_FALLBACK_REASONS.PROJECT_PREFERENCE_MALFORMED
+    || fallbackReason === PREFERENCE_FALLBACK_REASONS.GLOBAL_PREFERENCE_MALFORMED
+  ) return AUTO_RENAME_UNAVAILABLE_REASONS.INVALID;
+  return AUTO_RENAME_UNAVAILABLE_REASONS.NO_CONCRETE_DEFAULT;
+}
+
+function makeResolution(
+  projectId,
+  preference,
+  effectiveCategory,
+  fallback,
+  fallbackReason,
+  autoRenameUnavailableReason = null,
+) {
+  const autoRenameAvailable = Boolean(effectiveCategory);
   return {
     projectId,
     storedMode: preference.mode,
@@ -67,7 +105,27 @@ function makeResolution(projectId, preference, effectiveCategory, fallback, fall
       : { kind: 'all', category: null },
     fallback,
     fallbackReason,
+    autoRenameAvailable,
+    autoRenameUnavailableReason: autoRenameAvailable
+      ? null
+      : (autoRenameUnavailableReason || defaultAutoRenameUnavailableReason(fallbackReason)),
   };
+}
+
+function parseExplicitCategoryId(value) {
+  if (Number.isSafeInteger(value) && value > 0) return value;
+  if (typeof value !== 'string' || !/^[1-9]\d*$/.test(value)) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function extractExplicitCategory(value) {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    for (const key of ['explicitCategory', 'explicitCategoryId', 'categoryId', 'category']) {
+      if (Object.prototype.hasOwnProperty.call(value, key)) return value[key];
+    }
+  }
+  return value;
 }
 
 /**
@@ -184,8 +242,9 @@ export function createAssetBrowserPreferenceService({
      * preference store. All results carry the stored state and an explicit
      * fallback reason when a requested category cannot be used.
      */
-    resolveEffectiveCategory(projectId) {
-      return resolveProjectEffectiveCategory(projectId);
+    resolveEffectiveCategory(projectId, explicitCategoryInput) {
+      if (arguments.length < 2) return resolveProjectEffectiveCategory(projectId);
+      return resolveExplicitCategory(projectId, extractExplicitCategory(explicitCategoryInput));
     },
 
     /**
@@ -214,6 +273,72 @@ export function createAssetBrowserPreferenceService({
       return repository.resetProjectPreferenceIfCategory(projectId, categoryId);
     },
   };
+
+  function resolveExplicitCategory(projectId, rawCategory) {
+    const preference = readProjectPreference(projectId);
+
+    if (rawCategory === 'all') {
+      return makeResolution(
+        projectId,
+        preference,
+        null,
+        true,
+        null,
+        AUTO_RENAME_UNAVAILABLE_REASONS.ALL,
+      );
+    }
+    if (rawCategory === 'uncategorized') {
+      return makeResolution(
+        projectId,
+        preference,
+        null,
+        true,
+        null,
+        AUTO_RENAME_UNAVAILABLE_REASONS.UNCATEGORIZED,
+      );
+    }
+
+    const categoryId = parseExplicitCategoryId(rawCategory);
+    if (categoryId === null) {
+      return makeResolution(
+        projectId,
+        preference,
+        null,
+        true,
+        null,
+        AUTO_RENAME_UNAVAILABLE_REASONS.INVALID,
+      );
+    }
+
+    const category = assetCategoryRepository.findProjectCategoryById(projectId, categoryId);
+    if (!category) {
+      const foreignCategory = typeof assetCategoryRepository.findProjectCategoryByIdAnyProject === 'function'
+        ? assetCategoryRepository.findProjectCategoryByIdAnyProject(categoryId)
+        : null;
+      return makeResolution(
+        projectId,
+        preference,
+        null,
+        true,
+        null,
+        foreignCategory && foreignCategory.project_id !== projectId
+          ? AUTO_RENAME_UNAVAILABLE_REASONS.CROSS_PROJECT
+          : AUTO_RENAME_UNAVAILABLE_REASONS.MISSING,
+      );
+    }
+    if (!isEnabled(category)) {
+      return makeResolution(
+        projectId,
+        preference,
+        null,
+        true,
+        null,
+        AUTO_RENAME_UNAVAILABLE_REASONS.DISABLED,
+      );
+    }
+
+    return makeResolution(projectId, preference, category, false, null);
+  }
 
   function resolveProjectEffectiveCategory(projectId) {
     const preference = readProjectPreference(projectId);
