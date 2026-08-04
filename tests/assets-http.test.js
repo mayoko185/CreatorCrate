@@ -2051,7 +2051,6 @@ describe('asset browser HTTP workflow', () => {
     expect(res2.text).toContain('<title>CreatorCrate — Assets — Viewer Previewable — hero.png</title>');
     expect(res2.text).toContain('class="page-heading"');
     expect(res2.text).toContain('<h1 class="app-section-title">Assets — Viewer Previewable — hero.png</h1>');
-    expect(res2.text).toContain('Asset preview, metadata, and release usage.');
     expectAnchorHref(res2.text, 'asset-viewer-project', `/projects/${id}`);
     expectAnchorHref(res2.text, 'asset-viewer-back', `/projects/${id}/assets`);
     expect(res2.text).toContain(

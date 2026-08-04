@@ -96,4 +96,15 @@
       <a class="button button-secondary" href="{% if project %}/projects/{{ project.id }}{% else %}/projects{% endif %}">Cancel</a>
     </div>
   </form>
+
+  {% if action == 'Edit' and project and not project.archived_at %}
+    <section class="destructive-section">
+      <h3>Danger zone</h3>
+      <p>Archiving a project makes it read-only. This cannot be undone.</p>
+      <form method="post" action="/projects/{{ project.id }}/archive" class="inline-form">
+        <input type="hidden" name="_csrf" value="{{ _csrf }}">
+        <button class="button button-danger" type="submit" data-confirm="Archive this project? This cannot be undone.">Archive project</button>
+      </form>
+    </section>
+  {% endif %}
 {% endblock %}

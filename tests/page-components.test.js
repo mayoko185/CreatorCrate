@@ -146,13 +146,13 @@ describe('Phase 10.5A: Shared page-level components', () => {
       return match ? match[0] : '';
     }
 
-    it('project form has exactly one h1, supplied by the header, not page-heading', async () => {
+    it('project form has exactly one h1 from the header and renders no empty page-heading wrapper', async () => {
       const res = await agent.get('/projects/new').expect(200);
       expect(countTags(res.text, 'h1')).toBe(1);
       expect(res.text).toContain('<h1 class="app-section-title">Projects — Create Project</h1>');
-      expect(hasClass(res.text, 'page-heading-copy')).toBe(true);
-      expect(hasClass(res.text, 'page-heading')).toBe(true);
-      expect(countTags(extractPageHeading(res.text), 'h1')).toBe(0);
+      // The project form has no navigation or badge for page-heading to carry —
+      // it must not render an empty wrapper.
+      expect(hasClass(res.text, 'page-heading')).toBe(false);
     });
 
     it('release form has exactly one h1 and renders no empty page-heading wrapper', async () => {
@@ -181,21 +181,23 @@ describe('Phase 10.5A: Shared page-level components', () => {
       expect(countTags(extractPageHeading(res.text), 'h1')).toBe(0);
     });
 
-    it('published work page has exactly one h1, and page-heading carries supporting content only', async () => {
+    it('published work page has exactly one h1 and renders no empty page-heading wrapper', async () => {
       const res = await agent.get('/releases').expect(200);
       expect(countTags(res.text, 'h1')).toBe(1);
       expect(res.text).toContain('<h1 class="app-section-title">Published Work</h1>');
-      expect(hasClass(res.text, 'page-heading')).toBe(true);
-      expect(countTags(extractPageHeading(res.text), 'h1')).toBe(0);
+      // The published work page has no navigation or badge for page-heading to
+      // carry — it must not render an empty wrapper.
+      expect(hasClass(res.text, 'page-heading')).toBe(false);
     });
 
     it('dashboard has exactly one h1, and page-heading carries supporting content only', async () => {
       const res = await agent.get('/').expect(200);
       expect(countTags(res.text, 'h1')).toBe(1);
       expect(res.text).toContain('<h1 class="app-section-title">Dashboard</h1>');
+      // The dashboard page-heading now carries navigation actions only — no
+      // description copy.
       expect(hasClass(res.text, 'page-heading')).toBe(true);
-      expect(hasClass(res.text, 'page-heading-copy')).toBe(true);
-      expect(hasClass(res.text, 'page-heading-description')).toBe(true);
+      expect(hasClass(res.text, 'page-heading-description')).toBe(false);
       expect(countTags(extractPageHeading(res.text), 'h1')).toBe(0);
     });
 
@@ -251,8 +253,9 @@ describe('Phase 10.5A: Shared page-level components', () => {
         .expect(302);
       const id = projRes.headers.location.replace('/projects/', '');
 
-      const detail = await agent.get(`/projects/${id}`).expect(200);
-      expect(hasClass(detail.text, 'button-danger')).toBe(true);
+      // The archive (destructive) control now lives on the project edit page.
+      const edit = await agent.get(`/projects/${id}/edit`).expect(200);
+      expect(hasClass(edit.text, 'button-danger')).toBe(true);
     });
   });
 
@@ -473,7 +476,7 @@ describe('Phase 10.5A: Shared page-level components', () => {
   // ─── 8. Destructive sections ───────────────────────────────────────────
 
   describe('destructive section', () => {
-    it('project detail has destructive section with danger styling', async () => {
+    it('project edit page has destructive section with danger styling', async () => {
       const createRes = await agent
         .post('/projects')
         .send('title=Destructive+Test')
@@ -483,7 +486,8 @@ describe('Phase 10.5A: Shared page-level components', () => {
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
-      const res = await agent.get(createRes.headers.location).expect(200);
+      // The archive (destructive) control now lives on the project edit page.
+      const res = await agent.get(createRes.headers.location + '/edit').expect(200);
       expect(res.text).toContain('destructive-section');
       expect(res.text).toContain('button-danger');
       expect(res.text).toContain('Danger zone');

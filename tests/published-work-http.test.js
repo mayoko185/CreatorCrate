@@ -148,7 +148,6 @@ describe('Published Work HTTP route (Phase 2B)', () => {
     expect(res.text).toContain('<h1 class="app-section-title">Published</h1>');
     expect(res.text).not.toContain('<h1 class="app-section-title">Published Work</h1>');
     expect(res.text).toContain('Published Work');
-    expect(res.text).toContain('Projects published through CreatorCrate.');
   });
 
   it('redirects a bare request to valid saved Published Work defaults', async () => {

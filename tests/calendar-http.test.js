@@ -76,7 +76,6 @@ describe('release calendar HTTP', () => {
     it('calendar uses page-heading with view switcher', async () => {
       const res = await agent.get('/calendar').expect(200);
       expect(hasClass(res.text, 'page-heading')).toBe(true);
-      expect(hasClass(res.text, 'page-heading-copy')).toBe(true);
       expect(countTags(res.text, 'h1')).toBe(1);
     });
 

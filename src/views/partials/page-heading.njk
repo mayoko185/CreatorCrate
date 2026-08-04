@@ -1,29 +1,30 @@
 {#
-  Shared page heading macro — supporting content only (description, status
-  badge, actions). The page title itself lives in the compact top header
-  (see layout.njk's `page_title` contract), not here: authenticated pages
-  render exactly one <h1>, and this macro no longer emits one.
+  Shared page heading macro — navigation and status only. The page title lives
+  in the compact top header (see layout.njk's `page_title` contract), not here:
+  authenticated pages render exactly one <h1>, and this macro never emits one.
 
-  Usage without actions:
-    {% import "partials/page-heading.njk" as pageHeading %}
-    {{ pageHeading.render("Optional description") }}
+  This area is reserved for navigation (action buttons) and an optional status
+  badge. Page descriptions are intentionally NOT rendered — the first argument
+  is accepted for backward compatibility but ignored, so existing callers do
+  not need to be changed.
 
   Usage with actions:
+    {% import "partials/page-heading.njk" as pageHeading %}
     {% call pageHeading.render() %}
       <a class="button button-primary" href="/new">Create</a>
     {% endcall %}
 
-  Renders nothing when there is no description, badge, or caller content —
-  callers should not end up with an empty wrapper.
+  Renders nothing when there is no badge or caller content — callers should not
+  end up with an empty wrapper.
 
   Text parameters are escaped by Nunjucks autoescaping. Action markup is only
   accepted through the Nunjucks caller block; do not pass arbitrary HTML strings.
 #}
 {% macro render(description='', badgeStatus='', badgeText='') %}
-{% if description or badgeStatus or badgeText or caller is defined %}
+{% if badgeStatus or badgeText or caller is defined %}
 <header class="page-heading">
-  <div class="page-heading-copy">
-    {% if badgeStatus or badgeText %}
+  {% if badgeStatus or badgeText %}
+    <div class="page-heading-copy">
       {% if badgeText %}
         {% set headingBadgeStatus = badgeStatus or 'neutral' %}
         {% set headingBadgeText = badgeText %}
@@ -40,11 +41,8 @@
         {% set status = badgeStatus %}
         {% include "partials/status-badge.njk" %}
       {% endif %}
-    {% endif %}
-    {% if description %}
-      <p class="page-heading-description">{{ description }}</p>
-    {% endif %}
-  </div>
+    </div>
+  {% endif %}
   {% if caller is defined %}
     <div class="page-heading-actions">
       {{ caller() }}

@@ -2641,6 +2641,9 @@
         flex-wrap: wrap;
         min-width: 0;
         max-width: 100%;
+        /* Keep navigation actions right-aligned even when the heading carries
+           no copy (the common case now that page descriptions are gone). */
+        margin-left: auto;
       }
 
       /* ── Status badges ── */
@@ -4372,6 +4375,97 @@
       /* ── Project summary on detail page ── */
       .project-summary {
         margin-bottom: var(--space-xl);
+      }
+
+      /* ── Project detail hero (primary image + summary) ── */
+      .project-detail-hero {
+        display: grid;
+        grid-template-columns: 390px minmax(0, 1fr);
+        gap: var(--space-xl);
+        align-items: start;
+        margin-bottom: var(--space-xl);
+      }
+      .project-detail-media {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 18rem;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        padding: var(--space-md);
+        overflow: hidden;
+        text-align: center;
+      }
+      /* Intrinsic sizing: bound both axes and let the browser preserve the
+         natural ratio. Wide images cap on width, tall on height, square fills —
+         never letterboxed, never stretched. */
+      .project-detail-media-image {
+        display: block;
+        max-width: 100%;
+        max-height: 33rem;
+        width: auto;
+        height: auto;
+        border-radius: var(--radius-sm);
+      }
+      .project-detail-media-placeholder {
+        color: var(--muted);
+        overflow-wrap: anywhere;
+      }
+      .project-detail-media-placeholder a {
+        display: block;
+        margin-top: var(--space-xs);
+      }
+      .project-detail-media[data-primary-image-state="unavailable"] {
+        border-color: var(--warning);
+      }
+      .project-detail-summary {
+        display: flex;
+        flex-direction: column;
+        gap: var(--space-md);
+        min-width: 0;
+      }
+      .project-detail-meta {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: var(--space-sm);
+      }
+      .project-detail-priority {
+        font-size: 0.875rem;
+        color: var(--muted);
+      }
+      .project-detail-link {
+        font-size: 0.875rem;
+      }
+      .project-detail-health {
+        margin-top: var(--space-xs);
+      }
+      .tag-chip-list {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--space-xs);
+        list-style: none;
+        margin: 0;
+        padding: 0;
+      }
+      .tag-chip {
+        padding: 0.125rem 0.625rem;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        font-size: 0.8rem;
+        color: var(--muted);
+      }
+      .project-detail-info {
+        margin-top: var(--space-xs);
+      }
+      .project-detail-releases {
+        margin-bottom: var(--space-xl);
+      }
+      @media (max-width: 767px) {
+        .project-detail-hero {
+          grid-template-columns: 1fr;
+        }
       }
 
       /* ── Project-counts details ── */

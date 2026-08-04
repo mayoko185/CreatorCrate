@@ -581,8 +581,13 @@ export function createWorkflowQueryService({
     const assetMissing = assetRepository.countMissingByProjectId(projectId);
     const assetMissingByReleases = releaseRepository.countMissingAssetsReferencedByProjectId(projectId);
 
+    // Attach the retained primary image using the same helper the project list
+    // uses, so the detail hero renders identical `available`/`unavailable`/`none`
+    // states without any new query paths.
+    const [projectWithImage] = attachPrimaryImages([project]);
+
     return {
-      project,
+      project: projectWithImage,
       releaseSummary: {
         active: activeReleases,
         recent: recentReleases,

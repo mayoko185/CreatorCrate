@@ -16,7 +16,7 @@ function extractPageHeadingActions(html) {
 }
 
 function extractProjectTagsSection(html) {
-  return html.match(/<section class="project-tags">([\s\S]*?)<\/section>/)?.[1] || '';
+  return html.match(/<div class="project-detail-tags">([\s\S]*?)<\/div>/)?.[1] || '';
 }
 
 function extractCurrentTagsSection(html) {
@@ -124,9 +124,9 @@ describe('project tags — HTTP', () => {
 
     expect(actions).toContain(`href="/projects/${projectId}/edit">Edit project</a>`);
     expect(actions).toContain(`href="/projects/${projectId}/assets">View Assets</a>`);
-    expect(actions).toContain(`href="/projects/${projectId}/asset-categories">Asset Categories</a>`);
     expect(actions).toContain(`href="/projects/${projectId}/tags">Manage tags</a>`);
-    expect((actions.match(/<a\b/g) || [])).toHaveLength(4);
+    expect(actions).not.toContain(`href="/projects/${projectId}/asset-categories"`);
+    expect((actions.match(/<a\b/g) || [])).toHaveLength(3);
     expect(detail.text).not.toMatch(new RegExp(`<section class="workflow-actions">[\\s\\S]*?/projects/${projectId}/tags`));
 
     const management = await agent.get(`/projects/${projectId}/tags`).expect(200);
@@ -145,7 +145,8 @@ describe('project tags — HTTP', () => {
     expect(extractProjectTagsSection(detail.text)).toContain('Archived Display');
     expect(detailActions).not.toContain(`href="/projects/${projectId}/tags">Manage tags</a>`);
     expect(detailActions).toContain(`href="/projects/${projectId}/assets">View Assets</a>`);
-    expect(detailActions).toContain(`href="/projects/${projectId}/asset-categories">Asset Categories</a>`);
+    // Asset Categories is reached from the assets page, not the project detail header.
+    expect(detailActions).not.toContain(`href="/projects/${projectId}/asset-categories"`);
 
     const management = await agent.get(`/projects/${projectId}/tags`).expect(200);
     expect(management.text).toMatch(/archived and read-only/i);

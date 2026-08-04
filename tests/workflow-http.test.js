@@ -214,8 +214,8 @@ describe('Phase 6B HTTP workflow', () => {
     it('renders the release summary section heading', async () => {
       const projectId = await createProject(app, { title: 'Release Summary Project' });
       const res = await app.testAgent.get(`/projects/${projectId}`).expect(200);
-      expect(res.text).toContain('Release records and packaging');
-      expect(res.text).toContain('Status');
+      expect(res.text).toContain('Releases');
+      expect(res.text).toContain(`/releases/new?projectId=${projectId}`);
     });
 
     it('shows release status counts and active/recent lists', async () => {
@@ -249,7 +249,7 @@ describe('Phase 6B HTTP workflow', () => {
     it('shows asset health counts', async () => {
       const projectId = await createProject(app, { title: 'Health Project' });
       const res = await app.testAgent.get(`/projects/${projectId}`).expect(200);
-      expect(res.text).toContain('Asset health');
+      // Asset health is surfaced as count cards in the detail hero.
       expect(res.text).toContain('Total assets');
       expect(res.text).toContain('Present');
       expect(res.text).toContain('Missing');
@@ -275,8 +275,8 @@ describe('Phase 6B HTTP workflow', () => {
       db.prepare(`UPDATE assets SET is_present = 0, missing_since = datetime('now') WHERE id = ?`).run(missing.id);
 
       const res = await app.testAgent.get(`/projects/${projectId}`).expect(200);
-      // Counts should reflect 1 present and 1 missing
-      expect(res.text).toContain('<dd>1</dd>');
+      // Counts should reflect 1 present and 1 missing (count-card markup)
+      expect(res.text).toContain('<span class="count">1</span>');
     });
 
     it('shows missing assets referenced by releases', async () => {
@@ -396,7 +396,7 @@ describe('Phase 6B HTTP workflow', () => {
       expect(res.text).not.toMatch(/<button[^>]*>\s*Archive project\s*<\/button>/);
     });
 
-    it('active project still shows the Edit and Archive controls', async () => {
+    it('active project shows the Edit control on the detail page and the Archive control on the edit page', async () => {
       const projectId = await createProject(app, { title: 'Active Has Both Controls' });
       const res = await app.testAgent.get(`/projects/${projectId}`).expect(200);
 
@@ -404,8 +404,12 @@ describe('Phase 6B HTTP workflow', () => {
       // Phase 2C: the workspace edit action is labeled "Edit project" so its
       // publication-editing purpose is unambiguous.
       expect(res.text).toMatch(/<a[^>]*>\s*Edit project\s*<\/a>/);
-      expect(res.text).toContain(`action="/projects/${projectId}/archive"`);
-      expect(res.text).toMatch(/<button[^>]*>\s*Archive project\s*<\/button>/);
+      // The archive (destructive) control now lives on the project edit page.
+      expect(res.text).not.toContain(`action="/projects/${projectId}/archive"`);
+
+      const edit = await app.testAgent.get(`/projects/${projectId}/edit`).expect(200);
+      expect(edit.text).toContain(`action="/projects/${projectId}/archive"`);
+      expect(edit.text).toMatch(/<button[^>]*>\s*Archive project\s*<\/button>/);
     });
 
     it('archived project still preserves historical release information and assets', async () => {

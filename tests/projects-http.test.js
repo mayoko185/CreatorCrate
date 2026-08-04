@@ -804,9 +804,10 @@ describe('project HTTP workflow', () => {
     expect(res.text).toContain('Detail Project');
     expect(headingActions).toContain(`href="${location}/edit">Edit project</a>`);
     expect(headingActions).toContain(`href="${location}/assets">View Assets</a>`);
-    expect(headingActions).toContain(`href="${location}/asset-categories">Asset Categories</a>`);
     expect(headingActions).toContain(`href="${location}/tags">Manage tags</a>`);
-    expect((headingActions.match(/<a\b/g) || [])).toHaveLength(4);
+    // Asset Categories is reached from the assets page, not the detail header.
+    expect(headingActions).not.toContain(`href="${location}/asset-categories"`);
+    expect((headingActions.match(/<a\b/g) || [])).toHaveLength(3);
     expect(res.text).not.toMatch(
       new RegExp(`<section class="workflow-actions">\\s*<a[^>]+href="${location}/assets"`),
     );
@@ -832,10 +833,10 @@ describe('project HTTP workflow', () => {
     const headingActions = extractPageHeadingActions(res.text);
 
     expect(headingActions).toContain(`href="${location}/assets">View Assets</a>`);
-    expect(headingActions).toContain(`href="${location}/asset-categories">Asset Categories</a>`);
+    expect(headingActions).not.toContain(`href="${location}/asset-categories"`);
     expect(headingActions).not.toContain(`href="${location}/edit">Edit project</a>`);
     expect(res.text).not.toContain('Edit project');
-    expect((headingActions.match(/<a\b/g) || [])).toHaveLength(2);
+    expect((headingActions.match(/<a\b/g) || [])).toHaveLength(1);
     expect(res.text).not.toMatch(
       new RegExp(`<section class="workflow-actions">\\s*<a[^>]+href="${location}/assets"`),
     );
@@ -2045,7 +2046,7 @@ describe('project HTTP workflow', () => {
       expect(container).toMatch(/<input[^>]*id="patreonUrl"[^>]*>/);
     });
 
-    it('project detail shows context labels in the correct dt/dd pairs', async () => {
+    it('project detail shows planned date and the project link, and omits the published date', async () => {
       const createRes = await agent
         .post('/projects')
         .send('title=Wording+Test')
@@ -2061,18 +2062,53 @@ describe('project HTTP workflow', () => {
 
       const res = await agent.get(`/projects/${id}`).expect(200);
 
-      // Planned date: <dt>Planned date</dt> ... <small>(project target)</small>
+      // Planned date remains a labelled dt/dd pair in the Details list.
       const plannedDt = res.text.match(/<dt>Planned date<\/dt>\s*<dd>[^<]*(?:<small>\(project target\)<\/small>)[^<]*<\/dd>/);
       expect(plannedDt).not.toBeNull();
 
-      // Published date: <dt>Published date</dt> ... <small>(project published)</small>
-      const publishedDt = res.text.match(/<dt>Published date<\/dt>\s*<dd>[^<]*(?:<small>\(project published\)<\/small>)[^<]*<\/dd>/);
-      expect(publishedDt).not.toBeNull();
+      // Published date is intentionally not rendered on the detail page — the
+      // publication model is being reworked and the date is no longer surfaced.
+      expect(res.text).not.toContain('Published date');
 
-      // Project link: <dt>Project link</dt> ... <small>(project link)</small>
-      // Bounded pattern: cannot cross </dd>, <dt>, or opening <dd>
-      const projectLinkDt = res.text.match(/<dt>Project link<\/dt>\s*<dd>(?:(?!<\/dd>)(?!<dt>)(?!<dd>).)*<small>\(project link\)<\/small>(?:(?!<\/dd>)(?!<dt>)(?!<dd>).)*<\/dd>/);
-      expect(projectLinkDt).not.toBeNull();
+      // Project link now lives in the hero summary as a direct link.
+      expect(res.text).toMatch(/<a class="project-detail-link" href="https:\/\/patreon\.com\/test"[^>]*>Project link<\/a>/);
+    });
+
+    it('project detail hero renders the primary image when one is set', async () => {
+      const createRes = await agent
+        .post('/projects')
+        .send('title=Hero+Available')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .expect(302);
+      const id = createRes.headers.location.replace('/projects/', '');
+
+      seedPrimaryImage(Number(id));
+
+      const res = await agent.get(`/projects/${id}`).expect(200);
+      expect(res.text).toContain('data-preview-enhancement');
+      expect(res.text).toMatch(
+        /<img class="project-detail-media-image" data-preview-image src="\/projects\/\d+\/assets\/\d+\/preview\?v=[0-9a-f]+" alt="Preview of cover\.png"/
+      );
+    });
+
+    it('project detail hero shows a placeholder and asset-viewer CTA when no primary image is set', async () => {
+      const createRes = await agent
+        .post('/projects')
+        .send('title=Hero+None')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .expect(302);
+      const id = createRes.headers.location.replace('/projects/', '');
+
+      const res = await agent.get(`/projects/${id}`).expect(200);
+      expect(res.text).toContain('data-primary-image-state="none"');
+      expect(res.text).toContain('No primary image set.');
+      expect(res.text).toContain(`href="/projects/${id}/assets"`);
     });
   });
 
@@ -2205,7 +2241,7 @@ describe('project HTTP workflow', () => {
       expect(res.text).not.toContain(`/projects/${id}/edit`);
     });
 
-    it('still shows the Asset Categories link on an archived project (read-only page remains reachable)', async () => {
+    it('keeps the archived asset categories page reachable even though the detail header no longer links it', async () => {
       const createRes = await agent
         .post('/projects')
         .send('title=Archived+Categories+Link')
@@ -2218,8 +2254,11 @@ describe('project HTTP workflow', () => {
 
       await agent.post(`/projects/${id}/archive`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
+      // Asset Categories is reached from the assets page, not the project detail
+      // header, but the page itself remains reachable directly.
       const res = await agent.get(`/projects/${id}`).expect(200);
-      expect(res.text).toContain(`/projects/${id}/asset-categories`);
+      expect(res.text).not.toContain(`/projects/${id}/asset-categories`);
+      await agent.get(`/projects/${id}/asset-categories`).expect(200);
     });
   });
 

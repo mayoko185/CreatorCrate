@@ -419,7 +419,6 @@ describe('release-management HTTP route (Phase 2A)', () => {
     const res = await agent.get('/releases').expect(200);
 
     expect(res.headers.location).toBeUndefined();
-    expect(res.text).toContain('Projects published through CreatorCrate.');
     expect(res.text).not.toContain('board-container');
     expect(res.text).toContain('<option value="published" selected>Published</option>');
   });

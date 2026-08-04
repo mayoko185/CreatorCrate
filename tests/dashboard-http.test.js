@@ -442,10 +442,10 @@ describe('Phase 6B HTTP dashboard', () => {
         expect(countTags(res.text, 'h1')).toBe(1);
       });
 
-      it('has page-heading-copy with description', async () => {
+      it('has a page-heading carrying navigation actions, not a description', async () => {
         const res = await app.testAgent.get('/').expect(200);
-        expect(hasClass(res.text, 'page-heading-copy')).toBe(true);
-        expect(hasClass(res.text, 'page-heading-description')).toBe(true);
+        expect(hasClass(res.text, 'page-heading')).toBe(true);
+        expect(hasClass(res.text, 'page-heading-description')).toBe(false);
       });
 
       it('renders summary cards section', async () => {

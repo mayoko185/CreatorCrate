@@ -5,16 +5,14 @@
 
 {% block content %}
   {% if not project.archived_at %}
-    {% call pageHeading.render("Project status, dates, and project link govern publication — release records below are optional.", project.status) %}
+    {% call pageHeading.render() %}
       <a class="button" href="/projects/{{ project.id }}/edit">Edit project</a>
       <a class="button" href="/projects/{{ project.id }}/assets">View Assets</a>
-      <a class="button button-secondary" href="/projects/{{ project.id }}/asset-categories">Asset Categories</a>
       <a class="button button-secondary" href="/projects/{{ project.id }}/tags">Manage tags</a>
     {% endcall %}
   {% else %}
-    {% call pageHeading.render("This project is archived and read-only.", "archived") %}
+    {% call pageHeading.render("", "archived") %}
       <a class="button" href="/projects/{{ project.id }}/assets">View Assets</a>
-      <a class="button button-secondary" href="/projects/{{ project.id }}/asset-categories">Asset Categories</a>
     {% endcall %}
   {% endif %}
 
@@ -30,87 +28,100 @@
     {% include "partials/notice.njk" %}
   {% endif %}
 
-  {# ─── Project summary / publication ─────────────────────────────── #}
-  <section class="project-summary">
-    <h2>Publication</h2>
-    <p class="help-text">
-      This project's status, target date, published date, and project link are what the Calendar and
-      Published Work page read from. Editing the project — not creating a release record — is how you publish it.
-    </p>
-    <dl class="detail-list">
-      {% if project.project_dir %}
-        <dt>Project directory</dt>
-        <dd><code>{{ project.project_dir }}</code> <small>(relative to projects share)</small></dd>
+  {# ─── Hero: primary image + at-a-glance summary ─────────────────── #}
+  <section class="project-detail-hero">
+    <div class="project-detail-media{% if project.primaryImage.state == 'available' and project.primaryImage.mediaModifier %} project-card-media--{{ project.primaryImage.mediaModifier }}{% endif %}"{% if project.primaryImage.state == 'available' %} data-preview-enhancement data-preview-state="loading"{% else %} data-primary-image-state="{{ project.primaryImage.state }}"{% endif %}>
+      {% if project.primaryImage.state == 'available' %}
+        <img class="project-detail-media-image{% if project.primaryImage.mediaModifier %} project-card-media-image--{{ project.primaryImage.mediaModifier }}{% endif %}" data-preview-image src="{{ project.primaryImage.previewUrl }}" alt="{{ project.primaryImage.alt }}" loading="lazy" decoding="async">
+        <span class="project-detail-media-placeholder" data-preview-fallback hidden>Image unavailable</span>
+      {% elif project.primaryImage.state == 'unavailable' %}
+        <span class="project-detail-media-placeholder">Image unavailable</span>
+      {% else %}
+        <span class="project-detail-media-placeholder">
+          No primary image set.
+          {% if not project.archived_at %}
+            <a href="/projects/{{ project.id }}/assets">Choose one in the asset viewer</a>
+          {% endif %}
+        </span>
+      {% endif %}
+    </div>
+
+    <div class="project-detail-summary">
+      <div class="project-detail-meta">
+        {% set status = project.status %}{% include "partials/status-badge.njk" %}
+        <span class="project-detail-priority">{{ project.priority | title }} priority</span>
+        {% if project.patreon_url %}
+          <a class="project-detail-link" href="{{ project.patreon_url }}" target="_blank" rel="noopener">Project link</a>
+        {% endif %}
+      </div>
+
+      {% if project.description %}
+        <p class="description">{{ project.description }}</p>
       {% endif %}
 
-      <dt>Slug</dt>
-      <dd><code>{{ project.slug }}</code></dd>
-
-      <dt>Status</dt>
-      <dd>{% set status = project.status %}{% include "partials/status-badge.njk" %}</dd>
-
-      <dt>Priority</dt>
-      <dd>{{ project.priority | title }}</dd>
-
-      {% if project.planned_date %}
-        <dt>Planned date</dt>
-        <dd>{{ project.planned_date }} <small>(project target)</small></dd>
+      {% if project.notes %}
+        <h2>Notes</h2>
+        <p class="notes">{{ project.notes }}</p>
       {% endif %}
 
-      {% if project.published_date %}
-        <dt>Published date</dt>
-        <dd>{{ project.published_date }} <small>(project published)</small></dd>
-      {% endif %}
+      <div class="count-grid project-detail-health">
+        <div class="count-card"><span class="count">{{ assetHealth.total }}</span> Total assets</div>
+        <div class="count-card"><span class="count">{{ assetHealth.present }}</span> Present</div>
+        <div class="count-card">
+          <span class="count">{{ assetHealth.missing }}</span> Missing
+          {% if assetHealth.missingByReleases > 0 %}
+            <small>({{ assetHealth.missingByReleases }} referenced by releases)</small>
+          {% endif %}
+        </div>
+      </div>
 
-      {% if project.patreon_url %}
-        <dt>Project link</dt>
-        <dd><a href="{{ project.patreon_url }}" target="_blank" rel="noopener">{{ project.patreon_url }}</a> <small>(project link)</small></dd>
-      {% endif %}
+      <div class="project-detail-tags">
+        {% if projectTags.length > 0 %}
+          <ul class="tag-chip-list">
+            {% for tag in projectTags %}
+              <li class="tag-chip">{{ tag.displayName }}</li>
+            {% endfor %}
+          </ul>
+        {% else %}
+          <p class="help-text">No tags assigned to this project.</p>
+        {% endif %}
+      </div>
 
-      <dt>Created</dt>
-      <dd>{{ project.created_at }}</dd>
+      {# ─── Project details ────────────────────────────────────────── #}
+      <section class="project-detail-info">
+        <h2>Details</h2>
+        <dl class="detail-list">
+          {% if project.project_dir %}
+            <dt>Project directory</dt>
+            <dd><code>{{ project.project_dir }}</code> <small>(relative to projects share)</small></dd>
+          {% endif %}
 
-      <dt>Updated</dt>
-      <dd>{{ project.updated_at }}</dd>
+          <dt>Slug</dt>
+          <dd><code>{{ project.slug }}</code></dd>
 
-      {% if project.archived_at %}
-        <dt>Archived</dt>
-        <dd>{{ project.archived_at }}</dd>
-      {% endif %}
-    </dl>
+          {% if project.planned_date %}
+            <dt>Planned date</dt>
+            <dd>{{ project.planned_date }} <small>(project target)</small></dd>
+          {% endif %}
 
-    {% if project.description %}
-      <h2>Description</h2>
-      <p class="description">{{ project.description }}</p>
-    {% endif %}
+          <dt>Created</dt>
+          <dd>{{ project.created_at }}</dd>
 
-    {% if project.notes %}
-      <h2>Notes</h2>
-      <p class="notes">{{ project.notes }}</p>
-    {% endif %}
+          <dt>Updated</dt>
+          <dd>{{ project.updated_at }}</dd>
+
+          {% if project.archived_at %}
+            <dt>Archived</dt>
+            <dd>{{ project.archived_at }}</dd>
+          {% endif %}
+        </dl>
+      </section>
+    </div>
   </section>
 
-  <section class="project-tags">
-    <h2>Tags</h2>
-    {% if projectTags.length > 0 %}
-      <ul>
-        {% for tag in projectTags %}
-          <li>{{ tag.displayName }}</li>
-        {% endfor %}
-      </ul>
-    {% else %}
-      <p class="help-text">No tags assigned to this project.</p>
-    {% endif %}
-  </section>
-
-  {# ─── Release records ────────────────────────────────────────────── #}
-  <section class="release-summary">
-    <h2>Release records and packaging</h2>
-    <p class="help-text">
-      Optional records for asset packaging, readiness checks, multiple releases, and publication history.
-      A release record is not required to publish this project or to have it appear on the Calendar or
-      Published Work page.
-    </p>
+  {# ─── Releases (full width) ─────────────────────────────────────── #}
+  <section class="release-summary project-detail-releases">
+    <h2>Releases</h2>
 
     <div class="workflow-actions">
       <a class="button" href="/release-management?project={{ project.id }}">View release records</a>
@@ -119,35 +130,7 @@
       {% endif %}
     </div>
 
-    {% if releaseSummary.hasAnyReleases %}
-      <h3>Record status</h3>
-      <p class="help-text">These statuses belong to individual release records, not to the project above.</p>
-      <div class="count-grid">
-        <div class="count-card"><span class="count">{{ releaseSummary.statusCounts.idea or 0 }}</span> Idea</div>
-        <div class="count-card"><span class="count">{{ releaseSummary.statusCounts.planned or 0 }}</span> Planned</div>
-        <div class="count-card"><span class="count">{{ releaseSummary.statusCounts.drafting or 0 }}</span> Drafting</div>
-        <div class="count-card"><span class="count">{{ releaseSummary.statusCounts.ready or 0 }}</span> Ready</div>
-        <div class="count-card"><span class="count">{{ releaseSummary.statusCounts.published or 0 }}</span> Published</div>
-        <div class="count-card"><span class="count">{{ releaseSummary.statusCounts.cancelled or 0 }}</span> Cancelled</div>
-      </div>
-    {% endif %}
-
-    {% if not project.archived_at and releaseSummary.active.length > 0 %}
-      <h3>Active release records</h3>
-      <ul class="release-list">
-        {% for r in releaseSummary.active %}
-          <li>
-            <a href="/releases/{{ r.id }}">{{ r.title }}</a>
-            <span class="meta">
-              {{ r.status }}{% if r.planned_date %} · planned {{ r.planned_date }}{% endif %}
-            </span>
-          </li>
-        {% endfor %}
-      </ul>
-    {% endif %}
-
     {% if releaseSummary.recent.length > 0 %}
-      <h3>Recent release records</h3>
       <ul class="release-list">
         {% for r in releaseSummary.recent %}
           <li>
@@ -159,42 +142,11 @@
           </li>
         {% endfor %}
       </ul>
-    {% elif not releaseSummary.hasAnyReleases %}
+    {% else %}
       {% set emptyHeading = "No release records for this project." %}
       {% set emptyDescription = "Create one only when you need asset packaging, readiness checks, or a separate release history entry." %}
       {% set emptyHeadingLevel = "h3" %}
       {% include "partials/empty-state.njk" %}
     {% endif %}
   </section>
-
-  {# ─── Asset health ───────────────────────────────────────────────── #}
-  <section class="asset-health">
-    <h2>Asset health</h2>
-    <dl class="summary-list">
-      <dt>Total assets</dt>
-      <dd>{{ assetHealth.total }}</dd>
-
-      <dt>Present</dt>
-      <dd>{{ assetHealth.present }}</dd>
-
-      <dt>Missing</dt>
-      <dd>
-        {{ assetHealth.missing }}
-        {% if assetHealth.missingByReleases > 0 %}
-          <small>({{ assetHealth.missingByReleases }} referenced by releases)</small>
-        {% endif %}
-      </dd>
-    </dl>
-  </section>
-
-  {% if not project.archived_at %}
-    <section class="destructive-section">
-      <h3>Danger zone</h3>
-      <p>Archiving a project makes it read-only. This cannot be undone.</p>
-      <form method="post" action="/projects/{{ project.id }}/archive" class="inline-form">
-        <input type="hidden" name="_csrf" value="{{ _csrf }}">
-        <button class="button button-danger" type="submit" data-confirm="Archive this project? This cannot be undone.">Archive project</button>
-      </form>
-    </section>
-  {% endif %}
 {% endblock %}

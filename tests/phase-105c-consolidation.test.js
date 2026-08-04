@@ -88,7 +88,6 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
     it('release list has page-heading with New Release action', async () => {
       const res = await agent.get('/release-management').expect(200);
       expect(hasClass(res.text, 'page-heading')).toBe(true);
-      expect(hasClass(res.text, 'page-heading-copy')).toBe(true);
       expect(res.text).toContain('New Release');
       expect(hasClass(res.text, 'button-primary')).toBe(true);
     });
@@ -733,9 +732,11 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
   // ─── 8. Shared-component consistency ─────────────────────────────
 
   describe('shared-component consistency', () => {
-    it('release pages use page-heading consistently', async () => {
+    it('release pages that carry navigation use page-heading consistently', async () => {
+      // Pages whose header hosts navigation keep a page-heading. Description-only
+      // pages (e.g. Published Work at /releases) no longer render a header.
       const pages = [
-        { name: 'release list', url: '/releases' },
+        { name: 'release management', url: '/release-management' },
         { name: 'release calendar', url: '/calendar' },
       ];
       for (const { name, url } of pages) {
