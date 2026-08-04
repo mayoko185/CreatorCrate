@@ -739,6 +739,7 @@ export function createWorkflowQueryService({
    * @param {string|null} [input.extension]
    * @param {'all'|'present'|'missing'} [input.presence='all']
    * @param {'all'|'used'|'unused'} [input.usage='all']
+   * @param {number|null} [input.tag]
    * @param {'filename'|'modified'|'size'|'category'|'project'} [input.sort='filename']
    * @param {'asc'|'desc'} [input.order='asc']
    * @param {number} [input.page=1]
@@ -758,6 +759,7 @@ export function createWorkflowQueryService({
    *   context: object,
    *   projectOptions: Array<{ id: number, title: string }>,
    *   categoryOptions: Array<{ value: string, label: string, selected: boolean }>,
+   *   tagOptions: Array<{ value: string, displayName: string }>,
    *   extensionOptions: Array<{ value: string, label: string, selected: boolean }>,
    *   presenceOptions: Array<{ value: string, label: string, selected: boolean }>,
    *   usageOptions: Array<{ value: string, label: string, selected: boolean }>,
@@ -768,6 +770,11 @@ export function createWorkflowQueryService({
   function getAssetLibraryPage(input = {}) {
     const projectId = input.projectId ?? null;
     const category = input.category ?? 'all';
+    const tagCatalog = tagRepository.list();
+    const tag = Number.isSafeInteger(input.tag) && input.tag > 0
+      && tagCatalog.some((candidate) => candidate.id === input.tag)
+      ? input.tag
+      : null;
     const search = input.search ?? null;
     const extension = input.extension ?? null;
     const presence = input.presence ?? 'all';
@@ -781,6 +788,7 @@ export function createWorkflowQueryService({
     const filters = {
       projectId,
       category,
+      tag,
       search,
       extension,
       presence,
@@ -792,6 +800,7 @@ export function createWorkflowQueryService({
     const repositoryFilters = {
       projectId,
       category,
+      tag,
       search,
       extension,
       presence,
@@ -805,7 +814,7 @@ export function createWorkflowQueryService({
     const pageCount = Math.max(1, Math.ceil(total / pageSize));
     const page = Math.min(requestedPage, pageCount);
     const offset = (page - 1) * pageSize;
-    const assets = assetRepository.findAllAssets({
+    const assets = attachAssetTags(assetRepository.findAllAssets({
       ...repositoryFilters,
       limit: pageSize,
       offset,
@@ -822,7 +831,7 @@ export function createWorkflowQueryService({
         isPreviewable: preview.previewable,
         hasThumbnail: Boolean(preview.urls.thumbnail),
       };
-    });
+    }));
 
     // This is intentionally an unpaged project-option query: it is the
     // filter control's complete source, not the current asset page.
@@ -843,6 +852,10 @@ export function createWorkflowQueryService({
     const sortOptions = buildSelectedOptions(ASSET_LIBRARY_SORT_OPTIONS, sort);
     const viewOptions = buildSelectedOptions(ASSET_LIBRARY_VIEW_OPTIONS, view);
     const context = { ...filters, page, pageSize };
+    const tagOptions = tagCatalog.map((candidate) => ({
+      value: String(candidate.id),
+      displayName: candidate.display_name,
+    }));
 
     return {
       assets,
@@ -858,6 +871,7 @@ export function createWorkflowQueryService({
       context,
       projectOptions,
       categoryOptions,
+      tagOptions,
       extensionOptions,
       presenceOptions,
       usageOptions,

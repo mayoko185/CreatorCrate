@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { createWorkflowQueryService } from '../src/services/workflow-query-service.js';
 import { evaluateReleaseReadiness } from '../src/services/release-readiness-policy.js';
+import { createTagRepository } from '../src/data/tag-repository.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 
@@ -196,6 +197,7 @@ describe('workflow query service — asset library page model', () => {
       { value: 'png', label: 'png', selected: false },
       { value: 'txt', label: 'txt', selected: false },
     ]);
+    expect(page.tagOptions).toEqual([]);
     expect(page.presenceOptions.map((option) => option.value)).toEqual(['all', 'present', 'missing']);
     expect(page.usageOptions.map((option) => option.value)).toEqual(['all', 'used', 'unused']);
     expect(page.sortOptions.map((option) => option.value)).toEqual([
@@ -244,6 +246,138 @@ describe('workflow query service — asset library page model', () => {
     expect(page.projectOptions.map((project) => project.id)).toContain(projects[26].id);
     expect(page.projectOptions.map((project) => project.id)).not.toContain(archived.id);
     expect(page.assets.map((asset) => asset.project_id)).not.toContain(archived.id);
+  });
+
+  it('attaches deterministic display-only tags in one batch for the current page', () => {
+    const project = insertProject(db, { title: 'Asset Tags Project' });
+    const first = insertAsset(db, {
+      projectId: project.id,
+      relativePath: 'a.png',
+      filename: 'a.png',
+    });
+    const missing = insertAsset(db, {
+      projectId: project.id,
+      relativePath: 'b.png',
+      filename: 'b.png',
+      isPresent: 0,
+    });
+    const untagged = insertAsset(db, {
+      projectId: project.id,
+      relativePath: 'c.png',
+      filename: 'c.png',
+    });
+    const outsidePage = insertAsset(db, {
+      projectId: project.id,
+      relativePath: 'z.png',
+      filename: 'z.png',
+    });
+
+    const tagRepository = createTagRepository(db);
+    const alpha = tagRepository.create({ displayName: 'Alpha Label', normalizedName: 'alpha-secret' });
+    const shared = tagRepository.create({ displayName: 'Shared Label', normalizedName: 'shared-secret' });
+    const zeta = tagRepository.create({ displayName: 'Zeta Label', normalizedName: 'zeta-secret' });
+    const projectOnly = tagRepository.create({ displayName: 'Project Only Label', normalizedName: 'project-only-secret' });
+    const outside = tagRepository.create({ displayName: 'Outside Page Label', normalizedName: 'outside-page-secret' });
+
+    tagRepository.assignToProject(project.id, projectOnly.id);
+    for (const tag of [zeta, shared, alpha]) {
+      tagRepository.assignToAsset(first.id, tag.id);
+    }
+    tagRepository.assignToAsset(missing.id, shared.id);
+    tagRepository.assignToAsset(outsidePage.id, outside.id);
+
+    const batchCalls = [];
+    const taggedService = createWorkflowQueryService({
+      db,
+      evaluateReleaseReadiness,
+      tagRepository: {
+        list() {
+          return tagRepository.list();
+        },
+        listForAssetIds(assetIds) {
+          batchCalls.push(assetIds);
+          return tagRepository.listForAssetIds(assetIds);
+        },
+      },
+    });
+
+    const page = taggedService.getAssetLibraryPage({ page: 1, pageSize: 3 });
+
+    expect(batchCalls).toEqual([[first.id, missing.id, untagged.id]]);
+    expect(page.assets.map((asset) => asset.id)).toEqual([first.id, missing.id, untagged.id]);
+    expect(page.assets[0].tags).toEqual([
+      { displayName: 'Alpha Label' },
+      { displayName: 'Shared Label' },
+      { displayName: 'Zeta Label' },
+    ]);
+    expect(page.assets[1]).toMatchObject({
+      id: missing.id,
+      is_present: 0,
+      tags: [{ displayName: 'Shared Label' }],
+    });
+    expect(page.assets[2].tags).toEqual([]);
+    expect(page.assets.flatMap((asset) => asset.tags.map((tag) => tag.displayName)))
+      .not.toContain('Project Only Label');
+    expect(page.assets.flatMap((asset) => asset.tags.map((tag) => tag.displayName)))
+      .not.toContain('Outside Page Label');
+    expect(page.assets[0].tags[0]).not.toHaveProperty('id');
+    expect(page.assets[0].tags[0]).not.toHaveProperty('normalized_name');
+    expect(page.assets[0].tags[0]).not.toHaveProperty('normalizedName');
+  });
+
+  it('validates the selected tag against one deterministic full catalog and drops stale values', () => {
+    const project = insertProject(db, { title: 'Catalog Validation Project' });
+    const tagged = insertAsset(db, {
+      projectId: project.id,
+      relativePath: 'tagged.png',
+      filename: 'tagged.png',
+    });
+    const untagged = insertAsset(db, {
+      projectId: project.id,
+      relativePath: 'untagged.png',
+      filename: 'untagged.png',
+    });
+    const tagRepository = createTagRepository(db);
+    const zeta = tagRepository.create({ displayName: 'Zeta Label', normalizedName: 'zeta-catalog-secret' });
+    const alpha = tagRepository.create({ displayName: 'Alpha Label', normalizedName: 'alpha-catalog-secret' });
+    tagRepository.assignToAsset(tagged.id, zeta.id);
+
+    let catalogCalls = 0;
+    const taggedService = createWorkflowQueryService({
+      db,
+      evaluateReleaseReadiness,
+      tagRepository: {
+        list() {
+          catalogCalls += 1;
+          return tagRepository.list();
+        },
+        listForAssetIds(assetIds) {
+          return tagRepository.listForAssetIds(assetIds);
+        },
+      },
+    });
+
+    const selected = taggedService.getAssetLibraryPage({ tag: zeta.id, pageSize: 10 });
+
+    expect(catalogCalls).toBe(1);
+    expect(selected.filters.tag).toBe(zeta.id);
+    expect(selected.context.tag).toBe(zeta.id);
+    expect(selected.tagOptions).toEqual([
+      { value: String(alpha.id), displayName: 'Alpha Label' },
+      { value: String(zeta.id), displayName: 'Zeta Label' },
+    ]);
+    expect(selected.assets.map((asset) => asset.id)).toEqual([tagged.id]);
+    expect(selected.tagOptions[0]).not.toHaveProperty('normalizedName');
+    expect(selected.tagOptions[0]).not.toHaveProperty('normalized_name');
+    expect(selected.tagOptions[0]).not.toHaveProperty('usageCount');
+
+    tagRepository.deleteById(zeta.id);
+    const stale = taggedService.getAssetLibraryPage({ tag: zeta.id, pageSize: 10 });
+
+    expect(catalogCalls).toBe(2);
+    expect(stale.filters.tag).toBeNull();
+    expect(stale.context.tag).toBeNull();
+    expect(stale.assets.map((asset) => asset.id)).toEqual([tagged.id, untagged.id]);
   });
 
   it('passes normalized filters through and preserves them with the requested presentation state', () => {
@@ -304,6 +438,7 @@ describe('workflow query service — asset library page model', () => {
     expect(page.filters).toEqual({
       projectId: project.id,
       category: 'source',
+      tag: null,
       search: 'keep',
       extension: 'png',
       presence: 'present',

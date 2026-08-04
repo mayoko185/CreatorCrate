@@ -57,6 +57,7 @@ function makeModel(overrides = {}) {
   const filters = {
     projectId: null,
     category: 'all',
+    tag: null,
     search: null,
     extension: null,
     presence: 'all',
@@ -109,6 +110,7 @@ function makeModel(overrides = {}) {
       option('grid', 'Grid', filters.view === 'grid'),
       option('list', 'List', filters.view === 'list'),
     ],
+    tagOptions: [],
     orderOptions: [
       option('asc', 'Ascending', filters.order === 'asc'),
       option('desc', 'Descending', filters.order === 'desc'),
@@ -172,6 +174,7 @@ describe('cross-project Asset Viewer template', () => {
       filters: {
         projectId: 2,
         category: 'renders',
+        tag: 2,
         search: 'shared',
         extension: 'png',
         presence: 'missing',
@@ -182,12 +185,17 @@ describe('cross-project Asset Viewer template', () => {
       },
       presentation: { view: 'list' },
       pageSize: 50,
+      tagOptions: [
+        { value: '1', displayName: 'Alpha Tag' },
+        { value: '2', displayName: 'Beta Tag' },
+      ],
     });
 
     expect(html).toMatch(/<form class="filters" method="get" action="\/assets">/);
     expect(html).toContain('<input type="hidden" name="view" value="list">');
     expect(html).toMatch(/<option value="2" selected>Beta Project<\/option>/);
     expect(html).toMatch(/<option value="renders" selected>Renders<\/option>/);
+    expect(html).toMatch(/<select id="asset-tag" name="tag">[\s\S]*<option value="2" selected>Beta Tag<\/option>/);
     expect(html).toMatch(/id="asset-search"[^>]*value="shared"/);
     expect(html).toMatch(/<option value="png" selected>\.png<\/option>/);
     expect(html).toMatch(/<option value="missing" selected>Missing<\/option>/);
@@ -223,6 +231,31 @@ describe('cross-project Asset Viewer template', () => {
     expect(html).toContain('source/shared.png');
   });
 
+  it('renders assigned display names in grid cards without exposing tag internals or false untagged labels', () => {
+    const html = renderPage({
+      assets: [
+        {
+          ...alphaAsset,
+          tags: [
+            { id: 987654, normalized_name: 'shared-render-secret', displayName: 'Shared Render Tag' },
+            { displayName: 'Alpha Render Tag' },
+          ],
+        },
+        {
+          ...betaAsset,
+          tags: [{ displayName: 'Shared Render Tag' }],
+        },
+      ],
+    });
+
+    expect(html).toContain('<ul class="asset-card-tags" aria-label="Assigned tags">');
+    expect((html.match(/<li>\s*Shared Render Tag\s*<\/li>/g) || [])).toHaveLength(2);
+    expect(html).toContain('<li>Alpha Render Tag</li>');
+    expect(html).not.toContain('shared-render-secret');
+    expect(html).not.toContain('987654');
+    expect(html).not.toContain('Untagged');
+  });
+
   it('renders multiple-project list items with the same read-only metadata contract', () => {
     const html = renderPage({
       filters: { view: 'list' },
@@ -246,6 +279,34 @@ describe('cross-project Asset Viewer template', () => {
     expect(html).toContain('Not used by a release');
   });
 
+  it('renders a Tags column with aligned cells and leaves untagged cells neutral', () => {
+    const html = renderPage({
+      assets: [
+        { ...alphaAsset, tags: [{ displayName: 'Shared List Tag' }] },
+        { ...betaAsset, tags: [] },
+      ],
+      filters: { view: 'list' },
+      presentation: { view: 'list' },
+    });
+    const table = html.match(/<table class="data-table asset-table">[\s\S]*?<\/table>/)?.[0];
+    const header = table?.match(/<thead>[\s\S]*?<\/thead>/)?.[0];
+    const body = table?.match(/<tbody>[\s\S]*?<\/tbody>/)?.[0];
+    const rows = body?.match(/<tr(?:\s[^>]*)?>[\s\S]*?<\/tr>/g) || [];
+
+    expect(table).toBeDefined();
+    expect(header).toContain('<th scope="col">Tags</th>');
+    expect((header.match(/<th\b/g) || [])).toHaveLength(10);
+    expect(rows).toHaveLength(2);
+    expect(rows.map((row) => (row.match(/<td\b/g) || []).length)).toEqual([10, 10]);
+    expect(table).toContain('<ul class="asset-tag-list" aria-label="Assigned tags">');
+    expect(table).toContain('<li>Shared List Tag</li>');
+
+    const untaggedRow = rows.find((row) => row.includes('/projects/2/assets/202'));
+    expect(untaggedRow).toBeDefined();
+    expect(untaggedRow).not.toContain('asset-tag-list');
+    expect(untaggedRow).not.toContain('Untagged');
+  });
+
   it('contains only the read-only filter form and no mutation controls', () => {
     const html = renderPage();
     const forms = html.match(/<form\b[^>]*>/g) || [];
@@ -257,11 +318,20 @@ describe('cross-project Asset Viewer template', () => {
     expect(html).not.toContain('name="selectedAssetIds"');
   });
 
+  it('renders tag filtering without adding tag sorting controls', () => {
+    const html = renderPage();
+
+    expect(html).toContain('<select id="asset-tag" name="tag" disabled>');
+    expect(html).toContain('<option value="" selected>All tags</option>');
+    expect(html).not.toContain('sort=tag');
+  });
+
   it('uses supplied URLs for clear and pagination links without rebuilding query strings in the template', () => {
     const model = {
       filters: {
         projectId: 2,
         category: 'renders',
+        tag: 7,
         search: 'shared',
         extension: 'png',
         presence: 'present',
@@ -276,6 +346,7 @@ describe('cross-project Asset Viewer template', () => {
       pageCount: 3,
       hasPreviousPage: true,
       hasNextPage: true,
+      tagOptions: [{ value: '7', displayName: 'Context Tag' }],
     };
     const html = renderPage(model);
     const state = {
@@ -296,6 +367,7 @@ describe('cross-project Asset Viewer template', () => {
       category: 'all',
       search: null,
       extension: null,
+      tag: null,
       presence: 'all',
       usage: 'all',
       page: 1,

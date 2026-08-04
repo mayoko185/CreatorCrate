@@ -9,6 +9,7 @@ import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
 import { createAssetCategoryRepository } from '../src/data/asset-category-repository.js';
 import { createProjectRepository } from '../src/data/project-repository.js';
+import { createTagRepository } from '../src/data/tag-repository.js';
 import { PAGE_DEFAULT_DEFINITIONS } from '../src/services/page-defaults-service.js';
 import { STATUS_DIR_MAP } from '../src/storage/project-storage.js';
 
@@ -37,6 +38,7 @@ describe('cross-project Asset Viewer HTTP route', () => {
   let projectRepository;
   let assetRepository;
   let assetCategoryRepository;
+  let tagRepository;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-asset-library-http-'));
@@ -51,6 +53,7 @@ describe('cross-project Asset Viewer HTTP route', () => {
     projectRepository = createProjectRepository(db);
     assetRepository = createAssetRepository(db);
     assetCategoryRepository = createAssetCategoryRepository(db);
+    tagRepository = createTagRepository(db);
     app = createApp({ appName: 'CreatorCrate', db, projectsRoot });
   });
 
@@ -184,10 +187,114 @@ describe('cross-project Asset Viewer HTTP route', () => {
     expect(response.text).toContain('<option value="25" selected>25</option>');
     expect(response.text).toContain('<option value="50">50</option>');
     expect(response.text).toContain('<option value="100">100</option>');
+    expect(response.text).toContain('<select id="asset-tag" name="tag" disabled>');
+    expect(response.text).toContain('<option value="" selected>All tags</option>');
     expect(response.text).not.toMatch(/<form[^>]+method="post"/i);
     expect(response.text).not.toMatch(/Scan Now|Rename|Move file|Add selected|Set as primary|selectedAssetIds/i);
 
     await request(app).post('/assets').expect(404);
+  });
+
+  it('renders assigned tags in both views while exposing the reusable tag filter', async () => {
+    const project = createProject('Tagged Asset Viewer Project');
+    const present = createAsset(project.id, 'present.png');
+    const missing = createAsset(project.id, 'missing.png');
+    markMissing(project.id);
+    assetRepository.restorePresent(project.id, ['present.png']);
+
+    const shared = tagRepository.create({ displayName: 'HTTP Shared Tag', normalizedName: 'http-shared-secret' });
+    const presentOnly = tagRepository.create({ displayName: 'HTTP Present Tag', normalizedName: 'http-present-secret' });
+    const projectOnly = tagRepository.create({ displayName: 'HTTP Project Only Tag', normalizedName: 'http-project-only-secret' });
+    tagRepository.assignToAsset(present.id, shared.id);
+    tagRepository.assignToAsset(present.id, presentOnly.id);
+    tagRepository.assignToAsset(missing.id, shared.id);
+    tagRepository.assignToProject(project.id, projectOnly.id);
+
+    const grid = await request(app).get('/assets').expect(200);
+    expect(grid.text).toContain('<ul class="asset-card-tags" aria-label="Assigned tags">');
+    expect((grid.text.match(/>HTTP Shared Tag<\/li>/g) || [])).toHaveLength(2);
+    expect(grid.text).toContain('HTTP Present Tag');
+    expect(grid.text).toContain('Missing at last scan');
+    expect(grid.text).toContain(`<option value="${shared.id}">HTTP Shared Tag</option>`);
+    expect(grid.text).toContain(`<option value="${projectOnly.id}">HTTP Project Only Tag</option>`);
+    expect((grid.text.match(/<li>HTTP Project Only Tag<\/li>/g) || [])).toHaveLength(0);
+    expect(grid.text).not.toContain('http-shared-secret');
+    expect(grid.text).toContain('<select id="asset-tag" name="tag">');
+
+    const list = await request(app).get('/assets?view=list').expect(200);
+    const table = list.text.match(/<table class="data-table asset-table">[\s\S]*?<\/table>/)?.[0];
+    const header = table?.match(/<thead>[\s\S]*?<\/thead>/)?.[0];
+    const body = table?.match(/<tbody>[\s\S]*?<\/tbody>/)?.[0];
+    const rows = body?.match(/<tr(?:\s[^>]*)?>[\s\S]*?<\/tr>/g) || [];
+
+    expect(table).toBeDefined();
+    expect(header).toContain('<th scope="col">Tags</th>');
+    expect((header.match(/<th\b/g) || [])).toHaveLength(10);
+    expect(rows).toHaveLength(2);
+    expect(rows.map((row) => (row.match(/<td\b/g) || []).length)).toEqual([10, 10]);
+    expect(list.text).toContain('<ul class="asset-tag-list" aria-label="Assigned tags">');
+    expect(list.text).toContain(`<option value="${shared.id}">HTTP Shared Tag</option>`);
+    expect((list.text.match(/<li>HTTP Project Only Tag<\/li>/g) || [])).toHaveLength(0);
+    expect(list.text).not.toContain('http-shared-secret');
+    expect(list.text).toContain('<select id="asset-tag" name="tag">');
+  });
+
+  it('filters global assets by direct reusable tag assignments across projects', async () => {
+    const alpha = createProject('Tag Filter Alpha');
+    const beta = createProject('Tag Filter Beta');
+    const shared = tagRepository.create({ displayName: 'Shared Filter Tag', normalizedName: 'shared-filter-secret' });
+    const additional = tagRepository.create({ displayName: 'Additional Filter Tag', normalizedName: 'additional-filter-secret' });
+    const projectOnly = tagRepository.create({ displayName: 'Project Filter Tag', normalizedName: 'project-filter-secret' });
+    const alphaFirst = createAsset(alpha.id, 'alpha-first.png');
+    const alphaMultiple = createAsset(alpha.id, 'alpha-multiple.png');
+    const betaMissing = createAsset(beta.id, 'beta-missing.png');
+    createAsset(beta.id, 'beta-untagged.png');
+
+    tagRepository.assignToAsset(alphaFirst.id, shared.id);
+    tagRepository.assignToAsset(alphaMultiple.id, shared.id);
+    tagRepository.assignToAsset(alphaMultiple.id, additional.id);
+    tagRepository.assignToAsset(betaMissing.id, shared.id);
+    tagRepository.assignToProject(alpha.id, projectOnly.id);
+    markMissing(beta.id);
+
+    const response = await request(app).get(`/assets?tag=${shared.id}&view=list`).expect(200);
+
+    expect(response.headers.location).toBeUndefined();
+    const table = response.text.match(/<table class="data-table asset-table">[\s\S]*?<\/table>/)?.[0];
+    const rows = table?.match(/<tbody>[\s\S]*?<\/tbody>/)?.[0].match(/<tr(?:\s[^>]*)?>[\s\S]*?<\/tr>/g) || [];
+
+    expect(rows).toHaveLength(3);
+    expect(response.text).toContain('alpha-first.png');
+    expect(response.text).toContain('alpha-multiple.png');
+    expect(response.text).toContain('beta-missing.png');
+    expect(response.text).not.toContain('beta-untagged.png');
+    expect(response.text).toContain(`<option value="${shared.id}" selected>Shared Filter Tag</option>`);
+    expect((response.text.match(/<li>Project Filter Tag<\/li>/g) || [])).toHaveLength(0);
+    expect(response.text).toContain('3 assets found');
+  });
+
+  it('canonicalizes malformed, nonexistent, and deleted tags once without redirect loops', async () => {
+    const invalidValues = ['', '0', '-1', '1.5', '1junk', 'not-a-number', '9007199254740992', '9999'];
+
+    for (const value of invalidValues) {
+      const redirect = await request(app)
+        .get(`/assets?tag=${encodeURIComponent(value)}&search=keep`)
+        .expect(302);
+      expect(redirect.headers.location).toBe('/assets?search=keep');
+
+      const canonical = await request(app).get(redirect.headers.location).expect(200);
+      expect(canonical.headers.location).toBeUndefined();
+    }
+
+    const deleted = tagRepository.create({ displayName: 'Deleted Filter Tag', normalizedName: 'deleted-filter-secret' });
+    tagRepository.deleteById(deleted.id);
+    const redirect = await request(app)
+      .get(`/assets?tag=${deleted.id}&search=keep`)
+      .expect(302);
+
+    expect(redirect.headers.location).toBe('/assets?search=keep');
+    const canonical = await request(app).get(redirect.headers.location).expect(200);
+    expect(canonical.headers.location).toBeUndefined();
   });
 
   it('maps every supported filter to the read-only page query and renders list view', async () => {
@@ -356,15 +463,17 @@ describe('cross-project Asset Viewer HTTP route', () => {
       filename: 'used.PNG',
       extension: 'PNG',
     });
+    const tag = tagRepository.create({ displayName: 'Saved Default Tag', normalizedName: 'saved-default-secret' });
+    tagRepository.assignToAsset(keep.id, tag.id);
     insertReleaseUsage(project.id, used.id);
     markMissing(project.id);
     assetRepository.restorePresent(project.id, ['source/keep.PNG']);
 
     const redirect = await request(app).get(
-      `/assets?project=${project.id}&category=source&search=keep&extension=.PNG&presence=present&usage=unused`,
+      `/assets?project=${project.id}&category=source&tag=${tag.id}&search=keep&extension=.PNG&presence=present&usage=unused`,
     ).expect(302);
     expect(redirect.headers.location).toBe(
-      `/assets?project=${project.id}&category=source&search=keep&extension=png&presence=present&usage=unused&sort=project&order=desc&pageSize=50&view=list`,
+      `/assets?project=${project.id}&category=source&tag=${tag.id}&search=keep&extension=png&presence=present&usage=unused&sort=project&order=desc&pageSize=50&view=list`,
     );
 
     const response = await request(app).get(redirect.headers.location).expect(200);
@@ -372,6 +481,7 @@ describe('cross-project Asset Viewer HTTP route', () => {
     expect(response.text).toContain('keep.PNG');
     expect(response.text).not.toContain('used.PNG');
     expect(response.text).toContain('<option value="source" selected>Source</option>');
+    expect(response.text).toContain(`<option value="${tag.id}" selected>Saved Default Tag</option>`);
     expect(response.text).toContain('<option value="present" selected>Present</option>');
     expect(response.text).toContain('<option value="unused" selected>Not used in releases</option>');
   });
@@ -381,7 +491,7 @@ describe('cross-project Asset Viewer HTTP route', () => {
     createAsset(project.id, 'A+B.png', { filename: 'A+B.png', extension: 'PNG' });
 
     const redirect = await request(app)
-      .get('/assets?unknown=discard&project=not-a-number&category=Not%20A%20Category&search=%20A%2BB%20&extension=.PNG&presence=invalid&usage=invalid&sort=invalid&order=invalid&page=0&pageSize=20&view=invalid')
+      .get('/assets?unknown=discard&tag=123&project=not-a-number&category=Not%20A%20Category&search=%20A%2BB%20&extension=.PNG&presence=invalid&usage=invalid&sort=invalid&order=invalid&page=0&pageSize=20&view=invalid')
       .expect(302);
 
     expect(redirect.headers.location).toBe('/assets?search=A%2BB&extension=png');
@@ -438,22 +548,25 @@ describe('cross-project Asset Viewer HTTP route', () => {
   it('preserves effective presentation values through view, pagination, and clear-filter URLs', async () => {
     writeAssetViewerDefaults({ view: 'list', sort: 'project', order: 'desc', pageSize: '50' });
     const project = createProject('URL Context Project');
+    const contextAssets = [];
     for (let index = 1; index <= 51; index++) {
-      createAsset(project.id, `context-${String(index).padStart(2, '0')}.txt`, {
+      contextAssets.push(createAsset(project.id, `context-${String(index).padStart(2, '0')}.txt`, {
         filename: `context-${String(index).padStart(2, '0')}.txt`,
         extension: 'txt',
-      });
+      }));
     }
+    const tag = tagRepository.create({ displayName: 'URL Context Tag', normalizedName: 'url-context-secret' });
+    for (const asset of contextAssets) tagRepository.assignToAsset(asset.id, tag.id);
 
     const response = await request(app).get(
-      `/assets?project=${project.id}&sort=project&order=desc&page=2&pageSize=50&view=list`,
+      `/assets?project=${project.id}&tag=${tag.id}&sort=project&order=desc&page=2&pageSize=50&view=list`,
     ).expect(200);
 
     expect(response.text).toContain(
-      'href="/assets?project=' + project.id + '&amp;sort=project&amp;order=desc&amp;page=2&amp;pageSize=50&amp;view=grid"',
+      'href="/assets?project=' + project.id + '&amp;tag=' + tag.id + '&amp;sort=project&amp;order=desc&amp;page=2&amp;pageSize=50&amp;view=grid"',
     );
     expect(response.text).toContain(
-      'href="/assets?project=' + project.id + '&amp;sort=project&amp;order=desc&amp;pageSize=50&amp;view=list"',
+      'href="/assets?project=' + project.id + '&amp;tag=' + tag.id + '&amp;sort=project&amp;order=desc&amp;pageSize=50&amp;view=list"',
     );
     expect(response.text).toContain(
       'href="/assets?sort=project&amp;order=desc&amp;pageSize=50&amp;view=list">Clear filters</a>',

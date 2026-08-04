@@ -4,7 +4,7 @@
 
 {% set page_title = "Asset Viewer" %}
 {% set currentView = presentation.view or filters.view %}
-{% set clearFiltersUrl = pageUrl({ projectId: null, category: 'all', search: null, extension: null, presence: 'all', usage: 'all', page: 1 }) %}
+{% set clearFiltersUrl = pageUrl({ projectId: null, category: 'all', tag: null, search: null, extension: null, presence: 'all', usage: 'all', page: 1 }) %}
 
 {% macro renderPresence(asset) %}
   {% if asset.is_present %}
@@ -118,6 +118,16 @@
     </div>
 
     <div class="field">
+      <label for="asset-tag">Tag</label>
+      <select id="asset-tag" name="tag"{% if tagOptions.length == 0 %} disabled{% endif %}>
+        <option value=""{% if not filters.tag %} selected{% endif %}>All tags</option>
+        {% for option in tagOptions %}
+          <option value="{{ option.value }}"{% if filters.tag == option.value %} selected{% endif %}>{{ option.displayName }}</option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <div class="field">
       <label for="asset-search">Search</label>
       <input id="asset-search" name="search" type="search" value="{{ filters.search or '' }}">
     </div>
@@ -222,6 +232,13 @@
                 {% if asset.relative_path %}<span class="asset-card-location">{{ asset.relative_path }}</span>{% endif %}
                 <span class="asset-card-category">Category: {{ renderCategory(asset) }}</span>
                 <span class="asset-card-meta">{{ renderAssetMeta(asset) }}</span>
+                {% if asset.tags and asset.tags.length > 0 %}
+                  <ul class="asset-card-tags" aria-label="Assigned tags">
+                    {% for tag in asset.tags %}
+                      <li>{{ tag.displayName }}</li>
+                    {% endfor %}
+                  </ul>
+                {% endif %}
               </div>
             </article>
           </li>
@@ -236,6 +253,7 @@
               <th scope="col">File</th>
               <th scope="col">Project</th>
               <th scope="col">Category</th>
+              <th scope="col">Tags</th>
               <th scope="col">Extension</th>
               <th scope="col">Size</th>
               <th scope="col">Modified</th>
@@ -259,6 +277,15 @@
                   <a class="asset-project-link" href="{{ projectUrl }}" aria-label="View project {{ asset.project_title }}">{{ asset.project_title }}</a>
                 </td>
                 <td class="asset-category-cell">{{ renderCategory(asset) }}</td>
+                <td class="asset-tags-cell">
+                  {% if asset.tags and asset.tags.length > 0 %}
+                    <ul class="asset-tag-list" aria-label="Assigned tags">
+                      {% for tag in asset.tags %}
+                        <li>{{ tag.displayName }}</li>
+                      {% endfor %}
+                    </ul>
+                  {% endif %}
+                </td>
                 <td><span class="asset-type-label">{{ asset.extension or '—' }}</span></td>
                 <td>
                   {% if asset.size_bytes == 0 or asset.size_bytes %}{{ asset.size_bytes }} bytes{% else %}—{% endif %}
@@ -285,7 +312,7 @@
       </nav>
     {% endif %}
   {% else %}
-    {% set filtersActive = filters.projectId or filters.category != 'all' or filters.search or filters.extension or filters.presence != 'all' or filters.usage != 'all' %}
+    {% set filtersActive = filters.projectId or filters.category != 'all' or filters.tag or filters.search or filters.extension or filters.presence != 'all' or filters.usage != 'all' %}
     {% set noAssetsAcrossProjects = false %}
     {% if hasAnyAssets is defined %}
       {% set noAssetsAcrossProjects = not hasAnyAssets %}

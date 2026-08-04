@@ -1162,6 +1162,76 @@ describe('asset repository', () => {
       expect(assetRepo.countAllAssets({ projectId: other.id })).toBe(1);
     });
 
+    it('filters global assets by direct tags across projects before pagination without duplicates', () => {
+      const other = createProject('Other Tagged Project');
+      const category = insertCategory(projectId, {
+        displayName: 'Source Files',
+        directorySlug: 'source',
+      });
+      const otherCategory = insertCategory(other.id, {
+        displayName: 'Other Source Files',
+        directorySlug: 'source',
+      });
+      const shared = tagRepo.create({ displayName: 'Global Shared', normalizedName: 'global-shared-secret' });
+      const additional = tagRepo.create({ displayName: 'Global Additional', normalizedName: 'global-additional-secret' });
+      const projectOnly = tagRepo.create({ displayName: 'Global Project Only', normalizedName: 'global-project-only-secret' });
+      const first = addAsset(projectId, 'source/a-first.png', { categoryId: category.id });
+      const multiple = addAsset(projectId, 'source/b-multiple.png', { categoryId: category.id });
+      const missing = addAsset(projectId, 'source/c-missing.png', { categoryId: category.id });
+      const foreign = addAsset(other.id, 'source/d-foreign.png', { categoryId: otherCategory.id });
+      addAsset(projectId, 'source/e-untagged.png', { categoryId: category.id });
+      const wrongExtension = addAsset(projectId, 'source/f-wrong.jpg', {
+        categoryId: category.id,
+        extension: 'jpg',
+      });
+
+      tagRepo.assignToAsset(first.id, shared.id);
+      tagRepo.assignToAsset(multiple.id, shared.id);
+      tagRepo.assignToAsset(multiple.id, additional.id);
+      tagRepo.assignToAsset(missing.id, shared.id);
+      tagRepo.assignToAsset(foreign.id, shared.id);
+      tagRepo.assignToAsset(wrongExtension.id, shared.id);
+      tagRepo.assignToProject(projectId, projectOnly.id);
+      assetRepo.markMissingByProjectIdAndPathNotIn(projectId, [
+        'source/a-first.png',
+        'source/b-multiple.png',
+        'source/e-untagged.png',
+        'source/f-wrong.jpg',
+      ]);
+
+      const allMatching = assetRepo.findAllAssets({ tag: shared.id, limit: 100 });
+      const firstPage = assetRepo.findAllAssets({ tag: shared.id, limit: 2, offset: 0 });
+      const secondPage = assetRepo.findAllAssets({ tag: shared.id, limit: 2, offset: 2 });
+      const composedFilters = {
+        tag: shared.id,
+        projectId,
+        category: 'source',
+        search: 'source/',
+        extension: 'png',
+        presence: 'present',
+        usage: 'used',
+      };
+      const release = insertRelease(db, { projectId, title: 'Global Tag Release' });
+      linkAssetToRelease(db, { releaseId: release.id, assetId: first.id });
+
+      expect(allMatching.map((asset) => asset.id)).toEqual([
+        first.id,
+        multiple.id,
+        missing.id,
+        foreign.id,
+        wrongExtension.id,
+      ]);
+      expect(new Set(allMatching.map((asset) => asset.id)).size).toBe(allMatching.length);
+      expect(assetRepo.countAllAssets({ tag: shared.id })).toBe(allMatching.length);
+      expect([...firstPage, ...secondPage].map((asset) => asset.id)).toEqual(
+        allMatching.slice(0, 4).map((asset) => asset.id),
+      );
+      expect(allMatching.find((asset) => asset.id === missing.id).is_present).toBe(0);
+      expect(assetRepo.findAllAssets({ tag: projectOnly.id, limit: 100 })).toEqual([]);
+      expect(assetRepo.findAllAssets(composedFilters).map((asset) => asset.id)).toEqual([first.id]);
+      expect(assetRepo.countAllAssets(composedFilters)).toBe(1);
+    });
+
     it('searches filename and relative path across project boundaries', () => {
       const other = createProject('Other Project');
       addAsset(projectId, 'renders/sunset/final.png', { filename: 'final.png' });

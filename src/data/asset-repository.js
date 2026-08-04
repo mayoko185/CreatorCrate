@@ -216,6 +216,7 @@ function buildAllAssetBrowserConditions(filters = {}) {
   }
 
   appendGlobalAssetCategoryCondition(conditions, params, filters.category);
+  appendProjectAssetTagCondition(conditions, params, filters.tag);
   return { conditions, params };
 }
 
@@ -1112,6 +1113,7 @@ export function createAssetRepository(db) {
      * @param {'all'|'present'|'missing'} [filters.presence='all']
      * @param {'all'|'used'|'unused'} [filters.usage='all']
      * @param {'all'|'uncategorized'|string} [filters.category='all']
+     * @param {number|null} [filters.tag]
      * @param {'filename'|'modified'|'size'|'category'|'project'} [filters.sort='filename']
      * @param {'asc'|'desc'} [filters.order='asc']
      * @param {number} [filters.limit=25]
@@ -1146,6 +1148,7 @@ export function createAssetRepository(db) {
      * without multiplying rows, so the count cannot inflate from joins.
      *
      * @param {object} [filters]
+     * @param {number|null} [filters.tag]
      * @returns {number}
      */
     countAllAssets(filters = {}) {

@@ -3,6 +3,7 @@ import { validateDirectorySlug } from '../services/asset-category-validation.js'
 export const ASSET_LIBRARY_QUERY_KEYS = Object.freeze([
   'project',
   'category',
+  'tag',
   'search',
   'extension',
   'presence',
@@ -18,6 +19,7 @@ export const ASSET_LIBRARY_PAGE_SIZE_VALUES = Object.freeze([10, 25, 50, 100]);
 
 export const ASSET_LIBRARY_DEFAULTS = Object.freeze({
   category: 'all',
+  tag: null,
   search: null,
   extension: null,
   presence: 'all',
@@ -147,6 +149,7 @@ export function isBareAssetLibraryRequest(rawQuery) {
  * @returns {{
  *   projectId: number|null,
  *   category: string,
+ *   tag: number|null,
  *   search: string|null,
  *   extension: string|null,
  *   presence: 'all'|'present'|'missing',
@@ -169,6 +172,7 @@ export function parseAssetLibraryQuery(rawQuery = {}) {
   return {
     projectId: parsePositiveInteger(raw.project),
     category: hasOwn(raw, 'category') ? normalizeCategory(raw.category) : ASSET_LIBRARY_DEFAULTS.category,
+    tag: parsePositiveInteger(raw.tag),
     search: normalizeSearch(raw.search),
     extension: normalizeExtension(raw.extension),
     presence: normalizeEnum(raw.presence, PRESENCE_VALUES, ASSET_LIBRARY_DEFAULTS.presence),
@@ -245,6 +249,7 @@ export function buildAssetLibraryUrl(normalizedState = {}, overrides = {}) {
   const safeOverrides = isRecord(overrides) ? overrides : {};
   const project = readOverride(state, safeOverrides, 'projectId');
   const category = readOverride(state, safeOverrides, 'category');
+  const tag = readOverride(state, safeOverrides, 'tag');
   const search = readOverride(state, safeOverrides, 'search');
   const extension = readOverride(state, safeOverrides, 'extension');
   const presence = readOverride(state, safeOverrides, 'presence');
@@ -265,6 +270,7 @@ export function buildAssetLibraryUrl(normalizedState = {}, overrides = {}) {
   const normalizedCategory = normalizeCategory(category.value);
   if (normalizedCategory !== 'all') appendQueryValue(query, 'category', normalizedCategory);
 
+  appendQueryValue(query, 'tag', parsePositiveInteger(tag.value));
   appendQueryValue(query, 'search', normalizeSearch(search.value));
   appendQueryValue(query, 'extension', normalizeExtension(extension.value));
 

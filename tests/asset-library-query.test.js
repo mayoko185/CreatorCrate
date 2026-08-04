@@ -89,6 +89,16 @@ describe('Asset Viewer query foundation', () => {
     expect(parseAssetLibraryQuery({ category: 'source_files' }).category).toBe('all');
   });
 
+  it('parses only strict positive safe integer tag IDs', () => {
+    expect(parseAssetLibraryQuery({ tag: '42' }).tag).toBe(42);
+
+    for (const tag of ['', '0', '-1', '1.5', '1junk', 'not-a-number', '9007199254740992', '01', ' 2 ']) {
+      expect(parseAssetLibraryQuery({ tag }).tag).toBeNull();
+    }
+
+    expect(parseAssetLibraryQuery({}).tag).toBeNull();
+  });
+
   it('trims search text, omits empty search, and preserves meaningful intent', () => {
     expect(parseAssetLibraryQuery({ search: '  final render  ' }).search).toBe('final render');
     expect(parseAssetLibraryQuery({ search: '   ' }).search).toBeNull();
@@ -138,12 +148,15 @@ describe('Asset Viewer query foundation', () => {
     expect(hasAssetLibraryQuery({ unknown: 'value', view: 'invalid' })).toBe(true);
     expect(isBareAssetLibraryRequest({ unknown: 'value', view: 'invalid' })).toBe(false);
     expect(parseAssetLibraryQuery({ unknown: 'value', view: 'invalid' }).queryWasNonBare).toBe(true);
+    expect(hasAssetLibraryQuery({ tag: '' })).toBe(true);
+    expect(parseAssetLibraryQuery({ tag: '' }).tag).toBeNull();
   });
 
   it('omits fallback values and preserves active filters in deterministic order', () => {
     const parsed = parseAssetLibraryQuery({
       project: '12',
       category: 'source-files',
+      tag: '42',
       search: 'A&B / résumé',
       extension: '.PNG',
       presence: 'missing',
@@ -157,7 +170,7 @@ describe('Asset Viewer query foundation', () => {
     });
 
     expect(buildAssetLibraryUrl(parsed)).toBe(
-      '/assets?project=12&category=source-files&search=A%26B+%2F+r%C3%A9sum%C3%A9&extension=png&presence=missing&usage=used&sort=project&order=desc&page=3&pageSize=50&view=list',
+      '/assets?project=12&category=source-files&tag=42&search=A%26B+%2F+r%C3%A9sum%C3%A9&extension=png&presence=missing&usage=used&sort=project&order=desc&page=3&pageSize=50&view=list',
     );
 
     expect(buildAssetLibraryUrl(parseAssetLibraryQuery({
@@ -184,6 +197,14 @@ describe('Asset Viewer query foundation', () => {
       order: 'invalid',
       pageSize: '20',
     }))).toBe('/assets');
+  });
+
+  it('omits null, malformed, and unsafe tag values from generated URLs', () => {
+    const state = parseAssetLibraryQuery({ tag: '42', search: 'keep' });
+
+    expect(buildAssetLibraryUrl(state, { tag: null })).toBe('/assets?search=keep');
+    expect(buildAssetLibraryUrl(state, { tag: '42junk' })).toBe('/assets?search=keep');
+    expect(buildAssetLibraryUrl({ tag: '9007199254740992' })).toBe('/assets');
   });
 
   it('preserves a route-marked fallback for an invalid explicit value', () => {
