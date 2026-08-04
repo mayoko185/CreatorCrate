@@ -31,6 +31,7 @@ import { createAssetRepository } from '../data/asset-repository.js';
 import { createAssetCategoryRepository } from '../data/asset-category-repository.js';
 import { createAssetBrowserPreferenceRepository } from '../data/asset-browser-preference-repository.js';
 import { createProjectPrimaryImageRepository } from '../data/project-primary-image-repository.js';
+import { createTagRepository } from '../data/tag-repository.js';
 import {
   AUTO_RENAME_UNAVAILABLE_REASONS,
   createAssetBrowserPreferenceService,
@@ -86,7 +87,7 @@ const ASSET_LIBRARY_VIEW_OPTIONS = Object.freeze([
  * (list/grid presentation) so it round-trips through every generated
  * browser/viewer URL exactly like the other filter/sort/pagination fields.
  */
-const ASSET_BROWSER_CONTEXT_KEYS = ['category', 'search', 'extension', 'presence', 'usage', 'sort', 'order', 'page', 'pageSize', 'view'];
+const ASSET_BROWSER_CONTEXT_KEYS = ['category', 'tag', 'search', 'extension', 'presence', 'usage', 'sort', 'order', 'page', 'pageSize', 'view'];
 
 const ASSET_CATEGORY_SELECTIONS = Object.freeze({
   IMPLICIT_ALL: 'implicit-all',
@@ -177,7 +178,7 @@ export function buildCanonicalAssetBrowserQuery(context = {}, page, overrides = 
 }
 
 function buildAssetBrowserFilters(context) {
-  return {
+  const filters = {
     search: context.search,
     extension: context.extension,
     presence: context.presence,
@@ -187,6 +188,8 @@ function buildAssetBrowserFilters(context) {
     order: context.order,
     view: context.view,
   };
+  if (context.tag !== null && context.tag !== undefined) filters.tag = context.tag;
+  return filters;
 }
 
 /**
@@ -329,18 +332,21 @@ function groupByDate(releases) {
  * @param {Function} [deps.evaluateReleaseReadiness] — pure readiness policy
  *   function injected for Phase 7A read-service composition. When omitted,
  *   the service still works but getReleaseReadiness will throw a clear error.
+ * @param {object} [deps.tagRepository] — shared project/asset tag repository
  */
 export function createWorkflowQueryService({
   db,
   evaluateReleaseReadiness,
   projectPrimaryImageRepository,
   assetBrowserPreferenceService: injectedAssetBrowserPreferenceService,
+  tagRepository: injectedTagRepository,
 }) {
   const projectRepository = createProjectRepository(db);
   const releaseRepository = createReleaseRepository(db);
   const assetRepository = createAssetRepository(db);
   const assetCategoryRepository = createAssetCategoryRepository(db);
   const primaryImageRepository = projectPrimaryImageRepository ?? createProjectPrimaryImageRepository(db);
+  const tagRepository = injectedTagRepository ?? createTagRepository(db);
   const assetBrowserPreferenceService = injectedAssetBrowserPreferenceService
     ?? createAssetBrowserPreferenceService({
       preferenceRepository: createAssetBrowserPreferenceRepository(db),
@@ -618,8 +624,77 @@ export function createWorkflowQueryService({
   }
 
   /**
+   * Attach tags only to the already-paged project rows. The repository returns
+   * one ordered batch, which is indexed here before projecting display names.
+   *
+   * @param {Array} projects
+   * @returns {Array}
+   */
+  function attachProjectTags(projects) {
+    if (!Array.isArray(projects) || projects.length === 0) return [];
+
+    const projectIds = projects.map((project) => project.id);
+    const tagRows = tagRepository.listForProjectIds(projectIds);
+    const tagsByProjectId = new Map();
+
+    for (const tag of tagRows) {
+      if (!tagsByProjectId.has(tag.project_id)) {
+        tagsByProjectId.set(tag.project_id, []);
+      }
+      tagsByProjectId.get(tag.project_id).push({ displayName: tag.display_name });
+    }
+
+    return projects.map((project) => ({
+      ...project,
+      tags: tagsByProjectId.get(project.id) || [],
+    }));
+  }
+
+  /**
+   * Attach tags only to the already-selected asset rows. The repository
+   * returns one ordered batch, which is indexed here before projecting display
+   * names for the browser templates.
+   *
+   * @param {Array} assets
+   * @returns {Array}
+   */
+  function attachAssetTags(assets) {
+    if (!Array.isArray(assets) || assets.length === 0) return [];
+
+    const assetIds = assets.map((asset) => asset.id);
+    const tagRows = tagRepository.listForAssetIds(assetIds);
+    const tagsByAssetId = new Map();
+
+    for (const tag of tagRows) {
+      if (!tagsByAssetId.has(tag.asset_id)) {
+        tagsByAssetId.set(tag.asset_id, []);
+      }
+      tagsByAssetId.get(tag.asset_id).push({ displayName: tag.display_name });
+    }
+
+    return assets.map((asset) => ({
+      ...asset,
+      tags: tagsByAssetId.get(asset.id) || [],
+    }));
+  }
+
+  /**
+   * Return the global tag catalog in the fields required by the Projects
+   * filter. The repository owns deterministic ordering; display projection
+   * keeps normalized names and timestamps out of the page model.
+   *
+   * @returns {Array<{value: string, displayName: string}>}
+   */
+  function getProjectTagFilterOptions() {
+    return tagRepository.list().map((tag) => ({
+      value: String(tag.id),
+      displayName: tag.display_name,
+    }));
+  }
+
+  /**
    * Project-list read model foundation. Repository pagination and filtering
-   * happen first; only the returned page rows receive primary-image data.
+   * happen first; only the returned page rows receive primary-image and tag data.
    * Reads retain unavailable selections and never mutate primary-image state.
    *
    * @param {object} [options] - project repository list options
@@ -629,7 +704,7 @@ export function createWorkflowQueryService({
     const result = projectRepository.list(options);
     return {
       ...result,
-      rows: attachPrimaryImages(result.rows),
+      rows: attachProjectTags(attachPrimaryImages(result.rows)),
     };
   }
 
@@ -1109,9 +1184,10 @@ export function createWorkflowQueryService({
    * @param {Object} raw
    * @param {string[]} extensionChoices - normalized extensions available in the project scope
    * @param {Array<{id: number}>} projectCategories - the requesting project's own category rows
-   * @returns {{ search: string|null, extension: string|null, presence: 'all'|'present'|'missing', usage: 'all'|'used'|'unused', category: 'all'|'uncategorized'|number, categorySelection: string, categoryWasSupplied: boolean, sort: 'filename'|'modified'|'size'|'category', order: 'asc'|'desc', page: number, pageSize: number, view: 'list'|'grid', queryWasNonBare: boolean }}
+   * @param {Array<{id: number}>} tagCatalog - the global reusable tag rows
+   * @returns {{ search: string|null, tag: number|null, extension: string|null, presence: 'all'|'present'|'missing', usage: 'all'|'used'|'unused', category: 'all'|'uncategorized'|number, categorySelection: string, categoryWasSupplied: boolean, sort: 'filename'|'modified'|'size'|'category', order: 'asc'|'desc', page: number, pageSize: number, view: 'list'|'grid', queryWasNonBare: boolean }}
    */
-  function normalizeAssetBrowserQuery(raw = {}, extensionChoices = [], projectCategories = []) {
+  function normalizeAssetBrowserQuery(raw = {}, extensionChoices = [], projectCategories = [], tagCatalog = []) {
     const safeRaw = raw && typeof raw === 'object' ? raw : {};
     const presenceValues = ['all', 'present', 'missing'];
     const usageValues = ['all', 'used', 'unused'];
@@ -1120,6 +1196,7 @@ export function createWorkflowQueryService({
     const usage = usageValues.includes(safeRaw.usage) ? safeRaw.usage : 'all';
 
     const search = normalizeAssetBrowserSearch(safeRaw.search);
+    const tag = normalizeAssetBrowserTag(safeRaw.tag, tagCatalog, hasOwn(safeRaw, 'tag'));
     const extension = normalizeAssetBrowserExtension(safeRaw.extension, extensionChoices);
     const category = normalizeAssetBrowserCategory(
       safeRaw.category,
@@ -1141,6 +1218,7 @@ export function createWorkflowQueryService({
 
     return {
       search,
+      tag,
       extension,
       presence,
       usage,
@@ -1152,6 +1230,15 @@ export function createWorkflowQueryService({
       view,
       queryWasNonBare: Object.keys(safeRaw).length > 0,
     };
+  }
+
+  function normalizeAssetBrowserTag(raw, tagCatalog, tagWasSupplied) {
+    if (!tagWasSupplied || raw === '') return null;
+    if (Array.isArray(raw) || (typeof raw !== 'string' && typeof raw !== 'number')) return null;
+
+    const id = parseStrictPositiveInt(raw);
+    if (id === null) return null;
+    return tagCatalog.some((tag) => tag.id === id) ? id : null;
   }
 
   /**
@@ -1293,9 +1380,11 @@ export function createWorkflowQueryService({
   }
 
   function buildProjectAssetViewerUrl(projectId, assetId, context, page) {
+    const viewerContext = { ...(context || {}) };
+    delete viewerContext.tag;
     return appendQuery(
       `/projects/${projectId}/assets/${assetId}`,
-      buildCanonicalAssetBrowserQuery(context, page)
+      buildCanonicalAssetBrowserQuery(viewerContext, page)
     );
   }
 
@@ -1565,6 +1654,7 @@ export function createWorkflowQueryService({
    *   pageCount: number,
    *   filters: object,
    *   extensionChoices: Array<{ value: string, label: string, selected: boolean }>,
+   *   tagOptions: Array<{ value: number, displayName: string }>,
    *   categoryNavigation: object,
    *   emptyState: object|null,
    *   ordering: string,
@@ -1578,6 +1668,11 @@ export function createWorkflowQueryService({
     const projectCategories = assetCategoryRepository.listProjectCategories(projectId);
     const extensions = assetRepository.listProjectAssetExtensions(projectId);
     const navCounts = assetRepository.getProjectAssetNavigationCounts(projectId);
+    const tagCatalog = tagRepository.list();
+    const tagOptions = tagCatalog.map((tag) => ({
+      value: tag.id,
+      displayName: tag.display_name,
+    }));
 
     // Archived projects are read-only — bulk release-association targets are
     // never rendered there, so skip the (otherwise bounded) query entirely.
@@ -1590,7 +1685,7 @@ export function createWorkflowQueryService({
         status: release.status,
       }));
 
-    const filters = normalizeAssetBrowserQuery(rawQuery, extensions, projectCategories);
+    const filters = normalizeAssetBrowserQuery(rawQuery, extensions, projectCategories, tagCatalog);
 
     const total = assetRepository.countProjectAssets(projectId, filters);
 
@@ -1602,9 +1697,10 @@ export function createWorkflowQueryService({
       page,
       pageSize: filters.pageSize,
     });
+    const pageAssets = attachAssetTags(pageResult);
 
     // Attach release usage details for assets on the current page
-    const assetIds = pageResult.map((a) => a.id);
+    const assetIds = pageAssets.map((a) => a.id);
     const usageDetails = releaseRepository.findReleaseUsageForAssetIds(projectId, assetIds);
 
     // Index usage details by asset_id for O(1) lookup during attachment
@@ -1616,7 +1712,7 @@ export function createWorkflowQueryService({
       usageByAssetId.get(detail.asset_id).push(detail);
     }
 
-    const assets = pageResult.map((asset) => ({
+    const assets = pageAssets.map((asset) => ({
       id: asset.id,
       project_id: asset.project_id,
       relative_path: asset.relative_path,
@@ -1634,6 +1730,7 @@ export function createWorkflowQueryService({
       missing_since: asset.missing_since,
       release_usage_count: asset.release_usage_count,
       release_usage: usageByAssetId.get(asset.id) || [],
+      tags: asset.tags,
       preview: buildAssetPreviewModel(asset),
     })).map((asset) => ({
       ...asset,
@@ -1670,6 +1767,7 @@ export function createWorkflowQueryService({
         label: extension,
         selected: extension === filters.extension,
       })),
+      tagOptions,
       categoryNavigation: buildCategoryNavigationModel(projectCategories, navCounts, filters),
       emptyState: buildAssetBrowserEmptyState(filters, total, navCounts, isArchived),
       isArchived,
@@ -1725,6 +1823,7 @@ export function createWorkflowQueryService({
       updated_at: asset.updated_at,
       release_usage_count: asset.release_usage_count ?? releaseUsage.length,
       release_usage: releaseUsage,
+      tags: asset.tags,
       preview,
     };
 
@@ -1815,7 +1914,8 @@ export function createWorkflowQueryService({
         autoRenameUnavailableReason: AUTO_RENAME_UNAVAILABLE_REASONS.EMPTY,
       };
     }
-    const assetIds = rows.map((asset) => asset.id);
+    const taggedRows = attachAssetTags(rows);
+    const assetIds = taggedRows.map((asset) => asset.id);
     const usageDetails = assetIds.length > 0
       ? releaseRepository.findReleaseUsageForAssetIds(projectId, assetIds)
       : [];
@@ -1825,7 +1925,7 @@ export function createWorkflowQueryService({
       usageByAssetId.get(detail.asset_id).push(detail);
     }
 
-    const assets = rows.map((asset) => buildAutoRenameCategoryAssetModel(
+    const assets = taggedRows.map((asset) => buildAutoRenameCategoryAssetModel(
       projectId,
       category.id,
       view,
@@ -1861,7 +1961,10 @@ export function createWorkflowQueryService({
 
     const projectCategories = assetCategoryRepository.listProjectCategories(projectId);
     const extensions = assetRepository.listProjectAssetExtensions(projectId);
-    const context = normalizeAssetBrowserQuery(rawQuery, extensions, projectCategories);
+    const tagCatalog = Object.prototype.hasOwnProperty.call(rawQuery || {}, 'tag')
+      ? tagRepository.list()
+      : [];
+    const context = normalizeAssetBrowserQuery(rawQuery, extensions, projectCategories, tagCatalog);
 
     return {
       filters: {
@@ -2105,6 +2208,7 @@ export function createWorkflowQueryService({
     getDashboardData,
     getProjectWorkspace,
     getProjectList,
+    getProjectTagFilterOptions,
     getPublishedProjectList,
     getAssetLibraryPage,
     getReleaseList,

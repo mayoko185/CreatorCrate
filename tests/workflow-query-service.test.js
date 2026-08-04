@@ -13,6 +13,7 @@ import { createAssetRepository } from '../src/data/asset-repository.js';
 import { createAssetCategoryRepository } from '../src/data/asset-category-repository.js';
 import { createAssetBrowserPreferenceRepository } from '../src/data/asset-browser-preference-repository.js';
 import { createProjectPrimaryImageRepository } from '../src/data/project-primary-image-repository.js';
+import { createTagRepository } from '../src/data/tag-repository.js';
 import { createReleaseRepository } from '../src/data/release-repository.js';
 import { getLocalTodayIso } from '../src/util/date.js';
 import { buildRevisionToken } from '../src/storage/preview-cache.js';
@@ -27,7 +28,9 @@ const DASHBOARD_FIXED_STATEMENT_EXECUTIONS = 14;
 // Phase 3 chunk 3: browser composition also loads eligible release targets
 // for the bulk-add-to-release form (1 additional bounded statement, only
 // for non-archived projects — archived projects skip it entirely).
-const ASSET_BROWSER_FIXED_STATEMENT_EXECUTIONS = 8;
+// Phase 4: the browser performs one global tag-catalog lookup and one
+// page-local asset-tag batch lookup.
+const ASSET_BROWSER_FIXED_STATEMENT_EXECUTIONS = 10;
 const ASSET_VIEWER_FIXED_STATEMENT_EXECUTIONS = 5;
 // getReleaseList composes: countFiltered (filtered total),
 // countFiltered({ includeArchived: true }) (hasAnyReleases existence), findPage
@@ -142,6 +145,7 @@ describe('workflow query service', () => {
   let service;
   let primaryImageRepository;
   let preferenceRepository;
+  let tagRepository;
   let today;
 
   beforeEach(() => {
@@ -151,10 +155,12 @@ describe('workflow query service', () => {
     runMigrations(db, MIGRATIONS_DIR);
     primaryImageRepository = createProjectPrimaryImageRepository(db);
     preferenceRepository = createAssetBrowserPreferenceRepository(db);
+    tagRepository = createTagRepository(db);
     service = createWorkflowQueryService({
       db,
       evaluateReleaseReadiness,
       projectPrimaryImageRepository: primaryImageRepository,
+      tagRepository,
     });
     today = getLocalTodayIso();
   });
@@ -209,8 +215,9 @@ describe('workflow query service', () => {
 
     it('returns a stable none model when no selection exists', () => {
       const project = insertProject(db, { title: 'No Primary Selection' });
+      const row = getProjectRow(project.id);
 
-      expect(getProjectRow(project.id).primaryImage).toEqual({
+      expect(row.primaryImage).toEqual({
         selectedAssetId: null,
         state: 'none',
         kind: null,
@@ -220,6 +227,41 @@ describe('workflow query service', () => {
         revision: null,
         alt: null,
       });
+      expect(row.tags).toEqual([]);
+    });
+
+    it('projects the shared tag catalog into deterministic filter options with only stable values and display names', () => {
+      const zeta = tagRepository.create({ displayName: 'zeta', normalizedName: 'zeta' });
+      const alpha = tagRepository.create({ displayName: 'Alpha', normalizedName: 'alpha' });
+      const beta = tagRepository.create({ displayName: 'Beta', normalizedName: 'beta' });
+      const list = vi.spyOn(tagRepository, 'list');
+
+      expect(service.getProjectTagFilterOptions()).toEqual([
+        { value: String(alpha.id), displayName: 'Alpha' },
+        { value: String(beta.id), displayName: 'Beta' },
+        { value: String(zeta.id), displayName: 'zeta' },
+      ]);
+      expect(list).toHaveBeenCalledTimes(1);
+      expect(list).toHaveBeenCalledWith();
+      list.mockRestore();
+    });
+
+    it('passes a tag filter to the project repository before enriching the current page', () => {
+      const tag = tagRepository.create({ displayName: 'Filtered', normalizedName: 'filtered' });
+      const matching = insertProject(db, { title: 'Filtered Project' });
+      insertProject(db, { title: 'Other Project' });
+      tagRepository.assignToProject(matching.id, tag.id);
+
+      const result = service.getProjectList({
+        tagId: tag.id,
+        sortBy: 'title',
+        order: 'asc',
+        limit: 25,
+        offset: 0,
+      });
+
+      expect(result.total).toBe(1);
+      expect(result.rows.map((project) => project.title)).toEqual(['Filtered Project']);
     });
 
     it('returns an available selection with versioned bounded preview URLs', () => {
@@ -302,6 +344,51 @@ describe('workflow query service', () => {
       });
     });
 
+    it('attaches ordered display-name tags only to current-page rows through one batch call', () => {
+      const projects = ['A', 'B', 'C'].map((letter) => insertProject(db, { title: `Tag Page ${letter}` }));
+      const shared = tagRepository.create({ displayName: 'Shared Tag', normalizedName: 'shared tag' });
+      const upperBeta = tagRepository.create({ displayName: 'Beta Tag', normalizedName: 'beta-a' });
+      const lowerBeta = tagRepository.create({ displayName: 'beta tag', normalizedName: 'beta-z' });
+      const outsidePage = tagRepository.create({ displayName: 'Outside Page Tag', normalizedName: 'outside page tag' });
+      const assetOnly = tagRepository.create({ displayName: 'Asset Only Tag', normalizedName: 'asset only tag' });
+      const asset = insertAsset(db, {
+        projectId: projects[1].id,
+        relativePath: 'asset-only.png',
+        filename: 'asset-only.png',
+      });
+
+      tagRepository.assignToProject(projects[0].id, outsidePage.id);
+      for (const tag of [shared, lowerBeta, upperBeta]) {
+        tagRepository.assignToProject(projects[1].id, tag.id);
+      }
+      tagRepository.assignToProject(projects[2].id, shared.id);
+      tagRepository.assignToAsset(asset.id, assetOnly.id);
+
+      const listForProjectIds = vi.spyOn(tagRepository, 'listForProjectIds');
+      const result = service.getProjectList({
+        sortBy: 'title',
+        order: 'asc',
+        limit: 2,
+        offset: 1,
+      });
+
+      expect(result.total).toBe(3);
+      expect(result.rows).toHaveLength(2);
+      expect(result.rows.map((project) => project.title)).toEqual(['Tag Page B', 'Tag Page C']);
+      expect(result.rows[0].tags).toEqual([
+        { displayName: 'Beta Tag' },
+        { displayName: 'beta tag' },
+        { displayName: 'Shared Tag' },
+      ]);
+      expect(result.rows[1].tags).toEqual([{ displayName: 'Shared Tag' }]);
+      expect(result.rows[0].tags[0]).not.toHaveProperty('id');
+      expect(result.rows[0].tags[0]).not.toHaveProperty('normalized_name');
+      expect(result.rows[0].tags.map((tag) => tag.displayName)).not.toContain('Asset Only Tag');
+      expect(listForProjectIds).toHaveBeenCalledTimes(1);
+      expect(listForProjectIds).toHaveBeenCalledWith([projects[1].id, projects[2].id]);
+      listForProjectIds.mockRestore();
+    });
+
     it('enriches only the current page through one selection batch and one asset batch', () => {
       const projects = ['A', 'B', 'C'].map((letter) => insertProject(db, { title: `Primary Page ${letter}` }));
       for (const project of projects) {
@@ -339,7 +426,7 @@ describe('workflow query service', () => {
       expect(result.rows[0].primaryImage.selectedAssetId).not.toBeNull();
       expect(findBatch).toHaveBeenCalledTimes(1);
       expect(findBatch).toHaveBeenCalledWith([projects[1].id]);
-      expect(counter.count()).toBe(4);
+      expect(counter.count()).toBe(5);
       findBatch.mockRestore();
     });
 
@@ -3077,6 +3164,111 @@ describe('workflow query service', () => {
       expect(empty.filters.extension).toBeNull();
     });
 
+    it('filters by a valid reusable asset tag, returns numeric deterministic options, and keeps rows unique', () => {
+      const project = insertProject(db, { title: 'Asset Tag Filter' });
+      const matching = insertAsset(db, { projectId: project.id, relativePath: 'matching.png', filename: 'matching.png', extension: 'png', isPresent: 1 });
+      const secondMatching = insertAsset(db, { projectId: project.id, relativePath: 'second.png', filename: 'second.png', extension: 'png', isPresent: 1 });
+      insertAsset(db, { projectId: project.id, relativePath: 'other.png', filename: 'other.png', extension: 'png', isPresent: 1 });
+      const zeta = tagRepository.create({ displayName: 'zeta', normalizedName: 'zeta' });
+      const alpha = tagRepository.create({ displayName: 'Alpha', normalizedName: 'alpha' });
+      const beta = tagRepository.create({ displayName: 'Beta', normalizedName: 'beta' });
+
+      tagRepository.assignToAsset(matching.id, beta.id);
+      tagRepository.assignToAsset(matching.id, alpha.id);
+      tagRepository.assignToAsset(secondMatching.id, beta.id);
+
+      const result = service.getProjectAssetBrowser(project.id, {
+        tag: String(beta.id),
+        pageSize: 25,
+      });
+
+      expect(result.filters.tag).toBe(beta.id);
+      expect(result.assets.map((asset) => asset.id)).toEqual([matching.id, secondMatching.id]);
+      expect(new Set(result.assets.map((asset) => asset.id)).size).toBe(result.assets.length);
+      expect(result.total).toBe(result.assets.length);
+      expect(result.tagOptions).toEqual([
+        { value: alpha.id, displayName: 'Alpha' },
+        { value: beta.id, displayName: 'Beta' },
+        { value: zeta.id, displayName: 'zeta' },
+      ]);
+      expect(result.tagOptions[0]).not.toHaveProperty('normalizedName');
+      expect(result.tagOptions[0]).not.toHaveProperty('normalized_name');
+    });
+
+    it('normalizes empty, malformed, nonexistent, and deleted asset tag IDs to all assets', () => {
+      const project = insertProject(db, { title: 'Invalid Asset Tag Filter' });
+      const tagged = insertAsset(db, { projectId: project.id, relativePath: 'tagged.txt', filename: 'tagged.txt', isPresent: 1 });
+      insertAsset(db, { projectId: project.id, relativePath: 'untagged.txt', filename: 'untagged.txt', isPresent: 1 });
+      const tag = tagRepository.create({ displayName: 'Existing', normalizedName: 'existing' });
+      tagRepository.assignToAsset(tagged.id, tag.id);
+
+      for (const rawTag of ['', '0', '-1', '1.5', '1junk', '999999', ['1']]) {
+        const result = service.getProjectAssetBrowser(project.id, { tag: rawTag });
+        expect(result.filters.tag).toBeUndefined();
+        expect(result.total).toBe(2);
+      }
+
+      tagRepository.deleteById(tag.id);
+      const deleted = service.getProjectAssetBrowser(project.id, { tag: String(tag.id) });
+      expect(deleted.filters.tag).toBeUndefined();
+      expect(deleted.total).toBe(2);
+      expect(deleted.tagOptions).toEqual([]);
+    });
+
+    it('composes tag, search, extension, presence, and usage filters before pagination', () => {
+      const project = insertProject(db, { title: 'Composed Asset Tag Filter' });
+      const matching = insertAsset(db, {
+        projectId: project.id,
+        relativePath: 'renders/Hero-Final.png',
+        filename: 'Hero-Final.png',
+        extension: 'png',
+        mimeType: 'image/png',
+        isPresent: 1,
+      });
+      const missing = insertAsset(db, {
+        projectId: project.id,
+        relativePath: 'renders/Hero-Missing.png',
+        filename: 'Hero-Missing.png',
+        extension: 'png',
+        mimeType: 'image/png',
+        isPresent: 0,
+      });
+      insertAsset(db, {
+        projectId: project.id,
+        relativePath: 'renders/Hero-Final.jpg',
+        filename: 'Hero-Final.jpg',
+        extension: 'jpg',
+        mimeType: 'image/jpeg',
+        isPresent: 1,
+      });
+      const tag = tagRepository.create({ displayName: 'Composed', normalizedName: 'composed' });
+      tagRepository.assignToAsset(matching.id, tag.id);
+      tagRepository.assignToAsset(missing.id, tag.id);
+      const release = insertRelease(db, { projectId: project.id, title: 'Used Asset', status: 'idea' });
+      linkAssetToRelease(db, { releaseId: release.id, assetId: matching.id });
+
+      const result = service.getProjectAssetBrowser(project.id, {
+        tag: String(tag.id),
+        search: 'hero',
+        extension: '.PNG',
+        presence: 'present',
+        usage: 'used',
+        pageSize: 1,
+      });
+
+      expect(result.total).toBe(1);
+      expect(result.assets.map((asset) => asset.id)).toEqual([matching.id]);
+      expect(result.page).toBe(1);
+      expect(result.pageCount).toBe(1);
+      expect(result.filters).toMatchObject({
+        tag: tag.id,
+        search: 'hero',
+        extension: 'png',
+        presence: 'present',
+        usage: 'used',
+      });
+    });
+
     it('returns stable project-owned extension choices unaffected by active filters', () => {
       const project = insertProject(db, { title: 'Stable Extensions' });
       const other = insertProject(db, { title: 'Other Extensions' });
@@ -3309,6 +3501,7 @@ describe('workflow query service', () => {
         missing_since: null,
         release_usage_count: 0,
         release_usage: [],
+        tags: [],
         preview_state: 'previewable',
       });
       expect(row.preview).toMatchObject({
@@ -3316,6 +3509,55 @@ describe('workflow query service', () => {
         previewable: true,
         sourceMetadataValid: true,
       });
+    });
+
+    it('attaches ordered display-name tags only to current-page assets through one batch call', () => {
+      const project = insertProject(db, { title: 'Asset Tag Page' });
+      const assets = ['a.txt', 'b.txt', 'c.txt', 'd.txt'].map((filename) => insertAsset(db, {
+        projectId: project.id,
+        relativePath: filename,
+        filename,
+        isPresent: 1,
+      }));
+      const shared = tagRepository.create({ displayName: 'Shared Tag', normalizedName: 'shared tag' });
+      const upperBeta = tagRepository.create({ displayName: 'Beta Tag', normalizedName: 'beta-a' });
+      const lowerBeta = tagRepository.create({ displayName: 'beta tag', normalizedName: 'beta-z' });
+      const outsidePage = tagRepository.create({ displayName: 'Outside Page Tag', normalizedName: 'outside page tag' });
+      const projectOnly = tagRepository.create({ displayName: 'Project Only Tag', normalizedName: 'project only tag' });
+
+      tagRepository.assignToProject(project.id, projectOnly.id);
+      tagRepository.assignToAsset(assets[0].id, outsidePage.id);
+      for (const tag of [shared, lowerBeta, upperBeta]) {
+        tagRepository.assignToAsset(assets[2].id, tag.id);
+      }
+      tagRepository.assignToAsset(assets[3].id, shared.id);
+
+      const listForAssetIds = vi.spyOn(tagRepository, 'listForAssetIds');
+      const result = service.getProjectAssetBrowser(project.id, {
+        sort: 'filename',
+        order: 'asc',
+        page: 2,
+        pageSize: 2,
+      });
+
+      expect(result.total).toBe(4);
+      expect(result.page).toBe(2);
+      expect(result.pageCount).toBe(2);
+      expect(result.assets.map((asset) => asset.filename)).toEqual(['c.txt', 'd.txt']);
+      expect(result.assets[0].tags).toEqual([
+        { displayName: 'Beta Tag' },
+        { displayName: 'beta tag' },
+        { displayName: 'Shared Tag' },
+      ]);
+      expect(result.assets[1].tags).toEqual([{ displayName: 'Shared Tag' }]);
+      expect(result.assets.every((asset) => Array.isArray(asset.tags))).toBe(true);
+      expect(result.assets[0].tags[0]).not.toHaveProperty('id');
+      expect(result.assets[0].tags[0]).not.toHaveProperty('normalized_name');
+      expect(result.assets[0].tags.map((tag) => tag.displayName)).not.toContain('Project Only Tag');
+      expect(result.assets[0].tags.map((tag) => tag.displayName)).not.toContain('Outside Page Tag');
+      expect(listForAssetIds).toHaveBeenCalledTimes(1);
+      expect(listForAssetIds).toHaveBeenCalledWith([assets[2].id, assets[3].id]);
+      listForAssetIds.mockRestore();
     });
 
     // ─── Defect fix: row viewerUrl carries the normalized/clamped context ──
@@ -4053,6 +4295,8 @@ describe('workflow query service', () => {
       });
       const release = insertRelease(db, { projectId: project.id, title: 'Used Asset' });
       linkAssetToRelease(db, { releaseId: release.id, assetId: categoryAssets[0].id });
+      const categoryTag = tagRepository.create({ displayName: 'Category Tag', normalizedName: 'category tag' });
+      tagRepository.assignToAsset(categoryAssets[0].id, categoryTag.id);
 
       const expectedRows = assetRepository.findProjectAssetsByCategoryInBrowserOrder(project.id, category.id);
       const normalPage = service.getProjectAssetBrowser(project.id, {
@@ -4112,6 +4356,7 @@ describe('workflow query service', () => {
           is_present: 1,
           release_usage_count: 1,
           release_usage: [expect.objectContaining({ release_id: release.id })],
+          tags: [{ displayName: 'Category Tag' }],
           category: {
             id: category.id,
             displayName: 'Renders',

@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
 import { createProjectRepository } from '../src/data/project-repository.js';
+import { createTagRepository } from '../src/data/tag-repository.js';
 import slugify from '@sindresorhus/slugify';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
@@ -16,6 +17,7 @@ describe('asset repository', () => {
   let db;
   let assetRepo;
   let projectRepo;
+  let tagRepo;
   let projectId;
 
   function createProject(title = 'Test Project', overrides = {}) {
@@ -40,6 +42,7 @@ describe('asset repository', () => {
     runMigrations(db, MIGRATIONS_DIR);
     assetRepo = createAssetRepository(db);
     projectRepo = createProjectRepository(db);
+    tagRepo = createTagRepository(db);
     const project = createProject();
     projectId = project.id;
   });
@@ -962,6 +965,72 @@ describe('asset repository', () => {
       const results = assetRepo.findProjectAssetPage(projectId);
       expect(results.map((a) => a.relative_path)).toEqual(['mine.png']);
       expect(results[0].release_usage_count).toBe(0);
+    });
+
+    it('filters through asset_tags without duplicates, project-tag matches, or cross-project matches', () => {
+      const otherProject = createProject('Other Tagged Project');
+      const shared = tagRepo.create({ displayName: 'Shared', normalizedName: 'shared' });
+      const additional = tagRepo.create({ displayName: 'Additional', normalizedName: 'additional' });
+      const projectOnly = tagRepo.create({ displayName: 'Project Only', normalizedName: 'project-only' });
+      const first = assetRepo.upsert(projectId, 'first.png', {
+        filename: 'first.png', extension: 'png', mimeType: 'image/png', sizeBytes: 1, modifiedAt: null,
+      });
+      const second = assetRepo.upsert(projectId, 'second.png', {
+        filename: 'second.png', extension: 'png', mimeType: 'image/png', sizeBytes: 1, modifiedAt: null,
+      });
+      assetRepo.upsert(projectId, 'other.png', {
+        filename: 'other.png', extension: 'png', mimeType: 'image/png', sizeBytes: 1, modifiedAt: null,
+      });
+      const foreign = assetRepo.upsert(otherProject.id, 'foreign.png', {
+        filename: 'foreign.png', extension: 'png', mimeType: 'image/png', sizeBytes: 1, modifiedAt: null,
+      });
+
+      tagRepo.assignToAsset(first.id, shared.id);
+      tagRepo.assignToAsset(first.id, additional.id);
+      tagRepo.assignToAsset(second.id, shared.id);
+      tagRepo.assignToProject(projectId, projectOnly.id);
+      tagRepo.assignToAsset(foreign.id, shared.id);
+
+      const filtered = assetRepo.findProjectAssetPage(projectId, { tag: shared.id, pageSize: 100 });
+
+      expect(filtered.map((asset) => asset.filename)).toEqual(['first.png', 'second.png']);
+      expect(new Set(filtered.map((asset) => asset.id)).size).toBe(filtered.length);
+      expect(assetRepo.countProjectAssets(projectId, { tag: shared.id })).toBe(filtered.length);
+      expect(assetRepo.findProjectAssetPage(projectId, { tag: projectOnly.id, pageSize: 100 })).toEqual([]);
+
+      tagRepo.deleteById(shared.id);
+      expect(assetRepo.countProjectAssets(projectId, { tag: shared.id })).toBe(0);
+    });
+
+    it('applies tag filtering before pagination and composes with search, extension, presence, and usage', () => {
+      const tag = tagRepo.create({ displayName: 'Filtered', normalizedName: 'filtered' });
+      const releaseId = db.prepare(`
+        INSERT INTO releases (project_id, title, description, notes, status, planned_date, published_date, patreon_url)
+        VALUES (?, 'Filtered Release', '', '', 'idea', NULL, NULL, NULL)
+        RETURNING id
+      `).get(projectId).id;
+      const matching = assetRepo.upsert(projectId, 'renders/hero.png', {
+        filename: 'hero.png', extension: 'png', mimeType: 'image/png', sizeBytes: 1, modifiedAt: null,
+      });
+      const wrongExtension = assetRepo.upsert(projectId, 'renders/hero.jpg', {
+        filename: 'hero.jpg', extension: 'jpg', mimeType: 'image/jpeg', sizeBytes: 1, modifiedAt: null,
+      });
+      const missing = assetRepo.upsert(projectId, 'renders/hero-missing.png', {
+        filename: 'hero-missing.png', extension: 'png', mimeType: 'image/png', sizeBytes: 1, modifiedAt: null,
+      });
+      tagRepo.assignToAsset(matching.id, tag.id);
+      tagRepo.assignToAsset(wrongExtension.id, tag.id);
+      tagRepo.assignToAsset(missing.id, tag.id);
+      assetRepo.markMissingByProjectIdAndPathNotIn(projectId, ['renders/hero.png', 'renders/hero.jpg']);
+      linkAssetToRelease(db, { releaseId, assetId: matching.id });
+
+      const filters = { tag: tag.id, search: 'hero', extension: 'png', presence: 'present', usage: 'used' };
+      const rows = assetRepo.findProjectAssetPage(projectId, { ...filters, page: 1, pageSize: 1 });
+
+      expect(rows.map((asset) => asset.id)).toEqual([matching.id]);
+      expect(assetRepo.countProjectAssets(projectId, filters)).toBe(1);
+      expect(assetRepo.findProjectAssetPage(projectId, { tag: tag.id, page: 2, pageSize: 1 })
+        .map((asset) => asset.id)).toEqual([wrongExtension.id]);
     });
   });
 

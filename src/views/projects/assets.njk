@@ -87,6 +87,15 @@
       {{ asset.categoryLabel }}
       {% if asset.categoryDisabled %}<em class="asset-category-disabled-marker">(disabled)</em>{% endif %}
     </td>
+    <td class="asset-tags-cell">
+      {% if asset.tags and asset.tags.length > 0 %}
+        <ul class="asset-tag-list" aria-label="Assigned tags">
+          {% for tag in asset.tags %}
+            <li>{{ tag.displayName }}</li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+    </td>
     <td><span class="asset-type-label">{{ asset.typeLabel }}</span></td>
     <td>
       {% if asset.is_present %}
@@ -235,6 +244,13 @@
         </div>
         {% if asset.locationLabel %}<span class="asset-card-location">{{ asset.locationLabel }}</span>{% endif %}
         <span class="asset-card-meta">{{ asset.typeLabel }} · {{ asset.formattedSize }}</span>
+        {% if asset.tags and asset.tags.length > 0 %}
+          <ul class="asset-card-tags" aria-label="Assigned tags">
+            {% for tag in asset.tags %}
+              <li>{{ tag.displayName }}</li>
+            {% endfor %}
+          </ul>
+        {% endif %}
       </div>
     </article>
   </li>
@@ -346,7 +362,7 @@
       {{ total }} asset{% if total != 1 %}s{% endif %} in the complete {{ autoRenameCategory.displayName if autoRenameCategory else filters.category }} category
     {% else %}
       {{ total }} asset{% if total != 1 %}s{% endif %} found
-      {% if filters.search or filters.extension or filters.presence != 'all' or filters.usage != 'all' or filters.category != 'all' %}
+      {% if filters.search or filters.tag or filters.extension or filters.presence != 'all' or filters.usage != 'all' or filters.category != 'all' %}
         (filtered)
       {% endif %}
     {% endif %}
@@ -477,6 +493,16 @@
         </div>
 
         <div class="field">
+          <label for="tag">Tag</label>
+          <select id="tag" name="tag"{% if tagOptions.length == 0 %} disabled{% endif %}>
+            <option value=""{% if not filters.tag %} selected{% endif %}>All tags</option>
+            {% for tag in tagOptions %}
+              <option value="{{ tag.value }}"{% if filters.tag == tag.value %} selected{% endif %}>{{ tag.displayName }}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="field">
           <label for="extension">Extension</label>
           <select id="extension" name="extension">
             <option value="" {% if not filters.extension %}selected{% endif %}>All extensions</option>
@@ -523,7 +549,7 @@
         </div>
 
         <button class="button" type="submit">Filter</button>
-        <a class="button button-secondary" href="{{ pageUrl({ search: '', extension: '', presence: 'all', usage: 'all', category: 'all', sort: 'filename', order: 'asc', page: 1, pageSize: 25 }) }}">Reset</a>
+        <a class="button button-secondary" href="{{ pageUrl({ search: '', tag: '', extension: '', presence: 'all', usage: 'all', category: 'all', sort: 'filename', order: 'asc', page: 1, pageSize: 25 }) }}">Reset</a>
         </form>
       {% endif %}
 
@@ -662,9 +688,10 @@
                    {% if not isArchived %}<th scope="col"><span class="sr-only">Select</span></th>{% endif %}
                   {% if autoRenameSurface %}<th scope="col">Order</th>{% endif %}
                   <th scope="col">Preview</th>
-                  <th scope="col">File</th>
-                  <th scope="col">Category</th>
-                  <th scope="col">Type</th>
+                   <th scope="col">File</th>
+                   <th scope="col">Category</th>
+                   <th scope="col">Tags</th>
+                   <th scope="col">Type</th>
                   <th scope="col">Presence</th>
                   <th scope="col">Release usage</th>
                   <th scope="col">Actions</th>
@@ -712,6 +739,9 @@
             {% if filters.search %}
               <input type="hidden" name="search" value="{{ filters.search }}">
             {% endif %}
+            {% if filters.tag %}
+              <input type="hidden" name="tag" value="{{ filters.tag }}">
+            {% endif %}
             {% if filters.extension %}
               <input type="hidden" name="extension" value="{{ filters.extension }}">
             {% endif %}
@@ -743,7 +773,7 @@
            perform a scan, so no-assets/no-assets-archived intentionally omit
            emptyActionUrl/emptyActionLabel. #}
         {% if emptyState.kind != 'no-assets' and emptyState.kind != 'no-assets-archived' %}
-          {% set emptyActionUrl = pageUrl({ search: '', extension: '', presence: 'all', usage: 'all', category: 'all', sort: 'filename', order: 'asc', page: 1, pageSize: 25 }) %}
+           {% set emptyActionUrl = pageUrl({ search: '', tag: '', extension: '', presence: 'all', usage: 'all', category: 'all', sort: 'filename', order: 'asc', page: 1, pageSize: 25 }) %}
           {% set emptyActionLabel = "Reset Filters" %}
         {% endif %}
         {% include "partials/empty-state.njk" %}

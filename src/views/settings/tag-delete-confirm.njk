@@ -1,0 +1,32 @@
+{% extends "layout.njk" %}
+{% import "partials/page-heading.njk" as pageHeading %}
+
+{% set page_title = "Settings — Delete Tag" %}
+
+{% block content %}
+  {% call pageHeading.render() %}
+    <a class="button button-secondary" href="/settings/tags">Cancel</a>
+  {% endcall %}
+
+  <div class="settings-layout">
+    {% set activeSettingsSection = "tags" %}
+    {% include "partials/settings-nav.njk" %}
+
+    <div class="settings-content">
+      <div class="destructive-section">
+        <h2>Delete this tag?</h2>
+        <p>Tag: <strong>{{ tag.display_name }}</strong></p>
+        <p>Deleting this tag removes it from all assigned projects and assets.</p>
+        <p>Projects, assets, and their files are not deleted.</p>
+
+        <form method="post" action="/settings/tags/{{ tag.id }}/delete">
+          <input type="hidden" name="_csrf" value="{{ _csrf }}">
+          <div class="form-actions">
+            <button type="submit" class="button button-danger">Delete Tag</button>
+            <a class="button button-secondary" href="/settings/tags">Cancel</a>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+{% endblock %}

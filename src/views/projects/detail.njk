@@ -9,12 +9,19 @@
       <a class="button" href="/projects/{{ project.id }}/edit">Edit project</a>
       <a class="button" href="/projects/{{ project.id }}/assets">View Assets</a>
       <a class="button button-secondary" href="/projects/{{ project.id }}/asset-categories">Asset Categories</a>
+      <a class="button button-secondary" href="/projects/{{ project.id }}/tags">Manage tags</a>
     {% endcall %}
   {% else %}
     {% call pageHeading.render("This project is archived and read-only.", "archived") %}
       <a class="button" href="/projects/{{ project.id }}/assets">View Assets</a>
       <a class="button button-secondary" href="/projects/{{ project.id }}/asset-categories">Asset Categories</a>
     {% endcall %}
+  {% endif %}
+
+  {% if notice %}
+    {% set noticeVariant = notice.variant %}
+    {% set noticeText = notice.text %}
+    {% include "partials/notice.njk" %}
   {% endif %}
 
   {% if project.archived_at %}
@@ -80,6 +87,19 @@
     {% if project.notes %}
       <h2>Notes</h2>
       <p class="notes">{{ project.notes }}</p>
+    {% endif %}
+  </section>
+
+  <section class="project-tags">
+    <h2>Tags</h2>
+    {% if projectTags.length > 0 %}
+      <ul>
+        {% for tag in projectTags %}
+          <li>{{ tag.displayName }}</li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="help-text">No tags assigned to this project.</p>
     {% endif %}
   </section>
 

@@ -15,10 +15,14 @@ import { fileURLToPath } from 'node:url';
 
 const dependencyInstrumentation = vi.hoisted(() => ({
   appMetaRepositories: [],
+  tagRepositories: [],
   preferenceRepositories: [],
   projectServices: [],
   preferenceServices: [],
   pageDefaultsServices: [],
+  tagServices: [],
+  projectTagServices: [],
+  assetTagServices: [],
   projectAssetCategoryServices: [],
   primaryImageRepositories: [],
   primaryImageServices: [],
@@ -48,6 +52,18 @@ vi.mock('../src/data/app-meta-repository.js', async (importOriginal) => {
     createAppMetaRepository(...args) {
       const repository = actual.createAppMetaRepository(...args);
       dependencyInstrumentation.appMetaRepositories.push({ args, repository });
+      return repository;
+    },
+  };
+});
+
+vi.mock('../src/data/tag-repository.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    createTagRepository(...args) {
+      const repository = actual.createTagRepository(...args);
+      dependencyInstrumentation.tagRepositories.push({ args, repository });
       return repository;
     },
   };
@@ -84,6 +100,42 @@ vi.mock('../src/services/page-defaults-service.js', async (importOriginal) => {
     createPageDefaultsService(...args) {
       const service = actual.createPageDefaultsService(...args);
       dependencyInstrumentation.pageDefaultsServices.push({ args, service });
+      return service;
+    },
+  };
+});
+
+vi.mock('../src/services/tag-service.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    createTagService(...args) {
+      const service = actual.createTagService(...args);
+      dependencyInstrumentation.tagServices.push({ args, service });
+      return service;
+    },
+  };
+});
+
+vi.mock('../src/services/project-tag-service.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    createProjectTagService(...args) {
+      const service = actual.createProjectTagService(...args);
+      dependencyInstrumentation.projectTagServices.push({ args, service });
+      return service;
+    },
+  };
+});
+
+vi.mock('../src/services/asset-tag-service.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    createAssetTagService(...args) {
+      const service = actual.createAssetTagService(...args);
+      dependencyInstrumentation.assetTagServices.push({ args, service });
       return service;
     },
   };
@@ -296,6 +348,62 @@ describe('app construction — asset actions chunk 3 wiring', () => {
     expect(dependencyInstrumentation.preferenceRepositories).toHaveLength(1);
     expect(dependencyInstrumentation.preferenceRepositories[0].args[1])
       .toEqual({ appMetaRepository });
+  });
+
+  it('constructs one shared tag repository and wires all tag services without route consumption', () => {
+    const app = buildApp();
+
+    expect(dependencyInstrumentation.tagRepositories).toHaveLength(1);
+    expect(dependencyInstrumentation.tagServices).toHaveLength(1);
+    expect(dependencyInstrumentation.projectTagServices).toHaveLength(1);
+    expect(dependencyInstrumentation.assetTagServices).toHaveLength(1);
+
+    const { args: repositoryArgs, repository } = dependencyInstrumentation.tagRepositories[0];
+    const { args: tagServiceArgs, service: tagService } = dependencyInstrumentation.tagServices[0];
+    const { args: projectTagServiceArgs, service: projectTagService } =
+      dependencyInstrumentation.projectTagServices[0];
+    const { args: assetTagServiceArgs, service: assetTagService } =
+      dependencyInstrumentation.assetTagServices[0];
+    const projectRepository = dependencyInstrumentation.projectServices[0].service.repository;
+    const assetRepository = app.locals.assetScanner.repository;
+
+    expect(repositoryArgs[0]).toBe(db);
+    expect(tagServiceArgs[0]).toEqual({ tagRepository: repository });
+    expect(projectTagServiceArgs[0]).toEqual({ tagRepository: repository, projectRepository });
+    expect(assetTagServiceArgs[0]).toEqual({ tagRepository: repository, assetRepository });
+    expect(app.locals.tagService).toBe(tagService);
+    expect(app.locals.projectTagService).toBe(projectTagService);
+    expect(app.locals.assetTagService).toBe(assetTagService);
+    expect(dependencyInstrumentation.workflowQueryServices).toHaveLength(1);
+    expect(dependencyInstrumentation.workflowQueryServices[0].args[0].tagRepository)
+      .toBe(repository);
+
+    for (const dependencies of [
+      dependencyInstrumentation.assetRouters[0].args[0],
+      dependencyInstrumentation.projectAssetCategoryRouters[0].args[0],
+      dependencyInstrumentation.settingsRouters[0].args[0],
+    ]) {
+      expect(dependencies).not.toHaveProperty('tagService');
+      expect(dependencies).not.toHaveProperty('projectTagService');
+      expect(dependencies).not.toHaveProperty('assetTagService');
+    }
+  });
+
+  it('preserves explicit tag repository and service overrides', () => {
+    const tagRepository = {};
+    const tagService = {};
+    const projectTagService = {};
+    const assetTagService = {};
+
+    const app = buildApp({ tagRepository, tagService, projectTagService, assetTagService });
+
+    expect(dependencyInstrumentation.tagRepositories).toHaveLength(0);
+    expect(dependencyInstrumentation.tagServices).toHaveLength(0);
+    expect(dependencyInstrumentation.projectTagServices).toHaveLength(0);
+    expect(dependencyInstrumentation.assetTagServices).toHaveLength(0);
+    expect(app.locals.tagService).toBe(tagService);
+    expect(app.locals.projectTagService).toBe(projectTagService);
+    expect(app.locals.assetTagService).toBe(assetTagService);
   });
 
   it('constructs one shared primary-image repository and service from the application database', () => {

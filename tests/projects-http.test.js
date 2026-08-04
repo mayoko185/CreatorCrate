@@ -26,8 +26,20 @@ function extractProjectCard(html, projectId) {
   return cards.find((card) => card.includes(`data-project-card-link href="/projects/${projectId}"`)) || '';
 }
 
+function extractProjectCards(html) {
+  return html.match(/<article\b[^>]*data-project-card[^>]*>[\s\S]*?<\/article>/g) || [];
+}
+
 function extractPageHeadingActions(html) {
   return html.match(/<div class="page-heading-actions">([\s\S]*?)<\/div>/)?.[1] || '';
+}
+
+function extractProjectTags(card) {
+  return card.match(/<div class="project-card-meta project-card-meta--tags">([\s\S]*?)<\/div>/)?.[0] || '';
+}
+
+function extractTagFilter(html) {
+  return html.match(/<select id="tag"[\s\S]*?<\/select>/)?.[0] || '';
 }
 
 describe('project HTTP workflow', () => {
@@ -159,6 +171,8 @@ describe('project HTTP workflow', () => {
     expect(res.text).toContain('href="/projects?view=list"');
     expect(res.text).toContain('<option value="created" selected>Created</option>');
     expect(res.text).toContain('<option value="desc" selected>Desc</option>');
+    expect(extractTagFilter(res.text)).toContain('<select id="tag" name="tag" disabled>');
+    expect(extractTagFilter(res.text)).toContain('<option value="" selected>All tags</option>');
   });
 
   it('redirects a bare request to valid saved non-fallback Projects defaults', async () => {
@@ -335,6 +349,151 @@ describe('project HTTP workflow', () => {
     expect(css).not.toMatch(/\.project-card--list \.project-card-media-image\s*\{[^}]*object-fit\s*:\s*cover/);
   });
 
+  it('renders assigned project display names and the tag filter in grid and list views', async () => {
+    const taggedProjectId = await createProject({ title: 'Assigned Tags Project' });
+    const secondTaggedProjectId = await createProject({ title: 'Shared Tags Project' });
+    const untaggedProjectId = await createProject({ title: 'No Assigned Tags Project' });
+    const zebra = app.locals.tagService.createTag({ name: 'Zebra Display' });
+    const shared = app.locals.tagService.createTag({ name: 'Shared Display' });
+    const alpha = app.locals.tagService.createTag({ name: 'Alpha Display' });
+    const assetOnly = app.locals.tagService.createTag({ name: 'Asset Only Display' });
+
+    app.locals.projectTagService.replaceProjectTags(taggedProjectId, [zebra.id, shared.id, alpha.id]);
+    app.locals.projectTagService.replaceProjectTags(secondTaggedProjectId, [shared.id]);
+    const assetId = Number(db.prepare(`
+      INSERT INTO assets (project_id, relative_path, filename)
+      VALUES (?, ?, ?)
+    `).run(taggedProjectId, 'source/asset-only.png', 'asset-only.png').lastInsertRowid);
+    app.locals.assetTagService.replaceAssetTags(assetId, [assetOnly.id]);
+
+    const grid = await agent.get('/projects?sort=title&order=asc').expect(200);
+    const taggedGridCard = extractProjectCard(grid.text, taggedProjectId);
+    const secondTaggedGridCard = extractProjectCard(grid.text, secondTaggedProjectId);
+    const untaggedGridCard = extractProjectCard(grid.text, untaggedProjectId);
+    const gridTags = extractProjectTags(taggedGridCard);
+
+    expect(grid.text).toContain('<ul class="project-grid">');
+    expect(gridTags).toContain('<dt>Tags</dt>');
+    expect(gridTags.indexOf('Alpha Display')).toBeLessThan(gridTags.indexOf('Shared Display'));
+    expect(gridTags.indexOf('Shared Display')).toBeLessThan(gridTags.indexOf('Zebra Display'));
+    expect(gridTags).not.toContain('Asset Only Display');
+    expect(gridTags).not.toContain('alpha display');
+    expect(gridTags).not.toContain('normalized_name');
+    expect(gridTags).not.toContain(`>${alpha.id}<`);
+    expect(gridTags).not.toContain(`>${shared.id}<`);
+    expect(gridTags).not.toContain(`>${zebra.id}<`);
+    expect(gridTags).not.toContain('href=');
+    expect(extractProjectTags(secondTaggedGridCard)).toContain('Shared Display');
+    expect(extractProjectTags(untaggedGridCard)).toBe('');
+    expect(grid.text).not.toContain('name="tagIds"');
+    const gridTagFilter = extractTagFilter(grid.text);
+    expect(gridTagFilter).toContain('<option value="" selected>All tags</option>');
+    expect(gridTagFilter.indexOf('Alpha Display')).toBeLessThan(gridTagFilter.indexOf('Asset Only Display'));
+    expect(gridTagFilter.indexOf('Asset Only Display')).toBeLessThan(gridTagFilter.indexOf('Shared Display'));
+    expect(gridTagFilter.indexOf('Shared Display')).toBeLessThan(gridTagFilter.indexOf('Zebra Display'));
+    expect(gridTagFilter).not.toContain('normalized_name');
+    expect(gridTagFilter).not.toContain('selected>Shared Display</option>');
+    expect(grid.text).not.toContain('sort=tag');
+    expect(grid.text).not.toContain('Tag sort');
+
+    const list = await agent.get('/projects?sort=title&order=asc&view=list').expect(200);
+    const taggedListCard = extractProjectCard(list.text, taggedProjectId);
+    const secondTaggedListCard = extractProjectCard(list.text, secondTaggedProjectId);
+    const untaggedListCard = extractProjectCard(list.text, untaggedProjectId);
+
+    expect(list.text).toContain('<ul class="project-list">');
+    expect(extractProjectTags(taggedListCard)).toContain('Alpha Display');
+    expect(extractProjectTags(taggedListCard)).toContain('Shared Display');
+    expect(extractProjectTags(taggedListCard)).toContain('Zebra Display');
+    expect(extractProjectTags(secondTaggedListCard)).toContain('Shared Display');
+    expect(extractProjectTags(untaggedListCard)).toBe('');
+  });
+
+  it('filters projects by a valid tag ID, composes with search/status, and excludes asset-only assignments', async () => {
+    const shared = app.locals.tagService.createTag({ name: 'Shared Filter Tag' });
+    const additional = app.locals.tagService.createTag({ name: 'Additional Filter Tag' });
+    const firstId = await createProject({ title: 'Filter Alpha', status: 'planned' });
+    const secondId = await createProject({ title: 'Filter Beta', status: 'planned' });
+    const multiAssignedId = await createProject({ title: 'Needle Planned', status: 'planned' });
+    const wrongStatusId = await createProject({ title: 'Needle Ready', status: 'ready' });
+    const otherTagId = await createProject({ title: 'Needle Other Tag', status: 'planned' });
+    const assetOnlyId = await createProject({ title: 'Asset Only Filter', status: 'planned' });
+
+    app.locals.projectTagService.replaceProjectTags(firstId, [shared.id]);
+    app.locals.projectTagService.replaceProjectTags(secondId, [shared.id]);
+    app.locals.projectTagService.replaceProjectTags(multiAssignedId, [shared.id, additional.id]);
+    app.locals.projectTagService.replaceProjectTags(wrongStatusId, [shared.id]);
+    app.locals.projectTagService.replaceProjectTags(otherTagId, [additional.id]);
+    const assetId = Number(db.prepare(`
+      INSERT INTO assets (project_id, relative_path, filename)
+      VALUES (?, ?, ?)
+    `).run(assetOnlyId, 'source/asset-only-filter.png', 'asset-only-filter.png').lastInsertRowid);
+    app.locals.assetTagService.replaceAssetTags(assetId, [shared.id]);
+
+    const filtered = await agent
+      .get(`/projects?tag=${shared.id}&sort=title&order=asc`)
+      .expect(200);
+    expect(filtered.text).toContain('4 projects found');
+    expect(filtered.text).toContain('Filter Alpha');
+    expect(filtered.text).toContain('Filter Beta');
+    expect(filtered.text).toContain('Needle Planned');
+    expect(filtered.text).toContain('Needle Ready');
+    expect(filtered.text).not.toContain('Needle Other Tag');
+    expect(filtered.text).not.toContain('Asset Only Filter');
+    expect(filtered.text.match(/<article\b[^>]*data-project-card[^>]*>/g)).toHaveLength(4);
+    expect(extractTagFilter(filtered.text)).toContain(
+      `<option value="${shared.id}" selected>Shared Filter Tag</option>`,
+    );
+
+    const composed = await agent
+      .get(`/projects?tag=${shared.id}&search=needle&status=planned&sort=title&order=asc&view=list`)
+      .expect(200);
+    expect(composed.text).toContain('1 project found');
+    expect(composed.text).toContain('Needle Planned');
+    expect(composed.text).not.toContain('Needle Ready');
+    expect(composed.text).not.toContain('Needle Other Tag');
+    expect(composed.text).toContain('href="/projects"');
+
+    await agent
+      .post(`/projects/${wrongStatusId}/archive`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .expect(302);
+    const archived = await agent
+      .get(`/projects?tag=${shared.id}&status=archived&sort=title&order=asc`)
+      .expect(200);
+    expect(archived.text).toContain('1 project found');
+    expect(archived.text).toContain('Needle Ready');
+    expect(archived.text).not.toContain('Needle Planned');
+  });
+
+  it('normalizes empty, malformed, nonexistent, and deleted tag values to the unfiltered state', async () => {
+    const tag = app.locals.tagService.createTag({ name: 'Safe Filter Tag' });
+    const taggedId = await createProject({ title: 'Safe Tagged Project', status: 'planned' });
+    await createProject({ title: 'Safe Untagged Project', status: 'planned' });
+    app.locals.projectTagService.replaceProjectTags(taggedId, [tag.id]);
+
+    for (const rawTag of ['', '0', '-1', 'not-a-tag', '1.5', '999999']) {
+      const response = await agent
+        .get(`/projects?tag=${encodeURIComponent(rawTag)}&search=Safe&view=list`)
+        .expect(200);
+
+      expect(response.text).toContain('Safe Tagged Project');
+      expect(response.text).toContain('Safe Untagged Project');
+      expect(extractTagFilter(response.text)).toContain('<option value="" selected>All tags</option>');
+      expect(extractTagFilter(response.text)).not.toContain(`value="${tag.id}" selected`);
+    }
+
+    app.locals.tagService.deleteTag(tag.id);
+    const deleted = await agent
+      .get(`/projects?tag=${tag.id}&search=Safe&status=planned&view=list`)
+      .expect(200);
+
+    expect(deleted.text).toContain('Safe Tagged Project');
+    expect(deleted.text).toContain('Safe Untagged Project');
+    expect(extractTagFilter(deleted.text)).not.toContain(`value="${tag.id}"`);
+    expect(deleted.text).toContain('href="/projects?search=Safe&amp;status=planned&amp;view=list"');
+  });
+
   it('renders a selected merged KRA with intrinsic grid presentation and derivative URLs', async () => {
     const projectId = await createProject({ title: 'Merged KRA Project', status: 'ready' });
     const asset = await seedMergedKra(projectId);
@@ -372,16 +531,18 @@ describe('project HTTP workflow', () => {
   });
 
   it('normalizes project view state and preserves allowed query values', async () => {
+    const tag = app.locals.tagService.createTag({ name: 'View State Tag' });
     for (let i = 0; i < 26; i += 1) {
-      await createProject({ title: `View State ${String(i).padStart(2, '0')}`, status: 'planned' });
+      const projectId = await createProject({ title: `View State ${String(i).padStart(2, '0')}`, status: 'planned' });
+      app.locals.projectTagService.replaceProjectTags(projectId, [tag.id]);
     }
 
-    const list = await agent.get('/projects?search=View+State&status=planned&sort=title&order=asc&view=list&unknown=discarded').expect(200);
+    const list = await agent.get(`/projects?search=View+State&status=planned&tag=${tag.id}&sort=title&order=asc&view=list&unknown=discarded`).expect(200);
     expect(list.text).toContain('<ul class="project-list">');
     expect(list.text).toContain('name="view" value="list"');
-    expect(list.text).toContain('href="/projects?search=View+State&amp;status=planned&amp;sort=title&amp;order=asc"');
-    expect(list.text).toContain('href="/projects?search=View+State&amp;status=planned&amp;sort=title&amp;order=asc&amp;view=list"');
-    expect(list.text).toContain('href="/projects?search=View+State&amp;status=planned&amp;sort=title&amp;order=asc&amp;view=list&amp;page=2"');
+    expect(list.text).toContain(`href="/projects?search=View+State&amp;status=planned&amp;tag=${tag.id}&amp;sort=title&amp;order=asc"`);
+    expect(list.text).toContain(`href="/projects?search=View+State&amp;status=planned&amp;tag=${tag.id}&amp;sort=title&amp;order=asc&amp;view=list"`);
+    expect(list.text).toContain(`href="/projects?search=View+State&amp;status=planned&amp;tag=${tag.id}&amp;sort=title&amp;order=asc&amp;view=list&amp;page=2"`);
     expect(list.text).not.toContain('unknown=discarded');
 
     const invalid = await agent.get('/projects?view=invalid&unknown=discarded').expect(200);
@@ -397,32 +558,34 @@ describe('project HTTP workflow', () => {
     saveProjectDefault('sort', 'title');
     saveProjectDefault('order', 'asc');
 
+    const tag = app.locals.tagService.createTag({ name: 'Canonical Tag' });
     for (let i = 0; i < 26; i += 1) {
-      await createProject({ title: `Canonical Project ${String(i).padStart(2, '0')}`, status: 'planned' });
+      const projectId = await createProject({ title: `Canonical Project ${String(i).padStart(2, '0')}`, status: 'planned' });
+      app.locals.projectTagService.replaceProjectTags(projectId, [tag.id]);
     }
 
     const redirect = await agent
-      .get('/projects?search=Canonical+Project&status=planned&page=2&unknown=discarded')
+      .get(`/projects?search=Canonical+Project&status=planned&tag=${tag.id}&page=2&unknown=discarded`)
       .expect(302);
     expect(redirect.headers.location)
-      .toBe('/projects?search=Canonical+Project&status=planned&sort=title&order=asc&view=list&page=2');
+      .toBe(`/projects?search=Canonical+Project&status=planned&tag=${tag.id}&sort=title&order=asc&view=list&page=2`);
 
     const pageTwo = await agent.get(redirect.headers.location).expect(200);
     expect(pageTwo.text).toContain('<ul class="project-list">');
     expect(pageTwo.text).toContain('Canonical Project 25');
     expect(pageTwo.text).not.toContain('unknown=discarded');
     expect(pageTwo.text).toContain(
-      'href="/projects?search=Canonical+Project&amp;status=planned&amp;sort=title&amp;order=asc&amp;view=list&amp;page=1"'
+      `href="/projects?search=Canonical+Project&amp;status=planned&amp;tag=${tag.id}&amp;sort=title&amp;order=asc&amp;view=list&amp;page=1"`
     );
 
     const pageOne = await agent
-      .get('/projects?search=Canonical+Project&status=planned&sort=title&order=asc&view=list')
+      .get(`/projects?search=Canonical+Project&status=planned&tag=${tag.id}&sort=title&order=asc&view=list`)
       .expect(200);
     expect(pageOne.text).toContain(
-      'href="/projects?search=Canonical+Project&amp;status=planned&amp;sort=title&amp;order=asc&amp;view=list&amp;page=2"'
+      `href="/projects?search=Canonical+Project&amp;status=planned&amp;tag=${tag.id}&amp;sort=title&amp;order=asc&amp;view=list&amp;page=2"`
     );
     expect(pageOne.text).toContain(
-      'href="/projects?search=Canonical+Project&amp;status=planned&amp;sort=title&amp;order=asc&amp;view=grid"'
+      `href="/projects?search=Canonical+Project&amp;status=planned&amp;tag=${tag.id}&amp;sort=title&amp;order=asc&amp;view=grid"`
     );
     expect(pageOne.text).toContain('<input type="hidden" name="view" value="list">');
     expect(pageOne.text).toContain('<option value="title" selected>Title</option>');
@@ -642,7 +805,8 @@ describe('project HTTP workflow', () => {
     expect(headingActions).toContain(`href="${location}/edit">Edit project</a>`);
     expect(headingActions).toContain(`href="${location}/assets">View Assets</a>`);
     expect(headingActions).toContain(`href="${location}/asset-categories">Asset Categories</a>`);
-    expect((headingActions.match(/<a\b/g) || [])).toHaveLength(3);
+    expect(headingActions).toContain(`href="${location}/tags">Manage tags</a>`);
+    expect((headingActions.match(/<a\b/g) || [])).toHaveLength(4);
     expect(res.text).not.toMatch(
       new RegExp(`<section class="workflow-actions">\\s*<a[^>]+href="${location}/assets"`),
     );
@@ -851,10 +1015,13 @@ describe('project HTTP workflow', () => {
       .set('Content-Type', 'application/x-www-form-urlencoded')
         .send('_csrf=' + encodeURIComponent(csrfToken));
     const id = createRes.headers.location.replace('/projects/', '');
+    const archivedTag = app.locals.tagService.createTag({ name: 'Archived List Display' });
+    app.locals.projectTagService.replaceProjectTags(Number(id), [archivedTag.id]);
     await agent.post(`/projects/${id}/archive`).send('_csrf=' + encodeURIComponent(csrfToken));
 
     const archivedList = await agent.get('/projects?status=archived').expect(200);
     expect(archivedList.text).toContain('Filter Archive');
+    expect(archivedList.text).toContain('Archived List Display');
     expect(archivedList.text).toContain('class="project-card project-card--grid project-card--archived" data-project-card');
 
     const dashboard = await agent.get('/').expect(200);
@@ -945,23 +1112,38 @@ describe('project HTTP workflow', () => {
   });
 
   it('pagination is bounded', async () => {
+    const pageTwoTag = app.locals.tagService.createTag({ name: 'Page Two Only Tag' });
+    let pageTwoProjectId;
+
     for (let i = 1; i <= 30; i += 1) {
-      await agent
+      const response = await agent
         .post('/projects')
-        .send(`title=Page+${i}`)
+        .send(`title=Page+${String(i).padStart(2, '0')}`)
         .send('status=tbd')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken));
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .expect(302);
+      if (i === 30) pageTwoProjectId = Number(response.headers.location.replace('/projects/', ''));
     }
+    app.locals.projectTagService.replaceProjectTags(pageTwoProjectId, [pageTwoTag.id]);
 
-    const page1 = await agent.get('/projects?page=1').expect(200);
+    const page1 = await agent.get('/projects?sort=title&order=asc&page=1').expect(200);
+    expect(page1.text).toContain('30 projects found');
     expect(page1.text).toContain('Page 1 of 2');
-    expect(page1.text).toContain('href="/projects?page=2"');
+    expect(page1.text).toContain('href="/projects?sort=title&amp;order=asc&amp;page=2"');
+    expect(extractProjectCards(page1.text)).toHaveLength(25);
+    expect(extractProjectCards(page1.text).join('')).not.toContain('Page Two Only Tag');
 
-    const huge = await agent.get('/projects?page=999').expect(200);
+    const page2 = await agent.get('/projects?sort=title&order=asc&page=2').expect(200);
+    expect(page2.text).toContain('Page 2 of 2');
+    expect(page2.text).toContain('Page Two Only Tag');
+    expect(extractProjectCards(page2.text)).toHaveLength(5);
+
+    const huge = await agent.get('/projects?sort=title&order=asc&page=999').expect(200);
     expect(huge.text).toContain('Page 2 of 2');
-    expect(huge.text).toContain('href="/projects?page=1"');
+    expect(huge.text).toContain('href="/projects?sort=title&amp;order=asc&amp;page=1"');
+    expect(huge.text).toContain('Page Two Only Tag');
   });
 
   it('unknown routes still return safe 404', async () => {

@@ -7,6 +7,7 @@ import Database from 'better-sqlite3';
 import slugify from '@sindresorhus/slugify';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { createProjectRepository } from '../src/data/project-repository.js';
+import { createTagRepository } from '../src/data/tag-repository.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 
@@ -15,6 +16,7 @@ describe('project repository', () => {
   let dbPath;
   let db;
   let repository;
+  let tagRepository;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-projects-'));
@@ -22,6 +24,7 @@ describe('project repository', () => {
     db = openDatabase(dbPath);
     runMigrations(db, MIGRATIONS_DIR);
     repository = createProjectRepository(db);
+    tagRepository = createTagRepository(db);
   });
 
   afterEach(() => {
@@ -94,6 +97,57 @@ describe('project repository', () => {
     expect(result.rows.map((p) => p.title)).toEqual(['Alpha', 'Beta']);
   });
 
+  it('filters by project tag without duplicate rows or asset-only matches', () => {
+    const shared = tagRepository.create({ displayName: 'Shared', normalizedName: 'shared' });
+    const additional = tagRepository.create({ displayName: 'Additional', normalizedName: 'additional' });
+    const first = repository.create(sampleProject({ title: 'First Tagged' }));
+    const second = repository.create(sampleProject({ title: 'Second Tagged' }));
+    const assetOnlyProject = repository.create(sampleProject({ title: 'Asset Only Tag' }));
+    const assetId = Number(db.prepare(`
+      INSERT INTO assets (project_id, relative_path, filename)
+      VALUES (?, ?, ?)
+    `).run(assetOnlyProject.id, 'source/asset-only.png', 'asset-only.png').lastInsertRowid);
+
+    tagRepository.assignToProject(first.id, shared.id);
+    tagRepository.assignToProject(first.id, additional.id);
+    tagRepository.assignToProject(second.id, shared.id);
+    tagRepository.assignToAsset(assetId, shared.id);
+
+    const result = repository.list({ tagId: shared.id, sortBy: 'title', order: 'asc' });
+
+    expect(result.total).toBe(2);
+    expect(result.rows.map((project) => project.title)).toEqual(['First Tagged', 'Second Tagged']);
+    expect(new Set(result.rows.map((project) => project.id)).size).toBe(result.rows.length);
+  });
+
+  it('composes tag, search, status, and archived predicates and stops matching after tag deletion', () => {
+    const tag = tagRepository.create({ displayName: 'Needle', normalizedName: 'needle' });
+    const planned = repository.create(sampleProject({ title: 'Needle Planned', status: 'planned' }));
+    const ready = repository.create(sampleProject({ title: 'Needle Ready', status: 'ready' }));
+    repository.create(sampleProject({ title: 'Other Planned', status: 'planned' }));
+    const archived = repository.create(sampleProject({ title: 'Needle Archived' }));
+    repository.archive(archived.id);
+
+    for (const project of [planned, ready, archived]) {
+      tagRepository.assignToProject(project.id, tag.id);
+    }
+
+    const composed = repository.list({ tagId: tag.id, search: 'needle', status: 'planned' });
+    expect(composed.total).toBe(1);
+    expect(composed.rows.map((project) => project.id)).toEqual([planned.id]);
+
+    const defaultList = repository.list({ tagId: tag.id });
+    expect(defaultList.total).toBe(2);
+    expect(defaultList.rows.map((project) => project.id)).not.toContain(archived.id);
+
+    const archivedList = repository.list({ tagId: tag.id, status: 'archived', includeArchived: true });
+    expect(archivedList.total).toBe(1);
+    expect(archivedList.rows.map((project) => project.id)).toEqual([archived.id]);
+
+    tagRepository.deleteById(tag.id);
+    expect(repository.list({ tagId: tag.id }).total).toBe(0);
+  });
+
   it('treats search wildcards as literal characters', () => {
     repository.create(sampleProject({ title: '100% Done', description: '', notes: '' }));
     repository.create(sampleProject({ title: 'A_B Test', description: '', notes: '' }));
@@ -123,6 +177,23 @@ describe('project repository', () => {
 
     const page2 = repository.list({ limit: 25, offset: 25 });
     expect(page2.rows).toHaveLength(5);
+  });
+
+  it('paginates after applying the tag predicate', () => {
+    const tag = tagRepository.create({ displayName: 'Paged', normalizedName: 'paged' });
+    const matching = [1, 2, 3].map((number) => repository.create(
+      sampleProject({ title: `Tagged ${String(number).padStart(2, '0')}` })
+    ));
+    repository.create(sampleProject({ title: 'Tagged 02.5 Unmatched' }));
+    for (const project of matching) tagRepository.assignToProject(project.id, tag.id);
+
+    const page1 = repository.list({ tagId: tag.id, sortBy: 'title', order: 'asc', limit: 2, offset: 0 });
+    const page2 = repository.list({ tagId: tag.id, sortBy: 'title', order: 'asc', limit: 2, offset: 2 });
+
+    expect(page1.total).toBe(3);
+    expect(page1.rows.map((project) => project.title)).toEqual(['Tagged 01', 'Tagged 02']);
+    expect(page2.total).toBe(3);
+    expect(page2.rows.map((project) => project.title)).toEqual(['Tagged 03']);
   });
 
   it('counts projects by status', () => {

@@ -273,6 +273,7 @@ export function createProjectRepository(db) {
      * @param {Object} [options]
      * @param {string} [options.status]
      * @param {string} [options.search]
+     * @param {number} [options.tagId]
      * @param {boolean} [options.includeArchived]
      * @param {string} [options.sortBy]
      * @param {string} [options.order]
@@ -284,6 +285,7 @@ export function createProjectRepository(db) {
       const {
         status,
         search,
+        tagId,
         includeArchived = false,
         sortBy = 'updated',
         order = 'desc',
@@ -311,6 +313,13 @@ export function createProjectRepository(db) {
         const term = `%${escapeLike(search.trim())}%`;
         conditions.push("(title LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\' OR notes LIKE ? ESCAPE '\\')");
         params.push(term, term, term);
+      }
+
+      if (Number.isSafeInteger(tagId) && tagId > 0) {
+        conditions.push(
+          'EXISTS (SELECT 1 FROM project_tags WHERE project_tags.project_id = projects.id AND project_tags.tag_id = ?)'
+        );
+        params.push(tagId);
       }
 
       const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';

@@ -11,6 +11,13 @@ import {
 const SORT_OPTIONS = ['updated', 'created', 'title'];
 const VIEW_OPTIONS = ['grid', 'list'];
 const PAGE_SIZE = 25;
+const NOTICES = {
+  project_tags_updated: { variant: 'success', text: 'Project tags updated successfully.' },
+};
+
+function resolveNotice(code) {
+  return Object.prototype.hasOwnProperty.call(NOTICES, code) ? NOTICES[code] : null;
+}
 
 export function createProjectsRouter({ appName, projectService, workflowQueryService }) {
   const router = express.Router();
@@ -18,7 +25,8 @@ export function createProjectsRouter({ appName, projectService, workflowQuerySer
   router.get('/', (req, res, next) => {
     try {
       const pageDefaultsService = getPageDefaultsService(req);
-      const parsedQuery = parseListQuery(req.query, pageDefaultsService);
+      const tagOptions = getProjectTagFilterOptions(workflowQueryService);
+      const parsedQuery = parseListQuery(req.query, pageDefaultsService, tagOptions);
       const { total } = projectService.list({ ...parsedQuery, limit: 0 });
       const { total: totalProjects } = projectService.list({ includeArchived: true, limit: 0 });
       const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
@@ -30,7 +38,7 @@ export function createProjectsRouter({ appName, projectService, workflowQuerySer
       const offset = (currentPage - 1) * PAGE_SIZE;
       const { rows } = workflowQueryService.getProjectList({ ...parsedQuery, offset, limit: PAGE_SIZE });
       const pageUrl = buildPageUrl(req, parsedQuery, currentPage, pageDefaultsService);
-      const filtersActive = Boolean(parsedQuery.search || parsedQuery.status);
+      const filtersActive = Boolean(parsedQuery.search || parsedQuery.status || parsedQuery.tagId);
 
       res.render('projects/index.njk', {
         appName,
@@ -47,6 +55,7 @@ export function createProjectsRouter({ appName, projectService, workflowQuerySer
         query: {
           search: parsedQuery.search,
           status: parsedQuery.status,
+          tag: parsedQuery.tagId === undefined ? '' : String(parsedQuery.tagId),
           sort: parsedQuery.sortBy,
           order: parsedQuery.order,
           view: parsedQuery.view,
@@ -55,6 +64,7 @@ export function createProjectsRouter({ appName, projectService, workflowQuerySer
         statuses: STATUSES,
         priorities: PRIORITIES,
         sortOptions: SORT_OPTIONS,
+        tagOptions,
       });
     } catch (err) {
       next(err);
@@ -118,11 +128,17 @@ export function createProjectsRouter({ appName, projectService, workflowQuerySer
       return next(createNotFound());
     }
 
+    const projectTags = getProjectTagService(req)
+      .listProjectTags(id)
+      .map((tag) => ({ displayName: tag.display_name }));
+
     res.render('projects/detail.njk', {
       appName,
       project: workspace.project,
       releaseSummary: workspace.releaseSummary,
       assetHealth: workspace.assetHealth,
+      projectTags,
+      notice: resolveNotice(req.query.notice),
     });
   });
 
@@ -233,11 +249,27 @@ function getPageDefaultsService(req) {
   return service;
 }
 
-function parseListQuery(raw, pageDefaultsService) {
+function getProjectTagFilterOptions(workflowQueryService) {
+  if (!workflowQueryService || typeof workflowQueryService.getProjectTagFilterOptions !== 'function') {
+    throw new Error('Projects list requires workflowQueryService.getProjectTagFilterOptions.');
+  }
+  return workflowQueryService.getProjectTagFilterOptions();
+}
+
+function getProjectTagService(req) {
+  const service = req.app?.locals?.projectTagService;
+  if (!service) {
+    throw new Error('Project detail requires app.locals.projectTagService.');
+  }
+  return service;
+}
+
+function parseListQuery(raw, pageDefaultsService, tagOptions = []) {
   const rawQuery = raw && typeof raw === 'object' ? raw : {};
   const resolvedPresentation = pageDefaultsService.resolvePageDefaults('projects', rawQuery);
   const status = STATUSES.includes(rawQuery.status) ? rawQuery.status : undefined;
   const search = typeof rawQuery.search === 'string' ? rawQuery.search.trim() : '';
+  const tagId = parseTagFilterId(rawQuery.tag, tagOptions);
   const sortBy = resolvedPresentation.sort;
   const order = resolvedPresentation.order;
   const view = resolvedPresentation.view;
@@ -252,6 +284,7 @@ function parseListQuery(raw, pageDefaultsService) {
   return {
     status,
     search,
+    tagId,
     sortBy,
     order,
     view,
@@ -260,6 +293,18 @@ function parseListQuery(raw, pageDefaultsService) {
     limit: PAGE_SIZE,
     offset: (page - 1) * PAGE_SIZE,
   };
+}
+
+function parseTagFilterId(value, tagOptions) {
+  if (typeof value !== 'string' || !/^[1-9]\d*$/.test(value)) return undefined;
+
+  const id = Number(value);
+  if (!Number.isSafeInteger(id)) return undefined;
+
+  const validValues = new Set(
+    (Array.isArray(tagOptions) ? tagOptions : []).map((option) => String(option.value))
+  );
+  return validValues.has(value) ? id : undefined;
 }
 
 function hasPresentationQuery(raw) {
@@ -347,7 +392,7 @@ function buildPageUrl(req, parsedQuery, currentPage, pageDefaultsService) {
   return function pageUrl(overrides) {
     const query = { ...baseQuery };
     for (const [key, value] of Object.entries(overrides)) {
-      if (!['search', 'status', 'sort', 'order', 'page', 'view'].includes(key)) continue;
+      if (!['search', 'status', 'tag', 'sort', 'order', 'page', 'view'].includes(key)) continue;
       if (value === undefined || value === null || value === '') {
         delete query[key];
       } else if (key === 'view') {
@@ -374,6 +419,7 @@ function buildCanonicalPageQuery(req, parsedQuery, currentPage, pageDefaultsServ
 
   if (parsedQuery.search) query.search = parsedQuery.search;
   if (parsedQuery.status) query.status = parsedQuery.status;
+  if (parsedQuery.tagId !== undefined) query.tag = String(parsedQuery.tagId);
 
   if (
     parsedQuery.sortBy !== fallbackSort

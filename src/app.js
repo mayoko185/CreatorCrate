@@ -8,6 +8,8 @@ import { createProjectsRouter } from './routes/projects.js';
 import { createAssetsRouter } from './routes/assets.js';
 import { createAssetLibraryRouter } from './routes/asset-library.js';
 import { createProjectAssetCategoriesRouter } from './routes/project-asset-categories.js';
+import { createProjectTagsRouter } from './routes/project-tags.js';
+import { createAssetTagsRouter } from './routes/asset-tags.js';
 import { createReleasesRouter } from './routes/releases.js';
 import { createReleaseManagementRouter } from './routes/release-management.js';
 import { createCalendarRouter } from './routes/calendar.js';
@@ -18,6 +20,7 @@ import { createAssetCategoryRepository } from './data/asset-category-repository.
 import { createAssetCategoryService } from './services/asset-category-service.js';
 import { createAssetBrowserPreferenceRepository } from './data/asset-browser-preference-repository.js';
 import { createAppMetaRepository } from './data/app-meta-repository.js';
+import { createTagRepository } from './data/tag-repository.js';
 import { createProjectPrimaryImageRepository } from './data/project-primary-image-repository.js';
 import { createAssetBrowserPreferenceService } from './services/asset-browser-preference-service.js';
 import { createPageDefaultsService } from './services/page-defaults-service.js';
@@ -34,6 +37,9 @@ import { createPreviewService } from './services/preview-service.js';
 import { createMediaService } from './services/media-service.js';
 import { createBackupService } from './services/backup-service.js';
 import { createAuthService } from './services/auth-service.js';
+import { createTagService } from './services/tag-service.js';
+import { createProjectTagService } from './services/project-tag-service.js';
+import { createAssetTagService } from './services/asset-tag-service.js';
 import { createAuthMiddleware } from './middleware/auth.js';
 import { createCsrfMiddleware, createDisabledModeCsrfMiddleware } from './middleware/csrf.js';
 import { createSecurityHeadersMiddleware, createCachePolicyMiddleware } from './middleware/security-headers.js';
@@ -141,6 +147,20 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   const assetScanner = createAssetScanner(db, projectsRoot, { projectService, assetCategoryService, projectOperationCoordinator });
   app.locals.assetScanner = assetScanner;
 
+  const tagRepository = opts.tagRepository || createTagRepository(db);
+  const tagService = opts.tagService || createTagService({ tagRepository });
+  const projectTagService = opts.projectTagService || createProjectTagService({
+    tagRepository,
+    projectRepository: projectService.repository,
+  });
+  const assetTagService = opts.assetTagService || createAssetTagService({
+    tagRepository,
+    assetRepository: assetScanner.repository,
+  });
+  app.locals.tagService = tagService;
+  app.locals.projectTagService = projectTagService;
+  app.locals.assetTagService = assetTagService;
+
   // Phase 2 chunk 2: project-specific category mutations. Reuses the
   // project repository (via projectService.repository) and the asset
   // repository (via assetScanner.repository) rather than constructing
@@ -222,6 +242,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     evaluateReleaseReadiness,
     projectPrimaryImageRepository,
     assetBrowserPreferenceService,
+    tagRepository,
   });
 
   // Phase 10.1C: media service reuses the exact preview service instance
@@ -377,6 +398,10 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
       projectPrimaryImageService,
       previewProbe: previewService?.inspectKritaPreviewSource,
     }));
+
+    if (typeof workflowQueryService.getProjectAssetViewer === 'function') {
+      app.use('/projects', createAssetTagsRouter({ appName, workflowQueryService }));
+    }
   }
 
   // Phase 2 chunk 3: project-specific category routes. The router receives
@@ -390,6 +415,8 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
       assetBrowserPreferenceService,
     }));
   }
+
+  app.use('/projects', createProjectTagsRouter({ appName, projectService }));
 
   app.use('/releases', createReleasesRouter({ appName, releaseService, projectService, workflowQueryService }));
 

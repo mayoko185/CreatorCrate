@@ -10,7 +10,7 @@ import {
 } from '../services/workflow-query-service.js';
 import { buildAssetRevisionToken, classifyPreviewable } from '../services/preview-service.js';
 
-const ASSET_BROWSER_QUERY_KEYS = ['category', 'search', 'extension', 'presence', 'usage', 'sort', 'order', 'page', 'pageSize', 'view'];
+const ASSET_BROWSER_QUERY_KEYS = ['category', 'tag', 'search', 'extension', 'presence', 'usage', 'sort', 'order', 'page', 'pageSize', 'view'];
 const ASSET_PAGE_DEFAULTS_PAGE = 'projectAssets';
 const ASSET_PRESENTATION_OPTIONS = Object.freeze([
   Object.freeze({ key: 'view', option: 'view' }),
@@ -433,6 +433,8 @@ export function createAssetsRouter({
         return next(createNotFound());
       }
 
+      const assetTags = getAssetTagsForViewer(req, data.asset.id);
+
       let primaryImage;
       try {
         primaryImage = projectPrimaryImageService.getPrimaryImage(projectId);
@@ -447,6 +449,7 @@ export function createAssetsRouter({
       res.render('projects/asset-viewer.njk', {
         appName,
         ...buildAssetViewerRenderModel(data, buildPrimaryImageViewerState(data, primaryImage, viewerEligibility)),
+        assetTags,
         notice,
         noticeMessage: notice ? ASSET_ACTION_NOTICE_MESSAGES[notice] : null,
       });
@@ -866,6 +869,20 @@ function getPageDefaultsService(req) {
   return service;
 }
 
+function getAssetTagService(req) {
+  const service = req.app?.locals?.assetTagService;
+  if (!service) {
+    throw new Error('Asset Viewer requires app.locals.assetTagService.');
+  }
+  return service;
+}
+
+function getAssetTagsForViewer(req, assetId) {
+  return getAssetTagService(req)
+    .listAssetTags(assetId)
+    .map((tag) => ({ displayName: tag.display_name }));
+}
+
 function isBareAssetBrowserRequest(query) {
   return Boolean(query && typeof query === 'object' && Object.keys(query).length === 0);
 }
@@ -1024,6 +1041,7 @@ function buildBrowserRenderModel(project, data, pageDefaultsService) {
     pageCount: data.pageCount,
     filters: data.filters,
     extensionChoices: data.extensionChoices,
+    tagOptions: data.tagOptions || [],
     categoryNavigation: data.categoryNavigation,
     emptyState: data.emptyState,
     isArchived: data.isArchived,
@@ -1178,6 +1196,8 @@ function buildAutoRenameReturnContext(rawContext = {}) {
   const context = {};
   const categoryId = parseCanonicalPositiveId(rawContext.categoryId);
   if (categoryId !== null) context.category = String(categoryId);
+  const tagId = parseCanonicalPositiveId(rawContext.tag);
+  if (tagId !== null) context.tag = String(tagId);
   if (rawContext.view === 'list' || rawContext.view === 'grid') context.view = rawContext.view;
   return context;
 }
@@ -1524,6 +1544,7 @@ const ASSET_ACTION_NOTICE_CODES = new Set([
   'asset-moved',
   'primary-image-set',
   'primary-image-removed',
+  'asset_tags_updated',
 ]);
 
 const ASSET_ACTION_NOTICE_MESSAGES = {
@@ -1531,6 +1552,7 @@ const ASSET_ACTION_NOTICE_MESSAGES = {
   'asset-moved': 'The file was moved.',
   'primary-image-set': 'The primary image was set.',
   'primary-image-removed': 'The primary image was removed.',
+  asset_tags_updated: 'Asset tags updated successfully.',
 };
 
 function describeAutoRenameSuccess(renamed, unchanged) {
@@ -1766,13 +1788,14 @@ function buildPrimaryImageViewerState(data, selectedAsset, isEligiblePresentImag
  */
 function buildAssetsPageData(workflowQueryService, projectId, project, rawQuery = {}) {
   const hasExplicitCategory = Object.prototype.hasOwnProperty.call(rawQuery || {}, 'category');
+  const hasTagQuery = Object.prototype.hasOwnProperty.call(rawQuery || {}, 'tag');
   if (
-    hasExplicitCategory
-    && (
+    hasTagQuery
+    || (hasExplicitCategory && (
       rawQuery.category === 'all'
       || rawQuery.category === 'uncategorized'
       || parseCanonicalPositiveId(rawQuery.category) === null
-    )
+    ))
   ) {
     const ordinary = workflowQueryService.getProjectAssetBrowser(projectId, rawQuery);
     return ordinary
@@ -1851,6 +1874,7 @@ function buildAssetViewerRenderModel(data, overrides = {}) {
   return {
     project: data.project,
     asset: data.asset,
+    assetTags: [],
     context: data.context,
     filters: data.filters,
     contextFields: ASSET_BROWSER_CONTEXT_FIELDS,
@@ -1863,6 +1887,7 @@ function buildAssetViewerRenderModel(data, overrides = {}) {
     backToAssetsLink: data.backToAssetsLink,
     enabledCategories: data.enabledCategories,
     canMutate: data.canMutate,
+    canManageTags: !data.project.archived_at && data.project.status !== 'archived',
     notice: null,
     noticeMessage: null,
     formError: null,
@@ -1932,6 +1957,7 @@ function handleAssetActionFailure(err, {
 
   let data;
   let primaryImageState;
+  let assetTags;
   try {
     data = workflowQueryService.getProjectAssetViewer(projectId, assetId, req.body);
     if (data) {
@@ -1939,6 +1965,7 @@ function handleAssetActionFailure(err, {
         data,
         projectPrimaryImageService.getPrimaryImage(projectId),
       );
+      assetTags = getAssetTagsForViewer(req, data.asset.id);
     }
   } catch (renderErr) {
     return next(renderErr);
@@ -1955,7 +1982,7 @@ function handleAssetActionFailure(err, {
 
   res.status(status).render('projects/asset-viewer.njk', {
     appName,
-    ...buildAssetViewerRenderModel(data, { ...primaryImageState, ...overrides }),
+    ...buildAssetViewerRenderModel(data, { ...primaryImageState, assetTags, ...overrides }),
   });
 }
 

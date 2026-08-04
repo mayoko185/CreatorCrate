@@ -29,6 +29,9 @@
     {% if nextAssetLink %}
       <a class="button asset-viewer-next" href="{{ nextAssetLink.href }}" rel="next">Next asset</a>
     {% endif %}
+    {% if canManageTags %}
+      <a class="button button-secondary asset-viewer-manage-tags" href="/projects/{{ project.id }}/assets/{{ asset.id }}/tags">Manage tags</a>
+    {% endif %}
     {% if asset.original_url %}
       <a class="button asset-viewer-original" href="{{ asset.original_url }}">View Original</a>
     {% endif %}
@@ -133,6 +136,19 @@
       <dt>Missing since</dt>
       <dd>{{ asset.missing_since or '—' }}</dd>
     </dl>
+  </section>
+
+  <section class="asset-tags-section" aria-labelledby="asset-tags-heading">
+    <h2 id="asset-tags-heading">Tags</h2>
+    {% if assetTags.length > 0 %}
+      <ul>
+        {% for tag in assetTags %}
+          <li>{{ tag.displayName }}</li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="help-text">No tags assigned to this asset.</p>
+    {% endif %}
   </section>
 
   {% if isPrimaryImage or canSetAsPrimaryImage %}

@@ -14,6 +14,7 @@ import {
   PageDefaultValidationError,
   PAGE_DEFAULT_DEFINITIONS,
 } from '../services/page-defaults-service.js';
+import { TAG_NAME_MAX, TagNotFoundError, TagValidationError } from '../services/tag-service.js';
 
 function createNotFound() {
   const err = new Error('Not found');
@@ -71,6 +72,9 @@ const NOTICES = {
   },
   global_default_saved: { variant: 'success', text: 'Global asset-browser default saved.' },
   defaults_saved: { variant: 'success', text: 'Page defaults saved successfully.' },
+  tag_created: { variant: 'success', text: 'Tag created successfully.' },
+  tag_renamed: { variant: 'success', text: 'Tag renamed successfully.' },
+  tag_deleted: { variant: 'success', text: 'Tag deleted successfully.' },
 };
 
 function resolveNotice(code) {
@@ -192,6 +196,52 @@ function getPageDefaultsService(req) {
     throw new Error('Settings Defaults requires app.locals.pageDefaultsService.');
   }
   return service;
+}
+
+function getTagService(req) {
+  const service = req.app?.locals?.tagService;
+  if (!service) {
+    throw new Error('Settings Tags requires app.locals.tagService.');
+  }
+  return service;
+}
+
+function renderTagsPage(req, res, {
+  appName,
+  status = 200,
+  notice = null,
+  submittedName = '',
+  errors = {},
+} = {}) {
+  const tags = getTagService(req).listTags();
+  res.status(status).render('settings/tags.njk', {
+    appName,
+    tags,
+    notice,
+    submittedName,
+    errors,
+    errorMessages: Object.values(errors),
+    tagNameMax: TAG_NAME_MAX,
+  });
+}
+
+function renderTagEditPage(res, {
+  appName,
+  tag,
+  status = 200,
+  notice = null,
+  submittedName,
+  errors = {},
+} = {}) {
+  res.status(status).render('settings/tag-edit.njk', {
+    appName,
+    tag,
+    notice,
+    submittedName: submittedName === undefined ? tag.display_name : submittedName,
+    errors,
+    errorMessages: Object.values(errors),
+    tagNameMax: TAG_NAME_MAX,
+  });
 }
 
 function buildDefaultsPageModel(service, {
@@ -325,6 +375,14 @@ function transitionFailureNotice(result) {
 }
 
 function parseCategoryId(value) {
+  const id = Number.parseInt(value, 10);
+  if (!Number.isInteger(id) || id < 1 || String(id) !== String(value)) {
+    return null;
+  }
+  return id;
+}
+
+function parseTagId(value) {
   const id = Number.parseInt(value, 10);
   if (!Number.isInteger(id) || id < 1 || String(id) !== String(value)) {
     return null;
@@ -505,6 +563,100 @@ export function createSettingsRouter({
     }
 
     res.redirect('/settings/defaults?notice=defaults_saved');
+  });
+
+  router.get('/tags', (req, res) => {
+    renderTagsPage(req, res, {
+      appName,
+      notice: resolveNotice(req.query.notice),
+    });
+  });
+
+  router.post('/tags', (req, res, next) => {
+    const submittedName = typeof req.body?.name === 'string' ? req.body.name : '';
+
+    try {
+      getTagService(req).createTag({ name: submittedName });
+      res.redirect('/settings/tags?notice=tag_created');
+    } catch (err) {
+      if (err instanceof TagValidationError) {
+        renderTagsPage(req, res, {
+          appName,
+          status: 422,
+          submittedName,
+          errors: err.errors || { name: err.message },
+        });
+        return;
+      }
+      next(err);
+    }
+  });
+
+  router.get('/tags/:tagId/edit', (req, res, next) => {
+    const tagId = parseTagId(req.params.tagId);
+    if (tagId === null) return next(createNotFound());
+
+    try {
+      const tag = getTagService(req).getTag(tagId);
+      renderTagEditPage(res, { appName, tag });
+    } catch (err) {
+      if (err instanceof TagNotFoundError) return next(createNotFound());
+      return next(err);
+    }
+  });
+
+  router.post('/tags/:tagId/edit', (req, res, next) => {
+    const tagId = parseTagId(req.params.tagId);
+    if (tagId === null) return next(createNotFound());
+
+    const submittedName = typeof req.body?.name === 'string' ? req.body.name : '';
+    const service = getTagService(req);
+    let tag;
+
+    try {
+      tag = service.getTag(tagId);
+      service.renameTag(tagId, { name: submittedName });
+      res.redirect('/settings/tags?notice=tag_renamed');
+    } catch (err) {
+      if (err instanceof TagNotFoundError) return next(createNotFound());
+      if (err instanceof TagValidationError) {
+        renderTagEditPage(res, {
+          appName,
+          tag,
+          status: 422,
+          submittedName,
+          errors: err.errors || { name: err.message },
+        });
+        return;
+      }
+      return next(err);
+    }
+  });
+
+  router.get('/tags/:tagId/delete', (req, res, next) => {
+    const tagId = parseTagId(req.params.tagId);
+    if (tagId === null) return next(createNotFound());
+
+    try {
+      const tag = getTagService(req).getTag(tagId);
+      res.render('settings/tag-delete-confirm.njk', { appName, tag });
+    } catch (err) {
+      if (err instanceof TagNotFoundError) return next(createNotFound());
+      return next(err);
+    }
+  });
+
+  router.post('/tags/:tagId/delete', (req, res, next) => {
+    const tagId = parseTagId(req.params.tagId);
+    if (tagId === null) return next(createNotFound());
+
+    try {
+      getTagService(req).deleteTag(tagId);
+      res.redirect('/settings/tags?notice=tag_deleted');
+    } catch (err) {
+      if (err instanceof TagNotFoundError) return next(createNotFound());
+      return next(err);
+    }
   });
 
   if (authService) {

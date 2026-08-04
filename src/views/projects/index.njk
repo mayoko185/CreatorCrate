@@ -32,6 +32,16 @@
     </div>
 
     <div class="field">
+      <label for="tag">Tag</label>
+      <select id="tag" name="tag"{% if tagOptions.length == 0 %} disabled{% endif %}>
+        <option value=""{% if not query.tag %} selected{% endif %}>All tags</option>
+        {% for tag in tagOptions %}
+          <option value="{{ tag.value }}"{% if query.tag == tag.value %} selected{% endif %}>{{ tag.displayName }}</option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <div class="field">
       <label for="sort">Sort</label>
       <select id="sort" name="sort">
         {% for opt in sortOptions %}
@@ -59,6 +69,18 @@
       {% for project in projects %}
         {% call projectCard.render(project, view) %}
           <dl class="project-card-metadata">
+            {% if project.tags and project.tags.length > 0 %}
+              <div class="project-card-meta project-card-meta--tags">
+                <dt>Tags</dt>
+                <dd>
+                  <ul class="project-card-tag-list" aria-label="Assigned tags">
+                    {% for tag in project.tags %}
+                      <li>{{ tag.displayName }}</li>
+                    {% endfor %}
+                  </ul>
+                </dd>
+              </div>
+            {% endif %}
             <div class="project-card-meta">
               <dt>Status</dt>
               <dd>{% set status = project.status %}{% include "partials/status-badge.njk" %}</dd>

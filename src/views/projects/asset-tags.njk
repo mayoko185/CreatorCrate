@@ -1,0 +1,89 @@
+{% extends "layout.njk" %}
+{% import "partials/page-heading.njk" as pageHeading %}
+
+{% set page_title = "Assets — " ~ project.title ~ " — " ~ asset.filename ~ " — Tags" %}
+{% set isArchived = project.archived_at or project.status == 'archived' %}
+
+{% block content %}
+  {% if isArchived %}
+    {% call pageHeading.render("Assigned tags are shown read-only for archived projects.", "archived") %}
+      <a class="button button-secondary" href="/projects/{{ project.id }}/assets/{{ asset.id }}">Back to asset</a>
+    {% endcall %}
+  {% else %}
+    {% call pageHeading.render("Choose the reusable tags assigned to this asset.") %}
+      <a class="button button-secondary" href="/projects/{{ project.id }}/assets/{{ asset.id }}">Back to asset</a>
+    {% endcall %}
+  {% endif %}
+
+  {% if isArchived %}
+    {% set noticeVariant = "warning" %}
+    {% set noticeText = "This project is archived and read-only. Asset tag assignments cannot be changed." %}
+    {% include "partials/notice.njk" %}
+  {% elseif asset.missing %}
+    {% set noticeVariant = "warning" %}
+    {% set noticeText = "This asset is missing at last scan. Its retained database row can still have tags assigned." %}
+    {% include "partials/notice.njk" %}
+  {% endif %}
+
+  <section class="asset-tags-current" aria-labelledby="asset-tags-current-heading">
+    <h2 id="asset-tags-current-heading">Current tags</h2>
+    {% if assignedTags.length > 0 %}
+      <ul>
+        {% for tag in assignedTags %}
+          <li>{{ tag.displayName }}</li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="help-text">No tags assigned to this asset.</p>
+    {% endif %}
+  </section>
+
+  {% if tags.length == 0 %}
+    {% set emptyHeading = "No reusable tags available" %}
+    {% set emptyDescription = "Create reusable tags in Settings › Tags before assigning them to this asset." %}
+    {% set emptyActionUrl = "/settings/tags" %}
+    {% set emptyActionLabel = "Manage tags in Settings" %}
+    {% include "partials/empty-state.njk" %}
+  {% elif isArchived %}
+    <section class="settings-section">
+      <h2>Available reusable tags</h2>
+      <p class="help-text">Catalog tags can be created, renamed, or deleted in <a href="/settings/tags">Settings › Tags</a>.</p>
+      <ul>
+        {% for tag in tags %}
+          <li>{{ tag.displayName }}</li>
+        {% endfor %}
+      </ul>
+    </section>
+  {% else %}
+    <section class="settings-section">
+      <h2>Manage tags</h2>
+      <p class="help-text">Select the complete tag set for this asset. Manage reusable catalog tags in <a href="/settings/tags">Settings › Tags</a>.</p>
+
+      {% if errorMessages.length > 0 %}
+        <div class="error-summary" role="alert" id="asset-tag-errors">
+          <p>Could not update the asset tags. No changes were made.</p>
+          <ul>
+            {% for error in errorMessages %}<li>{{ error }}</li>{% endfor %}
+          </ul>
+        </div>
+      {% endif %}
+
+      <form method="post" action="/projects/{{ project.id }}/assets/{{ asset.id }}/tags" class="project-form" novalidate>
+        <input type="hidden" name="_csrf" value="{{ _csrf }}">
+        <fieldset{% if errorMessages.length > 0 %} aria-describedby="asset-tag-errors"{% endif %}>
+          <legend>Available tags</legend>
+          {% for tag in tags %}
+            <div class="field">
+              <input type="checkbox" id="asset-tag-{{ tag.id }}" name="tagIds[]" value="{{ tag.id }}"{% if (tag.id ~ '') in selectedTagIds %} checked{% endif %}>
+              <label for="asset-tag-{{ tag.id }}">{{ tag.displayName }}</label>
+            </div>
+          {% endfor %}
+        </fieldset>
+
+        <div class="form-actions">
+          <button type="submit" class="button button-primary">Save tags</button>
+        </div>
+      </form>
+    </section>
+  {% endif %}
+{% endblock %}

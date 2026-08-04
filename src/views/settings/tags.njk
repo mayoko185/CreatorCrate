@@ -1,0 +1,65 @@
+{% extends "layout.njk" %}
+{% import "partials/page-heading.njk" as pageHeading %}
+
+{% set page_title = "Settings — Tags" %}
+
+{% block content %}
+  {{ pageHeading.render("Create reusable tags for future project and asset tagging.") }}
+
+  {% if notice %}
+    {% set noticeVariant = notice.variant %}
+    {% set noticeText = notice.text %}
+    {% include "partials/notice.njk" %}
+  {% endif %}
+
+  <div class="settings-layout">
+    {% set activeSettingsSection = "tags" %}
+    {% include "partials/settings-nav.njk" %}
+
+    <div class="settings-content">
+      <div class="settings-section">
+        <h3>Create a tag</h3>
+        {% if errorMessages.length > 0 %}
+          <div class="error-summary" role="alert" id="tag-errors">
+            <p>Could not create the tag. Fix the field below and try again.</p>
+            <ul>
+              {% for error in errorMessages %}<li>{{ error }}</li>{% endfor %}
+            </ul>
+          </div>
+        {% endif %}
+
+        <form method="post" action="/settings/tags" class="project-form" novalidate>
+          <input type="hidden" name="_csrf" value="{{ _csrf }}">
+          <div class="field{% if errors.name %} field-error{% endif %}">
+            <label for="tag-name">Tag name <span class="required" aria-label="required">*</span></label>
+            <input type="text" id="tag-name" name="name" value="{{ submittedName or '' }}" maxlength="{{ tagNameMax }}" required{% if errors.name %} aria-describedby="tag-name-error" aria-invalid="true"{% endif %}>
+            {% if errors.name %}<span class="field-error-message" id="tag-name-error">{{ errors.name }}</span>{% endif %}
+          </div>
+
+          <div class="form-actions">
+            <button type="submit" class="button button-primary">Create Tag</button>
+          </div>
+        </form>
+      </div>
+
+      <div class="settings-section">
+        <h3>Tags</h3>
+        {% if tags.length > 0 %}
+          <ul>
+            {% for tag in tags %}
+              <li>
+                {{ tag.display_name }}
+                <a href="/settings/tags/{{ tag.id }}/edit" class="button button-small button-secondary" aria-label="Rename tag {{ tag.display_name }}">Rename</a>
+                <a href="/settings/tags/{{ tag.id }}/delete" class="button button-small button-danger" aria-label="Delete tag {{ tag.display_name }}">Delete</a>
+              </li>
+            {% endfor %}
+          </ul>
+        {% else %}
+          {% set emptyHeading = "No tags yet" %}
+          {% set emptyDescription = "Create a tag above to start building the catalog." %}
+          {% include "partials/empty-state.njk" %}
+        {% endif %}
+      </div>
+    </div>
+  </div>
+{% endblock %}

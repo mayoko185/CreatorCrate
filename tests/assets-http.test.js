@@ -175,6 +175,22 @@ describe('asset browser HTTP workflow', () => {
     return match ? match[2].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim() : null;
   }
 
+  function assetCardHtml(html, assetId) {
+    return html.match(new RegExp(`<article\\b[^>]*data-asset-id="${assetId}"[\\s\\S]*?<\\/article>`))?.[0] || '';
+  }
+
+  function assetRowHtml(html, filename) {
+    return html.match(new RegExp(`<tr\\b[^>]*>[\\s\\S]*?${filename}[\\s\\S]*?<\\/tr>`))?.[0] || '';
+  }
+
+  function assetTagListHtml(html, className) {
+    return html.match(new RegExp(`<ul class="${className}"[\\s\\S]*?<\\/ul>`))?.[0] || '';
+  }
+
+  function assetTagFilterHtml(html) {
+    return html.match(/<select id="tag"[\s\S]*?<\/select>/)?.[0] || '';
+  }
+
   function expectAnchorHref(html, className, expected) {
     expect(anchorHref(html, className)).toBe(expected);
   }
@@ -252,6 +268,266 @@ describe('asset browser HTTP workflow', () => {
     expect(res2.text).toContain('Back to Project');
     expect(res2.text).toContain('class="page-heading"');
     expect((res2.text.match(/<h1\b/g) || []).length).toBe(1);
+    expect(res2.text).toContain('<select id="tag" name="tag" disabled>');
+  });
+
+  it('renders page-local assigned asset tags in grid and list views without changing asset results', async () => {
+    const res = await createProject('Asset Tag Browser Display');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const assets = ['a.txt', 'b.txt', 'c.txt', 'd.txt'].map((filename) => assetRepo.upsert(id, filename, {
+      filename,
+      extension: 'txt',
+      mimeType: 'text/plain',
+      sizeBytes: 10,
+      modifiedAt: null,
+    }));
+    const zebra = app.locals.tagService.createTag({ name: 'Zebra Display' });
+    const shared = app.locals.tagService.createTag({ name: 'Shared Display' });
+    const alpha = app.locals.tagService.createTag({ name: 'Alpha Display' });
+    const projectOnly = app.locals.tagService.createTag({ name: 'Project Only Display' });
+
+    app.locals.projectTagService.replaceProjectTags(id, [projectOnly.id]);
+    app.locals.assetTagService.replaceAssetTags(assets[1].id, [zebra.id, shared.id, alpha.id]);
+    app.locals.assetTagService.replaceAssetTags(assets[2].id, [shared.id]);
+
+    const gridPageOne = await agent
+      .get(`/projects/${id}/assets?sort=filename&order=asc&page=1&pageSize=2`)
+      .expect(200);
+    const untaggedCard = assetCardHtml(gridPageOne.text, assets[0].id);
+    const taggedCard = assetCardHtml(gridPageOne.text, assets[1].id);
+    const taggedCardTags = assetTagListHtml(taggedCard, 'asset-card-tags');
+
+    expect(gridPageOne.text).toContain('4 assets found');
+    expect(untaggedCard).not.toContain('asset-card-tags');
+    expect(taggedCardTags.indexOf('Alpha Display')).toBeLessThan(taggedCardTags.indexOf('Shared Display'));
+    expect(taggedCardTags.indexOf('Shared Display')).toBeLessThan(taggedCardTags.indexOf('Zebra Display'));
+    expect(taggedCardTags).not.toContain('Project Only Display');
+    expect(taggedCardTags).not.toContain('normalized_name');
+    expect(taggedCardTags).not.toContain(`>${alpha.id}<`);
+    expect(taggedCardTags).not.toContain(`>${shared.id}<`);
+    expect(taggedCardTags).not.toContain(`>${zebra.id}<`);
+    expect(taggedCardTags).not.toContain('href=');
+
+    const listPageOne = await agent
+      .get(`/projects/${id}/assets?sort=filename&order=asc&page=1&pageSize=2&view=list`)
+      .expect(200);
+    const listTaggedRow = assetRowHtml(listPageOne.text, 'b.txt');
+    const listUntaggedRow = assetRowHtml(listPageOne.text, 'a.txt');
+    const listTags = assetTagListHtml(listTaggedRow, 'asset-tag-list');
+
+    expect(listPageOne.text).toContain('<th scope="col">Tags</th>');
+    expect(listTags.indexOf('Alpha Display')).toBeLessThan(listTags.indexOf('Shared Display'));
+    expect(listTags.indexOf('Shared Display')).toBeLessThan(listTags.indexOf('Zebra Display'));
+    expect(listUntaggedRow).not.toContain('asset-tag-list');
+
+    const gridPageTwo = await agent
+      .get(`/projects/${id}/assets?sort=filename&order=asc&page=2&pageSize=2`)
+      .expect(200);
+    const sharedCard = assetCardHtml(gridPageTwo.text, assets[2].id);
+    const secondUntaggedCard = assetCardHtml(gridPageTwo.text, assets[3].id);
+
+    expect(sharedCard).toContain('Shared Display');
+    expect(sharedCard).not.toContain('Alpha Display');
+    expect(sharedCard).not.toContain('Zebra Display');
+    expect(secondUntaggedCard).not.toContain('asset-card-tags');
+    expect((gridPageTwo.text.match(/data-asset-id="\d+"/g) || [])).toHaveLength(2);
+    expect(gridPageTwo.text).toContain('name="tag"');
+    expect(gridPageTwo.text).not.toContain('sort=tag');
+  });
+
+  it('keeps assigned tags visible for missing assets and archived project Assets pages', async () => {
+    const res = await createProject('Archived Asset Tag Display');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const asset = assetRepo.upsert(id, 'retained.txt', {
+      filename: 'retained.txt',
+      extension: 'txt',
+      mimeType: 'text/plain',
+      sizeBytes: 10,
+      modifiedAt: null,
+    });
+    const tag = app.locals.tagService.createTag({ name: 'Retained Asset Tag' });
+    app.locals.assetTagService.replaceAssetTags(asset.id, [tag.id]);
+    db.prepare('UPDATE assets SET is_present = 0, missing_since = datetime(\'now\') WHERE id = ?').run(asset.id);
+
+    const missing = await agent.get(`/projects/${id}/assets?presence=missing&view=list`).expect(200);
+    expect(assetRowHtml(missing.text, 'retained.txt')).toContain('Retained Asset Tag');
+    expect(missing.text).toContain('1 asset found');
+
+    await agent.post(`/projects/${id}/archive`).type('form').send({ _csrf: csrfToken }).expect(302);
+
+    const archived = await agent.get(`/projects/${id}/assets?view=grid`).expect(200);
+    expect(assetCardHtml(archived.text, asset.id)).toContain('Retained Asset Tag');
+    expect(archived.text).not.toContain('Scan Now');
+  });
+
+  it('filters project assets by one reusable tag, preserves uniqueness and pagination, and renders catalog options', async () => {
+    const res = await createProject('Asset Tag Filter');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const assets = ['a.txt', 'b.txt', 'c.txt', 'd.txt'].map((filename) => assetRepo.upsert(id, filename, {
+      filename,
+      extension: 'txt',
+      mimeType: 'text/plain',
+      sizeBytes: 10,
+      modifiedAt: null,
+    }));
+    const zebra = app.locals.tagService.createTag({ name: 'Zebra Filter' });
+    const shared = app.locals.tagService.createTag({ name: 'Shared Filter' });
+    const alpha = app.locals.tagService.createTag({ name: 'Alpha Filter' });
+    const projectOnly = app.locals.tagService.createTag({ name: 'Project Only Filter' });
+
+    app.locals.projectTagService.replaceProjectTags(id, [projectOnly.id]);
+    app.locals.assetTagService.replaceAssetTags(assets[0].id, [projectOnly.id]);
+    app.locals.assetTagService.replaceAssetTags(assets[1].id, [shared.id, zebra.id, alpha.id]);
+    app.locals.assetTagService.replaceAssetTags(assets[2].id, [shared.id]);
+    app.locals.assetTagService.replaceAssetTags(assets[3].id, [shared.id]);
+
+    const pageOne = await agent
+      .get(`/projects/${id}/assets?tag=${shared.id}&sort=filename&order=asc&page=1&pageSize=2&view=list`)
+      .expect(200);
+    const filter = assetTagFilterHtml(pageOne.text);
+    const nextMatch = pageOne.text.match(/<a href="([^"]+)" class="pagination-next">Next/);
+    expect(nextMatch).not.toBeNull();
+    const nextUrl = new URL(decodeHtmlHref(nextMatch[1]), 'http://localhost');
+    const pageSizeForm = pageOne.text.match(/<form class="page-size-form"[\s\S]*?<\/form>/)?.[0] || '';
+
+    expect(pageOne.text).toContain('3 assets found');
+    expect((pageOne.text.match(/<tr\b[^>]*>/g) || [])).toHaveLength(3);
+    expect(pageOne.text).toContain('b.txt');
+    expect(pageOne.text).toContain('c.txt');
+    expect(pageOne.text).not.toContain('a.txt');
+    expect(pageOne.text).not.toContain('d.txt');
+    expect(filter).toContain(`<option value="${shared.id}" selected>Shared Filter</option>`);
+    expect(filter.indexOf('Alpha Filter')).toBeLessThan(filter.indexOf('Project Only Filter'));
+    expect(filter.indexOf('Project Only Filter')).toBeLessThan(filter.indexOf('Shared Filter'));
+    expect(filter.indexOf('Shared Filter')).toBeLessThan(filter.indexOf('Zebra Filter'));
+    expect(filter).not.toContain('normalized_name');
+    expect(pageSizeForm).toContain(`<input type="hidden" name="tag" value="${shared.id}">`);
+    expect(nextUrl.searchParams.get('tag')).toBe(String(shared.id));
+    expect(nextUrl.searchParams.get('page')).toBe('2');
+    expect(nextUrl.searchParams.get('pageSize')).toBe('2');
+
+    const gridHref = pageOne.text.match(/<a class="view-switcher-option" href="([^"]+)"[\s\S]*?>Grid<\/a>/)?.[1];
+    expect(gridHref).toBeDefined();
+    expect(new URL(decodeHtmlHref(gridHref), 'http://localhost').searchParams.get('tag'))
+      .toBe(String(shared.id));
+
+    const pageTwo = await agent.get(nextUrl.pathname + nextUrl.search).expect(200);
+    expect(assetRowHtml(pageTwo.text, 'd.txt')).toContain('d.txt');
+    expect(pageTwo.text).not.toContain('a.txt');
+  });
+
+  it('composes tag, search, extension, presence, and release-usage filters', async () => {
+    const res = await createProject('Composed Asset Tag Filter');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('Composed Asset Tag Filter');
+    const matching = writeIndexedAsset(id, projectDir, 'Hero-Final.png', 'png', {
+      extension: 'png', mimeType: 'image/png',
+    });
+    const wrongExtension = writeIndexedAsset(id, projectDir, 'Hero-Final.jpg', 'jpg', {
+      extension: 'jpg', mimeType: 'image/jpeg',
+    });
+    const missing = assetRepo.upsert(id, 'Hero-Missing.png', {
+      filename: 'Hero-Missing.png', extension: 'png', mimeType: 'image/png', sizeBytes: 10, modifiedAt: null,
+    });
+    const tag = app.locals.tagService.createTag({ name: 'Composed Asset Tag' });
+    app.locals.assetTagService.replaceAssetTags(matching.id, [tag.id]);
+    app.locals.assetTagService.replaceAssetTags(wrongExtension.id, [tag.id]);
+    app.locals.assetTagService.replaceAssetTags(missing.id, [tag.id]);
+    assetRepo.markMissingByProjectIdAndPathNotIn(id, ['Hero-Final.png', 'Hero-Final.jpg']);
+    const releaseId = Number(db.prepare(`
+      INSERT INTO releases (project_id, title, description, notes, status, planned_date, published_date, patreon_url)
+      VALUES (?, 'Used Asset Release', '', '', 'idea', NULL, NULL, NULL)
+      RETURNING id
+    `).get(id).id);
+    db.prepare('INSERT INTO release_assets (release_id, asset_id, role, sort_order) VALUES (?, ?, ?, ?)')
+      .run(releaseId, matching.id, 'attachment', 0);
+
+    const response = await agent
+      .get(`/projects/${id}/assets?tag=${tag.id}&search=hero&extension=.PNG&presence=present&usage=used`)
+      .expect(200);
+
+    expect(response.text).toContain('1 asset found');
+    expect(response.text).toContain('Hero-Final');
+    expect(response.text).not.toContain('Hero-Missing');
+    expect(response.text).not.toContain('Hero-Final.jpg');
+    expect(response.text).toContain('Used Asset Release');
+  });
+
+  it('canonicalizes empty, malformed, nonexistent, and deleted tag values without selecting another tag', async () => {
+    const res = await createProject('Invalid Asset Tag Values');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    assetRepo.upsert(id, 'tagged.txt', {
+      filename: 'tagged.txt', extension: 'txt', mimeType: 'text/plain', sizeBytes: 10, modifiedAt: null,
+    });
+    assetRepo.upsert(id, 'untagged.txt', {
+      filename: 'untagged.txt', extension: 'txt', mimeType: 'text/plain', sizeBytes: 10, modifiedAt: null,
+    });
+    const tag = app.locals.tagService.createTag({ name: 'Existing Asset Tag' });
+    const taggedAsset = assetRepo.findByProjectIdAndPath(id, 'tagged.txt');
+    app.locals.assetTagService.replaceAssetTags(taggedAsset.id, [tag.id]);
+
+    for (const rawTag of ['', '0', '-1', '1.5', '1junk', '999999']) {
+      const response = await agent
+        .get(`/projects/${id}/assets?tag=${encodeURIComponent(rawTag)}&search=tagged&view=list`)
+        .expect(200);
+      const filter = assetTagFilterHtml(response.text);
+      expect(response.text).toContain('2 assets found');
+      expect(filter).toContain('<option value="" selected>All tags</option>');
+      expect(filter).not.toContain(`value="${tag.id}" selected`);
+    }
+
+    app.locals.tagService.deleteTag(tag.id);
+    const deleted = await agent
+      .get(`/projects/${id}/assets?tag=${tag.id}&search=tagged&view=list`)
+      .expect(200);
+    const deletedFilter = assetTagFilterHtml(deleted.text);
+    const gridHref = deleted.text.match(/<a class="view-switcher-option" href="([^"]+)"[\s\S]*?>Grid<\/a>/)?.[1];
+
+    expect(deleted.text).toContain('2 assets found');
+    expect(deletedFilter).not.toContain(`value="${tag.id}"`);
+    expect(new URL(decodeHtmlHref(gridHref), 'http://localhost').searchParams.has('tag')).toBe(false);
+  });
+
+  it('preserves a valid tag through saved presentation controls and browser action redirects', async () => {
+    saveAssetDefault('view', 'list');
+    saveAssetDefault('sort', 'size');
+    saveAssetDefault('order', 'desc');
+    saveAssetDefault('pageSize', '50');
+
+    const res = await createProject('Asset Tag Action Context');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('Asset Tag Action Context');
+    const asset = writeIndexedAsset(id, projectDir, 'old.png', 'png', {
+      extension: 'png', mimeType: 'image/png',
+    });
+    const tag = app.locals.tagService.createTag({ name: 'Action Context Tag' });
+    app.locals.assetTagService.replaceAssetTags(asset.id, [tag.id]);
+
+    const page = await agent.get(`/projects/${id}/assets?tag=${tag.id}&search=old`).expect(200);
+    expect(page.text).toContain('value="size" selected');
+    expect(page.text).toContain('value="desc" selected');
+    expect(page.text).toContain('<input type="hidden" name="pageSize" value="50">');
+    expect(page.text).toContain('<input type="hidden" name="view" value="list">');
+    expect(page.text).toContain(`<option value="${tag.id}" selected>Action Context Tag</option>`);
+
+    const scan = await agent
+      .post(`/projects/${id}/scan`)
+      .type('form')
+      .send({ tag: String(tag.id), search: 'old', _csrf: csrfToken })
+      .expect(302);
+    const scanUrl = new URL(scan.headers.location, 'http://localhost');
+    expect(scanUrl.searchParams.get('tag')).toBe(String(tag.id));
+    expect(scanUrl.searchParams.get('search')).toBe('old');
+
+    const renamed = await agent
+      .post(`/projects/${id}/assets/${asset.id}/rename`)
+      .type('form')
+      .send({ filename: 'new', origin: 'assets', tag: String(tag.id), search: 'old', _csrf: csrfToken })
+      .expect(302);
+    const renameUrl = new URL(renamed.headers.location, 'http://localhost');
+    expect(renameUrl.pathname).toBe(`/projects/${id}/assets`);
+    expect(renameUrl.searchParams.get('tag')).toBe(String(tag.id));
+    expect(renameUrl.searchParams.get('search')).toBe('old');
   });
 
   // ─── Phase B Chunk 3: bare-page defaults ─────────────────────────────

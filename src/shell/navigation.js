@@ -49,6 +49,7 @@ const NAVIGATION_ITEMS = [
       '/projects/:id/edit',
       '/projects/:id/assets',
       '/projects/:projectId/assets/:assetId',
+      '/projects/:projectId/assets/:assetId/tags',
     ],
   },
   {
@@ -100,6 +101,9 @@ const NAVIGATION_ITEMS = [
       '/settings/security',
       '/settings/security/disable',
       '/settings/defaults',
+      '/settings/tags',
+      '/settings/tags/:tagId/edit',
+      '/settings/tags/:tagId/delete',
     ],
   },
 ];
