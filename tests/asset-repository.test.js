@@ -967,7 +967,7 @@ describe('asset repository', () => {
       expect(results[0].release_usage_count).toBe(0);
     });
 
-    it('filters through asset_tags without duplicates, project-tag matches, or cross-project matches', () => {
+    it('keeps project-scoped tag filtering direct-only without duplicates or cross-project matches', () => {
       const otherProject = createProject('Other Tagged Project');
       const shared = tagRepo.create({ displayName: 'Shared', normalizedName: 'shared' });
       const additional = tagRepo.create({ displayName: 'Additional', normalizedName: 'additional' });
@@ -1162,7 +1162,7 @@ describe('asset repository', () => {
       expect(assetRepo.countAllAssets({ projectId: other.id })).toBe(1);
     });
 
-    it('filters global assets by direct tags across projects before pagination without duplicates', () => {
+    it('filters global assets by effective tags across projects before pagination without duplicates', () => {
       const other = createProject('Other Tagged Project');
       const category = insertCategory(projectId, {
         displayName: 'Source Files',
@@ -1179,7 +1179,7 @@ describe('asset repository', () => {
       const multiple = addAsset(projectId, 'source/b-multiple.png', { categoryId: category.id });
       const missing = addAsset(projectId, 'source/c-missing.png', { categoryId: category.id });
       const foreign = addAsset(other.id, 'source/d-foreign.png', { categoryId: otherCategory.id });
-      addAsset(projectId, 'source/e-untagged.png', { categoryId: category.id });
+      const untagged = addAsset(projectId, 'source/e-untagged.png', { categoryId: category.id });
       const wrongExtension = addAsset(projectId, 'source/f-wrong.jpg', {
         categoryId: category.id,
         extension: 'jpg',
@@ -1192,6 +1192,7 @@ describe('asset repository', () => {
       tagRepo.assignToAsset(foreign.id, shared.id);
       tagRepo.assignToAsset(wrongExtension.id, shared.id);
       tagRepo.assignToProject(projectId, projectOnly.id);
+      tagRepo.assignToAsset(first.id, projectOnly.id);
       assetRepo.markMissingByProjectIdAndPathNotIn(projectId, [
         'source/a-first.png',
         'source/b-multiple.png',
@@ -1227,9 +1228,101 @@ describe('asset repository', () => {
         allMatching.slice(0, 4).map((asset) => asset.id),
       );
       expect(allMatching.find((asset) => asset.id === missing.id).is_present).toBe(0);
-      expect(assetRepo.findAllAssets({ tag: projectOnly.id, limit: 100 })).toEqual([]);
+      const effectiveMatching = assetRepo.findAllAssets({ tag: projectOnly.id, limit: 100 });
+      const effectivePages = [0, 2, 4].map((offset) => assetRepo.findAllAssets({
+        tag: projectOnly.id,
+        limit: 2,
+        offset,
+      }));
+
+      expect(effectiveMatching.map((asset) => asset.id)).toEqual([
+        first.id,
+        multiple.id,
+        missing.id,
+        untagged.id,
+        wrongExtension.id,
+      ]);
+      expect(effectiveMatching.filter((asset) => asset.id === first.id)).toHaveLength(1);
+      expect(new Set(effectiveMatching.map((asset) => asset.id)).size).toBe(effectiveMatching.length);
+      expect(assetRepo.countAllAssets({ tag: projectOnly.id })).toBe(effectiveMatching.length);
+      expect(effectivePages.flat().map((asset) => asset.id)).toEqual(effectiveMatching.map((asset) => asset.id));
       expect(assetRepo.findAllAssets(composedFilters).map((asset) => asset.id)).toEqual([first.id]);
       expect(assetRepo.countAllAssets(composedFilters)).toBe(1);
+    });
+
+    it('matches any selected effective tag without duplicate rows and combines category/extension OR sets with AND', () => {
+      const beta = createProject('Multi-Value Beta Project');
+      const gamma = createProject('Multi-Value Gamma Project');
+      const alphaFinal = insertCategory(projectId, {
+        displayName: 'Final',
+        directorySlug: 'final',
+        displayOrder: 1,
+      });
+      const alphaKrz = insertCategory(projectId, {
+        displayName: 'KRZ',
+        directorySlug: 'krz',
+        displayOrder: 2,
+      });
+      const betaKrz = insertCategory(beta.id, {
+        displayName: 'KRZ',
+        directorySlug: 'krz',
+        displayOrder: 1,
+      });
+      const gammaFinal = insertCategory(gamma.id, {
+        displayName: 'Final',
+        directorySlug: 'final',
+        displayOrder: 1,
+      });
+      const tagA = tagRepo.create({ displayName: 'Tag A', normalizedName: 'multi-tag-a' });
+      const tagB = tagRepo.create({ displayName: 'Tag B', normalizedName: 'multi-tag-b' });
+      const directA = addAsset(projectId, 'a-final.png', { categoryId: alphaFinal.id });
+      const directB = addAsset(projectId, 'b-krz.krz', { categoryId: alphaKrz.id, extension: 'krz' });
+      const overlap = addAsset(projectId, 'c-final.krz', { categoryId: alphaFinal.id, extension: 'krz' });
+      const inherited = addAsset(beta.id, 'd-krz.png', { categoryId: betaKrz.id });
+      const untagged = addAsset(gamma.id, 'e-final.png', { categoryId: gammaFinal.id });
+
+      tagRepo.assignToAsset(directA.id, tagA.id);
+      tagRepo.assignToAsset(directB.id, tagB.id);
+      tagRepo.assignToAsset(overlap.id, tagA.id);
+      tagRepo.assignToAsset(overlap.id, tagB.id);
+      tagRepo.assignToProject(projectId, tagA.id);
+      tagRepo.assignToProject(projectId, tagB.id);
+      tagRepo.assignToProject(beta.id, tagB.id);
+
+      const selectedTags = { tags: [tagB.id, tagA.id, tagB.id], limit: 100 };
+      const effectiveRows = assetRepo.findAllAssets(selectedTags);
+      const effectiveIds = effectiveRows.map((asset) => asset.id);
+
+      expect(effectiveIds).toEqual([directA.id, directB.id, overlap.id, inherited.id]);
+      expect(effectiveRows.filter((asset) => asset.id === overlap.id)).toHaveLength(1);
+      expect(new Set(effectiveIds).size).toBe(effectiveIds.length);
+      expect(assetRepo.countAllAssets(selectedTags)).toBe(effectiveRows.length);
+
+      const effectivePages = [0, 2].flatMap((offset) => assetRepo.findAllAssets({
+        ...selectedTags,
+        limit: 2,
+        offset,
+      }));
+      expect(effectivePages.map((asset) => asset.id)).toEqual(effectiveIds);
+
+      const composedFilters = {
+        tags: [tagA.id],
+        categories: ['krz', 'final'],
+        extensions: ['krz', 'png'],
+        limit: 100,
+      };
+      const composedRows = assetRepo.findAllAssets(composedFilters);
+      expect(composedRows.map((asset) => asset.id)).toEqual([directA.id, directB.id, overlap.id]);
+      expect(assetRepo.countAllAssets(composedFilters)).toBe(composedRows.length);
+
+      const composedPages = [0, 1, 2].flatMap((offset) => assetRepo.findAllAssets({
+        ...composedFilters,
+        limit: 1,
+        offset,
+      }));
+      expect(composedPages.map((asset) => asset.id)).toEqual(composedRows.map((asset) => asset.id));
+      expect(composedRows).not.toContainEqual(expect.objectContaining({ id: inherited.id }));
+      expect(composedRows).not.toContainEqual(expect.objectContaining({ id: untagged.id }));
     });
 
     it('searches filename and relative path across project boundaries', () => {

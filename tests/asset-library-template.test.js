@@ -8,6 +8,7 @@ import { buildAssetLibraryUrl } from '../src/routes/asset-library-query.js';
 const VIEWS_DIR = fileURLToPath(new URL('../src/views', import.meta.url));
 const TEMPLATE_PATH = path.join(VIEWS_DIR, 'assets', 'index.njk');
 const PROJECT_ASSET_VIEWER_PATH = path.join(VIEWS_DIR, 'projects', 'asset-viewer.njk');
+const STYLESHEET_PATH = path.join(VIEWS_DIR, '..', 'static', 'creatorcrate.css');
 
 const alphaAsset = {
   id: 101,
@@ -15,6 +16,8 @@ const alphaAsset = {
   project_title: 'Alpha Project',
   filename: 'shared.png',
   relative_path: 'renders/shared.png',
+  nested_path: '',
+  category_directory_slug: 'renders',
   extension: 'png',
   mime_type: 'image/png',
   size_bytes: 1024,
@@ -23,6 +26,10 @@ const alphaAsset = {
   category_display_name: 'Renders',
   category_enabled: 1,
   release_usage_count: 2,
+  release_titles: [
+    { id: 301, title: 'Alpha Release' },
+    { id: 302, title: 'Zeta Release' },
+  ],
   preview: { kind: 'image', previewable: true },
   preview_state: 'previewable',
   thumbnail_url: '/projects/1/assets/101/thumbnail?v=alpha',
@@ -35,6 +42,8 @@ const betaAsset = {
   project_title: 'Beta Project',
   filename: 'shared.png',
   relative_path: 'source/shared.png',
+  nested_path: '',
+  category_directory_slug: 'source',
   extension: 'png',
   mime_type: 'image/png',
   size_bytes: 2048,
@@ -43,6 +52,7 @@ const betaAsset = {
   category_display_name: null,
   category_enabled: null,
   release_usage_count: 0,
+  release_titles: [],
   preview: { kind: null, previewable: false },
   preview_state: 'missing',
   thumbnail_url: null,
@@ -56,10 +66,10 @@ function option(value, label, selected = false) {
 function makeModel(overrides = {}) {
   const filters = {
     projectId: null,
-    category: 'all',
-    tag: null,
+    categories: [],
+    tags: [],
     search: null,
-    extension: null,
+    extensions: [],
     presence: 'all',
     usage: 'all',
     sort: 'filename',
@@ -87,11 +97,11 @@ function makeModel(overrides = {}) {
       { id: 2, title: 'Beta Project' },
     ],
     categoryOptions: [
-      option('all', 'All categories', filters.category === 'all'),
-      option('uncategorized', 'Uncategorized', filters.category === 'uncategorized'),
-      option('renders', 'Renders', filters.category === 'renders'),
+      option('all', 'All categories', filters.categories.length === 0),
+      option('uncategorized', 'Uncategorized', filters.categories.includes('uncategorized')),
+      option('renders', 'Renders', filters.categories.includes('renders')),
     ],
-    extensionOptions: [option('png', 'png', filters.extension === 'png')],
+    extensionOptions: [option('png', 'png', filters.extensions.includes('png'))],
     presenceOptions: [
       option('all', 'All assets', filters.presence === 'all'),
       option('present', 'Present', filters.presence === 'present'),
@@ -173,10 +183,10 @@ describe('cross-project Asset Viewer template', () => {
     const html = renderPage({
       filters: {
         projectId: 2,
-        category: 'renders',
-        tag: 2,
+        categories: ['renders'],
+        tags: [2],
         search: 'shared',
-        extension: 'png',
+        extensions: ['png'],
         presence: 'missing',
         usage: 'used',
         sort: 'project',
@@ -186,18 +196,27 @@ describe('cross-project Asset Viewer template', () => {
       presentation: { view: 'list' },
       pageSize: 50,
       tagOptions: [
-        { value: '1', displayName: 'Alpha Tag' },
-        { value: '2', displayName: 'Beta Tag' },
+        { value: '1', displayName: 'Alpha Tag', selected: false },
+        { value: '2', displayName: 'Beta Tag', selected: true },
       ],
     });
 
-    expect(html).toMatch(/<form class="filters" method="get" action="\/assets">/);
+    expect(html).toMatch(/<form class="filters asset-viewer-filters" method="get" action="\/assets">/);
     expect(html).toContain('<input type="hidden" name="view" value="list">');
-    expect(html).toMatch(/<option value="2" selected>Beta Project<\/option>/);
-    expect(html).toMatch(/<option value="renders" selected>Renders<\/option>/);
-    expect(html).toMatch(/<select id="asset-tag" name="tag">[\s\S]*<option value="2" selected>Beta Tag<\/option>/);
-    expect(html).toMatch(/id="asset-search"[^>]*value="shared"/);
-    expect(html).toMatch(/<option value="png" selected>\.png<\/option>/);
+    expect(html).toContain('aria-label="Project filter: Beta Project"');
+    expect(html).toMatch(/<span class="asset-filter-multiselect-summary" data-asset-project-filter-summary>Beta Project<\/span>/);
+    expect(html).toMatch(/<input id="asset-project-option-2" name="project" type="radio" value="2" checked>/);
+    expect(html).toContain('aria-label="Category filter: Renders"');
+    expect(html).toMatch(/<input[^>]+name="category"[^>]+value="renders" checked>/);
+    expect(html).toContain('aria-label="Tag filter: Beta Tag"');
+    expect(html).toMatch(/<input[^>]+name="tag"[^>]+value="2" checked>/);
+    expect(html).not.toContain('id="asset-search"');
+    expect(html).not.toMatch(/<label[^>]+for="asset-search"/);
+    expect(html).not.toMatch(/<input[^>]+name="search"/);
+    expect(html).toMatch(/<label[^>]+for="asset-project-filter-search">Search projects<\/label>/);
+    expect(html).toMatch(/id="asset-project-filter-search"[^>]*type="search"/);
+    expect(html).toContain('aria-label="Extension filter: .png"');
+    expect(html).toMatch(/<input[^>]+name="extension"[^>]+value="png" checked>/);
     expect(html).toMatch(/<option value="missing" selected>Missing<\/option>/);
     expect(html).toMatch(/<option value="used" selected>Used in releases<\/option>/);
     expect(html).toMatch(/<option value="project" selected>Project<\/option>/);
@@ -206,29 +225,152 @@ describe('cross-project Asset Viewer template', () => {
     expect(html).toContain('>Clear filters</a>');
   });
 
-  it('renders multiple-project grid items with contextual detail and preview links', () => {
+  it('renders Project as a searchable single-select disclosure with safe radio values', () => {
+    const emptyHtml = renderPage();
+    const selectedHtml = renderPage({ filters: { projectId: 2 } });
+
+    expect(emptyHtml).not.toMatch(/<select[^>]+(?:id="asset-project"|name="project")/);
+    expect(emptyHtml).toContain('<legend>Project</legend>');
+    expect(emptyHtml).toContain('data-asset-project-filter');
+    expect((emptyHtml.match(/data-asset-viewer-filter-disclosure/g) || [])).toHaveLength(4);
+    expect(emptyHtml).toContain('id="asset-project-filter-search" class="asset-project-filter-search" type="search"');
+    expect(emptyHtml).toMatch(/<input id="asset-project-option-all" name="project" type="radio" value="" checked>/);
+    expect(emptyHtml).toMatch(/<input id="asset-project-option-1" name="project" type="radio" value="1">/);
+    expect(emptyHtml).toMatch(/<input id="asset-project-option-2" name="project" type="radio" value="2">/);
+    expect(emptyHtml).toContain('>All projects</span>');
+    expect(emptyHtml).not.toMatch(/<input[^>]+type="hidden"[^>]+name="project"/);
+    expect((emptyHtml.match(/<input[^>]+name="project"[^>]+type="radio"/g) || [])).toHaveLength(3);
+
+    expect(selectedHtml).toContain('aria-expanded="false"');
+    expect(selectedHtml).toContain('aria-label="Project filter: Beta Project"');
+    expect(selectedHtml).toMatch(/<span class="asset-filter-multiselect-summary" data-asset-project-filter-summary>Beta Project<\/span>/);
+    expect(selectedHtml).toMatch(/<input id="asset-project-option-all" name="project" type="radio" value="">/);
+    expect(selectedHtml).toMatch(/<input id="asset-project-option-2" name="project" type="radio" value="2" checked>/);
+    expect(selectedHtml).not.toMatch(/<input id="asset-project-filter-search"[^>]+name="project"/);
+  });
+
+  it('renders repeated checkbox parameters, simultaneous checked values, and empty summaries', () => {
+    const emptyHtml = renderPage();
+    expect(emptyHtml).toContain('aria-label="Category filter: Any category"');
+    expect(emptyHtml).toContain('aria-label="Tag filter: Any tag"');
+    expect(emptyHtml).toContain('aria-label="Extension filter: Any extension"');
+
+    const html = renderPage({
+      filters: {
+        categories: ['uncategorized', 'renders'],
+        tags: [1, 2],
+        extensions: ['jpg', 'png'],
+      },
+      categoryOptions: [
+        option('all', 'All categories', false),
+        option('uncategorized', 'Uncategorized', true),
+        option('renders', 'Renders', true),
+      ],
+      extensionOptions: [
+        option('jpg', 'jpg', true),
+        option('png', 'png', true),
+      ],
+      tagOptions: [
+        { value: '1', displayName: 'Alpha Tag', selected: true },
+        { value: '2', displayName: 'Beta Tag', selected: true },
+      ],
+    });
+
+    expect(html).toContain('2 categories selected');
+    expect(html).toContain('2 tags selected');
+    expect(html).toContain('2 extensions selected');
+    expect((html.match(/data-asset-viewer-filter-disclosure/g) || [])).toHaveLength(4);
+    for (const id of ['asset-category-filter-trigger', 'asset-tag-filter-trigger', 'asset-extension-filter-trigger']) {
+      expect(html).toContain(`id="${id}"`);
+    }
+    expect((html.match(/name="category"/g) || [])).toHaveLength(2);
+    expect((html.match(/name="tag"/g) || [])).toHaveLength(2);
+    expect((html.match(/name="extension"/g) || [])).toHaveLength(2);
+    expect((html.match(/name="category"[^>]+checked/g) || [])).toHaveLength(2);
+    expect((html.match(/name="tag"[^>]+checked/g) || [])).toHaveLength(2);
+    expect((html.match(/name="extension"[^>]+checked/g) || [])).toHaveLength(2);
+    expect(html).not.toContain('id="asset-search"');
+    expect(html).not.toMatch(/<input[^>]+name="search"/);
+    expect(html).not.toMatch(/<select[^>]+(?:id="asset-(tag|category|extension)"|name="(tag|category|extension)")/);
+    expect(html).not.toMatch(/type="hidden"[^>]+name="(tag|category|extension)"/);
+  });
+
+  it('renders exact three-region Grid cards with retained indicators, preview info, and title-only footers', () => {
     const html = renderPage();
+    const cards = html.match(/<article class="asset-card asset-viewer-grid-card"[\s\S]*?<\/article>/g) || [];
+    const alphaCard = cards.find((card) => card.includes('Alpha Project'));
+    const betaCard = cards.find((card) => card.includes('Beta Project'));
+    const topRow = alphaCard?.match(/<div class="asset-card-top asset-viewer-grid-card-top">[\s\S]*?<\/div>/)?.[0];
+    const titleArea = alphaCard?.match(/<div class="asset-card-body asset-viewer-grid-card-title-area">[\s\S]*?<\/div>\s*<\/article>/)?.[0];
 
     expect(html).toMatch(/<ul class="asset-grid"[^>]*aria-label="Assets across active projects">/);
     expect((html.match(/class="asset-grid-item/g) || []).length).toBe(2);
-    expect(html).toContain('href="/projects/1"');
-    expect(html).toContain('href="/projects/2"');
-    expect(html).toContain('>Alpha Project</a>');
-    expect(html).toContain('>Beta Project</a>');
-    expect(html).toContain('href="/projects/1/assets/101"');
-    expect(html).toContain('href="/projects/2/assets/202"');
-    expect(html).toContain('src="/projects/1/assets/101/preview?v=alpha"');
-    expect(html).toContain('aria-label="View preview of shared.png from Alpha Project"');
-    expect(html).toContain('aria-label="View details for shared.png from Alpha Project"');
-    expect(html).toContain('aria-label="View details for shared.png from Beta Project"');
-    expect(html).toMatch(/class="asset-card-category">[\s\S]*?Category:\s*[\s\S]*?Renders[\s\S]*?<\/span>/);
-    expect(html).toMatch(/class="asset-card-category">[\s\S]*?Category:\s*[\s\S]*?Uncategorized[\s\S]*?<\/span>/);
-    expect(html).toContain('Missing at last scan');
-    expect(html).toContain('Used in 2 releases');
-    expect(html).toContain('Not used by a release');
-    expect(html).toContain('1024 bytes');
-    expect(html).toContain('renders/shared.png');
-    expect(html).toContain('source/shared.png');
+    expect(html).toContain('data-asset-grid-size-controls');
+    expect((html.match(/<input[^>]+data-grid-size-slider[^>]+type="range"/g) || [])).toHaveLength(1);
+    expect(html).toMatch(/<input[^>]+data-grid-size-slider[^>]+type="range"[^>]+min="1"[^>]+max="3"[^>]+step="1"[^>]+value="2"/);
+    expect(html).toMatch(/<input[^>]+data-grid-size-slider[^>]+aria-label="Grid size"/);
+    expect(html).toContain('aria-valuenow="2" aria-valuetext="Default"');
+    expect(html).not.toContain('data-grid-size-current');
+    expect(html).not.toContain('asset-grid-size-heading');
+    expect(html).not.toMatch(/>Grid size<\/(?:label|span|output)/);
+    expect(html).not.toMatch(/<button[^>]+data-grid-size="(?:compact|default|large)"/);
+    const optionLabels = [...html.matchAll(/data-grid-size-option-label="(compact|default|large)"[^>]*>([^<]+)</g)];
+    expect(optionLabels.map(([, value]) => value)).toEqual(['compact', 'default', 'large']);
+    expect(optionLabels.map(([, , label]) => label)).toEqual(['Compact', 'Default', 'Large']);
+    expect(html).toMatch(/data-grid-size-option-label="default" class="is-active">Default</);
+    expect(cards).toHaveLength(2);
+    expect(alphaCard).toBeDefined();
+    expect(betaCard).toBeDefined();
+    expect(topRow).toBeDefined();
+    expect((topRow?.match(/class="asset-indicator\b/g) || [])).toHaveLength(2);
+    expect(topRow).toContain('asset-indicator--present');
+    expect(topRow).toContain('aria-label="Present"');
+    expect(topRow).toContain('asset-indicator--used');
+    expect(topRow).toContain('aria-label="Used in 2 releases"');
+
+    expect(alphaCard).toContain('data-asset-viewer-preview');
+    expect(alphaCard).toContain('data-asset-info-card');
+    expect(alphaCard).toContain('aria-label="View preview of shared.png"');
+    expect(alphaCard).toContain('class="asset-file-link" href="/projects/1/assets/101"');
+    expect(alphaCard).toContain('src="/projects/1/assets/101/preview?v=alpha"');
+    expect(alphaCard).toContain('alt=""');
+    expect(alphaCard).toContain('>Alpha Project</a>');
+    expect(alphaCard).toContain('href="/releases/301">Alpha Release</a>');
+    expect(alphaCard).toContain('href="/releases/302">Zeta Release</a>');
+    expect(alphaCard.indexOf('href="/releases/301">Alpha Release</a>')).toBeLessThan(
+      alphaCard.indexOf('href="/releases/302">Zeta Release</a>'),
+    );
+    expect(betaCard).toContain('>Beta Project</a>');
+    expect(betaCard).toContain('Not in any release');
+
+    expect(titleArea).toBeDefined();
+    expect(titleArea).toContain('>shared.png</a>');
+    expect(titleArea).toContain('>Alpha Project</a>');
+    expect(titleArea).toContain('Alpha Release');
+    expect(titleArea).toContain('Zeta Release');
+    expect(titleArea).not.toContain('renders/shared.png');
+    expect(titleArea).not.toContain('Renders');
+    expect(titleArea).not.toContain('1024 bytes');
+    expect(titleArea).not.toContain('2026-08-01 10:00:00');
+    expect(titleArea).not.toContain('Effective tags');
+    expect(titleArea).not.toContain('Asset information');
+    expect(titleArea).not.toContain('View asset details');
+
+    for (const field of ['Location', 'Category', 'Extension', 'Size', 'Modified', 'Presence', 'Release usage']) {
+      expect((alphaCard.match(new RegExp(`<dt>${field}</dt>`, 'g')) || [])).toHaveLength(1);
+    }
+    expect(alphaCard).toContain('renders/shared.png');
+    expect(alphaCard).toContain('Renders');
+    expect(alphaCard).toContain('1024 bytes');
+    expect(alphaCard).toContain('2026-08-01 10:00:00');
+    expect(alphaCard).toContain('Present at last scan');
+    expect(alphaCard).toContain('Used in 2 releases');
+    expect(alphaCard).not.toContain('asset-details-link');
+    expect(alphaCard).not.toContain('data-tooltip="View asset details"');
+    expect(alphaCard).not.toContain('data-asset-info-trigger');
+    expect(alphaCard).not.toContain('asset-select-checkbox');
+    expect(alphaCard).not.toMatch(/\d+\s+of\s+\d+/);
+    expect(alphaCard).not.toMatch(/Rename|Move file|selectedAssetIds/);
   });
 
   it('renders assigned display names in grid cards without exposing tag internals or false untagged labels', () => {
@@ -237,8 +379,8 @@ describe('cross-project Asset Viewer template', () => {
         {
           ...alphaAsset,
           tags: [
-            { id: 987654, normalized_name: 'shared-render-secret', displayName: 'Shared Render Tag' },
-            { displayName: 'Alpha Render Tag' },
+            { id: 987654, normalized_name: 'shared-render-secret', displayName: 'Shared Render Tag', origin: 'direct' },
+            { displayName: 'Alpha Render Tag', origin: 'inherited' },
           ],
         },
         {
@@ -248,63 +390,272 @@ describe('cross-project Asset Viewer template', () => {
       ],
     });
 
-    expect(html).toContain('<ul class="asset-card-tags" aria-label="Assigned tags">');
+    expect(html).toContain('<ul class="asset-viewer-grid-card-info-tags" aria-label="Effective tags">');
     expect((html.match(/<li>\s*Shared Render Tag\s*<\/li>/g) || [])).toHaveLength(2);
-    expect(html).toContain('<li>Alpha Render Tag</li>');
+    expect(html).toContain('<li>Alpha Render Tag <span class="asset-tag-origin"><span class="sr-only">Inherited from </span>Project</span></li>');
     expect(html).not.toContain('shared-render-secret');
     expect(html).not.toContain('987654');
     expect(html).not.toContain('Untagged');
   });
 
-  it('renders multiple-project list items with the same read-only metadata contract', () => {
+  it('renders compact Projects-style List cards with detail, preview, metadata, release, and fallback links', () => {
     const html = renderPage({
       filters: { view: 'list' },
       presentation: { view: 'list' },
     });
+    const source = fs.readFileSync(TEMPLATE_PATH, 'utf8');
+    const cards = html.match(/<article class="asset-list-card"[\s\S]*?<\/article>/g) || [];
+    const alphaCard = cards.find((card) => card.includes('Alpha Project'));
 
-    expect(html).toMatch(/<table class="data-table asset-table">/);
-    expect((html.match(/<tr class="is-missing">/g) || []).length).toBe(1);
+    expect(html).toMatch(/<ul class="asset-list" role="list" aria-label="Assets across active projects">/);
+    expect(html).not.toContain('<table class="data-table asset-table">');
+    expect((html.match(/<li class="asset-list-item/g) || []).length).toBe(2);
+    expect(cards).toHaveLength(2);
+    expect(alphaCard).toBeDefined();
+    expect(source).toMatch(/<article class="asset-list-card"[\s\S]*?>\s*\{\{ renderListPreview\(asset, detailUrl, displayName\) \}\}\s*<div class="asset-list-card-body">[\s\S]*?<\/div>\s*<\/article>/);
+    expect(source).not.toContain('asset-list-card-actions');
     expect(html).toContain('>Alpha Project</a>');
     expect(html).toContain('>Beta Project</a>');
     expect(html).toContain('href="/projects/1/assets/101"');
     expect(html).toContain('href="/projects/2/assets/202"');
-    expect(html).toContain('class="asset-thumb-link" href="/projects/1/assets/101"');
+    expect(html).toContain('class="asset-list-card-media-link" href="/projects/1/assets/101"');
+    expect(html).toContain('class="asset-list-card-media-image"');
+    expect(html).toContain('src="/projects/1/assets/101/preview?v=alpha"');
+    expect(html).not.toContain('src="/projects/1/assets/101/thumbnail?v=alpha"');
+    expect(html).toContain('alt=""');
     expect(html).toContain('class="asset-file-link" href="/projects/1/assets/101"');
     expect(html).toContain('class="asset-file-link" href="/projects/2/assets/202"');
-    expect(html).toMatch(/class="asset-category-cell">[\s\S]*?Renders[\s\S]*?<\/td>/);
-    expect(html).toMatch(/class="asset-category-cell">[\s\S]*?Uncategorized[\s\S]*?<\/td>/);
+    expect(html).toMatch(/data-asset-containing-location[\s\S]*?renders[\s\S]*?<\/span>/);
+    expect(html).toMatch(/data-asset-containing-location[\s\S]*?source[\s\S]*?<\/span>/);
+    expect(html).not.toContain('renders/shared.png');
+    expect(html).not.toContain('source/shared.png');
+    expect(html).toContain('<dt>Project</dt>');
+    expect(html).toContain('<dt>Category</dt>');
+    expect(html).toContain('<div class="asset-list-card-associations">');
+    expect(html).toContain('<section class="asset-list-card-association asset-list-card-association--tags">');
+    expect(html).toContain('<h3 class="asset-list-card-association-label">Effective tags</h3>');
+    expect(html).toContain('<section class="asset-list-card-association asset-list-card-association--releases">');
+    expect(html).toContain('<h3 class="asset-list-card-association-label">Releases</h3>');
+    expect(html).toContain('Renders');
+    expect(html).toContain('Uncategorized');
     expect(html).toContain('Present at last scan');
     expect(html).toContain('Missing at last scan');
-    expect(html).toContain('Used in 2 releases');
-    expect(html).toContain('Not used by a release');
+    for (const field of ['Project', 'Category', 'Extension', 'Size', 'Modified']) {
+      expect((alphaCard?.match(new RegExp(`<dt>${field}</dt>`, 'g')) || [])).toHaveLength(1);
+    }
+    expect(alphaCard).toContain('.png');
+    expect(alphaCard).toContain('1024 bytes');
+    expect(alphaCard).toContain('2026-08-01 10:00:00');
+    expect(html).toContain('class="asset-list-card-release-link" href="/releases/301">Alpha Release</a>');
+    expect(html).toContain('Not in any release');
+    expect(html).not.toContain('data-asset-grid-size-controls');
+
+    const title = alphaCard?.match(/<h2 class="asset-list-card-title">[\s\S]*?<\/h2>/)?.[0];
+    const location = alphaCard?.match(/<span class="asset-list-card-location"[\s\S]*?<\/span>/)?.[0];
+    expect(title).toBeDefined();
+    expect(location).toBeDefined();
+    expect((title?.match(/>shared\.png<\/a>/g) || [])).toHaveLength(1);
+    expect(location).not.toContain('shared.png');
   });
 
-  it('renders a Tags column with aligned cells and leaves untagged cells neutral', () => {
+  it('renders direct and inherited effective tags with a subtle project-origin indicator', () => {
     const html = renderPage({
       assets: [
-        { ...alphaAsset, tags: [{ displayName: 'Shared List Tag' }] },
+        {
+          ...alphaAsset,
+          tags: [
+            { displayName: 'Direct List Tag', origin: 'direct' },
+            { displayName: 'Inherited List Tag', origin: 'inherited' },
+          ],
+        },
         { ...betaAsset, tags: [] },
       ],
       filters: { view: 'list' },
       presentation: { view: 'list' },
     });
-    const table = html.match(/<table class="data-table asset-table">[\s\S]*?<\/table>/)?.[0];
-    const header = table?.match(/<thead>[\s\S]*?<\/thead>/)?.[0];
-    const body = table?.match(/<tbody>[\s\S]*?<\/tbody>/)?.[0];
-    const rows = body?.match(/<tr(?:\s[^>]*)?>[\s\S]*?<\/tr>/g) || [];
 
-    expect(table).toBeDefined();
-    expect(header).toContain('<th scope="col">Tags</th>');
-    expect((header.match(/<th\b/g) || [])).toHaveLength(10);
-    expect(rows).toHaveLength(2);
-    expect(rows.map((row) => (row.match(/<td\b/g) || []).length)).toEqual([10, 10]);
-    expect(table).toContain('<ul class="asset-tag-list" aria-label="Assigned tags">');
-    expect(table).toContain('<li>Shared List Tag</li>');
+    expect(html).toContain('<ul class="asset-list-card-tags" aria-label="Effective tags">');
+    expect(html).toContain('Direct List Tag');
+    expect(html).toContain('Inherited List Tag');
+    expect(html).toContain('<span class="asset-tag-origin"><span class="sr-only">Inherited from </span>Project</span>');
+    expect(html).toContain('No effective tags');
+    expect(html).not.toContain('shared-list-secret');
+  });
 
-    const untaggedRow = rows.find((row) => row.includes('/projects/2/assets/202'));
-    expect(untaggedRow).toBeDefined();
-    expect(untaggedRow).not.toContain('asset-tag-list');
-    expect(untaggedRow).not.toContain('Untagged');
+  it('styles List cards with a non-square stretched media region and a full-width content region', () => {
+    const css = fs.readFileSync(STYLESHEET_PATH, 'utf8');
+    const listStyles = css.match(/\/\* ── Asset Viewer list:[\s\S]*?(?=\/\* ── Reduced motion)/)?.[0];
+    const cardRule = listStyles?.match(/(?:^|\n)\s*\.asset-list-card\s*\{[^}]*\}/)?.[0];
+    const mediaRule = listStyles?.match(/\.asset-list-card-media\s*\{[^}]*\}/)?.[0];
+    const mediaImageRule = listStyles?.match(/\.asset-list-card-media-image\s*\{[^}]*\}/)?.[0];
+    const bodyRule = listStyles?.match(/\.asset-list-card-body\s*\{[^}]*\}/)?.[0];
+    const metadataRule = listStyles?.match(/\.asset-list-card-metadata\s*\{[^}]*\}/)?.[0];
+    const projectRule = listStyles?.match(/\.asset-list-card-meta--project\s*\{[^}]*\}/)?.[0];
+    const extensionRule = listStyles?.match(/\.asset-list-card-meta--extension\s*\{[^}]*\}/)?.[0];
+    const associationsRule = listStyles?.match(/\.asset-list-card-associations\s*\{[^}]*\}/)?.[0];
+    const associationRule = listStyles?.match(/\.asset-list-card-association\s*\{[^}]*\}/)?.[0];
+
+    expect(listStyles).toBeDefined();
+    expect(cardRule).toBeDefined();
+    expect(cardRule).toContain('display: grid;');
+    expect(cardRule).toContain('grid-template-columns: clamp(7rem, 20%, 15rem) minmax(0, 1fr);');
+    expect(cardRule).toContain('align-items: stretch;');
+    expect(cardRule).toContain('padding: var(--space-sm);');
+    expect(cardRule).toContain('border: 1px solid var(--border);');
+    expect(cardRule).not.toContain('grid-template-areas');
+    expect(cardRule).not.toContain('9.5rem');
+    expect(cardRule).not.toContain('88px');
+
+    expect(mediaRule).toBeDefined();
+    expect(mediaRule).toContain('align-self: stretch;');
+    expect(mediaRule).toContain('width: 100%;');
+    expect(mediaRule).toContain('min-height: 10rem;');
+    expect(mediaRule).not.toMatch(/(?<![-\w])height\s*:/);
+    expect(mediaRule).not.toContain('aspect-ratio');
+    expect(mediaRule).not.toContain('9.5rem');
+    expect(mediaRule).not.toContain('5.5rem');
+
+    expect(mediaImageRule).toBeDefined();
+    expect(mediaImageRule).toContain('width: 100%;');
+    expect(mediaImageRule).toContain('height: 100%;');
+    expect(mediaImageRule).toContain('object-fit: contain;');
+    expect(mediaImageRule).not.toContain('object-fit: cover;');
+    expect(listStyles).not.toContain('aspect-ratio');
+    expect(listStyles).not.toContain('object-fit: cover;');
+    expect(bodyRule).toBeDefined();
+    expect(bodyRule).toContain('grid-column: 2;');
+    expect(bodyRule).toContain('width: 100%;');
+    expect(metadataRule).toBeDefined();
+    expect(metadataRule).toContain('display: flex;');
+    expect(metadataRule).toContain('flex-wrap: wrap;');
+    expect(metadataRule).not.toContain('grid-template-columns');
+    expect(projectRule).toBeDefined();
+    expect(projectRule).toContain('flex: 2 1 15rem;');
+    expect(extensionRule).toBeDefined();
+    expect(extensionRule).toContain('flex: 0 1 6rem;');
+    expect(associationsRule).toBeDefined();
+    expect(associationsRule).toContain('display: flex;');
+    expect(associationsRule).toContain('flex-wrap: wrap;');
+    expect(associationRule).toBeDefined();
+    expect(associationRule).toContain('flex: 1 1 18rem;');
+    expect(associationRule).toContain('min-width: min(100%, 16rem);');
+    expect(listStyles).toMatch(/\.asset-list-card-association\s*\{[^}]*flex:\s*1\s+1\s+18rem[\s\S]*?\}/);
+    expect(listStyles).toMatch(/\.asset-list-card-association\s*\{[^}]*\}[\s\S]*?@media\s*\(max-width:\s*540px\)[\s\S]*?\.asset-list-card-association\s*\{[^}]*flex-basis:\s*100%/);
+    expect(listStyles).not.toContain('grid-template-columns: repeat(auto-fit');
+    expect(listStyles).not.toContain('grid-column: 1 / -1;');
+    expect(listStyles).not.toContain('grid-column: span 2;');
+    expect(listStyles).not.toContain('asset-list-card-actions');
+  });
+
+  it('keeps List title, project, release, and preview links out of visited-purple styling', () => {
+    const css = fs.readFileSync(STYLESHEET_PATH, 'utf8');
+
+    expect(css).toMatch(/\.asset-list-card \.asset-list-card-title \.asset-file-link,[\s\S]*?\.asset-list-card \.asset-list-card-title \.asset-file-link:visited[\s\S]*?color:\s*var\(--text\)/);
+    expect(css).toMatch(/\.asset-list-card \.asset-project-link,[\s\S]*?\.asset-list-card \.asset-project-link:visited,[\s\S]*?\.asset-list-card \.asset-list-card-release-link,[\s\S]*?\.asset-list-card \.asset-list-card-release-link:visited[\s\S]*?color:\s*var\(--link\)/);
+    expect(css).toMatch(/\.asset-list-card \.asset-list-card-title \.asset-file-link:hover,[\s\S]*?\.asset-list-card \.asset-list-card-title \.asset-file-link:focus-visible[\s\S]*?color:\s*var\(--accent\)/);
+    expect(css).toMatch(/\.asset-list-card \.asset-project-link:hover,[\s\S]*?\.asset-list-card \.asset-project-link:focus-visible,[\s\S]*?\.asset-list-card \.asset-list-card-release-link:hover,[\s\S]*?\.asset-list-card \.asset-list-card-release-link:focus-visible[\s\S]*?color:\s*var\(--accent-2\)/);
+  });
+
+  it('uses the larger preview derivative for ordinary and Krita List media', () => {
+    const assets = [
+      alphaAsset,
+      {
+        ...alphaAsset,
+        id: 303,
+        filename: 'photo.jpg',
+        relative_path: 'references/photo.jpg',
+        category_directory_slug: 'references',
+        extension: 'jpg',
+        preview: { kind: 'image', previewable: true },
+        thumbnail_url: '/projects/1/assets/303/thumbnail?v=jpg',
+        preview_url: '/projects/1/assets/303/preview?v=jpg',
+      },
+      {
+        ...alphaAsset,
+        id: 404,
+        filename: 'painting.kra',
+        relative_path: 'source/painting.kra',
+        category_directory_slug: 'source',
+        extension: 'kra',
+        mime_type: 'application/x-krita',
+        preview: { kind: 'krita', previewable: true },
+        thumbnail_url: '/projects/1/assets/404/thumbnail?v=kra',
+        preview_url: '/projects/1/assets/404/preview?v=kra',
+      },
+    ];
+    const html = renderPage({
+      assets,
+      filters: { view: 'list' },
+      presentation: { view: 'list' },
+    });
+    const cards = html.match(/<article class="asset-list-card"[\s\S]*?<\/article>/g) || [];
+
+    expect(cards).toHaveLength(3);
+    for (const asset of assets) {
+      const card = cards.find((candidate) => candidate.includes(`assets/${asset.id}`));
+      expect(card).toContain(`src="${asset.preview_url}"`);
+      expect(card).not.toContain(`src="${asset.thumbnail_url}"`);
+    }
+  });
+
+  it('styles Grid cards with compact wrapping release and tag regions', () => {
+    const css = fs.readFileSync(STYLESHEET_PATH, 'utf8');
+
+    expect(css).toMatch(/\.asset-viewer-grid-card\s*\{[^}]*overflow:\s*visible/);
+    expect(css).toMatch(/\.asset-viewer-grid-card:hover,[\s\S]*?\.asset-viewer-grid-card:focus-within\s*\{[^}]*z-index:\s*60/);
+    expect(css).toMatch(/\.asset-viewer-grid-card-info\s*\{[^}]*display:\s*none[\s\S]*?position:\s*absolute[^}]*z-index:\s*30/);
+    expect(css).toMatch(/\.asset-viewer-grid-card-info\s*\{[\s\S]*?width:\s*min\(24rem,\s*calc\(100vw\s*-\s*2rem\)\)/);
+    expect(css).toMatch(/\.asset-viewer-filters\s*\{[^}]*z-index:\s*20/);
+    expect(css).toMatch(/\.asset-filter-multiselect\[open\]\s*\{[^}]*z-index:\s*40/);
+    expect(css).toMatch(/\.asset-filter-multiselect-panel\s*\{[\s\S]*?z-index:\s*50/);
+    expect(css).toMatch(/\.asset-viewer-grid-card-preview\s*\{[^}]*overflow:\s*visible/);
+    expect(css).not.toMatch(/\.asset-grid\s*\{[^}]*overflow:\s*(?:hidden|clip|auto|scroll)/);
+    expect(css).not.toMatch(/\.asset-browser-content\s*\{[^}]*overflow:\s*(?:hidden|clip|auto|scroll)/);
+    expect(css).not.toMatch(/\.asset-viewer-filters\s*\{[^}]*overflow:\s*(?:hidden|clip|auto|scroll)/);
+    expect(css).toMatch(/\.asset-viewer-grid-card-preview:hover \.asset-viewer-grid-card-info,[\s\S]*?\.asset-viewer-grid-card-preview:focus-within \.asset-viewer-grid-card-info\s*\{[^}]*display:\s*block/);
+    expect(css).toMatch(/\.asset-viewer-grid-card-info-tags\s*\{[^}]*flex-wrap:\s*wrap/);
+    expect(css).toMatch(/\.asset-viewer-grid-card-title-releases\s*\{[^}]*flex-wrap:\s*wrap/);
+    expect(css).toMatch(/\.asset-viewer-grid-card-title \.asset-file-link\s*\{[^}]*color:\s*var\(--text\)/);
+    expect(css).toMatch(/\.asset-viewer-grid-card-project-link:visited,[\s\S]*?\.asset-viewer-grid-card-release-link:visited[\s\S]*?color:\s*var\(--link\)/);
+  });
+
+  it('separates View and Grid-size controls and keeps the grouped toolbar wrap-safe', () => {
+    const css = fs.readFileSync(STYLESHEET_PATH, 'utf8');
+
+    expect(css).toMatch(/\.asset-viewer-display-controls\s*\{[\s\S]*?display:\s*flex;[\s\S]*?flex-wrap:\s*wrap;[\s\S]*?column-gap:\s*var\(--space-xl\);[\s\S]*?row-gap:\s*var\(--space-md\)/);
+    expect(css).toMatch(/\.asset-viewer-display-controls \.view-switcher,[\s\S]*?\.asset-viewer-display-controls \.asset-grid-size-controls[\s\S]*?margin-bottom:\s*0/);
+    expect(css).toMatch(/\.asset-viewer-grid-size-controls\s*\{[\s\S]*?flex-direction:\s*column;[\s\S]*?min-width:\s*min\(100%,\s*11rem\)[\s\S]*?max-width:\s*11rem/);
+    expect(css).not.toMatch(/\.asset-viewer-grid-size-controls\s*\{[\s\S]*?max-width:\s*22rem/);
+    expect(css).toMatch(/\.asset-grid-size-slider:focus-visible\s*\{[\s\S]*?outline:\s*2px solid var\(--focus-ring\)/);
+    expect(css).toMatch(/\.asset-grid-size-option-labels \.?\[data-grid-size-option-label\]\.is-active\s*\{[\s\S]*?font-weight:\s*700/);
+    expect(css).toMatch(/@media \(max-width: 540px\)[\s\S]*?\.asset-viewer-display-controls\s*\{[\s\S]*?row-gap:\s*var\(--space-sm\)[\s\S]*?\.asset-viewer-grid-size-controls\s*\{[\s\S]*?flex-basis:\s*100%/);
+  });
+
+  it('styles Asset Viewer filter disclosures as scoped scrollable controls with focus states', () => {
+    const css = fs.readFileSync(STYLESHEET_PATH, 'utf8');
+
+    expect(css).toMatch(/\.asset-viewer-filters\s*\{[^}]*position:\s*relative/);
+    expect(css).toMatch(/\.asset-filter-multiselect-panel\s*\{[\s\S]*?max-height:\s*20rem[\s\S]*?overflow-y:\s*auto/);
+    expect(css).toMatch(/\.asset-filter-multiselect summary:focus-visible\s*\{[\s\S]*?outline:\s*2px solid var\(--focus-ring\)/);
+    expect(css).toMatch(/\.asset-filter-multiselect-option input:focus-visible\s*\{[\s\S]*?outline:\s*2px solid var\(--focus-ring\)/);
+    expect(css).toMatch(/@media \(max-width: 540px\)[\s\S]*?\.asset-filter-multiselect-panel\s*\{[\s\S]*?width:\s*100%/);
+    expect(css).toMatch(/\.asset-viewer-project-filter \.asset-project-filter-panel\s*\{[\s\S]*?max-height:\s*20rem[\s\S]*?overflow:\s*hidden/);
+    expect(css).toMatch(/\.asset-viewer-project-filter \.asset-project-filter-option-list\s*\{[\s\S]*?overflow-y:\s*auto/);
+    expect(css).toMatch(/\.asset-viewer-project-filter \.asset-filter-multiselect-summary\s*\{[\s\S]*?text-overflow:\s*ellipsis/);
+  });
+
+  it('keeps transformed Grid cards and hover information below the global navigation root', () => {
+    const css = fs.readFileSync(STYLESHEET_PATH, 'utf8');
+    const sidebarLayer = Number(css.match(/--shell-z-sidebar:\s*(\d+)/)?.[1]);
+    const contentLayer = Number(css.match(/--shell-z-content:\s*(\d+)/)?.[1]);
+
+    expect(css).toMatch(/\.app-main\s*\{[\s\S]*?position:\s*relative[\s\S]*?z-index:\s*var\(--shell-z-content\)/);
+    expect(css).toMatch(/\.app-sidebar\s*\{[\s\S]*?position:\s*fixed[\s\S]*?z-index:\s*var\(--shell-z-sidebar\)/);
+    expect(sidebarLayer).toBeGreaterThan(contentLayer);
+    expect(sidebarLayer).toBeGreaterThan(60);
+    expect(css).toMatch(/\.asset-viewer-grid-card:hover,[\s\S]*?\.asset-viewer-grid-card:focus-within\s*\{[\s\S]*?transform:\s*translateY\(-2px\)/);
+    expect(css).toMatch(/\.asset-viewer-grid-card-info\s*\{[\s\S]*?position:\s*absolute[\s\S]*?z-index:\s*30/);
+    expect(css).toMatch(/\.asset-viewer-grid-card-preview:hover \.asset-viewer-grid-card-info,[\s\S]*?\.asset-viewer-grid-card-preview:focus-within \.asset-viewer-grid-card-info\s*\{[\s\S]*?display:\s*block/);
   });
 
   it('contains only the read-only filter form and no mutation controls', () => {
@@ -316,13 +667,17 @@ describe('cross-project Asset Viewer template', () => {
     expect(html).not.toMatch(/method="post"/i);
     expect(html).not.toMatch(/Scan Now|Rename|Move file|Add selected|Set as primary|select all/i);
     expect(html).not.toContain('name="selectedAssetIds"');
+    expect(html).not.toContain('asset-select-checkbox');
+    expect(html).not.toContain('asset-rename-trigger');
   });
 
   it('renders tag filtering without adding tag sorting controls', () => {
     const html = renderPage();
 
-    expect(html).toContain('<select id="asset-tag" name="tag" disabled>');
-    expect(html).toContain('<option value="" selected>All tags</option>');
+    expect(html).toContain('id="asset-tag-filter-trigger"');
+    expect(html).toContain('aria-label="Tag filter: Any tag"');
+    expect(html).toContain('No tags available');
+    expect(html).not.toContain('<select id="asset-tag"');
     expect(html).not.toContain('sort=tag');
   });
 
@@ -330,10 +685,10 @@ describe('cross-project Asset Viewer template', () => {
     const model = {
       filters: {
         projectId: 2,
-        category: 'renders',
-        tag: 7,
+        categories: ['renders'],
+        tags: [7],
         search: 'shared',
-        extension: 'png',
+        extensions: ['png'],
         presence: 'present',
         usage: 'used',
         sort: 'project',
@@ -346,7 +701,7 @@ describe('cross-project Asset Viewer template', () => {
       pageCount: 3,
       hasPreviousPage: true,
       hasNextPage: true,
-      tagOptions: [{ value: '7', displayName: 'Context Tag' }],
+      tagOptions: [{ value: '7', displayName: 'Context Tag', selected: true }],
     };
     const html = renderPage(model);
     const state = {
@@ -364,10 +719,10 @@ describe('cross-project Asset Viewer template', () => {
     const nextUrl = buildAssetLibraryUrl(state, { page: 3 });
     const clearUrl = buildAssetLibraryUrl(state, {
       projectId: null,
-      category: 'all',
+      categories: null,
       search: null,
-      extension: null,
-      tag: null,
+      extensions: null,
+      tags: null,
       presence: 'all',
       usage: 'all',
       page: 1,

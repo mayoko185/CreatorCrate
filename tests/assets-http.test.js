@@ -2831,13 +2831,21 @@ describe('asset browser HTTP workflow', () => {
     expect(gridRes.text).toContain('class="view-switcher"');
     expect(gridRes.text).toMatch(/class="view-switcher-option" href="[^"]*"\s+aria-current="page">Grid</);
     expect(gridRes.text.indexOf('>Grid</a>')).toBeLessThan(gridRes.text.indexOf('>List</a>'));
+    expect(gridRes.text).toContain('class="asset-viewer-display-controls"');
     expect(gridRes.text).toContain('data-asset-grid-size-controls');
-    expect(gridRes.text).toContain('data-grid-size="default"');
-    expect(gridRes.text).toContain('aria-pressed="true"');
+    expect((gridRes.text.match(/<input[^>]+data-grid-size-slider[^>]+type="range"/g) || [])).toHaveLength(1);
+    expect(gridRes.text).toMatch(/<input[^>]+data-grid-size-slider[^>]+min="1"[^>]+max="3"[^>]+step="1"[^>]+aria-label="Grid size"/);
+    expect(gridRes.text).toContain('aria-valuenow="2" aria-valuetext="Default"');
+    expect(gridRes.text).toContain('data-grid-size-option-label="compact">Compact');
+    expect(gridRes.text).toContain('data-grid-size-option-label="default" class="is-active">Default');
+    expect(gridRes.text).toContain('data-grid-size-option-label="large">Large');
+    expect(gridRes.text).not.toContain('data-grid-size-current');
+    expect(gridRes.text).not.toMatch(/<button[^>]+data-grid-size="(?:compact|default|large)"/);
     expect(gridRes.text).toContain('class="asset-grid"');
     expect(gridRes.text).toContain('class="asset-card"');
     expect(gridRes.text).not.toContain('data-table asset-table');
     expect(listRes.text).not.toContain('data-asset-grid-size-controls');
+    expect(listRes.text).not.toContain('data-grid-size-slider');
   });
 
   it('renders equivalent metadata, actions, and bulk-selection fields for a grid card', async () => {

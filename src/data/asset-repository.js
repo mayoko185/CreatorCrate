@@ -164,31 +164,81 @@ function appendProjectAssetTagCondition(conditions, params, tag) {
   // null / undefined = no tag restriction
 }
 
+function appendGlobalAssetTagCondition(conditions, params, tag) {
+  if (tag === undefined || tag === null || tag === '') return;
+
+  const values = Array.isArray(tag) ? tag : [tag];
+  const selected = [...new Set(values.filter((value) => Number.isSafeInteger(value) && value > 0))]
+    .sort((left, right) => left - right);
+  if (selected.length === 0) return;
+
+  const placeholders = selected.map(() => '?').join(',');
+  conditions.push(`(
+    EXISTS (
+      SELECT 1
+      FROM asset_tags asset_tag_filter
+      WHERE asset_tag_filter.asset_id = a.id
+        AND asset_tag_filter.tag_id IN (${placeholders})
+    ) OR EXISTS (
+      SELECT 1
+      FROM project_tags project_tag_filter
+      WHERE project_tag_filter.project_id = a.project_id
+        AND project_tag_filter.tag_id IN (${placeholders})
+    )
+  )`);
+  params.push(...selected, ...selected);
+}
+
 function appendGlobalAssetCategoryCondition(conditions, params, category) {
-  if (category === 'uncategorized') {
-    conditions.push('a.category_id IS NULL');
+  if (category === undefined || category === null || category === '') return;
+
+  const values = Array.isArray(category) ? category : [category];
+  const selected = [...new Set(values.filter((value) => (
+    typeof value === 'string' && value !== '' && value !== 'all'
+  )))].sort();
+  if (selected.length === 0) {
+    if (values.every((value) => value === 'all' || value === '')) return;
+    // Numeric project-local category IDs are not a stable cross-project
+    // identity. An unsupported category value must not silently mean "all".
+    conditions.push('1 = 0');
     return;
   }
 
-  if (category === undefined || category === null || category === '' || category === 'all') {
-    return;
+  const clauses = [];
+  if (selected.includes('uncategorized')) {
+    clauses.push('a.category_id IS NULL');
   }
 
-  if (typeof category === 'string') {
-    conditions.push(`EXISTS (
+  const slugs = selected.filter((value) => value !== 'uncategorized');
+  if (slugs.length > 0) {
+    const placeholders = slugs.map(() => '?').join(',');
+    clauses.push(`EXISTS (
       SELECT 1
       FROM project_asset_categories category_filter
       WHERE category_filter.project_id = a.project_id
         AND category_filter.id = a.category_id
-        AND category_filter.directory_slug COLLATE NOCASE = ?
+        AND category_filter.directory_slug COLLATE NOCASE IN (${placeholders})
     )`);
-    params.push(category);
-    return;
+    params.push(...slugs);
   }
 
-  // Numeric project-local category IDs are not a stable cross-project
-  // identity. An unsupported category value must not silently mean "all".
-  conditions.push('1 = 0');
+  conditions.push(`(${clauses.join(' OR ')})`);
+}
+
+function appendGlobalAssetExtensionCondition(conditions, params, extension) {
+  if (extension === undefined || extension === null || extension === '') return;
+
+  const values = Array.isArray(extension) ? extension : [extension];
+  const selected = [...new Set(values
+    .filter((value) => typeof value === 'string')
+    .map((value) => value.trim().replace(/^\./, '').toLowerCase())
+    .filter((value) => value !== '' && !value.startsWith('.')))]
+    .sort();
+  if (selected.length === 0) return;
+
+  const placeholders = selected.map(() => '?').join(',');
+  conditions.push(`LOWER(a.extension) IN (${placeholders})`);
+  params.push(...selected);
 }
 
 function buildProjectAssetBrowserConditions(projectId, filters = {}) {
@@ -201,7 +251,12 @@ function buildProjectAssetBrowserConditions(projectId, filters = {}) {
 }
 
 function buildAllAssetBrowserConditions(filters = {}) {
-  const { conditions, params } = buildSharedAssetBrowserConditions(filters);
+  // Keep project-scoped browser predicates scalar and unchanged. The global
+  // browser owns its selected-set predicates below.
+  const { conditions, params } = buildSharedAssetBrowserConditions({
+    ...filters,
+    extension: undefined,
+  });
   const projectId = filters.projectId ?? filters.project_id;
 
   // Active project browsing excludes either archive indicator. Normal archive
@@ -215,8 +270,9 @@ function buildAllAssetBrowserConditions(filters = {}) {
     params.push(projectId);
   }
 
-  appendGlobalAssetCategoryCondition(conditions, params, filters.category);
-  appendProjectAssetTagCondition(conditions, params, filters.tag);
+  appendGlobalAssetCategoryCondition(conditions, params, filters.categories ?? filters.category);
+  appendGlobalAssetTagCondition(conditions, params, filters.tags ?? filters.tag);
+  appendGlobalAssetExtensionCondition(conditions, params, filters.extensions ?? filters.extension);
   return { conditions, params };
 }
 
@@ -1109,11 +1165,14 @@ export function createAssetRepository(db) {
      * @param {object} [filters]
      * @param {number} [filters.projectId]
      * @param {string|null} [filters.search]
-     * @param {string|null} [filters.extension]
+     * @param {string|null} [filters.extension] - legacy scalar alias
+     * @param {string[]} [filters.extensions]
      * @param {'all'|'present'|'missing'} [filters.presence='all']
      * @param {'all'|'used'|'unused'} [filters.usage='all']
-     * @param {'all'|'uncategorized'|string} [filters.category='all']
-     * @param {number|null} [filters.tag]
+     * @param {'all'|'uncategorized'|string} [filters.category='all'] - legacy scalar alias
+     * @param {string[]} [filters.categories]
+     * @param {number|null} [filters.tag] - legacy scalar alias
+     * @param {number[]} [filters.tags]
      * @param {'filename'|'modified'|'size'|'category'|'project'} [filters.sort='filename']
      * @param {'asc'|'desc'} [filters.order='asc']
      * @param {number} [filters.limit=25]
@@ -1148,7 +1207,8 @@ export function createAssetRepository(db) {
      * without multiplying rows, so the count cannot inflate from joins.
      *
      * @param {object} [filters]
-     * @param {number|null} [filters.tag]
+     * @param {number|null} [filters.tag] - legacy scalar alias
+     * @param {number[]} [filters.tags]
      * @returns {number}
      */
     countAllAssets(filters = {}) {

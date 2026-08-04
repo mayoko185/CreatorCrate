@@ -1647,6 +1647,36 @@ export function createReleaseRepository(db) {
       return db.prepare(sql).all();
     },
 
+    /**
+     * Release title projections for a batch of assets across all projects.
+     * Only valid same-project release/asset associations are returned; this
+     * deliberately does not reuse the project-scoped usage query above.
+     *
+     * @param {number[]} assetIds - asset IDs from the current page
+     * @returns {Array<{asset_id: number, release_id: number, title: string}>}
+     */
+    findReleaseTitlesForAssetIds(assetIds) {
+      if (!Array.isArray(assetIds) || assetIds.length === 0) {
+        return [];
+      }
+
+      const placeholders = assetIds.map(() => '?').join(',');
+      const sql = `
+        SELECT DISTINCT
+          ra.asset_id,
+          r.id AS release_id,
+          r.title
+        FROM release_assets ra
+        JOIN releases r ON r.id = ra.release_id
+        JOIN assets a ON a.id = ra.asset_id
+        WHERE ra.asset_id IN (${placeholders})
+          AND r.project_id = a.project_id
+        ORDER BY ra.asset_id ASC, r.title COLLATE NOCASE ASC, r.id ASC
+      `;
+
+      return db.prepare(sql).all(...assetIds);
+    },
+
     findReleaseUsageForAssetIds(projectId, assetIds) {
       if (!Array.isArray(assetIds) || assetIds.length === 0) {
         return [];

@@ -222,7 +222,7 @@ function compareProjectOptions(left, right) {
   return left.id - right.id;
 }
 
-function buildAssetLibraryCategoryOptions(defaults, selectedValue) {
+function buildAssetLibraryCategoryOptions(defaults, selectedValues) {
   const enabledCategories = defaults
     .filter((category) => category.enabled === 1 || category.enabled === true)
     .slice()
@@ -234,19 +234,71 @@ function buildAssetLibraryCategoryOptions(defaults, selectedValue) {
     {
       value: 'all',
       label: 'All categories',
-      selected: selectedValue === 'all',
+      selected: selectedValues.length === 0,
     },
     {
       value: 'uncategorized',
       label: 'Uncategorized',
-      selected: selectedValue === 'uncategorized',
+      selected: selectedValues.includes('uncategorized'),
     },
     ...enabledCategories.map((category) => ({
       value: category.directory_slug,
       label: category.display_name,
-      selected: category.directory_slug === selectedValue,
+      selected: selectedValues.includes(category.directory_slug),
     })),
   ];
+}
+
+function readAssetLibrarySelection(input, pluralKey, singularKey) {
+  return hasOwn(input, pluralKey) ? input[pluralKey] : input[singularKey];
+}
+
+function normalizeAssetLibraryTagSelection(value, tagCatalog) {
+  const availableIds = new Set(tagCatalog.map((tag) => tag.id));
+  const values = value === undefined || value === null
+    ? []
+    : (Array.isArray(value) ? value : [value]);
+  const selected = new Set();
+
+  for (const candidate of values) {
+    const normalized = typeof candidate === 'number'
+      ? candidate
+      : (typeof candidate === 'string' && /^[1-9]\d*$/.test(candidate) ? Number(candidate) : null);
+    if (Number.isSafeInteger(normalized) && normalized > 0 && availableIds.has(normalized)) {
+      selected.add(normalized);
+    }
+  }
+
+  return [...selected].sort((left, right) => left - right);
+}
+
+function normalizeAssetLibraryStringSelection(
+  value,
+  availableValues,
+  { allowUncategorized = false, stripLeadingDot = false } = {},
+) {
+  const values = value === undefined || value === null
+    ? []
+    : (Array.isArray(value) ? value : [value]);
+  const selected = new Set();
+
+  for (const candidate of values) {
+    if (typeof candidate !== 'string') continue;
+    const trimmed = candidate.trim();
+    const normalized = stripLeadingDot
+      ? trimmed.replace(/^\./, '').toLowerCase()
+      : trimmed;
+    if (normalized === '' || normalized === 'all' || normalized.startsWith('.')) continue;
+    if (allowUncategorized && normalized === 'uncategorized') {
+      selected.add(normalized);
+    } else if (availableValues.has(normalized)) {
+      selected.add(normalized);
+    }
+  }
+
+  return [...selected].sort((left, right) => (
+    left < right ? -1 : left > right ? 1 : 0
+  ));
 }
 
 function isLeapYear(year) {
@@ -332,6 +384,8 @@ function groupByDate(releases) {
  * @param {Function} [deps.evaluateReleaseReadiness] — pure readiness policy
  *   function injected for Phase 7A read-service composition. When omitted,
  *   the service still works but getReleaseReadiness will throw a clear error.
+ * @param {object} [deps.releaseRepository] — release repository for page-local
+ *   batch enrichment
  * @param {object} [deps.tagRepository] — shared project/asset tag repository
  */
 export function createWorkflowQueryService({
@@ -339,10 +393,11 @@ export function createWorkflowQueryService({
   evaluateReleaseReadiness,
   projectPrimaryImageRepository,
   assetBrowserPreferenceService: injectedAssetBrowserPreferenceService,
+  releaseRepository: injectedReleaseRepository,
   tagRepository: injectedTagRepository,
 }) {
   const projectRepository = createProjectRepository(db);
-  const releaseRepository = createReleaseRepository(db);
+  const releaseRepository = injectedReleaseRepository ?? createReleaseRepository(db);
   const assetRepository = createAssetRepository(db);
   const assetCategoryRepository = createAssetCategoryRepository(db);
   const primaryImageRepository = projectPrimaryImageRepository ?? createProjectPrimaryImageRepository(db);
@@ -679,6 +734,93 @@ export function createWorkflowQueryService({
   }
 
   /**
+   * Attach every valid release title to the already-selected asset rows.
+   * Release lookup is intentionally one cross-project batch for the current
+   * page; assets without release usage receive an empty array.
+   *
+   * @param {Array} assets
+   * @returns {Array}
+   */
+  function attachAssetLibraryReleaseTitles(assets) {
+    if (!Array.isArray(assets) || assets.length === 0) return [];
+
+    const assetIds = assets.map((asset) => asset.id);
+    const releaseRows = releaseRepository.findReleaseTitlesForAssetIds(assetIds);
+    const releaseTitlesByAssetId = new Map();
+
+    for (const release of releaseRows) {
+      if (!releaseTitlesByAssetId.has(release.asset_id)) {
+        releaseTitlesByAssetId.set(release.asset_id, []);
+      }
+      releaseTitlesByAssetId.get(release.asset_id).push({
+        id: release.release_id,
+        title: release.title,
+      });
+    }
+
+    return assets.map((asset) => ({
+      ...asset,
+      release_titles: releaseTitlesByAssetId.get(asset.id) || [],
+    }));
+  }
+
+  function attachAssetLibraryTags(assets, tagCatalog) {
+    if (!Array.isArray(assets) || assets.length === 0) return [];
+
+    const assetIds = assets.map((asset) => asset.id);
+    const projectIds = [...new Set(assets.map((asset) => asset.project_id))];
+    const directTagRows = tagRepository.listForAssetIds(assetIds);
+    const inheritedTagRows = tagRepository.listForProjectIds(projectIds);
+    const tagOrderById = new Map(tagCatalog.map((tag, index) => [tag.id, index]));
+    const directTagsByAssetId = new Map();
+    const inheritedTagsByProjectId = new Map();
+
+    for (const tag of directTagRows) {
+      if (!directTagsByAssetId.has(tag.asset_id)) {
+        directTagsByAssetId.set(tag.asset_id, []);
+      }
+      directTagsByAssetId.get(tag.asset_id).push(tag);
+    }
+
+    for (const tag of inheritedTagRows) {
+      if (!inheritedTagsByProjectId.has(tag.project_id)) {
+        inheritedTagsByProjectId.set(tag.project_id, []);
+      }
+      inheritedTagsByProjectId.get(tag.project_id).push(tag);
+    }
+
+    const compareTagIds = (leftId, rightId) => {
+      const leftOrder = tagOrderById.get(leftId) ?? Number.MAX_SAFE_INTEGER;
+      const rightOrder = tagOrderById.get(rightId) ?? Number.MAX_SAFE_INTEGER;
+      return leftOrder - rightOrder || leftId - rightId;
+    };
+
+    return assets.map((asset) => {
+      const effectiveTagsById = new Map();
+
+      for (const tag of inheritedTagsByProjectId.get(asset.project_id) || []) {
+        effectiveTagsById.set(tag.id, {
+          displayName: tag.display_name,
+          origin: 'inherited',
+        });
+      }
+
+      for (const tag of directTagsByAssetId.get(asset.id) || []) {
+        effectiveTagsById.set(tag.id, {
+          displayName: tag.display_name,
+          origin: 'direct',
+        });
+      }
+
+      const tags = [...effectiveTagsById.entries()]
+        .sort(([leftId], [rightId]) => compareTagIds(leftId, rightId))
+        .map(([, tag]) => tag);
+
+      return { ...asset, tags };
+    });
+  }
+
+  /**
    * Return the global tag catalog in the fields required by the Projects
    * filter. The repository owns deterministic ordering; display projection
    * keeps normalized names and timestamps out of the page model.
@@ -734,12 +876,15 @@ export function createWorkflowQueryService({
    *
    * @param {object} [input]
    * @param {number|null} [input.projectId]
-   * @param {'all'|'uncategorized'|string} [input.category='all']
+   * @param {'all'|'uncategorized'|string} [input.category='all'] - legacy alias
+   * @param {string[]} [input.categories]
    * @param {string|null} [input.search]
-   * @param {string|null} [input.extension]
+   * @param {string|null} [input.extension] - legacy alias
+   * @param {string[]} [input.extensions]
    * @param {'all'|'present'|'missing'} [input.presence='all']
    * @param {'all'|'used'|'unused'} [input.usage='all']
-   * @param {number|null} [input.tag]
+   * @param {number|null} [input.tag] - legacy alias
+   * @param {number[]} [input.tags]
    * @param {'filename'|'modified'|'size'|'category'|'project'} [input.sort='filename']
    * @param {'asc'|'desc'} [input.order='asc']
    * @param {number} [input.page=1]
@@ -759,7 +904,7 @@ export function createWorkflowQueryService({
    *   context: object,
    *   projectOptions: Array<{ id: number, title: string }>,
    *   categoryOptions: Array<{ value: string, label: string, selected: boolean }>,
-   *   tagOptions: Array<{ value: string, displayName: string }>,
+   *   tagOptions: Array<{ value: string, displayName: string, selected: boolean }>,
    *   extensionOptions: Array<{ value: string, label: string, selected: boolean }>,
    *   presenceOptions: Array<{ value: string, label: string, selected: boolean }>,
    *   usageOptions: Array<{ value: string, label: string, selected: boolean }>,
@@ -769,14 +914,30 @@ export function createWorkflowQueryService({
    */
   function getAssetLibraryPage(input = {}) {
     const projectId = input.projectId ?? null;
-    const category = input.category ?? 'all';
     const tagCatalog = tagRepository.list();
-    const tag = Number.isSafeInteger(input.tag) && input.tag > 0
-      && tagCatalog.some((candidate) => candidate.id === input.tag)
-      ? input.tag
-      : null;
+    const categoryDefaults = assetCategoryRepository.listDefaults();
+    const availableCategoryValues = new Set([
+      'uncategorized',
+      ...categoryDefaults
+        .filter((categoryOption) => categoryOption.enabled === 1 || categoryOption.enabled === true)
+        .map((categoryOption) => categoryOption.directory_slug),
+    ]);
+    const availableExtensions = new Set(assetRepository.listAllAssetExtensions({ projectId }));
+    const tags = normalizeAssetLibraryTagSelection(
+      readAssetLibrarySelection(input, 'tags', 'tag'),
+      tagCatalog,
+    );
+    const categories = normalizeAssetLibraryStringSelection(
+      readAssetLibrarySelection(input, 'categories', 'category'),
+      availableCategoryValues,
+      { allowUncategorized: true },
+    );
+    const extensions = normalizeAssetLibraryStringSelection(
+      readAssetLibrarySelection(input, 'extensions', 'extension'),
+      availableExtensions,
+      { stripLeadingDot: true },
+    );
     const search = input.search ?? null;
-    const extension = input.extension ?? null;
     const presence = input.presence ?? 'all';
     const usage = input.usage ?? 'all';
     const sort = input.sort ?? 'filename';
@@ -787,10 +948,10 @@ export function createWorkflowQueryService({
 
     const filters = {
       projectId,
-      category,
-      tag,
+      categories,
+      tags,
       search,
-      extension,
+      extensions,
       presence,
       usage,
       sort,
@@ -799,10 +960,10 @@ export function createWorkflowQueryService({
     };
     const repositoryFilters = {
       projectId,
-      category,
-      tag,
+      categories,
+      tags,
       search,
-      extension,
+      extensions,
       presence,
       usage,
       sort,
@@ -814,24 +975,27 @@ export function createWorkflowQueryService({
     const pageCount = Math.max(1, Math.ceil(total / pageSize));
     const page = Math.min(requestedPage, pageCount);
     const offset = (page - 1) * pageSize;
-    const assets = attachAssetTags(assetRepository.findAllAssets({
-      ...repositoryFilters,
-      limit: pageSize,
-      offset,
-    }).map((asset) => {
-      const preview = buildAssetPreviewModel(asset);
-      return {
-        ...asset,
-        preview,
-        preview_state: preview.state,
-        preview_revision: preview.revision,
-        thumbnail_url: preview.urls.thumbnail,
-        preview_url: preview.urls.preview,
-        previewAltText: buildPreviewAltText(asset),
-        isPreviewable: preview.previewable,
-        hasThumbnail: Boolean(preview.urls.thumbnail),
-      };
-    }));
+    const assets = attachAssetLibraryReleaseTitles(attachAssetLibraryTags(
+      assetRepository.findAllAssets({
+        ...repositoryFilters,
+        limit: pageSize,
+        offset,
+      }).map((asset) => {
+        const preview = buildAssetPreviewModel(asset);
+        return {
+          ...asset,
+          preview,
+          preview_state: preview.state,
+          preview_revision: preview.revision,
+          thumbnail_url: preview.urls.thumbnail,
+          preview_url: preview.urls.preview,
+          previewAltText: buildPreviewAltText(asset),
+          isPreviewable: preview.previewable,
+          hasThumbnail: Boolean(preview.urls.thumbnail),
+        };
+      }),
+      tagCatalog,
+    ));
 
     // This is intentionally an unpaged project-option query: it is the
     // filter control's complete source, not the current asset page.
@@ -840,13 +1004,10 @@ export function createWorkflowQueryService({
       .map((project) => ({ id: project.id, title: project.title }))
       .sort(compareProjectOptions);
 
-    const categoryOptions = buildAssetLibraryCategoryOptions(
-      assetCategoryRepository.listDefaults(),
-      category,
-    );
-    const extensionOptions = assetRepository
-      .listAllAssetExtensions({ projectId })
-      .map((value) => ({ value, label: value, selected: value === extension }));
+    const categoryOptions = buildAssetLibraryCategoryOptions(categoryDefaults, categories);
+    const extensionOptions = [...availableExtensions]
+      .sort((left, right) => (left < right ? -1 : left > right ? 1 : 0))
+      .map((value) => ({ value, label: value, selected: extensions.includes(value) }));
     const presenceOptions = buildSelectedOptions(ASSET_LIBRARY_PRESENCE_OPTIONS, presence);
     const usageOptions = buildSelectedOptions(ASSET_LIBRARY_USAGE_OPTIONS, usage);
     const sortOptions = buildSelectedOptions(ASSET_LIBRARY_SORT_OPTIONS, sort);
@@ -855,6 +1016,7 @@ export function createWorkflowQueryService({
     const tagOptions = tagCatalog.map((candidate) => ({
       value: String(candidate.id),
       displayName: candidate.display_name,
+      selected: tags.includes(candidate.id),
     }));
 
     return {

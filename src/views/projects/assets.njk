@@ -446,24 +446,18 @@
     </nav>
 
     <div class="asset-browser-content">
-      <nav class="view-switcher" aria-label="Asset display">
-        <a class="view-switcher-option" href="{{ pageUrl({ view: 'grid' }) }}"
-           {% if filters.view == 'grid' %}aria-current="page"{% endif %}>Grid</a>
-        <a class="view-switcher-option" href="{{ pageUrl({ view: 'list' }) }}"
-           {% if filters.view == 'list' %}aria-current="page"{% endif %}>List</a>
-      </nav>
+      <div class="asset-viewer-display-controls">
+        <nav class="view-switcher" aria-label="Asset display">
+          <a class="view-switcher-option" href="{{ pageUrl({ view: 'grid' }) }}"
+             {% if filters.view == 'grid' %}aria-current="page"{% endif %}>Grid</a>
+          <a class="view-switcher-option" href="{{ pageUrl({ view: 'list' }) }}"
+             {% if filters.view == 'list' %}aria-current="page"{% endif %}>List</a>
+        </nav>
 
-      {% if filters.view == 'grid' %}
-        <div class="asset-grid-size-controls" data-asset-grid-size-controls role="group" aria-labelledby="asset-grid-size-label">
-          <span id="asset-grid-size-label" class="asset-grid-size-label">Grid size</span>
-          <button type="button" class="button button-small" data-grid-size="compact"
-                  aria-label="Use compact grid cards" aria-pressed="false">Compact</button>
-          <button type="button" class="button button-small" data-grid-size="default"
-                  aria-label="Use default grid cards" aria-pressed="true">Default</button>
-          <button type="button" class="button button-small" data-grid-size="large"
-                  aria-label="Use large grid cards" aria-pressed="false">Large</button>
-        </div>
-      {% endif %}
+        {% if filters.view == 'grid' %}
+          {% include "partials/asset-grid-size-control.njk" %}
+        {% endif %}
+      </div>
 
       {% if not completeCategorySurface %}
         <form class="filters" method="get" action="/projects/{{ project.id }}/assets">

@@ -99,6 +99,34 @@ describe('Asset Viewer query foundation', () => {
     expect(parseAssetLibraryQuery({}).tag).toBeNull();
   });
 
+  it('parses repeated tag, category, and extension values as sorted unique selections', () => {
+    const parsed = parseAssetLibraryQuery({
+      tag: ['2', '1', '2', 'not-a-number', '0'],
+      category: ['krz', 'all', 'final', 'krz', 'not a slug'],
+      extension: ['.KRZ', 'png', 'png', '..invalid', ''],
+    });
+
+    expect(parsed).toMatchObject({
+      tags: [1, 2],
+      categories: ['final', 'krz'],
+      extensions: ['krz', 'png'],
+      tag: 1,
+      category: 'final',
+      extension: 'krz',
+    });
+  });
+
+  it('keeps a single legacy value in the corresponding selection array', () => {
+    expect(parseAssetLibraryQuery({ tag: '7', category: 'final', extension: '.PNG' })).toMatchObject({
+      tags: [7],
+      categories: ['final'],
+      extensions: ['png'],
+      tag: 7,
+      category: 'final',
+      extension: 'png',
+    });
+  });
+
   it('trims search text, omits empty search, and preserves meaningful intent', () => {
     expect(parseAssetLibraryQuery({ search: '  final render  ' }).search).toBe('final render');
     expect(parseAssetLibraryQuery({ search: '   ' }).search).toBeNull();
@@ -180,6 +208,50 @@ describe('Asset Viewer query foundation', () => {
       usage: 'all',
       page: '1',
     }))).toBe('/assets');
+  });
+
+  it('serializes every valid multi-value selection as repeated canonical parameters', () => {
+    const parsed = parseAssetLibraryQuery({
+      tag: ['2', '1', '2'],
+      category: ['krz', 'final', 'all', 'final'],
+      extension: ['.KRZ', 'png', 'png'],
+      sort: 'project',
+      order: 'desc',
+      page: '2',
+      pageSize: '10',
+      view: 'list',
+    });
+
+    expect(buildAssetLibraryUrl(parsed)).toBe(
+      '/assets?category=final&category=krz&tag=1&tag=2&extension=krz&extension=png&sort=project&order=desc&page=2&pageSize=10&view=list',
+    );
+    expect(new URL(`http://localhost${buildAssetLibraryUrl(parsed)}`).searchParams.getAll('tag'))
+      .toEqual(['1', '2']);
+    expect(new URL(`http://localhost${buildAssetLibraryUrl(parsed)}`).searchParams.getAll('category'))
+      .toEqual(['final', 'krz']);
+    expect(new URL(`http://localhost${buildAssetLibraryUrl(parsed)}`).searchParams.getAll('extension'))
+      .toEqual(['krz', 'png']);
+  });
+
+  it('retains every selection when sorting, paging, resizing, and switching views', () => {
+    const parsed = parseAssetLibraryQuery({
+      tag: ['1', '2'],
+      category: ['final', 'krz'],
+      extension: ['png', 'krz'],
+      page: '3',
+      pageSize: '25',
+      view: 'grid',
+    });
+
+    expect(buildAssetLibraryUrl(parsed, {
+      sort: 'project',
+      order: 'desc',
+      page: 2,
+      pageSize: 50,
+      view: 'list',
+    })).toBe(
+      '/assets?category=final&category=krz&tag=1&tag=2&extension=krz&extension=png&sort=project&order=desc&page=2&pageSize=50&view=list',
+    );
   });
 
   it('preserves explicit valid fallback presentation values for future defaults', () => {

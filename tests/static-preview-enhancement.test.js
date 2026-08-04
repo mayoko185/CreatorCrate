@@ -11,6 +11,9 @@ import {
   enhanceAssetSelection,
   enhanceAssetRenames,
   enhanceAssetGridSize,
+  enhanceAssetProjectFilter,
+  enhanceAssetViewerFilterDisclosures,
+  enhanceAssetViewerInfoCards,
 } from '../src/static/creatorcrate.js';
 
 function makeElement(props = {}) {
@@ -1700,6 +1703,300 @@ describe('asset grid rename enhancement', () => {
   });
 });
 
+describe('Asset Viewer Project filter enhancement', () => {
+  function makeProjectFilterFixture(selectedValue = '') {
+    const makeInput = (value, checked = false) => {
+      const listeners = [];
+      return {
+        value,
+        checked,
+        listeners,
+        addEventListener(type, handler) { listeners.push({ type, handler }); },
+        dispatch(type) {
+          listeners.filter((listener) => listener.type === type)
+            .forEach((listener) => listener.handler());
+        },
+      };
+    };
+
+    const makeOption = (title, value) => {
+      const input = makeInput(value, value === selectedValue);
+      const label = { textContent: title };
+      const attrs = { 'data-project-title': title };
+      return {
+        input,
+        label,
+        hidden: false,
+        attrs,
+        querySelector(selector) {
+          if (selector === 'input[name="project"]') return input;
+          if (selector === 'label') return label;
+          return null;
+        },
+        getAttribute(name) { return attrs[name] ?? null; },
+        setAttribute(name, valueToSet) {
+          attrs[name] = String(valueToSet);
+          if (name === 'hidden') this.hidden = true;
+        },
+        removeAttribute(name) {
+          delete attrs[name];
+          if (name === 'hidden') this.hidden = false;
+        },
+      };
+    };
+
+    const all = makeOption('All projects', '');
+    const alpha = makeOption('Alpha Project', '1');
+    const beta = makeOption('Beta Project', '2');
+    const options = [all, alpha, beta];
+    const searchListeners = [];
+    const search = {
+      value: '',
+      listeners: searchListeners,
+      addEventListener(type, handler) { searchListeners.push({ type, handler }); },
+      dispatch(type) {
+        searchListeners.filter((listener) => listener.type === type)
+          .forEach((listener) => listener.handler());
+      },
+    };
+    const summaryText = { textContent: '' };
+    const summaryAttrs = {};
+    const summary = {
+      setAttribute(name, value) { summaryAttrs[name] = String(value); },
+    };
+    const empty = {
+      hidden: true,
+      setAttribute(name) { if (name === 'hidden') this.hidden = true; },
+      removeAttribute(name) { if (name === 'hidden') this.hidden = false; },
+    };
+    const toggleListeners = [];
+    const filter = {
+      dataset: {},
+      open: false,
+      querySelector(selector) {
+        if (selector === '[data-asset-project-filter-search]') return search;
+        if (selector === '[data-asset-project-filter-summary]') return summaryText;
+        if (selector === '[data-asset-project-filter-no-results]') return empty;
+        if (selector === 'summary') return summary;
+        return null;
+      },
+      querySelectorAll(selector) {
+        return selector === '[data-asset-project-filter-option]' ? options : [];
+      },
+      addEventListener(type, handler) { toggleListeners.push({ type, handler }); },
+      dispatchToggle(open) {
+        this.open = open;
+        toggleListeners.filter((listener) => listener.type === 'toggle')
+          .forEach((listener) => listener.handler());
+      },
+    };
+    const scope = {
+      querySelectorAll(selector) {
+        return selector === '[data-asset-project-filter]' ? [filter] : [];
+      },
+    };
+
+    return {
+      scope,
+      filter,
+      search,
+      all,
+      alpha,
+      beta,
+      empty,
+      summaryText,
+      summaryAttrs,
+      toggleListeners,
+    };
+  }
+
+  it('filters project titles case-insensitively by partial match and restores the complete list', () => {
+    const fixture = makeProjectFilterFixture();
+
+    expect(enhanceAssetProjectFilter(fixture.scope)).toBe(1);
+    expect(fixture.summaryText.textContent).toBe('All projects');
+    expect(fixture.all.input.checked).toBe(true);
+    expect(fixture.search.listeners.filter(({ type }) => type === 'input')).toHaveLength(1);
+
+    fixture.search.value = 'aLp';
+    fixture.search.dispatch('input');
+    expect(fixture.all.hidden).toBe(false);
+    expect(fixture.alpha.hidden).toBe(false);
+    expect(fixture.beta.hidden).toBe(true);
+    expect(fixture.empty.hidden).toBe(true);
+
+    fixture.search.value = 'does-not-exist';
+    fixture.search.dispatch('input');
+    expect(fixture.all.hidden).toBe(false);
+    expect(fixture.alpha.hidden).toBe(true);
+    expect(fixture.beta.hidden).toBe(true);
+    expect(fixture.empty.hidden).toBe(false);
+
+    fixture.search.value = '';
+    fixture.search.dispatch('input');
+    expect(fixture.alpha.hidden).toBe(false);
+    expect(fixture.beta.hidden).toBe(false);
+    expect(fixture.empty.hidden).toBe(true);
+  });
+
+  it('keeps the selected radio through filtering, updates the closed summary, and tracks disclosure state', () => {
+    const fixture = makeProjectFilterFixture('2');
+
+    enhanceAssetProjectFilter(fixture.scope);
+    expect(fixture.summaryText.textContent).toBe('Beta Project');
+    expect(fixture.beta.input.checked).toBe(true);
+    expect(fixture.all.input.checked).toBe(false);
+    expect(fixture.summaryAttrs['aria-label']).toBe('Project filter: Beta Project');
+    expect(fixture.summaryAttrs['aria-expanded']).toBe('false');
+
+    fixture.filter.dispatchToggle(true);
+    expect(fixture.summaryAttrs['aria-expanded']).toBe('true');
+    fixture.search.value = 'alpha';
+    fixture.search.dispatch('input');
+    expect(fixture.beta.input.checked).toBe(true);
+    expect(fixture.beta.hidden).toBe(true);
+
+    fixture.filter.dispatchToggle(false);
+    expect(fixture.summaryAttrs['aria-expanded']).toBe('false');
+
+    fixture.all.input.checked = true;
+    fixture.beta.input.checked = false;
+    fixture.all.input.dispatch('change');
+    expect(fixture.summaryText.textContent).toBe('All projects');
+    expect(fixture.summaryAttrs['aria-label']).toBe('Project filter: All projects');
+    expect(fixture.alpha.input.value).toBe('1');
+    expect(fixture.beta.input.value).toBe('2');
+    expect(fixture.search.name).toBeUndefined();
+  });
+});
+
+describe('Asset Viewer filter disclosure dismissal', () => {
+  function makeDisclosureFixture() {
+    const scopeListeners = [];
+    const disclosures = [];
+    const outside = { closest() { return null; } };
+
+    for (const name of ['project', 'category', 'tag', 'extension']) {
+      const summaryAttrs = {};
+      const disclosure = {
+        name,
+        open: false,
+        dataset: {},
+        querySelector(selector) {
+          if (selector === 'summary') return summary;
+          return null;
+        },
+        closest(selector) {
+          return selector === '[data-asset-viewer-filter-disclosure]' ? this : null;
+        },
+      };
+      const makeInsideNode = () => ({
+        closest(selector) {
+          return selector === '[data-asset-viewer-filter-disclosure]' ? disclosure : null;
+        },
+      });
+      const summary = {
+        focused: false,
+        attrs: summaryAttrs,
+        setAttribute(nameToSet, value) { summaryAttrs[nameToSet] = String(value); },
+        focus() { this.focused = true; },
+        closest(selector) {
+          return selector === '[data-asset-viewer-filter-disclosure]' ? disclosure : null;
+        },
+      };
+
+      disclosure.summary = summary;
+      disclosure.checkboxes = [makeInsideNode(), makeInsideNode()];
+      disclosure.search = makeInsideNode();
+      disclosures.push(disclosure);
+    }
+
+    const scope = {
+      dataset: {},
+      querySelectorAll(selector) {
+        return selector === '[data-asset-viewer-filter-disclosure]' ? disclosures : [];
+      },
+      addEventListener(type, handler, options) {
+        scopeListeners.push({ type, handler, options });
+      },
+      dispatch(type, target, props = {}) {
+        const event = {
+          type,
+          target,
+          defaultPrevented: false,
+          preventDefault() { this.defaultPrevented = true; },
+          ...props,
+        };
+        scopeListeners
+          .filter((listener) => listener.type === type)
+          .forEach((listener) => listener.handler(event));
+        return event;
+      },
+    };
+
+    return { scope, scopeListeners, disclosures, outside };
+  }
+
+  it('closes every Asset Viewer disclosure on outside click and keeps the listener set scoped and unique', () => {
+    const fixture = makeDisclosureFixture();
+
+    expect(enhanceAssetViewerFilterDisclosures(fixture.scope)).toBe(4);
+    expect(enhanceAssetViewerFilterDisclosures(fixture.scope)).toBe(4);
+    expect(fixture.scopeListeners.filter(({ type }) => type === 'click')).toHaveLength(1);
+    expect(fixture.scopeListeners.filter(({ type }) => type === 'keydown')).toHaveLength(1);
+    expect(fixture.scopeListeners.filter(({ type }) => type === 'toggle')).toHaveLength(1);
+
+    for (const disclosure of fixture.disclosures) {
+      disclosure.open = true;
+      fixture.scope.dispatch('click', fixture.outside);
+      expect(disclosure.open).toBe(false);
+      expect(disclosure.summary.attrs['aria-expanded']).toBe('false');
+    }
+  });
+
+  it('keeps internal multi-select clicks and Project search interaction open', () => {
+    const fixture = makeDisclosureFixture();
+
+    enhanceAssetViewerFilterDisclosures(fixture.scope);
+    for (const name of ['category', 'tag', 'extension']) {
+      const disclosure = fixture.disclosures.find((candidate) => candidate.name === name);
+      disclosure.open = true;
+      for (const checkbox of disclosure.checkboxes) {
+        fixture.scope.dispatch('click', checkbox);
+        expect(disclosure.open).toBe(true);
+      }
+    }
+
+    const project = fixture.disclosures.find((disclosure) => disclosure.name === 'project');
+    project.open = true;
+    fixture.scope.dispatch('keydown', project.search, { key: 's' });
+    expect(project.open).toBe(true);
+  });
+
+  it('closes the previous disclosure when another opens, toggles its own state normally, and dismisses Escape to its trigger', () => {
+    const fixture = makeDisclosureFixture();
+    const project = fixture.disclosures.find((disclosure) => disclosure.name === 'project');
+    const category = fixture.disclosures.find((disclosure) => disclosure.name === 'category');
+
+    enhanceAssetViewerFilterDisclosures(fixture.scope);
+    project.open = true;
+    fixture.scope.dispatch('click', category.summary);
+    expect(project.open).toBe(false);
+    expect(category.open).toBe(false);
+
+    category.open = true;
+    fixture.scope.dispatch('toggle', category);
+    expect(category.open).toBe(true);
+    expect(category.summary.attrs['aria-expanded']).toBe('true');
+
+    const escapeEvent = fixture.scope.dispatch('keydown', category.search, { key: 'Escape' });
+    expect(escapeEvent.defaultPrevented).toBe(true);
+    expect(category.open).toBe(false);
+    expect(category.summary.attrs['aria-expanded']).toBe('false');
+    expect(category.summary.focused).toBe(true);
+  });
+});
+
 describe('asset grid size enhancement', () => {
   function makeGrid() {
     const attrs = {};
@@ -1717,45 +2014,60 @@ describe('asset grid size enhancement', () => {
     };
   }
 
-  function makeGridControls() {
-    const controls = ['compact', 'default', 'large'].map((size) => {
-      const listeners = [];
-      return {
-        dataset: { gridSize: size },
-        attrs: {},
-        addEventListener(type, handler) { listeners.push({ type, handler }); },
-        setAttribute(name, value) { this.attrs[name] = String(value); },
-        dispatch(type) { listeners.filter((entry) => entry.type === type).forEach((entry) => entry.handler()); },
-      };
-    });
-    return {
-      querySelectorAll(selector) {
-        return selector === '[data-grid-size]' ? controls : [];
+  function makeGridSliderControls() {
+    const sliderListeners = [];
+    const slider = {
+      value: '2',
+      attrs: {},
+      addEventListener(type, handler) { sliderListeners.push({ type, handler }); },
+      setAttribute(name, value) { this.attrs[name] = String(value); },
+      dispatch(type) {
+        sliderListeners.filter((entry) => entry.type === type).forEach((entry) => entry.handler());
       },
-      controls,
     };
+    const labels = ['compact', 'default', 'large'].map((size) => ({
+      dataset: { gridSizeOptionLabel: size },
+      classList: {
+        values: new Set(),
+        toggle(name, force) {
+          if (force) this.values.add(name);
+          else this.values.delete(name);
+        },
+      },
+    }));
+    const group = {
+      querySelectorAll(selector) {
+        if (selector === '[data-grid-size-slider]') return [slider];
+        if (selector === '[data-grid-size-option-label]') return labels;
+        return [];
+      },
+    };
+    return { group, slider, labels };
   }
 
   it('uses the current default sizing without writing a custom property', () => {
     const grid = makeGrid();
-    const group = makeGridControls();
+    const controls = makeGridSliderControls();
     const scope = {
       querySelectorAll(selector) {
-        if (selector === '[data-asset-grid-size-controls]') return [group];
+        if (selector === '[data-asset-grid-size-controls]') return [controls.group];
         if (selector === '.asset-grid') return [grid];
-        if (selector.includes('[data-grid-size]')) return group.controls;
         return [];
       },
     };
 
     expect(enhanceAssetGridSize(scope)).toBe(1);
     expect(grid.style.values).toEqual({});
-    expect(group.controls.find((control) => control.dataset.gridSize === 'default').attrs['aria-pressed']).toBe('true');
+    expect(controls.slider.value).toBe('2');
+    expect(controls.slider.attrs['aria-valuenow']).toBe('2');
+    expect(controls.slider.attrs['aria-valuetext']).toBe('Default');
+    expect(controls.labels.map((option) => option.classList.values.has('is-active')))
+      .toEqual([false, true, false]);
   });
 
-  it('applies finite compact/default/large values and persists the selection', () => {
+  it('applies finite compact/default/large values and persists the selection across page scopes', () => {
     const grid = makeGrid();
-    const group = makeGridControls();
+    const controls = makeGridSliderControls();
     const storage = new Map();
     const previousStorage = globalThis.localStorage;
     globalThis.localStorage = {
@@ -1765,32 +2077,35 @@ describe('asset grid size enhancement', () => {
     try {
       const scope = {
         querySelectorAll(selector) {
-          if (selector === '[data-asset-grid-size-controls]') return [group];
+          if (selector === '[data-asset-grid-size-controls]') return [controls.group];
           if (selector === '.asset-grid') return [grid];
-          if (selector.includes('[data-grid-size]')) return group.controls;
           return [];
         },
       };
 
       enhanceAssetGridSize(scope);
-      group.controls.find((control) => control.dataset.gridSize === 'large').dispatch('click');
+      controls.slider.value = '3';
+      controls.slider.dispatch('input');
 
       expect(storage.get('creatorcrate-asset-grid-size')).toBe('large');
       expect(grid.attrs['data-grid-size']).toBe('large');
       expect(grid.style.values['--asset-card-min']).toBe('20rem');
-      expect(group.controls.find((control) => control.dataset.gridSize === 'large').attrs['aria-pressed']).toBe('true');
+      expect(controls.slider.attrs['aria-valuenow']).toBe('3');
+      expect(controls.slider.attrs['aria-valuetext']).toBe('Large');
 
       const secondGrid = makeGrid();
+      const secondControls = makeGridSliderControls();
       const secondScope = {
         querySelectorAll(selector) {
-          if (selector === '[data-asset-grid-size-controls]') return [group];
+          if (selector === '[data-asset-grid-size-controls]') return [secondControls.group];
           if (selector === '.asset-grid') return [secondGrid];
-          if (selector.includes('[data-grid-size]')) return group.controls;
           return [];
         },
       };
       enhanceAssetGridSize(secondScope);
       expect(secondGrid.style.values['--asset-card-min']).toBe('20rem');
+      expect(secondControls.slider.value).toBe('3');
+      expect(secondControls.slider.attrs['aria-valuetext']).toBe('Large');
     } finally {
       if (previousStorage === undefined) delete globalThis.localStorage;
       else globalThis.localStorage = previousStorage;
@@ -1799,7 +2114,7 @@ describe('asset grid size enhancement', () => {
 
   it('rejects an invalid stored value and falls back to the default size', () => {
     const grid = makeGrid();
-    const group = makeGridControls();
+    const controls = makeGridSliderControls();
     const previousStorage = globalThis.localStorage;
     globalThis.localStorage = {
       getItem: () => 'not-supported',
@@ -1808,19 +2123,138 @@ describe('asset grid size enhancement', () => {
     try {
       const scope = {
         querySelectorAll(selector) {
-          if (selector === '[data-asset-grid-size-controls]') return [group];
+          if (selector === '[data-asset-grid-size-controls]') return [controls.group];
           if (selector === '.asset-grid') return [grid];
-          if (selector.includes('[data-grid-size]')) return group.controls;
           return [];
         },
       };
 
       enhanceAssetGridSize(scope);
       expect(grid.style.values).toEqual({});
-      expect(group.controls.find((control) => control.dataset.gridSize === 'default').attrs['aria-pressed']).toBe('true');
+      expect(controls.slider.value).toBe('2');
+      expect(controls.slider.attrs['aria-valuetext']).toBe('Default');
     } finally {
       if (previousStorage === undefined) delete globalThis.localStorage;
       else globalThis.localStorage = previousStorage;
+    }
+  });
+
+  it('maps the three slider positions to the existing sizes, updates immediately, and restores the saved value', () => {
+    const grid = makeGrid();
+    const controls = makeGridSliderControls();
+    const storage = new Map([['creatorcrate-asset-grid-size', 'compact']]);
+    const previousStorage = globalThis.localStorage;
+    globalThis.localStorage = {
+      getItem: (key) => storage.get(key) ?? null,
+      setItem: (key, value) => storage.set(key, value),
+    };
+
+    const makeScope = (targetGrid) => ({
+      querySelectorAll(selector) {
+        if (selector === '[data-asset-grid-size-controls]') return [controls.group];
+        if (selector === '.asset-grid') return [targetGrid];
+        return [];
+      },
+    });
+
+    try {
+      expect(enhanceAssetGridSize(makeScope(grid))).toBe(1);
+      expect(controls.slider.value).toBe('1');
+      expect(controls.slider.attrs['aria-valuenow']).toBe('1');
+      expect(controls.slider.attrs['aria-valuetext']).toBe('Compact');
+      expect(controls.labels[0].classList.values.has('is-active')).toBe(true);
+
+      const expected = [
+        { position: '1', size: 'compact', min: '12rem', label: 'Compact' },
+        { position: '2', size: 'default', min: undefined, label: 'Default' },
+        { position: '3', size: 'large', min: '20rem', label: 'Large' },
+      ];
+      for (const { position, size, min, label } of expected) {
+        controls.slider.value = position;
+        controls.slider.dispatch('input');
+
+        expect(storage.get('creatorcrate-asset-grid-size')).toBe(size);
+        expect(controls.slider.attrs['aria-valuenow']).toBe(position);
+        expect(controls.slider.attrs['aria-valuetext']).toBe(label);
+        expect(controls.labels.map((option) => option.classList.values.has('is-active')))
+          .toEqual(expected.map((entry) => entry.size === size));
+        if (min) expect(grid.style.values['--asset-card-min']).toBe(min);
+        else expect(grid.style.values).toEqual({});
+        if (size === 'default') expect(grid.attrs['data-grid-size']).toBeUndefined();
+        else expect(grid.attrs['data-grid-size']).toBe(size);
+      }
+
+      const restoredGrid = makeGrid();
+      enhanceAssetGridSize(makeScope(restoredGrid));
+      expect(restoredGrid.attrs['data-grid-size']).toBe('large');
+      expect(restoredGrid.style.values['--asset-card-min']).toBe('20rem');
+      expect(controls.slider.value).toBe('3');
+    } finally {
+      if (previousStorage === undefined) delete globalThis.localStorage;
+      else globalThis.localStorage = previousStorage;
+    }
+  });
+
+  it('binds Grid preview hover/focus positioning without adding a metadata trigger', () => {
+    const listeners = [];
+    const styleValues = {};
+    const attrs = {};
+    const info = {
+      offsetWidth: 240,
+      offsetHeight: 120,
+      style: {
+        setProperty(name, value) { styleValues[name] = value; },
+      },
+      getBoundingClientRect() {
+        return { width: 240, height: 120 };
+      },
+      setAttribute(name, value) { attrs[name] = String(value); },
+    };
+    const preview = {
+      dataset: {},
+      querySelector(selector) {
+        return selector === '[data-asset-info-card]' ? info : null;
+      },
+      getBoundingClientRect() {
+        return { left: 900, top: 400, width: 200, height: 100, bottom: 500 };
+      },
+      addEventListener(type, handler) { listeners.push({ type, handler }); },
+      contains() { return true; },
+      setAttribute(name, value) { attrs[name] = String(value); },
+    };
+    const scope = {
+      querySelectorAll(selector) {
+        return selector === '[data-asset-viewer-preview]' ? [preview] : [];
+      },
+    };
+    const previousWidth = globalThis.innerWidth;
+    const previousHeight = globalThis.innerHeight;
+    const previousDocument = globalThis.document;
+    globalThis.innerWidth = 1000;
+    globalThis.innerHeight = 700;
+    globalThis.document = { documentElement: { clientWidth: 960, clientHeight: 680 } };
+
+    try {
+      expect(enhanceAssetViewerInfoCards(scope)).toBe(1);
+      expect(listeners.map(({ type }) => type)).toEqual([
+        'pointerenter',
+        'focusin',
+        'pointerleave',
+        'focusout',
+      ]);
+
+      listeners.find(({ type }) => type === 'focusin').handler();
+
+      expect(attrs['data-positioned']).toBe('true');
+      expect(styleValues['--asset-info-left']).toBe('-188px');
+      expect(styleValues['--asset-info-top']).toBe('108px');
+    } finally {
+      if (previousWidth === undefined) delete globalThis.innerWidth;
+      else globalThis.innerWidth = previousWidth;
+      if (previousHeight === undefined) delete globalThis.innerHeight;
+      else globalThis.innerHeight = previousHeight;
+      if (previousDocument === undefined) delete globalThis.document;
+      else globalThis.document = previousDocument;
     }
   });
 });

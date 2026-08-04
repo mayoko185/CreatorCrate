@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
+import { createReleaseRepository } from '../src/data/release-repository.js';
 import { createWorkflowQueryService } from '../src/services/workflow-query-service.js';
 import { evaluateReleaseReadiness } from '../src/services/release-readiness-policy.js';
 import { createTagRepository } from '../src/data/tag-repository.js';
@@ -248,7 +249,78 @@ describe('workflow query service — asset library page model', () => {
     expect(page.assets.map((asset) => asset.project_id)).not.toContain(archived.id);
   });
 
-  it('attaches deterministic display-only tags in one batch for the current page', () => {
+  it('attaches release IDs and titles for the current page in one cross-project batch', () => {
+    const alpha = insertProject(db, { title: 'Release Alpha Project' });
+    const beta = insertProject(db, { title: 'Release Beta Project' });
+    const noRelease = insertAsset(db, {
+      projectId: alpha.id,
+      relativePath: 'a-no-release.txt',
+      filename: 'a-no-release.txt',
+    });
+    const single = insertAsset(db, {
+      projectId: alpha.id,
+      relativePath: 'b-single.txt',
+      filename: 'b-single.txt',
+    });
+    const multiple = insertAsset(db, {
+      projectId: alpha.id,
+      relativePath: 'c-multiple.txt',
+      filename: 'c-multiple.txt',
+    });
+    const other = insertAsset(db, {
+      projectId: beta.id,
+      relativePath: 'd-other.txt',
+      filename: 'd-other.txt',
+    });
+
+    const singleRelease = insertRelease(db, { projectId: alpha.id, title: 'Single Release' });
+    const zetaRelease = insertRelease(db, { projectId: alpha.id, title: 'zeta Release' });
+    const alphaRelease = insertRelease(db, { projectId: alpha.id, title: 'Alpha Release' });
+    const lowercaseAlphaRelease = insertRelease(db, { projectId: alpha.id, title: 'alpha Release' });
+    const otherRelease = insertRelease(db, { projectId: beta.id, title: 'Other Release' });
+
+    linkAssetToRelease(db, singleRelease.id, single.id);
+    for (const release of [zetaRelease, alphaRelease, lowercaseAlphaRelease]) {
+      linkAssetToRelease(db, release.id, multiple.id);
+    }
+    linkAssetToRelease(db, otherRelease.id, other.id);
+
+    // Corrupt associations must not appear on either asset.
+    linkAssetToRelease(db, otherRelease.id, multiple.id);
+    linkAssetToRelease(db, singleRelease.id, other.id);
+
+    const repository = createReleaseRepository(db);
+    const batchCalls = [];
+    const trackedReleaseRepository = {
+      findReleaseTitlesForAssetIds(assetIds) {
+        batchCalls.push([...assetIds]);
+        return repository.findReleaseTitlesForAssetIds(assetIds);
+      },
+    };
+    const libraryService = createWorkflowQueryService({
+      db,
+      evaluateReleaseReadiness,
+      releaseRepository: trackedReleaseRepository,
+    });
+
+    const page = libraryService.getAssetLibraryPage({ page: 1, pageSize: 10 });
+
+    expect(batchCalls).toEqual([[noRelease.id, single.id, multiple.id, other.id]]);
+    expect(page.assets.find((asset) => asset.id === noRelease.id).release_titles).toEqual([]);
+    expect(page.assets.find((asset) => asset.id === single.id).release_titles).toEqual([
+      { id: singleRelease.id, title: 'Single Release' },
+    ]);
+    expect(page.assets.find((asset) => asset.id === multiple.id).release_titles).toEqual([
+      { id: alphaRelease.id, title: 'Alpha Release' },
+      { id: lowercaseAlphaRelease.id, title: 'alpha Release' },
+      { id: zetaRelease.id, title: 'zeta Release' },
+    ]);
+    expect(page.assets.find((asset) => asset.id === other.id).release_titles).toEqual([
+      { id: otherRelease.id, title: 'Other Release' },
+    ]);
+  });
+
+  it('attaches deterministic effective tags with direct origins winning in bounded batches', () => {
     const project = insertProject(db, { title: 'Asset Tags Project' });
     const first = insertAsset(db, {
       projectId: project.id,
@@ -280,13 +352,15 @@ describe('workflow query service — asset library page model', () => {
     const outside = tagRepository.create({ displayName: 'Outside Page Label', normalizedName: 'outside-page-secret' });
 
     tagRepository.assignToProject(project.id, projectOnly.id);
+    tagRepository.assignToProject(project.id, shared.id);
     for (const tag of [zeta, shared, alpha]) {
       tagRepository.assignToAsset(first.id, tag.id);
     }
     tagRepository.assignToAsset(missing.id, shared.id);
     tagRepository.assignToAsset(outsidePage.id, outside.id);
 
-    const batchCalls = [];
+    const directBatchCalls = [];
+    const inheritedBatchCalls = [];
     const taggedService = createWorkflowQueryService({
       db,
       evaluateReleaseReadiness,
@@ -295,29 +369,41 @@ describe('workflow query service — asset library page model', () => {
           return tagRepository.list();
         },
         listForAssetIds(assetIds) {
-          batchCalls.push(assetIds);
+          directBatchCalls.push(assetIds);
           return tagRepository.listForAssetIds(assetIds);
+        },
+        listForProjectIds(projectIds) {
+          inheritedBatchCalls.push(projectIds);
+          return tagRepository.listForProjectIds(projectIds);
         },
       },
     });
 
     const page = taggedService.getAssetLibraryPage({ page: 1, pageSize: 3 });
 
-    expect(batchCalls).toEqual([[first.id, missing.id, untagged.id]]);
+    expect(directBatchCalls).toEqual([[first.id, missing.id, untagged.id]]);
+    expect(inheritedBatchCalls).toEqual([[project.id]]);
     expect(page.assets.map((asset) => asset.id)).toEqual([first.id, missing.id, untagged.id]);
     expect(page.assets[0].tags).toEqual([
-      { displayName: 'Alpha Label' },
-      { displayName: 'Shared Label' },
-      { displayName: 'Zeta Label' },
+      { displayName: 'Alpha Label', origin: 'direct' },
+      { displayName: 'Project Only Label', origin: 'inherited' },
+      { displayName: 'Shared Label', origin: 'direct' },
+      { displayName: 'Zeta Label', origin: 'direct' },
     ]);
     expect(page.assets[1]).toMatchObject({
       id: missing.id,
       is_present: 0,
-      tags: [{ displayName: 'Shared Label' }],
+      tags: [
+        { displayName: 'Project Only Label', origin: 'inherited' },
+        { displayName: 'Shared Label', origin: 'direct' },
+      ],
     });
-    expect(page.assets[2].tags).toEqual([]);
+    expect(page.assets[2].tags).toEqual([
+      { displayName: 'Project Only Label', origin: 'inherited' },
+      { displayName: 'Shared Label', origin: 'inherited' },
+    ]);
     expect(page.assets.flatMap((asset) => asset.tags.map((tag) => tag.displayName)))
-      .not.toContain('Project Only Label');
+      .toContain('Project Only Label');
     expect(page.assets.flatMap((asset) => asset.tags.map((tag) => tag.displayName)))
       .not.toContain('Outside Page Label');
     expect(page.assets[0].tags[0]).not.toHaveProperty('id');
@@ -325,7 +411,7 @@ describe('workflow query service — asset library page model', () => {
     expect(page.assets[0].tags[0]).not.toHaveProperty('normalizedName');
   });
 
-  it('validates the selected tag against one deterministic full catalog and drops stale values', () => {
+  it('validates selected tags against one deterministic full catalog and drops stale values', () => {
     const project = insertProject(db, { title: 'Catalog Validation Project' });
     const tagged = insertAsset(db, {
       projectId: project.id,
@@ -354,17 +440,20 @@ describe('workflow query service — asset library page model', () => {
         listForAssetIds(assetIds) {
           return tagRepository.listForAssetIds(assetIds);
         },
+        listForProjectIds(projectIds) {
+          return tagRepository.listForProjectIds(projectIds);
+        },
       },
     });
 
-    const selected = taggedService.getAssetLibraryPage({ tag: zeta.id, pageSize: 10 });
+    const selected = taggedService.getAssetLibraryPage({ tags: [zeta.id], pageSize: 10 });
 
     expect(catalogCalls).toBe(1);
-    expect(selected.filters.tag).toBe(zeta.id);
-    expect(selected.context.tag).toBe(zeta.id);
+    expect(selected.filters.tags).toEqual([zeta.id]);
+    expect(selected.context.tags).toEqual([zeta.id]);
     expect(selected.tagOptions).toEqual([
-      { value: String(alpha.id), displayName: 'Alpha Label' },
-      { value: String(zeta.id), displayName: 'Zeta Label' },
+      { value: String(alpha.id), displayName: 'Alpha Label', selected: false },
+      { value: String(zeta.id), displayName: 'Zeta Label', selected: true },
     ]);
     expect(selected.assets.map((asset) => asset.id)).toEqual([tagged.id]);
     expect(selected.tagOptions[0]).not.toHaveProperty('normalizedName');
@@ -372,12 +461,76 @@ describe('workflow query service — asset library page model', () => {
     expect(selected.tagOptions[0]).not.toHaveProperty('usageCount');
 
     tagRepository.deleteById(zeta.id);
-    const stale = taggedService.getAssetLibraryPage({ tag: zeta.id, pageSize: 10 });
+    const stale = taggedService.getAssetLibraryPage({ tags: [zeta.id], pageSize: 10 });
 
     expect(catalogCalls).toBe(2);
-    expect(stale.filters.tag).toBeNull();
-    expect(stale.context.tag).toBeNull();
+    expect(stale.filters.tags).toEqual([]);
+    expect(stale.context.tags).toEqual([]);
     expect(stale.assets.map((asset) => asset.id)).toEqual([tagged.id, untagged.id]);
+    expect(stale.filters).not.toHaveProperty('tag');
+    expect(stale.filters).not.toHaveProperty('category');
+    expect(stale.filters).not.toHaveProperty('extension');
+  });
+
+  it('exposes canonical multi-value selections and selected option metadata', () => {
+    insertGlobalCategory(db, { displayName: 'Final', directorySlug: 'final', displayOrder: 1 });
+    insertGlobalCategory(db, { displayName: 'KRZ', directorySlug: 'krz', displayOrder: 2 });
+
+    const project = insertProject(db, { title: 'Multi-Value Project' });
+    const finalCategory = insertProjectCategory(db, {
+      projectId: project.id,
+      displayName: 'Final',
+      directorySlug: 'final',
+      displayOrder: 1,
+    });
+    const krzCategory = insertProjectCategory(db, {
+      projectId: project.id,
+      displayName: 'KRZ',
+      directorySlug: 'krz',
+      displayOrder: 2,
+    });
+    const finalAsset = insertAsset(db, {
+      projectId: project.id,
+      categoryId: finalCategory.id,
+      relativePath: 'final/a-scene.png',
+      filename: 'a-scene.png',
+      extension: 'png',
+    });
+    const krzAsset = insertAsset(db, {
+      projectId: project.id,
+      categoryId: krzCategory.id,
+      relativePath: 'krz/b-scene.krz',
+      filename: 'b-scene.krz',
+      extension: 'krz',
+    });
+    const direct = createTagRepository(db).create({ displayName: 'Direct', normalizedName: 'direct-multi-secret' });
+    const inherited = createTagRepository(db).create({ displayName: 'Inherited', normalizedName: 'inherited-multi-secret' });
+    createTagRepository(db).assignToAsset(finalAsset.id, direct.id);
+    createTagRepository(db).assignToProject(project.id, inherited.id);
+
+    const page = service.getAssetLibraryPage({
+      tags: [inherited.id, direct.id, inherited.id, 999999],
+      categories: ['krz', 'final', 'all', 'unavailable'],
+      extensions: ['.PNG', 'krz', 'png', 'unavailable'],
+      pageSize: 10,
+    });
+
+    expect(page.filters).toMatchObject({
+      tags: [direct.id, inherited.id].sort((left, right) => left - right),
+      categories: ['final', 'krz'],
+      extensions: ['krz', 'png'],
+    });
+    expect(page.filters).not.toHaveProperty('tag');
+    expect(page.filters).not.toHaveProperty('category');
+    expect(page.filters).not.toHaveProperty('extension');
+    expect(page.assets.map((asset) => asset.id)).toEqual([finalAsset.id, krzAsset.id]);
+    expect(page.total).toBe(2);
+    expect(page.categoryOptions.filter((option) => option.selected).map((option) => option.value))
+      .toEqual(['final', 'krz']);
+    expect(page.extensionOptions.filter((option) => option.selected).map((option) => option.value))
+      .toEqual(['krz', 'png']);
+    expect(page.tagOptions.filter((option) => option.selected).map((option) => Number(option.value)))
+      .toEqual([direct.id, inherited.id].sort((left, right) => left - right));
   });
 
   it('passes normalized filters through and preserves them with the requested presentation state', () => {
@@ -416,9 +569,9 @@ describe('workflow query service — asset library page model', () => {
 
     const page = service.getAssetLibraryPage({
       projectId: project.id,
-      category: 'source',
+      categories: ['source'],
       search: 'keep',
-      extension: 'png',
+      extensions: ['png'],
       presence: 'present',
       usage: 'unused',
       sort: 'filename',
@@ -437,10 +590,10 @@ describe('workflow query service — asset library page model', () => {
     expect(page.hasNextPage).toBe(false);
     expect(page.filters).toEqual({
       projectId: project.id,
-      category: 'source',
-      tag: null,
+      categories: ['source'],
+      tags: [],
       search: 'keep',
-      extension: 'png',
+      extensions: ['png'],
       presence: 'present',
       usage: 'unused',
       sort: 'filename',

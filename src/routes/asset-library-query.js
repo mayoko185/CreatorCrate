@@ -85,10 +85,35 @@ function normalizeExtension(value) {
   return normalized;
 }
 
-function normalizeCategory(value) {
-  if (value === 'all' || value === 'uncategorized') return value;
-  if (typeof value !== 'string' || /^\d+$/.test(value)) return 'all';
-  return validateDirectorySlug(value) === null ? value : 'all';
+function normalizeCategorySelectionValue(value) {
+  const normalized = scalarString(value);
+  if (normalized === null || normalized === 'all') return null;
+  if (normalized === 'uncategorized') return normalized;
+  if (/^\d+$/.test(normalized)) return null;
+  return validateDirectorySlug(normalized) === null ? normalized : null;
+}
+
+function compareNumericValues(left, right) {
+  return left - right;
+}
+
+function compareStringValues(left, right) {
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
+}
+
+function normalizeSelection(value, normalizeValue, compareValues) {
+  if (value === undefined || value === null) return [];
+
+  const values = Array.isArray(value) ? value : [value];
+  const unique = new Set();
+  for (const candidate of values) {
+    const normalized = normalizeValue(candidate);
+    if (normalized !== null) unique.add(normalized);
+  }
+
+  return [...unique].sort(compareValues);
 }
 
 function normalizeEnum(value, values, fallback) {
@@ -149,9 +174,12 @@ export function isBareAssetLibraryRequest(rawQuery) {
  * @returns {{
  *   projectId: number|null,
  *   category: string,
+ *   categories: string[],
  *   tag: number|null,
+ *   tags: number[],
  *   search: string|null,
  *   extension: string|null,
+ *   extensions: string[],
  *   presence: 'all'|'present'|'missing',
  *   usage: 'all'|'used'|'unused',
  *   sort: 'filename'|'modified'|'size'|'category'|'project',
@@ -168,13 +196,19 @@ export function parseAssetLibraryQuery(rawQuery = {}) {
   const presentation = Object.fromEntries(
     PRESENTATION_KEYS.map((key) => [key, parsePresentationValue(raw, key)]),
   );
+  const categories = normalizeSelection(raw.category, normalizeCategorySelectionValue, compareStringValues);
+  const tags = normalizeSelection(raw.tag, parsePositiveInteger, compareNumericValues);
+  const extensions = normalizeSelection(raw.extension, normalizeExtension, compareStringValues);
 
   return {
     projectId: parsePositiveInteger(raw.project),
-    category: hasOwn(raw, 'category') ? normalizeCategory(raw.category) : ASSET_LIBRARY_DEFAULTS.category,
-    tag: parsePositiveInteger(raw.tag),
+    categories,
+    category: categories[0] ?? ASSET_LIBRARY_DEFAULTS.category,
+    tags,
+    tag: tags[0] ?? ASSET_LIBRARY_DEFAULTS.tag,
     search: normalizeSearch(raw.search),
-    extension: normalizeExtension(raw.extension),
+    extensions,
+    extension: extensions[0] ?? ASSET_LIBRARY_DEFAULTS.extension,
     presence: normalizeEnum(raw.presence, PRESENCE_VALUES, ASSET_LIBRARY_DEFAULTS.presence),
     usage: normalizeEnum(raw.usage, USAGE_VALUES, ASSET_LIBRARY_DEFAULTS.usage),
     sort: presentation.sort.value,
@@ -206,6 +240,19 @@ function readOverride(state, overrides, key) {
   return { value: readStateValue(state, key), overridden: false };
 }
 
+function readSelectionOverride(state, overrides, key, legacyKey) {
+  if (hasOwn(overrides, key)) {
+    return { value: overrides[key], overridden: true };
+  }
+  if (hasOwn(overrides, legacyKey)) {
+    return { value: overrides[legacyKey], overridden: true };
+  }
+  if (hasOwn(state, key)) {
+    return { value: state[key], overridden: false };
+  }
+  return { value: state[legacyKey], overridden: false };
+}
+
 function normalizePresentationCandidate(value, key) {
   const normalized = scalarString(value);
   if (normalized === null || !PRESENTATION_VALUES[key].includes(normalized)) {
@@ -226,7 +273,13 @@ function shouldPreserveExplicitFallback(state, key, resolved, normalized) {
 
 function appendQueryValue(query, key, value) {
   if (value !== undefined && value !== null && value !== '') {
-    query.set(key, String(value));
+    query.append(key, String(value));
+  }
+}
+
+function appendQueryValues(query, key, value, normalizeValue, compareValues) {
+  for (const normalized of normalizeSelection(value, normalizeValue, compareValues)) {
+    appendQueryValue(query, key, normalized);
   }
 }
 
@@ -248,10 +301,10 @@ export function buildAssetLibraryUrl(normalizedState = {}, overrides = {}) {
   const state = isRecord(normalizedState) ? normalizedState : {};
   const safeOverrides = isRecord(overrides) ? overrides : {};
   const project = readOverride(state, safeOverrides, 'projectId');
-  const category = readOverride(state, safeOverrides, 'category');
-  const tag = readOverride(state, safeOverrides, 'tag');
+  const categories = readSelectionOverride(state, safeOverrides, 'categories', 'category');
+  const tags = readSelectionOverride(state, safeOverrides, 'tags', 'tag');
   const search = readOverride(state, safeOverrides, 'search');
-  const extension = readOverride(state, safeOverrides, 'extension');
+  const extensions = readSelectionOverride(state, safeOverrides, 'extensions', 'extension');
   const presence = readOverride(state, safeOverrides, 'presence');
   const usage = readOverride(state, safeOverrides, 'usage');
   const page = readOverride(state, safeOverrides, 'page');
@@ -267,12 +320,10 @@ export function buildAssetLibraryUrl(normalizedState = {}, overrides = {}) {
   const query = new URLSearchParams();
   appendQueryValue(query, 'project', parsePositiveInteger(project.value));
 
-  const normalizedCategory = normalizeCategory(category.value);
-  if (normalizedCategory !== 'all') appendQueryValue(query, 'category', normalizedCategory);
-
-  appendQueryValue(query, 'tag', parsePositiveInteger(tag.value));
+  appendQueryValues(query, 'category', categories.value, normalizeCategorySelectionValue, compareStringValues);
+  appendQueryValues(query, 'tag', tags.value, parsePositiveInteger, compareNumericValues);
   appendQueryValue(query, 'search', normalizeSearch(search.value));
-  appendQueryValue(query, 'extension', normalizeExtension(extension.value));
+  appendQueryValues(query, 'extension', extensions.value, normalizeExtension, compareStringValues);
 
   const normalizedPresence = normalizeEnum(presence.value, PRESENCE_VALUES, ASSET_LIBRARY_DEFAULTS.presence);
   if (normalizedPresence !== ASSET_LIBRARY_DEFAULTS.presence) appendQueryValue(query, 'presence', normalizedPresence);
@@ -294,7 +345,7 @@ export function buildAssetLibraryUrl(normalizedState = {}, overrides = {}) {
   // reorder operation, so the query is rebuilt once from its deterministic map.
   const orderedQuery = new URLSearchParams();
   for (const key of ASSET_LIBRARY_QUERY_KEYS) {
-    if (query.has(key)) orderedQuery.set(key, query.get(key));
+    for (const value of query.getAll(key)) orderedQuery.append(key, value);
   }
 
   const serialized = orderedQuery.toString();

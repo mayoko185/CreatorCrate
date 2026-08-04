@@ -599,6 +599,35 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
       expect(panelRule[0]).toMatch(/border-bottom/);
       expect(panelRule[0]).toMatch(/box-shadow/);
     });
+
+    it('keeps the drawer and scrim above the page without changing content flow', async () => {
+      const css = await extractStyle(agent, (await agent.get('/').expect(200)).text);
+      const navRule = css.match(/\.mobile-nav\s*\{[\s\S]*?\}/);
+      const summaryRule = css.match(/\.mobile-nav-summary\s*\{[\s\S]*?\}/);
+      const panelRule = css.match(/\.mobile-nav-primary\s*\{[\s\S]*?\}/);
+      const backdropRule = css.match(/\.mobile-nav\[open\]::after\s*\{[\s\S]*?\}/);
+      const sidebarLayer = Number(css.match(/--shell-z-sidebar:\s*(\d+)/)?.[1]);
+      const contentLayer = Number(css.match(/--shell-z-content:\s*(\d+)/)?.[1]);
+
+      expect(navRule).not.toBeNull();
+      expect(navRule[0]).toMatch(/position:\s*relative/);
+      expect(navRule[0]).toMatch(/z-index:\s*var\(--shell-z-sidebar\)/);
+      expect(summaryRule).not.toBeNull();
+      expect(summaryRule[0]).toMatch(/position:\s*relative/);
+      expect(summaryRule[0]).toMatch(/z-index:\s*2/);
+      expect(panelRule).not.toBeNull();
+      expect(panelRule[0]).toMatch(/position:\s*absolute/);
+      expect(panelRule[0]).toMatch(/top:\s*100%/);
+      expect(panelRule[0]).toMatch(/left:\s*0/);
+      expect(panelRule[0]).toMatch(/right:\s*0/);
+      expect(panelRule[0]).toMatch(/z-index:\s*1/);
+      expect(backdropRule).not.toBeNull();
+      expect(backdropRule[0]).toMatch(/position:\s*fixed/);
+      expect(backdropRule[0]).toMatch(/inset:\s*var\(--shell-header-height\)\s+0\s+0/);
+      expect(backdropRule[0]).toMatch(/z-index:\s*0/);
+      expect(backdropRule[0]).toMatch(/pointer-events:\s*auto/);
+      expect(sidebarLayer).toBeGreaterThan(contentLayer);
+    });
   });
 
   // ── §4b: Mobile title behavior (open vs closed) ────────────────────

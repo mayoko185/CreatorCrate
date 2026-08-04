@@ -1397,10 +1397,27 @@ const ASSET_RENAME_EDITOR_SELECTOR = '[data-asset-rename-editor]';
 const ASSET_GRID_SIZE_CONTROL_SELECTOR = '[data-asset-grid-size-controls]';
 const ASSET_GRID_SELECTOR = '.asset-grid';
 const ASSET_GRID_SIZE_STORAGE_KEY = 'creatorcrate-asset-grid-size';
+const ASSET_PROJECT_FILTER_SELECTOR = '[data-asset-project-filter]';
+const ASSET_PROJECT_FILTER_OPTION_SELECTOR = '[data-asset-project-filter-option]';
+const ASSET_PROJECT_FILTER_SEARCH_SELECTOR = '[data-asset-project-filter-search]';
+const ASSET_PROJECT_FILTER_SUMMARY_SELECTOR = '[data-asset-project-filter-summary]';
+const ASSET_PROJECT_FILTER_EMPTY_SELECTOR = '[data-asset-project-filter-no-results]';
+const ASSET_VIEWER_FILTER_DISCLOSURE_SELECTOR = '[data-asset-viewer-filter-disclosure]';
+const ASSET_VIEWER_INFO_SELECTOR = '[data-asset-info-card]';
+const ASSET_VIEWER_PREVIEW_SELECTOR = '[data-asset-viewer-preview]';
+const ASSET_VIEWER_INFO_GUTTER = 8;
+const ASSET_GRID_SIZE_SLIDER_SELECTOR = '[data-grid-size-slider]';
+const ASSET_GRID_SIZE_OPTION_LABEL_SELECTOR = '[data-grid-size-option-label]';
 const ASSET_GRID_SIZES = Object.freeze({
   compact: '12rem',
   default: '15rem',
   large: '20rem',
+});
+const ASSET_GRID_SIZE_ORDER = Object.freeze(['compact', 'default', 'large']);
+const ASSET_GRID_SIZE_LABELS = Object.freeze({
+  compact: 'Compact',
+  default: 'Default',
+  large: 'Large',
 });
 
 function getAssetSelectionCheckboxes(form, scope = form) {
@@ -1633,6 +1650,34 @@ function writeAssetGridSize(size) {
   }
 }
 
+function assetGridSizeFromPosition(value) {
+  const position = Number(value);
+  if (!Number.isInteger(position) || position < 1 || position > ASSET_GRID_SIZE_ORDER.length) return null;
+  return ASSET_GRID_SIZE_ORDER[position - 1];
+}
+
+function assetGridSizePosition(size) {
+  const position = ASSET_GRID_SIZE_ORDER.indexOf(size);
+  return position < 0 ? null : position + 1;
+}
+
+function updateAssetGridSizeControls(scope, size) {
+  const label = ASSET_GRID_SIZE_LABELS[size];
+  const position = assetGridSizePosition(size);
+
+  scope.querySelectorAll(ASSET_GRID_SIZE_CONTROL_SELECTOR).forEach((group) => {
+    group.querySelectorAll(ASSET_GRID_SIZE_SLIDER_SELECTOR).forEach((slider) => {
+      slider.value = String(position);
+      slider.setAttribute?.('aria-valuenow', String(position));
+      slider.setAttribute?.('aria-valuetext', label);
+    });
+
+    group.querySelectorAll(ASSET_GRID_SIZE_OPTION_LABEL_SELECTOR).forEach((optionLabel) => {
+      optionLabel.classList?.toggle?.('is-active', optionLabel.dataset.gridSizeOptionLabel === size);
+    });
+  });
+}
+
 function applyAssetGridSize(scope, size) {
   const grids = scope.querySelectorAll(ASSET_GRID_SELECTOR);
   grids.forEach((grid) => {
@@ -1644,10 +1689,7 @@ function applyAssetGridSize(scope, size) {
       grid.style?.setProperty('--asset-card-min', ASSET_GRID_SIZES[size]);
     }
   });
-
-  scope.querySelectorAll(`${ASSET_GRID_SIZE_CONTROL_SELECTOR} [data-grid-size]`).forEach((control) => {
-    control.setAttribute('aria-pressed', String(control.dataset.gridSize === size));
-  });
+  updateAssetGridSizeControls(scope, size);
 }
 
 export function enhanceAssetGridSize(scope = globalThis.document) {
@@ -1658,18 +1700,260 @@ export function enhanceAssetGridSize(scope = globalThis.document) {
 
   applyAssetGridSize(scope, readAssetGridSize());
   controls.forEach((group) => {
-    group.querySelectorAll('[data-grid-size]').forEach((control) => {
-      if (isEnhancementBound(control, 'assetGridSizeBound')) return;
-      markEnhancementBound(control, 'assetGridSizeBound');
-      control.addEventListener('click', () => {
-        const size = control.dataset.gridSize;
-        if (!Object.prototype.hasOwnProperty.call(ASSET_GRID_SIZES, size)) return;
+    group.querySelectorAll(ASSET_GRID_SIZE_SLIDER_SELECTOR).forEach((slider) => {
+      if (isEnhancementBound(slider, 'assetGridSizeBound')) return;
+      markEnhancementBound(slider, 'assetGridSizeBound');
+      slider.addEventListener('input', () => {
+        const size = assetGridSizeFromPosition(slider.value);
+        if (!size) return;
         writeAssetGridSize(size);
         applyAssetGridSize(scope, size);
       });
     });
   });
   return controls.length;
+}
+
+function assetProjectFilterInput(option) {
+  return option?.querySelector?.('input[name="project"]') || null;
+}
+
+function assetProjectFilterValue(input) {
+  return String(input?.value ?? input?.getAttribute?.('value') ?? '');
+}
+
+function assetProjectFilterTitle(option) {
+  const title = option?.getAttribute?.('data-project-title');
+  if (typeof title === 'string' && title !== '') return title;
+  return String(option?.querySelector?.('label')?.textContent || '').trim();
+}
+
+function updateAssetProjectFilterSummary(filter, options) {
+  let selectedOption = options.find((option) => assetProjectFilterInput(option)?.checked);
+  if (!selectedOption) {
+    selectedOption = options.find((option) => assetProjectFilterValue(assetProjectFilterInput(option)) === '');
+    if (selectedOption) assetProjectFilterInput(selectedOption).checked = true;
+  }
+
+  const selectedInput = assetProjectFilterInput(selectedOption);
+  const selectedTitle = selectedInput && assetProjectFilterValue(selectedInput) !== ''
+    ? assetProjectFilterTitle(selectedOption)
+    : 'All projects';
+  const summary = filter.querySelector?.(ASSET_PROJECT_FILTER_SUMMARY_SELECTOR);
+  const trigger = filter.querySelector?.('summary');
+  if (summary) summary.textContent = selectedTitle || 'All projects';
+  trigger?.setAttribute?.('aria-label', `Project filter: ${selectedTitle || 'All projects'}`);
+  trigger?.setAttribute?.('title', selectedTitle || 'All projects');
+}
+
+function updateAssetProjectFilterOptions(filter, options) {
+  const search = filter.querySelector?.(ASSET_PROJECT_FILTER_SEARCH_SELECTOR);
+  const empty = filter.querySelector?.(ASSET_PROJECT_FILTER_EMPTY_SELECTOR);
+  const query = String(search?.value || '').trim().toLowerCase();
+  const projectOptions = options.filter((option) => (
+    assetProjectFilterValue(assetProjectFilterInput(option)) !== ''
+  ));
+  let matchingProjectCount = 0;
+
+  projectOptions.forEach((option) => {
+    const matches = query === '' || assetProjectFilterTitle(option).toLowerCase().includes(query);
+    setHidden(option, !matches);
+    if (matches) matchingProjectCount += 1;
+  });
+
+  const allProjects = options.find((option) => assetProjectFilterValue(assetProjectFilterInput(option)) === '');
+  setHidden(allProjects, false);
+  setHidden(empty, query === '' || matchingProjectCount > 0);
+}
+
+function updateAssetProjectFilterDisclosure(filter) {
+  filter.querySelector?.('summary')?.setAttribute?.('aria-expanded', String(filter.open === true));
+}
+
+function updateAssetViewerFilterDisclosureState(disclosure) {
+  disclosure?.querySelector?.('summary')?.setAttribute?.('aria-expanded', String(disclosure.open === true));
+}
+
+function getAssetViewerFilterDisclosures(scope) {
+  return Array.from(scope?.querySelectorAll?.(ASSET_VIEWER_FILTER_DISCLOSURE_SELECTOR) || []);
+}
+
+function findAssetViewerFilterDisclosure(disclosures, target) {
+  const disclosure = target?.closest?.(ASSET_VIEWER_FILTER_DISCLOSURE_SELECTOR);
+  return disclosures.includes(disclosure) ? disclosure : null;
+}
+
+function closeAssetViewerFilterDisclosures(disclosures, except = null) {
+  disclosures.forEach((disclosure) => {
+    if (disclosure === except || disclosure.open !== true) return;
+    disclosure.open = false;
+    updateAssetViewerFilterDisclosureState(disclosure);
+  });
+}
+
+export function enhanceAssetViewerFilterDisclosures(scope = globalThis.document) {
+  if (!scope || typeof scope.querySelectorAll !== 'function') return 0;
+
+  const disclosures = getAssetViewerFilterDisclosures(scope);
+  disclosures.forEach(updateAssetViewerFilterDisclosureState);
+  if (disclosures.length === 0) return 0;
+
+  if (!isEnhancementBound(scope, 'assetViewerFilterDisclosuresBound')) {
+    markEnhancementBound(scope, 'assetViewerFilterDisclosuresBound');
+
+    scope.addEventListener?.('click', (event) => {
+      const currentDisclosures = getAssetViewerFilterDisclosures(scope);
+      const current = findAssetViewerFilterDisclosure(currentDisclosures, event.target);
+      closeAssetViewerFilterDisclosures(currentDisclosures, current);
+    });
+
+    scope.addEventListener?.('keydown', (event) => {
+      if (event.key !== 'Escape') return;
+
+      const currentDisclosures = getAssetViewerFilterDisclosures(scope);
+      const targetDisclosure = findAssetViewerFilterDisclosure(currentDisclosures, event.target);
+      const active = targetDisclosure?.open === true
+        ? targetDisclosure
+        : currentDisclosures.find((disclosure) => disclosure.open === true);
+      if (!active) return;
+
+      event.preventDefault?.();
+      active.open = false;
+      updateAssetViewerFilterDisclosureState(active);
+      active.querySelector?.('summary')?.focus?.();
+    });
+
+    scope.addEventListener?.('toggle', (event) => {
+      const currentDisclosures = getAssetViewerFilterDisclosures(scope);
+      const disclosure = currentDisclosures.includes(event.target) ? event.target : null;
+      if (!disclosure) return;
+
+      updateAssetViewerFilterDisclosureState(disclosure);
+      if (disclosure.open === true) {
+        closeAssetViewerFilterDisclosures(currentDisclosures, disclosure);
+      }
+    }, true);
+  }
+
+  return disclosures.length;
+}
+
+export function enhanceAssetProjectFilter(scope = globalThis.document) {
+  if (!scope || typeof scope.querySelectorAll !== 'function') return 0;
+
+  const filters = scope.querySelectorAll(ASSET_PROJECT_FILTER_SELECTOR);
+  filters.forEach((filter) => {
+    const options = Array.from(filter.querySelectorAll?.(ASSET_PROJECT_FILTER_OPTION_SELECTOR) || []);
+    const search = filter.querySelector?.(ASSET_PROJECT_FILTER_SEARCH_SELECTOR);
+
+    if (!isEnhancementBound(filter, 'assetProjectFilterBound')) {
+      markEnhancementBound(filter, 'assetProjectFilterBound');
+      search?.addEventListener?.('input', () => updateAssetProjectFilterOptions(filter, options));
+      options.forEach((option) => {
+        assetProjectFilterInput(option)?.addEventListener?.('change', () => {
+          updateAssetProjectFilterSummary(filter, options);
+        });
+      });
+      filter.addEventListener?.('toggle', () => updateAssetProjectFilterDisclosure(filter));
+    }
+
+    updateAssetProjectFilterSummary(filter, options);
+    updateAssetProjectFilterOptions(filter, options);
+    updateAssetProjectFilterDisclosure(filter);
+  });
+
+  return filters.length;
+}
+
+let activeAssetViewerInfoPlacement = null;
+let assetViewerInfoViewportListenersBound = false;
+
+function positionAssetViewerInfo(preview, info) {
+  if (!preview || !info || typeof preview.getBoundingClientRect !== 'function') return;
+
+  const viewportWidth = Number(globalThis.document?.documentElement?.clientWidth)
+    || Number(globalThis.innerWidth);
+  const viewportHeight = Number(globalThis.document?.documentElement?.clientHeight)
+    || Number(globalThis.innerHeight);
+  if (!(viewportWidth > 0) || !(viewportHeight > 0)) return;
+
+  const previewRect = preview.getBoundingClientRect();
+  const infoRect = typeof info.getBoundingClientRect === 'function'
+    ? info.getBoundingClientRect()
+    : { width: 0, height: 0 };
+  const infoWidth = Math.min(
+    Math.max(Number(info.offsetWidth) || Number(infoRect.width) || 0, 0),
+    viewportWidth - (ASSET_VIEWER_INFO_GUTTER * 2),
+  );
+  const infoHeight = Math.max(Number(info.offsetHeight) || Number(infoRect.height) || 0, 0);
+  if (!(infoWidth > 0) || !(infoHeight > 0)) return;
+
+  const unclampedLeft = previewRect.left + ((previewRect.width - infoWidth) / 2);
+  const left = Math.max(
+    ASSET_VIEWER_INFO_GUTTER,
+    Math.min(unclampedLeft, viewportWidth - ASSET_VIEWER_INFO_GUTTER - infoWidth),
+  );
+
+  const belowTop = previewRect.bottom + ASSET_VIEWER_INFO_GUTTER;
+  const aboveTop = previewRect.top - ASSET_VIEWER_INFO_GUTTER - infoHeight;
+  let top = belowTop;
+  if (belowTop + infoHeight > viewportHeight - ASSET_VIEWER_INFO_GUTTER && aboveTop >= ASSET_VIEWER_INFO_GUTTER) {
+    top = aboveTop;
+  } else if (belowTop + infoHeight > viewportHeight - ASSET_VIEWER_INFO_GUTTER) {
+    top = Math.max(ASSET_VIEWER_INFO_GUTTER, viewportHeight - ASSET_VIEWER_INFO_GUTTER - infoHeight);
+  }
+
+  info.style?.setProperty?.('--asset-info-left', `${left - previewRect.left}px`);
+  info.style?.setProperty?.('--asset-info-top', `${top - previewRect.top}px`);
+  info.setAttribute?.('data-positioned', 'true');
+}
+
+function repositionActiveAssetViewerInfo() {
+  if (!activeAssetViewerInfoPlacement) return;
+  positionAssetViewerInfo(
+    activeAssetViewerInfoPlacement.preview,
+    activeAssetViewerInfoPlacement.info,
+  );
+}
+
+function bindAssetViewerInfoViewportListeners() {
+  if (assetViewerInfoViewportListenersBound || typeof globalThis.addEventListener !== 'function') return;
+  assetViewerInfoViewportListenersBound = true;
+  globalThis.addEventListener('resize', repositionActiveAssetViewerInfo);
+  globalThis.addEventListener('scroll', repositionActiveAssetViewerInfo, true);
+}
+
+export function enhanceAssetViewerInfoCards(scope = globalThis.document) {
+  if (!scope || typeof scope.querySelectorAll !== 'function') return 0;
+
+  const previews = scope.querySelectorAll(ASSET_VIEWER_PREVIEW_SELECTOR);
+  let boundCount = 0;
+  previews.forEach((preview) => {
+    const info = preview.querySelector?.(ASSET_VIEWER_INFO_SELECTOR);
+    if (!info || isEnhancementBound(preview, 'assetViewerInfoBound')) return;
+
+    markEnhancementBound(preview, 'assetViewerInfoBound');
+    boundCount += 1;
+    const activate = () => {
+      activeAssetViewerInfoPlacement = { preview, info };
+      positionAssetViewerInfo(preview, info);
+    };
+    const deactivate = () => {
+      if (activeAssetViewerInfoPlacement?.preview === preview) {
+        activeAssetViewerInfoPlacement = null;
+      }
+    };
+
+    preview.addEventListener?.('pointerenter', activate);
+    preview.addEventListener?.('focusin', activate);
+    preview.addEventListener?.('pointerleave', deactivate);
+    preview.addEventListener?.('focusout', (event) => {
+      if (!preview.contains?.(event.relatedTarget)) deactivate();
+    });
+  });
+
+  if (boundCount > 0) bindAssetViewerInfoViewportListeners();
+  return boundCount;
 }
 
 if (typeof document !== 'undefined') {
@@ -1684,6 +1968,9 @@ if (typeof document !== 'undefined') {
     enhanceAssetSelection(document);
     enhanceAssetRenames(document);
     enhanceAssetGridSize(document);
+    enhanceAssetProjectFilter(document);
+    enhanceAssetViewerFilterDisclosures(document);
+    enhanceAssetViewerInfoCards(document);
   };
 
   if (document.readyState === 'loading') {

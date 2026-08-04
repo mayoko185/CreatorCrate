@@ -445,6 +445,35 @@ describe('application shell (Phase 10.4B) — landmarks & structure', () => {
       const headerVal = Number(css.match(new RegExp(`${hd[1]}:\\s*(\\d+)`))[1]);
       expect(sidebarVal).toBeGreaterThan(headerVal);
     });
+
+    it('keeps the navigation root above the page context and Asset Viewer layers', async () => {
+      const css = await extractStyle(agent, (await agent.get('/').expect(200)).text);
+      const contentRule = css.match(/\.app-main\s*\{[\s\S]*?\}/);
+      const sidebarLayer = Number(css.match(/--shell-z-sidebar:\s*(\d+)/)?.[1]);
+      const contentLayer = Number(css.match(/--shell-z-content:\s*(\d+)/)?.[1]);
+      const readLayer = (pattern) => {
+        const match = css.match(pattern);
+        expect(match).not.toBeNull();
+        return Number(match[1]);
+      };
+
+      expect(contentRule).not.toBeNull();
+      expect(contentRule[0]).toMatch(/position:\s*relative/);
+      expect(contentRule[0]).toMatch(/z-index:\s*var\(--shell-z-content\)/);
+      expect(sidebarLayer).toBeGreaterThan(contentLayer);
+
+      const assetLayers = [
+        readLayer(/\.asset-viewer-filters\s*\{[^}]*z-index:\s*(\d+)/),
+        readLayer(/\.asset-filter-multiselect\[open\]\s*\{[^}]*z-index:\s*(\d+)/),
+        readLayer(/\.asset-filter-multiselect-panel\s*\{[^}]*z-index:\s*(\d+)/),
+        readLayer(/\.asset-viewer-grid-card-info\s*\{[^}]*z-index:\s*(\d+)/),
+        readLayer(/\.asset-viewer-grid-card:hover,[\s\S]*?\.asset-viewer-grid-card:focus-within\s*\{[^}]*z-index:\s*(\d+)/),
+      ];
+
+      for (const layer of assetLayers) {
+        expect(layer).toBeLessThan(sidebarLayer);
+      }
+    });
   });
 
   describe('reduced motion', () => {

@@ -1467,6 +1467,93 @@ describe('release repository', () => {
     });
   });
 
+  describe('findReleaseTitlesForAssetIds', () => {
+    function insertAsset(projectId, relativePath) {
+      return assetRepo.upsert(projectId, relativePath, sampleAsset(projectId, {
+        relativePath,
+        filename: relativePath,
+      }));
+    }
+
+    function linkAssetToRelease(releaseId, assetId) {
+      db.prepare(`
+        INSERT INTO release_assets (release_id, asset_id, role, sort_order)
+        VALUES (?, ?, 'attachment', 0)
+      `).run(releaseId, assetId);
+    }
+
+    it('returns an empty array for an asset with no release usage', () => {
+      const asset = insertAsset(projectId, 'unused.txt');
+
+      expect(releaseRepo.findReleaseTitlesForAssetIds([asset.id])).toEqual([]);
+    });
+
+    it('returns the release ID and title for a single release', () => {
+      const asset = insertAsset(projectId, 'single.txt');
+      const release = releaseRepo.create({
+        projectId,
+        ...sampleRelease({ title: 'Single Release' }),
+      });
+      linkAssetToRelease(release.id, asset.id);
+
+      expect(releaseRepo.findReleaseTitlesForAssetIds([asset.id])).toEqual([
+        { asset_id: asset.id, release_id: release.id, title: 'Single Release' },
+      ]);
+    });
+
+    it('returns multiple releases ordered by case-insensitive title and release ID', () => {
+      const asset = insertAsset(projectId, 'multiple.txt');
+      const zeta = releaseRepo.create({
+        projectId,
+        ...sampleRelease({ title: 'zeta Release' }),
+      });
+      const alpha = releaseRepo.create({
+        projectId,
+        ...sampleRelease({ title: 'Alpha Release' }),
+      });
+      const alphaLowercase = releaseRepo.create({
+        projectId,
+        ...sampleRelease({ title: 'alpha Release' }),
+      });
+      linkAssetToRelease(zeta.id, asset.id);
+      linkAssetToRelease(alpha.id, asset.id);
+      linkAssetToRelease(alphaLowercase.id, asset.id);
+
+      expect(releaseRepo.findReleaseTitlesForAssetIds([asset.id])).toEqual([
+        { asset_id: asset.id, release_id: alpha.id, title: 'Alpha Release' },
+        { asset_id: asset.id, release_id: alphaLowercase.id, title: 'alpha Release' },
+        { asset_id: asset.id, release_id: zeta.id, title: 'zeta Release' },
+      ]);
+    });
+
+    it('batches assets from multiple projects without cross-assignment', () => {
+      const otherProject = projectRepo.create(sampleProject({ title: 'Other Project' }));
+      const asset = insertAsset(projectId, 'owned.txt');
+      const otherAsset = insertAsset(otherProject.id, 'other.txt');
+      const release = releaseRepo.create({
+        projectId,
+        ...sampleRelease({ title: 'Owned Release' }),
+      });
+      const otherRelease = releaseRepo.create({
+        projectId: otherProject.id,
+        ...sampleRelease({ title: 'Other Release' }),
+      });
+      linkAssetToRelease(release.id, asset.id);
+      linkAssetToRelease(otherRelease.id, otherAsset.id);
+
+      // Corrupt associations must not cross the project boundary.
+      linkAssetToRelease(release.id, otherAsset.id);
+      linkAssetToRelease(otherRelease.id, asset.id);
+
+      const results = releaseRepo.findReleaseTitlesForAssetIds([asset.id, otherAsset.id]);
+
+      expect(results).toEqual([
+        { asset_id: asset.id, release_id: release.id, title: 'Owned Release' },
+        { asset_id: otherAsset.id, release_id: otherRelease.id, title: 'Other Release' },
+      ]);
+    });
+  });
+
   // ─── Phase 7A-1: Release Readiness Facts ──────────────────────────────
 
   describe('findReadinessFactsById', () => {

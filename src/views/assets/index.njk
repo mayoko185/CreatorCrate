@@ -4,7 +4,15 @@
 
 {% set page_title = "Asset Viewer" %}
 {% set currentView = presentation.view or filters.view %}
-{% set clearFiltersUrl = pageUrl({ projectId: null, category: 'all', tag: null, search: null, extension: null, presence: 'all', usage: 'all', page: 1 }) %}
+{% set clearFiltersUrl = pageUrl({ projectId: null, categories: null, tags: null, search: null, extensions: null, presence: 'all', usage: 'all', page: 1 }) %}
+{% set projectFilterHasSelection = false %}
+{% set projectFilterSummary = 'All projects' %}
+{% for project in projectOptions %}
+  {% if project.id == filters.projectId %}
+    {% set projectFilterHasSelection = true %}
+    {% set projectFilterSummary = project.title %}
+  {% endif %}
+{% endfor %}
 
 {% macro renderPresence(asset) %}
   {% if asset.is_present %}
@@ -15,6 +23,35 @@
   {% include "partials/status-badge.njk" %}
 {% endmacro %}
 
+{% macro renderGridPresenceIcon(asset) %}
+  {% if asset.is_present %}
+    <span class="asset-indicator asset-icon-control asset-tooltip asset-tooltip--left asset-indicator--present"
+          role="img" tabindex="0" aria-label="Present" data-tooltip="Present">P</span>
+  {% else %}
+    <span class="asset-indicator asset-icon-control asset-tooltip asset-tooltip--left asset-indicator--missing"
+          role="img" tabindex="0" aria-label="Missing at last scan" data-tooltip="Missing at last scan">!</span>
+  {% endif %}
+{% endmacro %}
+
+{% macro renderGridReleaseUsageIcon(asset) %}
+  {% if asset.release_titles and asset.release_titles.length > 0 %}
+    {% if asset.release_titles.length == 1 %}
+      {% set release = asset.release_titles[0] %}
+      <a class="asset-indicator asset-icon-control asset-tooltip asset-indicator--used"
+         href="/releases/{{ release.id }}" aria-label="Used in release {{ release.title }}"
+         data-tooltip="Used in release">R</a>
+    {% else %}
+      <span class="asset-indicator asset-icon-control asset-tooltip asset-indicator--used"
+            role="img" tabindex="0" aria-label="Used in {{ asset.release_titles.length }} releases"
+            data-tooltip="Used in multiple releases">R</span>
+    {% endif %}
+  {% else %}
+    <span class="asset-indicator asset-icon-control asset-tooltip asset-indicator--unused"
+          role="img" tabindex="0" aria-label="Not used by a release"
+          data-tooltip="Not used by a release">U</span>
+  {% endif %}
+{% endmacro %}
+
 {% macro renderCategory(asset) %}
   {% if asset.category_display_name %}
     {{ asset.category_display_name }}{% if asset.category_enabled == 0 %} <em class="asset-category-disabled-marker">(disabled)</em>{% endif %}
@@ -23,25 +60,112 @@
   {% endif %}
 {% endmacro %}
 
-{% macro renderReleaseUsage(asset) %}
-  {% if asset.release_usage_count == 0 %}
-    Not used by a release
-  {% elif asset.release_usage_count == 1 %}
-    Used in 1 release
-  {% elif asset.release_usage_count %}
-    Used in {{ asset.release_usage_count }} releases
+{% macro renderFilterSummary(selectedValues, options, emptyLabel, countLabel, prefix) -%}
+  {%- if selectedValues.length == 0 -%}
+    {{ emptyLabel }}
+  {%- elif selectedValues.length == 1 -%}
+    {%- for option in options -%}
+      {%- if option.selected -%}
+        {{ prefix or '' }}{{ option.label or option.displayName }}
+      {%- endif -%}
+    {%- endfor -%}
+  {%- else -%}
+    {{ selectedValues.length }} {{ countLabel }} selected
+  {%- endif -%}
+{%- endmacro %}
+
+{% macro renderListLocation(asset) %}
+  {% if asset.category_directory_slug %}
+    {{ asset.category_directory_slug }}{% if asset.nested_path %}/{{ asset.nested_path }}{% endif %}
+  {% elif asset.nested_path %}
+    {{ asset.nested_path }}
+  {% elif asset.relative_path and asset.filename and asset.relative_path != asset.filename %}
+    {{ asset.relative_path | replace('/' ~ asset.filename, '') }}
+  {% else %}
+    Project root
   {% endif %}
+{% endmacro %}
+
+{% macro renderEffectiveTags(asset, listClass, emptyClass) %}
+  {% if asset.tags and asset.tags.length > 0 %}
+    <ul class="{{ listClass }}" aria-label="Effective tags">
+      {% for tag in asset.tags %}
+        <li>{{ tag.displayName }}{% if tag.origin == 'inherited' %} <span class="asset-tag-origin"><span class="sr-only">Inherited from </span>Project</span>{% endif %}</li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <span class="{{ emptyClass }}">No effective tags</span>
+  {% endif %}
+{% endmacro %}
+
+{% macro renderReleaseTitles(asset, listClass, emptyClass, linkClass) %}
+  {% if asset.release_titles and asset.release_titles.length > 0 %}
+    <ul class="{{ listClass }}" aria-label="Associated releases">
+      {% for release in asset.release_titles %}
+        <li><a class="{{ linkClass or 'asset-viewer-grid-card-release-link' }}" href="/releases/{{ release.id }}">{{ release.title }}</a></li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <span class="{{ emptyClass }}">Not in any release</span>
+  {% endif %}
+{% endmacro %}
+
+{% macro renderGridAssetInfo(asset) %}
+  <div class="asset-viewer-grid-card-info" data-asset-info-card role="group" aria-label="Asset information">
+    <h3 class="asset-viewer-grid-card-info-heading">Asset information</h3>
+    <dl class="asset-viewer-grid-card-info-list">
+      <div class="asset-viewer-grid-card-info-row">
+        <dt>Location</dt>
+        <dd>{{ asset.relative_path or '—' }}</dd>
+      </div>
+      <div class="asset-viewer-grid-card-info-row">
+        <dt>Category</dt>
+        <dd>{{ renderCategory(asset) }}</dd>
+      </div>
+      <div class="asset-viewer-grid-card-info-row">
+        <dt>Extension</dt>
+        <dd>{{ asset.extension or '—' }}</dd>
+      </div>
+      <div class="asset-viewer-grid-card-info-row">
+        <dt>Size</dt>
+        <dd>{% if asset.size_bytes == 0 or asset.size_bytes %}{{ asset.size_bytes }} bytes{% else %}—{% endif %}</dd>
+      </div>
+      <div class="asset-viewer-grid-card-info-row">
+        <dt>Modified</dt>
+        <dd>{{ asset.modified_at or '—' }}</dd>
+      </div>
+      <div class="asset-viewer-grid-card-info-row">
+        <dt>Presence</dt>
+        <dd>{% if asset.is_present %}Present at last scan{% else %}Missing at last scan{% endif %}</dd>
+      </div>
+      <div class="asset-viewer-grid-card-info-row">
+        <dt>Release usage</dt>
+        <dd>
+          {% if asset.release_titles and asset.release_titles.length > 0 %}
+            Used in {{ asset.release_titles.length }} release{% if asset.release_titles.length != 1 %}s{% endif %}
+          {% else %}
+            Not used by a release
+          {% endif %}
+        </dd>
+      </div>
+    </dl>
+
+    <div class="asset-viewer-grid-card-info-section">
+      <span class="asset-viewer-grid-card-info-section-label">Effective tags</span>
+      {{ renderEffectiveTags(asset, 'asset-viewer-grid-card-info-tags', 'asset-viewer-grid-card-info-empty') }}
+    </div>
+  </div>
 {% endmacro %}
 
 {% macro renderGridPreview(asset, detailUrl, displayName) %}
   {% set previewUrl = asset.preview_url or asset.thumbnail_url %}
   {% set previewAvailable = asset.is_present and previewUrl and asset.preview_state != 'unsupported' and asset.preview_state != 'missing' %}
-  <div class="asset-card-media{% if asset.preview and asset.preview.kind == 'krita' %} asset-media--krita{% endif %}"{% if previewAvailable %} data-preview-enhancement data-preview-state="loading"{% endif %}>
+  <div class="asset-card-media asset-viewer-grid-card-preview{% if asset.preview and asset.preview.kind == 'krita' %} asset-media--krita{% endif %}" data-asset-viewer-preview{% if previewAvailable %} data-preview-enhancement data-preview-state="loading"{% endif %}>
     {% if previewAvailable %}
-      <a class="asset-card-media-link" href="{{ detailUrl }}" aria-label="View preview of {{ displayName }} from {{ asset.project_title }}">
-        <img class="asset-card-thumb"
+      <a class="asset-card-media-link asset-viewer-grid-card-preview-link" href="{{ detailUrl }}" aria-label="View preview of {{ displayName }}">
+        <img class="asset-card-thumb asset-viewer-grid-card-preview-image"
              src="{{ previewUrl }}"
-             alt="Preview of {{ displayName }} from {{ asset.project_title }}"
+             alt=""
              loading="lazy"
              decoding="async"
              data-preview-image>
@@ -54,93 +178,149 @@
     {% else %}
       <span class="asset-card-placeholder">Preview unavailable</span>
     {% endif %}
+    {{ renderGridAssetInfo(asset) }}
   </div>
 {% endmacro %}
 
 {% macro renderListPreview(asset, detailUrl, displayName) %}
-  {% set previewUrl = asset.thumbnail_url or asset.preview_url %}
+  {% set previewUrl = asset.preview_url or asset.thumbnail_url %}
   {% set previewAvailable = asset.is_present and previewUrl and asset.preview_state != 'unsupported' and asset.preview_state != 'missing' %}
-  {% if previewAvailable %}
-    <a class="asset-thumb-link" href="{{ detailUrl }}" aria-label="View preview of {{ displayName }} from {{ asset.project_title }}">
-      <span class="asset-thumb{% if asset.preview and asset.preview.kind == 'krita' %} asset-media--krita{% endif %}" data-preview-enhancement data-preview-state="loading">
-        <img class="asset-thumb-image"
+  <div class="asset-list-card-media"{% if previewAvailable %} data-preview-enhancement data-preview-state="loading"{% endif %}>
+    {% if previewAvailable %}
+      <a class="asset-list-card-media-link" href="{{ detailUrl }}" aria-label="View preview of {{ displayName }} from {{ asset.project_title }}">
+        <img class="asset-list-card-media-image"
              src="{{ previewUrl }}"
-             alt="Preview of {{ displayName }} from {{ asset.project_title }}"
+             alt=""
              loading="lazy"
              decoding="async"
              data-preview-image>
-        <span class="asset-thumb-fallback" data-preview-fallback hidden>{{ asset.extension or 'Preview unavailable' }}</span>
-      </span>
-    </a>
-  {% elif not asset.is_present %}
-    <span class="asset-thumb-missing" aria-label="{{ displayName }} from {{ asset.project_title }} is missing at last scan">—</span>
-  {% elif asset.preview_state == 'unsupported' %}
-    <span class="asset-thumb-type">{{ asset.extension or 'Asset' }} — preview not supported</span>
-  {% else %}
-    <span class="asset-thumb-type">Preview unavailable</span>
-  {% endif %}
-{% endmacro %}
-
-{% macro renderAssetMeta(asset) %}
-  {% if asset.extension %}.{{ asset.extension }}{% else %}No extension{% endif %}
-  ·
-  {% if asset.size_bytes == 0 or asset.size_bytes %}{{ asset.size_bytes }} bytes{% else %}Size unavailable{% endif %}
-  · Modified {{ asset.modified_at or 'not recorded' }}
+      </a>
+      <span class="asset-list-card-media-fallback" data-preview-fallback hidden>{{ asset.extension or 'Preview unavailable' }}</span>
+    {% elif not asset.is_present %}
+      <span class="asset-list-card-media-placeholder asset-list-card-media-placeholder--missing">Missing at last scan</span>
+    {% elif asset.preview_state == 'unsupported' %}
+      <span class="asset-list-card-media-placeholder">{{ asset.extension or 'Asset' }} — preview not supported</span>
+    {% else %}
+      <span class="asset-list-card-media-placeholder">Preview unavailable</span>
+    {% endif %}
+  </div>
 {% endmacro %}
 
 {% block content %}
   {{ pageHeading.render("Browse assets across active projects.") }}
 
-  {{ viewSwitcher.render(currentView, pageUrl, "Asset display") }}
+  <div class="asset-viewer-display-controls">
+    {{ viewSwitcher.render(currentView, pageUrl, "Asset display") }}
 
-  <form class="filters" method="get" action="/assets">
+    {% if currentView == 'grid' %}
+      {% include "partials/asset-grid-size-control.njk" %}
+    {% endif %}
+  </div>
+
+  <form class="filters asset-viewer-filters" method="get" action="/assets">
     {% if currentView == 'list' or preserveViewQuery %}
       <input type="hidden" name="view" value="{{ currentView }}">
     {% endif %}
 
-    <div class="field">
-      <label for="asset-project">Project</label>
-      <select id="asset-project" name="project">
-        <option value=""{% if not filters.projectId %} selected{% endif %}>All active projects</option>
-        {% for project in projectOptions %}
-          <option value="{{ project.id }}"{% if project.id == filters.projectId %} selected{% endif %}>{{ project.title }}</option>
-        {% endfor %}
-      </select>
-    </div>
+    <fieldset class="field asset-viewer-filter-field asset-viewer-project-filter">
+      <legend>Project</legend>
+      <details class="asset-filter-multiselect asset-project-filter-disclosure" data-asset-project-filter data-asset-viewer-filter-disclosure>
+        <summary id="asset-project-filter-trigger"
+                 aria-controls="asset-project-filter-options"
+                 aria-expanded="false"
+                 aria-label="Project filter: {{ projectFilterSummary }}"
+                 title="{{ projectFilterSummary }}">
+          <span class="asset-filter-multiselect-summary" data-asset-project-filter-summary>{{ projectFilterSummary }}</span>
+        </summary>
+        <div id="asset-project-filter-options" class="asset-filter-multiselect-panel asset-project-filter-panel" role="group" aria-label="Project options">
+          <label class="asset-project-filter-search-label" for="asset-project-filter-search">Search projects</label>
+          <input id="asset-project-filter-search" class="asset-project-filter-search" type="search"
+                 autocomplete="off" data-asset-project-filter-search>
+          <div class="asset-project-filter-option-list" data-asset-project-filter-option-list role="radiogroup" aria-label="Project choices">
+            <div class="asset-filter-multiselect-option asset-project-filter-option"
+                 data-asset-project-filter-option data-project-title="All projects">
+              <input id="asset-project-option-all" name="project" type="radio" value=""{% if not projectFilterHasSelection %} checked{% endif %}>
+              <label for="asset-project-option-all">All projects</label>
+            </div>
+            {% for project in projectOptions %}
+              <div class="asset-filter-multiselect-option asset-project-filter-option"
+                   data-asset-project-filter-option data-project-title="{{ project.title }}">
+                <input id="asset-project-option-{{ project.id }}" name="project" type="radio" value="{{ project.id }}"{% if project.id == filters.projectId %} checked{% endif %}>
+                <label for="asset-project-option-{{ project.id }}">{{ project.title }}</label>
+              </div>
+            {% endfor %}
+          </div>
+          <p class="asset-filter-multiselect-empty asset-project-filter-no-results"
+             data-asset-project-filter-no-results role="status" aria-live="polite" hidden>No matching projects</p>
+        </div>
+      </details>
+    </fieldset>
 
-    <div class="field">
-      <label for="asset-category">Category</label>
-      <select id="asset-category" name="category">
-        {% for option in categoryOptions %}
-          <option value="{{ option.value }}"{% if option.selected %} selected{% endif %}>{{ option.label }}</option>
-        {% endfor %}
-      </select>
-    </div>
+    <fieldset class="field asset-viewer-filter-field">
+      <legend>Category</legend>
+      <details class="asset-filter-multiselect" data-asset-viewer-filter-disclosure>
+        <summary id="asset-category-filter-trigger"
+                 aria-controls="asset-category-filter-options"
+                 aria-expanded="false"
+                 aria-label="Category filter: {{ renderFilterSummary(filters.categories, categoryOptions, 'Any category', 'categories', '') }}">
+          <span class="asset-filter-multiselect-summary">{{ renderFilterSummary(filters.categories, categoryOptions, 'Any category', 'categories', '') }}</span>
+        </summary>
+        <div id="asset-category-filter-options" class="asset-filter-multiselect-panel" role="group" aria-label="Category options">
+          {% for option in categoryOptions %}
+            {% if option.value != 'all' %}
+              <div class="asset-filter-multiselect-option">
+                <input id="asset-category-option-{{ loop.index }}" name="category" type="checkbox" value="{{ option.value }}"{% if option.selected %} checked{% endif %}>
+                <label for="asset-category-option-{{ loop.index }}">{{ option.label }}</label>
+              </div>
+            {% endif %}
+          {% endfor %}
+        </div>
+      </details>
+    </fieldset>
 
-    <div class="field">
-      <label for="asset-tag">Tag</label>
-      <select id="asset-tag" name="tag"{% if tagOptions.length == 0 %} disabled{% endif %}>
-        <option value=""{% if not filters.tag %} selected{% endif %}>All tags</option>
-        {% for option in tagOptions %}
-          <option value="{{ option.value }}"{% if filters.tag == option.value %} selected{% endif %}>{{ option.displayName }}</option>
-        {% endfor %}
-      </select>
-    </div>
+    <fieldset class="field asset-viewer-filter-field">
+      <legend>Tag</legend>
+      <details class="asset-filter-multiselect" data-asset-viewer-filter-disclosure>
+        <summary id="asset-tag-filter-trigger"
+                 aria-controls="asset-tag-filter-options"
+                 aria-expanded="false"
+                 aria-label="Tag filter: {{ renderFilterSummary(filters.tags, tagOptions, 'Any tag', 'tags', '') }}">
+          <span class="asset-filter-multiselect-summary">{{ renderFilterSummary(filters.tags, tagOptions, 'Any tag', 'tags', '') }}</span>
+        </summary>
+        <div id="asset-tag-filter-options" class="asset-filter-multiselect-panel" role="group" aria-label="Tag options">
+          {% if tagOptions.length > 0 %}
+            {% for option in tagOptions %}
+              <div class="asset-filter-multiselect-option">
+                <input id="asset-tag-option-{{ loop.index }}" name="tag" type="checkbox" value="{{ option.value }}"{% if option.selected %} checked{% endif %}>
+                <label for="asset-tag-option-{{ loop.index }}">{{ option.displayName }}</label>
+              </div>
+            {% endfor %}
+          {% else %}
+            <p class="asset-filter-multiselect-empty">No tags available</p>
+          {% endif %}
+        </div>
+      </details>
+    </fieldset>
 
-    <div class="field">
-      <label for="asset-search">Search</label>
-      <input id="asset-search" name="search" type="search" value="{{ filters.search or '' }}">
-    </div>
-
-    <div class="field">
-      <label for="asset-extension">Extension</label>
-      <select id="asset-extension" name="extension">
-        <option value=""{% if not filters.extension %} selected{% endif %}>All extensions</option>
-        {% for option in extensionOptions %}
-          <option value="{{ option.value }}"{% if option.selected %} selected{% endif %}>.{{ option.label }}</option>
-        {% endfor %}
-      </select>
-    </div>
+    <fieldset class="field asset-viewer-filter-field">
+      <legend>Extension</legend>
+      <details class="asset-filter-multiselect" data-asset-viewer-filter-disclosure>
+        <summary id="asset-extension-filter-trigger"
+                 aria-controls="asset-extension-filter-options"
+                 aria-expanded="false"
+                 aria-label="Extension filter: {{ renderFilterSummary(filters.extensions, extensionOptions, 'Any extension', 'extensions', '.') }}">
+          <span class="asset-filter-multiselect-summary">{{ renderFilterSummary(filters.extensions, extensionOptions, 'Any extension', 'extensions', '.') }}</span>
+        </summary>
+        <div id="asset-extension-filter-options" class="asset-filter-multiselect-panel" role="group" aria-label="Extension options">
+          {% for option in extensionOptions %}
+            <div class="asset-filter-multiselect-option">
+              <input id="asset-extension-option-{{ loop.index }}" name="extension" type="checkbox" value="{{ option.value }}"{% if option.selected %} checked{% endif %}>
+              <label for="asset-extension-option-{{ loop.index }}">.{{ option.label }}</label>
+            </div>
+          {% endfor %}
+        </div>
+      </details>
+    </fieldset>
 
     <div class="field">
       <label for="asset-presence">Presence</label>
@@ -209,95 +389,91 @@
           {% set projectUrl = "/projects/" ~ asset.project_id %}
           {% set displayName = asset.filename or asset.relative_path or 'Unnamed asset' %}
           <li class="asset-grid-item{% if not asset.is_present %} is-missing{% endif %}">
-            <article class="asset-card" data-asset-id="{{ asset.id }}">
-              <div class="asset-card-top">
-                <span class="asset-card-project">Project:
-                  <a class="asset-project-link" href="{{ projectUrl }}" aria-label="View project {{ asset.project_title }}">{{ asset.project_title }}</a>
-                </span>
-                <span class="asset-card-presence">{{ renderPresence(asset) }}</span>
-                <span class="asset-card-usage">{{ renderReleaseUsage(asset) }}</span>
-                <a class="asset-details-link asset-tooltip" href="{{ detailUrl }}"
-                   aria-label="View details for {{ displayName }} from {{ asset.project_title }}" data-tooltip="View asset details">
-                  <span class="sr-only">View asset details</span>
-                </a>
+            <article class="asset-card asset-viewer-grid-card" data-asset-id="{{ asset.id }}">
+              <div class="asset-card-top asset-viewer-grid-card-top">
+                {{ renderGridPresenceIcon(asset) }}
+                <span class="asset-card-usage">{{ renderGridReleaseUsageIcon(asset) }}</span>
               </div>
 
               {{ renderGridPreview(asset, detailUrl, displayName) }}
 
-              <div class="asset-card-body">
-                <div class="asset-card-title-row">
+              <div class="asset-card-body asset-viewer-grid-card-title-area">
+                <h2 class="asset-viewer-grid-card-title">
                   <a class="asset-file-link" href="{{ detailUrl }}"
-                     aria-label="View details for {{ displayName }} from {{ asset.project_title }}">{{ displayName }}</a>
-                </div>
-                {% if asset.relative_path %}<span class="asset-card-location">{{ asset.relative_path }}</span>{% endif %}
-                <span class="asset-card-category">Category: {{ renderCategory(asset) }}</span>
-                <span class="asset-card-meta">{{ renderAssetMeta(asset) }}</span>
-                {% if asset.tags and asset.tags.length > 0 %}
-                  <ul class="asset-card-tags" aria-label="Assigned tags">
-                    {% for tag in asset.tags %}
-                      <li>{{ tag.displayName }}</li>
-                    {% endfor %}
-                  </ul>
-                {% endif %}
+                     aria-label="View details for {{ displayName }}">{{ displayName }}</a>
+                </h2>
+                <a class="asset-project-link asset-viewer-grid-card-project-link" href="{{ projectUrl }}"
+                   aria-label="View project {{ asset.project_title }}">{{ asset.project_title }}</a>
+                {{ renderReleaseTitles(asset, 'asset-viewer-grid-card-title-releases', 'asset-viewer-grid-card-title-empty') }}
               </div>
             </article>
           </li>
         {% endfor %}
       </ul>
     {% else %}
-      <div class="table-scroll" tabindex="0" aria-label="Asset Viewer list">
-        <table class="data-table asset-table">
-          <thead>
-            <tr>
-              <th scope="col">Preview</th>
-              <th scope="col">File</th>
-              <th scope="col">Project</th>
-              <th scope="col">Category</th>
-              <th scope="col">Tags</th>
-              <th scope="col">Extension</th>
-              <th scope="col">Size</th>
-              <th scope="col">Modified</th>
-              <th scope="col">Presence</th>
-              <th scope="col">Release usage</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for asset in assets %}
-              {% set detailUrl = "/projects/" ~ asset.project_id ~ "/assets/" ~ asset.id %}
-              {% set projectUrl = "/projects/" ~ asset.project_id %}
-              {% set displayName = asset.filename or asset.relative_path or 'Unnamed asset' %}
-              <tr{% if not asset.is_present %} class="is-missing"{% endif %}>
-                <td class="asset-thumb-cell">{{ renderListPreview(asset, detailUrl, displayName) }}</td>
-                <td class="asset-file-cell">
-                  <a class="asset-file-link" href="{{ detailUrl }}"
-                     aria-label="View details for {{ displayName }} from {{ asset.project_title }}">{{ displayName }}</a>
-                  {% if asset.relative_path %}<br><small class="asset-location">{{ asset.relative_path }}</small>{% endif %}
-                </td>
-                <td class="asset-project-cell">
-                  <a class="asset-project-link" href="{{ projectUrl }}" aria-label="View project {{ asset.project_title }}">{{ asset.project_title }}</a>
-                </td>
-                <td class="asset-category-cell">{{ renderCategory(asset) }}</td>
-                <td class="asset-tags-cell">
-                  {% if asset.tags and asset.tags.length > 0 %}
-                    <ul class="asset-tag-list" aria-label="Assigned tags">
-                      {% for tag in asset.tags %}
-                        <li>{{ tag.displayName }}</li>
-                      {% endfor %}
-                    </ul>
-                  {% endif %}
-                </td>
-                <td><span class="asset-type-label">{{ asset.extension or '—' }}</span></td>
-                <td>
-                  {% if asset.size_bytes == 0 or asset.size_bytes %}{{ asset.size_bytes }} bytes{% else %}—{% endif %}
-                </td>
-                <td>{{ asset.modified_at or '—' }}</td>
-                <td>{{ renderPresence(asset) }}</td>
-                <td class="asset-release-usage-cell">{{ renderReleaseUsage(asset) }}</td>
-              </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      </div>
+      <ul class="asset-list" role="list" aria-label="Assets across active projects">
+        {% for asset in assets %}
+          {% set detailUrl = "/projects/" ~ asset.project_id ~ "/assets/" ~ asset.id %}
+          {% set projectUrl = "/projects/" ~ asset.project_id %}
+          {% set displayName = asset.filename or asset.relative_path or 'Unnamed asset' %}
+          <li class="asset-list-item{% if not asset.is_present %} is-missing{% endif %}">
+            <article class="asset-list-card" data-asset-id="{{ asset.id }}">
+              {{ renderListPreview(asset, detailUrl, displayName) }}
+
+              <div class="asset-list-card-body">
+                <div class="asset-list-card-header">
+                  <div class="asset-list-card-heading">
+                    <h2 class="asset-list-card-title">
+                      <a class="asset-file-link" href="{{ detailUrl }}"
+                         aria-label="View details for {{ displayName }} from {{ asset.project_title }}">{{ displayName }}</a>
+                    </h2>
+                    <span class="asset-list-card-location" data-asset-containing-location>{{ renderListLocation(asset) }}</span>
+                  </div>
+                  <span class="asset-list-card-presence">{{ renderPresence(asset) }}</span>
+                </div>
+
+                <dl class="asset-list-card-metadata">
+                  <div class="asset-list-card-meta asset-list-card-meta--project">
+                    <dt>Project</dt>
+                    <dd><a class="asset-project-link" href="{{ projectUrl }}" aria-label="View project {{ asset.project_title }}">{{ asset.project_title }}</a></dd>
+                  </div>
+                  <div class="asset-list-card-meta asset-list-card-meta--category">
+                    <dt>Category</dt>
+                    <dd>{{ renderCategory(asset) }}</dd>
+                  </div>
+                  <div class="asset-list-card-meta asset-list-card-meta--extension">
+                    <dt>Extension</dt>
+                    <dd><span class="asset-type-label">{{ asset.extension or '—' }}</span></dd>
+                  </div>
+                  <div class="asset-list-card-meta asset-list-card-meta--size">
+                    <dt>Size</dt>
+                    <dd>{% if asset.size_bytes == 0 or asset.size_bytes %}{{ asset.size_bytes }} bytes{% else %}—{% endif %}</dd>
+                  </div>
+                  <div class="asset-list-card-meta asset-list-card-meta--modified">
+                    <dt>Modified</dt>
+                    <dd>{{ asset.modified_at or '—' }}</dd>
+                  </div>
+                </dl>
+
+                <div class="asset-list-card-associations">
+                  <section class="asset-list-card-association asset-list-card-association--tags">
+                    <h3 class="asset-list-card-association-label">Effective tags</h3>
+                    <div class="asset-list-card-association-content">
+                      {{ renderEffectiveTags(asset, 'asset-list-card-tags', 'asset-list-card-empty') }}
+                    </div>
+                  </section>
+                  <section class="asset-list-card-association asset-list-card-association--releases">
+                    <h3 class="asset-list-card-association-label">Releases</h3>
+                    <div class="asset-list-card-association-content">
+                      {{ renderReleaseTitles(asset, 'asset-list-card-releases', 'asset-list-card-empty', 'asset-list-card-release-link') }}
+                    </div>
+                  </section>
+                </div>
+              </div>
+            </article>
+          </li>
+        {% endfor %}
+      </ul>
     {% endif %}
 
     {% if pageCount > 1 %}
@@ -312,7 +488,7 @@
       </nav>
     {% endif %}
   {% else %}
-    {% set filtersActive = filters.projectId or filters.category != 'all' or filters.tag or filters.search or filters.extension or filters.presence != 'all' or filters.usage != 'all' %}
+    {% set filtersActive = filters.projectId or filters.categories.length > 0 or filters.tags.length > 0 or filters.search or filters.extensions.length > 0 or filters.presence != 'all' or filters.usage != 'all' %}
     {% set noAssetsAcrossProjects = false %}
     {% if hasAnyAssets is defined %}
       {% set noAssetsAcrossProjects = not hasAnyAssets %}

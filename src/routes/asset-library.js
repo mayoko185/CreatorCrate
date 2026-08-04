@@ -97,10 +97,10 @@ function buildAssetLibraryRenderModel(page, state) {
     pageSizeOptions: buildPageSizeOptions(page.pageSize),
     clearFiltersUrl: pageUrl({
       projectId: null,
-      category: 'all',
-      tag: null,
+      categories: null,
+      tags: null,
       search: null,
-      extension: null,
+      extensions: null,
       presence: 'all',
       usage: 'all',
       page: 1,
@@ -118,10 +118,10 @@ export function createAssetLibraryRouter({ appName, workflowQueryService } = {})
       const resolvedPresentation = resolveAssetLibraryPresentation(parsed, pageDefaultsService);
       const input = {
         projectId: parsed.projectId,
-        category: parsed.category,
-        tag: parsed.tag,
+        categories: parsed.categories,
+        tags: parsed.tags,
         search: parsed.search,
-        extension: parsed.extension,
+        extensions: parsed.extensions,
         presence: parsed.presence,
         usage: parsed.usage,
         ...resolvedPresentation.values,
@@ -130,7 +130,9 @@ export function createAssetLibraryRouter({ appName, workflowQueryService } = {})
       const page = workflowQueryService.getAssetLibraryPage(input);
       const state = {
         ...input,
-        tag: page.filters?.tag ?? null,
+        categories: page.filters?.categories ?? input.categories,
+        tags: page.filters?.tags ?? input.tags,
+        extensions: page.filters?.extensions ?? input.extensions,
         presentation: resolvedPresentation.presentation,
       };
       const canonicalUrl = buildAssetLibraryUrl(state, { page: page.page });
