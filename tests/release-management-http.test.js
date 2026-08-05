@@ -9,6 +9,8 @@ import { getDisabledModeCsrf } from './helpers/auth.js';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { STATUS_DIR_MAP } from '../src/storage/project-storage.js';
 import { PAGE_DEFAULT_DEFINITIONS } from '../src/services/page-defaults-service.js';
+import { createReleaseService } from '../src/services/release-service.js';
+import { evaluateReleaseReadiness } from '../src/services/release-readiness-policy.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 
@@ -72,13 +74,23 @@ describe('release-management HTTP route (Phase 2A)', () => {
       .post('/releases')
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
-      .send(`title=${encodeURIComponent(title)}`)
-      .send(`status=${status}`);
+      .send(`title=${encodeURIComponent(title)}`);
     for (const [key, value] of Object.entries(extra)) {
       req.send(`${key}=${encodeURIComponent(value)}`);
     }
     const res = await req.set('Content-Type', 'application/x-www-form-urlencoded').expect(302);
-    return res.headers.location; // /releases/:id
+    const releaseLocation = res.headers.location; // /releases/:id
+
+    // The release create/edit form no longer submits status. Promote the
+    // release to the requested status via the service when it differs from
+    // the default 'idea'.
+    if (status !== 'idea') {
+      const releaseId = Number(releaseLocation.replace('/releases/', ''));
+      const releaseService = createReleaseService({ db, evaluateReleaseReadiness });
+      releaseService.updateRelease(releaseId, { title, status });
+    }
+
+    return releaseLocation;
   }
 
   function saveReleaseManagementDefault(option, value) {
@@ -406,12 +418,13 @@ describe('release-management HTTP route (Phase 2A)', () => {
     expect(res.text).toContain('href="/releases/new"');
   });
 
-  it('GET /releases?view=board redirects to /release-management?view=board preserving query params', async () => {
-    const res = await agent.get('/releases?view=board&sort=title').expect(302);
-    expect(res.headers.location).toBe('/release-management?view=board&sort=title');
+  it('GET /releases?view=board renders the release board without redirecting', async () => {
+    const res = await agent.get('/releases?view=board&sort=title').expect(200);
+    expect(res.text).toContain('board-container');
+    expect(res.text).toContain('<input type="hidden" name="sort" value="title">');
   });
 
-  it('Release Management defaults do not affect Published Work at /releases', async () => {
+  it('Release Management defaults do not affect Releases at /releases', async () => {
     saveReleaseManagementDefault('view', 'board');
     saveReleaseManagementDefault('sort', 'title');
     saveReleaseManagementDefault('order', 'asc');
@@ -420,7 +433,8 @@ describe('release-management HTTP route (Phase 2A)', () => {
 
     expect(res.headers.location).toBeUndefined();
     expect(res.text).not.toContain('board-container');
-    expect(res.text).toContain('<option value="published" selected>Published</option>');
+    expect(res.text).toContain('<option value="planned" selected>Planned</option>');
+    expect(res.text).toContain('<option value="asc" selected>Asc</option>');
   });
 
   it('/release-management does not expose the mutation-route surface', async () => {

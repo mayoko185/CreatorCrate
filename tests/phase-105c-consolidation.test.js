@@ -23,6 +23,8 @@ import { createApp } from '../src/app.js';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { STATUS_DIR_MAP } from '../src/storage/project-storage.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
+import { createReleaseService } from '../src/services/release-service.js';
+import { evaluateReleaseReadiness } from '../src/services/release-readiness-policy.js';
 import { ensureAuthEnablement } from '../src/auth/auth-state.js';
 import { getDisabledModeCsrf } from './helpers/auth.js';
 
@@ -119,7 +121,6 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
       await agent.post('/releases')
         .send(`projectId=${projectId}`)
         .send('title=Release+List+Test')
-        .send('status=idea')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
@@ -142,14 +143,13 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
       await agent.post('/releases')
         .send(`projectId=${projectId}`)
         .send('title=Badge+Test+Release')
-        .send('status=drafting')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
       const res = await agent.get('/release-management').expect(200);
       expect(res.text).toContain('status-badge');
-      expect(res.text).toMatch(/status-badge--draft/);
+      expect(res.text).toMatch(/status-badge--neutral/);
     });
 
     it('release list empty state uses shared partial', async () => {
@@ -256,7 +256,6 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
       const relRes = await agent.post('/releases')
         .send(`projectId=${projectId}`)
         .send('title=Release+Status+published')
-        .send('status=ready')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
@@ -282,6 +281,15 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
         .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
+      // The create/edit form no longer submits status; promote to ready via
+      // the service so the publish action can succeed.
+      const releaseId = Number(relRes.headers.location.replace('/releases/', ''));
+      const releaseService = createReleaseService({ db, evaluateReleaseReadiness });
+      releaseService.updateRelease(releaseId, {
+        title: 'Release Status published',
+        status: 'ready',
+      });
+
       await agent.post(`${relRes.headers.location}/publish`)
         .send('publishedDate=2026-08-01')
         .set('Content-Type', 'application/x-www-form-urlencoded')
@@ -305,14 +313,13 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
       const createRes = await agent.post('/releases')
         .send(`projectId=${projectId}`)
         .send('title=Detail+Badge+Test')
-        .send('status=ready')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
       const res = await agent.get(createRes.headers.location).expect(200);
       expect(res.text).toContain('status-badge');
-      expect(res.text).toMatch(/status-badge--active/);
+      expect(res.text).toMatch(/status-badge--neutral/);
     });
 
   });
@@ -499,7 +506,8 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
 
       const res = await agent.get(`/releases/new?projectId=${projectId}`).expect(200);
       expect(res.text).toContain('Basic information');
-      expect(res.text).toContain('Status and scheduling');
+      expect(res.text).toContain('Scheduling');
+      expect(res.text).not.toContain('Status and scheduling');
       expect(res.text).toContain('Links');
       // Every label has a for= matching an input id
       const labels = res.text.match(/<label[^>]*for="([^"]+)"[^>]*>/g) || [];
@@ -510,6 +518,15 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
           expect(res.text).toMatch(new RegExp(`id="${forMatch[1]}"`));
         }
       }
+      // Scheduling section has date and time inputs
+      const plannedInput = res.text.match(/<input[^>]*id="plannedDate"[^>]*>/)?.[0];
+      const timeInput = res.text.match(/<input[^>]*id="plannedTime"[^>]*>/)?.[0];
+      expect(plannedInput).toBeTruthy();
+      expect(plannedInput).toContain('type="date"');
+      expect(timeInput).toBeTruthy();
+      expect(timeInput).toContain('type="time"');
+      // Status selector is no longer rendered
+      expect(res.text).not.toContain('id="status"');
     });
 
     it('create form has primary submit and secondary cancel', async () => {
@@ -542,9 +559,8 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
         .send('title=Preserved+Release+Title')
         .send('description=Preserved+release+description')
         .send('notes=Preserved+release+notes')
-        .send('status=planned')
         .send('plannedDate=2026-02-31')
-        .send('publishedDate=2026-08-15')
+        .send('plannedTime=14:30')
         .send('patreonUrl=https://patreon.com/preserved-release')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .send('_csrf=' + encodeURIComponent(csrfToken))
@@ -557,10 +573,64 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
       expect(res.text).toContain('value="Preserved Release Title"');
       expect(res.text).toContain('Preserved release description');
       expect(res.text).toContain('Preserved release notes');
-      expect(res.text).toContain('<option value="planned" selected>Planned</option>');
+      expect(res.text).not.toContain('id="status"');
       expect(res.text).toContain('value="2026-02-31"');
-      expect(res.text).toContain('value="2026-08-15"');
+      expect(res.text).toContain('value="14:30"');
       expect(res.text).toContain('value="https://patreon.com/preserved-release"');
+    });
+
+    it('defaults new release scheduled date and time to now', async () => {
+      const projRes = await agent.post('/projects')
+        .send('title=Default+Schedule+Test')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .expect(302);
+      const projectId = projRes.headers.location.replace('/projects/', '');
+
+      const before = new Date();
+      const res = await agent.get(`/releases/new?projectId=${projectId}`).expect(200);
+      const after = new Date();
+
+      const today = res.text.match(/id="plannedDate"[^\u003e]*value="(\d{4}-\d{2}-\d{2})"/)?.[1];
+      const nowTime = res.text.match(/id="plannedTime"[^\u003e]*value="(\d{2}:\d{2})"/)?.[1];
+      expect(today).toBeTruthy();
+      expect(nowTime).toBeTruthy();
+
+      const [hourStr, minuteStr] = nowTime.split(':');
+      const hour = Number(hourStr);
+      const minute = Number(minuteStr);
+      expect(hour).toBeGreaterThanOrEqual(0);
+      expect(hour).toBeLessThanOrEqual(23);
+      expect(minute).toBeGreaterThanOrEqual(0);
+      expect(minute).toBeLessThanOrEqual(59);
+    });
+
+    it('edit form shows stored scheduled date and time', async () => {
+      const projRes = await agent.post('/projects')
+        .send('title=Edit+Schedule+Test')
+        .send('status=tbd')
+        .send('priority=normal')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .expect(302);
+      const projectId = projRes.headers.location.replace('/projects/', '');
+
+      const createRes = await agent.post('/releases')
+        .send(`projectId=${projectId}`)
+        .send('title=Scheduled+Release')
+        .send('plannedDate=2026-08-15')
+        .send('plannedTime=09:45')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .expect(302);
+      const releaseId = createRes.headers.location.replace('/releases/', '');
+
+      const res = await agent.get(`/releases/${releaseId}/edit`).expect(200);
+      expect(res.text).toContain('value="2026-08-15"');
+      expect(res.text).toContain('value="09:45"');
+      expect(res.text).not.toContain('id="status"');
     });
   });
 
@@ -616,7 +686,7 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
       expect(res.text).toContain('archived');
     });
 
-    it('asset page uses deterministic selected and candidate tables with bounded wrappers', async () => {
+    it('asset page keeps selected assets tabular and renders candidates as an accessible grid', async () => {
       const projRes = await agent.post('/projects')
         .send('title=Asset+Table+Test')
         .send('status=tbd')
@@ -675,8 +745,11 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
       expect(selectedSection).toContain('aria-label="Move selected-primary-with-long-action-name.txt up');
       expect(selectedSection).toContain('aria-label="Move selected-primary-with-long-action-name.txt down');
 
-      expect(candidateSection).toContain('<div class="table-scroll" tabindex="0" aria-label="Available release assets">');
-      expect(candidateSection).toContain('<table class="data-table">');
+      expect(candidateSection).toContain('<ul class="candidate-grid" aria-label="Available release assets">');
+      expect(candidateSection).toContain('<li class="candidate-grid-item">');
+      expect(candidateSection).toContain('<div class="candidate-grid-tile">');
+      expect(candidateSection).toContain('<strong class="candidate-grid-filename">candidate-available.txt</strong>');
+      expect(candidateSection).toContain('<code class="candidate-grid-path">candidate-available.txt</code>');
       expect(candidateSection).toContain('candidate-available.txt');
       expect(candidateSection).toContain('aria-label="Add candidate-available.txt"');
       expect(candidateSection).not.toContain('selected-primary-with-long-action-name.txt');
@@ -734,7 +807,7 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
   describe('shared-component consistency', () => {
     it('release pages that carry navigation use page-heading consistently', async () => {
       // Pages whose header hosts navigation keep a page-heading. Description-only
-      // pages (e.g. Published Work at /releases) no longer render a header.
+    // pages (e.g. Releases at /releases) no longer render a header.
       const pages = [
         { name: 'release management', url: '/release-management' },
         { name: 'release calendar', url: '/calendar' },

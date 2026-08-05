@@ -212,6 +212,10 @@
 
                 {% if not project.archived_at %}
                   <div class="category-management-actions">
+                    <form method="post" action="/projects/{{ project.id }}/asset-categories/{{ category.id }}/create-release" class="inline-form">
+                      <input type="hidden" name="_csrf" value="{{ _csrf }}">
+                      <button type="submit" class="button button-small button-primary" aria-label="Create a new release from {{ category.display_name }}">Create release</button>
+                    </form>
                     <form method="post" action="/projects/{{ project.id }}/asset-categories/{{ category.id }}/delete" class="inline-form">
                       <input type="hidden" name="_csrf" value="{{ _csrf }}">
                       <button type="submit" class="button button-small button-danger" data-confirm="Delete this category? Only possible when no asset references it and its folder is empty or missing.">Delete</button>

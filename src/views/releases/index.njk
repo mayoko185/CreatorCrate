@@ -24,6 +24,10 @@
           <input type="hidden" name="pageSize" value="{{ query.pageSize }}">
         {% endif %}
         <div class="field">
+          <label for="board-search">Search releases</label>
+          <input type="search" id="board-search" name="search" value="{{ query.search or '' }}">
+        </div>
+        <div class="field">
           <label for="board-project">Project</label>
           <input type="text" id="board-project" name="project" value="{{ query.project or '' }}" placeholder="Project ID">
         </div>
@@ -80,7 +84,7 @@
                     <div class="card-project">{{ release.project_title }}</div>
                     <div class="card-meta">
                       {% if release.planned_date %}
-                        <span class="card-date">{{ release.planned_date }}</span>
+                        <span class="card-date">{{ release.planned_date }}{% if release.planned_time %} {{ release.planned_time }}{% endif %}</span>
                       {% else %}
                         <span class="card-date unspecified">No date</span>
                       {% endif %}
@@ -126,6 +130,10 @@
         <input type="hidden" name="pageSize" value="{{ query.pageSize }}">
       {% endif %}
       <div class="field">
+        <label for="list-search">Search releases</label>
+        <input type="search" id="list-search" name="search" value="{{ query.search or '' }}">
+      </div>
+      <div class="field">
         <label for="list-project">Project</label>
         <input type="text" id="list-project" name="project" value="{{ query.project or '' }}" placeholder="Project ID">
       </div>
@@ -164,7 +172,7 @@
         <label for="list-sort">Sort</label>
         <select id="list-sort" name="sort">
           {% for opt in sortOptions %}
-            <option value="{{ opt }}" {% if query.sort == opt or (not query.sort and opt == 'updated') %}selected{% endif %}>{{ opt | replace('-', ' ') | title }}</option>
+            <option value="{{ opt }}" {% if query.sort == opt or (not query.sort and opt == 'planned') %}selected{% endif %}>{{ opt | replace('-', ' ') | title }}</option>
           {% endfor %}
         </select>
         <label for="list-order">Sort order</label>
@@ -228,7 +236,7 @@
                   <span class="readiness-none">—</span>
                 {% endif %}
               </td>
-              <td>{{ release.planned_date or '—' }}</td>
+              <td>{{ release.planned_date or '—' }}{% if release.planned_time %} {{ release.planned_time }}{% endif %}</td>
               <td>{{ release.published_date or '—' }}</td>
               <td>
                 {{ release.selected_asset_count }} asset{% if release.selected_asset_count != 1 %}s{% endif %}
@@ -259,7 +267,7 @@
         {% endif %}
       </nav>
     {% else %}
-      {% set releaseFiltersActive = query.project or query.status or query.schedule or query.includeArchived == '1' or (query.readiness and query.readiness != 'all') %}
+      {% set releaseFiltersActive = query.search or query.project or query.status or query.schedule or query.includeArchived == '1' or (query.readiness and query.readiness != 'all') %}
       {% if releaseFiltersActive and hasAnyReleases %}
         {% set emptyHeading = "No releases match the current filters" %}
         {% set emptyDescription = "Reset the filters to return to the full release list." %}

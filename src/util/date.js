@@ -66,3 +66,16 @@ export function formatRelativeTime(isoString, now = new Date()) {
   if (diffMs < 30 * day) return `${Math.floor(diffMs / day)}d ago`;
   return formatLocalDate(then);
 }
+
+/**
+ * Format a Date as a local 24-hour time string (HH:MM) using the date's local
+ * hours and minutes. Pure function of its input.
+ *
+ * @param {Date} date
+ * @returns {string} local time in HH:MM
+ */
+export function formatLocalTime(date) {
+  const h = String(date.getHours()).padStart(2, '0');
+  const m = String(date.getMinutes()).padStart(2, '0');
+  return `${h}:${m}`;
+}

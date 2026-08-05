@@ -55,6 +55,16 @@ function listProjectCategories(db, projectId) {
     .all(projectId);
 }
 
+function listReleaseAssets(db, releaseId) {
+  return db
+    .prepare('SELECT asset_id, role, sort_order FROM release_assets WHERE release_id = ? ORDER BY sort_order ASC, asset_id ASC')
+    .all(releaseId);
+}
+
+function categoryReleasePath(projectId, categoryId) {
+  return `/projects/${projectId}/asset-categories/${categoryId}/create-release`;
+}
+
 function hasNestedForms(html) {
   let depth = 0;
   for (const tag of html.match(/<\/?form\b[^>]*>/gi) || []) {
@@ -198,6 +208,7 @@ describe('project asset categories — HTTP', () => {
       const paths = [
         `/projects/${projectId}/asset-categories`,
         `/projects/${projectId}/asset-categories/reorder`,
+        `/projects/${projectId}/asset-categories/${category.id}/create-release`,
         `/projects/${projectId}/asset-categories/${category.id}/name`,
         `/projects/${projectId}/asset-categories/${category.id}/enable`,
         `/projects/${projectId}/asset-categories/${category.id}/disable`,
@@ -230,6 +241,146 @@ describe('project asset categories — HTTP', () => {
       expect(fake.setEnabled).not.toHaveBeenCalled();
       expect(fake.reorder).not.toHaveBeenCalled();
       expect(fake.delete).not.toHaveBeenCalled();
+    });
+  });
+
+  // ─── Create release from category ─────────────────────────────────────
+
+  describe('create release from category', () => {
+    it('creates one release with the category assets and redirects to asset management', async () => {
+      ctx = setupTmp();
+      const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
+      const { agent, csrfToken } = await authenticate(app);
+      const projectId = await createProject(agent, csrfToken, 'Category Release');
+      const [category] = listProjectCategories(ctx.db, projectId);
+      const assetRepository = createAssetRepository(ctx.db);
+      const first = assetRepository.upsert(projectId, `${category.directory_slug}/first.txt`, {
+        filename: 'first.txt',
+        extension: 'txt',
+        mimeType: 'text/plain',
+        sizeBytes: 10,
+        modifiedAt: null,
+        categoryId: category.id,
+      });
+      const second = assetRepository.upsert(projectId, `${category.directory_slug}/second.txt`, {
+        filename: 'second.txt',
+        extension: 'txt',
+        mimeType: 'text/plain',
+        sizeBytes: 20,
+        modifiedAt: null,
+        categoryId: category.id,
+      });
+
+      const res = await agent
+        .post(categoryReleasePath(projectId, category.id))
+        .type('form')
+        .send({ _csrf: csrfToken })
+        .expect(302);
+
+      const releaseId = Number(res.headers.location.match(/^\/releases\/(\d+)\/assets$/)?.[1]);
+      expect(Number.isInteger(releaseId)).toBe(true);
+      expect(res.headers.location).toBe(`/releases/${releaseId}/assets`);
+      expect(ctx.db.prepare('SELECT COUNT(*) AS count FROM releases WHERE project_id = ?').get(projectId).count).toBe(1);
+      expect(listReleaseAssets(ctx.db, releaseId)).toEqual([
+        { asset_id: first.id, role: 'attachment', sort_order: 0 },
+        { asset_id: second.id, role: 'attachment', sort_order: 1 },
+      ]);
+
+      const assetPage = await agent.get(res.headers.location).expect(200);
+      expect(assetPage.text).toContain('first.txt');
+      expect(assetPage.text).toContain('second.txt');
+    });
+
+    it('maps malformed, missing, and cross-project IDs to the existing not-found response', async () => {
+      ctx = setupTmp();
+      const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
+      const { agent, csrfToken } = await authenticate(app);
+      const projectId = await createProject(agent, csrfToken, 'Category Release IDs');
+      const otherProjectId = await createProject(agent, csrfToken, 'Other Category Release IDs');
+      const [category] = listProjectCategories(ctx.db, projectId);
+      const [otherCategory] = listProjectCategories(ctx.db, otherProjectId);
+
+      await agent.post(categoryReleasePath('not-an-id', category.id)).type('form').send({ _csrf: csrfToken }).expect(404);
+      await agent.post(categoryReleasePath(projectId, 'not-an-id')).type('form').send({ _csrf: csrfToken }).expect(404);
+      await agent.post(categoryReleasePath(999999, category.id)).type('form').send({ _csrf: csrfToken }).expect(404);
+      await agent.post(categoryReleasePath(projectId, 999999)).type('form').send({ _csrf: csrfToken }).expect(404);
+      await agent.post(categoryReleasePath(projectId, otherCategory.id)).type('form').send({ _csrf: csrfToken }).expect(404);
+
+      expect(ctx.db.prepare('SELECT COUNT(*) AS count FROM releases').get().count).toBe(0);
+    });
+
+    it('rejects archived projects with the existing controlled 409 handling', async () => {
+      ctx = setupTmp();
+      const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
+      const { agent, csrfToken } = await authenticate(app);
+      const projectId = await createProject(agent, csrfToken, 'Archived Category Release');
+      const [category] = listProjectCategories(ctx.db, projectId);
+      await agent.post(`/projects/${projectId}/archive`).type('form').send({ _csrf: csrfToken }).expect(302);
+
+      const res = await agent
+        .post(categoryReleasePath(projectId, category.id))
+        .type('form')
+        .send({ _csrf: csrfToken })
+        .expect(409);
+
+      expect(res.text).toMatch(/archived/i);
+      expect(ctx.db.prepare('SELECT COUNT(*) AS count FROM releases WHERE project_id = ?').get(projectId).count).toBe(0);
+    });
+
+    it('does not create a release for GET requests to the POST-only path', async () => {
+      ctx = setupTmp();
+      const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
+      const { agent, csrfToken } = await authenticate(app);
+      const projectId = await createProject(agent, csrfToken, 'Category Release GET');
+      const [category] = listProjectCategories(ctx.db, projectId);
+
+      await agent.get(categoryReleasePath(projectId, category.id)).expect(404);
+
+      expect(ctx.db.prepare('SELECT COUNT(*) AS count FROM releases WHERE project_id = ?').get(projectId).count).toBe(0);
+    });
+
+    it('allows repeated valid POSTs to create separate releases', async () => {
+      ctx = setupTmp();
+      const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
+      const { agent, csrfToken } = await authenticate(app);
+      const projectId = await createProject(agent, csrfToken, 'Repeated Category Release');
+      const [category] = listProjectCategories(ctx.db, projectId);
+
+      const first = await agent.post(categoryReleasePath(projectId, category.id)).type('form').send({ _csrf: csrfToken }).expect(302);
+      const second = await agent.post(categoryReleasePath(projectId, category.id)).type('form').send({ _csrf: csrfToken }).expect(302);
+      const firstId = Number(first.headers.location.match(/^\/releases\/(\d+)\/assets$/)?.[1]);
+      const secondId = Number(second.headers.location.match(/^\/releases\/(\d+)\/assets$/)?.[1]);
+
+      expect(firstId).not.toBe(secondId);
+      expect(ctx.db.prepare('SELECT COUNT(*) AS count FROM releases WHERE project_id = ?').get(projectId).count).toBe(2);
+    });
+
+    it('passes unexpected service failures to the existing generic error handler', async () => {
+      ctx = setupTmp();
+      const releaseService = {
+        createReleaseFromCategory: vi.fn(() => {
+          throw new Error('internal release creation detail');
+        }),
+      };
+      const app = createApp(
+        { appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot },
+        { releaseService, authConfig: AUTH_CONFIG },
+      );
+      const { agent, csrfToken } = await authenticate(app);
+      const projectId = await createProject(agent, csrfToken, 'Category Release Failure');
+      const [category] = listProjectCategories(ctx.db, projectId);
+
+      const res = await agent
+        .post(categoryReleasePath(projectId, category.id))
+        .set('Accept', 'text/html')
+        .type('form')
+        .send({ _csrf: csrfToken })
+        .expect(500);
+
+      expect(releaseService.createReleaseFromCategory).toHaveBeenCalledWith(projectId, category.id);
+      expect(res.text).toContain('Something went wrong.');
+      expect(res.text).not.toContain('internal release creation detail');
+      expect(ctx.db.prepare('SELECT COUNT(*) AS count FROM releases WHERE project_id = ?').get(projectId).count).toBe(0);
     });
   });
 
@@ -331,6 +482,10 @@ describe('project asset categories — HTTP', () => {
         expect(card).toContain('Save name');
         expect(card).toContain(`<code>${rows[index].directory_slug}</code>`);
         expect(card).toContain('data-autosubmit');
+        expect(card).toContain(`method="post" action="/projects/${projectId}/asset-categories/${rows[index].id}/create-release" class="inline-form"`);
+        expect(card).toContain(`aria-label="Create a new release from ${rows[index].display_name}"`);
+        expect(card).toContain('>Create release</button>');
+        expect(card).not.toContain(`href="/projects/${projectId}/asset-categories/${rows[index].id}/create-release"`);
         expect(card).toContain('>Delete</button>');
          expect(card).toContain('Save status');
       }
@@ -418,8 +573,9 @@ describe('project asset categories — HTTP', () => {
       expect(res.text).not.toContain('category-name-form');
       expect(res.text).not.toContain(`id="name-${category.id}"`);
       expect(res.text).not.toContain(`/projects/${projectId}/asset-categories/${category.id}/enable`);
-      expect(res.text).not.toContain(`/projects/${projectId}/asset-categories/${category.id}/disable`);
-      expect(res.text).not.toContain('id="add-displayName"');
+       expect(res.text).not.toContain(`/projects/${projectId}/asset-categories/${category.id}/disable`);
+       expect(res.text).not.toContain(`/projects/${projectId}/asset-categories/${category.id}/create-release`);
+       expect(res.text).not.toContain('id="add-displayName"');
     });
   });
 

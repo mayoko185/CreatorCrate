@@ -16,7 +16,6 @@ export const CANONICAL_DIRS = [
   'planned',
   'active',
   'ready',
-  'published',
   'archived',
   'inbox',
 ];
@@ -29,7 +28,6 @@ export const STATUS_DIR_MAP = {
   planned: 'planned',
   'in-progress': 'active',
   ready: 'ready',
-  published: 'published',
   archived: 'archived',
 };
 

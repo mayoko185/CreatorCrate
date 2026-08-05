@@ -51,33 +51,25 @@
     </div>
 
     <div class="form-section">
-      <h2>Status and scheduling</h2>
+      <h2>Scheduling</h2>
 
       <div class="field-row">
-        <div class="field {% if errors.status %}field-error{% endif %}">
-          <label for="status">Status <span class="required" aria-label="required">*</span></label>
-          {% if release and release.status == 'published' %}
-            <input type="hidden" name="status" value="published">
-            <p class="field-static-value">Published</p>
-          {% else %}
-            <select id="status" name="status" required{% if errors.status %} aria-describedby="status-error" aria-invalid="true"{% endif %}>
-              {% for s in statuses %}
-                <option value="{{ s }}" {% if values.status == s %}selected{% endif %}>{{ s | replace('-', ' ') | title }}</option>
-              {% endfor %}
-            </select>
-          {% endif %}
-          {% if errors.status %}<span class="field-error-message" id="status-error">{{ errors.status }}</span>{% endif %}
-        </div>
-      </div>
-
-      <div class="field-row">
-        <div class="field {% if errors.plannedDate %}field-error{% endif %}">
-          <label for="plannedDate">Planned date</label>
-          <input type="date" id="plannedDate" name="plannedDate" value="{{ values.plannedDate or '' }}" aria-describedby="plannedDate-help{% if errors.plannedDate %} plannedDate-error{% endif %}"{% if errors.plannedDate %} aria-invalid="true"{% endif %}>
+        <div class="field {% if errors.plannedDate or errors.plannedTime %}field-error{% endif %}">
+          <label for="plannedDate">Scheduled date</label>
+          <input type="date" id="plannedDate" name="plannedDate" value="{{ values.plannedDate or '' }}" aria-describedby="plannedDate-help{% if errors.plannedDate %} plannedDate-error{% endif %}{% if errors.plannedTime %} plannedTime-error{% endif %}"{% if errors.plannedDate or errors.plannedTime %} aria-invalid="true"{% endif %}>
           <span class="help-text" id="plannedDate-help">Target publication date for this release</span>
           {% if errors.plannedDate %}<span class="field-error-message" id="plannedDate-error">{{ errors.plannedDate }}</span>{% endif %}
         </div>
 
+        <div class="field {% if errors.plannedTime %}field-error{% endif %}">
+          <label for="plannedTime">Scheduled time</label>
+          <input type="time" id="plannedTime" name="plannedTime" value="{{ values.plannedTime or '' }}" aria-describedby="plannedTime-help{% if errors.plannedTime %} plannedTime-error{% endif %}"{% if errors.plannedTime %} aria-invalid="true"{% endif %}>
+          <span class="help-text" id="plannedTime-help">Local time this release is scheduled to go live</span>
+          {% if errors.plannedTime %}<span class="field-error-message" id="plannedTime-error">{{ errors.plannedTime }}</span>{% endif %}
+        </div>
+      </div>
+
+      <div class="field-row">
         <div class="field {% if errors.publishedDate %}field-error{% endif %}">
           <label for="publishedDate">Published date</label>
           <input type="date" id="publishedDate" name="publishedDate" value="{{ values.publishedDate or '' }}" aria-describedby="publishedDate-help{% if errors.publishedDate %} publishedDate-error{% endif %}"{% if errors.publishedDate %} aria-invalid="true"{% endif %}>
@@ -100,10 +92,8 @@
 
     <div class="form-actions">
       <button class="button button-primary" type="submit">{{ action }}</button>
-      {# Phase 2D: without project context, Cancel falls back to
-         /release-management (release-record tooling) rather than /releases,
-         which is now the Published Work page and has no relation to an
-         in-progress release-record form. #}
+        {# Without project context, Cancel falls back to the release-management
+           surface rather than returning to an in-progress release form. #}
       <a class="button button-secondary" href="{% if release %}/releases/{{ release.id }}{% elif selectedProjectId %}/projects/{{ selectedProjectId }}{% else %}/release-management{% endif %}">Cancel</a>
     </div>
   </form>

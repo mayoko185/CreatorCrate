@@ -1,7 +1,10 @@
 import { createReleaseRepository, RELEASE_STATUSES, ACTIVE_RELEASE_STATUSES, RELEASE_ASSET_ROLES } from '../data/release-repository.js';
 import { createProjectRepository } from '../data/project-repository.js';
 import { createAssetRepository } from '../data/asset-repository.js';
-import { getLocalTodayIso } from '../util/date.js';
+import { createAssetCategoryRepository } from '../data/asset-category-repository.js';
+import { AssetCategoryNotFoundError } from './asset-category-service.js';
+import { AssetCategoryValidationError } from './asset-category-validation.js';
+import { formatLocalDate, formatLocalTime, getLocalTodayIso } from '../util/date.js';
 import { isValidWebUrl } from '../util/url.js';
 
 export { RELEASE_STATUSES, ACTIVE_RELEASE_STATUSES };
@@ -72,6 +75,7 @@ const DESCRIPTION_MAX = 4000;
 const NOTES_MAX = 10000;
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const TIME_RE = /^\d{2}:\d{2}$/;
 
 /**
  * Valid workflow transitions.
@@ -147,6 +151,16 @@ function isValidDate(value) {
   return day <= daysInMonth[month - 1];
 }
 
+function isValidTime(value) {
+  if (!value) return true;
+  if (!TIME_RE.test(value)) return false;
+  const [hourStr, minuteStr] = value.split(':');
+  const hour = Number(hourStr);
+  const minute = Number(minuteStr);
+  if (Number.isNaN(hour) || Number.isNaN(minute)) return false;
+  return hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59;
+}
+
 /**
  * Strict positive-integer validator. Rejects malformed strings like "1junk",
  * "2.5", "1e2", "+2", "-2", or "0". Returns null for invalid values.
@@ -162,10 +176,46 @@ function parseStrictPositiveInt(value) {
   return num;
 }
 
+function normalizeOptionalCategoryId(value) {
+  if (value === undefined || value === null || value === '') return null;
+
+  const text = typeof value === 'string' ? value.trim() : String(value);
+  if (!/^[1-9]\d*$/.test(text)) {
+    const error = new AssetCategoryValidationError({ categoryId: 'categoryId must be a positive integer.' });
+    error.status = 422;
+    throw error;
+  }
+
+  const id = Number(text);
+  if (!Number.isSafeInteger(id) || id <= 0) {
+    const error = new AssetCategoryValidationError({ categoryId: 'categoryId must be a positive integer.' });
+    error.status = 422;
+    throw error;
+  }
+  return id;
+}
+
+function normalizeRequiredCategoryId(value) {
+  const id = normalizeOptionalCategoryId(value);
+  if (id !== null) return id;
+
+  const error = new AssetCategoryValidationError({ categoryId: 'categoryId must be a positive integer.' });
+  error.status = 422;
+  throw error;
+}
+
+function readCategoryFilter(rawQuery) {
+  if (!rawQuery || typeof rawQuery !== 'object' || Array.isArray(rawQuery)) return undefined;
+  if (Object.hasOwn(rawQuery, 'categoryId')) return rawQuery.categoryId;
+  if (Object.hasOwn(rawQuery, 'category')) return rawQuery.category;
+  return undefined;
+}
+
 export function createReleaseService({ db, evaluateReleaseReadiness }) {
   const repository = createReleaseRepository(db);
   const projectRepository = createProjectRepository(db);
   const assetRepository = createAssetRepository(db);
+  const assetCategoryRepository = createAssetCategoryRepository(db);
 
   function validate(input, options = {}) {
     const { existingId } = options;
@@ -188,15 +238,20 @@ export function createReleaseService({ db, evaluateReleaseReadiness }) {
       errors.notes = `Notes must be ${NOTES_MAX} characters or fewer.`;
     }
 
-    const status = input.status;
+    const status = input.status ?? 'idea';
     if (!RELEASE_STATUSES.includes(status)) {
       errors.status = `Status must be one of: ${RELEASE_STATUSES.join(', ')}.`;
     }
 
     const plannedDate = input.plannedDate || null;
+    const submittedPlannedTime = input.plannedTime || null;
     if (!isValidDate(plannedDate)) {
       errors.plannedDate = 'Planned date must be a valid date (YYYY-MM-DD).';
     }
+    if (submittedPlannedTime != null && !isValidTime(submittedPlannedTime)) {
+      errors.plannedTime = 'Planned time must be a valid time (HH:MM).';
+    }
+    const plannedTime = plannedDate ? submittedPlannedTime : null;
 
     const publishedDate = input.publishedDate || null;
     if (!isValidDate(publishedDate)) {
@@ -222,6 +277,7 @@ export function createReleaseService({ db, evaluateReleaseReadiness }) {
       notes,
       status,
       plannedDate,
+      plannedTime,
       publishedDate,
       patreonUrl,
     };
@@ -309,6 +365,59 @@ export function createReleaseService({ db, evaluateReleaseReadiness }) {
     },
 
     /**
+     * Create a release from the currently present assets in one project-owned
+     * category. The returned release ID is sufficient for a caller to build
+     * the existing release edit or asset-management URL.
+     *
+     * @param {number|string} projectId
+     * @param {number|string} categoryId
+     * @returns {ReleaseRecord}
+     */
+    createReleaseFromCategory(projectId, categoryId) {
+      const normalizedProjectId = parseStrictPositiveInt(projectId);
+      if (normalizedProjectId === null) {
+        throw new ReleaseValidationError({ projectId: 'projectId must be a positive integer.' });
+      }
+
+      const project = validateProjectExists(normalizedProjectId);
+      const normalizedCategoryId = normalizeRequiredCategoryId(categoryId);
+      const category = assetCategoryRepository.findProjectCategoryById(
+        project.id,
+        normalizedCategoryId,
+      );
+      if (!category) {
+        throw new AssetCategoryNotFoundError(normalizedCategoryId);
+      }
+
+      const now = new Date();
+      const normalized = validate({
+        title: category.display_name,
+        description: '',
+        notes: '',
+        status: 'idea',
+        plannedDate: formatLocalDate(now),
+        plannedTime: formatLocalTime(now),
+        publishedDate: null,
+        patreonUrl: null,
+      });
+      validateTransition(null, normalized.status);
+
+      const selections = assetRepository
+        .findProjectAssetsByCategoryInBrowserOrder(project.id, category.id)
+        .filter((asset) => asset.is_present === 1)
+        .map((asset, sortOrder) => ({
+          assetId: asset.id,
+          role: 'attachment',
+          sortOrder,
+        }));
+
+      return repository.createWithAssetSelections(
+        { projectId: project.id, ...normalized },
+        selections,
+      );
+    },
+
+    /**
      * @param {number} id
      * @param {Object} input
      * @returns {ReleaseRecord}
@@ -329,7 +438,20 @@ export function createReleaseService({ db, evaluateReleaseReadiness }) {
       // Validate project still exists and is not archived
       validateProjectExists(release.project_id);
 
-      const normalized = validate(input, { existingId: id });
+      // Default missing status and scheduling values to the existing release
+      // values so the edit form can omit those fields without clearing them.
+      const inputWithDefaults = {
+        title: input.title ?? release.title,
+        description: input.description ?? release.description,
+        notes: input.notes ?? release.notes,
+        status: input.status ?? release.status,
+        plannedDate: input.plannedDate ?? release.planned_date,
+        plannedTime: input.plannedTime ?? release.planned_time,
+        publishedDate: input.publishedDate ?? release.published_date,
+        patreonUrl: input.patreonUrl ?? release.patreon_url,
+        ...input,
+      };
+      const normalized = validate(inputWithDefaults, { existingId: id });
       // Enforce lifecycle transitions
       validateTransition(release.status, normalized.status);
       const updated = repository.update(id, normalized);
@@ -1019,10 +1141,16 @@ export function createReleaseService({ db, evaluateReleaseReadiness }) {
     /**
      * Get all assets for a project (for asset selection UI).
      * @param {number} projectId
+     * @param {number|null} [categoryId] - optional project-owned category ID
      * @returns {Array}
      */
-    findProjectAssets(projectId) {
-      return assetRepository.findByProjectId(projectId, { sortBy: 'filename', order: 'asc' });
+    findProjectAssets(projectId, categoryId = null) {
+      const normalizedCategoryId = normalizeOptionalCategoryId(categoryId);
+      return assetRepository.findByProjectId(projectId, {
+        sortBy: 'filename',
+        order: 'asc',
+        categoryId: normalizedCategoryId,
+      });
     },
 
     // ─── Phase 9-1: Release Asset Candidate Discovery ─────────────────────
@@ -1065,6 +1193,9 @@ export function createReleaseService({ db, evaluateReleaseReadiness }) {
      *   - release
      *   - project
      *   - releaseAssets — complete selected assets (unpaginated, includes missing)
+     *   - assets — complete project asset list for Bulk Selection
+     *   - categories — all project-owned categories for a future filter control
+     *   - activeCategoryId — selected project category ID, or null
      *   - candidates — current bounded candidate page
      *   - candidateTotal — total matching candidates
      *   - candidatePage — current page number
@@ -1080,6 +1211,9 @@ export function createReleaseService({ db, evaluateReleaseReadiness }) {
      *   release: object,
      *   project: object,
      *   releaseAssets: Array,
+     *   assets: Array,
+     *   categories: Array,
+     *   activeCategoryId: number|null,
      *   candidates: Array,
      *   candidateTotal: number,
      *   candidatePage: number,
@@ -1106,6 +1240,17 @@ export function createReleaseService({ db, evaluateReleaseReadiness }) {
       // Complete selected assets (unpaginated, includes missing)
       const releaseAssets = repository.listReleaseAssets(releaseId);
 
+      const activeCategoryId = normalizeOptionalCategoryId(readCategoryFilter(rawQuery));
+      const categories = assetCategoryRepository.listProjectCategories(release.project_id);
+      if (
+        activeCategoryId !== null
+        && !assetCategoryRepository.findProjectCategoryById(release.project_id, activeCategoryId)
+      ) {
+        throw new AssetCategoryNotFoundError(activeCategoryId);
+      }
+
+      const assets = this.findProjectAssets(release.project_id);
+
       // Normalize candidate filters
       const candidateFilters = this.normalizeCandidateQuery(rawQuery);
 
@@ -1113,7 +1258,11 @@ export function createReleaseService({ db, evaluateReleaseReadiness }) {
       const candidateTotal = repository.countReleaseCandidates(
         releaseId,
         release.project_id,
-        { search: candidateFilters.search, extension: candidateFilters.extension }
+        {
+          search: candidateFilters.search,
+          extension: candidateFilters.extension,
+          categoryId: activeCategoryId,
+        }
       );
 
       // Pagination metadata
@@ -1127,18 +1276,26 @@ export function createReleaseService({ db, evaluateReleaseReadiness }) {
         {
           search: candidateFilters.search,
           extension: candidateFilters.extension,
+          categoryId: activeCategoryId,
           page: candidatePage,
           pageSize: candidateFilters.pageSize,
         }
       );
 
       // Available extensions for filter dropdown
-      const candidateExtensions = repository.getReleaseCandidateExtensions(releaseId, release.project_id);
+      const candidateExtensions = repository.getReleaseCandidateExtensions(
+        releaseId,
+        release.project_id,
+        { categoryId: activeCategoryId },
+      );
 
       return {
         release,
         project,
         releaseAssets,
+        assets,
+        categories,
+        activeCategoryId,
         candidates,
         candidateTotal,
         candidatePage,

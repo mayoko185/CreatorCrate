@@ -856,22 +856,6 @@ export function createWorkflowQueryService({
   }
 
   /**
-   * Compose the Published page's project list without changing the
-   * published-project repository semantics. Filtering, ordering, pagination,
-   * and totals happen in listPublished; only the returned page is enriched.
-   *
-   * @param {object} [options] - published-project repository list options
-   * @returns {{ rows: Array, total: number }}
-   */
-  function getPublishedProjectList(options = {}) {
-    const result = projectRepository.listPublished(options);
-    return {
-      ...result,
-      rows: attachPrimaryImages(result.rows),
-    };
-  }
-
-  /**
    * Compose the read-only cross-project Asset Viewer page model.
    *
    * The input is the route's normalized query state. This method deliberately
@@ -1078,6 +1062,7 @@ export function createWorkflowQueryService({
     }
 
     const projectId = parseStrictPositiveInt(raw.project);
+    const search = typeof raw.search === 'string' ? raw.search.trim() : '';
     const status = RELEASE_STATUSES.includes(raw.status) ? raw.status : null;
     const schedule = ['overdue', 'today', 'upcoming', 'unscheduled'].includes(raw.schedule)
       ? raw.schedule
@@ -1096,7 +1081,7 @@ export function createWorkflowQueryService({
     const readinessValues = ['all', 'publishable', 'blocked-ready'];
     const readiness = readinessValues.includes(raw.readiness) ? raw.readiness : 'all';
 
-    return { projectId, status, schedule, includeArchived, sortBy, order, page, pageSize, readiness };
+    return { search, projectId, status, schedule, includeArchived, sortBy, order, page, pageSize, readiness };
   }
 
   /**
@@ -1246,10 +1231,8 @@ export function createWorkflowQueryService({
    *
    * Calendar entries are project records, not release records: each
    * project appears at most once regardless of how many releases it has.
-   * The effective date is planned_date for tbd/planned/in-progress/ready
-   * projects, and published_date (falling back to planned_date) for
-   * published projects. Archived projects and projects with no applicable
-   * date are excluded.
+   * The effective date is planned_date for every valid project workflow
+   * status. Archived projects and projects with no planned date are excluded.
    * @param {string} month - YYYY-MM month string
    * @param {Object} [options]
    * @param {string} [options.today] - ISO date YYYY-MM-DD override
@@ -1309,6 +1292,81 @@ export function createWorkflowQueryService({
     // Leading padding cells show the tail end of the previous month's dates
     // (dimmed, non-interactive) rather than blank cells — needs that month's
     // day count to compute the numbers.
+    const prevMonthNum = monthNum === 1 ? 12 : monthNum - 1;
+    const prevMonthYear = monthNum === 1 ? year - 1 : year;
+    const prevMonthDaysCount = [31, isLeapYear(prevMonthYear) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][prevMonthNum - 1];
+
+    const monthStr = `${year}-${String(monthNum).padStart(2, '0')}`;
+    return {
+      month: monthStr,
+      days,
+      firstDayWeekday,
+      prevMonthDaysCount,
+      prevMonth: prevMonth(monthStr),
+      nextMonth: nextMonth(monthStr),
+      today,
+    };
+  }
+
+  /**
+   * Release-backed calendar view data for a given month.
+   *
+   * Calendar entries are release records. Every non-archived release with a
+   * planned_date in the requested month is included regardless of lifecycle
+   * status, including multiple releases belonging to one project. The
+   * repository supplies one row per release in deterministic schedule order.
+   *
+   * @param {string} month - YYYY-MM month string
+   * @param {Object} [options]
+   * @param {string} [options.today] - ISO date YYYY-MM-DD override
+   * @returns {{ month: string, days: Array<{ date: string, entries: Array }>, firstDayWeekday: number, prevMonthDaysCount: number, prevMonth: string|null, nextMonth: string|null, today: string }}
+   */
+  function getReleaseCalendar(month, options = {}) {
+    const today = options.today || defaultToday();
+    const validated = parseMonth(month);
+
+    // Fall back to current month if invalid.
+    const { year, month: monthNum } = validated || parseMonth(today.slice(0, 7)) || { year: 2026, month: 7 };
+
+    const startDate = `${year}-${String(monthNum).padStart(2, '0')}-01`;
+    let endYear = year;
+    let endMonth = monthNum + 1;
+    if (endMonth > 12) {
+      if (year + 1 > 9999) {
+        endMonth = 13;
+      } else {
+        endMonth = 1;
+        endYear++;
+      }
+    }
+    const endDate = `${endYear}-${String(endMonth).padStart(2, '0')}-01`;
+
+    const rows = releaseRepository.findCalendarRange(startDate, endDate);
+    const entries = attachReleasePreviewUrls(rows.map((row) => ({
+      id: row.id,
+      project_id: row.project_id,
+      project_title: row.project_title,
+      title: row.title,
+      status: row.status,
+      planned_date: row.planned_date,
+      planned_time: row.planned_time,
+    })));
+    const byDate = new Map();
+
+    for (const entry of entries) {
+      if (!byDate.has(entry.planned_date)) byDate.set(entry.planned_date, []);
+      byDate.get(entry.planned_date).push(entry);
+    }
+
+    const daysInMonth = [31, isLeapYear(year) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][monthNum - 1];
+    const days = [];
+    for (let d = 1; d <= daysInMonth; d++) {
+      const date = `${year}-${String(monthNum).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+      days.push({ date, entries: byDate.get(date) || [] });
+    }
+
+    const firstDay = new Date(year, monthNum - 1, 1);
+    const firstDayWeekday = (firstDay.getDay() + 6) % 7;
     const prevMonthNum = monthNum === 1 ? 12 : monthNum - 1;
     const prevMonthYear = monthNum === 1 ? year - 1 : year;
     const prevMonthDaysCount = [31, isLeapYear(prevMonthYear) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][prevMonthNum - 1];
@@ -1539,6 +1597,39 @@ export function createWorkflowQueryService({
       revision,
       urls,
     };
+  }
+
+  function attachReleasePreviewUrls(entries) {
+    if (!Array.isArray(entries) || entries.length === 0) return [];
+
+    const releaseIds = entries.map((entry) => entry.id);
+    const selectedAssetRows = releaseRepository.findReleaseAssetsByReleaseIds(releaseIds);
+    const previewUrlByReleaseId = new Map();
+
+    for (const row of selectedAssetRows) {
+      if (previewUrlByReleaseId.has(row.release_id) || row.asset_id == null) continue;
+      if (row.asset_project_id !== row.release_project_id) continue;
+
+      const previewModel = buildAssetPreviewModel({
+        id: row.asset_id,
+        project_id: row.asset_project_id,
+        relative_path: row.relative_path,
+        extension: row.extension,
+        mime_type: row.mime_type,
+        size_bytes: row.size_bytes,
+        modified_at: row.modified_at,
+        is_present: row.is_present,
+      });
+
+      if (previewModel.previewable && previewModel.sourceMetadataValid && previewModel.urls.thumbnail) {
+        previewUrlByReleaseId.set(row.release_id, previewModel.urls.thumbnail);
+      }
+    }
+
+    return entries.map((entry) => ({
+      ...entry,
+      preview_url: previewUrlByReleaseId.get(entry.id) ?? null,
+    }));
   }
 
   function buildOriginalUrl(asset) {
@@ -2390,11 +2481,11 @@ export function createWorkflowQueryService({
     getProjectWorkspace,
     getProjectList,
     getProjectTagFilterOptions,
-    getPublishedProjectList,
     getAssetLibraryPage,
     getReleaseList,
     getReleaseBoard,
     getProjectCalendar,
+    getReleaseCalendar,
     getProjectAssetBrowser,
     getProjectAutoRenameCategory,
     getProjectAssetBrowserContext,

@@ -7,7 +7,7 @@ import {
 import { DEFAULT_PRIORITY } from './project-service.js';
 
 const PROJECTS = 'projects';
-const PUBLISHED_WORK = 'publishedWork';
+const RELEASES = 'releases';
 const RELEASE_MANAGEMENT = 'releaseManagement';
 const PROJECT_ASSETS = 'projectAssets';
 const ASSET_VIEWER = 'assetViewer';
@@ -28,10 +28,10 @@ export const PAGE_DEFAULT_DEFINITIONS = Object.freeze({
     sort: definition('page_defaults.projects.sort', ['updated', 'created', 'title'], 'created'),
     order: definition('page_defaults.projects.order', ['asc', 'desc'], 'desc'),
   }),
-  [PUBLISHED_WORK]: Object.freeze({
-    view: definition('page_defaults.published_work.view', ['grid', 'list'], 'grid'),
-    sort: definition('page_defaults.published_work.sort', ['published', 'title', 'updated'], 'published'),
-    order: definition('page_defaults.published_work.order', ['asc', 'desc'], 'desc'),
+  [RELEASES]: Object.freeze({
+    view: definition('page_defaults.releases.view', ['list', 'board'], 'list'),
+    sort: definition('page_defaults.releases.sort', ['planned', 'updated', 'created', 'title'], 'planned'),
+    order: definition('page_defaults.releases.order', ['asc', 'desc'], 'asc'),
   }),
   [RELEASE_MANAGEMENT]: Object.freeze({
     view: definition('page_defaults.release_management.view', ['list', 'board'], 'list'),

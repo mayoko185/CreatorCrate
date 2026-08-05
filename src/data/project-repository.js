@@ -1,5 +1,5 @@
-export const STATUSES = ['tbd', 'planned', 'in-progress', 'ready', 'published', 'archived'];
-export const WORKFLOW_STATUSES = ['tbd', 'planned', 'in-progress', 'ready', 'published'];
+export const STATUSES = ['tbd', 'planned', 'in-progress', 'ready', 'archived'];
+export const WORKFLOW_STATUSES = ['tbd', 'planned', 'in-progress', 'ready'];
 export const PRIORITIES = ['low', 'normal', 'high'];
 
 const COLUMNS = [
@@ -96,7 +96,7 @@ export function createProjectRepository(db) {
   const findCalendarRangeStmt = db.prepare(`
     SELECT * FROM (
       SELECT ${COLUMNS.join(', ')},
-        CASE WHEN status = 'published' THEN COALESCE(published_date, planned_date) ELSE planned_date END AS effective_date
+        planned_date AS effective_date
       FROM projects
       WHERE archived_at IS NULL AND status <> 'archived'
     )
@@ -258,9 +258,8 @@ export function createProjectRepository(db) {
      * bounded range (inclusive start, exclusive end). A project is excluded
      * if either archived_at is set or status is 'archived' — the two can
      * disagree transiently, and both must be checked. The effective date is
-     * published_date (falling back to planned_date) for published projects,
-     * and planned_date for every other workflow status. Projects with no
-     * applicable date are excluded. Each project appears at most once.
+     * planned_date for every valid workflow status. Projects with no planned
+     * date are excluded. Each project appears at most once.
      * @param {string} startDate - ISO date YYYY-MM-DD (inclusive)
      * @param {string} endDate - ISO date YYYY-MM-DD (exclusive)
      * @returns {Array<ProjectRecord & {effective_date: string}>}
@@ -336,50 +335,6 @@ export function createProjectRepository(db) {
       return { rows, total };
     },
 
-    /**
-     * Published-project listing for the /releases "Published Work" page
-     * (Phase 2B). Always scoped to status='published' AND archived_at IS
-     * NULL — no release record required. Default order is published_date
-     * descending with nulls last, then updated_at descending, then id
-     * descending; sortBy 'title' and 'updated' order by those columns
-     * directly (no null handling needed — both are always populated).
-     * @param {Object} [options]
-     * @param {string} [options.search]
-     * @param {string} [options.sortBy] - 'published' | 'title' | 'updated'
-     * @param {string} [options.order] - 'asc' | 'desc'
-     * @param {number} [options.limit]
-     * @param {number} [options.offset]
-     * @returns {{ rows: ProjectRecord[], total: number }}
-     */
-    listPublished(options = {}) {
-      const {
-        search,
-        sortBy = 'published',
-        order = 'desc',
-        limit = 25,
-        offset = 0,
-      } = options;
-
-      const conditions = ["status = 'published'", 'archived_at IS NULL'];
-      const params = [];
-
-      if (search && search.trim()) {
-        const term = `%${escapeLike(search.trim())}%`;
-        conditions.push("(title LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\' OR notes LIKE ? ESCAPE '\\')");
-        params.push(term, term, term);
-      }
-
-      const where = `WHERE ${conditions.join(' AND ')}`;
-      const orderClause = buildPublishedOrderClause(sortBy, order);
-
-      const countSql = `SELECT COUNT(*) AS c FROM projects ${where}`;
-      const total = db.prepare(countSql).get(...params).c;
-
-      const listSql = `${SELECT_ALL} ${where} ${orderClause} LIMIT ? OFFSET ?`;
-      const rows = db.prepare(listSql).all(...params, limit, offset);
-
-      return { rows, total };
-    },
   };
 }
 
@@ -397,17 +352,4 @@ function buildOrderClause(sortBy, order) {
   const sort = ALLOWED_SORTS[sortBy] || ALLOWED_SORTS.updated;
   const direction = order === 'asc' ? 'ASC' : 'DESC';
   return `ORDER BY ${sort.column} ${direction}`;
-}
-
-function buildPublishedOrderClause(sortBy, order) {
-  const direction = order === 'asc' ? 'ASC' : 'DESC';
-  if (sortBy === 'title') {
-    return `ORDER BY title COLLATE NOCASE ${direction}, updated_at DESC, id DESC`;
-  }
-  if (sortBy === 'updated') {
-    return `ORDER BY updated_at ${direction}, id DESC`;
-  }
-  // Default: published_date, with nulls always sorted last regardless of
-  // direction (missing published dates are not meaningfully "earlier").
-  return `ORDER BY (published_date IS NULL) ASC, published_date ${direction}, updated_at DESC, id DESC`;
 }

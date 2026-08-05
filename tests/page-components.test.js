@@ -181,13 +181,12 @@ describe('Phase 10.5A: Shared page-level components', () => {
       expect(countTags(extractPageHeading(res.text), 'h1')).toBe(0);
     });
 
-    it('published work page has exactly one h1 and renders no empty page-heading wrapper', async () => {
+    it('Releases page has exactly one h1 and carries its view/actions in page-heading', async () => {
       const res = await agent.get('/releases').expect(200);
       expect(countTags(res.text, 'h1')).toBe(1);
-      expect(res.text).toContain('<h1 class="app-section-title">Published Work</h1>');
-      // The published work page has no navigation or badge for page-heading to
-      // carry — it must not render an empty wrapper.
-      expect(hasClass(res.text, 'page-heading')).toBe(false);
+      expect(res.text).toContain('<h1 class="app-section-title">Releases</h1>');
+      expect(hasClass(res.text, 'page-heading')).toBe(true);
+      expect(countTags(extractPageHeading(res.text), 'h1')).toBe(0);
     });
 
     it('dashboard has exactly one h1, and page-heading carries supporting content only', async () => {
@@ -379,14 +378,16 @@ describe('Phase 10.5A: Shared page-level components', () => {
   // ─── 6. Table responsiveness ───────────────────────────────────────────
 
   describe('table responsiveness', () => {
-    it('project list table uses data-table and table-scroll', async () => {
+    it('project list uses project card grid markup', async () => {
       db.prepare(
         `INSERT INTO projects (title, slug, description, notes, status, priority, planned_date, published_date, patreon_url)
          VALUES (?, ?, '', '', 'tbd', 'normal', NULL, NULL, NULL)`
       ).run('Table Test', 'table-test');
       const res = await agent.get('/projects').expect(200);
-      expect(res.text).toContain('data-table');
-      expect(res.text).toContain('table-scroll');
+      expect(res.text).toContain('<ul class="project-grid">');
+      expect(res.text).toMatch(
+        /<li class="project-grid-item">[\s\S]*?<article class="project-card project-card--grid" data-project-card>[\s\S]*?<a class="project-card-link" data-project-card-link href="\/projects\/\d+">Table Test<\/a>/
+      );
     });
 
     it('data-table styles are defined with proper header styles', async () => {
@@ -396,8 +397,7 @@ describe('Phase 10.5A: Shared page-level components', () => {
       expect(css).toContain('.data-table th');
     });
 
-    it('ordinary project tables are not extra tab stops', async () => {
-      // Need at least one project so the table renders (empty state has no table-scroll)
+    it('project cards expose a native focusable link without an extra tab stop', async () => {
       await agent
         .post('/projects')
         .send('title=Tabindex+Test')
@@ -408,9 +408,11 @@ describe('Phase 10.5A: Shared page-level components', () => {
         .expect(302);
 
       const res = await agent.get('/projects').expect(200);
-      const wrapper = res.text.match(/<div class="table-scroll">[\s\S]*?<table class="data-table">/);
-      expect(wrapper).not.toBeNull();
-      expect(wrapper[0]).not.toContain('tabindex="0"');
+      const card = res.text.match(/<article class="project-card project-card--grid" data-project-card>[\s\S]*?<\/article>/);
+      expect(card).not.toBeNull();
+      expect(card[0]).toContain('data-project-card-link href="/projects/');
+      expect(card[0]).toContain('>Tabindex Test</a>');
+      expect(card[0]).not.toContain('tabindex="0"');
     });
 
     it('intrinsically wide release tables remain focusable and named', async () => {

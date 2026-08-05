@@ -122,6 +122,13 @@ describe('project service', () => {
     expect(() => service.create(validInput({ status: 'banana' }))).toThrow(ProjectValidationError);
   });
 
+  it('rejects published as a project status', () => {
+    expect(() => service.create(validInput({ status: 'published' }))).toThrow(ProjectValidationError);
+    const project = service.create(validInput({ title: 'Status Update Project' }));
+    expect(() => service.update(project.id, validInput({ status: 'published' })))
+      .toThrow(ProjectValidationError);
+  });
+
   it.each(['', null, 'urgent'])('rejects an invalid priority %j', (priority) => {
     expect(() => service.create(validInput({ priority }))).toThrow(ProjectValidationError);
   });
@@ -598,13 +605,13 @@ describe('project service', () => {
 
       const updated = service.update(project.id, validInput({
         title: 'Combined Final',
-        status: 'published',
+        status: 'ready',
       }));
 
       const { absPath: newPath, relPath: newRel } = getProjectDir(updated);
       expect(fs.existsSync(oldPath)).toBe(false);
       expect(fs.existsSync(newPath)).toBe(true);
-      expect(newRel.startsWith('published' + path.sep)).toBe(true);
+      expect(newRel.startsWith('ready' + path.sep)).toBe(true);
 
       // Custom file in subdirectory survived
       expect(fs.existsSync(path.join(newPath, 'source', 'asset.blend'))).toBe(true);
@@ -613,7 +620,7 @@ describe('project service', () => {
       // Manifest is correct
       const manifest = readManifestSync(newPath);
       expect(manifest.title).toBe('Combined Final');
-      expect(manifest.status).toBe('published');
+      expect(manifest.status).toBe('ready');
     });
 
     it('existing manually added files survive rename', () => {
@@ -754,7 +761,7 @@ describe('project service', () => {
 
       const updated = service.update(project.id, validInput({
         title: 'Agreement Test Renamed',
-        status: 'published',
+        status: 'ready',
         description: 'New desc',
         priority: 'high',
         plannedDate: '2027-01-15',
@@ -763,7 +770,7 @@ describe('project service', () => {
       // DB values
       expect(updated.title).toBe('Agreement Test Renamed');
       expect(updated.slug).toBe('agreement-test-renamed');
-      expect(updated.status).toBe('published');
+      expect(updated.status).toBe('ready');
       expect(updated.description).toBe('New desc');
       expect(updated.priority).toBe('high');
       expect(updated.planned_date).toBe('2027-01-15');
@@ -877,7 +884,7 @@ describe('project service', () => {
       try {
         service.update(project.id, validInput({
           title: 'Manifest Fail Update', // same slug
-          status: 'published',
+          status: 'ready',
         }));
         expect(true).toBe(false);
       } catch (err) {
@@ -912,7 +919,7 @@ describe('project service', () => {
       try {
         service.update(project.id, validInput({
           title: 'Set Dir Fail Update', // same slug
-          status: 'published',
+          status: 'ready',
         }));
         expect(true).toBe(false);
       } catch (err) {

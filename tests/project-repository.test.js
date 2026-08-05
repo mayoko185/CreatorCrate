@@ -78,7 +78,7 @@ describe('project repository', () => {
   it('filters by status', () => {
     repository.create(sampleProject({ title: 'A', status: 'planned' }));
     repository.create(sampleProject({ title: 'B', status: 'ready' }));
-    repository.create(sampleProject({ title: 'C', status: 'published' }));
+    repository.create(sampleProject({ title: 'C', status: 'tbd' }));
 
     const planned = repository.list({ status: 'planned' });
     expect(planned.rows).toHaveLength(1);
@@ -303,22 +303,22 @@ describe('project repository', () => {
       }
     });
 
-    it('published project uses published_date', () => {
+    it('uses planned_date even when a project has a publication date field', () => {
       repository.create(sampleProject({
-        title: 'Published',
-        status: 'published',
+        title: 'Release-backed Project',
+        status: 'ready',
         plannedDate: '2025-06-01',
         publishedDate: '2025-06-20',
       }));
       const rows = repository.findCalendarRange('2025-06-01', '2025-07-01');
       expect(rows).toHaveLength(1);
-      expect(rows[0].effective_date).toBe('2025-06-20');
+      expect(rows[0].effective_date).toBe('2025-06-01');
     });
 
-    it('published project without published_date falls back to planned_date', () => {
+    it('uses planned_date for every non-archived workflow status', () => {
       repository.create(sampleProject({
-        title: 'Published No Pub Date',
-        status: 'published',
+        title: 'Planned Project',
+        status: 'planned',
         plannedDate: '2025-06-15',
         publishedDate: null,
       }));

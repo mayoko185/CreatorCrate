@@ -6,18 +6,8 @@ import { fileURLToPath } from 'node:url';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { createProjectRepository } from '../src/data/project-repository.js';
 
-const REAL_MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
-const MIGRATION_011 = '011_asset_category_assignments.sql';
-const MIGRATION_012 = '012_asset_browser_preferences.sql';
 const GLOBAL_DEFAULT_KEY = 'asset_browser.default_category';
-
-function copyMigrationsUpTo(destDir, lastFilename) {
-  const files = fs.readdirSync(REAL_MIGRATIONS_DIR).filter((name) => name.endsWith('.sql')).sort();
-  for (const filename of files) {
-    if (lastFilename && filename > lastFilename) continue;
-    fs.copyFileSync(path.join(REAL_MIGRATIONS_DIR, filename), path.join(destDir, filename));
-  }
-}
+const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 
 function createProject(repository, title) {
   return repository.create({
@@ -33,7 +23,7 @@ function createProject(repository, title) {
   });
 }
 
-describe('asset-browser preference migration (012)', () => {
+describe('asset-browser preferences in the baseline schema', () => {
   let tmpDir;
   let dbPath;
   let db;
@@ -49,20 +39,18 @@ describe('asset-browser preference migration (012)', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('applies after migration 011 and records migration 012 in order', () => {
+  it('records only the baseline migration', () => {
     db = openDatabase(dbPath);
 
-    expect(() => runMigrations(db, REAL_MIGRATIONS_DIR)).not.toThrow();
+    expect(() => runMigrations(db, MIGRATIONS_DIR)).not.toThrow();
 
     const applied = db.prepare('SELECT filename FROM schema_migrations ORDER BY rowid').pluck().all();
-    expect(applied).toContain(MIGRATION_011);
-    expect(applied).toContain(MIGRATION_012);
-    expect(applied.indexOf(MIGRATION_012)).toBeGreaterThan(applied.indexOf(MIGRATION_011));
+    expect(applied).toEqual(['001_initial.sql']);
   });
 
   it('creates the preference table with timestamps, project cascade, and no category foreign key', () => {
     db = openDatabase(dbPath);
-    runMigrations(db, REAL_MIGRATIONS_DIR);
+    runMigrations(db, MIGRATIONS_DIR);
 
     const columns = db.pragma('table_info(project_asset_browser_preferences)').map((column) => column.name);
     expect(columns).toEqual([
@@ -81,43 +69,19 @@ describe('asset-browser preference migration (012)', () => {
     expect(ddl).not.toMatch(/FOREIGN KEY\s*\(default_category_id\)/i);
   });
 
-  it('backfills existing projects as inherit and defaults missing global metadata to all', () => {
-    copyMigrationsUpTo(tmpDir, MIGRATION_011);
+  it('does not overwrite an existing global metadata value on repeated runs', () => {
     db = openDatabase(dbPath);
-    runMigrations(db, tmpDir);
+    runMigrations(db, MIGRATIONS_DIR);
+    db.prepare('UPDATE app_meta SET value = ? WHERE key = ?').run('exports', GLOBAL_DEFAULT_KEY);
 
-    const projectRepository = createProjectRepository(db);
-    const first = createProject(projectRepository, 'Existing One');
-    const second = createProject(projectRepository, 'Existing Two');
-
-    runMigrations(db, REAL_MIGRATIONS_DIR);
-
-    const preferences = db.prepare(`
-      SELECT project_id, default_category_mode, default_category_id
-      FROM project_asset_browser_preferences
-      ORDER BY project_id
-    `).all();
-    expect(preferences).toEqual([
-      { project_id: first.id, default_category_mode: 'inherit', default_category_id: null },
-      { project_id: second.id, default_category_mode: 'inherit', default_category_id: null },
-    ]);
-    expect(db.prepare('SELECT value FROM app_meta WHERE key = ?').pluck().get(GLOBAL_DEFAULT_KEY)).toBe('all');
-  });
-
-  it('does not overwrite an existing global metadata value', () => {
-    copyMigrationsUpTo(tmpDir, MIGRATION_011);
-    db = openDatabase(dbPath);
-    runMigrations(db, tmpDir);
-    db.prepare('INSERT INTO app_meta (key, value) VALUES (?, ?)').run(GLOBAL_DEFAULT_KEY, 'exports');
-
-    runMigrations(db, REAL_MIGRATIONS_DIR);
+    runMigrations(db, MIGRATIONS_DIR);
 
     expect(db.prepare('SELECT value FROM app_meta WHERE key = ?').pluck().get(GLOBAL_DEFAULT_KEY)).toBe('exports');
   });
 
   it('cascades preference deletion when a project is deleted', () => {
     db = openDatabase(dbPath);
-    runMigrations(db, REAL_MIGRATIONS_DIR);
+    runMigrations(db, MIGRATIONS_DIR);
     const projectRepository = createProjectRepository(db);
     const project = createProject(projectRepository, 'Cascade Project');
 
@@ -137,7 +101,7 @@ describe('asset-browser preference migration (012)', () => {
 
     beforeEach(() => {
       db = openDatabase(dbPath);
-      runMigrations(db, REAL_MIGRATIONS_DIR);
+      runMigrations(db, MIGRATIONS_DIR);
       projectId = createProject(createProjectRepository(db), 'Constraint Project').id;
     });
 
@@ -170,13 +134,4 @@ describe('asset-browser preference migration (012)', () => {
     });
   });
 
-  it('applies cleanly to a pre-Phase-B database', () => {
-    copyMigrationsUpTo(tmpDir, MIGRATION_011);
-    db = openDatabase(dbPath);
-    runMigrations(db, tmpDir);
-
-    expect(() => runMigrations(db, REAL_MIGRATIONS_DIR)).not.toThrow();
-    expect(db.prepare('SELECT COUNT(*) AS count FROM project_asset_browser_preferences').get().count).toBe(0);
-    expect(db.prepare('SELECT value FROM app_meta WHERE key = ?').pluck().get(GLOBAL_DEFAULT_KEY)).toBe('all');
-  });
 });

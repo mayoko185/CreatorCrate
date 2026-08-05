@@ -10,6 +10,7 @@ const COLUMNS = [
   'notes',
   'status',
   'planned_date',
+  'planned_time',
   'published_date',
   'patreon_url',
   'created_at',
@@ -28,12 +29,26 @@ const RELEASE_ASSET_COLUMNS = [
 const COLUMNS_WITH_PROJECT = [
   ...COLUMNS.slice(0, 2), // id, project_id
   'projects.title AS project_title',
-  ...COLUMNS.slice(2), // title, description, notes, status, planned_date, published_date, patreon_url, created_at, updated_at, archived_at
+  ...COLUMNS.slice(2), // title, description, notes, status, planned_date, planned_time, published_date, patreon_url, created_at, updated_at, archived_at
 ];
 
 const SELECT_WITH_PROJECT = `SELECT ${COLUMNS_WITH_PROJECT.join(', ')} FROM releases JOIN projects ON projects.id = releases.project_id`;
 
 const SELECT_ALL = `SELECT ${COLUMNS.join(', ')} FROM releases`;
+
+function buildReleaseInsertValues(input) {
+  return [
+    input.projectId,
+    input.title,
+    input.description,
+    input.notes,
+    input.status,
+    input.plannedDate ?? null,
+    input.plannedTime ?? null,
+    input.patreonUrl ?? null,
+    input.publishedDate ?? null,
+  ];
+}
 
 /**
  * Shared WHERE fragment: releases that are not archived and are in the active
@@ -112,6 +127,7 @@ function missingAssetCountSubquery(table = 'releases') {
  * @property {string} notes
  * @property {string} status
  * @property {string|null} planned_date
+ * @property {string|null} planned_time
  * @property {string|null} published_date
  * @property {string|null} patreon_url
  * @property {string} created_at
@@ -131,14 +147,14 @@ function missingAssetCountSubquery(table = 'releases') {
 export function createReleaseRepository(db) {
   const findById = db.prepare(`${SELECT_ALL} WHERE id = ?`);
   const insert = db.prepare(`
-    INSERT INTO releases (project_id, title, description, notes, status, planned_date, patreon_url, published_date)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO releases (project_id, title, description, notes, status, planned_date, planned_time, patreon_url, published_date)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     RETURNING ${COLUMNS.join(', ')}
   `);
   const update = db.prepare(`
     UPDATE releases
     SET title = ?, description = ?, notes = ?, status = ?,
-        planned_date = ?, patreon_url = ?, published_date = ?, updated_at = datetime('now')
+        planned_date = ?, planned_time = ?, patreon_url = ?, published_date = ?, updated_at = datetime('now')
     WHERE id = ? AND archived_at IS NULL
     RETURNING ${COLUMNS.join(', ')}
   `);
@@ -159,6 +175,29 @@ export function createReleaseRepository(db) {
     FROM releases
     WHERE archived_at IS NULL
     GROUP BY status
+  `);
+
+  const findCalendarRangeStmt = db.prepare(`
+    SELECT
+      r.id,
+      r.project_id,
+      p.title AS project_title,
+      r.title,
+      r.status,
+      r.planned_date,
+      r.planned_time,
+      r.archived_at
+    FROM releases r
+    JOIN projects p ON p.id = r.project_id
+    WHERE r.archived_at IS NULL
+      AND r.planned_date IS NOT NULL
+      AND r.planned_date >= ?
+      AND r.planned_date < ?
+    ORDER BY
+      r.planned_date ASC,
+      (NULLIF(r.planned_time, '') IS NULL) ASC,
+      NULLIF(r.planned_time, '') ASC,
+      r.id ASC
   `);
 
   // ─── Release Asset Selection ───────────────────────────────────────────
@@ -264,6 +303,37 @@ export function createReleaseRepository(db) {
         throw err;
       }
     }
+  });
+
+  /**
+   * Create a release and its initial asset selections atomically. The caller
+   * supplies selections in the desired manual order; ownership is still
+   * enforced by the guarded insert for every row.
+   *
+   * @param {Object} input
+   * @param {Array<{assetId: number, role: string, sortOrder: number}>} selections
+   * @returns {ReleaseRecord}
+   */
+  const createWithAssetSelectionsTx = db.transaction((input, selections) => {
+    const release = insert.get(...buildReleaseInsertValues(input));
+
+    for (const sel of selections) {
+      const row = raInsertOwnershipGuarded.get(
+        release.id,
+        sel.assetId,
+        sel.role,
+        sel.sortOrder,
+        release.id,
+        sel.assetId,
+      );
+      if (!row) {
+        const err = new Error(`Asset ${sel.assetId} does not belong to the same project as release ${release.id}`);
+        err.code = 'CROSS_PROJECT_ASSET';
+        throw err;
+      }
+    }
+
+    return release;
   });
 
   const raExistingByReleaseStmt = db.prepare(`
@@ -531,17 +601,17 @@ export function createReleaseRepository(db) {
      * @returns {ReleaseRecord}
      */
     create(input) {
-      const values = [
-        input.projectId,
-        input.title,
-        input.description,
-        input.notes,
-        input.status,
-        input.plannedDate ?? null,
-        input.patreonUrl ?? null,
-        input.publishedDate ?? null,
-      ];
-      return insert.get(...values);
+      return insert.get(...buildReleaseInsertValues(input));
+    },
+
+    /**
+     * Create a release and assign its initial assets in one transaction.
+     * @param {Object} input
+     * @param {Array<{assetId: number, role: string, sortOrder: number}>} selections
+     * @returns {ReleaseRecord}
+     */
+    createWithAssetSelections(input, selections) {
+      return createWithAssetSelectionsTx(input, selections);
     },
 
     /**
@@ -550,12 +620,15 @@ export function createReleaseRepository(db) {
      * @returns {ReleaseRecord|undefined}
      */
     update(id, input) {
+      const plannedDate = input.plannedDate;
+      const plannedTime = input.plannedTime;
       const values = [
         input.title,
         input.description,
         input.notes,
         input.status,
-        input.plannedDate ?? null,
+        plannedDate ?? null,
+        plannedTime ?? null,
         input.patreonUrl ?? null,
         input.publishedDate ?? null,
         id,
@@ -593,6 +666,20 @@ export function createReleaseRepository(db) {
     },
 
     /**
+     * Scheduled, non-archived releases whose planned date falls within a
+     * bounded range. Lifecycle status is deliberately not filtered here:
+     * the calendar is a historical and future schedule view, not an active
+     * workflow view.
+     *
+     * @param {string} startDate - ISO date YYYY-MM-DD (inclusive)
+     * @param {string} endDate - ISO date YYYY-MM-DD (exclusive)
+     * @returns {Array<ReleaseRecord & {project_title: string}>}
+     */
+    findCalendarRange(startDate, endDate) {
+      return findCalendarRangeStmt.all(startDate, endDate);
+    },
+
+    /**
      * Active, non-archived releases whose planned_date is strictly after the
      * supplied `today`. Releases whose parent project has been archived are
      * excluded — the project workspace surfaces them, but date classification
@@ -608,9 +695,9 @@ export function createReleaseRepository(db) {
         WHERE archived_at IS NULL
           AND status IN ('idea', 'planned', 'drafting', 'ready')
           AND planned_date IS NOT NULL
-          AND planned_date > ?
+          AND date(planned_date) > ?
           AND ${ACTIVE_PARENT_PROJECT}
-        ORDER BY planned_date ASC
+        ORDER BY date(planned_date) ASC, planned_time ASC
       `;
       return db.prepare(sql).all(today);
     },
@@ -631,9 +718,9 @@ export function createReleaseRepository(db) {
         WHERE archived_at IS NULL
           AND status IN ('idea', 'planned', 'drafting', 'ready')
           AND planned_date IS NOT NULL
-          AND planned_date < ?
+          AND date(planned_date) < ?
           AND ${ACTIVE_PARENT_PROJECT}
-        ORDER BY planned_date ASC
+        ORDER BY date(planned_date) ASC, planned_time ASC
       `;
       return db.prepare(sql).all(today);
     },
@@ -653,8 +740,8 @@ export function createReleaseRepository(db) {
         ${SELECT_ALL}
         WHERE ${DASHBOARD_ACTIVE}
           AND planned_date IS NOT NULL
-          AND planned_date < ?
-        ORDER BY planned_date ASC
+          AND date(planned_date) < ?
+        ORDER BY date(planned_date) ASC, planned_time ASC
         LIMIT ?
       `;
       return db.prepare(sql).all(today, limit);
@@ -675,8 +762,8 @@ export function createReleaseRepository(db) {
         ${SELECT_ALL}
         WHERE ${DASHBOARD_ACTIVE}
           AND planned_date IS NOT NULL
-          AND planned_date >= ?
-        ORDER BY planned_date ASC
+          AND date(planned_date) >= ?
+        ORDER BY date(planned_date) ASC, planned_time ASC
         LIMIT ?
       `;
       return db.prepare(sql).all(today, limit);
@@ -933,6 +1020,68 @@ export function createReleaseRepository(db) {
      */
     listReleaseAssets(releaseId) {
       return raFindByRelease.all(releaseId, releaseId);
+    },
+
+    /**
+     * List selected asset metadata for multiple releases in one or more
+     * bounded queries. Rows are ordered by release ID, then the release's
+     * manual asset order, with asset ID as the deterministic tie-breaker.
+     * Missing or cross-project asset rows are retained with null asset
+     * metadata so callers can continue to the next selected asset.
+     *
+     * @param {number[]} releaseIds
+     * @returns {Array<{
+     *   release_id: number,
+     *   selected_asset_id: number,
+     *   sort_order: number,
+     *   release_project_id: number,
+     *   asset_id: number|null,
+     *   asset_project_id: number|null,
+     *   relative_path: string|null,
+     *   extension: string|null,
+     *   mime_type: string|null,
+     *   size_bytes: number|null,
+     *   modified_at: string|null,
+     *   is_present: number|null,
+     * }>}
+     */
+    findReleaseAssetsByReleaseIds(releaseIds) {
+      if (!Array.isArray(releaseIds) || releaseIds.length === 0) return [];
+
+      const unique = [...new Set(releaseIds.filter((id) => Number.isInteger(id) && id > 0))];
+      if (unique.length === 0) return [];
+      unique.sort((a, b) => a - b);
+
+      const CHUNK_SIZE = 500;
+      const results = [];
+
+      for (let i = 0; i < unique.length; i += CHUNK_SIZE) {
+        const chunk = unique.slice(i, i + CHUNK_SIZE);
+        const placeholders = chunk.map(() => '?').join(',');
+        const sql = `
+          SELECT
+            ra.release_id,
+            ra.asset_id AS selected_asset_id,
+            ra.sort_order,
+            r.project_id AS release_project_id,
+            a.id AS asset_id,
+            a.project_id AS asset_project_id,
+            a.relative_path,
+            a.extension,
+            a.mime_type,
+            a.size_bytes,
+            a.modified_at,
+            a.is_present
+          FROM release_assets ra
+          JOIN releases r ON r.id = ra.release_id
+          LEFT JOIN assets a ON a.id = ra.asset_id AND a.project_id = r.project_id
+          WHERE ra.release_id IN (${placeholders})
+          ORDER BY ra.release_id ASC, ra.sort_order ASC, ra.asset_id ASC
+        `;
+        results.push(...db.prepare(sql).all(...chunk));
+      }
+
+      return results;
     },
 
     /**
@@ -1264,6 +1413,15 @@ export function createReleaseRepository(db) {
       const conditions = [];
       const params = [];
 
+      if (filters.search && filters.search.trim()) {
+        const term = `%${escapeLike(filters.search.trim())}%`;
+        conditions.push(
+          "(releases.title LIKE ? ESCAPE '\\' OR releases.description LIKE ? ESCAPE '\\' " +
+          "OR releases.notes LIKE ? ESCAPE '\\' OR projects.title LIKE ? ESCAPE '\\')"
+        );
+        params.push(term, term, term, term);
+      }
+
       if (filters.projectId != null) {
         conditions.push('releases.project_id = ?');
         params.push(filters.projectId);
@@ -1337,6 +1495,7 @@ export function createReleaseRepository(db) {
      */
     findPage(filters) {
       const {
+        search,
         projectId,
         status,
         schedule,
@@ -1350,7 +1509,7 @@ export function createReleaseRepository(db) {
       } = filters;
 
       const { conditions, params } = this._buildFilterConditions({
-        projectId, status, schedule, includeArchived, today, activeScheduleFilter,
+        search, projectId, status, schedule, includeArchived, today, activeScheduleFilter,
       });
       this._applyReadinessFilter(conditions, filters);
 
@@ -1366,7 +1525,7 @@ export function createReleaseRepository(db) {
       const sql = `
         SELECT releases.id, releases.project_id, projects.title AS project_title,
                releases.title, releases.description, releases.notes,
-               releases.status, releases.planned_date, releases.published_date,
+               releases.status, releases.planned_date, releases.planned_time, releases.published_date,
                releases.patreon_url, releases.created_at, releases.updated_at,
                releases.archived_at,
                ${selectedCountSubquery} AS selected_asset_count,
@@ -1390,6 +1549,7 @@ export function createReleaseRepository(db) {
      */
     countFiltered(filters) {
       const {
+        search,
         projectId,
         status,
         schedule,
@@ -1399,7 +1559,7 @@ export function createReleaseRepository(db) {
       } = filters;
 
       const { conditions, params } = this._buildFilterConditions({
-        projectId, status, schedule, includeArchived, today, activeScheduleFilter,
+        search, projectId, status, schedule, includeArchived, today, activeScheduleFilter,
       });
       this._applyReadinessFilter(conditions, filters);
 
@@ -1424,6 +1584,7 @@ export function createReleaseRepository(db) {
      */
     findBoard(filters) {
       const {
+        search,
         projectId,
         status,
         schedule,
@@ -1433,7 +1594,7 @@ export function createReleaseRepository(db) {
       } = filters;
 
       const { conditions, params } = this._buildFilterConditions({
-        projectId, status, schedule, includeArchived, today, activeScheduleFilter,
+        search, projectId, status, schedule, includeArchived, today, activeScheduleFilter,
       });
       this._applyReadinessFilter(conditions, filters);
 
@@ -1447,7 +1608,7 @@ export function createReleaseRepository(db) {
       const sql = `
         SELECT releases.id, releases.project_id, projects.title AS project_title,
                releases.title, releases.description, releases.notes,
-               releases.status, releases.planned_date, releases.published_date,
+               releases.status, releases.planned_date, releases.planned_time, releases.published_date,
                releases.patreon_url, releases.created_at, releases.updated_at,
                releases.archived_at,
                ${selectedCountSubquery} AS selected_asset_count,
@@ -1455,7 +1616,12 @@ export function createReleaseRepository(db) {
         FROM releases
         JOIN projects ON projects.id = releases.project_id
         ${where}
-        ORDER BY (releases.planned_date IS NULL), releases.planned_date ASC, releases.updated_at DESC, releases.id DESC
+        ORDER BY (releases.planned_date IS NULL) ASC,
+                 date(releases.planned_date) ASC,
+                 (releases.planned_time IS NULL) ASC,
+                 releases.planned_time ASC,
+                 releases.updated_at DESC,
+                 releases.id DESC
       `;
 
       return db.prepare(sql).all(...params);
@@ -1493,6 +1659,7 @@ export function createReleaseRepository(db) {
      * @param {object} filters
      * @param {string} [filters.search] - filename search term (LIKE)
      * @param {string} [filters.extension] - exact extension filter
+     * @param {number} [filters.categoryId] - exact project-owned category ID
      * @returns {{ conditions: string[], params: any[] }}
      */
     _buildCandidateConditions(releaseId, projectId, filters) {
@@ -1521,6 +1688,11 @@ export function createReleaseRepository(db) {
         params.push(filters.extension);
       }
 
+      if (filters.categoryId !== undefined && filters.categoryId !== null) {
+        conditions.push('a.category_id = ?');
+        params.push(filters.categoryId);
+      }
+
       return { conditions, params };
     },
 
@@ -1537,6 +1709,7 @@ export function createReleaseRepository(db) {
      * @param {object} [filters]
      * @param {string} [filters.search] - filename search term
      * @param {string} [filters.extension] - exact extension filter
+     * @param {number} [filters.categoryId] - exact project-owned category ID
      * @param {number} [filters.page=1]
      * @param {number} [filters.pageSize=25]
      * @returns {Array<{id: number, project_id: number, category_id: number|null, relative_path: string, nested_path: string, filename: string, extension: string, mime_type: string, size_bytes: number, is_present: number}>}
@@ -1568,6 +1741,7 @@ export function createReleaseRepository(db) {
      * @param {object} [filters]
      * @param {string} [filters.search] - filename search term
      * @param {string} [filters.extension] - exact extension filter
+     * @param {number} [filters.categoryId] - exact project-owned category ID
      * @returns {number}
      */
     countReleaseCandidates(releaseId, projectId, filters = {}) {
@@ -1585,18 +1759,29 @@ export function createReleaseRepository(db) {
      *
      * @param {number} releaseId
      * @param {number} projectId
+     * @param {{categoryId?: number}} [filters]
      * @returns {string[]}
      */
-    getReleaseCandidateExtensions(releaseId, projectId) {
+    getReleaseCandidateExtensions(releaseId, projectId, filters = {}) {
+      const conditions = [
+        'a.project_id = ?',
+        'a.is_present = 1',
+        'NOT EXISTS (SELECT 1 FROM release_assets ra WHERE ra.release_id = ? AND ra.asset_id = a.id)',
+      ];
+      const params = [projectId, releaseId];
+
+      if (filters.categoryId !== undefined && filters.categoryId !== null) {
+        conditions.push('a.category_id = ?');
+        params.push(filters.categoryId);
+      }
+
       const sql = `
         SELECT DISTINCT a.extension
         FROM assets a
-        WHERE a.project_id = ?
-          AND a.is_present = 1
-          AND NOT EXISTS (SELECT 1 FROM release_assets ra WHERE ra.release_id = ? AND ra.asset_id = a.id)
+        WHERE ${conditions.join(' AND ')}
         ORDER BY a.extension
       `;
-      return db.prepare(sql).pluck().all(projectId, releaseId);
+      return db.prepare(sql).pluck().all(...params);
     },
 
     // ─── Phase 9-3: Integrity Diagnostics ────────────────────────────────
@@ -1718,6 +1903,9 @@ const ALLOWED_SORTS = {
 function buildOrderClause(sortBy, order) {
   const sort = ALLOWED_SORTS[sortBy] || ALLOWED_SORTS.updated;
   const direction = order === 'asc' ? 'ASC' : 'DESC';
+  if (sortBy === 'planned') {
+    return `ORDER BY (planned_date IS NULL) ASC, date(planned_date) ${direction}, (planned_time IS NULL) ASC, planned_time ${direction}, updated_at DESC, id DESC`;
+  }
   // Always break ties by id for stable ordering
   return `ORDER BY ${sort.column} ${direction}, id DESC`;
 }
@@ -1725,7 +1913,14 @@ function buildOrderClause(sortBy, order) {
 function buildOrderClauseWithTable(table, sortBy, order) {
   const sort = ALLOWED_SORTS[sortBy] || ALLOWED_SORTS.updated;
   const direction = order === 'asc' ? 'ASC' : 'DESC';
+  if (sortBy === 'planned') {
+    return `ORDER BY (${table}.planned_date IS NULL) ASC, date(${table}.planned_date) ${direction}, (${table}.planned_time IS NULL) ASC, ${table}.planned_time ${direction}, ${table}.updated_at DESC, ${table}.id DESC`;
+  }
   // Qualify the column with the table name to avoid ambiguity in JOINs
   const col = sort.column.includes('.') ? sort.column : `${table}.${sort.column}`;
   return `ORDER BY ${col} ${direction}, ${table}.id DESC`;
+}
+
+function escapeLike(value) {
+  return value.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
 }

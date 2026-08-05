@@ -65,7 +65,7 @@ describe('database and migrations', () => {
     expect(indexes.some((name) => name.startsWith('sqlite_autoindex_projects_'))).toBe(true);
   });
 
-  it('adds project_dir column from migration 003', () => {
+  it('creates the project_dir column in the baseline schema', () => {
     db = openDatabase(dbPath);
     runMigrations(db, MIGRATIONS_DIR);
     const columns = db
@@ -85,15 +85,53 @@ describe('database and migrations', () => {
     expect(indexes).toContain('idx_projects_project_dir');
   });
 
-  it('is idempotent across repeated migration runs', () => {
+  it('records only the baseline migration and is idempotent across repeated runs', () => {
     db = openDatabase(dbPath);
     runMigrations(db, MIGRATIONS_DIR);
     runMigrations(db, MIGRATIONS_DIR);
-    const count = db
-      .prepare('SELECT COUNT(*) AS c FROM schema_migrations WHERE filename = ?')
-      .pluck()
-      .get('001_initial.sql');
-    expect(count).toBe(1);
+    const applied = db.prepare('SELECT filename FROM schema_migrations ORDER BY rowid').pluck().all();
+    expect(applied).toEqual(['001_initial.sql']);
+  });
+
+  it('creates the complete fresh-install table set with foreign keys enabled', () => {
+    db = openDatabase(dbPath);
+    runMigrations(db, MIGRATIONS_DIR);
+
+    const tables = db.prepare(`
+      SELECT name
+      FROM sqlite_master
+      WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+      ORDER BY name
+    `).pluck().all();
+
+    expect(tables).toEqual([
+      'app_meta',
+      'asset_category_defaults',
+      'asset_tags',
+      'assets',
+      'project_asset_browser_preferences',
+      'project_asset_categories',
+      'project_primary_images',
+      'project_tags',
+      'projects',
+      'release_assets',
+      'releases',
+      'schema_migrations',
+      'sessions',
+      'tags',
+    ]);
+    expect(db.pragma('foreign_keys', { simple: true })).toBe(1);
+    expect(db.pragma('foreign_key_check')).toEqual([]);
+  });
+
+  it('rejects published as a project status', () => {
+    db = openDatabase(dbPath);
+    runMigrations(db, MIGRATIONS_DIR);
+
+    expect(() => db.prepare(`
+      INSERT INTO projects (title, slug, status, priority)
+      VALUES ('Published Project', 'published-project', 'published', 'normal')
+    `).run()).toThrow(/CHECK constraint failed/i);
   });
 
   it('closes cleanly', () => {
@@ -103,7 +141,7 @@ describe('database and migrations', () => {
 
   // ─── Phase 4: asset migration tests ──────────────────────────────
 
-  it('creates the assets table from migration 004', () => {
+  it('creates the assets table from the baseline schema', () => {
     db = openDatabase(dbPath);
     runMigrations(db, MIGRATIONS_DIR);
     const row = db
@@ -160,7 +198,7 @@ describe('database and migrations', () => {
 
   // ─── Phase 5B: release migration tests ──────────────────────────────
 
-  it('creates the releases table from migration 006', () => {
+  it('creates the releases table from the baseline schema', () => {
     db = openDatabase(dbPath);
     runMigrations(db, MIGRATIONS_DIR);
     const row = db
@@ -209,6 +247,7 @@ describe('database and migrations', () => {
     expect(columns).toContain('notes');
     expect(columns).toContain('status');
     expect(columns).toContain('planned_date');
+    expect(columns).toContain('planned_time');
     expect(columns).toContain('published_date');
     expect(columns).toContain('patreon_url');
     expect(columns).toContain('created_at');
@@ -228,7 +267,7 @@ describe('database and migrations', () => {
 
   // ─── Phase 5C: release_assets migration tests ──────────────────────────
 
-  it('creates the release_assets table from migration 007', () => {
+  it('creates the release_assets table from the baseline schema', () => {
     db = openDatabase(dbPath);
     runMigrations(db, MIGRATIONS_DIR);
     const row = db
@@ -378,7 +417,7 @@ describe('database and migrations', () => {
 
   // ─── Phase 1: asset category migration tests ────────────────────────
 
-  it('creates the asset_category_defaults and project_asset_categories tables from migration 010', () => {
+  it('creates the asset category tables from the baseline schema', () => {
     db = openDatabase(dbPath);
     runMigrations(db, MIGRATIONS_DIR);
     const tables = db
@@ -453,12 +492,7 @@ describe('database and migrations', () => {
     expect(columns).not.toContain('default_category_id');
   });
 
-  // Migration 010 itself left assets untouched; migration 011 (Phase 2
-  // chunk 1) intentionally rebuilds it to add category_id/nested_path — see
-  // tests/asset-category-migration.test.js for the rebuild's own coverage
-  // (column set, FK behavior, data preservation). This asserts the final
-  // shape produced by running every migration through 011 in sequence.
-  it('produces the expected assets table schema through migration 011', () => {
+  it('produces the expected final assets table schema in the baseline', () => {
     db = openDatabase(dbPath);
     runMigrations(db, MIGRATIONS_DIR);
 

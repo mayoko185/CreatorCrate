@@ -190,14 +190,14 @@ describe('application shell — navigation model', () => {
     });
   });
 
-  describe('active state — released (Published Work) family', () => {
-    it('marks Published Work active on the release list', async () => {
+  describe('active state — Releases family', () => {
+    it('marks Releases active on the release list', async () => {
       const res = await agent.get('/releases').expect(200);
       expect(activeNavKeys(res.text)).toEqual(['releases']);
       expect(countActive(res.text)).toBe(1);
     });
 
-    it('marks Published Work active on release detail', async () => {
+    it('marks Releases active on release detail', async () => {
       const res = await agent.get(releaseLocation).expect(200);
       expect(activeNavKeys(res.text)).toEqual(['releases']);
     });
@@ -210,7 +210,7 @@ describe('application shell — navigation model', () => {
       expect(countActive(res.text)).toBe(1);
     });
 
-    it('leaves Published Work inactive on /calendar', async () => {
+    it('leaves Releases inactive on /calendar', async () => {
       const res = await agent.get('/calendar').expect(200);
       expect(activeNavKeys(res.text)).not.toContain('releases');
     });

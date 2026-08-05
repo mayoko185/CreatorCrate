@@ -4,9 +4,9 @@
 {% set page_title = "Calendar" %}
 
 {% block content %}
-  {% call pageHeading.render("Project scheduling across CreatorCrate.") %}
+  {% call pageHeading.render("Release scheduling across CreatorCrate.") %}
     <nav class="view-switcher" aria-label="Workflow view">
-      <a class="view-switcher-option" href="/releases">Published Work</a>
+      <a class="view-switcher-option" href="/releases">Releases</a>
       <a class="view-switcher-option" href="/release-management">Release Records</a>
       <a class="view-switcher-option" href="/release-management?view=board">Board</a>
       <a class="view-switcher-option" href="/calendar{% if query.month %}?month={{ query.month }}{% endif %}" aria-current="page">Calendar</a>
@@ -38,7 +38,7 @@
     {# Desktop: dense grid workspace. Hidden below the agenda breakpoint
        (see .calendar-scroll media query) — the agenda list below takes
        over there instead of relying on horizontal scroll. #}
-    <div class="calendar-scroll" tabindex="0" aria-label="Calendar grid">
+    <div class="calendar-scroll" tabindex="0" aria-label="Release calendar grid">
       {# Phase 13.3 (rewrite): a real CSS Grid layout, not a <table> styled
          to look like one — matches the approved Concept D structure.
          Static ARIA table roles (table/row/columnheader/cell, not the
@@ -74,7 +74,15 @@
               <div class="day-releases">
                 {% for entry in day.entries %}
                   <div class="calendar-release">
-                    <a href="/projects/{{ entry.id }}">{{ entry.title }}</a>
+                    <span class="calendar-release-trigger">
+                      <a href="/releases/{{ entry.id }}/edit">{{ entry.title }}</a>
+                      {% if entry.preview_url %}
+                        <img class="calendar-release-preview" src="{{ entry.preview_url }}" alt="Preview of {{ entry.title }}" loading="lazy" decoding="async">
+                      {% endif %}
+                    </span>
+                    {% if entry.planned_time %}
+                      <time class="calendar-release-time" datetime="{{ entry.planned_date }}T{{ entry.planned_time }}">{{ entry.planned_time }}</time>
+                    {% endif %}
                     {% set status = entry.status %}{% include "partials/status-badge.njk" %}
                   </div>
                 {% endfor %}
@@ -103,7 +111,7 @@
     {# Mobile: agenda-first list — same day data, no horizontal scrolling.
        Shown only below the agenda breakpoint; the grid above takes over
        at wider widths. Server-rendered, no JavaScript. #}
-    <ul class="calendar-agenda" aria-label="Calendar agenda">
+    <ul class="calendar-agenda" aria-label="Release calendar agenda">
       {% for day in days %}
         <li class="agenda-day{% if day.entries.length === 0 %} agenda-day-empty{% endif %}{% if day.date == today %} today{% endif %}">
           <div class="agenda-day-date">
@@ -113,7 +121,15 @@
             <div class="agenda-day-releases">
               {% for entry in day.entries %}
                 <div class="agenda-release">
-                  <a href="/projects/{{ entry.id }}">{{ entry.title }}</a>
+                  <span class="calendar-release-trigger">
+                    <a href="/releases/{{ entry.id }}/edit">{{ entry.title }}</a>
+                    {% if entry.preview_url %}
+                      <img class="calendar-release-preview" src="{{ entry.preview_url }}" alt="Preview of {{ entry.title }}" loading="lazy" decoding="async">
+                    {% endif %}
+                  </span>
+                  {% if entry.planned_time %}
+                    <time class="calendar-release-time" datetime="{{ entry.planned_date }}T{{ entry.planned_time }}">{{ entry.planned_time }}</time>
+                  {% endif %}
                   {% set status = entry.status %}{% include "partials/status-badge.njk" %}
                 </div>
               {% endfor %}
@@ -123,10 +139,10 @@
       {% endfor %}
     </ul>
   {% else %}
-    {% set emptyHeading = "No projects scheduled for " + month %}
-    {% set emptyDescription = "There are no projects scheduled for this month." %}
-    {% set emptyActionUrl = "/projects/new" %}
-    {% set emptyActionLabel = "New Project" %}
+    {% set emptyHeading = "No releases scheduled for " + month %}
+    {% set emptyDescription = "There are no releases scheduled for this month." %}
+    {% set emptyActionUrl = "/releases/new" %}
+    {% set emptyActionLabel = "New Release" %}
     {% set emptyHeadingLevel = "h2" %}
     {% include "partials/empty-state.njk" %}
   {% endif %}

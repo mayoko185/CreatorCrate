@@ -6,23 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { createProjectRepository } from '../src/data/project-repository.js';
 
-const REAL_MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
-const MIGRATION_012 = '012_asset_browser_preferences.sql';
-const MIGRATION_013 = '013_project_primary_images.sql';
-
-function copyMigrationsUpTo(destination, lastFilename) {
-  const files = fs.readdirSync(REAL_MIGRATIONS_DIR)
-    .filter((filename) => filename.endsWith('.sql'))
-    .sort();
-
-  for (const filename of files) {
-    if (filename > lastFilename) continue;
-    fs.copyFileSync(
-      path.join(REAL_MIGRATIONS_DIR, filename),
-      path.join(destination, filename),
-    );
-  }
-}
+const MIGRATIONS_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'migrations');
 
 function createProject(projectRepository, title) {
   return projectRepository.create({
@@ -48,7 +32,7 @@ function insertAsset(db, projectId, relativePath) {
   `).run(projectId, relativePath, filename).lastInsertRowid);
 }
 
-describe('project primary-image migration (013)', () => {
+describe('project primary-image baseline schema', () => {
   let tmpDir;
   let db;
 
@@ -62,34 +46,9 @@ describe('project primary-image migration (013)', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('applies after migration 012 without backfilling existing projects', () => {
-    copyMigrationsUpTo(tmpDir, MIGRATION_012);
-    db = openDatabase(path.join(tmpDir, 'test.db'));
-    runMigrations(db, tmpDir);
-
-    const projectRepository = createProjectRepository(db);
-    const existingProject = createProject(projectRepository, 'Existing Project');
-
-    fs.copyFileSync(
-      path.join(REAL_MIGRATIONS_DIR, MIGRATION_013),
-      path.join(tmpDir, MIGRATION_013),
-    );
-    runMigrations(db, tmpDir);
-
-    const applied = db.prepare(
-      'SELECT filename FROM schema_migrations ORDER BY rowid'
-    ).pluck().all();
-    expect(applied.indexOf(MIGRATION_013)).toBeGreaterThan(applied.indexOf(MIGRATION_012));
-    expect(db.prepare(
-      'SELECT COUNT(*) FROM project_primary_images WHERE project_id = ?'
-    ).pluck().get(existingProject.id)).toBe(0);
-    expect(db.pragma('foreign_key_check')).toEqual([]);
-  });
-
   it('enforces one selection per project and rejects cross-project references', () => {
-    copyMigrationsUpTo(tmpDir, MIGRATION_013);
     db = openDatabase(path.join(tmpDir, 'test.db'));
-    runMigrations(db, tmpDir);
+    runMigrations(db, MIGRATIONS_DIR);
     const projectRepository = createProjectRepository(db);
     const firstProject = createProject(projectRepository, 'First Project');
     const secondProject = createProject(projectRepository, 'Second Project');
@@ -106,9 +65,8 @@ describe('project primary-image migration (013)', () => {
   });
 
   it('cascades project and hard-asset deletion', () => {
-    copyMigrationsUpTo(tmpDir, MIGRATION_013);
     db = openDatabase(path.join(tmpDir, 'test.db'));
-    runMigrations(db, tmpDir);
+    runMigrations(db, MIGRATIONS_DIR);
     const projectRepository = createProjectRepository(db);
     const projectForCascade = createProject(projectRepository, 'Project Cascade');
     const projectAssetId = insertAsset(db, projectForCascade.id, 'project.png');
@@ -134,9 +92,8 @@ describe('project primary-image migration (013)', () => {
   });
 
   it('creates the composite parent and child-side indexes', () => {
-    copyMigrationsUpTo(tmpDir, MIGRATION_013);
     db = openDatabase(path.join(tmpDir, 'test.db'));
-    runMigrations(db, tmpDir);
+    runMigrations(db, MIGRATIONS_DIR);
 
     const assetsIndexes = db.pragma("index_list('assets')");
     const primaryImageIndexes = db.pragma("index_list('project_primary_images')");

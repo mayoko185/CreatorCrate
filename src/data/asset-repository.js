@@ -700,12 +700,19 @@ export function createAssetRepository(db) {
      * @param {object} [options]
      * @param {string} [options.extension] - Filter by file extension (without dot)
      * @param {string} [options.search] - Filename search term
+     * @param {number} [options.categoryId] - Filter by project-owned category ID
      * @param {string} [options.sortBy] - Column to sort by: filename, size, modified
      * @param {string} [options.order] - asc or desc
      * @returns {import('./asset-repository.js').AssetRecord[]}
      */
     findByProjectId(projectId, options = {}) {
-      const { extension, search, sortBy = 'filename', order = 'asc' } = options;
+      const {
+        extension,
+        search,
+        categoryId,
+        sortBy = 'filename',
+        order = 'asc',
+      } = options;
 
       const conditions = ['project_id = ?'];
       const params = [projectId];
@@ -719,6 +726,11 @@ export function createAssetRepository(db) {
         const term = `%${escapeLike(search.trim())}%`;
         conditions.push('filename LIKE ? ESCAPE \'\\\'');
         params.push(term);
+      }
+
+      if (categoryId !== undefined && categoryId !== null) {
+        conditions.push('category_id = ?');
+        params.push(categoryId);
       }
 
       const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';

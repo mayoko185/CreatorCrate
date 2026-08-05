@@ -166,6 +166,15 @@
         </select>
       </div>
       <div class="field">
+        <label for="candidate-category">Category</label>
+        <select id="candidate-category" name="category">
+          <option value="" {% if activeCategoryId == null %}selected{% endif %}>All categories</option>
+          {% for category in categories %}
+            <option value="{{ category.id }}" {% if activeCategoryId == category.id %}selected{% endif %}>{{ category.display_name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="field">
         <label for="candidate-page-size">Page size</label>
           <select id="candidate-page-size" name="pageSize">
           <option value="25" {% if candidatePageSize == 25 %}selected{% endif %}>25</option>
@@ -176,7 +185,7 @@
       <div class="field">
         <button class="button" type="submit">Filter</button>
       </div>
-      {% if candidateFilters.search or candidateFilters.extension %}
+      {% if candidateFilters.search or candidateFilters.extension or activeCategoryId != null %}
         <div class="field">
           <a class="button button-secondary" href="/releases/{{ release.id }}/assets">Clear</a>
         </div>
@@ -186,40 +195,48 @@
     <p class="results-meta">{{ candidateTotal }} candidate{% if candidateTotal != 1 %}s{% endif %} available</p>
 
     {% if candidates.length > 0 %}
-      <div class="table-scroll" tabindex="0" aria-label="Available release assets">
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th>Filename</th>
-              <th>Extension</th>
-              <th>Path</th>
-              <th class="num">Size</th>
-              {% if not readOnly %}
-                <th>Add</th>
-              {% endif %}
-            </tr>
-          </thead>
-          <tbody>
-            {% for asset in candidates %}
-              <tr>
-                <td class="asset-filename">{{ asset.filename }}</td>
-                <td>{{ asset.extension }}</td>
-                <td class="asset-path"><code>{{ asset.relative_path }}</code></td>
-                <td class="num">{{ asset.size_bytes }}</td>
-                {% if not readOnly %}
-                  <td>
-                    <form method="post" action="/releases/{{ release.id }}/assets/add" class="inline-form">
-                      <input type="hidden" name="_csrf" value="{{ _csrf }}">
-                      <input type="hidden" name="assetId" value="{{ asset.id }}">
-                      <button class="button button-small" type="submit" aria-label="Add {{ asset.filename }}">Add</button>
-                    </form>
-                  </td>
-                {% endif %}
-              </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      </div>
+      <ul class="candidate-grid" aria-label="Available release assets">
+        {% for asset in candidates %}
+          <li class="candidate-grid-item">
+            {% if not readOnly %}
+              <form method="post" action="/releases/{{ release.id }}/assets/add" class="candidate-asset-form">
+                <input type="hidden" name="_csrf" value="{{ _csrf }}">
+                <input type="hidden" name="assetId" value="{{ asset.id }}">
+            {% endif %}
+                <div class="candidate-grid-tile">
+                  <div class="candidate-grid-preview">
+                    {% if asset.preview_url or asset.thumbnail_url %}
+                      <img src="{{ asset.preview_url or asset.thumbnail_url }}" alt="Preview of {{ asset.filename }}" loading="lazy" decoding="async">
+                    {% elif asset.is_present == 1 and (
+                      (asset.extension == 'png' and asset.mime_type == 'image/png')
+                      or (asset.extension == 'jpg' and asset.mime_type == 'image/jpeg')
+                      or (asset.extension == 'jpeg' and asset.mime_type == 'image/jpeg')
+                      or (asset.extension == 'webp' and asset.mime_type == 'image/webp')
+                      or (asset.extension == 'gif' and asset.mime_type == 'image/gif')
+                      or (asset.extension == 'kra' and asset.mime_type == 'application/x-krita')
+                      or (asset.extension == 'krz' and asset.mime_type == 'application/x-krita')
+                    ) %}
+                      <img src="/projects/{{ project.id }}/assets/{{ asset.id }}/thumbnail" alt="Preview of {{ asset.filename }}" loading="lazy" decoding="async">
+                    {% else %}
+                      <span class="candidate-grid-fallback" aria-label="No preview available for {{ asset.filename }}">
+                        <span aria-hidden="true">.{{ asset.extension or 'file' }}</span>
+                      </span>
+                    {% endif %}
+                  </div>
+                  <div class="candidate-grid-info">
+                    <strong class="candidate-grid-filename">{{ asset.filename }}</strong>
+                    <code class="candidate-grid-path">{{ asset.relative_path }}</code>
+                  </div>
+                  {% if not readOnly %}
+                    <button class="button button-small" type="submit" aria-label="Add {{ asset.filename }}">Add</button>
+                  {% endif %}
+                </div>
+            {% if not readOnly %}
+              </form>
+            {% endif %}
+          </li>
+        {% endfor %}
+      </ul>
 
       {# Pagination #}
       {% if candidatePageCount > 1 %}

@@ -505,19 +505,30 @@ describe('Phase 10.6B: Visual-polish hardening', () => {
       expect(css).toMatch(/\.calendar-scroll[^{]*\{[^}]*max-width:\s*100%/);
     });
 
+    it('candidate assets use responsive grid tiles with bounded preview media', async () => {
+      const res = await request(app).get('/').expect(200);
+      const css = await extractStyle(app, res.text);
+      expect(css).toMatch(/\.candidate-grid\s*\{[^}]*display:\s*grid/);
+      expect(css).toMatch(/\.candidate-grid\s*\{[^}]*grid-template-columns:\s*repeat\(auto-fit,\s*minmax\(min\(100%,\s*12rem\),\s*1fr\)\)/);
+      expect(css).toMatch(/\.candidate-grid-preview\s*\{[^}]*aspect-ratio:\s*4\s*\/\s*3/);
+      expect(css).toMatch(/\.candidate-grid-preview img\s*\{[^}]*object-fit:\s*contain/);
+    });
+
     it('calendar replaces the grid with an agenda list on narrow screens instead of relying on horizontal scroll', async () => {
       const res = await request(app).get('/calendar').expect(200);
       const css = await extractStyle(app, res.text);
       // Phase 13.3: below 767px the grid is hidden and the agenda list
       // takes over — narrow screens no longer rely on horizontal scroll.
-      const mediaIndex = css.indexOf('@media (max-width: 767px)');
+      const calendarRuleIndex = css.indexOf('.calendar-scroll {\n          display: none;');
+      const mediaIndex = css.lastIndexOf('@media (max-width: 767px)', calendarRuleIndex);
       expect(mediaIndex).toBeGreaterThan(-1);
-      const mediaBlockEnd = css.indexOf('\n      }', mediaIndex);
+      const nextMediaIndex = css.indexOf('@media ', mediaIndex + 1);
+      const mediaBlockEnd = nextMediaIndex === -1 ? css.length : nextMediaIndex;
       expect(mediaBlockEnd).toBeGreaterThan(mediaIndex);
       const mediaBlock = css.substring(mediaIndex, mediaBlockEnd);
       expect(mediaBlock).toMatch(/\.calendar-scroll\s*\{[^}]*display:\s*none/);
       expect(mediaBlock).toMatch(/\.calendar-agenda\s*\{[^}]*display:\s*flex/);
-      expect(res.text).toContain('<ul class="calendar-agenda" aria-label="Calendar agenda">');
+      expect(res.text).toContain('<ul class="calendar-agenda" aria-label="Release calendar agenda">');
     });
   });
 

@@ -15,6 +15,8 @@ import { createAssetRepository } from '../src/data/asset-repository.js';
 import { createAssetCategoryRepository } from '../src/data/asset-category-repository.js';
 import { createAssetBrowserPreferenceRepository } from '../src/data/asset-browser-preference-repository.js';
 import { buildAssetRevisionToken } from '../src/services/preview-service.js';
+import { createReleaseService } from '../src/services/release-service.js';
+import { evaluateReleaseReadiness } from '../src/services/release-readiness-policy.js';
 import { ensureAuthEnablement } from '../src/auth/auth-state.js';
 import { AssetActionError } from '../src/services/asset-action-service.js';
 import { PAGE_DEFAULT_DEFINITIONS } from '../src/services/page-defaults-service.js';
@@ -141,12 +143,15 @@ describe('asset browser HTTP workflow', () => {
       .post('/releases')
       .send(`projectId=${projectId}`)
       .send(`title=${encodeURIComponent(title)}`)
-      .send(`status=${status}`)
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
     const releaseId = releaseRes.headers.location.replace('/releases/', '');
+    if (status !== 'idea') {
+      const releaseService = createReleaseService({ db, evaluateReleaseReadiness });
+      releaseService.updateRelease(Number(releaseId), { status });
+    }
     await agent
       .post(`/releases/${releaseId}/assets`)
       .send(`selectedAssetIds=${assetId}`)
@@ -993,23 +998,7 @@ describe('asset browser HTTP workflow', () => {
     const usedAsset = assets.find((a) => a.filename === 'used.png');
     const unusedAsset = assets.find((a) => a.filename === 'unused.png');
 
-    const releaseRes = await agent
-      .post('/releases')
-      .send(`projectId=${id}`)
-      .send('title=Used+Asset+Release')
-      .send('status=idea')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-      .set('Content-Type', 'application/x-www-form-urlencoded')
-      .expect(302);
-
-    const releaseId = releaseRes.headers.location.replace('/releases/', '');
-
-    await agent
-      .post(`/releases/${releaseId}/assets`)
-      .send(`selectedAssetIds=${usedAsset.id}`)
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-      .set('Content-Type', 'application/x-www-form-urlencoded')
-      .expect(302);
+    const releaseId = await createReleaseUsingAsset(id, usedAsset.id, 'Used Asset Release', 'idea');
 
     const res2 = await agent
       .get(`/projects/${id}/assets?usage=used`)
@@ -1032,23 +1021,7 @@ describe('asset browser HTTP workflow', () => {
     const assets = assetRepo.findByProjectId(id);
     const usedAsset = assets.find((a) => a.filename === 'used.png');
 
-    const releaseRes = await agent
-      .post('/releases')
-      .send(`projectId=${id}`)
-      .send('title=Link+Release')
-      .send('status=idea')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-      .set('Content-Type', 'application/x-www-form-urlencoded')
-      .expect(302);
-
-    const releaseId = releaseRes.headers.location.replace('/releases/', '');
-
-    await agent
-      .post(`/releases/${releaseId}/assets`)
-      .send(`selectedAssetIds=${usedAsset.id}`)
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-      .set('Content-Type', 'application/x-www-form-urlencoded')
-      .expect(302);
+    const releaseId = await createReleaseUsingAsset(id, usedAsset.id, 'Link Release', 'idea');
 
     const res2 = await agent
       .get(`/projects/${id}/assets?usage=unused`)
@@ -1089,22 +1062,7 @@ describe('asset browser HTTP workflow', () => {
     let assets = assetRepo.findByProjectId(id);
     const presentUsed = assets.find((a) => a.filename === 'present-used.png');
 
-    const releaseRes = await agent
-      .post('/releases')
-      .send(`projectId=${id}`)
-      .send('title=Combine+Release')
-      .send('status=idea')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-      .set('Content-Type', 'application/x-www-form-urlencoded')
-      .expect(302);
-    const releaseId = releaseRes.headers.location.replace('/releases/', '');
-
-    await agent
-      .post(`/releases/${releaseId}/assets`)
-      .send(`selectedAssetIds=${presentUsed.id}`)
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-      .set('Content-Type', 'application/x-www-form-urlencoded')
-      .expect(302);
+    const releaseId = await createReleaseUsingAsset(id, presentUsed.id, 'Combine Release', 'idea');
 
     // Remove missing-used from disk so it becomes missing
     fs.rmSync(path.join(projectDir, 'missing-used.png'));
@@ -1139,7 +1097,6 @@ describe('asset browser HTTP workflow', () => {
         .post('/releases')
         .send(`projectId=${id}`)
         .send(`title=${encodeURIComponent(title)}`)
-        .send('status=idea')
         .send('_csrf=' + encodeURIComponent(csrfToken))
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
@@ -1168,22 +1125,7 @@ describe('asset browser HTTP workflow', () => {
     const assets = assetRepo.findByProjectId(id);
     const asset = assets[0];
 
-    const relRes = await agent
-      .post('/releases')
-      .send(`projectId=${id}`)
-      .send('title=Status+Check+Release')
-      .send('status=planned')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-      .set('Content-Type', 'application/x-www-form-urlencoded')
-      .expect(302);
-    const releaseId = relRes.headers.location.replace('/releases/', '');
-
-    await agent
-      .post(`/releases/${releaseId}/assets`)
-      .send(`selectedAssetIds=${asset.id}`)
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-      .set('Content-Type', 'application/x-www-form-urlencoded')
-      .expect(302);
+    const releaseId = await createReleaseUsingAsset(id, asset.id, 'Status Check Release', 'planned');
 
     const res2 = await agent.get(`/projects/${id}/assets?view=list`).expect(200);
     expect(res2.text).toContain('Status Check Release');
@@ -3496,11 +3438,15 @@ describe('asset browser HTTP workflow', () => {
       .post('/releases')
       .send(`projectId=${projectId}`)
       .send(`title=${encodeURIComponent(title)}`)
-      .send(`status=${status}`)
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
-    return Number(res.headers.location.replace('/releases/', ''));
+    const releaseId = Number(res.headers.location.replace('/releases/', ''));
+    if (status !== 'idea') {
+      const releaseService = createReleaseService({ db, evaluateReleaseReadiness });
+      releaseService.updateRelease(releaseId, { status });
+    }
+    return releaseId;
   }
 
   describe('page-local selection markup', () => {

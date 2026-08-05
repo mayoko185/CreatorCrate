@@ -564,6 +564,81 @@
       .is-missing td { opacity: 0.6; }
       .missing-indicator { color: var(--danger); font-weight: bold; }
       .release-assets-form { margin-top: 1rem; }
+      .candidate-grid {
+        list-style: none;
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(min(100%, 12rem), 1fr));
+        gap: var(--space-md);
+        margin: var(--space-lg) 0;
+        padding: 0;
+      }
+      .candidate-grid-item {
+        min-width: 0;
+      }
+      .candidate-asset-form {
+        display: flex;
+        height: 100%;
+        margin: 0;
+      }
+      .candidate-grid-tile {
+        display: flex;
+        flex-direction: column;
+        gap: var(--space-sm);
+        box-sizing: border-box;
+        width: 100%;
+        min-width: 0;
+        height: 100%;
+        padding: var(--space-md);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        background: var(--surface);
+      }
+      .candidate-grid-preview {
+        display: grid;
+        place-items: center;
+        min-width: 0;
+        aspect-ratio: 4 / 3;
+        overflow: hidden;
+        border-radius: var(--radius-sm);
+        background: var(--bg);
+      }
+      .candidate-grid-preview img {
+        display: block;
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+      }
+      .candidate-grid-fallback {
+        display: grid;
+        place-items: center;
+        width: 100%;
+        height: 100%;
+        min-height: 5rem;
+        color: var(--muted);
+        font-size: 1.25rem;
+        font-weight: 600;
+        text-transform: uppercase;
+      }
+      .candidate-grid-info {
+        display: grid;
+        gap: var(--space-xs);
+        min-width: 0;
+      }
+      .candidate-grid-filename,
+      .candidate-grid-path {
+        min-width: 0;
+        margin: 0;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+      }
+      .candidate-grid-path {
+        color: var(--muted);
+        font-size: 0.8rem;
+      }
+      .candidate-grid-tile > .button {
+        width: 100%;
+        margin-top: auto;
+      }
       .needs-attention, .upcoming-releases, .workflow-summary,
       .release-summary, .asset-health, .workflow-actions {
         margin: 1.5rem 0;
@@ -3493,6 +3568,36 @@
       }
       .calendar-release a:hover {
         color: var(--accent);
+      }
+      .calendar-release-trigger {
+        display: block;
+        min-width: 0;
+      }
+      .calendar-release-trigger > a {
+        display: block;
+      }
+      .calendar-release-preview {
+        display: block;
+        box-sizing: border-box;
+        width: min(16rem, 100%);
+        max-width: 100%;
+        max-height: 0;
+        margin-top: 0;
+        overflow: hidden;
+        object-fit: contain;
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+        background: var(--surface);
+        opacity: 0;
+        visibility: hidden;
+        pointer-events: none;
+      }
+      .calendar-release-trigger:hover > .calendar-release-preview,
+      .calendar-release-trigger > a:focus-visible ~ .calendar-release-preview {
+        max-height: 12rem;
+        margin-top: var(--space-xs);
+        opacity: 1;
+        visibility: visible;
       }
       /* ── Mobile agenda: replaces reliance on horizontal scroll below the
          calendar-agenda breakpoint. Same day data as the grid above, just a

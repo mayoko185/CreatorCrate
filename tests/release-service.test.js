@@ -10,6 +10,9 @@ import { evaluateReleaseReadiness } from '../src/services/release-readiness-poli
 import { createProjectRepository } from '../src/data/project-repository.js';
 import { createReleaseRepository } from '../src/data/release-repository.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
+import { createAssetCategoryRepository } from '../src/data/asset-category-repository.js';
+import { AssetCategoryNotFoundError } from '../src/services/asset-category-service.js';
+import { AssetCategoryValidationError } from '../src/services/asset-category-validation.js';
 import { getLocalTodayIso } from '../src/util/date.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
@@ -76,6 +79,7 @@ describe('release service', () => {
   let service;
   let projectRepo;
   let assetRepo;
+  let categoryRepo;
   let projectId;
 
   beforeEach(() => {
@@ -86,6 +90,7 @@ describe('release service', () => {
     service = createReleaseService({ db, evaluateReleaseReadiness });
     projectRepo = createProjectRepository(db);
     assetRepo = createAssetRepository(db);
+    categoryRepo = createAssetCategoryRepository(db);
     const project = projectRepo.create(sampleProject({ title: 'Parent Project' }));
     projectId = project.id;
   });
@@ -100,6 +105,30 @@ describe('release service', () => {
       const release = service.createRelease(projectId, validInput({ title: 'New Release' }));
       expect(release.title).toBe('New Release');
       expect(release.project_id).toBe(projectId);
+    });
+
+    it('defaults missing status and stores scheduled date and time separately', () => {
+      const input = validInput({
+        title: 'Scheduled Release',
+        plannedDate: '2026-08-15',
+        plannedTime: '09:45',
+      });
+      delete input.status;
+
+      const release = service.createRelease(projectId, input);
+
+      expect(release.status).toBe('idea');
+      expect(release.planned_date).toBe('2026-08-15');
+      expect(release.planned_time).toBe('09:45');
+      expect(snapshotReleaseRow(db, release.id)).toMatchObject({
+        planned_date: '2026-08-15',
+        planned_time: '09:45',
+      });
+    });
+
+    it('rejects an invalid scheduled time', () => {
+      expect(() => service.createRelease(projectId, validInput({ plannedTime: '24:00' })))
+        .toThrow(ReleaseValidationError);
     });
 
     it('throws if project does not exist', () => {
@@ -207,11 +236,135 @@ describe('release service', () => {
     });
   });
 
+  describe('createReleaseFromCategory', () => {
+    function addCategory(project, displayName, directorySlug, displayOrder = 0) {
+      return categoryRepo.addProjectCategory({
+        projectId: project,
+        displayName,
+        directorySlug,
+        displayOrder,
+        enabled: true,
+      });
+    }
+
+    function addAsset(project, filename, categoryId) {
+      const data = sampleAsset(project, { relativePath: filename, filename });
+      data.categoryId = categoryId;
+      return assetRepo.upsert(project, filename, data);
+    }
+
+    it('creates exactly one idea release titled from the project category', () => {
+      const category = addCategory(projectId, 'Launch Assets', 'launch-assets');
+
+      const release = service.createReleaseFromCategory(projectId, category.id);
+
+      expect(release).toMatchObject({
+        project_id: projectId,
+        title: 'Launch Assets',
+        status: 'idea',
+      });
+      expect(release.id).toBeTruthy();
+      expect(service.listReleases(projectId, { includeArchived: true })).toHaveLength(1);
+    });
+
+    it('uses the existing local new-release date and time defaults', () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(2026, 7, 4, 14, 30));
+
+      try {
+        const category = addCategory(projectId, 'Scheduled Assets', 'scheduled-assets');
+        const release = service.createReleaseFromCategory(projectId, category.id);
+
+        expect(release.planned_date).toBe('2026-08-04');
+        expect(release.planned_time).toBe('14:30');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('selects only present category assets in canonical deterministic contiguous order', () => {
+      const category = addCategory(projectId, 'Ordered Assets', 'ordered-assets');
+      const zeta = addAsset(projectId, 'zeta.txt', category.id);
+      const alpha = addAsset(projectId, 'alpha.txt', category.id);
+      const alphaTie = addAsset(projectId, 'Alpha.txt', category.id);
+      const missing = addAsset(projectId, 'missing.txt', category.id);
+      const otherCategory = addCategory(projectId, 'Other Assets', 'other-assets', 1);
+      const otherCategoryAsset = addAsset(projectId, 'other.txt', otherCategory.id);
+      const otherProject = projectRepo.create(sampleProject({ title: 'Other Project' }));
+      const foreignCategory = addCategory(otherProject.id, 'Foreign Assets', 'foreign-assets');
+      const foreignAsset = addAsset(otherProject.id, 'foreign.txt', foreignCategory.id);
+      db.prepare('UPDATE assets SET is_present = 0 WHERE id = ?').run(missing.id);
+
+      const assetsBefore = db.prepare(
+        'SELECT id, project_id, category_id, relative_path, is_present FROM assets ORDER BY id'
+      ).all();
+      const categoryBefore = categoryRepo.findProjectCategoryById(projectId, category.id);
+
+      const release = service.createReleaseFromCategory(projectId, category.id);
+      const selections = service.listReleaseAssets(release.id);
+
+      expect(selections.map((selection) => selection.asset_id)).toEqual([
+        alpha.id,
+        alphaTie.id,
+        zeta.id,
+      ]);
+      expect(selections.map((selection) => selection.sort_order)).toEqual([0, 1, 2]);
+      expect(selections.every((selection) => selection.role === 'attachment')).toBe(true);
+      expect(selections.map((selection) => selection.asset_id)).not.toContain(missing.id);
+      expect(selections.map((selection) => selection.asset_id)).not.toContain(otherCategoryAsset.id);
+      expect(selections.map((selection) => selection.asset_id)).not.toContain(foreignAsset.id);
+      expect(db.prepare(
+        'SELECT id, project_id, category_id, relative_path, is_present FROM assets ORDER BY id'
+      ).all()).toEqual(assetsBefore);
+      expect(categoryRepo.findProjectCategoryById(projectId, category.id)).toEqual(categoryBefore);
+    });
+
+    it('creates a release with no selected assets for an empty category', () => {
+      const category = addCategory(projectId, 'Empty Assets', 'empty-assets');
+
+      const release = service.createReleaseFromCategory(projectId, category.id);
+
+      expect(service.listReleaseAssets(release.id)).toEqual([]);
+    });
+
+    it('rejects a missing or cross-project category', () => {
+      const otherProject = projectRepo.create(sampleProject({ title: 'Other Category Project' }));
+      const foreignCategory = addCategory(otherProject.id, 'Foreign Assets', 'foreign-assets');
+
+      expect(() => service.createReleaseFromCategory(projectId, 999999))
+        .toThrow(AssetCategoryNotFoundError);
+      expect(() => service.createReleaseFromCategory(projectId, foreignCategory.id))
+        .toThrow(AssetCategoryNotFoundError);
+      expect(service.listReleases(projectId, { includeArchived: true })).toEqual([]);
+    });
+  });
+
   describe('updateRelease', () => {
     it('updates a release', () => {
       const created = service.createRelease(projectId, validInput({ title: 'Original' }));
       const updated = service.updateRelease(created.id, validInput({ title: 'Updated' }));
       expect(updated.title).toBe('Updated');
+    });
+
+    it('preserves status when an update omits status and persists the new schedule', () => {
+      const created = service.createRelease(projectId, validInput({
+        title: 'Original',
+        status: 'planned',
+        plannedDate: '2026-08-01',
+        plannedTime: '08:00',
+      }));
+      const input = validInput({
+        title: 'Updated',
+        plannedDate: '2026-08-15',
+        plannedTime: '09:45',
+      });
+      delete input.status;
+
+      const updated = service.updateRelease(created.id, input);
+
+      expect(updated.status).toBe('planned');
+      expect(updated.planned_date).toBe('2026-08-15');
+      expect(updated.planned_time).toBe('09:45');
     });
 
     it('throws ReleaseNotFoundError for non-existent id', () => {
@@ -1025,6 +1178,102 @@ describe('release service', () => {
 
       const releases = service.findReleasesByAsset(asset.id);
       expect(releases).toHaveLength(2);
+    });
+  });
+
+  describe('getReleaseAssetManagementPage category filtering', () => {
+    function addCategory(project, displayName, directorySlug, displayOrder = 0) {
+      return categoryRepo.addProjectCategory({
+        projectId: project,
+        displayName,
+        directorySlug,
+        displayOrder,
+        enabled: true,
+      });
+    }
+
+    function addAsset(filename, categoryId = null) {
+      const data = sampleAsset(projectId, {
+        relativePath: filename,
+        filename,
+      });
+      data.categoryId = categoryId;
+      return assetRepo.upsert(projectId, filename, data);
+    }
+
+    it('keeps the existing all-assets behavior and returns categories with no filter', () => {
+      const source = addCategory(projectId, 'Source', 'source');
+      const categorized = addAsset('source.txt', source.id);
+      const uncategorized = addAsset('uncategorized.txt');
+      const release = service.createRelease(projectId, validInput());
+
+      const page = service.getReleaseAssetManagementPage(release.id, {});
+
+      expect(page.assets.map((asset) => asset.id)).toEqual([categorized.id, uncategorized.id]);
+      expect(page.categories.map((category) => category.id)).toEqual([source.id]);
+      expect(page.activeCategoryId).toBeNull();
+      expect(page.candidateTotal).toBe(2);
+    });
+
+    it('filters candidates by category while preserving complete assets, selection state, and order per release', () => {
+      const source = addCategory(projectId, 'Source', 'source');
+      const other = addCategory(projectId, 'Other', 'other', 1);
+      const first = addAsset('a-first.txt', source.id);
+      const second = addAsset('b-second.txt', source.id);
+      const unselectedSource = addAsset('c-unselected.txt', source.id);
+      const otherAsset = addAsset('other.txt', other.id);
+      const firstRelease = service.createRelease(projectId, validInput({ title: 'First Release' }));
+      const secondRelease = service.createRelease(projectId, validInput({ title: 'Second Release' }));
+
+      service.selectAssets(firstRelease.id, [
+        { assetId: second.id, role: 'preview', sortOrder: 0 },
+        { assetId: first.id, role: 'primary', sortOrder: 1 },
+      ]);
+      service.selectAssets(secondRelease.id, [
+        { assetId: first.id, role: 'attachment', sortOrder: 0 },
+      ]);
+
+      const firstPage = service.getReleaseAssetManagementPage(firstRelease.id, { categoryId: String(source.id) });
+      const secondPage = service.getReleaseAssetManagementPage(secondRelease.id, { category: source.id });
+
+      expect(firstPage.activeCategoryId).toBe(source.id);
+      expect(firstPage.assets.map((asset) => asset.id)).toEqual([first.id, second.id, unselectedSource.id, otherAsset.id]);
+      expect(firstPage.candidates.map((asset) => asset.id)).toEqual([unselectedSource.id]);
+      expect(firstPage.candidateTotal).toBe(1);
+      expect(firstPage.releaseAssets.map((asset) => asset.asset_id)).toEqual([second.id, first.id]);
+      expect(firstPage.releaseAssets.map((asset) => asset.sort_order)).toEqual([0, 1]);
+      expect(firstPage.releaseAssets.map((asset) => asset.role)).toEqual(['preview', 'primary']);
+
+      expect(secondPage.assets.map((asset) => asset.id)).toEqual([first.id, second.id, unselectedSource.id, otherAsset.id]);
+      expect(secondPage.releaseAssets.map((asset) => asset.asset_id)).toEqual([first.id]);
+      expect(firstPage.assets.map((asset) => asset.id)).toContain(otherAsset.id);
+      expect(firstPage.categories.map((category) => category.id)).toEqual([source.id, other.id]);
+    });
+
+    it('returns complete assets and empty candidates for a valid empty category', () => {
+      const empty = addCategory(projectId, 'Empty', 'empty');
+      const release = service.createRelease(projectId, validInput());
+      const uncategorized = addAsset('uncategorized.txt');
+
+      const page = service.getReleaseAssetManagementPage(release.id, { category: String(empty.id) });
+
+      expect(page.activeCategoryId).toBe(empty.id);
+      expect(page.assets.map((asset) => asset.id)).toEqual([uncategorized.id]);
+      expect(page.candidates).toEqual([]);
+      expect(page.candidateTotal).toBe(0);
+    });
+
+    it('uses category validation for malformed IDs and not-found for missing or cross-project IDs', () => {
+      const release = service.createRelease(projectId, validInput());
+      const otherProject = projectRepo.create(sampleProject({ title: 'Other Category Project' }));
+      const foreignCategory = addCategory(otherProject.id, 'Foreign', 'foreign');
+
+      expect(() => service.getReleaseAssetManagementPage(release.id, { categoryId: 'not-an-id' }))
+        .toThrow(AssetCategoryValidationError);
+      expect(() => service.getReleaseAssetManagementPage(release.id, { categoryId: 999999 }))
+        .toThrow(AssetCategoryNotFoundError);
+      expect(() => service.getReleaseAssetManagementPage(release.id, { categoryId: foreignCategory.id }))
+        .toThrow(AssetCategoryNotFoundError);
     });
   });
 

@@ -277,12 +277,12 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
       }
     });
 
-    it('marks Published Work active on the release list', async () => {
+  it('marks Releases active on the release list', async () => {
       const res = await agent.get('/releases').expect(200);
       expect(mobileActiveKeys(res.text)).toEqual(['releases']);
     });
 
-    it('marks Published Work active on release detail', async () => {
+  it('marks Releases active on release detail', async () => {
       const res = await agent.get(releaseLocation).expect(200);
       expect(mobileActiveKeys(res.text)).toEqual(['releases']);
     });

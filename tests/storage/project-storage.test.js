@@ -94,7 +94,6 @@ describe('buildProjectRelPath', () => {
       { status: 'planned', expectDir: 'planned' },
       { status: 'in-progress', expectDir: 'active' },
       { status: 'ready', expectDir: 'ready' },
-      { status: 'published', expectDir: 'published' },
       { status: 'archived', expectDir: 'archived' },
     ];
     for (const { status, expectDir } of testCases) {
@@ -631,7 +630,6 @@ describe('renameProjectDirSync', () => {
     fs.mkdirSync(projectsRoot, { recursive: true });
     // Create status dirs that buildProjectRelPath resolves to
     fs.mkdirSync(path.join(projectsRoot, 'tbd'), { recursive: true });
-    fs.mkdirSync(path.join(projectsRoot, 'published'), { recursive: true });
   });
 
   afterEach(() => {
@@ -658,7 +656,7 @@ describe('renameProjectDirSync', () => {
 
   it('surfaces EXDEV as a StorageError', () => {
     const oldPath = path.join(projectsRoot, 'active', '000042-project');
-    const newPath = path.join(projectsRoot, 'published', '000042-project');
+    const newPath = path.join(projectsRoot, 'ready', '000042-project');
 
     const mockError = new Error('cross-device link');
     mockError.code = 'EXDEV';

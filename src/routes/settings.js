@@ -85,7 +85,7 @@ const PAGE_DEFAULT_SECTIONS = Object.freeze([
   Object.freeze({ page: 'new_project', title: 'New Projects' }),
   Object.freeze({ page: 'new_release', title: 'New Releases' }),
   Object.freeze({ page: 'projects', title: 'Projects' }),
-  Object.freeze({ page: 'publishedWork', title: 'Published Work' }),
+  Object.freeze({ page: 'releases', title: 'Releases' }),
   Object.freeze({ page: 'releaseManagement', title: 'Release Management' }),
   Object.freeze({ page: 'projectAssets', title: 'Project Assets' }),
   Object.freeze({ page: 'assetViewer', title: 'Asset Viewer' }),
@@ -116,7 +116,6 @@ const DEFAULT_VALUE_LABELS = Object.freeze({
       planned: 'Planned',
       'in-progress': 'In progress',
       ready: 'Ready',
-      published: 'Published',
     }),
     priority: Object.freeze({ low: 'Low', normal: 'Normal', high: 'High' }),
   }),
@@ -128,9 +127,9 @@ const DEFAULT_VALUE_LABELS = Object.freeze({
     sort: Object.freeze({ updated: 'Recently updated', created: 'Recently created', title: 'Title' }),
     order: Object.freeze({ asc: 'Ascending', desc: 'Descending' }),
   }),
-  publishedWork: Object.freeze({
-    view: Object.freeze({ grid: 'Grid', list: 'List' }),
-    sort: Object.freeze({ published: 'Published date', title: 'Title', updated: 'Recently updated' }),
+  releases: Object.freeze({
+    view: Object.freeze({ list: 'List', board: 'Board' }),
+    sort: Object.freeze({ planned: 'Planned', updated: 'Updated', created: 'Created', title: 'Title' }),
     order: Object.freeze({ asc: 'Ascending', desc: 'Descending' }),
   }),
   releaseManagement: Object.freeze({

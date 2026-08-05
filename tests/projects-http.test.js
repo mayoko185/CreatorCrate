@@ -896,6 +896,22 @@ describe('project HTTP workflow', () => {
     expect(res.text).toContain('Status must be one of');
   });
 
+  it('rejects published status and does not render it as a project choice', async () => {
+    const form = await agent.get('/projects/new').expect(200);
+    expect(form.text).not.toContain('<option value="published"');
+
+    const res = await agent
+      .post('/projects')
+      .send('title=Invalid+Published+Project')
+      .send('status=published')
+      .send('priority=normal')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .expect(422);
+    expect(res.text).toContain('Status must be one of');
+    expect(res.text).not.toContain('<option value="published"');
+  });
+
   it('invalid edit request rerenders with submitted values and errors', async () => {
     const createRes = await agent
       .post('/projects')
@@ -1489,7 +1505,7 @@ describe('project HTTP workflow', () => {
       await agent
         .post(location)
         .send('title=Combined+HTTP+Final')
-        .send('status=published')
+        .send('status=ready')
         .send('priority=high')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .send('_csrf=' + encodeURIComponent(csrfToken))
@@ -1498,15 +1514,15 @@ describe('project HTTP workflow', () => {
       // Old directory gone
       expect(fs.existsSync(oldDir)).toBe(false);
 
-      // New directory under 'published'
-      const newDir = getProjectDir('Combined HTTP Final', 'published');
+      // New directory under 'ready'
+      const newDir = getProjectDir('Combined HTTP Final', 'ready');
       expect(newDir).not.toBeNull();
-      expect(newDir).toContain(path.join(projectsRoot, 'published'));
+      expect(newDir).toContain(path.join(projectsRoot, 'ready'));
 
       // Detail page shows everything
       const detail = await agent.get(location).expect(200);
       expect(detail.text).toContain('Combined HTTP Final');
-      expect(detail.text).toContain('Published');
+      expect(detail.text).toContain('Ready');
     });
 
     it('error responses contain no absolute filesystem paths on update failure', async () => {
@@ -2387,7 +2403,7 @@ describe('project HTTP workflow', () => {
   });
 
   describe('project status badge rendering', () => {
-    const statuses = ['tbd', 'planned', 'in-progress', 'ready', 'published'];
+    const statuses = ['tbd', 'planned', 'in-progress', 'ready'];
 
     for (const status of statuses) {
       it(`renders "${status}" with status-badge`, async () => {

@@ -111,6 +111,7 @@ function buildMovedOrder(categories, id, direction) {
  *   GET  /:projectId/asset-categories
  *   POST /:projectId/asset-categories
  *   POST /:projectId/asset-categories/reorder
+ *   POST /:projectId/asset-categories/:categoryId/create-release
  *   POST /:projectId/asset-categories/:categoryId/name
  *   POST /:projectId/asset-categories/:categoryId/enable
  *   POST /:projectId/asset-categories/:categoryId/disable
@@ -130,12 +131,14 @@ function buildMovedOrder(categories, id, direction) {
  * @param {import('../services/project-service.js').ProjectService} deps.projectService
  * @param {ReturnType<import('../services/project-asset-category-service.js').createProjectAssetCategoryService>} deps.projectAssetCategoryService
  * @param {ReturnType<import('../services/asset-browser-preference-service.js').createAssetBrowserPreferenceService>} deps.assetBrowserPreferenceService
+ * @param {ReturnType<import('../services/release-service.js').createReleaseService>} deps.releaseService
  */
 export function createProjectAssetCategoriesRouter({
   appName,
   projectService,
   projectAssetCategoryService,
   assetBrowserPreferenceService,
+  releaseService,
 } = {}) {
   if (!assetBrowserPreferenceService) {
     throw new Error('createProjectAssetCategoriesRouter requires an assetBrowserPreferenceService dependency.');
@@ -297,6 +300,30 @@ export function createProjectAssetCategoriesRouter({
         });
       }
       res.redirect(`/projects/${project.id}/asset-categories?notice=category_reorder_failed`);
+    }
+  });
+
+  router.post('/:projectId/asset-categories/:categoryId/create-release', (req, res, next) => {
+    const project = loadProjectOr404(req, res, next);
+    if (!project) return;
+    const categoryId = parseId(req.params.categoryId);
+    if (categoryId === null) return next(createNotFound());
+
+    if (isArchivedProject(project)) {
+      return renderPage(res, project, {
+        status: 409,
+        notice: resolveNotice('category_archived'),
+      });
+    }
+
+    try {
+      const release = releaseService.createReleaseFromCategory(project.id, categoryId);
+      res.redirect(`/releases/${release.id}/assets`);
+    } catch (err) {
+      if (err instanceof ProjectNotFoundError || err instanceof AssetCategoryNotFoundError) {
+        return next(createNotFound());
+      }
+      next(err);
     }
   });
 

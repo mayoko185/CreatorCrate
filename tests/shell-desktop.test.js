@@ -293,16 +293,16 @@ describe('application shell (Phase 10.4B) — landmarks & structure', () => {
       expect(res.text).toContain('class="app-nav-label">Dashboard</span>');
       expect(res.text).toContain('class="app-nav-label">Projects</span>');
       expect(res.text).toContain('class="app-nav-label">Asset Viewer</span>');
-      expect(res.text).toContain('class="app-nav-label">Published Work</span>');
+    expect(res.text).toContain('class="app-nav-label">Releases</span>');
       expect(res.text).toContain('class="app-nav-label">Calendar</span>');
       expect(res.text).toContain('class="app-nav-label">Settings</span>');
     });
 
-    it('no old "Releases" label remains in the primary sidebar', async () => {
+  it('the primary sidebar uses the Releases label', async () => {
       const res = await agent.get('/').expect(200);
       const navBlock = res.text.match(/<nav class="app-nav"[\s\S]*?<\/nav>/);
       expect(navBlock).not.toBeNull();
-      expect(navBlock[0]).not.toContain('class="app-nav-label">Releases</span>');
+    expect(navBlock[0]).toContain('class="app-nav-label">Releases</span>');
     });
 
     it('no duplicate Calendar link exists in the primary sidebar', async () => {
@@ -364,12 +364,12 @@ describe('application shell (Phase 10.4B) — landmarks & structure', () => {
       );
     });
 
-    it('/calendar leaves Published Work inactive', async () => {
+  it('/calendar leaves Releases inactive', async () => {
       const res = await agent.get('/calendar').expect(200);
       expect(activeNavKeys(res.text)).not.toContain('releases');
     });
 
-    it('/releases gives Published Work the active class and aria-current', async () => {
+  it('/releases gives Releases the active class and aria-current', async () => {
       const res = await agent.get('/releases').expect(200);
       expect(activeNavKeys(res.text)).toEqual(['releases']);
       expect(res.text).toMatch(

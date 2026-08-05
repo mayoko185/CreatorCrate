@@ -117,6 +117,31 @@ describe('release repository', () => {
         releaseRepo.create({ projectId: 99999, ...sampleRelease() });
       }).toThrow();
     });
+
+    it('rolls back the release when an initial asset assignment fails', () => {
+      const otherProject = projectRepo.create(sampleProject({ title: 'Other Project' }));
+      const localAsset = assetRepo.upsert(
+        projectId,
+        'local.txt',
+        sampleAsset(projectId, { relativePath: 'local.txt' }),
+      );
+      const foreignAsset = assetRepo.upsert(
+        otherProject.id,
+        'foreign.txt',
+        sampleAsset(otherProject.id, { relativePath: 'foreign.txt' }),
+      );
+
+      expect(() => releaseRepo.createWithAssetSelections(
+        { projectId, ...sampleRelease({ title: 'Atomic Failure' }) },
+        [
+          { assetId: localAsset.id, role: 'attachment', sortOrder: 0 },
+          { assetId: foreignAsset.id, role: 'attachment', sortOrder: 1 },
+        ],
+      )).toThrow(/same project/);
+
+      expect(releaseRepo.findByProjectId(projectId, { includeArchived: true })).toEqual([]);
+      expect(db.prepare('SELECT COUNT(*) AS count FROM release_assets').get().count).toBe(0);
+    });
   });
 
   describe('findById', () => {
@@ -192,6 +217,92 @@ describe('release repository', () => {
       const releases = releaseRepo.findByProjectId(projectId, { sortBy: 'planned', order: 'asc' });
       expect(releases[0].title).toBe('Earlier');
       expect(releases[1].title).toBe('Later');
+    });
+  });
+
+  describe('findCalendarRange', () => {
+    it('returns scheduled non-archived releases in date/time order without lifecycle filtering', () => {
+      const untimed = releaseRepo.create({
+        projectId,
+        ...sampleRelease({ title: 'Untimed', status: 'cancelled', plannedDate: '2025-06-15' }),
+      });
+      const late = releaseRepo.create({
+        projectId,
+        ...sampleRelease({ title: 'Late', status: 'published', plannedDate: '2025-06-15', plannedTime: '10:00' }),
+      });
+      const early = releaseRepo.create({
+        projectId,
+        ...sampleRelease({ title: 'Early', status: 'idea', plannedDate: '2025-06-15', plannedTime: '08:00' }),
+      });
+      const sameTimeLaterTitle = releaseRepo.create({
+        projectId,
+        ...sampleRelease({ title: 'Zeta', status: 'ready', plannedDate: '2025-06-15', plannedTime: '08:00' }),
+      });
+      const archived = releaseRepo.create({
+        projectId,
+        ...sampleRelease({ title: 'Archived', status: 'ready', plannedDate: '2025-06-15', plannedTime: '07:00' }),
+      });
+      releaseRepo.archive(archived.id);
+      releaseRepo.create({
+        projectId,
+        ...sampleRelease({ title: 'Unscheduled', status: 'ready', plannedDate: null }),
+      });
+
+      const rows = releaseRepo.findCalendarRange('2025-06-01', '2025-07-01');
+
+      expect(rows.map((row) => row.id)).toEqual([early.id, sameTimeLaterTitle.id, late.id, untimed.id]);
+      expect(rows.map((row) => row.planned_time)).toEqual(['08:00', '08:00', '10:00', null]);
+      expect(rows.every((row) => row.archived_at === null)).toBe(true);
+    });
+
+  });
+
+  describe('findReleaseAssetsByReleaseIds', () => {
+    it('returns selected assets in each release manual order', () => {
+      const firstRelease = releaseRepo.create({
+        projectId,
+        ...sampleRelease({ title: 'First Release' }),
+      });
+      const secondRelease = releaseRepo.create({
+        projectId,
+        ...sampleRelease({ title: 'Second Release' }),
+      });
+      const firstAsset = assetRepo.upsert(projectId, 'first.png', sampleAsset(projectId, {
+        relativePath: 'first.png',
+        filename: 'first.png',
+        extension: 'png',
+        mimeType: 'image/png',
+      }));
+      const secondAsset = assetRepo.upsert(projectId, 'second.png', sampleAsset(projectId, {
+        relativePath: 'second.png',
+        filename: 'second.png',
+        extension: 'png',
+        mimeType: 'image/png',
+      }));
+      const thirdAsset = assetRepo.upsert(projectId, 'third.png', sampleAsset(projectId, {
+        relativePath: 'third.png',
+        filename: 'third.png',
+        extension: 'png',
+        mimeType: 'image/png',
+      }));
+
+      releaseRepo.addReleaseAsset(firstRelease.id, secondAsset.id, 'attachment', 1);
+      releaseRepo.addReleaseAsset(firstRelease.id, firstAsset.id, 'primary', 0);
+      releaseRepo.addReleaseAsset(secondRelease.id, thirdAsset.id, 'preview', 0);
+
+      const rows = releaseRepo.findReleaseAssetsByReleaseIds([secondRelease.id, firstRelease.id]);
+
+      expect(rows.map((row) => [row.release_id, row.asset_id, row.sort_order])).toEqual([
+        [firstRelease.id, firstAsset.id, 0],
+        [firstRelease.id, secondAsset.id, 1],
+        [secondRelease.id, thirdAsset.id, 0],
+      ]);
+      expect(rows[0]).toMatchObject({
+        selected_asset_id: firstAsset.id,
+        release_project_id: projectId,
+        asset_project_id: projectId,
+        relative_path: 'first.png',
+      });
     });
   });
 
@@ -2106,6 +2217,41 @@ describe('release repository', () => {
       const candidates = releaseRepo.findReleaseCandidatePage(release.id, projectId, { extension: 'png' });
       expect(candidates).toHaveLength(1);
       expect(candidates[0].filename).toBe('b.png');
+    });
+
+    it('filters candidates by category and keeps the count in sync', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'R' }) });
+      const category = db.prepare(`
+        INSERT INTO project_asset_categories (project_id, display_name, directory_slug)
+        VALUES (?, 'Source', 'source')
+        RETURNING id
+      `).get(projectId);
+      const selectedCategoryAsset = insertAsset({
+        projectId,
+        relativePath: 'source/selected.txt',
+        filename: 'selected.txt',
+      });
+      const availableCategoryAsset = insertAsset({
+        projectId,
+        relativePath: 'source/available.txt',
+        filename: 'available.txt',
+      });
+      const otherCategoryAsset = insertAsset({
+        projectId,
+        relativePath: 'other/available.txt',
+        filename: 'available.txt',
+      });
+      db.prepare('UPDATE assets SET category_id = ? WHERE id IN (?, ?)')
+        .run(category.id, selectedCategoryAsset.id, availableCategoryAsset.id);
+      linkAssetToRelease({ releaseId: release.id, assetId: selectedCategoryAsset.id });
+
+      const filters = { categoryId: category.id };
+      const candidates = releaseRepo.findReleaseCandidatePage(release.id, projectId, filters);
+
+      expect(candidates.map((asset) => asset.id)).toEqual([availableCategoryAsset.id]);
+      expect(candidates.map((asset) => asset.id)).not.toContain(otherCategoryAsset.id);
+      expect(releaseRepo.countReleaseCandidates(release.id, projectId, filters)).toBe(1);
+      expect(releaseRepo.getReleaseCandidateExtensions(release.id, projectId, filters)).toEqual(['txt']);
     });
 
     it('combines search and extension filters', () => {

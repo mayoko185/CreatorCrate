@@ -36,9 +36,9 @@ describe('page defaults service', () => {
     expect(service.resolve('projects', 'view')).toBe('grid');
     expect(service.resolve('projects', 'sort')).toBe('created');
     expect(service.resolve('projects', 'order')).toBe('desc');
-    expect(service.resolve('publishedWork', 'view')).toBe('grid');
-    expect(service.resolve('publishedWork', 'sort')).toBe('published');
-    expect(service.resolve('publishedWork', 'order')).toBe('desc');
+    expect(service.resolve('releases', 'view')).toBe('list');
+    expect(service.resolve('releases', 'sort')).toBe('planned');
+    expect(service.resolve('releases', 'order')).toBe('asc');
     expect(service.resolve('releaseManagement', 'view')).toBe('list');
     expect(service.resolve('releaseManagement', 'sort')).toBe('updated');
     expect(service.resolve('releaseManagement', 'order')).toBe('desc');
@@ -109,7 +109,7 @@ describe('page defaults service', () => {
     expect(PAGE_DEFAULT_DEFINITIONS.new_project).toEqual({
       status: {
         key: 'page_defaults.new_project.status',
-        values: ['tbd', 'planned', 'in-progress', 'ready', 'published'],
+        values: ['tbd', 'planned', 'in-progress', 'ready'],
         fallback: 'tbd',
       },
       priority: {
@@ -229,12 +229,12 @@ describe('page defaults service', () => {
   });
 
   it('ignores an invalid saved value without rewriting it', () => {
-    const key = PAGE_DEFAULT_DEFINITIONS.publishedWork.sort.key;
-    repository.setValue(key, 'created');
+    const key = PAGE_DEFAULT_DEFINITIONS.releases.sort.key;
+    repository.setValue(key, 'invalid-sort');
 
-    expect(service.getSavedDefault('publishedWork', 'sort')).toBeUndefined();
-    expect(service.resolve('publishedWork', 'sort')).toBe('published');
-    expect(repository.getValue(key)).toBe('created');
+    expect(service.getSavedDefault('releases', 'sort')).toBeUndefined();
+    expect(service.resolve('releases', 'sort')).toBe('planned');
+    expect(repository.getValue(key)).toBe('invalid-sort');
   });
 
   it('uses New Projects fallbacks for invalid stored values without rewriting them', () => {
@@ -355,10 +355,10 @@ describe('page defaults service', () => {
   });
 
   it('saves a valid value and replaces the prior value', () => {
-    const key = PAGE_DEFAULT_DEFINITIONS.publishedWork.order.key;
+    const key = PAGE_DEFAULT_DEFINITIONS.releases.order.key;
 
-    expect(service.saveDefault('publishedWork', 'order', 'asc')).toBe('asc');
-    expect(service.saveDefault('publishedWork', 'order', 'desc')).toBe('desc');
+    expect(service.saveDefault('releases', 'order', 'asc')).toBe('asc');
+    expect(service.saveDefault('releases', 'order', 'desc')).toBe('desc');
     expect(repository.getValue(key)).toBe('desc');
   });
 
@@ -402,7 +402,7 @@ describe('page defaults service', () => {
   });
 
   it('returns definition-backed values when every submitted option is valid', () => {
-    expect(service.validatePageDefaults('publishedWork', {
+    expect(service.validatePageDefaults('releases', {
       view: 'list',
       sort: 'updated',
       order: 'asc',

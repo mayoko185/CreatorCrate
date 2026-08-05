@@ -1,5 +1,5 @@
 import express from 'express';
-import { getLocalTodayIso } from '../util/date.js';
+import { formatLocalDate, formatLocalTime, getLocalTodayIso } from '../util/date.js';
 import {
   AssetNotFoundError,
   createReleaseService,
@@ -9,43 +9,29 @@ import {
   ReleaseValidationError,
   ReleaseNotFoundError,
   RELEASE_STATUSES,
-  ACTIVE_RELEASE_STATUSES,
 } from '../services/release-service.js';
 
 const SORT_OPTIONS = ['updated', 'created', 'planned', 'title'];
 const PAGE_SIZE = 25;
+const RELEASES_PAGE_DEFAULTS = 'releases';
 const RELEASE_MANAGEMENT_PAGE_DEFAULTS = 'releaseManagement';
-
-// Phase 2B: query parameters that unambiguously target the release-record
-// list/board (now at /release-management). A GET /releases request carrying
-// any of these is a stale bookmark/link to the old release-record list, not
-// a request for the Published Work page — redirect it, preserving every
-// query parameter as-is.
-const RELEASE_MANAGEMENT_PARAMS = ['project', 'status', 'schedule', 'readiness', 'includeArchived'];
-
-const PUBLISHED_SORT_OPTIONS = ['published', 'title', 'updated'];
-const PUBLISHED_PAGE_SIZE = 25;
 
 export { handleReleaseListOrBoard, buildPageUrl };
 
 export function createReleasesRouter({ appName, releaseService, projectService, workflowQueryService }) {
   const router = express.Router();
 
-  // GET /releases — Published Work: project-derived list of published
-  // projects (Phase 2B). Requests that clearly target the old release-record
-  // list/board are redirected to /release-management instead.
+  // GET /releases — release-record list or board.
   router.get('/', (req, res, next) => {
-    const targetsReleaseManagement = req.query.view === 'board'
-      || RELEASE_MANAGEMENT_PARAMS.some((key) => req.query[key] !== undefined);
-    if (targetsReleaseManagement) {
-      const queryString = req.url.includes('?') ? req.url.slice(req.url.indexOf('?')) : '';
-      return res.redirect(`/release-management${queryString}`);
-    }
-    handlePublishedWork(req, res, next, { appName, projectService, workflowQueryService });
+    handleReleaseListOrBoard(req, res, next, {
+      appName,
+      workflowQueryService,
+      pageDefaultsKey: RELEASES_PAGE_DEFAULTS,
+    });
   });
 
   // GET /releases/calendar — Phase 2D: compatibility redirect. The
-  // project-backed calendar now lives at the canonical /calendar route (see
+  // release-backed calendar lives at the canonical /calendar route (see
   // routes/calendar.js); this preserves the full query string (month and any
   // other parameters) exactly, so bookmarked/linked URLs keep working.
   router.get('/calendar', (req, res) => {
@@ -56,8 +42,7 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
   // GET /releases/new — Create form (requires project selection)
   router.get('/new', (req, res, next) => {
     try {
-      const pageDefaultsService = getPageDefaultsService(req);
-      const values = buildNewReleaseFormValues(req.query, pageDefaultsService);
+      const values = buildNewReleaseFormValues(req.query);
       const context = buildReleaseFormProjectContext(req.query.projectId, projectService);
       if (context.projects.length === 0) {
         return res.status(422).render('releases/form.njk', {
@@ -65,8 +50,6 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
           release: null,
           values,
           errors: { general: 'No active projects found. Create a project first.' },
-          statuses: RELEASE_STATUSES,
-          activeStatuses: ACTIVE_RELEASE_STATUSES,
           projects: [],
           selectedProjectId: null,
           action: 'Create',
@@ -79,8 +62,6 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
         release: null,
         values,
         errors: {},
-        statuses: RELEASE_STATUSES,
-        activeStatuses: ACTIVE_RELEASE_STATUSES,
         projects: context.projects,
         selectedProjectId: context.selectedProjectId,
         action: 'Create',
@@ -110,8 +91,6 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
           release: null,
           values: req.body,
           errors: err.errors,
-          statuses: RELEASE_STATUSES,
-          activeStatuses: ACTIVE_RELEASE_STATUSES,
           projects: context.projects,
           selectedProjectId: context.selectedProjectId,
           action: 'Create',
@@ -182,8 +161,6 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
       release,
       values: releaseToFormValues(release),
       errors: {},
-      statuses: RELEASE_STATUSES,
-      activeStatuses: ACTIVE_RELEASE_STATUSES,
       projects,
       selectedProjectId: release.project_id,
       action: 'Edit',
@@ -217,8 +194,6 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
           release: existing || { id },
           values: req.body,
           errors: err.errors || { general: err.message },
-          statuses: RELEASE_STATUSES,
-          activeStatuses: ACTIVE_RELEASE_STATUSES,
           projects,
           selectedProjectId: req.body.projectId || (existing ? existing.project_id : null),
           action: 'Edit',
@@ -441,13 +416,14 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
     // Compose the full asset-management view-model through the service
     const viewModel = releaseService.getReleaseAssetManagementPage(id, req.query);
 
-    // Load all project assets for the existing bulk-selection form
-    const assets = releaseService.findProjectAssets(release.project_id);
+    // Use the service-composed asset list for the existing bulk-selection form.
+    const assets = viewModel.assets;
 
     // Build candidate page URL that preserves only candidate filters
     const candidateQuery = {};
     if (viewModel.candidateFilters.search) candidateQuery.search = viewModel.candidateFilters.search;
     if (viewModel.candidateFilters.extension) candidateQuery.extension = viewModel.candidateFilters.extension;
+    if (viewModel.activeCategoryId !== null) candidateQuery.category = String(viewModel.activeCategoryId);
     if (viewModel.candidatePage > 1) candidateQuery.page = String(viewModel.candidatePage);
     if (viewModel.candidatePageSize !== 25) candidateQuery.pageSize = String(viewModel.candidatePageSize);
     const pageUrl = buildPageUrl(req, candidateQuery);
@@ -458,6 +434,8 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
       project: viewModel.project,
       releaseAssets: viewModel.releaseAssets,
       assets,
+      categories: viewModel.categories,
+      activeCategoryId: viewModel.activeCategoryId,
       candidates: viewModel.candidates,
       candidateTotal: viewModel.candidateTotal,
       candidatePage: viewModel.candidatePage,
@@ -539,10 +517,11 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
         // Do NOT load persisted releaseAssets here — that would clobber the
         // user's changes after a validation failure.
         const submittedAssets = buildSubmittedReleaseAssets(req);
-        const assets = releaseService.findProjectAssets(release.project_id);
+        const assets = viewModel.assets;
         const candidateQuery = {};
         if (viewModel.candidateFilters.search) candidateQuery.search = viewModel.candidateFilters.search;
         if (viewModel.candidateFilters.extension) candidateQuery.extension = viewModel.candidateFilters.extension;
+        if (viewModel.activeCategoryId !== null) candidateQuery.category = String(viewModel.activeCategoryId);
         if (viewModel.candidatePage > 1) candidateQuery.page = String(viewModel.candidatePage);
         if (viewModel.candidatePageSize !== 25) candidateQuery.pageSize = String(viewModel.candidatePageSize);
         const pageUrl = buildAssetPageUrl(id, candidateQuery);
@@ -552,6 +531,8 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
           project: viewModel.project,
           releaseAssets: submittedAssets,
           assets,
+          categories: viewModel.categories,
+          activeCategoryId: viewModel.activeCategoryId,
           candidates: viewModel.candidates,
           candidateTotal: viewModel.candidateTotal,
           candidatePage: viewModel.candidatePage,
@@ -568,10 +549,11 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
       }
       if (err instanceof ReleaseArchivedError || err instanceof ReleaseParentArchivedError) {
         const viewModel = releaseService.getReleaseAssetManagementPage(id, req.query);
-        const assets = releaseService.findProjectAssets(release.project_id);
+        const assets = viewModel.assets;
         const candidateQuery = {};
         if (viewModel.candidateFilters.search) candidateQuery.search = viewModel.candidateFilters.search;
         if (viewModel.candidateFilters.extension) candidateQuery.extension = viewModel.candidateFilters.extension;
+        if (viewModel.activeCategoryId !== null) candidateQuery.category = String(viewModel.activeCategoryId);
         if (viewModel.candidatePage > 1) candidateQuery.page = String(viewModel.candidatePage);
         if (viewModel.candidatePageSize !== 25) candidateQuery.pageSize = String(viewModel.candidatePageSize);
         const pageUrl = buildAssetPageUrl(id, candidateQuery);
@@ -581,6 +563,8 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
           project: viewModel.project,
           releaseAssets: viewModel.releaseAssets,
           assets,
+          categories: viewModel.categories,
+          activeCategoryId: viewModel.activeCategoryId,
           candidates: viewModel.candidates,
           candidateTotal: viewModel.candidateTotal,
           candidatePage: viewModel.candidatePage,
@@ -808,20 +792,24 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
 
 /**
  * Shared GET / handler for the release list/board view. Reused by both the
- * /releases router and the /release-management router (Phase 2A) so the
- * filtering, sorting, pagination, and board-grouping contract stays identical
- * across both mount points — only `req.baseUrl` differs between them, and
- * `buildPageUrl`/`basePath` below derive their URLs from that dynamically.
+ * /releases router and the /release-management router so the filtering,
+ * sorting, pagination, and board-grouping contract stays identical across
+ * both mount points — only the mount point and page-default key differ.
  * @param {import('express').Request} req
  * @param {import('express').Response} res
  * @param {import('express').NextFunction} next
- * @param {object} deps - { appName, workflowQueryService }
+ * @param {object} deps - { appName, workflowQueryService, pageDefaultsKey }
  */
-function handleReleaseListOrBoard(req, res, next, { appName, workflowQueryService }) {
+function handleReleaseListOrBoard(
+  req,
+  res,
+  next,
+  { appName, workflowQueryService, pageDefaultsKey = RELEASE_MANAGEMENT_PAGE_DEFAULTS },
+) {
   try {
-    const pageDefaultsService = getReleaseManagementPageDefaultsService(req);
+    const pageDefaultsService = getReleasePageDefaultsService(req, pageDefaultsKey);
     const rawQuery = req.query && typeof req.query === 'object' ? req.query : {};
-    const presentation = resolveReleaseManagementPresentation(rawQuery, pageDefaultsService);
+    const presentation = resolveReleasePresentation(rawQuery, pageDefaultsService, pageDefaultsKey);
     const effectiveQuery = {
       ...rawQuery,
       sort: presentation.sort,
@@ -903,25 +891,25 @@ function handleReleaseListOrBoard(req, res, next, { appName, workflowQueryServic
   }
 }
 
-function getReleaseManagementPageDefaultsService(req) {
+function getReleasePageDefaultsService(req, pageDefaultsKey) {
   const service = req.app?.locals?.pageDefaultsService;
   if (!service) {
-    throw new Error('Release Management requires app.locals.pageDefaultsService.');
+    throw new Error(`Release page "${pageDefaultsKey}" requires app.locals.pageDefaultsService.`);
   }
   return service;
 }
 
-function resolveReleaseManagementPresentation(rawQuery, pageDefaultsService) {
+function resolveReleasePresentation(rawQuery, pageDefaultsService, pageDefaultsKey) {
   const query = rawQuery && typeof rawQuery === 'object' ? rawQuery : {};
   const presentation = {};
 
   for (const option of ['view', 'sort', 'order']) {
-    const fallback = pageDefaultsService.getFallback(RELEASE_MANAGEMENT_PAGE_DEFAULTS, option);
-    const savedValue = pageDefaultsService.resolve(RELEASE_MANAGEMENT_PAGE_DEFAULTS, option);
+    const fallback = pageDefaultsService.getFallback(pageDefaultsKey, option);
+    const savedValue = pageDefaultsService.resolve(pageDefaultsKey, option);
     const explicit = Object.hasOwn(query, option);
     const explicitValue = query[option] === undefined ? null : query[option];
     const value = explicit
-      ? pageDefaultsService.resolve(RELEASE_MANAGEMENT_PAGE_DEFAULTS, option, explicitValue)
+      ? pageDefaultsService.resolve(pageDefaultsKey, option, explicitValue)
       : savedValue;
 
     presentation[option] = {
@@ -957,6 +945,7 @@ function buildReleaseManagementUrlQuery(
 ) {
   const query = {};
 
+  if (normalizedFilters.search) query.search = normalizedFilters.search;
   if (normalizedFilters.projectId !== null) query.project = String(normalizedFilters.projectId);
   if (normalizedFilters.status !== null) query.status = normalizedFilters.status;
   if (normalizedFilters.schedule !== null) query.schedule = normalizedFilters.schedule;
@@ -980,6 +969,7 @@ function buildReleaseManagementUrlQuery(
 function buildReleaseManagementRenderQuery(normalizedFilters, presentation, currentPage = normalizedFilters.page) {
   return {
     view: presentation.view,
+    search: normalizedFilters.search || undefined,
     project: normalizedFilters.projectId === null ? undefined : String(normalizedFilters.projectId),
     status: normalizedFilters.status || undefined,
     schedule: normalizedFilters.schedule || undefined,
@@ -994,6 +984,7 @@ function buildReleaseManagementRenderQuery(normalizedFilters, presentation, curr
 
 function buildReleaseManagementClearOverrides() {
   return {
+    search: null,
     project: null,
     status: null,
     schedule: null,
@@ -1016,187 +1007,17 @@ function shouldRedirectToSavedReleaseManagementDefaults(rawQuery, presentation) 
   });
 }
 
-/**
- * Parse and normalize GET /releases (Published Work) query parameters.
- * @param {Object} raw - req.query
- */
-function parsePublishedQuery(raw, pageDefaultsService) {
-  const rawQuery = raw && typeof raw === 'object' ? raw : {};
-  const defaults = pageDefaultsService.resolvePageDefaults('publishedWork', rawQuery);
-  const search = typeof rawQuery.search === 'string' ? rawQuery.search.trim() : '';
-  const sortBy = defaults.sort;
-  const order = defaults.order;
-  const view = defaults.view;
-
-  let page = Number.parseInt(rawQuery.page, 10);
-  if (!Number.isInteger(page) || page < 1) {
-    page = 1;
-  }
-
-  return { search, sortBy, order, page, view };
-}
-
-function buildPublishedPageUrl(req, parsedQuery, currentPage, pageDefaultsService) {
-  const rawPath = req.baseUrl + req.path;
-  const cleanPath = rawPath.length > 1 && rawPath.endsWith('/') ? rawPath.slice(0, -1) : rawPath;
-  const rawQuery = req.query && typeof req.query === 'object' ? req.query : {};
-  const fallbackSort = pageDefaultsService.getFallback('publishedWork', 'sort');
-  const fallbackOrder = pageDefaultsService.getFallback('publishedWork', 'order');
-  const fallbackView = pageDefaultsService.getFallback('publishedWork', 'view');
-  const defaultSort = pageDefaultsService.resolve('publishedWork', 'sort');
-  const defaultOrder = pageDefaultsService.resolve('publishedWork', 'order');
-  const defaultView = pageDefaultsService.resolve('publishedWork', 'view');
-  const baseQuery = {};
-  if (parsedQuery.search) baseQuery.search = parsedQuery.search;
-  if (
-    parsedQuery.sortBy !== fallbackSort
-    || PUBLISHED_SORT_OPTIONS.includes(rawQuery.sort)
-    || (Object.hasOwn(rawQuery, 'sort') && defaultSort !== fallbackSort)
-  ) {
-    baseQuery.sort = parsedQuery.sortBy;
-  }
-  if (
-    parsedQuery.order !== fallbackOrder
-    || rawQuery.order === 'asc'
-    || rawQuery.order === 'desc'
-    || (Object.hasOwn(rawQuery, 'order') && defaultOrder !== fallbackOrder)
-  ) {
-    baseQuery.order = parsedQuery.order;
-  }
-  if (
-    parsedQuery.view !== fallbackView
-    || (Object.hasOwn(rawQuery, 'view') && defaultView !== fallbackView)
-  ) {
-    baseQuery.view = parsedQuery.view;
-  }
-  if (currentPage > 1) baseQuery.page = String(currentPage);
-
-  return function pageUrl(overrides) {
-    const query = { ...baseQuery };
-    for (const [key, value] of Object.entries(overrides)) {
-      if (!['search', 'sort', 'order', 'page', 'view'].includes(key)) continue;
-      if (value === undefined || value === null || value === '' || (key === 'page' && value == 1)) {
-        delete query[key];
-      } else if (key === 'view') {
-        if (value === 'list') query.view = 'list';
-        else if (value === 'grid' && defaultView !== fallbackView) query.view = 'grid';
-        else delete query.view;
-      } else {
-        query[key] = String(value);
-      }
-    }
-    const search = new URLSearchParams(query).toString();
-    return search ? `${cleanPath}?${search}` : cleanPath;
-  };
-}
-
-function getPageDefaultsService(req) {
-  const service = req.app?.locals?.pageDefaultsService;
-  if (!service) {
-    throw new Error('Published Work requires app.locals.pageDefaultsService.');
-  }
-  return service;
-}
-
-function buildNewReleaseFormValues(rawQuery, pageDefaultsService) {
+function buildNewReleaseFormValues(rawQuery) {
   const query = rawQuery && typeof rawQuery === 'object' && !Array.isArray(rawQuery)
     ? rawQuery
     : {};
-  const explicitStatus = typeof query.status === 'string' && ACTIVE_RELEASE_STATUSES.includes(query.status)
-    ? query.status
-    : null;
+  const now = new Date();
 
   return {
     ...query,
-    status: explicitStatus
-      ?? pageDefaultsService.getSavedDefault('new_release', 'status')
-      ?? pageDefaultsService.getFallback('new_release', 'status'),
+    plannedDate: query.plannedDate || formatLocalDate(now),
+    plannedTime: query.plannedTime || formatLocalTime(now),
   };
-}
-
-function hasPublishedPresentationQuery(raw) {
-  const rawQuery = raw && typeof raw === 'object' ? raw : {};
-  return ['view', 'sort', 'order'].some((key) => Object.hasOwn(rawQuery, key));
-}
-
-function shouldRedirectToSavedPublishedDefaults(raw, parsedQuery, pageDefaultsService) {
-  if (hasPublishedPresentationQuery(raw)) return false;
-
-  return parsedQuery.view !== pageDefaultsService.getFallback('publishedWork', 'view')
-    || parsedQuery.sortBy !== pageDefaultsService.getFallback('publishedWork', 'sort')
-    || parsedQuery.order !== pageDefaultsService.getFallback('publishedWork', 'order');
-}
-
-function shouldPreservePublishedViewQuery(raw, parsedQuery, pageDefaultsService) {
-  if (parsedQuery.view === 'list') return true;
-
-  const rawQuery = raw && typeof raw === 'object' ? raw : {};
-  return Object.hasOwn(rawQuery, 'view')
-    && parsedQuery.view === pageDefaultsService.getFallback('publishedWork', 'view')
-    && pageDefaultsService.resolve('publishedWork', 'view') !== pageDefaultsService.getFallback('publishedWork', 'view');
-}
-
-/**
- * GET /releases handler (Phase 2B): published-project listing. A project
- * appears once its status is 'published' and it is not archived — no
- * release record is required or consulted.
- * @param {import('express').Request} req
- * @param {import('express').Response} res
- * @param {import('express').NextFunction} next
- * @param {object} deps - { appName, projectService, workflowQueryService }
- */
-function handlePublishedWork(req, res, next, { appName, projectService, workflowQueryService }) {
-  try {
-    const pageDefaultsService = getPageDefaultsService(req);
-    const parsed = parsePublishedQuery(req.query, pageDefaultsService);
-    const baseOptions = { search: parsed.search, sortBy: parsed.sortBy, order: parsed.order };
-
-    const pageResult = workflowQueryService.getPublishedProjectList({
-      ...baseOptions,
-      limit: PUBLISHED_PAGE_SIZE,
-      offset: (parsed.page - 1) * PUBLISHED_PAGE_SIZE,
-    });
-    const { total } = pageResult;
-    const { total: totalPublished } = projectService.listPublished({ limit: 0 });
-    const pageCount = Math.max(1, Math.ceil(total / PUBLISHED_PAGE_SIZE));
-    const currentPage = Math.min(parsed.page, pageCount);
-    if (shouldRedirectToSavedPublishedDefaults(req.query, parsed, pageDefaultsService)) {
-      const canonicalUrl = buildPublishedPageUrl(req, parsed, currentPage, pageDefaultsService)({});
-      return res.redirect(canonicalUrl);
-    }
-    const rows = currentPage === parsed.page
-      ? pageResult.rows
-      : workflowQueryService.getPublishedProjectList({
-        ...baseOptions,
-        limit: PUBLISHED_PAGE_SIZE,
-        offset: (currentPage - 1) * PUBLISHED_PAGE_SIZE,
-      }).rows;
-
-    const pageUrl = buildPublishedPageUrl(req, parsed, currentPage, pageDefaultsService);
-
-    res.render('releases/published.njk', {
-      appName,
-      projects: rows,
-      total,
-      hasAnyPublished: totalPublished > 0,
-      searchActive: Boolean(parsed.search),
-      page: currentPage,
-      pageSize: PUBLISHED_PAGE_SIZE,
-      pageCount,
-      pageUrl,
-      query: {
-        search: parsed.search,
-        sort: parsed.sortBy,
-        order: parsed.order,
-        view: parsed.view,
-      },
-      view: parsed.view,
-      preserveViewQuery: shouldPreservePublishedViewQuery(req.query, parsed, pageDefaultsService),
-      sortOptions: PUBLISHED_SORT_OPTIONS,
-    });
-  } catch (err) {
-    next(err);
-  }
 }
 
 /**
@@ -1213,10 +1034,11 @@ function handlePublishedWork(req, res, next, { appName, projectService, workflow
 function renderAssetPageWithError(req, res, releaseId, errors, deps = {}) {
   const { releaseService, appName } = deps;
   const viewModel = releaseService.getReleaseAssetManagementPage(releaseId, req.query);
-  const assets = releaseService.findProjectAssets(viewModel.release.project_id);
+  const assets = viewModel.assets;
   const candidateQuery = {};
   if (viewModel.candidateFilters.search) candidateQuery.search = viewModel.candidateFilters.search;
   if (viewModel.candidateFilters.extension) candidateQuery.extension = viewModel.candidateFilters.extension;
+  if (viewModel.activeCategoryId !== null) candidateQuery.category = String(viewModel.activeCategoryId);
   if (viewModel.candidatePage > 1) candidateQuery.page = String(viewModel.candidatePage);
   if (viewModel.candidatePageSize !== 25) candidateQuery.pageSize = String(viewModel.candidatePageSize);
   const pageUrl = buildAssetPageUrl(releaseId, candidateQuery);
@@ -1226,6 +1048,8 @@ function renderAssetPageWithError(req, res, releaseId, errors, deps = {}) {
     project: viewModel.project,
     releaseAssets: viewModel.releaseAssets,
     assets,
+    categories: viewModel.categories,
+    activeCategoryId: viewModel.activeCategoryId,
     candidates: viewModel.candidates,
     candidateTotal: viewModel.candidateTotal,
     candidatePage: viewModel.candidatePage,
@@ -1270,20 +1094,40 @@ function parseReleaseInput(body) {
     title: body.title,
     description: body.description,
     notes: body.notes,
-    status: body.status,
     plannedDate: body.plannedDate || null,
+    plannedTime: body.plannedTime || null,
     publishedDate: body.publishedDate || null,
     patreonUrl: body.patreonUrl || null,
   };
 }
 
+function plannedDateTimeToFormValues(release) {
+  if (!release.planned_date) {
+    return { plannedDate: '', plannedTime: '' };
+  }
+
+  const dateStr = String(release.planned_date);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+    return { plannedDate: dateStr, plannedTime: release.planned_time || '' };
+  }
+
+  const match = dateStr.match(/^(\d{4}-\d{2}-\d{2})\s+(\d{2}):(\d{2}):\d{2}$/);
+  if (match) {
+    return { plannedDate: match[1], plannedTime: `${match[2]}:${match[3]}` };
+  }
+
+  return { plannedDate: dateStr, plannedTime: release.planned_time || '' };
+}
+
 function releaseToFormValues(release) {
+  const { plannedDate, plannedTime } = plannedDateTimeToFormValues(release);
+
   return {
     title: release.title,
     description: release.description,
     notes: release.notes,
-    status: release.status,
-    plannedDate: release.planned_date || '',
+    plannedDate,
+    plannedTime,
     publishedDate: release.published_date || '',
     patreonUrl: release.patreon_url || '',
   };

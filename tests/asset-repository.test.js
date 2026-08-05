@@ -238,6 +238,27 @@ describe('asset repository', () => {
     expect(pngs[0].filename).toBe('a.png');
   });
 
+  it('filters project assets by category ID', () => {
+    const category = db.prepare(`
+      INSERT INTO project_asset_categories (project_id, display_name, directory_slug, display_order, enabled)
+      VALUES (?, ?, ?, ?, 1)
+      RETURNING id
+    `).get(projectId, 'Source', 'source', 0);
+
+    const categorized = assetRepo.upsert(projectId, 'source/a.png', {
+      filename: 'a.png', extension: 'png', mimeType: 'image/png',
+      sizeBytes: 100, modifiedAt: null, categoryId: category.id,
+    });
+    assetRepo.upsert(projectId, 'other/b.png', {
+      filename: 'b.png', extension: 'png', mimeType: 'image/png',
+      sizeBytes: 100, modifiedAt: null,
+    });
+
+    const filtered = assetRepo.findByProjectId(projectId, { categoryId: category.id });
+
+    expect(filtered.map((asset) => asset.id)).toEqual([categorized.id]);
+  });
+
   it('searches by filename', () => {
     assetRepo.upsert(projectId, 'sunset-render.png', {
       filename: 'sunset-render.png', extension: 'png', mimeType: 'image/png',

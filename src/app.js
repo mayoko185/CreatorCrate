@@ -413,6 +413,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
       projectService,
       projectAssetCategoryService,
       assetBrowserPreferenceService,
+      releaseService,
     }));
   }
 

@@ -24,7 +24,7 @@ function activeKeys(path, opts = {}) {
 describe('navigation model — destinations', () => {
   it('exposes only destinations that resolve to real page routes', () => {
     const { navigation } = buildShellModel({ appName: APP_NAME, path: '/' });
-    // Dashboard, Projects, Asset Viewer, Published Work, Calendar, Settings. No Health
+    // Dashboard, Projects, Asset Viewer, Releases, Calendar, Settings. No Health
     // (JSON-only), no dead links.
     expect(navigation.map((n) => n.href)).toEqual([
       '/', '/projects', '/assets', '/releases', '/calendar', '/settings',
@@ -65,24 +65,24 @@ describe('navigation model — Phase 2E: dedicated Calendar item', () => {
     expect(item.icon).toBe('calendar');
   });
 
-  it('Published Work (formerly Releases) has href /releases', () => {
+  it('Releases has href /releases', () => {
     const item = NAVIGATION_ITEMS.find((i) => i.key === 'releases');
-    expect(item.label).toBe('Published Work');
+    expect(item.label).toBe('Releases');
     expect(item.href).toBe('/releases');
   });
 
-  it('item order is exactly Dashboard, Projects, Asset Viewer, Published Work, Calendar, Settings', () => {
+  it('item order is exactly Dashboard, Projects, Asset Viewer, Releases, Calendar, Settings', () => {
     expect(NAVIGATION_ITEMS.map((i) => i.label)).toEqual([
       'Dashboard',
       'Projects',
       'Asset Viewer',
-      'Published Work',
+      'Releases',
       'Calendar',
       'Settings',
     ]);
   });
 
-  it('Calendar appears immediately after Published Work and before Settings', () => {
+  it('Calendar appears immediately after Releases and before Settings', () => {
     const keys = NAVIGATION_ITEMS.map((i) => i.key);
     const releasesIdx = keys.indexOf('releases');
     const calendarIdx = keys.indexOf('calendar');
@@ -150,7 +150,7 @@ describe('navigation model — projects active state', () => {
   });
 });
 
-describe('navigation model — released (Published Work) active state', () => {
+describe('navigation model — Releases active state', () => {
   it('is active on the release list', () => {
     expect(activeKeys('/releases')).toEqual(['releases']);
   });
@@ -164,14 +164,14 @@ describe('navigation model — released (Published Work) active state', () => {
   });
 
   // Phase 2E: /release-management is the release-record list/board — it has
-  // no separate sidebar item, so it stays grouped under Published Work.
+  // no separate sidebar item, so it stays grouped under Releases.
   it('is active on the release-management route', () => {
     expect(activeKeys('/release-management')).toEqual(['releases']);
     expect(activeKeys('/release-management?view=board')).toEqual(['releases']);
   });
 
   // Phase 2E: /calendar now has its own dedicated sidebar item and must not
-  // activate Published Work.
+  // activate Releases.
   it('is not active on the canonical calendar route', () => {
     expect(activeKeys('/calendar')).not.toContain('releases');
   });
@@ -291,7 +291,7 @@ describe('navigation model — active section (header source)', () => {
   it('exposes the active item label as activeSection', () => {
     expect(buildShellModel({ appName: APP_NAME, path: '/projects' }).activeSection).toBe('Projects');
     expect(buildShellModel({ appName: APP_NAME, path: '/assets' }).activeSection).toBe('Asset Viewer');
-    expect(buildShellModel({ appName: APP_NAME, path: '/releases/3/edit' }).activeSection).toBe('Published Work');
+    expect(buildShellModel({ appName: APP_NAME, path: '/releases/3/edit' }).activeSection).toBe('Releases');
     expect(buildShellModel({ appName: APP_NAME, path: '/calendar' }).activeSection).toBe('Calendar');
     expect(buildShellModel({ appName: APP_NAME, path: '/' }).activeSection).toBe('Dashboard');
   });

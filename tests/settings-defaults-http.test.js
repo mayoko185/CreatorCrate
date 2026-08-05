@@ -16,9 +16,9 @@ const VALID_DEFAULTS = {
   projectsView: 'list',
   projectsSort: 'title',
   projectsOrder: 'asc',
-  publishedWorkView: 'list',
-  publishedWorkSort: 'updated',
-  publishedWorkOrder: 'asc',
+  releasesView: 'board',
+  releasesSort: 'title',
+  releasesOrder: 'desc',
   releaseManagementView: 'board',
   releaseManagementSort: 'planned',
   releaseManagementOrder: 'asc',
@@ -102,7 +102,7 @@ describe('settings — page defaults HTTP', () => {
     expect(res.text).toContain('<h2>New Projects</h2>');
     expect(res.text).toContain('<h2>New Releases</h2>');
     expect(res.text).toContain('<h2>Projects</h2>');
-    expect(res.text).toContain('<h2>Published Work</h2>');
+    expect(res.text).toContain('<h2>Releases</h2>');
     expect(res.text).toContain('<h2>Release Management</h2>');
     expect(res.text).toContain('<h2>Project Assets</h2>');
     expect(res.text).toContain('<h2>Asset Viewer</h2>');
@@ -116,9 +116,9 @@ describe('settings — page defaults HTTP', () => {
       'projectsView',
       'projectsSort',
       'projectsOrder',
-      'publishedWorkView',
-      'publishedWorkSort',
-      'publishedWorkOrder',
+      'releasesView',
+      'releasesSort',
+      'releasesOrder',
       'releaseManagementView',
       'releaseManagementSort',
       'releaseManagementOrder',
@@ -154,9 +154,9 @@ describe('settings — page defaults HTTP', () => {
     expect(selectedValue(res.text, 'projectsView')).toBe('grid');
     expect(selectedValue(res.text, 'projectsSort')).toBe('created');
     expect(selectedValue(res.text, 'projectsOrder')).toBe('desc');
-    expect(selectedValue(res.text, 'publishedWorkView')).toBe('grid');
-    expect(selectedValue(res.text, 'publishedWorkSort')).toBe('published');
-    expect(selectedValue(res.text, 'publishedWorkOrder')).toBe('desc');
+    expect(selectedValue(res.text, 'releasesView')).toBe('list');
+    expect(selectedValue(res.text, 'releasesSort')).toBe('planned');
+    expect(selectedValue(res.text, 'releasesOrder')).toBe('asc');
     expect(selectedValue(res.text, 'releaseManagementView')).toBe('list');
     expect(selectedValue(res.text, 'releaseManagementSort')).toBe('updated');
     expect(selectedValue(res.text, 'releaseManagementOrder')).toBe('desc');
@@ -186,9 +186,9 @@ describe('settings — page defaults HTTP', () => {
     writeMeta(db, defaultKey('projects', 'view'), 'list');
     writeMeta(db, defaultKey('projects', 'sort'), 'not-a-project-sort');
     writeMeta(db, defaultKey('projects', 'order'), 'asc');
-    writeMeta(db, defaultKey('publishedWork', 'view'), 'not-a-view');
-    writeMeta(db, defaultKey('publishedWork', 'sort'), 'title');
-    writeMeta(db, defaultKey('publishedWork', 'order'), 'not-an-order');
+    writeMeta(db, defaultKey('releases', 'view'), 'not-a-view');
+    writeMeta(db, defaultKey('releases', 'sort'), 'title');
+    writeMeta(db, defaultKey('releases', 'order'), 'not-an-order');
     writeMeta(db, defaultKey('releaseManagement', 'view'), 'grid');
     writeMeta(db, defaultKey('releaseManagement', 'sort'), 'published');
     writeMeta(db, defaultKey('releaseManagement', 'order'), 'forwards');
@@ -210,9 +210,9 @@ describe('settings — page defaults HTTP', () => {
     expect(selectedValue(res.text, 'projectsView')).toBe('list');
     expect(selectedValue(res.text, 'projectsSort')).toBe('created');
     expect(selectedValue(res.text, 'projectsOrder')).toBe('asc');
-    expect(selectedValue(res.text, 'publishedWorkView')).toBe('grid');
-    expect(selectedValue(res.text, 'publishedWorkSort')).toBe('title');
-    expect(selectedValue(res.text, 'publishedWorkOrder')).toBe('desc');
+    expect(selectedValue(res.text, 'releasesView')).toBe('list');
+    expect(selectedValue(res.text, 'releasesSort')).toBe('title');
+    expect(selectedValue(res.text, 'releasesOrder')).toBe('asc');
     expect(selectedValue(res.text, 'releaseManagementView')).toBe('list');
     expect(selectedValue(res.text, 'releaseManagementSort')).toBe('updated');
     expect(selectedValue(res.text, 'releaseManagementOrder')).toBe('desc');
@@ -270,9 +270,9 @@ describe('settings — page defaults HTTP', () => {
     expect(readMeta(db, defaultKey('projects', 'view'))).toBe('list');
     expect(readMeta(db, defaultKey('projects', 'sort'))).toBe('title');
     expect(readMeta(db, defaultKey('projects', 'order'))).toBe('asc');
-    expect(readMeta(db, defaultKey('publishedWork', 'view'))).toBe('list');
-    expect(readMeta(db, defaultKey('publishedWork', 'sort'))).toBe('updated');
-    expect(readMeta(db, defaultKey('publishedWork', 'order'))).toBe('asc');
+    expect(readMeta(db, defaultKey('releases', 'view'))).toBe('board');
+    expect(readMeta(db, defaultKey('releases', 'sort'))).toBe('title');
+    expect(readMeta(db, defaultKey('releases', 'order'))).toBe('desc');
     expect(readMeta(db, defaultKey('releaseManagement', 'view'))).toBe('board');
     expect(readMeta(db, defaultKey('releaseManagement', 'sort'))).toBe('planned');
     expect(readMeta(db, defaultKey('releaseManagement', 'order'))).toBe('asc');
@@ -296,7 +296,7 @@ describe('settings — page defaults HTTP', () => {
     expect(redirected.text).toContain('Page defaults saved successfully.');
     expect(redirected.text).toContain('notice--success');
     expect(selectedValue(redirected.text, 'projectsView')).toBe('list');
-    expect(selectedValue(redirected.text, 'publishedWorkSort')).toBe('updated');
+    expect(selectedValue(redirected.text, 'releasesSort')).toBe('title');
     expect(selectedValue(redirected.text, 'releaseManagementView')).toBe('board');
     expect(selectedValue(redirected.text, 'releaseManagementSort')).toBe('planned');
     expect(selectedValue(redirected.text, 'releaseManagementOrder')).toBe('asc');
@@ -316,9 +316,9 @@ describe('settings — page defaults HTTP', () => {
       projectsView: 'grid',
       projectsSort: 'created',
       projectsOrder: 'desc',
-      publishedWorkView: 'grid',
-      publishedWorkSort: 'published',
-      publishedWorkOrder: 'desc',
+      releasesView: 'list',
+      releasesSort: 'planned',
+      releasesOrder: 'asc',
       projectAssetsView: 'grid',
       projectAssetsSort: 'filename',
       projectAssetsOrder: 'asc',
@@ -331,9 +331,9 @@ describe('settings — page defaults HTTP', () => {
     writeMeta(db, defaultKey('projects', 'view'), existing.projectsView);
     writeMeta(db, defaultKey('projects', 'sort'), existing.projectsSort);
     writeMeta(db, defaultKey('projects', 'order'), existing.projectsOrder);
-    writeMeta(db, defaultKey('publishedWork', 'view'), existing.publishedWorkView);
-    writeMeta(db, defaultKey('publishedWork', 'sort'), existing.publishedWorkSort);
-    writeMeta(db, defaultKey('publishedWork', 'order'), existing.publishedWorkOrder);
+    writeMeta(db, defaultKey('releases', 'view'), existing.releasesView);
+    writeMeta(db, defaultKey('releases', 'sort'), existing.releasesSort);
+    writeMeta(db, defaultKey('releases', 'order'), existing.releasesOrder);
     writeMeta(db, defaultKey('projectAssets', 'view'), existing.projectAssetsView);
     writeMeta(db, defaultKey('projectAssets', 'sort'), existing.projectAssetsSort);
     writeMeta(db, defaultKey('projectAssets', 'order'), existing.projectAssetsOrder);
@@ -359,9 +359,9 @@ describe('settings — page defaults HTTP', () => {
     expect(readMeta(db, defaultKey('projects', 'view'))).toBe(existing.projectsView);
     expect(readMeta(db, defaultKey('projects', 'sort'))).toBe(existing.projectsSort);
     expect(readMeta(db, defaultKey('projects', 'order'))).toBe(existing.projectsOrder);
-    expect(readMeta(db, defaultKey('publishedWork', 'view'))).toBe(existing.publishedWorkView);
-    expect(readMeta(db, defaultKey('publishedWork', 'sort'))).toBe(existing.publishedWorkSort);
-    expect(readMeta(db, defaultKey('publishedWork', 'order'))).toBe(existing.publishedWorkOrder);
+    expect(readMeta(db, defaultKey('releases', 'view'))).toBe(existing.releasesView);
+    expect(readMeta(db, defaultKey('releases', 'sort'))).toBe(existing.releasesSort);
+    expect(readMeta(db, defaultKey('releases', 'order'))).toBe(existing.releasesOrder);
     expect(readMeta(db, defaultKey('projectAssets', 'view'))).toBe(existing.projectAssetsView);
     expect(readMeta(db, defaultKey('projectAssets', 'sort'))).toBe(existing.projectAssetsSort);
     expect(readMeta(db, defaultKey('projectAssets', 'order'))).toBe(existing.projectAssetsOrder);
@@ -396,9 +396,9 @@ describe('settings — page defaults HTTP', () => {
     expect(readMeta(db, defaultKey('projects', 'view'))).toBe(VALID_DEFAULTS.projectsView);
     expect(readMeta(db, defaultKey('projects', 'sort'))).toBe(VALID_DEFAULTS.projectsSort);
     expect(readMeta(db, defaultKey('projects', 'order'))).toBe(VALID_DEFAULTS.projectsOrder);
-    expect(readMeta(db, defaultKey('publishedWork', 'view'))).toBe(VALID_DEFAULTS.publishedWorkView);
-    expect(readMeta(db, defaultKey('publishedWork', 'sort'))).toBe(VALID_DEFAULTS.publishedWorkSort);
-    expect(readMeta(db, defaultKey('publishedWork', 'order'))).toBe(VALID_DEFAULTS.publishedWorkOrder);
+    expect(readMeta(db, defaultKey('releases', 'view'))).toBe(VALID_DEFAULTS.releasesView);
+    expect(readMeta(db, defaultKey('releases', 'sort'))).toBe(VALID_DEFAULTS.releasesSort);
+    expect(readMeta(db, defaultKey('releases', 'order'))).toBe(VALID_DEFAULTS.releasesOrder);
     expect(readMeta(db, defaultKey('projectAssets', 'view'))).toBe(VALID_DEFAULTS.projectAssetsView);
     expect(readMeta(db, defaultKey('projectAssets', 'sort'))).toBe(VALID_DEFAULTS.projectAssetsSort);
     expect(readMeta(db, defaultKey('projectAssets', 'order'))).toBe(VALID_DEFAULTS.projectAssetsOrder);
@@ -487,9 +487,9 @@ describe('settings — page defaults HTTP', () => {
         projectsView: 'grid',
         projectsSort: 'created',
         projectsOrder: 'desc',
-        publishedWorkView: 'grid',
-        publishedWorkSort: 'published',
-        publishedWorkOrder: 'desc',
+        releasesView: 'list',
+        releasesSort: 'planned',
+        releasesOrder: 'asc',
         releaseManagementView: 'list',
         releaseManagementSort: 'updated',
         releaseManagementOrder: 'desc',

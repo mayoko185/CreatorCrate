@@ -42,7 +42,7 @@ describe('app meta repository for page defaults', () => {
   it('leaves unrelated app_meta keys untouched', () => {
     repository.setValue('unrelated.preference', 'preserve-me');
 
-    repository.setValue(PAGE_DEFAULT_DEFINITIONS.publishedWork.sort.key, 'title');
+    repository.setValue(PAGE_DEFAULT_DEFINITIONS.releases.sort.key, 'title');
 
     expect(repository.getValue('unrelated.preference')).toBe('preserve-me');
     expect(repository.getValue('asset_browser.default_category')).toBe('all');

@@ -32,7 +32,7 @@ function makeProjectsRoot(tmpDir) {
   const projectsRoot = path.join(tmpDir, 'projects');
   fs.mkdirSync(projectsRoot, { recursive: true });
   // Create the canonical directory names that status values map to.
-  for (const dir of ['tbd', 'planned', 'active', 'ready', 'published', 'archived']) {
+  for (const dir of ['tbd', 'planned', 'active', 'ready', 'archived']) {
     fs.mkdirSync(path.join(projectsRoot, dir), { recursive: true });
   }
   return projectsRoot;

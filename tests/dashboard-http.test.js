@@ -14,6 +14,8 @@ import { createApp } from '../src/app.js';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { STATUS_DIR_MAP } from '../src/storage/project-storage.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
+import { createReleaseService } from '../src/services/release-service.js';
+import { evaluateReleaseReadiness } from '../src/services/release-readiness-policy.js';
 import { ensureAuthEnablement } from '../src/auth/auth-state.js';
 import { getDisabledModeCsrf } from './helpers/auth.js';
 
@@ -64,7 +66,7 @@ async function createProject(app, { title, status = 'tbd' }) {
 }
 
 async function createRelease(app, { projectId, title, status = 'idea', plannedDate = null }) {
-  const body = [`projectId=${projectId}`, `title=${encodeURIComponent(title)}`, `status=${status}`];
+  const body = [`projectId=${projectId}`, `title=${encodeURIComponent(title)}`];
   if (plannedDate) body.push(`plannedDate=${plannedDate}`);
   body.push('_csrf=' + encodeURIComponent(app.testCsrfToken));
   const res = await app.testAgent
@@ -72,7 +74,12 @@ async function createRelease(app, { projectId, title, status = 'idea', plannedDa
     .send(body.join('&'))
     .set('Content-Type', 'application/x-www-form-urlencoded')
     .expect(302);
-  return res.headers.location.replace('/releases/', '');
+  const releaseId = res.headers.location.replace('/releases/', '');
+  if (status !== 'idea') {
+    const releaseService = createReleaseService({ db: app.testDb, evaluateReleaseReadiness });
+    releaseService.updateRelease(Number(releaseId), { status });
+  }
+  return releaseId;
 }
 
 /**
@@ -120,6 +127,7 @@ describe('Phase 6B HTTP dashboard', () => {
     fs.mkdirSync(appDataRoot, { recursive: true });
     const { csrfPepper } = ensureAuthEnablement(appDataRoot);
     app = createApp({ appName: 'CreatorCrate', db, projectsRoot }, { appDataRoot, authState: { csrfPepper } });
+    app.testDb = db;
     const { agent, csrfToken } = await getDisabledModeCsrf(app, appDataRoot);
     app.testAgent = agent;
     app.testCsrfToken = csrfToken;

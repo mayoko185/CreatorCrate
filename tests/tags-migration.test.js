@@ -6,10 +6,8 @@ import { fileURLToPath } from 'node:url';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
-const MIGRATION_BEFORE_TAGS = '013_project_primary_images.sql';
-const TAGS_MIGRATION = '014_tags.sql';
 
-describe('tags schema migration (014)', () => {
+describe('tags schema in the baseline migration', () => {
   let tmpDir;
   let dbPath;
   let db;
@@ -85,15 +83,13 @@ describe('tags schema migration (014)', () => {
       .all(table);
   }
 
-  it('applies on a fresh database, records migration order, and is idempotent', () => {
+  it('applies on a fresh database, records the baseline, and is idempotent', () => {
     migrate();
 
     expect(() => runMigrations(db, MIGRATIONS_DIR)).not.toThrow();
 
     const applied = db.prepare('SELECT filename FROM schema_migrations ORDER BY rowid').pluck().all();
-    expect(applied).toContain(MIGRATION_BEFORE_TAGS);
-    expect(applied).toContain(TAGS_MIGRATION);
-    expect(applied.indexOf(TAGS_MIGRATION)).toBeGreaterThan(applied.indexOf(MIGRATION_BEFORE_TAGS));
+    expect(applied).toEqual(['001_initial.sql']);
     expect(db.pragma('foreign_keys', { simple: true })).toBe(1);
     expect(db.pragma('foreign_key_check')).toEqual([]);
   });

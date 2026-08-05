@@ -61,11 +61,10 @@ const NAVIGATION_ITEMS = [
   },
   {
     key: 'releases',
-    label: 'Published Work',
+    label: 'Releases',
     href: '/releases',
     icon: 'releases',
-    // Phase 2E: /releases is Published Work; /release-management (the
-    // release-record list/board) and every release-record route stay
+    // Release records and their management surface stay
     // grouped under this item. /calendar now has its own dedicated sidebar
     // item (below) rather than being grouped here.
     matches: [
@@ -85,7 +84,7 @@ const NAVIGATION_ITEMS = [
     icon: 'calendar',
     // Phase 2E: the canonical project-backed calendar route gets its own
     // dedicated primary-navigation item, discoverable independently of
-    // Published Work.
+    // Releases.
     matches: ['/calendar'],
   },
   {
