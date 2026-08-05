@@ -136,7 +136,7 @@
           <li>
             <a href="/releases/{{ r.id }}">{{ r.title }}</a>
             <span class="meta">
-              {{ r.status }}{% if r.published_date %} · published {{ r.published_date }}{% elif r.planned_date %} · planned {{ r.planned_date }}{% endif %}
+              {% set status = r.project_status %}{% include "partials/status-badge.njk" %}{% if r.published_date %} · published {{ r.published_date }}{% elif r.planned_date %} · planned {{ r.planned_date }}{% endif %}
               · updated {{ r.updated_at }}
             </span>
           </li>

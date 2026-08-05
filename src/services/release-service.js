@@ -1,4 +1,4 @@
-import { createReleaseRepository, RELEASE_STATUSES, ACTIVE_RELEASE_STATUSES, RELEASE_ASSET_ROLES } from '../data/release-repository.js';
+import { createReleaseRepository, RELEASE_ASSET_ROLES } from '../data/release-repository.js';
 import { createProjectRepository } from '../data/project-repository.js';
 import { createAssetRepository } from '../data/asset-repository.js';
 import { createAssetCategoryRepository } from '../data/asset-category-repository.js';
@@ -6,8 +6,6 @@ import { AssetCategoryNotFoundError } from './asset-category-service.js';
 import { AssetCategoryValidationError } from './asset-category-validation.js';
 import { formatLocalDate, formatLocalTime, getLocalTodayIso } from '../util/date.js';
 import { isValidWebUrl } from '../util/url.js';
-
-export { RELEASE_STATUSES, ACTIVE_RELEASE_STATUSES };
 
 export class ReleaseValidationError extends Error {
   constructor(errors) {
@@ -76,63 +74,6 @@ const NOTES_MAX = 10000;
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const TIME_RE = /^\d{2}:\d{2}$/;
-
-/**
- * Valid workflow transitions.
- * Keys are current status (or 'new' for initial creation).
- * Values are arrays of allowed next statuses.
- *
- * published is terminal — cannot be set via create/update, only via publishRelease.
- * cancelled is allowed as initial status (historical/imported releases) but
- * once set, cannot transition to any other status.
- */
-const WORKFLOW_TRANSITIONS = {
-  new: ['tbd', 'planned', 'in-progress', 'ready', 'cancelled'],
-  tbd: ['planned', 'in-progress', 'ready', 'cancelled'],
-  planned: ['tbd', 'in-progress', 'ready', 'cancelled'],
-  'in-progress': ['tbd', 'planned', 'ready', 'cancelled'],
-  ready: ['cancelled'], // NOTE: published is NOT here — only publishRelease() can publish
-  published: [], // terminal — no transitions out
-  cancelled: [], // terminal — no transitions out
-};
-
-/**
- * Validate a status transition for create/update operations.
- * publishRelease() has its own internal validation and does NOT use this function.
- * @param {string|null} currentStatus - existing status, or null for new releases
- * @param {string} newStatus - desired new status
- * @throws {ReleaseValidationError} if transition is not allowed
- */
-function validateTransition(currentStatus, newStatus) {
-  // Same status is a no-op — always allowed
-  if (currentStatus !== null && currentStatus === newStatus) {
-    return;
-  }
-
-  // published is NEVER allowed via create/update — only via publishRelease()
-  if (newStatus === 'published') {
-    if (currentStatus === null) {
-      throw new ReleaseValidationError({
-        status: `Cannot create a release with status "published". Use the publish action to publish a release.`,
-      });
-    }
-    throw new ReleaseValidationError({
-      status: `Cannot change status from "${currentStatus}" to "published". Use the publish action.`,
-    });
-  }
-
-  const allowed = WORKFLOW_TRANSITIONS[currentStatus ?? 'new'];
-  if (!allowed || !allowed.includes(newStatus)) {
-    if (currentStatus === null) {
-      throw new ReleaseValidationError({
-        status: `Cannot create a release with status "${newStatus}".`,
-      });
-    }
-    throw new ReleaseValidationError({
-      status: `Cannot change status from "${currentStatus}" to "${newStatus}".`,
-    });
-  }
-}
 
 function isLeapYear(year) {
   return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
@@ -217,8 +158,7 @@ export function createReleaseService({ db, evaluateReleaseReadiness }) {
   const assetRepository = createAssetRepository(db);
   const assetCategoryRepository = createAssetCategoryRepository(db);
 
-  function validate(input, options = {}) {
-    const { existingId } = options;
+  function validate(input) {
     const errors = {};
 
     const title = typeof input.title === 'string' ? input.title.trim() : '';
@@ -238,11 +178,6 @@ export function createReleaseService({ db, evaluateReleaseReadiness }) {
       errors.notes = `Notes must be ${NOTES_MAX} characters or fewer.`;
     }
 
-    const status = input.status ?? 'tbd';
-    if (!RELEASE_STATUSES.includes(status)) {
-      errors.status = `Status must be one of: ${RELEASE_STATUSES.join(', ')}.`;
-    }
-
     const plannedDate = input.plannedDate || null;
     const submittedPlannedTime = input.plannedTime || null;
     if (!isValidDate(plannedDate)) {
@@ -258,10 +193,6 @@ export function createReleaseService({ db, evaluateReleaseReadiness }) {
       errors.publishedDate = 'Published date must be a valid date (YYYY-MM-DD).';
     }
 
-    if (status === 'published' && !publishedDate) {
-      errors.publishedDate = 'Published date is required when status is published.';
-    }
-
     const patreonUrl = input.patreonUrl || null;
     if (!isValidWebUrl(patreonUrl)) {
       errors.patreonUrl = 'Release link must be a valid absolute HTTP or HTTPS URL.';
@@ -275,7 +206,6 @@ export function createReleaseService({ db, evaluateReleaseReadiness }) {
       title,
       description,
       notes,
-      status,
       plannedDate,
       plannedTime,
       publishedDate,
@@ -381,9 +311,9 @@ export function createReleaseService({ db, evaluateReleaseReadiness }) {
   }
 
   /**
-   * Shared guard: reject a release-asset mutation when the release has status
-   * "published". Published releases have locked asset selections — the junction
-   * table rows (asset_id, role, sort_order) are immutable. Scans may still
+   * Shared guard: reject a release-asset mutation when publication data exists.
+   * Published releases have locked asset selections — the junction table rows
+   * (asset_id, role, sort_order) are immutable. Scans may still
    * update asset presence and metadata on the assets table, but the
    * release_assets rows themselves must not change.
    *
@@ -394,15 +324,12 @@ export function createReleaseService({ db, evaluateReleaseReadiness }) {
    * @throws {ReleasePublishedError}
    */
   function guardReleaseNotPublished(release) {
-    if (release.status === 'published') {
+    if (release.published_date != null) {
       throw new ReleasePublishedError(release.id);
     }
   }
 
   return {
-    RELEASE_STATUSES,
-    ACTIVE_RELEASE_STATUSES,
-
     repository,
 
     /**
@@ -413,8 +340,6 @@ export function createReleaseService({ db, evaluateReleaseReadiness }) {
     createRelease(projectId, input) {
       validateProjectExists(projectId);
       const normalized = validate(input);
-      // Enforce lifecycle: published and cancelled are terminal states
-      validateTransition(null, normalized.status);
       return repository.create({ projectId, ...normalized });
     },
 
@@ -432,8 +357,6 @@ export function createReleaseService({ db, evaluateReleaseReadiness }) {
     createReleaseWithSelectedAssets(projectId, input, assetIds) {
       const { project, assetIds: normalizedAssetIds } = validateAndNormalizeSelectedAssetIds(projectId, assetIds);
       const normalized = validate(input);
-      // Enforce lifecycle: published and cancelled are terminal states
-      validateTransition(null, normalized.status);
 
       const selections = normalizedAssetIds.map((assetId, sortOrder) => ({
         assetId,
@@ -489,14 +412,11 @@ export function createReleaseService({ db, evaluateReleaseReadiness }) {
         title: category.display_name,
         description: '',
         notes: '',
-        status: 'tbd',
         plannedDate: formatLocalDate(now),
         plannedTime: formatLocalTime(now),
         publishedDate: null,
         patreonUrl: null,
       });
-      validateTransition(null, normalized.status);
-
       const selections = assetRepository
         .findProjectAssetsByCategoryInBrowserOrder(project.id, category.id)
         .filter((asset) => asset.is_present === 1)
@@ -527,14 +447,11 @@ export function createReleaseService({ db, evaluateReleaseReadiness }) {
         title: project.title,
         description: '',
         notes: '',
-        status: 'tbd',
         plannedDate: formatLocalDate(now),
         plannedTime: formatLocalTime(now),
         publishedDate: null,
         patreonUrl: null,
       });
-      validateTransition(null, normalized.status);
-
       const selections = normalizedAssetIds.map((assetId, sortOrder) => ({
         assetId,
         role: 'attachment',
@@ -568,22 +485,19 @@ export function createReleaseService({ db, evaluateReleaseReadiness }) {
       // Validate project still exists and is not archived
       validateProjectExists(release.project_id);
 
-      // Default missing status and scheduling values to the existing release
+      // Default missing metadata and scheduling values to the existing release
       // values so the edit form can omit those fields without clearing them.
       const inputWithDefaults = {
         title: input.title ?? release.title,
         description: input.description ?? release.description,
         notes: input.notes ?? release.notes,
-        status: input.status ?? release.status,
         plannedDate: input.plannedDate ?? release.planned_date,
         plannedTime: input.plannedTime ?? release.planned_time,
         publishedDate: input.publishedDate ?? release.published_date,
         patreonUrl: input.patreonUrl ?? release.patreon_url,
         ...input,
       };
-      const normalized = validate(inputWithDefaults, { existingId: id });
-      // Enforce lifecycle transitions
-      validateTransition(release.status, normalized.status);
+      const normalized = validate(inputWithDefaults);
       const updated = repository.update(id, normalized);
       if (!updated) {
         throw new ReleaseNotFoundError(id);
@@ -593,7 +507,7 @@ export function createReleaseService({ db, evaluateReleaseReadiness }) {
 
     /**
      * Publish a release. Sets published_date to today if not provided.
-     * Only ready releases can be published.
+     * Only releases whose owning project is ready can be published.
      * Enforces the shared readiness policy before publishing.
      * @param {number} id
      * @param {string} [publishedDate] - ISO date string YYYY-MM-DD, defaults to today
@@ -613,12 +527,12 @@ export function createReleaseService({ db, evaluateReleaseReadiness }) {
         throw new ReleaseArchivedError(id);
       }
 
-      if (release.status === 'published') {
+      if (release.published_date != null) {
         throw new ReleaseValidationError({ general: 'Release is already published.' });
       }
 
-      if (release.status !== 'ready') {
-        throw new ReleaseValidationError({ general: 'Only releases with status "ready" can be published.' });
+      if (release.project_status !== 'ready') {
+        throw new ReleaseValidationError({ general: 'Only releases whose project status is "ready" can be published.' });
       }
 
       // ── Phase 7C-1: Enforce release readiness ──────────────────────────
@@ -654,7 +568,7 @@ export function createReleaseService({ db, evaluateReleaseReadiness }) {
     },
 
     /**
-     * Archive a release. Sets archived_at but does not change status.
+     * Archive a release by setting archived_at.
      * @param {number} id
      * @returns {ReleaseRecord}
      */
@@ -692,7 +606,6 @@ export function createReleaseService({ db, evaluateReleaseReadiness }) {
     /**
      * @param {number} projectId
      * @param {Object} [options]
-     * @param {string} [options.status]
      * @param {boolean} [options.includeArchived]
      * @param {string} [options.sortBy]
      * @param {string} [options.order]
@@ -700,13 +613,6 @@ export function createReleaseService({ db, evaluateReleaseReadiness }) {
      */
     listReleases(projectId, options) {
       return repository.findByProjectId(projectId, options);
-    },
-
-    /**
-     * @returns {Object.<string, number>}
-     */
-    countByStatus() {
-      return repository.countByStatus();
     },
 
     /**
@@ -1452,7 +1358,6 @@ export function createReleaseService({ db, evaluateReleaseReadiness }) {
     /**
      * List releases across all projects (global list for routes).
      * @param {Object} [options]
-     * @param {string} [options.status]
      * @param {boolean} [options.includeArchived]
      * @param {string} [options.sortBy]
      * @param {string} [options.order]

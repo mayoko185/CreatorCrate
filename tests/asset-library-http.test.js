@@ -127,9 +127,9 @@ describe('cross-project Asset Viewer HTTP route', () => {
 
   function insertRelease(projectId, title, assetId) {
     const release = db.prepare(`
-      INSERT INTO releases (project_id, title, description, notes, status,
+      INSERT INTO releases (project_id, title, description, notes,
                             planned_date, published_date, patreon_url, archived_at)
-      VALUES (?, ?, '', '', 'planned', NULL, NULL, NULL, NULL)
+      VALUES (?, ?, '', '', NULL, NULL, NULL, NULL)
       RETURNING id
     `).get(projectId, title);
     db.prepare(`
@@ -258,9 +258,9 @@ describe('cross-project Asset Viewer HTTP route', () => {
     tagRepository.assignToProject(project.id, inherited.id);
 
     const release = db.prepare(`
-      INSERT INTO releases (project_id, title, description, notes, status,
+      INSERT INTO releases (project_id, title, description, notes,
                             planned_date, published_date, patreon_url, archived_at)
-      VALUES (?, ?, '', '', 'planned', NULL, NULL, NULL, NULL)
+      VALUES (?, ?, '', '', NULL, NULL, NULL, NULL)
       RETURNING id
     `).get(project.id, 'List Viewer Release');
     db.prepare(`

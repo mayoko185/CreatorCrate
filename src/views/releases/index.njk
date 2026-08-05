@@ -32,15 +32,6 @@
           <input type="text" id="board-project" name="project" value="{{ query.project or '' }}" placeholder="Project ID">
         </div>
         <div class="field">
-          <label for="board-status">Status</label>
-          <select id="board-status" name="status">
-            <option value="">All</option>
-            {% for s in statuses %}
-              <option value="{{ s }}" {% if query.status == s %}selected{% endif %}>{{ s | replace('-', ' ') | title }}</option>
-            {% endfor %}
-          </select>
-        </div>
-        <div class="field">
           <label for="board-schedule">Schedule</label>
           <select id="board-schedule" name="schedule">
             <option value="">All</option>
@@ -72,8 +63,9 @@
 
     <div class="board-scroll" tabindex="0" aria-label="Release board columns">
       <div class="board-container">
-        {% for status in ['tbd', 'planned', 'in-progress', 'ready', 'published', 'cancelled'] %}
-          {% set column = columns[status] %}
+        {% for group in ['tbd', 'planned', 'in-progress', 'ready', 'published'] %}
+          {% set column = columns[group] %}
+          {% set status = 'published' if group == 'published' else group %}
           <div class="board-column">
             <h3 class="board-column-header">{% include "partials/status-badge.njk" %} <span class="count">({{ column.length }})</span></h3>
             <div class="board-column-content">
@@ -139,16 +131,6 @@
       </div>
 
       <div class="field">
-        <label for="list-status">Status</label>
-        <select id="list-status" name="status">
-          <option value="">All</option>
-          {% for s in statuses %}
-            <option value="{{ s }}" {% if query.status == s %}selected{% endif %}>{{ s | replace('-', ' ') | title }}</option>
-          {% endfor %}
-        </select>
-      </div>
-
-      <div class="field">
         <label for="list-schedule">Schedule</label>
         <select id="list-schedule" name="schedule">
           <option value="">All</option>
@@ -200,7 +182,7 @@
           <tr>
             <th>Title</th>
             <th>Project</th>
-            <th>Status</th>
+            <th>Project status</th>
             <th>Readiness</th>
             <th>Planned</th>
             <th>Published</th>
@@ -213,7 +195,7 @@
             <tr{% if release.archived_at %} class="archived-row"{% endif %}>
               <td><a href="/releases/{{ release.id }}">{{ release.title }}</a></td>
               <td>{{ release.project_title }}</td>
-              <td>{% set status = release.status %}{% include "partials/status-badge.njk" %}</td>
+              <td>{% set status = release.project_status %}{% include "partials/status-badge.njk" %}</td>
               <td class="num">
                 {% if release._readiness %}
                   {% if release._readiness.publishable %}
@@ -267,7 +249,7 @@
         {% endif %}
       </nav>
     {% else %}
-      {% set releaseFiltersActive = query.search or query.project or query.status or query.schedule or query.includeArchived == '1' or (query.readiness and query.readiness != 'all') %}
+      {% set releaseFiltersActive = query.search or query.project or query.schedule or query.includeArchived == '1' or (query.readiness and query.readiness != 'all') %}
       {% if releaseFiltersActive and hasAnyReleases %}
         {% set emptyHeading = "No releases match the current filters" %}
         {% set emptyDescription = "Reset the filters to return to the full release list." %}

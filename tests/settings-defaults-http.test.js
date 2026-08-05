@@ -32,7 +32,6 @@ const VALID_DEFAULTS = {
   assetViewerPageSize: '100',
   new_projectStatus: 'ready',
   new_projectPriority: 'high',
-  new_releaseStatus: 'in-progress',
   defaultCategory: 'all',
 };
 
@@ -95,24 +94,22 @@ describe('settings — page defaults HTTP', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('renders New Projects and all existing controls with the Defaults sub-navigation active and Settings active in the shell', async () => {
+  it('renders the supported defaults with the Defaults sub-navigation active and Settings active in the shell', async () => {
     const res = await agent.get('/settings/defaults').expect(200);
 
     expect(res.text).toContain('Settings — Defaults');
     expect(res.text).toContain('<h2>New Projects</h2>');
-    expect(res.text).toContain('<h2>New Releases</h2>');
     expect(res.text).toContain('<h2>Projects</h2>');
     expect(res.text).toContain('<h2>Releases</h2>');
     expect(res.text).toContain('<h2>Release Management</h2>');
     expect(res.text).toContain('<h2>Project Assets</h2>');
     expect(res.text).toContain('<h2>Asset Viewer</h2>');
     expect(res.text).toContain('These defaults apply only to new projects. Changing them does not modify existing projects.');
-    expect(res.text).toContain('This default applies only to newly created release records. Changing it does not modify existing releases.');
-    expect((res.text.match(/<select /g) || [])).toHaveLength(21);
+    expect(res.text).not.toContain('New Releases');
+    expect((res.text.match(/<select /g) || [])).toHaveLength(20);
     for (const id of [
       'new_projectStatus',
       'new_projectPriority',
-      'new_releaseStatus',
       'projectsView',
       'projectsSort',
       'projectsOrder',
@@ -170,10 +167,8 @@ describe('settings — page defaults HTTP', () => {
     expect(selectedValue(res.text, 'assetViewerPageSize')).toBe('25');
     expect(selectedValue(res.text, 'new_projectStatus')).toBe('tbd');
     expect(selectedValue(res.text, 'new_projectPriority')).toBe('normal');
-    expect(selectedValue(res.text, 'new_releaseStatus')).toBe('tbd');
     expect(selectedValue(res.text, 'project-assets-default-category')).toBe('all');
-    expect((res.text.match(/Application fallback:/g) || [])).toHaveLength(20);
-    expect(res.text).toContain('<label for="new_releaseStatus">Default status</label>');
+    expect((res.text.match(/Application fallback:/g) || [])).toHaveLength(19);
     expect(res.text).toContain('<label for="releaseManagementView">Default view</label>');
     expect(res.text).toContain('<option value="board">Board</option>');
     expect(res.text).toContain('<option value="tbd" selected>TBD</option>');
@@ -202,7 +197,6 @@ describe('settings — page defaults HTTP', () => {
     writeMeta(db, defaultKey('assetViewer', 'pageSize'), '20');
     writeMeta(db, defaultKey('new_project', 'status'), 'cancelled');
     writeMeta(db, defaultKey('new_project', 'priority'), 'urgent');
-    writeMeta(db, defaultKey('new_release', 'status'), 'cancelled');
     writeMeta(db, 'asset_browser.default_category', 'does-not-exist');
 
     const res = await agent.get('/settings/defaults').expect(200);
@@ -226,10 +220,9 @@ describe('settings — page defaults HTTP', () => {
     expect(selectedValue(res.text, 'assetViewerPageSize')).toBe('25');
     expect(selectedValue(res.text, 'new_projectStatus')).toBe('tbd');
     expect(selectedValue(res.text, 'new_projectPriority')).toBe('normal');
-    expect(selectedValue(res.text, 'new_releaseStatus')).toBe('tbd');
     expect(res.text).toContain('Category &quot;does-not-exist&quot; (unavailable)');
     expect(res.text).toContain('Effective:</span> <strong>All Categories</strong>');
-    expect((res.text.match(/Application fallback:/g) || [])).toHaveLength(17);
+    expect((res.text.match(/Application fallback:/g) || [])).toHaveLength(16);
     expect(res.text).not.toContain('not-a-project-sort');
     expect(res.text).not.toContain('not-a-view');
     expect(res.text).not.toContain('not-an-order');
@@ -286,7 +279,6 @@ describe('settings — page defaults HTTP', () => {
     expect(readMeta(db, defaultKey('assetViewer', 'pageSize'))).toBe('100');
     expect(readMeta(db, defaultKey('new_project', 'status'))).toBe('ready');
     expect(readMeta(db, defaultKey('new_project', 'priority'))).toBe('high');
-    expect(readMeta(db, defaultKey('new_release', 'status'))).toBe('in-progress');
     expect(readMeta(db, 'asset_browser.default_category')).toBe('all');
     expect(readMeta(db, 'unrelated.preference')).toBe('preserve-me');
     expect(assetBrowserDefaultBefore).toBe('all');
@@ -307,7 +299,6 @@ describe('settings — page defaults HTTP', () => {
     expect(selectedValue(redirected.text, 'assetViewerPageSize')).toBe('100');
     expect(selectedValue(redirected.text, 'new_projectStatus')).toBe('ready');
     expect(selectedValue(redirected.text, 'new_projectPriority')).toBe('high');
-    expect(selectedValue(redirected.text, 'new_releaseStatus')).toBe('in-progress');
     expect(selectedValue(redirected.text, 'project-assets-default-category')).toBe('all');
   });
 
@@ -325,7 +316,6 @@ describe('settings — page defaults HTTP', () => {
       projectAssetsPageSize: '25',
       new_projectStatus: 'tbd',
       new_projectPriority: 'normal',
-      new_releaseStatus: 'tbd',
       defaultCategory: 'all',
     };
     writeMeta(db, defaultKey('projects', 'view'), existing.projectsView);
@@ -340,7 +330,6 @@ describe('settings — page defaults HTTP', () => {
     writeMeta(db, defaultKey('projectAssets', 'pageSize'), existing.projectAssetsPageSize);
     writeMeta(db, defaultKey('new_project', 'status'), existing.new_projectStatus);
     writeMeta(db, defaultKey('new_project', 'priority'), existing.new_projectPriority);
-    writeMeta(db, defaultKey('new_release', 'status'), existing.new_releaseStatus);
     writeMeta(db, 'asset_browser.default_category', existing.defaultCategory);
 
     const res = await agent
@@ -368,7 +357,6 @@ describe('settings — page defaults HTTP', () => {
     expect(readMeta(db, defaultKey('projectAssets', 'pageSize'))).toBe(existing.projectAssetsPageSize);
     expect(readMeta(db, defaultKey('new_project', 'status'))).toBe(existing.new_projectStatus);
     expect(readMeta(db, defaultKey('new_project', 'priority'))).toBe(existing.new_projectPriority);
-    expect(readMeta(db, defaultKey('new_release', 'status'))).toBe(existing.new_releaseStatus);
     expect(readMeta(db, 'asset_browser.default_category')).toBe(existing.defaultCategory);
   });
 
@@ -405,38 +393,26 @@ describe('settings — page defaults HTTP', () => {
     expect(readMeta(db, defaultKey('projectAssets', 'pageSize'))).toBe(VALID_DEFAULTS.projectAssetsPageSize);
     expect(readMeta(db, defaultKey('new_project', 'status'))).toBe(VALID_DEFAULTS.new_projectStatus);
     expect(readMeta(db, defaultKey('new_project', 'priority'))).toBe(VALID_DEFAULTS.new_projectPriority);
-    expect(readMeta(db, defaultKey('new_release', 'status'))).toBe(VALID_DEFAULTS.new_releaseStatus);
     expect(readMeta(db, 'asset_browser.default_category')).toBe(VALID_DEFAULTS.defaultCategory);
   });
 
-  it('rejects an invalid New Release status before partially saving any Defaults values', async () => {
-    await agent
+  it('ignores obsolete stored and submitted New Release status defaults', async () => {
+    const obsoleteKey = 'page_defaults.new_release.status';
+    writeMeta(db, obsoleteKey, 'cancelled');
+
+    const rendered = await agent.get('/settings/defaults').expect(200);
+    expect(rendered.text).not.toContain('new_releaseStatus');
+    expect(rendered.text).not.toContain('New Releases');
+
+    const saved = await agent
       .post('/settings/defaults')
       .type('form')
-      .send({ ...VALID_DEFAULTS, _csrf: csrfToken })
+      .send({ ...VALID_DEFAULTS, new_releaseStatus: 'published', _csrf: csrfToken })
       .expect(302);
 
-    const res = await agent
-      .post('/settings/defaults')
-      .type('form')
-      .send({
-        ...VALID_DEFAULTS,
-        projectsView: 'grid',
-        projectAssetsPageSize: '100',
-        new_projectPriority: 'low',
-        new_releaseStatus: 'published',
-        defaultCategory: 'all',
-        _csrf: csrfToken,
-      })
-      .expect(422);
-
-    expect(res.text).toContain('new_release.status');
-    expect(res.text).toContain('Submitted value: published');
-    expect(readMeta(db, defaultKey('projects', 'view'))).toBe(VALID_DEFAULTS.projectsView);
-    expect(readMeta(db, defaultKey('projectAssets', 'pageSize'))).toBe(VALID_DEFAULTS.projectAssetsPageSize);
-    expect(readMeta(db, defaultKey('new_project', 'priority'))).toBe(VALID_DEFAULTS.new_projectPriority);
-    expect(readMeta(db, defaultKey('new_release', 'status'))).toBe(VALID_DEFAULTS.new_releaseStatus);
-    expect(readMeta(db, 'asset_browser.default_category')).toBe(VALID_DEFAULTS.defaultCategory);
+    expect(saved.headers.location).toBe('/settings/defaults?notice=defaults_saved');
+    expect(readMeta(db, obsoleteKey)).toBe('cancelled');
+    expect(readMeta(db, defaultKey('new_project', 'status'))).toBe(VALID_DEFAULTS.new_projectStatus);
   });
 
   it('rejects an invalid Release Management value before partially saving any Defaults values', async () => {
@@ -503,7 +479,6 @@ describe('settings — page defaults HTTP', () => {
         assetViewerPageSize: '10',
         new_projectStatus: 'tbd',
         new_projectPriority: 'low',
-        new_releaseStatus: 'tbd',
         defaultCategory: 'all',
         _csrf: csrfToken,
       })

@@ -52,7 +52,6 @@ describe('page defaults service', () => {
     expect(service.resolve('assetViewer', 'pageSize')).toBe('25');
     expect(service.resolve('new_project', 'status')).toBe('tbd');
     expect(service.resolve('new_project', 'priority')).toBe('normal');
-    expect(service.resolve('new_release', 'status')).toBe('tbd');
   });
 
   it('defines the exact Project Assets option allowlists, keys, and fallbacks', () => {
@@ -120,14 +119,8 @@ describe('page defaults service', () => {
     });
   });
 
-  it('defines the exact New Release status allowlist, key, and fallback', () => {
-    expect(PAGE_DEFAULT_DEFINITIONS.new_release).toEqual({
-      status: {
-        key: 'page_defaults.new_release.status',
-        values: ['tbd', 'planned', 'in-progress', 'ready'],
-        fallback: 'tbd',
-      },
-    });
+  it('does not define an obsolete New Release status default', () => {
+    expect(PAGE_DEFAULT_DEFINITIONS).not.toHaveProperty('new_release');
   });
 
   it('defines the exact Release Management allowlists, keys, and fallbacks', () => {
@@ -167,13 +160,6 @@ describe('page defaults service', () => {
       status: 'ready',
       priority: 'high',
     });
-  });
-
-  it('accepts a valid New Release saved value', () => {
-    repository.setValue(PAGE_DEFAULT_DEFINITIONS.new_release.status.key, 'ready');
-
-    expect(service.getSavedDefault('new_release', 'status')).toBe('ready');
-    expect(service.resolve('new_release', 'status')).toBe('ready');
   });
 
   it('accepts valid Release Management saved values', () => {
@@ -256,12 +242,11 @@ describe('page defaults service', () => {
     }
   });
 
-  it('uses the New Release fallback for invalid stored values without rewriting them', () => {
-    const key = PAGE_DEFAULT_DEFINITIONS.new_release.status.key;
+  it('ignores an obsolete stored New Release status default without rewriting it', () => {
+    const key = 'page_defaults.new_release.status';
     repository.setValue(key, 'cancelled');
 
-    expect(service.getSavedDefault('new_release', 'status')).toBeUndefined();
-    expect(service.resolve('new_release', 'status')).toBe('tbd');
+    expect(PAGE_DEFAULT_DEFINITIONS).not.toHaveProperty('new_release');
     expect(repository.getValue(key)).toBe('cancelled');
   });
 
@@ -343,10 +328,6 @@ describe('page defaults service', () => {
     expect(() => service.saveDefault('projectAssets', 'sort', 'project'))
       .toThrow(PageDefaultValidationError);
     expect(() => service.saveDefault('projectAssets', 'pageSize', '20'))
-      .toThrow(PageDefaultValidationError);
-    expect(() => service.saveDefault('new_release', 'status', 'published'))
-      .toThrow(PageDefaultValidationError);
-    expect(() => service.saveDefault('new_release', 'status', 'cancelled'))
       .toThrow(PageDefaultValidationError);
     expect(() => service.saveDefault('releaseManagement', 'view', 'grid'))
       .toThrow(PageDefaultValidationError);

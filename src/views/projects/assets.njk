@@ -9,7 +9,7 @@
   {% elif asset.releaseSummary.mode == 'single' %}
     {% set usage = asset.releaseSummary.releases[0] %}
     <a class="asset-indicator asset-icon-control asset-tooltip asset-indicator--used" href="/releases/{{ usage.release_id }}"
-       aria-label="Used in release {{ usage.title }} ({{ usage.status }}, {{ usage.role | title }})"
+       aria-label="Used in release {{ usage.title }} ({{ usage.role | title }})"
        data-tooltip="Used in release">R</a>
   {% else %}
     <details class="release-usage-details asset-usage-details">
@@ -21,7 +21,6 @@
           <li>
             <a href="/releases/{{ usage.release_id }}">{{ usage.title }}</a>
             <span class="release-role">{{ usage.role | title }}</span>
-            <span class="release-status">({{ usage.status }})</span>
           </li>
         {% endfor %}
       </ul>

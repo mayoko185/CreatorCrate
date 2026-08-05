@@ -67,7 +67,7 @@
             {% for r in attention.overdue %}
               <li>
                 <a href="/releases/{{ r.id }}">{{ r.title }}</a>
-                <span class="meta">{{ r.status }} · planned {{ r.planned_date }}</span>
+                <span class="meta">{% set status = r.project_status %}{% include "partials/status-badge.njk" %} · planned {{ r.planned_date }}</span>
               </li>
             {% endfor %}
           </ul>
@@ -81,7 +81,7 @@
             {% for r in attention.readyToPublish %}
               <li>
                 <a href="/releases/{{ r.id }}">{{ r.title }}</a>
-                <span class="meta">{{ r.status }}{% if r.planned_date %} · planned {{ r.planned_date }}{% endif %}</span>
+                <span class="meta">{% set status = r.project_status %}{% include "partials/status-badge.njk" %}{% if r.planned_date %} · planned {{ r.planned_date }}{% endif %}</span>
               </li>
             {% endfor %}
           </ul>
@@ -96,7 +96,7 @@
               <li>
                 <a href="/releases/{{ r.id }}">{{ r.title }}</a>
                 <span class="meta">
-                  {{ r.status }}{% if r.planned_date %} · planned {{ r.planned_date }}{% endif %}
+                  {% set status = r.project_status %}{% include "partials/status-badge.njk" %}{% if r.planned_date %} · planned {{ r.planned_date }}{% endif %}
                   {% if r.blockers.length > 0 %}
                     · blocked:
                     {% for b in r.blockers %}
@@ -123,7 +123,7 @@
             {% for r in attention.missingPlannedDate %}
               <li>
                 <a href="/releases/{{ r.id }}">{{ r.title }}</a>
-                <span class="meta">{{ r.status }}</span>
+                <span class="meta">{% set status = r.project_status %}{% include "partials/status-badge.njk" %}</span>
               </li>
             {% endfor %}
           </ul>
@@ -138,7 +138,7 @@
               <li>
                 <a href="/releases/{{ r.id }}">{{ r.title }}</a>
                 <span class="meta">
-                  {{ r.status }}{% if r.planned_date %} · planned {{ r.planned_date }}{% endif %}
+                  {% set status = r.project_status %}{% include "partials/status-badge.njk" %}{% if r.planned_date %} · planned {{ r.planned_date }}{% endif %}
                   · no assets selected
                 </span>
               </li>
@@ -155,7 +155,7 @@
               <li>
                 <a href="/releases/{{ r.id }}">{{ r.title }}</a>
                 <span class="meta">
-                  {{ r.status }}{% if r.planned_date %} · planned {{ r.planned_date }}{% endif %}
+                  {% set status = r.project_status %}{% include "partials/status-badge.njk" %}{% if r.planned_date %} · planned {{ r.planned_date }}{% endif %}
                   · {{ r.missing_asset_count }} missing
                 </span>
               </li>
@@ -177,7 +177,7 @@
             {% for r in group.releases %}
               <li>
                 <a href="/releases/{{ r.id }}">{{ r.title }}</a>
-                <span class="meta">{{ r.status }}</span>
+                <span class="meta">{% set status = r.project_status %}{% include "partials/status-badge.njk" %}</span>
               </li>
             {% endfor %}
           </ul>
@@ -193,15 +193,7 @@
 
   {# ─── Workflow summary ──────────────────────────────────────────── #}
   <section class="workflow-summary">
-    <h2>Release status</h2>
-    <div class="count-grid">
-      <div class="count-card"><span class="count">{{ summary.releaseStatusCounts.tbd or 0 }}</span> TBD</div>
-      <div class="count-card"><span class="count">{{ summary.releaseStatusCounts.planned or 0 }}</span> Planned</div>
-      <div class="count-card"><span class="count">{{ summary.releaseStatusCounts['in-progress'] or 0 }}</span> In Progress</div>
-      <div class="count-card"><span class="count">{{ summary.releaseStatusCounts.ready or 0 }}</span> Ready</div>
-      <div class="count-card"><span class="count">{{ summary.releaseStatusCounts.published or 0 }}</span> Published</div>
-      <div class="count-card"><span class="count">{{ summary.releaseStatusCounts.cancelled or 0 }}</span> Cancelled</div>
-    </div>
+    <h2>Workflow summary</h2>
 
     <details class="project-counts-details">
       <summary>Project counts</summary>

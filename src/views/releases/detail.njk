@@ -6,7 +6,7 @@
 {% block content %}
   {% set projectArchived = project and project.archived_at %}
   {% set releaseArchived = release and release.archived_at %}
-  {% set isPublished = release and release.status == 'published' %}
+  {% set isPublished = release and release.published_date %}
   {% set isArchived = projectArchived or releaseArchived %}
   {% if not projectArchived and not releaseArchived %}
     {% call pageHeading.render("Release record") %}
@@ -46,8 +46,8 @@
       <ul>
         {% for key, details in errors.readiness %}
           <li>
-            {% if key == 'status_ready' %}
-              Status is "{{ details.status }}", must be "ready".
+            {% if key == 'project_status_ready' %}
+              Project status is "{{ details.projectStatus }}", must be "ready".
             {% elif key == 'assets_selected' %}
               No assets selected ({{ details.selectedAssetCount }} selected).
             {% elif key == 'selected_assets_present' %}
@@ -71,8 +71,8 @@
         <dd><a href="/projects/{{ project.id }}">{{ project.title }}</a></dd>
       {% endif %}
 
-      <dt>Status</dt>
-      <dd>{% set status = release.status %}{% include "partials/status-badge.njk" %}</dd>
+      <dt>Project status</dt>
+      <dd>{% set status = project.status if project else release.project_status %}{% include "partials/status-badge.njk" %}</dd>
 
       {% if release.planned_date %}
         <dt>Planned date</dt>
@@ -213,7 +213,7 @@
           <li class="readiness-check {% if check.passed %}check-passed{% else %}check-blocked{% endif %}">
             <span class="check-icon">{% if check.passed %}&#10003;{% else %}&#10007;{% endif %}</span>
             <span class="check-label">
-              {% if check.key == 'status_ready' %}Status is ready
+              {% if check.key == 'project_status_ready' %}Project status is ready
               {% elif check.key == 'assets_selected' %}Assets selected
               {% elif check.key == 'selected_assets_present' %}Selected assets present
               {% elif check.key == 'scope_mutable' %}Scope is mutable
@@ -221,8 +221,8 @@
               {% endif %}
             </span>
             <span class="check-detail">
-              {% if check.key == 'status_ready' %}
-                Status: {{ check.details.status }}
+              {% if check.key == 'project_status_ready' %}
+                Project status: {{ check.details.projectStatus }}
               {% elif check.key == 'assets_selected' %}
                 {{ check.details.selectedAssetCount }} selected
               {% elif check.key == 'selected_assets_present' %}
@@ -254,7 +254,7 @@
           {% set releaseArchived = release.archived_at %}
           {% for check in readiness.checks %}
             {% if not check.passed %}
-              {% if check.key === 'status_ready' and not projectArchived and not releaseArchived %}
+              {% if check.key === 'project_status_ready' and not projectArchived and not releaseArchived %}
                 <li><a href="/releases/{{ release.id }}/edit">Edit release</a></li>
               {% elif check.key === 'assets_selected' and not projectArchived and not releaseArchived %}
                 <li><a href="/releases/{{ release.id }}/assets">Manage assets</a></li>
@@ -275,7 +275,7 @@
   {% endif %}
 
   {# ─── Destructive action separated from primary actions ──────────── #}
-  {% if not projectArchived and not releaseArchived and not isPublished and release.status !== 'cancelled' %}
+  {% if not projectArchived and not releaseArchived and not isPublished %}
     <section class="destructive-section">
       <h3>Danger zone</h3>
       <p>Archiving a release makes it read-only. This cannot be undone.</p>

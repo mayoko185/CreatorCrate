@@ -80,20 +80,16 @@
                       {% if entry.preview_url %}
                         <img class="calendar-release-preview" src="{{ entry.preview_url }}" alt="Preview of {{ entry.title }}" loading="lazy" decoding="async">
                       {% endif %}
-                      {% if entry.preview_url or entry.notes %}
+                      {% if entry.notes %}
                         <span class="calendar-release-preview-details">
-                          <span class="calendar-release-preview-project">{{ entry.project_title }}</span>
-                          <span class="calendar-release-preview-title">{{ entry.title }}</span>
-                          {% if entry.notes %}
-                            <span class="calendar-release-preview-notes">{{ entry.notes }}</span>
-                          {% endif %}
+                          <span class="calendar-release-preview-notes">{{ entry.notes }}</span>
                         </span>
                       {% endif %}
                     </span>
                     {% if entry.planned_time %}
                       <time class="calendar-release-time" datetime="{{ entry.planned_date }}T{{ entry.planned_time }}">{{ entry.planned_time }}</time>
                     {% endif %}
-                    {% set status = entry.status %}{% include "partials/status-badge.njk" %}
+                    {% set status = entry.project_status %}{% include "partials/status-badge.njk" %}
                   </div>
                 {% endfor %}
               </div>
@@ -137,20 +133,16 @@
                     {% if entry.preview_url %}
                       <img class="calendar-release-preview" src="{{ entry.preview_url }}" alt="Preview of {{ entry.title }}" loading="lazy" decoding="async">
                     {% endif %}
-                    {% if entry.preview_url or entry.notes %}
+                    {% if entry.notes %}
                       <span class="calendar-release-preview-details">
-                        <span class="calendar-release-preview-project">{{ entry.project_title }}</span>
-                        <span class="calendar-release-preview-title">{{ entry.title }}</span>
-                        {% if entry.notes %}
-                          <span class="calendar-release-preview-notes">{{ entry.notes }}</span>
-                        {% endif %}
+                        <span class="calendar-release-preview-notes">{{ entry.notes }}</span>
                       </span>
                     {% endif %}
                   </span>
                   {% if entry.planned_time %}
                     <time class="calendar-release-time" datetime="{{ entry.planned_date }}T{{ entry.planned_time }}">{{ entry.planned_time }}</time>
                   {% endif %}
-                  {% set status = entry.status %}{% include "partials/status-badge.njk" %}
+                  {% set status = entry.project_status %}{% include "partials/status-badge.njk" %}
                 </div>
               {% endfor %}
             </div>

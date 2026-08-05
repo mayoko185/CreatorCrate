@@ -90,7 +90,11 @@ describe('database and migrations', () => {
     runMigrations(db, MIGRATIONS_DIR);
     runMigrations(db, MIGRATIONS_DIR);
     const applied = db.prepare('SELECT filename FROM schema_migrations ORDER BY rowid').pluck().all();
-    expect(applied).toEqual(['001_initial.sql', '002_unify_release_statuses.sql']);
+    expect(applied).toEqual([
+      '001_initial.sql',
+      '002_unify_release_statuses.sql',
+      '003_drop_release_status.sql',
+    ]);
   });
 
   it('creates the complete fresh-install table set with foreign keys enabled', () => {
@@ -226,10 +230,10 @@ describe('database and migrations', () => {
       .all();
 
     expect(indexes).toContain('idx_releases_project_id');
-    expect(indexes).toContain('idx_releases_status');
     expect(indexes).toContain('idx_releases_planned_date');
     expect(indexes).toContain('idx_releases_overdue');
     expect(indexes).toContain('idx_releases_archived');
+    expect(indexes).not.toContain('idx_releases_status');
   });
 
   it('releases table has expected columns', () => {
@@ -245,7 +249,7 @@ describe('database and migrations', () => {
     expect(columns).toContain('title');
     expect(columns).toContain('description');
     expect(columns).toContain('notes');
-    expect(columns).toContain('status');
+    expect(columns).not.toContain('status');
     expect(columns).toContain('planned_date');
     expect(columns).toContain('planned_time');
     expect(columns).toContain('published_date');
@@ -255,17 +259,17 @@ describe('database and migrations', () => {
     expect(columns).toContain('archived_at');
   });
 
-  it('releases table has status check constraint', () => {
+  it('releases table has no obsolete status check constraint', () => {
     db = openDatabase(dbPath);
     runMigrations(db, MIGRATIONS_DIR);
     const ddl = db
       .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'releases'")
       .pluck()
       .get();
-    expect(ddl).toMatch(/CHECK\s*\(status\s+IN\s*\(/i);
+    expect(ddl).not.toMatch(/\bstatus\b/i);
   });
 
-  it('uses the unified release status vocabulary in fresh databases', () => {
+  it('creates releases without an obsolete status column in fresh databases', () => {
     db = openDatabase(dbPath);
     runMigrations(db, MIGRATIONS_DIR);
 
@@ -275,20 +279,16 @@ describe('database and migrations', () => {
     `).run().lastInsertRowid;
 
     const release = db.prepare(`
-      INSERT INTO releases (project_id, title)
-      VALUES (?, 'Default Status Release')
+      INSERT INTO releases (project_id, title, notes)
+      VALUES (?, 'Default Release', 'Release notes')
     `).run(projectId);
 
-    expect(db.prepare('SELECT status FROM releases WHERE id = ?').pluck().get(release.lastInsertRowid)).toBe('tbd');
-    for (const legacyStatus of ['idea', 'drafting']) {
-      expect(() => db.prepare(`
-        INSERT INTO releases (project_id, title, status)
-        VALUES (?, ?, ?)
-      `).run(projectId, `Legacy ${legacyStatus}`, legacyStatus)).toThrow(/CHECK constraint failed/i);
-    }
+    expect(db.prepare('SELECT id, title, notes FROM releases WHERE id = ?').get(release.lastInsertRowid))
+      .toMatchObject({ title: 'Default Release', notes: 'Release notes' });
+    expect(db.prepare('SELECT name FROM pragma_table_info(\'releases\')').pluck().all()).not.toContain('status');
   });
 
-  it('migrates legacy release statuses and preserves release assets', () => {
+  it('removes legacy release statuses and preserves release assets', () => {
     db = openDatabase(dbPath);
     db.exec(`
       CREATE TABLE schema_migrations (
@@ -348,18 +348,16 @@ describe('database and migrations', () => {
 
     runMigrations(db, MIGRATIONS_DIR);
 
-    expect(db.prepare('SELECT id, status FROM releases ORDER BY id').all()).toEqual([
-      { id: 11, status: 'tbd' },
-      { id: 12, status: 'in-progress' },
+    expect(db.prepare('SELECT id, project_id, title, description, notes FROM releases ORDER BY id').all()).toEqual([
+      { id: 11, project_id: 1, title: 'Legacy TBD', description: '', notes: '' },
+      { id: 12, project_id: 1, title: 'Legacy In Progress', description: '', notes: '' },
     ]);
     expect(db.prepare('SELECT release_id, asset_id, role, sort_order FROM release_assets').all()).toEqual([
       { release_id: 12, asset_id: 10, role: 'attachment', sort_order: 3 },
     ]);
     expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'releases_legacy'").get()).toBeUndefined();
     expect(db.pragma('foreign_key_check')).toEqual([]);
-    expect(() => db.prepare(`
-      INSERT INTO releases (project_id, title, status) VALUES (1, 'Rejected Legacy', 'idea')
-    `).run()).toThrow(/CHECK constraint failed/i);
+    expect(db.prepare('SELECT name FROM pragma_table_info(\'releases\')').pluck().all()).not.toContain('status');
   });
 
   // ─── Phase 5C: release_assets migration tests ──────────────────────────
@@ -462,9 +460,9 @@ describe('database and migrations', () => {
 
     // Create release
     const releaseId = db.prepare(`
-      INSERT INTO releases (project_id, title, description, notes, status, planned_date, patreon_url)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(projectId, 'R1', '', '', 'tbd', null, null).lastInsertRowid;
+      INSERT INTO releases (project_id, title, description, notes, planned_date, patreon_url)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(projectId, 'R1', '', '', null, null).lastInsertRowid;
 
     // Create asset
     const assetId = db.prepare(`
@@ -493,9 +491,9 @@ describe('database and migrations', () => {
     `).run('Test Project', 'test-project', '', '', 'tbd', 'normal', null, null, null).lastInsertRowid;
 
     const releaseId = db.prepare(`
-      INSERT INTO releases (project_id, title, description, notes, status, planned_date, patreon_url)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(projectId, 'R1', '', '', 'tbd', null, null).lastInsertRowid;
+      INSERT INTO releases (project_id, title, description, notes, planned_date, patreon_url)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(projectId, 'R1', '', '', null, null).lastInsertRowid;
 
     const assetId = db.prepare(`
       INSERT INTO assets (project_id, relative_path, filename, extension, mime_type, size_bytes, modified_at, is_present, last_seen_at)

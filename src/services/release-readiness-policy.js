@@ -21,7 +21,7 @@
  * `releaseRepository.findReadinessFactsById()`.
  * @property {number} release_id
  * @property {number} project_id
- * @property {string} release_status
+ * @property {string} project_status
  * @property {string|null} release_archived_at
  * @property {string|null} project_archived_at
  * @property {number} selected_asset_count
@@ -55,8 +55,8 @@
  * @returns {ReadinessResult} stable plain object
  */
 export function evaluateReleaseReadiness(facts) {
-  // ── status_ready ──────────────────────────────────────────────────────
-  const statusReady = facts.release_status === 'ready';
+  // ── project_status_ready ───────────────────────────────────────────────
+  const projectStatusReady = facts.project_status === 'ready';
 
   // ── assets_selected ───────────────────────────────────────────────────
   const assetsSelected = facts.selected_asset_count > 0;
@@ -71,10 +71,10 @@ export function evaluateReleaseReadiness(facts) {
 
   const checks = [
     {
-      key: 'status_ready',
-      passed: statusReady,
+      key: 'project_status_ready',
+      passed: projectStatusReady,
       severity: 'blocker',
-      details: { status: facts.release_status },
+      details: { projectStatus: facts.project_status },
     },
     {
       key: 'assets_selected',

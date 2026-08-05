@@ -83,7 +83,6 @@ function resolveNotice(code) {
 
 const PAGE_DEFAULT_SECTIONS = Object.freeze([
   Object.freeze({ page: 'new_project', title: 'New Projects' }),
-  Object.freeze({ page: 'new_release', title: 'New Releases' }),
   Object.freeze({ page: 'projects', title: 'Projects' }),
   Object.freeze({ page: 'releases', title: 'Releases' }),
   Object.freeze({ page: 'releaseManagement', title: 'Release Management' }),
@@ -106,7 +105,6 @@ const DEFAULT_OPTION_LABELS = Object.freeze({
   }),
   status: 'New project status',
   priority: 'New project priority',
-  new_release: Object.freeze({ status: 'Default status' }),
 });
 
 const DEFAULT_VALUE_LABELS = Object.freeze({
@@ -118,9 +116,6 @@ const DEFAULT_VALUE_LABELS = Object.freeze({
       ready: 'Ready',
     }),
     priority: Object.freeze({ low: 'Low', normal: 'Normal', high: 'High' }),
-  }),
-  new_release: Object.freeze({
-    status: Object.freeze({ tbd: 'TBD', planned: 'Planned', 'in-progress': 'In progress', ready: 'Ready' }),
   }),
   projects: Object.freeze({
     view: Object.freeze({ grid: 'Grid', list: 'List' }),

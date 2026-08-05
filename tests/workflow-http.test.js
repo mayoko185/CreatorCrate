@@ -16,9 +16,6 @@ import { createApp } from '../src/app.js';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { STATUS_DIR_MAP } from '../src/storage/project-storage.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
-import { createReleaseRepository } from '../src/data/release-repository.js';
-import { createReleaseService } from '../src/services/release-service.js';
-import { evaluateReleaseReadiness } from '../src/services/release-readiness-policy.js';
 import { getLocalTodayIso } from '../src/util/date.js';
 import { ensureAuthEnablement } from '../src/auth/auth-state.js';
 import { getDisabledModeCsrf } from './helpers/auth.js';
@@ -52,7 +49,16 @@ async function createProject(app, { title, status = 'tbd' }) {
   return res.headers.location.replace('/projects/', '');
 }
 
-async function createRelease(app, { projectId, title, status = 'tbd', plannedDate = null, plannedTime = null }) {
+async function createRelease(app, {
+  projectId,
+  title,
+  status: projectStatus = null,
+  plannedDate = null,
+  plannedTime = null,
+}) {
+  if (projectStatus !== null) {
+    app.testDb.prepare('UPDATE projects SET status = ? WHERE id = ?').run(projectStatus, projectId);
+  }
   const body = [`projectId=${projectId}`, `title=${encodeURIComponent(title)}`];
   if (plannedDate) body.push(`plannedDate=${plannedDate}`);
   if (plannedTime) body.push(`plannedTime=${plannedTime}`);
@@ -62,12 +68,7 @@ async function createRelease(app, { projectId, title, status = 'tbd', plannedDat
     .send(body.join('&'))
     .set('Content-Type', 'application/x-www-form-urlencoded')
     .expect(302);
-  const releaseId = res.headers.location.replace('/releases/', '');
-  if (status !== 'tbd') {
-    const releaseService = createReleaseService({ db: app.testDb, evaluateReleaseReadiness });
-    releaseService.updateRelease(Number(releaseId), { status });
-  }
-  return releaseId;
+  return res.headers.location.replace('/releases/', '');
 }
 
 /**
@@ -104,7 +105,7 @@ function findReadinessFacts(db, releaseId) {
     SELECT
       r.id AS release_id,
       r.project_id,
-      r.status AS release_status,
+      p.status AS project_status,
       r.archived_at AS release_archived_at,
       p.archived_at AS project_archived_at,
       COUNT(DISTINCT CASE WHEN a.id IS NOT NULL THEN a.id END) AS selected_asset_count,
@@ -149,7 +150,7 @@ function extractPaginationHref(html, label) {
 /**
  * Decode the HTML entities a server-rendered href may carry. Nunjucks'
  * `{{ value }}` HTML-escapes the value, so query strings come out as
-  // `?project=5&amp;status=…` rather than `?project=5&status=…`. The
+  // `?project=5&amp;search=…` rather than `?project=5&search=…`. The
  * URL parser does not understand `&amp;` as a separator, so we have
  * to decode before parsing.
  */
@@ -211,7 +212,7 @@ describe('Phase 6B HTTP workflow', () => {
       expect(res.text).toContain(`/releases/new?projectId=${projectId}`);
     });
 
-    it('shows release status counts and active/recent lists', async () => {
+    it('shows active and recent release lists', async () => {
       const projectId = await createProject(app, { title: 'Lists Project', status: 'in-progress' });
       await createRelease(app, {
         projectId,
@@ -327,8 +328,8 @@ describe('Phase 6B HTTP workflow', () => {
       expect(res.text).toContain('Archived');
       // Historical release still shows in recent
       expect(res.text).toContain('Historical Release');
-      // Status count is still accurate
-      expect(res.text).toContain('published');
+      // Publication metadata remains visible in the historical release row.
+      expect(res.text).toContain('2020-01-15');
     });
 
     it('shows safe empty states for a project with no releases or assets', async () => {
@@ -550,14 +551,15 @@ describe('Phase 6B HTTP workflow', () => {
       expect(res.text).not.toContain('R2');
     });
 
-    it('filters by status', async () => {
-      const projectId = await createProject(app, { title: 'Status Filter Project' });
-      await createRelease(app, { projectId, title: 'Idea R', status: 'tbd' });
-      await createRelease(app, { projectId, title: 'Planned R', status: 'planned' });
+    it('ignores an obsolete release-status query without mapping it to project status', async () => {
+      const tbdProjectId = await createProject(app, { title: 'Status Filter TBD Project', status: 'tbd' });
+      const plannedProjectId = await createProject(app, { title: 'Status Filter Planned Project', status: 'planned' });
+      await createRelease(app, { projectId: tbdProjectId, title: 'Idea R', status: 'tbd' });
+      await createRelease(app, { projectId: plannedProjectId, title: 'Planned R', status: 'planned' });
 
       const res = await app.testAgent.get('/release-management?status=tbd').expect(200);
       expect(res.text).toContain('Idea R');
-      expect(res.text).not.toContain('Planned R');
+      expect(res.text).toContain('Planned R');
     });
 
     it('filters by schedule: overdue', async () => {
@@ -949,13 +951,13 @@ describe('Phase 6B HTTP workflow', () => {
       expect(nextUrl.searchParams.get('page')).toBe('2');
     });
 
-    it('Next link: pathname and every preserved query parameter', async () => {
+    it('Next link: pathname and every supported query parameter', async () => {
       const projectId = await createProject(app, { title: 'Pagination Preserve Project' });
       for (let i = 0; i < 30; i++) {
         await createRelease(app, { projectId, title: `Preserve Release ${i}`, status: 'tbd' });
       }
 
-      const baseUrl = `/release-management?project=${projectId}&status=tbd&includeArchived=1&pageSize=10`;
+      const baseUrl = `/release-management?project=${projectId}&includeArchived=1&pageSize=10`;
       const res = await app.testAgent.get(baseUrl).expect(200);
 
       // Extract ONLY the Next anchor's href — not any href that happens
@@ -965,48 +967,48 @@ describe('Phase 6B HTTP workflow', () => {
       expect(nextUrl.pathname).toBe('/release-management');
       // Every preserved parameter MUST be on the same URL.
       expect(nextUrl.searchParams.get('project')).toBe(String(projectId));
-      expect(nextUrl.searchParams.get('status')).toBe('tbd');
+      expect(nextUrl.searchParams.has('status')).toBe(false);
       expect(nextUrl.searchParams.get('includeArchived')).toBe('1');
       expect(nextUrl.searchParams.get('pageSize')).toBe('10');
       expect(nextUrl.searchParams.get('page')).toBe('2');
     });
 
-    it('Previous link on page 2: pathname and every preserved query parameter', async () => {
+    it('Previous link on page 2: pathname and every supported query parameter', async () => {
       const projectId = await createProject(app, { title: 'Pagination Prev Project' });
       for (let i = 0; i < 30; i++) {
         await createRelease(app, { projectId, title: `Prev Release ${i}`, status: 'tbd' });
       }
 
-      const baseUrl = `/release-management?project=${projectId}&status=tbd&includeArchived=1&pageSize=10&page=2`;
+      const baseUrl = `/release-management?project=${projectId}&includeArchived=1&pageSize=10&page=2`;
       const res = await app.testAgent.get(baseUrl).expect(200);
 
       const prevHref = extractPaginationHref(res.text, 'Previous');
       const prevUrl = new URL(prevHref, 'http://localhost');
       expect(prevUrl.pathname).toBe('/release-management');
       expect(prevUrl.searchParams.get('project')).toBe(String(projectId));
-      expect(prevUrl.searchParams.get('status')).toBe('tbd');
+      expect(prevUrl.searchParams.has('status')).toBe(false);
       expect(prevUrl.searchParams.get('includeArchived')).toBe('1');
       expect(prevUrl.searchParams.get('pageSize')).toBe('10');
       // Page=1 is the default so it's omitted from generated URLs
       expect(prevUrl.searchParams.get('page')).toBeNull();
     });
 
-    it('pagination URLs preserve view, project, status, schedule, includeArchived, pageSize on a single URL', async () => {
+    it('pagination URLs preserve view, project, schedule, includeArchived, pageSize on a single URL', async () => {
       const projectId = await createProject(app, { title: 'Full Filter Preserve Project' });
       for (let i = 0; i < 30; i++) {
         await createRelease(app, { projectId, title: `Full Release ${i}`, status: 'planned', plannedDate: '2099-01-01' });
       }
 
-      const baseUrl = `/release-management?view=list&project=${projectId}&status=planned&schedule=upcoming&includeArchived=1&pageSize=5`;
+      const baseUrl = `/release-management?view=list&project=${projectId}&schedule=upcoming&includeArchived=1&pageSize=5`;
       const res = await app.testAgent.get(baseUrl).expect(200);
 
       const nextHref = extractPaginationHref(res.text, 'Next');
       const nextUrl = new URL(nextHref, 'http://localhost');
       expect(nextUrl.pathname).toBe('/release-management');
-      // All six parameters must be on the SAME URL.
+      // All supported parameters must be on the SAME URL.
       expect(nextUrl.searchParams.get('view')).toBe('list');
       expect(nextUrl.searchParams.get('project')).toBe(String(projectId));
-      expect(nextUrl.searchParams.get('status')).toBe('planned');
+      expect(nextUrl.searchParams.has('status')).toBe(false);
       expect(nextUrl.searchParams.get('schedule')).toBe('upcoming');
       expect(nextUrl.searchParams.get('includeArchived')).toBe('1');
       expect(nextUrl.searchParams.get('pageSize')).toBe('5');
@@ -1079,8 +1081,8 @@ describe('Phase 6B HTTP workflow', () => {
       expect(listUrl.searchParams.get('view')).toBe('list');
     });
 
-    it('view switch (list → board) preserves all query params on a single URL', async () => {
-      const res = await app.testAgent.get('/release-management?project=5&status=planned&schedule=upcoming&includeArchived=1&pageSize=5').expect(200);
+    it('view switch (list → board) preserves all supported query params on a single URL', async () => {
+      const res = await app.testAgent.get('/release-management?project=5&schedule=upcoming&includeArchived=1&pageSize=5').expect(200);
       const boardHref = extractViewSwitchHref(res.text, 'Board');
       expect(boardHref).not.toBeNull();
       const boardUrl = new URL(boardHref, 'http://localhost');
@@ -1088,21 +1090,21 @@ describe('Phase 6B HTTP workflow', () => {
       // Every parameter on the same URL.
       expect(boardUrl.searchParams.get('view')).toBe('board');
       expect(boardUrl.searchParams.get('project')).toBe('5');
-      expect(boardUrl.searchParams.get('status')).toBe('planned');
+      expect(boardUrl.searchParams.has('status')).toBe(false);
       expect(boardUrl.searchParams.get('schedule')).toBe('upcoming');
       expect(boardUrl.searchParams.get('includeArchived')).toBe('1');
       expect(boardUrl.searchParams.get('pageSize')).toBe('5');
     });
 
-    it('view switch (board → list) preserves all query params on a single URL', async () => {
-      const res = await app.testAgent.get('/release-management?view=board&project=7&status=tbd&schedule=today&includeArchived=1&pageSize=10').expect(200);
+    it('view switch (board → list) preserves all supported query params on a single URL', async () => {
+      const res = await app.testAgent.get('/release-management?view=board&project=7&schedule=today&includeArchived=1&pageSize=10').expect(200);
       const listHref = extractViewSwitchHref(res.text, 'List');
       expect(listHref).not.toBeNull();
       const listUrl = new URL(listHref, 'http://localhost');
       expect(listUrl.pathname).toBe('/release-management');
       expect(listUrl.searchParams.get('view')).toBe('list');
       expect(listUrl.searchParams.get('project')).toBe('7');
-      expect(listUrl.searchParams.get('status')).toBe('tbd');
+      expect(listUrl.searchParams.has('status')).toBe(false);
       expect(listUrl.searchParams.get('schedule')).toBe('today');
       expect(listUrl.searchParams.get('includeArchived')).toBe('1');
       expect(listUrl.searchParams.get('pageSize')).toBe('10');
@@ -1118,7 +1120,7 @@ describe('Phase 6B HTTP workflow', () => {
 
       // Page 2 in list view → switch to board → page must be cleared.
       const listRes = await app.testAgent
-        .get(`/release-management?view=list&project=${projectId}&status=tbd&pageSize=10&page=2`)
+        .get(`/release-management?view=list&project=${projectId}&pageSize=10&page=2`)
         .expect(200);
       const boardHref = extractViewSwitchHref(listRes.text, 'Board');
       const boardUrl = new URL(boardHref, 'http://localhost');
@@ -1126,7 +1128,7 @@ describe('Phase 6B HTTP workflow', () => {
       expect(boardUrl.searchParams.get('page')).toBeNull();
       // Also confirm the new list anchor (back to list) has no page.
       const boardRes = await app.testAgent
-        .get(`/release-management?view=board&project=${projectId}&status=tbd&pageSize=10&page=2`)
+        .get(`/release-management?view=board&project=${projectId}&pageSize=10&page=2`)
         .expect(200);
       const listHref = extractViewSwitchHref(boardRes.text, 'List');
       const listUrl = new URL(listHref, 'http://localhost');
@@ -1201,7 +1203,8 @@ describe('Phase 6B HTTP workflow', () => {
       const publishable = await makeReadyRelease(projectId, 'HTTP Publishable');
       await makeReadyRelease(projectId, 'HTTP Blocked Zero', { present: false });
       await makeReadyRelease(projectId, 'HTTP Blocked Missing', { present: false, missing: true });
-      await createRelease(app, { projectId, title: 'HTTP Planned', status: 'planned' });
+       const plannedProjectId = await createProject(app, { title: 'HTTP Planned Project', status: 'planned' });
+       await createRelease(app, { projectId: plannedProjectId, title: 'HTTP Planned', status: 'planned' });
 
       const res = await app.testAgent.get('/release-management?readiness=publishable').expect(200);
       const ids = extractListReleaseIds(res.text);
@@ -1323,7 +1326,8 @@ describe('Phase 6B HTTP workflow', () => {
       const projectId = await createProject(app, { title: 'HTTP Readiness Consistency' });
       const pub = await makeReadyRelease(projectId, 'Consistency Publishable');
       const blocked = await makeReadyRelease(projectId, 'Consistency Blocked', { present: false });
-      await createRelease(app, { projectId, title: 'Consistency Idea', status: 'tbd' });
+       const nonReadyProjectId = await createProject(app, { title: 'Consistency Non-Ready Project', status: 'tbd' });
+       await createRelease(app, { projectId: nonReadyProjectId, title: 'Consistency Idea', status: 'tbd' });
 
       const listPub = await app.testAgent.get('/release-management?readiness=publishable').expect(200);
       const boardPub = await app.testAgent.get('/release-management?view=board&readiness=publishable').expect(200);
@@ -1748,24 +1752,20 @@ describe('Phase 6B HTTP workflow', () => {
   });
 
   describe('release list — board view', () => {
-    it('renders board view with all six status column headers', async () => {
+    it('renders board view with the five workflow and publication column headers', async () => {
       // The previous test asserted `toContain('Idea')` etc. — those
       // words also appear in the Status filter <option> labels, so the
       // assertion could pass without ever rendering a board column. The
       // new test pins the exact column-header markup: each column header
       // contains a status badge with the status label text.
       const res = await app.testAgent.get('/release-management?view=board').expect(200);
-      const columns = ['tbd', 'planned', 'in-progress', 'ready', 'published', 'cancelled'];
-      for (const status of columns) {
-        // Phase 10.5C: column headers use status-badge partial instead of
-        // inline status-X color classes on the h3.
-        expect(res.text).toMatch(
-          new RegExp(`<h3 class="board-column-header">[\\s\\S]*?<span class="status-badge`),
-        );
-      }
+      const headers = res.text.match(/<h3 class="board-column-header">[\s\S]*?<\/h3>/g) || [];
+      const labels = headers.map((header) => header.match(/<span class="status-badge[^>]*>([^<]+)<\/span>/)?.[1]);
+      expect(labels).toEqual(['Tbd', 'Planned', 'In Progress', 'Ready', 'Published']);
+      expect(res.text).not.toContain('Cancelled');
     });
 
-    it('renders all six columns each with its own count badge', async () => {
+    it('renders all five columns each with its own count badge', async () => {
       // The previous test used `toMatch(/Idea.*\()/)` which is satisfied
       // by any "Idea" followed by an opening paren anywhere in the page.
       // The new test pins each column header to its own count badge
@@ -1773,24 +1773,12 @@ describe('Phase 6B HTTP workflow', () => {
       // Phase 10.5C: column headers use shared status-badge partial
       // instead of inline status-X color classes.
       const res = await app.testAgent.get('/release-management?view=board').expect(200);
-      const columns = ['tbd', 'planned', 'in-progress', 'ready', 'published', 'cancelled'];
-      for (const status of columns) {
-        expect(res.text).toMatch(
-          new RegExp(
-            `<h3 class="board-column-header">[\\s\\S]*?<span class="count">\\(\\d+\\)</span>`,
-          ),
-        );
-        // Each status label appears in a status badge
-        const label = {
-          tbd: 'Tbd',
-          planned: 'Planned',
-          'in-progress': 'In Progress',
-          ready: 'Ready',
-          published: 'Published',
-          cancelled: 'Cancelled',
-        }[status];
-        expect(res.text).toContain(label);
+      const headers = res.text.match(/<h3 class="board-column-header">[\s\S]*?<\/h3>/g) || [];
+      expect(headers).toHaveLength(5);
+      for (const header of headers) {
+        expect(header).toMatch(/<span class="count">\(\d+\)<\/span>/);
       }
+      expect(res.text).not.toContain('Cancelled');
     });
 
     it('renders releases in board columns inside board-card markup', async () => {
@@ -1810,6 +1798,38 @@ describe('Phase 6B HTTP workflow', () => {
       expect(res.text).toMatch(
         /<div class="board-card"[^>]*>[\s\S]*?ZZZ-Board-Planned-Card-Test[\s\S]*?<\/div>/,
       );
+    });
+
+    it('groups published releases by published_date instead of project status', async () => {
+      const projectId = await createProject(app, { title: 'Board Published Project', status: 'ready' });
+      const publishedId = await createRelease(app, {
+        projectId,
+        title: 'ZZZ-Board-Published-By-Date',
+        status: 'ready',
+      });
+      const activeId = await createRelease(app, {
+        projectId,
+        title: 'ZZZ-Board-Ready-By-Project',
+        status: 'ready',
+      });
+      db.prepare("UPDATE releases SET published_date = '2025-06-15' WHERE id = ?").run(Number(publishedId));
+
+      const res = await app.testAgent.get('/release-management?view=board').expect(200);
+      const headers = [...res.text.matchAll(/<h3 class="board-column-header">[\s\S]*?<\/h3>/g)];
+      const columnBody = (label) => {
+        const index = headers.findIndex((match) => match[0].includes(`>${label}</span>`));
+        expect(index).toBeGreaterThanOrEqual(0);
+        const start = headers[index].index;
+        const end = headers[index + 1]?.index ?? res.text.length;
+        return res.text.slice(start, end);
+      };
+
+      const publishedColumn = columnBody('Published');
+      const readyColumn = columnBody('Ready');
+      expect(publishedColumn).toContain(`href="/releases/${publishedId}"`);
+      expect(publishedColumn).not.toContain(`href="/releases/${activeId}"`);
+      expect(readyColumn).toContain(`href="/releases/${activeId}"`);
+      expect(readyColumn).not.toContain(`href="/releases/${publishedId}"`);
     });
 
     it('board shows project title on cards (in .card-project)', async () => {
@@ -1894,8 +1914,8 @@ describe('Phase 6B HTTP workflow', () => {
       // by each board column.
       const res = await app.testAgent.get('/release-management?view=board').expect(200);
       const boardEmptyMatches = res.text.match(/<div class="empty-state">\s*<h4 class="empty-state-heading">No releases<\/h4>\s*<\/div>/g) || [];
-      // Six columns × one "No releases" each = 6.
-      expect(boardEmptyMatches.length).toBe(6);
+      // Five columns × one "No releases" each = 5.
+      expect(boardEmptyMatches.length).toBe(5);
     });
 
     it('board is read-only (no mutation controls)', async () => {
@@ -1980,11 +2000,10 @@ describe('Phase 6B HTTP workflow', () => {
     });
 
     it('renders release entries on calendar days with status badge and time', async () => {
-      const projectId = await createProject(app, { title: 'ZZZ-June-15-Calendar-Project' });
+      const projectId = await createProject(app, { title: 'ZZZ-June-15-Calendar-Project', status: 'planned' });
       const releaseId = await createRelease(app, {
         projectId,
         title: 'ZZZ-June-15-Calendar-Release',
-        status: 'planned',
         plannedDate: '2025-06-15',
         plannedTime: '09:15',
       });
@@ -2050,7 +2069,6 @@ describe('Phase 6B HTTP workflow', () => {
       await createRelease(app, {
         projectId,
         title: 'Calendar No Readiness Release',
-        status: 'ready',
         plannedDate: '2025-06-15',
       });
 
@@ -2065,7 +2083,6 @@ describe('Phase 6B HTTP workflow', () => {
       const releaseId = await createRelease(app, {
         projectId,
         title: 'Calendar Link Release',
-        status: 'planned',
         plannedDate: '2025-06-15',
       });
 
@@ -2200,7 +2217,6 @@ describe('Phase 6B HTTP workflow', () => {
       const releaseId = await createRelease(app, {
         projectId,
         title: 'Hidden From Calendar',
-        status: 'planned',
         plannedDate: '2025-06-15',
       });
 

@@ -5,7 +5,7 @@
  *  - GET /calendar page heading and view switcher
  *  - List/board view switching links
  *  - Bounded responsive calendar container
- *  - Release status badges within calendar cells
+ *  - Project status badges within calendar cells
  *  - Empty-month grid rendering
  *  - Calendar-specific accessibility
  *  - Server-rendered navigation that works without JavaScript
@@ -36,30 +36,29 @@ function hasClass(html, className) {
   return re.test(html);
 }
 
-function insertProject(db, title, { archivedAt = null } = {}) {
+function insertProject(db, title, { archivedAt = null, status = 'tbd' } = {}) {
   const slug = `${title.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   return db.prepare(`
     INSERT INTO projects (title, slug, description, notes, status, priority, archived_at)
-    VALUES (?, ?, '', '', 'tbd', 'normal', ?)
+    VALUES (?, ?, '', '', ?, 'normal', ?)
     RETURNING id
-  `).get(title, slug, archivedAt);
+  `).get(title, slug, status, archivedAt);
 }
 
 function insertRelease(db, {
   projectId,
   title,
-  status = 'planned',
   notes = '',
   plannedDate = null,
   plannedTime = null,
   archivedAt = null,
 }) {
   return db.prepare(`
-    INSERT INTO releases (project_id, title, description, notes, status,
+    INSERT INTO releases (project_id, title, description, notes,
                           planned_date, planned_time, archived_at)
-    VALUES (?, ?, '', ?, ?, ?, ?, ?)
+    VALUES (?, ?, '', ?, ?, ?, ?)
     RETURNING id
-  `).get(projectId, title, notes, status, plannedDate, plannedTime, archivedAt);
+  `).get(projectId, title, notes, plannedDate, plannedTime, archivedAt);
 }
 
 function addReleasePreview(db, app, { projectId, releaseId, filename = 'calendar-preview.png' }) {
@@ -136,17 +135,16 @@ describe('release calendar HTTP', () => {
       expect(css).toContain('max-width: 100%');
     });
 
-    it('calendar uses status-badge partial instead of inline status classes', async () => {
-      const project = insertProject(db, 'Calendar Badge Project');
+    it('calendar uses the project status in the status-badge partial', async () => {
+      const project = insertProject(db, 'Calendar Badge Project', { status: 'ready' });
       insertRelease(db, {
         projectId: project.id,
         title: 'Calendar Badge Release',
-        status: 'planned',
         plannedDate: '2025-06-15',
       });
 
       const res = await agent.get('/calendar?month=2025-06').expect(200);
-      expect(res.text).toContain('status-badge');
+      expect((res.text.match(/<span class="status-badge status-badge--active">Ready<\/span>/g) || [])).toHaveLength(2);
     });
 
     it('renders scheduled releases with time and canonical release edit links', async () => {
@@ -189,7 +187,7 @@ describe('release calendar HTTP', () => {
       const release = insertRelease(db, {
         projectId: project.id,
         title: 'Calendar Hierarchy Release',
-        notes: 'Release <notes> & details',
+        notes: 'Release <notes> & details\nSecond line',
         plannedDate: '2025-06-15',
       });
       addReleasePreview(db, app, { projectId: project.id, releaseId: release.id });
@@ -203,9 +201,9 @@ describe('release calendar HTTP', () => {
       ) || [];
 
       expect(collapsedHierarchy).toHaveLength(2);
-      expect((res.text.match(/class="calendar-release-preview-project"/g) || [])).toHaveLength(2);
-      expect((res.text.match(/class="calendar-release-preview-title"/g) || [])).toHaveLength(2);
-      expect((res.text.match(/<span class="calendar-release-preview-notes">Release &lt;notes&gt; &amp; details<\/span>/g) || [])).toHaveLength(2);
+      expect(res.text).not.toContain('calendar-release-preview-project');
+      expect(res.text).not.toContain('calendar-release-preview-title');
+      expect((res.text.match(/<span class="calendar-release-preview-notes">Release &lt;notes&gt; &amp; details\nSecond line<\/span>/g) || [])).toHaveLength(2);
       expect(res.text).not.toContain('<notes>');
     });
 
@@ -248,40 +246,41 @@ describe('release calendar HTTP', () => {
       expect(css).toMatch(/\.calendar-release-trigger:hover\s*>\s*\.calendar-release-preview-details/);
       expect(css).toMatch(/\.calendar-release-trigger\s*>\s*a:focus-visible\s*~\s*\.calendar-release-preview-details/);
       expect(css).toMatch(/\.calendar-release-preview\s*\{[^}]*pointer-events:\s*none/);
+      expect(css).toMatch(/\.calendar-release-preview-notes\s*\{[^}]*white-space:\s*pre-wrap/);
+      expect(css).toMatch(/\.calendar-release-trigger:hover\s*>\s*\.calendar-release-preview,\s*\.calendar-release-trigger\s*>\s*a:focus-visible\s*~\s*\.calendar-release-preview\s*\{[^}]*max-height:\s*none;[^}]*overflow:\s*visible/);
+      expect(css).toMatch(/\.calendar-release-trigger:hover\s*>\s*\.calendar-release-preview-details,\s*\.calendar-release-trigger\s*>\s*a:focus-visible\s*~\s*\.calendar-release-preview-details\s*\{[^}]*max-height:\s*none;[^}]*overflow:\s*visible/);
     });
 
     it('renders multiple releases independently and excludes archived or unscheduled releases', async () => {
-      const project = insertProject(db, 'Calendar Multi Release Project');
+      const readyProject = insertProject(db, 'Calendar Ready Project', { status: 'ready' });
+      const plannedProject = insertProject(db, 'Calendar Planned Project', { status: 'planned' });
       const first = insertRelease(db, {
-        projectId: project.id,
+        projectId: readyProject.id,
         title: 'First Calendar Release',
-        status: 'cancelled',
         plannedDate: '2025-06-15',
       });
       const second = insertRelease(db, {
-        projectId: project.id,
+        projectId: plannedProject.id,
         title: 'Second Calendar Release',
-        status: 'published',
         plannedDate: '2025-06-15',
       });
       insertRelease(db, {
-        projectId: project.id,
+        projectId: readyProject.id,
         title: 'Archived Calendar Release',
         plannedDate: '2025-06-15',
         archivedAt: '2025-06-01 00:00:00',
       });
       insertRelease(db, {
-        projectId: project.id,
+        projectId: readyProject.id,
         title: 'Unscheduled Calendar Release',
-        status: 'ready',
       });
 
       const res = await agent.get('/calendar?month=2025-06').expect(200);
 
       expect(res.text).toContain(`/releases/${first.id}/edit">First Calendar Release</a>`);
       expect(res.text).toContain(`/releases/${second.id}/edit">Second Calendar Release</a>`);
-      expect(res.text).toContain('Cancelled');
-      expect(res.text).toContain('Published');
+      expect(res.text).toContain('Ready');
+      expect(res.text).toContain('Planned');
       expect(res.text).not.toContain('Archived Calendar Release');
       expect(res.text).not.toContain('Unscheduled Calendar Release');
     });

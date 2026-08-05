@@ -81,9 +81,9 @@ function insertAsset(db, {
 
 function insertRelease(db, { projectId, title }) {
   return db.prepare(`
-    INSERT INTO releases (project_id, title, description, notes, status,
+    INSERT INTO releases (project_id, title, description, notes,
                           planned_date, published_date, patreon_url, archived_at)
-    VALUES (?, ?, '', '', 'tbd', NULL, NULL, NULL, NULL)
+    VALUES (?, ?, '', '', NULL, NULL, NULL, NULL)
     RETURNING *
   `).get(projectId, title);
 }

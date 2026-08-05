@@ -1,5 +1,4 @@
 import { WORKFLOW_STATUSES, PRIORITIES } from '../data/project-repository.js';
-import { ACTIVE_RELEASE_STATUSES } from '../data/release-repository.js';
 import {
   ASSET_LIBRARY_DEFAULTS,
   ASSET_LIBRARY_PAGE_SIZE_VALUES,
@@ -12,7 +11,6 @@ const RELEASE_MANAGEMENT = 'releaseManagement';
 const PROJECT_ASSETS = 'projectAssets';
 const ASSET_VIEWER = 'assetViewer';
 const NEW_PROJECT = 'new_project';
-const NEW_RELEASE = 'new_release';
 
 function definition(key, values, fallback) {
   return Object.freeze({
@@ -61,9 +59,6 @@ export const PAGE_DEFAULT_DEFINITIONS = Object.freeze({
   [NEW_PROJECT]: Object.freeze({
     status: definition('page_defaults.new_project.status', WORKFLOW_STATUSES, WORKFLOW_STATUSES[0]),
     priority: definition('page_defaults.new_project.priority', PRIORITIES, DEFAULT_PRIORITY),
-  }),
-  [NEW_RELEASE]: Object.freeze({
-    status: definition('page_defaults.new_release.status', ACTIVE_RELEASE_STATUSES, ACTIVE_RELEASE_STATUSES[0]),
   }),
 });
 

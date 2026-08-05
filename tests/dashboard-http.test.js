@@ -2,8 +2,8 @@
  * HTTP-level tests for the Phase 6B dashboard composition.
  *
  * Moved out of workflow-http.test.js to give the dashboard sections a
- * durable, focused test owner. Organizational move only — behavior and
- * assertions are unchanged from their prior home.
+ * durable, focused test owner. Release fixtures use the project-owned
+ * workflow status model.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
@@ -14,8 +14,6 @@ import { createApp } from '../src/app.js';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { STATUS_DIR_MAP } from '../src/storage/project-storage.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
-import { createReleaseService } from '../src/services/release-service.js';
-import { evaluateReleaseReadiness } from '../src/services/release-readiness-policy.js';
 import { ensureAuthEnablement } from '../src/auth/auth-state.js';
 import { getDisabledModeCsrf } from './helpers/auth.js';
 
@@ -65,7 +63,10 @@ async function createProject(app, { title, status = 'tbd' }) {
   return res.headers.location.replace('/projects/', '');
 }
 
-async function createRelease(app, { projectId, title, status = 'tbd', plannedDate = null }) {
+async function createRelease(app, { projectId, title, status: projectStatus = null, plannedDate = null }) {
+  if (projectStatus !== null) {
+    app.testDb.prepare('UPDATE projects SET status = ? WHERE id = ?').run(projectStatus, projectId);
+  }
   const body = [`projectId=${projectId}`, `title=${encodeURIComponent(title)}`];
   if (plannedDate) body.push(`plannedDate=${plannedDate}`);
   body.push('_csrf=' + encodeURIComponent(app.testCsrfToken));
@@ -74,12 +75,7 @@ async function createRelease(app, { projectId, title, status = 'tbd', plannedDat
     .send(body.join('&'))
     .set('Content-Type', 'application/x-www-form-urlencoded')
     .expect(302);
-  const releaseId = res.headers.location.replace('/releases/', '');
-  if (status !== 'tbd') {
-    const releaseService = createReleaseService({ db: app.testDb, evaluateReleaseReadiness });
-    releaseService.updateRelease(Number(releaseId), { status });
-  }
-  return releaseId;
+  return res.headers.location.replace('/releases/', '');
 }
 
 /**
@@ -176,6 +172,7 @@ describe('Phase 6B HTTP dashboard', () => {
       expect(res.text).toContain('Ready but blocked (1)');
       expect(res.text).toContain('Ready To Publish');
       expect(res.text).toContain('no assets selected');
+      expect(res.text).toMatch(/<span class="status-badge status-badge--active">Ready<\/span>/);
     });
 
     it('shows ready-to-publish releases with present assets', async () => {
@@ -365,9 +362,9 @@ describe('Phase 6B HTTP dashboard', () => {
   // ─── Dashboard: workflow summary ───────────────────────────────────
 
   describe('dashboard workflow summary', () => {
-    it('renders the workflow summary section', async () => {
+    it('renders the project workflow summary section', async () => {
       const res = await app.testAgent.get('/').expect(200);
-      expect(res.text).toContain('Release status');
+      expect(res.text).toContain('Workflow summary');
     });
 
     it('shows total projects, total assets, and missing assets', async () => {
@@ -380,15 +377,20 @@ describe('Phase 6B HTTP dashboard', () => {
       expect(res.text).toContain('Missing assets');
     });
 
-    it('shows release status counts (tbd, planned, in-progress, ready, published, cancelled)', async () => {
+    it('does not render obsolete release-status counts or a Cancelled workflow group', async () => {
+      await createProject(app, { title: 'TBD Dashboard Project', status: 'tbd' });
+      await createProject(app, { title: 'Planned Dashboard Project', status: 'planned' });
+      await createProject(app, { title: 'In Progress Dashboard Project', status: 'in-progress' });
+      await createProject(app, { title: 'Ready Dashboard Project', status: 'ready' });
+
       const res = await app.testAgent.get('/').expect(200);
-      // Check that each status appears in the dashboard
       expect(res.text).toMatch(/TBD/);
       expect(res.text).toMatch(/Planned/);
       expect(res.text).toMatch(/In Progress/);
       expect(res.text).toMatch(/Ready/);
-      expect(res.text).toMatch(/Published/);
-      expect(res.text).toMatch(/Cancelled/);
+      expect(res.text).not.toContain('releaseStatusCounts');
+      expect(res.text).not.toContain('Release status');
+      expect(res.text).not.toContain('Cancelled');
     });
 
     it('keeps project counts but demotes them inside a collapsible section', async () => {

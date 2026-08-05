@@ -12,8 +12,8 @@ import { STATUS_DIR_MAP } from '../src/storage/project-storage.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
 import { createReleaseRepository } from '../src/data/release-repository.js';
 import { createReleaseService } from '../src/services/release-service.js';
-import { getLocalTodayIso } from '../src/util/date.js';
 import { evaluateReleaseReadiness } from '../src/services/release-readiness-policy.js';
+import { getLocalTodayIso } from '../src/util/date.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 
@@ -41,11 +41,12 @@ function getReleaseAssets(db, releaseId) {
   return db.prepare('SELECT release_id, asset_id, role, sort_order, created_at FROM release_assets WHERE release_id = ? ORDER BY sort_order ASC, asset_id ASC').all(releaseId);
 }
 
-/** Set up a lifecycle fixture without relying on the removed form status field. */
-function setReleaseStatusForTest(db, releaseLocation, status) {
+/** Set the owning project's workflow status for a release fixture. */
+function setProjectStatusForReleaseTest(db, releaseLocation, projectStatus) {
   const releaseId = Number(releaseLocation.replace('/releases/', ''));
-  const service = createReleaseService({ db, evaluateReleaseReadiness });
-  return service.updateRelease(releaseId, { status });
+  const release = createReleaseRepository(db).findById(releaseId);
+  db.prepare('UPDATE projects SET status = ? WHERE id = ?').run(projectStatus, release.project_id);
+  return createReleaseRepository(db).findById(releaseId);
 }
 
 /**
@@ -83,7 +84,7 @@ async function setupPublishableRelease(agent, projectsRoot, db, csrfToken) {
     .set('Content-Type', 'application/x-www-form-urlencoded')
     .expect(302);
   const releaseLocation = createRes.headers.location;
-  setReleaseStatusForTest(db, releaseLocation, 'ready');
+  setProjectStatusForReleaseTest(db, releaseLocation, 'ready');
 
   // Select the asset
   await agent
@@ -372,7 +373,7 @@ describe('release HTTP workflow', () => {
         .expect(302);
       const releaseLocation = createRes.headers.location;
       const releaseId = Number(releaseLocation.replace('/releases/', ''));
-      setReleaseStatusForTest(db, releaseLocation, 'ready');
+      setProjectStatusForReleaseTest(db, releaseLocation, 'ready');
 
       // Select the asset
       await agent
@@ -411,7 +412,7 @@ describe('release HTTP workflow', () => {
         .post(`/projects/${projectId}`)
       .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Legacy+Readiness+Project')
-        .send('status=tbd')
+        .send('status=ready')
         .send('priority=normal')
         .send('plannedDate=2020-01-01')
         .set('Content-Type', 'application/x-www-form-urlencoded')
@@ -442,7 +443,7 @@ describe('release HTTP workflow', () => {
         .post(`/projects/${projectId}`)
       .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Legacy+Readiness+Project')
-        .send('status=tbd')
+        .send('status=ready')
         .send('priority=normal')
         .send('publishedDate=2020-06-15')
         .set('Content-Type', 'application/x-www-form-urlencoded')
@@ -470,7 +471,7 @@ describe('release HTTP workflow', () => {
         .post(`/projects/${projectId}`)
       .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Legacy+Readiness+Project')
-        .send('status=tbd')
+        .send('status=ready')
         .send('priority=normal')
         .send('patreonUrl=https://patreon.com/creator')
         .set('Content-Type', 'application/x-www-form-urlencoded')
@@ -606,7 +607,7 @@ describe('release HTTP workflow', () => {
     expect(res.text).toContain('Release Two');
   });
 
-  it('release list filters by status', async () => {
+  it('release list ignores obsolete status filters without mapping them to project status', async () => {
     const projRes = await agent
       .post('/projects')
       .send('_csrf=' + encodeURIComponent(csrfToken))
@@ -633,11 +634,11 @@ describe('release HTTP workflow', () => {
       .send('title=Planned+Release')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
-    setReleaseStatusForTest(db, plannedRelease.headers.location, 'planned');
+    setProjectStatusForReleaseTest(db, plannedRelease.headers.location, 'planned');
 
     const res = await agent.get('/release-management?status=tbd').expect(200);
     expect(res.text).toContain('Idea Release');
-    expect(res.text).not.toContain('Planned Release');
+    expect(res.text).toContain('Planned Release');
   });
 
   // ─── Create release ────────────────────────────────────────────────────────
@@ -728,7 +729,7 @@ describe('release HTTP workflow', () => {
     expect(res.text).toContain('value="09:45"');
   });
 
-  it('successful create ignores a submitted status and persists the internal default', async () => {
+  it('successful create ignores a submitted status and persists no release status field', async () => {
     const projRes = await agent
       .post('/projects')
       .send('_csrf=' + encodeURIComponent(csrfToken))
@@ -748,7 +749,7 @@ describe('release HTTP workflow', () => {
       .expect(302);
 
     const releaseId = Number(res.headers.location.replace('/releases/', ''));
-    expect(releaseRepository.findById(releaseId).status).toBe('tbd');
+    expect(releaseRepository.findById(releaseId)).not.toHaveProperty('status');
   });
 
   it('valid create request redirects to detail', async () => {
@@ -810,10 +811,9 @@ describe('release HTTP workflow', () => {
         notes,
         planned_date: '2026-12-01',
         planned_time: '09:45',
-        published_date: '2026-12-15',
-        patreon_url: 'https://example.com/selected-release',
-        status: 'tbd',
-      });
+         published_date: '2026-12-15',
+         patreon_url: 'https://example.com/selected-release',
+       });
       expect(getReleaseAssets(db, releaseId).map(({ asset_id, role, sort_order }) => ({
         asset_id,
         role,
@@ -948,6 +948,33 @@ describe('release HTTP workflow', () => {
     expect(res.text).toContain('Manage Assets');
   });
 
+  it('release detail renders the associated project status and shows Ready for a ready project', async () => {
+    const projRes = await agent
+      .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .send('title=Ready+Project+Status+Detail')
+      .send('status=tbd')
+      .send('priority=normal')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+    const projectId = projRes.headers.location.replace('/projects/', '');
+
+    const createRes = await agent
+      .post('/releases')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .send(`projectId=${projectId}`)
+      .send('title=Ready+Project+Release')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+    const releaseId = Number(createRes.headers.location.replace('/releases/', ''));
+    db.prepare("UPDATE projects SET status = 'ready' WHERE id = ?").run(projectId);
+
+    const res = await agent.get(createRes.headers.location).expect(200);
+    expect(res.text).toMatch(/<dt>Project status<\/dt>[\s\S]*?<span class="status-badge status-badge--active">Ready<\/span>/);
+    expect(res.text).not.toMatch(/<dt>Project status<\/dt>[\s\S]*?<span class="status-badge status-badge--neutral">Tbd<\/span>/);
+    expect(releaseRepository.findById(releaseId).project_status).toBe('ready');
+  });
+
   it('missing release returns 404', async () => {
     await agent.get('/releases/9999').expect(404);
   });
@@ -973,7 +1000,7 @@ describe('release HTTP workflow', () => {
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
-      setReleaseStatusForTest(db, relRes.headers.location, 'ready');
+      setProjectStatusForReleaseTest(db, relRes.headers.location, 'ready');
 
       // Add an asset to make it publishable
       const slug = 'publish-heading-test';
@@ -1018,7 +1045,7 @@ describe('release HTTP workflow', () => {
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
-      setReleaseStatusForTest(db, relRes.headers.location, 'ready');
+      setProjectStatusForReleaseTest(db, relRes.headers.location, 'ready');
 
       const slug = 'publish-panel-test';
       const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
@@ -1044,7 +1071,7 @@ describe('release HTTP workflow', () => {
       expect(res.text).toContain('class="panel panel--readiness"');
     });
 
-    it('publish page uses status-badge for release status', async () => {
+    it('publish page uses the associated project status badge', async () => {
       const projRes = await agent.post('/projects')
         .send('title=Publish+Badge+Test')
         .send('status=tbd')
@@ -1060,7 +1087,7 @@ describe('release HTTP workflow', () => {
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
-      setReleaseStatusForTest(db, relRes.headers.location, 'ready');
+      setProjectStatusForReleaseTest(db, relRes.headers.location, 'ready');
 
       const slug = 'publish-badge-test';
       const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
@@ -1083,7 +1110,7 @@ describe('release HTTP workflow', () => {
         .expect(302);
 
       const res = await agent.get(`${relRes.headers.location}/publish`).expect(200);
-      expect(res.text).toContain('status-badge');
+      expect(res.text).toMatch(/<dt>Project status<\/dt>[\s\S]*?<span class="status-badge status-badge--active">Ready<\/span>/);
     });
   });
 
@@ -1664,7 +1691,7 @@ describe('release HTTP workflow', () => {
     expect(res.text).toContain('Releases — Edit Before Edit');
   });
 
-  it('existing release editing keeps its stored status instead of using the New Release default', async () => {
+  it('existing release editing does not expose a release-owned status field', async () => {
     const projRes = await agent
       .post('/projects')
       .send('_csrf=' + encodeURIComponent(csrfToken))
@@ -1682,11 +1709,12 @@ describe('release HTTP workflow', () => {
       .send('title=Stored+Release+Status')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
-    setReleaseStatusForTest(db, createRes.headers.location, 'planned');
+    setProjectStatusForReleaseTest(db, createRes.headers.location, 'planned');
 
     const res = await agent.get(`${createRes.headers.location}/edit`).expect(200);
     expect(res.text).not.toContain('id="status"');
-    expect(releaseRepository.findById(Number(createRes.headers.location.replace('/releases/', ''))).status).toBe('planned');
+    expect(releaseRepository.findById(Number(createRes.headers.location.replace('/releases/', ''))).project_status)
+      .toBe('planned');
   });
 
   it('failed existing-release edits ignore the submitted status', async () => {
@@ -1718,7 +1746,7 @@ describe('release HTTP workflow', () => {
       .expect(422);
 
     expect(res.text).not.toContain('id="status"');
-    expect(releaseRepository.findById(Number(releaseId)).status).toBe('tbd');
+    expect(releaseRepository.findById(Number(releaseId))).not.toHaveProperty('status');
   });
 
   it('valid update redirects to detail', async () => {
@@ -1748,7 +1776,8 @@ describe('release HTTP workflow', () => {
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
     expect(res.headers.location).toBe(createRes.headers.location);
-    expect(releaseRepository.findById(Number(createRes.headers.location.replace('/releases/', ''))).status).toBe('tbd');
+    expect(releaseRepository.findById(Number(createRes.headers.location.replace('/releases/', ''))))
+      .not.toHaveProperty('status');
 
     const detail = await agent.get(createRes.headers.location).expect(200);
     expect(detail.text).toContain('New Title');
@@ -1876,11 +1905,14 @@ describe('release HTTP workflow', () => {
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
+    db.prepare("UPDATE projects SET status = 'ready' WHERE id = ?").run(projectId);
+
     const res = await agent
       .get(`${createRes.headers.location}/assets`)
       .expect(200);
     expect(res.text).toContain('Asset Selection Release');
     expect(res.text).toContain('Back to Release');
+    expect(res.text).toMatch(/Project status:[\s\S]*?<span class="status-badge status-badge--active">Ready<\/span>/);
   });
 
   it('asset selection requires assets from correct project', async () => {
@@ -3759,32 +3791,24 @@ describe('release HTTP workflow', () => {
     expect(detail.text).toContain('2025-12-15');
   });
 
-  it('publish preserves a previously edited publishedDate when publish form omits it', async () => {
-    // Simulates: user edits the release and sets a publishedDate, then clicks
-    // the publish button (which historically overwrote the date with today).
-    const { releaseLocation, projectId } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
+  it('publishedDate set during metadata editing becomes the publication state', async () => {
+    const { releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
 
-    // Edit the release to set a publishedDate
     await agent
       .post(releaseLocation)
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('title=Publishable+Release')
-      .send('status=ready')
       .send('publishedDate=2025-08-20')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
-    // Publish button with no publishedDate in the body — the route must fall
-    // back to the release's existing publishedDate.
-    await agent
-      .post(`${releaseLocation}/publish`)
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-      .set('Content-Type', 'application/x-www-form-urlencoded')
-      .expect(302);
+    const releaseId = Number(releaseLocation.replace('/releases/', ''));
+    expect(db.prepare('SELECT published_date FROM releases WHERE id = ?').get(releaseId)).toEqual({
+      published_date: '2025-08-20',
+    });
 
-    const detail = await agent.get(releaseLocation).expect(200);
-    expect(detail.text).toContain('2025-08-20');
-    expect(detail.text).toContain('Published');
+    const publishReview = await agent.get(`${releaseLocation}/publish`).expect(302);
+    expect(publishReview.headers.location).toBe(releaseLocation);
   });
 
   it('publish uses today when neither the form nor the release has a publishedDate', async () => {
@@ -3823,7 +3847,7 @@ describe('release HTTP workflow', () => {
       .send('title=Zero+Asset+Publish')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
-    setReleaseStatusForTest(db, createRes.headers.location, 'ready');
+    setProjectStatusForReleaseTest(db, createRes.headers.location, 'ready');
 
     // Direct POST with no assets selected — must be blocked
     const res = await agent
@@ -3880,11 +3904,12 @@ describe('release HTTP workflow', () => {
       .send('title=Rejected+State+Release')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
-    setReleaseStatusForTest(db, createRes.headers.location, 'ready');
+    setProjectStatusForReleaseTest(db, createRes.headers.location, 'ready');
 
     // Verify initial state
     const before = await agent.get(createRes.headers.location).expect(200);
-    expect(before.text).toContain('Status: ready');
+    expect(releaseRepository.findById(Number(createRes.headers.location.replace('/releases/', ''))).project_status)
+      .toBe('ready');
     expect(before.text).not.toContain('readiness-badge readiness-publishable">Published</p>');
 
     // Attempt publish (will fail — no assets)
@@ -3895,7 +3920,8 @@ describe('release HTTP workflow', () => {
 
     // State must be unchanged
     const after = await agent.get(createRes.headers.location).expect(200);
-    expect(after.text).toContain('Status: ready');
+    expect(releaseRepository.findById(Number(createRes.headers.location.replace('/releases/', ''))).project_status)
+      .toBe('ready');
     expect(after.text).not.toContain('readiness-badge readiness-publishable">Published</p>');
   });
 
@@ -4230,7 +4256,8 @@ describe('release HTTP workflow', () => {
       const res = await agent.get(releaseLocation).expect(200);
 
       expect(res.text).toContain('Publishable');
-      expect(res.text).toContain('Status is ready');
+      expect(releaseRepository.findById(Number(releaseLocation.replace('/releases/', ''))).project_status)
+        .toBe('ready');
       expect(res.text).toContain('Assets selected');
       expect(res.text).toContain('Selected assets present');
       expect(res.text).toContain('Scope is mutable');
@@ -4260,7 +4287,8 @@ describe('release HTTP workflow', () => {
 
       const res = await agent.get(createRes.headers.location).expect(200);
       expect(res.text).toContain('Needs attention');
-      expect(res.text).toContain('Status: tbd');
+      expect(releaseRepository.findById(Number(createRes.headers.location.replace('/releases/', ''))).project_status)
+        .toBe('tbd');
       expect(res.text).not.toContain('Publishable');
     });
 
@@ -4354,7 +4382,8 @@ describe('release HTTP workflow', () => {
 
       const res = await agent.get(createRes.headers.location).expect(200);
       expect(res.text).toContain('Needs attention');
-      expect(res.text).toContain('Status: tbd');
+      expect(releaseRepository.findById(Number(createRes.headers.location.replace('/releases/', ''))).project_status)
+        .toBe('tbd');
       expect(res.text).toContain('0 selected');
     });
 
@@ -4362,7 +4391,8 @@ describe('release HTTP workflow', () => {
       const { releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
       const res = await agent.get(releaseLocation).expect(200);
 
-      expect(res.text).toContain('Status is ready');
+      expect(releaseRepository.findById(Number(releaseLocation.replace('/releases/', ''))).project_status)
+        .toBe('ready');
       expect(res.text).toContain('Assets selected');
       expect(res.text).toContain('Selected assets present');
       expect(res.text).toContain('Scope is mutable');
@@ -4512,7 +4542,7 @@ describe('release HTTP workflow', () => {
         .send('title=Enforced+Release')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
-      setReleaseStatusForTest(db, createRes.headers.location, 'ready');
+      setProjectStatusForReleaseTest(db, createRes.headers.location, 'ready');
 
       // Verify the readiness panel shows it's blocked (no assets selected)
       const detail = await agent.get(createRes.headers.location).expect(200);
@@ -4587,7 +4617,7 @@ describe('release HTTP workflow', () => {
         .send('title=Forged+POST+Release')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
-      setReleaseStatusForTest(db, createRes.headers.location, 'ready');
+      setProjectStatusForReleaseTest(db, createRes.headers.location, 'ready');
 
       // Direct POST with no assets — server must reject
       const res = await agent
@@ -4633,7 +4663,7 @@ describe('release HTTP workflow', () => {
       expect(detail.text).toMatch(/href="\/releases\/\d+\/publish"/);
     });
 
-    it('publication date and status behavior remain correct', async () => {
+    it('publication date metadata behavior remains correct', async () => {
       const { releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
 
       // Publish with explicit date
@@ -4696,7 +4726,7 @@ describe('release HTTP workflow', () => {
       expect(detail.text).not.toMatch(/href="\/releases\/\d+\/publish"/);
     });
 
-    it('cancelled release has no Publish button', async () => {
+    it('obsolete submitted status does not create a publishable release', async () => {
       const projRes = await agent
         .post('/projects')
       .send('_csrf=' + encodeURIComponent(csrfToken))
@@ -4717,8 +4747,10 @@ describe('release HTTP workflow', () => {
         .expect(302);
 
       const detail = await agent.get(createRes.headers.location).expect(200);
-      // Readiness panel shows blocked (status_ready fails)
+      // Readiness remains blocked because the owning project is not ready.
       expect(detail.text).toContain('Needs attention');
+      expect(releaseRepository.findById(Number(createRes.headers.location.replace('/releases/', ''))).project_status)
+        .toBe('tbd');
       // No Publish button
       expect(detail.text).not.toMatch(/href="\/releases\/\d+\/publish"/);
     });
@@ -4762,7 +4794,7 @@ describe('release HTTP workflow', () => {
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
       const releaseLocation = createRes.headers.location;
-      setReleaseStatusForTest(db, releaseLocation, 'ready');
+      setProjectStatusForReleaseTest(db, releaseLocation, 'ready');
 
       // Select the asset
       await agent
@@ -5323,7 +5355,7 @@ describe('release HTTP workflow', () => {
       expect(detail.text).toMatch(/Published/);
     });
 
-    it('submitted status cannot change a published release during metadata edit', async () => {
+    it('submitted status is ignored during published metadata edit', async () => {
       const { releaseLocation } = await setupPublishedRelease();
       const res = await agent
         .post(releaseLocation)
@@ -5335,8 +5367,8 @@ describe('release HTTP workflow', () => {
         .expect(302);
       expect(res.headers.location).toBe(releaseLocation);
       const releaseId = Number(releaseLocation.replace('/releases/', ''));
-      expect(db.prepare('SELECT status, title FROM releases WHERE id = ?').get(releaseId)).toEqual({
-        status: 'published',
+      expect(db.prepare('SELECT published_date, title FROM releases WHERE id = ?').get(releaseId)).toEqual({
+        published_date: '2025-06-15',
         title: 'Status Change Attempt',
       });
     });
@@ -5678,31 +5710,25 @@ describe('release HTTP workflow', () => {
     });
   });
 
-  describe('cancelled release behavior remains unchanged', () => {
-    it('cancelled release detail still shows readiness', async () => {
-      const projRes = await agent
-        .post('/projects')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-        .send('title=Cancelled+Readiness+Project')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .expect(302);
-      const projectId = projRes.headers.location.replace('/projects/', '');
-
+  describe('archived release behavior remains intact', () => {
+    it('archived release detail is read-only and has no publication summary', async () => {
+      const projectId = await createTestProject('Archived Readiness Project');
       const createRes = await agent
         .post('/releases')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
+        .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
-        .send('title=Cancelled+Readiness+Release')
-        .send('status=cancelled')
+        .send('title=Archived Readiness Release')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
       const releaseLocation = createRes.headers.location;
 
+      await agent
+        .post(`${releaseLocation}/archive`)
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .expect(302);
+
       const res = await agent.get(releaseLocation).expect(200);
-      // Cancelled releases still show readiness panel (not published summary)
-      expect(res.text).toMatch(/Readiness/);
+      expect(res.text).toMatch(/archived and read-only/i);
       expect(res.text).not.toMatch(/Publication Summary/);
     });
   });
@@ -5741,7 +5767,7 @@ describe('release HTTP workflow', () => {
         .send('title=Blocked+Ready+Review')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
-      setReleaseStatusForTest(db, createRes.headers.location, 'ready');
+      setProjectStatusForReleaseTest(db, createRes.headers.location, 'ready');
 
       const res = await agent
         .get(`${createRes.headers.location}/publish`)
@@ -5783,16 +5809,14 @@ describe('release HTTP workflow', () => {
     });
 
     describe('lifecycle eligibility redirects', () => {
-      const NON_READY_STATUSES = [
-        { status: 'tbd', label: 'tbd' },
-        { status: 'planned', label: 'planned' },
-        { status: 'in-progress', label: 'in-progress' },
-        { status: 'published', label: 'published' },
-        { status: 'cancelled', label: 'cancelled' },
+      const NON_READY_PROJECT_STATUSES = [
+        { projectStatus: 'tbd', label: 'tbd' },
+        { projectStatus: 'planned', label: 'planned' },
+        { projectStatus: 'in-progress', label: 'in-progress' },
       ];
 
-      for (const { status, label } of NON_READY_STATUSES) {
-        it(`GET redirects for ${label} status`, async () => {
+      for (const { projectStatus, label } of NON_READY_PROJECT_STATUSES) {
+        it(`GET redirects when project status is ${label}`, async () => {
           const projRes = await agent
             .post('/projects')
       .send('_csrf=' + encodeURIComponent(csrfToken))
@@ -5806,56 +5830,17 @@ describe('release HTTP workflow', () => {
           let releaseLocation;
           let releaseId;
 
-          if (status === 'published') {
-            // published can only be reached via publishRelease, not direct create
-            const createRes = await agent
-              .post('/releases')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-              .send(`projectId=${projectId}`)
-              .send('title=Lifecycle+Redirect+published')
-              .set('Content-Type', 'application/x-www-form-urlencoded')
-              .expect(302);
-            releaseLocation = createRes.headers.location;
-            releaseId = Number(releaseLocation.replace('/releases/', ''));
-            setReleaseStatusForTest(db, releaseLocation, 'ready');
-
-            // Need a publishable release: create asset, select it, then publish
-            const slug = 'lifecycle-redirect-test';
-            const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-            const matching = entries.filter((e) => e.endsWith(`-${slug}`));
-            const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
-            fs.writeFileSync(path.join(projectDir, 'pub-asset.txt'), 'content');
-            await agent.post(`/projects/${projectId}/scan`)
-      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
-
-            const assetRepo = createAssetRepository(db);
-            const assets = assetRepo.findByProjectId(Number(projectId));
-            await agent
-              .post(releaseLocation + '/assets')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-              .send(`selectedAssetIds[]=${assets[0].id}`)
-              .send('roles[]=primary')
-              .send('sortOrder[]=0')
-              .set('Content-Type', 'application/x-www-form-urlencoded')
-              .expect(302);
-
-            await agent
-              .post(`${releaseLocation}/publish`)
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-              .set('Content-Type', 'application/x-www-form-urlencoded')
-              .expect(302);
-          } else {
-            const createRes = await agent
-              .post('/releases')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-              .send(`projectId=${projectId}`)
-              .send(`title=Lifecycle+Redirect+${label}`)
-              .send(`status=${status}`)
-              .set('Content-Type', 'application/x-www-form-urlencoded')
-              .expect(302);
-            releaseLocation = createRes.headers.location;
-            releaseId = Number(releaseLocation.replace('/releases/', ''));
-          }
+          const createRes = await agent
+            .post('/releases')
+            .send('_csrf=' + encodeURIComponent(csrfToken))
+            .send(`projectId=${projectId}`)
+            .send(`title=Lifecycle+Redirect+${label}`)
+            .send('status=ready')
+            .set('Content-Type', 'application/x-www-form-urlencoded')
+            .expect(302);
+          releaseLocation = createRes.headers.location;
+          releaseId = Number(releaseLocation.replace('/releases/', ''));
+          setProjectStatusForReleaseTest(db, releaseLocation, projectStatus);
 
           const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
 
@@ -5978,16 +5963,15 @@ describe('release HTTP workflow', () => {
       });
     });
 
-    it('persisted date prefills', async () => {
+    it('persisted published date marks the release as already published', async () => {
       const { releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
-      // Set a persisted published_date
       const releaseId = Number(releaseLocation.replace('/releases/', ''));
       db.prepare("UPDATE releases SET published_date = '2025-12-01' WHERE id = ?").run(releaseId);
 
       const res = await agent
         .get(`${releaseLocation}/publish`)
-        .expect(200);
-      expect(res.text).toContain('value="2025-12-01"');
+        .expect(302);
+      expect(res.headers.location).toBe(releaseLocation);
     });
 
     it('local-today fallback prefills', async () => {
@@ -6013,7 +5997,7 @@ describe('release HTTP workflow', () => {
 
       const release = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
       expect(release.published_date).toBe('2025-11-01');
-      expect(release.status).toBe('published');
+      expect(release).not.toHaveProperty('status');
     });
 
     it('missing direct-POST date preserves fallback behavior', async () => {
@@ -6027,7 +6011,7 @@ describe('release HTTP workflow', () => {
         .expect(302);
 
       const release = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
-      expect(release.status).toBe('published');
+      expect(release).not.toHaveProperty('status');
       const today = getLocalTodayIso();
       expect(release.published_date).toBe(today);
     });
@@ -6077,7 +6061,7 @@ describe('release HTTP workflow', () => {
           .expect(302);
 
         const release = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
-        expect(release.status).toBe('published');
+        expect(release).not.toHaveProperty('status');
         const today = getLocalTodayIso();
         expect(release.published_date).toBe(today);
       });
@@ -6094,7 +6078,7 @@ describe('release HTTP workflow', () => {
           .expect(302);
 
         const release = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
-        expect(release.status).toBe('published');
+        expect(release).not.toHaveProperty('status');
         expect(release.published_date).toBe('2025-06-15');
       });
     });
@@ -6175,7 +6159,7 @@ describe('release HTTP workflow', () => {
         .send('title=Forged+Review+POST')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
-      setReleaseStatusForTest(db, createRes.headers.location, 'ready');
+      setProjectStatusForReleaseTest(db, createRes.headers.location, 'ready');
 
       // Direct POST with no assets — server must reject
       const res = await agent
@@ -6185,7 +6169,7 @@ describe('release HTTP workflow', () => {
       expect(res.text).toContain('Cannot publish');
     });
 
-    it('successful publication redirects to published summary', async () => {
+    it('successful publication redirects to the release detail', async () => {
       const { releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
 
       const res = await agent
@@ -6197,9 +6181,9 @@ describe('release HTTP workflow', () => {
       // Should redirect to release detail
       expect(res.headers.location).toBe(releaseLocation);
 
-      // Detail should show published summary
-      const detail = await agent.get(releaseLocation).expect(200);
-      expect(detail.text).toContain('Publication Summary');
+      const releaseId = Number(releaseLocation.replace('/releases/', ''));
+      const release = db.prepare('SELECT published_date FROM releases WHERE id = ?').get(releaseId);
+      expect(release.published_date).toBe(getLocalTodayIso());
     });
 
     it('newly published selection is already locked', async () => {
@@ -6682,8 +6666,9 @@ describe('release HTTP workflow', () => {
       const afterRelease = snapshotRelease(releaseId);
       const afterJunction = snapshotJunction(releaseId);
 
-      // Status must remain published
-      expect(afterRelease.status).toBe('published');
+      // Publication metadata remains present without a release-owned status field.
+      expect(afterRelease).not.toHaveProperty('status');
+      expect(afterRelease.published_date).toBe('2025-06-20');
 
       // Metadata fields changed
       expect(afterRelease.title).toBe('Updated Published Title');
@@ -6882,7 +6867,7 @@ describe('release HTTP workflow', () => {
         .expect(302);
       const releaseLocation = createRes.headers.location;
       const releaseId = Number(releaseLocation.replace('/releases/', ''));
-      setReleaseStatusForTest(db, releaseLocation, 'ready');
+      setProjectStatusForReleaseTest(db, releaseLocation, 'ready');
 
       // Select one asset (alpha.txt)
       const alphaAsset = allAssets.find((a) => a.filename === 'alpha.txt');
@@ -7254,7 +7239,7 @@ describe('release HTTP workflow', () => {
         .expect(302);
       const releaseLocation = createRes.headers.location;
       const releaseId = Number(releaseLocation.replace('/releases/', ''));
-      setReleaseStatusForTest(db, releaseLocation, 'ready');
+      setProjectStatusForReleaseTest(db, releaseLocation, 'ready');
 
       // Select both assets
       await agent
@@ -7403,7 +7388,7 @@ describe('release HTTP workflow', () => {
         .expect(302);
       const releaseLocation = createRes.headers.location;
       const releaseId = Number(releaseLocation.replace('/releases/', ''));
-      setReleaseStatusForTest(db, releaseLocation, 'ready');
+      setProjectStatusForReleaseTest(db, releaseLocation, 'ready');
 
       // Add assets via Phase 9-2 add route in non-alphabetical order
       await agent
@@ -8431,7 +8416,7 @@ describe('release HTTP workflow', () => {
         .expect(302);
       const releaseLocation = createRes.headers.location;
       const releaseId = Number(releaseLocation.replace('/releases/', ''));
-      setReleaseStatusForTest(db, releaseLocation, 'ready');
+      setProjectStatusForReleaseTest(db, releaseLocation, 'ready');
 
       // Select both assets
       await agent
@@ -9670,7 +9655,7 @@ describe('release HTTP workflow', () => {
       const releaseLocation = createRes.headers.location;
       const releaseId = Number(releaseLocation.replace('/releases/', ''));
       if (status === 'published') {
-        setReleaseStatusForTest(db, releaseLocation, 'ready');
+        setProjectStatusForReleaseTest(db, releaseLocation, 'ready');
       }
 
       // Select the asset
@@ -9832,7 +9817,7 @@ describe('release HTTP workflow', () => {
       expect(archiveForms).toBeNull();
     });
 
-    it('cancelled release has no archive form', async () => {
+    it('archived release has no archive form', async () => {
       const projRes = await agent
         .post('/projects')
       .send('_csrf=' + encodeURIComponent(csrfToken))
@@ -9850,7 +9835,10 @@ describe('release HTTP workflow', () => {
         .send('title=Cancel+Archive+Release')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
-      setReleaseStatusForTest(db, createRes.headers.location, 'cancelled');
+      await agent
+        .post(`${createRes.headers.location}/archive`)
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .expect(302);
 
       const res = await agent.get(createRes.headers.location).expect(200);
       const archiveForms = res.text.match(/action="\/releases\/\d+\/archive"/g);
@@ -9925,7 +9913,6 @@ describe('release HTTP workflow', () => {
         title: 'Calendar Release',
         description: '',
         notes: '',
-        status: 'planned',
         plannedDate: null,
         plannedTime: null,
         patreonUrl: null,
@@ -9935,7 +9922,7 @@ describe('release HTTP workflow', () => {
     }
 
     it('renders a release entry linking to its canonical edit page with its status badge', async () => {
-      const projectId = insertProjectDirect(db, { title: 'Calendar Project' });
+      const projectId = insertProjectDirect(db, { title: 'Calendar Project', status: 'planned' });
       const release = createCalendarRelease(projectId, {
         title: 'Calendar Release',
         plannedDate: '2026-07-14',

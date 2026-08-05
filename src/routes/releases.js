@@ -8,7 +8,6 @@ import {
   ReleasePublishedError,
   ReleaseValidationError,
   ReleaseNotFoundError,
-  RELEASE_STATUSES,
 } from '../services/release-service.js';
 
 const SORT_OPTIONS = ['updated', 'created', 'planned', 'title'];
@@ -131,7 +130,7 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
 
     // Published releases show a publication summary instead of readiness.
     // Archived releases (or archived-parent) also skip readiness.
-    const isPublished = release.status === 'published';
+    const isPublished = release.published_date != null;
     const isArchived = release.archived_at || (project && project.archived_at);
     const readiness = isPublished || isArchived ? null : workflowQueryService.getReleaseReadiness(id);
 
@@ -141,7 +140,6 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
       project,
       releaseAssets,
       assetCount,
-      statuses: RELEASE_STATUSES,
       readiness,
     });
   });
@@ -203,7 +201,7 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
         res.status(422).render('releases/form.njk', {
           appName,
           release: existing || { id },
-          values: req.body,
+          values: omitLegacyStatusField(req.body),
           errors: err.errors || { general: err.message },
           projects,
           selectedProjectId: req.body.projectId || (existing ? existing.project_id : null),
@@ -225,7 +223,6 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
           project,
           releaseAssets,
           assetCount: releaseAssets.length,
-          statuses: RELEASE_STATUSES,
           readiness: null,
           errors: { general: err.message },
         });
@@ -249,15 +246,15 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
 
     const project = projectService.findById(release.project_id);
 
-    // Redirect non-ready lifecycle states to release detail
+    // Archived and already-published releases cannot enter publication review.
     if (release.archived_at || (project && project.archived_at)) {
       return res.redirect(`/releases/${id}`);
     }
-    if (['tbd', 'planned', 'in-progress', 'published', 'cancelled'].includes(release.status)) {
+    if (release.published_date != null || release.project_status !== 'ready') {
       return res.redirect(`/releases/${id}`);
     }
 
-    // status is ready — render review page (publishable or blocked-ready)
+    // The owning project is ready — render review page (publishable or blocked-ready)
     const releaseAssets = releaseService.listReleaseAssets(id);
     const readiness = workflowQueryService.getReleaseReadiness(id);
 
@@ -271,7 +268,6 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
       project,
       releaseAssets,
       assetCount: releaseAssets.length,
-      statuses: RELEASE_STATUSES,
       readiness,
       prefillDate,
       errors: {},
@@ -320,7 +316,6 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
           project,
           releaseAssets,
           assetCount: releaseAssets.length,
-          statuses: RELEASE_STATUSES,
           readiness,
           prefillDate,
           errors: err.errors || { general: err.message },
@@ -340,7 +335,6 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
           project,
           releaseAssets,
           assetCount: releaseAssets.length,
-          statuses: RELEASE_STATUSES,
           readiness: null,
           errors: { general: err.message },
         });
@@ -378,7 +372,6 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
           project,
           releaseAssets,
           assetCount: releaseAssets.length,
-          statuses: RELEASE_STATUSES,
           errors: err.errors,
           readiness,
         });
@@ -397,7 +390,6 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
           project,
           releaseAssets,
           assetCount: releaseAssets.length,
-          statuses: RELEASE_STATUSES,
           readiness: null,
           errors: { general: err.message },
         });
@@ -454,7 +446,6 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
       candidatePageCount: viewModel.candidatePageCount,
       candidateFilters: viewModel.candidateFilters,
       candidateExtensions: viewModel.candidateExtensions,
-      statuses: RELEASE_STATUSES,
       roles: ['primary', 'preview', 'attachment', 'source'],
       pageUrl,
     });
@@ -551,7 +542,6 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
           candidatePageCount: viewModel.candidatePageCount,
           candidateFilters: viewModel.candidateFilters,
           candidateExtensions: viewModel.candidateExtensions,
-          statuses: RELEASE_STATUSES,
           roles: ['primary', 'preview', 'attachment', 'source'],
           errors: err.errors || { general: err.message },
           pageUrl,
@@ -583,7 +573,6 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
           candidatePageCount: viewModel.candidatePageCount,
           candidateFilters: viewModel.candidateFilters,
           candidateExtensions: viewModel.candidateExtensions,
-          statuses: RELEASE_STATUSES,
           roles: ['primary', 'preview', 'attachment', 'source'],
           errors: { general: err.message },
           pageUrl,
@@ -629,7 +618,6 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
           project,
           releaseAssets,
           assetCount: releaseAssets.length,
-          statuses: RELEASE_STATUSES,
           errors: { general: err.message },
           readiness: null,
         });
@@ -645,7 +633,6 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
           project,
           releaseAssets,
           assetCount: releaseAssets.length,
-          statuses: RELEASE_STATUSES,
           errors: err.errors || { general: err.message },
           readiness,
         });
@@ -820,9 +807,10 @@ function handleReleaseListOrBoard(
   try {
     const pageDefaultsService = getReleasePageDefaultsService(req, pageDefaultsKey);
     const rawQuery = req.query && typeof req.query === 'object' ? req.query : {};
-    const presentation = resolveReleasePresentation(rawQuery, pageDefaultsService, pageDefaultsKey);
+    const normalizedRawQuery = omitLegacyStatusField(rawQuery);
+    const presentation = resolveReleasePresentation(normalizedRawQuery, pageDefaultsService, pageDefaultsKey);
     const effectiveQuery = {
-      ...rawQuery,
+      ...normalizedRawQuery,
       sort: presentation.sort,
       order: presentation.order,
     };
@@ -831,8 +819,8 @@ function handleReleaseListOrBoard(
 
     if (presentation.view === 'board') {
       const { columns, today } = workflowQueryService.getReleaseBoard(effectiveQuery);
-      const urlQuery = buildReleaseManagementUrlQuery(rawQuery, normalizedFilters, presentation);
-      if (shouldRedirectToSavedReleaseManagementDefaults(rawQuery, presentation)) {
+      const urlQuery = buildReleaseManagementUrlQuery(normalizedRawQuery, normalizedFilters, presentation);
+      if (shouldRedirectToSavedReleaseManagementDefaults(normalizedRawQuery, presentation)) {
         return res.redirect(buildPageUrl(req, urlQuery)({}));
       }
       const pageUrl = buildPageUrl(req, urlQuery);
@@ -840,7 +828,7 @@ function handleReleaseListOrBoard(
       const clearUrl = buildPageUrl(
         req,
         buildReleaseManagementUrlQuery(
-          rawQuery,
+          normalizedRawQuery,
           normalizedFilters,
           presentation,
           normalizedFilters.page,
@@ -854,7 +842,6 @@ function handleReleaseListOrBoard(
         columns,
         today,
         query,
-        statuses: RELEASE_STATUSES,
         pageUrl,
         clearUrl,
         basePath,
@@ -863,8 +850,8 @@ function handleReleaseListOrBoard(
 
     // List view
     const { releases, total, page, pageSize, pageCount, today, hasAnyReleases } = workflowQueryService.getReleaseList(effectiveQuery);
-    const urlQuery = buildReleaseManagementUrlQuery(rawQuery, normalizedFilters, presentation, page);
-    if (shouldRedirectToSavedReleaseManagementDefaults(rawQuery, presentation)) {
+    const urlQuery = buildReleaseManagementUrlQuery(normalizedRawQuery, normalizedFilters, presentation, page);
+    if (shouldRedirectToSavedReleaseManagementDefaults(normalizedRawQuery, presentation)) {
       return res.redirect(buildPageUrl(req, urlQuery)({}));
     }
     const pageUrl = buildPageUrl(req, urlQuery);
@@ -872,7 +859,7 @@ function handleReleaseListOrBoard(
     const clearUrl = buildPageUrl(
       req,
       buildReleaseManagementUrlQuery(
-        rawQuery,
+        normalizedRawQuery,
         normalizedFilters,
         presentation,
         page,
@@ -893,7 +880,6 @@ function handleReleaseListOrBoard(
       pageUrl,
       clearUrl,
       query,
-      statuses: RELEASE_STATUSES,
       sortOptions: SORT_OPTIONS,
       basePath,
     });
@@ -958,7 +944,6 @@ function buildReleaseManagementUrlQuery(
 
   if (normalizedFilters.search) query.search = normalizedFilters.search;
   if (normalizedFilters.projectId !== null) query.project = String(normalizedFilters.projectId);
-  if (normalizedFilters.status !== null) query.status = normalizedFilters.status;
   if (normalizedFilters.schedule !== null) query.schedule = normalizedFilters.schedule;
   if (normalizedFilters.includeArchived) query.includeArchived = '1';
   if (includeImplicitView || shouldIncludeReleaseManagementOption(rawQuery, presentation, 'view')) {
@@ -982,7 +967,6 @@ function buildReleaseManagementRenderQuery(normalizedFilters, presentation, curr
     view: presentation.view,
     search: normalizedFilters.search || undefined,
     project: normalizedFilters.projectId === null ? undefined : String(normalizedFilters.projectId),
-    status: normalizedFilters.status || undefined,
     schedule: normalizedFilters.schedule || undefined,
     includeArchived: normalizedFilters.includeArchived ? '1' : undefined,
     sort: presentation.sort,
@@ -997,7 +981,6 @@ function buildReleaseManagementClearOverrides() {
   return {
     search: null,
     project: null,
-    status: null,
     schedule: null,
     readiness: null,
     includeArchived: null,
@@ -1020,7 +1003,7 @@ function shouldRedirectToSavedReleaseManagementDefaults(rawQuery, presentation) 
 
 function buildNewReleaseFormValues(rawQuery) {
   const query = rawQuery && typeof rawQuery === 'object' && !Array.isArray(rawQuery)
-    ? rawQuery
+    ? omitLegacyStatusField(rawQuery)
     : {};
   const now = new Date();
 
@@ -1036,6 +1019,11 @@ function buildNewReleaseFormValues(rawQuery) {
   }
 
   return values;
+}
+
+function omitLegacyStatusField(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  return Object.fromEntries(Object.entries(value).filter(([key]) => key !== 'status'));
 }
 
 function buildCreateReleaseFormModel({ appName, projectService, values = {}, errors = {} }) {
@@ -1091,7 +1079,6 @@ function renderAssetPageWithError(req, res, releaseId, errors, deps = {}) {
     candidatePageCount: viewModel.candidatePageCount,
     candidateFilters: viewModel.candidateFilters,
     candidateExtensions: viewModel.candidateExtensions,
-    statuses: RELEASE_STATUSES,
     roles: ['primary', 'preview', 'attachment', 'source'],
     errors,
     pageUrl,
@@ -1099,7 +1086,6 @@ function renderAssetPageWithError(req, res, releaseId, errors, deps = {}) {
 }
 
 function parseListQuery(raw) {
-  const status = RELEASE_STATUSES.includes(raw.status) ? raw.status : undefined;
   const search = typeof raw.search === 'string' ? raw.search.trim() : '';
   const sortBy = SORT_OPTIONS.includes(raw.sort) ? raw.sort : 'updated';
   const order = raw.order === 'asc' ? 'asc' : 'desc';
@@ -1112,7 +1098,6 @@ function parseListQuery(raw) {
   const includeArchived = raw.includeArchived === '1';
 
   return {
-    status,
     search,
     sortBy,
     order,

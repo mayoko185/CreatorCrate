@@ -33,7 +33,6 @@ function sampleRelease(overrides = {}) {
     title: 'Test Release',
     description: '',
     notes: '',
-    status: 'tbd',
     plannedDate: null,
     patreonUrl: null,
     ...overrides,
@@ -79,12 +78,12 @@ describe('release repository', () => {
   });
 
   describe('create', () => {
-    it('creates a release with default status', () => {
+    it('creates a release without a release-owned status field', () => {
       const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Alpha Release' }) });
       expect(release.title).toBe('Alpha Release');
-      expect(release.status).toBe('tbd');
       expect(release.project_id).toBe(projectId);
       expect(release.id).toBeTruthy();
+      expect(release).not.toHaveProperty('status');
     });
 
     it('creates a release with all fields', () => {
@@ -93,7 +92,6 @@ describe('release repository', () => {
         title: 'Full Release',
         description: 'A description',
         notes: 'Some notes',
-        status: 'planned',
         plannedDate: '2025-06-15',
         patreonUrl: 'https://patreon.com/user',
       };
@@ -101,9 +99,9 @@ describe('release repository', () => {
       expect(release.title).toBe('Full Release');
       expect(release.description).toBe('A description');
       expect(release.notes).toBe('Some notes');
-      expect(release.status).toBe('planned');
       expect(release.planned_date).toBe('2025-06-15');
       expect(release.patreon_url).toBe('https://patreon.com/user');
+      expect(release).not.toHaveProperty('status');
     });
 
     it('rejects duplicate titles (titles are not unique enforced)', () => {
@@ -174,13 +172,13 @@ describe('release repository', () => {
       expect(releases[0].title).toBe('Mine');
     });
 
-    it('filters by status', () => {
-      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Idea 1', status: 'tbd' }) });
-      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Planned 1', status: 'planned' }) });
-      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Planned 2', status: 'planned' }) });
-      const planned = releaseRepo.findByProjectId(projectId, { status: 'planned' });
-      expect(planned).toHaveLength(2);
-      expect(planned.every((r) => r.status === 'planned')).toBe(true);
+    it('ignores obsolete release-status filters without mapping them to project status', () => {
+      releaseRepo.create({ projectId, ...sampleRelease({ title: 'First' }) });
+      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Second' }) });
+      const results = releaseRepo.findByProjectId(projectId, { status: 'planned' });
+      expect(results).toHaveLength(2);
+      expect(results.every((release) => release.project_status === 'tbd')).toBe(true);
+      expect(results.every((release) => !Object.hasOwn(release, 'status'))).toBe(true);
     });
 
     it('excludes archived releases by default', () => {
@@ -221,31 +219,31 @@ describe('release repository', () => {
   });
 
   describe('findCalendarRange', () => {
-    it('returns scheduled non-archived releases in date/time order without lifecycle filtering', () => {
+    it('returns scheduled non-archived releases in date/time order without release-status filtering', () => {
       const untimed = releaseRepo.create({
         projectId,
-        ...sampleRelease({ title: 'Untimed', status: 'cancelled', plannedDate: '2025-06-15' }),
+        ...sampleRelease({ title: 'Untimed', plannedDate: '2025-06-15' }),
       });
       const late = releaseRepo.create({
         projectId,
-        ...sampleRelease({ title: 'Late', status: 'published', plannedDate: '2025-06-15', plannedTime: '10:00' }),
+        ...sampleRelease({ title: 'Late', publishedDate: '2025-01-01', plannedDate: '2025-06-15', plannedTime: '10:00' }),
       });
       const early = releaseRepo.create({
         projectId,
-        ...sampleRelease({ title: 'Early', status: 'tbd', plannedDate: '2025-06-15', plannedTime: '08:00' }),
+        ...sampleRelease({ title: 'Early', plannedDate: '2025-06-15', plannedTime: '08:00' }),
       });
       const sameTimeLaterTitle = releaseRepo.create({
         projectId,
-        ...sampleRelease({ title: 'Zeta', status: 'ready', plannedDate: '2025-06-15', plannedTime: '08:00' }),
+        ...sampleRelease({ title: 'Zeta', plannedDate: '2025-06-15', plannedTime: '08:00' }),
       });
       const archived = releaseRepo.create({
         projectId,
-        ...sampleRelease({ title: 'Archived', status: 'ready', plannedDate: '2025-06-15', plannedTime: '07:00' }),
+        ...sampleRelease({ title: 'Archived', plannedDate: '2025-06-15', plannedTime: '07:00' }),
       });
       releaseRepo.archive(archived.id);
       releaseRepo.create({
         projectId,
-        ...sampleRelease({ title: 'Unscheduled', status: 'ready', plannedDate: null }),
+        ...sampleRelease({ title: 'Unscheduled', plannedDate: null }),
       });
 
       const rows = releaseRepo.findCalendarRange('2025-06-01', '2025-07-01');
@@ -253,6 +251,8 @@ describe('release repository', () => {
       expect(rows.map((row) => row.id)).toEqual([early.id, sameTimeLaterTitle.id, late.id, untimed.id]);
       expect(rows.map((row) => row.planned_time)).toEqual(['08:00', '08:00', '10:00', null]);
       expect(rows.every((row) => row.archived_at === null)).toBe(true);
+      expect(rows.every((row) => row.project_status === 'tbd')).toBe(true);
+      expect(rows.find((row) => row.title === 'Late').published_date).toBe('2025-01-01');
     });
 
   });
@@ -313,13 +313,12 @@ describe('release repository', () => {
         title: 'Updated',
         description: 'New desc',
         notes: 'New notes',
-        status: 'planned',
         plannedDate: '2025-07-01',
         patreonUrl: null,
       });
       expect(updated.title).toBe('Updated');
-      expect(updated.status).toBe('planned');
       expect(updated.planned_date).toBe('2025-07-01');
+      expect(updated).not.toHaveProperty('status');
     });
 
     it('returns undefined for non-existent id', () => {
@@ -357,50 +356,16 @@ describe('release repository', () => {
   });
 
   describe('publish', () => {
-    it('sets status to published and sets published_date', () => {
-      const created = releaseRepo.create({ projectId, ...sampleRelease({ status: 'ready' }) });
+    it('sets published_date without a release-owned status column', () => {
+      const created = releaseRepo.create({ projectId, ...sampleRelease() });
       const published = releaseRepo.publish(created.id, '2025-06-15');
-      expect(published.status).toBe('published');
       expect(published.published_date).toBe('2025-06-15');
+      expect(published).not.toHaveProperty('status');
     });
 
     it('returns undefined for non-existent id', () => {
       const published = releaseRepo.publish(99999, '2025-06-15');
       expect(published).toBeUndefined();
-    });
-  });
-
-  describe('countByStatus', () => {
-    it('counts releases by status', () => {
-      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Idea 1', status: 'tbd' }) });
-      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Idea 2', status: 'tbd' }) });
-      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Planned 1', status: 'planned' }) });
-      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Drafting 1', status: 'in-progress' }) });
-      const counts = releaseRepo.countByStatus();
-      expect(counts.tbd).toBe(2);
-      expect(counts.planned).toBe(1);
-      expect(counts['in-progress']).toBe(1);
-      expect(counts.ready).toBe(0);
-      expect(counts.published).toBe(0);
-      expect(counts.cancelled).toBe(0);
-    });
-
-    it('returns zero for all statuses when no releases exist', () => {
-      const counts = releaseRepo.countByStatus();
-      expect(counts.tbd).toBe(0);
-      expect(counts.planned).toBe(0);
-      expect(counts['in-progress']).toBe(0);
-      expect(counts.ready).toBe(0);
-      expect(counts.published).toBe(0);
-      expect(counts.cancelled).toBe(0);
-    });
-
-    it('excludes archived releases from count', () => {
-      const r1 = releaseRepo.create({ projectId, ...sampleRelease({ status: 'tbd' }) });
-      releaseRepo.create({ projectId, ...sampleRelease({ status: 'tbd' }) });
-      releaseRepo.archive(r1.id);
-      const counts = releaseRepo.countByStatus();
-      expect(counts.tbd).toBe(1);
     });
   });
 
@@ -799,6 +764,24 @@ describe('release repository', () => {
       expect(releaseRepo.findReady(10)).toEqual([]);
     });
 
+    it('findReady uses project readiness and excludes published releases', () => {
+      db.prepare("UPDATE projects SET status = 'ready' WHERE id = ?").run(projectId);
+      const ready = releaseRepo.create({
+        projectId,
+        ...sampleRelease({ title: 'Project Ready', plannedDate: '2099-01-01' }),
+      });
+      const published = releaseRepo.create({
+        projectId,
+        ...sampleRelease({ title: 'Already Published', plannedDate: '2099-01-02' }),
+      });
+      releaseRepo.publish(published.id, '2026-01-01');
+
+      const rows = releaseRepo.findReady(10);
+      expect(rows.map((row) => row.id)).toEqual([ready.id]);
+      expect(rows[0].project_status).toBe('ready');
+      expect(rows[0]).not.toHaveProperty('status');
+    });
+
     it('findActiveWithoutPlannedDate excludes releases whose parent project is archived', () => {
       releaseRepo.create({
         projectId,
@@ -955,6 +938,8 @@ describe('release repository', () => {
       const rows = releaseRepo.findPage({ today: '2025-06-15' });
       expect(rows).toHaveLength(1);
       expect(rows[0].project_title).toBe('Parent Project');
+      expect(rows[0].project_status).toBe('tbd');
+      expect(rows[0]).not.toHaveProperty('status');
       expect(rows[0].selected_asset_count).toBe(1);
       expect(rows[0].missing_asset_count).toBe(0);
     });
@@ -982,17 +967,14 @@ describe('release repository', () => {
       expect(rows[0].title).toBe('Mine');
     });
 
-    it('filters by status', () => {
-      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Idea', status: 'tbd' }) });
-      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Planned', status: 'planned' }) });
+    it('removes release-status filtering without mapping it to project status', () => {
+      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Idea' }) });
+      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Planned' }) });
 
-      const tbdRows = releaseRepo.findPage({ status: 'tbd', today: '2025-06-15' });
-      expect(tbdRows).toHaveLength(1);
-      expect(tbdRows[0].title).toBe('Idea');
-
-      const plannedRows = releaseRepo.findPage({ status: 'planned', today: '2025-06-15' });
-      expect(plannedRows).toHaveLength(1);
-      expect(plannedRows[0].title).toBe('Planned');
+      const rows = releaseRepo.findPage({ status: 'planned', today: '2025-06-15' });
+      expect(rows.map((row) => row.title)).toEqual(['Planned', 'Idea']);
+      expect(rows.every((row) => row.project_status === 'tbd')).toBe(true);
+      expect(rows.every((row) => !Object.hasOwn(row, 'status'))).toBe(true);
     });
 
     it('orders by sort column with stable tie-breaking', () => {
@@ -1064,14 +1046,14 @@ describe('release repository', () => {
   // ─── Phase 6C: Release Planning Views — countFiltered ────────────────────
 
   describe('countFiltered', () => {
-    it('returns total count matching filters', () => {
-      releaseRepo.create({ projectId, ...sampleRelease({ title: 'R1', status: 'tbd' }) });
-      releaseRepo.create({ projectId, ...sampleRelease({ title: 'R2', status: 'tbd' }) });
-      releaseRepo.create({ projectId, ...sampleRelease({ title: 'R3', status: 'planned' }) });
+    it('returns total count and ignores obsolete release-status filters', () => {
+      releaseRepo.create({ projectId, ...sampleRelease({ title: 'R1' }) });
+      releaseRepo.create({ projectId, ...sampleRelease({ title: 'R2' }) });
+      releaseRepo.create({ projectId, ...sampleRelease({ title: 'R3' }) });
 
       expect(releaseRepo.countFiltered({ today: '2025-06-15' })).toBe(3);
-      expect(releaseRepo.countFiltered({ status: 'tbd', today: '2025-06-15' })).toBe(2);
-      expect(releaseRepo.countFiltered({ status: 'planned', today: '2025-06-15' })).toBe(1);
+      expect(releaseRepo.countFiltered({ status: 'tbd', today: '2025-06-15' })).toBe(3);
+      expect(releaseRepo.countFiltered({ status: 'planned', today: '2025-06-15' })).toBe(3);
     });
 
     it('counts only matching project', () => {
@@ -1082,8 +1064,8 @@ describe('release repository', () => {
       expect(releaseRepo.countFiltered({ projectId, today: '2025-06-15' })).toBe(1);
     });
 
-    it('returns zero for empty result set', () => {
-      expect(releaseRepo.countFiltered({ status: 'published', today: '2025-06-15' })).toBe(0);
+    it('returns zero for an empty result set', () => {
+      expect(releaseRepo.countFiltered({ search: 'does-not-exist', today: '2025-06-15' })).toBe(0);
     });
   });
 
@@ -1168,8 +1150,9 @@ describe('release repository', () => {
     const FIXED_TODAY = '2025-06-15';
 
     function makeReadyWithAssets(title, { present = true, missing = false } = {}) {
+      db.prepare("UPDATE projects SET status = 'ready' WHERE id = ?").run(projectId);
       const release = releaseRepo.create({
-        projectId, ...sampleRelease({ title, status: 'ready', plannedDate: FIXED_TODAY }),
+        projectId, ...sampleRelease({ title, plannedDate: FIXED_TODAY }),
       });
       if (present) {
         const asset = assetRepo.upsert(projectId, `${title}.txt`, sampleAsset(projectId, { relativePath: `${title}.txt` }));
@@ -1187,28 +1170,26 @@ describe('release repository', () => {
       const publishable = makeReadyWithAssets('Publishable');
       makeReadyWithAssets('Blocked Zero', { present: false });
       makeReadyWithAssets('Blocked Missing', { present: false, missing: true });
-      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Planned', status: 'planned' }) });
-
       const rows = releaseRepo.findPage({ readiness: 'publishable', today: FIXED_TODAY });
       expect(rows.map((r) => r.title)).toEqual(['Publishable']);
-      expect(rows[0].status).toBe('ready');
+      expect(rows[0].project_status).toBe('ready');
     });
 
     it('blocked-ready filter includes only ready releases that are blocked', () => {
       const publishable = makeReadyWithAssets('Publishable');
       const zero = makeReadyWithAssets('Blocked Zero', { present: false });
       const missing = makeReadyWithAssets('Blocked Missing', { present: false, missing: true });
-      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Planned', status: 'planned' }) });
-
       const rows = releaseRepo.findPage({ readiness: 'blocked-ready', today: FIXED_TODAY });
       expect(rows.map((r) => r.id).sort()).toEqual([zero.id, missing.id].sort());
       expect(rows.map((r) => r.id)).not.toContain(publishable.id);
     });
 
     it('readiness filters exclude non-ready releases', () => {
-      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Idea', status: 'tbd' }) });
-      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Planned', status: 'planned' }) });
-      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Published', status: 'published' }) });
+      const otherProject = projectRepo.create(sampleProject({ title: 'Not Ready Project' }));
+      releaseRepo.create({ projectId: otherProject.id, ...sampleRelease({ title: 'Idea' }) });
+      releaseRepo.create({ projectId: otherProject.id, ...sampleRelease({ title: 'Planned' }) });
+      const published = releaseRepo.create({ projectId: otherProject.id, ...sampleRelease({ title: 'Published' }) });
+      releaseRepo.publish(published.id, '2025-01-01');
 
       expect(releaseRepo.findPage({ readiness: 'publishable', today: FIXED_TODAY })).toHaveLength(0);
       expect(releaseRepo.findPage({ readiness: 'blocked-ready', today: FIXED_TODAY })).toHaveLength(0);
@@ -1229,7 +1210,7 @@ describe('release repository', () => {
     it('readiness filters exclude releases under archived parent projects', () => {
       const other = projectRepo.create(sampleProject({ title: 'Archived Parent' }));
       const release = releaseRepo.create({
-        projectId: other.id, ...sampleRelease({ title: 'Ready Under Archived', status: 'ready' }),
+        projectId: other.id, ...sampleRelease({ title: 'Ready Under Archived' }),
       });
       const asset = assetRepo.upsert(other.id, 'a.txt', sampleAsset(other.id, { relativePath: 'a.txt' }));
       releaseRepo.addReleaseAsset(release.id, asset.id, 'primary', 0);
@@ -1240,7 +1221,7 @@ describe('release repository', () => {
     });
 
     it('unknown readiness value falls back to no readiness restriction', () => {
-      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Idea', status: 'tbd' }) });
+      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Idea' }) });
       makeReadyWithAssets('Ready');
 
       expect(releaseRepo.findPage({ readiness: 'invalid', today: FIXED_TODAY })).toHaveLength(2);
@@ -1255,19 +1236,29 @@ describe('release repository', () => {
 
       expect(spy).not.toHaveBeenCalled();
     });
+
+    it('returns a release without a former status value with its owning project status', () => {
+      db.prepare("UPDATE projects SET status = 'ready' WHERE id = ?").run(projectId);
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Project Ready Release' }) });
+
+      const rows = releaseRepo.findPage({ today: FIXED_TODAY });
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ id: release.id, project_status: 'ready', published_date: null });
+      expect(rows[0]).not.toHaveProperty('status');
+    });
   });
 
   describe('countFiltered — readiness filters', () => {
     const FIXED_TODAY = '2025-06-15';
 
     it('count matches findPage for publishable filter', () => {
+      db.prepare("UPDATE projects SET status = 'ready' WHERE id = ?").run(projectId);
       const release = releaseRepo.create({
-        projectId, ...sampleRelease({ title: 'Ready', status: 'ready', plannedDate: FIXED_TODAY }),
+        projectId, ...sampleRelease({ title: 'Ready', plannedDate: FIXED_TODAY }),
       });
       const asset = assetRepo.upsert(projectId, 'a.txt', sampleAsset(projectId, { relativePath: 'a.txt' }));
       releaseRepo.addReleaseAsset(release.id, asset.id, 'primary', 0);
-      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Blocked', status: 'ready', plannedDate: FIXED_TODAY }) });
-      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Idea', status: 'tbd' }) });
+      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Blocked', plannedDate: FIXED_TODAY }) });
 
       expect(releaseRepo.countFiltered({ readiness: 'publishable', today: FIXED_TODAY })).toBe(1);
       expect(releaseRepo.countFiltered({ readiness: 'blocked-ready', today: FIXED_TODAY })).toBe(1);
@@ -1278,28 +1269,30 @@ describe('release repository', () => {
     const FIXED_TODAY = '2025-06-15';
 
     it('publishable filter leaves only publishable ready releases in ready column', () => {
+      db.prepare("UPDATE projects SET status = 'ready' WHERE id = ?").run(projectId);
       const publishable = releaseRepo.create({
-        projectId, ...sampleRelease({ title: 'Publishable', status: 'ready', plannedDate: FIXED_TODAY }),
+        projectId, ...sampleRelease({ title: 'Publishable', plannedDate: FIXED_TODAY }),
       });
       const asset = assetRepo.upsert(projectId, 'a.txt', sampleAsset(projectId, { relativePath: 'a.txt' }));
       releaseRepo.addReleaseAsset(publishable.id, asset.id, 'primary', 0);
       releaseRepo.create({
-        projectId, ...sampleRelease({ title: 'Blocked', status: 'ready', plannedDate: FIXED_TODAY }),
+        projectId, ...sampleRelease({ title: 'Blocked', plannedDate: FIXED_TODAY }),
       });
-      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Idea', status: 'tbd' }) });
+      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Idea' }) });
 
       const rows = releaseRepo.findBoard({ readiness: 'publishable', today: FIXED_TODAY });
       expect(rows.map((r) => r.title)).toEqual(['Publishable']);
     });
 
     it('blocked-ready filter leaves only blocked ready releases in ready column', () => {
+      db.prepare("UPDATE projects SET status = 'ready' WHERE id = ?").run(projectId);
       const publishable = releaseRepo.create({
-        projectId, ...sampleRelease({ title: 'Publishable', status: 'ready', plannedDate: FIXED_TODAY }),
+        projectId, ...sampleRelease({ title: 'Publishable', plannedDate: FIXED_TODAY }),
       });
       const asset = assetRepo.upsert(projectId, 'a.txt', sampleAsset(projectId, { relativePath: 'a.txt' }));
       releaseRepo.addReleaseAsset(publishable.id, asset.id, 'primary', 0);
       const blocked = releaseRepo.create({
-        projectId, ...sampleRelease({ title: 'Blocked', status: 'ready', plannedDate: FIXED_TODAY }),
+        projectId, ...sampleRelease({ title: 'Blocked', plannedDate: FIXED_TODAY }),
       });
 
       const rows = releaseRepo.findBoard({ readiness: 'blocked-ready', today: FIXED_TODAY });
@@ -1317,6 +1310,8 @@ describe('release repository', () => {
       const rows = releaseRepo.findBoard({ today: '2025-06-15' });
       expect(rows[0].title).toBe('Earlier');
       expect(rows[1].title).toBe('Later');
+      expect(rows.every((row) => row.project_status === 'tbd')).toBe(true);
+      expect(rows.every((row) => !Object.hasOwn(row, 'status'))).toBe(true);
     });
 
     it('releases with NULL planned_date sort last', () => {
@@ -1403,7 +1398,8 @@ describe('release repository', () => {
         asset_id: a.id,
         release_id: rel.id,
         title: 'Release One',
-        status: 'tbd',
+        published_date: null,
+        project_status: 'tbd',
         release_archived_at: null,
         project_archived_at: null,
       });
@@ -1454,8 +1450,8 @@ describe('release repository', () => {
       const a = insertAsset({ projectId, relativePath: 'a.txt', filename: 'a.txt' });
       // Use direct SQL to set archived_at since create() doesn't support it
       const archivedRelId = db.prepare(`
-        INSERT INTO releases (project_id, title, description, notes, status, planned_date, published_date, patreon_url, archived_at)
-        VALUES (?, 'Archived Release', '', '', 'tbd', NULL, NULL, NULL, '2024-01-01 00:00:00')
+        INSERT INTO releases (project_id, title, description, notes, planned_date, published_date, patreon_url, archived_at)
+        VALUES (?, 'Archived Release', '', '', NULL, NULL, NULL, '2024-01-01 00:00:00')
         RETURNING id
       `).get(projectId).id;
 
@@ -1503,30 +1499,30 @@ describe('release repository', () => {
     it('historical and archived releases remain visible', () => {
       const a = insertAsset({ projectId, relativePath: 'a.txt', filename: 'a.txt' });
       const publishedId = db.prepare(`
-        INSERT INTO releases (project_id, title, description, notes, status, planned_date, published_date, patreon_url)
-        VALUES (?, 'Published Release', '', '', 'published', NULL, '2020-01-01', NULL)
+        INSERT INTO releases (project_id, title, description, notes, planned_date, published_date, patreon_url)
+        VALUES (?, 'Published Release', '', '', NULL, '2020-01-01', NULL)
         RETURNING id
       `).get(projectId).id;
-      const cancelledId = db.prepare(`
-        INSERT INTO releases (project_id, title, description, notes, status, planned_date, published_date, patreon_url)
-        VALUES (?, 'Cancelled Release', '', '', 'cancelled', NULL, NULL, NULL)
+      const unpublishedId = db.prepare(`
+        INSERT INTO releases (project_id, title, description, notes, planned_date, published_date, patreon_url)
+        VALUES (?, 'Unpublished Release', '', '', NULL, NULL, NULL)
         RETURNING id
       `).get(projectId).id;
       const archivedId = db.prepare(`
-        INSERT INTO releases (project_id, title, description, notes, status, planned_date, published_date, patreon_url, archived_at)
-        VALUES (?, 'Archived Release', '', '', 'tbd', NULL, NULL, NULL, '2024-01-01')
+        INSERT INTO releases (project_id, title, description, notes, planned_date, published_date, patreon_url, archived_at)
+        VALUES (?, 'Archived Release', '', '', NULL, NULL, NULL, '2024-01-01')
         RETURNING id
       `).get(projectId).id;
       linkAssetToRelease({ releaseId: publishedId, assetId: a.id });
-      linkAssetToRelease({ releaseId: cancelledId, assetId: a.id });
+      linkAssetToRelease({ releaseId: unpublishedId, assetId: a.id });
       linkAssetToRelease({ releaseId: archivedId, assetId: a.id });
 
       const results = releaseRepo.findReleaseUsageForAssetIds(projectId, [a.id]);
       expect(results).toHaveLength(3);
-      const statuses = results.map((r) => r.status);
-      expect(statuses).toContain('published');
-      expect(statuses).toContain('cancelled');
-      expect(results.find((r) => r.status === 'tbd').release_archived_at).toBeTruthy();
+      expect(results.find((r) => r.release_id === publishedId).published_date).toBe('2020-01-01');
+      expect(results.find((r) => r.release_id === unpublishedId).published_date).toBeNull();
+      expect(results.find((r) => r.release_id === archivedId).release_archived_at).toBeTruthy();
+      expect(results.every((r) => r.project_status === 'tbd')).toBe(true);
     });
 
     // ─── Phase 6D: Project-scoped release usage ──────────────────────
@@ -1778,7 +1774,7 @@ describe('release repository', () => {
 
       const facts = releaseRepo.findReadinessFactsById(release.id);
       expect(facts.release_archived_at).toBeTruthy();
-      expect(facts.release_status).toBe('tbd');
+      expect(facts.project_status).toBe('tbd');
     });
 
     it('returns project_archived_at for archived parent project', () => {
@@ -1913,18 +1909,18 @@ describe('release repository', () => {
     });
 
     it('returns facts for ready releases only', () => {
-      const ready = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Ready', status: 'ready' }) });
-      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Planned', status: 'planned' }) });
-      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Drafting', status: 'in-progress' }) });
+      db.prepare("UPDATE projects SET status = 'ready' WHERE id = ?").run(projectId);
+      const ready = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Ready' }) });
 
       const rows = releaseRepo.findReadyDashboardFacts(5);
       expect(rows).toHaveLength(1);
       expect(rows[0].release_id).toBe(ready.id);
-      expect(rows[0].release_status).toBe('ready');
+      expect(rows[0].project_status).toBe('ready');
     });
 
     it('includes display fields: title, project_title, planned_date, updated_at', () => {
-      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Display Fields', status: 'ready', plannedDate: '2099-01-01' }) });
+      db.prepare("UPDATE projects SET status = 'ready' WHERE id = ?").run(projectId);
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Display Fields', plannedDate: '2099-01-01' }) });
 
       const rows = releaseRepo.findReadyDashboardFacts(5);
       expect(rows).toHaveLength(1);
@@ -1935,7 +1931,8 @@ describe('release repository', () => {
     });
 
     it('includes readiness fact columns (selected_asset_count, present/missing counts)', () => {
-      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Fact Counts', status: 'ready' }) });
+      db.prepare("UPDATE projects SET status = 'ready' WHERE id = ?").run(projectId);
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Fact Counts' }) });
       const asset = assetRepo.upsert(projectId, 'a.txt', sampleAsset(projectId, { relativePath: 'a.txt' }));
       releaseRepo.addReleaseAsset(release.id, asset.id, 'primary', 0);
 
@@ -1947,7 +1944,8 @@ describe('release repository', () => {
     });
 
     it('excludes archived ready releases', () => {
-      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Archived Ready', status: 'ready' }) });
+      db.prepare("UPDATE projects SET status = 'ready' WHERE id = ?").run(projectId);
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Archived Ready' }) });
       db.prepare(`UPDATE releases SET archived_at = datetime('now') WHERE id = ?`).run(release.id);
 
       const rows = releaseRepo.findReadyDashboardFacts(5);
@@ -1966,7 +1964,8 @@ describe('release repository', () => {
 
     it('respects the bounded limit', () => {
       for (let i = 0; i < 10; i++) {
-        releaseRepo.create({ projectId, ...sampleRelease({ title: `Ready ${i}`, status: 'ready' }) });
+        db.prepare("UPDATE projects SET status = 'ready' WHERE id = ?").run(projectId);
+        releaseRepo.create({ projectId, ...sampleRelease({ title: `Ready ${i}` }) });
       }
 
       const rows = releaseRepo.findReadyDashboardFacts(3);
@@ -1974,9 +1973,10 @@ describe('release repository', () => {
     });
 
     it('returns deterministic ordering (planned_date ASC, updated_at DESC, id DESC)', () => {
-      const r1 = releaseRepo.create({ projectId, ...sampleRelease({ title: 'A', status: 'ready', plannedDate: '2099-01-01' }) });
-      const r2 = releaseRepo.create({ projectId, ...sampleRelease({ title: 'B', status: 'ready', plannedDate: '2099-02-01' }) });
-      const r3 = releaseRepo.create({ projectId, ...sampleRelease({ title: 'C', status: 'ready', plannedDate: '2099-01-01' }) });
+      db.prepare("UPDATE projects SET status = 'ready' WHERE id = ?").run(projectId);
+      const r1 = releaseRepo.create({ projectId, ...sampleRelease({ title: 'A', plannedDate: '2099-01-01' }) });
+      const r2 = releaseRepo.create({ projectId, ...sampleRelease({ title: 'B', plannedDate: '2099-02-01' }) });
+      const r3 = releaseRepo.create({ projectId, ...sampleRelease({ title: 'C', plannedDate: '2099-01-01' }) });
 
       const rows = releaseRepo.findReadyDashboardFacts(5);
       // r1 and r3 have same planned_date; r3 has higher id so it sorts first (id DESC)
@@ -1986,7 +1986,8 @@ describe('release repository', () => {
     });
 
     it('does not duplicate releases when multiple assets are linked', () => {
-      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Multi Asset', status: 'ready' }) });
+      db.prepare("UPDATE projects SET status = 'ready' WHERE id = ?").run(projectId);
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Multi Asset' }) });
       const a1 = assetRepo.upsert(projectId, 'a1.txt', sampleAsset(projectId, { relativePath: 'a1.txt' }));
       const a2 = assetRepo.upsert(projectId, 'a2.txt', sampleAsset(projectId, { relativePath: 'a2.txt' }));
       releaseRepo.addReleaseAsset(release.id, a1.id, 'primary', 0);
@@ -2017,11 +2018,12 @@ describe('release repository', () => {
     });
 
     it('returns facts for a single valid ID', () => {
-      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Single Fact', status: 'ready' }) });
+      db.prepare("UPDATE projects SET status = 'ready' WHERE id = ?").run(projectId);
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Single Fact' }) });
       const results = releaseRepo.findReadinessFactsByIds([release.id]);
       expect(results).toHaveLength(1);
       expect(results[0].release_id).toBe(release.id);
-      expect(results[0].release_status).toBe('ready');
+      expect(results[0].project_status).toBe('ready');
     });
 
     it('deduplicates repeated IDs', () => {
@@ -3359,13 +3361,15 @@ describe('release repository', () => {
       expect(after.slice(0, 2)).toEqual(before);
     });
 
-    it('does not change release status', () => {
-      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Status Stable', status: 'planned' }) });
+    it('does not create or change a release-owned status field', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Publication Stable' }) });
       const a1 = assetRepo.upsert(projectId, 'a.txt', sampleAsset(projectId, { relativePath: 'a.txt' }));
 
       releaseRepo.appendAssetsToRelease(release.id, [a1.id]);
 
-      expect(releaseRepo.findById(release.id).status).toBe('planned');
+      const updated = releaseRepo.findById(release.id);
+      expect(updated.published_date).toBeNull();
+      expect(updated).not.toHaveProperty('status');
     });
   });
 
@@ -3399,14 +3403,15 @@ describe('release repository', () => {
       expect(ids).not.toContain(theirs.id);
     });
 
-    it('returns render-ready id/title/status only, ordered by title', () => {
+    it('returns render-ready id/title/project_status only, ordered by title', () => {
       releaseRepo.create({ projectId, ...sampleRelease({ title: 'Zebra' }) });
       releaseRepo.create({ projectId, ...sampleRelease({ title: 'Alpha' }) });
 
       const targets = releaseRepo.findEligibleAssetSelectionTargets(projectId);
 
       expect(targets.map((t) => t.title)).toEqual(['Alpha', 'Zebra']);
-      expect(Object.keys(targets[0]).sort()).toEqual(['id', 'status', 'title']);
+      expect(Object.keys(targets[0]).sort()).toEqual(['id', 'project_status', 'title']);
+      expect(targets.every((target) => target.project_status === 'tbd')).toBe(true);
     });
   });
 });

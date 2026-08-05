@@ -1,5 +1,3 @@
-export const RELEASE_STATUSES = ['tbd', 'planned', 'in-progress', 'ready', 'published', 'cancelled'];
-export const ACTIVE_RELEASE_STATUSES = ['tbd', 'planned', 'in-progress', 'ready'];
 export const RELEASE_ASSET_ROLES = ['primary', 'preview', 'attachment', 'source'];
 
 const COLUMNS = [
@@ -8,7 +6,6 @@ const COLUMNS = [
   'title',
   'description',
   'notes',
-  'status',
   'planned_date',
   'planned_time',
   'published_date',
@@ -26,15 +23,9 @@ const RELEASE_ASSET_COLUMNS = [
   'created_at',
 ];
 
-const COLUMNS_WITH_PROJECT = [
-  ...COLUMNS.slice(0, 2), // id, project_id
-  'projects.title AS project_title',
-  ...COLUMNS.slice(2), // title, description, notes, status, planned_date, planned_time, published_date, patreon_url, created_at, updated_at, archived_at
-];
-
-const SELECT_WITH_PROJECT = `SELECT ${COLUMNS_WITH_PROJECT.join(', ')} FROM releases JOIN projects ON projects.id = releases.project_id`;
-
-const SELECT_ALL = `SELECT ${COLUMNS.join(', ')} FROM releases`;
+const QUALIFIED_RELEASE_COLUMNS = COLUMNS.map((column) => `releases.${column}`).join(', ');
+const SELECT_ALL_WITH_PROJECT = `SELECT ${QUALIFIED_RELEASE_COLUMNS}, projects.status AS project_status FROM releases JOIN projects ON projects.id = releases.project_id`;
+const RELEASE_COLUMNS_WITH_ALIAS = (alias) => COLUMNS.map((column) => `${alias}.${column}`).join(', ');
 
 function buildReleaseInsertValues(input) {
   return [
@@ -42,7 +33,6 @@ function buildReleaseInsertValues(input) {
     input.title,
     input.description,
     input.notes,
-    input.status,
     input.plannedDate ?? null,
     input.plannedTime ?? null,
     input.patreonUrl ?? null,
@@ -51,23 +41,21 @@ function buildReleaseInsertValues(input) {
 }
 
 /**
- * Shared WHERE fragment: releases that are not archived and are in the active
- * workflow (tbd/planned/in-progress/ready). Used by overdue, upcoming, ready,
- * and missing-planned-date queries so the active-set definition stays in one
- * place.
+ * Shared WHERE fragment: releases that are active and unpublished. Used by
+ * overdue, upcoming, and missing-planned-date queries so the active-set
+ * definition stays in one place.
  */
-const ACTIVE_UNARCHIVED = `archived_at IS NULL AND status IN ('tbd', 'planned', 'in-progress', 'ready')`;
+const ACTIVE_UNPUBLISHED = `releases.archived_at IS NULL AND releases.published_date IS NULL`;
 
 /**
  * Shared EXISTS fragment: release belongs to a project that is not archived.
  * Used by every dashboard workflow query so an active release whose parent
  * project has been archived is hidden from attention lists. Archived
  * projects remain readable through the project workspace (historical recent
- * list, status counts) — only the actionable attention lists are filtered.
+ * list) — only the actionable attention lists are filtered.
  *
  * The fragment references `releases.project_id` and assumes the implicit
- * from-table of the surrounding query is `releases`. Queries that alias the
- * table as `r` use {@link ACTIVE_PARENT_PROJECT_R} instead.
+ * from-table of the surrounding query is `releases`.
  */
 const ACTIVE_PARENT_PROJECT = `EXISTS (
   SELECT 1 FROM projects
@@ -76,21 +64,11 @@ const ACTIVE_PARENT_PROJECT = `EXISTS (
 )`;
 
 /**
- * Same as {@link ACTIVE_PARENT_PROJECT} but for queries that alias the
- * releases table as `r` (currently only findReleasesWithMissingSelectedAssets).
- */
-const ACTIVE_PARENT_PROJECT_R = `EXISTS (
-  SELECT 1 FROM projects
-  WHERE projects.id = r.project_id
-    AND projects.archived_at IS NULL
-)`;
-
-/**
  * Shared full WHERE fragment for the dashboard attention lists: release is
- * not archived, in an active workflow status, and belongs to a non-archived
- * project. Combines {@link ACTIVE_UNARCHIVED} with the parent-project check.
+ * active and unpublished, and belongs to a non-archived project. Combines
+ * {@link ACTIVE_UNPUBLISHED} with the parent-project check.
  */
-const DASHBOARD_ACTIVE = `${ACTIVE_UNARCHIVED} AND ${ACTIVE_PARENT_PROJECT}`;
+const DASHBOARD_ACTIVE = `${ACTIVE_UNPUBLISHED} AND ${ACTIVE_PARENT_PROJECT}`;
 
 // ─── Phase 7D-1: Readiness classification projection ────────────────────
 //
@@ -100,7 +78,7 @@ const DASHBOARD_ACTIVE = `${ACTIVE_UNARCHIVED} AND ${ACTIVE_PARENT_PROJECT}`;
 // pagination can filter in the database instead of loading every release.
 //
 // Keep the projection in sync with the policy's material blockers:
-//   - status must be 'ready'
+//   - the owning project must have status 'ready'
 //   - release must not be archived
 //   - parent project must not be archived (enforced by activeScheduleFilter)
 //   - at least one selected asset must exist
@@ -125,7 +103,6 @@ function missingAssetCountSubquery(table = 'releases') {
  * @property {string} title
  * @property {string} description
  * @property {string} notes
- * @property {string} status
  * @property {string|null} planned_date
  * @property {string|null} planned_time
  * @property {string|null} published_date
@@ -145,15 +122,15 @@ function missingAssetCountSubquery(table = 'releases') {
  */
 
 export function createReleaseRepository(db) {
-  const findById = db.prepare(`${SELECT_ALL} WHERE id = ?`);
+  const findById = db.prepare(`${SELECT_ALL_WITH_PROJECT} WHERE releases.id = ?`);
   const insert = db.prepare(`
-    INSERT INTO releases (project_id, title, description, notes, status, planned_date, planned_time, patreon_url, published_date)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO releases (project_id, title, description, notes, planned_date, planned_time, patreon_url, published_date)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     RETURNING ${COLUMNS.join(', ')}
   `);
   const update = db.prepare(`
     UPDATE releases
-    SET title = ?, description = ?, notes = ?, status = ?,
+    SET title = ?, description = ?, notes = ?,
         planned_date = ?, planned_time = ?, patreon_url = ?, published_date = ?, updated_at = datetime('now')
     WHERE id = ? AND archived_at IS NULL
     RETURNING ${COLUMNS.join(', ')}
@@ -166,15 +143,9 @@ export function createReleaseRepository(db) {
   `);
   const setPublishedDate = db.prepare(`
     UPDATE releases
-    SET status = 'published', published_date = ?, updated_at = datetime('now')
+    SET published_date = ?, updated_at = datetime('now')
     WHERE id = ? AND archived_at IS NULL
     RETURNING ${COLUMNS.join(', ')}
-  `);
-  const countByStatus = db.prepare(`
-    SELECT status, COUNT(*) AS c
-    FROM releases
-    WHERE archived_at IS NULL
-    GROUP BY status
   `);
 
   const findCalendarRangeStmt = db.prepare(`
@@ -182,11 +153,12 @@ export function createReleaseRepository(db) {
       r.id,
       r.project_id,
       p.title AS project_title,
+      p.status AS project_status,
       r.title,
       r.notes,
-      r.status,
       r.planned_date,
       r.planned_time,
+      r.published_date,
       r.archived_at
     FROM releases r
     JOIN projects p ON p.id = r.project_id
@@ -226,7 +198,7 @@ export function createReleaseRepository(db) {
     SELECT
       r.id AS release_id,
       r.project_id,
-      r.status AS release_status,
+      p.status AS project_status,
       r.archived_at AS release_archived_at,
       p.archived_at AS project_archived_at,
       COUNT(DISTINCT CASE WHEN a.id IS NOT NULL THEN a.id END) AS selected_asset_count,
@@ -521,7 +493,6 @@ export function createReleaseRepository(db) {
     /**
      * Find all releases across all projects.
      * @param {Object} [options]
-     * @param {string} [options.status]
      * @param {boolean} [options.includeArchived]
      * @param {string} [options.sortBy]
      * @param {string} [options.order]
@@ -530,7 +501,6 @@ export function createReleaseRepository(db) {
      */
     findAll(options = {}) {
       const {
-        status,
         includeArchived = false,
         sortBy = 'updated',
         order = 'desc',
@@ -541,22 +511,17 @@ export function createReleaseRepository(db) {
       const params = [];
 
       if (!includeArchived) {
-        conditions.push('archived_at IS NULL');
-      }
-
-      if (status && RELEASE_STATUSES.includes(status)) {
-        conditions.push('status = ?');
-        params.push(status);
+        conditions.push('releases.archived_at IS NULL');
       }
 
       if (search) {
-        conditions.push('title LIKE ?');
+        conditions.push('releases.title LIKE ?');
         params.push(`%${search}%`);
       }
 
       const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-      const orderClause = buildOrderClause(sortBy, order);
-      const sql = `${SELECT_ALL} ${where} ${orderClause}`;
+      const orderClause = buildOrderClauseWithTable('releases', sortBy, order);
+      const sql = `${SELECT_ALL_WITH_PROJECT} ${where} ${orderClause}`;
       const stmt = db.prepare(sql);
       return stmt.all(...params);
     },
@@ -564,7 +529,6 @@ export function createReleaseRepository(db) {
     /**
      * @param {number} projectId
      * @param {Object} [options]
-     * @param {string} [options.status]
      * @param {boolean} [options.includeArchived]
      * @param {string} [options.sortBy]
      * @param {string} [options.order]
@@ -572,27 +536,21 @@ export function createReleaseRepository(db) {
      */
     findByProjectId(projectId, options = {}) {
       const {
-        status,
         includeArchived = false,
         sortBy = 'updated',
         order = 'desc',
       } = options;
 
-      const conditions = ['project_id = ?'];
+      const conditions = ['releases.project_id = ?'];
       const params = [projectId];
 
       if (!includeArchived) {
-        conditions.push('archived_at IS NULL');
-      }
-
-      if (status && RELEASE_STATUSES.includes(status)) {
-        conditions.push('status = ?');
-        params.push(status);
+        conditions.push('releases.archived_at IS NULL');
       }
 
       const where = `WHERE ${conditions.join(' AND ')}`;
-      const orderClause = buildOrderClause(sortBy, order);
-      const sql = `${SELECT_ALL} ${where} ${orderClause}`;
+      const orderClause = buildOrderClauseWithTable('releases', sortBy, order);
+      const sql = `${SELECT_ALL_WITH_PROJECT} ${where} ${orderClause}`;
       const stmt = db.prepare(sql);
       return stmt.all(...params);
     },
@@ -627,7 +585,6 @@ export function createReleaseRepository(db) {
         input.title,
         input.description,
         input.notes,
-        input.status,
         plannedDate ?? null,
         plannedTime ?? null,
         input.patreonUrl ?? null,
@@ -655,26 +612,14 @@ export function createReleaseRepository(db) {
     },
 
     /**
-     * @returns {Object.<string, number>}
-     */
-    countByStatus() {
-      const rows = countByStatus.all();
-      const counts = Object.fromEntries(RELEASE_STATUSES.map((s) => [s, 0]));
-      for (const row of rows) {
-        counts[row.status] = row.c;
-      }
-      return counts;
-    },
-
-    /**
      * Scheduled, non-archived releases whose planned date falls within a
-     * bounded range. Lifecycle status is deliberately not filtered here:
-     * the calendar is a historical and future schedule view, not an active
+     * bounded range. Publication state is deliberately not filtered here: the
+     * calendar is a historical and future schedule view, not an active
      * workflow view.
      *
      * @param {string} startDate - ISO date YYYY-MM-DD (inclusive)
      * @param {string} endDate - ISO date YYYY-MM-DD (exclusive)
-     * @returns {Array<ReleaseRecord & {project_title: string, notes: string}>}
+     * @returns {Array<ReleaseRecord & {project_title: string, project_status: string, notes: string, published_date: string|null}>}
      */
     findCalendarRange(startDate, endDate) {
       return findCalendarRangeStmt.all(startDate, endDate);
@@ -692,13 +637,12 @@ export function createReleaseRepository(db) {
      */
     upcomingReleases(today) {
       const sql = `
-        ${SELECT_ALL}
-        WHERE archived_at IS NULL
-          AND status IN ('tbd', 'planned', 'in-progress', 'ready')
-          AND planned_date IS NOT NULL
-          AND date(planned_date) > ?
+        ${SELECT_ALL_WITH_PROJECT}
+        WHERE ${ACTIVE_UNPUBLISHED}
+          AND releases.planned_date IS NOT NULL
+          AND date(releases.planned_date) > ?
           AND ${ACTIVE_PARENT_PROJECT}
-        ORDER BY date(planned_date) ASC, planned_time ASC
+        ORDER BY date(releases.planned_date) ASC, releases.planned_time ASC
       `;
       return db.prepare(sql).all(today);
     },
@@ -715,13 +659,12 @@ export function createReleaseRepository(db) {
      */
     overdueReleases(today) {
       const sql = `
-        ${SELECT_ALL}
-        WHERE archived_at IS NULL
-          AND status IN ('tbd', 'planned', 'in-progress', 'ready')
-          AND planned_date IS NOT NULL
-          AND date(planned_date) < ?
+        ${SELECT_ALL_WITH_PROJECT}
+        WHERE ${ACTIVE_UNPUBLISHED}
+          AND releases.planned_date IS NOT NULL
+          AND date(releases.planned_date) < ?
           AND ${ACTIVE_PARENT_PROJECT}
-        ORDER BY date(planned_date) ASC, planned_time ASC
+        ORDER BY date(releases.planned_date) ASC, releases.planned_time ASC
       `;
       return db.prepare(sql).all(today);
     },
@@ -738,11 +681,11 @@ export function createReleaseRepository(db) {
      */
     findOverdue(limit, today) {
       const sql = `
-        ${SELECT_ALL}
+        ${SELECT_ALL_WITH_PROJECT}
         WHERE ${DASHBOARD_ACTIVE}
-          AND planned_date IS NOT NULL
-          AND date(planned_date) < ?
-        ORDER BY date(planned_date) ASC, planned_time ASC
+          AND releases.planned_date IS NOT NULL
+          AND date(releases.planned_date) < ?
+        ORDER BY date(releases.planned_date) ASC, releases.planned_time ASC
         LIMIT ?
       `;
       return db.prepare(sql).all(today, limit);
@@ -760,18 +703,19 @@ export function createReleaseRepository(db) {
      */
     findUpcoming(limit, today) {
       const sql = `
-        ${SELECT_ALL}
+        ${SELECT_ALL_WITH_PROJECT}
         WHERE ${DASHBOARD_ACTIVE}
-          AND planned_date IS NOT NULL
-          AND date(planned_date) >= ?
-        ORDER BY date(planned_date) ASC, planned_time ASC
+          AND releases.planned_date IS NOT NULL
+          AND date(releases.planned_date) >= ?
+        ORDER BY date(releases.planned_date) ASC, releases.planned_time ASC
         LIMIT ?
       `;
       return db.prepare(sql).all(today, limit);
     },
 
     /**
-     * Releases with status 'ready'. These are waiting to be published.
+     * Unpublished releases whose owning project is ready. These are waiting
+     * to be published.
      * Bounded; ordered by planned_date ascending (NULLs last), then by
      * updated_at descending as a tie-breaker.
      * @param {number} limit
@@ -779,17 +723,21 @@ export function createReleaseRepository(db) {
      */
     findReady(limit) {
       const sql = `
-        ${SELECT_ALL}
-        WHERE ${DASHBOARD_ACTIVE}
-          AND status = 'ready'
-        ORDER BY (planned_date IS NULL), planned_date ASC, updated_at DESC
+        SELECT ${RELEASE_COLUMNS_WITH_ALIAS('r')}, p.status AS project_status
+        FROM releases r
+        JOIN projects p ON p.id = r.project_id
+        WHERE r.archived_at IS NULL
+          AND r.published_date IS NULL
+          AND p.archived_at IS NULL
+          AND p.status = 'ready'
+        ORDER BY (r.planned_date IS NULL), r.planned_date ASC, r.updated_at DESC
         LIMIT ?
       `;
       return db.prepare(sql).all(limit);
     },
 
     /**
-     * Batch readiness facts for all status=ready releases on the dashboard.
+     * Batch readiness facts for all releases under ready projects on the dashboard.
      * Returns one row per ready release with the same fact columns as
      * findReadinessFactsById, plus display fields (title, planned_date,
      * updated_at, project_title). Excludes archived releases and releases
@@ -804,7 +752,7 @@ export function createReleaseRepository(db) {
      *   release_id: number,
      *   project_id: number,
      *   title: string,
-     *   release_status: string,
+     *   project_status: string,
      *   planned_date: string|null,
      *   updated_at: string,
      *   release_archived_at: string|null,
@@ -825,7 +773,7 @@ export function createReleaseRepository(db) {
           r.id AS release_id,
           r.project_id,
           r.title,
-          r.status AS release_status,
+          p.status AS project_status,
           r.planned_date,
           r.updated_at,
           r.archived_at AS release_archived_at,
@@ -842,8 +790,9 @@ export function createReleaseRepository(db) {
         JOIN projects p ON p.id = r.project_id
         LEFT JOIN release_assets ra ON ra.release_id = r.id
         LEFT JOIN assets a ON a.id = ra.asset_id AND a.project_id = r.project_id
-        WHERE r.status = 'ready'
-          AND r.archived_at IS NULL
+         WHERE p.status = 'ready'
+           AND r.published_date IS NULL
+           AND r.archived_at IS NULL
           AND p.archived_at IS NULL
         GROUP BY r.id
         ORDER BY (r.planned_date IS NULL), r.planned_date ASC, r.updated_at DESC, r.id DESC
@@ -860,10 +809,10 @@ export function createReleaseRepository(db) {
      */
     findActiveWithoutPlannedDate(limit) {
       const sql = `
-        ${SELECT_ALL}
+        ${SELECT_ALL_WITH_PROJECT}
         WHERE ${DASHBOARD_ACTIVE}
-          AND planned_date IS NULL
-        ORDER BY updated_at DESC
+          AND releases.planned_date IS NULL
+        ORDER BY releases.updated_at DESC
         LIMIT ?
       `;
       return db.prepare(sql).all(limit);
@@ -875,19 +824,21 @@ export function createReleaseRepository(db) {
      * `missing_asset_count` field for display. Ordered by planned_date
      * ascending (NULLs last) so the most urgent surface first.
      * @param {number} limit
-     * @returns {Array<ReleaseRecord & {missing_asset_count: number}>}
+     * @returns {Array<ReleaseRecord & {project_status: string, missing_asset_count: number}>}
      */
     findReleasesWithMissingSelectedAssets(limit) {
       const sql = `
-        SELECT ${COLUMNS.map((c) => `r.${c}`).join(', ')},
+        SELECT ${RELEASE_COLUMNS_WITH_ALIAS('r')},
+               p.status AS project_status,
                COUNT(a.id) AS missing_asset_count
         FROM releases r
+        JOIN projects p ON p.id = r.project_id
         JOIN release_assets ra ON ra.release_id = r.id
         JOIN assets a ON a.id = ra.asset_id AND a.project_id = r.project_id
         WHERE r.archived_at IS NULL
-          AND r.status IN ('tbd', 'planned', 'in-progress', 'ready')
+          AND r.published_date IS NULL
+          AND p.archived_at IS NULL
           AND a.is_present = 0
-          AND ${ACTIVE_PARENT_PROJECT_R}
         GROUP BY r.id
         ORDER BY (r.planned_date IS NULL), r.planned_date ASC, r.updated_at DESC
         LIMIT ?
@@ -907,43 +858,21 @@ export function createReleaseRepository(db) {
      */
     findReleasesWithoutSelectedAssets(limit) {
       const sql = `
-        ${SELECT_ALL}
+        ${SELECT_ALL_WITH_PROJECT}
         WHERE ${DASHBOARD_ACTIVE}
           AND NOT EXISTS (
             SELECT 1 FROM release_assets ra
             JOIN assets a ON a.id = ra.asset_id AND a.project_id = releases.project_id
             WHERE ra.release_id = releases.id
           )
-        ORDER BY (planned_date IS NULL), planned_date ASC, updated_at DESC
+        ORDER BY (releases.planned_date IS NULL), releases.planned_date ASC, releases.updated_at DESC
         LIMIT ?
       `;
       return db.prepare(sql).all(limit);
     },
 
     /**
-     * Per-project release status counts (all releases, including archived).
-     * Returns an object keyed by status with 0 for missing statuses.
-     * @param {number} projectId
-     * @returns {Object.<string, number>}
-     */
-    countByStatusByProjectId(projectId) {
-      const rows = db.prepare(`
-        SELECT status, COUNT(*) AS c
-        FROM releases
-        WHERE project_id = ?
-        GROUP BY status
-      `).all(projectId);
-      const counts = Object.fromEntries(RELEASE_STATUSES.map((s) => [s, 0]));
-      for (const row of rows) {
-        if (counts[row.status] !== undefined) {
-          counts[row.status] = row.c;
-        }
-      }
-      return counts;
-    },
-
-    /**
-     * Active (non-terminal, non-archived) releases for a project, bounded.
+     * Active, unpublished releases for a project, bounded.
      * Ordered by planned_date ascending (NULLs last) then by updated_at DESC.
      * @param {number} projectId
      * @param {number} limit
@@ -951,25 +880,25 @@ export function createReleaseRepository(db) {
      */
     findActiveByProjectId(projectId, limit) {
       const sql = `
-        ${SELECT_ALL}
-        WHERE project_id = ? AND ${ACTIVE_UNARCHIVED}
-        ORDER BY (planned_date IS NULL), planned_date ASC, updated_at DESC
+        ${SELECT_ALL_WITH_PROJECT}
+        WHERE releases.project_id = ? AND ${ACTIVE_UNPUBLISHED}
+        ORDER BY (releases.planned_date IS NULL), releases.planned_date ASC, releases.updated_at DESC
         LIMIT ?
       `;
       return db.prepare(sql).all(projectId, limit);
     },
 
     /**
-     * Recently updated releases for a project (any status, including archived).
+     * Recently updated releases for a project (any publication/archive state).
      * @param {number} projectId
      * @param {number} limit
      * @returns {ReleaseRecord[]}
      */
     findRecentByProjectId(projectId, limit) {
       const sql = `
-        ${SELECT_ALL}
-        WHERE project_id = ?
-        ORDER BY updated_at DESC
+        ${SELECT_ALL_WITH_PROJECT}
+        WHERE releases.project_id = ?
+        ORDER BY releases.updated_at DESC
         LIMIT ?
       `;
       return db.prepare(sql).all(projectId, limit);
@@ -1104,7 +1033,7 @@ export function createReleaseRepository(db) {
      * @returns {{
      *   release_id: number,
      *   project_id: number,
-     *   release_status: string,
+     *   project_status: string,
      *   release_archived_at: string|null,
      *   project_archived_at: string|null,
      *   selected_asset_count: number,
@@ -1139,7 +1068,7 @@ export function createReleaseRepository(db) {
      * @returns {Array<{
      *   release_id: number,
      *   project_id: number,
-     *   release_status: string,
+     *   project_status: string,
      *   release_archived_at: string|null,
      *   project_archived_at: string|null,
      *   selected_asset_count: number,
@@ -1174,7 +1103,7 @@ export function createReleaseRepository(db) {
           SELECT
             r.id AS release_id,
             r.project_id,
-            r.status AS release_status,
+            p.status AS project_status,
             r.archived_at AS release_archived_at,
             p.archived_at AS project_archived_at,
             COUNT(DISTINCT CASE WHEN a.id IS NOT NULL THEN a.id END) AS selected_asset_count,
@@ -1274,20 +1203,20 @@ export function createReleaseRepository(db) {
 
     /**
      * Releases in one project that are valid targets for adding new asset
-     * associations: not archived, not published. (Cancelled releases remain
-     * eligible — existing curation methods like addCandidateAsset already
-     * permit mutating a cancelled release's selection, so this query mirrors
-     * that policy rather than inventing a stricter one.) One bounded query,
-     * render-ready id/title/status only.
+     * associations: archived_at IS NULL and published_date IS NULL. The
+     * owning project's workflow status is included for display; publication is
+     * represented by published_date rather than a release-owned status.
+     * One bounded query, render-ready id/title/project_status only.
      * @param {number} projectId
-     * @returns {Array<{id: number, title: string, status: string}>}
+      * @returns {Array<{id: number, title: string, project_status: string}>}
      */
     findEligibleAssetSelectionTargets(projectId) {
       return db.prepare(`
-        SELECT id, title, status
-        FROM releases
-        WHERE project_id = ? AND archived_at IS NULL AND status != 'published'
-        ORDER BY title COLLATE NOCASE ASC, id ASC
+        SELECT r.id, r.title, p.status AS project_status
+        FROM releases r
+        JOIN projects p ON p.id = r.project_id
+        WHERE r.project_id = ? AND r.archived_at IS NULL AND r.published_date IS NULL
+        ORDER BY r.title COLLATE NOCASE ASC, r.id ASC
       `).all(projectId);
     },
 
@@ -1387,8 +1316,9 @@ export function createReleaseRepository(db) {
       const selected = selectedAssetCountSubquery('releases');
       const missing = missingAssetCountSubquery('releases');
 
-      conditions.push("releases.status = 'ready'");
+      conditions.push("projects.status = 'ready'");
       conditions.push('releases.archived_at IS NULL');
+      conditions.push('releases.published_date IS NULL');
       conditions.push(ACTIVE_PARENT_PROJECT);
 
       if (filters.readiness === 'publishable') {
@@ -1404,7 +1334,6 @@ export function createReleaseRepository(db) {
      * Returns { conditions: string[], params: any[] }.
      * @param {Object} filters
      * @param {number|null} filters.projectId
-     * @param {string|null} filters.status
      * @param {string|null} filters.schedule - 'overdue'|'today'|'upcoming'|'unscheduled'
      * @param {boolean} filters.includeArchived
      * @param {string} filters.today - ISO date string YYYY-MM-DD for schedule classification
@@ -1428,14 +1357,9 @@ export function createReleaseRepository(db) {
         params.push(filters.projectId);
       }
 
-      if (filters.status && RELEASE_STATUSES.includes(filters.status)) {
-        conditions.push('releases.status = ?');
-        params.push(filters.status);
-      }
-
       // Schedule filters (overdue, today, upcoming, unscheduled) ALWAYS exclude
-      // archived release records — even when includeArchived=1 — because they
-      // are active-workflow views. The includeArchived flag only affects
+      // archived and published release records — even when includeArchived=1 —
+      // because they are active-workflow views. The includeArchived flag affects
       // schedule=all (no schedule filter).
       const isScheduleFilter = filters.schedule
         && ['overdue', 'today', 'upcoming', 'unscheduled'].includes(filters.schedule);
@@ -1444,12 +1368,12 @@ export function createReleaseRepository(db) {
         conditions.push('releases.archived_at IS NULL');
       }
 
-      // Schedule filters apply to active releases (non-terminal, non-archived).
+      // Schedule filters apply to active, unpublished releases.
       // Per Phase 6C: schedule filters ALWAYS exclude archived parent projects
       // because they are used in active workflow views — even when includeArchived=1.
       if (isScheduleFilter) {
-        // Always apply active-release predicate for schedule filters
-        conditions.push(`releases.status IN ('tbd', 'planned', 'in-progress', 'ready')`);
+        // Always apply the active-unpublished predicate for schedule filters.
+        conditions.push('releases.published_date IS NULL');
 
         // Always exclude archived parent projects for schedule filters
         conditions.push(ACTIVE_PARENT_PROJECT);
@@ -1482,7 +1406,6 @@ export function createReleaseRepository(db) {
      * Uses SQL LIMIT/OFFSET for pagination — no in-memory slicing.
      * @param {Object} filters
      * @param {number|null} filters.projectId
-     * @param {string|null} filters.status
      * @param {string|null} filters.schedule
      * @param {boolean} filters.includeArchived
      * @param {string} filters.today
@@ -1498,7 +1421,6 @@ export function createReleaseRepository(db) {
       const {
         search,
         projectId,
-        status,
         schedule,
         includeArchived = false,
         today,
@@ -1510,7 +1432,7 @@ export function createReleaseRepository(db) {
       } = filters;
 
       const { conditions, params } = this._buildFilterConditions({
-        search, projectId, status, schedule, includeArchived, today, activeScheduleFilter,
+        search, projectId, schedule, includeArchived, today, activeScheduleFilter,
       });
       this._applyReadinessFilter(conditions, filters);
 
@@ -1525,8 +1447,9 @@ export function createReleaseRepository(db) {
 
       const sql = `
         SELECT releases.id, releases.project_id, projects.title AS project_title,
+               projects.status AS project_status,
                releases.title, releases.description, releases.notes,
-               releases.status, releases.planned_date, releases.planned_time, releases.published_date,
+               releases.planned_date, releases.planned_time, releases.published_date,
                releases.patreon_url, releases.created_at, releases.updated_at,
                releases.archived_at,
                ${selectedCountSubquery} AS selected_asset_count,
@@ -1552,7 +1475,6 @@ export function createReleaseRepository(db) {
       const {
         search,
         projectId,
-        status,
         schedule,
         includeArchived = false,
         today,
@@ -1560,7 +1482,7 @@ export function createReleaseRepository(db) {
       } = filters;
 
       const { conditions, params } = this._buildFilterConditions({
-        search, projectId, status, schedule, includeArchived, today, activeScheduleFilter,
+        search, projectId, schedule, includeArchived, today, activeScheduleFilter,
       });
       this._applyReadinessFilter(conditions, filters);
 
@@ -1571,11 +1493,10 @@ export function createReleaseRepository(db) {
     },
 
     /**
-     * Board-ready release data grouped by status.
+     * Board-ready release data grouped by project workflow status.
      * Returns flat array — service layer performs the grouping into columns.
      * @param {Object} filters
      * @param {number|null} filters.projectId
-     * @param {string|null} filters.status
      * @param {string|null} filters.schedule
      * @param {boolean} filters.includeArchived
      * @param {string} filters.today
@@ -1587,7 +1508,6 @@ export function createReleaseRepository(db) {
       const {
         search,
         projectId,
-        status,
         schedule,
         includeArchived = false,
         today,
@@ -1595,7 +1515,7 @@ export function createReleaseRepository(db) {
       } = filters;
 
       const { conditions, params } = this._buildFilterConditions({
-        search, projectId, status, schedule, includeArchived, today, activeScheduleFilter,
+        search, projectId, schedule, includeArchived, today, activeScheduleFilter,
       });
       this._applyReadinessFilter(conditions, filters);
 
@@ -1608,8 +1528,9 @@ export function createReleaseRepository(db) {
       // then releases.id DESC as the final deterministic tie-breaker.
       const sql = `
         SELECT releases.id, releases.project_id, projects.title AS project_title,
+               projects.status AS project_status,
                releases.title, releases.description, releases.notes,
-               releases.status, releases.planned_date, releases.planned_time, releases.published_date,
+               releases.planned_date, releases.planned_time, releases.published_date,
                releases.patreon_url, releases.created_at, releases.updated_at,
                releases.archived_at,
                ${selectedCountSubquery} AS selected_asset_count,
@@ -1633,7 +1554,8 @@ export function createReleaseRepository(db) {
     /**
      * Release usage details for a batch of asset IDs, scoped to a project.
      * Returns one row per (asset, release) pair, enriched with release title,
-     * status, archive state, and parent project archive state for display policy.
+     * publication/archive state, and parent project workflow/archive state for
+     * display policy.
      * Both the asset and the release must belong to the given projectId to
      * prevent corrupt cross-project junction rows from leaking data.
      * Historical and archived releases are included — the browser shows what
@@ -1641,7 +1563,7 @@ export function createReleaseRepository(db) {
      *
      * @param {number} projectId - scope: both asset and release must belong here
      * @param {number[]} assetIds - array of asset IDs (empty array returns [])
-     * @returns {Array<{asset_id: number, release_id: number, title: string, status: string, release_archived_at: string|null, project_archived_at: string|null}>}
+     * @returns {Array<{asset_id: number, release_id: number, title: string, published_date: string|null, project_status: string, release_archived_at: string|null, project_archived_at: string|null}>}
      */
     // ─── Phase 9-1: Release Asset Candidate Discovery ──────────────────────
 
@@ -1874,7 +1796,8 @@ export function createReleaseRepository(db) {
           ra.asset_id,
           r.id AS release_id,
           r.title,
-          r.status,
+          r.published_date,
+          p.status AS project_status,
           r.archived_at AS release_archived_at,
           p.archived_at AS project_archived_at,
           ra.role,

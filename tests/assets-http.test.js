@@ -138,7 +138,7 @@ describe('asset browser HTTP workflow', () => {
     };
   }
 
-  async function createReleaseUsingAsset(projectId, assetId, title = 'Viewer Release', status = 'planned') {
+  async function createReleaseUsingAsset(projectId, assetId, title = 'Viewer Release', projectStatus = 'planned') {
     const releaseRes = await agent
       .post('/releases')
       .send(`projectId=${projectId}`)
@@ -148,10 +148,7 @@ describe('asset browser HTTP workflow', () => {
       .expect(302);
 
     const releaseId = releaseRes.headers.location.replace('/releases/', '');
-    if (status !== 'tbd') {
-      const releaseService = createReleaseService({ db, evaluateReleaseReadiness });
-      releaseService.updateRelease(Number(releaseId), { status });
-    }
+    db.prepare('UPDATE projects SET status = ? WHERE id = ?').run(projectStatus, projectId);
     await agent
       .post(`/releases/${releaseId}/assets`)
       .send(`selectedAssetIds=${assetId}`)
@@ -440,8 +437,8 @@ describe('asset browser HTTP workflow', () => {
     app.locals.assetTagService.replaceAssetTags(missing.id, [tag.id]);
     assetRepo.markMissingByProjectIdAndPathNotIn(id, ['Hero-Final.png', 'Hero-Final.jpg']);
     const releaseId = Number(db.prepare(`
-      INSERT INTO releases (project_id, title, description, notes, status, planned_date, published_date, patreon_url)
-      VALUES (?, 'Used Asset Release', '', '', 'tbd', NULL, NULL, NULL)
+      INSERT INTO releases (project_id, title, description, notes, planned_date, published_date, patreon_url)
+      VALUES (?, 'Used Asset Release', '', '', NULL, NULL, NULL)
       RETURNING id
     `).get(id).id);
     db.prepare('INSERT INTO release_assets (release_id, asset_id, role, sort_order) VALUES (?, ?, ?, ?)')
@@ -1114,7 +1111,7 @@ describe('asset browser HTTP workflow', () => {
     expect(res2.text).toContain('aria-label="Used in 2 releases"');
   });
 
-  it('shows release titles and statuses for used assets', async () => {
+  it('shows release titles for used assets', async () => {
     const res = await createProject('Release Titles');
     const id = res.headers.location.replace('/projects/', '');
     const projectDir = getProjectDir('Release Titles');
@@ -1129,7 +1126,6 @@ describe('asset browser HTTP workflow', () => {
 
     const res2 = await agent.get(`/projects/${id}/assets?view=list`).expect(200);
     expect(res2.text).toContain('Status Check Release');
-    expect(res2.text).toContain('planned');
     // Check the release detail link exists (not the asset-selection page)
     expect(res2.text).toContain(`/releases/${releaseId}"`);
     expect(res2.text).not.toContain(`/releases/${releaseId}/assets`);
@@ -2006,7 +2002,9 @@ describe('asset browser HTTP workflow', () => {
     expect(res2.text).toContain('Present at last scan');
     expect(res2.text).toContain('Used by 1 release');
     expect(res2.text).toContain('Hero Release');
-    expect(res2.text).toContain(`/releases/${releaseId}`);
+    expect(res2.text).toContain(`<a href="/releases/${releaseId}">Hero Release</a>`);
+    expect(res2.text).toContain('<span class="release-role">Attachment</span>');
+    expect(res2.text).not.toContain('()');
   });
 
   // ─── Defect fix: browser row links carry normalized/clamped context ────
@@ -3444,6 +3442,8 @@ describe('asset browser HTTP workflow', () => {
     expect(html).toContain('Release One');
     expect(html).toContain('Release Two');
     expect(html).toContain(`/releases/${relA}`);
+    expect(html).toContain('aria-label="Used in release Solo Release (Attachment)"');
+    expect(html).not.toContain('()');
     expect(none.id).toBeGreaterThan(0);
   });
 
@@ -3472,7 +3472,7 @@ describe('asset browser HTTP workflow', () => {
 
   // ─── Phase 3 chunk 3: page-local selection + bulk release association ───
 
-  async function createEmptyRelease(projectId, title = 'Bulk Target', status = 'tbd') {
+  async function createEmptyRelease(projectId, title = 'Bulk Target') {
     const res = await agent
       .post('/releases')
       .send(`projectId=${projectId}`)
@@ -3481,10 +3481,6 @@ describe('asset browser HTTP workflow', () => {
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
     const releaseId = Number(res.headers.location.replace('/releases/', ''));
-    if (status !== 'tbd') {
-      const releaseService = createReleaseService({ db, evaluateReleaseReadiness });
-      releaseService.updateRelease(releaseId, { status });
-    }
     return releaseId;
   }
 

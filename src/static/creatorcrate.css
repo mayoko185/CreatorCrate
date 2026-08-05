@@ -3609,6 +3609,7 @@
         width: min(16rem, 100%);
         max-width: 100%;
         max-height: 0;
+        height: auto;
         margin-top: 0;
         overflow: hidden;
         object-fit: contain;
@@ -3630,33 +3631,26 @@
         visibility: hidden;
         pointer-events: none;
       }
-      .calendar-release-preview-project,
-      .calendar-release-preview-title,
       .calendar-release-preview-notes {
         display: block;
+        color: var(--muted);
         overflow-wrap: anywhere;
         word-break: break-word;
-      }
-      .calendar-release-preview-project,
-      .calendar-release-preview-title {
-        color: var(--text);
-        font-weight: 600;
-      }
-      .calendar-release-preview-notes {
-        color: var(--muted);
         white-space: pre-wrap;
       }
       .calendar-release-trigger:hover > .calendar-release-preview,
       .calendar-release-trigger > a:focus-visible ~ .calendar-release-preview {
-        max-height: 12rem;
+        max-height: none;
         margin-top: var(--space-xs);
+        overflow: visible;
         opacity: 1;
         visibility: visible;
       }
       .calendar-release-trigger:hover > .calendar-release-preview-details,
       .calendar-release-trigger > a:focus-visible ~ .calendar-release-preview-details {
-        max-height: 16rem;
+        max-height: none;
         margin-top: var(--space-xs);
+        overflow: visible;
         opacity: 1;
         visibility: visible;
       }

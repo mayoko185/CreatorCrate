@@ -698,7 +698,7 @@ export function createAssetRepository(db) {
         JOIN assets a ON a.id = ra.asset_id
         WHERE a.project_id = ?
           AND ra.asset_id IN (${placeholders})
-          AND r.status = 'published'
+          AND r.published_date IS NOT NULL
         ORDER BY ra.asset_id
       `;
       return db.prepare(sql).all(projectId, ...unique).map(({ asset_id }) => asset_id);

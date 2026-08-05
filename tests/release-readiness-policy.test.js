@@ -10,7 +10,7 @@ function buildFacts(overrides = {}) {
   return {
     release_id: 1,
     project_id: 1,
-    release_status: 'ready',
+    project_status: 'ready',
     release_archived_at: null,
     project_archived_at: null,
     selected_asset_count: 2,
@@ -35,19 +35,28 @@ describe('evaluateReleaseReadiness', () => {
     expect(result.checks.every((c) => c.passed)).toBe(true);
   });
 
-  // ─── status_ready ──────────────────────────────────────────────────────
+  // ─── project_status_ready ──────────────────────────────────────────────
 
-  it('fails status_ready when release_status is not "ready"', () => {
-    const statuses = ['tbd', 'planned', 'in-progress', 'published', 'cancelled'];
-    for (const status of statuses) {
-      const facts = buildFacts({ release_status: status });
+  it('fails project_status_ready when project_status is not "ready"', () => {
+    const statuses = ['tbd', 'planned', 'archived', null];
+    for (const projectStatus of statuses) {
+      const facts = buildFacts({ project_status: projectStatus });
       const result = evaluateReleaseReadiness(facts);
 
       expect(result.publishable).toBe(false);
-      const check = result.checks.find((c) => c.key === 'status_ready');
+      const check = result.checks.find((c) => c.key === 'project_status_ready');
       expect(check.passed).toBe(false);
-      expect(check.details.status).toBe(status);
+      expect(check.details.projectStatus).toBe(projectStatus);
     }
+  });
+
+  it('does not depend on a submitted release_status fact', () => {
+    const facts = buildFacts({ release_status: 'obsolete-release-status' });
+    const result = evaluateReleaseReadiness(facts);
+
+    expect(result.publishable).toBe(true);
+    expect(result.facts).toBe(facts);
+    expect(result.checks).not.toContainEqual(expect.objectContaining({ details: expect.objectContaining({ status: expect.anything() }) }));
   });
 
   // ─── assets_selected ───────────────────────────────────────────────────
@@ -150,7 +159,7 @@ describe('evaluateReleaseReadiness', () => {
 
   it('reports multiple failing checks simultaneously', () => {
     const facts = buildFacts({
-      release_status: 'in-progress',
+      project_status: 'tbd',
       selected_asset_count: 0,
       missing_selected_asset_count: 0,
       release_archived_at: '2025-06-15 10:00:00',
@@ -159,7 +168,7 @@ describe('evaluateReleaseReadiness', () => {
 
     expect(result.publishable).toBe(false);
 
-    const statusCheck = result.checks.find((c) => c.key === 'status_ready');
+    const statusCheck = result.checks.find((c) => c.key === 'project_status_ready');
     expect(statusCheck.passed).toBe(false);
 
     const assetsSelected = result.checks.find((c) => c.key === 'assets_selected');
@@ -253,7 +262,7 @@ describe('evaluateReleaseReadiness', () => {
 
     const keys = result.checks.map((c) => c.key);
     expect(keys).toEqual([
-      'status_ready',
+      'project_status_ready',
       'assets_selected',
       'selected_assets_present',
       'scope_mutable',
@@ -301,7 +310,7 @@ describe('evaluateReleaseReadiness', () => {
     const passResult = evaluateReleaseReadiness(passing);
     expect(passResult.publishable).toBe(passResult.checks.every((c) => c.passed));
 
-    const failing = buildFacts({ release_status: 'tbd' });
+    const failing = buildFacts({ project_status: 'tbd' });
     const failResult = evaluateReleaseReadiness(failing);
     expect(failResult.publishable).toBe(failResult.checks.every((c) => c.passed));
   });

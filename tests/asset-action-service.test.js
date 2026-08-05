@@ -125,9 +125,13 @@ describe('asset action service', () => {
     });
   }
 
-  function insertRelease(title = 'Release', status = 'tbd') {
-    return db.prepare(`INSERT INTO releases (project_id, title, status) VALUES (?, ?, ?) RETURNING id`)
-      .get(project.id, title, status);
+  function insertRelease(title = 'Release') {
+    return db.prepare(`
+      INSERT INTO releases (project_id, title, description, notes,
+                            planned_date, published_date, patreon_url, archived_at)
+      VALUES (?, ?, '', '', NULL, NULL, NULL, NULL)
+      RETURNING id
+    `).get(project.id, title);
   }
 
   function linkReleaseAsset(releaseId, assetId, role = 'attachment', sortOrder = 0) {
@@ -1734,7 +1738,8 @@ describe('asset action service', () => {
     it('rejects published-release assets before filesystem staging', () => {
       writeFile('published.png', 'published');
       const asset = createAsset('published.png');
-      const release = insertRelease('Published release', 'published');
+      const release = insertRelease('Published release');
+      db.prepare("UPDATE releases SET published_date = '2026-08-05' WHERE id = ?").run(release.id);
       linkReleaseAsset(release.id, asset.id);
       const stagingSpy = vi.spyOn(fs, 'mkdtempSync');
       const renameSpy = vi.spyOn(fs, 'renameSync');
@@ -1765,7 +1770,8 @@ describe('asset action service', () => {
       writeFile('published.png', 'published');
       const ordinary = createAsset('ordinary.png');
       const published = createAsset('published.png');
-      const release = insertRelease('Published batch blocker', 'published');
+      const release = insertRelease('Published batch blocker');
+      db.prepare("UPDATE releases SET published_date = '2026-08-05' WHERE id = ?").run(release.id);
       linkReleaseAsset(release.id, published.id);
 
       expect(() => actionService.deleteAssets(project.id, [ordinary.id, published.id])).toThrowError(
@@ -1915,7 +1921,7 @@ describe('asset action service', () => {
       `).get('Delete test', 'delete-test');
       db.prepare('INSERT INTO asset_tags (asset_id, tag_id) VALUES (?, ?)').run(asset.id, tag.id);
 
-      expect(db.prepare('SELECT status FROM releases WHERE id = ?').get(release.id).status).not.toBe('published');
+      expect(db.prepare('SELECT published_date FROM releases WHERE id = ?').get(release.id).published_date).toBeNull();
       actionService.deleteAssets(project.id, [asset.id]);
 
       expect(db.prepare('SELECT * FROM release_assets WHERE asset_id = ?').all(asset.id)).toEqual([]);

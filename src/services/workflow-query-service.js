@@ -10,9 +10,9 @@
  * Conventions:
  *   - All composed lists are bounded via the `limits` option so a busy
  *     CreatorCrate does not materialize unbounded result sets.
- *   - "Active" releases mean status in (tbd, planned, in-progress, ready) and
- *     archived_at IS NULL. Terminal states (published, cancelled, archived)
- *     are not surfaced in attention lists. Releases whose parent project
+ *   - "Active" releases mean unpublished and archived_at IS NULL. Published
+ *     and archived releases are not surfaced in attention lists. Releases whose
+ *     parent project
  *     has been archived are also hidden from the dashboard attention lists
  *     because mutations reject archived parents.
  *   - Today is a single application-local date (YYYY-MM-DD) computed by
@@ -25,7 +25,7 @@
  *     are returned so templates can render safe empty states.
  */
 
-import { createReleaseRepository, RELEASE_STATUSES } from '../data/release-repository.js';
+import { createReleaseRepository } from '../data/release-repository.js';
 import { createProjectRepository } from '../data/project-repository.js';
 import { createAssetRepository } from '../data/asset-repository.js';
 import { createAssetCategoryRepository } from '../data/asset-category-repository.js';
@@ -433,7 +433,6 @@ export function createWorkflowQueryService({
    *   },
    *   upcomingReleases: Array,
    *   workflowSummary: {
-   *     releaseStatusCounts: Object<string, number>,
    *     totalProjects: number,
    *     totalAssets: number,
    *     missingAssetSummary: { total: number, referencedByReleases: number },
@@ -455,7 +454,7 @@ export function createWorkflowQueryService({
     const upcoming = groupByDate(upcomingRaw);
 
     // ── Phase 7B-2: Dashboard Publishability Groups ──────────────────────
-    // Batch-load readiness facts for all status=ready releases, then
+    // Batch-load readiness facts for releases under ready projects, then
     // evaluate each through the shared policy. This is a single batch query
     // — no N+1 readiness queries per release.
     const readyFacts = releaseRepository.findReadyDashboardFacts(limits.ready);
@@ -471,7 +470,7 @@ export function createWorkflowQueryService({
         project_title: facts.project_title,
         planned_date: facts.planned_date,
         updated_at: facts.updated_at,
-        status: facts.release_status,
+        project_status: facts.project_status,
       };
 
       if (result.publishable) {
@@ -486,7 +485,6 @@ export function createWorkflowQueryService({
       }
     }
 
-    const releaseStatusCounts = releaseRepository.countByStatus();
     const projectCounts = projectRepository.countByStatus();
     const totalAssets = assetRepository.getTotalCount();
     const missingTotal = assetRepository.getTotalMissingCount();
@@ -517,7 +515,6 @@ export function createWorkflowQueryService({
       },
       upcomingReleases: upcoming,
       workflowSummary: {
-        releaseStatusCounts,
         totalProjects: totalFromCounts(projectCounts),
         totalAssets,
         missingAssetSummary: {
@@ -536,11 +533,11 @@ export function createWorkflowQueryService({
    * is not found so the route can render a 404 without an extra lookup.
    *
    * Archived projects: active releases are always empty, even if the
-   * underlying release rows are non-terminal and non-archived. Mutations
+   * underlying release rows are unpublished and non-archived. Mutations
    * (update, asset selection, publish) reject archived parent projects, so
    * surfacing active workflow for an archived project is misleading. The
-   * historical `recent` list and the status counts still reflect every
-   * release so published/cancelled information remains visible.
+   * historical `recent` list still reflects every release so publication and
+   * archive metadata remains visible.
    *
    * @param {number} projectId
    * @param {object} [options]
@@ -550,7 +547,6 @@ export function createWorkflowQueryService({
    *   releaseSummary: {
    *     active: Array,
    *     recent: Array,
-   *     statusCounts: Object<string, number>,
    *     hasAnyReleases: boolean,
    *   },
    *   assetHealth: {
@@ -574,7 +570,10 @@ export function createWorkflowQueryService({
       ? []
       : releaseRepository.findActiveByProjectId(projectId, limits.activeReleases);
     const recentReleases = releaseRepository.findRecentByProjectId(projectId, limits.recentReleases);
-    const statusCounts = releaseRepository.countByStatusByProjectId(projectId);
+    const releaseCount = releaseRepository.countFiltered({
+      projectId,
+      includeArchived: true,
+    });
 
     const assetTotal = assetRepository.countByProjectId(projectId);
     const assetPresent = assetRepository.countPresentByProjectId(projectId);
@@ -591,8 +590,7 @@ export function createWorkflowQueryService({
       releaseSummary: {
         active: activeReleases,
         recent: recentReleases,
-        statusCounts,
-        hasAnyReleases: totalFromCounts(statusCounts) > 0,
+        hasAnyReleases: releaseCount > 0,
       },
       assetHealth: {
         total: assetTotal,
@@ -1063,7 +1061,6 @@ export function createWorkflowQueryService({
 
     const projectId = parseStrictPositiveInt(raw.project);
     const search = typeof raw.search === 'string' ? raw.search.trim() : '';
-    const status = RELEASE_STATUSES.includes(raw.status) ? raw.status : null;
     const schedule = ['overdue', 'today', 'upcoming', 'unscheduled'].includes(raw.schedule)
       ? raw.schedule
       : null;
@@ -1081,7 +1078,7 @@ export function createWorkflowQueryService({
     const readinessValues = ['all', 'publishable', 'blocked-ready'];
     const readiness = readinessValues.includes(raw.readiness) ? raw.readiness : 'all';
 
-    return { search, projectId, status, schedule, includeArchived, sortBy, order, page, pageSize, readiness };
+    return { search, projectId, schedule, includeArchived, sortBy, order, page, pageSize, readiness };
   }
 
   /**
@@ -1126,7 +1123,7 @@ export function createWorkflowQueryService({
     });
 
     // ── Phase 7B-3: Compact Release Readiness Indicators ──────────────
-    // Batch-attach readiness facts for all status=ready releases on this
+    // Batch-attach readiness facts for all releases under ready projects on this
     // page — no N+1 readiness queries per release.
     const enhanced = _attachReadiness(releases);
 
@@ -1134,11 +1131,12 @@ export function createWorkflowQueryService({
   }
 
   /**
-   * Board-ready release data grouped by status columns.
+   * Board-ready release data grouped by project workflow status, with a
+   * separate Published grouping derived from published_date.
    * @param {Object} rawFilters - raw query parameters
    * @param {Object} [options]
    * @param {string} [options.today] - ISO date YYYY-MM-DD override
-   * @returns {{ columns: Object, today: string }} columns keyed by status
+   * @returns {{ columns: Object, today: string }} columns keyed by project status or publication
    */
   function getReleaseBoard(rawFilters, options = {}) {
     const filters = normalizeListFilters(rawFilters);
@@ -1154,17 +1152,20 @@ export function createWorkflowQueryService({
     });
 
     // ── Phase 7B-3: Compact Release Readiness Indicators ──────────────
-    // Batch-attach readiness facts for all status=ready releases on the
+    // Batch-attach readiness facts for all releases under ready projects on the
     // board — no N+1 readiness queries per release.
     const enhanced = _attachReadiness(rows);
 
-    // Group into columns by status
-    const BOARD_STATUSES = ['tbd', 'planned', 'in-progress', 'ready', 'published', 'cancelled'];
-    const columns = Object.fromEntries(BOARD_STATUSES.map((s) => [s, []]));
+    // Group by project workflow status. Publication is a separate data axis,
+    // so published releases take the Published grouping regardless of the
+    // owning project's workflow status.
+    const boardGroups = ['tbd', 'planned', 'in-progress', 'ready', 'published'];
+    const columns = Object.fromEntries(boardGroups.map((group) => [group, []]));
 
     for (const release of enhanced) {
-      if (columns[release.status]) {
-        columns[release.status].push(release);
+      const group = release.published_date != null ? 'published' : release.project_status;
+      if (columns[group]) {
+        columns[group].push(release);
       }
     }
 
@@ -1312,8 +1313,8 @@ export function createWorkflowQueryService({
    * Release-backed calendar view data for a given month.
    *
    * Calendar entries are release records. Every non-archived release with a
-   * planned_date in the requested month is included regardless of lifecycle
-   * status, including multiple releases belonging to one project. The
+   * planned_date in the requested month is included, including multiple
+   * releases belonging to one project. The
    * repository supplies one row per release in deterministic schedule order.
    *
    * @param {string} month - YYYY-MM month string
@@ -1348,7 +1349,7 @@ export function createWorkflowQueryService({
       project_title: row.project_title,
       title: row.title,
       notes: row.notes,
-      status: row.status,
+      project_status: row.project_status,
       planned_date: row.planned_date,
       planned_time: row.planned_time,
     })));
@@ -1955,7 +1956,7 @@ export function createWorkflowQueryService({
       : releaseRepository.findEligibleAssetSelectionTargets(projectId).map((release) => ({
         id: release.id,
         title: release.title,
-        status: release.status,
+        project_status: release.project_status,
       }));
 
     const filters = normalizeAssetBrowserQuery(rawQuery, extensions, projectCategories, tagCatalog);
@@ -2354,7 +2355,7 @@ export function createWorkflowQueryService({
   /**
    * Batch-attach compact readiness indicators to an array of releases.
    *
-   * For status=ready releases, evaluates readiness via the shared policy
+   * For releases under ready projects, evaluates readiness via the shared policy
    * and attaches a `_readiness` property with:
    *   - publishable: boolean
    *   - blockerCount: number (only when not publishable)
@@ -2366,7 +2367,7 @@ export function createWorkflowQueryService({
    *     when not publishable and scope is mutable) — links to resolve
    *     asset-related blockers; omitted for archived-scope releases
    *
-   * For non-ready releases, no `_readiness` property is attached so
+   * For releases whose project is not ready, no `_readiness` property is attached so
    * templates can distinguish "no claim" from "blocked".
    *
    * This is a single batch query: all readiness facts are loaded in one
@@ -2380,9 +2381,9 @@ export function createWorkflowQueryService({
     if (typeof evaluateReleaseReadiness !== 'function') return releases;
     if (!Array.isArray(releases) || releases.length === 0) return releases;
 
-    // Collect IDs of status=ready releases
+    // Collect IDs of releases whose owning project is ready
     const readyIds = releases
-      .filter((r) => r.status === 'ready')
+      .filter((r) => r.project_status === 'ready')
       .map((r) => r.id);
 
     if (readyIds.length === 0) return releases;
@@ -2427,7 +2428,7 @@ export function createWorkflowQueryService({
     }
 
     return releases.map((release) => {
-      if (release.status !== 'ready') return release;
+      if (release.project_status !== 'ready') return release;
       const indicator = readinessByReleaseId.get(release.id);
       if (!indicator) return release;
       return { ...release, _readiness: indicator };
@@ -2501,8 +2502,6 @@ export function createWorkflowQueryService({
     // truth for the active-set definition. Not intended for route use.
     constants: {
       DEFAULT_LIMITS,
-      ACTIVE_RELEASE_STATUSES: ['tbd', 'planned', 'in-progress', 'ready'],
-      RELEASE_STATUSES,
     },
   };
 }

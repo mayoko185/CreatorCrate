@@ -6,7 +6,7 @@
 {% block content %}
   {% set projectArchived = project and project.archived_at %}
   {% set releaseArchived = release and release.archived_at %}
-  {% set isPublished = release and release.status == 'published' %}
+  {% set isPublished = release and release.published_date %}
   {% set isArchived = projectArchived or releaseArchived %}
   {% set readOnly = isArchived or isPublished %}
   {% call pageHeading.render() %}
@@ -24,6 +24,12 @@
     {% set noticeText = "This release is published. Asset selections are locked and read-only." %}
     {% include "partials/notice.njk" %}
   {% endif %}
+
+  <p class="meta release-workflow-status">
+    Project status:
+    {% set status = project.status if project else release.project_status %}
+    {% include "partials/status-badge.njk" %}
+  </p>
 
   {% if errors.general or errors.assets %}
     <div class="error-summary" role="alert">

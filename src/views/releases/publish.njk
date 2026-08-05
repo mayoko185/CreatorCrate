@@ -20,8 +20,8 @@
       <ul>
         {% for key, details in errors.readiness %}
           <li>
-            {% if key == 'status_ready' %}
-              Status is "{{ details.status }}", must be "ready".
+            {% if key == 'project_status_ready' %}
+              Project status is "{{ details.projectStatus }}", must be "ready".
             {% elif key == 'assets_selected' %}
               No assets selected ({{ details.selectedAssetCount }} selected).
             {% elif key == 'selected_assets_present' %}
@@ -58,8 +58,8 @@
     <dl class="detail-list">
       <dt>Title</dt>
       <dd>{{ release.title }}</dd>
-      <dt>Status</dt>
-      <dd>{% set status = release.status %}{% include "partials/status-badge.njk" %}</dd>
+      <dt>Project status</dt>
+      <dd>{% set status = project.status if project else release.project_status %}{% include "partials/status-badge.njk" %}</dd>
       {% if release.planned_date %}
         <dt>Planned date</dt>
         <dd>{{ release.planned_date }}</dd>
@@ -82,7 +82,7 @@
         <li class="readiness-check {% if check.passed %}check-passed{% else %}check-blocked{% endif %}">
           <span class="check-icon">{% if check.passed %}&#10003;{% else %}&#10007;{% endif %}</span>
           <span class="check-label">
-            {% if check.key == 'status_ready' %}Status is ready
+            {% if check.key == 'project_status_ready' %}Project status is ready
             {% elif check.key == 'assets_selected' %}Assets selected
             {% elif check.key == 'selected_assets_present' %}Selected assets present
             {% elif check.key == 'scope_mutable' %}Scope is mutable
@@ -90,8 +90,8 @@
             {% endif %}
           </span>
           <span class="check-detail">
-            {% if check.key == 'status_ready' %}
-              Status: {{ check.details.status }}
+            {% if check.key == 'project_status_ready' %}
+              Project status: {{ check.details.projectStatus }}
             {% elif check.key == 'assets_selected' %}
               {{ check.details.selectedAssetCount }} selected
             {% elif check.key == 'selected_assets_present' %}

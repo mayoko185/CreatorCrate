@@ -39,13 +39,17 @@ describe('asset-browser preferences in the baseline schema', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('records only the baseline migration', () => {
+  it('records all current migrations', () => {
     db = openDatabase(dbPath);
 
     expect(() => runMigrations(db, MIGRATIONS_DIR)).not.toThrow();
 
     const applied = db.prepare('SELECT filename FROM schema_migrations ORDER BY rowid').pluck().all();
-    expect(applied).toEqual(['001_initial.sql']);
+    expect(applied).toEqual([
+      '001_initial.sql',
+      '002_unify_release_statuses.sql',
+      '003_drop_release_status.sql',
+    ]);
   });
 
   it('creates the preference table with timestamps, project cascade, and no category foreign key', () => {

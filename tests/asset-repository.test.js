@@ -149,18 +149,18 @@ describe('asset repository', () => {
       sizeBytes: 100, modifiedAt: null,
     });
     const publishedRelease = db.prepare(`
-      INSERT INTO releases (project_id, title, status)
-      VALUES (?, ?, 'published')
+      INSERT INTO releases (project_id, title, published_date)
+      VALUES (?, ?, '2026-01-01')
       RETURNING id
     `).get(projectId, 'Published Release');
     const unpublishedRelease = db.prepare(`
-      INSERT INTO releases (project_id, title, status)
-      VALUES (?, ?, 'in-progress')
+      INSERT INTO releases (project_id, title)
+      VALUES (?, ?)
       RETURNING id
     `).get(projectId, 'Draft Release');
     const foreignRelease = db.prepare(`
-      INSERT INTO releases (project_id, title, status)
-      VALUES (?, ?, 'published')
+      INSERT INTO releases (project_id, title, published_date)
+      VALUES (?, ?, '2026-01-01')
       RETURNING id
     `).get(otherProject.id, 'Foreign Published Release');
 
@@ -826,13 +826,13 @@ describe('asset repository', () => {
   /**
    * Helper: insert a release directly.
    */
-  function insertRelease(db, { projectId, title, status = 'tbd', archivedAt = null }) {
+  function insertRelease(db, { projectId, title, archivedAt = null }) {
     return db.prepare(`
-      INSERT INTO releases (project_id, title, description, notes, status,
+      INSERT INTO releases (project_id, title, description, notes,
                             planned_date, published_date, patreon_url, archived_at)
-      VALUES (?, ?, '', '', ?, NULL, NULL, NULL, ?)
+      VALUES (?, ?, '', '', NULL, NULL, NULL, ?)
       RETURNING *
-    `).get(projectId, title, status, archivedAt);
+    `).get(projectId, title, archivedAt);
   }
 
   /**
@@ -1002,18 +1002,18 @@ describe('asset repository', () => {
     it('does not duplicate asset rows when asset belongs to multiple releases', () => {
       // Insert releases directly via SQL to avoid the create() helper signature issue
       const rel1Id = db.prepare(`
-        INSERT INTO releases (project_id, title, description, notes, status, planned_date, published_date, patreon_url)
-        VALUES (?, 'R1', '', '', 'tbd', NULL, NULL, NULL)
+        INSERT INTO releases (project_id, title, description, notes, planned_date, published_date, patreon_url)
+        VALUES (?, 'R1', '', '', NULL, NULL, NULL)
         RETURNING id
       `).get(projectId).id;
       const rel2Id = db.prepare(`
-        INSERT INTO releases (project_id, title, description, notes, status, planned_date, published_date, patreon_url)
-        VALUES (?, 'R2', '', '', 'tbd', NULL, NULL, NULL)
+        INSERT INTO releases (project_id, title, description, notes, planned_date, published_date, patreon_url)
+        VALUES (?, 'R2', '', '', NULL, NULL, NULL)
         RETURNING id
       `).get(projectId).id;
       const rel3Id = db.prepare(`
-        INSERT INTO releases (project_id, title, description, notes, status, planned_date, published_date, patreon_url)
-        VALUES (?, 'R3', '', '', 'tbd', NULL, NULL, NULL)
+        INSERT INTO releases (project_id, title, description, notes, planned_date, published_date, patreon_url)
+        VALUES (?, 'R3', '', '', NULL, NULL, NULL)
         RETURNING id
       `).get(projectId).id;
 
@@ -1047,8 +1047,8 @@ describe('asset repository', () => {
         patreonUrl: null,
       });
       const otherRelId = db.prepare(`
-        INSERT INTO releases (project_id, title, description, notes, status, planned_date, published_date, patreon_url)
-        VALUES (?, 'Other Release', '', '', 'tbd', NULL, NULL, NULL)
+        INSERT INTO releases (project_id, title, description, notes, planned_date, published_date, patreon_url)
+        VALUES (?, 'Other Release', '', '', NULL, NULL, NULL)
         RETURNING id
       `).get(otherProject.id).id;
 
@@ -1106,8 +1106,8 @@ describe('asset repository', () => {
     it('applies tag filtering before pagination and composes with search, extension, presence, and usage', () => {
       const tag = tagRepo.create({ displayName: 'Filtered', normalizedName: 'filtered' });
       const releaseId = db.prepare(`
-        INSERT INTO releases (project_id, title, description, notes, status, planned_date, published_date, patreon_url)
-        VALUES (?, 'Filtered Release', '', '', 'tbd', NULL, NULL, NULL)
+        INSERT INTO releases (project_id, title, description, notes, planned_date, published_date, patreon_url)
+        VALUES (?, 'Filtered Release', '', '', NULL, NULL, NULL)
         RETURNING id
       `).get(projectId).id;
       const matching = assetRepo.upsert(projectId, 'renders/hero.png', {
@@ -1819,8 +1819,8 @@ describe('asset repository', () => {
 
     it('usage=used returns only assets with release_assets rows', () => {
       const relId = db.prepare(`
-        INSERT INTO releases (project_id, title, description, notes, status, planned_date, published_date, patreon_url)
-        VALUES (?, 'R1', '', '', 'tbd', NULL, NULL, NULL)
+        INSERT INTO releases (project_id, title, description, notes, planned_date, published_date, patreon_url)
+        VALUES (?, 'R1', '', '', NULL, NULL, NULL)
         RETURNING id
       `).get(projectId).id;
 
@@ -1842,8 +1842,8 @@ describe('asset repository', () => {
 
     it('usage=unused returns only assets with no release_assets rows', () => {
       const relId = db.prepare(`
-        INSERT INTO releases (project_id, title, description, notes, status, planned_date, published_date, patreon_url)
-        VALUES (?, 'R1', '', '', 'tbd', NULL, NULL, NULL)
+        INSERT INTO releases (project_id, title, description, notes, planned_date, published_date, patreon_url)
+        VALUES (?, 'R1', '', '', NULL, NULL, NULL)
         RETURNING id
       `).get(projectId).id;
 
@@ -1879,8 +1879,8 @@ describe('asset repository', () => {
         status: 'tbd', priority: 'normal', plannedDate: null, publishedDate: null, patreonUrl: null,
       });
       const otherRelId = db.prepare(`
-        INSERT INTO releases (project_id, title, description, notes, status, planned_date, published_date, patreon_url)
-        VALUES (?, 'Other Release', '', '', 'tbd', NULL, NULL, NULL)
+        INSERT INTO releases (project_id, title, description, notes, planned_date, published_date, patreon_url)
+        VALUES (?, 'Other Release', '', '', NULL, NULL, NULL)
         RETURNING id
       `).get(otherProject.id).id;
 
@@ -1903,8 +1903,8 @@ describe('asset repository', () => {
         status: 'tbd', priority: 'normal', plannedDate: null, publishedDate: null, patreonUrl: null,
       });
       const otherRelId = db.prepare(`
-        INSERT INTO releases (project_id, title, description, notes, status, planned_date, published_date, patreon_url)
-        VALUES (?, 'Other Release', '', '', 'tbd', NULL, NULL, NULL)
+        INSERT INTO releases (project_id, title, description, notes, planned_date, published_date, patreon_url)
+        VALUES (?, 'Other Release', '', '', NULL, NULL, NULL)
         RETURNING id
       `).get(otherProject.id).id;
 
@@ -1926,13 +1926,13 @@ describe('asset repository', () => {
         status: 'tbd', priority: 'normal', plannedDate: null, publishedDate: null, patreonUrl: null,
       });
       const otherRelId = db.prepare(`
-        INSERT INTO releases (project_id, title, description, notes, status, planned_date, published_date, patreon_url)
-        VALUES (?, 'Other Release', '', '', 'tbd', NULL, NULL, NULL)
+        INSERT INTO releases (project_id, title, description, notes, planned_date, published_date, patreon_url)
+        VALUES (?, 'Other Release', '', '', NULL, NULL, NULL)
         RETURNING id
       `).get(otherProject.id).id;
       const myRelId = db.prepare(`
-        INSERT INTO releases (project_id, title, description, notes, status, planned_date, published_date, patreon_url)
-        VALUES (?, 'My Release', '', '', 'tbd', NULL, NULL, NULL)
+        INSERT INTO releases (project_id, title, description, notes, planned_date, published_date, patreon_url)
+        VALUES (?, 'My Release', '', '', NULL, NULL, NULL)
         RETURNING id
       `).get(projectId).id;
 
@@ -1955,8 +1955,8 @@ describe('asset repository', () => {
   describe('combined filters', () => {
     it('presence=present and usage=used together', () => {
       const relId = db.prepare(`
-        INSERT INTO releases (project_id, title, description, notes, status, planned_date, published_date, patreon_url)
-        VALUES (?, 'R1', '', '', 'tbd', NULL, NULL, NULL)
+        INSERT INTO releases (project_id, title, description, notes, planned_date, published_date, patreon_url)
+        VALUES (?, 'R1', '', '', NULL, NULL, NULL)
         RETURNING id
       `).get(projectId).id;
 
@@ -1996,18 +1996,18 @@ describe('asset repository', () => {
   describe('release_usage_count', () => {
     it('counts distinct releases for an asset', () => {
       const r1Id = db.prepare(`
-        INSERT INTO releases (project_id, title, description, notes, status, planned_date, published_date, patreon_url)
-        VALUES (?, 'R1', '', '', 'tbd', NULL, NULL, NULL)
+        INSERT INTO releases (project_id, title, description, notes, planned_date, published_date, patreon_url)
+        VALUES (?, 'R1', '', '', NULL, NULL, NULL)
         RETURNING id
       `).get(projectId).id;
       const r2Id = db.prepare(`
-        INSERT INTO releases (project_id, title, description, notes, status, planned_date, published_date, patreon_url)
-        VALUES (?, 'R2', '', '', 'tbd', NULL, NULL, NULL)
+        INSERT INTO releases (project_id, title, description, notes, planned_date, published_date, patreon_url)
+        VALUES (?, 'R2', '', '', NULL, NULL, NULL)
         RETURNING id
       `).get(projectId).id;
       const r3Id = db.prepare(`
-        INSERT INTO releases (project_id, title, description, notes, status, planned_date, published_date, patreon_url)
-        VALUES (?, 'R3', '', '', 'published', NULL, NULL, NULL)
+        INSERT INTO releases (project_id, title, description, notes, planned_date, published_date, patreon_url)
+        VALUES (?, 'R3', '', '', NULL, '2026-01-01', NULL)
         RETURNING id
       `).get(projectId).id;
 
@@ -2042,8 +2042,8 @@ describe('asset repository', () => {
         status: 'tbd', priority: 'normal', plannedDate: null, publishedDate: null, patreonUrl: null,
       });
       const otherRelId = db.prepare(`
-        INSERT INTO releases (project_id, title, description, notes, status, planned_date, published_date, patreon_url)
-        VALUES (?, 'Other Release', '', '', 'tbd', NULL, NULL, NULL)
+        INSERT INTO releases (project_id, title, description, notes, planned_date, published_date, patreon_url)
+        VALUES (?, 'Other Release', '', '', NULL, NULL, NULL)
         RETURNING id
       `).get(otherProject.id).id;
 
@@ -2065,13 +2065,13 @@ describe('asset repository', () => {
         status: 'tbd', priority: 'normal', plannedDate: null, publishedDate: null, patreonUrl: null,
       });
       const otherRelId = db.prepare(`
-        INSERT INTO releases (project_id, title, description, notes, status, planned_date, published_date, patreon_url)
-        VALUES (?, 'Other Release', '', '', 'tbd', NULL, NULL, NULL)
+        INSERT INTO releases (project_id, title, description, notes, planned_date, published_date, patreon_url)
+        VALUES (?, 'Other Release', '', '', NULL, NULL, NULL)
         RETURNING id
       `).get(otherProject.id).id;
       const myRelId = db.prepare(`
-        INSERT INTO releases (project_id, title, description, notes, status, planned_date, published_date, patreon_url)
-        VALUES (?, 'My Release', '', '', 'tbd', NULL, NULL, NULL)
+        INSERT INTO releases (project_id, title, description, notes, planned_date, published_date, patreon_url)
+        VALUES (?, 'My Release', '', '', NULL, NULL, NULL)
         RETURNING id
       `).get(projectId).id;
 
@@ -2092,13 +2092,13 @@ describe('asset repository', () => {
 
     it('rendered usage count equals rendered release references', () => {
       const r1Id = db.prepare(`
-        INSERT INTO releases (project_id, title, description, notes, status, planned_date, published_date, patreon_url)
-        VALUES (?, 'R1', '', '', 'tbd', NULL, NULL, NULL)
+        INSERT INTO releases (project_id, title, description, notes, planned_date, published_date, patreon_url)
+        VALUES (?, 'R1', '', '', NULL, NULL, NULL)
         RETURNING id
       `).get(projectId).id;
       const r2Id = db.prepare(`
-        INSERT INTO releases (project_id, title, description, notes, status, planned_date, published_date, patreon_url)
-        VALUES (?, 'R2', '', '', 'tbd', NULL, NULL, NULL)
+        INSERT INTO releases (project_id, title, description, notes, planned_date, published_date, patreon_url)
+        VALUES (?, 'R2', '', '', NULL, NULL, NULL)
         RETURNING id
       `).get(projectId).id;
 

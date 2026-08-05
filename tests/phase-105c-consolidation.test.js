@@ -23,8 +23,6 @@ import { createApp } from '../src/app.js';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { STATUS_DIR_MAP } from '../src/storage/project-storage.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
-import { createReleaseService } from '../src/services/release-service.js';
-import { evaluateReleaseReadiness } from '../src/services/release-readiness-policy.js';
 import { ensureAuthEnablement } from '../src/auth/auth-state.js';
 import { getDisabledModeCsrf } from './helpers/auth.js';
 
@@ -201,7 +199,6 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
       const createRes = await agent.post('/releases')
         .send(`projectId=${projectId}`)
         .send('title=Archived+Release+Badge')
-        .send('status=tbd')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
@@ -216,14 +213,14 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
 
   // ─── 2. Status badges and date display ──────────────────────────────
 
-  describe('release status and date display', () => {
-    const statuses = ['tbd', 'planned', 'in-progress', 'ready', 'cancelled'];
+  describe('project status and date display', () => {
+    const projectStatuses = ['tbd', 'planned', 'in-progress', 'ready'];
 
-    for (const status of statuses) {
-      it(`renders "${status}" with status-badge in release list`, async () => {
+    for (const projectStatus of projectStatuses) {
+      it(`renders "${projectStatus}" with status-badge in release list`, async () => {
         const projRes = await agent.post('/projects')
-          .send(`title=Status+${status}+Release`)
-          .send('status=tbd')
+          .send(`title=Status+${projectStatus}+Release`)
+          .send(`status=${projectStatus}`)
           .send('priority=normal')
           .set('Content-Type', 'application/x-www-form-urlencoded')
           .send('_csrf=' + encodeURIComponent(csrfToken))
@@ -232,8 +229,7 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
 
         await agent.post('/releases')
           .send(`projectId=${projectId}`)
-          .send(`title=Release+Status+${status}`)
-          .send(`status=${status}`)
+          .send(`title=Release+Status+${projectStatus}`)
           .set('Content-Type', 'application/x-www-form-urlencoded')
           .send('_csrf=' + encodeURIComponent(csrfToken))
           .expect(302);
@@ -246,7 +242,7 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
     it('renders "published" with status-badge after publishing', async () => {
       const projRes = await agent.post('/projects')
         .send('title=Status+Published+Release')
-        .send('status=tbd')
+        .send('status=ready')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .send('_csrf=' + encodeURIComponent(csrfToken))
@@ -262,9 +258,9 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
 
       // Add an asset so it can be published
       const slug = 'status-published-release';
-      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
+      const entries = fs.readdirSync(path.join(projectsRoot, 'ready'));
       const matching = entries.filter(e => e.endsWith(`-${slug}`));
-      fs.writeFileSync(path.join(projectsRoot, 'tbd', matching[0], 'test.txt'), 'hello');
+      fs.writeFileSync(path.join(projectsRoot, 'ready', matching[0], 'test.txt'), 'hello');
       await agent.post(`/projects/${projectId}/scan`).send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
@@ -281,26 +277,23 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
         .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
-      // The create/edit form no longer submits status; promote to ready via
-      // the service so the publish action can succeed.
-      const releaseId = Number(relRes.headers.location.replace('/releases/', ''));
-      const releaseService = createReleaseService({ db, evaluateReleaseReadiness });
-      releaseService.updateRelease(releaseId, {
-        title: 'Release Status published',
-        status: 'ready',
-      });
-
-      await agent.post(`${relRes.headers.location}/publish`)
+      const publishRes = await agent.post(`${relRes.headers.location}/publish`)
         .send('publishedDate=2026-08-01')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
-      const res = await agent.get('/release-management').expect(200);
+      expect(publishRes.headers.location).toBe(relRes.headers.location);
+      expect(db.prepare('SELECT published_date FROM releases WHERE id = ?').get(
+        Number(relRes.headers.location.replace('/releases/', '')),
+      ).published_date).toBe('2026-08-01');
+
+      const res = await agent.get('/release-management?view=board').expect(200);
       expect(res.text).toContain('status-badge--published');
+      expect(res.text).toContain('Release Status published');
     });
 
-    it('release detail uses status-badge for release status', async () => {
+    it('release detail uses status-badge for project status', async () => {
       const projRes = await agent.post('/projects')
         .send('title=Detail+Status+Badge')
         .send('status=tbd')
@@ -340,7 +333,6 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
       const createRes = await agent.post('/releases')
         .send(`projectId=${projectId}`)
         .send('title=H1+Detail+Release')
-        .send('status=tbd')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
@@ -362,7 +354,6 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
       const createRes = await agent.post('/releases')
         .send(`projectId=${projectId}`)
         .send('title=Action+Test+Release')
-        .send('status=tbd')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
@@ -385,7 +376,6 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
       const createRes = await agent.post('/releases')
         .send(`projectId=${projectId}`)
         .send('title=Archived+Release+No+Danger')
-        .send('status=tbd')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
@@ -410,7 +400,6 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
       const createRes = await agent.post('/releases')
         .send(`projectId=${projectId}`)
         .send('title=Notice+Release')
-        .send('status=tbd')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
@@ -436,7 +425,6 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
       const createRes = await agent.post('/releases')
         .send(`projectId=${projectId}`)
         .send('title=Panel+Release')
-        .send('status=ready')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
@@ -468,7 +456,6 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
       const createRes = await agent.post('/releases')
         .send(`projectId=${projectId}`)
         .send('title=Table+Release')
-        .send('status=tbd')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
@@ -650,7 +637,6 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
       const relRes = await agent.post('/releases')
         .send(`projectId=${projectId}`)
         .send('title=Asset+Heading+Release')
-        .send('status=tbd')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
@@ -673,7 +659,6 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
       const relRes = await agent.post('/releases')
         .send(`projectId=${projectId}`)
         .send('title=Archived+Asset+Release')
-        .send('status=tbd')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
@@ -712,7 +697,6 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
       const relRes = await agent.post('/releases')
         .send(`projectId=${projectId}`)
         .send('title=Asset+Table+Release')
-        .send('status=tbd')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
@@ -768,7 +752,6 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
       const relRes = await agent.post('/releases')
         .send(`projectId=${projectId}`)
         .send('title=Asset+Empty+Release')
-        .send('status=tbd')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
@@ -790,7 +773,6 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
       const relRes = await agent.post('/releases')
         .send(`projectId=${projectId}`)
         .send('title=Asset+Filter+Release')
-        .send('status=tbd')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
@@ -822,7 +804,7 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
     it('release list and project list use the same status-badge partial', async () => {
       const projRes = await agent.post('/projects')
         .send('title=Badge+Consistency')
-        .send('status=tbd')
+        .send('status=in-progress')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .send('_csrf=' + encodeURIComponent(csrfToken))
@@ -832,7 +814,6 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
       await agent.post('/releases')
         .send(`projectId=${projectId}`)
         .send('title=Badge+Release')
-        .send('status=in-progress')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
@@ -883,7 +864,6 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
       const createRes = await agent.post('/releases')
         .send(`projectId=${projectId}`)
         .send('title=NoJS+Archive+Release')
-        .send('status=tbd')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);

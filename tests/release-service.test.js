@@ -38,7 +38,6 @@ function validInput(overrides = {}) {
     title: 'Test Release',
     description: '',
     notes: '',
-    status: 'tbd',
     plannedDate: null,
     patreonUrl: null,
     ...overrides,
@@ -62,7 +61,7 @@ function sampleAsset(projectId, overrides = {}) {
  * readiness policy. Returns { release, asset }.
  */
 function createPublishableRelease(service, assetRepo, projectId, inputOverrides = {}) {
-  const release = service.createRelease(projectId, validInput({ status: 'ready', ...inputOverrides }));
+  const release = service.createRelease(projectId, validInput(inputOverrides));
   const asset = assetRepo.upsert(projectId, 'pub-asset.txt', sampleAsset(projectId, { relativePath: 'pub-asset.txt' }));
   service.selectAssets(release.id, [{ assetId: asset.id, role: 'primary', sortOrder: 0 }]);
   return { release, asset };
@@ -93,6 +92,7 @@ describe('release service', () => {
     categoryRepo = createAssetCategoryRepository(db);
     const project = projectRepo.create(sampleProject({ title: 'Parent Project' }));
     projectId = project.id;
+    db.prepare("UPDATE projects SET status = 'ready' WHERE id = ?").run(projectId);
   });
 
   afterEach(() => {
@@ -107,23 +107,38 @@ describe('release service', () => {
       expect(release.project_id).toBe(projectId);
     });
 
-    it('defaults missing status and stores scheduled date and time separately', () => {
+    it('ignores an obsolete submitted status and stores scheduled date and time separately', () => {
       const input = validInput({
         title: 'Scheduled Release',
+        status: 'obsolete',
         plannedDate: '2026-08-15',
         plannedTime: '09:45',
       });
-      delete input.status;
 
       const release = service.createRelease(projectId, input);
 
-      expect(release.status).toBe('tbd');
+      expect(release).not.toHaveProperty('status');
       expect(release.planned_date).toBe('2026-08-15');
       expect(release.planned_time).toBe('09:45');
       expect(snapshotReleaseRow(db, release.id)).toMatchObject({
         planned_date: '2026-08-15',
         planned_time: '09:45',
       });
+      expect(snapshotReleaseRow(db, release.id)).not.toHaveProperty('status');
+    });
+
+    it('does not pass an obsolete status property to repository create or update', () => {
+      const createSpy = vi.spyOn(service.repository, 'create');
+      const created = service.createRelease(projectId, validInput({ status: 'stale' }));
+      const createInput = createSpy.mock.calls[0][0];
+
+      expect(createInput).not.toHaveProperty('status');
+
+      const updateSpy = vi.spyOn(service.repository, 'update');
+      service.updateRelease(created.id, validInput({ title: 'Updated', status: 'stale-again' }));
+      const updateInput = updateSpy.mock.calls[0][1];
+
+      expect(updateInput).not.toHaveProperty('status');
     });
 
     it('rejects an invalid scheduled time', () => {
@@ -161,18 +176,6 @@ describe('release service', () => {
     it('rejects title that is only whitespace', () => {
       expect(() => {
         service.createRelease(projectId, validInput({ title: '   ' }));
-      }).toThrow(ReleaseValidationError);
-    });
-
-    it('rejects invalid status', () => {
-      expect(() => {
-        service.createRelease(projectId, validInput({ status: 'invalid' }));
-      }).toThrow(ReleaseValidationError);
-    });
-
-    it.each(['idea', 'drafting'])('rejects legacy status "%s"', (status) => {
-      expect(() => {
-        service.createRelease(projectId, validInput({ status }));
       }).toThrow(ReleaseValidationError);
     });
 
@@ -259,7 +262,7 @@ describe('release service', () => {
       return assetRepo.upsert(project, filename, data);
     }
 
-    it('creates exactly one tbd release titled from the project category', () => {
+    it('creates exactly one release titled from the project category without a status field', () => {
       const category = addCategory(projectId, 'Launch Assets', 'launch-assets');
 
       const release = service.createReleaseFromCategory(projectId, category.id);
@@ -267,8 +270,8 @@ describe('release service', () => {
       expect(release).toMatchObject({
         project_id: projectId,
         title: 'Launch Assets',
-        status: 'tbd',
       });
+      expect(release).not.toHaveProperty('status');
       expect(release.id).toBeTruthy();
       expect(service.listReleases(projectId, { includeArchived: true })).toHaveLength(1);
     });
@@ -366,10 +369,10 @@ describe('release service', () => {
         expect(release).toMatchObject({
           project_id: projectId,
           title: 'Parent Project',
-          status: 'tbd',
           planned_date: '2026-08-04',
           planned_time: '14:30',
         });
+        expect(release).not.toHaveProperty('status');
         expect(service.listReleaseAssets(release.id).map((asset) => ({
           asset_id: asset.asset_id,
           role: asset.role,
@@ -420,6 +423,24 @@ describe('release service', () => {
     });
   });
 
+  describe('createReleaseWithSelectedAssets', () => {
+    it('creates an ordered selected-assets release atomically without a status field', () => {
+      const first = assetRepo.upsert(projectId, 'first.txt', sampleAsset(projectId, { relativePath: 'first.txt' }));
+      const second = assetRepo.upsert(projectId, 'second.txt', sampleAsset(projectId, { relativePath: 'second.txt' }));
+      const createSpy = vi.spyOn(service.repository, 'createWithAssetSelections');
+
+      const release = service.createReleaseWithSelectedAssets(
+        projectId,
+        validInput({ title: 'Selected Assets', status: 'published' }),
+        [second.id, first.id],
+      );
+
+      expect(release).not.toHaveProperty('status');
+      expect(createSpy.mock.calls[0][0]).not.toHaveProperty('status');
+      expect(service.listReleaseAssets(release.id).map((asset) => asset.asset_id)).toEqual([second.id, first.id]);
+    });
+  });
+
   describe('updateRelease', () => {
     it('updates a release', () => {
       const created = service.createRelease(projectId, validInput({ title: 'Original' }));
@@ -427,25 +448,25 @@ describe('release service', () => {
       expect(updated.title).toBe('Updated');
     });
 
-    it('preserves status when an update omits status and persists the new schedule', () => {
+    it('updates metadata when status is omitted and ignores an obsolete submitted status', () => {
       const created = service.createRelease(projectId, validInput({
         title: 'Original',
-        status: 'planned',
         plannedDate: '2026-08-01',
         plannedTime: '08:00',
       }));
       const input = validInput({
         title: 'Updated',
+        status: 'obsolete',
         plannedDate: '2026-08-15',
         plannedTime: '09:45',
       });
-      delete input.status;
 
       const updated = service.updateRelease(created.id, input);
 
-      expect(updated.status).toBe('planned');
+      expect(updated).not.toHaveProperty('status');
       expect(updated.planned_date).toBe('2026-08-15');
       expect(updated.planned_time).toBe('09:45');
+      expect(snapshotReleaseRow(db, created.id)).not.toHaveProperty('status');
     });
 
     it('throws ReleaseNotFoundError for non-existent id', () => {
@@ -460,13 +481,6 @@ describe('release service', () => {
       expect(() => {
         service.updateRelease(created.id, validInput({ title: 'Should Fail' }));
       }).toThrow(ReleaseParentArchivedError);
-    });
-
-    it('rejects invalid status on update', () => {
-      const created = service.createRelease(projectId, validInput());
-      expect(() => {
-        service.updateRelease(created.id, validInput({ status: 'invalid' }));
-      }).toThrow(ReleaseValidationError);
     });
 
     it('throws ReleaseArchivedError when updating an archived release', () => {
@@ -486,18 +500,18 @@ describe('release service', () => {
     }
 
     it('publishes a release with default date (today)', () => {
-      const created = service.createRelease(projectId, validInput({ status: 'ready' }));
+      const created = service.createRelease(projectId, validInput());
       selectAssetForRelease(created.id);
       const published = service.publishRelease(created.id);
-      expect(published.status).toBe('published');
+      expect(published).not.toHaveProperty('status');
       expect(published.published_date).toBeTruthy();
     });
 
     it('publishes a release with specified date', () => {
-      const created = service.createRelease(projectId, validInput({ status: 'ready' }));
+      const created = service.createRelease(projectId, validInput());
       selectAssetForRelease(created.id);
       const published = service.publishRelease(created.id, '2025-06-15');
-      expect(published.status).toBe('published');
+      expect(published).not.toHaveProperty('status');
       expect(published.published_date).toBe('2025-06-15');
     });
 
@@ -508,7 +522,7 @@ describe('release service', () => {
     });
 
     it('throws if release is already published', () => {
-      const created = service.createRelease(projectId, validInput({ status: 'ready' }));
+      const created = service.createRelease(projectId, validInput());
       selectAssetForRelease(created.id);
       service.publishRelease(created.id);
       const before = snapshotReleaseRow(db, created.id);
@@ -518,11 +532,13 @@ describe('release service', () => {
       expect(snapshotReleaseRow(db, created.id)).toEqual(before);
     });
 
-    it('throws if release is cancelled', () => {
-      const created = service.createRelease(projectId, validInput({ status: 'cancelled' }));
+    it('throws if the owning project is not ready', () => {
+      db.prepare("UPDATE projects SET status = 'tbd' WHERE id = ?").run(projectId);
+      const created = service.createRelease(projectId, validInput());
       expect(() => {
         service.publishRelease(created.id);
       }).toThrow(ReleaseValidationError);
+      expect(snapshotReleaseRow(db, created.id).published_date).toBeNull();
     });
 
     it('throws if release is archived', () => {
@@ -534,7 +550,7 @@ describe('release service', () => {
     });
 
     it('throws for invalid published date', () => {
-      const created = service.createRelease(projectId, validInput({ status: 'ready' }));
+      const created = service.createRelease(projectId, validInput());
       selectAssetForRelease(created.id);
       expect(() => {
         service.publishRelease(created.id, 'invalid');
@@ -544,25 +560,22 @@ describe('release service', () => {
       }).toThrow(ReleaseValidationError);
     });
 
-    it('throws if release is not ready', () => {
-      const statuses = ['tbd', 'planned', 'in-progress', 'cancelled'];
-      for (const status of statuses) {
-        const created = service.createRelease(projectId, validInput({
-          title: `Non-Ready ${status} Release`,
-          description: `Description before ${status} rejection`,
-          notes: `Notes before ${status} rejection`,
-          status,
-          plannedDate: '2025-06-15',
-          patreonUrl: 'https://patreon.com/creator',
-        }));
-        const before = snapshotReleaseRow(db, created.id);
+    it('does not publish a release when its project is not ready', () => {
+      db.prepare("UPDATE projects SET status = 'tbd' WHERE id = ?").run(projectId);
+      const created = service.createRelease(projectId, validInput({
+        title: 'Non-Ready Project Release',
+        description: 'Description before rejection',
+        notes: 'Notes before rejection',
+        plannedDate: '2025-06-15',
+        patreonUrl: 'https://patreon.com/creator',
+      }));
+      const before = snapshotReleaseRow(db, created.id);
 
-        expect(() => {
-          service.publishRelease(created.id);
-        }).toThrow(ReleaseValidationError);
+      expect(() => {
+        service.publishRelease(created.id);
+      }).toThrow(ReleaseValidationError);
 
-        expect(snapshotReleaseRow(db, created.id)).toEqual(before);
-      }
+      expect(snapshotReleaseRow(db, created.id)).toEqual(before);
     });
 
     // ─── Phase 7C-1: Readiness enforcement ────────────────────────────────
@@ -572,7 +585,6 @@ describe('release service', () => {
         title: 'Zero Asset Release',
         description: 'Description before rejection',
         notes: 'Notes before rejection',
-        status: 'ready',
         plannedDate: '2025-06-15',
         patreonUrl: 'https://patreon.com/creator',
       }));
@@ -639,11 +651,11 @@ describe('release service', () => {
     });
 
     it('rejects publish for a non-ready release without changing the complete release row', () => {
+      db.prepare("UPDATE projects SET status = 'tbd' WHERE id = ?").run(projectId);
       const created = service.createRelease(projectId, validInput({
         title: 'Non-Ready Release',
         description: 'Description before non-ready rejection',
         notes: 'Notes before non-ready rejection',
-        status: 'planned',
         plannedDate: '2025-06-15',
         patreonUrl: 'https://patreon.com/creator',
       }));
@@ -662,7 +674,6 @@ describe('release service', () => {
         title: 'Multiple Blockers Release',
         description: 'Description before multiple-blocker rejection',
         notes: 'Notes before multiple-blocker rejection',
-        status: 'ready',
         plannedDate: '2025-06-15',
         patreonUrl: 'https://patreon.com/creator',
       }));
@@ -679,7 +690,7 @@ describe('release service', () => {
     it('reports readiness blockers when publish is rejected', () => {
       // Create a ready release with no assets — readiness check runs and
       // reports the assets_selected blocker.
-      const created = service.createRelease(projectId, validInput({ status: 'ready' }));
+      const created = service.createRelease(projectId, validInput());
       const before = snapshotReleaseRow(db, created.id);
       try {
         service.publishRelease(created.id);
@@ -699,7 +710,6 @@ describe('release service', () => {
         title: 'Readiness Failure Release',
         description: 'Description before readiness failure',
         notes: 'Notes before readiness failure',
-        status: 'ready',
         plannedDate: '2025-06-15',
         patreonUrl: 'https://patreon.com/creator',
       }));
@@ -720,7 +730,7 @@ describe('release service', () => {
       expect(expectedFacts).toEqual({
         release_id: release.id,
         project_id: projectId,
-        release_status: 'ready',
+        project_status: 'ready',
         release_archived_at: null,
         project_archived_at: null,
         selected_asset_count: 1,
@@ -743,7 +753,7 @@ describe('release service', () => {
 
       const published = publishingService.publishRelease(release.id, '2025-06-15');
 
-      expect(published.status).toBe('published');
+      expect(published).not.toHaveProperty('status');
       expect(evaluateReleaseReadinessSpy).toHaveBeenCalledTimes(1);
       expect(evaluateReleaseReadinessSpy).toHaveBeenCalledWith(expectedFacts);
     });
@@ -751,13 +761,12 @@ describe('release service', () => {
     it('calls the shared readiness policy exactly once for blocked publication', () => {
       const created = service.createRelease(projectId, validInput({
         title: 'Spy Blocked Release',
-        status: 'ready',
       }));
       const expectedFacts = service.repository.findReadinessFactsById(created.id);
       expect(expectedFacts).toEqual({
         release_id: created.id,
         project_id: projectId,
-        release_status: 'ready',
+        project_status: 'ready',
         release_archived_at: null,
         project_archived_at: null,
         selected_asset_count: 0,
@@ -813,10 +822,11 @@ describe('release service', () => {
       }).toThrow(ReleaseArchivedError);
     });
 
-    it('does not change status when archiving', () => {
-      const created = service.createRelease(projectId, validInput({ status: 'planned' }));
+    it('archives without exposing a release-owned status field', () => {
+      const created = service.createRelease(projectId, validInput());
       const archived = service.archiveRelease(created.id);
-      expect(archived.status).toBe('planned');
+      expect(archived).not.toHaveProperty('status');
+      expect(archived.archived_at).toBeTruthy();
     });
   });
 
@@ -1366,12 +1376,14 @@ describe('release service', () => {
       expect(releases).toHaveLength(2);
     });
 
-    it('filters by status', () => {
-      service.createRelease(projectId, validInput({ title: 'Idea', status: 'tbd' }));
-      service.createRelease(projectId, validInput({ title: 'Planned', status: 'planned' }));
-      const planned = service.listReleases(projectId, { status: 'planned' });
-      expect(planned).toHaveLength(1);
-      expect(planned[0].status).toBe('planned');
+    it('ignores an obsolete release-status filter without exposing release status', () => {
+      service.createRelease(projectId, validInput({ title: 'First' }));
+      service.createRelease(projectId, validInput({ title: 'Second' }));
+      const releases = service.listReleases(projectId, { status: 'planned' });
+
+      expect(releases).toHaveLength(2);
+      expect(releases.every((release) => release.project_status === 'ready')).toBe(true);
+      expect(releases.every((release) => !Object.hasOwn(release, 'status'))).toBe(true);
     });
 
     it('excludes archived releases by default', () => {
@@ -1392,26 +1404,6 @@ describe('release service', () => {
     });
   });
 
-  describe('countByStatus (service)', () => {
-    it('returns counts of releases by status', () => {
-      service.createRelease(projectId, validInput({ title: 'Idea 1', status: 'tbd' }));
-      service.createRelease(projectId, validInput({ title: 'Idea 2', status: 'tbd' }));
-      service.createRelease(projectId, validInput({ title: 'Planned 1', status: 'planned' }));
-      const counts = service.countByStatus();
-      expect(counts.tbd).toBe(2);
-      expect(counts.planned).toBe(1);
-      expect(counts['in-progress']).toBe(0);
-    });
-
-    it('excludes archived releases from count', () => {
-      const r1 = service.createRelease(projectId, validInput({ status: 'tbd' }));
-      service.createRelease(projectId, validInput({ status: 'tbd' }));
-      service.archiveRelease(r1.id);
-      const counts = service.countByStatus();
-      expect(counts.tbd).toBe(1);
-    });
-  });
-
   describe('upcomingReleases (service)', () => {
     it('returns releases with future planned_date sorted asc', () => {
       const today = new Date();
@@ -1422,8 +1414,8 @@ describe('release service', () => {
       const fmt = (d) => d.toISOString().split('T')[0];
       const todayIso = fmt(today);
 
-      service.createRelease(projectId, validInput({ title: 'Later', plannedDate: fmt(future2), status: 'planned' }));
-      service.createRelease(projectId, validInput({ title: 'Sooner', plannedDate: fmt(future1), status: 'planned' }));
+      service.createRelease(projectId, validInput({ title: 'Later', plannedDate: fmt(future2) }));
+      service.createRelease(projectId, validInput({ title: 'Sooner', plannedDate: fmt(future1) }));
       const upcoming = service.upcomingReleases(todayIso);
       expect(upcoming[0].title).toBe('Sooner');
       expect(upcoming[1].title).toBe('Later');
@@ -1435,7 +1427,7 @@ describe('release service', () => {
       future.setDate(future.getDate() + 30);
       const fmt = (d) => d.toISOString().split('T')[0];
       const todayIso = fmt(today);
-      const r1 = service.createRelease(projectId, validInput({ title: 'Archived', plannedDate: fmt(future), status: 'planned' }));
+      const r1 = service.createRelease(projectId, validInput({ title: 'Archived', plannedDate: fmt(future) }));
       service.archiveRelease(r1.id);
       const upcoming = service.upcomingReleases(todayIso);
       expect(upcoming).toHaveLength(0);
@@ -1449,7 +1441,7 @@ describe('release service', () => {
       past.setDate(past.getDate() - 10);
       const fmt = (d) => d.toISOString().split('T')[0];
       const todayIso = fmt(today);
-      service.createRelease(projectId, validInput({ title: 'Overdue', plannedDate: fmt(past), status: 'planned' }));
+      service.createRelease(projectId, validInput({ title: 'Overdue', plannedDate: fmt(past) }));
       const overdue = service.overdueReleases(todayIso);
       expect(overdue).toHaveLength(1);
       expect(overdue[0].title).toBe('Overdue');
@@ -1461,7 +1453,7 @@ describe('release service', () => {
       past.setDate(past.getDate() - 10);
       const fmt = (d) => d.toISOString().split('T')[0];
       const todayIso = fmt(today);
-      const r1 = service.createRelease(projectId, validInput({ title: 'Archived', plannedDate: fmt(past), status: 'planned' }));
+      const r1 = service.createRelease(projectId, validInput({ title: 'Archived', plannedDate: fmt(past) }));
       service.archiveRelease(r1.id);
       const overdue = service.overdueReleases(todayIso);
       expect(overdue).toHaveLength(0);
@@ -1657,7 +1649,7 @@ describe('release service', () => {
 
   describe('published release asset-selection lock', () => {
     function createPublishedRelease() {
-      const release = service.createRelease(projectId, validInput({ status: 'ready' }));
+      const release = service.createRelease(projectId, validInput());
       const asset = assetRepo.upsert(projectId, 'pub-lock.txt', sampleAsset(projectId, { relativePath: 'pub-lock.txt' }));
       service.selectAssets(release.id, [{ assetId: asset.id, role: 'primary', sortOrder: 0 }]);
       const published = service.publishRelease(release.id, '2025-06-15');
@@ -1750,7 +1742,7 @@ describe('release service', () => {
     });
 
     it('preserves current behavior for non-published releases (ready)', () => {
-      const release = service.createRelease(projectId, validInput({ status: 'ready' }));
+      const release = service.createRelease(projectId, validInput());
       const asset = assetRepo.upsert(projectId, 'ready-asset.txt', sampleAsset(projectId, { relativePath: 'ready-asset.txt' }));
       service.selectAssets(release.id, [{ assetId: asset.id, role: 'primary', sortOrder: 0 }]);
 
@@ -1761,11 +1753,11 @@ describe('release service', () => {
       expect(rows).toHaveLength(2);
     });
 
-    it('preserves current behavior for cancelled releases', () => {
-      const release = service.createRelease(projectId, validInput({ status: 'cancelled' }));
-      const asset = assetRepo.upsert(projectId, 'cancelled-asset.txt', sampleAsset(projectId, { relativePath: 'cancelled-asset.txt' }));
+    it('preserves current behavior for unpublished releases', () => {
+      const release = service.createRelease(projectId, validInput());
+      const asset = assetRepo.upsert(projectId, 'unpublished-asset.txt', sampleAsset(projectId, { relativePath: 'unpublished-asset.txt' }));
 
-      // Should not throw — cancelled releases are not locked by this guard
+      // Should not throw — unpublished releases are not locked by this guard
       service.selectAssets(release.id, [{ assetId: asset.id, role: 'primary', sortOrder: 0 }]);
       const rows = snapshotReleaseAssets(release.id);
       expect(rows).toHaveLength(1);
@@ -1843,77 +1835,6 @@ describe('release service', () => {
     });
   });
 
-  describe('lifecycle transitions', () => {
-    it('createRelease rejects status=published', () => {
-      expect(() => {
-        service.createRelease(projectId, validInput({
-          status: 'published',
-          publishedDate: '2025-06-15',
-        }));
-      }).toThrow(ReleaseValidationError);
-    });
-
-    it('createRelease allows status=cancelled (historical/imported releases)', () => {
-      // Cancelled is allowed as initial status for imported/historical releases
-      const release = service.createRelease(projectId, validInput({ status: 'cancelled' }));
-      expect(release.status).toBe('cancelled');
-    });
-
-    it('updateRelease rejects transition to status=published', () => {
-      const created = service.createRelease(projectId, validInput({ status: 'tbd' }));
-      expect(() => {
-        service.updateRelease(created.id, validInput({
-          status: 'published',
-          publishedDate: '2025-07-01',
-        }));
-      }).toThrow(ReleaseValidationError);
-    });
-
-    it('updateRelease rejects transition from cancelled to any other status', () => {
-      const created = service.createRelease(projectId, validInput({ status: 'cancelled' }));
-      // Try to move from cancelled to tbd
-      expect(() => {
-        service.updateRelease(created.id, validInput({ status: 'tbd' }));
-      }).toThrow(ReleaseValidationError);
-      // Try to move from cancelled to ready
-      expect(() => {
-        service.updateRelease(created.id, validInput({ status: 'ready' }));
-      }).toThrow(ReleaseValidationError);
-    });
-
-    it('updateRelease rejects transition from published to any other status', () => {
-      const { release: created } = createPublishableRelease(service, assetRepo, projectId);
-      service.publishRelease(created.id);
-      // Try to move from published back to ready
-      expect(() => {
-        service.updateRelease(created.id, validInput({ status: 'ready' }));
-      }).toThrow(ReleaseValidationError);
-    });
-
-    it('updateRelease allows valid transitions', () => {
-      const created = service.createRelease(projectId, validInput({ status: 'tbd' }));
-      // tbd → planned
-      let updated = service.updateRelease(created.id, validInput({ status: 'planned' }));
-      expect(updated.status).toBe('planned');
-      // planned → in-progress
-      updated = service.updateRelease(created.id, validInput({ status: 'in-progress' }));
-      expect(updated.status).toBe('in-progress');
-      // in-progress → ready
-      updated = service.updateRelease(created.id, validInput({ status: 'ready' }));
-      expect(updated.status).toBe('ready');
-      // ready → cancelled
-      updated = service.updateRelease(created.id, validInput({ status: 'cancelled' }));
-      expect(updated.status).toBe('cancelled');
-    });
-
-    it('createRelease allows valid initial statuses', () => {
-      for (const status of ['tbd', 'planned', 'in-progress', 'ready', 'cancelled']) {
-        const release = service.createRelease(projectId, validInput({ status }));
-        expect(release.status).toBe(status);
-      }
-    });
-  });
-
   describe('upcomingReleases excludes past dates', () => {
     it('excludes releases with past planned_date', () => {
       const today = new Date();
@@ -1922,49 +1843,32 @@ describe('release service', () => {
       const fmt = (d) => d.toISOString().split('T')[0];
       const todayIso = fmt(today);
 
-      service.createRelease(projectId, validInput({ title: 'Past Release', plannedDate: fmt(past), status: 'planned' }));
+      service.createRelease(projectId, validInput({ title: 'Past Release', plannedDate: fmt(past) }));
       const upcoming = service.upcomingReleases(todayIso);
       expect(upcoming).toHaveLength(0);
     });
 
     it('excludes releases with today as planned_date', () => {
       const today = '2025-06-15';
-      service.createRelease(projectId, validInput({ title: 'Today Release', plannedDate: today, status: 'planned' }));
+      service.createRelease(projectId, validInput({ title: 'Today Release', plannedDate: today }));
       const upcoming = service.upcomingReleases(today);
       expect(upcoming).toHaveLength(0);
     });
 
-    it('excludes cancelled releases', () => {
-      const today = new Date();
-      const future = new Date(today);
-      future.setDate(future.getDate() + 30);
-      const fmt = (d) => d.toISOString().split('T')[0];
-      const todayIso = fmt(today);
-
-      service.createRelease(projectId, validInput({ title: 'Cancelled Future', plannedDate: fmt(future), status: 'cancelled' }));
-      const upcoming = service.upcomingReleases(todayIso);
-      expect(upcoming).toHaveLength(0);
-    });
   });
 
-  // ─── Terminal release metadata behavior ─────────────────────────────────
-  //
-  // "Terminal" statuses are `published` and `cancelled`. They cannot transition
-  // to any other status (see lifecycle transitions above), but the user is
-  // still allowed to edit other metadata. These tests pin down the expected
-  // behavior of terminal releases so future changes cannot silently regress it.
+  // ─── Published release metadata behavior ────────────────────────────────
 
-  describe('terminal release metadata', () => {
+  describe('published release metadata', () => {
     it('allows updating the title of a published release', () => {
       const { release: created } = createPublishableRelease(service, assetRepo, projectId);
       const published = service.publishRelease(created.id, '2025-06-15');
 
       const updated = service.updateRelease(published.id, validInput({
         title: 'Edited Title',
-        status: 'published',
         publishedDate: '2025-06-15',
       }));
-      expect(updated.status).toBe('published');
+      expect(updated).not.toHaveProperty('status');
       expect(updated.title).toBe('Edited Title');
       expect(updated.published_date).toBe('2025-06-15');
     });
@@ -1975,69 +1879,20 @@ describe('release service', () => {
 
       const updated = service.updateRelease(published.id, validInput({
         description: 'Updated description after publish',
-        status: 'published',
         publishedDate: '2025-06-15',
       }));
-      expect(updated.status).toBe('published');
+      expect(updated).not.toHaveProperty('status');
       expect(updated.description).toBe('Updated description after publish');
     });
 
-    it('allows updating the title of a cancelled release', () => {
-      const created = service.createRelease(projectId, validInput({ status: 'cancelled' }));
-
-      const updated = service.updateRelease(created.id, validInput({
-        title: 'Cancelled But Edited',
-        status: 'cancelled',
-      }));
-      expect(updated.status).toBe('cancelled');
-      expect(updated.title).toBe('Cancelled But Edited');
-    });
-
-    it('archiving a published release preserves its published status and date', () => {
+    it('archiving a published release preserves its publication date', () => {
       const { release: created } = createPublishableRelease(service, assetRepo, projectId);
       const published = service.publishRelease(created.id, '2025-06-15');
 
       const archived = service.archiveRelease(published.id);
-      expect(archived.status).toBe('published');
+      expect(archived).not.toHaveProperty('status');
       expect(archived.published_date).toBe('2025-06-15');
       expect(archived.archived_at).toBeTruthy();
-    });
-
-    it('archiving a cancelled release preserves its cancelled status', () => {
-      const created = service.createRelease(projectId, validInput({ status: 'cancelled' }));
-
-      const archived = service.archiveRelease(created.id);
-      expect(archived.status).toBe('cancelled');
-      expect(archived.archived_at).toBeTruthy();
-    });
-
-    it('rejects status change for a published release even when other fields change', () => {
-      const { release: created } = createPublishableRelease(service, assetRepo, projectId);
-      const published = service.publishRelease(created.id);
-
-      // Any change to status away from 'published' must be rejected, even
-      // when the new title is otherwise valid.
-      for (const newStatus of ['tbd', 'planned', 'in-progress', 'ready', 'cancelled']) {
-        expect(() => {
-          service.updateRelease(published.id, validInput({
-            title: 'New Title',
-            status: newStatus,
-          }));
-        }).toThrow(ReleaseValidationError);
-      }
-    });
-
-    it('rejects status change for a cancelled release even when other fields change', () => {
-      const created = service.createRelease(projectId, validInput({ status: 'cancelled' }));
-
-      for (const newStatus of ['tbd', 'planned', 'in-progress', 'ready', 'published']) {
-        expect(() => {
-          service.updateRelease(created.id, validInput({
-            title: 'New Title',
-            status: newStatus,
-          }));
-        }).toThrow(ReleaseValidationError);
-      }
     });
   });
 
@@ -2055,15 +1910,14 @@ describe('release service', () => {
       expect(published.published_date).toBe('2025-12-15');
     });
 
-    it('overrides a previously-set published_date with the explicit publish date', () => {
+    it('treats a previously-set published_date as already published', () => {
       const { release: created } = createPublishableRelease(service, assetRepo, projectId);
       service.updateRelease(created.id, validInput({
-        status: 'ready',
         publishedDate: '2025-08-20',
       }));
 
-      const published = service.publishRelease(created.id, '2025-09-30');
-      expect(published.published_date).toBe('2025-09-30');
+      expect(() => service.publishRelease(created.id, '2025-09-30')).toThrow(ReleaseValidationError);
+      expect(snapshotReleaseRow(db, created.id).published_date).toBe('2025-08-20');
     });
 
     it('falls back to the application-local today when no date is provided', () => {
@@ -2505,15 +2359,15 @@ describe('release service', () => {
     });
   });
 
-  // ─── Phase 9-2: Lifecycle guard coverage for all new mutations ──────
+  // ─── Phase 9-2: Mutation guard coverage for all new mutations ──────
 
-  describe('Phase 9-2 lifecycle guards', () => {
+  describe('Phase 9-2 mutation guards', () => {
     function snapshotReleaseAssets(releaseId) {
       return db.prepare('SELECT release_id, asset_id, role, sort_order, created_at FROM release_assets WHERE release_id = ? ORDER BY sort_order ASC, asset_id ASC').all(releaseId);
     }
 
     function createPublishedRelease() {
-      const release = service.createRelease(projectId, validInput({ status: 'ready' }));
+      const release = service.createRelease(projectId, validInput());
       const asset = assetRepo.upsert(projectId, 'pub-lifecycle.txt', sampleAsset(projectId, { relativePath: 'pub-lifecycle.txt' }));
       service.selectAssets(release.id, [{ assetId: asset.id, role: 'primary', sortOrder: 0 }]);
       const published = service.publishRelease(release.id, '2025-06-15');
@@ -3224,89 +3078,6 @@ describe('release service', () => {
     });
   });
 
-  // ─── Phase 9-5: Cancelled-release policy contract ────────────────────
-
-  describe('Phase 9-5 cancelled-release policy contract', () => {
-    it('cancelled release remains asset-curatable (no ReadOnly guard)', () => {
-      // cancelled releases are NOT in the locked-lifecycle group.
-      // The guards (guardReleaseNotPublished, guardReleaseNotArchived,
-      // guardParentProjectNotArchived) only prevent mutations on
-      // published/archived states. A cancelled release is still editable
-      // — its status is terminal for transitions but not for asset curation.
-      const release = service.createRelease(projectId, validInput({ status: 'cancelled' }));
-      expect(release.status).toBe('cancelled');
-
-      // Verify asset operations still work on a cancelled release
-      const asset = assetRepo.upsert(projectId, 'cancelled-add.txt',
-        sampleAsset(projectId, { relativePath: 'cancelled-add.txt' })
-      );
-
-      // addCandidateAsset should succeed on a cancelled release
-      const added = service.addCandidateAsset(release.id, asset.id);
-      expect(added.asset_id).toBe(asset.id);
-      expect(added.role).toBe('attachment');
-    });
-
-    it('cancelled release can have assets removed', () => {
-      const release = service.createRelease(projectId, validInput());
-      const asset1 = assetRepo.upsert(projectId, 'cancel-rem-a.txt',
-        sampleAsset(projectId, { relativePath: 'cancel-rem-a.txt' })
-      );
-      const asset2 = assetRepo.upsert(projectId, 'cancel-rem-b.txt',
-        sampleAsset(projectId, { relativePath: 'cancel-rem-b.txt' })
-      );
-      service.addCandidateAsset(release.id, asset1.id);
-      service.addCandidateAsset(release.id, asset2.id);
-
-      // Transition to cancelled
-      service.updateRelease(release.id, validInput({ status: 'cancelled' }));
-
-      // Remove one asset should succeed
-      const removed = service.removeSelectedAsset(release.id, asset1.id);
-      expect(removed).toBe(true);
-      const remaining = service.listReleaseAssets(release.id);
-      expect(remaining).toHaveLength(1);
-      expect(remaining[0].asset_id).toBe(asset2.id);
-    });
-
-    it('cancelled release asset roles can be updated', () => {
-      const release = service.createRelease(projectId, validInput());
-      const asset = assetRepo.upsert(projectId, 'cancel-role.txt',
-        sampleAsset(projectId, { relativePath: 'cancel-role.txt' })
-      );
-      service.addCandidateAsset(release.id, asset.id);
-
-      service.updateRelease(release.id, validInput({ status: 'cancelled' }));
-
-      // Role update should succeed
-      const updated = service.updateAssetRole(release.id, asset.id, 'preview');
-      expect(updated).toBe(true);
-      const rows = service.listReleaseAssets(release.id);
-      expect(rows[0].role).toBe('preview');
-    });
-
-    it('cancelled release asset ordering can be changed', () => {
-      const release = service.createRelease(projectId, validInput());
-      const asset1 = assetRepo.upsert(projectId, 'cancel-ord-a.txt',
-        sampleAsset(projectId, { relativePath: 'cancel-ord-a.txt' })
-      );
-      const asset2 = assetRepo.upsert(projectId, 'cancel-ord-b.txt',
-        sampleAsset(projectId, { relativePath: 'cancel-ord-b.txt' })
-      );
-      service.addCandidateAsset(release.id, asset1.id);
-      service.addCandidateAsset(release.id, asset2.id);
-
-      service.updateRelease(release.id, validInput({ status: 'cancelled' }));
-
-      // Move-down should succeed on a cancelled release
-      const moved = service.moveAssetDown(release.id, asset1.id);
-      expect(moved).toBe(true);
-      const rows = service.listReleaseAssets(release.id);
-      expect(rows[0].asset_id).toBe(asset2.id);
-      expect(rows[1].asset_id).toBe(asset1.id);
-    });
-  });
-
   // ─── Phase 3 chunk 3: addAssetsToRelease (bulk browser association) ─────
 
   describe('addAssetsToRelease', () => {
@@ -3435,8 +3206,8 @@ describe('release service', () => {
       expect(asset.id).toBeGreaterThan(0);
     });
 
-    it('permits mutation on a cancelled release, matching existing curation policy', () => {
-      const release = service.createRelease(projectId, validInput({ title: 'Cancelled', status: 'cancelled' }));
+    it('permits mutation on an unpublished release', () => {
+      const release = service.createRelease(projectId, validInput({ title: 'Unpublished' }));
       const a1 = presentAsset({ relativePath: 'a.txt' });
 
       const result = service.addAssetsToRelease(release.id, projectId, [a1.id]);
