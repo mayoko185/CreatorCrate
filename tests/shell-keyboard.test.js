@@ -134,7 +134,7 @@ describe('Phase 10.6A: keyboard and focus-state hardening', () => {
     const relRes = await agent
       .post('/releases')
       .type('form')
-      .send({ projectId, title: 'Keyboard Test Release', status: 'idea', _csrf: csrfToken })
+      .send({ projectId, title: 'Keyboard Test Release', status: 'tbd', _csrf: csrfToken })
       .expect(302);
     releaseLocation = relRes.headers.location;
   });

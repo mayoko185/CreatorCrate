@@ -72,7 +72,7 @@
 
     <div class="board-scroll" tabindex="0" aria-label="Release board columns">
       <div class="board-container">
-        {% for status in ['idea', 'planned', 'drafting', 'ready', 'published', 'cancelled'] %}
+        {% for status in ['tbd', 'planned', 'in-progress', 'ready', 'published', 'cancelled'] %}
           {% set column = columns[status] %}
           <div class="board-column">
             <h3 class="board-column-header">{% include "partials/status-badge.njk" %} <span class="count">({{ column.length }})</span></h3>

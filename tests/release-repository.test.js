@@ -33,7 +33,7 @@ function sampleRelease(overrides = {}) {
     title: 'Test Release',
     description: '',
     notes: '',
-    status: 'idea',
+    status: 'tbd',
     plannedDate: null,
     patreonUrl: null,
     ...overrides,
@@ -82,7 +82,7 @@ describe('release repository', () => {
     it('creates a release with default status', () => {
       const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Alpha Release' }) });
       expect(release.title).toBe('Alpha Release');
-      expect(release.status).toBe('idea');
+      expect(release.status).toBe('tbd');
       expect(release.project_id).toBe(projectId);
       expect(release.id).toBeTruthy();
     });
@@ -175,7 +175,7 @@ describe('release repository', () => {
     });
 
     it('filters by status', () => {
-      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Idea 1', status: 'idea' }) });
+      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Idea 1', status: 'tbd' }) });
       releaseRepo.create({ projectId, ...sampleRelease({ title: 'Planned 1', status: 'planned' }) });
       releaseRepo.create({ projectId, ...sampleRelease({ title: 'Planned 2', status: 'planned' }) });
       const planned = releaseRepo.findByProjectId(projectId, { status: 'planned' });
@@ -202,7 +202,7 @@ describe('release repository', () => {
 
     it('sorts by updated desc by default', () => {
       const r1 = releaseRepo.create({ projectId, ...sampleRelease({ title: 'First' }) });
-      releaseRepo.update(r1.id, { title: 'First Updated', description: '', notes: '', status: 'idea', plannedDate: null, patreonUrl: null });
+      releaseRepo.update(r1.id, { title: 'First Updated', description: '', notes: '', status: 'tbd', plannedDate: null, patreonUrl: null });
       const r2 = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Second' }) });
       const releases = releaseRepo.findByProjectId(projectId);
       expect(releases).toHaveLength(2);
@@ -232,7 +232,7 @@ describe('release repository', () => {
       });
       const early = releaseRepo.create({
         projectId,
-        ...sampleRelease({ title: 'Early', status: 'idea', plannedDate: '2025-06-15', plannedTime: '08:00' }),
+        ...sampleRelease({ title: 'Early', status: 'tbd', plannedDate: '2025-06-15', plannedTime: '08:00' }),
       });
       const sameTimeLaterTitle = releaseRepo.create({
         projectId,
@@ -372,14 +372,14 @@ describe('release repository', () => {
 
   describe('countByStatus', () => {
     it('counts releases by status', () => {
-      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Idea 1', status: 'idea' }) });
-      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Idea 2', status: 'idea' }) });
+      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Idea 1', status: 'tbd' }) });
+      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Idea 2', status: 'tbd' }) });
       releaseRepo.create({ projectId, ...sampleRelease({ title: 'Planned 1', status: 'planned' }) });
-      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Drafting 1', status: 'drafting' }) });
+      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Drafting 1', status: 'in-progress' }) });
       const counts = releaseRepo.countByStatus();
-      expect(counts.idea).toBe(2);
+      expect(counts.tbd).toBe(2);
       expect(counts.planned).toBe(1);
-      expect(counts.drafting).toBe(1);
+      expect(counts['in-progress']).toBe(1);
       expect(counts.ready).toBe(0);
       expect(counts.published).toBe(0);
       expect(counts.cancelled).toBe(0);
@@ -387,20 +387,20 @@ describe('release repository', () => {
 
     it('returns zero for all statuses when no releases exist', () => {
       const counts = releaseRepo.countByStatus();
-      expect(counts.idea).toBe(0);
+      expect(counts.tbd).toBe(0);
       expect(counts.planned).toBe(0);
-      expect(counts.drafting).toBe(0);
+      expect(counts['in-progress']).toBe(0);
       expect(counts.ready).toBe(0);
       expect(counts.published).toBe(0);
       expect(counts.cancelled).toBe(0);
     });
 
     it('excludes archived releases from count', () => {
-      const r1 = releaseRepo.create({ projectId, ...sampleRelease({ status: 'idea' }) });
-      releaseRepo.create({ projectId, ...sampleRelease({ status: 'idea' }) });
+      const r1 = releaseRepo.create({ projectId, ...sampleRelease({ status: 'tbd' }) });
+      releaseRepo.create({ projectId, ...sampleRelease({ status: 'tbd' }) });
       releaseRepo.archive(r1.id);
       const counts = releaseRepo.countByStatus();
-      expect(counts.idea).toBe(1);
+      expect(counts.tbd).toBe(1);
     });
   });
 
@@ -802,7 +802,7 @@ describe('release repository', () => {
     it('findActiveWithoutPlannedDate excludes releases whose parent project is archived', () => {
       releaseRepo.create({
         projectId,
-        ...sampleRelease({ title: 'No Date In Archived', plannedDate: null, status: 'drafting' }),
+        ...sampleRelease({ title: 'No Date In Archived', plannedDate: null, status: 'in-progress' }),
       });
       archiveProject(projectId);
       expect(releaseRepo.findActiveWithoutPlannedDate(10)).toEqual([]);
@@ -961,7 +961,7 @@ describe('release repository', () => {
 
     it('paginates with limit and offset in SQL', () => {
       for (let i = 0; i < 10; i++) {
-        releaseRepo.create({ projectId, ...sampleRelease({ title: `R${i}`, status: 'idea' }) });
+        releaseRepo.create({ projectId, ...sampleRelease({ title: `R${i}`, status: 'tbd' }) });
       }
       const page1 = releaseRepo.findPage({ limit: 3, offset: 0, today: '2025-06-15' });
       const page2 = releaseRepo.findPage({ limit: 3, offset: 3, today: '2025-06-15' });
@@ -974,8 +974,8 @@ describe('release repository', () => {
 
     it('filters by project', () => {
       const otherProject = projectRepo.create(sampleProject({ title: 'Other' }));
-      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Mine', status: 'idea' }) });
-      releaseRepo.create({ projectId: otherProject.id, ...sampleRelease({ title: 'Other', status: 'idea' }) });
+      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Mine', status: 'tbd' }) });
+      releaseRepo.create({ projectId: otherProject.id, ...sampleRelease({ title: 'Other', status: 'tbd' }) });
 
       const rows = releaseRepo.findPage({ projectId, today: '2025-06-15' });
       expect(rows).toHaveLength(1);
@@ -983,12 +983,12 @@ describe('release repository', () => {
     });
 
     it('filters by status', () => {
-      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Idea', status: 'idea' }) });
+      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Idea', status: 'tbd' }) });
       releaseRepo.create({ projectId, ...sampleRelease({ title: 'Planned', status: 'planned' }) });
 
-      const ideaRows = releaseRepo.findPage({ status: 'idea', today: '2025-06-15' });
-      expect(ideaRows).toHaveLength(1);
-      expect(ideaRows[0].title).toBe('Idea');
+      const tbdRows = releaseRepo.findPage({ status: 'tbd', today: '2025-06-15' });
+      expect(tbdRows).toHaveLength(1);
+      expect(tbdRows[0].title).toBe('Idea');
 
       const plannedRows = releaseRepo.findPage({ status: 'planned', today: '2025-06-15' });
       expect(plannedRows).toHaveLength(1);
@@ -1065,12 +1065,12 @@ describe('release repository', () => {
 
   describe('countFiltered', () => {
     it('returns total count matching filters', () => {
-      releaseRepo.create({ projectId, ...sampleRelease({ title: 'R1', status: 'idea' }) });
-      releaseRepo.create({ projectId, ...sampleRelease({ title: 'R2', status: 'idea' }) });
+      releaseRepo.create({ projectId, ...sampleRelease({ title: 'R1', status: 'tbd' }) });
+      releaseRepo.create({ projectId, ...sampleRelease({ title: 'R2', status: 'tbd' }) });
       releaseRepo.create({ projectId, ...sampleRelease({ title: 'R3', status: 'planned' }) });
 
       expect(releaseRepo.countFiltered({ today: '2025-06-15' })).toBe(3);
-      expect(releaseRepo.countFiltered({ status: 'idea', today: '2025-06-15' })).toBe(2);
+      expect(releaseRepo.countFiltered({ status: 'tbd', today: '2025-06-15' })).toBe(2);
       expect(releaseRepo.countFiltered({ status: 'planned', today: '2025-06-15' })).toBe(1);
     });
 
@@ -1139,7 +1139,7 @@ describe('release repository', () => {
 
     it('unscheduled: planned_date IS NULL', () => {
       releaseRepo.create({
-        projectId, ...sampleRelease({ title: 'No Date', status: 'drafting', plannedDate: null }),
+        projectId, ...sampleRelease({ title: 'No Date', status: 'in-progress', plannedDate: null }),
       });
       releaseRepo.create({
         projectId, ...sampleRelease({ title: 'Has Date', status: 'planned', plannedDate: '2025-06-15' }),
@@ -1206,7 +1206,7 @@ describe('release repository', () => {
     });
 
     it('readiness filters exclude non-ready releases', () => {
-      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Idea', status: 'idea' }) });
+      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Idea', status: 'tbd' }) });
       releaseRepo.create({ projectId, ...sampleRelease({ title: 'Planned', status: 'planned' }) });
       releaseRepo.create({ projectId, ...sampleRelease({ title: 'Published', status: 'published' }) });
 
@@ -1240,7 +1240,7 @@ describe('release repository', () => {
     });
 
     it('unknown readiness value falls back to no readiness restriction', () => {
-      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Idea', status: 'idea' }) });
+      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Idea', status: 'tbd' }) });
       makeReadyWithAssets('Ready');
 
       expect(releaseRepo.findPage({ readiness: 'invalid', today: FIXED_TODAY })).toHaveLength(2);
@@ -1267,7 +1267,7 @@ describe('release repository', () => {
       const asset = assetRepo.upsert(projectId, 'a.txt', sampleAsset(projectId, { relativePath: 'a.txt' }));
       releaseRepo.addReleaseAsset(release.id, asset.id, 'primary', 0);
       releaseRepo.create({ projectId, ...sampleRelease({ title: 'Blocked', status: 'ready', plannedDate: FIXED_TODAY }) });
-      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Idea', status: 'idea' }) });
+      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Idea', status: 'tbd' }) });
 
       expect(releaseRepo.countFiltered({ readiness: 'publishable', today: FIXED_TODAY })).toBe(1);
       expect(releaseRepo.countFiltered({ readiness: 'blocked-ready', today: FIXED_TODAY })).toBe(1);
@@ -1286,7 +1286,7 @@ describe('release repository', () => {
       releaseRepo.create({
         projectId, ...sampleRelease({ title: 'Blocked', status: 'ready', plannedDate: FIXED_TODAY }),
       });
-      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Idea', status: 'idea' }) });
+      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Idea', status: 'tbd' }) });
 
       const rows = releaseRepo.findBoard({ readiness: 'publishable', today: FIXED_TODAY });
       expect(rows.map((r) => r.title)).toEqual(['Publishable']);
@@ -1311,8 +1311,8 @@ describe('release repository', () => {
 
   describe('findBoard', () => {
     it('returns releases ordered by planned_date asc', () => {
-      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Later', status: 'idea', plannedDate: '2025-07-01' }) });
-      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Earlier', status: 'idea', plannedDate: '2025-06-01' }) });
+      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Later', status: 'tbd', plannedDate: '2025-07-01' }) });
+      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Earlier', status: 'tbd', plannedDate: '2025-06-01' }) });
 
       const rows = releaseRepo.findBoard({ today: '2025-06-15' });
       expect(rows[0].title).toBe('Earlier');
@@ -1320,8 +1320,8 @@ describe('release repository', () => {
     });
 
     it('releases with NULL planned_date sort last', () => {
-      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Has Date', status: 'idea', plannedDate: '2025-06-01' }) });
-      releaseRepo.create({ projectId, ...sampleRelease({ title: 'No Date', status: 'idea', plannedDate: null }) });
+      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Has Date', status: 'tbd', plannedDate: '2025-06-01' }) });
+      releaseRepo.create({ projectId, ...sampleRelease({ title: 'No Date', status: 'tbd', plannedDate: null }) });
 
       const rows = releaseRepo.findBoard({ today: '2025-06-15' });
       expect(rows[0].title).toBe('Has Date');
@@ -1394,7 +1394,7 @@ describe('release repository', () => {
 
     it('returns release usage details for a single asset', () => {
       const a = insertAsset({ projectId, relativePath: 'a.txt', filename: 'a.txt' });
-      const rel = releaseRepo.create({ projectId, title: 'Release One', status: 'idea', description: '', notes: '' });
+      const rel = releaseRepo.create({ projectId, title: 'Release One', status: 'tbd', description: '', notes: '' });
       linkAssetToRelease({ releaseId: rel.id, assetId: a.id });
 
       const results = releaseRepo.findReleaseUsageForAssetIds(projectId, [a.id]);
@@ -1403,7 +1403,7 @@ describe('release repository', () => {
         asset_id: a.id,
         release_id: rel.id,
         title: 'Release One',
-        status: 'idea',
+        status: 'tbd',
         release_archived_at: null,
         project_archived_at: null,
       });
@@ -1411,7 +1411,7 @@ describe('release repository', () => {
 
     it('returns multiple release references for a single asset', () => {
       const a = insertAsset({ projectId, relativePath: 'a.txt', filename: 'a.txt' });
-      const r1 = releaseRepo.create({ projectId, title: 'R1', status: 'idea', description: '', notes: '' });
+      const r1 = releaseRepo.create({ projectId, title: 'R1', status: 'tbd', description: '', notes: '' });
       const r2 = releaseRepo.create({ projectId, title: 'R2', status: 'planned', description: '', notes: '' });
       const r3 = releaseRepo.create({ projectId, title: 'R3', status: 'published', description: '', notes: '' });
       linkAssetToRelease({ releaseId: r1.id, assetId: a.id });
@@ -1427,7 +1427,7 @@ describe('release repository', () => {
       const a1 = insertAsset({ projectId, relativePath: 'a1.txt', filename: 'a1.txt' });
       const a2 = insertAsset({ projectId, relativePath: 'a2.txt', filename: 'a2.txt' });
       const a3 = insertAsset({ projectId, relativePath: 'a3.txt', filename: 'a3.txt' });
-      const r1 = releaseRepo.create({ projectId, title: 'R1', status: 'idea', description: '', notes: '' });
+      const r1 = releaseRepo.create({ projectId, title: 'R1', status: 'tbd', description: '', notes: '' });
       const r2 = releaseRepo.create({ projectId, title: 'R2', status: 'planned', description: '', notes: '' });
       linkAssetToRelease({ releaseId: r1.id, assetId: a1.id });
       linkAssetToRelease({ releaseId: r1.id, assetId: a2.id });
@@ -1455,7 +1455,7 @@ describe('release repository', () => {
       // Use direct SQL to set archived_at since create() doesn't support it
       const archivedRelId = db.prepare(`
         INSERT INTO releases (project_id, title, description, notes, status, planned_date, published_date, patreon_url, archived_at)
-        VALUES (?, 'Archived Release', '', '', 'idea', NULL, NULL, NULL, '2024-01-01 00:00:00')
+        VALUES (?, 'Archived Release', '', '', 'tbd', NULL, NULL, NULL, '2024-01-01 00:00:00')
         RETURNING id
       `).get(projectId).id;
 
@@ -1473,8 +1473,8 @@ describe('release repository', () => {
     it('orders results by asset_id, release title, then release id', () => {
       const a1 = insertAsset({ projectId, relativePath: 'a1.txt', filename: 'a1.txt' });
       const a2 = insertAsset({ projectId, relativePath: 'a2.txt', filename: 'a2.txt' });
-      const r1 = releaseRepo.create({ projectId, title: 'Alpha', status: 'idea', description: '', notes: '' });
-      const r2 = releaseRepo.create({ projectId, title: 'Beta', status: 'idea', description: '', notes: '' });
+      const r1 = releaseRepo.create({ projectId, title: 'Alpha', status: 'tbd', description: '', notes: '' });
+      const r2 = releaseRepo.create({ projectId, title: 'Beta', status: 'tbd', description: '', notes: '' });
       linkAssetToRelease({ releaseId: r1.id, assetId: a1.id });
       linkAssetToRelease({ releaseId: r1.id, assetId: a2.id });
       linkAssetToRelease({ releaseId: r2.id, assetId: a2.id });
@@ -1489,7 +1489,7 @@ describe('release repository', () => {
 
     it('safe with duplicate IDs in input', () => {
       const a = insertAsset({ projectId, relativePath: 'a.txt', filename: 'a.txt' });
-      const rel = releaseRepo.create({ projectId, title: 'R', status: 'idea', description: '', notes: '' });
+      const rel = releaseRepo.create({ projectId, title: 'R', status: 'tbd', description: '', notes: '' });
       linkAssetToRelease({ releaseId: rel.id, assetId: a.id });
 
       // SQLite IN clause with duplicate placeholders returns each matching row once,
@@ -1514,7 +1514,7 @@ describe('release repository', () => {
       `).get(projectId).id;
       const archivedId = db.prepare(`
         INSERT INTO releases (project_id, title, description, notes, status, planned_date, published_date, patreon_url, archived_at)
-        VALUES (?, 'Archived Release', '', '', 'idea', NULL, NULL, NULL, '2024-01-01')
+        VALUES (?, 'Archived Release', '', '', 'tbd', NULL, NULL, NULL, '2024-01-01')
         RETURNING id
       `).get(projectId).id;
       linkAssetToRelease({ releaseId: publishedId, assetId: a.id });
@@ -1526,7 +1526,7 @@ describe('release repository', () => {
       const statuses = results.map((r) => r.status);
       expect(statuses).toContain('published');
       expect(statuses).toContain('cancelled');
-      expect(results.find((r) => r.status === 'idea').release_archived_at).toBeTruthy();
+      expect(results.find((r) => r.status === 'tbd').release_archived_at).toBeTruthy();
     });
 
     // ─── Phase 6D: Project-scoped release usage ──────────────────────
@@ -1534,13 +1534,13 @@ describe('release repository', () => {
     it('excludes cross-project junction rows (corrupt data)', () => {
       const otherProject = projectRepo.create(sampleProject({ title: 'Other Project' }));
       const a = insertAsset({ projectId, relativePath: 'a.txt', filename: 'a.txt' });
-      const rel = releaseRepo.create({ projectId, title: 'Same Project Release', status: 'idea', description: '', notes: '' });
+      const rel = releaseRepo.create({ projectId, title: 'Same Project Release', status: 'tbd', description: '', notes: '' });
       linkAssetToRelease({ releaseId: rel.id, assetId: a.id });
 
       // Create a corrupt cross-project junction: asset from projectId linked
       // to a release from otherProject.
       const otherAsset = insertAsset({ projectId: otherProject.id, relativePath: 'other.txt', filename: 'other.txt' });
-      const otherRel = releaseRepo.create({ projectId: otherProject.id, title: 'Other Release', status: 'idea', description: '', notes: '' });
+      const otherRel = releaseRepo.create({ projectId: otherProject.id, title: 'Other Release', status: 'tbd', description: '', notes: '' });
       // Corrupt junction: otherProject's asset linked to projectId's release
       db.prepare(`
         INSERT INTO release_assets (release_id, asset_id, role, sort_order)
@@ -1565,8 +1565,8 @@ describe('release repository', () => {
       const a1 = insertAsset({ projectId, relativePath: 'shared.txt', filename: 'shared.txt' });
       const a2 = insertAsset({ projectId: otherProject.id, relativePath: 'shared.txt', filename: 'shared.txt' });
       // Create releases with same title in both projects
-      const r1 = releaseRepo.create({ projectId, title: 'Shared Title', status: 'idea', description: '', notes: '' });
-      const r2 = releaseRepo.create({ projectId: otherProject.id, title: 'Shared Title', status: 'idea', description: '', notes: '' });
+      const r1 = releaseRepo.create({ projectId, title: 'Shared Title', status: 'tbd', description: '', notes: '' });
+      const r2 = releaseRepo.create({ projectId: otherProject.id, title: 'Shared Title', status: 'tbd', description: '', notes: '' });
       linkAssetToRelease({ releaseId: r1.id, assetId: a1.id });
       linkAssetToRelease({ releaseId: r2.id, assetId: a2.id });
 
@@ -1778,7 +1778,7 @@ describe('release repository', () => {
 
       const facts = releaseRepo.findReadinessFactsById(release.id);
       expect(facts.release_archived_at).toBeTruthy();
-      expect(facts.release_status).toBe('idea');
+      expect(facts.release_status).toBe('tbd');
     });
 
     it('returns project_archived_at for archived parent project', () => {
@@ -1915,7 +1915,7 @@ describe('release repository', () => {
     it('returns facts for ready releases only', () => {
       const ready = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Ready', status: 'ready' }) });
       releaseRepo.create({ projectId, ...sampleRelease({ title: 'Planned', status: 'planned' }) });
-      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Drafting', status: 'drafting' }) });
+      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Drafting', status: 'in-progress' }) });
 
       const rows = releaseRepo.findReadyDashboardFacts(5);
       expect(rows).toHaveLength(1);
@@ -2922,7 +2922,7 @@ describe('release repository', () => {
   describe('countMissingAssetsReferencedByProjectId ownership parity', () => {
     it('counts only missing assets from releases of the same project', () => {
       const otherProject = projectRepo.create(sampleProject({ title: 'Other' }));
-      const otherRelease = releaseRepo.create({ projectId: otherProject.id, ...sampleRelease({ title: 'Other Release', status: 'idea', plannedDate: null }) });
+      const otherRelease = releaseRepo.create({ projectId: otherProject.id, ...sampleRelease({ title: 'Other Release', status: 'tbd', plannedDate: null }) });
       const otherAsset = assetRepo.upsert(otherProject.id, 'other.txt', sampleAsset(otherProject.id, { relativePath: 'other.txt' }));
       releaseRepo.addReleaseAsset(otherRelease.id, otherAsset.id, 'primary', 0);
       db.prepare('UPDATE assets SET is_present = 0, missing_since = datetime(\'now\') WHERE id = ?').run(otherAsset.id);
@@ -2931,7 +2931,7 @@ describe('release repository', () => {
       expect(releaseRepo.countMissingAssetsReferencedByProjectId(projectId)).toBe(0);
 
       // Add a same-project missing asset
-      const ownRelease = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Own Release', status: 'idea', plannedDate: null }) });
+      const ownRelease = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Own Release', status: 'tbd', plannedDate: null }) });
       const ownMissing = assetRepo.upsert(projectId, 'missing.txt', sampleAsset(projectId, { relativePath: 'missing.txt' }));
       releaseRepo.addReleaseAsset(ownRelease.id, ownMissing.id, 'primary', 0);
       db.prepare('UPDATE assets SET is_present = 0, missing_since = datetime(\'now\') WHERE id = ?').run(ownMissing.id);
@@ -2941,7 +2941,7 @@ describe('release repository', () => {
 
     it('cross-project release from project B referencing project A missing asset does not inflate project A count', () => {
       // Create a missing asset in project A
-      const ownRelease = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Own Release', status: 'idea' }) });
+      const ownRelease = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Own Release', status: 'tbd' }) });
       const aMissing = assetRepo.upsert(projectId, 'a_missing.txt', sampleAsset(projectId, { relativePath: 'a_missing.txt' }));
       releaseRepo.addReleaseAsset(ownRelease.id, aMissing.id, 'primary', 0);
       db.prepare('UPDATE assets SET is_present = 0, missing_since = datetime(\'now\') WHERE id = ?').run(aMissing.id);
@@ -2951,7 +2951,7 @@ describe('release repository', () => {
       // Now create a malformed junction: a release from project B referencing
       // the same missing asset from project A via direct insert
       const otherProject = projectRepo.create(sampleProject({ title: 'B' }));
-      const bRelease = releaseRepo.create({ projectId: otherProject.id, ...sampleRelease({ title: 'B Release', status: 'idea' }) });
+      const bRelease = releaseRepo.create({ projectId: otherProject.id, ...sampleRelease({ title: 'B Release', status: 'tbd' }) });
       db.prepare('INSERT INTO release_assets (release_id, asset_id, role, sort_order) VALUES (?, ?, ?, ?)')
         .run(bRelease.id, aMissing.id, 'attachment', 0);
 
@@ -2973,7 +2973,7 @@ describe('release repository', () => {
       const otherAsset = assetRepo.upsert(otherProjectId, 'cross.txt', sampleAsset(otherProjectId, { relativePath: 'cross.txt' }));
       otherAssetId = otherAsset.id;
 
-      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Parity Release', status: 'idea' }) });
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Parity Release', status: 'tbd' }) });
       releaseId = release.id;
 
       // Valid same-project selection
@@ -3371,7 +3371,7 @@ describe('release repository', () => {
 
   describe('findEligibleAssetSelectionTargets', () => {
     it('returns only non-archived, non-published releases for the given project', () => {
-      const active = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Active', status: 'idea' }) });
+      const active = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Active', status: 'tbd' }) });
       const cancelled = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Cancelled', status: 'cancelled' }) });
       const published = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Published', status: 'planned' }) });
       releaseRepo.publish(published.id, '2026-01-01');

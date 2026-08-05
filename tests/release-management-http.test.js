@@ -69,7 +69,7 @@ describe('release-management HTTP route (Phase 2A)', () => {
     return projRes.headers.location.replace('/projects/', '');
   }
 
-  async function createRelease(projectId, title, status = 'idea', extra = {}) {
+  async function createRelease(projectId, title, status = 'tbd', extra = {}) {
     const req = agent
       .post('/releases')
       .send('_csrf=' + encodeURIComponent(csrfToken))
@@ -83,8 +83,8 @@ describe('release-management HTTP route (Phase 2A)', () => {
 
     // The release create/edit form no longer submits status. Promote the
     // release to the requested status via the service when it differs from
-    // the default 'idea'.
-    if (status !== 'idea') {
+    // the default 'tbd'.
+    if (status !== 'tbd') {
       const releaseId = Number(releaseLocation.replace('/releases/', ''));
       const releaseService = createReleaseService({ db, evaluateReleaseReadiness });
       releaseService.updateRelease(releaseId, { title, status });
@@ -108,7 +108,7 @@ describe('release-management HTTP route (Phase 2A)', () => {
 
   it('GET /release-management renders the release-record list', async () => {
     const projectId = await createProject('Mgmt List Project');
-    await createRelease(projectId, 'Mgmt List Release', 'idea');
+    await createRelease(projectId, 'Mgmt List Release', 'tbd');
 
     const res = await agent.get('/release-management').expect(200);
     expect(res.text).toContain('table-scroll');
@@ -181,7 +181,7 @@ describe('release-management HTTP route (Phase 2A)', () => {
     saveReleaseManagementDefault('order', 'asc');
 
     const res = await agent
-      .get('/release-management?view=list&status=idea')
+      .get('/release-management?view=list&status=tbd')
       .expect(200);
 
     expect(res.text).not.toContain('board-container');
@@ -213,8 +213,8 @@ describe('release-management HTTP route (Phase 2A)', () => {
   it('project filtering works with project=<id>', async () => {
     const projectA = await createProject('Mgmt Filter Project A');
     const projectB = await createProject('Mgmt Filter Project B');
-    await createRelease(projectA, 'Release In A', 'idea');
-    await createRelease(projectB, 'Release In B', 'idea');
+    await createRelease(projectA, 'Release In A', 'tbd');
+    await createRelease(projectB, 'Release In B', 'tbd');
 
     const res = await agent.get(`/release-management?project=${projectA}`).expect(200);
     expect(res.text).toContain('Release In A');
@@ -223,7 +223,7 @@ describe('release-management HTTP route (Phase 2A)', () => {
 
   it('status filtering works', async () => {
     const projectId = await createProject('Mgmt Status Project');
-    await createRelease(projectId, 'Idea Release', 'idea');
+    await createRelease(projectId, 'Idea Release', 'tbd');
     await createRelease(projectId, 'Planned Release', 'planned');
 
     const res = await agent.get('/release-management?status=planned').expect(200);
@@ -233,7 +233,7 @@ describe('release-management HTTP route (Phase 2A)', () => {
 
   it('schedule filtering works', async () => {
     const projectId = await createProject('Mgmt Schedule Project');
-    await createRelease(projectId, 'Unscheduled Release', 'idea');
+    await createRelease(projectId, 'Unscheduled Release', 'tbd');
     await createRelease(projectId, 'Scheduled Release', 'planned', { plannedDate: '2026-08-01' });
 
     const res = await agent.get('/release-management?schedule=unscheduled').expect(200);
@@ -254,7 +254,7 @@ describe('release-management HTTP route (Phase 2A)', () => {
 
   it('includeArchived works', async () => {
     const projectId = await createProject('Mgmt Archived Project');
-    const releaseLocation = await createRelease(projectId, 'To Be Archived Release', 'idea');
+    const releaseLocation = await createRelease(projectId, 'To Be Archived Release', 'tbd');
     await agent
       .post(`${releaseLocation}/archive`)
       .send('_csrf=' + encodeURIComponent(csrfToken))
@@ -270,8 +270,8 @@ describe('release-management HTTP route (Phase 2A)', () => {
 
   it('sorting and ordering work', async () => {
     const projectId = await createProject('Mgmt Sort Project');
-    await createRelease(projectId, 'A Title Release', 'idea');
-    await createRelease(projectId, 'Z Title Release', 'idea');
+    await createRelease(projectId, 'A Title Release', 'tbd');
+    await createRelease(projectId, 'Z Title Release', 'tbd');
 
     const res = await agent.get('/release-management?sort=title&order=asc').expect(200);
     const aIdx = res.text.indexOf('A Title Release');
@@ -290,12 +290,12 @@ describe('release-management HTTP route (Phase 2A)', () => {
     // and release 0 is guaranteed on page 2.
     const projectId = await createProject('Mgmt Page Project');
     for (let i = 0; i < 30; i++) {
-      await createRelease(projectId, `Mgmt Page Release ${i}`, 'idea');
+      await createRelease(projectId, `Mgmt Page Release ${i}`, 'tbd');
     }
 
     // Explicitly request page=1 to prove it gets normalized away rather than
     // carried through into rendered links (e.g. as a stray "page=1").
-    const page1Res = await agent.get('/release-management?status=idea&page=1').expect(200);
+    const page1Res = await agent.get('/release-management?status=tbd&page=1').expect(200);
     expect(page1Res.text).toContain('Page 1 of');
     expect(page1Res.text).toContain('Mgmt Page Release 29');
     expect(page1Res.text).not.toContain('Mgmt Page Release 0');
@@ -308,7 +308,7 @@ describe('release-management HTTP route (Phase 2A)', () => {
     expect(page1LinkMatch[1]).not.toContain('page=1');
     expect(page1LinkMatch[1]).toContain('page=2');
 
-    const res = await agent.get('/release-management?status=idea&page=2').expect(200);
+    const res = await agent.get('/release-management?status=tbd&page=2').expect(200);
     expect(res.text).toContain('Page 2 of');
     expect(res.text).toContain('Mgmt Page Release 0');
     expect(res.text).not.toContain('Mgmt Page Release 29');
@@ -316,7 +316,7 @@ describe('release-management HTTP route (Phase 2A)', () => {
     const prevMatch = res.text.match(/<a\s[^>]*href="(\/release-management\?[^"]*)"[^>]*>Previous<\/a>/);
     expect(prevMatch).not.toBeNull();
     expect(prevMatch[1]).toMatch(/^\/release-management\?/);
-    expect(prevMatch[1]).toContain('status=idea');
+    expect(prevMatch[1]).toContain('status=tbd');
     expect(prevMatch[1]).not.toContain('page=');
   });
 
@@ -331,7 +331,7 @@ describe('release-management HTTP route (Phase 2A)', () => {
     }
 
     const res = await agent
-      .get(`/release-management?project=${projectId}&status=idea&schedule=unscheduled&readiness=all&includeArchived=1&page=2&pageSize=10&view=list`)
+      .get(`/release-management?project=${projectId}&status=tbd&schedule=unscheduled&readiness=all&includeArchived=1&page=2&pageSize=10&view=list`)
       .expect(200);
 
     expect(res.text).toContain('Page 2 of 3');
@@ -345,7 +345,7 @@ describe('release-management HTTP route (Phase 2A)', () => {
     const boardUrl = new URL(boardHref.replace(/&amp;/g, '&'), 'http://localhost');
     expect(boardUrl.searchParams.get('view')).toBe('board');
     expect(boardUrl.searchParams.get('project')).toBe(projectId);
-    expect(boardUrl.searchParams.get('status')).toBe('idea');
+    expect(boardUrl.searchParams.get('status')).toBe('tbd');
     expect(boardUrl.searchParams.get('schedule')).toBe('unscheduled');
     expect(boardUrl.searchParams.get('includeArchived')).toBe('1');
     expect(boardUrl.searchParams.get('sort')).toBe('title');
@@ -405,7 +405,7 @@ describe('release-management HTTP route (Phase 2A)', () => {
 
   it('release-detail links still point to /releases/:id', async () => {
     const projectId = await createProject('Mgmt Detail Link Project');
-    const releaseLocation = await createRelease(projectId, 'Detail Link Release', 'idea');
+    const releaseLocation = await createRelease(projectId, 'Detail Link Release', 'tbd');
     const releaseId = releaseLocation.replace('/releases/', '');
 
     const res = await agent.get('/release-management').expect(200);
@@ -442,7 +442,7 @@ describe('release-management HTTP route (Phase 2A)', () => {
     // exposes no route for these paths, rather than merely rejecting an
     // invalid identifier (which would 404 for a different reason).
     const projectId = await createProject('Mgmt Boundary Project');
-    const releaseLocation = await createRelease(projectId, 'Mgmt Boundary Release', 'idea');
+    const releaseLocation = await createRelease(projectId, 'Mgmt Boundary Release', 'tbd');
     const releaseId = releaseLocation.replace('/releases/', '');
 
     await agent.get('/release-management/new').expect(404);
@@ -452,7 +452,7 @@ describe('release-management HTTP route (Phase 2A)', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=Should+Not+Be+Creatable')
-      .send('status=idea')
+      .send('status=tbd')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(404);
     await agent
@@ -495,7 +495,7 @@ describe('release-management HTTP route (Phase 2A)', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=URL+Strip+Release')
-        .send('status=idea')
+        .send('status=tbd')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
@@ -534,7 +534,7 @@ describe('release-management HTTP route (Phase 2A)', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
           .send(`projectId=${projectId}`)
           .send(`title=URL+Status+Release+${i}`)
-          .send('status=idea')
+          .send('status=tbd')
           .set('Content-Type', 'application/x-www-form-urlencoded')
           .expect(302);
       }
@@ -584,7 +584,7 @@ describe('release-management HTTP route (Phase 2A)', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
           .send(`projectId=${projectId}`)
           .send(`title=URL+PageSize+Release+${i}`)
-          .send('status=idea')
+          .send('status=tbd')
           .set('Content-Type', 'application/x-www-form-urlencoded')
           .expect(302);
       }
@@ -618,19 +618,19 @@ describe('release-management HTTP route (Phase 2A)', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=URL+Preserve+Release')
-        .send('status=idea')
+        .send('status=tbd')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
       const res = await agent
-        .get('/release-management?status=idea&view=list')
+        .get('/release-management?status=tbd&view=list')
         .expect(200);
 
       // Board link must preserve the status filter
       const boardMatch = res.text.match(/<a\s[^>]*href="(\/release-management\?[^"]*)"[^>]*>Board<\/a>/);
       expect(boardMatch).not.toBeNull();
       const boardQuery = parseQuery(boardMatch[1]);
-      expect(boardQuery.status).toBe('idea');
+      expect(boardQuery.status).toBe('tbd');
       expect(boardQuery.view).toBe('board');
     });
 
@@ -687,7 +687,7 @@ describe('release-management HTTP route (Phase 2A)', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
           .send(`projectId=${projectId}`)
           .send(`title=Page+Canon+Release+${i}`)
-          .send('status=idea')
+          .send('status=tbd')
           .set('Content-Type', 'application/x-www-form-urlencoded')
           .expect(302);
       }
@@ -722,7 +722,7 @@ describe('release-management HTTP route (Phase 2A)', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
           .send(`projectId=${projectId}`)
           .send(`title=Page+Board+Release+${i}`)
-          .send('status=idea')
+          .send('status=tbd')
           .set('Content-Type', 'application/x-www-form-urlencoded')
           .expect(302);
       }
@@ -769,7 +769,7 @@ describe('release-management HTTP route (Phase 2A)', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
           .send(`projectId=${projectId}`)
           .send(`title=Page+Prev+Release+${i}`)
-          .send('status=idea')
+          .send('status=tbd')
           .set('Content-Type', 'application/x-www-form-urlencoded')
           .expect(302);
       }
@@ -801,7 +801,7 @@ describe('release-management HTTP route (Phase 2A)', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
           .send(`projectId=${projectId}`)
           .send(`title=Page+Next+Release+${i}`)
-          .send('status=idea')
+          .send('status=tbd')
           .set('Content-Type', 'application/x-www-form-urlencoded')
           .expect(302);
       }
@@ -833,25 +833,25 @@ describe('release-management HTTP route (Phase 2A)', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
           .send(`projectId=${projectId}`)
           .send(`title=Page+Filter+Release+${i}`)
-          .send('status=idea')
+          .send('status=tbd')
           .set('Content-Type', 'application/x-www-form-urlencoded')
           .expect(302);
       }
 
       const res = await agent
-        .get('/release-management?status=idea&page=2')
+        .get('/release-management?status=tbd&page=2')
         .expect(200);
 
-      // Previous link must retain status=idea and omit page
+      // Previous link must retain status=tbd and omit page
       const prevMatch = res.text.match(/<a\s[^>]*href="(\/release-management\?[^"]*)"[^>]*>Previous<\/a>/);
       expect(prevMatch).not.toBeNull();
       const prevQuery = parseQuery(prevMatch[1]);
-      expect(prevQuery.status).toBe('idea');
+      expect(prevQuery.status).toBe('tbd');
       expect(prevQuery.page).toBeUndefined();
     });
   });
   describe('release-management list empty-state detection', () => {
-    async function createReleaseWithTitle(title, status = 'idea') {
+    async function createReleaseWithTitle(title, status = 'tbd') {
       const projRes = await agent
         .post('/projects')
       .send('_csrf=' + encodeURIComponent(csrfToken))
@@ -919,7 +919,7 @@ describe('release-management HTTP route (Phase 2A)', () => {
     });
 
     it('releases exist but status filter returns none shows "No releases match" and Reset Filters', async () => {
-      await createReleaseWithTitle('Visible Release', 'idea');
+      await createReleaseWithTitle('Visible Release', 'tbd');
 
       const res = await agent.get('/release-management?status=published').expect(200);
       const emptyBlock = extractEmptyState(res.text);
@@ -931,7 +931,7 @@ describe('release-management HTTP route (Phase 2A)', () => {
     });
 
     it('releases exist but project filter returns none shows filtered-empty state', async () => {
-      await createReleaseWithTitle('Existing Release', 'idea');
+      await createReleaseWithTitle('Existing Release', 'tbd');
 
       // Project ID 999 does not exist
       const res = await agent.get('/release-management?project=999').expect(200);
@@ -943,7 +943,7 @@ describe('release-management HTTP route (Phase 2A)', () => {
     });
 
     it('Reset Filters URL has the exact canonical path and no query keys', async () => {
-      await createReleaseWithTitle('Reset URL Release', 'idea');
+      await createReleaseWithTitle('Reset URL Release', 'tbd');
 
       const res = await agent.get('/release-management?status=published').expect(200);
       const emptyBlock = extractEmptyState(res.text);
@@ -955,7 +955,7 @@ describe('release-management HTTP route (Phase 2A)', () => {
     });
 
     it('New Release does not appear in the filtered-empty state', async () => {
-      await createReleaseWithTitle('Filter Test Release', 'idea');
+      await createReleaseWithTitle('Filter Test Release', 'tbd');
 
       const res = await agent.get('/release-management?status=published').expect(200);
       const emptyBlock = extractEmptyState(res.text);
@@ -965,7 +965,7 @@ describe('release-management HTTP route (Phase 2A)', () => {
     });
 
     it('releases exist and are visible shows the table, not an empty state', async () => {
-      await createReleaseWithTitle('Shown Release', 'idea');
+      await createReleaseWithTitle('Shown Release', 'tbd');
 
       const res = await agent.get('/release-management').expect(200);
       expect(res.text).toContain('table-scroll');

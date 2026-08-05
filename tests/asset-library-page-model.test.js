@@ -83,7 +83,7 @@ function insertRelease(db, { projectId, title }) {
   return db.prepare(`
     INSERT INTO releases (project_id, title, description, notes, status,
                           planned_date, published_date, patreon_url, archived_at)
-    VALUES (?, ?, '', '', 'idea', NULL, NULL, NULL, NULL)
+    VALUES (?, ?, '', '', 'tbd', NULL, NULL, NULL, NULL)
     RETURNING *
   `).get(projectId, title);
 }

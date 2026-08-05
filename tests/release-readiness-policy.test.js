@@ -38,7 +38,7 @@ describe('evaluateReleaseReadiness', () => {
   // ─── status_ready ──────────────────────────────────────────────────────
 
   it('fails status_ready when release_status is not "ready"', () => {
-    const statuses = ['idea', 'planned', 'drafting', 'published', 'cancelled'];
+    const statuses = ['tbd', 'planned', 'in-progress', 'published', 'cancelled'];
     for (const status of statuses) {
       const facts = buildFacts({ release_status: status });
       const result = evaluateReleaseReadiness(facts);
@@ -150,7 +150,7 @@ describe('evaluateReleaseReadiness', () => {
 
   it('reports multiple failing checks simultaneously', () => {
     const facts = buildFacts({
-      release_status: 'drafting',
+      release_status: 'in-progress',
       selected_asset_count: 0,
       missing_selected_asset_count: 0,
       release_archived_at: '2025-06-15 10:00:00',
@@ -301,7 +301,7 @@ describe('evaluateReleaseReadiness', () => {
     const passResult = evaluateReleaseReadiness(passing);
     expect(passResult.publishable).toBe(passResult.checks.every((c) => c.passed));
 
-    const failing = buildFacts({ release_status: 'idea' });
+    const failing = buildFacts({ release_status: 'tbd' });
     const failResult = evaluateReleaseReadiness(failing);
     expect(failResult.publishable).toBe(failResult.checks.every((c) => c.passed));
   });

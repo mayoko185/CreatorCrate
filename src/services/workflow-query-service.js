@@ -10,7 +10,7 @@
  * Conventions:
  *   - All composed lists are bounded via the `limits` option so a busy
  *     CreatorCrate does not materialize unbounded result sets.
- *   - "Active" releases mean status in (idea, planned, drafting, ready) and
+ *   - "Active" releases mean status in (tbd, planned, in-progress, ready) and
  *     archived_at IS NULL. Terminal states (published, cancelled, archived)
  *     are not surfaced in attention lists. Releases whose parent project
  *     has been archived are also hidden from the dashboard attention lists
@@ -1159,7 +1159,7 @@ export function createWorkflowQueryService({
     const enhanced = _attachReadiness(rows);
 
     // Group into columns by status
-    const BOARD_STATUSES = ['idea', 'planned', 'drafting', 'ready', 'published', 'cancelled'];
+    const BOARD_STATUSES = ['tbd', 'planned', 'in-progress', 'ready', 'published', 'cancelled'];
     const columns = Object.fromEntries(BOARD_STATUSES.map((s) => [s, []]));
 
     for (const release of enhanced) {
@@ -1347,6 +1347,7 @@ export function createWorkflowQueryService({
       project_id: row.project_id,
       project_title: row.project_title,
       title: row.title,
+      notes: row.notes,
       status: row.status,
       planned_date: row.planned_date,
       planned_time: row.planned_time,
@@ -2500,7 +2501,7 @@ export function createWorkflowQueryService({
     // truth for the active-set definition. Not intended for route use.
     constants: {
       DEFAULT_LIMITS,
-      ACTIVE_RELEASE_STATUSES: ['idea', 'planned', 'drafting', 'ready'],
+      ACTIVE_RELEASE_STATUSES: ['tbd', 'planned', 'in-progress', 'ready'],
       RELEASE_STATUSES,
     },
   };

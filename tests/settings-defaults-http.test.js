@@ -32,7 +32,7 @@ const VALID_DEFAULTS = {
   assetViewerPageSize: '100',
   new_projectStatus: 'ready',
   new_projectPriority: 'high',
-  new_releaseStatus: 'drafting',
+  new_releaseStatus: 'in-progress',
   defaultCategory: 'all',
 };
 
@@ -170,15 +170,15 @@ describe('settings — page defaults HTTP', () => {
     expect(selectedValue(res.text, 'assetViewerPageSize')).toBe('25');
     expect(selectedValue(res.text, 'new_projectStatus')).toBe('tbd');
     expect(selectedValue(res.text, 'new_projectPriority')).toBe('normal');
-    expect(selectedValue(res.text, 'new_releaseStatus')).toBe('idea');
+    expect(selectedValue(res.text, 'new_releaseStatus')).toBe('tbd');
     expect(selectedValue(res.text, 'project-assets-default-category')).toBe('all');
     expect((res.text.match(/Application fallback:/g) || [])).toHaveLength(20);
     expect(res.text).toContain('<label for="new_releaseStatus">Default status</label>');
     expect(res.text).toContain('<label for="releaseManagementView">Default view</label>');
     expect(res.text).toContain('<option value="board">Board</option>');
-    expect(res.text).toContain('<option value="idea" selected>Idea</option>');
+    expect(res.text).toContain('<option value="tbd" selected>TBD</option>');
     expect(res.text).toContain('<option value="planned">Planned</option>');
-    expect(res.text).toContain('<option value="drafting">Drafting</option>');
+    expect(res.text).toContain('<option value="in-progress">In progress</option>');
     expect(res.text).toContain('<option value="ready">Ready</option>');
   });
 
@@ -226,7 +226,7 @@ describe('settings — page defaults HTTP', () => {
     expect(selectedValue(res.text, 'assetViewerPageSize')).toBe('25');
     expect(selectedValue(res.text, 'new_projectStatus')).toBe('tbd');
     expect(selectedValue(res.text, 'new_projectPriority')).toBe('normal');
-    expect(selectedValue(res.text, 'new_releaseStatus')).toBe('idea');
+    expect(selectedValue(res.text, 'new_releaseStatus')).toBe('tbd');
     expect(res.text).toContain('Category &quot;does-not-exist&quot; (unavailable)');
     expect(res.text).toContain('Effective:</span> <strong>All Categories</strong>');
     expect((res.text.match(/Application fallback:/g) || [])).toHaveLength(17);
@@ -286,7 +286,7 @@ describe('settings — page defaults HTTP', () => {
     expect(readMeta(db, defaultKey('assetViewer', 'pageSize'))).toBe('100');
     expect(readMeta(db, defaultKey('new_project', 'status'))).toBe('ready');
     expect(readMeta(db, defaultKey('new_project', 'priority'))).toBe('high');
-    expect(readMeta(db, defaultKey('new_release', 'status'))).toBe('drafting');
+    expect(readMeta(db, defaultKey('new_release', 'status'))).toBe('in-progress');
     expect(readMeta(db, 'asset_browser.default_category')).toBe('all');
     expect(readMeta(db, 'unrelated.preference')).toBe('preserve-me');
     expect(assetBrowserDefaultBefore).toBe('all');
@@ -307,7 +307,7 @@ describe('settings — page defaults HTTP', () => {
     expect(selectedValue(redirected.text, 'assetViewerPageSize')).toBe('100');
     expect(selectedValue(redirected.text, 'new_projectStatus')).toBe('ready');
     expect(selectedValue(redirected.text, 'new_projectPriority')).toBe('high');
-    expect(selectedValue(redirected.text, 'new_releaseStatus')).toBe('drafting');
+    expect(selectedValue(redirected.text, 'new_releaseStatus')).toBe('in-progress');
     expect(selectedValue(redirected.text, 'project-assets-default-category')).toBe('all');
   });
 
@@ -325,7 +325,7 @@ describe('settings — page defaults HTTP', () => {
       projectAssetsPageSize: '25',
       new_projectStatus: 'tbd',
       new_projectPriority: 'normal',
-      new_releaseStatus: 'idea',
+      new_releaseStatus: 'tbd',
       defaultCategory: 'all',
     };
     writeMeta(db, defaultKey('projects', 'view'), existing.projectsView);
@@ -503,7 +503,7 @@ describe('settings — page defaults HTTP', () => {
         assetViewerPageSize: '10',
         new_projectStatus: 'tbd',
         new_projectPriority: 'low',
-        new_releaseStatus: 'idea',
+        new_releaseStatus: 'tbd',
         defaultCategory: 'all',
         _csrf: csrfToken,
       })

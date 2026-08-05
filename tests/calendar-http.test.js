@@ -49,6 +49,7 @@ function insertRelease(db, {
   projectId,
   title,
   status = 'planned',
+  notes = '',
   plannedDate = null,
   plannedTime = null,
   archivedAt = null,
@@ -56,9 +57,9 @@ function insertRelease(db, {
   return db.prepare(`
     INSERT INTO releases (project_id, title, description, notes, status,
                           planned_date, planned_time, archived_at)
-    VALUES (?, ?, '', '', ?, ?, ?, ?)
+    VALUES (?, ?, '', ?, ?, ?, ?, ?)
     RETURNING id
-  `).get(projectId, title, status, plannedDate, plannedTime, archivedAt);
+  `).get(projectId, title, notes, status, plannedDate, plannedTime, archivedAt);
 }
 
 function addReleasePreview(db, app, { projectId, releaseId, filename = 'calendar-preview.png' }) {
@@ -183,6 +184,46 @@ describe('release calendar HTTP', () => {
       expect(editLinks).toHaveLength(2);
     });
 
+    it('renders project and release hierarchy plus escaped notes in both calendar presentations', async () => {
+      const project = insertProject(db, 'Calendar Hierarchy Project');
+      const release = insertRelease(db, {
+        projectId: project.id,
+        title: 'Calendar Hierarchy Release',
+        notes: 'Release <notes> & details',
+        plannedDate: '2025-06-15',
+      });
+      addReleasePreview(db, app, { projectId: project.id, releaseId: release.id });
+
+      const res = await agent.get('/calendar?month=2025-06').expect(200);
+      const collapsedHierarchy = res.text.match(
+        new RegExp(
+          `<span class="calendar-release-project">Calendar Hierarchy Project</span>\\s*<a href="/releases/${release.id}/edit">Calendar Hierarchy Release</a>`,
+          'g',
+        ),
+      ) || [];
+
+      expect(collapsedHierarchy).toHaveLength(2);
+      expect((res.text.match(/class="calendar-release-preview-project"/g) || [])).toHaveLength(2);
+      expect((res.text.match(/class="calendar-release-preview-title"/g) || [])).toHaveLength(2);
+      expect((res.text.match(/<span class="calendar-release-preview-notes">Release &lt;notes&gt; &amp; details<\/span>/g) || [])).toHaveLength(2);
+      expect(res.text).not.toContain('<notes>');
+    });
+
+    it('omits the notes area when release notes are empty', async () => {
+      const project = insertProject(db, 'Calendar Empty Notes Project');
+      const release = insertRelease(db, {
+        projectId: project.id,
+        title: 'Calendar Empty Notes Release',
+        plannedDate: '2025-06-15',
+      });
+      addReleasePreview(db, app, { projectId: project.id, releaseId: release.id });
+
+      const res = await agent.get('/calendar?month=2025-06').expect(200);
+
+      expect(res.text).not.toContain('calendar-release-preview-notes');
+      expect(res.text).toContain(`/releases/${release.id}/edit">Calendar Empty Notes Release</a>`);
+    });
+
     it('does not render preview markup or an empty preview container when preview_url is absent', async () => {
       const project = insertProject(db, 'Calendar No Preview Project');
       const release = insertRelease(db, {
@@ -204,6 +245,8 @@ describe('release calendar HTTP', () => {
 
       expect(css).toMatch(/\.calendar-release-trigger:hover\s*>\s*\.calendar-release-preview/);
       expect(css).toMatch(/\.calendar-release-trigger\s*>\s*a:focus-visible\s*~\s*\.calendar-release-preview/);
+      expect(css).toMatch(/\.calendar-release-trigger:hover\s*>\s*\.calendar-release-preview-details/);
+      expect(css).toMatch(/\.calendar-release-trigger\s*>\s*a:focus-visible\s*~\s*\.calendar-release-preview-details/);
       expect(css).toMatch(/\.calendar-release-preview\s*\{[^}]*pointer-events:\s*none/);
     });
 

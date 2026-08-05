@@ -122,6 +122,17 @@ function insertProjectDirect(db, overrides = {}) {
   return row.id;
 }
 
+function insertAssetDirect(db, projectId, filename, isPresent = 1) {
+  return db.prepare(`
+    INSERT INTO assets (
+      project_id, relative_path, filename, extension, mime_type, size_bytes,
+      is_present, last_seen_at
+    )
+    VALUES (?, ?, ?, 'png', 'image/png', 1, ?, datetime('now'))
+    RETURNING id
+  `).get(projectId, filename, filename, isPresent);
+}
+
 describe('release HTTP workflow', () => {
   let db;
   let app;
@@ -154,6 +165,18 @@ describe('release HTTP workflow', () => {
     closeDatabase(db);
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
+
+  async function createTestProject(title) {
+    const res = await agent
+      .post('/projects')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .send(`title=${encodeURIComponent(title)}`)
+      .send('status=tbd')
+      .send('priority=normal')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+    return Number(res.headers.location.replace('/projects/', ''));
+  }
 
   // ─── Phase 7D-3: Release planning field wording ──────────────────────
   //
@@ -256,7 +279,7 @@ describe('release HTTP workflow', () => {
         .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=Invalid+Release+Link')
-        .send('status=idea')
+        .send('status=tbd')
         .send('patreonUrl=ftp%3A%2F%2Fexample.com%2Frelease')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(422);
@@ -281,7 +304,7 @@ describe('release HTTP workflow', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=Detail+Wording+Release')
-        .send('status=idea')
+        .send('status=tbd')
         .send('plannedDate=2025-12-01')
         .send('publishedDate=2025-12-15')
         .send('patreonUrl=https://patreon.com/release')
@@ -564,7 +587,7 @@ describe('release HTTP workflow', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=Release+One')
-      .send('status=idea')
+      .send('status=tbd')
       .send('plannedDate=2026-12-01')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
@@ -599,7 +622,7 @@ describe('release HTTP workflow', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=Idea+Release')
-      .send('status=idea')
+      .send('status=tbd')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
@@ -612,7 +635,7 @@ describe('release HTTP workflow', () => {
       .expect(302);
     setReleaseStatusForTest(db, plannedRelease.headers.location, 'planned');
 
-    const res = await agent.get('/release-management?status=idea').expect(200);
+    const res = await agent.get('/release-management?status=tbd').expect(200);
     expect(res.text).toContain('Idea Release');
     expect(res.text).not.toContain('Planned Release');
   });
@@ -725,7 +748,7 @@ describe('release HTTP workflow', () => {
       .expect(302);
 
     const releaseId = Number(res.headers.location.replace('/releases/', ''));
-    expect(releaseRepository.findById(releaseId).status).toBe('idea');
+    expect(releaseRepository.findById(releaseId).status).toBe('tbd');
   });
 
   it('valid create request redirects to detail', async () => {
@@ -745,11 +768,108 @@ describe('release HTTP workflow', () => {
       .send(`projectId=${projectId}`)
       .send('title=Test+Release')
       .send('description=A+test+release')
-      .send('status=idea')
+      .send('status=tbd')
       .send('plannedDate=2026-12-01')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
     expect(res.headers.location).toMatch(/^\/releases\/\d+$/);
+    expect(getReleaseAssets(db, Number(res.headers.location.replace('/releases/', '')))).toEqual([]);
+  });
+
+  describe('selected assets in normal create submission', () => {
+    it('preserves submitted metadata, uses the selected project, attaches all assets, and deduplicates IDs', async () => {
+      const projectId = await createTestProject('Selected Release Project');
+      const first = insertAssetDirect(db, projectId, 'first.png');
+      const second = insertAssetDirect(db, projectId, 'second.png');
+      const title = 'Custom Selected Release';
+      const notes = 'Notes remain exactly: line 1\nline 2 & <tag>';
+
+      const res = await agent
+        .post('/releases')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .send(`projectId=${projectId}`)
+        .send(`title=${encodeURIComponent(title)}`)
+        .send('description=Selected+release+description')
+        .send(`notes=${encodeURIComponent(notes)}`)
+        .send('plannedDate=2026-12-01')
+        .send('plannedTime=09:45')
+        .send('publishedDate=2026-12-15')
+        .send('patreonUrl=https%3A%2F%2Fexample.com%2Fselected-release')
+        .send(`selectedAssetIds=${second.id}`)
+        .send(`selectedAssetIds=${first.id}`)
+        .send(`selectedAssetIds=${second.id}`)
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      const releaseId = Number(res.headers.location.split('/')[2]);
+      expect(res.headers.location).toBe(`/releases/${releaseId}/assets`);
+      expect(releaseRepository.findById(releaseId)).toMatchObject({
+        project_id: projectId,
+        title,
+        description: 'Selected release description',
+        notes,
+        planned_date: '2026-12-01',
+        planned_time: '09:45',
+        published_date: '2026-12-15',
+        patreon_url: 'https://example.com/selected-release',
+        status: 'tbd',
+      });
+      expect(getReleaseAssets(db, releaseId).map(({ asset_id, role, sort_order }) => ({
+        asset_id,
+        role,
+        sort_order,
+      }))).toEqual([
+        { asset_id: second.id, role: 'attachment', sort_order: 0 },
+        { asset_id: first.id, role: 'attachment', sort_order: 1 },
+      ]);
+    });
+
+    it('returns controlled validation for empty, malformed, stale, missing, and cross-project selections', async () => {
+      const projectId = await createTestProject('Selected Validation Project');
+      const missing = insertAssetDirect(db, projectId, 'missing.png', 0);
+      const otherProjectId = await createTestProject('Selected Foreign Project');
+      const foreign = insertAssetDirect(db, otherProjectId, 'foreign.png');
+      const cases = [
+        { value: '', message: 'At least one asset must be selected.' },
+        { value: 'not-an-id', message: 'Asset IDs must be positive integers.' },
+        { value: '999999', message: 'Asset 999999 not found' },
+        { value: String(missing.id), message: 'currently missing and cannot be selected' },
+        { value: String(foreign.id), message: 'does not belong to the specified project' },
+      ];
+
+      for (const { value, message } of cases) {
+        const res = await agent
+          .post('/releases')
+          .send('_csrf=' + encodeURIComponent(csrfToken))
+          .send(`projectId=${projectId}`)
+          .send('title=Rejected+Selected+Release')
+          .send(`selectedAssetIds=${value}`)
+          .set('Content-Type', 'application/x-www-form-urlencoded')
+          .expect(422);
+
+        expect(res.text).toContain(message);
+        if (value) {
+          expect(res.text).toContain(`name="selectedAssetIds" value="${value}"`);
+        }
+        expect(releaseRepository.findByProjectId(projectId, { includeArchived: true })).toEqual([]);
+      }
+    });
+
+    it('rejects malformed selectedAssetIds shapes without creating a release', async () => {
+      const projectId = await createTestProject('Malformed Selected Shape Project');
+
+      const res = await agent
+        .post('/releases')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .send(`projectId=${projectId}`)
+        .send('title=Malformed+Selected+Shape+Release')
+        .send('selectedAssetIds[0][]=1')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(422);
+
+      expect(res.text).toContain('Invalid asset selection format.');
+      expect(releaseRepository.findByProjectId(projectId, { includeArchived: true })).toEqual([]);
+    });
   });
 
   it('invalid create request rerenders with values and errors', async () => {
@@ -780,7 +900,7 @@ describe('release HTTP workflow', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('projectId=99999')
       .send('title=Orphan+Release')
-      .send('status=idea')
+      .send('status=tbd')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(422);
     expect(res.text).toContain('Project not found');
@@ -792,7 +912,7 @@ describe('release HTTP workflow', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('projectId=1junk')
       .send('title=Bad+Id+Release')
-      .send('status=idea')
+      .send('status=tbd')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(422);
     expect(res.text).toContain('Project is required');
@@ -816,7 +936,7 @@ describe('release HTTP workflow', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=Detail+View+Test')
-      .send('status=idea')
+      .send('status=tbd')
       .send('plannedDate=2026-12-01')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
@@ -1178,7 +1298,7 @@ describe('release HTTP workflow', () => {
         .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=Cancel+Edit+Release')
-        .send('status=idea')
+        .send('status=tbd')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
       const releaseLocation = createRes.headers.location;
@@ -1235,7 +1355,7 @@ describe('release HTTP workflow', () => {
         .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${inconsistentId}`)
         .send('title=Should+Not+Create')
-        .send('status=idea')
+        .send('status=tbd')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(422);
 
@@ -1385,7 +1505,7 @@ describe('release HTTP workflow', () => {
         .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('projectId=1abc')
         .send('title=Malformed+Context+Release')
-        .send('status=idea')
+        .send('status=tbd')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(422);
 
@@ -1401,7 +1521,7 @@ describe('release HTTP workflow', () => {
         .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${unsafeValue}`)
         .send('title=Unsafe+Integer+Context+Release')
-        .send('status=idea')
+        .send('status=tbd')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(422);
 
@@ -1422,7 +1542,7 @@ describe('release HTTP workflow', () => {
         .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${inconsistentId}`)
         .send('title=Should+Not+Create')
-        .send('status=idea')
+        .send('status=tbd')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(422);
 
@@ -1453,7 +1573,7 @@ describe('release HTTP workflow', () => {
         .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=Should+Not+Create+Either')
-        .send('status=idea')
+        .send('status=tbd')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(422);
 
@@ -1479,7 +1599,7 @@ describe('release HTTP workflow', () => {
         .send(`projectId=${projectId}`)
         .send('title=') // triggers an unrelated (title required) validation error
         .send('description=Keep+This+Description')
-        .send('status=idea')
+        .send('status=tbd')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(422);
 
@@ -1507,7 +1627,7 @@ describe('release HTTP workflow', () => {
         .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${targetId}`)
         .send('title=') // triggers an unrelated (title required) validation error
-        .send('status=idea')
+        .send('status=tbd')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(422);
 
@@ -1536,7 +1656,7 @@ describe('release HTTP workflow', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=Before+Edit')
-      .send('status=idea')
+      .send('status=tbd')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
@@ -1598,7 +1718,7 @@ describe('release HTTP workflow', () => {
       .expect(422);
 
     expect(res.text).not.toContain('id="status"');
-    expect(releaseRepository.findById(Number(releaseId)).status).toBe('idea');
+    expect(releaseRepository.findById(Number(releaseId)).status).toBe('tbd');
   });
 
   it('valid update redirects to detail', async () => {
@@ -1628,7 +1748,7 @@ describe('release HTTP workflow', () => {
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
     expect(res.headers.location).toBe(createRes.headers.location);
-    expect(releaseRepository.findById(Number(createRes.headers.location.replace('/releases/', ''))).status).toBe('idea');
+    expect(releaseRepository.findById(Number(createRes.headers.location.replace('/releases/', ''))).status).toBe('tbd');
 
     const detail = await agent.get(createRes.headers.location).expect(200);
     expect(detail.text).toContain('New Title');
@@ -1682,7 +1802,7 @@ describe('release HTTP workflow', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=To+Archive')
-      .send('status=idea')
+      .send('status=tbd')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
@@ -1712,7 +1832,7 @@ describe('release HTTP workflow', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=Double+Archive')
-      .send('status=idea')
+      .send('status=tbd')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
@@ -1752,7 +1872,7 @@ describe('release HTTP workflow', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=Asset+Selection+Release')
-      .send('status=idea')
+      .send('status=tbd')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
@@ -1789,7 +1909,7 @@ describe('release HTTP workflow', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId1}`)
       .send('title=Cross+Project+Test')
-      .send('status=idea')
+      .send('status=tbd')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
@@ -1836,7 +1956,7 @@ describe('release HTTP workflow', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=Asset+Form+Test+Release')
-      .send('status=idea')
+      .send('status=tbd')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
@@ -1893,7 +2013,7 @@ describe('release HTTP workflow', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=Malformed+Asset+ID+Release')
-      .send('status=idea')
+      .send('status=tbd')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
@@ -1940,19 +2060,19 @@ describe('release HTTP workflow', () => {
       .expect(302);
     const projectId = projRes.headers.location.replace('/projects/', '');
 
-    // Create release with idea status
-    const ideaRes = await agent
+    // Create release with tbd status
+    const tbdRes = await agent
       .post('/releases')
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=Idea+Release')
-      .send('status=idea')
+      .send('status=tbd')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
-    // Publishing idea status should fail — readiness policy reports status_ready
+    // Publishing tbd status should fail — readiness policy reports status_ready
     const publishRes = await agent
-      .post(`${ideaRes.headers.location}/publish`)
+      .post(`${tbdRes.headers.location}/publish`)
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .expect(422);
     expect(publishRes.text).toContain('ready');
@@ -2023,7 +2143,7 @@ describe('release HTTP workflow', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=NoJS+Asset+Release')
-      .send('status=idea')
+      .send('status=tbd')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
@@ -2088,7 +2208,7 @@ describe('release HTTP workflow', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=PartialJS+Release')
-      .send('status=idea')
+      .send('status=tbd')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
@@ -2174,7 +2294,7 @@ describe('release HTTP workflow', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=Preserve+Selection+Release')
-      .send('status=idea')
+      .send('status=tbd')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
@@ -2265,7 +2385,7 @@ describe('release HTTP workflow', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=Duplicate+Asset+Release')
-      .send('status=idea')
+      .send('status=tbd')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
@@ -2323,7 +2443,7 @@ describe('release HTTP workflow', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=Dup+String+Release')
-      .send('status=idea')
+      .send('status=tbd')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
@@ -2377,7 +2497,7 @@ describe('release HTTP workflow', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=Nested+Array+Release')
-      .send('status=idea')
+      .send('status=tbd')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
@@ -2444,7 +2564,7 @@ describe('release HTTP workflow', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=Object+Asset+Release')
-      .send('status=idea')
+      .send('status=tbd')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
@@ -2503,7 +2623,7 @@ describe('release HTTP workflow', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=Blank+Asset+Release')
-      .send('status=idea')
+      .send('status=tbd')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
@@ -2569,7 +2689,7 @@ describe('release HTTP workflow', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=NonInt+Asset+Release')
-      .send('status=idea')
+      .send('status=tbd')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
@@ -2635,7 +2755,7 @@ describe('release HTTP workflow', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=Neg+Asset+Release')
-      .send('status=idea')
+      .send('status=tbd')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
@@ -2700,7 +2820,7 @@ describe('release HTTP workflow', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=Zero+Asset+Release')
-      .send('status=idea')
+      .send('status=tbd')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
@@ -2765,7 +2885,7 @@ describe('release HTTP workflow', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=Single+Asset+Role+Release')
-      .send('status=idea')
+      .send('status=tbd')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
@@ -2836,7 +2956,7 @@ describe('release HTTP workflow', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=Multi+Asset+Preserve+Release')
-      .send('status=idea')
+      .send('status=tbd')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
@@ -2912,7 +3032,7 @@ describe('release HTTP workflow', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=Empty+Selection+Release')
-      .send('status=idea')
+      .send('status=tbd')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
@@ -2978,7 +3098,7 @@ describe('release HTTP workflow', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=Empty+Scalar+Clear+Release')
-      .send('status=idea')
+      .send('status=tbd')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
@@ -3044,7 +3164,7 @@ describe('release HTTP workflow', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=Null+Asset+Reject+Release')
-      .send('status=idea')
+      .send('status=tbd')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
@@ -3110,7 +3230,7 @@ describe('release HTTP workflow', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=Malformed+Object+Release')
-      .send('status=idea')
+      .send('status=tbd')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
@@ -3205,7 +3325,7 @@ describe('release HTTP workflow', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=Nested+Obj+Key+Release')
-      .send('status=idea')
+      .send('status=tbd')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
@@ -3271,7 +3391,7 @@ describe('release HTTP workflow', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=NonNumeric+Key+Release')
-      .send('status=idea')
+      .send('status=tbd')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
@@ -3337,7 +3457,7 @@ describe('release HTTP workflow', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=Mixed+Nested+Release')
-      .send('status=idea')
+      .send('status=tbd')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
@@ -3404,7 +3524,7 @@ describe('release HTTP workflow', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=Archived+Preserve+Release')
-      .send('status=idea')
+      .send('status=tbd')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
@@ -3493,7 +3613,7 @@ describe('release HTTP workflow', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=Archived+Parent+Preserve+Release')
-      .send('status=idea')
+      .send('status=tbd')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
@@ -3584,7 +3704,7 @@ describe('release HTTP workflow', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=Replacement+Release')
-      .send('status=idea')
+      .send('status=tbd')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
@@ -3880,7 +4000,7 @@ describe('release HTTP workflow', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=Gated+Asset+Release')
-        .send('status=idea')
+        .send('status=tbd')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
       const releaseLocation = createRes.headers.location;
@@ -3935,7 +4055,7 @@ describe('release HTTP workflow', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=Active+Asset+Release')
-        .send('status=idea')
+        .send('status=tbd')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
       const releaseLocation = createRes.headers.location;
@@ -3974,7 +4094,7 @@ describe('release HTTP workflow', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=Update+Reject+Release')
-        .send('status=idea')
+        .send('status=tbd')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
@@ -4036,7 +4156,7 @@ describe('release HTTP workflow', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=Archive+Reject+Release')
-        .send('status=idea')
+        .send('status=tbd')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
@@ -4083,7 +4203,7 @@ describe('release HTTP workflow', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=Asset+Reject+Release')
-        .send('status=idea')
+        .send('status=tbd')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
@@ -4134,13 +4254,13 @@ describe('release HTTP workflow', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=Non+Ready+Release')
-        .send('status=idea')
+        .send('status=tbd')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
       const res = await agent.get(createRes.headers.location).expect(200);
       expect(res.text).toContain('Needs attention');
-      expect(res.text).toContain('Status: idea');
+      expect(res.text).toContain('Status: tbd');
       expect(res.text).not.toContain('Publishable');
     });
 
@@ -4222,19 +4342,19 @@ describe('release HTTP workflow', () => {
         .expect(302);
       const projectId = projRes.headers.location.replace('/projects/', '');
 
-      // Create release with idea status and no assets — two blockers
+      // Create release with tbd status and no assets — two blockers
       const createRes = await agent
         .post('/releases')
       .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=Multiple+Blockers+Release')
-        .send('status=idea')
+        .send('status=tbd')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
       const res = await agent.get(createRes.headers.location).expect(200);
       expect(res.text).toContain('Needs attention');
-      expect(res.text).toContain('Status: idea');
+      expect(res.text).toContain('Status: tbd');
       expect(res.text).toContain('0 selected');
     });
 
@@ -4271,7 +4391,7 @@ describe('release HTTP workflow', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=Scan+Wording+Release')
-        .send('status=idea')
+        .send('status=tbd')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
@@ -4296,7 +4416,7 @@ describe('release HTTP workflow', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=Corrective+Links+Release')
-        .send('status=idea')
+        .send('status=tbd')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
@@ -4362,7 +4482,7 @@ describe('release HTTP workflow', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=No+Path+Readiness+Release')
-        .send('status=idea')
+        .send('status=tbd')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
@@ -4488,13 +4608,13 @@ describe('release HTTP workflow', () => {
         .expect(302);
       const projectId = projRes.headers.location.replace('/projects/', '');
 
-      // Create a release with idea status — blocked by status_ready
+      // Create a release with tbd status — blocked by status_ready
       const createRes = await agent
         .post('/releases')
       .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=One+Blocker+Release')
-        .send('status=idea')
+        .send('status=tbd')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
@@ -5664,9 +5784,9 @@ describe('release HTTP workflow', () => {
 
     describe('lifecycle eligibility redirects', () => {
       const NON_READY_STATUSES = [
-        { status: 'idea', label: 'idea' },
+        { status: 'tbd', label: 'tbd' },
         { status: 'planned', label: 'planned' },
-        { status: 'drafting', label: 'drafting' },
+        { status: 'in-progress', label: 'in-progress' },
         { status: 'published', label: 'published' },
         { status: 'cancelled', label: 'cancelled' },
       ];
@@ -6936,7 +7056,7 @@ describe('release HTTP workflow', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=Role+Guidance+Release')
-        .send('status=idea')
+        .send('status=tbd')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
       const releaseLocation = createRes.headers.location;
@@ -7398,7 +7518,7 @@ describe('release HTTP workflow', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=Count+Parity+Release')
-        .send('status=idea')
+        .send('status=tbd')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
       const releaseLocation = createRes.headers.location;
@@ -7448,7 +7568,7 @@ describe('release HTTP workflow', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=Count+Parity+Remove+Release')
-        .send('status=idea')
+        .send('status=tbd')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
       const releaseLocation = createRes.headers.location;
@@ -7516,7 +7636,7 @@ describe('release HTTP workflow', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=Phase+9-4+Release')
-        .send('status=idea')
+        .send('status=tbd')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
       const releaseLocation = createRes.headers.location;
@@ -8673,7 +8793,7 @@ describe('release HTTP workflow', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
           .send(`projectId=${projectId}`)
           .send('title=Candidate+URL+Release')
-          .send('status=idea')
+          .send('status=tbd')
           .set('Content-Type', 'application/x-www-form-urlencoded')
           .expect(302);
         const releaseLocation = createRes.headers.location;
@@ -9068,7 +9188,7 @@ describe('release HTTP workflow', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=Exact+Candidate+Release')
-        .send('status=idea')
+        .send('status=tbd')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
       const releaseLocation = createRes.headers.location;
@@ -9295,7 +9415,7 @@ describe('release HTTP workflow', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=Count+Parity+Release')
-        .send('status=idea')
+        .send('status=tbd')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
       const releaseLocation = createRes.headers.location;
@@ -9425,7 +9545,7 @@ describe('release HTTP workflow', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectAId}`)
         .send('title=Malformed+Release')
-        .send('status=idea')
+        .send('status=tbd')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
       const releaseLocation = createRes.headers.location;
@@ -9483,7 +9603,7 @@ describe('release HTTP workflow', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=Consistency+Release')
-        .send('status=idea')
+        .send('status=tbd')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
       const releaseLocation = createRes.headers.location;
@@ -9665,7 +9785,7 @@ describe('release HTTP workflow', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
         .send(`projectId=${projectId}`)
         .send('title=Dedup+Archive+Release')
-        .send('status=idea')
+        .send('status=tbd')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
       return { projectId, releaseLocation: createRes.headers.location };

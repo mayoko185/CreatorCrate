@@ -1,6 +1,7 @@
 import express from 'express';
 import { ProjectNotFoundError } from '../services/project-service.js';
 import { ReleaseValidationError } from '../services/release-service.js';
+import { buildCreateReleaseFormModel } from './releases.js';
 import { UNCATEGORIZED } from '../services/asset-action-service.js';
 import { PRIMARY_IMAGE_ERROR_CODES } from '../services/project-primary-image-service.js';
 import { AUTO_RENAME_ERROR_CODES } from '../services/auto-rename-service.js';
@@ -108,7 +109,7 @@ const AUTO_RENAME_BLOCK_REASON_MESSAGES = Object.freeze({
  *   POST /projects/:projectId/assets/:assetId/delete — Permanently delete the viewed asset
  *   POST /projects/:id/scan  — Trigger a manual scan
  *   POST /projects/:id/assets/add-to-release — Bulk-add selected present assets to one release
- *   POST /projects/:id/assets/create-release — Create a release from selected present assets
+ *   POST /projects/:id/assets/create-release — Open a release form for selected present assets
  *   POST /projects/:id/assets/move-selected — Batch-move selected present assets to a category
  *   POST /projects/:id/assets/copy-selected — Batch-copy selected present assets to a category
  *   POST /projects/:id/assets/delete-selected — Permanently delete selected present assets
@@ -812,9 +813,10 @@ export function createAssetsRouter({
     }
   });
 
-  // POST /projects/:id/assets/create-release — Create a release from the
-  // selected present assets. The release service owns selection validation and
-  // the transactional release-plus-asset mutation.
+  // POST /projects/:id/assets/create-release — Open the normal release-create
+  // form with the selected present assets carried forward. This intermediate
+  // route validates only; release creation and asset association remain owned
+  // by their existing later flows.
   router.post('/:id/assets/create-release', (req, res, next) => {
     const body = req.body || {};
 
@@ -834,8 +836,20 @@ export function createAssetsRouter({
         throw new ReleaseValidationError({ assetIds: 'Invalid asset selection format.' });
       }
 
-      const release = releaseService.createReleaseFromAssets(id, normalizedSelection.ids);
-      return res.redirect(`/releases/${release.id}/assets`);
+      const selectedAssetIds = releaseService.validateAndNormalizeSelectedAssetIds(
+        id,
+        normalizedSelection.ids,
+      );
+
+      return res.render('releases/form.njk', buildCreateReleaseFormModel({
+        appName,
+        projectService,
+        values: {
+          projectId: String(id),
+          selectedAssetIds: selectedAssetIds.map(String),
+        },
+        errors: {},
+      }));
     } catch (err) {
       const id = parseId(req.params.id);
       if (id === null) {

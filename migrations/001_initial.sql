@@ -99,8 +99,8 @@ CREATE TABLE IF NOT EXISTS releases (
     title TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT '',
     notes TEXT NOT NULL DEFAULT '',
-    status TEXT NOT NULL DEFAULT 'idea'
-        CHECK (status IN ('idea', 'planned', 'drafting', 'ready', 'published', 'cancelled')),
+    status TEXT NOT NULL DEFAULT 'tbd'
+        CHECK (status IN ('tbd', 'planned', 'in-progress', 'ready', 'published', 'cancelled')),
     planned_date TEXT,
     planned_time TEXT,
     published_date TEXT,
@@ -119,11 +119,11 @@ CREATE INDEX IF NOT EXISTS idx_releases_status
 
 CREATE INDEX IF NOT EXISTS idx_releases_planned_date
     ON releases(planned_date DESC)
-    WHERE status IN ('idea', 'planned', 'drafting', 'ready');
+    WHERE status IN ('tbd', 'planned', 'in-progress', 'ready');
 
 CREATE INDEX IF NOT EXISTS idx_releases_overdue
     ON releases(planned_date)
-    WHERE status IN ('idea', 'planned', 'drafting', 'ready') AND planned_date IS NOT NULL;
+    WHERE status IN ('tbd', 'planned', 'in-progress', 'ready') AND planned_date IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_releases_archived
     ON releases(archived_at)

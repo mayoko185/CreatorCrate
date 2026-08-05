@@ -65,7 +65,7 @@ async function createProject(app, { title, status = 'tbd' }) {
   return res.headers.location.replace('/projects/', '');
 }
 
-async function createRelease(app, { projectId, title, status = 'idea', plannedDate = null }) {
+async function createRelease(app, { projectId, title, status = 'tbd', plannedDate = null }) {
   const body = [`projectId=${projectId}`, `title=${encodeURIComponent(title)}`];
   if (plannedDate) body.push(`plannedDate=${plannedDate}`);
   body.push('_csrf=' + encodeURIComponent(app.testCsrfToken));
@@ -75,7 +75,7 @@ async function createRelease(app, { projectId, title, status = 'idea', plannedDa
     .set('Content-Type', 'application/x-www-form-urlencoded')
     .expect(302);
   const releaseId = res.headers.location.replace('/releases/', '');
-  if (status !== 'idea') {
+  if (status !== 'tbd') {
     const releaseService = createReleaseService({ db: app.testDb, evaluateReleaseReadiness });
     releaseService.updateRelease(Number(releaseId), { status });
   }
@@ -199,7 +199,7 @@ describe('Phase 6B HTTP dashboard', () => {
       await createRelease(app, {
         projectId,
         title: 'Schedule Me',
-        status: 'drafting',
+        status: 'in-progress',
         plannedDate: null,
       });
 
@@ -286,7 +286,7 @@ describe('Phase 6B HTTP dashboard', () => {
       const tomorrowId = await createRelease(app, {
         projectId,
         title: 'Tomorrow',
-        status: 'drafting',
+        status: 'in-progress',
         plannedDate: '2099-01-15',
       });
       // Link a present asset so the release is not flagged for missing
@@ -380,12 +380,12 @@ describe('Phase 6B HTTP dashboard', () => {
       expect(res.text).toContain('Missing assets');
     });
 
-    it('shows release status counts (idea, planned, drafting, ready, published, cancelled)', async () => {
+    it('shows release status counts (tbd, planned, in-progress, ready, published, cancelled)', async () => {
       const res = await app.testAgent.get('/').expect(200);
       // Check that each status appears in the dashboard
-      expect(res.text).toMatch(/Idea/);
+      expect(res.text).toMatch(/TBD/);
       expect(res.text).toMatch(/Planned/);
-      expect(res.text).toMatch(/Drafting/);
+      expect(res.text).toMatch(/In Progress/);
       expect(res.text).toMatch(/Ready/);
       expect(res.text).toMatch(/Published/);
       expect(res.text).toMatch(/Cancelled/);

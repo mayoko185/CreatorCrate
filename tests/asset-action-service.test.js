@@ -125,7 +125,7 @@ describe('asset action service', () => {
     });
   }
 
-  function insertRelease(title = 'Release', status = 'idea') {
+  function insertRelease(title = 'Release', status = 'tbd') {
     return db.prepare(`INSERT INTO releases (project_id, title, status) VALUES (?, ?, ?) RETURNING id`)
       .get(project.id, title, status);
   }

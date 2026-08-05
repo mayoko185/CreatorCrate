@@ -1,5 +1,5 @@
-export const RELEASE_STATUSES = ['idea', 'planned', 'drafting', 'ready', 'published', 'cancelled'];
-export const ACTIVE_RELEASE_STATUSES = ['idea', 'planned', 'drafting', 'ready'];
+export const RELEASE_STATUSES = ['tbd', 'planned', 'in-progress', 'ready', 'published', 'cancelled'];
+export const ACTIVE_RELEASE_STATUSES = ['tbd', 'planned', 'in-progress', 'ready'];
 export const RELEASE_ASSET_ROLES = ['primary', 'preview', 'attachment', 'source'];
 
 const COLUMNS = [
@@ -52,11 +52,11 @@ function buildReleaseInsertValues(input) {
 
 /**
  * Shared WHERE fragment: releases that are not archived and are in the active
- * workflow (idea/planned/drafting/ready). Used by overdue, upcoming, ready,
+ * workflow (tbd/planned/in-progress/ready). Used by overdue, upcoming, ready,
  * and missing-planned-date queries so the active-set definition stays in one
  * place.
  */
-const ACTIVE_UNARCHIVED = `archived_at IS NULL AND status IN ('idea', 'planned', 'drafting', 'ready')`;
+const ACTIVE_UNARCHIVED = `archived_at IS NULL AND status IN ('tbd', 'planned', 'in-progress', 'ready')`;
 
 /**
  * Shared EXISTS fragment: release belongs to a project that is not archived.
@@ -183,6 +183,7 @@ export function createReleaseRepository(db) {
       r.project_id,
       p.title AS project_title,
       r.title,
+      r.notes,
       r.status,
       r.planned_date,
       r.planned_time,
@@ -673,7 +674,7 @@ export function createReleaseRepository(db) {
      *
      * @param {string} startDate - ISO date YYYY-MM-DD (inclusive)
      * @param {string} endDate - ISO date YYYY-MM-DD (exclusive)
-     * @returns {Array<ReleaseRecord & {project_title: string}>}
+     * @returns {Array<ReleaseRecord & {project_title: string, notes: string}>}
      */
     findCalendarRange(startDate, endDate) {
       return findCalendarRangeStmt.all(startDate, endDate);
@@ -693,7 +694,7 @@ export function createReleaseRepository(db) {
       const sql = `
         ${SELECT_ALL}
         WHERE archived_at IS NULL
-          AND status IN ('idea', 'planned', 'drafting', 'ready')
+          AND status IN ('tbd', 'planned', 'in-progress', 'ready')
           AND planned_date IS NOT NULL
           AND date(planned_date) > ?
           AND ${ACTIVE_PARENT_PROJECT}
@@ -716,7 +717,7 @@ export function createReleaseRepository(db) {
       const sql = `
         ${SELECT_ALL}
         WHERE archived_at IS NULL
-          AND status IN ('idea', 'planned', 'drafting', 'ready')
+          AND status IN ('tbd', 'planned', 'in-progress', 'ready')
           AND planned_date IS NOT NULL
           AND date(planned_date) < ?
           AND ${ACTIVE_PARENT_PROJECT}
@@ -884,7 +885,7 @@ export function createReleaseRepository(db) {
         JOIN release_assets ra ON ra.release_id = r.id
         JOIN assets a ON a.id = ra.asset_id AND a.project_id = r.project_id
         WHERE r.archived_at IS NULL
-          AND r.status IN ('idea', 'planned', 'drafting', 'ready')
+          AND r.status IN ('tbd', 'planned', 'in-progress', 'ready')
           AND a.is_present = 0
           AND ${ACTIVE_PARENT_PROJECT_R}
         GROUP BY r.id
@@ -1448,7 +1449,7 @@ export function createReleaseRepository(db) {
       // because they are used in active workflow views — even when includeArchived=1.
       if (isScheduleFilter) {
         // Always apply active-release predicate for schedule filters
-        conditions.push(`releases.status IN ('idea', 'planned', 'drafting', 'ready')`);
+        conditions.push(`releases.status IN ('tbd', 'planned', 'in-progress', 'ready')`);
 
         // Always exclude archived parent projects for schedule filters
         conditions.push(ACTIVE_PARENT_PROJECT);

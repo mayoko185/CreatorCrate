@@ -195,9 +195,9 @@
   <section class="workflow-summary">
     <h2>Release status</h2>
     <div class="count-grid">
-      <div class="count-card"><span class="count">{{ summary.releaseStatusCounts.idea or 0 }}</span> Idea</div>
+      <div class="count-card"><span class="count">{{ summary.releaseStatusCounts.tbd or 0 }}</span> TBD</div>
       <div class="count-card"><span class="count">{{ summary.releaseStatusCounts.planned or 0 }}</span> Planned</div>
-      <div class="count-card"><span class="count">{{ summary.releaseStatusCounts.drafting or 0 }}</span> Drafting</div>
+      <div class="count-card"><span class="count">{{ summary.releaseStatusCounts['in-progress'] or 0 }}</span> In Progress</div>
       <div class="count-card"><span class="count">{{ summary.releaseStatusCounts.ready or 0 }}</span> Ready</div>
       <div class="count-card"><span class="count">{{ summary.releaseStatusCounts.published or 0 }}</span> Published</div>
       <div class="count-card"><span class="count">{{ summary.releaseStatusCounts.cancelled or 0 }}</span> Cancelled</div>

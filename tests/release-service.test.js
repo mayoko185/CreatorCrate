@@ -38,7 +38,7 @@ function validInput(overrides = {}) {
     title: 'Test Release',
     description: '',
     notes: '',
-    status: 'idea',
+    status: 'tbd',
     plannedDate: null,
     patreonUrl: null,
     ...overrides,
@@ -117,7 +117,7 @@ describe('release service', () => {
 
       const release = service.createRelease(projectId, input);
 
-      expect(release.status).toBe('idea');
+      expect(release.status).toBe('tbd');
       expect(release.planned_date).toBe('2026-08-15');
       expect(release.planned_time).toBe('09:45');
       expect(snapshotReleaseRow(db, release.id)).toMatchObject({
@@ -167,6 +167,12 @@ describe('release service', () => {
     it('rejects invalid status', () => {
       expect(() => {
         service.createRelease(projectId, validInput({ status: 'invalid' }));
+      }).toThrow(ReleaseValidationError);
+    });
+
+    it.each(['idea', 'drafting'])('rejects legacy status "%s"', (status) => {
+      expect(() => {
+        service.createRelease(projectId, validInput({ status }));
       }).toThrow(ReleaseValidationError);
     });
 
@@ -253,7 +259,7 @@ describe('release service', () => {
       return assetRepo.upsert(project, filename, data);
     }
 
-    it('creates exactly one idea release titled from the project category', () => {
+    it('creates exactly one tbd release titled from the project category', () => {
       const category = addCategory(projectId, 'Launch Assets', 'launch-assets');
 
       const release = service.createReleaseFromCategory(projectId, category.id);
@@ -261,7 +267,7 @@ describe('release service', () => {
       expect(release).toMatchObject({
         project_id: projectId,
         title: 'Launch Assets',
-        status: 'idea',
+        status: 'tbd',
       });
       expect(release.id).toBeTruthy();
       expect(service.listReleases(projectId, { includeArchived: true })).toHaveLength(1);
@@ -360,7 +366,7 @@ describe('release service', () => {
         expect(release).toMatchObject({
           project_id: projectId,
           title: 'Parent Project',
-          status: 'idea',
+          status: 'tbd',
           planned_date: '2026-08-04',
           planned_time: '14:30',
         });
@@ -539,7 +545,7 @@ describe('release service', () => {
     });
 
     it('throws if release is not ready', () => {
-      const statuses = ['idea', 'planned', 'drafting', 'cancelled'];
+      const statuses = ['tbd', 'planned', 'in-progress', 'cancelled'];
       for (const status of statuses) {
         const created = service.createRelease(projectId, validInput({
           title: `Non-Ready ${status} Release`,
@@ -1361,7 +1367,7 @@ describe('release service', () => {
     });
 
     it('filters by status', () => {
-      service.createRelease(projectId, validInput({ title: 'Idea', status: 'idea' }));
+      service.createRelease(projectId, validInput({ title: 'Idea', status: 'tbd' }));
       service.createRelease(projectId, validInput({ title: 'Planned', status: 'planned' }));
       const planned = service.listReleases(projectId, { status: 'planned' });
       expect(planned).toHaveLength(1);
@@ -1388,21 +1394,21 @@ describe('release service', () => {
 
   describe('countByStatus (service)', () => {
     it('returns counts of releases by status', () => {
-      service.createRelease(projectId, validInput({ title: 'Idea 1', status: 'idea' }));
-      service.createRelease(projectId, validInput({ title: 'Idea 2', status: 'idea' }));
+      service.createRelease(projectId, validInput({ title: 'Idea 1', status: 'tbd' }));
+      service.createRelease(projectId, validInput({ title: 'Idea 2', status: 'tbd' }));
       service.createRelease(projectId, validInput({ title: 'Planned 1', status: 'planned' }));
       const counts = service.countByStatus();
-      expect(counts.idea).toBe(2);
+      expect(counts.tbd).toBe(2);
       expect(counts.planned).toBe(1);
-      expect(counts.drafting).toBe(0);
+      expect(counts['in-progress']).toBe(0);
     });
 
     it('excludes archived releases from count', () => {
-      const r1 = service.createRelease(projectId, validInput({ status: 'idea' }));
-      service.createRelease(projectId, validInput({ status: 'idea' }));
+      const r1 = service.createRelease(projectId, validInput({ status: 'tbd' }));
+      service.createRelease(projectId, validInput({ status: 'tbd' }));
       service.archiveRelease(r1.id);
       const counts = service.countByStatus();
-      expect(counts.idea).toBe(1);
+      expect(counts.tbd).toBe(1);
     });
   });
 
@@ -1854,7 +1860,7 @@ describe('release service', () => {
     });
 
     it('updateRelease rejects transition to status=published', () => {
-      const created = service.createRelease(projectId, validInput({ status: 'idea' }));
+      const created = service.createRelease(projectId, validInput({ status: 'tbd' }));
       expect(() => {
         service.updateRelease(created.id, validInput({
           status: 'published',
@@ -1865,9 +1871,9 @@ describe('release service', () => {
 
     it('updateRelease rejects transition from cancelled to any other status', () => {
       const created = service.createRelease(projectId, validInput({ status: 'cancelled' }));
-      // Try to move from cancelled to idea
+      // Try to move from cancelled to tbd
       expect(() => {
-        service.updateRelease(created.id, validInput({ status: 'idea' }));
+        service.updateRelease(created.id, validInput({ status: 'tbd' }));
       }).toThrow(ReleaseValidationError);
       // Try to move from cancelled to ready
       expect(() => {
@@ -1885,14 +1891,14 @@ describe('release service', () => {
     });
 
     it('updateRelease allows valid transitions', () => {
-      const created = service.createRelease(projectId, validInput({ status: 'idea' }));
-      // idea → planned
+      const created = service.createRelease(projectId, validInput({ status: 'tbd' }));
+      // tbd → planned
       let updated = service.updateRelease(created.id, validInput({ status: 'planned' }));
       expect(updated.status).toBe('planned');
-      // planned → drafting
-      updated = service.updateRelease(created.id, validInput({ status: 'drafting' }));
-      expect(updated.status).toBe('drafting');
-      // drafting → ready
+      // planned → in-progress
+      updated = service.updateRelease(created.id, validInput({ status: 'in-progress' }));
+      expect(updated.status).toBe('in-progress');
+      // in-progress → ready
       updated = service.updateRelease(created.id, validInput({ status: 'ready' }));
       expect(updated.status).toBe('ready');
       // ready → cancelled
@@ -1901,7 +1907,7 @@ describe('release service', () => {
     });
 
     it('createRelease allows valid initial statuses', () => {
-      for (const status of ['idea', 'planned', 'drafting', 'ready', 'cancelled']) {
+      for (const status of ['tbd', 'planned', 'in-progress', 'ready', 'cancelled']) {
         const release = service.createRelease(projectId, validInput({ status }));
         expect(release.status).toBe(status);
       }
@@ -2011,7 +2017,7 @@ describe('release service', () => {
 
       // Any change to status away from 'published' must be rejected, even
       // when the new title is otherwise valid.
-      for (const newStatus of ['idea', 'planned', 'drafting', 'ready', 'cancelled']) {
+      for (const newStatus of ['tbd', 'planned', 'in-progress', 'ready', 'cancelled']) {
         expect(() => {
           service.updateRelease(published.id, validInput({
             title: 'New Title',
@@ -2024,7 +2030,7 @@ describe('release service', () => {
     it('rejects status change for a cancelled release even when other fields change', () => {
       const created = service.createRelease(projectId, validInput({ status: 'cancelled' }));
 
-      for (const newStatus of ['idea', 'planned', 'drafting', 'ready', 'published']) {
+      for (const newStatus of ['tbd', 'planned', 'in-progress', 'ready', 'published']) {
         expect(() => {
           service.updateRelease(created.id, validInput({
             title: 'New Title',

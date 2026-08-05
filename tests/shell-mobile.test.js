@@ -133,7 +133,7 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
     const relRes = await agent
       .post('/releases')
       .type('form')
-      .send({ projectId, title: 'Mobile Shell Release', status: 'idea', _csrf: csrfToken })
+      .send({ projectId, title: 'Mobile Shell Release', status: 'tbd', _csrf: csrfToken })
       .expect(302);
     releaseLocation = relRes.headers.location;
   });

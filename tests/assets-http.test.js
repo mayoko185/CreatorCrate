@@ -148,7 +148,7 @@ describe('asset browser HTTP workflow', () => {
       .expect(302);
 
     const releaseId = releaseRes.headers.location.replace('/releases/', '');
-    if (status !== 'idea') {
+    if (status !== 'tbd') {
       const releaseService = createReleaseService({ db, evaluateReleaseReadiness });
       releaseService.updateRelease(Number(releaseId), { status });
     }
@@ -441,7 +441,7 @@ describe('asset browser HTTP workflow', () => {
     assetRepo.markMissingByProjectIdAndPathNotIn(id, ['Hero-Final.png', 'Hero-Final.jpg']);
     const releaseId = Number(db.prepare(`
       INSERT INTO releases (project_id, title, description, notes, status, planned_date, published_date, patreon_url)
-      VALUES (?, 'Used Asset Release', '', '', 'idea', NULL, NULL, NULL)
+      VALUES (?, 'Used Asset Release', '', '', 'tbd', NULL, NULL, NULL)
       RETURNING id
     `).get(id).id);
     db.prepare('INSERT INTO release_assets (release_id, asset_id, role, sort_order) VALUES (?, ?, ?, ?)')
@@ -998,7 +998,7 @@ describe('asset browser HTTP workflow', () => {
     const usedAsset = assets.find((a) => a.filename === 'used.png');
     const unusedAsset = assets.find((a) => a.filename === 'unused.png');
 
-    const releaseId = await createReleaseUsingAsset(id, usedAsset.id, 'Used Asset Release', 'idea');
+    const releaseId = await createReleaseUsingAsset(id, usedAsset.id, 'Used Asset Release', 'tbd');
 
     const res2 = await agent
       .get(`/projects/${id}/assets?usage=used`)
@@ -1021,7 +1021,7 @@ describe('asset browser HTTP workflow', () => {
     const assets = assetRepo.findByProjectId(id);
     const usedAsset = assets.find((a) => a.filename === 'used.png');
 
-    const releaseId = await createReleaseUsingAsset(id, usedAsset.id, 'Link Release', 'idea');
+    const releaseId = await createReleaseUsingAsset(id, usedAsset.id, 'Link Release', 'tbd');
 
     const res2 = await agent
       .get(`/projects/${id}/assets?usage=unused`)
@@ -1062,7 +1062,7 @@ describe('asset browser HTTP workflow', () => {
     let assets = assetRepo.findByProjectId(id);
     const presentUsed = assets.find((a) => a.filename === 'present-used.png');
 
-    const releaseId = await createReleaseUsingAsset(id, presentUsed.id, 'Combine Release', 'idea');
+    const releaseId = await createReleaseUsingAsset(id, presentUsed.id, 'Combine Release', 'tbd');
 
     // Remove missing-used from disk so it becomes missing
     fs.rmSync(path.join(projectDir, 'missing-used.png'));
@@ -3431,8 +3431,8 @@ describe('asset browser HTTP workflow', () => {
     const multi = writeIndexedAsset(id, projectDir, 'multi.png', await makePng());
 
     const relA = await createReleaseUsingAsset(id, single.id, 'Solo Release', 'planned');
-    await createReleaseUsingAsset(id, multi.id, 'Release One', 'idea');
-    await createReleaseUsingAsset(id, multi.id, 'Release Two', 'idea');
+    await createReleaseUsingAsset(id, multi.id, 'Release One', 'tbd');
+    await createReleaseUsingAsset(id, multi.id, 'Release Two', 'tbd');
 
     const res2 = await agent.get(`/projects/${id}/assets?pageSize=100`).expect(200);
     const html = res2.text;
@@ -3472,7 +3472,7 @@ describe('asset browser HTTP workflow', () => {
 
   // ─── Phase 3 chunk 3: page-local selection + bulk release association ───
 
-  async function createEmptyRelease(projectId, title = 'Bulk Target', status = 'idea') {
+  async function createEmptyRelease(projectId, title = 'Bulk Target', status = 'tbd') {
     const res = await agent
       .post('/releases')
       .send(`projectId=${projectId}`)
@@ -3481,7 +3481,7 @@ describe('asset browser HTTP workflow', () => {
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
     const releaseId = Number(res.headers.location.replace('/releases/', ''));
-    if (status !== 'idea') {
+    if (status !== 'tbd') {
       const releaseService = createReleaseService({ db, evaluateReleaseReadiness });
       releaseService.updateRelease(releaseId, { status });
     }
@@ -3664,7 +3664,7 @@ describe('asset browser HTTP workflow', () => {
       const projectDir = getProjectDir('Bulk Mixed');
       const already = writeIndexedAsset(id, projectDir, 'already.png', await makePng());
       const fresh = writeIndexedAsset(id, projectDir, 'fresh.png', await makePng());
-      const releaseId = await createReleaseUsingAsset(id, already.id, 'Mixed Release', 'idea');
+      const releaseId = await createReleaseUsingAsset(id, already.id, 'Mixed Release', 'tbd');
 
       const res2 = await agent
         .post(`/projects/${id}/assets/add-to-release`)
@@ -3860,28 +3860,84 @@ describe('asset browser HTTP workflow', () => {
   });
 
   describe('POST /projects/:id/assets/create-release', () => {
-    it('creates a release from multiple selected assets and redirects to its asset page', async () => {
+    it('opens the normal Create Release form with the project and selected assets', async () => {
       const res = await createProject('Create Release From Assets');
       const id = Number(res.headers.location.replace('/projects/', ''));
       const projectDir = getProjectDir('Create Release From Assets');
       const first = writeIndexedAsset(id, projectDir, 'first.png', await makePng());
       const second = writeIndexedAsset(id, projectDir, 'second.png', await makePng());
 
-      const created = await agent
+      const opened = await agent
         .post(`/projects/${id}/assets/create-release`)
         .type('form')
         .send({
           selectedAssetIds: [String(second.id), String(first.id)],
           _csrf: csrfToken,
         })
-        .expect(302);
+        .expect(200);
 
-      expect(created.headers.location).toMatch(/^\/releases\/\d+\/assets$/);
-      const releaseId = Number(created.headers.location.split('/')[2]);
+      expect(opened.text).toContain('Releases — Create Release');
+      expect(opened.text).toContain('<form method="post" action="/releases" class="project-form" novalidate>');
+      expect(opened.text).toContain(`<option value="${id}" selected>`);
+      expect(opened.text).toContain('<input type="text" id="title" name="title" value=""');
+      expect(opened.text).toContain('<textarea id="notes" name="notes" rows="6" maxlength="10000"></textarea>');
+
+      const hiddenSelectedAssetIds = opened.text.match(
+        /<input type="hidden" name="selectedAssetIds" value="\d+">/g,
+      ) || [];
+      expect(hiddenSelectedAssetIds).toEqual([
+        `<input type="hidden" name="selectedAssetIds" value="${second.id}">`,
+        `<input type="hidden" name="selectedAssetIds" value="${first.id}">`,
+      ]);
+
       const releaseService = createReleaseService({ db, evaluateReleaseReadiness });
-      expect(releaseService.listReleaseAssets(releaseId).map((asset) => asset.asset_id)).toEqual([
-        second.id,
-        first.id,
+      expect(releaseService.listReleases(id, { includeArchived: true })).toEqual([]);
+    });
+
+    it('preserves selected IDs through validation rerender and attaches them on successful create', async () => {
+      const res = await createProject('Create Release Form Rerender');
+      const id = Number(res.headers.location.replace('/projects/', ''));
+      const projectDir = getProjectDir('Create Release Form Rerender');
+      const first = writeIndexedAsset(id, projectDir, 'first.png', await makePng());
+      const second = writeIndexedAsset(id, projectDir, 'second.png', await makePng());
+
+      const invalid = await agent
+        .post('/releases')
+        .type('form')
+        .send(`projectId=${id}`)
+        .send('title=')
+        .send('notes=Keep+these+notes')
+        .send(`selectedAssetIds=${second.id}`)
+        .send(`selectedAssetIds=${first.id}`)
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .expect(422);
+
+      expect(invalid.text).toContain('Keep these notes');
+      expect((invalid.text.match(/<input type="hidden" name="selectedAssetIds" value="\d+">/g) || [])).toEqual([
+        `<input type="hidden" name="selectedAssetIds" value="${second.id}">`,
+        `<input type="hidden" name="selectedAssetIds" value="${first.id}">`,
+      ]);
+      expect(createReleaseService({ db, evaluateReleaseReadiness }).listReleases(id, { includeArchived: true })).toEqual([]);
+
+      const created = await agent
+        .post('/releases')
+        .type('form')
+        .send(`projectId=${id}`)
+        .send('title=Release With Selected Attachments')
+        .send(`selectedAssetIds=${second.id}`)
+        .send(`selectedAssetIds=${first.id}`)
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .expect(302);
+      const releaseId = Number(created.headers.location.split('/')[2]);
+
+      expect(created.headers.location).toBe(`/releases/${releaseId}/assets`);
+      expect(createReleaseService({ db, evaluateReleaseReadiness }).listReleaseAssets(releaseId).map((asset) => ({
+        asset_id: asset.asset_id,
+        role: asset.role,
+        sort_order: asset.sort_order,
+      }))).toEqual([
+        { asset_id: second.id, role: 'attachment', sort_order: 0 },
+        { asset_id: first.id, role: 'attachment', sort_order: 1 },
       ]);
     });
 
@@ -3898,6 +3954,8 @@ describe('asset browser HTTP workflow', () => {
         .expect(422);
 
       expect(rejected.text).toContain('At least one asset must be selected.');
+      expect(rejected.text).toContain(`action="/projects/${id}/assets/add-to-release"`);
+      expect(rejected.text).not.toContain('Releases — Create Release');
       const releaseService = createReleaseService({ db, evaluateReleaseReadiness });
       expect(releaseService.listReleases(id, { includeArchived: true })).toEqual([]);
     });
@@ -3914,6 +3972,8 @@ describe('asset browser HTTP workflow', () => {
         .send({ selectedAssetIds: [String(ownAsset.id), 'not-an-id'], _csrf: csrfToken })
         .expect(422);
       expect(invalid.text).toContain('Asset IDs must be positive integers.');
+      expect(invalid.text).toContain(`action="/projects/${id}/assets/add-to-release"`);
+      expect(invalid.text).not.toContain('Releases — Create Release');
 
       const otherRes = await createProject('Create Release Foreign Project');
       const otherId = Number(otherRes.headers.location.replace('/projects/', ''));
@@ -3926,6 +3986,8 @@ describe('asset browser HTTP workflow', () => {
         .send({ selectedAssetIds: String(foreignAsset.id), _csrf: csrfToken })
         .expect(422);
       expect(crossProject.text).toContain('does not belong to the specified project.');
+      expect(crossProject.text).toContain(`action="/projects/${id}/assets/add-to-release"`);
+      expect(crossProject.text).not.toContain('Releases — Create Release');
 
       const releaseService = createReleaseService({ db, evaluateReleaseReadiness });
       expect(releaseService.listReleases(id, { includeArchived: true })).toEqual([]);

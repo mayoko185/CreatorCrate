@@ -85,12 +85,12 @@ describe('database and migrations', () => {
     expect(indexes).toContain('idx_projects_project_dir');
   });
 
-  it('records only the baseline migration and is idempotent across repeated runs', () => {
+  it('records all migrations and is idempotent across repeated runs', () => {
     db = openDatabase(dbPath);
     runMigrations(db, MIGRATIONS_DIR);
     runMigrations(db, MIGRATIONS_DIR);
     const applied = db.prepare('SELECT filename FROM schema_migrations ORDER BY rowid').pluck().all();
-    expect(applied).toEqual(['001_initial.sql']);
+    expect(applied).toEqual(['001_initial.sql', '002_unify_release_statuses.sql']);
   });
 
   it('creates the complete fresh-install table set with foreign keys enabled', () => {
@@ -265,6 +265,103 @@ describe('database and migrations', () => {
     expect(ddl).toMatch(/CHECK\s*\(status\s+IN\s*\(/i);
   });
 
+  it('uses the unified release status vocabulary in fresh databases', () => {
+    db = openDatabase(dbPath);
+    runMigrations(db, MIGRATIONS_DIR);
+
+    const projectId = db.prepare(`
+      INSERT INTO projects (title, slug, status, priority)
+      VALUES ('Status Project', 'status-project', 'tbd', 'normal')
+    `).run().lastInsertRowid;
+
+    const release = db.prepare(`
+      INSERT INTO releases (project_id, title)
+      VALUES (?, 'Default Status Release')
+    `).run(projectId);
+
+    expect(db.prepare('SELECT status FROM releases WHERE id = ?').pluck().get(release.lastInsertRowid)).toBe('tbd');
+    for (const legacyStatus of ['idea', 'drafting']) {
+      expect(() => db.prepare(`
+        INSERT INTO releases (project_id, title, status)
+        VALUES (?, ?, ?)
+      `).run(projectId, `Legacy ${legacyStatus}`, legacyStatus)).toThrow(/CHECK constraint failed/i);
+    }
+  });
+
+  it('migrates legacy release statuses and preserves release assets', () => {
+    db = openDatabase(dbPath);
+    db.exec(`
+      CREATE TABLE schema_migrations (
+        filename TEXT PRIMARY KEY,
+        applied_at TEXT NOT NULL
+      );
+      INSERT INTO schema_migrations (filename, applied_at) VALUES ('001_initial.sql', datetime('now'));
+
+      CREATE TABLE projects (id INTEGER PRIMARY KEY, title TEXT NOT NULL);
+      CREATE TABLE assets (id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL);
+      CREATE TABLE releases (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id INTEGER NOT NULL,
+        title TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        notes TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'idea'
+          CHECK (status IN ('idea', 'planned', 'drafting', 'ready', 'published', 'cancelled')),
+        planned_date TEXT,
+        planned_time TEXT,
+        published_date TEXT,
+        patreon_url TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        archived_at TEXT,
+        FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE RESTRICT
+      );
+      CREATE INDEX idx_releases_project_id ON releases(project_id);
+      CREATE INDEX idx_releases_status ON releases(status);
+      CREATE INDEX idx_releases_planned_date ON releases(planned_date DESC)
+        WHERE status IN ('idea', 'planned', 'drafting', 'ready');
+      CREATE INDEX idx_releases_overdue ON releases(planned_date)
+        WHERE status IN ('idea', 'planned', 'drafting', 'ready') AND planned_date IS NOT NULL;
+      CREATE INDEX idx_releases_archived ON releases(archived_at)
+        WHERE archived_at IS NOT NULL;
+      CREATE TABLE release_assets (
+        release_id INTEGER NOT NULL,
+        asset_id INTEGER NOT NULL,
+        role TEXT NOT NULL DEFAULT 'attachment'
+          CHECK (role IN ('primary', 'preview', 'attachment', 'source')),
+        sort_order INTEGER NOT NULL DEFAULT 0 CHECK (sort_order >= 0),
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (release_id, asset_id),
+        FOREIGN KEY (release_id) REFERENCES releases(id) ON DELETE CASCADE,
+        FOREIGN KEY (asset_id) REFERENCES assets(id) ON DELETE CASCADE
+      );
+      CREATE INDEX idx_release_assets_asset_id ON release_assets(asset_id);
+      CREATE INDEX idx_release_assets_release_sort ON release_assets(release_id, sort_order);
+
+      INSERT INTO projects (id, title) VALUES (1, 'Legacy Project');
+      INSERT INTO assets (id, project_id) VALUES (10, 1);
+      INSERT INTO releases (id, project_id, title, status)
+      VALUES (11, 1, 'Legacy TBD', 'idea'), (12, 1, 'Legacy In Progress', 'drafting');
+      INSERT INTO release_assets (release_id, asset_id, role, sort_order)
+      VALUES (12, 10, 'attachment', 3);
+    `);
+
+    runMigrations(db, MIGRATIONS_DIR);
+
+    expect(db.prepare('SELECT id, status FROM releases ORDER BY id').all()).toEqual([
+      { id: 11, status: 'tbd' },
+      { id: 12, status: 'in-progress' },
+    ]);
+    expect(db.prepare('SELECT release_id, asset_id, role, sort_order FROM release_assets').all()).toEqual([
+      { release_id: 12, asset_id: 10, role: 'attachment', sort_order: 3 },
+    ]);
+    expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'releases_legacy'").get()).toBeUndefined();
+    expect(db.pragma('foreign_key_check')).toEqual([]);
+    expect(() => db.prepare(`
+      INSERT INTO releases (project_id, title, status) VALUES (1, 'Rejected Legacy', 'idea')
+    `).run()).toThrow(/CHECK constraint failed/i);
+  });
+
   // ─── Phase 5C: release_assets migration tests ──────────────────────────
 
   it('creates the release_assets table from the baseline schema', () => {
@@ -367,7 +464,7 @@ describe('database and migrations', () => {
     const releaseId = db.prepare(`
       INSERT INTO releases (project_id, title, description, notes, status, planned_date, patreon_url)
       VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(projectId, 'R1', '', '', 'idea', null, null).lastInsertRowid;
+    `).run(projectId, 'R1', '', '', 'tbd', null, null).lastInsertRowid;
 
     // Create asset
     const assetId = db.prepare(`
@@ -398,7 +495,7 @@ describe('database and migrations', () => {
     const releaseId = db.prepare(`
       INSERT INTO releases (project_id, title, description, notes, status, planned_date, patreon_url)
       VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(projectId, 'R1', '', '', 'idea', null, null).lastInsertRowid;
+    `).run(projectId, 'R1', '', '', 'tbd', null, null).lastInsertRowid;
 
     const assetId = db.prepare(`
       INSERT INTO assets (project_id, relative_path, filename, extension, mime_type, size_bytes, modified_at, is_present, last_seen_at)

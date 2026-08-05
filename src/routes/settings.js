@@ -120,7 +120,7 @@ const DEFAULT_VALUE_LABELS = Object.freeze({
     priority: Object.freeze({ low: 'Low', normal: 'Normal', high: 'High' }),
   }),
   new_release: Object.freeze({
-    status: Object.freeze({ idea: 'Idea', planned: 'Planned', drafting: 'Drafting', ready: 'Ready' }),
+    status: Object.freeze({ tbd: 'TBD', planned: 'Planned', 'in-progress': 'In progress', ready: 'Ready' }),
   }),
   projects: Object.freeze({
     view: Object.freeze({ grid: 'Grid', list: 'List' }),

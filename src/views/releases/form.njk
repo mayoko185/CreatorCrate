@@ -12,6 +12,9 @@
 
   <form method="post" action="{{ submitUrl }}" class="project-form" novalidate>
     <input type="hidden" name="_csrf" value="{{ _csrf }}">
+    {% for assetId in values.selectedAssetIds %}
+      <input type="hidden" name="selectedAssetIds" value="{{ assetId }}">
+    {% endfor %}
     {% if not release %}
       <div class="form-section">
         <h2>Project</h2>

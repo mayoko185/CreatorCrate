@@ -52,7 +52,7 @@ async function createProject(app, { title, status = 'tbd' }) {
   return res.headers.location.replace('/projects/', '');
 }
 
-async function createRelease(app, { projectId, title, status = 'idea', plannedDate = null, plannedTime = null }) {
+async function createRelease(app, { projectId, title, status = 'tbd', plannedDate = null, plannedTime = null }) {
   const body = [`projectId=${projectId}`, `title=${encodeURIComponent(title)}`];
   if (plannedDate) body.push(`plannedDate=${plannedDate}`);
   if (plannedTime) body.push(`plannedTime=${plannedTime}`);
@@ -63,7 +63,7 @@ async function createRelease(app, { projectId, title, status = 'idea', plannedDa
     .set('Content-Type', 'application/x-www-form-urlencoded')
     .expect(302);
   const releaseId = res.headers.location.replace('/releases/', '');
-  if (status !== 'idea') {
+  if (status !== 'tbd') {
     const releaseService = createReleaseService({ db: app.testDb, evaluateReleaseReadiness });
     releaseService.updateRelease(Number(releaseId), { status });
   }
@@ -542,8 +542,8 @@ describe('Phase 6B HTTP workflow', () => {
     it('filters by project', async () => {
       const p1 = await createProject(app, { title: 'P1' });
       const p2 = await createProject(app, { title: 'P2' });
-      await createRelease(app, { projectId: p1, title: 'R1', status: 'idea' });
-      await createRelease(app, { projectId: p2, title: 'R2', status: 'idea' });
+      await createRelease(app, { projectId: p1, title: 'R1', status: 'tbd' });
+      await createRelease(app, { projectId: p2, title: 'R2', status: 'tbd' });
 
       const res = await app.testAgent.get(`/release-management?project=${p1}`).expect(200);
       expect(res.text).toContain('R1');
@@ -552,10 +552,10 @@ describe('Phase 6B HTTP workflow', () => {
 
     it('filters by status', async () => {
       const projectId = await createProject(app, { title: 'Status Filter Project' });
-      await createRelease(app, { projectId, title: 'Idea R', status: 'idea' });
+      await createRelease(app, { projectId, title: 'Idea R', status: 'tbd' });
       await createRelease(app, { projectId, title: 'Planned R', status: 'planned' });
 
-      const res = await app.testAgent.get('/release-management?status=idea').expect(200);
+      const res = await app.testAgent.get('/release-management?status=tbd').expect(200);
       expect(res.text).toContain('Idea R');
       expect(res.text).not.toContain('Planned R');
     });
@@ -585,7 +585,7 @@ describe('Phase 6B HTTP workflow', () => {
       await createRelease(app, {
         projectId,
         title: 'No Date',
-        status: 'drafting',
+        status: 'in-progress',
         plannedDate: null,
       });
 
@@ -763,7 +763,7 @@ describe('Phase 6B HTTP workflow', () => {
       const releaseId = await createRelease(app, {
         projectId,
         title: 'ZZZ-Archive-Badge-Markup',
-        status: 'idea',
+        status: 'tbd',
       });
       await app.testAgent.post(`/releases/${releaseId}/archive`).send({ _csrf: app.testCsrfToken }).expect(302);
 
@@ -802,12 +802,12 @@ describe('Phase 6B HTTP workflow', () => {
       const activeId = await createRelease(app, {
         projectId,
         title: 'ZZZ-Active-List-Archive-Test',
-        status: 'idea',
+        status: 'tbd',
       });
       const archivedId = await createRelease(app, {
         projectId,
         title: 'ZZZ-Archived-List-Archive-Test',
-        status: 'idea',
+        status: 'tbd',
       });
       await app.testAgent.post(`/releases/${archivedId}/archive`).send({ _csrf: app.testCsrfToken }).expect(302);
 
@@ -844,7 +844,7 @@ describe('Phase 6B HTTP workflow', () => {
       const archivedId = await createRelease(app, {
         projectId,
         title: 'ZZZ-Board-Archived-Card-Test',
-        status: 'idea',
+        status: 'tbd',
       });
       await app.testAgent.post(`/releases/${archivedId}/archive`).send({ _csrf: app.testCsrfToken }).expect(302);
 
@@ -935,7 +935,7 @@ describe('Phase 6B HTTP workflow', () => {
     it('pagination forces multiple pages when enough releases exist', async () => {
       const projectId = await createProject(app, { title: 'Pagination Force Project' });
       for (let i = 0; i < 30; i++) {
-        await createRelease(app, { projectId, title: `Page Release ${i}`, status: 'idea' });
+        await createRelease(app, { projectId, title: `Page Release ${i}`, status: 'tbd' });
       }
 
       const res = await app.testAgent.get('/release-management').expect(200);
@@ -952,10 +952,10 @@ describe('Phase 6B HTTP workflow', () => {
     it('Next link: pathname and every preserved query parameter', async () => {
       const projectId = await createProject(app, { title: 'Pagination Preserve Project' });
       for (let i = 0; i < 30; i++) {
-        await createRelease(app, { projectId, title: `Preserve Release ${i}`, status: 'idea' });
+        await createRelease(app, { projectId, title: `Preserve Release ${i}`, status: 'tbd' });
       }
 
-      const baseUrl = `/release-management?project=${projectId}&status=idea&includeArchived=1&pageSize=10`;
+      const baseUrl = `/release-management?project=${projectId}&status=tbd&includeArchived=1&pageSize=10`;
       const res = await app.testAgent.get(baseUrl).expect(200);
 
       // Extract ONLY the Next anchor's href — not any href that happens
@@ -965,7 +965,7 @@ describe('Phase 6B HTTP workflow', () => {
       expect(nextUrl.pathname).toBe('/release-management');
       // Every preserved parameter MUST be on the same URL.
       expect(nextUrl.searchParams.get('project')).toBe(String(projectId));
-      expect(nextUrl.searchParams.get('status')).toBe('idea');
+      expect(nextUrl.searchParams.get('status')).toBe('tbd');
       expect(nextUrl.searchParams.get('includeArchived')).toBe('1');
       expect(nextUrl.searchParams.get('pageSize')).toBe('10');
       expect(nextUrl.searchParams.get('page')).toBe('2');
@@ -974,17 +974,17 @@ describe('Phase 6B HTTP workflow', () => {
     it('Previous link on page 2: pathname and every preserved query parameter', async () => {
       const projectId = await createProject(app, { title: 'Pagination Prev Project' });
       for (let i = 0; i < 30; i++) {
-        await createRelease(app, { projectId, title: `Prev Release ${i}`, status: 'idea' });
+        await createRelease(app, { projectId, title: `Prev Release ${i}`, status: 'tbd' });
       }
 
-      const baseUrl = `/release-management?project=${projectId}&status=idea&includeArchived=1&pageSize=10&page=2`;
+      const baseUrl = `/release-management?project=${projectId}&status=tbd&includeArchived=1&pageSize=10&page=2`;
       const res = await app.testAgent.get(baseUrl).expect(200);
 
       const prevHref = extractPaginationHref(res.text, 'Previous');
       const prevUrl = new URL(prevHref, 'http://localhost');
       expect(prevUrl.pathname).toBe('/release-management');
       expect(prevUrl.searchParams.get('project')).toBe(String(projectId));
-      expect(prevUrl.searchParams.get('status')).toBe('idea');
+      expect(prevUrl.searchParams.get('status')).toBe('tbd');
       expect(prevUrl.searchParams.get('includeArchived')).toBe('1');
       expect(prevUrl.searchParams.get('pageSize')).toBe('10');
       // Page=1 is the default so it's omitted from generated URLs
@@ -1016,7 +1016,7 @@ describe('Phase 6B HTTP workflow', () => {
     it('board view does not render pagination links (no Next/Previous anchors)', async () => {
       const projectId = await createProject(app, { title: 'Board Pagination Project' });
       for (let i = 0; i < 30; i++) {
-        await createRelease(app, { projectId, title: `Board Page Release ${i}`, status: 'idea' });
+        await createRelease(app, { projectId, title: `Board Page Release ${i}`, status: 'tbd' });
       }
 
       const res = await app.testAgent.get(`/release-management?view=board&project=${projectId}`).expect(200);
@@ -1095,14 +1095,14 @@ describe('Phase 6B HTTP workflow', () => {
     });
 
     it('view switch (board → list) preserves all query params on a single URL', async () => {
-      const res = await app.testAgent.get('/release-management?view=board&project=7&status=idea&schedule=today&includeArchived=1&pageSize=10').expect(200);
+      const res = await app.testAgent.get('/release-management?view=board&project=7&status=tbd&schedule=today&includeArchived=1&pageSize=10').expect(200);
       const listHref = extractViewSwitchHref(res.text, 'List');
       expect(listHref).not.toBeNull();
       const listUrl = new URL(listHref, 'http://localhost');
       expect(listUrl.pathname).toBe('/release-management');
       expect(listUrl.searchParams.get('view')).toBe('list');
       expect(listUrl.searchParams.get('project')).toBe('7');
-      expect(listUrl.searchParams.get('status')).toBe('idea');
+      expect(listUrl.searchParams.get('status')).toBe('tbd');
       expect(listUrl.searchParams.get('schedule')).toBe('today');
       expect(listUrl.searchParams.get('includeArchived')).toBe('1');
       expect(listUrl.searchParams.get('pageSize')).toBe('10');
@@ -1113,12 +1113,12 @@ describe('Phase 6B HTTP workflow', () => {
       // pagination is view-specific — list and board have different page counts.
       const projectId = await createProject(app, { title: 'View Switch Page Project' });
       for (let i = 0; i < 60; i++) {
-        await createRelease(app, { projectId, title: `ViewSwitch Release ${i}`, status: 'idea' });
+        await createRelease(app, { projectId, title: `ViewSwitch Release ${i}`, status: 'tbd' });
       }
 
       // Page 2 in list view → switch to board → page must be cleared.
       const listRes = await app.testAgent
-        .get(`/release-management?view=list&project=${projectId}&status=idea&pageSize=10&page=2`)
+        .get(`/release-management?view=list&project=${projectId}&status=tbd&pageSize=10&page=2`)
         .expect(200);
       const boardHref = extractViewSwitchHref(listRes.text, 'Board');
       const boardUrl = new URL(boardHref, 'http://localhost');
@@ -1126,7 +1126,7 @@ describe('Phase 6B HTTP workflow', () => {
       expect(boardUrl.searchParams.get('page')).toBeNull();
       // Also confirm the new list anchor (back to list) has no page.
       const boardRes = await app.testAgent
-        .get(`/release-management?view=board&project=${projectId}&status=idea&pageSize=10&page=2`)
+        .get(`/release-management?view=board&project=${projectId}&status=tbd&pageSize=10&page=2`)
         .expect(200);
       const listHref = extractViewSwitchHref(boardRes.text, 'List');
       const listUrl = new URL(listHref, 'http://localhost');
@@ -1187,7 +1187,7 @@ describe('Phase 6B HTTP workflow', () => {
 
     it('defaults to all readiness (no restriction) and selects the All option', async () => {
       const projectId = await createProject(app, { title: 'Readiness Default Project' });
-      await createRelease(app, { projectId, title: 'Default Idea', status: 'idea' });
+      await createRelease(app, { projectId, title: 'Default Idea', status: 'tbd' });
       await createRelease(app, { projectId, title: 'Default Ready', status: 'ready' });
 
       const res = await app.testAgent.get('/release-management').expect(200);
@@ -1225,7 +1225,7 @@ describe('Phase 6B HTTP workflow', () => {
 
     it('non-ready releases are excluded from readiness-specific filters', async () => {
       const projectId = await createProject(app, { title: 'HTTP Non Ready Filter' });
-      await createRelease(app, { projectId, title: 'Idea NR', status: 'idea' });
+      await createRelease(app, { projectId, title: 'Idea NR', status: 'tbd' });
       await createRelease(app, { projectId, title: 'Planned NR', status: 'planned' });
 
       const pubRes = await app.testAgent.get('/release-management?readiness=publishable').expect(200);
@@ -1261,7 +1261,7 @@ describe('Phase 6B HTTP workflow', () => {
 
     it('invalid readiness value falls back to all', async () => {
       const projectId = await createProject(app, { title: 'HTTP Invalid Readiness' });
-      await createRelease(app, { projectId, title: 'Invalid Idea', status: 'idea' });
+      await createRelease(app, { projectId, title: 'Invalid Idea', status: 'tbd' });
 
       const res = await app.testAgent.get('/release-management?readiness=junk').expect(200);
       expect(res.text).toContain('Invalid Idea');
@@ -1323,7 +1323,7 @@ describe('Phase 6B HTTP workflow', () => {
       const projectId = await createProject(app, { title: 'HTTP Readiness Consistency' });
       const pub = await makeReadyRelease(projectId, 'Consistency Publishable');
       const blocked = await makeReadyRelease(projectId, 'Consistency Blocked', { present: false });
-      await createRelease(app, { projectId, title: 'Consistency Idea', status: 'idea' });
+      await createRelease(app, { projectId, title: 'Consistency Idea', status: 'tbd' });
 
       const listPub = await app.testAgent.get('/release-management?readiness=publishable').expect(200);
       const boardPub = await app.testAgent.get('/release-management?view=board&readiness=publishable').expect(200);
@@ -1467,7 +1467,7 @@ describe('Phase 6B HTTP workflow', () => {
       const releaseId = await createRelease(app, {
         projectId,
         title: 'Blocker Non Ready',
-        status: 'idea',
+        status: 'tbd',
       });
 
       const res = await app.testAgent.get('/release-management').expect(200);
@@ -1585,8 +1585,8 @@ describe('Phase 6B HTTP workflow', () => {
     it('invalid project id uses safe default (null) — returns releases from both projects', async () => {
       const p1 = await createProject(app, { title: 'HTTP Malformed Alpha' });
       const p2 = await createProject(app, { title: 'HTTP Malformed Beta' });
-      await createRelease(app, { projectId: p1, title: 'Alpha-HTTP-Malformed-Release', status: 'idea' });
-      await createRelease(app, { projectId: p2, title: 'Beta-HTTP-Malformed-Release', status: 'idea' });
+      await createRelease(app, { projectId: p1, title: 'Alpha-HTTP-Malformed-Release', status: 'tbd' });
+      await createRelease(app, { projectId: p2, title: 'Beta-HTTP-Malformed-Release', status: 'tbd' });
 
       const res = await app.testAgent.get('/release-management?project=1junk').expect(200);
       // project filter is null → both projects' releases are returned.
@@ -1596,7 +1596,7 @@ describe('Phase 6B HTTP workflow', () => {
 
     it('invalid page uses safe default (1) and renders correctly', async () => {
       const projectId = await createProject(app, { title: 'Page Default Project' });
-      await createRelease(app, { projectId, title: 'Valid Release', status: 'idea' });
+      await createRelease(app, { projectId, title: 'Valid Release', status: 'tbd' });
       const res = await app.testAgent.get('/release-management?page=1junk').expect(200);
       // Should render with page 1 (the only page)
       expect(res.text).toContain('Page 1');
@@ -1606,7 +1606,7 @@ describe('Phase 6B HTTP workflow', () => {
     it('invalid pageSize uses safe default (25) — renders exactly 25 releases per page', async () => {
       const projectId = await createProject(app, { title: 'PageSize Default Project' });
       for (let i = 0; i < 30; i++) {
-        await createRelease(app, { projectId, title: `Size Default ${i}`, status: 'idea' });
+        await createRelease(app, { projectId, title: `Size Default ${i}`, status: 'tbd' });
       }
       const res = await app.testAgent.get('/release-management?pageSize=1junk').expect(200);
       // pageSize falls back to the default of 25. With 30 releases, page 1
@@ -1620,7 +1620,7 @@ describe('Phase 6B HTTP workflow', () => {
     it('pageSize over max is capped at 100', async () => {
       const projectId = await createProject(app, { title: 'Large PageSize Project' });
       for (let i = 0; i < 150; i++) {
-        await createRelease(app, { projectId, title: `Large Release ${i}`, status: 'idea' });
+        await createRelease(app, { projectId, title: `Large Release ${i}`, status: 'tbd' });
       }
 
       const res = await app.testAgent.get('/release-management?pageSize=200').expect(200);
@@ -1631,7 +1631,7 @@ describe('Phase 6B HTTP workflow', () => {
 
     it('rejects non-integer page values and uses safe default', async () => {
       const projectId = await createProject(app, { title: 'NonInteger Page Project' });
-      await createRelease(app, { projectId, title: 'NonInt Release', status: 'idea' });
+      await createRelease(app, { projectId, title: 'NonInt Release', status: 'tbd' });
       const res = await app.testAgent.get('/release-management?page=2.5').expect(200);
       expect(res.text).toContain('Page 1');
       expect(res.text).toContain('NonInt Release');
@@ -1639,7 +1639,7 @@ describe('Phase 6B HTTP workflow', () => {
 
     it('rejects negative page values and uses safe default', async () => {
       const projectId = await createProject(app, { title: 'Negative Page Project' });
-      await createRelease(app, { projectId, title: 'Neg Release', status: 'idea' });
+      await createRelease(app, { projectId, title: 'Neg Release', status: 'tbd' });
       const res = await app.testAgent.get('/release-management?page=-1').expect(200);
       expect(res.text).toContain('Page 1');
       expect(res.text).toContain('Neg Release');
@@ -1647,7 +1647,7 @@ describe('Phase 6B HTTP workflow', () => {
 
     it('rejects zero page value and uses safe default', async () => {
       const projectId = await createProject(app, { title: 'Zero Page Project' });
-      await createRelease(app, { projectId, title: 'Zero Release', status: 'idea' });
+      await createRelease(app, { projectId, title: 'Zero Release', status: 'tbd' });
       const res = await app.testAgent.get('/release-management?page=0').expect(200);
       expect(res.text).toContain('Page 1');
       expect(res.text).toContain('Zero Release');
@@ -1655,7 +1655,7 @@ describe('Phase 6B HTTP workflow', () => {
 
     it('rejects scientific notation page values and uses safe default', async () => {
       const projectId = await createProject(app, { title: 'Sci Notation Page Project' });
-      await createRelease(app, { projectId, title: 'Sci Release', status: 'idea' });
+      await createRelease(app, { projectId, title: 'Sci Release', status: 'tbd' });
       const res = await app.testAgent.get('/release-management?page=1e2').expect(200);
       expect(res.text).toContain('Page 1');
       expect(res.text).toContain('Sci Release');
@@ -1663,7 +1663,7 @@ describe('Phase 6B HTTP workflow', () => {
 
     it('rejects leading plus page values and uses safe default', async () => {
       const projectId = await createProject(app, { title: 'Plus Page Project' });
-      await createRelease(app, { projectId, title: 'Plus Release', status: 'idea' });
+      await createRelease(app, { projectId, title: 'Plus Release', status: 'tbd' });
       const res = await app.testAgent.get('/release-management?page=+2').expect(200);
       expect(res.text).toContain('Page 1');
       expect(res.text).toContain('Plus Release');
@@ -1675,15 +1675,15 @@ describe('Phase 6B HTTP workflow', () => {
       // strict validator must reject the leading-space page, so the route
       // uses the default page=1. The pageSize=1 is valid and respected.
       const projectId = await createProject(app, { title: 'Url Decoded Plus Project' });
-      await createRelease(app, { projectId, title: 'First', status: 'idea' });
-      await createRelease(app, { projectId, title: 'Second', status: 'idea' });
+      await createRelease(app, { projectId, title: 'First', status: 'tbd' });
+      await createRelease(app, { projectId, title: 'Second', status: 'tbd' });
       const res = await app.testAgent.get('/release-management?page=+2&pageSize=1').expect(200);
       expect(res.text).toContain('Page 1');
     });
 
     it('rejects leading-whitespace page values', async () => {
       const projectId = await createProject(app, { title: 'Leading Space Project' });
-      await createRelease(app, { projectId, title: 'Leading Space Release', status: 'idea' });
+      await createRelease(app, { projectId, title: 'Leading Space Release', status: 'tbd' });
       // Express URL-decodes "%20" to a literal space; test via percent-encoded form.
       const res = await app.testAgent.get('/release-management?page=%202').expect(200);
       expect(res.text).toContain('Page 1');
@@ -1692,7 +1692,7 @@ describe('Phase 6B HTTP workflow', () => {
 
     it('rejects trailing-whitespace page values', async () => {
       const projectId = await createProject(app, { title: 'Trailing Space Project' });
-      await createRelease(app, { projectId, title: 'Trailing Space Release', status: 'idea' });
+      await createRelease(app, { projectId, title: 'Trailing Space Release', status: 'tbd' });
       const res = await app.testAgent.get('/release-management?page=2%20').expect(200);
       expect(res.text).toContain('Page 1');
       expect(res.text).toContain('Trailing Space Release');
@@ -1700,7 +1700,7 @@ describe('Phase 6B HTTP workflow', () => {
 
     it('rejects "1junk" page values', async () => {
       const projectId = await createProject(app, { title: '1Junk Page Project' });
-      await createRelease(app, { projectId, title: '1Junk Release', status: 'idea' });
+      await createRelease(app, { projectId, title: '1Junk Release', status: 'tbd' });
       const res = await app.testAgent.get('/release-management?page=1junk').expect(200);
       expect(res.text).toContain('Page 1');
       expect(res.text).toContain('1Junk Release');
@@ -1708,7 +1708,7 @@ describe('Phase 6B HTTP workflow', () => {
 
     it('rejects "2.5" page values', async () => {
       const projectId = await createProject(app, { title: '2.5 Page Project' });
-      await createRelease(app, { projectId, title: '2.5 Release', status: 'idea' });
+      await createRelease(app, { projectId, title: '2.5 Release', status: 'tbd' });
       const res = await app.testAgent.get('/release-management?page=2.5').expect(200);
       expect(res.text).toContain('Page 1');
       expect(res.text).toContain('2.5 Release');
@@ -1716,7 +1716,7 @@ describe('Phase 6B HTTP workflow', () => {
 
     it('rejects "1e2" page values', async () => {
       const projectId = await createProject(app, { title: '1e2 Page Project' });
-      await createRelease(app, { projectId, title: '1e2 Release', status: 'idea' });
+      await createRelease(app, { projectId, title: '1e2 Release', status: 'tbd' });
       const res = await app.testAgent.get('/release-management?page=1e2').expect(200);
       expect(res.text).toContain('Page 1');
       expect(res.text).toContain('1e2 Release');
@@ -1724,7 +1724,7 @@ describe('Phase 6B HTTP workflow', () => {
 
     it('rejects "-2" page values', async () => {
       const projectId = await createProject(app, { title: 'Neg2 Page Project' });
-      await createRelease(app, { projectId, title: 'Neg2 Release', status: 'idea' });
+      await createRelease(app, { projectId, title: 'Neg2 Release', status: 'tbd' });
       const res = await app.testAgent.get('/release-management?page=-2').expect(200);
       expect(res.text).toContain('Page 1');
       expect(res.text).toContain('Neg2 Release');
@@ -1732,7 +1732,7 @@ describe('Phase 6B HTTP workflow', () => {
 
     it('rejects "0" page values', async () => {
       const projectId = await createProject(app, { title: 'Zero Page Project 2' });
-      await createRelease(app, { projectId, title: 'Zero Page Release', status: 'idea' });
+      await createRelease(app, { projectId, title: 'Zero Page Release', status: 'tbd' });
       const res = await app.testAgent.get('/release-management?page=0').expect(200);
       expect(res.text).toContain('Page 1');
       expect(res.text).toContain('Zero Page Release');
@@ -1740,7 +1740,7 @@ describe('Phase 6B HTTP workflow', () => {
 
     it('rejects blank page values', async () => {
       const projectId = await createProject(app, { title: 'Blank Page Project' });
-      await createRelease(app, { projectId, title: 'Blank Release', status: 'idea' });
+      await createRelease(app, { projectId, title: 'Blank Release', status: 'tbd' });
       const res = await app.testAgent.get('/release-management?page=').expect(200);
       expect(res.text).toContain('Page 1');
       expect(res.text).toContain('Blank Release');
@@ -1755,7 +1755,7 @@ describe('Phase 6B HTTP workflow', () => {
       // new test pins the exact column-header markup: each column header
       // contains a status badge with the status label text.
       const res = await app.testAgent.get('/release-management?view=board').expect(200);
-      const columns = ['idea', 'planned', 'drafting', 'ready', 'published', 'cancelled'];
+      const columns = ['tbd', 'planned', 'in-progress', 'ready', 'published', 'cancelled'];
       for (const status of columns) {
         // Phase 10.5C: column headers use status-badge partial instead of
         // inline status-X color classes on the h3.
@@ -1773,7 +1773,7 @@ describe('Phase 6B HTTP workflow', () => {
       // Phase 10.5C: column headers use shared status-badge partial
       // instead of inline status-X color classes.
       const res = await app.testAgent.get('/release-management?view=board').expect(200);
-      const columns = ['idea', 'planned', 'drafting', 'ready', 'published', 'cancelled'];
+      const columns = ['tbd', 'planned', 'in-progress', 'ready', 'published', 'cancelled'];
       for (const status of columns) {
         expect(res.text).toMatch(
           new RegExp(
@@ -1781,7 +1781,14 @@ describe('Phase 6B HTTP workflow', () => {
           ),
         );
         // Each status label appears in a status badge
-        const label = status.charAt(0).toUpperCase() + status.slice(1).replace('-', ' ');
+        const label = {
+          tbd: 'Tbd',
+          planned: 'Planned',
+          'in-progress': 'In Progress',
+          ready: 'Ready',
+          published: 'Published',
+          cancelled: 'Cancelled',
+        }[status];
         expect(res.text).toContain(label);
       }
     });
@@ -1792,7 +1799,7 @@ describe('Phase 6B HTTP workflow', () => {
       // The new test pins the card markup: each card is
       // <div class="board-card …">…<a href="/releases/{id}">Title</a>…</div>.
       const projectId = await createProject(app, { title: 'Board Render Project' });
-      await createRelease(app, { projectId, title: 'ZZZ-Board-Idea-Card-Test', status: 'idea' });
+      await createRelease(app, { projectId, title: 'ZZZ-Board-Idea-Card-Test', status: 'tbd' });
       await createRelease(app, { projectId, title: 'ZZZ-Board-Planned-Card-Test', status: 'planned' });
 
       const res = await app.testAgent.get('/release-management?view=board').expect(200);
@@ -1810,7 +1817,7 @@ describe('Phase 6B HTTP workflow', () => {
       // that could be matched by an unrelated text occurrence. Pin the
       // markup to the .card-project element.
       const projectId = await createProject(app, { title: 'ZZZ-Board-Title-Project' });
-      await createRelease(app, { projectId, title: 'Card Release', status: 'idea' });
+      await createRelease(app, { projectId, title: 'Card Release', status: 'tbd' });
 
       const res = await app.testAgent.get('/release-management?view=board').expect(200);
       expect(res.text).toMatch(
@@ -1827,7 +1834,7 @@ describe('Phase 6B HTTP workflow', () => {
       await createRelease(app, {
         projectId,
         title: 'ZZZ-Board-Dated-Release',
-        status: 'idea',
+        status: 'tbd',
         plannedDate: '2025-06-15',
       });
 
@@ -1846,7 +1853,7 @@ describe('Phase 6B HTTP workflow', () => {
       const releaseId = await createRelease(app, {
         projectId,
         title: 'ZZZ-Board-Asset-Count-Release',
-        status: 'idea',
+        status: 'tbd',
       });
       attachPresentAssetToRelease(db, Number(projectId), Number(releaseId), { name: 'asset.txt' });
 
@@ -1864,7 +1871,7 @@ describe('Phase 6B HTTP workflow', () => {
       const releaseId = await createRelease(app, {
         projectId,
         title: 'ZZZ-Board-Missing-Card-Release',
-        status: 'idea',
+        status: 'tbd',
       });
       const assetRepo = createAssetRepository(db);
       const asset = assetRepo.upsert(Number(projectId), 'gone.txt', {
@@ -1893,7 +1900,7 @@ describe('Phase 6B HTTP workflow', () => {
 
     it('board is read-only (no mutation controls)', async () => {
       const projectId = await createProject(app, { title: 'Board Read-Only Project' });
-      await createRelease(app, { projectId, title: 'Read-Only Release', status: 'idea' });
+      await createRelease(app, { projectId, title: 'Read-Only Release', status: 'tbd' });
 
       const res = await app.testAgent.get('/release-management?view=board').expect(200);
       expect(res.text).not.toContain('action="/releases/');
@@ -1906,8 +1913,8 @@ describe('Phase 6B HTTP workflow', () => {
       // board-card element.
       const p1 = await createProject(app, { title: 'BP1 Filter' });
       const p2 = await createProject(app, { title: 'BP2 Filter' });
-      await createRelease(app, { projectId: p1, title: 'ZZZ-P1-Card', status: 'idea' });
-      await createRelease(app, { projectId: p2, title: 'ZZZ-P2-Card', status: 'idea' });
+      await createRelease(app, { projectId: p1, title: 'ZZZ-P1-Card', status: 'tbd' });
+      await createRelease(app, { projectId: p2, title: 'ZZZ-P2-Card', status: 'tbd' });
 
       const res = await app.testAgent.get(`/release-management?view=board&project=${p1}`).expect(200);
       expect(res.text).toMatch(
@@ -2344,7 +2351,7 @@ describe('Phase 6B HTTP workflow', () => {
       const releaseId = await createRelease(app, {
         projectId,
         title: 'Edit Regression Release',
-        status: 'idea',
+        status: 'tbd',
       });
 
       const res = await app.testAgent.get(`/releases/${releaseId}/edit`).expect(200);
@@ -2356,7 +2363,7 @@ describe('Phase 6B HTTP workflow', () => {
       const releaseId = await createRelease(app, {
         projectId,
         title: 'Mutation Regression Release',
-        status: 'idea',
+        status: 'tbd',
       });
 
       await app.testAgent.post(`/releases/${releaseId}/archive`).send({ _csrf: app.testCsrfToken }).expect(302);
@@ -2371,7 +2378,7 @@ describe('Phase 6B HTTP workflow', () => {
       const releaseId = await createRelease(app, {
         projectId,
         title: 'Should Not Archive',
-        status: 'idea',
+        status: 'tbd',
       });
 
       // 2. Archive the parent project.
@@ -2407,7 +2414,7 @@ describe('Phase 6B HTTP workflow', () => {
      * Create a release and link an asset to it.
      */
     async function createReleaseWithLinkedAsset(projectId, title) {
-      const releaseId = await createRelease(app, { projectId, title, status: 'idea' });
+      const releaseId = await createRelease(app, { projectId, title, status: 'tbd' });
       // Scan to create the asset record
       await app.testAgent.post(`/projects/${projectId}/scan`).send({ _csrf: app.testCsrfToken }).expect(302);
       const assetRepo = createAssetRepository(db);

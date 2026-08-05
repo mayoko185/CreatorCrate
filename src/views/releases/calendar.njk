@@ -75,9 +75,19 @@
                 {% for entry in day.entries %}
                   <div class="calendar-release">
                     <span class="calendar-release-trigger">
+                      <span class="calendar-release-project">{{ entry.project_title }}</span>
                       <a href="/releases/{{ entry.id }}/edit">{{ entry.title }}</a>
                       {% if entry.preview_url %}
                         <img class="calendar-release-preview" src="{{ entry.preview_url }}" alt="Preview of {{ entry.title }}" loading="lazy" decoding="async">
+                      {% endif %}
+                      {% if entry.preview_url or entry.notes %}
+                        <span class="calendar-release-preview-details">
+                          <span class="calendar-release-preview-project">{{ entry.project_title }}</span>
+                          <span class="calendar-release-preview-title">{{ entry.title }}</span>
+                          {% if entry.notes %}
+                            <span class="calendar-release-preview-notes">{{ entry.notes }}</span>
+                          {% endif %}
+                        </span>
                       {% endif %}
                     </span>
                     {% if entry.planned_time %}
@@ -122,9 +132,19 @@
               {% for entry in day.entries %}
                 <div class="agenda-release">
                   <span class="calendar-release-trigger">
+                    <span class="calendar-release-project">{{ entry.project_title }}</span>
                     <a href="/releases/{{ entry.id }}/edit">{{ entry.title }}</a>
                     {% if entry.preview_url %}
                       <img class="calendar-release-preview" src="{{ entry.preview_url }}" alt="Preview of {{ entry.title }}" loading="lazy" decoding="async">
+                    {% endif %}
+                    {% if entry.preview_url or entry.notes %}
+                      <span class="calendar-release-preview-details">
+                        <span class="calendar-release-preview-project">{{ entry.project_title }}</span>
+                        <span class="calendar-release-preview-title">{{ entry.title }}</span>
+                        {% if entry.notes %}
+                          <span class="calendar-release-preview-notes">{{ entry.notes }}</span>
+                        {% endif %}
+                      </span>
                     {% endif %}
                   </span>
                   {% if entry.planned_time %}

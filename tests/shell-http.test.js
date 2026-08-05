@@ -105,7 +105,7 @@ describe('application shell — navigation model', () => {
     const relRes = await agent
       .post('/releases')
       .type('form')
-      .send({ projectId, title: 'Shell Test Release', status: 'idea', _csrf: csrfToken })
+      .send({ projectId, title: 'Shell Test Release', status: 'tbd', _csrf: csrfToken })
       .expect(302);
     releaseLocation = relRes.headers.location;
   });

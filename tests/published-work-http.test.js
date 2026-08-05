@@ -57,7 +57,7 @@ describe('Releases HTTP route', () => {
     return res.headers.location.replace('/projects/', '');
   }
 
-  async function createRelease({ projectId, title, plannedDate = null, plannedTime = null, status = 'idea' }) {
+  async function createRelease({ projectId, title, plannedDate = null, plannedTime = null, status = 'tbd' }) {
     const requestBody = [
       `projectId=${projectId}`,
       `title=${encodeURIComponent(title)}`,
@@ -73,7 +73,7 @@ describe('Releases HTTP route', () => {
       .expect(302);
     const releaseId = Number(res.headers.location.replace('/releases/', ''));
 
-    if (status !== 'idea') {
+    if (status !== 'tbd') {
       const releaseService = createReleaseService({ db, evaluateReleaseReadiness });
       releaseService.updateRelease(releaseId, { status });
     }

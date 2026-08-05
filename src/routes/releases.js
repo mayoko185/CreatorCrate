@@ -16,7 +16,7 @@ const PAGE_SIZE = 25;
 const RELEASES_PAGE_DEFAULTS = 'releases';
 const RELEASE_MANAGEMENT_PAGE_DEFAULTS = 'releaseManagement';
 
-export { handleReleaseListOrBoard, buildPageUrl };
+export { handleReleaseListOrBoard, buildPageUrl, buildCreateReleaseFormModel };
 
 export function createReleasesRouter({ appName, releaseService, projectService, workflowQueryService }) {
   const router = express.Router();
@@ -42,31 +42,22 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
   // GET /releases/new — Create form (requires project selection)
   router.get('/new', (req, res, next) => {
     try {
-      const values = buildNewReleaseFormValues(req.query);
-      const context = buildReleaseFormProjectContext(req.query.projectId, projectService);
-      if (context.projects.length === 0) {
+      const formModel = buildCreateReleaseFormModel({
+        appName,
+        projectService,
+        values: req.query,
+        errors: {},
+      });
+      if (formModel.projects.length === 0) {
         return res.status(422).render('releases/form.njk', {
-          appName,
-          release: null,
-          values,
+          ...formModel,
           errors: { general: 'No active projects found. Create a project first.' },
           projects: [],
           selectedProjectId: null,
-          action: 'Create',
-          submitUrl: '/releases',
         });
       }
 
-      res.render('releases/form.njk', {
-        appName,
-        release: null,
-        values,
-        errors: {},
-        projects: context.projects,
-        selectedProjectId: context.selectedProjectId,
-        action: 'Create',
-        submitUrl: '/releases',
-      });
+      res.render('releases/form.njk', formModel);
     } catch (err) {
       next(err);
     }
@@ -74,28 +65,48 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
 
   // POST /releases — Create a release
   router.post('/', (req, res, next) => {
+    const body = req.body || {};
+    const hasSelectedAssetIds = Object.hasOwn(body, 'selectedAssetIds');
+
     try {
-      const projectId = parseStrictInt(req.body.projectId);
+      const projectId = parseStrictInt(body.projectId);
       if (projectId === null) {
         throw new ReleaseValidationError({ projectId: 'Project is required.' });
       }
 
-      const input = parseReleaseInput(req.body);
+      const input = parseReleaseInput(body);
+      if (hasSelectedAssetIds) {
+        const normalizedSelection = normalizeSelectedAssetIds(body.selectedAssetIds);
+        if (!normalizedSelection.valid) {
+          throw new ReleaseValidationError({ assetIds: 'Invalid asset selection format.' });
+        }
+
+        const release = releaseService.createReleaseWithSelectedAssets(
+          projectId,
+          input,
+          normalizedSelection.ids,
+        );
+        return res.redirect(`/releases/${release.id}/assets`);
+      }
+
       const release = releaseService.createRelease(projectId, input);
-      res.redirect(`/releases/${release.id}`);
+      return res.redirect(`/releases/${release.id}`);
     } catch (err) {
-      if (err instanceof ReleaseValidationError) {
-        const context = buildReleaseFormProjectContext(req.body.projectId, projectService);
-        res.status(422).render('releases/form.njk', {
+      if (err instanceof ReleaseValidationError || (hasSelectedAssetIds && err instanceof AssetNotFoundError)) {
+        const errors = err instanceof ReleaseValidationError
+          ? { ...err.errors }
+          : { assets: err.message };
+        const selectedAssetError = errors.assetIds || errors.assets;
+        if (hasSelectedAssetIds && selectedAssetError && !errors.general) {
+          errors.general = selectedAssetError;
+        }
+
+        res.status(422).render('releases/form.njk', buildCreateReleaseFormModel({
           appName,
-          release: null,
-          values: req.body,
-          errors: err.errors,
-          projects: context.projects,
-          selectedProjectId: context.selectedProjectId,
-          action: 'Create',
-          submitUrl: '/releases',
-        });
+          projectService,
+          values: body,
+          errors,
+        }));
         return;
       }
       next(err);
@@ -242,7 +253,7 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
     if (release.archived_at || (project && project.archived_at)) {
       return res.redirect(`/releases/${id}`);
     }
-    if (['idea', 'planned', 'drafting', 'published', 'cancelled'].includes(release.status)) {
+    if (['tbd', 'planned', 'in-progress', 'published', 'cancelled'].includes(release.status)) {
       return res.redirect(`/releases/${id}`);
     }
 
@@ -1013,10 +1024,33 @@ function buildNewReleaseFormValues(rawQuery) {
     : {};
   const now = new Date();
 
-  return {
+  const values = {
     ...query,
     plannedDate: query.plannedDate || formatLocalDate(now),
     plannedTime: query.plannedTime || formatLocalTime(now),
+  };
+
+  if (Object.hasOwn(query, 'selectedAssetIds')) {
+    const normalized = normalizeSelectedAssetIds(query.selectedAssetIds);
+    values.selectedAssetIds = normalized.valid ? normalized.ids : [];
+  }
+
+  return values;
+}
+
+function buildCreateReleaseFormModel({ appName, projectService, values = {}, errors = {} }) {
+  const formValues = buildNewReleaseFormValues(values);
+  const context = buildReleaseFormProjectContext(formValues.projectId, projectService);
+
+  return {
+    appName,
+    release: null,
+    values: formValues,
+    errors,
+    projects: context.projects,
+    selectedProjectId: context.selectedProjectId,
+    action: 'Create',
+    submitUrl: '/releases',
   };
 }
 

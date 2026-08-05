@@ -59,16 +59,17 @@ function insertProject(db, {
  * Helper to insert a release directly.
  */
 function insertRelease(db, {
-  projectId, title, status = 'idea',
+  projectId, title, status = 'tbd',
+  notes = '',
   plannedDate = null, plannedTime = null, publishedDate = null, archivedAt = null,
 }) {
   return db.prepare(`
     INSERT INTO releases (project_id, title, description, notes, status,
                           planned_date, planned_time, published_date, patreon_url,
                           archived_at)
-    VALUES (?, ?, '', '', ?, ?, ?, ?, NULL, ?)
+    VALUES (?, ?, '', ?, ?, ?, ?, ?, NULL, ?)
     RETURNING *
-  `).get(projectId, title, status, plannedDate, plannedTime, publishedDate, archivedAt);
+  `).get(projectId, title, notes, status, plannedDate, plannedTime, publishedDate, archivedAt);
 }
 
 /**
@@ -191,7 +192,7 @@ describe('workflow query service', () => {
       expect(data.workflowSummary.missingAssetSummary.total).toBe(0);
       expect(data.workflowSummary.missingAssetSummary.referencedByReleases).toBe(0);
       expect(data.workflowSummary.releaseStatusCounts).toEqual({
-        idea: 0, planned: 0, drafting: 0, ready: 0, published: 0, cancelled: 0,
+        tbd: 0, planned: 0, 'in-progress': 0, ready: 0, published: 0, cancelled: 0,
       });
       expect(data.projectCounts).toEqual({
         tbd: 0, planned: 0, 'in-progress': 0, ready: 0, archived: 0,
@@ -591,7 +592,7 @@ describe('workflow query service', () => {
       insertRelease(db, {
         projectId: project.id,
         title: 'Drafting Release',
-        status: 'drafting',
+        status: 'in-progress',
         plannedDate: '2099-01-01',
       });
 
@@ -766,7 +767,7 @@ describe('workflow query service', () => {
       const noDate = insertRelease(db, {
         projectId: project.id,
         title: 'No Date',
-        status: 'drafting',
+        status: 'in-progress',
         plannedDate: null,
       });
       linkAssetToRelease(db, { releaseId: noDate.id, assetId: presentAsset.id });
@@ -779,7 +780,7 @@ describe('workflow query service', () => {
       const releaseWithMissing = insertRelease(db, {
         projectId: project.id,
         title: 'Has Missing',
-        status: 'drafting',
+        status: 'in-progress',
         plannedDate: '2099-01-01',
       });
       linkAssetToRelease(db, { releaseId: releaseWithMissing.id, assetId: presentAsset.id });
@@ -865,7 +866,7 @@ describe('workflow query service', () => {
       const release = insertRelease(db, {
         projectId: project.id,
         title: 'Archived Ref Release',
-        status: 'idea',
+        status: 'tbd',
         plannedDate: null,
         archivedAt: '2024-01-01 00:00:00',
       });
@@ -877,13 +878,13 @@ describe('workflow query service', () => {
 
     it('returns release status counts with all statuses set to zero or actual', () => {
       const project = insertProject(db, { title: 'Status Counts Project' });
-      insertRelease(db, { projectId: project.id, title: 'I1', status: 'idea' });
-      insertRelease(db, { projectId: project.id, title: 'I2', status: 'idea' });
+      insertRelease(db, { projectId: project.id, title: 'I1', status: 'tbd' });
+      insertRelease(db, { projectId: project.id, title: 'I2', status: 'tbd' });
       insertRelease(db, { projectId: project.id, title: 'R1', status: 'ready' });
 
       const data = service.getDashboardData();
       expect(data.workflowSummary.releaseStatusCounts).toEqual({
-        idea: 2, planned: 0, drafting: 0, ready: 1, published: 0, cancelled: 0,
+        tbd: 2, planned: 0, 'in-progress': 0, ready: 1, published: 0, cancelled: 0,
       });
     });
   });
@@ -989,7 +990,7 @@ describe('workflow query service', () => {
       expect(ws.releaseSummary.active).toEqual([]);
       expect(ws.releaseSummary.recent).toEqual([]);
       expect(ws.releaseSummary.statusCounts).toEqual({
-        idea: 0, planned: 0, drafting: 0, ready: 0, published: 0, cancelled: 0,
+        tbd: 0, planned: 0, 'in-progress': 0, ready: 0, published: 0, cancelled: 0,
       });
       expect(ws.releaseSummary.hasAnyReleases).toBe(false);
       expect(ws.assetHealth).toEqual({
@@ -1011,7 +1012,7 @@ describe('workflow query service', () => {
       insertRelease(db, {
         projectId: project.id,
         title: 'Active B',
-        status: 'drafting',
+        status: 'in-progress',
         plannedDate: '2099-02-01',
       });
       insertRelease(db, {
@@ -1026,7 +1027,7 @@ describe('workflow query service', () => {
       // Recent should include all releases, ordered by updated_at DESC
       expect(ws.releaseSummary.recent.length).toBe(3);
       expect(ws.releaseSummary.statusCounts).toEqual({
-        idea: 0, planned: 1, drafting: 1, ready: 0, published: 1, cancelled: 0,
+        tbd: 0, planned: 1, 'in-progress': 1, ready: 0, published: 1, cancelled: 0,
       });
       expect(ws.releaseSummary.hasAnyReleases).toBe(true);
     });
@@ -1071,7 +1072,7 @@ describe('workflow query service', () => {
       const release = insertRelease(db, {
         projectId: project.id,
         title: 'Archived Ref',
-        status: 'idea',
+        status: 'tbd',
         plannedDate: null,
         archivedAt: '2024-01-01 00:00:00',
       });
@@ -1211,7 +1212,7 @@ describe('workflow query service', () => {
       // Status counts are still accurate so published/cancelled info is
       // visible in the dashboard.
       expect(ws.releaseSummary.statusCounts).toEqual({
-        idea: 0, planned: 0, drafting: 0, ready: 0, published: 1, cancelled: 1,
+        tbd: 0, planned: 0, 'in-progress': 0, ready: 0, published: 1, cancelled: 1,
       });
       expect(ws.releaseSummary.hasAnyReleases).toBe(true);
     });
@@ -1564,7 +1565,7 @@ describe('workflow query service', () => {
       const release = insertRelease(db, {
         projectId: project.id,
         title: 'Hidden No Date',
-        status: 'drafting',
+        status: 'in-progress',
         plannedDate: null,
       });
       db.prepare(`UPDATE projects SET archived_at = datetime('now') WHERE id = ?`).run(project.id);
@@ -1825,7 +1826,7 @@ describe('workflow query service', () => {
   describe('read-only invariants', () => {
     it('does not create or modify any table when called', () => {
       const project = insertProject(db, { title: 'Read-Only Project' });
-      insertRelease(db, { projectId: project.id, title: 'R', status: 'idea' });
+      insertRelease(db, { projectId: project.id, title: 'R', status: 'tbd' });
 
       const before = db.prepare(`
         SELECT (SELECT COUNT(*) FROM projects) AS projects,
@@ -1864,7 +1865,7 @@ describe('workflow query service', () => {
     it('returns paginated releases with metadata', () => {
       const project = insertProject(db, { title: 'List Project' });
       for (let i = 0; i < 5; i++) {
-        insertRelease(db, { projectId: project.id, title: `R${i}`, status: 'idea' });
+        insertRelease(db, { projectId: project.id, title: `R${i}`, status: 'tbd' });
       }
 
       const result = service.getReleaseList({}, { today: '2025-06-15' });
@@ -1878,7 +1879,7 @@ describe('workflow query service', () => {
     it('respects page and pageSize parameters', () => {
       const project = insertProject(db, { title: 'Page Project' });
       for (let i = 0; i < 10; i++) {
-        insertRelease(db, { projectId: project.id, title: `P${i}`, status: 'idea' });
+        insertRelease(db, { projectId: project.id, title: `P${i}`, status: 'tbd' });
       }
 
       const result = service.getReleaseList({ page: 2, pageSize: 3 }, { today: '2025-06-15' });
@@ -1905,7 +1906,7 @@ describe('workflow query service', () => {
 
     it('invalid status falls back to null (no filter)', () => {
       const project = insertProject(db, { title: 'Status Filter' });
-      insertRelease(db, { projectId: project.id, title: 'Idea', status: 'idea' });
+      insertRelease(db, { projectId: project.id, title: 'Idea', status: 'tbd' });
       insertRelease(db, { projectId: project.id, title: 'Planned', status: 'planned' });
 
       const result = service.getReleaseList({ status: 'invalid' }, { today: '2025-06-15' });
@@ -1928,8 +1929,8 @@ describe('workflow query service', () => {
     it('filters by project', () => {
       const p1 = insertProject(db, { title: 'P1' });
       const p2 = insertProject(db, { title: 'P2' });
-      insertRelease(db, { projectId: p1.id, title: 'R1', status: 'idea' });
-      insertRelease(db, { projectId: p2.id, title: 'R2', status: 'idea' });
+      insertRelease(db, { projectId: p1.id, title: 'R1', status: 'tbd' });
+      insertRelease(db, { projectId: p2.id, title: 'R2', status: 'tbd' });
 
       const result = service.getReleaseList({ project: String(p1.id) }, { today: '2025-06-15' });
       expect(result.total).toBe(1);
@@ -1968,7 +1969,7 @@ describe('workflow query service', () => {
 
     it('filters by schedule: unscheduled', () => {
       const project = insertProject(db, { title: 'Unscheduled Schedule' });
-      insertRelease(db, { projectId: project.id, title: 'No Date', status: 'drafting', plannedDate: null });
+      insertRelease(db, { projectId: project.id, title: 'No Date', status: 'in-progress', plannedDate: null });
       insertRelease(db, { projectId: project.id, title: 'Has Date', status: 'planned', plannedDate: '2025-06-15' });
 
       const result = service.getReleaseList({ schedule: 'unscheduled' }, { today: '2025-06-15' });
@@ -2047,8 +2048,8 @@ describe('workflow query service', () => {
     it('rejects leading-plus project id — falls back to no filter, returns both projects', () => {
       const p1 = insertProject(db, { title: 'Malformed Proj Alpha' });
       const p2 = insertProject(db, { title: 'Malformed Proj Beta' });
-      const r1 = insertRelease(db, { projectId: p1.id, title: 'Alpha-Malformed-Proj-Release', status: 'idea' });
-      const r2 = insertRelease(db, { projectId: p2.id, title: 'Beta-Malformed-Proj-Release', status: 'idea' });
+      const r1 = insertRelease(db, { projectId: p1.id, title: 'Alpha-Malformed-Proj-Release', status: 'tbd' });
+      const r2 = insertRelease(db, { projectId: p2.id, title: 'Beta-Malformed-Proj-Release', status: 'tbd' });
 
       const result = service.getReleaseList({ project: '+2' }, { today: '2025-06-15' });
       // projectId is null → no project filter → both releases returned.
@@ -2060,8 +2061,8 @@ describe('workflow query service', () => {
     it('rejects "1junk" project id — falls back to no filter, returns both projects', () => {
       const p1 = insertProject(db, { title: 'Junk Filter Alpha' });
       const p2 = insertProject(db, { title: 'Junk Filter Beta' });
-      const r1 = insertRelease(db, { projectId: p1.id, title: 'Alpha-Junk-Filter-Release', status: 'idea' });
-      const r2 = insertRelease(db, { projectId: p2.id, title: 'Beta-Junk-Filter-Release', status: 'idea' });
+      const r1 = insertRelease(db, { projectId: p1.id, title: 'Alpha-Junk-Filter-Release', status: 'tbd' });
+      const r2 = insertRelease(db, { projectId: p2.id, title: 'Beta-Junk-Filter-Release', status: 'tbd' });
 
       const result = service.getReleaseList({ project: '1junk' }, { today: '2025-06-15' });
       expect(result.total).toBe(2);
@@ -2072,8 +2073,8 @@ describe('workflow query service', () => {
     it('rejects decimal project id — falls back to no filter', () => {
       const p1 = insertProject(db, { title: 'Decimal Filter A' });
       const p2 = insertProject(db, { title: 'Decimal Filter B' });
-      const r1 = insertRelease(db, { projectId: p1.id, title: 'Alpha-Dec-Filter-Release', status: 'idea' });
-      const r2 = insertRelease(db, { projectId: p2.id, title: 'Beta-Dec-Filter-Release', status: 'idea' });
+      const r1 = insertRelease(db, { projectId: p1.id, title: 'Alpha-Dec-Filter-Release', status: 'tbd' });
+      const r2 = insertRelease(db, { projectId: p2.id, title: 'Beta-Dec-Filter-Release', status: 'tbd' });
 
       const result = service.getReleaseList({ project: '1.5' }, { today: '2025-06-15' });
       expect(result.total).toBe(2);
@@ -2084,8 +2085,8 @@ describe('workflow query service', () => {
     it('rejects scientific-notation project id — falls back to no filter', () => {
       const p1 = insertProject(db, { title: 'Sci Note Filter A' });
       const p2 = insertProject(db, { title: 'Sci Note Filter B' });
-      const r1 = insertRelease(db, { projectId: p1.id, title: 'Alpha-Sci-Note-Release', status: 'idea' });
-      const r2 = insertRelease(db, { projectId: p2.id, title: 'Beta-Sci-Note-Release', status: 'idea' });
+      const r1 = insertRelease(db, { projectId: p1.id, title: 'Alpha-Sci-Note-Release', status: 'tbd' });
+      const r2 = insertRelease(db, { projectId: p2.id, title: 'Beta-Sci-Note-Release', status: 'tbd' });
 
       const result = service.getReleaseList({ project: '1e2' }, { today: '2025-06-15' });
       expect(result.total).toBe(2);
@@ -2096,8 +2097,8 @@ describe('workflow query service', () => {
     it('rejects whitespace project id — falls back to no filter', () => {
       const p1 = insertProject(db, { title: 'WS Filter A' });
       const p2 = insertProject(db, { title: 'WS Filter B' });
-      const r1 = insertRelease(db, { projectId: p1.id, title: 'Alpha-WS-Filter-Release', status: 'idea' });
-      const r2 = insertRelease(db, { projectId: p2.id, title: 'Beta-WS-Filter-Release', status: 'idea' });
+      const r1 = insertRelease(db, { projectId: p1.id, title: 'Alpha-WS-Filter-Release', status: 'tbd' });
+      const r2 = insertRelease(db, { projectId: p2.id, title: 'Beta-WS-Filter-Release', status: 'tbd' });
 
       const result = service.getReleaseList({ project: ' 2' }, { today: '2025-06-15' });
       expect(result.total).toBe(2);
@@ -2108,8 +2109,8 @@ describe('workflow query service', () => {
     it('accepts a valid project id — returns only that project\'s releases', () => {
       const p1 = insertProject(db, { title: 'Valid Filter Alpha' });
       const p2 = insertProject(db, { title: 'Valid Filter Beta' });
-      insertRelease(db, { projectId: p1.id, title: 'Alpha-Valid-Filter-Release', status: 'idea' });
-      insertRelease(db, { projectId: p2.id, title: 'Beta-Valid-Filter-Release', status: 'idea' });
+      insertRelease(db, { projectId: p1.id, title: 'Alpha-Valid-Filter-Release', status: 'tbd' });
+      insertRelease(db, { projectId: p2.id, title: 'Beta-Valid-Filter-Release', status: 'tbd' });
 
       const result = service.getReleaseList({ project: String(p1.id) }, { today: '2025-06-15' });
       expect(result.total).toBe(1);
@@ -2157,7 +2158,7 @@ describe('workflow query service', () => {
       // Need enough releases that page=3 is meaningful (pageSize defaults
       // to 25, so 75 releases guarantees pageCount >= 3).
       for (let i = 0; i < 75; i++) {
-        insertRelease(db, { projectId: project.id, title: `Valid Page R${i}`, status: 'idea' });
+        insertRelease(db, { projectId: project.id, title: `Valid Page R${i}`, status: 'tbd' });
       }
       const result = service.getReleaseList({ page: '3' }, { today: '2025-06-15' });
       expect(result.page).toBe(3);
@@ -2250,7 +2251,7 @@ describe('workflow query service', () => {
     });
 
     it('non-ready releases are excluded from readiness-specific filters', () => {
-      insertRelease(db, { projectId: project.id, title: 'Idea', status: 'idea' });
+      insertRelease(db, { projectId: project.id, title: 'Idea', status: 'tbd' });
       insertRelease(db, { projectId: project.id, title: 'Planned', status: 'planned' });
       insertRelease(db, { projectId: project.id, title: 'Published', status: 'published' });
 
@@ -2497,12 +2498,12 @@ describe('workflow query service', () => {
       });
       linkAssetToRelease(db, { releaseId: publishable.id, assetId: asset.id });
       insertRelease(db, { projectId: project.id, title: 'Blocked', status: 'ready', plannedDate: FIXED_TODAY });
-      insertRelease(db, { projectId: project.id, title: 'Idea', status: 'idea' });
+      insertRelease(db, { projectId: project.id, title: 'Idea', status: 'tbd' });
 
       const { columns } = service.getReleaseBoard({ readiness: 'publishable' }, { today: FIXED_TODAY });
       expect(columns.ready).toHaveLength(1);
       expect(columns.ready[0].id).toBe(publishable.id);
-      expect(columns.idea).toHaveLength(0);
+      expect(columns.tbd).toHaveLength(0);
     });
 
     it('blocked-ready filter shows only blocked releases in ready column', () => {
@@ -2521,11 +2522,11 @@ describe('workflow query service', () => {
 
     it('all readiness leaves non-ready columns intact', () => {
       const project = insertProject(db, { title: 'Board All Project' });
-      insertRelease(db, { projectId: project.id, title: 'Idea', status: 'idea' });
+      insertRelease(db, { projectId: project.id, title: 'Idea', status: 'tbd' });
       insertRelease(db, { projectId: project.id, title: 'Ready', status: 'ready', plannedDate: FIXED_TODAY });
 
       const { columns } = service.getReleaseBoard({ readiness: 'all' }, { today: FIXED_TODAY });
-      expect(columns.idea).toHaveLength(1);
+      expect(columns.tbd).toHaveLength(1);
       expect(columns.ready).toHaveLength(1);
     });
   });
@@ -2535,20 +2536,20 @@ describe('workflow query service', () => {
   describe('getReleaseBoard', () => {
     it('groups releases into columns by status', () => {
       const project = insertProject(db, { title: 'Board Project' });
-      insertRelease(db, { projectId: project.id, title: 'Idea R', status: 'idea' });
+      insertRelease(db, { projectId: project.id, title: 'Idea R', status: 'tbd' });
       insertRelease(db, { projectId: project.id, title: 'Planned R', status: 'planned' });
 
       const { columns } = service.getReleaseBoard({}, { today: '2025-06-15' });
-      expect(columns.idea).toHaveLength(1);
+      expect(columns.tbd).toHaveLength(1);
       expect(columns.planned).toHaveLength(1);
-      expect(columns.drafting).toHaveLength(0);
+      expect(columns['in-progress']).toHaveLength(0);
     });
 
     it('returns all six board columns with exact keys and no extras', () => {
       const { columns } = service.getReleaseBoard({}, { today: '2025-06-15' });
       const keys = Object.keys(columns).sort();
       // Exact keys, sorted alphabetically — verifies all six and no extras.
-      expect(keys).toEqual(['cancelled', 'drafting', 'idea', 'planned', 'published', 'ready']);
+      expect(keys).toEqual(['cancelled', 'in-progress', 'planned', 'published', 'ready', 'tbd']);
       // Every column value must be an array.
       for (const key of keys) {
         expect(Array.isArray(columns[key])).toBe(true);
@@ -2557,7 +2558,7 @@ describe('workflow query service', () => {
 
     it('exposes empty arrays for columns with no releases', () => {
       const { columns } = service.getReleaseBoard({}, { today: '2025-06-15' });
-      expect(Array.isArray(columns.idea)).toBe(true);
+      expect(Array.isArray(columns.tbd)).toBe(true);
       expect(Array.isArray(columns.published)).toBe(true);
     });
 
@@ -2585,11 +2586,11 @@ describe('workflow query service', () => {
 
     it('filters by status', () => {
       const project = insertProject(db, { title: 'Board Status Filter' });
-      insertRelease(db, { projectId: project.id, title: 'Idea R', status: 'idea' });
+      insertRelease(db, { projectId: project.id, title: 'Idea R', status: 'tbd' });
       insertRelease(db, { projectId: project.id, title: 'Planned R', status: 'planned' });
 
-      const { columns } = service.getReleaseBoard({ status: 'idea' }, { today: '2025-06-15' });
-      expect(columns.idea).toHaveLength(1);
+      const { columns } = service.getReleaseBoard({ status: 'tbd' }, { today: '2025-06-15' });
+      expect(columns.tbd).toHaveLength(1);
       expect(columns.planned).toHaveLength(0);
     });
 
@@ -2735,9 +2736,29 @@ describe('workflow query service', () => {
       expect(entries.map((entry) => entry.id)).toEqual([first.id, second.id]);
     });
 
+    it('includes release notes in calendar entries', () => {
+      const project = insertProject(db, { title: 'Calendar Notes Project' });
+      const release = insertRelease(db, {
+        projectId: project.id,
+        title: 'Calendar Notes Release',
+        notes: 'Calendar release notes',
+        plannedDate: '2025-06-15',
+      });
+
+      const entry = service.getReleaseCalendar('2025-06', { today: '2025-06-15' })
+        .days.find((day) => day.date === '2025-06-15').entries[0];
+
+      expect(entry).toMatchObject({
+        id: release.id,
+        project_title: 'Calendar Notes Project',
+        title: 'Calendar Notes Release',
+        notes: 'Calendar release notes',
+      });
+    });
+
     it('does not filter scheduled releases by lifecycle status', () => {
       const project = insertProject(db, { title: 'Lifecycle Project' });
-      const statuses = ['idea', 'planned', 'drafting', 'ready', 'published', 'cancelled'];
+      const statuses = ['tbd', 'planned', 'in-progress', 'ready', 'published', 'cancelled'];
       const releases = statuses.map((status, index) => insertRelease(db, {
         projectId: project.id,
         title: `${status} Release`,
@@ -3188,7 +3209,7 @@ describe('workflow query service', () => {
       const tag = tagRepository.create({ displayName: 'Composed', normalizedName: 'composed' });
       tagRepository.assignToAsset(matching.id, tag.id);
       tagRepository.assignToAsset(missing.id, tag.id);
-      const release = insertRelease(db, { projectId: project.id, title: 'Used Asset', status: 'idea' });
+      const release = insertRelease(db, { projectId: project.id, title: 'Used Asset', status: 'tbd' });
       linkAssetToRelease(db, { releaseId: release.id, assetId: matching.id });
 
       const result = service.getProjectAssetBrowser(project.id, {
@@ -3329,7 +3350,7 @@ describe('workflow query service', () => {
       const project = insertProject(db, { title: 'Used Usage' });
       const usedAsset = insertAsset(db, { projectId: project.id, relativePath: 'used.txt', filename: 'used.txt', isPresent: 1 });
       insertAsset(db, { projectId: project.id, relativePath: 'unused.txt', filename: 'unused.txt', isPresent: 1 });
-      const rel = insertRelease(db, { projectId: project.id, title: 'R1', status: 'idea' });
+      const rel = insertRelease(db, { projectId: project.id, title: 'R1', status: 'tbd' });
       linkAssetToRelease(db, { releaseId: rel.id, assetId: usedAsset.id });
 
       const result = service.getProjectAssetBrowser(project.id, { usage: 'used' });
@@ -3342,7 +3363,7 @@ describe('workflow query service', () => {
       const project = insertProject(db, { title: 'Unused Usage' });
       const usedAsset = insertAsset(db, { projectId: project.id, relativePath: 'used.txt', filename: 'used.txt', isPresent: 1 });
       insertAsset(db, { projectId: project.id, relativePath: 'unused.txt', filename: 'unused.txt', isPresent: 1 });
-      const rel = insertRelease(db, { projectId: project.id, title: 'R1', status: 'idea' });
+      const rel = insertRelease(db, { projectId: project.id, title: 'R1', status: 'tbd' });
       linkAssetToRelease(db, { releaseId: rel.id, assetId: usedAsset.id });
 
       const result = service.getProjectAssetBrowser(project.id, { usage: 'unused' });
@@ -3357,7 +3378,7 @@ describe('workflow query service', () => {
       insertAsset(db, { projectId: project.id, relativePath: 'used-missing.txt', filename: 'used-missing.txt', isPresent: 0 });
       insertAsset(db, { projectId: project.id, relativePath: 'unused-present.txt', filename: 'unused-present.txt', isPresent: 1 });
       insertAsset(db, { projectId: project.id, relativePath: 'unused-missing.txt', filename: 'unused-missing.txt', isPresent: 0 });
-      const rel = insertRelease(db, { projectId: project.id, title: 'R1', status: 'idea' });
+      const rel = insertRelease(db, { projectId: project.id, title: 'R1', status: 'tbd' });
       linkAssetToRelease(db, { releaseId: rel.id, assetId: usedPresent.id });
 
       const result = service.getProjectAssetBrowser(project.id, { presence: 'present', usage: 'used' });
@@ -3368,7 +3389,7 @@ describe('workflow query service', () => {
 
     it('combines search, extension, presence, and usage filters', () => {
       const project = insertProject(db, { title: 'Combined Search Extension' });
-      const rel = insertRelease(db, { projectId: project.id, title: 'R1', status: 'idea' });
+      const rel = insertRelease(db, { projectId: project.id, title: 'R1', status: 'tbd' });
       const target = insertAsset(db, {
         projectId: project.id,
         relativePath: 'renders/Hero-Final.png',
@@ -3403,7 +3424,7 @@ describe('workflow query service', () => {
       const project = insertProject(db, { title: 'Usage Count' });
       insertAsset(db, { projectId: project.id, relativePath: 'zero.txt', filename: 'zero.txt', isPresent: 1 });
       const oneAsset = insertAsset(db, { projectId: project.id, relativePath: 'one.txt', filename: 'one.txt', isPresent: 1 });
-      const r1 = insertRelease(db, { projectId: project.id, title: 'R1', status: 'idea' });
+      const r1 = insertRelease(db, { projectId: project.id, title: 'R1', status: 'tbd' });
       linkAssetToRelease(db, { releaseId: r1.id, assetId: oneAsset.id });
 
       const result = service.getProjectAssetBrowser(project.id);
@@ -3720,7 +3741,7 @@ describe('workflow query service', () => {
       const project = insertProject(db, { title: 'Usage Details' });
       const a1 = insertAsset(db, { projectId: project.id, relativePath: 'a1.txt', filename: 'a1.txt', isPresent: 1 });
       const a2 = insertAsset(db, { projectId: project.id, relativePath: 'a2.txt', filename: 'a2.txt', isPresent: 1 });
-      const r1 = insertRelease(db, { projectId: project.id, title: 'R1', status: 'idea' });
+      const r1 = insertRelease(db, { projectId: project.id, title: 'R1', status: 'tbd' });
       const r2 = insertRelease(db, { projectId: project.id, title: 'R2', status: 'planned' });
       linkAssetToRelease(db, { releaseId: r1.id, assetId: a1.id });
       linkAssetToRelease(db, { releaseId: r1.id, assetId: a2.id });
@@ -3778,7 +3799,7 @@ describe('workflow query service', () => {
       const project = insertProject(db, { title: 'Filter Preserve' });
       // Create enough assets for multiple pages with presence=missing, usage=used
       // We need: assets that are both missing AND used
-      const rel = insertRelease(db, { projectId: project.id, title: 'R1', status: 'idea' });
+      const rel = insertRelease(db, { projectId: project.id, title: 'R1', status: 'tbd' });
       for (let i = 1; i <= 7; i++) {
         const asset = insertAsset(db, {
           projectId: project.id,
@@ -3855,7 +3876,7 @@ describe('workflow query service', () => {
       const rel = insertRelease(db, {
         projectId: project.id,
         title: 'Archived Rel',
-        status: 'idea',
+        status: 'tbd',
         archivedAt: '2024-01-01 00:00:00',
       });
       linkAssetToRelease(db, { releaseId: rel.id, assetId: asset.id });
@@ -3908,7 +3929,7 @@ describe('workflow query service', () => {
       const counter = instrumentStatementExecution(db);
       const instrumentedService = createWorkflowQueryService({ db, evaluateReleaseReadiness });
       const project = insertProject(db, { title: 'Browser Query Page Size' });
-      const release = insertRelease(db, { projectId: project.id, title: 'Usage Release', status: 'idea' });
+      const release = insertRelease(db, { projectId: project.id, title: 'Usage Release', status: 'tbd' });
       for (let i = 1; i <= 30; i++) {
         const asset = insertAsset(db, {
           projectId: project.id,
@@ -3942,7 +3963,7 @@ describe('workflow query service', () => {
       const instrumentedService = createWorkflowQueryService({ db, evaluateReleaseReadiness });
 
       const lowUsageProject = insertProject(db, { title: 'Browser Query Low Usage' });
-      const oneUsageRelease = insertRelease(db, { projectId: lowUsageProject.id, title: 'One Usage', status: 'idea' });
+      const oneUsageRelease = insertRelease(db, { projectId: lowUsageProject.id, title: 'One Usage', status: 'tbd' });
       for (let i = 1; i <= 5; i++) {
         const asset = insertAsset(db, {
           projectId: lowUsageProject.id,
@@ -3965,7 +3986,7 @@ describe('workflow query service', () => {
         manyUsageReleases.push(insertRelease(db, {
           projectId: highUsageProject.id,
           title: `Many Usage ${String(i).padStart(2, '0')}`,
-          status: 'idea',
+          status: 'tbd',
         }));
       }
       for (let i = 1; i <= 5; i++) {
@@ -4024,7 +4045,7 @@ describe('workflow query service', () => {
     describe('releaseTargets', () => {
       it('includes active, planned, and cancelled releases but excludes published and archived', () => {
         const project = insertProject(db, { title: 'Targets Basic' });
-        const active = insertRelease(db, { projectId: project.id, title: 'Active', status: 'idea' });
+        const active = insertRelease(db, { projectId: project.id, title: 'Active', status: 'tbd' });
         const cancelled = insertRelease(db, { projectId: project.id, title: 'Cancelled', status: 'cancelled' });
         const published = insertRelease(db, { projectId: project.id, title: 'Published', status: 'published', publishedDate: '2026-01-01' });
         const archived = insertRelease(db, { projectId: project.id, title: 'Archived', archivedAt: '2026-01-01 00:00:00' });
@@ -4731,7 +4752,7 @@ describe('workflow query service', () => {
       const usageProject = insertProject(db, { title: 'Viewer Excluded Usage' });
       const used = addViewerAsset(usageProject, 'visible.txt');
       const usageCurrent = addViewerAsset(usageProject, 'hidden.txt');
-      const release = insertRelease(db, { projectId: usageProject.id, title: 'Usage Release', status: 'idea' });
+      const release = insertRelease(db, { projectId: usageProject.id, title: 'Usage Release', status: 'tbd' });
       linkAssetToRelease(db, { releaseId: release.id, assetId: used.id });
 
       const cases = [
@@ -4929,7 +4950,7 @@ describe('workflow query service', () => {
       const release = insertRelease(db, {
         projectId: project.id,
         title: 'Drafting Release',
-        status: 'drafting',
+        status: 'in-progress',
       });
       const asset = insertAsset(db, {
         projectId: project.id,
@@ -5041,7 +5062,7 @@ describe('workflow query service', () => {
       const release = insertRelease(db, {
         projectId: project.id,
         title: 'Multi Blocker Release',
-        status: 'drafting',
+        status: 'in-progress',
         archivedAt: '2025-06-15 10:00:00',
       });
       // No assets selected.
@@ -5389,14 +5410,14 @@ describe('workflow query service', () => {
     it('non-ready board cards have no _readiness', () => {
       const project = insertProject(db, { title: 'Board NonReady' });
       insertRelease(db, {
-        projectId: project.id, title: 'Idea', status: 'idea', plannedDate: '2099-01-01',
+        projectId: project.id, title: 'Idea', status: 'tbd', plannedDate: '2099-01-01',
       });
       insertRelease(db, {
         projectId: project.id, title: 'Published', status: 'published', plannedDate: '2099-01-01',
       });
 
       const result = service.getReleaseBoard({}, { today: '2099-01-01' });
-      for (const status of ['idea', 'planned', 'drafting', 'published', 'cancelled']) {
+      for (const status of ['tbd', 'planned', 'in-progress', 'published', 'cancelled']) {
         for (const release of (result.columns[status] || [])) {
           expect(release._readiness).toBeUndefined();
         }

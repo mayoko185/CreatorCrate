@@ -87,10 +87,10 @@ const TIME_RE = /^\d{2}:\d{2}$/;
  * once set, cannot transition to any other status.
  */
 const WORKFLOW_TRANSITIONS = {
-  new: ['idea', 'planned', 'drafting', 'ready', 'cancelled'],
-  idea: ['planned', 'drafting', 'ready', 'cancelled'],
-  planned: ['idea', 'drafting', 'ready', 'cancelled'],
-  drafting: ['idea', 'planned', 'ready', 'cancelled'],
+  new: ['tbd', 'planned', 'in-progress', 'ready', 'cancelled'],
+  tbd: ['planned', 'in-progress', 'ready', 'cancelled'],
+  planned: ['tbd', 'in-progress', 'ready', 'cancelled'],
+  'in-progress': ['tbd', 'planned', 'ready', 'cancelled'],
   ready: ['cancelled'], // NOTE: published is NOT here — only publishRelease() can publish
   published: [], // terminal — no transitions out
   cancelled: [], // terminal — no transitions out
@@ -238,7 +238,7 @@ export function createReleaseService({ db, evaluateReleaseReadiness }) {
       errors.notes = `Notes must be ${NOTES_MAX} characters or fewer.`;
     }
 
-    const status = input.status ?? 'idea';
+    const status = input.status ?? 'tbd';
     if (!RELEASE_STATUSES.includes(status)) {
       errors.status = `Status must be one of: ${RELEASE_STATUSES.join(', ')}.`;
     }
@@ -295,6 +295,60 @@ export function createReleaseService({ db, evaluateReleaseReadiness }) {
       throw new ReleaseValidationError({ projectId: 'Cannot create release for archived project.' });
     }
     return project;
+  }
+
+  /**
+   * Validate and normalize an ordered asset selection without mutating any
+   * release state. The create-from-assets flow reuses this contract before
+   * building its release and junction rows.
+   *
+   * @param {number|string} projectId
+   * @param {Array<number|string>} assetIds
+   * @returns {{ project: object, assetIds: number[] }}
+   */
+  function validateAndNormalizeSelectedAssetIds(projectId, assetIds) {
+    const normalizedProjectId = parseStrictPositiveInt(projectId);
+    if (normalizedProjectId === null) {
+      throw new ReleaseValidationError({ projectId: 'projectId must be a positive integer.' });
+    }
+
+    const project = validateProjectExists(normalizedProjectId);
+    if (!Array.isArray(assetIds) || assetIds.length === 0) {
+      throw new ReleaseValidationError({ assetIds: 'At least one asset must be selected.' });
+    }
+
+    const normalizedAssetIds = [];
+    const seen = new Set();
+    for (const raw of assetIds) {
+      const id = parseStrictPositiveInt(raw);
+      if (id === null) {
+        throw new ReleaseValidationError({ assetIds: 'Asset IDs must be positive integers.' });
+      }
+      if (seen.has(id)) continue;
+      seen.add(id);
+      normalizedAssetIds.push(id);
+    }
+
+    const assets = assetRepository.findByIds(normalizedAssetIds);
+    const assetsById = new Map(assets.map((asset) => [asset.id, asset]));
+    for (const id of normalizedAssetIds) {
+      const asset = assetsById.get(id);
+      if (!asset) {
+        throw new AssetNotFoundError(id);
+      }
+      if (asset.project_id !== project.id) {
+        throw new ReleaseValidationError({
+          assets: `Asset ${id} does not belong to the specified project.`,
+        });
+      }
+      if (asset.is_present !== 1) {
+        throw new ReleaseValidationError({
+          assets: `Asset ${id} is currently missing and cannot be selected.`,
+        });
+      }
+    }
+
+    return { project, assetIds: normalizedAssetIds };
   }
 
   /**
@@ -365,6 +419,47 @@ export function createReleaseService({ db, evaluateReleaseReadiness }) {
     },
 
     /**
+     * Create a release from normal release-form metadata and a submitted set
+     * of selected project assets. Asset validation completes before the
+     * repository transaction creates anything; the repository then inserts
+     * the release and all attachment rows atomically.
+     *
+     * @param {number|string} projectId
+     * @param {Object} input
+     * @param {Array<number|string>} assetIds
+     * @returns {ReleaseRecord}
+     */
+    createReleaseWithSelectedAssets(projectId, input, assetIds) {
+      const { project, assetIds: normalizedAssetIds } = validateAndNormalizeSelectedAssetIds(projectId, assetIds);
+      const normalized = validate(input);
+      // Enforce lifecycle: published and cancelled are terminal states
+      validateTransition(null, normalized.status);
+
+      const selections = normalizedAssetIds.map((assetId, sortOrder) => ({
+        assetId,
+        role: 'attachment',
+        sortOrder,
+      }));
+
+      return repository.createWithAssetSelections(
+        { projectId: project.id, ...normalized },
+        selections,
+      );
+    },
+
+    /**
+     * Validate and normalize a selected project-owned asset set without
+     * creating a release or changing any asset association.
+     *
+     * @param {number|string} projectId
+     * @param {Array<number|string>} assetIds
+     * @returns {number[]}
+     */
+    validateAndNormalizeSelectedAssetIds(projectId, assetIds) {
+      return validateAndNormalizeSelectedAssetIds(projectId, assetIds).assetIds;
+    },
+
+    /**
      * Create a release from the currently present assets in one project-owned
      * category. The returned release ID is sufficient for a caller to build
      * the existing release edit or asset-management URL.
@@ -394,7 +489,7 @@ export function createReleaseService({ db, evaluateReleaseReadiness }) {
         title: category.display_name,
         description: '',
         notes: '',
-        status: 'idea',
+        status: 'tbd',
         plannedDate: formatLocalDate(now),
         plannedTime: formatLocalTime(now),
         publishedDate: null,
@@ -425,53 +520,14 @@ export function createReleaseService({ db, evaluateReleaseReadiness }) {
      * @returns {ReleaseRecord}
      */
     createReleaseFromAssets(projectId, assetIds) {
-      const normalizedProjectId = parseStrictPositiveInt(projectId);
-      if (normalizedProjectId === null) {
-        throw new ReleaseValidationError({ projectId: 'projectId must be a positive integer.' });
-      }
-
-      const project = validateProjectExists(normalizedProjectId);
-      if (!Array.isArray(assetIds) || assetIds.length === 0) {
-        throw new ReleaseValidationError({ assetIds: 'At least one asset must be selected.' });
-      }
-
-      const normalizedAssetIds = [];
-      const seen = new Set();
-      for (const raw of assetIds) {
-        const id = parseStrictPositiveInt(raw);
-        if (id === null) {
-          throw new ReleaseValidationError({ assetIds: 'Asset IDs must be positive integers.' });
-        }
-        if (seen.has(id)) continue;
-        seen.add(id);
-        normalizedAssetIds.push(id);
-      }
-
-      const assets = assetRepository.findByIds(normalizedAssetIds);
-      const assetsById = new Map(assets.map((asset) => [asset.id, asset]));
-      for (const id of normalizedAssetIds) {
-        const asset = assetsById.get(id);
-        if (!asset) {
-          throw new AssetNotFoundError(id);
-        }
-        if (asset.project_id !== project.id) {
-          throw new ReleaseValidationError({
-            assets: `Asset ${id} does not belong to the specified project.`,
-          });
-        }
-        if (asset.is_present !== 1) {
-          throw new ReleaseValidationError({
-            assets: `Asset ${id} is currently missing and cannot be selected.`,
-          });
-        }
-      }
+      const { project, assetIds: normalizedAssetIds } = validateAndNormalizeSelectedAssetIds(projectId, assetIds);
 
       const now = new Date();
       const normalized = validate({
         title: project.title,
         description: '',
         notes: '',
-        status: 'idea',
+        status: 'tbd',
         plannedDate: formatLocalDate(now),
         plannedTime: formatLocalTime(now),
         publishedDate: null,

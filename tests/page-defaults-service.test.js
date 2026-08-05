@@ -52,7 +52,7 @@ describe('page defaults service', () => {
     expect(service.resolve('assetViewer', 'pageSize')).toBe('25');
     expect(service.resolve('new_project', 'status')).toBe('tbd');
     expect(service.resolve('new_project', 'priority')).toBe('normal');
-    expect(service.resolve('new_release', 'status')).toBe('idea');
+    expect(service.resolve('new_release', 'status')).toBe('tbd');
   });
 
   it('defines the exact Project Assets option allowlists, keys, and fallbacks', () => {
@@ -124,8 +124,8 @@ describe('page defaults service', () => {
     expect(PAGE_DEFAULT_DEFINITIONS.new_release).toEqual({
       status: {
         key: 'page_defaults.new_release.status',
-        values: ['idea', 'planned', 'drafting', 'ready'],
-        fallback: 'idea',
+        values: ['tbd', 'planned', 'in-progress', 'ready'],
+        fallback: 'tbd',
       },
     });
   });
@@ -261,7 +261,7 @@ describe('page defaults service', () => {
     repository.setValue(key, 'cancelled');
 
     expect(service.getSavedDefault('new_release', 'status')).toBeUndefined();
-    expect(service.resolve('new_release', 'status')).toBe('idea');
+    expect(service.resolve('new_release', 'status')).toBe('tbd');
     expect(repository.getValue(key)).toBe('cancelled');
   });
 

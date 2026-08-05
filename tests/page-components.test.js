@@ -430,7 +430,7 @@ describe('Phase 10.5A: Shared page-level components', () => {
         .post('/releases')
         .send(`projectId=${projectId}`)
         .send('title=Wide+Release')
-        .send('status=idea')
+        .send('status=tbd')
         .send('_csrf=' + encodeURIComponent(csrfToken))
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
@@ -540,7 +540,7 @@ describe('Phase 10.5A: Shared page-level components', () => {
         .post('/releases')
         .send(`projectId=${projectId}`)
         .send('title=Archived+Release')
-        .send('status=idea')
+        .send('status=tbd')
         .send('_csrf=' + encodeURIComponent(csrfToken))
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
