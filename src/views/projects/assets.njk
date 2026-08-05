@@ -631,6 +631,8 @@
                               </select>
                             </label>
                             <button type="submit" class="button button-primary" data-bulk-submit>Add selected to release</button>
+                            <button type="submit" class="button button-secondary"
+                                    formaction="/projects/{{ project.id }}/assets/create-release">Create release with selected</button>
                           </div>
                         </fieldset>
                         <fieldset class="asset-action-group">
@@ -695,6 +697,8 @@
                         </select>
                       </label>
                       <button type="submit" class="button button-primary" data-bulk-submit>Add selected to release</button>
+                      <button type="submit" class="button button-secondary"
+                              formaction="/projects/{{ project.id }}/assets/create-release">Create release with selected</button>
                     </div>
                   </fieldset>
                   <fieldset class="asset-action-group">

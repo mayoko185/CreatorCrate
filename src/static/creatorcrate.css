@@ -2727,6 +2727,7 @@
       }
       .page-heading-actions {
         display: flex;
+        align-items: center;
         gap: var(--space-md);
         flex-wrap: wrap;
         min-width: 0;
@@ -2734,6 +2735,9 @@
         /* Keep navigation actions right-aligned even when the heading carries
            no copy (the common case now that page descriptions are gone). */
         margin-left: auto;
+      }
+      .page-heading-actions > .view-switcher {
+        margin-bottom: 0;
       }
 
       /* ── Status badges ── */

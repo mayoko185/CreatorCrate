@@ -418,6 +418,80 @@ export function createReleaseService({ db, evaluateReleaseReadiness }) {
     },
 
     /**
+     * Create a release from a selected, ordered set of present project assets.
+     *
+     * @param {number|string} projectId
+     * @param {Array<number|string>} assetIds
+     * @returns {ReleaseRecord}
+     */
+    createReleaseFromAssets(projectId, assetIds) {
+      const normalizedProjectId = parseStrictPositiveInt(projectId);
+      if (normalizedProjectId === null) {
+        throw new ReleaseValidationError({ projectId: 'projectId must be a positive integer.' });
+      }
+
+      const project = validateProjectExists(normalizedProjectId);
+      if (!Array.isArray(assetIds) || assetIds.length === 0) {
+        throw new ReleaseValidationError({ assetIds: 'At least one asset must be selected.' });
+      }
+
+      const normalizedAssetIds = [];
+      const seen = new Set();
+      for (const raw of assetIds) {
+        const id = parseStrictPositiveInt(raw);
+        if (id === null) {
+          throw new ReleaseValidationError({ assetIds: 'Asset IDs must be positive integers.' });
+        }
+        if (seen.has(id)) continue;
+        seen.add(id);
+        normalizedAssetIds.push(id);
+      }
+
+      const assets = assetRepository.findByIds(normalizedAssetIds);
+      const assetsById = new Map(assets.map((asset) => [asset.id, asset]));
+      for (const id of normalizedAssetIds) {
+        const asset = assetsById.get(id);
+        if (!asset) {
+          throw new AssetNotFoundError(id);
+        }
+        if (asset.project_id !== project.id) {
+          throw new ReleaseValidationError({
+            assets: `Asset ${id} does not belong to the specified project.`,
+          });
+        }
+        if (asset.is_present !== 1) {
+          throw new ReleaseValidationError({
+            assets: `Asset ${id} is currently missing and cannot be selected.`,
+          });
+        }
+      }
+
+      const now = new Date();
+      const normalized = validate({
+        title: project.title,
+        description: '',
+        notes: '',
+        status: 'idea',
+        plannedDate: formatLocalDate(now),
+        plannedTime: formatLocalTime(now),
+        publishedDate: null,
+        patreonUrl: null,
+      });
+      validateTransition(null, normalized.status);
+
+      const selections = normalizedAssetIds.map((assetId, sortOrder) => ({
+        assetId,
+        role: 'attachment',
+        sortOrder,
+      }));
+
+      return repository.createWithAssetSelections(
+        { projectId: project.id, ...normalized },
+        selections,
+      );
+    },
+
+    /**
      * @param {number} id
      * @param {Object} input
      * @returns {ReleaseRecord}

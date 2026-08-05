@@ -339,6 +339,81 @@ describe('release service', () => {
     });
   });
 
+  describe('createReleaseFromAssets', () => {
+    function addPresentAsset(relativePath) {
+      return assetRepo.upsert(projectId, relativePath, sampleAsset(projectId, { relativePath }));
+    }
+
+    it('creates an ordered release from multiple present assets and deduplicates IDs', () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(2026, 7, 4, 14, 30));
+
+      try {
+        const first = addPresentAsset('first.txt');
+        const second = addPresentAsset('second.txt');
+
+        const release = service.createReleaseFromAssets(
+          String(projectId),
+          [String(second.id), first.id, second.id],
+        );
+
+        expect(release).toMatchObject({
+          project_id: projectId,
+          title: 'Parent Project',
+          status: 'idea',
+          planned_date: '2026-08-04',
+          planned_time: '14:30',
+        });
+        expect(service.listReleaseAssets(release.id).map((asset) => ({
+          asset_id: asset.asset_id,
+          role: asset.role,
+          sort_order: asset.sort_order,
+        }))).toEqual([
+          { asset_id: second.id, role: 'attachment', sort_order: 0 },
+          { asset_id: first.id, role: 'attachment', sort_order: 1 },
+        ]);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it.each([
+      { label: 'a non-array', value: 'not-an-array' },
+      { label: 'an empty array', value: [] },
+      { label: 'a malformed ID', value: ['abc'] },
+      { label: 'a fractional ID', value: [1.5] },
+      { label: 'a zero ID', value: [0] },
+      { label: 'a negative ID', value: [-1] },
+    ])('rejects $label before creating a release', ({ value }) => {
+      expect(() => service.createReleaseFromAssets(projectId, value)).toThrow(ReleaseValidationError);
+      expect(service.listReleases(projectId, { includeArchived: true })).toEqual([]);
+    });
+
+    it('rejects unknown, cross-project, and missing assets before creating a release', () => {
+      const otherProject = projectRepo.create(sampleProject({ title: 'Other Project' }));
+      const foreign = assetRepo.upsert(
+        otherProject.id,
+        'foreign.txt',
+        sampleAsset(otherProject.id, { relativePath: 'foreign.txt' }),
+      );
+      const missing = addPresentAsset('missing.txt');
+      assetRepo.markMissingByProjectIdAndPathNotIn(projectId, []);
+
+      expect(() => service.createReleaseFromAssets(projectId, [999999])).toThrow(AssetNotFoundError);
+      expect(() => service.createReleaseFromAssets(projectId, [foreign.id])).toThrow(ReleaseValidationError);
+      expect(() => service.createReleaseFromAssets(projectId, [missing.id])).toThrow(ReleaseValidationError);
+      expect(service.listReleases(projectId, { includeArchived: true })).toEqual([]);
+    });
+
+    it('preserves archived-project rejection behavior', () => {
+      const asset = addPresentAsset('archived.txt');
+      projectRepo.archive(projectId);
+
+      expect(() => service.createReleaseFromAssets(projectId, [asset.id])).toThrow(ReleaseValidationError);
+      expect(service.listReleases(projectId, { includeArchived: true })).toEqual([]);
+    });
+  });
+
   describe('updateRelease', () => {
     it('updates a release', () => {
       const created = service.createRelease(projectId, validInput({ title: 'Original' }));

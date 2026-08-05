@@ -931,6 +931,15 @@ describe('Phase 10.5A: Shared page-level components', () => {
       expect(css).toContain('flex-wrap');
     });
 
+    it('heading action rows keep view switchers and buttons at their intrinsic heights', async () => {
+      const res = await agent.get('/releases').expect(200);
+      const css = await extractStyle(agent, res.text);
+
+      expect(css).toMatch(/\.page-heading-actions\s*\{[^}]*align-items:\s*center/);
+      expect(css).toMatch(/\.page-heading-actions\s*>\s*\.view-switcher\s*\{[^}]*margin-bottom:\s*0/);
+      expect(css).toMatch(/\.view-switcher\s*\{[^}]*margin-bottom:\s*var\(--space-lg\)/);
+    });
+
     it('data-table has responsive styles', async () => {
       const res = await agent.get('/projects').expect(200);
       const css = await extractStyle(agent, res.text);

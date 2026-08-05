@@ -4,22 +4,18 @@ services:
     container_name: creatorcrate
     restart: unless-stopped
     ports:
-      - "${CREATORCRATE_PORT:-3000}:3000"
+      - "3000:3000"
     environment:
       NODE_ENV: production
       PORT: 3000
-      TZ: ${TZ:-UTC}
-      APP_NAME: ${APP_NAME:-CreatorCrate}
+      TZ: UTC
+      APP_NAME: CreatorCrate
       APP_DATA_ROOT: /data/app
       PROJECTS_ROOT: /data/projects
       DATABASE_PATH: /data/app/creatorcrate.db
     volumes:
-      - type: bind
-        source: ${CREATORCRATE_APP_DATA_PATH:?Set CREATORCRATE_APP_DATA_PATH in .env}
-        target: /data/app
-      - type: bind
-        source: ${CREATORCRATE_PROJECTS_PATH:?Set CREATORCRATE_PROJECTS_PATH in .env}
-        target: /data/projects
+      - ./data/app:/data/app
+      - ./data/projects:/data/projects
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://localhost:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 30s

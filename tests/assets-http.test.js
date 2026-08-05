@@ -3559,35 +3559,39 @@ describe('asset browser HTTP workflow', () => {
       fs.writeFileSync(path.join(projectDir, 'a.png'), 'png');
       await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
-      const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
-      const form = res2.text.match(/<form id="bulk-select-form"[\s\S]*?<\/form>/)?.[0];
-      expect(form).toBeDefined();
-      expect(form).toContain('<div class="asset-selection-header">');
-      expect(form).toContain('role="group" aria-label="Selection controls"');
-      expect((form.match(/class="asset-action-group"/g) || []).length).toBe(2);
-      expect(form).toContain('<legend>Release actions</legend>');
-      expect(form).toContain('<legend>Category &amp; file actions</legend>');
-      expect(form).toContain('data-release-select');
-      expect(form).toContain('name="destinationCategory"');
-      expect(form).toContain(`formaction="/projects/${id}/assets/move-selected"`);
-      expect(form).toContain(`formaction="/projects/${id}/assets/copy-selected">Copy selected</button>`);
+      for (const view of ['list', 'grid']) {
+        const res2 = await agent.get(`/projects/${id}/assets?view=${view}`).expect(200);
+        const form = res2.text.match(/<form id="bulk-select-form"[\s\S]*?<\/form>/)?.[0];
+        expect(form).toBeDefined();
+        expect(form).toContain('<div class="asset-selection-header">');
+        expect(form).toContain('role="group" aria-label="Selection controls"');
+        expect((form.match(/class="asset-action-group"/g) || []).length).toBe(2);
+        expect(form).toContain('<legend>Release actions</legend>');
+        expect(form).toContain('<legend>Category &amp; file actions</legend>');
+        expect(form).toContain('data-release-select');
+        expect(form).toContain('name="destinationCategory"');
+        expect(form).toContain(`formaction="/projects/${id}/assets/move-selected"`);
+        expect(form).toContain(`formaction="/projects/${id}/assets/copy-selected">Copy selected</button>`);
 
-      const actionGroups = form.match(/<fieldset class="asset-action-group">[\s\S]*?<\/fieldset>/g) || [];
-      const releaseActions = actionGroups.find((group) => group.includes('<legend>Release actions</legend>'));
-      const categoryFileActions = actionGroups.find((group) => group.includes('<legend>Category &amp; file actions</legend>'));
-      expect(releaseActions).toBeDefined();
-      expect(categoryFileActions).toBeDefined();
-      expect(categoryFileActions).toMatch(new RegExp(`formaction="/projects/${id}/assets/delete-selected"[\\s\\S]*>Delete selected<\\/button>`));
-      expect(categoryFileActions).not.toContain('data-release-select');
-      expect(categoryFileActions).not.toContain('Add selected to release');
-      expect(releaseActions).not.toContain('Move selected');
-      expect(releaseActions).not.toContain('Copy selected');
-      expect(releaseActions).not.toContain('Delete selected');
+        const actionGroups = form.match(/<fieldset class="asset-action-group">[\s\S]*?<\/fieldset>/g) || [];
+        const releaseActions = actionGroups.find((group) => group.includes('<legend>Release actions</legend>'));
+        const categoryFileActions = actionGroups.find((group) => group.includes('<legend>Category &amp; file actions</legend>'));
+        expect(releaseActions).toBeDefined();
+        expect(categoryFileActions).toBeDefined();
+        expect(releaseActions).toContain('<button type="submit" class="button button-primary" data-bulk-submit>Add selected to release</button>');
+        expect(releaseActions).toContain(`formaction="/projects/${id}/assets/create-release">Create release with selected</button>`);
+        expect(categoryFileActions).toMatch(new RegExp(`formaction="/projects/${id}/assets/delete-selected"[\\s\\S]*>Delete selected<\\/button>`));
+        expect(categoryFileActions).not.toContain('data-release-select');
+        expect(categoryFileActions).not.toContain('Add selected to release');
+        expect(releaseActions).not.toContain('Move selected');
+        expect(releaseActions).not.toContain('Copy selected');
+        expect(releaseActions).not.toContain('Delete selected');
 
-      const style = await readStylesheetSource(res2.text);
-      expect(style).toMatch(/\.asset-action-groups\s*\{[^}]*display:\s*grid[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/);
-      expect(style).toMatch(/\.asset-action-group-controls\s*\{[^}]*flex-wrap:\s*wrap/);
-      expect(style).toMatch(/\.asset-action-groups\s*\{[^}]*grid-template-columns:\s*1fr/);
+        const style = await readStylesheetSource(res2.text);
+        expect(style).toMatch(/\.asset-action-groups\s*\{[^}]*display:\s*grid[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/);
+        expect(style).toMatch(/\.asset-action-group-controls\s*\{[^}]*flex-wrap:\s*wrap/);
+        expect(style).toMatch(/\.asset-action-groups\s*\{[^}]*grid-template-columns:\s*1fr/);
+      }
     });
 
     it('archived projects render no selection controls and no bulk mutation form', async () => {
@@ -3852,6 +3856,97 @@ describe('asset browser HTTP workflow', () => {
       ]) {
         await agent.post(path_).type('form').send({ _csrf: csrfToken }).expect(404);
       }
+    });
+  });
+
+  describe('POST /projects/:id/assets/create-release', () => {
+    it('creates a release from multiple selected assets and redirects to its asset page', async () => {
+      const res = await createProject('Create Release From Assets');
+      const id = Number(res.headers.location.replace('/projects/', ''));
+      const projectDir = getProjectDir('Create Release From Assets');
+      const first = writeIndexedAsset(id, projectDir, 'first.png', await makePng());
+      const second = writeIndexedAsset(id, projectDir, 'second.png', await makePng());
+
+      const created = await agent
+        .post(`/projects/${id}/assets/create-release`)
+        .type('form')
+        .send({
+          selectedAssetIds: [String(second.id), String(first.id)],
+          _csrf: csrfToken,
+        })
+        .expect(302);
+
+      expect(created.headers.location).toMatch(/^\/releases\/\d+\/assets$/);
+      const releaseId = Number(created.headers.location.split('/')[2]);
+      const releaseService = createReleaseService({ db, evaluateReleaseReadiness });
+      expect(releaseService.listReleaseAssets(releaseId).map((asset) => asset.asset_id)).toEqual([
+        second.id,
+        first.id,
+      ]);
+    });
+
+    it('re-renders with 422 for an empty selection and creates no release', async () => {
+      const res = await createProject('Create Release Empty Selection');
+      const id = Number(res.headers.location.replace('/projects/', ''));
+      const projectDir = getProjectDir('Create Release Empty Selection');
+      writeIndexedAsset(id, projectDir, 'available.png', await makePng());
+
+      const rejected = await agent
+        .post(`/projects/${id}/assets/create-release`)
+        .type('form')
+        .send({ _csrf: csrfToken })
+        .expect(422);
+
+      expect(rejected.text).toContain('At least one asset must be selected.');
+      const releaseService = createReleaseService({ db, evaluateReleaseReadiness });
+      expect(releaseService.listReleases(id, { includeArchived: true })).toEqual([]);
+    });
+
+    it('rejects malformed and cross-project selections without creating a release', async () => {
+      const res = await createProject('Create Release Invalid Selection');
+      const id = Number(res.headers.location.replace('/projects/', ''));
+      const projectDir = getProjectDir('Create Release Invalid Selection');
+      const ownAsset = writeIndexedAsset(id, projectDir, 'own.png', await makePng());
+
+      const invalid = await agent
+        .post(`/projects/${id}/assets/create-release`)
+        .type('form')
+        .send({ selectedAssetIds: [String(ownAsset.id), 'not-an-id'], _csrf: csrfToken })
+        .expect(422);
+      expect(invalid.text).toContain('Asset IDs must be positive integers.');
+
+      const otherRes = await createProject('Create Release Foreign Project');
+      const otherId = Number(otherRes.headers.location.replace('/projects/', ''));
+      const otherProjectDir = getProjectDir('Create Release Foreign Project');
+      const foreignAsset = writeIndexedAsset(otherId, otherProjectDir, 'foreign.png', await makePng());
+
+      const crossProject = await agent
+        .post(`/projects/${id}/assets/create-release`)
+        .type('form')
+        .send({ selectedAssetIds: String(foreignAsset.id), _csrf: csrfToken })
+        .expect(422);
+      expect(crossProject.text).toContain('does not belong to the specified project.');
+
+      const releaseService = createReleaseService({ db, evaluateReleaseReadiness });
+      expect(releaseService.listReleases(id, { includeArchived: true })).toEqual([]);
+    });
+
+    it('re-renders with the service validation status for an archived project', async () => {
+      const res = await createProject('Create Release Archived Project');
+      const id = Number(res.headers.location.replace('/projects/', ''));
+      const projectDir = getProjectDir('Create Release Archived Project');
+      const asset = writeIndexedAsset(id, projectDir, 'archived.png', await makePng());
+      await agent.post(`/projects/${id}/archive`).type('form').send({ _csrf: csrfToken }).expect(302);
+
+      const rejected = await agent
+        .post(`/projects/${id}/assets/create-release`)
+        .type('form')
+        .send({ selectedAssetIds: String(asset.id), _csrf: csrfToken })
+        .expect(422);
+
+      expect(rejected.text).toContain('Cannot create release for archived project.');
+      const releaseService = createReleaseService({ db, evaluateReleaseReadiness });
+      expect(releaseService.listReleases(id, { includeArchived: true })).toEqual([]);
     });
   });
 
@@ -5233,6 +5328,8 @@ describe('asset browser HTTP workflow', () => {
           expect(bulk[0]).toContain(`formaction="/projects/${id}/assets/delete-selected"`);
           expect(bulk[0]).toContain('data-confirm="The selected files will be permanently deleted from disk and cannot be restored through CreatorCrate. Continue?"');
           expect(bulk[0]).toContain('action="/projects/' + id + '/assets/add-to-release"');
+          expect(bulk[0]).toContain('<button type="submit" class="button button-primary" data-bulk-submit>Add selected to release</button>');
+          expect(bulk[0]).toContain(`formaction="/projects/${id}/assets/create-release">Create release with selected</button>`);
           const expectedAssetId = query.includes(`category=${enabled.id}`) ? categoryAsset.id : asset.id;
           expect(res.text).toMatch(new RegExp(`<input type="checkbox" form="bulk-select-form"[^>]*name="selectedAssetIds" value="${expectedAssetId}"`));
           expect((res.text.match(/<h1\b/g) || []).length).toBe(1);

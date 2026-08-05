@@ -108,6 +108,7 @@ const AUTO_RENAME_BLOCK_REASON_MESSAGES = Object.freeze({
  *   POST /projects/:projectId/assets/:assetId/delete — Permanently delete the viewed asset
  *   POST /projects/:id/scan  — Trigger a manual scan
  *   POST /projects/:id/assets/add-to-release — Bulk-add selected present assets to one release
+ *   POST /projects/:id/assets/create-release — Create a release from selected present assets
  *   POST /projects/:id/assets/move-selected — Batch-move selected present assets to a category
  *   POST /projects/:id/assets/copy-selected — Batch-copy selected present assets to a category
  *   POST /projects/:id/assets/delete-selected — Permanently delete selected present assets
@@ -808,6 +809,73 @@ export function createAssetsRouter({
       }
 
       next(err);
+    }
+  });
+
+  // POST /projects/:id/assets/create-release — Create a release from the
+  // selected present assets. The release service owns selection validation and
+  // the transactional release-plus-asset mutation.
+  router.post('/:id/assets/create-release', (req, res, next) => {
+    const body = req.body || {};
+
+    try {
+      const id = parseId(req.params.id);
+      if (id === null) {
+        return next(createNotFound());
+      }
+
+      const project = projectService.findById(id);
+      if (!project) {
+        return next(createNotFound());
+      }
+
+      const normalizedSelection = normalizeSelectedAssetIds(body.selectedAssetIds);
+      if (!normalizedSelection.valid) {
+        throw new ReleaseValidationError({ assetIds: 'Invalid asset selection format.' });
+      }
+
+      const release = releaseService.createReleaseFromAssets(id, normalizedSelection.ids);
+      return res.redirect(`/releases/${release.id}/assets`);
+    } catch (err) {
+      const id = parseId(req.params.id);
+      if (id === null) {
+        return next(createNotFound());
+      }
+
+      const project = projectService.findById(id);
+      if (!project) {
+        return next(createNotFound());
+      }
+
+      const status = err instanceof ReleaseValidationError
+        ? 422
+        : (typeof err.status === 'number' ? err.status : null);
+
+      if (status !== null) {
+        try {
+          const pageDefaultsService = getPageDefaultsService(req);
+          const presentation = resolveAssetBrowserPresentation(body, pageDefaultsService);
+          const data = buildAssetBrowserPageData(workflowQueryService, id, project, presentation);
+          if (!data) return next(createNotFound());
+
+          const normalizedSelection = normalizeSelectedAssetIds(body.selectedAssetIds);
+          return res.status(status).render('projects/assets.njk', {
+            appName,
+            ...buildBrowserRenderModel(project, data, pageDefaultsService),
+            query: {},
+            error: null,
+            archivedError: null,
+            bulkNotice: null,
+            bulkError: { message: describeBulkError(err) },
+            submittedSelectedAssetIds: normalizedSelection.valid ? normalizedSelection.ids : [],
+            submittedReleaseId: null,
+          });
+        } catch (renderErr) {
+          return next(renderErr);
+        }
+      }
+
+      return next(err);
     }
   });
 
