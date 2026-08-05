@@ -1402,6 +1402,7 @@ const ASSET_PROJECT_FILTER_OPTION_SELECTOR = '[data-asset-project-filter-option]
 const ASSET_PROJECT_FILTER_SEARCH_SELECTOR = '[data-asset-project-filter-search]';
 const ASSET_PROJECT_FILTER_SUMMARY_SELECTOR = '[data-asset-project-filter-summary]';
 const ASSET_PROJECT_FILTER_EMPTY_SELECTOR = '[data-asset-project-filter-no-results]';
+const PROJECT_ASSET_CATEGORY_FILTER_SELECTOR = '[data-asset-category-filter]';
 const ASSET_VIEWER_FILTER_DISCLOSURE_SELECTOR = '[data-asset-viewer-filter-disclosure]';
 const ASSET_VIEWER_INFO_SELECTOR = '[data-asset-info-card]';
 const ASSET_VIEWER_PREVIEW_SELECTOR = '[data-asset-viewer-preview]';
@@ -1865,6 +1866,66 @@ export function enhanceAssetProjectFilter(scope = globalThis.document) {
   return filters.length;
 }
 
+function getProjectAssetCategoryFilterInput(option) {
+  return option?.querySelector?.('input[name="category"]') || null;
+}
+
+function updateProjectAssetCategoryFilter(filter, options, presenceControl, syncPresence = false) {
+  const selectedOption = options.find((option) => getProjectAssetCategoryFilterInput(option)?.checked);
+  const selectedInput = getProjectAssetCategoryFilterInput(selectedOption);
+  const selectedLabel = selectedOption?.querySelector?.('label')?.textContent?.trim()
+    || 'All categories';
+  const missingOption = options.find((option) => {
+    const input = getProjectAssetCategoryFilterInput(option);
+    return input?.value === 'all'
+      && input?.getAttribute?.('data-asset-category-presence') === 'missing';
+  });
+  const missingLabel = missingOption?.querySelector?.('label')?.textContent?.trim() || 'Missing';
+  const selectedPresence = selectedInput?.getAttribute?.('data-asset-category-presence') || 'all';
+
+  if (syncPresence && presenceControl && selectedPresence) {
+    presenceControl.value = selectedPresence;
+  }
+
+  const effectivePresence = presenceControl?.value || selectedPresence;
+  const summaryText = selectedInput?.value === 'all' && effectivePresence === 'missing'
+    ? missingLabel
+    : selectedLabel;
+  const summary = filter.querySelector?.('[data-asset-category-filter-summary]');
+  const trigger = filter.querySelector?.('summary');
+  const currentSummary = filter.querySelector?.('[data-asset-category-filter-current-summary]') || summary;
+  if (currentSummary) currentSummary.textContent = summaryText;
+  trigger?.setAttribute?.('aria-label', `Category filter: ${summaryText}`);
+  trigger?.setAttribute?.('title', summaryText);
+}
+
+export function enhanceProjectAssetCategoryFilter(scope = globalThis.document) {
+  if (!scope || typeof scope.querySelectorAll !== 'function') return 0;
+
+  const filters = scope.querySelectorAll(PROJECT_ASSET_CATEGORY_FILTER_SELECTOR);
+  filters.forEach((filter) => {
+    const options = Array.from(filter.querySelectorAll?.('.asset-filter-multiselect-option') || [])
+      .filter((option) => getProjectAssetCategoryFilterInput(option));
+    const presenceControl = filter.closest?.('form')?.querySelector?.('select[name="presence"]') || null;
+
+    if (!isEnhancementBound(filter, 'projectAssetCategoryFilterBound')) {
+      markEnhancementBound(filter, 'projectAssetCategoryFilterBound');
+      options.forEach((option) => {
+        getProjectAssetCategoryFilterInput(option)?.addEventListener?.('change', () => {
+          updateProjectAssetCategoryFilter(filter, options, presenceControl, true);
+        });
+      });
+      presenceControl?.addEventListener?.('change', () => {
+        updateProjectAssetCategoryFilter(filter, options, presenceControl);
+      });
+    }
+
+    updateProjectAssetCategoryFilter(filter, options, presenceControl);
+  });
+
+  return filters.length;
+}
+
 let activeAssetViewerInfoPlacement = null;
 let assetViewerInfoViewportListenersBound = false;
 
@@ -1969,6 +2030,7 @@ if (typeof document !== 'undefined') {
     enhanceAssetRenames(document);
     enhanceAssetGridSize(document);
     enhanceAssetProjectFilter(document);
+    enhanceProjectAssetCategoryFilter(document);
     enhanceAssetViewerFilterDisclosures(document);
     enhanceAssetViewerInfoCards(document);
   };

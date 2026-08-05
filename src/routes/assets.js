@@ -105,9 +105,12 @@ const AUTO_RENAME_BLOCK_REASON_MESSAGES = Object.freeze({
  * Routes:
  *   GET  /projects/:id/assets — Asset listing page
  *   GET  /projects/:projectId/assets/:assetId — Asset viewer page
+ *   POST /projects/:projectId/assets/:assetId/delete — Permanently delete the viewed asset
  *   POST /projects/:id/scan  — Trigger a manual scan
  *   POST /projects/:id/assets/add-to-release — Bulk-add selected present assets to one release
  *   POST /projects/:id/assets/move-selected — Batch-move selected present assets to a category
+ *   POST /projects/:id/assets/copy-selected — Batch-copy selected present assets to a category
+ *   POST /projects/:id/assets/delete-selected — Permanently delete selected present assets
  *   POST /projects/:projectId/assets/auto-rename/preview — Preview Auto Rename
  *   POST /projects/:projectId/assets/auto-rename/apply — Apply a signed Auto Rename plan
  *
@@ -254,6 +257,12 @@ export function createAssetsRouter({
       const moveNotice = isSmallNonNegativeInt(req.query.assets_moved)
         ? { movedCount: Number(req.query.assets_moved) }
         : null;
+      const copyNotice = isSmallNonNegativeInt(req.query.assets_copied)
+        ? { copiedCount: Number(req.query.assets_copied) }
+        : null;
+      const deleteNotice = isSmallNonNegativeInt(req.query.assets_deleted)
+        ? { deletedCount: Number(req.query.assets_deleted) }
+        : null;
 
       res.render('projects/assets.njk', {
         appName,
@@ -263,6 +272,8 @@ export function createAssetsRouter({
         archivedError,
         bulkNotice,
         moveNotice,
+        copyNotice,
+        deleteNotice,
         assetActionNotice,
         autoRenameNotice,
       });
@@ -453,6 +464,39 @@ export function createAssetsRouter({
         notice,
         noticeMessage: notice ? ASSET_ACTION_NOTICE_MESSAGES[notice] : null,
       });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // POST /projects/:projectId/assets/:assetId/delete — Permanently delete
+  // the viewed asset from disk and the index through the existing one-lock
+  // batch service operation.
+  router.post('/:projectId/assets/:assetId/delete', (req, res, next) => {
+    try {
+      const pageDefaultsService = getPageDefaultsService(req);
+      const projectId = parseId(req.params.projectId);
+      const assetId = parseId(req.params.assetId);
+      if (projectId === null || assetId === null) {
+        return next(createNotFound());
+      }
+
+      try {
+        assetActionService.deleteAssets(projectId, [assetId]);
+      } catch (err) {
+        return handleAssetActionFailure(err, {
+          appName, workflowQueryService, projectPrimaryImageService, req, res, next,
+          projectId, assetId, action: 'delete',
+        });
+      }
+
+      return res.redirect(buildAssetsRedirectUrl(
+        workflowQueryService,
+        projectId,
+        req.body,
+        { assets_deleted: 1 },
+        pageDefaultsService,
+      ));
     } catch (err) {
       next(err);
     }
@@ -797,8 +841,11 @@ export function createAssetsRouter({
             archivedError: null,
             bulkNotice: null,
             moveNotice: null,
+            copyNotice: null,
             bulkMoveError: { message },
+            copyError: null,
             submittedSelectedAssetIds: selectedIds,
+            submittedDestinationCategory: typeof rawDestination === 'string' ? rawDestination : '',
           });
         } catch (renderErr) {
           return next(renderErr);
@@ -843,6 +890,178 @@ export function createAssetsRouter({
         id,
         req.body,
         { assets_moved: result.movedCount },
+        pageDefaultsService,
+      ));
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // POST /projects/:id/assets/copy-selected — Batch-copy selected present
+  // assets to one category or Uncategorized. The route mirrors Move's strict
+  // form parsing and browser-context handling; the service owns all project,
+  // filesystem, lock, and indexed-row validation.
+  router.post('/:id/assets/copy-selected', (req, res, next) => {
+    try {
+      const pageDefaultsService = getPageDefaultsService(req);
+      const id = parseId(req.params.id);
+      if (id === null) return next(createNotFound());
+
+      const project = projectService.findById(id);
+      if (!project) return next(createNotFound());
+
+      const normalizedSelection = normalizeSelectedAssetIds(req.body.selectedAssetIds);
+      const rawDestination = req.body.destinationCategory;
+      const parsedDestination = parseDestinationCategoryField(rawDestination);
+      const submittedDestinationCategory = typeof rawDestination === 'string' ? rawDestination : '';
+
+      const renderCopyError = (status, message, selectedIds = []) => {
+        try {
+          const presentation = resolveAssetBrowserPresentation(req.body, pageDefaultsService);
+          const data = buildAssetBrowserPageData(workflowQueryService, id, project, presentation);
+          if (!data) return next(createNotFound());
+          return res.status(status).render('projects/assets.njk', {
+            appName,
+            ...buildBrowserRenderModel(project, data, pageDefaultsService),
+            query: {},
+            error: null,
+            archivedError: null,
+            bulkNotice: null,
+            moveNotice: null,
+            copyNotice: null,
+            bulkMoveError: null,
+            copyError: { message },
+            submittedSelectedAssetIds: selectedIds,
+            submittedDestinationCategory,
+          });
+        } catch (renderErr) {
+          return next(renderErr);
+        }
+      };
+
+      if (!normalizedSelection.valid) {
+        return renderCopyError(422, 'Invalid asset selection.');
+      }
+
+      if (normalizedSelection.ids.length === 0) {
+        return renderCopyError(422, 'Select at least one asset to copy.');
+      }
+
+      if (!parsedDestination.ok) {
+        return renderCopyError(422, 'Choose a valid destination category.', normalizedSelection.ids);
+      }
+
+      const assetIds = [];
+      for (const idStr of normalizedSelection.ids) {
+        const assetId = parseId(idStr);
+        if (assetId === null) {
+          return renderCopyError(422, 'Invalid asset selection.');
+        }
+        assetIds.push(assetId);
+      }
+
+      let result;
+      try {
+        result = assetActionService.copyAssets(id, assetIds, parsedDestination.value);
+      } catch (err) {
+        const code = err && err.code;
+        const status = COPY_ASSET_ACTION_ERROR_STATUS[code];
+        if (status === undefined) return next(err);
+        if (status === 404) return next(createNotFound());
+        return renderCopyError(status, describeBatchCopyError(err), normalizedSelection.ids);
+      }
+
+      return res.redirect(buildAssetsRedirectUrl(
+        workflowQueryService,
+        id,
+        req.body,
+        { assets_copied: result.copiedCount },
+        pageDefaultsService,
+      ));
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // POST /projects/:id/assets/delete-selected — Permanently delete selected
+  // present assets from disk and the index. The locked service owns all
+  // validation, staging, rollback, cascade, and published-release policy.
+  router.post('/:id/assets/delete-selected', (req, res, next) => {
+    try {
+      const pageDefaultsService = getPageDefaultsService(req);
+      const id = parseId(req.params.id);
+      if (id === null) return next(createNotFound());
+
+      const project = projectService.findById(id);
+      if (!project) return next(createNotFound());
+
+      const body = req.body || {};
+      const normalizedSelection = normalizeSelectedAssetIds(body.selectedAssetIds);
+      const submittedReleaseId = typeof body.releaseId === 'string' ? body.releaseId : '';
+      const submittedDestinationCategory = typeof body.destinationCategory === 'string'
+        ? body.destinationCategory
+        : '';
+
+      const renderDeleteError = (status, message, selectedIds = []) => {
+        try {
+          const presentation = resolveAssetBrowserPresentation(body, pageDefaultsService);
+          const data = buildAssetBrowserPageData(workflowQueryService, id, project, presentation);
+          if (!data) return next(createNotFound());
+          return res.status(status).render('projects/assets.njk', {
+            appName,
+            ...buildBrowserRenderModel(project, data, pageDefaultsService),
+            query: {},
+            error: null,
+            archivedError: null,
+            bulkNotice: null,
+            moveNotice: null,
+            copyNotice: null,
+            deleteNotice: null,
+            bulkMoveError: null,
+            copyError: null,
+            deleteError: { message },
+            submittedSelectedAssetIds: selectedIds,
+            submittedReleaseId,
+            submittedDestinationCategory,
+          });
+        } catch (renderErr) {
+          return next(renderErr);
+        }
+      };
+
+      if (!normalizedSelection.valid) {
+        return renderDeleteError(422, 'Invalid asset selection.');
+      }
+
+      if (normalizedSelection.ids.length === 0) {
+        return renderDeleteError(422, 'Select at least one asset to delete.');
+      }
+
+      const assetIds = [];
+      for (const idStr of normalizedSelection.ids) {
+        const assetId = parseId(idStr);
+        if (assetId === null) {
+          return renderDeleteError(422, 'Invalid asset selection.', normalizedSelection.ids);
+        }
+        assetIds.push(assetId);
+      }
+
+      let result;
+      try {
+        result = assetActionService.deleteAssets(id, assetIds);
+      } catch (err) {
+        const code = err && err.code;
+        const status = DELETE_ASSET_ACTION_ERROR_STATUS[code];
+        if (status === undefined) return next(err);
+        if (status === 404) return next(createNotFound());
+        return renderDeleteError(status, describeBatchDeleteError(err), normalizedSelection.ids);
+      }
+
+      return res.redirect(buildAssetsRedirectUrl(
+        workflowQueryService,
+        id,
+        body,
+        { assets_deleted: result.deletedCount },
         pageDefaultsService,
       ));
     } catch (err) {
@@ -1049,7 +1268,11 @@ function buildBrowserRenderModel(project, data, pageDefaultsService) {
     searchMaxLength: data.searchMaxLength,
     bulkError: null,
     bulkMoveError: null,
+    copyError: null,
+    deleteError: null,
     moveNotice: null,
+    copyNotice: null,
+    deleteNotice: null,
     assetActionNotice: null,
     autoRenameNotice: null,
     autoRenameError: null,
@@ -1059,6 +1282,7 @@ function buildBrowserRenderModel(project, data, pageDefaultsService) {
     renameFailure: null,
     submittedSelectedAssetIds: [],
     submittedReleaseId: null,
+    submittedDestinationCategory: null,
     preserveViewQuery: Boolean(presentation?.forceFallback?.view),
     preserveSortQuery: Boolean(presentation?.forceFallback?.sort),
     preserveOrderQuery: Boolean(presentation?.forceFallback?.order),
@@ -1639,6 +1863,66 @@ function describeBatchMoveError(err) {
   return BATCH_ASSET_ACTION_ERROR_MESSAGES[code] || 'The operation could not be completed.';
 }
 
+const COPY_ASSET_ACTION_ERROR_STATUS = {
+  COPY_PRECHECK_FAILED: 422,
+  COPY_DESTINATION_CONFLICT: 409,
+  COPY_DUPLICATE_DESTINATION: 409,
+  COPY_FILESYSTEM_OPERATION_FAILED: 500,
+  COPY_RECOVERY_REQUIRED: 500,
+  PROJECT_NOT_FOUND: 404,
+  PROJECT_ARCHIVED: 409,
+  PROJECT_BUSY: 409,
+  PROJECT_DIRECTORY_UNSAFE: 500,
+};
+
+const COPY_ASSET_ACTION_ERROR_MESSAGES = {
+  COPY_PRECHECK_FAILED: 'One or more selected assets cannot be copied to that destination.',
+  COPY_DESTINATION_CONFLICT: 'Destination already exists for one or more selected assets.',
+  COPY_DUPLICATE_DESTINATION: 'Two or more selected assets have the same filename and would conflict at the destination.',
+  COPY_FILESYSTEM_OPERATION_FAILED: 'The selected files could not be copied. No copied files were retained.',
+  COPY_RECOVERY_REQUIRED: 'Files were copied, but CreatorCrate could not safely finish or clean up the batch. Inspect the project folder before scanning.',
+  PROJECT_ARCHIVED: 'This project is archived and read-only.',
+  PROJECT_BUSY: 'Another project operation is already in progress. Try again.',
+  PROJECT_DIRECTORY_UNSAFE: 'The operation could not be completed. Please try again.',
+};
+
+function describeBatchCopyError(err) {
+  const code = err && err.code;
+  return COPY_ASSET_ACTION_ERROR_MESSAGES[code] || 'The copy operation could not be completed.';
+}
+
+const DELETE_ASSET_ACTION_ERROR_STATUS = {
+  NO_ASSETS_SELECTED: 422,
+  INVALID_ASSET_SELECTION: 422,
+  DELETE_PUBLISHED_RELEASE_ASSET: 409,
+  DELETE_PRECHECK_FAILED: 422,
+  DELETE_FILESYSTEM_OPERATION_FAILED: 500,
+  DELETE_DATABASE_OPERATION_FAILED: 500,
+  DELETE_RECOVERY_REQUIRED: 500,
+  PROJECT_NOT_FOUND: 404,
+  PROJECT_ARCHIVED: 409,
+  PROJECT_BUSY: 409,
+  PROJECT_DIRECTORY_UNSAFE: 500,
+};
+
+const DELETE_ASSET_ACTION_ERROR_MESSAGES = {
+  NO_ASSETS_SELECTED: 'Select at least one asset to delete.',
+  INVALID_ASSET_SELECTION: 'Invalid asset selection.',
+  DELETE_PUBLISHED_RELEASE_ASSET: 'One or more selected assets are associated with a published release and cannot be deleted.',
+  DELETE_PRECHECK_FAILED: 'One or more selected assets cannot be deleted.',
+  DELETE_FILESYSTEM_OPERATION_FAILED: 'The selected files could not be deleted. No selected files were removed.',
+  DELETE_DATABASE_OPERATION_FAILED: 'The selected files were restored because CreatorCrate could not remove all indexed asset records.',
+  DELETE_RECOVERY_REQUIRED: 'Deletion could not be completed safely. Inspect the project folder before scanning.',
+  PROJECT_ARCHIVED: 'This project is archived and read-only.',
+  PROJECT_BUSY: 'Another project operation is already in progress. Try again.',
+  PROJECT_DIRECTORY_UNSAFE: 'The operation could not be completed. Please try again.',
+};
+
+function describeBatchDeleteError(err) {
+  const code = err && err.code;
+  return DELETE_ASSET_ACTION_ERROR_MESSAGES[code] || 'The delete operation could not be completed.';
+}
+
 // Deliberate, explicit whitelist of every AssetActionError code this route
 // layer knows how to handle, plus one route-local code (destinationCategory
 // form parsing, which never reaches the service). A code not in this map is
@@ -1681,6 +1965,10 @@ const ASSET_ACTION_ERROR_STATUS = {
   RECOVERY_REQUIRED: 500,
   PROJECT_DIRECTORY_UNSAFE: 500,
   SOURCE_PATH_UNSAFE: 500,
+
+  // Permanent deletion reuses the same viewer failure renderer as rename and
+  // move, but its service exposes batch-specific codes.
+  ...DELETE_ASSET_ACTION_ERROR_STATUS,
 };
 
 const ASSET_ACTION_ERROR_MESSAGES = {
@@ -1703,6 +1991,10 @@ const ASSET_ACTION_ERROR_MESSAGES = {
   RECOVERY_REQUIRED: 'The file was moved on disk, but CreatorCrate could not finish updating its records. Inspect the project folder before scanning or trying again.',
   PROJECT_DIRECTORY_UNSAFE: 'The operation could not be completed. Please try again.',
   SOURCE_PATH_UNSAFE: 'The operation could not be completed. Please try again.',
+
+  // Keep these fixed and path-free: service messages can contain asset IDs or
+  // filesystem details that must never be rendered directly by the route.
+  ...DELETE_ASSET_ACTION_ERROR_MESSAGES,
 };
 
 /**
@@ -1710,12 +2002,18 @@ const ASSET_ACTION_ERROR_MESSAGES = {
  * UNCHANGED_LOCATION reads differently for rename vs. move — every other
  * code's message is action-independent.
  * @param {string} code
- * @param {'rename'|'move'} action
+ * @param {'rename'|'move'|'delete'} action
  * @returns {string}
  */
 function describeAssetActionError(code, action) {
   if (code === 'UNCHANGED_LOCATION') {
     return action === 'move' ? 'That destination is unchanged.' : 'That filename is unchanged.';
+  }
+  if (action === 'delete' && code === 'DELETE_PUBLISHED_RELEASE_ASSET') {
+    return 'This asset is associated with a published release and cannot be permanently deleted.';
+  }
+  if (action === 'delete' && (code === 'DELETE_PRECHECK_FAILED' || code === 'ASSET_MISSING')) {
+    return 'This asset cannot be deleted because it is missing or inaccessible.';
   }
   return ASSET_ACTION_ERROR_MESSAGES[code] || 'The operation could not be completed. Please try again.';
 }
@@ -1781,16 +2079,17 @@ function buildPrimaryImageViewerState(data, selectedAsset, isEligiblePresentImag
 }
 
 /**
- * Build the Assets-page model without allowing browser subset filters to
- * narrow a concrete category ordering surface. The ordinary browser query is
- * used only for shell metadata; displayed assets and pagination come from
- * the complete-category model.
+ * Build the Assets-page model with the complete category ordering surface for
+ * default numeric-category controls, and the ordinary browser surface when a
+ * numeric category request uses meaningful search or non-default sorting.
  */
 function buildAssetsPageData(workflowQueryService, projectId, project, rawQuery = {}) {
   const hasExplicitCategory = Object.prototype.hasOwnProperty.call(rawQuery || {}, 'category');
   const hasTagQuery = Object.prototype.hasOwnProperty.call(rawQuery || {}, 'tag');
+  const hasConcreteCategory = parseCanonicalPositiveId(rawQuery.category) !== null;
   if (
     hasTagQuery
+    || (hasConcreteCategory && hasNonDefaultCategoryBrowserControls(rawQuery))
     || (hasExplicitCategory && (
       rawQuery.category === 'all'
       || rawQuery.category === 'uncategorized'
@@ -1862,6 +2161,16 @@ function buildAssetsPageData(workflowQueryService, projectId, project, rawQuery 
   };
 }
 
+function hasNonDefaultCategoryBrowserControls(rawQuery = {}) {
+  return (
+    (typeof rawQuery.search === 'string' && rawQuery.search.trim() !== '')
+    || rawQuery.sort === 'modified'
+    || rawQuery.sort === 'size'
+    || rawQuery.sort === 'category'
+    || rawQuery.order === 'desc'
+  );
+}
+
 /**
  * Shared render-model fields for the asset viewer — used by the GET route
  * and by every controlled-failure re-render, so both stay in sync as the
@@ -1898,7 +2207,7 @@ function buildAssetViewerRenderModel(data, overrides = {}) {
 }
 
 /**
- * Map a rename/move failure to a controlled HTTP response.
+ * Map a rename/move/delete failure to a controlled HTTP response.
  *
  * - An unrecognized code (not in ASSET_ACTION_ERROR_STATUS) is always
  *   unexpected — passed to `next(err)` so the existing application error
@@ -1925,7 +2234,7 @@ function buildAssetViewerRenderModel(data, overrides = {}) {
  * @param {object} [ctx.project]
  * @param {number} ctx.projectId
  * @param {number} ctx.assetId
- * @param {'rename'|'move'} ctx.action
+ * @param {'rename'|'move'|'delete'} ctx.action
  * @param {'assets'|'viewer'} [ctx.origin]
  * @param {string} [ctx.submittedFilename]
  * @param {string} [ctx.submittedDestinationCategory]

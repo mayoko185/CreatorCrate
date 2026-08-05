@@ -354,6 +354,48 @@ export function createAssetRepository(db) {
     RETURNING ${ASSET_COLUMNS.join(', ')}
   `);
 
+  const upsertManyTx = db.transaction((projectId, assets) => {
+    if (!Array.isArray(assets)) {
+      throw new TypeError('Asset upsert input must be an array.');
+    }
+
+    return assets.map((data) => upsertStmt.get(
+      projectId,
+      data.relativePath,
+      data.categoryId ?? null,
+      data.nestedPath ?? '',
+      data.filename,
+      data.extension,
+      data.mimeType,
+      data.sizeBytes,
+      data.modifiedAt || null,
+    ));
+  });
+
+  const deleteAssetStmt = db.prepare(`
+    DELETE FROM assets
+    WHERE project_id = ? AND id = ? AND relative_path = ?
+    RETURNING ${ASSET_COLUMNS.join(', ')}
+  `);
+
+  const deleteManyTx = db.transaction((projectId, expectedAssets) => {
+    if (!Array.isArray(expectedAssets)) {
+      throw new TypeError('Asset delete input must be an array.');
+    }
+
+    const deleted = [];
+    for (const expected of expectedAssets) {
+      const asset = deleteAssetStmt.get(projectId, expected.assetId, expected.relativePath);
+      if (!asset) {
+        const error = new Error('Asset delete did not match the expected database state.');
+        error.code = 'NOT_FOUND';
+        throw error;
+      }
+      deleted.push(asset);
+    }
+    return deleted;
+  });
+
   const selectExistingForReconcileStmt = db.prepare(`
     SELECT id, category_id, nested_path, relative_path, filename, extension, mime_type, size_bytes, modified_at, is_present
     FROM assets
@@ -638,6 +680,31 @@ export function createAssetRepository(db) {
     },
 
     /**
+     * Find selected project-owned assets associated with a published release.
+     * Used by permanent deletion preflight so published-release references are
+     * protected while unpublished release associations may still cascade.
+     * @param {number} projectId
+     * @param {number[]} ids
+     * @returns {number[]}
+     */
+    findPublishedReleaseAssetIds(projectId, ids) {
+      if (!Array.isArray(ids) || ids.length === 0) return [];
+      const unique = [...new Set(ids)];
+      const placeholders = unique.map(() => '?').join(',');
+      const sql = `
+        SELECT DISTINCT ra.asset_id
+        FROM release_assets ra
+        JOIN releases r ON r.id = ra.release_id
+        JOIN assets a ON a.id = ra.asset_id
+        WHERE a.project_id = ?
+          AND ra.asset_id IN (${placeholders})
+          AND r.status = 'published'
+        ORDER BY ra.asset_id
+      `;
+      return db.prepare(sql).all(projectId, ...unique).map(({ asset_id }) => asset_id);
+    },
+
+    /**
      * Find the selected assets for one project in the exact default order used
      * by the asset browser. The order expression is deliberately shared with
      * the browser page/viewer queries rather than reproduced by a service.
@@ -870,6 +937,31 @@ export function createAssetRepository(db) {
         data.sizeBytes,
         data.modifiedAt || null,
       );
+    },
+
+    /**
+     * Upsert several asset records atomically. Used after a batch filesystem
+     * copy has completed so a database failure cannot leave only part of the
+     * copied batch indexed.
+     * @param {number} projectId
+     * @param {Array<object>} assets
+     * @returns {import('./asset-repository.js').AssetRecord[]}
+     */
+    upsertMany(projectId, assets) {
+      return upsertManyTx(projectId, assets);
+    },
+
+    /**
+     * Permanently delete several project-owned asset rows atomically. Each
+     * expected relative path is matched with its ID so stale callers cannot
+     * delete a row after its location has changed. Foreign-key cascades remove
+     * release, primary-image, and tag references according to the schema.
+     * @param {number} projectId
+     * @param {Array<{assetId: number, relativePath: string}>} expectedAssets
+     * @returns {import('./asset-repository.js').AssetRecord[]}
+     */
+    deleteMany(projectId, expectedAssets) {
+      return deleteManyTx(projectId, expectedAssets);
     },
 
     /**

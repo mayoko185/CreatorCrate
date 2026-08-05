@@ -501,7 +501,7 @@
         color: var(--muted);
       }
 
-      .results-meta { color: var(--muted); font-size: 0.875rem; min-width: 0; overflow-wrap: anywhere; }
+      .results-meta { color: var(--muted); font-size: 0.9375rem; font-weight: 700; min-width: 0; overflow-wrap: anywhere; }
       .detail-list {
         display: grid;
         grid-template-columns: minmax(0, 8rem) minmax(0, 1fr);
@@ -745,13 +745,6 @@
          authenticated page; internal layouts (e.g. .calendar-scroll,
          .settings-content) apply their own local constraints instead. */
 
-      /* ── Scan freshness note ── */
-      .scan-freshness {
-        color: var(--muted);
-        font-size: 0.8125rem;
-        margin: var(--space-sm) 0 var(--space-lg);
-      }
-
       /* ── View switcher (segmented control) ── */
       .view-switcher {
         display: inline-flex;
@@ -786,108 +779,22 @@
         font-weight: 600;
       }
 
-      /* ═══ Phase 15.2: Asset browser — category nav + compact table ═══ */
+      /* ═══ Phase 15.2: Asset browser — category filter + compact table ═══ */
 
-      /* ── Two-column browser shell ── */
+      /* ── Browser shell ── */
       .asset-browser-layout {
-        display: grid;
-        grid-template-columns: 14rem 1fr;
-        gap: var(--space-xl);
-        align-items: start;
+        display: block;
         margin-top: var(--space-lg);
       }
-      .asset-browser-content { min-width: 0; }
+      .asset-browser-content { width: 100%; min-width: 0; }
 
-      /* ── Category navigation panel ── */
-      .asset-browser-nav {
-        display: flex;
-        flex-direction: column;
-        gap: var(--space-sm);
-        border: 1px solid var(--border);
-        border-radius: var(--radius-lg);
-        background: var(--surface);
-        padding: var(--space-md);
-      }
-      .asset-browser-nav-list {
-        list-style: none;
-        margin: 0;
-        padding: 0;
-        display: flex;
-        flex-direction: column;
-        gap: 2px;
-      }
-      .asset-browser-nav-list a {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: var(--space-sm);
-        padding: var(--space-xs) var(--space-sm);
-        border-radius: var(--radius-sm);
-        color: var(--muted);
-        text-decoration: none;
-        font-size: 0.875rem;
-        transition: background var(--transition-fast), color var(--transition-fast);
-      }
-      .asset-browser-nav-list a:hover {
-        background: var(--surface-hover);
-        color: var(--text);
-      }
-      .asset-browser-nav-list a:focus-visible {
-        outline: 2px solid var(--focus-ring);
-        outline-offset: -2px;
-      }
-      .asset-browser-nav-list a[aria-current="page"] {
-        background: var(--surface-card);
-        color: var(--text);
-        font-weight: 600;
-        box-shadow: inset 3px 0 0 var(--accent);
-      }
-      .asset-nav-label { min-width: 0; overflow-wrap: anywhere; }
-      .asset-nav-count {
-        flex-shrink: 0;
-        font-variant-numeric: tabular-nums;
-        font-size: 0.75rem;
-        color: var(--muted);
-        background: var(--bg);
-        border-radius: var(--radius-sm);
-        padding: 0.0625rem 0.375rem;
-      }
-      .asset-browser-nav-section {
-        border-top: 1px solid var(--border);
-        padding-top: var(--space-sm);
-      }
-      .asset-browser-nav-heading {
-        margin: 0 0 var(--space-xs);
-        font-size: 0.75rem;
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-        color: var(--muted);
-      }
-      .asset-browser-nav-empty {
-        margin: 0;
-        font-size: 0.8125rem;
-        color: var(--muted);
-      }
-      .asset-nav-disabled-marker,
       .asset-category-disabled-marker {
         font-style: normal;
         font-size: 0.75rem;
         color: var(--muted);
       }
-      .asset-browser-nav-manage {
-        display: block;
-        margin-top: var(--space-xs);
-        padding-top: var(--space-sm);
-        border-top: 1px solid var(--border);
-        font-size: 0.8125rem;
-        color: var(--link);
-        text-decoration: none;
-      }
-      .asset-browser-nav-manage:visited { color: var(--link); }
-      .asset-browser-nav-manage:hover { filter: brightness(1.15); }
-      .asset-browser-nav-manage:focus-visible {
-        outline: 2px solid var(--focus-ring);
-        outline-offset: 2px;
+      .asset-project-category-filter {
+        z-index: 45;
       }
 
       /* ── Compact asset table: preview/type cell ── */
@@ -1068,11 +975,6 @@
       /* ═══ Phase 3 chunk 3: page-local asset selection ═══ */
 
       .bulk-select-form { margin: 0; }
-      .selection-scope-note {
-        margin: 0 0 var(--space-sm);
-        font-size: 0.8125rem;
-        color: var(--muted);
-      }
       .asset-table .asset-select-cell { width: 2.25rem; text-align: center; }
       .asset-select-cell input[type="checkbox"],
       .asset-selection-controls input[type="checkbox"] {
@@ -1094,9 +996,51 @@
 
       .asset-selection-controls {
         display: flex;
-        flex-wrap: wrap;
+        flex-direction: column;
+        align-items: stretch;
+        gap: var(--space-lg);
+      }
+      .asset-selection-header {
+        display: flex;
         align-items: center;
+        justify-content: space-between;
         gap: var(--space-md);
+        flex-wrap: wrap;
+      }
+      .asset-selection-tools {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: var(--space-sm);
+      }
+      .asset-action-groups {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: var(--space-md);
+        min-width: 0;
+      }
+      .asset-action-group {
+        display: flex;
+        flex-direction: column;
+        gap: var(--space-sm);
+        min-width: 0;
+        margin: 0;
+        padding: var(--space-sm);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+      }
+      .asset-action-group legend {
+        padding: 0 var(--space-xs);
+        color: var(--text);
+        font-size: 0.8125rem;
+        font-weight: 600;
+      }
+      .asset-action-group-controls {
+        display: flex;
+        align-items: flex-end;
+        flex-wrap: wrap;
+        gap: var(--space-sm);
+        min-width: 0;
       }
       .asset-selection-controls .button:focus-visible {
         outline: 2px solid var(--focus-ring);
@@ -1112,7 +1056,8 @@
         display: flex;
         flex-direction: column;
         gap: 0.25rem;
-        min-width: 12rem;
+        flex: 1 1 12rem;
+        min-width: 0;
         font-size: 0.875rem;
       }
       .bulk-release-field span { color: var(--muted); }
@@ -1147,25 +1092,20 @@
       .asset-table .asset-actions-cell { text-align: right; }
       .asset-table thead th:last-child { text-align: right; }
 
-      .asset-actions-divider {
-        display: inline-block;
-        width: 1px;
-        height: 1.5rem;
-        background: var(--border);
-        align-self: center;
-        margin: 0 var(--space-sm);
-      }
       .bulk-move-field {
         display: flex;
-        align-items: center;
-        gap: var(--space-sm);
+        flex: 1 1 12rem;
+        flex-direction: column;
+        align-items: stretch;
+        gap: 0.25rem;
         font-size: 0.875rem;
         min-width: 0;
       }
       .bulk-move-field span { color: var(--muted); }
       .bulk-move-field select {
-        font-size: 0.875rem;
-        padding: 0.25rem 0.5rem;
+        width: 100%;
+        font-size: 0.9375rem;
+        padding: 0.5rem;
         border: 1px solid var(--border);
         border-radius: var(--radius-sm);
         background: var(--bg);
@@ -1427,8 +1367,7 @@
         font-weight: 600;
         color: var(--text);
       }
-      .asset-actions-helper,
-      .selection-scope-note {
+      .asset-actions-helper {
         color: var(--muted);
         font-size: 0.8125rem;
         overflow-wrap: anywhere;
@@ -1442,9 +1381,7 @@
       }
       .asset-actions-selection-label {
         display: block;
-        margin-bottom: var(--space-xs);
       }
-      .selection-scope-note { margin: var(--space-sm) 0 0; }
       .auto-rename-order-indicator {
         color: var(--muted);
         font-size: 0.8125rem;
@@ -1505,9 +1442,13 @@
         }
         .auto-rename-assets-form { align-items: stretch; }
         .auto-rename-assets-form .button { width: 100%; }
-        .asset-selection-controls { gap: var(--space-sm); }
-        .asset-actions-divider { display: none; }
-        .bulk-move-field { align-items: stretch; flex-direction: column; }
+        .asset-action-groups { grid-template-columns: 1fr; }
+        .asset-selection-tools { align-items: stretch; }
+        .asset-selection-tools .button { flex: 1 1 auto; }
+        .asset-action-group-controls { align-items: stretch; }
+        .asset-action-group-controls .button { width: 100%; }
+        .bulk-release-field,
+        .bulk-move-field { width: 100%; }
       }
 
       /* ── Asset grid: intrinsic-ratio cards, responsive columns ── */
@@ -1769,6 +1710,61 @@
         padding: 0;
         color: var(--muted);
         font-size: 0.875rem;
+      }
+      .asset-project-category-filter {
+        flex: 0 1 auto;
+        width: max-content;
+        min-width: 0;
+        max-width: min(100%, 26rem);
+      }
+      .asset-project-category-filter .asset-filter-multiselect {
+        width: max-content;
+        max-width: 100%;
+      }
+      .asset-project-category-filter .asset-filter-multiselect summary {
+        width: max-content;
+        max-width: 100%;
+      }
+      .asset-project-category-filter .asset-filter-multiselect-summary {
+        display: grid;
+        grid-template-columns: max-content;
+        width: max-content;
+        max-width: 100%;
+      }
+      .asset-project-category-filter .asset-filter-multiselect-summary-current,
+      .asset-project-category-filter .asset-filter-multiselect-summary-width {
+        grid-area: 1 / 1;
+      }
+      .asset-project-category-filter .asset-filter-multiselect-summary-current {
+        min-width: 0;
+        max-width: 100%;
+      }
+      .asset-project-category-filter .asset-filter-multiselect-summary-width {
+        display: flex;
+        flex-direction: column;
+        width: max-content;
+        max-width: none;
+        visibility: hidden;
+        white-space: nowrap;
+        pointer-events: none;
+      }
+      .asset-project-category-filter .asset-filter-multiselect-panel {
+        width: max-content;
+        max-width: min(26rem, calc(100vw - 1rem));
+      }
+      .asset-project-category-filter .asset-filter-multiselect-option {
+        padding: 0;
+      }
+      .asset-project-category-filter .asset-filter-multiselect-option > label {
+        display: flex;
+        align-items: flex-start;
+        gap: var(--space-sm);
+        width: 100%;
+        box-sizing: border-box;
+        padding: var(--space-xs) var(--space-sm);
+      }
+      .asset-project-category-filter .asset-filter-multiselect-option > label > span {
+        min-width: 0;
       }
       .asset-filter-multiselect {
         position: relative;
@@ -2421,6 +2417,29 @@
           max-width: none;
           min-width: 0;
         }
+        .asset-project-category-filter {
+          width: 100%;
+          max-width: 100%;
+        }
+        .asset-project-category-filter .asset-filter-multiselect,
+        .asset-project-category-filter .asset-filter-multiselect summary {
+          width: 100%;
+          max-width: 100%;
+        }
+        .asset-project-category-filter .asset-filter-multiselect-summary {
+          grid-template-columns: minmax(0, 1fr);
+          width: auto;
+          min-width: 0;
+        }
+        .asset-project-category-filter .asset-filter-multiselect-summary-width {
+          width: 100%;
+          max-width: 100%;
+          overflow: hidden;
+        }
+        .asset-project-category-filter .asset-filter-multiselect-panel {
+          width: 100%;
+          max-width: 100%;
+        }
         .asset-filter-multiselect-panel {
           width: 100%;
           max-width: 100%;
@@ -2474,12 +2493,6 @@
         .panel {
           transition: none !important;
         }
-      }
-
-      /* ── Responsive: stack the browser shell, keep the nav scannable ── */
-      @media (max-width: 767px) {
-        .asset-browser-layout { grid-template-columns: 1fr; }
-        .asset-browser-nav { padding: var(--space-sm); }
       }
 
       /* ── Pagination ── */

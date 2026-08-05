@@ -172,7 +172,7 @@ describe('category-scoped Auto Rename HTTP integration', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('renders a complete explicit category in canonical order and keeps Auto Rename independent of bulk selection', async () => {
+  it('uses the ordinary results surface for a concrete category with non-default search', async () => {
     const { id, projectDir } = await createProject('Complete Category');
     const category = categories(id)[0];
     const assets = [];
@@ -184,39 +184,14 @@ describe('category-scoped Auto Rename HTTP integration', () => {
     const expected = assetRepository.findProjectAssetsByCategoryInBrowserOrder(id, category.id).map((asset) => asset.id);
 
     const response = await agent.get(`/projects/${id}/assets?category=${category.id}&view=list&search=does-not-match&extension=kra&presence=missing&usage=used&page=9&pageSize=1`).expect(200);
-    expect(surfaceAssetIds(response.text)).toEqual(expected);
-    expect(response.text).toContain('30 assets in the complete Source category');
-    expect(response.text).not.toContain('pagination-info');
-    expect(response.text).not.toContain('page-size-form');
-    expect(response.text).not.toContain('id="search"');
-    expect(response.text).toContain('data-auto-rename-surface');
-    expect(response.text).not.toContain('data-auto-rename-drag-handle');
-    expect(response.text).not.toContain('Move Up');
-    expect(response.text).not.toContain('Move Down');
-    expect((response.text.match(/data-asset-actions-panel/g) || []).length).toBe(1);
-    expect(response.text).toContain('Category order');
-    expect(response.text).toContain('Drag assets to change their filename order');
-    expect(response.text).toContain('Selected assets');
-    expect(response.text).toContain('Selection applies to this page');
-    expect(response.text).not.toContain('auto-rename-assets-toolbar');
-    expect(response.text).not.toContain('bulk-toolbar');
-    expect(response.text).toMatch(/data-auto-rename-asset[^>]*draggable="true"[^>]*tabindex="0"/);
-
-    const autoForm = formMarkup(response.text, `/projects/${id}/assets/auto-rename/preview`);
-    const bulkForm = response.text.match(/<form id="bulk-select-form"[\s\S]*?<\/form>/)?.[0];
-    expect(autoForm).toBeDefined();
-    expect(bulkForm).toBeDefined();
-    expect(autoForm).toContain('name="categoryId"');
-    expect(autoForm).toContain(`name="orderedAssetIds" value="${JSON.stringify(expected)}"`);
-    expect(autoForm).toContain('name="view" value="list"');
-    expect(autoForm).toContain('name="_csrf"');
-    expect(autoForm).toContain('disabled');
-    expect(autoForm).not.toContain('name="selectedAssetIds"');
-    expect(response.text).toContain('form="bulk-select-form" name="selectedAssetIds"');
-    expect(bulkForm).toContain('move-selected');
-    expect(bulkForm).not.toContain('auto-rename/preview');
-    expect((response.text.match(/data-auto-rename-order-indicator/g) || []).length).toBe(30);
-    expect((response.text.match(/data-auto-rename-initial-index/g) || []).length).toBe(30);
+    expect(surfaceAssetIds(response.text)).toEqual([]);
+    expect(response.text).not.toContain('data-auto-rename-surface');
+    expect(response.text).toContain('id="search"');
+    expect(response.text).toContain('value="does-not-match"');
+    expect(response.text).toContain('No missing assets');
+    expect(response.text).not.toContain('Category order');
+    expect(response.text).not.toContain('Selection applies to this page');
+    expect(expected).toHaveLength(30);
   });
 
   it('renders the default concrete category completely and strips subset context while retaining view', async () => {
@@ -234,7 +209,8 @@ describe('category-scoped Auto Rename HTTP integration', () => {
     );
     expect(response.text).toContain('data-auto-rename-surface');
     expect(response.text).toContain('name="view" value="grid"');
-    expect(response.text).not.toContain('name="search"');
+    expect(response.text).toContain('id="search"');
+    expect(response.text).toContain('value="filename" selected');
     expect(response.text).not.toContain('name="page"');
     expect(response.text).not.toContain('pagination-info');
     expect(assets).toHaveLength(2);

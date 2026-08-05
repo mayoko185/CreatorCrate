@@ -1,15 +1,17 @@
 /**
- * Asset rename/move — Node filesystem action service (Phase: asset actions
+ * Asset rename/move/copy/delete — Node filesystem action service (Phase: asset actions
  * chunk 2, coordinator-integrated in chunk 3).
  *
- * Performs exactly one physical file rename/move per call and updates the
- * same existing asset row in place (same id, same release associations).
+ * Rename/move updates the same existing asset row in place (same id, same
+ * release associations). Batch copy creates new rows, while batch delete
+ * stages validated files before removing rows and their schema-defined
+ * references.
  * Uses synchronous filesystem operations throughout to match the rest of
  * the application (scanner, manifest, project-storage are all sync).
  *
  * Every public mutation holds the injected `projectOperationCoordinator`'s
  * per-project lock for its entire duration — validation through database
- * update — so it can never interleave with a scan (or another rename/move)
+ * update — so it can never interleave with a scan (or another rename/move/copy)
  * for the same project within this process.
  *
  * ─── Post-move failure policy ───────────────────────────────────────────
@@ -23,6 +25,7 @@
  */
 
 import fs from 'node:fs';
+import path from 'node:path';
 import { resolveProjectDir, resolveCategoryDir, requireRealCategoryDir } from '../storage/project-storage.js';
 import { resolveContainedAssetPath } from '../storage/asset-file.js';
 import { assertValidAssetFilename, AssetFilenameValidationError } from './asset-filename-validation.js';
@@ -68,7 +71,7 @@ function isCategoryEnabled(category) {
  * @param {ReturnType<import('./project-operation-coordinator.js').createProjectOperationCoordinator>} deps.projectOperationCoordinator
  *   Shared per-project lock (Phase: asset actions chunk 3) — the same
  *   instance the caller also injects into the asset scanner, so a scan and
- *   a rename/move for one project can never interleave.
+ *   a rename/move/copy/delete for one project can never interleave.
  */
 export function createAssetActionService({
   projectRepository,
@@ -84,9 +87,9 @@ export function createAssetActionService({
   if (!projectOperationCoordinator) throw new Error('createAssetActionService requires a projectOperationCoordinator dependency.');
 
   /**
-   * Run `callback` (the full body of a rename/move, from validation through
+   * Run `callback` (the full body of a rename/move/copy/delete, from validation through
    * database update) under this project's lock. A same-project scan or another
-   * rename/move already in progress surfaces as the coordinator's own
+   * rename/move/copy/delete already in progress surfaces as the coordinator's own
    * PROJECT_OPERATION_IN_PROGRESS — translated here into a precise
    * AssetActionError so callers only ever need to recognize one error type
    * from this service. Intended future HTTP mapping: 409 Conflict (the
@@ -138,10 +141,10 @@ export function createAssetActionService({
     return asset;
   }
 
-  function requirePresentAsset(projectId, assetId) {
+  function requirePresentAsset(projectId, assetId, action = 'moved or renamed') {
     const asset = requireAsset(projectId, assetId);
     if (asset.is_present !== 1) {
-      throw new AssetActionError(`Asset ${assetId} is marked missing and cannot be moved or renamed.`, { code: 'ASSET_MISSING' });
+      throw new AssetActionError(`Asset ${assetId} is marked missing and cannot be ${action}.`, { code: 'ASSET_MISSING' });
     }
     return asset;
   }
@@ -234,6 +237,66 @@ export function createAssetActionService({
     throw new AssetActionError('Destination path already exists.', { code: 'DESTINATION_CONFLICT' });
   }
 
+  function resolveBatchDestination(
+    projectId,
+    projectDir,
+    destinationCategoryIdOrUncategorized,
+    precheckCode = 'BATCH_PRECHECK_FAILED',
+  ) {
+    let destCategoryId;
+    let destDirAbsPath;
+    let destCategorySlug = null;
+
+    if (destinationCategoryIdOrUncategorized === UNCATEGORIZED) {
+      let rootStats;
+      try {
+        rootStats = fs.lstatSync(projectDir);
+      } catch {
+        throw new AssetActionError('Project directory cannot be accessed.', { code: 'PROJECT_DIRECTORY_UNSAFE' });
+      }
+      if (rootStats.isSymbolicLink() || !rootStats.isDirectory()) {
+        throw new AssetActionError('Project directory is unsafe.', { code: 'PROJECT_DIRECTORY_UNSAFE' });
+      }
+      destCategoryId = null;
+      destDirAbsPath = projectDir;
+    } else if (isPositiveInteger(destinationCategoryIdOrUncategorized)) {
+      const category = assetCategoryRepository.findProjectCategoryById(projectId, destinationCategoryIdOrUncategorized);
+      if (!category) {
+        throw new AssetActionError('Destination category not found.', { code: precheckCode });
+      }
+      if (!isCategoryEnabled(category)) {
+        throw new AssetActionError('Destination category is disabled.', { code: precheckCode });
+      }
+
+      let categoryAbsPath;
+      try {
+        categoryAbsPath = resolveCategoryDir(projectDir, category.directory_slug);
+      } catch {
+        throw new AssetActionError('Destination category directory is unsafe.', { code: 'PROJECT_DIRECTORY_UNSAFE' });
+      }
+
+      try {
+        requireRealCategoryDir(categoryAbsPath);
+      } catch (err) {
+        if (err.message.includes('does not exist')) {
+          throw new AssetActionError('Destination category directory does not exist.', { code: precheckCode });
+        }
+        throw new AssetActionError('Destination category directory is unsafe.', { code: 'PROJECT_DIRECTORY_UNSAFE' });
+      }
+
+      destCategoryId = category.id;
+      destDirAbsPath = categoryAbsPath;
+      destCategorySlug = category.directory_slug;
+    } else {
+      throw new AssetActionError(
+        'Destination must be a valid enabled category ID or the Uncategorized sentinel.',
+        { code: precheckCode }
+      );
+    }
+
+    return { destCategoryId, destDirAbsPath, destCategorySlug };
+  }
+
   // ── Post-move verification ─────────────────────────────────────────────
 
   function assertSourceGoneAfterMove(sourceAbsPath) {
@@ -267,6 +330,137 @@ export function createAssetActionService({
   // these fields might not be meaningful.
   function identityMatches(sourceIdentity, stats) {
     return stats.dev === sourceIdentity.dev && stats.ino === sourceIdentity.ino;
+  }
+
+  function removeDeleteStagingDir(stagingDir) {
+    try {
+      // Empty-directory removal is intentionally non-recursive: unexpected
+      // objects left in the staging area must make cleanup fail visibly.
+      fs.rmdirSync(stagingDir);
+      return true;
+    } catch (err) {
+      return err.code === 'ENOENT';
+    }
+  }
+
+  function restoreStagedDeleteFiles(stagedItems) {
+    let restored = true;
+
+    for (const item of [...stagedItems].reverse()) {
+      if (!item.staged) continue;
+
+      try {
+        const stagedStats = fs.lstatSync(item.stagedAbsPath);
+        if (!identityMatches(item.sourceIdentity, stagedStats)) {
+          restored = false;
+          continue;
+        }
+
+        try {
+          fs.lstatSync(item.sourceAbsPath);
+          // Never overwrite an object that appeared at the original path
+          // after staging began.
+          restored = false;
+          continue;
+        } catch (err) {
+          if (err.code !== 'ENOENT') {
+            restored = false;
+            continue;
+          }
+        }
+
+        fs.renameSync(item.stagedAbsPath, item.sourceAbsPath);
+        item.staged = false;
+      } catch {
+        restored = false;
+      }
+    }
+
+    return restored;
+  }
+
+  function recoverStagedDelete(staging) {
+    const restored = restoreStagedDeleteFiles(staging.items);
+    const stagingRemoved = removeDeleteStagingDir(staging.stagingDir);
+    return restored && stagingRemoved;
+  }
+
+  function stageDeleteFiles(projectDir, preflightItems) {
+    let stagingDir;
+    try {
+      // Dot-directories are ignored by the scanner and keep a failed recovery
+      // staging area out of the indexed asset surface.
+      stagingDir = fs.mkdtempSync(path.join(projectDir, '.creatorcrate-delete-'));
+    } catch {
+      throw new AssetActionError(
+        'CreatorCrate could not prepare a safe deletion staging area.',
+        { code: 'DELETE_FILESYSTEM_OPERATION_FAILED' }
+      );
+    }
+
+    const stagedItems = preflightItems.map((item, index) => ({
+      sourceAbsPath: item.sourceAbsPath,
+      sourceIdentity: item.sourceIdentity,
+      stagedAbsPath: path.join(stagingDir, String(index)),
+      staged: false,
+    }));
+
+    try {
+      for (const item of stagedItems) {
+        const currentStats = inspectSource(item.sourceAbsPath);
+        if (!identityMatches(item.sourceIdentity, currentStats)) {
+          throw new Error('Source identity changed before deletion staging.');
+        }
+
+        fs.renameSync(item.sourceAbsPath, item.stagedAbsPath);
+        item.staged = true;
+
+        const stagedStats = inspectSource(item.stagedAbsPath);
+        if (!identityMatches(item.sourceIdentity, stagedStats)) {
+          throw new Error('Staged source identity does not match the selected asset.');
+        }
+      }
+
+      return { stagingDir, items: stagedItems };
+    } catch {
+      if (!recoverStagedDelete({ stagingDir, items: stagedItems })) {
+        throw new AssetActionError(
+          'CreatorCrate could not safely restore files after deletion staging failed. Inspect the project folder before scanning.',
+          { code: 'DELETE_RECOVERY_REQUIRED' }
+        );
+      }
+      throw new AssetActionError(
+        'The selected files could not be staged for deletion. No selected files were deleted.',
+        { code: 'DELETE_FILESYSTEM_OPERATION_FAILED' }
+      );
+    }
+  }
+
+  function cleanupStagedDeleteFiles(staging) {
+    let clean = true;
+
+    for (const item of staging.items) {
+      if (!item.staged) continue;
+
+      try {
+        const stagedStats = fs.lstatSync(item.stagedAbsPath);
+        if (!identityMatches(item.sourceIdentity, stagedStats)) {
+          clean = false;
+          continue;
+        }
+        fs.rmSync(item.stagedAbsPath);
+        item.staged = false;
+      } catch (err) {
+        if (err.code === 'ENOENT') {
+          item.staged = false;
+        } else {
+          clean = false;
+        }
+      }
+    }
+
+    if (!removeDeleteStagingDir(staging.stagingDir)) clean = false;
+    return clean;
   }
 
   /**
@@ -431,52 +625,11 @@ export function createAssetActionService({
     const projectDir = resolveProjectAbsPath(project);
 
     // Resolve destination once for the whole batch.
-    let destCategoryId, destDirAbsPath, destCategorySlug;
-
-    if (destinationCategoryIdOrUncategorized === UNCATEGORIZED) {
-      let rootStats;
-      try {
-        rootStats = fs.lstatSync(projectDir);
-      } catch {
-        throw new AssetActionError('Project directory cannot be accessed.', { code: 'PROJECT_DIRECTORY_UNSAFE' });
-      }
-      if (rootStats.isSymbolicLink() || !rootStats.isDirectory()) {
-        throw new AssetActionError('Project directory is unsafe.', { code: 'PROJECT_DIRECTORY_UNSAFE' });
-      }
-      destCategoryId = null;
-      destDirAbsPath = projectDir;
-      destCategorySlug = null;
-    } else if (isPositiveInteger(destinationCategoryIdOrUncategorized)) {
-      const category = assetCategoryRepository.findProjectCategoryById(projectId, destinationCategoryIdOrUncategorized);
-      if (!category) {
-        throw new AssetActionError('Destination category not found.', { code: 'BATCH_PRECHECK_FAILED' });
-      }
-      if (!isCategoryEnabled(category)) {
-        throw new AssetActionError('Destination category is disabled.', { code: 'BATCH_PRECHECK_FAILED' });
-      }
-      let categoryAbsPath;
-      try {
-        categoryAbsPath = resolveCategoryDir(projectDir, category.directory_slug);
-      } catch {
-        throw new AssetActionError('Destination category directory is unsafe.', { code: 'PROJECT_DIRECTORY_UNSAFE' });
-      }
-      try {
-        requireRealCategoryDir(categoryAbsPath);
-      } catch (err) {
-        if (err.message.includes('does not exist')) {
-          throw new AssetActionError('Destination category directory does not exist.', { code: 'BATCH_PRECHECK_FAILED' });
-        }
-        throw new AssetActionError('Destination category directory is unsafe.', { code: 'PROJECT_DIRECTORY_UNSAFE' });
-      }
-      destCategoryId = category.id;
-      destDirAbsPath = categoryAbsPath;
-      destCategorySlug = category.directory_slug;
-    } else {
-      throw new AssetActionError(
-        'Destination must be a valid enabled category ID or the Uncategorized sentinel.',
-        { code: 'BATCH_PRECHECK_FAILED' }
-      );
-    }
+    const { destCategoryId, destDirAbsPath, destCategorySlug } = resolveBatchDestination(
+      projectId,
+      projectDir,
+      destinationCategoryIdOrUncategorized,
+    );
 
     // Per-asset preflight — load, validate, compute destination.
     const preflightItems = [];
@@ -585,6 +738,253 @@ export function createAssetActionService({
     }
 
     return { movedCount: completedAssetIds.length, requestedCount, completedAssetIds };
+  }
+
+  function inspectDestinationAfterCopy(destAbsPath) {
+    let stats;
+    try {
+      stats = fs.lstatSync(destAbsPath);
+    } catch {
+      throw new Error('Destination path is missing after the copy.');
+    }
+    if (stats.isSymbolicLink() || !stats.isFile()) {
+      throw new Error('Destination path is not a regular, non-symlink file after the copy.');
+    }
+    return stats;
+  }
+
+  function cleanupCopiedFiles(copiedItems) {
+    let clean = true;
+    for (const item of [...copiedItems].reverse()) {
+      if (!item.identity) {
+        clean = false;
+        continue;
+      }
+
+      try {
+        const stats = fs.lstatSync(item.destAbsPath);
+        if (stats.dev !== item.identity.dev || stats.ino !== item.identity.ino) {
+          clean = false;
+          continue;
+        }
+        fs.rmSync(item.destAbsPath);
+      } catch (err) {
+        if (err.code !== 'ENOENT') clean = false;
+      }
+    }
+    return clean;
+  }
+
+  function copyAssetsLocked(projectId, assetIds, destinationCategoryIdOrUncategorized) {
+    const requestedCount = assetIds.length;
+    const idSet = new Set(assetIds);
+    if (idSet.size !== assetIds.length) {
+      throw new AssetActionError('Duplicate asset IDs in selection.', { code: 'COPY_PRECHECK_FAILED' });
+    }
+
+    const project = requireMutableProject(projectId);
+    const projectDir = resolveProjectAbsPath(project);
+    const { destCategoryId, destDirAbsPath, destCategorySlug } = resolveBatchDestination(
+      projectId,
+      projectDir,
+      destinationCategoryIdOrUncategorized,
+      'COPY_PRECHECK_FAILED',
+    );
+
+    const preflightItems = [];
+    const destinationPaths = new Set();
+
+    for (const assetId of assetIds) {
+      let asset;
+      try {
+        asset = requirePresentAsset(projectId, assetId);
+      } catch (err) {
+        if (err instanceof AssetActionError) {
+          throw new AssetActionError(err.message, { code: 'COPY_PRECHECK_FAILED' });
+        }
+        throw err;
+      }
+
+      const filename = asset.filename;
+      const newRelativePath = destCategoryId === null
+        ? filename
+        : `${destCategorySlug}/${filename}`;
+
+      if (destinationPaths.has(newRelativePath)) {
+        throw new AssetActionError(
+          'Two or more selected assets would have the same destination filename.',
+          { code: 'COPY_DUPLICATE_DESTINATION' }
+        );
+      }
+      destinationPaths.add(newRelativePath);
+
+      preflightItems.push({ assetId, asset, filename, newRelativePath });
+    }
+
+    // A copy always creates a new indexed row, so even the selected source row
+    // itself conflicts when the destination path is already indexed.
+    for (const item of preflightItems) {
+      const existing = assetRepository.findByProjectIdAndPath(projectId, item.newRelativePath);
+      if (existing) {
+        throw new AssetActionError(
+          'Destination already used by another asset record.',
+          { code: 'COPY_DESTINATION_CONFLICT' }
+        );
+      }
+    }
+
+    for (const item of preflightItems) {
+      const sourceAbsPath = resolveContained(projectDir, item.asset.relative_path, 'SOURCE_PATH_UNSAFE', 'Source');
+      try {
+        inspectSource(sourceAbsPath);
+      } catch (err) {
+        if (err instanceof AssetActionError) {
+          throw new AssetActionError(err.message, { code: 'COPY_PRECHECK_FAILED' });
+        }
+        throw err;
+      }
+
+      const destAbsPath = resolveContained(destDirAbsPath, item.filename, 'DESTINATION_DIRECTORY_UNSAFE', 'Destination');
+      try {
+        assertDestinationClearOnDisk(destAbsPath);
+      } catch (err) {
+        if (err instanceof AssetActionError && err.code === 'DESTINATION_CONFLICT') {
+          throw new AssetActionError('Destination already exists on disk.', { code: 'COPY_DESTINATION_CONFLICT' });
+        }
+        throw new AssetActionError('Cannot verify the destination path.', { code: 'COPY_PRECHECK_FAILED' });
+      }
+
+      item.sourceAbsPath = sourceAbsPath;
+      item.destAbsPath = destAbsPath;
+    }
+
+    const copiedItems = [];
+    try {
+      for (const item of preflightItems) {
+        fs.copyFileSync(item.sourceAbsPath, item.destAbsPath, fs.constants.COPYFILE_EXCL);
+        const copied = { destAbsPath: item.destAbsPath, identity: null };
+        copiedItems.push(copied);
+        const destStats = inspectDestinationAfterCopy(item.destAbsPath);
+        copied.identity = { dev: destStats.dev, ino: destStats.ino };
+        item.record = {
+          relativePath: item.newRelativePath,
+          filename: item.filename,
+          extension: deriveExtensionFromFilename(item.filename),
+          mimeType: mimeFromExtension(deriveExtensionFromFilename(item.filename)),
+          categoryId: destCategoryId,
+          nestedPath: '',
+          sizeBytes: destStats.size,
+          modifiedAt: destStats.mtime.toISOString(),
+        };
+      }
+
+      const copiedAssets = assetRepository.upsertMany(projectId, preflightItems.map((item) => item.record));
+      return {
+        copiedCount: copiedAssets.length,
+        requestedCount,
+        copiedAssetIds: copiedAssets.map((asset) => asset.id),
+      };
+    } catch (err) {
+      const cleaned = cleanupCopiedFiles(copiedItems);
+      if (!cleaned) {
+        throw new AssetActionError(
+          'Files were copied, but CreatorCrate could not safely finish or clean up the batch. Inspect the project folder before scanning.',
+          { code: 'COPY_RECOVERY_REQUIRED' }
+        );
+      }
+      if (err instanceof AssetActionError && err.code === 'COPY_DESTINATION_CONFLICT') {
+        throw err;
+      }
+      if (err && err.code === 'EEXIST') {
+        throw new AssetActionError('Destination already exists for one or more selected assets.', { code: 'COPY_DESTINATION_CONFLICT' });
+      }
+      throw new AssetActionError(
+        'The selected files could not be copied. No copied files were retained.',
+        { code: 'COPY_FILESYSTEM_OPERATION_FAILED' }
+      );
+    }
+  }
+
+  // Holds the project lock for the entire deletion operation. Every selected
+  // asset and source path is preflighted before any source is moved into the
+  // private staging area. The indexed rows are deleted transactionally after
+  // staging; staged files are physically removed only after that commit.
+  function deleteAssetsLocked(projectId, assetIds) {
+    const requestedCount = assetIds.length;
+    const idSet = new Set(assetIds);
+    if (idSet.size !== assetIds.length) {
+      throw new AssetActionError('Duplicate asset IDs in selection.', { code: 'DELETE_PRECHECK_FAILED' });
+    }
+
+    const project = requireMutableProject(projectId);
+    const publishedReleaseAssetIds = assetRepository.findPublishedReleaseAssetIds(projectId, assetIds);
+    if (publishedReleaseAssetIds.length > 0) {
+      throw new AssetActionError(
+        `Assets associated with a published release cannot be deleted: ${publishedReleaseAssetIds.join(', ')}.`,
+        { code: 'DELETE_PUBLISHED_RELEASE_ASSET' }
+      );
+    }
+
+    const projectDir = resolveProjectAbsPath(project);
+    const preflightItems = [];
+
+    for (const assetId of assetIds) {
+      try {
+        const asset = requirePresentAsset(projectId, assetId, 'permanently deleted');
+        const sourceAbsPath = resolveContained(projectDir, asset.relative_path, 'SOURCE_PATH_UNSAFE', 'Source');
+        const sourceStats = inspectSource(sourceAbsPath);
+        preflightItems.push({
+          assetId,
+          asset,
+          sourceAbsPath,
+          sourceIdentity: { dev: sourceStats.dev, ino: sourceStats.ino },
+        });
+      } catch (err) {
+        if (err instanceof AssetActionError) {
+          throw new AssetActionError(err.message, { code: 'DELETE_PRECHECK_FAILED' });
+        }
+        throw err;
+      }
+    }
+
+    const staging = stageDeleteFiles(projectDir, preflightItems);
+    let deletedAssets;
+    try {
+      deletedAssets = assetRepository.deleteMany(
+        projectId,
+        preflightItems.map((item) => ({
+          assetId: item.assetId,
+          relativePath: item.asset.relative_path,
+        })),
+      );
+      if (!Array.isArray(deletedAssets) || deletedAssets.length !== requestedCount) {
+        throw new Error('Asset repository deleted an unexpected number of rows.');
+      }
+    } catch {
+      if (!recoverStagedDelete(staging)) {
+        throw new AssetActionError(
+          'CreatorCrate could not safely restore files after indexed deletion failed. Inspect the project folder before scanning.',
+          { code: 'DELETE_RECOVERY_REQUIRED' }
+        );
+      }
+      throw new AssetActionError(
+        'The selected files were restored because CreatorCrate could not remove all indexed asset records.',
+        { code: 'DELETE_DATABASE_OPERATION_FAILED' }
+      );
+    }
+
+    if (!cleanupStagedDeleteFiles(staging)) {
+      throw new AssetActionError(
+        'Asset records were deleted, but CreatorCrate could not safely remove every staged file. Inspect the project folder before scanning.',
+        { code: 'DELETE_RECOVERY_REQUIRED' }
+      );
+    }
+
+    return {
+      deletedCount: deletedAssets.length,
+      requestedCount,
+      deletedAssetIds: deletedAssets.map((asset) => asset.id),
+    };
   }
 
   function moveAssetLocked(projectId, assetId, destinationCategoryIdOrUncategorized) {
@@ -758,6 +1158,66 @@ export function createAssetActionService({
         }
       }
       return runLocked(projectId, () => moveAssetsLocked(projectId, assetIds, destinationCategoryIdOrUncategorized));
+    },
+
+    /**
+     * Copy a batch of present assets into one enabled project category or the
+     * project root (Uncategorized), under one project lock. Every source,
+     * destination database row, destination filesystem path, and intra-batch
+     * collision is preflighted before any copy occurs. Originals are retained
+     * and new destination rows are indexed atomically after the copies finish.
+     *
+     * @param {number} projectId
+     * @param {number[]} assetIds - Non-empty array of positive-integer asset IDs.
+     * @param {number|typeof UNCATEGORIZED} destinationCategoryIdOrUncategorized
+     * @returns {{ copiedCount: number, requestedCount: number, copiedAssetIds: number[] }}
+     * @throws {AssetActionError}
+     */
+    copyAssets(projectId, assetIds, destinationCategoryIdOrUncategorized) {
+      assertPositiveInteger(projectId, 'INVALID_PROJECT_ID', 'projectId');
+      if (!Array.isArray(assetIds)) {
+        throw new AssetActionError('assetIds must be an array.', { code: 'INVALID_ASSET_SELECTION' });
+      }
+      if (assetIds.length === 0) {
+        throw new AssetActionError('No assets selected.', { code: 'NO_ASSETS_SELECTED' });
+      }
+      for (const id of assetIds) {
+        if (!isPositiveInteger(id)) {
+          throw new AssetActionError('assetIds must contain only positive integer IDs.', { code: 'INVALID_ASSET_SELECTION' });
+        }
+      }
+      return runLocked(projectId, () => copyAssetsLocked(projectId, assetIds, destinationCategoryIdOrUncategorized));
+    },
+
+    /**
+     * Permanently delete a batch of present assets from disk and the index.
+     * All selected source paths are validated before staging; database rows
+     * are removed atomically, and schema-defined asset references cascade.
+     * Holds the project lock for validation through physical cleanup.
+     *
+     * @param {number} projectId
+     * @param {number[]} assetIds - Non-empty array of positive-integer asset IDs.
+     * @returns {{ deletedCount: number, requestedCount: number, deletedAssetIds: number[] }}
+     * @throws {AssetActionError} codes: NO_ASSETS_SELECTED, INVALID_ASSET_SELECTION,
+     *   DELETE_PUBLISHED_RELEASE_ASSET, DELETE_PRECHECK_FAILED,
+     *   DELETE_FILESYSTEM_OPERATION_FAILED,
+     *   DELETE_DATABASE_OPERATION_FAILED, DELETE_RECOVERY_REQUIRED,
+     *   PROJECT_NOT_FOUND, PROJECT_ARCHIVED, PROJECT_BUSY, PROJECT_DIRECTORY_UNSAFE
+     */
+    deleteAssets(projectId, assetIds) {
+      assertPositiveInteger(projectId, 'INVALID_PROJECT_ID', 'projectId');
+      if (!Array.isArray(assetIds)) {
+        throw new AssetActionError('assetIds must be an array.', { code: 'INVALID_ASSET_SELECTION' });
+      }
+      if (assetIds.length === 0) {
+        throw new AssetActionError('No assets selected.', { code: 'NO_ASSETS_SELECTED' });
+      }
+      for (const id of assetIds) {
+        if (!isPositiveInteger(id)) {
+          throw new AssetActionError('assetIds must contain only positive integer IDs.', { code: 'INVALID_ASSET_SELECTION' });
+        }
+      }
+      return runLocked(projectId, () => deleteAssetsLocked(projectId, assetIds));
     },
   };
 }

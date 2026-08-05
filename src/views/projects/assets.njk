@@ -262,6 +262,7 @@
   {% set assetsHeadingDescription = "Browse scanned files, category, and release usage." %}
   {% if project.archived_at %}
     {% call pageHeading.render(assetsHeadingDescription, "archived") %}
+      <a class="button button-secondary" href="/projects/{{ project.id }}/asset-categories">Manage Categories</a>
       <a class="button" href="/projects/{{ project.id }}">Back to Project</a>
     {% endcall %}
   {% else %}
@@ -275,8 +276,9 @@
           {% endif %}
         {% endfor %}
         <button class="button button-primary" type="submit">Scan Now</button>
-      </form>
-    {% endif %}
+        </form>
+      {% endif %}
+    <a class="button button-secondary" href="/projects/{{ project.id }}/asset-categories">Manage Categories</a>
     <a class="button" href="/projects/{{ project.id }}">Back to Project</a>
     {% endcall %}
   {% endif %}
@@ -321,6 +323,22 @@
     </div>
   {% endif %}
 
+  {% if copyNotice %}
+    <div class="scan-success">
+      <p>
+        Copied {{ copyNotice.copiedCount }} asset{% if copyNotice.copiedCount != 1 %}s{% endif %}.
+      </p>
+    </div>
+  {% endif %}
+
+  {% if deleteNotice %}
+    <div class="scan-success">
+      <p>
+        Deleted {{ deleteNotice.deletedCount }} asset{% if deleteNotice.deletedCount != 1 %}s{% endif %}.
+      </p>
+    </div>
+  {% endif %}
+
   {% if assetActionNotice %}
     {% set noticeVariant = "success" %}
     {% set noticeText = assetActionNotice.message %}
@@ -342,6 +360,18 @@
   {% if bulkMoveError %}
     {% set noticeVariant = "danger" %}
     {% set noticeText = bulkMoveError.message %}
+    {% include "partials/notice.njk" %}
+  {% endif %}
+
+  {% if copyError %}
+    {% set noticeVariant = "danger" %}
+    {% set noticeText = copyError.message %}
+    {% include "partials/notice.njk" %}
+  {% endif %}
+
+  {% if deleteError %}
+    {% set noticeVariant = "danger" %}
+    {% set noticeText = deleteError.message %}
     {% include "partials/notice.njk" %}
   {% endif %}
 
@@ -368,84 +398,22 @@
     {% endif %}
   </p>
 
-  <p class="scan-freshness">
-    Asset presence reflects the last completed scan — files are not checked live, and CreatorCrate never deletes
-    files on disk. "Missing at last scan" means the file was not found during the last completed scan, not that it
-    was removed by CreatorCrate. Disabled categories are still scanned — disabling a category only hides it from
-    this navigation, it does not stop CreatorCrate from indexing files inside it.
-  </p>
-
   <div class="asset-browser-layout">
-    <nav class="asset-browser-nav" aria-label="Asset categories">
-      <ul class="asset-browser-nav-list">
-        <li>
-          <a href="{{ pageUrl({ category: 'all', presence: 'all', page: 1 }) }}"
-             {% if categoryNavigation.allActive %}aria-current="page"{% endif %}>
-            <span class="asset-nav-label">All Assets</span>
-            <span class="asset-nav-count">{{ categoryNavigation.totalCount }}</span>
-          </a>
-        </li>
-        <li>
-          <a href="{{ pageUrl({ category: 'uncategorized', presence: 'all', page: 1 }) }}"
-             {% if categoryNavigation.uncategorizedActive %}aria-current="page"{% endif %}>
-            <span class="asset-nav-label">Uncategorized</span>
-            <span class="asset-nav-count">{{ categoryNavigation.uncategorizedCount }}</span>
-          </a>
-        </li>
-      </ul>
-
-      <div class="asset-browser-nav-section">
-        <p class="asset-browser-nav-heading">Categories</p>
-        {% if categoryNavigation.enabled.length > 0 %}
-          <ul class="asset-browser-nav-list">
-            {% for cat in categoryNavigation.enabled %}
-              <li>
-                <a href="{{ pageUrl({ category: cat.id, presence: 'all', page: 1 }) }}"
-                   {% if cat.isActive %}aria-current="page"{% endif %}>
-                  <span class="asset-nav-label">{{ cat.displayName }}</span>
-                  <span class="asset-nav-count">{{ cat.assetCount }}</span>
-                </a>
-              </li>
-            {% endfor %}
-          </ul>
-        {% else %}
-          <p class="asset-browser-nav-empty">No enabled categories.</p>
-        {% endif %}
-      </div>
-
-      <div class="asset-browser-nav-section asset-browser-nav-section--disabled">
-        <p class="asset-browser-nav-heading">Disabled Categories</p>
-        {% if categoryNavigation.disabled.length > 0 %}
-          <ul class="asset-browser-nav-list">
-            {% for cat in categoryNavigation.disabled %}
-              <li>
-                <a href="{{ pageUrl({ category: cat.id, presence: 'all', page: 1 }) }}"
-                   {% if cat.isActive %}aria-current="page"{% endif %}>
-                  <span class="asset-nav-label">{{ cat.displayName }} <em class="asset-nav-disabled-marker">(disabled)</em></span>
-                  <span class="asset-nav-count">{{ cat.assetCount }}</span>
-                </a>
-              </li>
-            {% endfor %}
-          </ul>
-        {% else %}
-          <p class="asset-browser-nav-empty">No disabled categories.</p>
-        {% endif %}
-      </div>
-
-      <ul class="asset-browser-nav-list">
-        <li>
-          <a href="{{ pageUrl({ category: 'all', presence: 'missing', page: 1 }) }}"
-             {% if categoryNavigation.missingActive %}aria-current="page"{% endif %}>
-            <span class="asset-nav-label">Missing Assets</span>
-            <span class="asset-nav-count">{{ categoryNavigation.missingCount }}</span>
-          </a>
-        </li>
-      </ul>
-
-      <a class="asset-browser-nav-manage" href="/projects/{{ project.id }}/asset-categories">Manage Categories</a>
-    </nav>
-
     <div class="asset-browser-content">
+      {% set categoryFilterSummary = "All categories (" ~ categoryNavigation.totalCount ~ ")" %}
+      {% if filters.category == 'all' and filters.presence == 'missing' %}
+        {% set categoryFilterSummary = "Missing (" ~ categoryNavigation.missingCount ~ ")" %}
+      {% elif filters.category == 'uncategorized' %}
+        {% set categoryFilterSummary = "Uncategorized (" ~ categoryNavigation.uncategorizedCount ~ ")" %}
+      {% elif filters.category != 'all' %}
+        {% for cat in categoryNavigation.enabled %}
+          {% if cat.id == filters.category %}{% set categoryFilterSummary = cat.displayName ~ " (" ~ cat.assetCount ~ ")" %}{% endif %}
+        {% endfor %}
+        {% for cat in categoryNavigation.disabled %}
+          {% if cat.id == filters.category %}{% set categoryFilterSummary = cat.displayName ~ " (" ~ cat.assetCount ~ ") (disabled)" %}{% endif %}
+        {% endfor %}
+      {% endif %}
+
       <div class="asset-viewer-display-controls">
         <nav class="view-switcher" aria-label="Asset display">
           <a class="view-switcher-option" href="{{ pageUrl({ view: 'grid' }) }}"
@@ -459,7 +427,6 @@
         {% endif %}
       </div>
 
-      {% if not completeCategorySurface %}
         <form class="filters" method="get" action="/projects/{{ project.id }}/assets">
         {% if filters.view == 'list' or preserveViewQuery %}
           <input type="hidden" name="view" value="{{ filters.view }}">
@@ -467,23 +434,81 @@
         {% if pageSize != 25 or preservePageSizeQuery %}
           <input type="hidden" name="pageSize" value="{{ pageSize }}">
         {% endif %}
+        <fieldset class="field asset-viewer-filter-field asset-project-category-filter" data-asset-category-filter>
+          <legend>Category</legend>
+          <details class="asset-filter-multiselect" data-asset-viewer-filter-disclosure>
+            <summary id="asset-category-filter-trigger"
+                     aria-controls="asset-category-filter-options"
+                     aria-expanded="false"
+                     aria-label="Category filter: {{ categoryFilterSummary }}"
+                     title="{{ categoryFilterSummary }}">
+              <span class="asset-filter-multiselect-summary" data-asset-category-filter-summary>
+                <span class="asset-filter-multiselect-summary-current" data-asset-category-filter-current-summary>{{ categoryFilterSummary }}</span>
+                <span class="asset-filter-multiselect-summary-width" aria-hidden="true">
+                  <span>All categories ({{ categoryNavigation.totalCount }})</span>
+                  <span>Uncategorized ({{ categoryNavigation.uncategorizedCount }})</span>
+                  {% for cat in categoryNavigation.enabled %}
+                    <span>{{ cat.displayName }} ({{ cat.assetCount }})</span>
+                  {% endfor %}
+                  {% for cat in categoryNavigation.disabled %}
+                    <span>{{ cat.displayName }} ({{ cat.assetCount }}) (disabled)</span>
+                  {% endfor %}
+                  <span>Missing ({{ categoryNavigation.missingCount }})</span>
+                </span>
+              </span>
+            </summary>
+            <div id="asset-category-filter-options" class="asset-filter-multiselect-panel" role="radiogroup" aria-label="Category options">
+              <div class="asset-filter-multiselect-option">
+                <label for="asset-category-option-all">
+                  <input id="asset-category-option-all" name="category" type="radio" value="all"
+                         data-asset-category-presence="all"
+                         {% if filters.category == 'all' and filters.presence != 'missing' %}checked{% endif %}>
+                  <span>All categories ({{ categoryNavigation.totalCount }})</span>
+                </label>
+              </div>
+              <div class="asset-filter-multiselect-option">
+                <label for="asset-category-option-uncategorized">
+                  <input id="asset-category-option-uncategorized" name="category" type="radio" value="uncategorized"
+                         data-asset-category-presence="all"
+                         {% if filters.category == 'uncategorized' %}checked{% endif %}>
+                  <span>Uncategorized ({{ categoryNavigation.uncategorizedCount }})</span>
+                </label>
+              </div>
+              {% for cat in categoryNavigation.enabled %}
+                <div class="asset-filter-multiselect-option">
+                  <label for="asset-category-option-{{ cat.id }}">
+                    <input id="asset-category-option-{{ cat.id }}" name="category" type="radio" value="{{ cat.id }}"
+                           data-asset-category-presence="all"
+                           {% if filters.category == cat.id %}checked{% endif %}>
+                    <span>{{ cat.displayName }} ({{ cat.assetCount }})</span>
+                  </label>
+                </div>
+              {% endfor %}
+              {% for cat in categoryNavigation.disabled %}
+                <div class="asset-filter-multiselect-option">
+                  <label for="asset-category-option-{{ cat.id }}">
+                    <input id="asset-category-option-{{ cat.id }}" name="category" type="radio" value="{{ cat.id }}"
+                           data-asset-category-presence="all"
+                           {% if filters.category == cat.id %}checked{% endif %}>
+                    <span>{{ cat.displayName }} ({{ cat.assetCount }}) <em class="asset-category-disabled-marker">(disabled)</em></span>
+                  </label>
+                </div>
+              {% endfor %}
+              <div class="asset-filter-multiselect-option">
+                <label for="asset-category-option-missing">
+                  <input id="asset-category-option-missing" name="category" type="radio" value="all"
+                         data-asset-category-presence="missing"
+                         {% if filters.category == 'all' and filters.presence == 'missing' %}checked{% endif %}>
+                  <span>Missing ({{ categoryNavigation.missingCount }})</span>
+                </label>
+              </div>
+            </div>
+          </details>
+        </fieldset>
+
         <div class="field">
           <label for="search">Search</label>
           <input id="search" name="search" type="search" value="{{ filters.search or '' }}" maxlength="{{ searchMaxLength }}">
-        </div>
-
-        <div class="field">
-          <label for="category">Category</label>
-          <select id="category" name="category">
-            <option value="all" {% if filters.category == 'all' %}selected{% endif %}>All categories</option>
-            <option value="uncategorized" {% if filters.category == 'uncategorized' %}selected{% endif %}>Uncategorized</option>
-            {% for cat in categoryNavigation.enabled %}
-              <option value="{{ cat.id }}" {% if filters.category == cat.id %}selected{% endif %}>{{ cat.displayName }}</option>
-            {% endfor %}
-            {% for cat in categoryNavigation.disabled %}
-              <option value="{{ cat.id }}" {% if filters.category == cat.id %}selected{% endif %}>{{ cat.displayName }} (disabled)</option>
-            {% endfor %}
-          </select>
         </div>
 
         <div class="field">
@@ -545,7 +570,6 @@
         <button class="button" type="submit">Filter</button>
         <a class="button button-secondary" href="{{ pageUrl({ search: '', tag: '', extension: '', presence: 'all', usage: 'all', category: 'all', sort: 'filename', order: 'asc', page: 1, pageSize: 25 }) }}">Reset</a>
         </form>
-      {% endif %}
 
       {% if assets.length > 0 %}
         {% if completeCategorySurface %}
@@ -584,38 +608,54 @@
                       {% endif %}
                     {% endfor %}
 
-                    <span class="asset-actions-selection-label">Selected assets</span>
-                    <div class="asset-selection-controls">
-                      <button type="button" class="button button-small" data-select-all>Select all visible</button>
-                      <button type="button" class="button button-small button-secondary" data-clear-selection>Clear selection</button>
+                    <div class="asset-selection-header">
+                      <span class="asset-actions-selection-label">Selected assets</span>
                       <span class="selected-count" data-selected-count>0 selected</span>
-
-                      <label class="field bulk-release-field">
-                        <span>Add to release</span>
-                        <select name="releaseId" data-release-select>
-                          <option value="">Select a release…</option>
-                          {% for target in releaseTargets %}
-                            <option value="{{ target.id }}"{% if submittedReleaseId == (target.id ~ '') %} selected{% endif %}>{{ target.title }}</option>
-                          {% endfor %}
-                        </select>
-                      </label>
-                      <button type="submit" class="button button-primary" data-bulk-submit>Add selected to release</button>
-
-                      <span class="asset-actions-divider" aria-hidden="true"></span>
-
-                      <label class="field bulk-move-field">
-                        <span>Move selected to</span>
-                        <select name="destinationCategory">
-                          <option value="uncategorized">Uncategorized</option>
-                          {% for cat in categoryNavigation.enabled %}
-                            <option value="{{ cat.id }}">{{ cat.displayName }}</option>
-                          {% endfor %}
-                        </select>
-                      </label>
-                      <button type="submit" class="button"
-                              formaction="/projects/{{ project.id }}/assets/move-selected">Move selected</button>
                     </div>
-                    <p class="selection-scope-note">Selection applies to this page.</p>
+                    <div class="asset-selection-controls">
+                      <div class="asset-selection-tools" role="group" aria-label="Selection controls">
+                        <button type="button" class="button button-small" data-select-all>Select all visible</button>
+                        <button type="button" class="button button-small button-secondary" data-clear-selection>Clear selection</button>
+                      </div>
+                      <div class="asset-action-groups">
+                        <fieldset class="asset-action-group">
+                          <legend>Release actions</legend>
+                          <div class="asset-action-group-controls">
+                            <label class="field bulk-release-field">
+                              <span>Add to release</span>
+                              <select name="releaseId" data-release-select>
+                                <option value="">Select a release…</option>
+                                {% for target in releaseTargets %}
+                                  <option value="{{ target.id }}"{% if submittedReleaseId == (target.id ~ '') %} selected{% endif %}>{{ target.title }}</option>
+                                {% endfor %}
+                              </select>
+                            </label>
+                            <button type="submit" class="button button-primary" data-bulk-submit>Add selected to release</button>
+                          </div>
+                        </fieldset>
+                        <fieldset class="asset-action-group">
+                          <legend>Category &amp; file actions</legend>
+                          <div class="asset-action-group-controls">
+                            <label class="field bulk-move-field">
+                              <span>Move selected to</span>
+                              <select name="destinationCategory">
+                                <option value="uncategorized"{% if submittedDestinationCategory == 'uncategorized' %} selected{% endif %}>Uncategorized</option>
+                                {% for cat in categoryNavigation.enabled %}
+                                  <option value="{{ cat.id }}"{% if submittedDestinationCategory == (cat.id ~ '') %} selected{% endif %}>{{ cat.displayName }}</option>
+                                {% endfor %}
+                              </select>
+                            </label>
+                            <button type="submit" class="button"
+                                    formaction="/projects/{{ project.id }}/assets/move-selected">Move selected</button>
+                            <button type="submit" class="button button-secondary"
+                                    formaction="/projects/{{ project.id }}/assets/copy-selected">Copy selected</button>
+                            <button type="submit" class="button button-danger"
+                                    formaction="/projects/{{ project.id }}/assets/delete-selected"
+                                    data-confirm="The selected files will be permanently deleted from disk and cannot be restored through CreatorCrate. Continue?">Delete selected</button>
+                          </div>
+                        </fieldset>
+                      </div>
+                    </div>
                   </form>
                 {% endif %}
               </div>
@@ -632,38 +672,54 @@
                 {% endif %}
               {% endfor %}
 
-              <span class="asset-actions-selection-label">Selected assets</span>
-              <div class="asset-selection-controls">
-                <button type="button" class="button button-small" data-select-all>Select all visible</button>
-                <button type="button" class="button button-small button-secondary" data-clear-selection>Clear selection</button>
+              <div class="asset-selection-header">
+                <span class="asset-actions-selection-label">Selected assets</span>
                 <span class="selected-count" data-selected-count>0 selected</span>
-
-                <label class="field bulk-release-field">
-                  <span>Add to release</span>
-                  <select name="releaseId" data-release-select>
-                    <option value="">Select a release…</option>
-                    {% for target in releaseTargets %}
-                      <option value="{{ target.id }}"{% if submittedReleaseId == (target.id ~ '') %} selected{% endif %}>{{ target.title }}</option>
-                    {% endfor %}
-                  </select>
-                </label>
-                <button type="submit" class="button button-primary" data-bulk-submit>Add selected to release</button>
-
-                <span class="asset-actions-divider" aria-hidden="true"></span>
-
-                <label class="field bulk-move-field">
-                  <span>Move selected to</span>
-                  <select name="destinationCategory">
-                    <option value="uncategorized">Uncategorized</option>
-                    {% for cat in categoryNavigation.enabled %}
-                      <option value="{{ cat.id }}">{{ cat.displayName }}</option>
-                    {% endfor %}
-                  </select>
-                </label>
-                <button type="submit" class="button"
-                        formaction="/projects/{{ project.id }}/assets/move-selected">Move selected</button>
               </div>
-              <p class="selection-scope-note">Selection applies to this page.</p>
+              <div class="asset-selection-controls">
+                <div class="asset-selection-tools" role="group" aria-label="Selection controls">
+                  <button type="button" class="button button-small" data-select-all>Select all visible</button>
+                  <button type="button" class="button button-small button-secondary" data-clear-selection>Clear selection</button>
+                </div>
+                <div class="asset-action-groups">
+                  <fieldset class="asset-action-group">
+                    <legend>Release actions</legend>
+                    <div class="asset-action-group-controls">
+                      <label class="field bulk-release-field">
+                        <span>Add to release</span>
+                        <select name="releaseId" data-release-select>
+                          <option value="">Select a release…</option>
+                          {% for target in releaseTargets %}
+                            <option value="{{ target.id }}"{% if submittedReleaseId == (target.id ~ '') %} selected{% endif %}>{{ target.title }}</option>
+                          {% endfor %}
+                        </select>
+                      </label>
+                      <button type="submit" class="button button-primary" data-bulk-submit>Add selected to release</button>
+                    </div>
+                  </fieldset>
+                  <fieldset class="asset-action-group">
+                    <legend>Category &amp; file actions</legend>
+                    <div class="asset-action-group-controls">
+                      <label class="field bulk-move-field">
+                        <span>Move selected to</span>
+                        <select name="destinationCategory">
+                          <option value="uncategorized"{% if submittedDestinationCategory == 'uncategorized' %} selected{% endif %}>Uncategorized</option>
+                          {% for cat in categoryNavigation.enabled %}
+                            <option value="{{ cat.id }}"{% if submittedDestinationCategory == (cat.id ~ '') %} selected{% endif %}>{{ cat.displayName }}</option>
+                          {% endfor %}
+                        </select>
+                      </label>
+                      <button type="submit" class="button"
+                              formaction="/projects/{{ project.id }}/assets/move-selected">Move selected</button>
+                      <button type="submit" class="button button-secondary"
+                              formaction="/projects/{{ project.id }}/assets/copy-selected">Copy selected</button>
+                      <button type="submit" class="button button-danger"
+                              formaction="/projects/{{ project.id }}/assets/delete-selected"
+                              data-confirm="The selected files will be permanently deleted from disk and cannot be restored through CreatorCrate. Continue?">Delete selected</button>
+                    </div>
+                  </fieldset>
+                </div>
+              </div>
             </form>
           </div>
         {% endif %}

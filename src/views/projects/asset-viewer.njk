@@ -246,6 +246,25 @@
           </form>
         </div>
 
+        <hr class="asset-actions-divider">
+
+        <div class="asset-action-group">
+          <h3>Delete asset</h3>
+          <p class="asset-action-description">Permanently delete this file from disk. It cannot be restored through CreatorCrate.</p>
+          <form method="post" action="/projects/{{ project.id }}/assets/{{ asset.id }}/delete" class="asset-action-form asset-delete-form">
+            <input type="hidden" name="_csrf" value="{{ _csrf }}">
+            {% for key in contextFields %}
+              {% if context[key] is not none and context[key] != '' %}
+                <input type="hidden" name="{{ key }}" value="{{ context[key] }}">
+              {% endif %}
+            {% endfor %}
+            <div>
+              <button class="button button-danger" type="submit"
+                      data-confirm="The file will be permanently deleted from disk and cannot be restored through CreatorCrate. Continue?">Delete asset</button>
+            </div>
+          </form>
+        </div>
+
       </div>
     </section>
   {% endif %}

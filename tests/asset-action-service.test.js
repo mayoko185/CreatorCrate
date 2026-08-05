@@ -125,9 +125,9 @@ describe('asset action service', () => {
     });
   }
 
-  function insertRelease(title = 'Release') {
-    return db.prepare(`INSERT INTO releases (project_id, title) VALUES (?, ?) RETURNING id`)
-      .get(project.id, title);
+  function insertRelease(title = 'Release', status = 'idea') {
+    return db.prepare(`INSERT INTO releases (project_id, title, status) VALUES (?, ?, ?) RETURNING id`)
+      .get(project.id, title, status);
   }
 
   function linkReleaseAsset(releaseId, assetId, role = 'attachment', sortOrder = 0) {
@@ -1569,6 +1569,359 @@ describe('asset action service', () => {
         expect(err.batchContext.movedCount).toBe(0);
         expect(err.batchContext.completedAssetIds).toEqual([]);
       }
+    });
+  });
+
+  describe('copyAssets', () => {
+    it('rejects an empty selection and an unknown destination category', () => {
+      expect(() => actionService.copyAssets(project.id, [], UNCATEGORIZED)).toThrowError(
+        expect.objectContaining({ code: 'NO_ASSETS_SELECTED' })
+      );
+
+      writeFile('a.png', 'content');
+      const asset = createAsset('a.png');
+      expect(() => actionService.copyAssets(project.id, [asset.id], 999999)).toThrowError(
+        expect.objectContaining({ code: 'COPY_PRECHECK_FAILED' })
+      );
+    });
+
+    it('copies one asset, preserves the original, and creates a destination row', () => {
+      const category = createEnabledCategory('Renders', 'renders');
+      writeFile('a.png', 'original');
+      const asset = createAsset('a.png', { categoryId: null });
+
+      const result = actionService.copyAssets(project.id, [asset.id], category.id);
+
+      expect(result).toMatchObject({ copiedCount: 1, requestedCount: 1 });
+      expect(result.copiedAssetIds).toHaveLength(1);
+      expect(result.copiedAssetIds[0]).not.toBe(asset.id);
+      expect(fs.readFileSync(path.join(absPath, 'a.png'), 'utf8')).toBe('original');
+      expect(fs.readFileSync(path.join(absPath, 'renders', 'a.png'), 'utf8')).toBe('original');
+
+      const original = assetRepository.findById(asset.id);
+      const copied = assetRepository.findByProjectIdAndPath(project.id, 'renders/a.png');
+      expect(original).toMatchObject({ relative_path: 'a.png', category_id: null, is_present: 1 });
+      expect(copied).toMatchObject({
+        project_id: project.id,
+        relative_path: 'renders/a.png',
+        category_id: category.id,
+        nested_path: '',
+        filename: 'a.png',
+        is_present: 1,
+      });
+      expect(copied.id).toBe(result.copiedAssetIds[0]);
+    });
+
+    it('copies multiple assets into one category', () => {
+      const category = createEnabledCategory('Renders', 'renders');
+      writeFile('a.png', 'aaa');
+      writeFile('b.png', 'bbb');
+      const assetA = createAsset('a.png');
+      const assetB = createAsset('b.png');
+
+      const result = actionService.copyAssets(project.id, [assetA.id, assetB.id], category.id);
+
+      expect(result.copiedCount).toBe(2);
+      expect(result.requestedCount).toBe(2);
+      expect(result.copiedAssetIds).toHaveLength(2);
+      expect(fs.existsSync(path.join(absPath, 'a.png'))).toBe(true);
+      expect(fs.existsSync(path.join(absPath, 'b.png'))).toBe(true);
+      expect(fs.existsSync(path.join(absPath, 'renders', 'a.png'))).toBe(true);
+      expect(fs.existsSync(path.join(absPath, 'renders', 'b.png'))).toBe(true);
+      expect(assetRepository.findByProjectIdAndPath(project.id, 'renders/a.png')).toBeDefined();
+      expect(assetRepository.findByProjectIdAndPath(project.id, 'renders/b.png')).toBeDefined();
+    });
+
+    it('rejects a destination collision before copying any part of the batch', () => {
+      const category = createEnabledCategory('Renders', 'renders');
+      writeFile('a.png', 'aaa');
+      writeFile('b.png', 'bbb');
+      writeFile('renders/a.png', 'existing');
+      const assetA = createAsset('a.png');
+      const assetB = createAsset('b.png');
+      const copySpy = vi.spyOn(fs, 'copyFileSync');
+
+      try {
+        actionService.copyAssets(project.id, [assetA.id, assetB.id], category.id);
+        expect.unreachable();
+      } catch (err) {
+        expect(err).toBeInstanceOf(AssetActionError);
+        expect(err.code).toBe('COPY_DESTINATION_CONFLICT');
+      } finally {
+        copySpy.mockRestore();
+      }
+
+      expect(copySpy).not.toHaveBeenCalled();
+      expect(fs.readFileSync(path.join(absPath, 'renders', 'a.png'), 'utf8')).toBe('existing');
+      expect(fs.existsSync(path.join(absPath, 'renders', 'b.png'))).toBe(false);
+      expect(fs.existsSync(path.join(absPath, 'a.png'))).toBe(true);
+      expect(fs.existsSync(path.join(absPath, 'b.png'))).toBe(true);
+      expect(assetRepository.findByProjectIdAndPath(project.id, 'renders/a.png')).toBeUndefined();
+      expect(assetRepository.findByProjectIdAndPath(project.id, 'renders/b.png')).toBeUndefined();
+    });
+
+    it('rejects archived projects without copying', () => {
+      const category = createEnabledCategory('Renders', 'renders');
+      writeFile('a.png', 'content');
+      const asset = createAsset('a.png');
+      projectRepository.archive(project.id);
+
+      expect(() => actionService.copyAssets(project.id, [asset.id], category.id)).toThrowError(
+        expect.objectContaining({ code: 'PROJECT_ARCHIVED' })
+      );
+      expect(fs.existsSync(path.join(absPath, 'a.png'))).toBe(true);
+      expect(fs.existsSync(path.join(absPath, 'renders', 'a.png'))).toBe(false);
+    });
+  });
+
+  describe('deleteAssets', () => {
+    it('rejects malformed selections before touching the filesystem or lock', () => {
+      writeFile('a.png', 'content');
+      const asset = createAsset('a.png');
+
+      expect(() => actionService.deleteAssets(project.id, [asset.id, 0])).toThrowError(
+        expect.objectContaining({ code: 'INVALID_ASSET_SELECTION' })
+      );
+
+      expect(projectOperationCoordinator.isActive(project.id)).toBe(false);
+      expect(fs.existsSync(path.join(absPath, 'a.png'))).toBe(true);
+      expect(assetRepository.findById(asset.id)).toBeDefined();
+    });
+
+    it('permanently deletes multiple ordinary assets from disk and the index', () => {
+      writeFile('a.png', 'aaa');
+      writeFile('b.png', 'bbb');
+      const assetA = createAsset('a.png');
+      const assetB = createAsset('b.png');
+
+      const result = actionService.deleteAssets(project.id, [assetA.id, assetB.id]);
+
+      expect(result).toEqual({
+        deletedCount: 2,
+        requestedCount: 2,
+        deletedAssetIds: [assetA.id, assetB.id],
+      });
+      expect(fs.existsSync(path.join(absPath, 'a.png'))).toBe(false);
+      expect(fs.existsSync(path.join(absPath, 'b.png'))).toBe(false);
+      expect(assetRepository.findById(assetA.id)).toBeUndefined();
+      expect(assetRepository.findById(assetB.id)).toBeUndefined();
+      expect(fs.readdirSync(absPath).filter((name) => name.startsWith('.creatorcrate-delete-'))).toEqual([]);
+    });
+
+    it('validates the complete batch before staging or deleting any member', () => {
+      writeFile('valid.png', 'valid');
+      const valid = createAsset('valid.png');
+      const missing = createAsset('missing.png');
+      const renameSpy = vi.spyOn(fs, 'renameSync');
+      const removeSpy = vi.spyOn(fs, 'rmSync');
+
+      try {
+        expect(() => actionService.deleteAssets(project.id, [valid.id, missing.id])).toThrowError(
+          expect.objectContaining({ code: 'DELETE_PRECHECK_FAILED' })
+        );
+      } finally {
+        renameSpy.mockRestore();
+        removeSpy.mockRestore();
+      }
+
+      expect(renameSpy).not.toHaveBeenCalled();
+      expect(removeSpy).not.toHaveBeenCalled();
+      expect(fs.existsSync(path.join(absPath, 'valid.png'))).toBe(true);
+      expect(assetRepository.findById(valid.id)).toBeDefined();
+      expect(assetRepository.findById(missing.id)).toBeDefined();
+    });
+
+    it('rejects published-release assets before filesystem staging', () => {
+      writeFile('published.png', 'published');
+      const asset = createAsset('published.png');
+      const release = insertRelease('Published release', 'published');
+      linkReleaseAsset(release.id, asset.id);
+      const stagingSpy = vi.spyOn(fs, 'mkdtempSync');
+      const renameSpy = vi.spyOn(fs, 'renameSync');
+      const deleteSpy = vi.spyOn(assetRepository, 'deleteMany');
+
+      try {
+        expect(() => actionService.deleteAssets(project.id, [asset.id])).toThrowError(
+          expect.objectContaining({
+            code: 'DELETE_PUBLISHED_RELEASE_ASSET',
+            message: expect.stringContaining('published release cannot be deleted'),
+          })
+        );
+      } finally {
+        stagingSpy.mockRestore();
+        renameSpy.mockRestore();
+        deleteSpy.mockRestore();
+      }
+
+      expect(stagingSpy).not.toHaveBeenCalled();
+      expect(renameSpy).not.toHaveBeenCalled();
+      expect(deleteSpy).not.toHaveBeenCalled();
+      expect(fs.existsSync(path.join(absPath, 'published.png'))).toBe(true);
+      expect(assetRepository.findById(asset.id)).toBeDefined();
+    });
+
+    it('rejects a mixed batch containing one published-release asset without deleting any asset', () => {
+      writeFile('ordinary.png', 'ordinary');
+      writeFile('published.png', 'published');
+      const ordinary = createAsset('ordinary.png');
+      const published = createAsset('published.png');
+      const release = insertRelease('Published batch blocker', 'published');
+      linkReleaseAsset(release.id, published.id);
+
+      expect(() => actionService.deleteAssets(project.id, [ordinary.id, published.id])).toThrowError(
+        expect.objectContaining({ code: 'DELETE_PUBLISHED_RELEASE_ASSET' })
+      );
+
+      expect(fs.existsSync(path.join(absPath, 'ordinary.png'))).toBe(true);
+      expect(fs.existsSync(path.join(absPath, 'published.png'))).toBe(true);
+      expect(assetRepository.findById(ordinary.id)).toBeDefined();
+      expect(assetRepository.findById(published.id)).toBeDefined();
+      expect(db.prepare('SELECT * FROM release_assets WHERE asset_id = ?').all(published.id)).toHaveLength(1);
+    });
+
+    it('rejects an inaccessible member without deleting valid earlier members', () => {
+      writeFile('valid.png', 'valid');
+      const valid = createAsset('valid.png');
+      const blockedPath = writeFile('blocked.png', 'blocked');
+      const blocked = createAsset('blocked.png');
+      const originalLstat = fs.lstatSync.bind(fs);
+      const lstatSpy = vi.spyOn(fs, 'lstatSync').mockImplementation((target, ...args) => {
+        if (target === blockedPath) {
+          const error = new Error('simulated inaccessible file');
+          error.code = 'EACCES';
+          throw error;
+        }
+        return originalLstat(target, ...args);
+      });
+
+      try {
+        expect(() => actionService.deleteAssets(project.id, [valid.id, blocked.id])).toThrowError(
+          expect.objectContaining({ code: 'DELETE_PRECHECK_FAILED' })
+        );
+      } finally {
+        lstatSpy.mockRestore();
+      }
+
+      expect(fs.existsSync(path.join(absPath, 'valid.png'))).toBe(true);
+      expect(fs.existsSync(blockedPath)).toBe(true);
+      expect(assetRepository.findById(valid.id)).toBeDefined();
+      expect(assetRepository.findById(blocked.id)).toBeDefined();
+    });
+
+    it('rejects an outside-project path without deleting valid members', () => {
+      writeFile('valid.png', 'valid');
+      const valid = createAsset('valid.png');
+      const outsidePath = path.join(tmpDir, 'outside.png');
+      fs.writeFileSync(outsidePath, 'outside');
+      const outside = createAsset('../outside.png');
+
+      expect(() => actionService.deleteAssets(project.id, [valid.id, outside.id])).toThrowError(
+        expect.objectContaining({ code: 'DELETE_PRECHECK_FAILED' })
+      );
+
+      expect(fs.existsSync(path.join(absPath, 'valid.png'))).toBe(true);
+      expect(fs.existsSync(outsidePath)).toBe(true);
+      expect(assetRepository.findById(valid.id)).toBeDefined();
+      expect(assetRepository.findById(outside.id)).toBeDefined();
+    });
+
+    it.skipIf(!HAS_SYMLINKS)('rejects a symlinked member without deleting valid members', () => {
+      writeFile('valid.png', 'valid');
+      const valid = createAsset('valid.png');
+      const targetPath = path.join(tmpDir, 'symlink-target.png');
+      const linkPath = writeFile('linked.png');
+      fs.writeFileSync(targetPath, 'target');
+      fs.rmSync(linkPath);
+      fs.symlinkSync(targetPath, linkPath, 'file');
+      const linked = createAsset('linked.png');
+
+      expect(() => actionService.deleteAssets(project.id, [valid.id, linked.id])).toThrowError(
+        expect.objectContaining({ code: 'DELETE_PRECHECK_FAILED' })
+      );
+
+      expect(fs.existsSync(path.join(absPath, 'valid.png'))).toBe(true);
+      expect(fs.existsSync(linkPath)).toBe(true);
+      expect(fs.existsSync(targetPath)).toBe(true);
+      expect(assetRepository.findById(valid.id)).toBeDefined();
+      expect(assetRepository.findById(linked.id)).toBeDefined();
+    });
+
+    it('rejects archived projects without deleting valid members', () => {
+      writeFile('a.png', 'content');
+      const asset = createAsset('a.png');
+      projectRepository.archive(project.id);
+
+      expect(() => actionService.deleteAssets(project.id, [asset.id])).toThrowError(
+        expect.objectContaining({ code: 'PROJECT_ARCHIVED' })
+      );
+      expect(assetRepository.findById(asset.id)).toBeDefined();
+      expect(projectOperationCoordinator.isActive(project.id)).toBe(false);
+    });
+
+    it('holds the project lock through indexed deletion', () => {
+      writeFile('a.png', 'content');
+      const asset = createAsset('a.png');
+      const originalDeleteMany = assetRepository.deleteMany.bind(assetRepository);
+      let lockActiveDuringDelete = null;
+      const deleteSpy = vi.spyOn(assetRepository, 'deleteMany').mockImplementationOnce((...args) => {
+        lockActiveDuringDelete = projectOperationCoordinator.isActive(project.id);
+        return originalDeleteMany(...args);
+      });
+
+      try {
+        actionService.deleteAssets(project.id, [asset.id]);
+      } finally {
+        deleteSpy.mockRestore();
+      }
+
+      expect(lockActiveDuringDelete).toBe(true);
+      expect(projectOperationCoordinator.isActive(project.id)).toBe(false);
+    });
+
+    it('restores staged files and rows when indexed deletion fails', () => {
+      writeFile('a.png', 'aaa');
+      writeFile('b.png', 'bbb');
+      const assetA = createAsset('a.png');
+      const assetB = createAsset('b.png');
+      const deleteSpy = vi.spyOn(assetRepository, 'deleteMany').mockImplementationOnce(() => {
+        throw new Error('simulated database failure');
+      });
+
+      try {
+        expect(() => actionService.deleteAssets(project.id, [assetA.id, assetB.id])).toThrowError(
+          expect.objectContaining({ code: 'DELETE_DATABASE_OPERATION_FAILED' })
+        );
+      } finally {
+        deleteSpy.mockRestore();
+      }
+
+      expect(fs.readFileSync(path.join(absPath, 'a.png'), 'utf8')).toBe('aaa');
+      expect(fs.readFileSync(path.join(absPath, 'b.png'), 'utf8')).toBe('bbb');
+      expect(assetRepository.findById(assetA.id)).toBeDefined();
+      expect(assetRepository.findById(assetB.id)).toBeDefined();
+      expect(fs.readdirSync(absPath).filter((name) => name.startsWith('.creatorcrate-delete-'))).toEqual([]);
+    });
+
+    it('deletes an asset associated only with an unpublished release and clears cascaded references', () => {
+      writeFile('a.png', 'content');
+      const asset = createAsset('a.png', { mimeType: 'image/png' });
+      const release = insertRelease('Release using deleted asset');
+      linkReleaseAsset(release.id, asset.id, 'primary');
+      primaryImageService.setPrimaryImage(project.id, asset.id);
+      const tag = db.prepare(`
+        INSERT INTO tags (display_name, normalized_name)
+        VALUES (?, ?)
+        RETURNING id
+      `).get('Delete test', 'delete-test');
+      db.prepare('INSERT INTO asset_tags (asset_id, tag_id) VALUES (?, ?)').run(asset.id, tag.id);
+
+      expect(db.prepare('SELECT status FROM releases WHERE id = ?').get(release.id).status).not.toBe('published');
+      actionService.deleteAssets(project.id, [asset.id]);
+
+      expect(db.prepare('SELECT * FROM release_assets WHERE asset_id = ?').all(asset.id)).toEqual([]);
+      expect(db.prepare('SELECT * FROM asset_tags WHERE asset_id = ?').all(asset.id)).toEqual([]);
+      expect(primaryImageRepository.findByProjectId(project.id)).toBeUndefined();
+      expect(assetRepository.findById(asset.id)).toBeUndefined();
     });
   });
 });

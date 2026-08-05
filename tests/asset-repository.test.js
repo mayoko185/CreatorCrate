@@ -134,6 +134,86 @@ describe('asset repository', () => {
     expect(missing).toBeUndefined();
   });
 
+  it('finds only selected project assets associated with published releases', () => {
+    const published = assetRepo.upsert(projectId, 'published.png', {
+      filename: 'published.png', extension: 'png', mimeType: 'image/png',
+      sizeBytes: 100, modifiedAt: null,
+    });
+    const unpublished = assetRepo.upsert(projectId, 'unpublished.png', {
+      filename: 'unpublished.png', extension: 'png', mimeType: 'image/png',
+      sizeBytes: 100, modifiedAt: null,
+    });
+    const otherProject = createProject('Other Project');
+    const foreign = assetRepo.upsert(otherProject.id, 'foreign.png', {
+      filename: 'foreign.png', extension: 'png', mimeType: 'image/png',
+      sizeBytes: 100, modifiedAt: null,
+    });
+    const publishedRelease = db.prepare(`
+      INSERT INTO releases (project_id, title, status)
+      VALUES (?, ?, 'published')
+      RETURNING id
+    `).get(projectId, 'Published Release');
+    const unpublishedRelease = db.prepare(`
+      INSERT INTO releases (project_id, title, status)
+      VALUES (?, ?, 'drafting')
+      RETURNING id
+    `).get(projectId, 'Draft Release');
+    const foreignRelease = db.prepare(`
+      INSERT INTO releases (project_id, title, status)
+      VALUES (?, ?, 'published')
+      RETURNING id
+    `).get(otherProject.id, 'Foreign Published Release');
+
+    db.prepare('INSERT INTO release_assets (release_id, asset_id) VALUES (?, ?)')
+      .run(publishedRelease.id, published.id);
+    db.prepare('INSERT INTO release_assets (release_id, asset_id) VALUES (?, ?)')
+      .run(unpublishedRelease.id, unpublished.id);
+    db.prepare('INSERT INTO release_assets (release_id, asset_id) VALUES (?, ?)')
+      .run(foreignRelease.id, foreign.id);
+
+    expect(assetRepo.findPublishedReleaseAssetIds(projectId, [published.id, unpublished.id, foreign.id]))
+      .toEqual([published.id]);
+  });
+
+  it('deletes several expected asset rows and returns the deleted records', () => {
+    const first = assetRepo.upsert(projectId, 'first.png', {
+      filename: 'first.png', extension: 'png', mimeType: 'image/png',
+      sizeBytes: 100, modifiedAt: null,
+    });
+    const second = assetRepo.upsert(projectId, 'second.png', {
+      filename: 'second.png', extension: 'png', mimeType: 'image/png',
+      sizeBytes: 200, modifiedAt: null,
+    });
+
+    const deleted = assetRepo.deleteMany(projectId, [
+      { assetId: first.id, relativePath: first.relative_path },
+      { assetId: second.id, relativePath: second.relative_path },
+    ]);
+
+    expect(deleted.map((asset) => asset.id)).toEqual([first.id, second.id]);
+    expect(assetRepo.findById(first.id)).toBeUndefined();
+    expect(assetRepo.findById(second.id)).toBeUndefined();
+  });
+
+  it('rolls back the complete deletion when an expected path is stale', () => {
+    const first = assetRepo.upsert(projectId, 'first.png', {
+      filename: 'first.png', extension: 'png', mimeType: 'image/png',
+      sizeBytes: 100, modifiedAt: null,
+    });
+    const second = assetRepo.upsert(projectId, 'second.png', {
+      filename: 'second.png', extension: 'png', mimeType: 'image/png',
+      sizeBytes: 200, modifiedAt: null,
+    });
+
+    expect(() => assetRepo.deleteMany(projectId, [
+      { assetId: first.id, relativePath: first.relative_path },
+      { assetId: second.id, relativePath: 'stale-second.png' },
+    ])).toThrowError(expect.objectContaining({ code: 'NOT_FOUND' }));
+
+    expect(assetRepo.findById(first.id)).toBeDefined();
+    expect(assetRepo.findById(second.id)).toBeDefined();
+  });
+
   // ─── Presence marking (replaces delete) ─────────────────────────
 
   it('marks missing assets instead of deleting', () => {

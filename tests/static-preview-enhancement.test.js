@@ -8,10 +8,12 @@ import {
   enhanceAutoSubmit,
   enhanceCategoryReorder,
   enhanceCategoryDetails,
+  enhanceConfirmations,
   enhanceAssetSelection,
   enhanceAssetRenames,
   enhanceAssetGridSize,
   enhanceAssetProjectFilter,
+  enhanceProjectAssetCategoryFilter,
   enhanceAssetViewerFilterDisclosures,
   enhanceAssetViewerInfoCards,
 } from '../src/static/creatorcrate.js';
@@ -1867,6 +1869,157 @@ describe('Asset Viewer Project filter enhancement', () => {
     expect(fixture.alpha.input.value).toBe('1');
     expect(fixture.beta.input.value).toBe('2');
     expect(fixture.search.name).toBeUndefined();
+  });
+});
+
+describe('Destructive confirmation enhancement', () => {
+  it('prevents an unconfirmed data-confirm submit action', () => {
+    const message = 'The selected files will be permanently deleted from disk and cannot be restored through CreatorCrate. Continue?';
+    const listeners = [];
+    const control = {
+      getAttribute(name) {
+        return name === 'data-confirm' ? message : null;
+      },
+      addEventListener(type, handler) {
+        listeners.push({ type, handler });
+      },
+    };
+    const scope = {
+      querySelectorAll(selector) {
+        return selector === '[data-confirm]' ? [control] : [];
+      },
+    };
+    const previousConfirm = globalThis.confirm;
+    let promptedMessage = null;
+    globalThis.confirm = (prompt) => {
+      promptedMessage = prompt;
+      return false;
+    };
+
+    try {
+      expect(enhanceConfirmations(scope)).toBe(1);
+      const click = listeners.find((listener) => listener.type === 'click');
+      expect(click).toBeDefined();
+      const event = {
+        defaultPrevented: false,
+        preventDefault() { this.defaultPrevented = true; },
+      };
+      click.handler(event);
+      expect(promptedMessage).toBe(message);
+      expect(event.defaultPrevented).toBe(true);
+    } finally {
+      if (previousConfirm === undefined) delete globalThis.confirm;
+      else globalThis.confirm = previousConfirm;
+    }
+  });
+});
+
+describe('Project Assets category filter enhancement', () => {
+  function makeFixture({ selected = 'all', presence = 'all' } = {}) {
+    const inputs = [
+      ['All categories (12)', 'all', 'all'],
+      ['Renders (7)', '7', 'all'],
+      ['Missing (3)', 'all', 'missing'],
+    ].map(([labelText, value, presenceValue]) => {
+      const listeners = [];
+      const input = {
+        value,
+        checked: value === selected && (presenceValue !== 'missing' || presence === 'missing'),
+        listeners,
+        addEventListener(type, handler) { listeners.push({ type, handler }); },
+        dispatch(type) {
+          listeners.filter((listener) => listener.type === type)
+            .forEach((listener) => listener.handler());
+        },
+        getAttribute(name) {
+          return name === 'data-asset-category-presence' ? presenceValue : null;
+        },
+      };
+      const label = { textContent: labelText };
+      const option = {
+        querySelector(selector) {
+          if (selector === 'input[name="category"]') return input;
+          if (selector === 'label') return label;
+          return null;
+        },
+      };
+      return { input, option };
+    });
+
+    const summaryAttrs = {};
+    const summary = {
+      setAttribute(name, value) { summaryAttrs[name] = String(value); },
+    };
+    const summaryText = { textContent: '' };
+    const presenceListeners = [];
+    const presenceControl = {
+      value: presence,
+      addEventListener(type, handler) { presenceListeners.push({ type, handler }); },
+      dispatch(type) {
+        presenceListeners.filter((listener) => listener.type === type)
+          .forEach((listener) => listener.handler());
+      },
+    };
+    const form = {
+      querySelector(selector) {
+        return selector === 'select[name="presence"]' ? presenceControl : null;
+      },
+    };
+    const filter = {
+      dataset: {},
+      querySelectorAll(selector) {
+        return selector === '.asset-filter-multiselect-option'
+          ? inputs.map(({ option }) => option)
+          : [];
+      },
+      querySelector(selector) {
+        if (selector === '[data-asset-category-filter-summary]') return summaryText;
+        if (selector === 'summary') return summary;
+        return null;
+      },
+      closest(selector) {
+        return selector === 'form' ? form : null;
+      },
+    };
+    const scope = {
+      querySelectorAll(selector) {
+        return selector === '[data-asset-category-filter]' ? [filter] : [];
+      },
+    };
+
+    return {
+      scope,
+      inputs,
+      summaryAttrs,
+      summaryText,
+      presenceControl,
+      presenceListeners,
+    };
+  }
+
+  it('updates the selected summary and maps Missing to presence without duplicate listeners', () => {
+    const fixture = makeFixture();
+
+    expect(enhanceProjectAssetCategoryFilter(fixture.scope)).toBe(1);
+    expect(enhanceProjectAssetCategoryFilter(fixture.scope)).toBe(1);
+    expect(fixture.summaryText.textContent).toBe('All categories (12)');
+    expect(fixture.summaryAttrs['aria-label']).toBe('Category filter: All categories (12)');
+    expect(fixture.inputs[2].input.listeners.filter(({ type }) => type === 'change')).toHaveLength(1);
+    expect(fixture.presenceListeners.filter(({ type }) => type === 'change')).toHaveLength(1);
+
+    fixture.inputs[0].input.checked = false;
+    fixture.inputs[2].input.checked = true;
+    fixture.inputs[2].input.dispatch('change');
+    expect(fixture.presenceControl.value).toBe('missing');
+    expect(fixture.summaryText.textContent).toBe('Missing (3)');
+    expect(fixture.summaryAttrs['aria-label']).toBe('Category filter: Missing (3)');
+
+    fixture.inputs[2].input.checked = false;
+    fixture.inputs[1].input.checked = true;
+    fixture.inputs[1].input.dispatch('change');
+    expect(fixture.presenceControl.value).toBe('all');
+    expect(fixture.summaryText.textContent).toBe('Renders (7)');
+    expect(fixture.summaryAttrs['aria-label']).toBe('Category filter: Renders (7)');
   });
 });
 
