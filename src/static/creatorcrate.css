@@ -1744,6 +1744,8 @@
         flex-direction: column;
         width: max-content;
         max-width: none;
+        max-height: 0;
+        overflow: hidden;
         visibility: hidden;
         white-space: nowrap;
         pointer-events: none;

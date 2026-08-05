@@ -3184,7 +3184,12 @@ describe('asset browser HTTP workflow', () => {
 
     const style = await readStylesheetSource(res2.text);
     expect(style).toMatch(/\.asset-project-category-filter\s*\{[^}]*flex:\s*0 1 auto[^}]*width:\s*max-content[^}]*max-width:\s*min\(100%,\s*26rem\)/);
-    expect(style).toMatch(/\.asset-project-category-filter \.asset-filter-multiselect-summary-width\s*\{[^}]*visibility:\s*hidden/);
+    const categorySummaryWidthRule = style.match(/(?:^|})\s*\.asset-project-category-filter \.asset-filter-multiselect-summary-width\s*\{([^}]*)\}/)?.[1] || '';
+    expect(categorySummaryWidthRule).toMatch(/max-height:\s*0/);
+    expect(categorySummaryWidthRule).toMatch(/overflow:\s*hidden/);
+    expect(categorySummaryWidthRule).toMatch(/visibility:\s*hidden/);
+    const categorySummaryRule = style.match(/(?:^|})\s*\.asset-filter-multiselect summary\s*\{([^}]*)\}/)?.[1] || '';
+    expect(categorySummaryRule).toMatch(/min-height:\s*2\.5rem/);
     expect(style).toMatch(/@media\s*\(max-width:\s*540px\)[\s\S]*?\.asset-project-category-filter\s*\{[^}]*width:\s*100%[^}]*max-width:\s*100%/);
 
     const gridCards = [...res2.text.matchAll(/<article class="asset-card[\s\S]*?<\/article>/g)].map((match) => match[0]).join('\n');
