@@ -386,7 +386,7 @@ describe('Phase 10.5A: Shared page-level components', () => {
       const res = await agent.get('/projects').expect(200);
       expect(res.text).toContain('<ul class="project-grid">');
       expect(res.text).toMatch(
-        /<li class="project-grid-item">[\s\S]*?<article class="project-card project-card--grid" data-project-card>[\s\S]*?<a class="project-card-link" data-project-card-link href="\/projects\/\d+">Table Test<\/a>/
+        /<li class="project-grid-item">[\s\S]*?<article class="project-card project-card--grid project-grid-card" data-project-card>[\s\S]*?<a class="project-card-link" data-project-card-link href="\/projects\/\d+">Table Test<\/a>/
       );
     });
 
@@ -408,7 +408,7 @@ describe('Phase 10.5A: Shared page-level components', () => {
         .expect(302);
 
       const res = await agent.get('/projects').expect(200);
-      const card = res.text.match(/<article class="project-card project-card--grid" data-project-card>[\s\S]*?<\/article>/);
+      const card = res.text.match(/<article class="project-card project-card--grid project-grid-card" data-project-card>[\s\S]*?<\/article>/);
       expect(card).not.toBeNull();
       expect(card[0]).toContain('data-project-card-link href="/projects/');
       expect(card[0]).toContain('>Tabindex Test</a>');

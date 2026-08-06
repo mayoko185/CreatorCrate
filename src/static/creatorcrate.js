@@ -1397,6 +1397,10 @@ const ASSET_RENAME_EDITOR_SELECTOR = '[data-asset-rename-editor]';
 const ASSET_GRID_SIZE_CONTROL_SELECTOR = '[data-asset-grid-size-controls]';
 const ASSET_GRID_SELECTOR = '.asset-grid';
 const ASSET_GRID_SIZE_STORAGE_KEY = 'creatorcrate-asset-grid-size';
+const PROJECT_GRID_SELECTOR = '.project-grid';
+const PROJECT_GRID_SIZE_STORAGE_KEY = 'creatorcrate-project-grid-size';
+const PROJECT_GRID_SIZE_CONTROL_SCOPE_SELECTOR = '[data-project-grid-size-controls]';
+const PROJECT_GRID_SIZE_CONTROL_SELECTOR = `${PROJECT_GRID_SIZE_CONTROL_SCOPE_SELECTOR} ${ASSET_GRID_SIZE_CONTROL_SELECTOR}`;
 const ASSET_PROJECT_FILTER_SELECTOR = '[data-asset-project-filter]';
 const ASSET_PROJECT_FILTER_OPTION_SELECTOR = '[data-asset-project-filter-option]';
 const ASSET_PROJECT_FILTER_SEARCH_SELECTOR = '[data-asset-project-filter-search]';
@@ -1407,6 +1411,8 @@ const ASSET_VIEWER_FILTER_DISCLOSURE_SELECTOR = '[data-asset-viewer-filter-discl
 const ASSET_VIEWER_INFO_SELECTOR = '[data-asset-info-card]';
 const ASSET_VIEWER_PREVIEW_SELECTOR = '[data-asset-viewer-preview]';
 const ASSET_VIEWER_INFO_GUTTER = 8;
+const PROJECT_INFO_SELECTOR = '[data-project-info-card]';
+const PROJECT_PREVIEW_SELECTOR = '[data-project-grid-preview]';
 const ASSET_GRID_SIZE_SLIDER_SELECTOR = '[data-grid-size-slider]';
 const ASSET_GRID_SIZE_OPTION_LABEL_SELECTOR = '[data-grid-size-option-label]';
 const ASSET_GRID_SIZES = Object.freeze({
@@ -1419,6 +1425,37 @@ const ASSET_GRID_SIZE_LABELS = Object.freeze({
   compact: 'Compact',
   default: 'Default',
   large: 'Large',
+});
+const ASSET_GRID_SIZE_CONFIG = Object.freeze({
+  controlSelector: ASSET_GRID_SIZE_CONTROL_SELECTOR,
+  excludeControlScopeSelector: PROJECT_GRID_SIZE_CONTROL_SCOPE_SELECTOR,
+  gridSelector: ASSET_GRID_SELECTOR,
+  storageKey: ASSET_GRID_SIZE_STORAGE_KEY,
+  cssVariable: '--asset-card-min',
+  boundKey: 'assetGridSizeBound',
+});
+const PROJECT_GRID_SIZE_CONFIG = Object.freeze({
+  controlSelector: PROJECT_GRID_SIZE_CONTROL_SELECTOR,
+  gridSelector: PROJECT_GRID_SELECTOR,
+  storageKey: PROJECT_GRID_SIZE_STORAGE_KEY,
+  cssVariable: '--project-card-min',
+  boundKey: 'projectGridSizeBound',
+});
+const ASSET_VIEWER_INFO_CONFIG = Object.freeze({
+  infoSelector: ASSET_VIEWER_INFO_SELECTOR,
+  previewSelector: ASSET_VIEWER_PREVIEW_SELECTOR,
+  gutter: ASSET_VIEWER_INFO_GUTTER,
+  leftProperty: '--asset-info-left',
+  topProperty: '--asset-info-top',
+  boundKey: 'assetViewerInfoBound',
+});
+const PROJECT_INFO_CONFIG = Object.freeze({
+  infoSelector: PROJECT_INFO_SELECTOR,
+  previewSelector: PROJECT_PREVIEW_SELECTOR,
+  gutter: ASSET_VIEWER_INFO_GUTTER,
+  leftProperty: '--project-info-left',
+  topProperty: '--project-info-top',
+  boundKey: 'projectInfoBound',
 });
 
 function getAssetSelectionCheckboxes(form, scope = form) {
@@ -1634,18 +1671,18 @@ export function enhanceAssetRenames(scope = globalThis.document) {
   return triggers.length;
 }
 
-function readAssetGridSize() {
+function readGridSize(storageKey) {
   try {
-    const stored = globalThis.localStorage?.getItem(ASSET_GRID_SIZE_STORAGE_KEY);
+    const stored = globalThis.localStorage?.getItem(storageKey);
     return Object.prototype.hasOwnProperty.call(ASSET_GRID_SIZES, stored) ? stored : 'default';
   } catch {
     return 'default';
   }
 }
 
-function writeAssetGridSize(size) {
+function writeGridSize(size, storageKey) {
   try {
-    globalThis.localStorage?.setItem(ASSET_GRID_SIZE_STORAGE_KEY, size);
+    globalThis.localStorage?.setItem(storageKey, size);
   } catch {
     // Storage can be unavailable or blocked; the current page still works.
   }
@@ -1662,11 +1699,11 @@ function assetGridSizePosition(size) {
   return position < 0 ? null : position + 1;
 }
 
-function updateAssetGridSizeControls(scope, size) {
+function updateGridSizeControls(controls, size) {
   const label = ASSET_GRID_SIZE_LABELS[size];
   const position = assetGridSizePosition(size);
 
-  scope.querySelectorAll(ASSET_GRID_SIZE_CONTROL_SELECTOR).forEach((group) => {
+  controls.forEach((group) => {
     group.querySelectorAll(ASSET_GRID_SIZE_SLIDER_SELECTOR).forEach((slider) => {
       slider.value = String(position);
       slider.setAttribute?.('aria-valuenow', String(position));
@@ -1679,40 +1716,56 @@ function updateAssetGridSizeControls(scope, size) {
   });
 }
 
-function applyAssetGridSize(scope, size) {
-  const grids = scope.querySelectorAll(ASSET_GRID_SELECTOR);
+function applyGridSize(scope, size, config, controls) {
+  const grids = scope.querySelectorAll(config.gridSelector);
   grids.forEach((grid) => {
     if (size === 'default') {
       grid.removeAttribute('data-grid-size');
-      grid.style?.removeProperty('--asset-card-min');
+      grid.style?.removeProperty(config.cssVariable);
     } else {
       grid.setAttribute('data-grid-size', size);
-      grid.style?.setProperty('--asset-card-min', ASSET_GRID_SIZES[size]);
+      grid.style?.setProperty(config.cssVariable, ASSET_GRID_SIZES[size]);
     }
   });
-  updateAssetGridSizeControls(scope, size);
+  updateGridSizeControls(controls, size);
 }
 
-export function enhanceAssetGridSize(scope = globalThis.document) {
+function getGridSizeControls(scope, config) {
+  return Array.from(scope.querySelectorAll(config.controlSelector))
+    .filter((control) => !config.excludeControlScopeSelector
+      || !control.closest?.(config.excludeControlScopeSelector));
+}
+
+function enhanceGridSize(scope, config) {
   if (!scope || typeof scope.querySelectorAll !== 'function') return 0;
-  const controls = scope.querySelectorAll(ASSET_GRID_SIZE_CONTROL_SELECTOR);
-  const grids = scope.querySelectorAll(ASSET_GRID_SELECTOR);
+  const controls = getGridSizeControls(scope, config);
+  const grids = scope.querySelectorAll(config.gridSelector);
   if (controls.length === 0 || grids.length === 0) return 0;
 
-  applyAssetGridSize(scope, readAssetGridSize());
+  applyGridSize(scope, readGridSize(config.storageKey), config, controls);
   controls.forEach((group) => {
     group.querySelectorAll(ASSET_GRID_SIZE_SLIDER_SELECTOR).forEach((slider) => {
-      if (isEnhancementBound(slider, 'assetGridSizeBound')) return;
-      markEnhancementBound(slider, 'assetGridSizeBound');
-      slider.addEventListener('input', () => {
+      if (isEnhancementBound(slider, config.boundKey)) return;
+      markEnhancementBound(slider, config.boundKey);
+      const applySliderSize = () => {
         const size = assetGridSizeFromPosition(slider.value);
         if (!size) return;
-        writeAssetGridSize(size);
-        applyAssetGridSize(scope, size);
-      });
+        writeGridSize(size, config.storageKey);
+        applyGridSize(scope, size, config, controls);
+      };
+      slider.addEventListener('input', applySliderSize);
+      slider.addEventListener('change', applySliderSize);
     });
   });
   return controls.length;
+}
+
+export function enhanceAssetGridSize(scope = globalThis.document) {
+  return enhanceGridSize(scope, ASSET_GRID_SIZE_CONFIG);
+}
+
+export function enhanceProjectGridSize(scope = globalThis.document) {
+  return enhanceGridSize(scope, PROJECT_GRID_SIZE_CONFIG);
 }
 
 function assetProjectFilterInput(option) {
@@ -1926,10 +1979,10 @@ export function enhanceProjectAssetCategoryFilter(scope = globalThis.document) {
   return filters.length;
 }
 
-let activeAssetViewerInfoPlacement = null;
-let assetViewerInfoViewportListenersBound = false;
+let activeGridInfoPlacement = null;
+let gridInfoViewportListenersBound = false;
 
-function positionAssetViewerInfo(preview, info) {
+function positionGridInfo(preview, info, config) {
   if (!preview || !info || typeof preview.getBoundingClientRect !== 'function') return;
 
   const viewportWidth = Number(globalThis.document?.documentElement?.clientWidth)
@@ -1944,64 +1997,65 @@ function positionAssetViewerInfo(preview, info) {
     : { width: 0, height: 0 };
   const infoWidth = Math.min(
     Math.max(Number(info.offsetWidth) || Number(infoRect.width) || 0, 0),
-    viewportWidth - (ASSET_VIEWER_INFO_GUTTER * 2),
+    viewportWidth - (config.gutter * 2),
   );
   const infoHeight = Math.max(Number(info.offsetHeight) || Number(infoRect.height) || 0, 0);
   if (!(infoWidth > 0) || !(infoHeight > 0)) return;
 
   const unclampedLeft = previewRect.left + ((previewRect.width - infoWidth) / 2);
   const left = Math.max(
-    ASSET_VIEWER_INFO_GUTTER,
-    Math.min(unclampedLeft, viewportWidth - ASSET_VIEWER_INFO_GUTTER - infoWidth),
+    config.gutter,
+    Math.min(unclampedLeft, viewportWidth - config.gutter - infoWidth),
   );
 
-  const belowTop = previewRect.bottom + ASSET_VIEWER_INFO_GUTTER;
-  const aboveTop = previewRect.top - ASSET_VIEWER_INFO_GUTTER - infoHeight;
+  const belowTop = previewRect.bottom + config.gutter;
+  const aboveTop = previewRect.top - config.gutter - infoHeight;
   let top = belowTop;
-  if (belowTop + infoHeight > viewportHeight - ASSET_VIEWER_INFO_GUTTER && aboveTop >= ASSET_VIEWER_INFO_GUTTER) {
+  if (belowTop + infoHeight > viewportHeight - config.gutter && aboveTop >= config.gutter) {
     top = aboveTop;
-  } else if (belowTop + infoHeight > viewportHeight - ASSET_VIEWER_INFO_GUTTER) {
-    top = Math.max(ASSET_VIEWER_INFO_GUTTER, viewportHeight - ASSET_VIEWER_INFO_GUTTER - infoHeight);
+  } else if (belowTop + infoHeight > viewportHeight - config.gutter) {
+    top = Math.max(config.gutter, viewportHeight - config.gutter - infoHeight);
   }
 
-  info.style?.setProperty?.('--asset-info-left', `${left - previewRect.left}px`);
-  info.style?.setProperty?.('--asset-info-top', `${top - previewRect.top}px`);
+  info.style?.setProperty?.(config.leftProperty, `${left - previewRect.left}px`);
+  info.style?.setProperty?.(config.topProperty, `${top - previewRect.top}px`);
   info.setAttribute?.('data-positioned', 'true');
 }
 
-function repositionActiveAssetViewerInfo() {
-  if (!activeAssetViewerInfoPlacement) return;
-  positionAssetViewerInfo(
-    activeAssetViewerInfoPlacement.preview,
-    activeAssetViewerInfoPlacement.info,
+function repositionActiveGridInfo() {
+  if (!activeGridInfoPlacement) return;
+  positionGridInfo(
+    activeGridInfoPlacement.preview,
+    activeGridInfoPlacement.info,
+    activeGridInfoPlacement.config,
   );
 }
 
-function bindAssetViewerInfoViewportListeners() {
-  if (assetViewerInfoViewportListenersBound || typeof globalThis.addEventListener !== 'function') return;
-  assetViewerInfoViewportListenersBound = true;
-  globalThis.addEventListener('resize', repositionActiveAssetViewerInfo);
-  globalThis.addEventListener('scroll', repositionActiveAssetViewerInfo, true);
+function bindGridInfoViewportListeners() {
+  if (gridInfoViewportListenersBound || typeof globalThis.addEventListener !== 'function') return;
+  gridInfoViewportListenersBound = true;
+  globalThis.addEventListener('resize', repositionActiveGridInfo);
+  globalThis.addEventListener('scroll', repositionActiveGridInfo, true);
 }
 
-export function enhanceAssetViewerInfoCards(scope = globalThis.document) {
+function enhanceGridInfoCards(scope, config) {
   if (!scope || typeof scope.querySelectorAll !== 'function') return 0;
 
-  const previews = scope.querySelectorAll(ASSET_VIEWER_PREVIEW_SELECTOR);
+  const previews = scope.querySelectorAll(config.previewSelector);
   let boundCount = 0;
   previews.forEach((preview) => {
-    const info = preview.querySelector?.(ASSET_VIEWER_INFO_SELECTOR);
-    if (!info || isEnhancementBound(preview, 'assetViewerInfoBound')) return;
+    const info = preview.querySelector?.(config.infoSelector);
+    if (!info || isEnhancementBound(preview, config.boundKey)) return;
 
-    markEnhancementBound(preview, 'assetViewerInfoBound');
+    markEnhancementBound(preview, config.boundKey);
     boundCount += 1;
     const activate = () => {
-      activeAssetViewerInfoPlacement = { preview, info };
-      positionAssetViewerInfo(preview, info);
+      activeGridInfoPlacement = { preview, info, config };
+      positionGridInfo(preview, info, config);
     };
     const deactivate = () => {
-      if (activeAssetViewerInfoPlacement?.preview === preview) {
-        activeAssetViewerInfoPlacement = null;
+      if (activeGridInfoPlacement?.preview === preview) {
+        activeGridInfoPlacement = null;
       }
     };
 
@@ -2013,8 +2067,16 @@ export function enhanceAssetViewerInfoCards(scope = globalThis.document) {
     });
   });
 
-  if (boundCount > 0) bindAssetViewerInfoViewportListeners();
+  if (boundCount > 0) bindGridInfoViewportListeners();
   return boundCount;
+}
+
+export function enhanceAssetViewerInfoCards(scope = globalThis.document) {
+  return enhanceGridInfoCards(scope, ASSET_VIEWER_INFO_CONFIG);
+}
+
+export function enhanceProjectInfoCards(scope = globalThis.document) {
+  return enhanceGridInfoCards(scope, PROJECT_INFO_CONFIG);
 }
 
 if (typeof document !== 'undefined') {
@@ -2029,10 +2091,12 @@ if (typeof document !== 'undefined') {
     enhanceAssetSelection(document);
     enhanceAssetRenames(document);
     enhanceAssetGridSize(document);
+    enhanceProjectGridSize(document);
     enhanceAssetProjectFilter(document);
     enhanceProjectAssetCategoryFilter(document);
     enhanceAssetViewerFilterDisclosures(document);
     enhanceAssetViewerInfoCards(document);
+    enhanceProjectInfoCards(document);
   };
 
   if (document.readyState === 'loading') {

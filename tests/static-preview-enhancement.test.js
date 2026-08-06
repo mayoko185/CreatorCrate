@@ -12,10 +12,12 @@ import {
   enhanceAssetSelection,
   enhanceAssetRenames,
   enhanceAssetGridSize,
+  enhanceProjectGridSize,
   enhanceAssetProjectFilter,
   enhanceProjectAssetCategoryFilter,
   enhanceAssetViewerFilterDisclosures,
   enhanceAssetViewerInfoCards,
+  enhanceProjectInfoCards,
 } from '../src/static/creatorcrate.js';
 
 function makeElement(props = {}) {
@@ -2167,7 +2169,7 @@ describe('asset grid size enhancement', () => {
     };
   }
 
-  function makeGridSliderControls() {
+  function makeGridSliderControls({ project = false } = {}) {
     const sliderListeners = [];
     const slider = {
       value: '2',
@@ -2193,6 +2195,9 @@ describe('asset grid size enhancement', () => {
         if (selector === '[data-grid-size-slider]') return [slider];
         if (selector === '[data-grid-size-option-label]') return labels;
         return [];
+      },
+      closest(selector) {
+        return project && selector === '[data-project-grid-size-controls]' ? {} : null;
       },
     };
     return { group, slider, labels };
@@ -2348,6 +2353,137 @@ describe('asset grid size enhancement', () => {
     }
   });
 
+  it('finds the Projects grid and control, maps every size, and keeps state isolated', () => {
+    const assetGrid = makeGrid();
+    const projectGrid = makeGrid();
+    const assetControls = makeGridSliderControls();
+    const projectControls = makeGridSliderControls({ project: true });
+    const storage = new Map([
+      ['creatorcrate-asset-grid-size', 'large'],
+      ['creatorcrate-project-grid-size', 'compact'],
+    ]);
+    const previousStorage = globalThis.localStorage;
+    globalThis.localStorage = {
+      getItem: (key) => storage.get(key) ?? null,
+      setItem: (key, value) => storage.set(key, value),
+    };
+    try {
+      const scope = {
+        querySelectorAll(selector) {
+          if (selector === '[data-asset-grid-size-controls]') return [assetControls.group, projectControls.group];
+          if (selector === '[data-project-grid-size-controls] [data-asset-grid-size-controls]') {
+            return [projectControls.group];
+          }
+          if (selector === '.asset-grid') return [assetGrid];
+          if (selector === '.project-grid') return [projectGrid];
+          return [];
+        },
+      };
+
+      expect(enhanceAssetGridSize(scope)).toBe(1);
+      expect(assetGrid.style.values['--asset-card-min']).toBe('20rem');
+      expect(projectGrid.style.values).toEqual({});
+      expect(storage.get('creatorcrate-asset-grid-size')).toBe('large');
+
+      expect(enhanceProjectGridSize(scope)).toBe(1);
+      expect(projectGrid.attrs['data-grid-size']).toBe('compact');
+      expect(projectGrid.style.values['--project-card-min']).toBe('12rem');
+      expect(projectGrid.style.values['--asset-card-min']).toBeUndefined();
+      expect(projectControls.slider.attrs['aria-valuetext']).toBe('Compact');
+      expect(storage.get('creatorcrate-project-grid-size')).toBe('compact');
+
+      const expected = [
+        { position: '1', size: 'compact', min: '12rem', label: 'Compact' },
+        { position: '2', size: 'default', min: undefined, label: 'Default' },
+        { position: '3', size: 'large', min: '20rem', label: 'Large' },
+      ];
+      for (const { position, size, min, label } of expected) {
+        projectControls.slider.value = position;
+        projectControls.slider.dispatch('input');
+
+        expect(storage.get('creatorcrate-project-grid-size')).toBe(size);
+        expect(projectControls.slider.attrs['aria-valuenow']).toBe(position);
+        expect(projectControls.slider.attrs['aria-valuetext']).toBe(label);
+        if (min) expect(projectGrid.style.values['--project-card-min']).toBe(min);
+        else expect(projectGrid.style.values).toEqual({});
+        if (size === 'default') expect(projectGrid.attrs['data-grid-size']).toBeUndefined();
+        else expect(projectGrid.attrs['data-grid-size']).toBe(size);
+      }
+
+      assetControls.slider.value = '1';
+      assetControls.slider.dispatch('input');
+      expect(storage.get('creatorcrate-asset-grid-size')).toBe('compact');
+      expect(storage.get('creatorcrate-project-grid-size')).toBe('large');
+      expect(assetGrid.style.values['--asset-card-min']).toBe('12rem');
+      expect(projectGrid.style.values['--project-card-min']).toBe('20rem');
+      expect(storage.get('creatorcrate-asset-grid-size')).not.toBe(storage.get('creatorcrate-project-grid-size'));
+    } finally {
+      if (previousStorage === undefined) delete globalThis.localStorage;
+      else globalThis.localStorage = previousStorage;
+    }
+  });
+
+  it('applies a Projects size when the range control emits change without input', () => {
+    const grid = makeGrid();
+    const controls = makeGridSliderControls({ project: true });
+    const storage = new Map();
+    const previousStorage = globalThis.localStorage;
+    globalThis.localStorage = {
+      getItem: (key) => storage.get(key) ?? null,
+      setItem: (key, value) => storage.set(key, value),
+    };
+    try {
+      const scope = {
+        querySelectorAll(selector) {
+          if (selector === '[data-project-grid-size-controls] [data-asset-grid-size-controls]') return [controls.group];
+          if (selector === '.project-grid') return [grid];
+          return [];
+        },
+      };
+
+      expect(enhanceProjectGridSize(scope)).toBe(1);
+      controls.slider.value = '3';
+      controls.slider.dispatch('change');
+
+      expect(storage.get('creatorcrate-project-grid-size')).toBe('large');
+      expect(grid.style.values['--project-card-min']).toBe('20rem');
+      expect(grid.attrs['data-grid-size']).toBe('large');
+      expect(controls.slider.attrs['aria-valuetext']).toBe('Large');
+    } finally {
+      if (previousStorage === undefined) delete globalThis.localStorage;
+      else globalThis.localStorage = previousStorage;
+    }
+  });
+
+  it('falls back to the responsive default for missing or invalid Projects storage', () => {
+    for (const stored of [null, 'not-supported']) {
+      const grid = makeGrid();
+      const controls = makeGridSliderControls({ project: true });
+      const previousStorage = globalThis.localStorage;
+      globalThis.localStorage = {
+        getItem: () => stored,
+        setItem() {},
+      };
+      try {
+        const scope = {
+          querySelectorAll(selector) {
+            if (selector === '[data-project-grid-size-controls] [data-asset-grid-size-controls]') return [controls.group];
+            if (selector === '.project-grid') return [grid];
+            return [];
+          },
+        };
+
+        expect(enhanceProjectGridSize(scope)).toBe(1);
+        expect(grid.style.values).toEqual({});
+        expect(controls.slider.value).toBe('2');
+        expect(controls.slider.attrs['aria-valuetext']).toBe('Default');
+      } finally {
+        if (previousStorage === undefined) delete globalThis.localStorage;
+        else globalThis.localStorage = previousStorage;
+      }
+    }
+  });
+
   it('binds Grid preview hover/focus positioning without adding a metadata trigger', () => {
     const listeners = [];
     const styleValues = {};
@@ -2401,6 +2537,69 @@ describe('asset grid size enhancement', () => {
       expect(attrs['data-positioned']).toBe('true');
       expect(styleValues['--asset-info-left']).toBe('-188px');
       expect(styleValues['--asset-info-top']).toBe('108px');
+    } finally {
+      if (previousWidth === undefined) delete globalThis.innerWidth;
+      else globalThis.innerWidth = previousWidth;
+      if (previousHeight === undefined) delete globalThis.innerHeight;
+      else globalThis.innerHeight = previousHeight;
+      if (previousDocument === undefined) delete globalThis.document;
+      else globalThis.document = previousDocument;
+    }
+  });
+
+  it('binds Projects Grid preview information to the shared viewport edge positioning', () => {
+    const listeners = [];
+    const styleValues = {};
+    const attrs = {};
+    const info = {
+      offsetWidth: 240,
+      offsetHeight: 120,
+      style: {
+        setProperty(name, value) { styleValues[name] = value; },
+      },
+      getBoundingClientRect() {
+        return { width: 240, height: 120 };
+      },
+      setAttribute(name, value) { attrs[name] = String(value); },
+    };
+    const preview = {
+      dataset: {},
+      querySelector(selector) {
+        return selector === '[data-project-info-card]' ? info : null;
+      },
+      getBoundingClientRect() {
+        return { left: 0, top: 600, width: 200, height: 100, bottom: 700 };
+      },
+      addEventListener(type, handler) { listeners.push({ type, handler }); },
+      contains() { return true; },
+      setAttribute(name, value) { attrs[name] = String(value); },
+    };
+    const scope = {
+      querySelectorAll(selector) {
+        return selector === '[data-project-grid-preview]' ? [preview] : [];
+      },
+    };
+    const previousWidth = globalThis.innerWidth;
+    const previousHeight = globalThis.innerHeight;
+    const previousDocument = globalThis.document;
+    globalThis.innerWidth = 800;
+    globalThis.innerHeight = 700;
+    globalThis.document = { documentElement: { clientWidth: 800, clientHeight: 700 } };
+
+    try {
+      expect(enhanceProjectInfoCards(scope)).toBe(1);
+      expect(listeners.map(({ type }) => type)).toEqual([
+        'pointerenter',
+        'focusin',
+        'pointerleave',
+        'focusout',
+      ]);
+
+      listeners.find(({ type }) => type === 'focusin').handler();
+
+      expect(attrs['data-positioned']).toBe('true');
+      expect(styleValues['--project-info-left']).toBe('8px');
+      expect(styleValues['--project-info-top']).toBe('-128px');
     } finally {
       if (previousWidth === undefined) delete globalThis.innerWidth;
       else globalThis.innerWidth = previousWidth;

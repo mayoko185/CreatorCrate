@@ -5,14 +5,34 @@
 
 {% set page_title = "Projects" %}
 
+{% macro renderFilterSummary(selectedValues, options, emptyLabel, countLabel, prefix) -%}
+  {%- if selectedValues.length == 0 -%}
+    {{ emptyLabel }}
+  {%- elif selectedValues.length == 1 -%}
+    {%- for option in options -%}
+      {%- if option.selected -%}
+        {{ prefix or '' }}{{ option.label or option.displayName }}
+      {%- endif -%}
+    {%- endfor -%}
+  {%- else -%}
+    {{ selectedValues.length }} {{ countLabel }} selected
+  {%- endif -%}
+{%- endmacro %}
+
 {% block content %}
   {% call pageHeading.render("Browse active and archived project records.") %}
     <a class="button button-primary" href="/projects/new">New Project</a>
   {% endcall %}
 
-  {{ viewSwitcher.render(view, pageUrl, "Project display") }}
+  <div class="asset-viewer-display-controls"{% if view == 'grid' %} data-project-grid-size-controls{% endif %}>
+    {{ viewSwitcher.render(view, pageUrl, "Project display") }}
 
-  <form class="filters" method="get" action="/projects">
+    {% if view == 'grid' %}
+      {% include "partials/asset-grid-size-control.njk" %}
+    {% endif %}
+  </div>
+
+  <form class="filters asset-viewer-filters" method="get" action="/projects">
     {% if view == 'list' or preserveViewQuery %}
       <input type="hidden" name="view" value="{{ view }}">
     {% endif %}
@@ -21,25 +41,49 @@
       <input type="search" id="search" name="search" value="{{ query.search or '' }}">
     </div>
 
-    <div class="field">
-      <label for="status">Status</label>
-      <select id="status" name="status">
-        <option value="" {% if not query.status %}selected{% endif %}>All active</option>
-        {% for s in statuses %}
-          <option value="{{ s }}" {% if query.status == s %}selected{% endif %}>{{ s | replace('-', ' ') | title }}</option>
-        {% endfor %}
-      </select>
-    </div>
+    <fieldset class="field asset-viewer-filter-field">
+      <legend>Status</legend>
+      <details class="asset-filter-multiselect" data-asset-viewer-filter-disclosure>
+        <summary id="project-status-filter-trigger"
+                 aria-controls="project-status-filter-options"
+                 aria-expanded="false"
+                 aria-label="Status filter: {{ renderFilterSummary(query.statuses, statusOptions, 'All active', 'statuses', '') }}">
+          <span class="asset-filter-multiselect-summary">{{ renderFilterSummary(query.statuses, statusOptions, 'All active', 'statuses', '') }}</span>
+        </summary>
+        <div id="project-status-filter-options" class="asset-filter-multiselect-panel" role="group" aria-label="Status options">
+          {% for option in statusOptions %}
+            <div class="asset-filter-multiselect-option">
+              <input id="project-status-option-{{ loop.index }}" name="status" type="checkbox" value="{{ option.value }}"{% if option.selected %} checked{% endif %}>
+              <label for="project-status-option-{{ loop.index }}">{{ option.label }}</label>
+            </div>
+          {% endfor %}
+        </div>
+      </details>
+    </fieldset>
 
-    <div class="field">
-      <label for="tag">Tag</label>
-      <select id="tag" name="tag"{% if tagOptions.length == 0 %} disabled{% endif %}>
-        <option value=""{% if not query.tag %} selected{% endif %}>All tags</option>
-        {% for tag in tagOptions %}
-          <option value="{{ tag.value }}"{% if query.tag == tag.value %} selected{% endif %}>{{ tag.displayName }}</option>
-        {% endfor %}
-      </select>
-    </div>
+    <fieldset class="field asset-viewer-filter-field">
+      <legend>Tag</legend>
+      <details class="asset-filter-multiselect" data-asset-viewer-filter-disclosure>
+        <summary id="project-tag-filter-trigger"
+                 aria-controls="project-tag-filter-options"
+                 aria-expanded="false"
+                 aria-label="Tag filter: {{ renderFilterSummary(query.tagIds, tagOptions, 'All tags', 'tags', '') }}">
+          <span class="asset-filter-multiselect-summary">{{ renderFilterSummary(query.tagIds, tagOptions, 'All tags', 'tags', '') }}</span>
+        </summary>
+        <div id="project-tag-filter-options" class="asset-filter-multiselect-panel" role="group" aria-label="Tag options">
+          {% if tagOptions.length > 0 %}
+            {% for option in tagOptions %}
+              <div class="asset-filter-multiselect-option">
+                <input id="project-tag-option-{{ loop.index }}" name="tag" type="checkbox" value="{{ option.value }}"{% if option.selected %} checked{% endif %}>
+                <label for="project-tag-option-{{ loop.index }}">{{ option.displayName }}</label>
+              </div>
+            {% endfor %}
+          {% else %}
+            <p class="asset-filter-multiselect-empty">No tags available</p>
+          {% endif %}
+        </div>
+      </details>
+    </fieldset>
 
     <div class="field">
       <label for="sort">Sort</label>
@@ -65,46 +109,11 @@
   <p class="results-meta">{{ total }} project{% if total != 1 %}s{% endif %} found</p>
 
   {% if projects.length > 0 %}
-    <ul class="{% if view == 'list' %}project-list{% else %}project-grid{% endif %}">
-      {% for project in projects %}
-        {% call projectCard.render(project, view) %}
-          <dl class="project-card-metadata">
-            {% if project.tags and project.tags.length > 0 %}
-              <div class="project-card-meta project-card-meta--tags">
-                <dt>Tags</dt>
-                <dd>
-                  <ul class="project-card-tag-list" aria-label="Assigned tags">
-                    {% for tag in project.tags %}
-                      <li>{{ tag.displayName }}</li>
-                    {% endfor %}
-                  </ul>
-                </dd>
-              </div>
-            {% endif %}
-            <div class="project-card-meta">
-              <dt>Status</dt>
-              <dd>{% set status = project.status %}{% include "partials/status-badge.njk" %}</dd>
-            </div>
-            <div class="project-card-meta">
-              <dt>Priority</dt>
-              <dd>{{ project.priority | title }}</dd>
-            </div>
-            <div class="project-card-meta project-card-meta--date">
-              <dt>Updated</dt>
-              <dd>{{ project.updated_at }}</dd>
-            </div>
-            <div class="project-card-meta project-card-meta--date">
-              <dt>Planned</dt>
-              <dd>{{ project.planned_date or '—' }}</dd>
-            </div>
-            <div class="project-card-meta project-card-meta--date">
-              <dt>Published</dt>
-              <dd>{{ project.published_date or '—' }}</dd>
-            </div>
-          </dl>
-        {% endcall %}
-      {% endfor %}
-    </ul>
+      <ul class="{% if view == 'list' %}project-list{% else %}project-grid{% endif %}">
+        {% for project in projects %}
+        {{ projectCard.render(project, view) }}
+        {% endfor %}
+      </ul>
 
     {% if pageCount > 1 %}
       <nav class="pagination" aria-label="Project list pages">

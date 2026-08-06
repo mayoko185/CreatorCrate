@@ -20,6 +20,7 @@ import { PAGE_DEFAULT_DEFINITIONS } from '../src/services/page-defaults-service.
 import { makeZip } from './helpers/zip-fixture.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
+const PROJECTS_TEMPLATE_PATH = fileURLToPath(new URL('../src/views/projects/index.njk', import.meta.url));
 
 function extractProjectCard(html, projectId) {
   const cards = html.match(/<article\b[^>]*data-project-card[^>]*>[\s\S]*?<\/article>/g) || [];
@@ -35,11 +36,15 @@ function extractPageHeadingActions(html) {
 }
 
 function extractProjectTags(card) {
-  return card.match(/<div class="project-card-meta project-card-meta--tags">([\s\S]*?)<\/div>/)?.[0] || '';
+  return card.match(/<div class="project-grid-card-info-section">([\s\S]*?)<\/div>/)?.[0] || '';
 }
 
 function extractTagFilter(html) {
-  return html.match(/<select id="tag"[\s\S]*?<\/select>/)?.[0] || '';
+  return html.match(/<fieldset class="field asset-viewer-filter-field">\s*<legend>Tag<\/legend>[\s\S]*?<\/fieldset>/)?.[0] || '';
+}
+
+function extractStatusFilter(html) {
+  return html.match(/<fieldset class="field asset-viewer-filter-field">\s*<legend>Status<\/legend>[\s\S]*?<\/fieldset>/)?.[0] || '';
 }
 
 describe('project HTTP workflow', () => {
@@ -171,8 +176,64 @@ describe('project HTTP workflow', () => {
     expect(res.text).toContain('href="/projects?view=list"');
     expect(res.text).toContain('<option value="created" selected>Created</option>');
     expect(res.text).toContain('<option value="desc" selected>Desc</option>');
-    expect(extractTagFilter(res.text)).toContain('<select id="tag" name="tag" disabled>');
-    expect(extractTagFilter(res.text)).toContain('<option value="" selected>All tags</option>');
+    expect(extractStatusFilter(res.text)).toContain('aria-label="Status filter: All active"');
+    expect(extractTagFilter(res.text)).toContain('aria-label="Tag filter: All tags"');
+    expect(extractTagFilter(res.text)).toContain('No tags available');
+  });
+
+  it('renders status and tag multiselects with Asset Viewer disclosure hooks and checked values', async () => {
+    const firstTag = app.locals.tagService.createTag({ name: 'First Project Filter Tag' });
+    const secondTag = app.locals.tagService.createTag({ name: 'Second Project Filter Tag' });
+
+    const res = await agent
+      .get(`/projects?status=planned&status=ready&tag=${secondTag.id}&tag=${firstTag.id}`)
+      .expect(200);
+
+    expect(res.text).toContain('<form class="filters asset-viewer-filters" method="get" action="/projects">');
+    expect((res.text.match(/data-asset-viewer-filter-disclosure/g) || [])).toHaveLength(2);
+    expect(extractStatusFilter(res.text)).toContain('aria-label="Status filter: 2 statuses selected"');
+    expect(extractStatusFilter(res.text)).toMatch(/name="status"[^>]+value="planned" checked/);
+    expect(extractStatusFilter(res.text)).toMatch(/name="status"[^>]+value="ready" checked/);
+    expect(extractTagFilter(res.text)).toContain('aria-label="Tag filter: 2 tags selected"');
+    expect(extractTagFilter(res.text)).toMatch(new RegExp(`name="tag"[^>]+value="${firstTag.id}" checked`));
+    expect(extractTagFilter(res.text)).toMatch(new RegExp(`name="tag"[^>]+value="${secondTag.id}" checked`));
+    expect(res.text).not.toMatch(/<select[^>]+(?:id="status"|id="tag"|name="status"|name="tag")/);
+  });
+
+  it('reset removes all selected status and tag values', async () => {
+    const tag = app.locals.tagService.createTag({ name: 'Reset Filter Tag' });
+    const selected = await agent
+      .get(`/projects?status=planned&status=ready&tag=${tag.id}`)
+      .expect(200);
+
+    expect(selected.text).toContain('href="/projects"');
+
+    const cleared = await agent.get('/projects').expect(200);
+    expect(extractStatusFilter(cleared.text)).toContain('aria-label="Status filter: All active"');
+    expect(extractStatusFilter(cleared.text)).not.toMatch(/name="status"[^>]+checked/);
+    expect(extractTagFilter(cleared.text)).toContain('aria-label="Tag filter: All tags"');
+    expect(extractTagFilter(cleared.text)).not.toMatch(/name="tag"[^>]+checked/);
+  });
+
+  it('renders Asset Viewer-style display controls and grid-size hooks only in Projects Grid view', async () => {
+    await createProject({ title: 'Grid Controls Project' });
+    const grid = await agent.get('/projects?view=grid').expect(200);
+    expect(grid.text).toMatch(
+      /<div class="asset-viewer-display-controls" data-project-grid-size-controls>\s*<nav class="view-switcher" aria-label="Project display">[\s\S]*?<\/nav>\s*<div class="asset-grid-size-controls asset-viewer-grid-size-controls" data-asset-grid-size-controls/
+    );
+    expect(grid.text).toContain('<ul class="project-grid">');
+    expect(grid.text).toContain('data-grid-size-slider');
+    expect(grid.text).toContain('data-grid-size-option-label="compact"');
+
+    const gridLink = grid.text.match(/<a class="view-switcher-option" href="([^"]+)"[^>]*>Grid<\/a>/);
+    const listLink = grid.text.match(/<a class="view-switcher-option" href="([^"]+)"[^>]*>List<\/a>/);
+    expect(gridLink?.[1]).toBe('/projects');
+    expect(listLink?.[1]).toBe('/projects?view=list');
+
+    const list = await agent.get('/projects?view=list').expect(200);
+    expect(list.text).toMatch(/<div class="asset-viewer-display-controls">\s*<nav class="view-switcher" aria-label="Project display">/);
+    expect(list.text).not.toContain('data-asset-grid-size-controls');
+    expect(list.text).not.toContain('data-grid-size-slider');
   });
 
   it('redirects a bare request to valid saved non-fallback Projects defaults', async () => {
@@ -267,11 +328,18 @@ describe('project HTTP workflow', () => {
     const availableCard = extractProjectCard(res.text, availableId);
     const noneCard = extractProjectCard(res.text, noneId);
     const unavailableCard = extractProjectCard(res.text, unavailableId);
+    const projectsTemplate = fs.readFileSync(PROJECTS_TEMPLATE_PATH, 'utf8');
 
     expect(res.text).toContain('<ul class="project-grid">');
     expect(res.text).not.toContain('<table class="data-table">');
+    expect(extractProjectCards(res.text)).toHaveLength(3);
     expect(res.text.match(/<li class="project-grid-item">/g)).toHaveLength(3);
     expect(res.text.match(/<article class="project-card[^"]*" data-project-card>/g)).toHaveLength(3);
+    expect(projectsTemplate).toContain('{{ projectCard.render(project, view) }}');
+    expect(projectsTemplate).not.toContain('{% call projectCard.render(project, view) %}');
+    expect(projectsTemplate).not.toContain('<dl class="project-card-metadata">');
+    expect(projectsTemplate).not.toContain('project-card-meta--tags');
+    expect(res.text).not.toContain('project-card-meta--tags');
 
     expect(availableCard).toContain(`data-project-card-link href="/projects/${availableId}">Available Primary Image</a>`);
     expect(availableCard).toMatch(
@@ -279,10 +347,22 @@ describe('project HTTP workflow', () => {
     );
     expect(availableCard).toContain('data-preview-enhancement');
     expect(availableCard).toContain('data-preview-fallback');
+    expect(availableCard).toContain(`class="project-card project-card--grid project-grid-card" data-project-card`);
+    expect(availableCard).toContain(`class="project-grid-card-preview-link" href="/projects/${availableId}"`);
+    expect(availableCard).not.toContain('project-list-card');
     expect(availableCard).not.toContain('/original');
     expect(availableCard).not.toContain('/thumbnail');
     expect(availableCard).toMatch(
-      /<h2 class="project-card-title">\s*<a class="project-card-link"[^>]*>Available Primary Image<\/a>\s*<\/h2>\s*<div class="project-card-details">/
+      /<div class="project-grid-card-top"[^>]*>[\s\S]*?project-grid-card-status[\s\S]*?Ready[\s\S]*?project-grid-card-priority[\s\S]*?High[\s\S]*?<\/div>[\s\S]*?<div class="project-grid-card-preview[\s\S]*?<div class="project-grid-card-info" data-project-info-card[^>]*>[\s\S]*?<h3 class="project-grid-card-info-heading">Project information<\/h3>[\s\S]*?<dt>Status<\/dt>/
+    );
+    expect(availableCard).toContain('data-project-grid-preview');
+    expect(availableCard).toContain('<dl class="project-grid-card-info-list">');
+    expect((availableCard.match(/class="project-grid-card-info-row"/g) || [])).toHaveLength(5);
+    expect(availableCard).toContain('<div class="project-grid-card-info-section">');
+    expect(availableCard).toContain('<span class="project-grid-card-info-section-label">Tags</span>');
+    expect(availableCard).toContain('class="project-grid-card-info-empty">No tags assigned</span>');
+    expect(availableCard).toMatch(
+      /<div class="project-grid-card-title-area">\s*<h2 class="project-grid-card-title">\s*<a class="project-card-link"[^>]*>Available Primary Image<\/a>\s*<\/h2>\s*<\/div>/
     );
 
     expect(noneCard).toContain('data-primary-image-state="none"');
@@ -309,21 +389,42 @@ describe('project HTTP workflow', () => {
     const unavailableListCard = extractProjectCard(list.text, unavailableId);
     expect(list.text).toContain('<ul class="project-list">');
     expect(list.text).not.toContain('<ul class="project-grid">');
-    expect(availableListCard).toContain('class="project-card project-card--list"');
+    expect(availableListCard).toContain('class="project-card project-card--list project-list-card" data-project-card');
+    expect(availableListCard).not.toContain('project-grid-card');
+    expect(availableListCard).not.toContain('data-project-info-card');
+    expect(availableListCard).not.toContain('data-project-grid-preview');
+    expect(availableListCard).not.toContain('project-grid-card-info-list');
+    expect(availableListCard).toContain('class="project-list-card-media project-card-media project-card-media--image"');
+    expect(availableListCard).toContain(`class="project-list-card-media-link" href="/projects/${availableId}"`);
     expect(availableListCard).toMatch(
-      /<img class="project-card-media-image project-card-media-image--list" data-preview-image src="\/projects\/\d+\/assets\/\d+\/thumbnail\?v=[0-9a-f]+"/
+      /<img class="project-list-card-media-image project-card-media-image project-card-media-image--list" data-preview-image src="\/projects\/\d+\/assets\/\d+\/thumbnail\?v=[0-9a-f]+"/
     );
     expect(availableListCard).not.toContain('/preview');
     expect(availableListCard).not.toContain('/original');
+    expect(availableListCard).toContain('class="project-list-card-header"');
+    expect(availableListCard).toMatch(
+      /<h2 class="project-list-card-title project-card-title">\s*<a class="project-list-card-link project-card-link"[^>]*>Available Primary Image<\/a>/
+    );
+    expect(availableListCard).toContain('class="project-list-card-status"');
+    expect(availableListCard).toContain('>Ready</span>');
+    expect(availableListCard).toContain('class="project-list-card-priority">Priority: High</span>');
+    expect(availableListCard).toContain('<dl class="project-list-card-metadata">');
+    expect(availableListCard).not.toContain('project-card-meta--tags');
     expect(availableListCard).toContain('<dt>Status</dt>');
     expect(availableListCard).toContain('<dt>Priority</dt>');
     expect(availableListCard).toContain('<dt>Updated</dt>');
     expect(availableListCard).toContain('<dt>Planned</dt>');
     expect(availableListCard).toContain('<dt>Published</dt>');
+    expect(availableListCard).toContain('class="project-list-card-associations"');
+    expect(availableListCard).toContain('class="project-list-card-association project-list-card-association--tags"');
     expect(noneListCard).not.toContain('<img');
+    expect(noneListCard).toContain('class="project-list-card-media project-card-media project-card-media--fallback" data-primary-image-state="none"');
     expect(noneListCard).toContain('data-primary-image-state="none"');
+    expect(noneListCard).toContain(`class="project-list-card-media-link project-list-card-media-link--fallback" href="/projects/${noneId}"`);
     expect(unavailableListCard).not.toContain('<img');
+    expect(unavailableListCard).toContain('class="project-list-card-media project-card-media project-card-media--fallback" data-primary-image-state="unavailable"');
     expect(unavailableListCard).toContain('data-primary-image-state="unavailable"');
+    expect(unavailableListCard).toContain(`class="project-list-card-media-link project-list-card-media-link--fallback" href="/projects/${unavailableId}"`);
   });
 
   it('serves scoped responsive project-card presentation contracts', async () => {
@@ -331,7 +432,11 @@ describe('project HTTP workflow', () => {
     const css = (await agent.get('/creatorcrate.css').expect(200)).text;
 
     expect(page.text).toContain('<link rel="stylesheet" href="/creatorcrate.css">');
-    expect(css).toMatch(/\.project-grid\s*\{[\s\S]*?display:\s*grid;[\s\S]*?grid-template-columns:\s*repeat\(auto-fit,\s*minmax\(min\(100%,\s*17rem\),\s*1fr\)\)/);
+    expect(css).toMatch(/\.project-grid\s*\{[\s\S]*?--project-card-min:\s*15rem;[\s\S]*?display:\s*grid;[\s\S]*?grid-template-columns:\s*repeat\(auto-fit,\s*minmax\(min\(100%,\s*var\(--project-card-min\)\),\s*1fr\)\)/);
+    expect(css).toMatch(/@media\s*\(max-width:\s*540px\)[\s\S]*?\.project-grid\s*\{[\s\S]*?--project-card-min:\s*9rem;[\s\S]*?gap:\s*var\(--space-md\)/);
+    expect(css).toMatch(/\.project-list\s*>\s*li:not\(\.project-list-item\)\s*\{[^}]*padding:\s*0\.75rem 0;[^}]*border-bottom:\s*1px solid var\(--border\);/);
+    expect(css).not.toMatch(/\.project-list\s+li\s*\{[^}]*border-bottom:\s*1px solid var\(--border\)/);
+    expect(css).toMatch(/@media\s*\(max-width:\s*540px\)[\s\S]*?\.project-list\s*>\s*li:not\(\.project-list-item\)\s*\{[^}]*padding:\s*var\(--space-sm\) 0;/);
     expect(css).toMatch(/\.project-card-media-image\s*\{[^}]*width:\s*100%;[^}]*height:\s*auto;/);
     expect(css).not.toMatch(/\.project-card[^{}]*\{[^}]*aspect-ratio\s*:/);
     expect(css).not.toMatch(/\.project-card[^{}]*\{[^}]*object-fit\s*:\s*cover/);
@@ -342,11 +447,34 @@ describe('project HTTP workflow', () => {
     expect(css).toMatch(/@media\s*\(max-width:\s*540px\)\s*\{[\s\S]*?\.project-card-meta\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\)/);
     expect(css).toMatch(/\.project-card:focus-within\s*\{[\s\S]*?outline:\s*2px solid var\(--focus-ring\)[\s\S]*?transform:\s*scale\(1\.01\)/);
     expect(css).toMatch(/\.project-card--grid \.project-card-media\s*\{[\s\S]*?margin:\s*var\(--space-sm\) var\(--space-sm\) 0;/);
-    expect(css).toMatch(/\.project-card--grid \.project-card-details\s*\{[\s\S]*?display:\s*none;/);
-    expect(css).toMatch(/\.project-card--grid:hover \.project-card-details,[\s\S]*?\.project-card--grid:focus-within \.project-card-details\s*\{[\s\S]*?display:\s*flex;/);
-    expect(css).toMatch(/@media\s*\(hover:\s*none\)\s*\{[\s\S]*?\.project-card--grid \.project-card-details\s*\{[\s\S]*?display:\s*flex;/);
-    expect(css).toMatch(/\.project-card--list \.project-card-media-image\s*\{[\s\S]*?width:\s*auto;[\s\S]*?height:\s*auto;[\s\S]*?max-width:\s*4rem;[\s\S]*?max-height:\s*4rem;/);
-    expect(css).not.toMatch(/\.project-card--list \.project-card-media-image\s*\{[^}]*object-fit\s*:\s*cover/);
+    expect(css).toMatch(/\.project-grid-card\s*\{[\s\S]*?position:\s*relative;[\s\S]*?overflow:\s*visible/);
+    expect(css).toMatch(/\.project-grid-card:hover,[\s\S]*?\.project-grid-card:focus-within\s*\{[\s\S]*?z-index:\s*60/);
+    expect(css).toMatch(/\.project-grid-card-top\s*\{[\s\S]*?display:\s*flex/);
+    expect(css).toMatch(/\.project-grid-card-preview\s*\{[\s\S]*?position:\s*relative;[\s\S]*?overflow:\s*visible/);
+    expect(css).toMatch(/\.project-grid-card-preview\s*\{[\s\S]*?--project-info-top:\s*0px;[\s\S]*?--project-info-left:\s*0px/);
+    expect(css).toMatch(/\.project-grid-card-info\s*\{[\s\S]*?display:\s*none[\s\S]*?position:\s*absolute[\s\S]*?z-index:\s*30/);
+    expect(css).toMatch(/\.project-grid-card-info\s*\{[\s\S]*?width:\s*min\(24rem,\s*calc\(100vw\s*-\s*2rem\)\)[\s\S]*?max-height:\s*calc\(100vh\s*-\s*1rem\)[\s\S]*?overflow:\s*auto[\s\S]*?padding:\s*var\(--space-md\)[\s\S]*?border:\s*1px solid var\(--border-strong\)[\s\S]*?border-radius:\s*var\(--radius-md\)[\s\S]*?background:\s*var\(--surface-card\)[\s\S]*?box-shadow:\s*var\(--shadow-lg\)[\s\S]*?opacity:\s*0[\s\S]*?visibility:\s*hidden[\s\S]*?pointer-events:\s*none[\s\S]*?transition:\s*opacity var\(--transition-fast\), transform var\(--transition-fast\), visibility var\(--transition-fast\)/);
+    expect(css).toMatch(/\.project-grid-card-info\[data-positioned="true"\]\s*\{[\s\S]*?top:\s*var\(--project-info-top\)[\s\S]*?left:\s*var\(--project-info-left\)[\s\S]*?transform:\s*translateY\(-0\.25rem\)/);
+    expect(css).not.toMatch(/\.project-grid-card:hover \.project-grid-card-info|\.project-grid-card:focus-within \.project-grid-card-info/);
+    expect(css).toMatch(/\.project-grid-card-preview:hover \.project-grid-card-info,[\s\S]*?\.project-grid-card-preview:focus-within \.project-grid-card-info\s*\{[\s\S]*?display:\s*block/);
+    expect(css).toMatch(/\.project-grid-card-info-row\s*\{[\s\S]*?display:\s*grid[\s\S]*?grid-template-columns:\s*minmax\(5\.5rem,\s*auto\)\s+minmax\(0,\s*1fr\)[\s\S]*?gap:\s*var\(--space-sm\)/);
+    expect(css).toMatch(/\.project-grid-card-info-row dt,[\s\S]*?\.project-grid-card-info-section-label\s*\{[\s\S]*?font-size:\s*0\.6875rem[\s\S]*?text-transform:\s*uppercase/);
+    expect(css).toMatch(/\.project-grid-card-info-section\s*\{[\s\S]*?margin-top:\s*var\(--space-sm\)[\s\S]*?padding-top:\s*var\(--space-sm\)[\s\S]*?border-top:\s*1px solid var\(--border\)/);
+    expect(css).toMatch(/\.project-grid-card-info-tags\s*\{[\s\S]*?display:\s*flex[\s\S]*?flex-wrap:\s*wrap[\s\S]*?gap:\s*var\(--space-xs\)/);
+    expect(css).toMatch(/\.project-grid-card-info-tags li\s*\{[\s\S]*?padding:\s*0\.2rem 0\.45rem[\s\S]*?border-radius:\s*var\(--radius-sm\)[\s\S]*?background:\s*var\(--surface\)[\s\S]*?font-size:\s*0\.75rem/);
+    expect(css).toMatch(/@media\s*\(max-width:\s*540px\)[\s\S]*?\.project-grid-card-info-row\s*\{[\s\S]*?grid-template-columns:\s*minmax\(5rem,\s*auto\)\s+minmax\(0,\s*1fr\)[\s\S]*?gap:\s*var\(--space-xs\)/);
+    expect(css).not.toMatch(/\.project-card--grid \.project-card-details\s*\{[\s\S]*?display:/);
+    expect(css).toMatch(/\.project-list-card\s*\{[\s\S]*?grid-template-columns:\s*clamp\(7rem,\s*20%,\s*15rem\)\s+minmax\(0,\s*1fr\)/);
+    expect(css).toMatch(/\.project-list-card-media\s*\{[\s\S]*?min-height:\s*10rem/);
+    expect(css).toMatch(/\.project-list-card-media-image\s*\{[\s\S]*?width:\s*100%;[\s\S]*?height:\s*100%;[\s\S]*?object-fit:\s*contain/);
+    expect(css).toMatch(/\.project-list-card \.project-list-card-media-link\s*\{[^}]*color:\s*inherit;[^}]*font-weight:\s*normal;/);
+    expect(css).toMatch(/\.project-list-card \.project-list-card-media-fallback,\s*\.project-list-card \.project-list-card-media-placeholder\s*\{[^}]*color:\s*var\(--muted\);[^}]*font-weight:\s*normal;/);
+    expect(css).toMatch(/\.project-list-card \.project-list-card-media-link--fallback,\s*\.project-list-card \.project-list-card-media-link--fallback:visited\s*\{[^}]*color:\s*var\(--muted\);[^}]*font-weight:\s*normal;/);
+    expect(css).toMatch(/\.project-list-card-metadata\s*\{[\s\S]*?display:\s*flex/);
+    expect(css).toMatch(/\.project-list-card-associations\s*\{[\s\S]*?display:\s*flex/);
+    expect(css).toMatch(/@media\s*\(max-width:\s*540px\)[\s\S]*?\.project-list-card-media\s*\{[\s\S]*?height:\s*9rem;[\s\S]*?min-height:\s*9rem/);
+    expect(css).not.toMatch(/\.project-card--list \.project-card-media-image\s*\{/);
+    expect(css).not.toMatch(/\.project-card--list \.project-card-media\s*\{/);
   });
 
   it('renders assigned project display names and the tag filter in grid and list views', async () => {
@@ -373,7 +501,7 @@ describe('project HTTP workflow', () => {
     const gridTags = extractProjectTags(taggedGridCard);
 
     expect(grid.text).toContain('<ul class="project-grid">');
-    expect(gridTags).toContain('<dt>Tags</dt>');
+    expect(gridTags).toContain('<span class="project-grid-card-info-section-label">Tags</span>');
     expect(gridTags.indexOf('Alpha Display')).toBeLessThan(gridTags.indexOf('Shared Display'));
     expect(gridTags.indexOf('Shared Display')).toBeLessThan(gridTags.indexOf('Zebra Display'));
     expect(gridTags).not.toContain('Asset Only Display');
@@ -384,10 +512,10 @@ describe('project HTTP workflow', () => {
     expect(gridTags).not.toContain(`>${zebra.id}<`);
     expect(gridTags).not.toContain('href=');
     expect(extractProjectTags(secondTaggedGridCard)).toContain('Shared Display');
-    expect(extractProjectTags(untaggedGridCard)).toBe('');
+    expect(extractProjectTags(untaggedGridCard)).toContain('No tags assigned');
     expect(grid.text).not.toContain('name="tagIds"');
     const gridTagFilter = extractTagFilter(grid.text);
-    expect(gridTagFilter).toContain('<option value="" selected>All tags</option>');
+    expect(gridTagFilter).toContain('aria-label="Tag filter: All tags"');
     expect(gridTagFilter.indexOf('Alpha Display')).toBeLessThan(gridTagFilter.indexOf('Asset Only Display'));
     expect(gridTagFilter.indexOf('Asset Only Display')).toBeLessThan(gridTagFilter.indexOf('Shared Display'));
     expect(gridTagFilter.indexOf('Shared Display')).toBeLessThan(gridTagFilter.indexOf('Zebra Display'));
@@ -402,11 +530,15 @@ describe('project HTTP workflow', () => {
     const untaggedListCard = extractProjectCard(list.text, untaggedProjectId);
 
     expect(list.text).toContain('<ul class="project-list">');
-    expect(extractProjectTags(taggedListCard)).toContain('Alpha Display');
-    expect(extractProjectTags(taggedListCard)).toContain('Shared Display');
-    expect(extractProjectTags(taggedListCard)).toContain('Zebra Display');
-    expect(extractProjectTags(secondTaggedListCard)).toContain('Shared Display');
-    expect(extractProjectTags(untaggedListCard)).toBe('');
+    const taggedListAssociations = taggedListCard.match(/<div class="project-list-card-associations">([\s\S]*?)<\/div>\s*<\/div>\s*<\/article>/)?.[1] || '';
+    expect(taggedListAssociations).toContain('project-list-card-association--tags');
+    expect(taggedListAssociations).toContain('Alpha Display');
+    expect(taggedListAssociations).toContain('Shared Display');
+    expect(taggedListAssociations).toContain('Zebra Display');
+    const secondListAssociations = secondTaggedListCard.match(/<div class="project-list-card-associations">([\s\S]*?)<\/div>\s*<\/div>\s*<\/article>/)?.[1] || '';
+    const untaggedListAssociations = untaggedListCard.match(/<div class="project-list-card-associations">([\s\S]*?)<\/div>\s*<\/div>\s*<\/article>/)?.[1] || '';
+    expect(secondListAssociations).toContain('Shared Display');
+    expect(untaggedListAssociations).toContain('No tags assigned');
   });
 
   it('filters projects by a valid tag ID, composes with search/status, and excludes asset-only assignments', async () => {
@@ -442,8 +574,21 @@ describe('project HTTP workflow', () => {
     expect(filtered.text).not.toContain('Asset Only Filter');
     expect(filtered.text.match(/<article\b[^>]*data-project-card[^>]*>/g)).toHaveLength(4);
     expect(extractTagFilter(filtered.text)).toContain(
-      `<option value="${shared.id}" selected>Shared Filter Tag</option>`,
+      `value="${shared.id}" checked`,
     );
+
+    const multiTag = await agent
+      .get(`/projects?tag=${additional.id}&tag=${shared.id}&sort=title&order=asc`)
+      .expect(200);
+    expect(multiTag.text).toContain('5 projects found');
+    expect(multiTag.text).toContain('Filter Alpha');
+    expect(multiTag.text).toContain('Filter Beta');
+    expect(multiTag.text).toContain('Needle Planned');
+    expect(multiTag.text).toContain('Needle Ready');
+    expect(multiTag.text).toContain('Needle Other Tag');
+    expect(multiTag.text).not.toContain('Asset Only Filter');
+    expect(extractTagFilter(multiTag.text)).toContain('aria-label="Tag filter: 2 tags selected"');
+    expect((extractTagFilter(multiTag.text).match(/name="tag"[^>]+checked/g) || [])).toHaveLength(2);
 
     const composed = await agent
       .get(`/projects?tag=${shared.id}&search=needle&status=planned&sort=title&order=asc&view=list`)
@@ -479,8 +624,8 @@ describe('project HTTP workflow', () => {
 
       expect(response.text).toContain('Safe Tagged Project');
       expect(response.text).toContain('Safe Untagged Project');
-      expect(extractTagFilter(response.text)).toContain('<option value="" selected>All tags</option>');
-      expect(extractTagFilter(response.text)).not.toContain(`value="${tag.id}" selected`);
+      expect(extractTagFilter(response.text)).toContain('aria-label="Tag filter: All tags"');
+      expect(extractTagFilter(response.text)).not.toContain(`value="${tag.id}" checked`);
     }
 
     app.locals.tagService.deleteTag(tag.id);
@@ -591,6 +736,42 @@ describe('project HTTP workflow', () => {
     expect(pageOne.text).toContain('<option value="title" selected>Title</option>');
     expect(pageOne.text).toContain('<option value="asc" selected>Asc</option>');
     expect(pageOne.text).not.toContain('unknown=discarded');
+  });
+
+  it('preserves repeated status and tag selections through saved defaults, pagination, and view links', async () => {
+    saveProjectDefault('view', 'list');
+    saveProjectDefault('sort', 'title');
+    saveProjectDefault('order', 'asc');
+
+    const firstTag = app.locals.tagService.createTag({ name: 'Repeated First Tag' });
+    const secondTag = app.locals.tagService.createTag({ name: 'Repeated Second Tag' });
+    for (let i = 0; i < 26; i += 1) {
+      const projectId = await createProject({
+        title: `Repeated State ${String(i).padStart(2, '0')}`,
+        status: i % 2 === 0 ? 'planned' : 'ready',
+      });
+      app.locals.projectTagService.replaceProjectTags(projectId, [firstTag.id, secondTag.id]);
+    }
+
+    const redirect = await agent
+      .get(`/projects?search=Repeated+State&status=ready&status=planned&tag=${secondTag.id}&tag=${firstTag.id}&page=2`)
+      .expect(302);
+    const canonical = `/projects?search=Repeated+State&status=planned&status=ready&tag=${firstTag.id}&tag=${secondTag.id}&sort=title&order=asc&view=list&page=2`;
+    expect(redirect.headers.location).toBe(canonical);
+
+    const pageTwo = await agent.get(canonical).expect(200);
+    expect(pageTwo.text).toContain('26 projects found');
+    expect(pageTwo.text).toContain('name="view" value="list"');
+    expect(pageTwo.text).toContain(
+      `href="/projects?search=Repeated+State&amp;status=planned&amp;status=ready&amp;tag=${firstTag.id}&amp;tag=${secondTag.id}&amp;sort=title&amp;order=asc&amp;view=list&amp;page=1"`
+    );
+    expect(pageTwo.text).toContain(
+      `href="/projects?search=Repeated+State&amp;status=planned&amp;status=ready&amp;tag=${firstTag.id}&amp;tag=${secondTag.id}&amp;sort=title&amp;order=asc&amp;view=grid&amp;page=2"`
+    );
+    expect(extractStatusFilter(pageTwo.text)).toContain('aria-label="Status filter: 2 statuses selected"');
+    expect(extractTagFilter(pageTwo.text)).toContain('aria-label="Tag filter: 2 tags selected"');
+    expect((extractStatusFilter(pageTwo.text).match(/name="status"[^>]+checked/g) || [])).toHaveLength(2);
+    expect((extractTagFilter(pageTwo.text).match(/name="tag"[^>]+checked/g) || [])).toHaveLength(2);
   });
 
   it('new-project form renders', async () => {
@@ -1039,7 +1220,7 @@ describe('project HTTP workflow', () => {
     const archivedList = await agent.get('/projects?status=archived').expect(200);
     expect(archivedList.text).toContain('Filter Archive');
     expect(archivedList.text).toContain('Archived List Display');
-    expect(archivedList.text).toContain('class="project-card project-card--grid project-card--archived" data-project-card');
+    expect(archivedList.text).toContain('class="project-card project-card--grid project-grid-card project-card--archived" data-project-card');
 
     const dashboard = await agent.get('/').expect(200);
     expect(dashboard.text).toContain('<span class="count">1</span> Archived');
@@ -1109,6 +1290,25 @@ describe('project HTTP workflow', () => {
     const res = await agent.get('/projects?status=in-progress').expect(200);
     expect(res.text).toContain('Status Filter Match');
     expect(res.text).not.toContain('Status Filter Nonmatch');
+  });
+
+  it('filters by multiple statuses and applies every checked status', async () => {
+    await createProject({ title: 'Multi Status Planned', status: 'planned' });
+    await createProject({ title: 'Multi Status Ready', status: 'ready' });
+    await createProject({ title: 'Multi Status TBD', status: 'tbd' });
+
+    const res = await agent
+      .get('/projects?status=ready&status=planned&sort=title&order=asc')
+      .expect(200);
+
+    expect(res.text).toContain('2 projects found');
+    expect(res.text).toContain('Multi Status Planned');
+    expect(res.text).toContain('Multi Status Ready');
+    expect(res.text).not.toContain('Multi Status TBD');
+    expect(extractStatusFilter(res.text)).toContain('aria-label="Status filter: 2 statuses selected"');
+    expect((extractStatusFilter(res.text).match(/name="status"[^>]+checked/g) || [])).toHaveLength(2);
+    expect(extractStatusFilter(res.text)).toMatch(/value="planned" checked/);
+    expect(extractStatusFilter(res.text)).toMatch(/value="ready" checked/);
   });
 
   it('valid status filter with no matches shows filtered-empty state and reset action', async () => {

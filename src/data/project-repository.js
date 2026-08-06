@@ -270,9 +270,11 @@ export function createProjectRepository(db) {
 
     /**
      * @param {Object} [options]
-     * @param {string} [options.status]
+     * @param {string|string[]} [options.status]
+     * @param {string[]} [options.statuses]
      * @param {string} [options.search]
      * @param {number} [options.tagId]
+     * @param {number[]} [options.tagIds]
      * @param {boolean} [options.includeArchived]
      * @param {string} [options.sortBy]
      * @param {string} [options.order]
@@ -283,14 +285,19 @@ export function createProjectRepository(db) {
     list(options = {}) {
       const {
         status,
+        statuses,
         search,
         tagId,
+        tagIds,
         includeArchived = false,
         sortBy = 'updated',
         order = 'desc',
         limit = 25,
         offset = 0,
       } = options;
+
+      const selectedStatuses = normalizeStatusSelection(statuses === undefined ? status : statuses);
+      const selectedTagIds = normalizeTagSelection(tagIds === undefined ? tagId : tagIds);
 
       const conditions = [];
       const params = [];
@@ -299,13 +306,22 @@ export function createProjectRepository(db) {
         conditions.push('archived_at IS NULL');
       }
 
-      if (status && STATUSES.includes(status)) {
-        if (status === 'archived') {
-          conditions.push('archived_at IS NOT NULL');
-        } else {
-          conditions.push('status = ?');
-          params.push(status);
+      if (selectedStatuses.length > 0) {
+        const statusConditions = [];
+        const activeStatuses = selectedStatuses.filter((value) => value !== 'archived');
+
+        if (selectedStatuses.includes('archived')) {
+          statusConditions.push('archived_at IS NOT NULL');
         }
+        if (activeStatuses.length > 0) {
+          const placeholders = activeStatuses.map(() => '?').join(',');
+          statusConditions.push(`status IN (${placeholders})`);
+          params.push(...activeStatuses);
+        }
+
+        conditions.push(statusConditions.length === 1
+          ? statusConditions[0]
+          : `(${statusConditions.join(' OR ')})`);
       }
 
       if (search && search.trim()) {
@@ -314,11 +330,13 @@ export function createProjectRepository(db) {
         params.push(term, term, term);
       }
 
-      if (Number.isSafeInteger(tagId) && tagId > 0) {
+      if (selectedTagIds.length > 0) {
+        const placeholders = selectedTagIds.map(() => '?').join(',');
         conditions.push(
-          'EXISTS (SELECT 1 FROM project_tags WHERE project_tags.project_id = projects.id AND project_tags.tag_id = ?)'
+          `EXISTS (SELECT 1 FROM project_tags WHERE project_tags.project_id = projects.id `
+          + `AND project_tags.tag_id IN (${placeholders}))`
         );
-        params.push(tagId);
+        params.push(...selectedTagIds);
       }
 
       const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
@@ -340,6 +358,17 @@ export function createProjectRepository(db) {
 
 function escapeLike(value) {
   return value.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
+}
+
+function normalizeStatusSelection(value) {
+  const values = new Set(Array.isArray(value) ? value : [value]);
+  return STATUSES.filter((status) => values.has(status));
+}
+
+function normalizeTagSelection(value) {
+  const values = Array.isArray(value) ? value : [value];
+  return [...new Set(values.filter((tagId) => Number.isSafeInteger(tagId) && tagId > 0))]
+    .sort((left, right) => left - right);
 }
 
 const ALLOWED_SORTS = {
