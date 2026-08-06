@@ -707,35 +707,6 @@
         font-size: 0.8rem;
       }
       .asset-actions { display: flex; gap: 0.25rem; flex-wrap: nowrap; }
-      .asset-viewer-breadcrumb {
-        display: flex;
-        gap: var(--space-sm);
-        flex-wrap: wrap;
-        min-width: 0;
-        max-width: 100%;
-        margin-bottom: var(--space-lg);
-        font-size: 0.875rem;
-      }
-      .asset-viewer-breadcrumb a {
-        min-width: 0;
-        max-width: 100%;
-        color: var(--link);
-        text-decoration: none;
-        padding: var(--space-xs) var(--space-sm);
-        border: 1px solid var(--border);
-        border-radius: var(--radius-sm);
-        overflow-wrap: anywhere;
-        word-break: break-word;
-        transition: background var(--transition-fast), color var(--transition-fast);
-      }
-      .asset-viewer-breadcrumb a:hover {
-        background: var(--surface);
-        color: var(--text);
-      }
-      .asset-viewer-breadcrumb a:focus-visible {
-        outline: 2px solid var(--focus-ring);
-        outline-offset: 1px;
-      }
 
       /* ═══ Phase 10.3B: Asset browser visual hierarchy ═══ */
 
@@ -2477,10 +2448,10 @@
       /* ── Reduced motion ── */
       @media (prefers-reduced-motion: reduce) {
         .asset-thumb-image,
+        .asset-list-card-media-image,
         .view-switcher-option,
         .pagination-prev,
         .pagination-next,
-        .asset-viewer-breadcrumb a,
         .asset-preview-image,
         .app-sidebar,
         .app-sidebar-brand,
@@ -2494,6 +2465,117 @@
         .summary-card,
         .panel {
           transition: none !important;
+        }
+      }
+
+      /* ── Project asset list-card modifiers ── */
+      .asset-list--project {
+        min-width: 0;
+        max-width: 100%;
+      }
+      .asset-list-card--project {
+        position: relative;
+      }
+      .asset-list-card--project.is-selected {
+        border-color: var(--accent);
+        box-shadow: inset 0 0 0 2px var(--accent), var(--shadow-md);
+      }
+      .asset-list-card--project[data-asset-selectable-card] {
+        cursor: pointer;
+      }
+      .asset-list-card--project .asset-list-card-top {
+        position: absolute;
+        inset-block-start: var(--space-sm);
+        inset-inline-start: var(--space-sm);
+        z-index: 1;
+        display: flex;
+        align-items: flex-start;
+        min-width: 0;
+        pointer-events: none;
+      }
+      .asset-list-card--project .asset-list-card-top .asset-selection-control {
+        pointer-events: auto;
+      }
+      .asset-list-card--project .asset-list-card-body {
+        min-width: 0;
+      }
+      .asset-list-card--project .asset-list-card-actions {
+        display: flex;
+        align-items: flex-start;
+        flex-wrap: wrap;
+        gap: var(--space-sm) var(--space-md);
+        min-width: 0;
+        max-width: 100%;
+        padding-top: var(--space-sm);
+        border-top: 1px solid var(--border);
+      }
+      .asset-list-card--project .asset-list-card-actions .asset-details-link {
+        flex: 0 0 auto;
+      }
+      .asset-list-card--project .asset-list-card-rename-form {
+        display: flex;
+        flex: 1 1 18rem;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: var(--space-sm);
+        min-width: 0;
+        max-width: 100%;
+        margin-top: 0;
+      }
+      .asset-list-card--project .asset-list-card-rename-input {
+        flex: 1 1 10rem;
+        width: auto;
+        min-width: 0;
+        max-width: 100%;
+      }
+      .asset-list-card--project .asset-list-card-rename-form .asset-rename-extension,
+      .asset-list-card--project .asset-list-card-rename-form .button {
+        flex: 0 0 auto;
+      }
+      .asset-list-card--project .asset-action-error {
+        flex: 1 1 100%;
+        min-width: 0;
+        max-width: 100%;
+      }
+      .asset-list-card--project .asset-list-card-association-content,
+      .asset-list-card--project .release-usage-details,
+      .asset-list-card--project .release-detail-list,
+      .asset-list-card--project .release-detail-list li,
+      .asset-list-card--project .release-detail-list a {
+        min-width: 0;
+        max-width: 100%;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+      }
+
+      @media (max-width: 767px) {
+        .asset-list-card--project {
+          grid-template-columns: minmax(0, 1fr);
+        }
+        .asset-list-card--project .asset-list-card-body {
+          grid-column: 1;
+          grid-row: 2;
+        }
+        .asset-list-card--project .asset-list-card-presence {
+          margin-left: 0;
+          text-align: left;
+        }
+        .asset-list-card--project .asset-list-card-actions {
+          align-items: stretch;
+        }
+        .asset-list-card--project .asset-list-card-actions .asset-details-link {
+          align-self: flex-start;
+        }
+        .asset-list-card--project .asset-list-card-rename-form {
+          flex-basis: 100%;
+          width: 100%;
+        }
+      }
+
+      @media (max-width: 540px) {
+        .asset-list-card--project .asset-list-card-rename-input {
+          flex-basis: 100%;
+          width: 100%;
         }
       }
 
@@ -2563,7 +2645,6 @@
       .asset-preview-frame {
         margin: var(--space-lg) 0;
         background: var(--bg);
-        border: 1px solid var(--border);
         border-radius: var(--radius-lg);
         padding: var(--space-lg);
         display: flex;
@@ -2572,6 +2653,14 @@
         min-width: 0;
         max-width: 100%;
         min-height: 200px;
+      }
+      .asset-preview-link {
+        display: block;
+        max-width: 100%;
+      }
+      .asset-preview-link:focus-visible {
+        outline: 2px solid var(--focus-ring);
+        outline-offset: 3px;
       }
       .asset-preview-image {
         display: block;
@@ -2738,6 +2827,14 @@
       }
       .page-heading-actions > .view-switcher {
         margin-bottom: 0;
+      }
+      .page-heading-actions > .asset-viewer-project,
+      .page-heading-actions > .asset-viewer-back {
+        min-width: 0;
+        max-width: 100%;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+        white-space: normal;
       }
 
       /* ── Status badges ── */
@@ -5006,6 +5103,46 @@
       }
       .project-detail-releases {
         margin-bottom: var(--space-xl);
+      }
+      .release-thumbnail-strip {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--space-xs);
+        min-width: 0;
+        max-width: 100%;
+        margin-top: var(--space-xs);
+      }
+      .release-thumbnail-link {
+        display: block;
+        flex: 0 1 5.5rem;
+        width: 5.5rem;
+        height: 5.5rem;
+        min-width: 0;
+        max-width: 100%;
+        overflow: hidden;
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+        background: var(--bg);
+        line-height: 0;
+      }
+      .release-thumbnail-link:focus-visible {
+        outline: 2px solid var(--focus-ring);
+        outline-offset: 2px;
+      }
+      .release-thumbnail-image {
+        display: block;
+        width: 100%;
+        height: 100%;
+        max-width: 100%;
+        object-fit: contain;
+      }
+      .release-thumbnail-more {
+        align-self: center;
+        min-width: 0;
+        max-width: 100%;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+        font-size: 0.8125rem;
       }
       @media (max-width: 767px) {
         .project-detail-hero {

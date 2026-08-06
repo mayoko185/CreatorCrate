@@ -139,6 +139,21 @@
               {% set status = r.project_status %}{% include "partials/status-badge.njk" %}{% if r.published_date %} · published {{ r.published_date }}{% elif r.planned_date %} · planned {{ r.planned_date }}{% endif %}
               · updated {{ r.updated_at }}
             </span>
+            {% if r.thumbnails and r.thumbnails.length > 0 %}
+              {% set thumbnailLimit = 12 %}
+              <div class="release-thumbnail-strip">
+                {% for thumbnail in r.thumbnails %}
+                  {% if loop.index <= thumbnailLimit %}
+                    <a class="release-thumbnail-link" href="{{ thumbnail.viewerUrl }}" aria-label="View {{ thumbnail.filename }}">
+                      <img class="release-thumbnail-image" src="{{ thumbnail.thumbnailUrl }}" alt="{{ thumbnail.filename }}" loading="lazy" decoding="async">
+                    </a>
+                  {% endif %}
+                {% endfor %}
+                {% if r.thumbnails.length > thumbnailLimit %}
+                  <a class="release-thumbnail-more" href="/releases/{{ r.id }}">+{{ r.thumbnails.length - thumbnailLimit }} more</a>
+                {% endif %}
+              </div>
+            {% endif %}
           </li>
         {% endfor %}
       </ul>

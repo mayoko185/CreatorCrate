@@ -59,9 +59,11 @@ export function markPreviewFailed(root) {
 
   const image = root.querySelector?.(PREVIEW_IMAGE_SELECTOR);
   const fallback = root.querySelector?.(PREVIEW_FALLBACK_SELECTOR);
+  const previewLink = image?.closest?.('.asset-preview-link');
 
   setPreviewState(root, 'failed');
   hideElement(image);
+  hideElement(previewLink);
   showElement(fallback);
   return 'failed';
 }

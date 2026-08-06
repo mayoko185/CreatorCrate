@@ -98,6 +98,9 @@
         {# Without project context, Cancel falls back to the release-management
            surface rather than returning to an in-progress release form. #}
       <a class="button button-secondary" href="{% if release %}/releases/{{ release.id }}{% elif selectedProjectId %}/projects/{{ selectedProjectId }}{% else %}/release-management{% endif %}">Cancel</a>
+      {% if release and release.project_id %}
+        <a class="button button-secondary" href="/projects/{{ release.project_id }}">Back to Project</a>
+      {% endif %}
     </div>
   </form>
 {% endblock %}

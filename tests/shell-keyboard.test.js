@@ -244,7 +244,6 @@ describe('Phase 10.6A: keyboard and focus-state hardening', () => {
       '.asset-filter-multiselect summary',
       '.asset-file-link',
       '.summary-card',
-      '.asset-viewer-breadcrumb a',
       '.field input',
       '.table-scroll',
       '.board-scroll',

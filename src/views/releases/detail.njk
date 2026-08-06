@@ -11,9 +11,16 @@
   {% if not projectArchived and not releaseArchived %}
     {% call pageHeading.render("Release record") %}
       <a class="button" href="/releases/{{ release.id }}/edit">Edit</a>
+      {% if project and project.id %}
+        <a class="button button-secondary" href="/projects/{{ project.id }}">Back to Project</a>
+      {% endif %}
     {% endcall %}
   {% else %}
-    {{ pageHeading.render("Release record", "archived", "Archived") }}
+    {% call pageHeading.render("Release record", "archived", "Archived") %}
+      {% if project and project.id %}
+        <a class="button button-secondary" href="/projects/{{ project.id }}">Back to Project</a>
+      {% endif %}
+    {% endcall %}
   {% endif %}
 
   {% if projectArchived %}

@@ -546,7 +546,7 @@ export function createWorkflowQueryService({
    *   project: object,
    *   releaseSummary: {
    *     active: Array,
-   *     recent: Array,
+   *     recent: Array<{ thumbnails: Array }>,
    *     hasAnyReleases: boolean,
    *   },
    *   assetHealth: {
@@ -569,7 +569,9 @@ export function createWorkflowQueryService({
     const activeReleases = isArchived
       ? []
       : releaseRepository.findActiveByProjectId(projectId, limits.activeReleases);
-    const recentReleases = releaseRepository.findRecentByProjectId(projectId, limits.recentReleases);
+    const recentReleases = attachReleaseThumbnails(
+      releaseRepository.findRecentByProjectId(projectId, limits.recentReleases)
+    );
     const releaseCount = releaseRepository.countFiltered({
       projectId,
       includeArchived: true,
@@ -1631,6 +1633,60 @@ export function createWorkflowQueryService({
     return entries.map((entry) => ({
       ...entry,
       preview_url: previewUrlByReleaseId.get(entry.id) ?? null,
+    }));
+  }
+
+  /**
+   * Attach every selected asset that can produce a revisioned thumbnail to
+   * each release. The repository query preserves release-asset order; this
+   * projection only groups those rows and never deduplicates them.
+   *
+   * @param {Array} releases
+   * @returns {Array}
+   */
+  function attachReleaseThumbnails(releases) {
+    if (!Array.isArray(releases) || releases.length === 0) return [];
+
+    const releaseIds = releases.map((release) => release.id);
+    const thumbnailsByReleaseId = new Map(
+      releases.map((release) => [release.id, []])
+    );
+    const selectedAssetRows = releaseRepository.findReleaseAssetsByReleaseIds(releaseIds);
+
+    for (const row of selectedAssetRows) {
+      if (!thumbnailsByReleaseId.has(row.release_id)) continue;
+      if (row.asset_id == null || row.asset_project_id !== row.release_project_id) continue;
+
+      const previewModel = buildAssetPreviewModel({
+        id: row.asset_id,
+        project_id: row.asset_project_id,
+        relative_path: row.relative_path,
+        extension: row.extension,
+        mime_type: row.mime_type,
+        size_bytes: row.size_bytes,
+        modified_at: row.modified_at,
+        is_present: row.is_present,
+      });
+
+      if (!previewModel.previewable || !previewModel.sourceMetadataValid || !previewModel.urls.thumbnail) {
+        continue;
+      }
+
+      const filename = typeof row.filename === 'string' && row.filename.trim() !== ''
+        ? row.filename
+        : row.relative_path || `Asset ${row.asset_id}`;
+
+      thumbnailsByReleaseId.get(row.release_id).push({
+        assetId: row.asset_id,
+        filename,
+        thumbnailUrl: previewModel.urls.thumbnail,
+        viewerUrl: buildProjectAssetViewerUrl(row.asset_project_id, row.asset_id),
+      });
+    }
+
+    return releases.map((release) => ({
+      ...release,
+      thumbnails: thumbnailsByReleaseId.get(release.id) || [],
     }));
   }
 

@@ -1034,6 +1034,188 @@ describe('workflow query service', () => {
       expect(ws.releaseSummary.hasAnyReleases).toBe(true);
     });
 
+    it('enriches one release with all previewable selected assets in repository order', () => {
+      const project = insertProject(db, { title: 'Release Thumbnail Order' });
+      const release = insertRelease(db, {
+        projectId: project.id,
+        title: 'Thumbnail Release',
+      });
+      const firstById = insertAsset(db, {
+        projectId: project.id,
+        relativePath: 'first-by-id.png',
+        filename: 'first-by-id.png',
+        extension: 'png',
+        mimeType: 'image/png',
+        sizeBytes: 1024,
+        modifiedAt: '2026-08-02T12:00:00.000Z',
+      });
+      const secondById = insertAsset(db, {
+        projectId: project.id,
+        relativePath: 'second-by-id.png',
+        filename: 'second-by-id.png',
+        extension: 'png',
+        mimeType: 'image/png',
+        sizeBytes: 2048,
+        modifiedAt: '2026-08-02T12:00:00.000Z',
+      });
+      linkAssetToRelease(db, { releaseId: release.id, assetId: firstById.id, sortOrder: 1 });
+      linkAssetToRelease(db, { releaseId: release.id, assetId: secondById.id, sortOrder: 0 });
+
+      const result = service.getProjectWorkspace(project.id);
+      const thumbnails = result.releaseSummary.recent[0].thumbnails;
+      const firstRevision = buildRevisionToken({
+        projectId: project.id,
+        assetId: firstById.id,
+        relativePath: 'first-by-id.png',
+        size: 1024,
+        mtime: '2026-08-02T12:00:00.000Z',
+      });
+      const secondRevision = buildRevisionToken({
+        projectId: project.id,
+        assetId: secondById.id,
+        relativePath: 'second-by-id.png',
+        size: 2048,
+        mtime: '2026-08-02T12:00:00.000Z',
+      });
+
+      expect(thumbnails).toEqual([
+        {
+          assetId: secondById.id,
+          filename: 'second-by-id.png',
+          thumbnailUrl: `/projects/${project.id}/assets/${secondById.id}/thumbnail?v=${secondRevision}`,
+          viewerUrl: `/projects/${project.id}/assets/${secondById.id}`,
+        },
+        {
+          assetId: firstById.id,
+          filename: 'first-by-id.png',
+          thumbnailUrl: `/projects/${project.id}/assets/${firstById.id}/thumbnail?v=${firstRevision}`,
+          viewerUrl: `/projects/${project.id}/assets/${firstById.id}`,
+        },
+      ]);
+    });
+
+    it('includes previewable Krita assets and excludes missing or unsupported selections', () => {
+      const project = insertProject(db, { title: 'Release Thumbnail Formats' });
+      const release = insertRelease(db, {
+        projectId: project.id,
+        title: 'Format Release',
+      });
+      const krita = insertAsset(db, {
+        projectId: project.id,
+        relativePath: 'source.kra',
+        filename: 'source.kra',
+        extension: 'kra',
+        mimeType: 'application/x-krita',
+        sizeBytes: 100,
+        modifiedAt: '2026-08-02T12:00:00.000Z',
+      });
+      const compressedKrita = insertAsset(db, {
+        projectId: project.id,
+        relativePath: 'source.krz',
+        filename: 'source.krz',
+        extension: 'krz',
+        mimeType: 'application/x-krita',
+        sizeBytes: 200,
+        modifiedAt: '2026-08-02T12:00:00.000Z',
+      });
+      const missing = insertAsset(db, {
+        projectId: project.id,
+        relativePath: 'missing.png',
+        filename: 'missing.png',
+        extension: 'png',
+        mimeType: 'image/png',
+        isPresent: 0,
+      });
+      const unsupported = insertAsset(db, {
+        projectId: project.id,
+        relativePath: 'source.txt',
+        filename: 'source.txt',
+        extension: 'txt',
+        mimeType: 'text/plain',
+        sizeBytes: 300,
+        modifiedAt: '2026-08-02T12:00:00.000Z',
+      });
+      linkAssetToRelease(db, { releaseId: release.id, assetId: krita.id, sortOrder: 0 });
+      linkAssetToRelease(db, { releaseId: release.id, assetId: compressedKrita.id, sortOrder: 1 });
+      linkAssetToRelease(db, { releaseId: release.id, assetId: missing.id, sortOrder: 2 });
+      linkAssetToRelease(db, { releaseId: release.id, assetId: unsupported.id, sortOrder: 3 });
+
+      const result = service.getProjectWorkspace(project.id);
+
+      expect(result.releaseSummary.recent[0].thumbnails.map((thumbnail) => thumbnail.filename))
+        .toEqual(['source.kra', 'source.krz']);
+    });
+
+    it('returns an empty thumbnail array when a release has no qualifying assets', () => {
+      const project = insertProject(db, { title: 'Release Without Thumbnails' });
+      const release = insertRelease(db, {
+        projectId: project.id,
+        title: 'No Thumbnail Release',
+      });
+      const missing = insertAsset(db, {
+        projectId: project.id,
+        relativePath: 'missing.jpg',
+        filename: 'missing.jpg',
+        extension: 'jpg',
+        mimeType: 'image/jpeg',
+        isPresent: 0,
+      });
+      linkAssetToRelease(db, { releaseId: release.id, assetId: missing.id });
+
+      const result = service.getProjectWorkspace(project.id);
+
+      expect(result.releaseSummary.recent[0].thumbnails).toEqual([]);
+    });
+
+    it('keeps thumbnails assigned to their release through one batched repository call', () => {
+      const project = insertProject(db, { title: 'Release Thumbnail Batching' });
+      const first = insertRelease(db, { projectId: project.id, title: 'First Thumbnail Release' });
+      const second = insertRelease(db, { projectId: project.id, title: 'Second Thumbnail Release' });
+      const firstAsset = insertAsset(db, {
+        projectId: project.id,
+        relativePath: 'first.png',
+        filename: 'first.png',
+        extension: 'png',
+        mimeType: 'image/png',
+        sizeBytes: 1024,
+        modifiedAt: '2026-08-02T12:00:00.000Z',
+      });
+      const secondAsset = insertAsset(db, {
+        projectId: project.id,
+        relativePath: 'second.png',
+        filename: 'second.png',
+        extension: 'png',
+        mimeType: 'image/png',
+        sizeBytes: 2048,
+        modifiedAt: '2026-08-02T12:00:00.000Z',
+      });
+      linkAssetToRelease(db, { releaseId: first.id, assetId: firstAsset.id });
+      linkAssetToRelease(db, { releaseId: second.id, assetId: secondAsset.id });
+
+      const releaseRepository = createReleaseRepository(db);
+      const findReleaseAssets = vi.spyOn(releaseRepository, 'findReleaseAssetsByReleaseIds');
+      const batchedService = createWorkflowQueryService({
+        db,
+        evaluateReleaseReadiness,
+        releaseRepository,
+      });
+
+      const result = batchedService.getProjectWorkspace(project.id);
+
+      expect(findReleaseAssets).toHaveBeenCalledTimes(1);
+      expect(findReleaseAssets).toHaveBeenCalledWith(
+        result.releaseSummary.recent.map((release) => release.id)
+      );
+      expect(result.releaseSummary.recent.find((release) => release.id === first.id).thumbnails)
+        .toEqual([expect.objectContaining({ assetId: firstAsset.id, filename: 'first.png' })]);
+      expect(result.releaseSummary.recent.find((release) => release.id === second.id).thumbnails)
+        .toEqual([expect.objectContaining({ assetId: secondAsset.id, filename: 'second.png' })]);
+      expect(result.releaseSummary.recent.find((release) => release.id === first.id).thumbnails)
+        .not.toEqual(expect.arrayContaining([expect.objectContaining({ assetId: secondAsset.id })]));
+      expect(result.releaseSummary.recent.find((release) => release.id === second.id).thumbnails)
+        .not.toEqual(expect.arrayContaining([expect.objectContaining({ assetId: firstAsset.id })]));
+    });
+
     it('counts present and missing assets correctly', () => {
       const project = insertProject(db, { title: 'Asset Count Project 2' });
       insertAsset(db, { projectId: project.id, relativePath: 'p1.txt', filename: 'p1.txt', isPresent: 1 });

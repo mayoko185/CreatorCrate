@@ -946,6 +946,8 @@ describe('release HTTP workflow', () => {
     expect(res.text).toContain('Detail View Test');
     expect(res.text).toContain('Edit');
     expect(res.text).toContain('Manage Assets');
+    expect(res.text).toContain(`<a class="button button-secondary" href="/projects/${projectId}">Back to Project</a>`);
+    expect(res.text).toContain(`<dd><a href="/projects/${projectId}">Detail Test Project</a></dd>`);
   });
 
   it('release detail renders the associated project status and shows Ready for a ready project', async () => {
@@ -1307,6 +1309,7 @@ describe('release HTTP workflow', () => {
       expect(res.text).toContain(`<option value="${projectAId}" selected>`);
       expect(res.text).not.toContain(`<option value="${projectBId}" selected>`);
       expect(res.text).toContain(`<a class="button button-secondary" href="/projects/${projectAId}">Cancel</a>`);
+      expect(res.text).not.toContain('>Back to Project</a>');
     });
 
     it('edit form Cancel points to /releases/:releaseId', async () => {
@@ -1689,6 +1692,7 @@ describe('release HTTP workflow', () => {
 
     const res = await agent.get(`${createRes.headers.location}/edit`).expect(200);
     expect(res.text).toContain('Releases — Edit Before Edit');
+    expect(res.text).toContain(`<a class="button button-secondary" href="/projects/${projectId}">Back to Project</a>`);
   });
 
   it('existing release editing does not expose a release-owned status field', async () => {
@@ -1843,6 +1847,7 @@ describe('release HTTP workflow', () => {
 
     const detail = await agent.get(createRes.headers.location).expect(200);
     expect(detail.text).toContain('Archived');
+    expect(detail.text).toContain(`<a class="button button-secondary" href="/projects/${projectId}">Back to Project</a>`);
   });
 
   it('cannot archive already archived release', async () => {
@@ -1912,6 +1917,7 @@ describe('release HTTP workflow', () => {
       .expect(200);
     expect(res.text).toContain('Asset Selection Release');
     expect(res.text).toContain('Back to Release');
+    expect(res.text).toContain(`<a class="button button-secondary" href="/projects/${projectId}">Back to Project</a>`);
     expect(res.text).toMatch(/Project status:[\s\S]*?<span class="status-badge status-badge--active">Ready<\/span>/);
   });
 

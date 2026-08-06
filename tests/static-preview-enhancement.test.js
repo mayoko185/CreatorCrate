@@ -157,8 +157,21 @@ function makeProjectCardFixture({ variant = 'grid' } = {}) {
   };
 }
 
-function makePreview({ complete = false, naturalWidth = 0, src = '/thumbnail.webp' } = {}) {
-  const image = makeElement({ complete, naturalWidth, src });
+function makePreview({ complete = false, naturalWidth = 0, src = '/thumbnail.webp', clickable = false } = {}) {
+  const previewLink = clickable
+    ? makeElement({
+      href: '/original.webp',
+      classList: { contains: (className) => className === 'asset-preview-link' },
+    })
+    : null;
+  const image = makeElement({ complete, naturalWidth, src, parentElement: previewLink });
+  if (previewLink) {
+    image.closest = (selector) => (
+      selector === '.asset-preview-link' && previewLink.classList.contains('asset-preview-link')
+        ? previewLink
+        : null
+    );
+  }
   const fallback = makeElement({ hidden: true });
   const root = makeElement({ dataset: { previewState: 'loading' } });
   root.querySelector = (selector) => {
@@ -166,7 +179,7 @@ function makePreview({ complete = false, naturalWidth = 0, src = '/thumbnail.web
     if (selector === '[data-preview-fallback]') return fallback;
     return null;
   };
-  return { root, image, fallback };
+  return { root, image, fallback, previewLink };
 }
 
 describe('static preview enhancement helpers', () => {
@@ -206,6 +219,18 @@ describe('static preview enhancement helpers', () => {
     expect(root.dataset.previewState).toBe('failed');
     expect(root.dataset.previewState).not.toBe('loading');
     expect(image.hidden).toBe(true);
+    expect(fallback.hidden).toBe(false);
+  });
+
+  it('hides a clickable preview link when its image fails', () => {
+    const { root, image, fallback, previewLink } = makePreview({ clickable: true });
+
+    enhancePreview(root);
+    image.dispatch('error');
+
+    expect(previewLink.hidden).toBe(true);
+    expect(previewLink.attrOps).toContainEqual(['set', 'hidden', '']);
+    expect(previewLink.href).toBe('/original.webp');
     expect(fallback.hidden).toBe(false);
   });
 
@@ -1448,8 +1473,9 @@ describe('page-local asset selection enhancement', () => {
     expect(checkbox.checked).toBe(false);
   });
 
-  it('selects blank card/title space while excluding real interactive descendants', () => {
-    const form = makeAssetSelectionForm({});
+  it('selects project list-card blank space while excluding real interactive descendants', () => {
+    const selectedCount = makeControl();
+    const form = makeAssetSelectionForm({ selectedCount });
     const checkbox = makeCheckbox();
     checkbox.form = form;
     const listeners = [];
@@ -1466,13 +1492,16 @@ describe('page-local asset selection enhancement', () => {
       renameTrigger: {},
       renameInput: {},
       renameButton: {},
+      releaseLink: {},
       checkbox,
     };
     const interactiveTargets = new Set([
       mediaLink, targets.details, targets.status,
-      targets.renameTrigger, targets.renameInput, targets.renameButton, targets.checkbox,
+      targets.renameTrigger, targets.renameInput, targets.renameButton,
+      targets.releaseLink, targets.checkbox,
     ]);
     const card = {
+      className: 'asset-list-card asset-list-card--project',
       dataset: {},
       attributes: {},
       addEventListener(type, handler) { listeners.push({ type, handler }); },
@@ -1493,7 +1522,7 @@ describe('page-local asset selection enhancement', () => {
     for (const name of ['blankMedia', 'fallback', 'blankLower']) targets[name].closest = () => null;
     targets.titleRow.closest = () => null;
     targets.titleText.closest = () => null;
-    for (const name of ['details', 'status', 'renameTrigger', 'renameInput', 'renameButton']) {
+    for (const name of ['details', 'status', 'renameTrigger', 'renameInput', 'renameButton', 'releaseLink']) {
       targets[name].closest = () => targets[name];
     }
 
@@ -1512,24 +1541,39 @@ describe('page-local asset selection enhancement', () => {
 
     click(targets.blankMedia);
     expect(checkbox.checked).toBe(true);
-    click(targets.fallback);
+    expect(selectedCount.textContent).toBe('1 selected');
+    expect(card.attributes['aria-selected']).toBe('true');
+    click(targets.blankMedia);
     expect(checkbox.checked).toBe(false);
-    click(targets.blankLower);
-    expect(checkbox.checked).toBe(true);
-    click(targets.titleRow);
-    expect(checkbox.checked).toBe(false);
-    click(targets.titleText);
-    expect(checkbox.checked).toBe(true);
+    expect(selectedCount.textContent).toBe('0 selected');
+    expect(card.attributes['aria-selected']).toBe('false');
 
+    click(targets.fallback);
+    expect(checkbox.checked).toBe(true);
+    click(targets.blankLower);
+    expect(checkbox.checked).toBe(false);
+    click(targets.titleRow);
+    expect(checkbox.checked).toBe(true);
+    click(targets.titleText);
+    expect(checkbox.checked).toBe(false);
+
+    checkbox.checked = true;
+    checkbox.dispatch('change');
     click(mediaLink);
     expect(checkbox.checked).toBe(true);
     click(targets.image);
     expect(checkbox.checked).toBe(true);
     for (const target of [
       targets.details, targets.status,
-      targets.renameTrigger, targets.renameInput, targets.renameButton, targets.checkbox,
+      targets.renameTrigger, targets.renameInput, targets.renameButton,
+      targets.releaseLink, targets.checkbox,
     ]) {
-      click(target);
+      if (target === targets.checkbox) {
+        checkbox.checked = true;
+        checkbox.dispatch('change');
+      } else {
+        click(target);
+      }
       expect(checkbox.checked).toBe(true);
     }
 
@@ -1541,6 +1585,7 @@ describe('page-local asset selection enhancement', () => {
     checkbox.checked = true;
     checkbox.dispatch('change');
     expect(card.attributes['aria-selected']).toBe('true');
+    expect(selectedCount.textContent).toBe('1 selected');
     expect(listeners.filter((entry) => entry.type === 'click')).toHaveLength(1);
   });
 });

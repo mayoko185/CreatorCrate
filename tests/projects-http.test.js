@@ -8,6 +8,8 @@ import { createApp } from '../src/app.js';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { MANIFEST_FILENAME, readManifestSync } from '../src/storage/manifest.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
+import { createReleaseRepository } from '../src/data/release-repository.js';
+import { buildAssetRevisionToken } from '../src/services/preview-service.js';
 import { ensureAuthEnablement } from '../src/auth/auth-state.js';
 import { getDisabledModeCsrf } from './helpers/auth.js';
 import {
@@ -45,6 +47,16 @@ function extractTagFilter(html) {
 
 function extractStatusFilter(html) {
   return html.match(/<fieldset class="field asset-viewer-filter-field">\s*<legend>Status<\/legend>[\s\S]*?<\/fieldset>/)?.[0] || '';
+}
+
+function extractReleaseList(html) {
+  return html.match(/<ul class="release-list">([\s\S]*?)<\/ul>/)?.[1] || '';
+}
+
+function extractReleaseItem(releaseList, releaseId) {
+  return releaseList.match(/<li>[\s\S]*?<\/li>/g)?.find((item) => (
+    item.includes(`href="/releases/${releaseId}"`)
+  )) || '';
 }
 
 describe('project HTTP workflow', () => {
@@ -2326,6 +2338,112 @@ describe('project HTTP workflow', () => {
       expect(res.text).toContain('No primary image set.');
       expect(res.text).toContain(`href="/projects/${id}/assets"`);
     });
+  });
+
+  it('project detail renders release thumbnails per release with accessible labels and a display cap', async () => {
+    const projectId = await createProject({ title: 'Release Thumbnail Project' });
+    const assetRepository = createAssetRepository(db);
+    const releaseRepository = createReleaseRepository(db);
+    const firstAssets = Array.from({ length: 14 }, (_, index) => assetRepository.upsert(
+      projectId,
+      `first-${index}.png`,
+      {
+        filename: index === 0 ? 'cover & <featured>.png' : `first-${index}.png`,
+        extension: 'png',
+        mimeType: 'image/png',
+        sizeBytes: 1024 + index,
+        modifiedAt: '2026-08-06 12:00:00',
+      },
+    ));
+    const secondAssets = Array.from({ length: 2 }, (_, index) => assetRepository.upsert(
+      projectId,
+      `second-${index}.png`,
+      {
+        filename: `second-${index}.png`,
+        extension: 'png',
+        mimeType: 'image/png',
+        sizeBytes: 2048 + index,
+        modifiedAt: '2026-08-06 12:00:00',
+      },
+    ));
+    const createRelease = (title) => releaseRepository.create({
+      projectId,
+      title,
+      description: '',
+      notes: '',
+      plannedDate: null,
+      plannedTime: null,
+      patreonUrl: null,
+      publishedDate: null,
+    });
+    const firstRelease = createRelease('First Thumbnail Release');
+    const secondRelease = createRelease('Second Thumbnail Release');
+    const emptyRelease = createRelease('Empty Thumbnail Release');
+
+    firstAssets.forEach((asset, sortOrder) => {
+      releaseRepository.addReleaseAsset(firstRelease.id, asset.id, 'attachment', sortOrder);
+    });
+    secondAssets.forEach((asset, sortOrder) => {
+      releaseRepository.addReleaseAsset(secondRelease.id, asset.id, 'attachment', sortOrder);
+    });
+
+    const res = await agent.get(`/projects/${projectId}`).expect(200);
+    const releaseList = extractReleaseList(res.text);
+    const firstItem = extractReleaseItem(releaseList, firstRelease.id);
+    const secondItem = extractReleaseItem(releaseList, secondRelease.id);
+    const emptyItem = extractReleaseItem(releaseList, emptyRelease.id);
+    const firstThumbnailLinks = firstItem.match(/<a class="release-thumbnail-link"[^>]*>[\s\S]*?<\/a>/g) || [];
+    const secondThumbnailLinks = secondItem.match(/<a class="release-thumbnail-link"[^>]*>[\s\S]*?<\/a>/g) || [];
+
+    expect(firstItem).toContain(`<a href="/releases/${firstRelease.id}">First Thumbnail Release</a>`);
+    expect(firstItem).toContain('class="meta"');
+    expect(firstItem).toContain('updated');
+    expect(firstThumbnailLinks).toHaveLength(12);
+    for (const [index, asset] of firstAssets.slice(0, 12).entries()) {
+      expect(firstThumbnailLinks[index]).toContain(`href="/projects/${projectId}/assets/${asset.id}"`);
+      expect(firstThumbnailLinks[index]).toContain(
+        `src="/projects/${projectId}/assets/${asset.id}/thumbnail?v=${buildAssetRevisionToken(asset)}"`,
+      );
+      expect(firstThumbnailLinks[index]).toContain('loading="lazy" decoding="async"');
+      expect(firstThumbnailLinks[index]).not.toContain('data-preview-enhancement');
+    }
+    expect(firstThumbnailLinks[0]).toContain('aria-label="View cover &amp; &lt;featured&gt;.png"');
+    expect(firstThumbnailLinks[0]).toContain('alt="cover &amp; &lt;featured&gt;.png"');
+    expect(firstThumbnailLinks[0]).not.toContain('aria-label="View cover & <featured>.png"');
+    expect(firstItem).not.toContain(`/projects/${projectId}/assets/${firstAssets[12].id}/thumbnail`);
+    expect(firstItem).not.toContain(`/projects/${projectId}/assets/${firstAssets[13].id}/thumbnail`);
+    expect(firstItem).toContain(
+      `<a class="release-thumbnail-more" href="/releases/${firstRelease.id}">+2 more</a>`,
+    );
+
+    expect(secondItem).toContain(`<a href="/releases/${secondRelease.id}">Second Thumbnail Release</a>`);
+    expect(secondThumbnailLinks).toHaveLength(2);
+    for (const [index, asset] of secondAssets.entries()) {
+      expect(secondThumbnailLinks[index]).toContain(`href="/projects/${projectId}/assets/${asset.id}"`);
+      expect(secondThumbnailLinks[index]).toContain(
+        `src="/projects/${projectId}/assets/${asset.id}/thumbnail?v=${buildAssetRevisionToken(asset)}"`,
+      );
+    }
+    expect(firstItem).not.toContain(`/projects/${projectId}/assets/${secondAssets[0].id}/thumbnail`);
+    expect(secondItem).not.toContain(`/projects/${projectId}/assets/${firstAssets[0].id}/thumbnail`);
+    expect(emptyItem).not.toContain('release-thumbnail-strip');
+  });
+
+  it('serves larger responsive release-thumbnail styles without changing shared asset-card rules', async () => {
+    const css = (await agent.get('/creatorcrate.css').expect(200)).text;
+
+    expect(css).toMatch(
+      /\.release-thumbnail-strip\s*\{[\s\S]*?display:\s*flex;[\s\S]*?flex-wrap:\s*wrap;[\s\S]*?min-width:\s*0;[\s\S]*?max-width:\s*100%;/,
+    );
+    expect(css).toMatch(
+      /\.release-thumbnail-link\s*\{[\s\S]*?flex:\s*0 1 5\.5rem;[\s\S]*?width:\s*5\.5rem;[\s\S]*?height:\s*5\.5rem;[\s\S]*?min-width:\s*0;[\s\S]*?max-width:\s*100%;/,
+    );
+    expect(css).toMatch(
+      /\.release-thumbnail-image\s*\{[\s\S]*?width:\s*100%;[\s\S]*?height:\s*100%;[\s\S]*?object-fit:\s*contain;/,
+    );
+    expect(css).toMatch(
+      /\.release-thumbnail-more\s*\{[\s\S]*?overflow-wrap:\s*anywhere;[\s\S]*?word-break:\s*break-word;/,
+    );
   });
 
   // ─── Phase 7D-3: Project status preserves filesystem behavior ──────

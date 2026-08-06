@@ -11,6 +11,9 @@
   {% set readOnly = isArchived or isPublished %}
   {% call pageHeading.render() %}
     <a class="button button-secondary" href="/releases/{{ release.id }}">Back to Release</a>
+    {% if project and project.id %}
+      <a class="button button-secondary" href="/projects/{{ project.id }}">Back to Project</a>
+    {% endif %}
   {% endcall %}
 
   {% if isArchived %}

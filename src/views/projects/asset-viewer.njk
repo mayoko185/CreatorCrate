@@ -17,12 +17,9 @@
     {% set viewerBadgeStatus = "unavailable" %}
     {% set viewerBadgeText = "Unavailable" %}
   {% endif %}
-  <nav class="asset-viewer-breadcrumb" aria-label="Asset viewer context">
-    <a class="asset-viewer-project" href="/projects/{{ project.id }}">Project: {{ project.title }}</a>
-    <a class="asset-viewer-back" href="{{ backToAssetsLink.href }}">Back to Assets</a>
-  </nav>
-
   {% call pageHeading.render("Asset preview, metadata, and release usage.", viewerBadgeStatus, viewerBadgeText) %}
+    <a class="button button-secondary asset-viewer-project" href="/projects/{{ project.id }}">Project: {{ project.title }}</a>
+    <a class="button button-secondary asset-viewer-back" href="{{ backToAssetsLink.href }}">Back to Assets</a>
     {% if previousAssetLink %}
       <a class="button asset-viewer-prev" href="{{ previousAssetLink.href }}" rel="prev">Previous asset</a>
     {% endif %}
@@ -59,7 +56,13 @@
     <h2 id="asset-preview-heading">Preview</h2>
     {% if asset.preview.previewable and asset.preview_url %}
       <figure class="asset-preview-frame{% if asset.preview.kind == 'krita' %} asset-media--krita{% endif %}" data-preview-enhancement data-preview-state="loading">
-        <img class="asset-preview-image" src="{{ asset.preview_url }}" alt="{{ asset.previewAltText }}" data-preview-image>
+        {% if asset.original_url %}
+          <a class="asset-preview-link" href="{{ asset.original_url }}" aria-label="View original {{ asset.filename }}">
+            <img class="asset-preview-image" src="{{ asset.preview_url }}" alt="{{ asset.previewAltText }}" data-preview-image>
+          </a>
+        {% else %}
+          <img class="asset-preview-image" src="{{ asset.preview_url }}" alt="{{ asset.previewAltText }}" data-preview-image>
+        {% endif %}
         <p class="asset-preview-placeholder asset-preview-fallback" data-preview-fallback hidden>Preview unavailable</p>
       </figure>
       <noscript>
