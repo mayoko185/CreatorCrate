@@ -7,6 +7,7 @@ import {
   PRIORITIES,
   DEFAULT_PRIORITY,
 } from '../services/project-service.js';
+import { buildOpenLocallyUri } from '../util/open-locally.js';
 
 const SORT_OPTIONS = ['updated', 'created', 'title'];
 const VIEW_OPTIONS = ['grid', 'list'];
@@ -145,6 +146,10 @@ export function createProjectsRouter({ appName, projectService, workflowQuerySer
       releaseSummary: workspace.releaseSummary,
       assetHealth: workspace.assetHealth,
       projectTags,
+      openLocallyUri: buildOpenLocallyUri({
+        windowsRoot: getOpenLocallySettingsService(req).getWindowsProjectsPath(),
+        projectDir: workspace.project.project_dir,
+      }),
       notice: resolveNotice(req.query.notice),
     });
   });
@@ -252,6 +257,14 @@ function getPageDefaultsService(req) {
   const service = req.app?.locals?.pageDefaultsService;
   if (!service) {
     throw new Error('Projects list requires app.locals.pageDefaultsService.');
+  }
+  return service;
+}
+
+function getOpenLocallySettingsService(req) {
+  const service = req.app?.locals?.openLocallySettingsService;
+  if (!service) {
+    throw new Error('Project detail requires app.locals.openLocallySettingsService.');
   }
   return service;
 }

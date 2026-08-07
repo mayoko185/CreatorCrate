@@ -32,6 +32,9 @@
     {% if asset.original_url %}
       <a class="button asset-viewer-original" href="{{ asset.original_url }}">View Original</a>
     {% endif %}
+    {% if openLocallyUri %}
+      <a class="button button-secondary asset-viewer-open-locally" href="{{ openLocallyUri }}">Open locally</a>
+    {% endif %}
   {% endcall %}
 
   {% if filteredOut %}

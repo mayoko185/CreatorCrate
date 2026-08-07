@@ -5571,3 +5571,34 @@
         width: 100%;
         max-width: 24rem;
       }
+
+      /* ═══ Settings — Open locally page ═══
+         Indent the Projects path label and input so they line up with the
+         padded help text and key/value rows above, instead of sitting flush
+         against the card's left edge. Buttons are intentionally left flush in
+         the card corner and are not affected. */
+      .open-locally-field {
+        padding-left: var(--space-md);
+        padding-right: var(--space-md);
+      }
+      .open-locally-field .help-text {
+        padding-left: 0;
+        padding-right: 0;
+      }
+
+      /* Projects-path input sits on its own row with the Clear mapping button
+         directly to its right; the input is capped so the line is short and
+         leaves room for the button. Save is its own action row below. */
+      .open-locally-path-row {
+        display: flex;
+        align-items: center;
+        gap: var(--space-md);
+        flex-wrap: nowrap;
+      }
+      .open-locally-path-row > input {
+        flex: 0 1 24rem;
+        min-width: 0;
+      }
+      .open-locally-path-row > .inline-form {
+        flex: 0 0 auto;
+      }

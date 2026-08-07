@@ -15,6 +15,7 @@ import {
   PAGE_DEFAULT_DEFINITIONS,
 } from '../services/page-defaults-service.js';
 import { TAG_NAME_MAX, TagNotFoundError, TagValidationError } from '../services/tag-service.js';
+import { OpenLocallySettingsValidationError } from '../services/open-locally-settings-service.js';
 
 function createNotFound() {
   const err = new Error('Not found');
@@ -75,6 +76,8 @@ const NOTICES = {
   tag_created: { variant: 'success', text: 'Tag created successfully.' },
   tag_renamed: { variant: 'success', text: 'Tag renamed successfully.' },
   tag_deleted: { variant: 'success', text: 'Tag deleted successfully.' },
+  open_locally_saved: { variant: 'success', text: 'Open locally mapping saved.' },
+  open_locally_cleared: { variant: 'success', text: 'Open locally mapping removed.' },
 };
 
 function resolveNotice(code) {
@@ -200,6 +203,14 @@ function getTagService(req) {
   return service;
 }
 
+function getOpenLocallySettingsService(req) {
+  const service = req.app?.locals?.openLocallySettingsService;
+  if (!service) {
+    throw new Error('Settings Open locally requires app.locals.openLocallySettingsService.');
+  }
+  return service;
+}
+
 function renderTagsPage(req, res, {
   appName,
   status = 200,
@@ -235,6 +246,27 @@ function renderTagEditPage(res, {
     errors,
     errorMessages: Object.values(errors),
     tagNameMax: TAG_NAME_MAX,
+  });
+}
+
+function renderOpenLocallyPage(req, res, {
+  appName,
+  projectsRoot,
+  status = 200,
+  notice = null,
+  submittedValue = null,
+  errors = {},
+} = {}) {
+  const service = getOpenLocallySettingsService(req);
+  const configuredPath = service.getWindowsProjectsPath();
+  res.status(status).render('settings/open-locally.njk', {
+    appName,
+    projectsRoot,
+    notice,
+    configuredPath,
+    submittedValue,
+    errors,
+    errorMessages: Object.values(errors),
   });
 }
 
@@ -649,6 +681,52 @@ export function createSettingsRouter({
       res.redirect('/settings/tags?notice=tag_deleted');
     } catch (err) {
       if (err instanceof TagNotFoundError) return next(createNotFound());
+      return next(err);
+    }
+  });
+
+  // ─── Open locally (v2) ─────────────────────────────────────────────────
+  //
+  // Configures the Windows projects root used to build v2 "Open locally"
+  // URIs. The value is validated for shape only — the app runs in
+  // Docker/Linux, so the service can never verify the Windows path exists.
+
+  router.get('/open-locally', (req, res) => {
+    renderOpenLocallyPage(req, res, {
+      appName,
+      projectsRoot,
+      notice: resolveNotice(req.query.notice),
+    });
+  });
+
+  router.post('/open-locally', (req, res, next) => {
+    const submittedValue = typeof req.body?.windowsProjectsPath === 'string'
+      ? req.body.windowsProjectsPath
+      : '';
+
+    try {
+      getOpenLocallySettingsService(req).setWindowsProjectsPath(submittedValue);
+      res.redirect('/settings/open-locally?notice=open_locally_saved');
+    } catch (err) {
+      if (err instanceof OpenLocallySettingsValidationError) {
+        renderOpenLocallyPage(req, res, {
+          appName,
+          projectsRoot,
+          status: 422,
+          submittedValue,
+          errors: err.errors || { windowsProjectsPath: err.message },
+        });
+        return;
+      }
+      return next(err);
+    }
+  });
+
+  router.post('/open-locally/clear', (req, res, next) => {
+    try {
+      getOpenLocallySettingsService(req).clearWindowsProjectsPath();
+      res.redirect('/settings/open-locally?notice=open_locally_cleared');
+    } catch (err) {
       return next(err);
     }
   });

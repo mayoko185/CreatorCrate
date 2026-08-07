@@ -10,6 +10,7 @@ import {
   isPrimaryImageAssetUsable,
 } from '../services/workflow-query-service.js';
 import { buildAssetRevisionToken, classifyPreviewable } from '../services/preview-service.js';
+import { buildOpenLocallyUri } from '../util/open-locally.js';
 
 const ASSET_BROWSER_QUERY_KEYS = ['category', 'tag', 'search', 'extension', 'presence', 'usage', 'sort', 'order', 'page', 'pageSize', 'view'];
 const ASSET_PAGE_DEFAULTS_PAGE = 'projectAssets';
@@ -268,7 +269,7 @@ export function createAssetsRouter({
 
       res.render('projects/assets.njk', {
         appName,
-        ...buildBrowserRenderModel(project, data, pageDefaultsService),
+        ...buildBrowserRenderModel(project, data, pageDefaultsService, req),
         query,
         error,
         archivedError,
@@ -461,7 +462,7 @@ export function createAssetsRouter({
 
       res.render('projects/asset-viewer.njk', {
         appName,
-        ...buildAssetViewerRenderModel(data, buildPrimaryImageViewerState(data, primaryImage, viewerEligibility)),
+        ...buildAssetViewerRenderModel(data, buildPrimaryImageViewerState(data, primaryImage, viewerEligibility), req),
         assetTags,
         notice,
         noticeMessage: notice ? ASSET_ACTION_NOTICE_MESSAGES[notice] : null,
@@ -795,7 +796,7 @@ export function createAssetsRouter({
 
           return res.status(status).render('projects/assets.njk', {
             appName,
-            ...buildBrowserRenderModel(project, data, pageDefaultsService),
+            ...buildBrowserRenderModel(project, data, pageDefaultsService, req),
             query: {},
             error: null,
             archivedError: null,
@@ -875,7 +876,7 @@ export function createAssetsRouter({
           const normalizedSelection = normalizeSelectedAssetIds(body.selectedAssetIds);
           return res.status(status).render('projects/assets.njk', {
             appName,
-            ...buildBrowserRenderModel(project, data, pageDefaultsService),
+            ...buildBrowserRenderModel(project, data, pageDefaultsService, req),
             query: {},
             error: null,
             archivedError: null,
@@ -917,7 +918,7 @@ export function createAssetsRouter({
           if (!data) return next(createNotFound());
           return res.status(status).render('projects/assets.njk', {
             appName,
-            ...buildBrowserRenderModel(project, data, pageDefaultsService),
+            ...buildBrowserRenderModel(project, data, pageDefaultsService, req),
             query: {},
             error: null,
             archivedError: null,
@@ -1004,7 +1005,7 @@ export function createAssetsRouter({
           if (!data) return next(createNotFound());
           return res.status(status).render('projects/assets.njk', {
             appName,
-            ...buildBrowserRenderModel(project, data, pageDefaultsService),
+            ...buildBrowserRenderModel(project, data, pageDefaultsService, req),
             query: {},
             error: null,
             archivedError: null,
@@ -1091,7 +1092,7 @@ export function createAssetsRouter({
           if (!data) return next(createNotFound());
           return res.status(status).render('projects/assets.njk', {
             appName,
-            ...buildBrowserRenderModel(project, data, pageDefaultsService),
+            ...buildBrowserRenderModel(project, data, pageDefaultsService, req),
             query: {},
             error: null,
             archivedError: null,
@@ -1166,6 +1167,14 @@ function getPageDefaultsService(req) {
   const service = req.app?.locals?.pageDefaultsService;
   if (!service) {
     throw new Error('Project Assets requires app.locals.pageDefaultsService.');
+  }
+  return service;
+}
+
+function getOpenLocallySettingsService(req) {
+  const service = req.app?.locals?.openLocallySettingsService;
+  if (!service) {
+    throw new Error('Assets routes require app.locals.openLocallySettingsService.');
   }
   return service;
 }
@@ -1325,7 +1334,7 @@ function buildAssetsPageUrl(projectId, allowedParams, pageDefaultsService) {
  * that re-renders the same template (e.g. bulk-add or asset-action failure).
  * Centralizing this keeps both call sites in sync as the browser model grows.
  */
-function buildBrowserRenderModel(project, data, pageDefaultsService) {
+function buildBrowserRenderModel(project, data, pageDefaultsService, req) {
   const context = {
     ...(data.context || data.filters),
     page: data.page,
@@ -1335,6 +1344,12 @@ function buildBrowserRenderModel(project, data, pageDefaultsService) {
 
   return {
     project,
+    openLocallyUri: buildOpenLocallyUri({
+      windowsRoot: req ? getOpenLocallySettingsService(req).getWindowsProjectsPath() : null,
+      projectDir: project.project_dir,
+      // When filtered to one concrete category, open that category's folder.
+      categoryDir: data.activeCategoryDirectorySlug || null,
+    }),
     assets: data.assets,
     total: data.total,
     page: data.page,
@@ -1715,7 +1730,7 @@ function renderAutoRenameBrowserError({
 
   return res.status(status).render('projects/assets.njk', {
     appName,
-    ...buildBrowserRenderModel(project, data, pageDefaultsService),
+    ...buildBrowserRenderModel(project, data, pageDefaultsService, req),
     query: {},
     error: null,
     archivedError: null,
@@ -2261,7 +2276,7 @@ function hasNonDefaultCategoryBrowserControls(rawQuery = {}) {
  * @param {object} data - workflowQueryService.getProjectAssetViewer(...) result
  * @param {object} [overrides]
  */
-function buildAssetViewerRenderModel(data, overrides = {}) {
+function buildAssetViewerRenderModel(data, overrides = {}, req) {
   return {
     project: data.project,
     asset: data.asset,
@@ -2279,6 +2294,11 @@ function buildAssetViewerRenderModel(data, overrides = {}) {
     enabledCategories: data.enabledCategories,
     canMutate: data.canMutate,
     canManageTags: !data.project.archived_at && data.project.status !== 'archived',
+    openLocallyUri: buildOpenLocallyUri({
+      windowsRoot: req ? getOpenLocallySettingsService(req).getWindowsProjectsPath() : null,
+      projectDir: data.project.project_dir,
+      assetRelativePath: data.asset.relative_path,
+    }),
     notice: null,
     noticeMessage: null,
     formError: null,
@@ -2373,7 +2393,7 @@ function handleAssetActionFailure(err, {
 
   res.status(status).render('projects/asset-viewer.njk', {
     appName,
-    ...buildAssetViewerRenderModel(data, { ...primaryImageState, assetTags, ...overrides }),
+    ...buildAssetViewerRenderModel(data, { ...primaryImageState, assetTags, ...overrides }, req),
   });
 }
 
@@ -2405,7 +2425,7 @@ function handleAssetBrowserActionFailure(err, {
 
   return res.status(status).render('projects/assets.njk', {
     appName,
-    ...buildBrowserRenderModel(project, data, pageDefaultsService),
+    ...buildBrowserRenderModel(project, data, pageDefaultsService, req),
     query: {},
     error: null,
     archivedError: null,

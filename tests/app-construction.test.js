@@ -28,6 +28,7 @@ const dependencyInstrumentation = vi.hoisted(() => ({
   primaryImageServices: [],
   autoRenameServices: [],
   workflowQueryServices: [],
+  openLocallySettingsServices: [],
   assetRouters: [],
   projectAssetCategoryRouters: [],
   settingsRouters: [],
@@ -100,6 +101,18 @@ vi.mock('../src/services/page-defaults-service.js', async (importOriginal) => {
     createPageDefaultsService(...args) {
       const service = actual.createPageDefaultsService(...args);
       dependencyInstrumentation.pageDefaultsServices.push({ args, service });
+      return service;
+    },
+  };
+});
+
+vi.mock('../src/services/open-locally-settings-service.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    createOpenLocallySettingsService(...args) {
+      const service = actual.createOpenLocallySettingsService(...args);
+      dependencyInstrumentation.openLocallySettingsServices.push({ args, service });
       return service;
     },
   };
@@ -321,6 +334,32 @@ describe('app construction — asset actions chunk 3 wiring', () => {
     expect(pageDefaultsServiceArgs[0]).toEqual({ appMetaRepository });
     expect(app.locals.pageDefaultsService).toBe(service);
     expect(dependencyInstrumentation.settingsRouters[0].args[0].pageDefaultsService).toBeUndefined();
+  });
+
+  it('constructs one app-scoped open-locally settings service over the shared app-meta repository', () => {
+    const app = buildApp();
+
+    expect(dependencyInstrumentation.openLocallySettingsServices).toHaveLength(1);
+    const { args, service } = dependencyInstrumentation.openLocallySettingsServices[0];
+    const { repository: appMetaRepository } = dependencyInstrumentation.appMetaRepositories[0];
+
+    expect(args[0]).toEqual({ appMetaRepository });
+    expect(app.locals.openLocallySettingsService).toBe(service);
+    expect(typeof service.getWindowsProjectsPath).toBe('function');
+    expect(typeof service.setWindowsProjectsPath).toBe('function');
+    expect(typeof service.clearWindowsProjectsPath).toBe('function');
+  });
+
+  it('accepts an injected open-locally settings service without constructing a replacement', () => {
+    const injected = {
+      getWindowsProjectsPath: () => null,
+      setWindowsProjectsPath: () => null,
+      clearWindowsProjectsPath: () => false,
+    };
+    const app = buildApp({ openLocallySettingsService: injected });
+
+    expect(dependencyInstrumentation.openLocallySettingsServices).toHaveLength(0);
+    expect(app.locals.openLocallySettingsService).toBe(injected);
   });
 
   it('preserves existing service overrides while accepting app-scoped metadata/default overrides', () => {

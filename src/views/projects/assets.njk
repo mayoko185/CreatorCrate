@@ -307,6 +307,9 @@
     {% call pageHeading.render(assetsHeadingDescription, "archived") %}
       <a class="button button-secondary" href="/projects/{{ project.id }}/asset-categories">Manage Categories</a>
       <a class="button" href="/projects/{{ project.id }}">Back to Project</a>
+      {% if openLocallyUri %}
+        <a class="button button-secondary" href="{{ openLocallyUri }}">Open locally</a>
+      {% endif %}
     {% endcall %}
   {% else %}
     {% call pageHeading.render(assetsHeadingDescription) %}
@@ -323,6 +326,9 @@
       {% endif %}
     <a class="button button-secondary" href="/projects/{{ project.id }}/asset-categories">Manage Categories</a>
     <a class="button" href="/projects/{{ project.id }}">Back to Project</a>
+    {% if openLocallyUri %}
+      <a class="button button-secondary" href="{{ openLocallyUri }}">Open locally</a>
+    {% endif %}
     {% endcall %}
   {% endif %}
 

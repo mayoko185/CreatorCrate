@@ -2555,6 +2555,110 @@ describe('project HTTP workflow', () => {
     });
   });
 
+  // ─── Open locally action on project detail ─────────────────────────
+  //
+  // The detail page renders a custom-protocol link built from the shared
+  // URI builder. The href is Nunjucks-escaped (autoescape), so ampersands
+  // appear as &amp; in the markup; browsers decode them when following the
+  // link. The action must never leak the container root or an absolute path.
+  // The action lives in the page-heading action area, not inline in the
+  // project directory detail row.
+
+  describe('open locally action on project detail', () => {
+    async function createDetailProject(title) {
+      const id = await createProject({ title });
+      return id;
+    }
+
+    function configureWindowsRoot() {
+      db.prepare('INSERT INTO app_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
+        .run('open_locally.windows_projects_path', 'D:\\example');
+    }
+
+    it('renders the Open locally action in the page heading when project_dir exists and a windows root is configured', async () => {
+      const id = await createDetailProject('Open Locally Test');
+      const row = db.prepare('SELECT project_dir FROM projects WHERE id = ?').get(id);
+      configureWindowsRoot();
+
+      const res = await agent.get(`/projects/${id}`).expect(200);
+
+      expect(row.project_dir).toBeTruthy();
+      const actions = extractPageHeadingActions(res.text);
+      expect(actions).toContain('Open locally');
+      expect(actions).toContain('creatorcrate-open://');
+      expect(actions).toContain(
+        `href="creatorcrate-open://open?v=2&amp;path=${encodeURIComponent(`D:\\example\\${row.project_dir}`)}&amp;select=0"`
+      );
+    });
+
+    it('uses the creatorcrate-open scheme with the encoded absolute path and select=0', async () => {
+      const id = await createDetailProject('Open Locally Href Test');
+      const row = db.prepare('SELECT project_dir FROM projects WHERE id = ?').get(id);
+      configureWindowsRoot();
+
+      const res = await agent.get(`/projects/${id}`).expect(200);
+      const actions = extractPageHeadingActions(res.text);
+      const href = actions.match(/href="(creatorcrate-open:[^"]+)"/)?.[1] || '';
+
+      expect(href).toMatch(/^creatorcrate-open:\/\/open\?v=2/);
+      expect(href).toContain(`path=${encodeURIComponent(`D:\\example\\${row.project_dir}`)}`);
+      expect(href).toContain('select=0');
+      expect(href).not.toContain('mapping=');
+      expect(href).not.toContain('/data/projects');
+      expect(href).not.toContain(projectsRoot);
+    });
+
+    it('does not expose the container projects root anywhere on the detail page', async () => {
+      const id = await createDetailProject('Open Locally No Root Leak');
+
+      const res = await agent.get(`/projects/${id}`).expect(200);
+
+      expect(res.text).not.toContain('/data/projects');
+      expect(res.text).not.toContain(projectsRoot);
+    });
+
+    it('omits the action from the page heading when no windows root is configured', async () => {
+      const id = await createDetailProject('Open Locally No Root Configured');
+
+      const res = await agent.get(`/projects/${id}`).expect(200);
+
+      expect(extractPageHeadingActions(res.text)).not.toContain('Open locally');
+      expect(res.text).not.toContain('creatorcrate-open://');
+    });
+
+    it('omits the action from the page heading when project_dir is missing', async () => {
+      const id = await createDetailProject('Open Locally Missing Dir');
+      db.prepare('UPDATE projects SET project_dir = NULL WHERE id = ?').run(id);
+
+      const res = await agent.get(`/projects/${id}`).expect(200);
+
+      expect(extractPageHeadingActions(res.text)).not.toContain('Open locally');
+      expect(res.text).not.toContain('creatorcrate-open://');
+    });
+
+    it('omits the action from the page heading when project_dir is invalid', async () => {
+      const id = await createDetailProject('Open Locally Invalid Dir');
+      db.prepare('UPDATE projects SET project_dir = ? WHERE id = ?').run('../escape', id);
+
+      const res = await agent.get(`/projects/${id}`).expect(200);
+
+      expect(extractPageHeadingActions(res.text)).not.toContain('Open locally');
+      expect(res.text).not.toContain('creatorcrate-open://');
+    });
+
+    it('no longer renders the obsolete inline Open locally link in the project directory row', async () => {
+      const id = await createDetailProject('Open Locally Inline Link Gone');
+      configureWindowsRoot();
+
+      const res = await agent.get(`/projects/${id}`).expect(200);
+
+      const detailList = res.text.match(/<dl class="detail-list">([\s\S]*?)<\/dl>/)?.[1] || '';
+      expect(detailList).not.toContain('project-detail-link');
+      expect(detailList).not.toContain('creatorcrate-open://');
+      expect(detailList).not.toContain('Open locally');
+    });
+  });
+
   // ─── Phase 6B regression: archived project edit route guard ─────────
   //
   // Archived projects are immutable. The edit form must not be reachable

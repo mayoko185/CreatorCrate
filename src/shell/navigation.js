@@ -103,6 +103,7 @@ const NAVIGATION_ITEMS = [
       '/settings/tags',
       '/settings/tags/:tagId/edit',
       '/settings/tags/:tagId/delete',
+      '/settings/open-locally',
     ],
   },
 ];

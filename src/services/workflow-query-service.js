@@ -1816,6 +1816,7 @@ export function createWorkflowQueryService({
       slug: project.slug,
       status: project.status,
       archived_at: project.archived_at,
+      project_dir: project.project_dir,
     };
   }
 
@@ -1914,6 +1915,14 @@ export function createWorkflowQueryService({
 
     const filters = normalizeAssetBrowserQuery(rawQuery, extensions, projectCategories, tagCatalog);
 
+    // When the browser is filtered to one concrete category, expose that
+    // category's on-disk folder name so "Open locally" can target the
+    // category subfolder directly. 'all'/'uncategorized' have no folder.
+    const activeCategory = typeof filters.category === 'number'
+      ? projectCategories.find((category) => category.id === filters.category) || null
+      : null;
+    const activeCategoryDirectorySlug = activeCategory ? activeCategory.directory_slug : null;
+
     const total = assetRepository.countProjectAssets(projectId, filters);
 
     const pageCount = Math.max(1, Math.ceil(total / filters.pageSize));
@@ -1988,6 +1997,7 @@ export function createWorkflowQueryService({
       pageSize: filters.pageSize,
       pageCount,
       filters: buildAssetBrowserFilters(filters),
+      activeCategoryDirectorySlug,
       context: { ...filters, page, pageSize: filters.pageSize },
       extensionChoices: extensions.map((extension) => ({
         value: extension,

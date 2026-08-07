@@ -1,0 +1,2 @@
+G:\code\creatorcrate\helper\windows\installer\dist\OpenLocally.pdb
+G:\code\creatorcrate\helper\windows\installer\dist\OpenLocally.exe

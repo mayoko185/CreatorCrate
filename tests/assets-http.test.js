@@ -2347,6 +2347,260 @@ describe('asset browser HTTP workflow', () => {
     expect(res2.text).not.toContain('/home/');
   });
 
+  // ─── Open locally action on the asset viewer ─────────────────────────
+  //
+  // The viewer renders a custom-protocol link built from the shared URI
+  // builder. The href is Nunjucks-escaped (autoescape), so ampersands appear
+  // as &amp; in the markup; browsers decode them when following the link.
+  // The action must never leak the container root or an absolute path.
+
+  describe('open locally action on the asset viewer', () => {
+    function configureWindowsRoot() {
+      db.prepare('INSERT INTO app_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
+        .run('open_locally.windows_projects_path', 'D:\\example');
+    }
+
+    it('renders Open locally when project directory and relative path exist', async () => {
+      const res = await createProject('Viewer Open Locally');
+      const id = Number(res.headers.location.replace('/projects/', ''));
+      const projectDir = getProjectDir('Viewer Open Locally');
+      if (!projectDir) throw new Error('projectDir not found for Viewer Open Locally');
+      const asset = writeIndexedAsset(id, projectDir, 'gallery/hero.png', await makePng());
+      configureWindowsRoot();
+
+      const res2 = await agent
+        .get(`/projects/${id}/assets/${asset.id}`)
+        .expect(200);
+
+      expect(anchorText(res2.text, 'asset-viewer-open-locally')).toBe('Open locally');
+    });
+
+    it('uses the creatorcrate-open scheme with the encoded absolute path and select=1', async () => {
+      const res = await createProject('Viewer Open Locally Href');
+      const id = Number(res.headers.location.replace('/projects/', ''));
+      const projectDir = getProjectDir('Viewer Open Locally Href');
+      if (!projectDir) throw new Error('projectDir not found for Viewer Open Locally Href');
+      const asset = writeIndexedAsset(id, projectDir, 'gallery/hero.png', await makePng());
+      const row = db.prepare('SELECT project_dir FROM projects WHERE id = ?').get(id);
+      configureWindowsRoot();
+
+      const res2 = await agent
+        .get(`/projects/${id}/assets/${asset.id}`)
+        .expect(200);
+
+      const href = anchorHref(res2.text, 'asset-viewer-open-locally');
+      expect(href).toMatch(/^creatorcrate-open:\/\/open\?v=2/);
+      expect(href).toContain(`path=${encodeURIComponent(`D:\\example\\${row.project_dir}\\gallery/hero.png`)}`);
+      expect(href).toContain('select=1');
+      expect(href).not.toContain('mapping=');
+      expect(href).not.toContain('/data/projects');
+      expect(href).not.toContain(projectsRoot);
+    });
+
+    it('does not expose the container projects root in the viewer action', async () => {
+      const res = await createProject('Viewer Open Locally No Root Leak');
+      const id = Number(res.headers.location.replace('/projects/', ''));
+      const projectDir = getProjectDir('Viewer Open Locally No Root Leak');
+      if (!projectDir) throw new Error('projectDir not found for Viewer Open Locally No Root Leak');
+      const asset = writeIndexedAsset(id, projectDir, 'hero.png', await makePng());
+      configureWindowsRoot();
+
+      const res2 = await agent
+        .get(`/projects/${id}/assets/${asset.id}`)
+        .expect(200);
+
+      const href = anchorHref(res2.text, 'asset-viewer-open-locally');
+      expect(href).not.toContain('/data/projects');
+      expect(href).not.toContain(projectsRoot);
+      expect(href).not.toMatch(/[A-Z]:\\/);
+    });
+
+    it('omits the action when no windows root is configured', async () => {
+      const res = await createProject('Viewer Open Locally No Root Configured');
+      const id = Number(res.headers.location.replace('/projects/', ''));
+      const projectDir = getProjectDir('Viewer Open Locally No Root Configured');
+      if (!projectDir) throw new Error('projectDir not found for Viewer Open Locally No Root Configured');
+      const asset = writeIndexedAsset(id, projectDir, 'hero.png', await makePng());
+
+      const res2 = await agent
+        .get(`/projects/${id}/assets/${asset.id}`)
+        .expect(200);
+
+      expectNoAnchor(res2.text, 'asset-viewer-open-locally');
+      expect(res2.text).not.toContain('creatorcrate-open://');
+    });
+
+    it('omits the action when the project directory is missing', async () => {
+      const res = await createProject('Viewer Open Locally Missing Dir');
+      const id = Number(res.headers.location.replace('/projects/', ''));
+      const projectDir = getProjectDir('Viewer Open Locally Missing Dir');
+      if (!projectDir) throw new Error('projectDir not found for Viewer Open Locally Missing Dir');
+      const asset = writeIndexedAsset(id, projectDir, 'hero.png', await makePng());
+      db.prepare('UPDATE projects SET project_dir = NULL WHERE id = ?').run(id);
+      configureWindowsRoot();
+
+      const res2 = await agent
+        .get(`/projects/${id}/assets/${asset.id}`)
+        .expect(200);
+
+      expectNoAnchor(res2.text, 'asset-viewer-open-locally');
+      expect(res2.text).not.toContain('creatorcrate-open://');
+    });
+
+    it('omits the action when the asset relative path is invalid', async () => {
+      const res = await createProject('Viewer Open Locally Invalid Path');
+      const id = Number(res.headers.location.replace('/projects/', ''));
+      const projectDir = getProjectDir('Viewer Open Locally Invalid Path');
+      if (!projectDir) throw new Error('projectDir not found for Viewer Open Locally Invalid Path');
+      const asset = writeIndexedAsset(id, projectDir, 'hero.png', await makePng());
+      db.prepare('UPDATE assets SET relative_path = ? WHERE id = ?').run('../escape.png', asset.id);
+      configureWindowsRoot();
+
+      const res2 = await agent
+        .get(`/projects/${id}/assets/${asset.id}`)
+        .expect(200);
+
+      expectNoAnchor(res2.text, 'asset-viewer-open-locally');
+      expect(res2.text).not.toContain('creatorcrate-open://');
+    });
+  });
+
+  // ─── Open locally action on the project assets page ────────────────
+  //
+  // The assets browser renders a page-level "Open locally" action in the
+  // page-heading action area, built from the shared URI builder with
+  // project-folder semantics (select=0). The href is Nunjucks-escaped
+  // (autoescape), so ampersands appear as &amp; in the markup; browsers
+  // decode them when following the link. The action must never leak the
+  // container root or an absolute path.
+
+  describe('open locally action on the project assets page', () => {
+    function configureWindowsRoot() {
+      db.prepare('INSERT INTO app_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
+        .run('open_locally.windows_projects_path', 'D:\\example');
+    }
+
+    function extractPageHeadingActions(html) {
+      return html.match(/<div class="page-heading-actions">([\s\S]*?)<\/div>/)?.[1] || '';
+    }
+
+    async function createAssetsProject(title) {
+      const res = await createProject(title);
+      const id = Number(res.headers.location.replace('/projects/', ''));
+      const projectDir = getProjectDir(title);
+      if (!projectDir) throw new Error(`projectDir not found for ${title}`);
+      return { id, projectDir };
+    }
+
+    it('renders the Open locally action in the page heading when a windows root is configured', async () => {
+      const { id, projectDir } = await createAssetsProject('Assets Open Locally');
+      const row = db.prepare('SELECT project_dir FROM projects WHERE id = ?').get(id);
+      configureWindowsRoot();
+
+      const res = await agent
+        .get(`/projects/${id}/assets`)
+        .expect(200);
+
+      const actions = extractPageHeadingActions(res.text);
+      expect(actions).toContain('Open locally');
+      expect(actions).toContain('creatorcrate-open://');
+      expect(actions).toContain(
+        `href="creatorcrate-open://open?v=2&amp;path=${encodeURIComponent(`D:\\example\\${row.project_dir}`)}&amp;select=0"`
+      );
+      expect(projectDir).toBeTruthy();
+    });
+
+    it('uses project-folder semantics with select=0 and never an asset path', async () => {
+      const { id } = await createAssetsProject('Assets Open Locally Href');
+      const row = db.prepare('SELECT project_dir FROM projects WHERE id = ?').get(id);
+      configureWindowsRoot();
+
+      const res = await agent
+        .get(`/projects/${id}/assets`)
+        .expect(200);
+
+      const actions = extractPageHeadingActions(res.text);
+      const href = actions.match(/href="(creatorcrate-open:[^"]+)"/)?.[1] || '';
+
+      expect(href).toMatch(/^creatorcrate-open:\/\/open\?v=2/);
+      expect(href).toContain(`path=${encodeURIComponent(`D:\\example\\${row.project_dir}`)}`);
+      expect(href).toContain('select=0');
+      expect(href).not.toContain('select=1');
+      expect(href).not.toContain('mapping=');
+      expect(href).not.toContain('/data/projects');
+      expect(href).not.toContain(projectsRoot);
+    });
+
+    it('targets the category folder with select=0 when filtered to one category', async () => {
+      const { id } = await createAssetsProject('Assets Open Locally Category');
+      const row = db.prepare('SELECT project_dir FROM projects WHERE id = ?').get(id);
+      const category = assetCategoryRepo.listProjectCategories(id)[0];
+      if (!category) throw new Error('project has no category');
+      configureWindowsRoot();
+
+      const res = await agent
+        .get(`/projects/${id}/assets?category=${category.id}`)
+        .expect(200);
+
+      const href = extractPageHeadingActions(res.text).match(/href="(creatorcrate-open:[^"]+)"/)?.[1] || '';
+      expect(href).toContain(
+        `path=${encodeURIComponent(`D:\\example\\${row.project_dir}\\${category.directory_slug}`)}`
+      );
+      expect(href).toContain('select=0');
+      expect(href).not.toContain('select=1');
+    });
+
+    it('targets the project folder (not a category) when the filter is All', async () => {
+      const { id } = await createAssetsProject('Assets Open Locally All');
+      const row = db.prepare('SELECT project_dir FROM projects WHERE id = ?').get(id);
+      configureWindowsRoot();
+
+      const res = await agent
+        .get(`/projects/${id}/assets?category=all`)
+        .expect(200);
+
+      const href = extractPageHeadingActions(res.text).match(/href="(creatorcrate-open:[^"]+)"/)?.[1] || '';
+      expect(href).toContain(`path=${encodeURIComponent(`D:\\example\\${row.project_dir}`)}&amp;select=0`);
+    });
+
+    it('omits the action from the page heading when no windows root is configured', async () => {
+      const { id } = await createAssetsProject('Assets Open Locally No Root');
+
+      const res = await agent
+        .get(`/projects/${id}/assets`)
+        .expect(200);
+
+      expect(extractPageHeadingActions(res.text)).not.toContain('Open locally');
+      expect(res.text).not.toContain('creatorcrate-open://');
+    });
+
+    it('omits the action from the page heading when project_dir is missing', async () => {
+      const { id } = await createAssetsProject('Assets Open Locally Missing Dir');
+      db.prepare('UPDATE projects SET project_dir = NULL WHERE id = ?').run(id);
+      configureWindowsRoot();
+
+      const res = await agent
+        .get(`/projects/${id}/assets`)
+        .expect(200);
+
+      expect(extractPageHeadingActions(res.text)).not.toContain('Open locally');
+      expect(res.text).not.toContain('creatorcrate-open://');
+    });
+
+    it('omits the action from the page heading when project_dir is invalid', async () => {
+      const { id } = await createAssetsProject('Assets Open Locally Invalid Dir');
+      db.prepare('UPDATE projects SET project_dir = ? WHERE id = ?').run('../escape', id);
+      configureWindowsRoot();
+
+      const res = await agent
+        .get(`/projects/${id}/assets`)
+        .expect(200);
+
+      expect(extractPageHeadingActions(res.text)).not.toContain('Open locally');
+      expect(res.text).not.toContain('creatorcrate-open://');
+    });
+  });
+
   it('forwards unexpected viewer service errors to the global 500 handler', async () => {
     const throwingApp = createApp(
       { appName: 'CreatorCrate', db, projectsRoot, previewRoot },

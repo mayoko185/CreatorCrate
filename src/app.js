@@ -15,6 +15,7 @@ import { createReleaseManagementRouter } from './routes/release-management.js';
 import { createCalendarRouter } from './routes/calendar.js';
 import { createMediaRouter } from './routes/media.js';
 import { createSettingsRouter } from './routes/settings.js';
+import { createDownloadsRouter } from './routes/downloads.js';
 import { createProjectService } from './services/project-service.js';
 import { createAssetCategoryRepository } from './data/asset-category-repository.js';
 import { createAssetCategoryService } from './services/asset-category-service.js';
@@ -24,6 +25,7 @@ import { createTagRepository } from './data/tag-repository.js';
 import { createProjectPrimaryImageRepository } from './data/project-primary-image-repository.js';
 import { createAssetBrowserPreferenceService } from './services/asset-browser-preference-service.js';
 import { createPageDefaultsService } from './services/page-defaults-service.js';
+import { createOpenLocallySettingsService } from './services/open-locally-settings-service.js';
 import { createProjectAssetCategoryService } from './services/project-asset-category-service.js';
 import { createAssetScanner } from './services/asset-scanner.js';
 import { createAssetActionService } from './services/asset-action-service.js';
@@ -121,6 +123,13 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   const pageDefaultsService =
     opts.pageDefaultsService || createPageDefaultsService({ appMetaRepository });
   app.locals.pageDefaultsService = pageDefaultsService;
+
+  // Phase: Open locally v2 — one app-scoped settings service over the shared
+  // app-meta repository. Owns the configured Windows projects root used to
+  // build v2 "Open locally" URIs; the Settings UI is a later phase.
+  const openLocallySettingsService =
+    opts.openLocallySettingsService || createOpenLocallySettingsService({ appMetaRepository });
+  app.locals.openLocallySettingsService = openLocallySettingsService;
 
   const projectService = createProjectService(db, projectsRoot, {
     assetCategoryService,
@@ -418,6 +427,11 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   }
 
   app.use('/projects', createProjectTagsRouter({ appName, projectService }));
+
+  // Phase: Open locally installer — serves the fixed Windows setup artifact
+  // from the application-controlled downloads/ directory. Mounted before the
+  // catch-all 404 so the download route is always reachable.
+  app.use('/downloads', createDownloadsRouter({ downloadsRoot: opts.downloadsRoot }));
 
   app.use('/releases', createReleasesRouter({ appName, releaseService, projectService, workflowQueryService }));
 

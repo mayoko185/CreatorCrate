@@ -9,10 +9,16 @@
       <a class="button" href="/projects/{{ project.id }}/edit">Edit project</a>
       <a class="button" href="/projects/{{ project.id }}/assets">View Assets</a>
       <a class="button button-secondary" href="/projects/{{ project.id }}/tags">Manage tags</a>
+      {% if openLocallyUri %}
+        <a class="button button-secondary" href="{{ openLocallyUri }}">Open locally</a>
+      {% endif %}
     {% endcall %}
   {% else %}
     {% call pageHeading.render("", "archived") %}
       <a class="button" href="/projects/{{ project.id }}/assets">View Assets</a>
+      {% if openLocallyUri %}
+        <a class="button button-secondary" href="{{ openLocallyUri }}">Open locally</a>
+      {% endif %}
     {% endcall %}
   {% endif %}
 

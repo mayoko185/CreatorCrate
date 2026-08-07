@@ -30,6 +30,7 @@ FROM base AS runtime
 COPY --from=deps /app/node_modules ./node_modules
 COPY src ./src
 COPY migrations ./migrations
+COPY downloads ./downloads
 RUN chown -R creatorcrate:creatorcrate /app
 
 USER creatorcrate

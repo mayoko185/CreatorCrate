@@ -4848,8 +4848,8 @@ describe('workflow query service', () => {
         slug: 'viewer-model',
         status: 'tbd',
         archived_at: null,
+        project_dir: null,
       });
-      expect(result.project.project_dir).toBeUndefined();
       expect(result.asset).toMatchObject({
         id: current.id,
         project_id: project.id,
