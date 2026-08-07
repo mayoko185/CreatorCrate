@@ -64,12 +64,6 @@ export function createProjectRepository(db) {
     WHERE id = ? AND archived_at IS NULL
     RETURNING ${COLUMNS.join(', ')}
   `);
-  const restoreFromArchive = db.prepare(`
-    UPDATE projects
-    SET status = ?, archived_at = NULL, project_dir = ?, updated_at = datetime('now')
-    WHERE id = ?
-    RETURNING ${COLUMNS.join(', ')}
-  `);
   const setProjectDirStmt = db.prepare(`
     UPDATE projects
     SET project_dir = ?, updated_at = datetime('now')
@@ -77,7 +71,6 @@ export function createProjectRepository(db) {
     RETURNING ${COLUMNS.join(', ')}
   `);
   const deleteByIdStmt = db.prepare('DELETE FROM projects WHERE id = ?');
-  const findByNullProjectDir = db.prepare(`${SELECT_ALL} WHERE project_dir IS NULL`);
   const countByStatus = db.prepare(`
     SELECT status, COUNT(*) AS c
     FROM projects
@@ -188,19 +181,6 @@ export function createProjectRepository(db) {
     },
 
     /**
-     * Restore a project from archived state.
-     * Used during archive compensation to undo the DB changes.
-     * Does NOT filter on archived_at — designed for rollback.
-     * @param {number} id
-     * @param {string} status - Original status to restore
-     * @param {string|null} projectDir - Original project_dir to restore
-     * @returns {ProjectRecord|undefined}
-     */
-    restoreFromArchive(id, status, projectDir) {
-      return restoreFromArchive.get(status, projectDir, id);
-    },
-
-    /**
      * Permanently delete a project record by ID.
      * Used as rollback when filesystem creation fails after the DB record exists.
      * This is NOT the public archive workflow — it's a hard delete.
@@ -214,20 +194,13 @@ export function createProjectRepository(db) {
 
     /**
      * Set the project_dir for a project and return the updated record.
+     * Project directories are direct children of PROJECTS_ROOT.
      * @param {number} id
-     * @param {string|null} projectDir Relative path (e.g. "active/my-project").
+     * @param {string|null} projectDir Project directory name (e.g. "000042-my-project").
      * @returns {ProjectRecord|undefined}
      */
     setProjectDir(id, projectDir) {
       return setProjectDirStmt.get(projectDir, id);
-    },
-
-    /**
-     * Find all projects that have no project_dir set.
-     * @returns {ProjectRecord[]}
-     */
-    findByProjectDirNull() {
-      return findByNullProjectDir.all();
     },
 
     /**

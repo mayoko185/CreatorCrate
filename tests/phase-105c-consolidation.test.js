@@ -21,7 +21,6 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createApp } from '../src/app.js';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
-import { STATUS_DIR_MAP } from '../src/storage/project-storage.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
 import { ensureAuthEnablement } from '../src/auth/auth-state.js';
 import { getDisabledModeCsrf } from './helpers/auth.js';
@@ -52,6 +51,18 @@ function extractSectionByHeading(html, heading) {
   return afterHeading.split('</section>')[0];
 }
 
+/**
+ * Resolve the flat project directory by scanning PROJECTS_ROOT for the
+ * slug suffix. Status never participates: the project directory is a
+ * direct child of PROJECTS_ROOT.
+ */
+function findProjectDir(projectsRoot, slug) {
+  const entries = fs.readdirSync(projectsRoot);
+  const matching = entries.filter((e) => e.endsWith(`-${slug}`));
+  if (matching.length === 0) return null;
+  return path.join(projectsRoot, matching[0]);
+}
+
 describe('Phase 10.5C: Release page visual consolidation', () => {
   let db;
   let app;
@@ -64,9 +75,6 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-105c-'));
     projectsRoot = path.join(tmpDir, 'projects');
     fs.mkdirSync(projectsRoot, { recursive: true });
-    for (const dir of Object.values(STATUS_DIR_MAP)) {
-      fs.mkdirSync(path.join(projectsRoot, dir), { recursive: true });
-    }
     const dbPath = path.join(tmpDir, 'test.db');
     db = openDatabase(dbPath);
     runMigrations(db, MIGRATIONS_DIR);
@@ -258,9 +266,8 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
 
       // Add an asset so it can be published
       const slug = 'status-published-release';
-      const entries = fs.readdirSync(path.join(projectsRoot, 'ready'));
-      const matching = entries.filter(e => e.endsWith(`-${slug}`));
-      fs.writeFileSync(path.join(projectsRoot, 'ready', matching[0], 'test.txt'), 'hello');
+      const projectDir = findProjectDir(projectsRoot, slug);
+      fs.writeFileSync(path.join(projectDir, 'test.txt'), 'hello');
       await agent.post(`/projects/${projectId}/scan`).send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
@@ -444,9 +451,7 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
       const projectId = projRes.headers.location.replace('/projects/', '');
 
       const slug = 'table-test-release';
-      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-      const matching = entries.filter(e => e.endsWith(`-${slug}`));
-      const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
+      const projectDir = findProjectDir(projectsRoot, slug);
       fs.writeFileSync(path.join(projectDir, 'detail-selected.txt'), 'selected');
       await agent.post(`/projects/${projectId}/scan`).send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
@@ -683,9 +688,7 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
       const projectId = projRes.headers.location.replace('/projects/', '');
 
       const slug = 'asset-table-test';
-      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-      const matching = entries.filter(e => e.endsWith(`-${slug}`));
-      const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
+      const projectDir = findProjectDir(projectsRoot, slug);
       fs.writeFileSync(path.join(projectDir, 'selected-primary-with-long-action-name.txt'), 'selected one');
       fs.writeFileSync(path.join(projectDir, 'selected-preview.txt'), 'selected two');
       fs.writeFileSync(path.join(projectDir, 'candidate-available.txt'), 'candidate');

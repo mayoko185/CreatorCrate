@@ -23,7 +23,7 @@ import {
   AssetCategoryNotFoundError,
   AssetCategoryValidationError,
 } from '../src/services/project-asset-category-service.js';
-import { resolveProjectDir, STATUS_DIR_MAP } from '../src/storage/project-storage.js';
+import { resolveProjectDir } from '../src/storage/project-storage.js';
 import { readManifestSync } from '../src/storage/manifest.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
@@ -117,9 +117,6 @@ describe('project asset category service', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-pacs-'));
     projectsRoot = path.join(tmpDir, 'projects');
     fs.mkdirSync(projectsRoot, { recursive: true });
-    for (const dir of Object.values(STATUS_DIR_MAP)) {
-      fs.mkdirSync(path.join(projectsRoot, dir), { recursive: true });
-    }
     const dbPath = path.join(tmpDir, 'test.db');
     db = openDatabase(dbPath);
     runMigrations(db, MIGRATIONS_DIR);

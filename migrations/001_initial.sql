@@ -64,11 +64,11 @@ CREATE INDEX IF NOT EXISTS idx_asset_category_defaults_order
     ON asset_category_defaults(display_order, id);
 
 INSERT INTO asset_category_defaults (display_name, directory_slug, display_order, enabled) VALUES
-    ('Source', 'source', 0, 1),
-    ('Exports', 'exports', 1, 1),
-    ('Extras', 'extras', 2, 1),
-    ('References', 'references', 3, 1),
-    ('Thumbnails', 'thumbnails', 4, 1);
+    ('Final', 'final', 0, 1),
+    ('WIP', 'wip', 1, 1),
+    ('KRZ', 'krz', 2, 1),
+    ('WM', 'wm', 3, 1),
+    ('WM-LQ', 'wm-lq', 4, 1);
 
 CREATE TABLE IF NOT EXISTS project_asset_categories (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -99,8 +99,6 @@ CREATE TABLE IF NOT EXISTS releases (
     title TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT '',
     notes TEXT NOT NULL DEFAULT '',
-    status TEXT NOT NULL DEFAULT 'tbd'
-        CHECK (status IN ('tbd', 'planned', 'in-progress', 'ready', 'published', 'cancelled')),
     planned_date TEXT,
     planned_time TEXT,
     published_date TEXT,
@@ -114,16 +112,13 @@ CREATE TABLE IF NOT EXISTS releases (
 CREATE INDEX IF NOT EXISTS idx_releases_project_id
     ON releases(project_id);
 
-CREATE INDEX IF NOT EXISTS idx_releases_status
-    ON releases(status);
-
 CREATE INDEX IF NOT EXISTS idx_releases_planned_date
     ON releases(planned_date DESC)
-    WHERE status IN ('tbd', 'planned', 'in-progress', 'ready');
+    WHERE archived_at IS NULL AND published_date IS NULL;
 
 CREATE INDEX IF NOT EXISTS idx_releases_overdue
     ON releases(planned_date)
-    WHERE status IN ('tbd', 'planned', 'in-progress', 'ready') AND planned_date IS NOT NULL;
+    WHERE archived_at IS NULL AND published_date IS NULL AND planned_date IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_releases_archived
     ON releases(archived_at)

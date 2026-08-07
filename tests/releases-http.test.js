@@ -8,7 +8,7 @@ import { createApp } from '../src/app.js';
 import { ensureAuthEnablement } from '../src/auth/auth-state.js';
 import { getDisabledModeCsrf } from './helpers/auth.js';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
-import { STATUS_DIR_MAP } from '../src/storage/project-storage.js';
+import { formatProjectDirName } from '../src/storage/project-storage.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
 import { createReleaseRepository } from '../src/data/release-repository.js';
 import { createReleaseService } from '../src/services/release-service.js';
@@ -31,6 +31,18 @@ function selectedOptionValue(html, selectId) {
   const select = html.match(new RegExp(`<select id="${selectId}"[\\s\\S]*?</select>`))?.[0];
   if (!select) throw new Error(`Select ${selectId} was not rendered.`);
   return select.match(/<option value="([^"]+)"\s+selected(?:\s|>)/)?.[1];
+}
+
+/**
+ * Local flat-layout helper: resolve a project directory as a direct child
+ * of PROJECTS_ROOT using the production directory-name primitive.
+ * @param {string} projectsRoot
+ * @param {string|number} projectId - Project id (string or number)
+ * @param {string} slug - Project slug
+ * @returns {string} Absolute path to the project directory
+ */
+function getProjectDir(projectsRoot, projectId, slug) {
+  return path.join(projectsRoot, formatProjectDirName(Number(projectId), slug));
 }
 
 /**
@@ -65,9 +77,7 @@ async function setupPublishableRelease(agent, projectsRoot, db, csrfToken) {
   const projectId = projRes.headers.location.replace('/projects/', '');
 
   const slug = 'readiness-test-project';
-  const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-  const matching = entries.filter((e) => e.endsWith(`-${slug}`));
-  const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
+  const projectDir = getProjectDir(projectsRoot, projectId, slug);
   fs.writeFileSync(path.join(projectDir, 'asset.png'), 'png');
   await agent.post(`/projects/${projectId}/scan`)
       .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
@@ -148,9 +158,6 @@ describe('release HTTP workflow', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-http-'));
     projectsRoot = path.join(tmpDir, 'projects');
     fs.mkdirSync(projectsRoot, { recursive: true });
-    for (const dir of Object.values(STATUS_DIR_MAP)) {
-      fs.mkdirSync(path.join(projectsRoot, dir), { recursive: true });
-    }
     appDataRoot = path.join(tmpDir, 'app');
     fs.mkdirSync(appDataRoot, { recursive: true });
     const dbPath = path.join(tmpDir, 'test.db');
@@ -353,9 +360,7 @@ describe('release HTTP workflow', () => {
       const projectId = projRes.headers.location.replace('/projects/', '');
 
       const slug = 'legacy-readiness-project';
-      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
-      const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
+      const projectDir = getProjectDir(projectsRoot, projectId, slug);
       fs.writeFileSync(path.join(projectDir, 'asset.png'), 'png');
       await agent.post(`/projects/${projectId}/scan`)
       .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
@@ -515,9 +520,7 @@ describe('release HTTP workflow', () => {
 
       // Scan an asset into project B
       const slugB = 'cross-project-b';
-      const entriesB = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-      const matchingB = entriesB.filter((e) => e.endsWith(`-${slugB}`));
-      const projectBDir = path.join(projectsRoot, 'tbd', matchingB[0]);
+      const projectBDir = getProjectDir(projectsRoot, projectBId, slugB);
       fs.writeFileSync(path.join(projectBDir, 'asset-b.png'), 'png');
       await agent.post(`/projects/${projectBId}/scan`)
       .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
@@ -1088,9 +1091,8 @@ describe('release HTTP workflow', () => {
 
       // Add an asset to make it publishable
       const slug = 'publish-heading-test';
-      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-      const matching = entries.filter(e => e.endsWith(`-${slug}`));
-      fs.writeFileSync(path.join(projectsRoot, 'tbd', matching[0], 'test.txt'), 'hello');
+      const projectDir = getProjectDir(projectsRoot, projectId, slug);
+      fs.writeFileSync(path.join(projectDir, 'test.txt'), 'hello');
       await agent.post(`/projects/${projectId}/scan`).send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
@@ -1132,9 +1134,8 @@ describe('release HTTP workflow', () => {
       setProjectStatusForReleaseTest(db, relRes.headers.location, 'ready');
 
       const slug = 'publish-panel-test';
-      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-      const matching = entries.filter(e => e.endsWith(`-${slug}`));
-      fs.writeFileSync(path.join(projectsRoot, 'tbd', matching[0], 'test.txt'), 'hello');
+      const projectDir = getProjectDir(projectsRoot, projectId, slug);
+      fs.writeFileSync(path.join(projectDir, 'test.txt'), 'hello');
       await agent.post(`/projects/${projectId}/scan`).send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
@@ -1174,9 +1175,8 @@ describe('release HTTP workflow', () => {
       setProjectStatusForReleaseTest(db, relRes.headers.location, 'ready');
 
       const slug = 'publish-badge-test';
-      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-      const matching = entries.filter(e => e.endsWith(`-${slug}`));
-      fs.writeFileSync(path.join(projectsRoot, 'tbd', matching[0], 'test.txt'), 'hello');
+      const projectDir = getProjectDir(projectsRoot, projectId, slug);
+      fs.writeFileSync(path.join(projectDir, 'test.txt'), 'hello');
       await agent.post(`/projects/${projectId}/scan`).send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
@@ -2050,14 +2050,7 @@ describe('release HTTP workflow', () => {
     const projectId = projRes.headers.location.replace('/projects/', '');
 
     // Create a file and scan
-    const getProjectDir = () => {
-      const slug = 'asset-form-test-project';
-      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
-      return path.join(projectsRoot, 'tbd', matching[0]);
-    };
-
-    const projectDir = getProjectDir();
+    const projectDir = getProjectDir(projectsRoot, projectId, 'asset-form-test-project');
     fs.writeFileSync(path.join(projectDir, 'file1.png'), 'png');
     fs.writeFileSync(path.join(projectDir, 'file2.txt'), 'txt');
 
@@ -2112,13 +2105,7 @@ describe('release HTTP workflow', () => {
       .expect(302);
     const projectId = projRes.headers.location.replace('/projects/', '');
 
-    const getProjectDir = () => {
-      const slug = 'malformed-asset-id-test';
-      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
-      return path.join(projectsRoot, 'tbd', matching[0]);
-    };
-    const projectDir = getProjectDir();
+    const projectDir = getProjectDir(projectsRoot, projectId, 'malformed-asset-id-test');
     fs.writeFileSync(path.join(projectDir, 'mid.png'), 'png');
     await agent.post(`/projects/${projectId}/scan`)
       .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
@@ -2239,14 +2226,7 @@ describe('release HTTP workflow', () => {
     const projectId = projRes.headers.location.replace('/projects/', '');
 
     // Create a file and scan
-    const getProjectDir = () => {
-      const slug = 'no-js-asset-test';
-      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
-      return path.join(projectsRoot, 'tbd', matching[0]);
-    };
-
-    const projectDir = getProjectDir();
+    const projectDir = getProjectDir(projectsRoot, projectId, 'no-js-asset-test');
     fs.writeFileSync(path.join(projectDir, 'a.png'), 'png');
     fs.writeFileSync(path.join(projectDir, 'b.txt'), 'txt');
     await agent.post(`/projects/${projectId}/scan`)
@@ -2306,13 +2286,7 @@ describe('release HTTP workflow', () => {
       .expect(302);
     const projectId = projRes.headers.location.replace('/projects/', '');
 
-    const getProjectDir = () => {
-      const slug = 'partial-js-asset-test';
-      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
-      return path.join(projectsRoot, 'tbd', matching[0]);
-    };
-    const projectDir = getProjectDir();
+    const projectDir = getProjectDir(projectsRoot, projectId, 'partial-js-asset-test');
     fs.writeFileSync(path.join(projectDir, 'one.png'), 'png');
     fs.writeFileSync(path.join(projectDir, 'two.txt'), 'txt');
     await agent.post(`/projects/${projectId}/scan`)
@@ -2386,17 +2360,12 @@ describe('release HTTP workflow', () => {
       .expect(302);
     const otherProjectId = proj2Res.headers.location.replace('/projects/', '');
 
-    const getProjectDir = (slug) => {
-      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
-      return path.join(projectsRoot, 'tbd', matching[0]);
-    };
-    const mainDir = getProjectDir('preserve-selection-test');
+    const mainDir = getProjectDir(projectsRoot, projectId, 'preserve-selection-test');
     fs.writeFileSync(path.join(mainDir, 'main.png'), 'png');
     await agent.post(`/projects/${projectId}/scan`)
       .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
-    const otherDir = getProjectDir('other-project');
+    const otherDir = getProjectDir(projectsRoot, otherProjectId, 'other-project');
     fs.writeFileSync(path.join(otherDir, 'other.png'), 'png');
     await agent.post(`/projects/${otherProjectId}/scan`)
       .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
@@ -2479,13 +2448,7 @@ describe('release HTTP workflow', () => {
       .expect(302);
     const projectId = projRes.headers.location.replace('/projects/', '');
 
-    const getProjectDir = () => {
-      const slug = 'duplicate-asset-test';
-      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
-      return path.join(projectsRoot, 'tbd', matching[0]);
-    };
-    const projectDir = getProjectDir();
+    const projectDir = getProjectDir(projectsRoot, projectId, 'duplicate-asset-test');
     fs.writeFileSync(path.join(projectDir, 'dup.png'), 'png');
     await agent.post(`/projects/${projectId}/scan`)
       .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
@@ -2537,13 +2500,7 @@ describe('release HTTP workflow', () => {
       .expect(302);
     const projectId = projRes.headers.location.replace('/projects/', '');
 
-    const getProjectDir = () => {
-      const slug = 'dup-string-test';
-      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
-      return path.join(projectsRoot, 'tbd', matching[0]);
-    };
-    const projectDir = getProjectDir();
+    const projectDir = getProjectDir(projectsRoot, projectId, 'dup-string-test');
     fs.writeFileSync(path.join(projectDir, 'dupstr.png'), 'png');
     await agent.post(`/projects/${projectId}/scan`)
       .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
@@ -2591,13 +2548,7 @@ describe('release HTTP workflow', () => {
       .expect(302);
     const projectId = projRes.headers.location.replace('/projects/', '');
 
-    const getProjectDir = () => {
-      const slug = 'nested-array-test';
-      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
-      return path.join(projectsRoot, 'tbd', matching[0]);
-    };
-    const projectDir = getProjectDir();
+    const projectDir = getProjectDir(projectsRoot, projectId, 'nested-array-test');
     fs.writeFileSync(path.join(projectDir, 'nested.png'), 'png');
     await agent.post(`/projects/${projectId}/scan`)
       .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
@@ -2658,13 +2609,7 @@ describe('release HTTP workflow', () => {
       .expect(302);
     const projectId = projRes.headers.location.replace('/projects/', '');
 
-    const getProjectDir = () => {
-      const slug = 'object-asset-test';
-      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
-      return path.join(projectsRoot, 'tbd', matching[0]);
-    };
-    const projectDir = getProjectDir();
+    const projectDir = getProjectDir(projectsRoot, projectId, 'object-asset-test');
     fs.writeFileSync(path.join(projectDir, 'obj.png'), 'png');
     await agent.post(`/projects/${projectId}/scan`)
       .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
@@ -2717,13 +2662,7 @@ describe('release HTTP workflow', () => {
       .expect(302);
     const projectId = projRes.headers.location.replace('/projects/', '');
 
-    const getProjectDir = () => {
-      const slug = 'blank-asset-test';
-      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
-      return path.join(projectsRoot, 'tbd', matching[0]);
-    };
-    const projectDir = getProjectDir();
+    const projectDir = getProjectDir(projectsRoot, projectId, 'blank-asset-test');
     fs.writeFileSync(path.join(projectDir, 'blank.png'), 'png');
     await agent.post(`/projects/${projectId}/scan`)
       .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
@@ -2783,13 +2722,7 @@ describe('release HTTP workflow', () => {
       .expect(302);
     const projectId = projRes.headers.location.replace('/projects/', '');
 
-    const getProjectDir = () => {
-      const slug = 'non-int-asset-test';
-      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
-      return path.join(projectsRoot, 'tbd', matching[0]);
-    };
-    const projectDir = getProjectDir();
+    const projectDir = getProjectDir(projectsRoot, projectId, 'non-int-asset-test');
     fs.writeFileSync(path.join(projectDir, 'ni.png'), 'png');
     await agent.post(`/projects/${projectId}/scan`)
       .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
@@ -2849,13 +2782,7 @@ describe('release HTTP workflow', () => {
       .expect(302);
     const projectId = projRes.headers.location.replace('/projects/', '');
 
-    const getProjectDir = () => {
-      const slug = 'neg-asset-test';
-      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
-      return path.join(projectsRoot, 'tbd', matching[0]);
-    };
-    const projectDir = getProjectDir();
+    const projectDir = getProjectDir(projectsRoot, projectId, 'neg-asset-test');
     fs.writeFileSync(path.join(projectDir, 'neg.png'), 'png');
     await agent.post(`/projects/${projectId}/scan`)
       .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
@@ -2914,13 +2841,7 @@ describe('release HTTP workflow', () => {
       .expect(302);
     const projectId = projRes.headers.location.replace('/projects/', '');
 
-    const getProjectDir = () => {
-      const slug = 'zero-asset-test';
-      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
-      return path.join(projectsRoot, 'tbd', matching[0]);
-    };
-    const projectDir = getProjectDir();
+    const projectDir = getProjectDir(projectsRoot, projectId, 'zero-asset-test');
     fs.writeFileSync(path.join(projectDir, 'zero.png'), 'png');
     await agent.post(`/projects/${projectId}/scan`)
       .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
@@ -2979,13 +2900,7 @@ describe('release HTTP workflow', () => {
       .expect(302);
     const projectId = projRes.headers.location.replace('/projects/', '');
 
-    const getProjectDir = () => {
-      const slug = 'single-asset-role-test';
-      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
-      return path.join(projectsRoot, 'tbd', matching[0]);
-    };
-    const projectDir = getProjectDir();
+    const projectDir = getProjectDir(projectsRoot, projectId, 'single-asset-role-test');
     fs.writeFileSync(path.join(projectDir, 'single.png'), 'png');
     await agent.post(`/projects/${projectId}/scan`)
       .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
@@ -3048,13 +2963,7 @@ describe('release HTTP workflow', () => {
       .expect(302);
     const projectId = projRes.headers.location.replace('/projects/', '');
 
-    const getProjectDir = () => {
-      const slug = 'multi-asset-preserve-test';
-      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
-      return path.join(projectsRoot, 'tbd', matching[0]);
-    };
-    const projectDir = getProjectDir();
+    const projectDir = getProjectDir(projectsRoot, projectId, 'multi-asset-preserve-test');
     fs.writeFileSync(path.join(projectDir, 'a.png'), 'png');
     fs.writeFileSync(path.join(projectDir, 'b.png'), 'png');
     await agent.post(`/projects/${projectId}/scan`)
@@ -3126,13 +3035,7 @@ describe('release HTTP workflow', () => {
       .expect(302);
     const projectId = projRes.headers.location.replace('/projects/', '');
 
-    const getProjectDir = () => {
-      const slug = 'empty-selection-test';
-      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
-      return path.join(projectsRoot, 'tbd', matching[0]);
-    };
-    const projectDir = getProjectDir();
+    const projectDir = getProjectDir(projectsRoot, projectId, 'empty-selection-test');
     fs.writeFileSync(path.join(projectDir, 'clear.png'), 'png');
     await agent.post(`/projects/${projectId}/scan`)
       .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
@@ -3192,13 +3095,7 @@ describe('release HTTP workflow', () => {
       .expect(302);
     const projectId = projRes.headers.location.replace('/projects/', '');
 
-    const getProjectDir = () => {
-      const slug = 'empty-scalar-clear-test';
-      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
-      return path.join(projectsRoot, 'tbd', matching[0]);
-    };
-    const projectDir = getProjectDir();
+    const projectDir = getProjectDir(projectsRoot, projectId, 'empty-scalar-clear-test');
     fs.writeFileSync(path.join(projectDir, 'esc.png'), 'png');
     await agent.post(`/projects/${projectId}/scan`)
       .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
@@ -3258,13 +3155,7 @@ describe('release HTTP workflow', () => {
       .expect(302);
     const projectId = projRes.headers.location.replace('/projects/', '');
 
-    const getProjectDir = () => {
-      const slug = 'null-asset-reject-test';
-      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
-      return path.join(projectsRoot, 'tbd', matching[0]);
-    };
-    const projectDir = getProjectDir();
+    const projectDir = getProjectDir(projectsRoot, projectId, 'null-asset-reject-test');
     fs.writeFileSync(path.join(projectDir, 'null.png'), 'png');
     await agent.post(`/projects/${projectId}/scan`)
       .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
@@ -3323,12 +3214,7 @@ describe('release HTTP workflow', () => {
       .expect(302);
     const projectId = projRes.headers.location.replace('/projects/', '');
 
-    const getProjectDir = (slug) => {
-      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
-      return path.join(projectsRoot, 'tbd', matching[0]);
-    };
-    const projectDir = getProjectDir('malformed-object-test');
+    const projectDir = getProjectDir(projectsRoot, projectId, 'malformed-object-test');
     fs.writeFileSync(path.join(projectDir, 'm1.png'), 'png');
     fs.writeFileSync(path.join(projectDir, 'm2.png'), 'png');
     await agent.post(`/projects/${projectId}/scan`)
@@ -3378,7 +3264,7 @@ describe('release HTTP workflow', () => {
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
     const otherProjectId = proj2Res.headers.location.replace('/projects/', '');
-    const otherProjectDir = getProjectDir('other-malformed-project');
+    const otherProjectDir = getProjectDir(projectsRoot, otherProjectId, 'other-malformed-project');
     fs.writeFileSync(path.join(otherProjectDir, 'other.png'), 'png');
     await agent.post(`/projects/${otherProjectId}/scan`)
       .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
@@ -3419,13 +3305,7 @@ describe('release HTTP workflow', () => {
       .expect(302);
     const projectId = projRes.headers.location.replace('/projects/', '');
 
-    const getProjectDir = () => {
-      const slug = 'nested-obj-key-test';
-      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
-      return path.join(projectsRoot, 'tbd', matching[0]);
-    };
-    const projectDir = getProjectDir();
+    const projectDir = getProjectDir(projectsRoot, projectId, 'nested-obj-key-test');
     fs.writeFileSync(path.join(projectDir, 'nok.png'), 'png');
     await agent.post(`/projects/${projectId}/scan`)
       .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
@@ -3485,13 +3365,7 @@ describe('release HTTP workflow', () => {
       .expect(302);
     const projectId = projRes.headers.location.replace('/projects/', '');
 
-    const getProjectDir = () => {
-      const slug = 'non-numeric-key-test';
-      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
-      return path.join(projectsRoot, 'tbd', matching[0]);
-    };
-    const projectDir = getProjectDir();
+    const projectDir = getProjectDir(projectsRoot, projectId, 'non-numeric-key-test');
     fs.writeFileSync(path.join(projectDir, 'nnk.png'), 'png');
     await agent.post(`/projects/${projectId}/scan`)
       .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
@@ -3551,13 +3425,7 @@ describe('release HTTP workflow', () => {
       .expect(302);
     const projectId = projRes.headers.location.replace('/projects/', '');
 
-    const getProjectDir = () => {
-      const slug = 'mixed-nested-test';
-      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
-      return path.join(projectsRoot, 'tbd', matching[0]);
-    };
-    const projectDir = getProjectDir();
+    const projectDir = getProjectDir(projectsRoot, projectId, 'mixed-nested-test');
     fs.writeFileSync(path.join(projectDir, 'mn.png'), 'png');
     await agent.post(`/projects/${projectId}/scan`)
       .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
@@ -3618,13 +3486,7 @@ describe('release HTTP workflow', () => {
       .expect(302);
     const projectId = projRes.headers.location.replace('/projects/', '');
 
-    const getProjectDir = () => {
-      const slug = 'archived-preserve-test';
-      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
-      return path.join(projectsRoot, 'tbd', matching[0]);
-    };
-    const projectDir = getProjectDir();
+    const projectDir = getProjectDir(projectsRoot, projectId, 'archived-preserve-test');
     fs.writeFileSync(path.join(projectDir, 'ap.png'), 'png');
     await agent.post(`/projects/${projectId}/scan`)
       .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
@@ -3707,13 +3569,7 @@ describe('release HTTP workflow', () => {
       .expect(302);
     const projectId = projRes.headers.location.replace('/projects/', '');
 
-    const getProjectDir = () => {
-      const slug = 'archived-parent-preserve';
-      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
-      return path.join(projectsRoot, 'tbd', matching[0]);
-    };
-    const projectDir = getProjectDir();
+    const projectDir = getProjectDir(projectsRoot, projectId, 'archived-parent-preserve');
     fs.writeFileSync(path.join(projectDir, 'app.png'), 'png');
     await agent.post(`/projects/${projectId}/scan`)
       .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
@@ -3796,13 +3652,7 @@ describe('release HTTP workflow', () => {
       .expect(302);
     const projectId = projRes.headers.location.replace('/projects/', '');
 
-    const getProjectDir = () => {
-      const slug = 'replacement-test';
-      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
-      return path.join(projectsRoot, 'tbd', matching[0]);
-    };
-    const projectDir = getProjectDir();
+    const projectDir = getProjectDir(projectsRoot, projectId, 'replacement-test');
     fs.writeFileSync(path.join(projectDir, 'keep.png'), 'png');
     fs.writeFileSync(path.join(projectDir, 'remove.png'), 'png');
     await agent.post(`/projects/${projectId}/scan`)
@@ -4093,13 +3943,7 @@ describe('release HTTP workflow', () => {
         .expect(302);
       const projectId = projRes.headers.location.replace('/projects/', '');
 
-      const getProjectDir = () => {
-        const slug = 'gated-assets-project';
-        const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-        const matching = entries.filter((e) => e.endsWith(`-${slug}`));
-        return path.join(projectsRoot, 'tbd', matching[0]);
-      };
-      const projectDir = getProjectDir();
+      const projectDir = getProjectDir(projectsRoot, projectId, 'gated-assets-project');
       fs.writeFileSync(path.join(projectDir, 'gated.png'), 'png');
       await agent.post(`/projects/${projectId}/scan`)
       .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
@@ -4143,13 +3987,7 @@ describe('release HTTP workflow', () => {
         .expect(302);
       const projectId = projRes.headers.location.replace('/projects/', '');
 
-      const getProjectDir = () => {
-        const slug = 'active-assets-project';
-        const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-        const matching = entries.filter((e) => e.endsWith(`-${slug}`));
-        return path.join(projectsRoot, 'tbd', matching[0]);
-      };
-      const projectDir = getProjectDir();
+      const projectDir = getProjectDir(projectsRoot, projectId, 'active-assets-project');
       fs.writeFileSync(path.join(projectDir, 'active.png'), 'png');
       await agent.post(`/projects/${projectId}/scan`)
       .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
@@ -4286,13 +4124,7 @@ describe('release HTTP workflow', () => {
         .expect(302);
       const projectId = projRes.headers.location.replace('/projects/', '');
 
-      const getProjectDir = () => {
-        const slug = 'asset-reject-archived';
-        const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-        const matching = entries.filter((e) => e.endsWith(`-${slug}`));
-        return path.join(projectsRoot, 'tbd', matching[0]);
-      };
-      const projectDir = getProjectDir();
+      const projectDir = getProjectDir(projectsRoot, projectId, 'asset-reject-archived');
       fs.writeFileSync(path.join(projectDir, 'a.png'), 'png');
       await agent.post(`/projects/${projectId}/scan`)
       .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
@@ -4853,9 +4685,7 @@ describe('release HTTP workflow', () => {
       const projectId = projRes.headers.location.replace('/projects/', '');
 
       const slug = 'missing-remove-test';
-      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
-      const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
+      const projectDir = getProjectDir(projectsRoot, projectId, slug);
       fs.writeFileSync(path.join(projectDir, 'asset.png'), 'png');
       await agent.post(`/projects/${projectId}/scan`)
       .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
@@ -4918,9 +4748,7 @@ describe('release HTTP workflow', () => {
 
       // Add a second present asset with a distinctive role and sort order
       const slug = 'readiness-test-project';
-      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
-      const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
+      const projectDir = getProjectDir(projectsRoot, projectId, slug);
       fs.writeFileSync(path.join(projectDir, 'second-asset.txt'), 'second content');
       await agent.post(`/projects/${projectId}/scan`)
       .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
@@ -4985,9 +4813,7 @@ describe('release HTTP workflow', () => {
 
       // Add a second present asset to verify only the missing one is removed
       const slug = 'missing-remove-test';
-      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
-      const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
+      const projectDir = getProjectDir(projectsRoot, projectId, slug);
       fs.writeFileSync(path.join(projectDir, 'second.png'), 'png');
       await agent.post(`/projects/${projectId}/scan`)
       .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
@@ -5028,9 +4854,7 @@ describe('release HTTP workflow', () => {
 
       // Add a second present asset so removing the missing one leaves a selection
       const slug = 'missing-remove-test';
-      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
-      const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
+      const projectDir = getProjectDir(projectsRoot, projectId, slug);
       fs.writeFileSync(path.join(projectDir, 'second.png'), 'png');
       await agent.post(`/projects/${projectId}/scan`)
       .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
@@ -5239,9 +5063,7 @@ describe('release HTTP workflow', () => {
 
       // Delete the asset file from disk
       const slug = 'readiness-test-project';
-      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
-      const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
+      const projectDir = getProjectDir(projectsRoot, projectId, slug);
       fs.unlinkSync(path.join(projectDir, 'asset.png'));
 
       // Run the real project scan so the asset becomes is_present = 0
@@ -5303,9 +5125,7 @@ describe('release HTTP workflow', () => {
 
       // Remove the asset file from disk to trigger a scan change
       const slug = 'readiness-test-project';
-      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
-      const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
+      const projectDir = getProjectDir(projectsRoot, projectId, slug);
       fs.unlinkSync(path.join(projectDir, 'asset.png'));
 
       // Scan — should succeed and detect the removal
@@ -6180,9 +6000,7 @@ describe('release HTTP workflow', () => {
 
       // Change readiness: remove the asset file and scan
       const slug = 'readiness-test-project';
-      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
-      const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
+      const projectDir = getProjectDir(projectsRoot, projectId, slug);
       fs.unlinkSync(path.join(projectDir, 'asset.png'));
       await agent
         .post(`/projects/${projectId}/scan`)
@@ -6206,9 +6024,7 @@ describe('release HTTP workflow', () => {
 
       // Remove the asset file and scan to make it missing
       const slug = 'readiness-test-project';
-      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
-      const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
+      const projectDir = getProjectDir(projectsRoot, projectId, slug);
       fs.unlinkSync(path.join(projectDir, 'asset.png'));
       await agent
         .post(`/projects/${projectId}/scan`)
@@ -6314,9 +6130,7 @@ describe('release HTTP workflow', () => {
 
       // Create additional assets with deliberately unordered insertion
       const slug = 'readiness-test-project';
-      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
-      const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
+      const projectDir = getProjectDir(projectsRoot, projectId, slug);
 
       // Write distinct files
       fs.writeFileSync(path.join(projectDir, 'delta.txt'), 'delta');
@@ -6442,9 +6256,7 @@ describe('release HTTP workflow', () => {
       const projectId = projRes.headers.location.replace('/projects/', '');
 
       const slug = 'complete-state-archived-project';
-      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
-      const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
+      const projectDir = getProjectDir(projectsRoot, projectId, slug);
       fs.writeFileSync(path.join(projectDir, 'asset.png'), 'png');
       await agent.post(`/projects/${projectId}/scan`)
       .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
@@ -6495,9 +6307,7 @@ describe('release HTTP workflow', () => {
       const projectId = projRes.headers.location.replace('/projects/', '');
 
       const slug = 'complete-state-archived-parent';
-      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
-      const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
+      const projectDir = getProjectDir(projectsRoot, projectId, slug);
       fs.writeFileSync(path.join(projectDir, 'asset.png'), 'png');
       await agent.post(`/projects/${projectId}/scan`)
       .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
@@ -6788,9 +6598,7 @@ describe('release HTTP workflow', () => {
 
       // Add a second asset with a different role and sort order
       const slug = 'readiness-test-project';
-      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
-      const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
+      const projectDir = getProjectDir(projectsRoot, projectId, slug);
       fs.writeFileSync(path.join(projectDir, 'second-asset.txt'), 'second content');
       await agent.post(`/projects/${projectId}/scan`)
       .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
@@ -6907,9 +6715,7 @@ describe('release HTTP workflow', () => {
         .expect(302);
       const projectId = projRes.headers.location.replace('/projects/', '');
 
-      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
-      const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
+      const projectDir = getProjectDir(projectsRoot, projectId, slug);
 
       // Create multiple files
       fs.writeFileSync(path.join(projectDir, 'alpha.txt'), 'alpha content');
@@ -7565,9 +7371,7 @@ describe('release HTTP workflow', () => {
       const projectId = projRes.headers.location.replace('/projects/', '');
 
       const slug = 'role-guidance-test';
-      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
-      const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
+      const projectDir = getProjectDir(projectsRoot, projectId, slug);
       fs.writeFileSync(path.join(projectDir, 'asset.png'), 'png');
       fs.writeFileSync(path.join(projectDir, 'asset2.png'), 'png2');
       await agent.post(`/projects/${projectId}/scan`)
@@ -7719,9 +7523,7 @@ describe('release HTTP workflow', () => {
       const projectId = projRes.headers.location.replace('/projects/', '');
 
       const slug = 'lifecycle-regression-test';
-      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
-      const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
+      const projectDir = getProjectDir(projectsRoot, projectId, slug);
       fs.writeFileSync(path.join(projectDir, 'a.png'), 'png');
       fs.writeFileSync(path.join(projectDir, 'b.png'), 'png');
       await agent.post(`/projects/${projectId}/scan`)
@@ -7864,9 +7666,7 @@ describe('release HTTP workflow', () => {
       const projectId = projRes.headers.location.replace('/projects/', '');
 
       const slug = 'ordering-test';
-      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
-      const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
+      const projectDir = getProjectDir(projectsRoot, projectId, slug);
       fs.writeFileSync(path.join(projectDir, 'c.txt'), 'c');
       fs.writeFileSync(path.join(projectDir, 'a.txt'), 'a');
       fs.writeFileSync(path.join(projectDir, 'b.txt'), 'b');
@@ -7988,9 +7788,7 @@ describe('release HTTP workflow', () => {
       const projectId = projRes.headers.location.replace('/projects/', '');
 
       const slug = 'count-parity-test';
-      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
-      const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
+      const projectDir = getProjectDir(projectsRoot, projectId, slug);
       fs.writeFileSync(path.join(projectDir, 'a.txt'), 'a');
       fs.writeFileSync(path.join(projectDir, 'b.txt'), 'b');
       await agent.post(`/projects/${projectId}/scan`)
@@ -8038,9 +7836,7 @@ describe('release HTTP workflow', () => {
       const projectId = projRes.headers.location.replace('/projects/', '');
 
       const slug = 'count-parity-remove-test';
-      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
-      const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
+      const projectDir = getProjectDir(projectsRoot, projectId, slug);
       fs.writeFileSync(path.join(projectDir, 'a.txt'), 'a');
       fs.writeFileSync(path.join(projectDir, 'b.txt'), 'b');
       await agent.post(`/projects/${projectId}/scan`)
@@ -8106,9 +7902,7 @@ describe('release HTTP workflow', () => {
       const projectId = projRes.headers.location.replace('/projects/', '');
 
       const slug = 'phase-9-4-test';
-      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
-      const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
+      const projectDir = getProjectDir(projectsRoot, projectId, slug);
       fs.writeFileSync(path.join(projectDir, 'alpha.txt'), 'alpha');
       fs.writeFileSync(path.join(projectDir, 'beta.txt'), 'beta');
       fs.writeFileSync(path.join(projectDir, 'gamma.txt'), 'gamma');
@@ -8135,9 +7929,7 @@ describe('release HTTP workflow', () => {
     async function setupPhase94MoveRelease() {
       const fixture = await setupPhase94Release();
       const { project_id: projectId } = db.prepare('SELECT project_id FROM releases WHERE id = ?').get(fixture.releaseId);
-      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-      const matching = entries.filter((entry) => entry.endsWith('-phase-9-4-test'));
-      const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
+      const projectDir = getProjectDir(projectsRoot, projectId, 'phase-9-4-test');
 
       fs.writeFileSync(path.join(projectDir, 'delta.txt'), 'delta');
       fs.writeFileSync(path.join(projectDir, 'epsilon.txt'), 'epsilon');
@@ -8778,9 +8570,7 @@ describe('release HTTP workflow', () => {
         .expect(302);
       const projectId2 = projRes2.headers.location.replace('/projects/', '');
       const slug2 = 'cross-project';
-      const entries2 = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-      const matching2 = entries2.filter((e) => e.endsWith(`-${slug2}`));
-      const projectDir2 = path.join(projectsRoot, 'tbd', matching2[0]);
+      const projectDir2 = getProjectDir(projectsRoot, projectId2, slug2);
       fs.writeFileSync(path.join(projectDir2, 'cross.txt'), 'cross');
       await agent.post(`/projects/${projectId2}/scan`)
       .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
@@ -8898,9 +8688,7 @@ describe('release HTTP workflow', () => {
       const projectId = projRes.headers.location.replace('/projects/', '');
 
       const slug = 'lifecycle-matrix-test';
-      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
-      const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
+      const projectDir = getProjectDir(projectsRoot, projectId, slug);
       fs.writeFileSync(path.join(projectDir, 'a.txt'), 'a');
       fs.writeFileSync(path.join(projectDir, 'b.txt'), 'b');
       await agent.post(`/projects/${projectId}/scan`)
@@ -9262,9 +9050,7 @@ describe('release HTTP workflow', () => {
         const projectId = projRes.headers.location.replace('/projects/', '');
 
         const slug = 'candidate-url-test';
-        const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-        const matching = entries.filter((e) => e.endsWith(`-${slug}`));
-        const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
+        const projectDir = getProjectDir(projectsRoot, projectId, slug);
         fs.writeFileSync(path.join(projectDir, 'alpha.txt'), 'alpha');
         fs.writeFileSync(path.join(projectDir, 'beta.txt'), 'beta');
         fs.writeFileSync(path.join(projectDir, 'gamma.txt'), 'gamma');
@@ -9473,9 +9259,7 @@ describe('release HTTP workflow', () => {
         .expect(302);
       const projectId = projectRes.headers.location.replace('/projects/', '');
 
-      const projectEntries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-      const projectDirName = projectEntries.find((entry) => entry.endsWith('-category-filter-test'));
-      const projectDir = path.join(projectsRoot, 'tbd', projectDirName);
+      const projectDir = getProjectDir(projectsRoot, projectId, 'category-filter-test');
       fs.writeFileSync(path.join(projectDir, 'source-asset.txt'), 'source');
       fs.writeFileSync(path.join(projectDir, 'other-asset.txt'), 'other');
       await agent
@@ -9701,9 +9485,7 @@ describe('release HTTP workflow', () => {
       const projectId = projRes.headers.location.replace('/projects/', '');
 
       const slug = 'exact-candidate-rows';
-      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
-      const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
+      const projectDir = getProjectDir(projectsRoot, projectId, slug);
 
       // Write files in non-sorted order to test sorting
       fs.writeFileSync(path.join(projectDir, 'gamma.txt'), 'gamma');
@@ -9930,9 +9712,7 @@ describe('release HTTP workflow', () => {
       const projectId = projRes.headers.location.replace('/projects/', '');
 
       const slug = 'count-parity-test';
-      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
-      const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
+      const projectDir = getProjectDir(projectsRoot, projectId, slug);
 
       // Create 10 files with varied names and extensions
       const files = [
@@ -10048,9 +9828,7 @@ describe('release HTTP workflow', () => {
         .expect(302);
       const projectAId = projARes.headers.location.replace('/projects/', '');
       const slugA = 'malformed-a';
-      const entriesA = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-      const matchingA = entriesA.filter((e) => e.endsWith(`-${slugA}`));
-      const projectDirA = path.join(projectsRoot, 'tbd', matchingA[0]);
+      const projectDirA = getProjectDir(projectsRoot, projectAId, slugA);
       fs.writeFileSync(path.join(projectDirA, 'alpha.png'), 'alpha');
       fs.writeFileSync(path.join(projectDirA, 'beta.png'), 'beta');
       await agent.post(`/projects/${projectAId}/scan`)
@@ -10067,9 +9845,7 @@ describe('release HTTP workflow', () => {
         .expect(302);
       const projectBId = projBRes.headers.location.replace('/projects/', '');
       const slugB = 'malformed-b';
-      const entriesB = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-      const matchingB = entriesB.filter((e) => e.endsWith(`-${slugB}`));
-      const projectDirB = path.join(projectsRoot, 'tbd', matchingB[0]);
+      const projectDirB = getProjectDir(projectsRoot, projectBId, slugB);
       fs.writeFileSync(path.join(projectDirB, 'cross.txt'), 'cross');
       await agent.post(`/projects/${projectBId}/scan`)
       .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
@@ -10126,9 +9902,7 @@ describe('release HTTP workflow', () => {
         .expect(302);
       const projectId = projRes.headers.location.replace('/projects/', '');
       const slug = 'consistency-check';
-      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
-      const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
+      const projectDir = getProjectDir(projectsRoot, projectId, slug);
       fs.writeFileSync(path.join(projectDir, 'valid1.txt'), 'v1');
       fs.writeFileSync(path.join(projectDir, 'valid2.txt'), 'v2');
       await agent.post(`/projects/${projectId}/scan`)
@@ -10188,9 +9962,7 @@ describe('release HTTP workflow', () => {
       const projectId = projRes.headers.location.replace('/projects/', '');
 
       const slug = 'read-only-test';
-      const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
-      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
-      const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
+      const projectDir = getProjectDir(projectsRoot, projectId, slug);
       fs.writeFileSync(path.join(projectDir, 'asset.png'), 'png');
       await agent.post(`/projects/${projectId}/scan`)
       .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);

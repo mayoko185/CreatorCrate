@@ -4,14 +4,12 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   formatProjectDirName,
-  buildProjectRelPath,
   resolveProjectDir,
   ensureNoConflict,
   createProjectCategoryDirs,
   verifyProjectDirOwnership,
   removeProjectDir,
   renameProjectDirSync,
-  STATUS_DIR_MAP,
   resolveCategoryDir,
   preflightCategoryDestination,
   createCategoryDirExclusive,
@@ -43,10 +41,14 @@ function symlinksSupported() {
   }
 }
 
-/** Create a complete valid project directory on disk for testing. */
-function createRealProjectDir(root, status, id, slug) {
+/**
+ * Create a complete valid project directory on disk for testing.
+ * Project directories are direct children of PROJECTS_ROOT:
+ * `PROJECTS_ROOT/<project-directory>`.
+ */
+function createRealProjectDir(root, id, slug) {
   const dirName = formatProjectDirName(id, slug);
-  const relPath = buildProjectRelPath(status, dirName);
+  const relPath = dirName;
   const absPath = resolveProjectDir(root, relPath);
   fs.mkdirSync(absPath, { recursive: true });
   return { dirName, relPath, absPath };
@@ -85,33 +87,6 @@ describe('formatProjectDirName', () => {
   });
 });
 
-// ─── buildProjectRelPath ─────────────────────────────────────────────────
-
-describe('buildProjectRelPath', () => {
-  it('maps each status to its canonical directory', () => {
-    const testCases = [
-      { status: 'tbd', expectDir: 'tbd' },
-      { status: 'planned', expectDir: 'planned' },
-      { status: 'in-progress', expectDir: 'active' },
-      { status: 'ready', expectDir: 'ready' },
-      { status: 'archived', expectDir: 'archived' },
-    ];
-    for (const { status, expectDir } of testCases) {
-      const result = buildProjectRelPath(status, '000042-my-project');
-      expect(result).toBe(path.join(expectDir, '000042-my-project'));
-    }
-  });
-
-  it('throws StorageError for unknown status', () => {
-    expect(() => buildProjectRelPath('bogus', 'anything')).toThrow(StorageError);
-  });
-
-  it('produces a relative path (no leading separator)', () => {
-    const result = buildProjectRelPath('tbd', '000001-test');
-    expect(path.isAbsolute(result)).toBe(false);
-  });
-});
-
 // ─── resolveProjectDir ───────────────────────────────────────────────────
 
 describe('resolveProjectDir', () => {
@@ -122,8 +97,6 @@ describe('resolveProjectDir', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-resolve-'));
     projectsRoot = path.join(tmpDir, 'projects');
     fs.mkdirSync(projectsRoot, { recursive: true });
-    // Create a status directory
-    fs.mkdirSync(path.join(projectsRoot, 'active'), { recursive: true });
   });
 
   afterEach(() => {
@@ -141,28 +114,28 @@ describe('resolveProjectDir', () => {
   it('rejects traversal outside PROJECTS_ROOT', () => {
     expect(() => resolveProjectDir(projectsRoot, '..')).toThrow(StorageError);
     expect(() => resolveProjectDir(projectsRoot, '../../etc')).toThrow(StorageError);
-    expect(() => resolveProjectDir(projectsRoot, 'active/../..')).toThrow(StorageError);
   });
 
   it('rejects a path that resolves to PROJECTS_ROOT itself', () => {
     expect(() => resolveProjectDir(projectsRoot, '.')).toThrow(StorageError);
   });
 
-  it('resolves a valid relative path', () => {
-    const rel = path.join('active', '000042-my-project');
+  it('resolves a project directory name to a direct child of PROJECTS_ROOT', () => {
+    const rel = '000042-my-project';
     const resolved = resolveProjectDir(projectsRoot, rel);
     expect(resolved).toBe(path.resolve(projectsRoot, rel));
-  });
-
-  it('resolves a nested path correctly', () => {
-    const rel = path.join('active', '000001-test');
-    const resolved = resolveProjectDir(projectsRoot, rel);
-    expect(resolved).toBe(path.join(projectsRoot, 'active', '000001-test'));
+    expect(path.dirname(resolved)).toBe(path.resolve(projectsRoot));
   });
 
   it('rejects an absolute path even when it is inside PROJECTS_ROOT', () => {
-    const inside = path.join(projectsRoot, 'active', '000001-test');
+    const inside = path.join(projectsRoot, '000001-test');
     expect(() => resolveProjectDir(projectsRoot, inside)).toThrow(StorageError);
+  });
+
+  it('rejects a status-nested project path (old hierarchy is not valid)', () => {
+    expect(() => resolveProjectDir(projectsRoot, 'active/000001-test')).toThrow(StorageError);
+    expect(() => resolveProjectDir(projectsRoot, path.join('active', '000001-test')))
+      .toThrow(StorageError);
   });
 
   describe('symlink rejection', () => {
@@ -171,30 +144,13 @@ describe('resolveProjectDir', () => {
     it('refuses a project directory that is a symlink', () => {
       if (!hasSymlinks) return;
 
-      const realDir = path.join(projectsRoot, 'active', 'real-target');
+      const realDir = path.join(projectsRoot, 'real-target');
       fs.mkdirSync(realDir, { recursive: true });
 
-      const linkDir = path.join(projectsRoot, 'active', '000001-link');
+      const linkDir = path.join(projectsRoot, '000001-link');
       fs.symlinkSync(realDir, linkDir, 'junction');
 
-      const rel = path.join('active', '000001-link');
-      expect(() => resolveProjectDir(projectsRoot, rel)).toThrow(StorageError);
-    });
-
-    it('refuses a symlink escape via intermediate component', () => {
-      if (!hasSymlinks) return;
-
-      const outside = path.join(tmpDir, 'outside');
-      fs.mkdirSync(outside);
-
-      // Replace the 'active' dir with a symlink pointing outside
-      const realActive = path.join(tmpDir, 'real-active');
-      fs.mkdirSync(realActive);
-      fs.rmSync(path.join(projectsRoot, 'active'), { recursive: true });
-      fs.symlinkSync(realActive, path.join(projectsRoot, 'active'), 'junction');
-
-      const rel = path.join('active', '000042-project');
-      expect(() => resolveProjectDir(projectsRoot, rel)).toThrow(StorageError);
+      expect(() => resolveProjectDir(projectsRoot, '000001-link')).toThrow(StorageError);
     });
 
     it('accepts a real directory that coexists with a symlink sibling', () => {
@@ -202,16 +158,15 @@ describe('resolveProjectDir', () => {
 
       // Create a real directory alongside a symlink — only the target's
       // own path components are checked, not siblings.
-      const realDir = path.join(projectsRoot, 'active', '000001-real');
+      const realDir = path.join(projectsRoot, '000001-real');
       fs.mkdirSync(realDir, { recursive: true });
 
-      const linkTarget = path.join(projectsRoot, 'active', 'link-target');
+      const linkTarget = path.join(projectsRoot, 'link-target');
       fs.mkdirSync(linkTarget);
-      const linkDir = path.join(projectsRoot, 'active', 'evil-link');
+      const linkDir = path.join(projectsRoot, 'evil-link');
       fs.symlinkSync(linkTarget, linkDir, 'junction');
 
-      const rel = path.join('active', '000001-real');
-      expect(() => resolveProjectDir(projectsRoot, rel)).not.toThrow();
+      expect(() => resolveProjectDir(projectsRoot, '000001-real')).not.toThrow();
     });
   });
 });
@@ -253,7 +208,7 @@ describe('createProjectCategoryDirs', () => {
   let tmpDir;
   let projectDir;
 
-  const EXPECTED_SUBDIRS = ['source', 'exports', 'extras', 'references', 'thumbnails'];
+  const EXPECTED_SUBDIRS = ['final', 'wip', 'krz', 'wm', 'wm-lq'];
 
   /** Ordered, all-enabled category rows matching the seeded defaults. */
   function makeCategories(slugs = EXPECTED_SUBDIRS) {
@@ -549,8 +504,6 @@ describe('removeProjectDir', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-cleanup-'));
     projectsRoot = path.join(tmpDir, 'projects');
     fs.mkdirSync(projectsRoot, { recursive: true });
-    // Create the status dirs that buildProjectRelPath resolves to
-    fs.mkdirSync(path.join(projectsRoot, 'tbd'), { recursive: true });
   });
 
   afterEach(() => {
@@ -558,14 +511,14 @@ describe('removeProjectDir', () => {
   });
 
   it('removes an empty project directory that matches expected ID', () => {
-    const { absPath } = createRealProjectDir(projectsRoot, 'tbd', 42, 'my-project');
+    const { absPath } = createRealProjectDir(projectsRoot, 42, 'my-project');
     expect(fs.existsSync(absPath)).toBe(true);
     removeProjectDir(absPath, 42, projectsRoot);
     expect(fs.existsSync(absPath)).toBe(false);
   });
 
   it('refuses to remove a directory with wrong expected ID', () => {
-    const { absPath } = createRealProjectDir(projectsRoot, 'tbd', 42, 'my-project');
+    const { absPath } = createRealProjectDir(projectsRoot, 42, 'my-project');
     expect(() => removeProjectDir(absPath, 99, projectsRoot)).toThrow(StorageError);
     expect(fs.existsSync(absPath)).toBe(true); // Not removed
   });
@@ -577,18 +530,18 @@ describe('removeProjectDir', () => {
   });
 
   it('is a no-op when the directory does not exist', () => {
-    const missing = path.join(projectsRoot, 'active', '000099-ghost');
+    const missing = path.join(projectsRoot, '000099-ghost');
     expect(() => removeProjectDir(missing, 99, projectsRoot)).not.toThrow();
   });
 
   it('refuses to remove a directory that is a file', () => {
-    const filePath = path.join(projectsRoot, 'tbd', 'some-file');
+    const filePath = path.join(projectsRoot, 'some-file');
     fs.writeFileSync(filePath, 'content');
     expect(() => removeProjectDir(filePath, 0, projectsRoot)).toThrow(StorageError);
   });
 
   it('refuses to remove a non-empty directory', () => {
-    const { absPath } = createRealProjectDir(projectsRoot, 'tbd', 50, 'nonempty');
+    const { absPath } = createRealProjectDir(projectsRoot, 50, 'nonempty');
     fs.writeFileSync(path.join(absPath, 'placeholder.txt'), 'stuff');
     expect(() => removeProjectDir(absPath, 50, projectsRoot)).toThrow(StorageError);
     expect(fs.existsSync(absPath)).toBe(true); // Not removed
@@ -597,9 +550,9 @@ describe('removeProjectDir', () => {
   it('refuses to remove a symlinked directory', () => {
     if (!symlinksSupported()) return;
 
-    const realDir = path.join(projectsRoot, 'tbd', 'real');
+    const realDir = path.join(projectsRoot, 'real');
     fs.mkdirSync(realDir);
-    const linkDir = path.join(projectsRoot, 'tbd', '000099-link');
+    const linkDir = path.join(projectsRoot, '000099-link');
     fs.symlinkSync(realDir, linkDir, 'junction');
 
     expect(() => removeProjectDir(linkDir, 99, projectsRoot)).toThrow(StorageError);
@@ -607,12 +560,12 @@ describe('removeProjectDir', () => {
   });
 
   it('does not affect neighboring directories', () => {
-    createRealProjectDir(projectsRoot, 'tbd', 1, 'keep-me');
-    const { absPath: removeMe } = createRealProjectDir(projectsRoot, 'tbd', 2, 'remove-me');
+    createRealProjectDir(projectsRoot, 1, 'keep-me');
+    const { absPath: removeMe } = createRealProjectDir(projectsRoot, 2, 'remove-me');
 
     removeProjectDir(removeMe, 2, projectsRoot);
 
-    const neighbor = path.join(projectsRoot, 'tbd', '000001-keep-me');
+    const neighbor = path.join(projectsRoot, '000001-keep-me');
     expect(fs.existsSync(neighbor)).toBe(true);
     expect(fs.existsSync(removeMe)).toBe(false);
   });
@@ -628,8 +581,6 @@ describe('renameProjectDirSync', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-rename-'));
     projectsRoot = path.join(tmpDir, 'projects');
     fs.mkdirSync(projectsRoot, { recursive: true });
-    // Create status dirs that buildProjectRelPath resolves to
-    fs.mkdirSync(path.join(projectsRoot, 'tbd'), { recursive: true });
   });
 
   afterEach(() => {
@@ -637,8 +588,8 @@ describe('renameProjectDirSync', () => {
   });
 
   it('renames a project directory within the same filesystem', () => {
-    const { absPath: oldPath } = createRealProjectDir(projectsRoot, 'tbd', 42, 'old-name');
-    const newPath = path.join(projectsRoot, 'tbd', '000042-new-name');
+    const { absPath: oldPath } = createRealProjectDir(projectsRoot, 42, 'old-name');
+    const newPath = path.join(projectsRoot, '000042-new-name');
 
     // Create a file inside the project dir to prove contents survive
     fs.writeFileSync(path.join(oldPath, 'project.json'), JSON.stringify({ id: 42 }));
@@ -655,8 +606,8 @@ describe('renameProjectDirSync', () => {
   });
 
   it('surfaces EXDEV as a StorageError', () => {
-    const oldPath = path.join(projectsRoot, 'active', '000042-project');
-    const newPath = path.join(projectsRoot, 'ready', '000042-project');
+    const oldPath = path.join(projectsRoot, '000042-project');
+    const newPath = path.join(projectsRoot, '000043-project');
 
     const mockError = new Error('cross-device link');
     mockError.code = 'EXDEV';
@@ -670,8 +621,8 @@ describe('renameProjectDirSync', () => {
   });
 
   it('surfaces unexpected rename errors', () => {
-    const oldPath = path.join(projectsRoot, 'active', 'ghost');
-    const newPath = path.join(projectsRoot, 'active', '000042-target');
+    const oldPath = path.join(projectsRoot, 'ghost');
+    const newPath = path.join(projectsRoot, '000042-target');
 
     const mockError = new Error('access denied');
     mockError.code = 'EACCES';
@@ -1153,10 +1104,6 @@ describe('integrated directory lifecycle', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-lifecycle-'));
     projectsRoot = path.join(tmpDir, 'projects');
     fs.mkdirSync(projectsRoot, { recursive: true });
-    // Create status directories (as the real startup would)
-    for (const dir of Object.values(STATUS_DIR_MAP)) {
-      fs.mkdirSync(path.join(projectsRoot, dir), { recursive: true });
-    }
   });
 
   afterEach(() => {
@@ -1167,9 +1114,9 @@ describe('integrated directory lifecycle', () => {
     const id = 42;
     const slug = 'my-project';
 
-    // 1. Build and resolve
+    // 1. Build and resolve as a direct child of PROJECTS_ROOT
     const dirName = formatProjectDirName(id, slug);
-    const relPath = buildProjectRelPath('tbd', dirName);
+    const relPath = dirName;
     const absPath = resolveProjectDir(projectsRoot, relPath);
 
     // 2. Ensure no conflict and create
@@ -1184,8 +1131,8 @@ describe('integrated directory lifecycle', () => {
     // 4. Verify ownership
     expect(verifyProjectDirOwnership(absPath, id)).toBe(true);
 
-    // 5. Move to different status (in-progress maps to 'active' dir)
-    const newRelPath = buildProjectRelPath('in-progress', dirName);
+    // 5. Move to a new direct-child path (status no longer participates)
+    const newRelPath = '000042-renamed';
     const newAbsPath = resolveProjectDir(projectsRoot, newRelPath);
     ensureNoConflict(newAbsPath);
     renameProjectDirSync(absPath, newAbsPath);

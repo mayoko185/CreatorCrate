@@ -7,10 +7,7 @@ import {
   closeAssetFile,
 } from '../../src/storage/asset-file.js';
 import { StorageError } from '../../src/storage/path-manager.js';
-import {
-  formatProjectDirName,
-  buildProjectRelPath,
-} from '../../src/storage/project-storage.js';
+import { formatProjectDirName } from '../../src/storage/project-storage.js';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────
 
@@ -31,16 +28,16 @@ function symlinksSupported() {
 function makeProjectsRoot(tmpDir) {
   const projectsRoot = path.join(tmpDir, 'projects');
   fs.mkdirSync(projectsRoot, { recursive: true });
-  // Create the canonical directory names that status values map to.
-  for (const dir of ['tbd', 'planned', 'active', 'ready', 'archived']) {
-    fs.mkdirSync(path.join(projectsRoot, dir), { recursive: true });
-  }
   return projectsRoot;
 }
 
-function makeProjectDir(projectsRoot, status, id, slug) {
+/**
+ * Create a project directory as a direct child of PROJECTS_ROOT.
+ * Status never participates: the directory is always flat at the root.
+ */
+function makeProjectDir(projectsRoot, id, slug) {
   const dirName = formatProjectDirName(id, slug);
-  const relPath = buildProjectRelPath(status, dirName);
+  const relPath = dirName;
   const absPath = path.join(projectsRoot, relPath);
   fs.mkdirSync(absPath, { recursive: true });
   fs.mkdirSync(path.join(absPath, 'source'), { recursive: true });
@@ -66,7 +63,7 @@ describe('openAssetFile', () => {
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-asset-file-'));
     projectsRoot = makeProjectsRoot(tmpDir);
-    project = makeProjectDir(projectsRoot, 'in-progress', 42, 'my-project');
+    project = makeProjectDir(projectsRoot, 42, 'my-project');
   });
 
   afterEach(() => {
@@ -99,10 +96,10 @@ describe('openAssetFile', () => {
     closeAssetFile(opened);
   });
 
-  it('opens an asset in the archived status directory', () => {
-    const archived = makeProjectDir(projectsRoot, 'archived', 7, 'old-project');
-    writeFile(archived.absPath, 'final.png', 'final');
-    const opened = openAssetFile(projectsRoot, archived.relPath, 'final.png');
+  it('opens an asset in any project directory at the flat root', () => {
+    const other = makeProjectDir(projectsRoot, 7, 'old-project');
+    writeFile(other.absPath, 'final.png', 'final');
+    const opened = openAssetFile(projectsRoot, other.relPath, 'final.png');
     expect(opened.stat.isFile()).toBe(true);
     closeAssetFile(opened);
   });
@@ -173,7 +170,7 @@ describe('openAssetFile', () => {
 
   it('rejects a path outside the project directory but inside PROJECTS_ROOT', () => {
     // A sibling project's file must not be reachable through this project.
-    const sibling = makeProjectDir(projectsRoot, 'in-progress', 43, 'other-project');
+    const sibling = makeProjectDir(projectsRoot, 43, 'other-project');
     writeFile(sibling.absPath, 'secret.png', 'secret');
     const rel = path.relative(project.absPath, path.join(sibling.absPath, 'secret.png'));
     expect(rel.startsWith('..')).toBe(true);

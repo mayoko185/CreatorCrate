@@ -16,7 +16,7 @@ import {
   createAutoRenameService,
 } from '../src/services/auto-rename-service.js';
 import { createProjectOperationCoordinator } from '../src/services/project-operation-coordinator.js';
-import { resolveProjectDir, STATUS_DIR_MAP } from '../src/storage/project-storage.js';
+import { resolveProjectDir } from '../src/storage/project-storage.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 
@@ -114,9 +114,6 @@ describe('category-scoped Auto Rename service', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-auto-rename-'));
     const projectsRoot = path.join(tmpDir, 'projects');
     fs.mkdirSync(projectsRoot, { recursive: true });
-    for (const directory of Object.values(STATUS_DIR_MAP)) {
-      fs.mkdirSync(path.join(projectsRoot, directory), { recursive: true });
-    }
 
     const db = openDatabase(path.join(tmpDir, 'test.db'));
     runMigrations(db, MIGRATIONS_DIR);

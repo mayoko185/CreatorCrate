@@ -15,7 +15,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createApp } from '../src/app.js';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
-import { STATUS_DIR_MAP, resolveProjectDir } from '../src/storage/project-storage.js';
+import { resolveProjectDir } from '../src/storage/project-storage.js';
 import { readManifestSync } from '../src/storage/manifest.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
 import { ProjectAssetCategoryError } from '../src/services/project-asset-category-service.js';
@@ -31,9 +31,6 @@ function setupTmp() {
   fs.mkdirSync(appDataRoot, { recursive: true });
   const projectsRoot = path.join(tmpDir, 'projects');
   fs.mkdirSync(projectsRoot, { recursive: true });
-  for (const dir of Object.values(STATUS_DIR_MAP)) {
-    fs.mkdirSync(path.join(projectsRoot, dir), { recursive: true });
-  }
   const databasePath = path.join(appDataRoot, 'creatorcrate.db');
   const db = openDatabase(databasePath);
   runMigrations(db, MIGRATIONS_DIR);
@@ -1227,12 +1224,13 @@ describe('project asset categories — HTTP', () => {
   describe('delete', () => {
     it('safe deletion succeeds, including deleting the final category', async () => {
       ctx = setupTmp();
-      ctx.db.prepare('UPDATE asset_category_defaults SET enabled = 0 WHERE directory_slug != ?').run('source');
+      ctx.db.prepare('UPDATE asset_category_defaults SET enabled = 0 WHERE directory_slug != ?').run('final');
       const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
       const { agent, csrfToken } = await authenticate(app);
       const projectId = await createProject(agent, csrfToken, 'Delete Final');
       const rows = listProjectCategories(ctx.db, projectId);
       expect(rows).toHaveLength(1);
+      expect(rows[0].directory_slug).toBe('final');
 
       const res = await agent.post(`/projects/${projectId}/asset-categories/${rows[0].id}/delete`).type('form').send({ _csrf: csrfToken }).expect(302);
       expect(res.headers.location).toBe(`/projects/${projectId}/asset-categories?notice=category_deleted`);

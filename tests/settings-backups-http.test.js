@@ -16,7 +16,6 @@ import { createApp } from '../src/app.js';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { createBackupService, BackupError } from '../src/services/backup-service.js';
 import { resolveBackupDir } from '../src/storage/backup-storage.js';
-import { STATUS_DIR_MAP } from '../src/storage/project-storage.js';
 import { authenticate, AUTH_CONFIG, extractCsrfToken } from './helpers/auth.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
@@ -75,9 +74,6 @@ describe('settings — backup management HTTP', () => {
     fs.mkdirSync(appDataRoot, { recursive: true });
     projectsRoot = path.join(tmpDir, 'projects');
     fs.mkdirSync(projectsRoot, { recursive: true });
-    for (const dir of Object.values(STATUS_DIR_MAP)) {
-      fs.mkdirSync(path.join(projectsRoot, dir), { recursive: true });
-    }
     databasePath = path.join(appDataRoot, 'creatorcrate.db');
     db = openDatabase(databasePath);
     runMigrations(db, MIGRATIONS_DIR);
@@ -673,7 +669,7 @@ describe('settings — backup management HTTP', () => {
 
   describe('project files untouched', () => {
     it('backup creation does not modify or delete files under projectsRoot', async () => {
-      const sentinel = path.join(projectsRoot, 'tbd', 'sentinel.txt');
+      const sentinel = path.join(projectsRoot, 'sentinel.txt');
       fs.writeFileSync(sentinel, 'project-content');
 
       await backupService.createBackup(db);

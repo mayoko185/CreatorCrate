@@ -12,7 +12,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createApp } from '../src/app.js';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
-import { STATUS_DIR_MAP } from '../src/storage/project-storage.js';
+import { formatProjectDirName } from '../src/storage/project-storage.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
 import { ensureAuthEnablement } from '../src/auth/auth-state.js';
 import { getDisabledModeCsrf } from './helpers/auth.js';
@@ -42,13 +42,9 @@ function extractSummaryCards(html) {
   return m ? m[0] : '';
 }
 
-function getProjectDir(projectsRoot, title, status = 'tbd') {
+function getProjectDir(projectsRoot, projectId, title) {
   const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-');
-  const statusDir = STATUS_DIR_MAP[status];
-  const entries = fs.readdirSync(path.join(projectsRoot, statusDir));
-  const matching = entries.filter((e) => e.endsWith(`-${slug}`));
-  if (matching.length === 0) return null;
-  return path.join(projectsRoot, statusDir, matching[0]);
+  return path.join(projectsRoot, formatProjectDirName(Number(projectId), slug));
 }
 
 async function createProject(app, { title, status = 'tbd' }) {
@@ -113,9 +109,6 @@ describe('Phase 6B HTTP dashboard', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-6b-'));
     projectsRoot = path.join(tmpDir, 'projects');
     fs.mkdirSync(projectsRoot, { recursive: true });
-    for (const dir of Object.values(STATUS_DIR_MAP)) {
-      fs.mkdirSync(path.join(projectsRoot, dir), { recursive: true });
-    }
     const dbPath = path.join(tmpDir, 'test.db');
     db = openDatabase(dbPath);
     runMigrations(db, MIGRATIONS_DIR);
@@ -208,7 +201,7 @@ describe('Phase 6B HTTP dashboard', () => {
     it('shows missing-asset warnings when a release references a missing asset', async () => {
       const projectId = await createProject(app, { title: 'Missing Asset Project' });
       // Create a project directory and a missing file
-      const projectDir = getProjectDir(projectsRoot, 'Missing Asset Project');
+      const projectDir = getProjectDir(projectsRoot, projectId, 'Missing Asset Project');
       expect(projectDir).not.toBeNull();
       // Do not create any file — but assets table needs a row to reference.
       // Insert a missing asset directly.

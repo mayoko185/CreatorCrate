@@ -14,7 +14,6 @@ import { fileURLToPath } from 'node:url';
 import { createApp } from '../src/app.js';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { createBackupService } from '../src/services/backup-service.js';
-import { STATUS_DIR_MAP } from '../src/storage/project-storage.js';
 import { ensureAuthEnablement } from '../src/auth/auth-state.js';
 import { AUTH_CONFIG, TEST_PASSWORD, authenticate, extractCsrfToken, requestLoginPage, countTotalCsrfInputs } from './helpers/auth.js';
 
@@ -40,9 +39,6 @@ describe('CSRF protection — authenticated mutations', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-csrf-'));
     const projectsRoot = path.join(tmpDir, 'projects');
     fs.mkdirSync(projectsRoot, { recursive: true });
-    for (const dir of Object.values(STATUS_DIR_MAP)) {
-      fs.mkdirSync(path.join(projectsRoot, dir), { recursive: true });
-    }
     db = openDatabase(path.join(tmpDir, 'test.db'));
     runMigrations(db, MIGRATIONS_DIR);
     app = createApp({ appName: 'CreatorCrate', db, projectsRoot }, { authConfig: AUTH_CONFIG });
@@ -187,9 +183,6 @@ describe('CSRF — every mutating form has exactly one token', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-csrf-forms-'));
     const projectsRoot = path.join(tmpDir, 'projects');
     fs.mkdirSync(projectsRoot, { recursive: true });
-    for (const dir of Object.values(STATUS_DIR_MAP)) {
-      fs.mkdirSync(path.join(projectsRoot, dir), { recursive: true });
-    }
     const appDataRoot = path.join(tmpDir, 'app');
     fs.mkdirSync(appDataRoot, { recursive: true });
     const databasePath = path.join(appDataRoot, 'creatorcrate.db');
@@ -270,9 +263,6 @@ describe('CSRF protection — authentication disabled', () => {
     fs.mkdirSync(appDataRoot, { recursive: true });
     const projectsRoot = path.join(tmpDir, 'projects');
     fs.mkdirSync(projectsRoot, { recursive: true });
-    for (const dir of Object.values(STATUS_DIR_MAP)) {
-      fs.mkdirSync(path.join(projectsRoot, dir), { recursive: true });
-    }
     db = openDatabase(path.join(appDataRoot, 'test.db'));
     runMigrations(db, MIGRATIONS_DIR);
     csrfPepper = ensureAuthEnablement(appDataRoot).csrfPepper;

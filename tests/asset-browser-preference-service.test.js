@@ -300,12 +300,12 @@ describe('asset-browser preference service', () => {
 
     it('resolves inherit plus a matching enabled global/project slug', () => {
       const { project, categories } = createProject();
-      const source = categories.find((category) => category.directory_slug === 'source');
-      service.setGlobalPreference('source');
+      const final = categories.find((category) => category.directory_slug === 'final');
+      service.setGlobalPreference('final');
       service.setProjectPreference(project.id, 'inherit');
 
       expect(service.resolveEffectiveCategory(project.id)).toMatchObject({
-        effective: { kind: 'category', category: source },
+        effective: { kind: 'category', category: final },
         fallback: false,
         fallbackReason: null,
       });
@@ -313,9 +313,9 @@ describe('asset-browser preference service', () => {
 
     it('falls back when the global category has no project match', () => {
       const { project } = createProject();
-      service.setGlobalPreference('source');
+      service.setGlobalPreference('final');
       db.prepare('DELETE FROM project_asset_categories WHERE project_id = ? AND directory_slug = ?')
-        .run(project.id, 'source');
+        .run(project.id, 'final');
 
       expect(service.resolveEffectiveCategory(project.id)).toMatchObject({
         effective: { kind: 'all', category: null },
@@ -326,9 +326,9 @@ describe('asset-browser preference service', () => {
 
     it('falls back when the matching project category is disabled and restores it when re-enabled', () => {
       const { project, categories } = createProject();
-      const source = categories.find((category) => category.directory_slug === 'source');
-      service.setGlobalPreference('source');
-      setProjectCategoryEnabled(project.id, source.id, false);
+      const final = categories.find((category) => category.directory_slug === 'final');
+      service.setGlobalPreference('final');
+      setProjectCategoryEnabled(project.id, final.id, false);
 
       expect(service.resolveEffectiveCategory(project.id)).toMatchObject({
         effective: { kind: 'all', category: null },
@@ -336,10 +336,10 @@ describe('asset-browser preference service', () => {
         fallbackReason: PREFERENCE_FALLBACK_REASONS.GLOBAL_PROJECT_CATEGORY_DISABLED,
       });
 
-      setProjectCategoryEnabled(project.id, source.id, true);
+      setProjectCategoryEnabled(project.id, final.id, true);
       expect(service.resolveEffectiveCategory(project.id).effective).toEqual({
         kind: 'category',
-        category: assetCategoryRepository.findProjectCategoryById(project.id, source.id),
+        category: assetCategoryRepository.findProjectCategoryById(project.id, final.id),
       });
     });
 
@@ -367,8 +367,8 @@ describe('asset-browser preference service', () => {
 
     it.each(['disabled', 'deleted', 'renamed'])('falls back when the global category is %s', (change) => {
       const { project } = createProject();
-      const global = assetCategoryRepository.listDefaults().find((category) => category.directory_slug === 'source');
-      service.setGlobalPreference('source');
+      const global = assetCategoryRepository.listDefaults().find((category) => category.directory_slug === 'final');
+      service.setGlobalPreference('final');
 
       if (change === 'disabled') {
         assetCategoryRepository.setDefaultEnabled(global.id, false);
@@ -389,12 +389,12 @@ describe('asset-browser preference service', () => {
         PREFERENCE_FALLBACK_REASONS.GLOBAL_CATEGORY_MISSING,
         PREFERENCE_FALLBACK_REASONS.GLOBAL_CATEGORY_NOT_IN_PROJECT,
       ]).toContain(resolution.fallbackReason);
-      expect(service.getGlobalPreference()).toBe('source');
+      expect(service.getGlobalPreference()).toBe('final');
 
       if (change === 'disabled') {
         assetCategoryRepository.setDefaultEnabled(global.id, true);
         expect(service.resolveEffectiveCategory(project.id).effective.kind).toBe('category');
-        expect(service.resolveEffectiveCategory(project.id).effective.category.directory_slug).toBe('source');
+        expect(service.resolveEffectiveCategory(project.id).effective.category.directory_slug).toBe('final');
       }
     });
   });
@@ -402,19 +402,19 @@ describe('asset-browser preference service', () => {
   describe('global writes', () => {
     it('sets all and an enabled global slug', () => {
       expect(service.setGlobalPreference('all')).toBe('all');
-      expect(service.setGlobalPreference('exports')).toBe('exports');
-      expect(service.getGlobalPreference()).toBe('exports');
+      expect(service.setGlobalPreference('wip')).toBe('wip');
+      expect(service.getGlobalPreference()).toBe('wip');
     });
 
     it('rejects unknown and disabled global values without changing the stored value', () => {
-      service.setGlobalPreference('exports');
+      service.setGlobalPreference('wip');
       expect(() => service.setGlobalPreference('unknown-slug')).toThrow(AssetCategoryValidationError);
-      expect(service.getGlobalPreference()).toBe('exports');
+      expect(service.getGlobalPreference()).toBe('wip');
 
-      const source = assetCategoryRepository.listDefaults().find((category) => category.directory_slug === 'source');
-      assetCategoryRepository.setDefaultEnabled(source.id, false);
-      expect(() => service.setGlobalPreference('source')).toThrow(AssetCategoryValidationError);
-      expect(service.getGlobalPreference()).toBe('exports');
+      const final = assetCategoryRepository.listDefaults().find((category) => category.directory_slug === 'final');
+      assetCategoryRepository.setDefaultEnabled(final.id, false);
+      expect(() => service.setGlobalPreference('final')).toThrow(AssetCategoryValidationError);
+      expect(service.getGlobalPreference()).toBe('wip');
     });
   });
 

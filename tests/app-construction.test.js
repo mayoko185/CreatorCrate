@@ -249,7 +249,6 @@ import { createAssetCategoryService } from '../src/services/asset-category-servi
 import { createProjectService } from '../src/services/project-service.js';
 import { createProjectOperationCoordinator, ProjectOperationError } from '../src/services/project-operation-coordinator.js';
 import { AssetActionError } from '../src/services/asset-action-service.js';
-import { STATUS_DIR_MAP } from '../src/storage/project-storage.js';
 import { ensureAuthEnablement } from '../src/auth/auth-state.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
@@ -267,9 +266,6 @@ describe('app construction — asset actions chunk 3 wiring', () => {
     fs.mkdirSync(appDataRoot, { recursive: true });
     projectsRoot = path.join(tmpDir, 'projects');
     fs.mkdirSync(projectsRoot, { recursive: true });
-    for (const dir of Object.values(STATUS_DIR_MAP)) {
-      fs.mkdirSync(path.join(projectsRoot, dir), { recursive: true });
-    }
     db = openDatabase(path.join(appDataRoot, 'test.db'));
     runMigrations(db, MIGRATIONS_DIR);
     csrfPepper = ensureAuthEnablement(appDataRoot).csrfPepper;

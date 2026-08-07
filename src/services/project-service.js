@@ -10,7 +10,6 @@ import {
 } from '../data/project-repository.js';
 import {
   formatProjectDirName,
-  buildProjectRelPath,
   resolveProjectDir,
   ensureNoConflict,
   createProjectCategoryDirs,
@@ -20,7 +19,7 @@ import {
 import {
   writeManifestSync,
   readManifestSync,
-  validateManifestV2,
+  validateManifest,
   MANIFEST_FILENAME,
 } from '../storage/manifest.js';
 import { isValidWebUrl } from '../util/url.js';
@@ -227,66 +226,6 @@ export function createProjectService(
     }
   }
 
-  /**
-   * Compensate an archive failure by restoring filesystem and database state.
-   *
-   * @param {object} project - Original project record (pre-archive)
-   * @param {string} originalStatus - Original status value
-   * @param {string|null} originalProjectDir - Original project_dir value
-   * @param {string} currentAbsPath - Original absolute directory path
-   * @param {string|null} newAbsPath - Target archived absolute path
-   * @param {boolean} dirMoved - Whether the directory was moved
-   * @param {boolean} dbArchived - Whether the database was archived
-   */
-  function compensateArchive(project, originalStatus, originalProjectDir,
-    currentAbsPath, newAbsPath, dirMoved, dbArchived) {
-    try {
-      // Step A: If directory was moved, move it back
-      if (dirMoved && newAbsPath && currentAbsPath) {
-        try {
-          if (fs.existsSync(newAbsPath)) {
-            renameProjectDirSync(newAbsPath, currentAbsPath);
-          }
-        } catch (moveBackErr) {
-          console.error(
-            `[CreatorCrate] Archive rollback — failed to move directory ` +
-            `"${path.basename(newAbsPath)}" back: ${moveBackErr.message}`
-          );
-        }
-      }
-
-      // Step B: Restore original manifest at original location
-      if (currentAbsPath && fs.existsSync(currentAbsPath)) {
-        try {
-          const categories = assetCategoryService.listProjectCategories(project.id);
-          writeManifestSync(currentAbsPath, project, projectsRoot, categories);
-        } catch (manifestErr) {
-          console.error(
-            `[CreatorCrate] Archive rollback — failed to restore manifest ` +
-            `for project ${project.id}: ${manifestErr.message}`
-          );
-        }
-      }
-
-      // Step C: Restore original database values
-      if (dbArchived) {
-        try {
-          repository.restoreFromArchive(project.id, originalStatus, originalProjectDir);
-        } catch (dbErr) {
-          console.error(
-            `[CreatorCrate] Archive rollback — failed to restore database ` +
-            `for project ${project.id}: ${dbErr.message}`
-          );
-        }
-      }
-    } catch (compErr) {
-      console.error(
-        `[CreatorCrate] Archive rollback — compensation failed for project ` +
-        `${project.id}: ${compErr.message}`
-      );
-    }
-  }
-
   return {
     STATUSES,
     WORKFLOW_STATUSES,
@@ -332,9 +271,11 @@ export function createProjectService(
         // transaction, so a failure rolls back the project and copied rows.
         assetBrowserPreferenceRepository.ensureProjectPreference(project.id);
 
-        // Phase 4: Compute the canonical (unchanged) project-directory path.
+        // Phase 4: Compute the canonical (unchanged) project-directory name.
+        // Status does not participate: the project directory is always a
+        // direct child of PROJECTS_ROOT.
         const dirName = formatProjectDirName(project.id, project.slug);
-        relPath = buildProjectRelPath(project.status, dirName);
+        relPath = dirName;
         const absPath = resolveProjectDir(projectsRoot, relPath);
 
         // Phase 5: Destination safety check.
@@ -352,7 +293,7 @@ export function createProjectService(
           trackOwnedChild(ownership, absPath, category.directory_slug ?? category.directorySlug, true);
         }
 
-        // Phase 8: Write the schema-version-2 manifest with those categories.
+        // Phase 8: Write the schema-version-3 manifest with those categories.
         writeManifestSync(absPath, project, projectsRoot, categories);
         trackOwnedChild(ownership, absPath, MANIFEST_FILENAME, false);
 
@@ -397,21 +338,44 @@ export function createProjectService(
       // Phase 1: Validate input
       const normalized = validate(input, { existingId: id });
 
-      // Phase 2: Compute changes and pre-flight validation
+      // Phase 2: Compute changes and pre-flight validation.
+      //
+      // Only a title/slug change may rename the flat project directory.
+      // A status-only change is a database/UI transition: it must not
+      // inspect, rename, or move anything on the filesystem and must not
+      // require a valid manifest or stored directory.
       const slugChanged = normalized.slug !== project.slug;
-      const statusChanged = normalized.status !== project.status;
-      const dirNeedsChange = slugChanged || statusChanged;
+      const dirNeedsChange = slugChanged;
 
-      if (!project.project_dir) {
-        throw new Error('Project has no stored directory path.');
-      }
+      // The manifest serializes every non-status field (title, slug,
+      // priority, description, notes, planned/published date, patreon URL).
+      // A metadata-only update must rewrite project.json even when the
+      // slug is unchanged; only a pure status-only update skips the
+      // filesystem entirely. Fields are compared via their DB→input
+      // (snake_case→camelCase) mapping.
+      const metadataChanged = [
+        ['title', 'title'],
+        ['slug', 'slug'],
+        ['description', 'description'],
+        ['notes', 'notes'],
+        ['priority', 'priority'],
+        ['planned_date', 'plannedDate'],
+        ['published_date', 'publishedDate'],
+        ['patreon_url', 'patreonUrl'],
+      ].some(([dbField, inputField]) => normalized[inputField] !== project[dbField]);
+      const manifestNeedsRewrite = dirNeedsChange || metadataChanged;
 
-      const currentAbsPath = resolveProjectDir(projectsRoot, project.project_dir);
-
+      let currentAbsPath = null;
       let newRelPath = null;
       let newAbsPath = null;
 
       if (dirNeedsChange) {
+        if (!project.project_dir) {
+          throw new Error('Project has no stored directory path.');
+        }
+
+        currentAbsPath = resolveProjectDir(projectsRoot, project.project_dir);
+
         // Verify source directory ownership (ID prefix)
         if (!verifyProjectDirOwnership(currentAbsPath, project.id)) {
           throw new Error('Source directory ownership verification failed.');
@@ -437,7 +401,7 @@ export function createProjectService(
         // Verify existing manifest belongs to the expected project
         let manifest = null;
         try {
-          manifest = validateManifestV2(readManifestSync(currentAbsPath));
+          manifest = validateManifest(readManifestSync(currentAbsPath));
         } catch {
           manifest = null;
         }
@@ -447,9 +411,14 @@ export function createProjectService(
 
         // Compute new path and verify no destination conflict
         const dirName = formatProjectDirName(project.id, normalized.slug);
-        newRelPath = buildProjectRelPath(normalized.status, dirName);
+        newRelPath = dirName;
         newAbsPath = resolveProjectDir(projectsRoot, newRelPath);
         ensureNoConflict(newAbsPath);
+      } else if (manifestNeedsRewrite) {
+        if (!project.project_dir) {
+          throw new Error('Project has no stored directory path.');
+        }
+        currentAbsPath = resolveProjectDir(projectsRoot, project.project_dir);
       }
 
       // Save original values for potential compensation
@@ -471,26 +440,32 @@ export function createProjectService(
       let dirMoved = false;
 
       try {
-        // Phase 3: Update database metadata
+        // Phase 3: Update database metadata (status included — it is a
+        // DB/UI-only value and must not be written to the manifest).
         updated = repository.update(id, normalized);
         if (!updated) {
           throw new ProjectNotFoundError(id);
         }
 
-        // Phase 4: Rename/move directory if needed
+        // Phase 4: Rename the flat project directory if the slug changed.
+        // A status-only update never touches the filesystem.
         if (dirNeedsChange) {
           renameProjectDirSync(currentAbsPath, newAbsPath);
           dirMoved = true;
         }
 
-        // Phase 5: Write updated manifest at final location, preserving the
-        // project's current categories (never recopied or propagated from
-        // global defaults here).
-        const manifestTarget = dirNeedsChange ? newAbsPath : currentAbsPath;
-        const categories = assetCategoryService.listProjectCategories(id);
-        writeManifestSync(manifestTarget, updated, projectsRoot, categories);
+        // Phase 5: Write the updated manifest at the final location,
+        // preserving the project's current categories (never recopied or
+        // propagated from global defaults here). A metadata-only update
+        // (no slug change) rewrites project.json in place; a pure
+        // status-only update skips the manifest entirely.
+        if (manifestNeedsRewrite) {
+          const manifestTarget = dirNeedsChange ? newAbsPath : currentAbsPath;
+          const categories = assetCategoryService.listProjectCategories(id);
+          writeManifestSync(manifestTarget, updated, projectsRoot, categories);
+        }
 
-        // Phase 6: Update stored path in database (if directory changed)
+        // Phase 6: Update stored path in database (only on rename)
         if (dirNeedsChange) {
           updated = repository.setProjectDir(id, newRelPath);
         }
@@ -523,88 +498,18 @@ export function createProjectService(
         throw new Error('Project is already archived.');
       }
 
-      if (!project.project_dir) {
-        throw new Error('Project has no stored directory path.');
-      }
-
-      // ── Phase 0: Pre-flight ────────────────────────────────────────
-
-      const currentAbsPath = resolveProjectDir(projectsRoot, project.project_dir);
-
-      // Verify source directory ownership (ID prefix)
-      if (!verifyProjectDirOwnership(currentAbsPath, project.id)) {
-        throw new Error('Source directory ownership verification failed.');
-      }
-
-      // Verify source directory exists and is not a symlink
-      let srcStats;
-      try {
-        srcStats = fs.lstatSync(currentAbsPath);
-      } catch (err) {
-        if (err.code === 'ENOENT') {
-          throw new Error('Project directory not found.');
-        }
-        throw new Error('Cannot access project directory.');
-      }
-      if (!srcStats.isDirectory()) {
-        throw new Error('Source is not a directory.');
-      }
-      if (srcStats.isSymbolicLink()) {
-        throw new Error('Source is a symbolic link.');
-      }
-
-      // Verify existing manifest matches the project
-      let manifest = null;
-      try {
-        manifest = validateManifestV2(readManifestSync(currentAbsPath));
-      } catch {
-        manifest = null;
-      }
-      if (!manifest || manifest.id !== project.id) {
-        throw new Error('Existing manifest does not match the expected project.');
-      }
-
-      // Compute target path in archived/
-      const dirName = formatProjectDirName(project.id, project.slug);
-      const newRelPath = buildProjectRelPath('archived', dirName);
-      const newAbsPath = resolveProjectDir(projectsRoot, newRelPath);
-
-      // Verify no destination conflict
-      ensureNoConflict(newAbsPath);
-
-      // Save original values for compensation
-      const originalStatus = project.status;
-      const originalProjectDir = project.project_dir;
-
       // ── Execution ───────────────────────────────────────────────────
-      let dirMoved = false;
-      let dbArchived = false;
+      // Archiving is a database transition only. The existing project_dir
+      // is preserved and the filesystem directory is never inspected,
+      // moved, or renamed — it can be missing and archive still succeeds.
 
       try {
-        // Phase 1: Move directory to archived/
-        renameProjectDirSync(currentAbsPath, newAbsPath);
-        dirMoved = true;
-
-        // Phase 2: Archive in database
         const archived = repository.archive(id);
         if (!archived) {
           throw new Error('Failed to archive project in database.');
         }
-        dbArchived = true;
-
-        // Phase 3: Write manifest at new location, preserving current categories
-        const categories = assetCategoryService.listProjectCategories(id);
-        writeManifestSync(newAbsPath, archived, projectsRoot, categories);
-
-        // Phase 4: Update stored relative path
-        const updated = repository.setProjectDir(id, newRelPath);
-
-        return updated;
+        return archived;
       } catch (err) {
-        // ── Compensation ───────────────────────────────────────────
-        compensateArchive(project, originalStatus, originalProjectDir,
-          currentAbsPath, newAbsPath, dirMoved, dbArchived);
-
         // Log the primary failure (safe relative path, no absolute paths)
         console.error(
           `[CreatorCrate] Archive failed for project ${id} ` +
@@ -629,157 +534,6 @@ export function createProjectService(
 
     countByStatus() {
       return repository.countByStatus();
-    },
-
-    /**
-     * Backfill project directories for existing records with no relative path.
-     *
-     * Scans records where project_dir IS NULL, computes the canonical path
-     * from the project's status and slug, and either creates the directory
-     * fresh or adopts an existing matching directory.
-     *
-     * Idempotent — subsequent calls skip records that already have project_dir
-     * (only findByProjectDirNull() is queried).
-     *
-     * Adoption rules (all must pass):
-     * - Destination is a real directory (not a file, not a symlink)
-     * - project.json exists and is valid JSON
-     * - schemaVersion is 2
-     * - Manifest project ID matches the database record
-     * - Manifest slug matches the database record
-     *
-     * Never overwrites or modifies a non-matching directory, and never
-     * invents categories for a project that has no project-category rows.
-     *
-     * Startup behavior: failures do NOT halt the caller. Each project is
-     * processed independently; errors and conflicts are logged and collected
-     * in the returned results object.
-     *
-     * @returns {{ backfilled: number, adopted: number, conflicts: number, errors: Array<{id: number, error: string}> }}
-     */
-    backfillProjectDirs() {
-      const records = repository.findByProjectDirNull();
-      const results = { backfilled: 0, adopted: 0, conflicts: 0, errors: [] };
-
-      for (const project of records) {
-        let dirName, relPath, absPath;
-        let createdByUs = false;
-        let exists = false;
-        let ownership = null;
-
-        try {
-          dirName = formatProjectDirName(project.id, project.slug);
-          relPath = buildProjectRelPath(project.status, dirName);
-
-          // Compute absolute path without safety checks first, so we can
-          // test existence before resolveProjectDir (which may throw on
-          // symlinks that should be treated as conflicts, not errors).
-          absPath = path.resolve(projectsRoot, relPath);
-
-          exists = fs.existsSync(absPath);
-          if (exists) {
-            // ── Adoption path: verify safety then adopt matching directory ──
-            // Verify path is safe (contained in projectsRoot, no symlinks)
-            resolveProjectDir(projectsRoot, relPath);
-
-            const stats = fs.lstatSync(absPath);
-            if (!stats.isDirectory()) {
-              throw new Error(
-                `"${path.basename(absPath)}" exists but is not a directory.`
-              );
-            }
-            if (stats.isSymbolicLink()) {
-              throw new Error(
-                `"${path.basename(absPath)}" is a symbolic link.`
-              );
-            }
-
-            const rawManifest = readManifestSync(absPath);
-            if (!rawManifest) {
-              throw new Error('Destination has no project manifest.');
-            }
-            const manifest = validateManifestV2(rawManifest);
-            if (manifest.id !== project.id) {
-              throw new Error(
-                `Manifest ID ${manifest.id} does not match project ${project.id}.`
-              );
-            }
-            if (manifest.slug !== project.slug) {
-              throw new Error(
-                `Manifest slug "${manifest.slug}" does not match "${project.slug}".`
-              );
-            }
-            // Adoption checks passed
-          } else {
-            // ── Fresh creation: verify safety then create ──
-            resolveProjectDir(projectsRoot, relPath);
-            ensureNoConflict(absPath);
-            const categories = assetCategoryService.listProjectCategories(project.id);
-            // Same exclusive-creation guarantee as normal project creation:
-            // a foreign directory appearing between the preflight checks
-            // above and this call must surface as a conflict, not be
-            // silently adopted as if this operation created it.
-            createProjectRootExclusive(absPath, dirName);
-            createdByUs = true;
-            ownership = beginOwnership(project.id, relPath, dirName, absPath);
-
-            createProjectCategoryDirs(absPath, categories);
-            for (const category of categories) {
-              if (!isCategoryEnabled(category)) continue;
-              trackOwnedChild(ownership, absPath, category.directory_slug ?? category.directorySlug, true);
-            }
-
-            writeManifestSync(absPath, project, projectsRoot, categories);
-            trackOwnedChild(ownership, absPath, MANIFEST_FILENAME, false);
-          }
-
-          // ── Store relative path ──
-          repository.setProjectDir(project.id, relPath);
-
-          if (exists) {
-            results.adopted++;
-          } else {
-            results.backfilled++;
-          }
-        } catch (err) {
-          if (exists) {
-            // Destination existed but adoption checks failed — safe conflict
-            results.conflicts++;
-            console.error(
-              `[CreatorCrate] Backfill conflict — project ${project.id} ` +
-              `(${relPath}): ${err.message}`
-            );
-          } else {
-            // Failed during fresh creation — compensate
-            if (createdByUs && ownership) {
-              try {
-                safeRemoveCreatedDir(ownership, projectsRoot);
-              } catch (cleanupErr) {
-                console.error(
-                  `[CreatorCrate] Backfill cleanup failed for project ${project.id}: ${cleanupErr.message}`
-                );
-              }
-            }
-            results.errors.push({ id: project.id, error: err.message });
-            console.error(
-              `[CreatorCrate] Backfill failed for project ${project.id} ` +
-              `(${relPath || dirName}): ${err.message}`
-            );
-          }
-        }
-      }
-
-      const total = results.backfilled + results.adopted +
-        results.conflicts + results.errors.length;
-      if (total > 0) {
-        console.log(
-          `[CreatorCrate] Backfill complete: ${results.backfilled} created, ` +
-          `${results.adopted} adopted, ${results.conflicts} conflicts, ` +
-          `${results.errors.length} errors`
-        );
-      }
-
-      return results;
     },
   };
 }
@@ -809,9 +563,7 @@ function isCategoryEnabled(category) {
  * Exclusively create a project root directory. No `recursive: true` — a
  * foreign directory appearing at this exact path between preflight checks
  * and this call must surface as a real destination conflict rather than
- * silently being adopted as if this operation created it. Shared by normal
- * project creation and fresh-directory backfill so both get the identical
- * exclusivity guarantee.
+ * silently being adopted as if this operation created it.
  *
  * @param {string} absPath
  * @param {string} dirName - Used only for the error message (no absolute paths)

@@ -236,12 +236,12 @@ describe('settings — page defaults HTTP', () => {
   });
 
   it('renders the existing saved global category preference through its original slug semantics', async () => {
-    writeMeta(db, 'asset_browser.default_category', 'exports');
+    writeMeta(db, 'asset_browser.default_category', 'wip');
 
     const res = await agent.get('/settings/defaults').expect(200);
 
-    expect(res.text).toContain('<option value="exports" selected>Exports</option>');
-    expect(res.text).toContain('Saved:</span> <strong>Exports</strong>');
+    expect(res.text).toContain('<option value="wip" selected>WIP</option>');
+    expect(res.text).toContain('Saved:</span> <strong>WIP</strong>');
   });
 
   it('saves all Defaults values through the service, redirects, shows a success notice, and preserves unrelated app_meta values', async () => {

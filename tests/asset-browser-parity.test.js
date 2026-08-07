@@ -14,7 +14,6 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createApp } from '../src/app.js';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
-import { STATUS_DIR_MAP } from '../src/storage/project-storage.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
 import { ensureAuthEnablement } from '../src/auth/auth-state.js';
 import { getDisabledModeCsrf } from './helpers/auth.js';
@@ -37,9 +36,6 @@ describe('asset-browser structural parity: releases vs projects', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-parity-'));
     projectsRoot = path.join(tmpDir, 'projects');
     fs.mkdirSync(projectsRoot, { recursive: true });
-    for (const dir of Object.values(STATUS_DIR_MAP)) {
-      fs.mkdirSync(path.join(projectsRoot, dir), { recursive: true });
-    }
     const dbPath = path.join(tmpDir, 'test.db');
     db = openDatabase(dbPath);
     runMigrations(db, MIGRATIONS_DIR);
@@ -60,10 +56,11 @@ describe('asset-browser structural parity: releases vs projects', () => {
       .expect(302);
     projectId = projRes.headers.location.replace('/projects/', '');
 
-    const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
+    // Project directories are direct children of PROJECTS_ROOT.
+    const entries = fs.readdirSync(projectsRoot);
     const slug = 'parity-test-project';
     const matching = entries.filter((e) => e.endsWith(`-${slug}`));
-    const projectDir = path.join(projectsRoot, 'tbd', matching[0]);
+    const projectDir = path.join(projectsRoot, matching[0]);
     fs.writeFileSync(path.join(projectDir, 'alpha.png'), 'png');
     fs.writeFileSync(path.join(projectDir, 'beta.txt'), 'txt');
     await agent

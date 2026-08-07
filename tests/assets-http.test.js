@@ -6,11 +6,6 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createApp } from '../src/app.js';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
-import {
-  STATUS_DIR_MAP,
-  formatProjectDirName,
-  buildProjectRelPath,
-} from '../src/storage/project-storage.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
 import { createAssetCategoryRepository } from '../src/data/asset-category-repository.js';
 import { createAssetBrowserPreferenceRepository } from '../src/data/asset-browser-preference-repository.js';
@@ -48,13 +43,17 @@ describe('asset browser HTTP workflow', () => {
       .set('Content-Type', 'application/x-www-form-urlencoded');
   }
 
-  function getProjectDir(projectTitle, status = 'tbd') {
+  /**
+   * Resolve the flat project directory by scanning PROJECTS_ROOT for the
+   * slug suffix. Status never participates: the project directory is a
+   * direct child of PROJECTS_ROOT.
+   */
+  function getProjectDir(projectTitle) {
     const slug = slugify(projectTitle, { lowercase: true });
-    const statusDir = STATUS_DIR_MAP[status];
-    const entries = fs.readdirSync(path.join(projectsRoot, statusDir));
+    const entries = fs.readdirSync(projectsRoot);
     const matching = entries.filter((e) => e.endsWith(`-${slug}`));
     if (matching.length === 0) return null;
-    return path.join(projectsRoot, statusDir, matching[0]);
+    return path.join(projectsRoot, matching[0]);
   }
 
   async function makePng(width = 64, height = 64) {
@@ -246,9 +245,6 @@ describe('asset browser HTTP workflow', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-asset-browser-'));
     projectsRoot = path.join(tmpDir, 'projects');
     fs.mkdirSync(projectsRoot, { recursive: true });
-    for (const dir of Object.values(STATUS_DIR_MAP)) {
-      fs.mkdirSync(path.join(projectsRoot, dir), { recursive: true });
-    }
     previewRoot = path.join(tmpDir, 'previews');
     fs.mkdirSync(previewRoot, { recursive: true });
     const dbPath = path.join(tmpDir, 'test.db');
@@ -5743,9 +5739,11 @@ describe('asset browser HTTP workflow', () => {
       });
 
       it('rejects Copy selected for archived projects', async () => {
-        const { id, asset } = await setupProjectWithAsset('Bulk Copy Archived', 'a.png');
+        const { id, asset, projectDir } = await setupProjectWithAsset('Bulk Copy Archived', 'a.png');
         await agent.post(`/projects/${id}/archive`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
-        const archivedProjectDir = getProjectDir('Bulk Copy Archived', 'archived');
+        // Archiving is a database transition only — the flat project
+        // directory is preserved in place.
+        const archivedProjectDir = projectDir;
 
         const res = await agent.post(`/projects/${id}/assets/copy-selected`).type('form')
           .send({ selectedAssetIds: String(asset.id), destinationCategory: 'uncategorized', _csrf: csrfToken })

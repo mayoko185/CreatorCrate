@@ -18,8 +18,6 @@ import { evaluateReleaseReadiness } from '../src/services/release-readiness-poli
 import { createProjectOperationCoordinator, ProjectOperationError } from '../src/services/project-operation-coordinator.js';
 import {
   formatProjectDirName,
-  buildProjectRelPath,
-  STATUS_DIR_MAP,
 } from '../src/storage/project-storage.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
@@ -36,9 +34,9 @@ describe('asset scanner', () => {
   let projectsRoot;
   let projectOperationCoordinator;
 
-  /** Create a project and its directory on disk (mimics real creation). */
+  /** Create a project and its flat directory on disk (mimics real creation). */
   function createProjectWithDir(title, status = 'tbd') {
-    const project = projectRepo.create({
+    let project = projectRepo.create({
       title,
       slug: slugify(title, { lowercase: true }),
       description: '',
@@ -51,12 +49,22 @@ describe('asset scanner', () => {
     });
 
     const dirName = formatProjectDirName(project.id, project.slug);
-    const relPath = buildProjectRelPath(project.status, dirName);
+    const relPath = dirName;
     const absPath = path.resolve(projectsRoot, relPath);
     fs.mkdirSync(absPath, { recursive: true });
-    projectRepo.setProjectDir(project.id, relPath);
+    // setProjectDir returns the updated record; replace the local project so
+    // the returned record carries the stored flat project_dir.
+    project = projectRepo.setProjectDir(project.id, relPath);
 
     return { project, absPath, relPath };
+  }
+
+  /**
+   * Resolve the flat project directory of a project created by
+   * createProjectWithDir, from its stored flat project_dir.
+   */
+  function resolveProjectDirForTest(project) {
+    return path.resolve(projectsRoot, project.project_dir);
   }
 
   function getPrimaryImageModel(projectId) {
@@ -68,9 +76,6 @@ describe('asset scanner', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-scanner-'));
     projectsRoot = path.join(tmpDir, 'projects');
     fs.mkdirSync(projectsRoot, { recursive: true });
-    for (const dir of Object.values(STATUS_DIR_MAP)) {
-      fs.mkdirSync(path.join(projectsRoot, dir), { recursive: true });
-    }
 
     const dbPath = path.join(tmpDir, 'test.db');
     db = openDatabase(dbPath);
@@ -370,9 +375,7 @@ describe('asset scanner', () => {
   it('throws for missing project directory', () => {
     const { project } = createProjectWithDir('Vanished');
     // Remove the directory
-    const dirName = formatProjectDirName(project.id, project.slug);
-    const relPath = buildProjectRelPath(project.status, dirName);
-    const absPath = path.resolve(projectsRoot, relPath);
+    const absPath = resolveProjectDirForTest(project);
     fs.rmSync(absPath, { recursive: true, force: true });
 
     expect(() => assetScanner.scanProjectAssets(project.id)).toThrow(

@@ -5,7 +5,7 @@ import { StorageError } from './path-manager.js';
 
 export const MANIFEST_FILENAME = 'project.json';
 
-export const MANIFEST_SCHEMA_VERSION = 2;
+export const MANIFEST_SCHEMA_VERSION = 3;
 
 const DISPLAY_NAME_MIN = 1;
 const DISPLAY_NAME_MAX = 100;
@@ -124,10 +124,9 @@ function validateAssetCategoriesArray(categories) {
 }
 
 /**
- * The single authoritative schema-version-2 manifest validator. Every
- * direct manifest-read acceptance path (deserialization, ownership checks,
- * update/archive preflight, backfill/adoption) must call this instead of
- * inspecting manifest fields ad hoc.
+ * The single authoritative manifest validator. Every direct manifest-read
+ * acceptance path (deserialization, ownership checks, update preflight)
+ * must call this instead of inspecting manifest fields ad hoc.
  *
  * Validates schema version, required project identity fields (id, slug),
  * and the complete assetCategories contract. Does not compare identity
@@ -137,7 +136,7 @@ function validateAssetCategoriesArray(categories) {
  * @returns {object} The same manifest object, once fully validated
  * @throws {StorageError} on any structural violation
  */
-export function validateManifestV2(manifest) {
+export function validateManifest(manifest) {
   if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) {
     throw new StorageError('Manifest is not a valid object.');
   }
@@ -154,6 +153,9 @@ export function validateManifestV2(manifest) {
   }
   if (Object.prototype.hasOwnProperty.call(manifest, 'categories')) {
     throw new StorageError('Manifest must not contain the obsolete "categories" property.');
+  }
+  if (Object.prototype.hasOwnProperty.call(manifest, 'status')) {
+    throw new StorageError('Manifest must not contain the obsolete "status" property.');
   }
   if (!Object.prototype.hasOwnProperty.call(manifest, 'assetCategories')) {
     throw new StorageError('Manifest is missing the required "assetCategories" property.');
@@ -253,11 +255,15 @@ function parseDate(value) {
 // ─── Serialization ───────────────────────────────────────────────────────
 
 /**
- * Serialize a ProjectRecord (from repository) into a schema-version-2
+ * Serialize a ProjectRecord (from repository) into a schema-version-3
  * manifest object.
  *
  * The manifest uses camelCase JSON fields per the CreatorCrate schema.
  * Tags is always an empty array; thumbnail is always null for now.
+ *
+ * Project workflow status is deliberately excluded: it exists only as
+ * application/UI/database metadata and must never be serialized into the
+ * manifest.
  *
  * @param {object} project - ProjectRecord with snake_case database fields
  * @param {Array<object>} [categories] - Project-owned asset-category rows
@@ -270,7 +276,6 @@ export function serializeManifest(project, categories = []) {
     id: project.id,
     title: project.title,
     slug: project.slug,
-    status: project.status,
     priority: project.priority,
     description: project.description ?? '',
     notes: project.notes ?? '',
@@ -286,23 +291,26 @@ export function serializeManifest(project, categories = []) {
 }
 
 /**
- * Deserialize a schema-version-2 manifest object back into a plain data
+ * Deserialize a schema-version-3 manifest object back into a plain data
  * object with snake_case keys matching the ProjectRecord shape.
  *
- * Rejects any manifest whose schemaVersion is not exactly 2 — there is no
- * schema-version-1 compatibility or conversion.
+ * Rejects any manifest whose schemaVersion is not exactly 3 — there is no
+ * schema-version-1 or -2 compatibility or conversion.
+ *
+ * Project workflow status is deliberately absent from the result: it is
+ * application/database metadata and is never restored from the filesystem
+ * manifest.
  *
  * @param {object} manifest - Parsed manifest object (camelCase fields)
  * @returns {object} Data object with snake_case keys
  * @throws {StorageError} if the manifest schema version is not supported
  */
 export function deserializeManifest(manifest) {
-  validateManifestV2(manifest);
+  validateManifest(manifest);
   return {
     id: manifest.id,
     title: manifest.title,
     slug: manifest.slug,
-    status: manifest.status,
     priority: manifest.priority,
     description: manifest.description ?? '',
     notes: manifest.notes ?? '',

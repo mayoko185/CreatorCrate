@@ -11,7 +11,6 @@ import { createAssetCategoryRepository } from '../src/data/asset-category-reposi
 import { createProjectRepository } from '../src/data/project-repository.js';
 import { createTagRepository } from '../src/data/tag-repository.js';
 import { PAGE_DEFAULT_DEFINITIONS } from '../src/services/page-defaults-service.js';
-import { STATUS_DIR_MAP } from '../src/storage/project-storage.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 
@@ -44,9 +43,6 @@ describe('cross-project Asset Viewer HTTP route', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-asset-library-http-'));
     projectsRoot = path.join(tmpDir, 'projects');
     fs.mkdirSync(projectsRoot, { recursive: true });
-    for (const directory of Object.values(STATUS_DIR_MAP)) {
-      fs.mkdirSync(path.join(projectsRoot, directory), { recursive: true });
-    }
 
     db = openDatabase(path.join(tmpDir, 'test.db'));
     runMigrations(db, MIGRATIONS_DIR);

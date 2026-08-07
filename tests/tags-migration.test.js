@@ -83,17 +83,13 @@ describe('tags schema in the baseline migration', () => {
       .all(table);
   }
 
-  it('applies on a fresh database, records all migrations, and is idempotent', () => {
+  it('applies on a fresh database, records the single migration, and is idempotent', () => {
     migrate();
 
     expect(() => runMigrations(db, MIGRATIONS_DIR)).not.toThrow();
 
     const applied = db.prepare('SELECT filename FROM schema_migrations ORDER BY rowid').pluck().all();
-    expect(applied).toEqual([
-      '001_initial.sql',
-      '002_unify_release_statuses.sql',
-      '003_drop_release_status.sql',
-    ]);
+    expect(applied).toEqual(['001_initial.sql']);
     expect(db.pragma('foreign_keys', { simple: true })).toBe(1);
     expect(db.pragma('foreign_key_check')).toEqual([]);
   });

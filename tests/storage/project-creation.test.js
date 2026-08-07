@@ -13,10 +13,8 @@ import {
 } from '../../src/services/project-service.js';
 import {
   formatProjectDirName,
-  buildProjectRelPath,
   resolveProjectDir,
   verifyProjectDirOwnership,
-  STATUS_DIR_MAP,
 } from '../../src/storage/project-storage.js';
 import { MANIFEST_FILENAME } from '../../src/storage/manifest.js';
 
@@ -38,6 +36,15 @@ function validInput(overrides = {}) {
   };
 }
 
+/**
+ * Resolve the flat project directory path. Status never participates:
+ * the project directory is always a direct child of PROJECTS_ROOT.
+ */
+function projectDirPath(project, root) {
+  const dirName = formatProjectDirName(project.id, project.slug);
+  return resolveProjectDir(root, dirName);
+}
+
 // ─── Tests ───────────────────────────────────────────────────────────────
 
 describe('project creation integration', () => {
@@ -51,9 +58,6 @@ describe('project creation integration', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-creation-'));
     projectsRoot = path.join(tmpDir, 'projects');
     fs.mkdirSync(projectsRoot, { recursive: true });
-    for (const dir of Object.values(STATUS_DIR_MAP)) {
-      fs.mkdirSync(path.join(projectsRoot, dir), { recursive: true });
-    }
     const dbPath = path.join(tmpDir, 'test.db');
     db = openDatabase(dbPath);
     runMigrations(db, MIGRATIONS_DIR);
@@ -96,18 +100,30 @@ describe('project creation integration', () => {
       `).get(project.id).count).toBe(1);
     });
 
-    it('creates project directory at correct path', () => {
-      const project = service.create(validInput({ title: 'Path Check', status: 'in-progress' }));
+    it('creates the project directory as a direct child of PROJECTS_ROOT regardless of status', () => {
+      for (const status of ['tbd', 'planned', 'in-progress', 'ready']) {
+        const project = service.create(validInput({
+          title: `Path Check ${status}`,
+          status,
+        }));
 
-      const dirName = formatProjectDirName(project.id, project.slug);
-      const relPath = buildProjectRelPath(project.status, dirName);
-      const absPath = resolveProjectDir(projectsRoot, relPath);
+        const absPath = projectDirPath(project, projectsRoot);
+        expect(fs.existsSync(absPath)).toBe(true);
+        expect(fs.statSync(absPath).isDirectory()).toBe(true);
+        // Status never participates: the directory is always flat at the root.
+        expect(path.dirname(absPath)).toBe(path.resolve(projectsRoot));
+        expect(project.project_dir).toBe(formatProjectDirName(project.id, project.slug));
+        expect(project.project_dir.split(path.sep)).toHaveLength(1);
+      }
+    });
 
-      expect(fs.existsSync(absPath)).toBe(true);
-      expect(fs.statSync(absPath).isDirectory()).toBe(true);
-
-      expect(relPath.startsWith('active' + path.sep)).toBe(true);
-      expect(absPath).toContain(path.join(projectsRoot, 'active'));
+    it('does not create any status directory', () => {
+      service.create(validInput({ title: 'No Status Dirs', status: 'in-progress' }));
+      const entries = fs.readdirSync(projectsRoot);
+      expect(entries).not.toContain('active');
+      expect(entries).not.toContain('archived');
+      expect(entries).not.toContain('inbox');
+      expect(entries).not.toContain('tbd');
     });
 
     it('uses six-digit zero-padded ID in directory name', () => {
@@ -120,12 +136,9 @@ describe('project creation integration', () => {
 
     it('creates exactly the expected category directories', () => {
       const project = service.create(validInput({ title: 'Subdir Check' }));
-      const absPath = resolveProjectDir(
-        projectsRoot,
-        buildProjectRelPath(project.status, formatProjectDirName(project.id, project.slug))
-      );
+      const absPath = projectDirPath(project, projectsRoot);
 
-      const expected = ['source', 'exports', 'extras', 'references', 'thumbnails'];
+      const expected = ['final', 'wip', 'krz', 'wm', 'wm-lq'];
 
       for (const sub of expected) {
         const subPath = path.join(absPath, sub);
@@ -141,7 +154,7 @@ describe('project creation integration', () => {
       expect(topLevel.sort()).toEqual([...expected].sort());
     });
 
-    it('writes valid manifest matching project data', () => {
+    it('writes a schema-version-3 manifest without status', () => {
       const project = service.create(validInput({
         title: 'Manifest Data',
         description: 'Desc for manifest',
@@ -152,18 +165,16 @@ describe('project creation integration', () => {
         patreonUrl: 'https://patreon.com/artist',
       }));
 
-      const absPath = resolveProjectDir(
-        projectsRoot,
-        buildProjectRelPath(project.status, formatProjectDirName(project.id, project.slug))
-      );
+      const absPath = projectDirPath(project, projectsRoot);
       const content = fs.readFileSync(path.join(absPath, MANIFEST_FILENAME), 'utf8');
       const manifest = JSON.parse(content);
 
-      expect(manifest.schemaVersion).toBe(2);
+      expect(manifest.schemaVersion).toBe(3);
       expect(manifest.id).toBe(project.id);
       expect(manifest.title).toBe('Manifest Data');
       expect(manifest.slug).toBe('manifest-data');
-      expect(manifest.status).toBe('planned');
+      expect(manifest).not.toHaveProperty('status');
+      expect(content).not.toMatch(/"status"\s*:/);
       expect(manifest.priority).toBe('high');
       expect(manifest.description).toBe('Desc for manifest');
       expect(manifest.notes).toBe('Notes for manifest');
@@ -173,22 +184,22 @@ describe('project creation integration', () => {
       expect(manifest.createdAt).toBeTruthy();
       expect(manifest.updatedAt).toBeTruthy();
       expect(manifest.assetCategories.map((c) => c.directorySlug)).toEqual([
-        'source', 'exports', 'extras', 'references', 'thumbnails',
+        'final', 'wip', 'krz', 'wm', 'wm-lq',
       ]);
       expect(manifest.assetCategories.every((c) => c.enabled === true)).toBe(true);
     });
 
-    it('stores relative path and returns updated project', () => {
+    it('stores the flat relative path and returns the updated project', () => {
       const project = service.create(validInput({ title: 'Rel Path Store' }));
       expect(project.project_dir).toBeTruthy();
 
       const dirName = formatProjectDirName(project.id, project.slug);
-      const expectedRelPath = buildProjectRelPath(project.status, dirName);
-      expect(project.project_dir).toBe(expectedRelPath);
+      expect(project.project_dir).toBe(dirName);
+      expect(project.project_dir.split(path.sep)).toHaveLength(1);
 
       // Verify via repository lookup
       const found = service.findById(project.id);
-      expect(found.project_dir).toBe(expectedRelPath);
+      expect(found.project_dir).toBe(dirName);
     });
   });
 
@@ -254,9 +265,8 @@ describe('project creation integration', () => {
       // No database record
       expect(service.repository.findBySlug('manifest-fail')).toBeUndefined();
 
-      // No directory
-      const statusDir = path.join(projectsRoot, 'tbd');
-      const entries = fs.readdirSync(statusDir);
+      // No flat project directory remains at the root
+      const entries = fs.readdirSync(projectsRoot);
       expect(entries.filter((e) => e.endsWith('-manifest-fail'))).toHaveLength(0);
     });
 
@@ -272,8 +282,7 @@ describe('project creation integration', () => {
 
       expect(service.repository.findBySlug('set-dir-fail')).toBeUndefined();
 
-      const statusDir = path.join(projectsRoot, 'tbd');
-      const entries = fs.readdirSync(statusDir);
+      const entries = fs.readdirSync(projectsRoot);
       expect(entries.filter((e) => e.endsWith('-set-dir-fail'))).toHaveLength(0);
     });
 
@@ -298,10 +307,7 @@ describe('project creation integration', () => {
       expect(found.project_dir).toBeTruthy();
 
       // Its directory still exists
-      const legitDir = resolveProjectDir(
-        projectsRoot,
-        buildProjectRelPath(legit.status, formatProjectDirName(legit.id, legit.slug))
-      );
+      const legitDir = projectDirPath(legit, projectsRoot);
       expect(fs.existsSync(legitDir)).toBe(true);
     });
 
@@ -370,9 +376,8 @@ describe('project creation integration', () => {
       // succeeds — i.e. after the identity check has already moved our own
       // artifact safely aside, and before removal from quarantine.
       const dirName = formatProjectDirName(1, 'child-swap');
-      const relPath = buildProjectRelPath('tbd', dirName);
-      const absPath = resolveProjectDir(projectsRoot, relPath);
-      const childPath = path.join(absPath, 'source');
+      const absPath = resolveProjectDir(projectsRoot, dirName);
+      const childPath = path.join(absPath, 'final');
       const foreignFileName = 'do-not-delete.txt';
       const foreignFileContent = 'foreign artifact — must survive';
 
@@ -424,8 +429,7 @@ describe('project creation integration', () => {
       // succeeds (all tracked children have already been quarantined and
       // removed from the real, unswapped root by this point).
       const dirName = formatProjectDirName(1, 'root-swap');
-      const relPath = buildProjectRelPath('tbd', dirName);
-      const absPath = resolveProjectDir(projectsRoot, relPath);
+      const absPath = resolveProjectDir(projectsRoot, dirName);
 
       let intercepted = false;
       const originalRenameSync = fs.renameSync;
@@ -484,10 +488,7 @@ describe('project creation integration', () => {
 
     it('ownership verification correctly identifies matching and non-matching IDs', () => {
       const project = service.create(validInput({ title: 'Ownership Check' }));
-      const absPath = resolveProjectDir(
-        projectsRoot,
-        buildProjectRelPath(project.status, formatProjectDirName(project.id, project.slug))
-      );
+      const absPath = projectDirPath(project, projectsRoot);
 
       expect(verifyProjectDirOwnership(absPath, project.id)).toBe(true);
       expect(verifyProjectDirOwnership(absPath, 99999)).toBe(false);
@@ -512,10 +513,7 @@ describe('project creation integration', () => {
       expect(p2.slug).not.toBe(p1.slug);
 
       for (const p of [p1, p2]) {
-        const absPath = resolveProjectDir(
-          projectsRoot,
-          buildProjectRelPath(p.status, formatProjectDirName(p.id, p.slug))
-        );
+        const absPath = projectDirPath(p, projectsRoot);
         expect(fs.existsSync(absPath)).toBe(true);
       }
     });

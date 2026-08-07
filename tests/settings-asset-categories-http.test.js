@@ -13,7 +13,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createApp } from '../src/app.js';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
-import { STATUS_DIR_MAP, resolveProjectDir } from '../src/storage/project-storage.js';
+import { resolveProjectDir } from '../src/storage/project-storage.js';
 import { authenticate, AUTH_CONFIG } from './helpers/auth.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
@@ -25,9 +25,6 @@ function setupTmp() {
   fs.mkdirSync(appDataRoot, { recursive: true });
   const projectsRoot = path.join(tmpDir, 'projects');
   fs.mkdirSync(projectsRoot, { recursive: true });
-  for (const dir of Object.values(STATUS_DIR_MAP)) {
-    fs.mkdirSync(path.join(projectsRoot, dir), { recursive: true });
-  }
   const databasePath = path.join(appDataRoot, 'creatorcrate.db');
   const db = openDatabase(databasePath);
   runMigrations(db, MIGRATIONS_DIR);
@@ -112,7 +109,7 @@ describe('settings — asset category defaults HTTP', () => {
     it('createSettingsRouter uses the explicitly injected asset-category service', async () => {
       ctx = setupTmp();
       const fake = makeFakeCategoryService([
-        { id: 1, display_name: 'Source', directory_slug: 'source', display_order: 0, enabled: 1 },
+        { id: 1, display_name: 'Final', directory_slug: 'final', display_order: 0, enabled: 1 },
       ]);
       const app = createApp(
         { appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot },
@@ -122,7 +119,7 @@ describe('settings — asset category defaults HTTP', () => {
 
       const res = await agent.get('/settings/asset-categories').expect(200);
       expect(fake.listDefaults).toHaveBeenCalled();
-      expect(res.text).toContain('Source');
+      expect(res.text).toContain('Final');
     });
 
     it('the same injected service instance backs both project creation and Settings', async () => {
@@ -188,16 +185,16 @@ describe('settings — asset category defaults HTTP', () => {
       const { agent, csrfToken } = await authenticate(app);
 
       const listBefore = await agent.get('/settings/asset-categories').expect(200);
-      const sourceRow = ctx.db.prepare('SELECT id FROM asset_category_defaults WHERE directory_slug = ?').get('source');
-      await agent.post(`/settings/asset-categories/${sourceRow.id}/disable`).type('form').send({ _csrf: csrfToken }).expect(302);
+      const finalRow = ctx.db.prepare('SELECT id FROM asset_category_defaults WHERE directory_slug = ?').get('final');
+      await agent.post(`/settings/asset-categories/${finalRow.id}/disable`).type('form').send({ _csrf: csrfToken }).expect(302);
 
       const res = await agent.get('/settings/asset-categories').expect(200);
-      expect(res.text).toContain('Source');
-      expect(res.text).toContain('Exports');
+      expect(res.text).toContain('Final');
+      expect(res.text).toContain('WIP');
       expect(res.text).toContain('Disabled');
       expect(res.text).toContain('Enabled');
       expect(res.text).toMatch(/newly created projects|future project/i);
-      expect(listBefore.text).toContain('Source');
+      expect(listBefore.text).toContain('Final');
       expect(res.text).toMatch(/<input\s+type="checkbox"\s+id="global-category-enabled-\d+"[\s\S]*?checked/);
     });
 
@@ -223,7 +220,7 @@ describe('settings — asset category defaults HTTP', () => {
       const { agent } = await authenticate(app);
 
       const res = await agent.get('/settings/asset-categories').expect(200);
-      const order = ['Source', 'Exports', 'Extras', 'References', 'Thumbnails'].map((name) => res.text.indexOf(`>${name}<`));
+      const order = ['Final', 'WIP', 'KRZ', 'WM', 'WM-LQ'].map((name) => res.text.indexOf(`>${name}<`));
       const sorted = [...order].sort((a, b) => a - b);
       expect(order).toEqual(sorted);
       for (const idx of order) expect(idx).toBeGreaterThan(-1);
@@ -249,13 +246,13 @@ describe('settings — asset category defaults HTTP', () => {
       ctx = setupTmp();
       const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
       const { agent, csrfToken } = await authenticate(app);
-      const source = ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE directory_slug = ?').get('source');
-      await agent.post(`/settings/asset-categories/${source.id}/disable`).type('form').send({ _csrf: csrfToken }).expect(302);
+      const final = ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE directory_slug = ?').get('final');
+      await agent.post(`/settings/asset-categories/${final.id}/disable`).type('form').send({ _csrf: csrfToken }).expect(302);
 
       const res = await agent.get('/settings/asset-categories').expect(200);
       expect(res.text).toMatch(/<option value="all" selected>All Categories/);
-      expect(res.text).toContain('<option value="exports">Exports');
-      expect(res.text).not.toContain('<option value="source">Source');
+      expect(res.text).toContain('<option value="wip">WIP');
+      expect(res.text).not.toContain('<option value="final">Final');
       expect(res.text).toMatch(/projects set to.*Inherit global default/i);
       expect(res.text).toMatch(/stable directory slug is stored/i);
     });
@@ -265,26 +262,26 @@ describe('settings — asset category defaults HTTP', () => {
       const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
       const { agent, csrfToken } = await authenticate(app);
       await agent.post('/settings/asset-categories/browser-default').type('form')
-        .send({ defaultCategory: 'exports', _csrf: csrfToken }).expect(302);
+        .send({ defaultCategory: 'wip', _csrf: csrfToken }).expect(302);
 
       const res = await agent.get('/settings/asset-categories').expect(200);
-      expect(res.text).toMatch(/<option value="exports" selected>Exports/);
-      expect(res.text).toContain('Saved:</span> <strong>Exports</strong>');
-      expect(getGlobalBrowserDefault(ctx.db)).toBe('exports');
+      expect(res.text).toMatch(/<option value="wip" selected>WIP/);
+      expect(res.text).toContain('Saved:</span> <strong>WIP</strong>');
+      expect(getGlobalBrowserDefault(ctx.db)).toBe('wip');
     });
 
     it('warns for stale, disabled, and malformed stored values without rewriting them', async () => {
       ctx = setupTmp();
       const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
       const { agent, csrfToken } = await authenticate(app);
-      const source = ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE directory_slug = ?').get('source');
+      const final = ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE directory_slug = ?').get('final');
 
-      ctx.db.prepare('UPDATE app_meta SET value = ? WHERE key = ?').run('source', 'asset_browser.default_category');
-      await agent.post(`/settings/asset-categories/${source.id}/disable`).type('form').send({ _csrf: csrfToken }).expect(302);
+      ctx.db.prepare('UPDATE app_meta SET value = ? WHERE key = ?').run('final', 'asset_browser.default_category');
+      await agent.post(`/settings/asset-categories/${final.id}/disable`).type('form').send({ _csrf: csrfToken }).expect(302);
       const disabled = await agent.get('/settings/asset-categories').expect(200);
       expect(disabled.text).toMatch(/saved global category is disabled/i);
       expect(disabled.text).toMatch(/Effective:<\/span>\s*<strong>All Categories<\/strong>\s*for inheriting projects/i);
-      expect(getGlobalBrowserDefault(ctx.db)).toBe('source');
+      expect(getGlobalBrowserDefault(ctx.db)).toBe('final');
 
       ctx.db.prepare('UPDATE app_meta SET value = ? WHERE key = ?').run('does-not-exist', 'asset_browser.default_category');
       const stale = await agent.get('/settings/asset-categories').expect(200);
@@ -309,10 +306,10 @@ describe('settings — asset category defaults HTTP', () => {
         .send({ defaultCategory: 'all', _csrf: csrfToken }).expect(302);
       expect(all.headers.location).toBe('/settings/asset-categories?notice=global_default_saved');
       const slug = await agent.post('/settings/asset-categories/browser-default').type('form')
-        .send({ defaultCategory: 'exports', _csrf: csrfToken }).expect(302);
+        .send({ defaultCategory: 'wip', _csrf: csrfToken }).expect(302);
       expect(slug.headers.location).toBe('/settings/asset-categories?notice=global_default_saved');
 
-      expect(getGlobalBrowserDefault(ctx.db)).toBe('exports');
+      expect(getGlobalBrowserDefault(ctx.db)).toBe('wip');
       expect(getProjectBrowserPreference(ctx.db, projectId)).toEqual(preferenceBefore);
       expect(ctx.db.prepare('SELECT * FROM project_asset_categories WHERE project_id = ? ORDER BY id').all(projectId))
         .toEqual(categoriesBefore);
@@ -322,21 +319,21 @@ describe('settings — asset category defaults HTTP', () => {
       ctx = setupTmp();
       const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
       const { agent, csrfToken } = await authenticate(app);
-      const source = ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE directory_slug = ?').get('source');
-      ctx.db.prepare('UPDATE app_meta SET value = ? WHERE key = ?').run('exports', 'asset_browser.default_category');
+      const finalDefault = ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE directory_slug = ?').get('final');
+      ctx.db.prepare('UPDATE app_meta SET value = ? WHERE key = ?').run('wip', 'asset_browser.default_category');
 
       const unknown = await agent.post('/settings/asset-categories/browser-default').type('form')
         .send({ defaultCategory: 'unknown-slug', _csrf: csrfToken }).expect(422);
       expect(unknown.text).toContain('unknown-slug');
       expect(unknown.text).toContain('Global preference must be all or an enabled global category slug');
-      expect(getGlobalBrowserDefault(ctx.db)).toBe('exports');
+      expect(getGlobalBrowserDefault(ctx.db)).toBe('wip');
 
-      await agent.post(`/settings/asset-categories/${source.id}/disable`).type('form').send({ _csrf: csrfToken }).expect(302);
+      await agent.post(`/settings/asset-categories/${finalDefault.id}/disable`).type('form').send({ _csrf: csrfToken }).expect(302);
       const disabled = await agent.post('/settings/asset-categories/browser-default').type('form')
-        .send({ defaultCategory: 'source', _csrf: csrfToken }).expect(422);
-      expect(disabled.text).toContain('source');
+        .send({ defaultCategory: 'final', _csrf: csrfToken }).expect(422);
+      expect(disabled.text).toContain('final');
       expect(disabled.text).toContain('selected global category is disabled');
-      expect(getGlobalBrowserDefault(ctx.db)).toBe('exports');
+      expect(getGlobalBrowserDefault(ctx.db)).toBe('wip');
     });
 
     it('requires CSRF and does not render arbitrary notice values', async () => {
@@ -462,12 +459,12 @@ describe('settings — asset category defaults HTTP', () => {
       const { agent, csrfToken } = await authenticate(app);
 
       const res = await agent.post('/settings/asset-categories').type('form')
-        .send({ displayName: 'Dup', directorySlug: 'SOURCE', _csrf: csrfToken })
+        .send({ displayName: 'Dup', directorySlug: 'FINAL', _csrf: csrfToken })
         .expect(422);
       expect(res.text).not.toContain('SQLITE_CONSTRAINT');
       expect(res.text).not.toContain('idx_asset_category_defaults_slug');
 
-      const count = ctx.db.prepare('SELECT COUNT(*) AS c FROM asset_category_defaults WHERE directory_slug = ?').get('source').c;
+      const count = ctx.db.prepare('SELECT COUNT(*) AS c FROM asset_category_defaults WHERE directory_slug = ?').get('final').c;
       expect(count).toBe(1);
     });
 
@@ -492,10 +489,10 @@ describe('settings — asset category defaults HTTP', () => {
       ctx = setupTmp();
       const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
       const { agent, csrfToken } = await authenticate(app);
-      const row = ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE directory_slug = ?').get('source');
+      const row = ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE directory_slug = ?').get('final');
 
       await agent.post(`/settings/asset-categories/${row.id}`).type('form')
-        .send({ displayName: 'Raw Footage', directorySlug: 'source', _csrf: csrfToken })
+        .send({ displayName: 'Raw Footage', directorySlug: 'final', _csrf: csrfToken })
         .expect(302);
 
       const updated = ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE id = ?').get(row.id);
@@ -506,10 +503,10 @@ describe('settings — asset category defaults HTTP', () => {
       ctx = setupTmp();
       const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
       const { agent, csrfToken } = await authenticate(app);
-      const row = ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE directory_slug = ?').get('source');
+      const row = ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE directory_slug = ?').get('final');
 
       await agent.post(`/settings/asset-categories/${row.id}`).type('form')
-        .send({ displayName: 'Source', directorySlug: 'raw', _csrf: csrfToken })
+        .send({ displayName: 'Final', directorySlug: 'raw', _csrf: csrfToken })
         .expect(302);
 
       const updated = ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE id = ?').get(row.id);
@@ -520,22 +517,22 @@ describe('settings — asset category defaults HTTP', () => {
       ctx = setupTmp();
       const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
       const { agent, csrfToken } = await authenticate(app);
-      const row = ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE directory_slug = ?').get('exports');
+      const row = ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE directory_slug = ?').get('wip');
 
       const res = await agent.post(`/settings/asset-categories/${row.id}`).type('form')
-        .send({ displayName: 'Exports', directorySlug: 'SOURCE', _csrf: csrfToken })
+        .send({ displayName: 'WIP', directorySlug: 'FINAL', _csrf: csrfToken })
         .expect(422);
       expect(res.text).not.toContain('SQLITE_CONSTRAINT');
 
       const unchanged = ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE id = ?').get(row.id);
-      expect(unchanged.directory_slug).toBe('exports');
+      expect(unchanged.directory_slug).toBe('wip');
     });
 
     it('rerenders edit validation errors inside the affected card with retained values', async () => {
       ctx = setupTmp();
       const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
       const { agent, csrfToken } = await authenticate(app);
-      const row = ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE directory_slug = ?').get('source');
+      const row = ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE directory_slug = ?').get('final');
 
       const res = await agent.post(`/settings/asset-categories/${row.id}`).type('form')
         .send({ displayName: '   ', directorySlug: 'bad slug', _csrf: csrfToken })
@@ -562,11 +559,11 @@ describe('settings — asset category defaults HTTP', () => {
       const projectCategoriesBefore = ctx.db.prepare('SELECT * FROM project_asset_categories WHERE project_id = ? ORDER BY id').all(projectId);
       expect(projectCategoriesBefore.length).toBeGreaterThan(0);
 
-      const sourceDefault = ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE directory_slug = ?').get('source');
+      const finalDefault = ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE directory_slug = ?').get('final');
       const before = fs.readdirSync(ctx.projectsRoot, { recursive: true }).sort();
 
-      await agent.post(`/settings/asset-categories/${sourceDefault.id}`).type('form')
-        .send({ displayName: 'Renamed Source', directorySlug: 'renamed-source', _csrf: csrfToken })
+      await agent.post(`/settings/asset-categories/${finalDefault.id}`).type('form')
+        .send({ displayName: 'Renamed Final', directorySlug: 'renamed-final', _csrf: csrfToken })
         .expect(302);
 
       const projectCategoriesAfter = ctx.db.prepare('SELECT * FROM project_asset_categories WHERE project_id = ? ORDER BY id').all(projectId);
@@ -594,7 +591,7 @@ describe('settings — asset category defaults HTTP', () => {
       ctx = setupTmp();
       const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
       const { agent, csrfToken } = await authenticate(app);
-      const row = ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE directory_slug = ?').get('source');
+      const row = ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE directory_slug = ?').get('final');
 
       await agent.post(`/settings/asset-categories/${row.id}/enabled`).type('form')
         .send({ enabled: '0', _csrf: csrfToken }).expect(302);
@@ -609,7 +606,7 @@ describe('settings — asset category defaults HTTP', () => {
       ctx = setupTmp();
       const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
       const { agent, csrfToken } = await authenticate(app);
-      const row = ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE directory_slug = ?').get('source');
+      const row = ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE directory_slug = ?').get('final');
 
       const res = await agent.post(`/settings/asset-categories/${row.id}/enabled`).type('form')
         .send({ enabled: ['0', '1', '1'], _csrf: csrfToken }).expect(422);
@@ -621,7 +618,7 @@ describe('settings — asset category defaults HTTP', () => {
       ctx = setupTmp();
       const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
       const { agent, csrfToken } = await authenticate(app);
-      const row = ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE directory_slug = ?').get('source');
+      const row = ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE directory_slug = ?').get('final');
 
       await agent.post(`/settings/asset-categories/${row.id}/disable`).type('form').send({ _csrf: csrfToken }).expect(302);
       expect(ctx.db.prepare('SELECT enabled FROM asset_category_defaults WHERE id = ?').get(row.id).enabled).toBe(0);
@@ -634,14 +631,14 @@ describe('settings — asset category defaults HTTP', () => {
       ctx = setupTmp();
       const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
       const { agent, csrfToken } = await authenticate(app);
-      const row = ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE directory_slug = ?').get('source');
+      const row = ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE directory_slug = ?').get('final');
 
       await agent.post(`/settings/asset-categories/${row.id}/disable`).type('form').send({ _csrf: csrfToken }).expect(302);
       const res = await agent.get('/settings/asset-categories').expect(200);
-      expect(res.text).toContain('Source');
+      expect(res.text).toContain('Final');
     });
 
-    it('leaves existing project-owned categories unchanged after disabling their source default', async () => {
+    it('leaves existing project-owned categories unchanged after disabling their default', async () => {
       ctx = setupTmp();
       const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
       const { agent, csrfToken } = await authenticate(app);
@@ -649,8 +646,8 @@ describe('settings — asset category defaults HTTP', () => {
       const projectId = await createProject(agent, csrfToken, 'Toggle Independence');
       const before = ctx.db.prepare('SELECT * FROM project_asset_categories WHERE project_id = ? ORDER BY id').all(projectId);
 
-      const sourceDefault = ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE directory_slug = ?').get('source');
-      await agent.post(`/settings/asset-categories/${sourceDefault.id}/disable`).type('form').send({ _csrf: csrfToken }).expect(302);
+      const finalDefault = ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE directory_slug = ?').get('final');
+      await agent.post(`/settings/asset-categories/${finalDefault.id}/disable`).type('form').send({ _csrf: csrfToken }).expect(302);
 
       const after = ctx.db.prepare('SELECT * FROM project_asset_categories WHERE project_id = ? ORDER BY id').all(projectId);
       expect(after).toEqual(before);
@@ -661,13 +658,13 @@ describe('settings — asset category defaults HTTP', () => {
       const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
       const { agent, csrfToken } = await authenticate(app);
 
-      const sourceDefault = ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE directory_slug = ?').get('source');
-      await agent.post(`/settings/asset-categories/${sourceDefault.id}/disable`).type('form').send({ _csrf: csrfToken }).expect(302);
+      const finalDefault = ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE directory_slug = ?').get('final');
+      await agent.post(`/settings/asset-categories/${finalDefault.id}/disable`).type('form').send({ _csrf: csrfToken }).expect(302);
 
       const projectId = await createProject(agent, csrfToken, 'Enabled Only Copy');
       const categories = ctx.db.prepare('SELECT directory_slug FROM project_asset_categories WHERE project_id = ?').all(projectId).map((r) => r.directory_slug);
-      expect(categories).not.toContain('source');
-      expect(categories).toContain('exports');
+      expect(categories).not.toContain('final');
+      expect(categories).toContain('wip');
     });
   });
 
@@ -722,8 +719,8 @@ describe('settings — asset category defaults HTTP', () => {
       ctx = setupTmp();
       const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
       const { agent, csrfToken } = await authenticate(app);
-      const sourceDefault = ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE directory_slug = ?').get('source');
-      await agent.post(`/settings/asset-categories/${sourceDefault.id}/disable`).type('form').send({ _csrf: csrfToken }).expect(302);
+      const finalDefault = ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE directory_slug = ?').get('final');
+      await agent.post(`/settings/asset-categories/${finalDefault.id}/disable`).type('form').send({ _csrf: csrfToken }).expect(302);
 
       const ids = ctx.db.prepare('SELECT id FROM asset_category_defaults ORDER BY display_order').all().map((r) => r.id);
       const reversed = [...ids].reverse();
@@ -880,11 +877,11 @@ describe('settings — asset category defaults HTTP', () => {
 
       const res = await agent.get(response.headers.location).expect(200);
       expect(res.text).toContain('Asset category order updated.');
-      const thumbnailsIdx = res.text.indexOf('>Thumbnails<');
-      const sourceIdx = res.text.indexOf('>Source<');
-      expect(thumbnailsIdx).toBeGreaterThan(-1);
-      expect(sourceIdx).toBeGreaterThan(-1);
-      expect(thumbnailsIdx).toBeLessThan(sourceIdx);
+      const wmLqIdx = res.text.indexOf('>WM-LQ<');
+      const finalIdx = res.text.indexOf('>Final<');
+      expect(wmLqIdx).toBeGreaterThan(-1);
+      expect(finalIdx).toBeGreaterThan(-1);
+      expect(wmLqIdx).toBeLessThan(finalIdx);
     });
 
     it('preserves the global browser default and all existing project state', async () => {
@@ -929,7 +926,7 @@ describe('settings — asset category defaults HTTP', () => {
       const filesBefore = fs.readdirSync(projectDir, { recursive: true }).sort();
       const manifestBefore = fs.readFileSync(path.join(projectDir, 'project.json'), 'utf8');
       ctx.db.prepare('UPDATE app_meta SET value = ? WHERE key = ?')
-        .run('exports', 'asset_browser.default_category');
+        .run('wip', 'asset_browser.default_category');
       const globalPreferenceBefore = getGlobalBrowserDefault(ctx.db);
       const orderedIds = listGlobalRows().map((row) => row.id).reverse();
 
@@ -995,28 +992,28 @@ describe('settings — asset category defaults HTTP', () => {
       ctx = setupTmp();
       const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
       const { agent, csrfToken } = await authenticate(app);
-      const exportsRow = ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE directory_slug = ?').get('exports');
+      const wipRow = ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE directory_slug = ?').get('wip');
 
-      await agent.post(`/settings/asset-categories/${exportsRow.id}/move-up`).type('form').send({ _csrf: csrfToken }).expect(302);
+      await agent.post(`/settings/asset-categories/${wipRow.id}/move-up`).type('form').send({ _csrf: csrfToken }).expect(302);
 
       const rows = ctx.db.prepare('SELECT directory_slug FROM asset_category_defaults ORDER BY display_order').all();
-      expect(rows[0].directory_slug).toBe('exports');
-      expect(rows[1].directory_slug).toBe('source');
+      expect(rows[0].directory_slug).toBe('wip');
+      expect(rows[1].directory_slug).toBe('final');
     });
 
     it('Move Down preserves the existing boundary and redirect behavior', async () => {
       ctx = setupTmp();
       const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
       const { agent, csrfToken } = await authenticate(app);
-      const extras = ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE directory_slug = ?').get('extras');
+      const krz = ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE directory_slug = ?').get('krz');
 
-      const response = await agent.post(`/settings/asset-categories/${extras.id}/move-down`)
+      const response = await agent.post(`/settings/asset-categories/${krz.id}/move-down`)
         .type('form').send({ _csrf: csrfToken }).expect(302);
       expect(response.headers.location).toBe('/settings/asset-categories?notice=category_reordered');
 
       const rows = ctx.db.prepare('SELECT directory_slug FROM asset_category_defaults ORDER BY display_order').all();
       expect(rows.map((row) => row.directory_slug)).toEqual([
-        'source', 'exports', 'references', 'extras', 'thumbnails',
+        'final', 'wip', 'wm', 'krz', 'wm-lq',
       ]);
     });
 
@@ -1024,8 +1021,8 @@ describe('settings — asset category defaults HTTP', () => {
       ctx = setupTmp();
       const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
       const { agent, csrfToken } = await authenticate(app);
-      const first = ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE directory_slug = ?').get('source');
-      const last = ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE directory_slug = ?').get('thumbnails');
+      const first = ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE directory_slug = ?').get('final');
+      const last = ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE directory_slug = ?').get('wm-lq');
       const before = listGlobalRows().map((row) => row.id);
 
       await agent.post(`/settings/asset-categories/${first.id}/move-up`).type('form')
@@ -1044,7 +1041,7 @@ describe('settings — asset category defaults HTTP', () => {
       ctx = setupTmp();
       const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
       const { agent, csrfToken } = await authenticate(app);
-      const row = ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE directory_slug = ?').get('thumbnails');
+      const row = ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE directory_slug = ?').get('wm-lq');
 
       await agent.post(`/settings/asset-categories/${row.id}/delete`).type('form').send({ _csrf: csrfToken }).expect(302);
       expect(ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE id = ?').get(row.id)).toBeUndefined();
@@ -1063,7 +1060,7 @@ describe('settings — asset category defaults HTTP', () => {
       expect(ctx.db.prepare('SELECT COUNT(*) AS c FROM asset_category_defaults').get().c).toBe(0);
     });
 
-    it('leaves existing project-owned categories unchanged after deleting their source default, with no directory or manifest mutation', async () => {
+    it('leaves existing project-owned categories unchanged after deleting their default, with no directory or manifest mutation', async () => {
       ctx = setupTmp();
       const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
       const { agent, csrfToken } = await authenticate(app);
@@ -1072,8 +1069,8 @@ describe('settings — asset category defaults HTTP', () => {
       const before = ctx.db.prepare('SELECT * FROM project_asset_categories WHERE project_id = ? ORDER BY id').all(projectId);
       const beforeFs = fs.readdirSync(ctx.projectsRoot, { recursive: true }).sort();
 
-      const sourceDefault = ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE directory_slug = ?').get('source');
-      await agent.post(`/settings/asset-categories/${sourceDefault.id}/delete`).type('form').send({ _csrf: csrfToken }).expect(302);
+      const finalDefault = ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE directory_slug = ?').get('final');
+      await agent.post(`/settings/asset-categories/${finalDefault.id}/delete`).type('form').send({ _csrf: csrfToken }).expect(302);
 
       const after = ctx.db.prepare('SELECT * FROM project_asset_categories WHERE project_id = ? ORDER BY id').all(projectId);
       expect(after).toEqual(before);
@@ -1134,7 +1131,7 @@ describe('settings — asset category defaults HTTP', () => {
       ctx = setupTmp();
       const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
       const { agent } = await authenticate(app);
-      const row = ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE directory_slug = ?').get('source');
+      const row = ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE directory_slug = ?').get('final');
       await agent.get(`/settings/asset-categories/${row.id}/delete`).expect(404);
       expect(ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE id = ?').get(row.id)).toBeTruthy();
     });

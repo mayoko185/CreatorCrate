@@ -10,7 +10,6 @@ import { createAssetRepository } from '../src/data/asset-repository.js';
 import { createAssetBrowserPreferenceRepository } from '../src/data/asset-browser-preference-repository.js';
 import { buildAutoRenamePlanRenderModel } from '../src/routes/assets.js';
 import { AUTO_RENAME_ERROR_CODES } from '../src/services/auto-rename-service.js';
-import { STATUS_DIR_MAP } from '../src/storage/project-storage.js';
 import { ensureAuthEnablement } from '../src/auth/auth-state.js';
 import { getDisabledModeCsrf } from './helpers/auth.js';
 
@@ -147,9 +146,6 @@ describe('category-scoped Auto Rename HTTP integration', () => {
     fs.mkdirSync(appDataRoot, { recursive: true });
     fs.mkdirSync(projectsRoot, { recursive: true });
     fs.mkdirSync(previewRoot, { recursive: true });
-    for (const directory of Object.values(STATUS_DIR_MAP)) {
-      fs.mkdirSync(path.join(projectsRoot, directory), { recursive: true });
-    }
 
     db = openDatabase(path.join(tmpDir, 'test.db'));
     runMigrations(db, MIGRATIONS_DIR);

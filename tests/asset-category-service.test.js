@@ -9,7 +9,7 @@ import { parseEnabledField } from '../src/services/asset-category-validation.js'
 function makeFakeRepository(overrides = {}) {
   return {
     listDefaults: vi.fn(() => []),
-    findDefaultById: vi.fn(() => ({ id: 1, display_name: 'Source', directory_slug: 'source' })),
+    findDefaultById: vi.fn(() => ({ id: 1, display_name: 'Final', directory_slug: 'final' })),
     addDefault: vi.fn((input) => ({ id: 99, ...input })),
     updateDefaultNameSlug: vi.fn((id, input) => ({ id, ...input })),
     setDefaultEnabled: vi.fn((id, enabled) => ({ id, enabled })),
@@ -77,7 +77,7 @@ describe('asset category service', () => {
       expect(() => {
         service.listDefaults();
         service.addDefault({ displayName: 'Raw', directorySlug: 'raw' });
-        service.editDefault(1, { displayName: 'Source', directorySlug: 'source' });
+        service.editDefault(1, { displayName: 'Final', directorySlug: 'final' });
         service.setDefaultEnabled(1, false);
         service.reorderDefaults([]);
         service.deleteDefault(1);
@@ -156,7 +156,7 @@ describe('asset category service', () => {
     }
 
     it('accepts the required pattern', () => {
-      expectSlugAccepted('source');
+      expectSlugAccepted('final');
       expectSlugAccepted('exports-full');
       expectSlugAccepted('a1-b2-c3');
     });
@@ -217,7 +217,7 @@ describe('asset category service', () => {
     });
 
     it('rejects uppercase letters and invalid characters per the required pattern', () => {
-      expectSlugRejected('Source');
+      expectSlugRejected('Final');
       expectSlugRejected('source_final');
       expectSlugRejected('source--final');
       expectSlugRejected('-source');
@@ -261,9 +261,9 @@ describe('asset category service', () => {
     it('delegates a valid reorder to the repository', () => {
       const repo = makeFakeRepository({
         listDefaults: vi.fn(() => [
-          { id: 1, display_name: 'Source', directory_slug: 'source', display_order: 0, enabled: 1 },
-          { id: 2, display_name: 'Exports', directory_slug: 'exports', display_order: 1, enabled: 1 },
-          { id: 3, display_name: 'Extras', directory_slug: 'extras', display_order: 2, enabled: 1 },
+          { id: 1, display_name: 'Final', directory_slug: 'final', display_order: 0, enabled: 1 },
+          { id: 2, display_name: 'WIP', directory_slug: 'wip', display_order: 1, enabled: 1 },
+          { id: 3, display_name: 'KRZ', directory_slug: 'krz', display_order: 2, enabled: 1 },
         ]),
       });
       const service = createAssetCategoryService(repo);
@@ -273,9 +273,9 @@ describe('asset category service', () => {
 
     it('rejects duplicate, missing, and extra IDs as one exact-set contract', () => {
       const categories = [
-        { id: 1, display_name: 'Source', directory_slug: 'source', display_order: 0, enabled: 1 },
-        { id: 2, display_name: 'Exports', directory_slug: 'exports', display_order: 1, enabled: 1 },
-        { id: 3, display_name: 'Extras', directory_slug: 'extras', display_order: 2, enabled: 1 },
+        { id: 1, display_name: 'Final', directory_slug: 'final', display_order: 0, enabled: 1 },
+        { id: 2, display_name: 'WIP', directory_slug: 'wip', display_order: 1, enabled: 1 },
+        { id: 3, display_name: 'KRZ', directory_slug: 'krz', display_order: 2, enabled: 1 },
       ];
       const repo = makeFakeRepository({ listDefaults: vi.fn(() => categories) });
       const service = createAssetCategoryService(repo);
@@ -365,11 +365,11 @@ describe('asset category service', () => {
       it('still performs the existence lookup and mutation for a fully valid editDefault payload', () => {
         const repo = makeFakeRepository();
         const service = createAssetCategoryService(repo);
-        service.editDefault(1, { displayName: 'Source', directorySlug: 'source' });
+        service.editDefault(1, { displayName: 'Final', directorySlug: 'final' });
         expect(repo.findDefaultById).toHaveBeenCalledWith(1);
         expect(repo.updateDefaultNameSlug).toHaveBeenCalledWith(1, {
-          displayName: 'Source',
-          directorySlug: 'source',
+          displayName: 'Final',
+          directorySlug: 'final',
         });
       });
 

@@ -1,9 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { StorageError, STATUS_DIR_MAP } from './path-manager.js';
-
-export { STATUS_DIR_MAP };
+import { StorageError } from './path-manager.js';
 
 // ─── Directory name formatting ───────────────────────────────────────────
 
@@ -20,37 +18,24 @@ export function formatProjectDirName(id, slug) {
   return `${padded}-${slug}`;
 }
 
-// ─── Status-to-directory mapping ─────────────────────────────────────────
-
-/**
- * Build a relative path from project status and formatted directory name.
- *
- * @param {string} status - One of the known project status values
- * @param {string} dirName - Formatted directory name from {@link formatProjectDirName}
- * @returns {string} e.g. "active/000042-my-project"
- * @throws {StorageError} if status is unknown
- */
-export function buildProjectRelPath(status, dirName) {
-  const statusDir = STATUS_DIR_MAP[status];
-  if (!statusDir) {
-    throw new StorageError(`Unknown status "${status}".`);
-  }
-  return path.join(statusDir, dirName);
-}
-
 // ─── Safe path resolution ────────────────────────────────────────────────
 
 /**
  * Resolve a relative project path under PROJECTS_ROOT with safety checks:
  *
  * - Rejects absolute `relPath` inputs.
+ * - Enforces the flat project-root contract: `relPath` must be a single
+ *   path segment (the project directory name, e.g. "000001-my-project"),
+ *   so the resolved project directory is always a direct child of
+ *   PROJECTS_ROOT. Old status-nested values such as "active/000001-my-project"
+ *   are no longer valid.
  * - Refuses traversal outside PROJECTS_ROOT.
  * - Uses `lstat` on every existing path component and refuses any component
  *   that is a symbolic link (prevents symlink-escape attacks).
  * - Refuses the target path itself if it is a symbolic link.
  *
  * @param {string} projectsRoot - Absolute path to PROJECTS_ROOT (must exist)
- * @param {string} relPath - Relative path under a status directory
+ * @param {string} relPath - Relative project directory path under PROJECTS_ROOT
  * @returns {string} Resolved, verified absolute path
  * @throws {StorageError} if any safety check fails
  */
@@ -67,6 +52,11 @@ export function resolveProjectDir(projectsRoot, relPath) {
 
   if (resolved === normalizedRoot) {
     throw new StorageError('Project directory path must be a subdirectory of PROJECTS_ROOT.');
+  }
+  if (path.dirname(resolved) !== normalizedRoot) {
+    throw new StorageError(
+      'Project directory path must be a direct child of PROJECTS_ROOT.'
+    );
   }
   if (!isContained(normalizedRoot, resolved)) {
     throw new StorageError('Project directory path escapes PROJECTS_ROOT.');

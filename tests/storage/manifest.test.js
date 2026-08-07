@@ -14,7 +14,7 @@ import {
   isManifestTempFile,
 } from '../../src/storage/manifest.js';
 import { StorageError } from '../../src/storage/path-manager.js';
-import { formatProjectDirName, buildProjectRelPath, resolveProjectDir } from '../../src/storage/project-storage.js';
+import { formatProjectDirName, resolveProjectDir } from '../../src/storage/project-storage.js';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────
 
@@ -40,16 +40,20 @@ function makeProject(overrides = {}) {
 /** Create minimal project-owned category rows for serialization tests. */
 function makeCategories(overrides = []) {
   return [
-    { id: 1, project_id: 42, display_name: 'Source', directory_slug: 'source', display_order: 0, enabled: 1, created_at: '2026-07-26 14:00:00', updated_at: '2026-07-26 14:00:00' },
-    { id: 2, project_id: 42, display_name: 'Exports', directory_slug: 'exports', display_order: 1, enabled: 1, created_at: '2026-07-26 14:00:00', updated_at: '2026-07-26 14:00:00' },
+    { id: 1, project_id: 42, display_name: 'Final', directory_slug: 'final', display_order: 0, enabled: 1, created_at: '2026-07-24 14:00:00', updated_at: '2026-07-24 14:00:00' },
+    { id: 2, project_id: 42, display_name: 'WIP', directory_slug: 'wip', display_order: 1, enabled: 1, created_at: '2026-07-24 14:00:00', updated_at: '2026-07-24 14:00:00' },
     ...overrides,
   ];
 }
 
-/** Create a complete valid project directory on disk for writer tests. */
-function createRealProjectDir(root, status, id, slug) {
+/**
+ * Create a complete valid project directory on disk for writer tests.
+ * Project directories are direct children of PROJECTS_ROOT:
+ * `PROJECTS_ROOT/<project-directory>`.
+ */
+function createRealProjectDir(root, id, slug) {
   const dirName = formatProjectDirName(id, slug);
-  const relPath = buildProjectRelPath(status, dirName);
+  const relPath = dirName;
   const absPath = resolveProjectDir(root, relPath);
   fs.mkdirSync(absPath, { recursive: true });
   return { dirName, relPath, absPath };
@@ -90,7 +94,6 @@ describe('serializeManifest', () => {
       'publishedDate',
       'schemaVersion',
       'slug',
-      'status',
       'tags',
       'thumbnail',
       'title',
@@ -98,10 +101,20 @@ describe('serializeManifest', () => {
     ].sort());
   });
 
-  it('sets schemaVersion to exactly 2', () => {
+  it('does not serialize project status', () => {
+    const project = makeProject({ status: 'in-progress' });
+    const manifest = serializeManifest(project);
+
+    expect(manifest).not.toHaveProperty('status');
+    const json = formatManifestJson(manifest);
+    expect(json).not.toMatch(/"status"\s*:/);
+    expect(json).not.toContain('in-progress');
+  });
+
+  it('sets schemaVersion to exactly 3', () => {
     const manifest = serializeManifest(makeProject());
     expect(manifest.schemaVersion).toBe(MANIFEST_SCHEMA_VERSION);
-    expect(manifest.schemaVersion).toBe(2);
+    expect(manifest.schemaVersion).toBe(3);
   });
 
   it('uses camelCase for all JSON field names', () => {
@@ -205,19 +218,19 @@ describe('serializeManifest', () => {
 
   it('maps category fields correctly and coerces enabled to a boolean', () => {
     const manifest = serializeManifest(makeProject(), [
-      { id: 7, project_id: 42, display_name: 'Source', directory_slug: 'source', display_order: 0, enabled: 1 },
-      { id: 8, project_id: 42, display_name: 'Extras', directory_slug: 'extras', display_order: 1, enabled: 0 },
+      { id: 7, project_id: 42, display_name: 'Final', directory_slug: 'final', display_order: 0, enabled: 1 },
+      { id: 8, project_id: 42, display_name: 'KRZ', directory_slug: 'krz', display_order: 1, enabled: 0 },
     ]);
 
     expect(manifest.assetCategories).toEqual([
-      { displayName: 'Source', directorySlug: 'source', displayOrder: 0, enabled: true },
-      { displayName: 'Extras', directorySlug: 'extras', displayOrder: 1, enabled: false },
+      { displayName: 'Final', directorySlug: 'final', displayOrder: 0, enabled: true },
+      { displayName: 'KRZ', directorySlug: 'krz', displayOrder: 1, enabled: false },
     ]);
   });
 
   it('preserves the given category order', () => {
     const manifest = serializeManifest(makeProject(), makeCategories());
-    expect(manifest.assetCategories.map((c) => c.directorySlug)).toEqual(['source', 'exports']);
+    expect(manifest.assetCategories.map((c) => c.directorySlug)).toEqual(['final', 'wip']);
   });
 
   it('does not serialize database category IDs, project IDs, or timestamps', () => {
@@ -240,11 +253,10 @@ describe('serializeManifest', () => {
 describe('deserializeManifest', () => {
   it('converts camelCase manifest back to snake_case', () => {
     const manifest = {
-      schemaVersion: 2,
+      schemaVersion: 3,
       id: 42,
       title: 'Test',
       slug: 'test',
-      status: 'tbd',
       priority: 'normal',
       description: 'desc',
       notes: 'notes',
@@ -270,6 +282,16 @@ describe('deserializeManifest', () => {
     expect(data.thumbnail).toBeNull();
   });
 
+  it('does not expose status as project metadata', () => {
+    // A stale v2 manifest carries a status field, but it is now obsolete
+    // and must not survive parsing as project metadata.
+    const stale = validBaseManifest({ status: 'in-progress' });
+    expect(() => deserializeManifest(stale)).toThrow(StorageError);
+
+    const data = deserializeManifest(validBaseManifest());
+    expect(data).not.toHaveProperty('status');
+  });
+
   it('round-trips through serialize → JSON → parse → deserialize', () => {
     const project = makeProject({
       planned_date: '2026-08-15',
@@ -286,6 +308,7 @@ describe('deserializeManifest', () => {
     expect(result.slug).toBe(project.slug);
     expect(result.description).toBe(project.description);
     expect(result.notes).toBe(project.notes);
+    expect(result).not.toHaveProperty('status');
     expect(result.planned_date).toBe('2026-08-15');
     expect(result.published_date).toBeNull();
     expect(result.patreon_url).toBe('https://patreon.com/creator');
@@ -312,6 +335,11 @@ describe('deserializeManifest', () => {
     expect(() => deserializeManifest(v1Manifest)).toThrow(StorageError);
   });
 
+  it('rejects a schema-version-2 manifest', () => {
+    const v2Manifest = validBaseManifest({ schemaVersion: 2 });
+    expect(() => deserializeManifest(v2Manifest)).toThrow(StorageError);
+  });
+
   it('rejects a manifest with no schemaVersion', () => {
     expect(() => deserializeManifest({ id: 1, title: 'x', slug: 'x' })).toThrow(StorageError);
   });
@@ -324,11 +352,10 @@ describe('deserializeManifest', () => {
 
   function validBaseManifest(overrides = {}) {
     return {
-      schemaVersion: 2,
+      schemaVersion: 3,
       id: 42,
       title: 'Test',
       slug: 'test',
-      status: 'tbd',
       priority: 'normal',
       description: '',
       notes: '',
@@ -366,6 +393,11 @@ describe('deserializeManifest', () => {
 
   it('rejects a manifest with an obsolete "categories" property', () => {
     const manifest = validBaseManifest({ categories: [] });
+    expect(() => deserializeManifest(manifest)).toThrow(StorageError);
+  });
+
+  it('rejects a manifest with an obsolete "status" property', () => {
+    const manifest = validBaseManifest({ status: 'in-progress' });
     expect(() => deserializeManifest(manifest)).toThrow(StorageError);
   });
 
@@ -502,7 +534,6 @@ describe('manifest file operations', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-manifest-'));
     projectsRoot = path.join(tmpDir, 'projects');
     fs.mkdirSync(projectsRoot, { recursive: true });
-    fs.mkdirSync(path.join(projectsRoot, 'active'), { recursive: true });
   });
 
   afterEach(() => {
@@ -513,7 +544,7 @@ describe('manifest file operations', () => {
 
   describe('writeManifestSync', () => {
     it('creates a manifest file atomically on first write', () => {
-      const { absPath } = createRealProjectDir(projectsRoot, 'in-progress', 42, 'summer-set');
+      const { absPath } = createRealProjectDir(projectsRoot, 42, 'summer-set');
       const project = makeProject({ id: 42, slug: 'summer-set' });
 
       writeManifestSync(absPath, project, projectsRoot);
@@ -523,28 +554,42 @@ describe('manifest file operations', () => {
 
       const content = fs.readFileSync(manifestPath, 'utf8');
       const parsed = JSON.parse(content);
-      expect(parsed.schemaVersion).toBe(2);
+      expect(parsed.schemaVersion).toBe(3);
       expect(parsed.id).toBe(42);
       expect(parsed.title).toBe('Summer Character Set');
       expect(parsed.slug).toBe('summer-set');
       expect(parsed.assetCategories).toEqual([]);
     });
 
+    it('writes a manifest without any status metadata', () => {
+      const { absPath } = createRealProjectDir(projectsRoot, 42, 'no-status');
+      const project = makeProject({ id: 42, slug: 'no-status', status: 'in-progress' });
+
+      writeManifestSync(absPath, project, projectsRoot);
+
+      const manifestPath = path.join(absPath, MANIFEST_FILENAME);
+      const content = fs.readFileSync(manifestPath, 'utf8');
+      expect(content).not.toMatch(/"status"\s*:/);
+      expect(content).not.toContain('in-progress');
+      const parsed = JSON.parse(content);
+      expect(parsed).not.toHaveProperty('status');
+    });
+
     it('writes the given categories in the given order', () => {
-      const { absPath } = createRealProjectDir(projectsRoot, 'in-progress', 42, 'with-categories');
+      const { absPath } = createRealProjectDir(projectsRoot, 42, 'with-categories');
       const project = makeProject({ id: 42, slug: 'with-categories' });
 
       writeManifestSync(absPath, project, projectsRoot, makeCategories());
 
       const manifest = readManifestSync(absPath);
       expect(manifest.assetCategories).toEqual([
-        { displayName: 'Source', directorySlug: 'source', displayOrder: 0, enabled: true },
-        { displayName: 'Exports', directorySlug: 'exports', displayOrder: 1, enabled: true },
+        { displayName: 'Final', directorySlug: 'final', displayOrder: 0, enabled: true },
+        { displayName: 'WIP', directorySlug: 'wip', displayOrder: 1, enabled: true },
       ]);
     });
 
     it('replaces an existing manifest', () => {
-      const { absPath } = createRealProjectDir(projectsRoot, 'in-progress', 42, 'project');
+      const { absPath } = createRealProjectDir(projectsRoot, 42, 'project');
       const project1 = makeProject({ id: 42, title: 'First Title', slug: 'project' });
       const project2 = makeProject({ id: 42, title: 'Updated Title', slug: 'project' });
 
@@ -561,7 +606,7 @@ describe('manifest file operations', () => {
     });
 
     it('does not leave a temp file after successful write', () => {
-      const { absPath } = createRealProjectDir(projectsRoot, 'in-progress', 42, 'clean');
+      const { absPath } = createRealProjectDir(projectsRoot, 42, 'clean');
       const project = makeProject({ id: 42, slug: 'clean' });
 
       writeManifestSync(absPath, project, projectsRoot);
@@ -572,7 +617,7 @@ describe('manifest file operations', () => {
     });
 
     it('uses a temp filename that does not look like a valid manifest', () => {
-      const { absPath } = createRealProjectDir(projectsRoot, 'in-progress', 42, 'temp-name');
+      const { absPath } = createRealProjectDir(projectsRoot, 42, 'temp-name');
       const project = makeProject({ id: 42, slug: 'temp-name' });
 
       // Spy on openSync to capture the temp path
@@ -590,7 +635,7 @@ describe('manifest file operations', () => {
     });
 
     it('cleans up the temp file when rename fails', () => {
-      const { absPath } = createRealProjectDir(projectsRoot, 'in-progress', 42, 'rename-fail');
+      const { absPath } = createRealProjectDir(projectsRoot, 42, 'rename-fail');
       const project = makeProject({ id: 42, slug: 'rename-fail' });
 
       const renameSpy = vi.spyOn(fs, 'renameSync').mockImplementation(() => {
@@ -611,7 +656,7 @@ describe('manifest file operations', () => {
     });
 
     it('preserves existing manifest when replacement rename fails', () => {
-      const { absPath } = createRealProjectDir(projectsRoot, 'in-progress', 42, 'preserve');
+      const { absPath } = createRealProjectDir(projectsRoot, 42, 'preserve');
       const project1 = makeProject({ id: 42, title: 'Original', slug: 'preserve' });
       const project2 = makeProject({ id: 42, title: 'Replacement', slug: 'preserve' });
 
@@ -634,14 +679,14 @@ describe('manifest file operations', () => {
     });
 
     it('rejects a non-existent project directory', () => {
-      const ghostPath = path.join(projectsRoot, 'active', '000099-ghost');
+      const ghostPath = path.join(projectsRoot, '000099-ghost');
       const project = makeProject({ id: 99, slug: 'ghost' });
 
       expect(() => writeManifestSync(ghostPath, project, projectsRoot)).toThrow(StorageError);
     });
 
     it('rejects a path that is a file (not a directory)', () => {
-      const filePath = path.join(projectsRoot, 'active', 'not-a-dir');
+      const filePath = path.join(projectsRoot, 'not-a-dir');
       fs.writeFileSync(filePath, '');
 
       const project = makeProject({ id: 99, slug: 'not-a-dir' });
@@ -651,10 +696,10 @@ describe('manifest file operations', () => {
     it('rejects a symlink project directory', () => {
       if (!symlinksSupported()) return;
 
-      const realDir = path.join(projectsRoot, 'active', 'real-target');
+      const realDir = path.join(projectsRoot, 'real-target');
       fs.mkdirSync(realDir, { recursive: true });
 
-      const linkDir = path.join(projectsRoot, 'active', '000042-link');
+      const linkDir = path.join(projectsRoot, '000042-link');
       fs.symlinkSync(realDir, linkDir, 'junction');
 
       const project = makeProject({ id: 42, slug: 'link' });
@@ -662,7 +707,7 @@ describe('manifest file operations', () => {
     });
 
     it('includes project ID and safe relative path in error', () => {
-      const { absPath } = createRealProjectDir(projectsRoot, 'in-progress', 42, 'error-msg');
+      const { absPath } = createRealProjectDir(projectsRoot, 42, 'error-msg');
       const project = makeProject({ id: 42, slug: 'error-msg' });
 
       const renameSpy = vi.spyOn(fs, 'renameSync').mockImplementation(() => {
@@ -680,7 +725,7 @@ describe('manifest file operations', () => {
     });
 
     it('produces valid JSON that can be read back', () => {
-      const { absPath } = createRealProjectDir(projectsRoot, 'in-progress', 42, 'roundtrip');
+      const { absPath } = createRealProjectDir(projectsRoot, 42, 'roundtrip');
       const project = makeProject({ id: 42, slug: 'roundtrip' });
 
       writeManifestSync(absPath, project, projectsRoot);
@@ -688,7 +733,7 @@ describe('manifest file operations', () => {
       // Read it back via readManifestSync
       const manifest = readManifestSync(absPath);
       expect(manifest).not.toBeNull();
-      expect(manifest.schemaVersion).toBe(2);
+      expect(manifest.schemaVersion).toBe(3);
       expect(manifest.id).toBe(42);
       expect(manifest.title).toBe('Summer Character Set');
     });
@@ -698,18 +743,18 @@ describe('manifest file operations', () => {
 
   describe('readManifestSync', () => {
     it('returns null when no manifest file exists', () => {
-      const { absPath } = createRealProjectDir(projectsRoot, 'in-progress', 42, 'no-manifest');
+      const { absPath } = createRealProjectDir(projectsRoot, 42, 'no-manifest');
       expect(readManifestSync(absPath)).toBeNull();
     });
 
     it('throws StorageError for invalid JSON', () => {
-      const { absPath } = createRealProjectDir(projectsRoot, 'in-progress', 42, 'bad-json');
+      const { absPath } = createRealProjectDir(projectsRoot, 42, 'bad-json');
       fs.writeFileSync(path.join(absPath, MANIFEST_FILENAME), 'not json');
       expect(() => readManifestSync(absPath)).toThrow(StorageError);
     });
 
     it('reads back a previously written manifest', () => {
-      const { absPath } = createRealProjectDir(projectsRoot, 'in-progress', 42, 'read-back');
+      const { absPath } = createRealProjectDir(projectsRoot, 42, 'read-back');
       const project = makeProject({ id: 42, slug: 'read-back' });
       writeManifestSync(absPath, project, projectsRoot);
 
@@ -728,7 +773,7 @@ describe('manifest file operations', () => {
 
   describe('removeManifestSync', () => {
     it('removes an existing manifest file', () => {
-      const { absPath } = createRealProjectDir(projectsRoot, 'in-progress', 42, 'remove-me');
+      const { absPath } = createRealProjectDir(projectsRoot, 42, 'remove-me');
       const project = makeProject({ id: 42, slug: 'remove-me' });
       writeManifestSync(absPath, project, projectsRoot);
 
@@ -740,7 +785,7 @@ describe('manifest file operations', () => {
     });
 
     it('is a no-op when no manifest exists', () => {
-      const { absPath } = createRealProjectDir(projectsRoot, 'in-progress', 42, 'noop');
+      const { absPath } = createRealProjectDir(projectsRoot, 42, 'noop');
       expect(() => removeManifestSync(absPath)).not.toThrow();
     });
   });

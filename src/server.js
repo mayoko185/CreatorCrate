@@ -5,12 +5,8 @@ import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { createConfig, ConfigError } from './config.js';
 import { validateMounts, FilesystemError } from './filesystem.js';
-import { ensureStatusDirs, ensurePreviewRoot, StorageError } from './storage/path-manager.js';
+import { ensurePreviewRoot, StorageError } from './storage/path-manager.js';
 import { openDatabase, runMigrations, closeDatabase, DatabaseError } from './db.js';
-import { createProjectService } from './services/project-service.js';
-import { createAssetCategoryRepository } from './data/asset-category-repository.js';
-import { createAssetCategoryService } from './services/asset-category-service.js';
-import { createAssetBrowserPreferenceRepository } from './data/asset-browser-preference-repository.js';
 import { createBackupService } from './services/backup-service.js';
 import { createApplicationContext } from './app-context.js';
 import { createManagedCredentialProvider, CredentialError } from './auth/credential-provider.js';
@@ -38,16 +34,6 @@ async function main() {
     throw err;
   }
 
-  try {
-    ensureStatusDirs(config.projectsRoot);
-  } catch (err) {
-    if (err instanceof StorageError) {
-      console.error(`Storage error: ${err.message}`);
-      process.exit(1);
-    }
-    throw err;
-  }
-
   // Phase 10.1A: ensure the derived preview root exists before serving.
   try {
     ensurePreviewRoot(config.previewRoot);
@@ -70,22 +56,6 @@ async function main() {
       process.exit(1);
     }
     throw err;
-  }
-
-  // Backfill project directories for existing Phase 2 records with no path
-  const assetCategoryRepository = createAssetCategoryRepository(db);
-  const assetCategoryService = createAssetCategoryService(assetCategoryRepository);
-  const assetBrowserPreferenceRepository = createAssetBrowserPreferenceRepository(db);
-  const backfillService = createProjectService(db, config.projectsRoot, {
-    assetCategoryService,
-    assetBrowserPreferenceRepository,
-  });
-  const backfillResults = backfillService.backfillProjectDirs();
-  if (backfillResults.errors.length > 0) {
-    console.error(
-      `[CreatorCrate] Backfill completed with ${backfillResults.errors.length} error(s). ` +
-      `Check logs above for details.`
-    );
   }
 
   // Phase 11.2: shared maintenance boundary so the 503 middleware, health

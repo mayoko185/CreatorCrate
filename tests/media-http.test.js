@@ -29,11 +29,7 @@ import { getDisabledModeCsrf } from './helpers/auth.js';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { createProjectRepository } from '../src/data/project-repository.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
-import {
-  STATUS_DIR_MAP,
-  formatProjectDirName,
-  buildProjectRelPath,
-} from '../src/storage/project-storage.js';
+import { formatProjectDirName } from '../src/storage/project-storage.js';
 import { writeManifestSync } from '../src/storage/manifest.js';
 import { resolvePublishedDir, THUMBNAIL_FILENAME, PREVIEW_FILENAME, buildRevisionToken } from '../src/storage/preview-cache.js';
 import {
@@ -102,9 +98,7 @@ function makeKritaArchive({ merged = null, preview = null } = {}) {
 function makeHarness({ withMediaService = true } = {}) {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-media-http-'));
   const projectsRoot = path.join(tmpDir, 'projects');
-  for (const dir of Object.values(STATUS_DIR_MAP)) {
-    fs.mkdirSync(path.join(projectsRoot, dir), { recursive: true });
-  }
+  fs.mkdirSync(projectsRoot, { recursive: true });
   const previewRoot = path.join(tmpDir, 'app', 'previews');
   fs.mkdirSync(previewRoot, { recursive: true });
 
@@ -131,8 +125,9 @@ function makeHarness({ withMediaService = true } = {}) {
       publishedDate: null,
       patreonUrl: null,
     });
+    // Flat layout: the project directory is a direct child of PROJECTS_ROOT.
     const dirName = formatProjectDirName(project.id, project.slug);
-    const relPath = buildProjectRelPath(project.status, dirName);
+    const relPath = dirName;
     const absPath = path.resolve(projectsRoot, relPath);
     fs.mkdirSync(absPath, { recursive: true });
     // Write the manifest so the archive HTTP flow (which reads the manifest
@@ -1227,20 +1222,18 @@ describe('media routes — security', () => {
     writeProjectFile(absPath, 'archive.png', buf);
     const asset = h.indexAsset(project, 'archive.png');
 
-    // Prime the cache BEFORE archiving (so the file is reachable in the
-    // tbd directory).
+    // Prime the cache BEFORE archiving (so the file is reachable).
     await h.previewService.getThumbnail(project.id, asset.id);
 
-    // Archive the project through the HTTP API (moves the directory to
-    // archived/).
+    // Archive the project through the HTTP API. Archiving is a database
+    // transition only: the flat project directory is preserved in place.
     const { agent, csrfToken } = await getDisabledModeCsrf(h.app, h.appDataRoot);
     await agent.post(`/projects/${project.id}/archive`).send({ _csrf: csrfToken }).expect(302);
 
-    // Re-index the asset at its new (archived) location so the row points
-    // to a present file again. The scan would do this on the next scan.
+    // The project_dir is unchanged; re-stat the file in place.
     const archivedProject = h.projectRepo.findById(project.id);
     const archivedAbs = path.resolve(h.projectsRoot, archivedProject.project_dir);
-    // The file moved with the directory, so it still exists. Re-stat.
+    // The file still exists in the same flat directory. Re-stat.
     h.assetRepo.upsert(project.id, 'archive.png', {
       filename: 'archive.png',
       extension: 'png',
@@ -1249,7 +1242,7 @@ describe('media routes — security', () => {
       modifiedAt: '2026-09-01 10:00:00',
     });
 
-    // The original route must still serve the file from the archived dir.
+    // The original route must still serve the file from the same directory.
     const res = await request(h.app)
       .get(`/projects/${project.id}/assets/${asset.id}/original`)
       .expect(200);
@@ -1257,9 +1250,9 @@ describe('media routes — security', () => {
     expect(res.headers['content-type']).toBe('image/png');
     expect(res.body.equals(buf)).toBe(true);
 
-    // Thumbnail also still works from the archived dir (cache was primed
-    // before the move; the cache file lives under preview root, not the
-    // project dir, so the move does not invalidate it).
+    // Thumbnail also still works (cache was primed before the archive; the
+    // cache file lives under preview root, not the project dir, so the
+    // archived state does not invalidate it).
     const thumbRes = await request(h.app)
       .get(`/projects/${project.id}/assets/${asset.id}/thumbnail`)
       .expect(200);
@@ -1967,9 +1960,7 @@ describe('media routes — global 500 cache policy', () => {
   function makeHarnessWithStub(stub) {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-media-500-'));
     const projectsRoot = path.join(tmpDir, 'projects');
-    for (const dir of Object.values(STATUS_DIR_MAP)) {
-      fs.mkdirSync(path.join(projectsRoot, dir), { recursive: true });
-    }
+    fs.mkdirSync(projectsRoot, { recursive: true });
     const previewRoot = path.join(tmpDir, 'app', 'previews');
     fs.mkdirSync(previewRoot, { recursive: true });
 
@@ -2278,9 +2269,7 @@ describe('media routes — original descriptor cleanup', () => {
   function makeDescriptorHarness({ makeStream } = {}) {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-media-desc-'));
     const projectsRoot = path.join(tmpDir, 'projects');
-    for (const dir of Object.values(STATUS_DIR_MAP)) {
-      fs.mkdirSync(path.join(projectsRoot, dir), { recursive: true });
-    }
+    fs.mkdirSync(projectsRoot, { recursive: true });
     const previewRoot = path.join(tmpDir, 'app', 'previews');
     fs.mkdirSync(previewRoot, { recursive: true });
 

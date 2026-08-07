@@ -300,39 +300,28 @@ describe('project repository', () => {
 
     it('can set and retrieve project_dir', () => {
       const project = repository.create(sampleProject({ title: 'Dir Update' }));
-      const updated = repository.setProjectDir(project.id, 'active/dir-update');
-      expect(updated.project_dir).toBe('active/dir-update');
+      const updated = repository.setProjectDir(project.id, '000001-dir-update');
+      expect(updated.project_dir).toBe('000001-dir-update');
 
       const found = repository.findById(project.id);
-      expect(found.project_dir).toBe('active/dir-update');
+      expect(found.project_dir).toBe('000001-dir-update');
     });
 
     it('can set project_dir to null', () => {
       const project = repository.create(sampleProject({ title: 'Dir Nullable' }));
-      repository.setProjectDir(project.id, 'tbd/some-path');
+      repository.setProjectDir(project.id, '000001-dir-nullable');
       const cleared = repository.setProjectDir(project.id, null);
       expect(cleared.project_dir).toBeNull();
     });
 
-    it('finds projects without project_dir', () => {
-      const withDir = repository.create(sampleProject({ title: 'Has Dir' }));
-      repository.setProjectDir(withDir.id, 'tbd/has-dir');
+    it('preserves project_dir across an archive', () => {
+      const project = repository.create(sampleProject({ title: 'Dir Archive' }));
+      repository.setProjectDir(project.id, '000001-dir-archive');
 
-      const without = repository.create(sampleProject({ title: 'No Dir' }));
+      const archived = repository.archive(project.id);
 
-      const nullRows = repository.findByProjectDirNull();
-      const ids = nullRows.map((p) => p.id);
-      expect(ids).not.toContain(withDir.id);
-      expect(ids).toContain(without.id);
-    });
-
-    it('returns empty array when all projects have project_dir', () => {
-      const p1 = repository.create(sampleProject({ title: 'A' }));
-      const p2 = repository.create(sampleProject({ title: 'B' }));
-      repository.setProjectDir(p1.id, 'tbd/a');
-      repository.setProjectDir(p2.id, 'tbd/b');
-
-      expect(repository.findByProjectDirNull()).toHaveLength(0);
+      expect(archived.project_dir).toBe('000001-dir-archive');
+      expect(repository.findById(project.id).project_dir).toBe('000001-dir-archive');
     });
   });
 

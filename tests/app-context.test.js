@@ -18,7 +18,6 @@ import { fileURLToPath } from 'node:url';
 import { createApplicationContext } from '../src/app-context.js';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { createBackupService } from '../src/services/backup-service.js';
-import { STATUS_DIR_MAP } from '../src/storage/project-storage.js';
 import { hashPassword } from '../src/auth/password-hash.js';
 import { generateSessionToken, hashSessionToken } from '../src/auth/session-token.js';
 import { createStaticCredentialProvider, createManagedCredentialProvider } from '../src/auth/credential-provider.js';
@@ -53,9 +52,6 @@ describe('live restore — same-process application context', () => {
     fs.mkdirSync(appDataRoot, { recursive: true });
     projectsRoot = path.join(tmpDir, 'projects');
     fs.mkdirSync(projectsRoot, { recursive: true });
-    for (const dir of Object.values(STATUS_DIR_MAP)) {
-      fs.mkdirSync(path.join(projectsRoot, dir), { recursive: true });
-    }
     databasePath = path.join(appDataRoot, 'creatorcrate.db');
     db = openDatabase(databasePath);
     runMigrations(db, MIGRATIONS_DIR);
@@ -431,9 +427,6 @@ describe('live restore — authentication interaction', () => {
     fs.mkdirSync(appDataRoot, { recursive: true });
     projectsRoot = path.join(tmpDir, 'projects');
     fs.mkdirSync(projectsRoot, { recursive: true });
-    for (const dir of Object.values(STATUS_DIR_MAP)) {
-      fs.mkdirSync(path.join(projectsRoot, dir), { recursive: true });
-    }
     databasePath = path.join(appDataRoot, 'creatorcrate.db');
     db = openDatabase(databasePath);
     runMigrations(db, MIGRATIONS_DIR);
@@ -695,9 +688,6 @@ describe('live restore — does not change auth mode or revert managed credentia
     fs.mkdirSync(appDataRoot, { recursive: true });
     projectsRoot = path.join(tmpDir, 'projects');
     fs.mkdirSync(projectsRoot, { recursive: true });
-    for (const dir of Object.values(STATUS_DIR_MAP)) {
-      fs.mkdirSync(path.join(projectsRoot, dir), { recursive: true });
-    }
     databasePath = path.join(appDataRoot, 'creatorcrate.db');
     db = openDatabase(databasePath);
     runMigrations(db, MIGRATIONS_DIR);

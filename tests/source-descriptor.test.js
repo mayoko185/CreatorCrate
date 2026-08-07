@@ -27,11 +27,7 @@ import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { createProjectRepository } from '../src/data/project-repository.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
 import { openAssetFile, closeAssetFile } from '../src/storage/asset-file.js';
-import {
-  formatProjectDirName,
-  buildProjectRelPath,
-  STATUS_DIR_MAP,
-} from '../src/storage/project-storage.js';
+import { formatProjectDirName } from '../src/storage/project-storage.js';
 import {
   createPreviewService,
   PreviewError,
@@ -65,9 +61,7 @@ function writeProjectFile(projectAbs, relPath, buffer) {
 function makeHarness() {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-src-desc-'));
   const projectsRoot = path.join(tmpDir, 'projects');
-  for (const dir of Object.values(STATUS_DIR_MAP)) {
-    fs.mkdirSync(path.join(projectsRoot, dir), { recursive: true });
-  }
+  fs.mkdirSync(projectsRoot, { recursive: true });
   const previewRoot = path.join(tmpDir, 'app', 'previews');
   fs.mkdirSync(previewRoot, { recursive: true });
 
@@ -90,8 +84,9 @@ function makeHarness() {
       publishedDate: null,
       patreonUrl: null,
     });
+    // Flat layout: the project directory is a direct child of PROJECTS_ROOT.
     const dirName = formatProjectDirName(project.id, project.slug);
-    const relPath = buildProjectRelPath(project.status, dirName);
+    const relPath = dirName;
     const absPath = path.resolve(projectsRoot, relPath);
     fs.mkdirSync(absPath, { recursive: true });
     project = projectRepo.setProjectDir(project.id, relPath);
@@ -373,11 +368,9 @@ describe('source-descriptor read (lower-level)', () => {
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-asset-desc-'));
     projectsRoot = path.join(tmpDir, 'projects');
-    for (const dir of Object.values(STATUS_DIR_MAP)) {
-      fs.mkdirSync(path.join(projectsRoot, dir), { recursive: true });
-    }
+    fs.mkdirSync(projectsRoot, { recursive: true });
     const dirName = formatProjectDirName(1, 'desc-project');
-    const relPath = buildProjectRelPath('tbd', dirName);
+    const relPath = dirName;
     const absPath = path.join(projectsRoot, relPath);
     fs.mkdirSync(absPath, { recursive: true });
     project = { absPath, relPath };

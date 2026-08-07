@@ -88,9 +88,9 @@ Copy `.env.example` for local runs. The Compose file supplies the in-container p
 | `APP_DATA_ROOT` | SQLite database and WAL files, managed database backups, generated previews, and managed authentication state |
 | `PROJECTS_ROOT` | Project directories, `project.json` manifests, and original project files |
 
-Project folders are organized by project lifecycle: work in progress lives below `active/`, ready work below `ready/`, and archived projects below `archived/`. A project directory is named with its zero-padded ID and slug, for example `000042-summer-illustration/`.
+Project directories live directly under `PROJECTS_ROOT`; each is named with its zero-padded ID and slug, for example `000042-summer-illustration/`. Project status is application metadata only — it is not represented by filesystem parent folders, and status changes or archiving never move project files. CreatorCrate does not create or use an `inbox` folder under `PROJECTS_ROOT`.
 
-Each project receives a `project.json` manifest plus standard working folders: `source/`, `references/`, `extras/`, `thumbnails/`, `exports/full/`, and `exports/web/`. CreatorCrate updates the manifest atomically as project metadata changes.
+Each project receives a `project.json` manifest plus standard working folders: `final/`, `wip/`, `krz/`, `wm/`, and `wm-lq/`. CreatorCrate updates the manifest atomically as project metadata changes.
 
 ### Projects and assets
 

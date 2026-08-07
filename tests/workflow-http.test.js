@@ -14,7 +14,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createApp } from '../src/app.js';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
-import { STATUS_DIR_MAP } from '../src/storage/project-storage.js';
+import { formatProjectDirName } from '../src/storage/project-storage.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
 import { getLocalTodayIso } from '../src/util/date.js';
 import { ensureAuthEnablement } from '../src/auth/auth-state.js';
@@ -28,13 +28,9 @@ function renderTemplate(templateName, context = {}) {
   return env.render(templateName, context);
 }
 
-function getProjectDir(projectsRoot, title, status = 'tbd') {
+function getProjectDir(projectsRoot, projectId, title) {
   const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-');
-  const statusDir = STATUS_DIR_MAP[status];
-  const entries = fs.readdirSync(path.join(projectsRoot, statusDir));
-  const matching = entries.filter((e) => e.endsWith(`-${slug}`));
-  if (matching.length === 0) return null;
-  return path.join(projectsRoot, statusDir, matching[0]);
+  return path.join(projectsRoot, formatProjectDirName(Number(projectId), slug));
 }
 
 async function createProject(app, { title, status = 'tbd' }) {
@@ -173,9 +169,6 @@ describe('Phase 6B HTTP workflow', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-6b-'));
     projectsRoot = path.join(tmpDir, 'projects');
     fs.mkdirSync(projectsRoot, { recursive: true });
-    for (const dir of Object.values(STATUS_DIR_MAP)) {
-      fs.mkdirSync(path.join(projectsRoot, dir), { recursive: true });
-    }
     const dbPath = path.join(tmpDir, 'test.db');
     db = openDatabase(dbPath);
     runMigrations(db, MIGRATIONS_DIR);
@@ -2420,7 +2413,7 @@ describe('Phase 6B HTTP workflow', () => {
      */
     async function createProjectWithFile({ title, status = 'tbd' }) {
       const projectId = await createProject(app, { title, status });
-      const projectDir = getProjectDir(projectsRoot, title, status);
+      const projectDir = getProjectDir(projectsRoot, projectId, title);
       expect(projectDir).not.toBeNull();
       fs.writeFileSync(path.join(projectDir, 'asset.txt'), 'content');
       return projectId;
@@ -2493,7 +2486,7 @@ describe('Phase 6B HTTP workflow', () => {
 
       it('archived scan rejection causes no asset changes (full row snapshot)', async () => {
         const projectId = await createProjectWithFile({ title: 'Archived Scan Snapshot' });
-        const projectDir = getProjectDir(projectsRoot, 'Archived Scan Snapshot');
+        const projectDir = getProjectDir(projectsRoot, projectId, 'Archived Scan Snapshot');
         expect(projectDir).not.toBeNull();
 
         // Establish baseline: scan the initial file
@@ -2661,7 +2654,7 @@ describe('Phase 6B HTTP workflow', () => {
       it('pagination URLs contain only canonical browser params — no junk or defaults', async () => {
         // Create enough assets for multiple pages
         const projectId = await createProjectWithFile({ title: 'Pagination Whitelist' });
-        const projectDir = getProjectDir(projectsRoot, 'Pagination Whitelist');
+        const projectDir = getProjectDir(projectsRoot, projectId, 'Pagination Whitelist');
         for (let i = 0; i < 15; i++) {
           fs.writeFileSync(path.join(projectDir, `page_${i}.txt`), 'content');
         }

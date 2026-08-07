@@ -13,9 +13,7 @@ import { buildAssetRevisionToken } from '../src/services/preview-service.js';
 import { ensureAuthEnablement } from '../src/auth/auth-state.js';
 import { getDisabledModeCsrf } from './helpers/auth.js';
 import {
-  STATUS_DIR_MAP,
   formatProjectDirName,
-  buildProjectRelPath,
   resolveProjectDir,
 } from '../src/storage/project-storage.js';
 import { PAGE_DEFAULT_DEFINITIONS } from '../src/services/page-defaults-service.js';
@@ -73,9 +71,6 @@ describe('project HTTP workflow', () => {
     projectsRoot = path.join(tmpDir, 'projects');
     previewRoot = path.join(tmpDir, 'previews');
     fs.mkdirSync(projectsRoot, { recursive: true });
-    for (const dir of Object.values(STATUS_DIR_MAP)) {
-      fs.mkdirSync(path.join(projectsRoot, dir), { recursive: true });
-    }
     const dbPath = path.join(tmpDir, 'test.db');
     db = openDatabase(dbPath);
     runMigrations(db, MIGRATIONS_DIR);
@@ -1394,13 +1389,13 @@ describe('project HTTP workflow', () => {
       return title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
     }
 
-    function getProjectDir(title, status = 'tbd') {
+    function getProjectDir(title) {
+      // Flat layout: project directories are direct children of PROJECTS_ROOT
       const slug = parseSlug(title);
-      const statusDir = STATUS_DIR_MAP[status];
-      const entries = fs.readdirSync(path.join(projectsRoot, statusDir));
+      const entries = fs.readdirSync(projectsRoot);
       const matching = entries.filter((e) => e.endsWith(`-${slug}`));
       if (matching.length === 0) return null;
-      return path.join(projectsRoot, statusDir, matching[0]);
+      return path.join(projectsRoot, matching[0]);
     }
 
     it('creates the database record and project directory', async () => {
@@ -1417,26 +1412,33 @@ describe('project HTTP workflow', () => {
       expect(location).toMatch(/^\/projects\/\d+$/);
 
       // Verify the directory exists
-      const projectDir = getProjectDir('HTTP FS Test', 'tbd');
+      const projectDir = getProjectDir('HTTP FS Test');
       expect(projectDir).not.toBeNull();
       expect(fs.existsSync(projectDir)).toBe(true);
       expect(fs.statSync(projectDir).isDirectory()).toBe(true);
+      // Flat layout: direct child of PROJECTS_ROOT
+      expect(path.dirname(projectDir)).toBe(path.resolve(projectsRoot));
     });
 
-    it('uses correct status root directory', async () => {
-      await agent
-        .post('/projects')
-        .send('title=Status+Root+Check')
-        .send('status=in-progress')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
+    it('creates the same flat path shape for every status', async () => {
+      for (const status of ['tbd', 'planned', 'in-progress', 'ready']) {
+        await agent
+          .post('/projects')
+          .send(`title=Flat+Shape+${encodeURIComponent(status)}`)
+          .send(`status=${encodeURIComponent(status)}`)
+          .send('priority=normal')
+          .set('Content-Type', 'application/x-www-form-urlencoded')
+          .send('_csrf=' + encodeURIComponent(csrfToken))
+          .expect(302);
 
-      const projectDir = getProjectDir('Status Root Check', 'in-progress');
-      expect(projectDir).not.toBeNull();
-      // The directory should be under the 'active' directory
-      expect(projectDir).toContain(path.join(projectsRoot, 'active'));
+        const projectDir = getProjectDir(`Flat Shape ${status}`);
+        expect(projectDir).not.toBeNull();
+        expect(projectDir).toContain(path.join(projectsRoot, ''));
+        // Status never participates — no status directory is created
+        expect(fs.existsSync(path.join(projectsRoot, 'active'))).toBe(false);
+        expect(fs.existsSync(path.join(projectsRoot, 'inbox'))).toBe(false);
+        expect(path.dirname(projectDir)).toBe(path.resolve(projectsRoot));
+      }
     });
 
     it('creates standard subdirectories', async () => {
@@ -1449,10 +1451,10 @@ describe('project HTTP workflow', () => {
         .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
-      const projectDir = getProjectDir('Subdirs HTTP', 'tbd');
+      const projectDir = getProjectDir('Subdirs HTTP');
       expect(projectDir).not.toBeNull();
 
-      const expectedSubdirs = ['source', 'exports', 'extras', 'references', 'thumbnails'];
+      const expectedSubdirs = ['final', 'wip', 'krz', 'wm', 'wm-lq'];
       for (const sub of expectedSubdirs) {
         const subPath = path.join(projectDir, sub);
         expect(fs.existsSync(subPath)).toBe(true);
@@ -1462,7 +1464,7 @@ describe('project HTTP workflow', () => {
       expect(fs.existsSync(path.join(projectDir, 'exports', 'web'))).toBe(false);
     });
 
-    it('writes a project manifest', async () => {
+    it('writes a schema-version-3 project manifest without status', async () => {
       await agent
         .post('/projects')
         .send('title=Manifest+HTTP')
@@ -1473,18 +1475,21 @@ describe('project HTTP workflow', () => {
         .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
-      const projectDir = getProjectDir('Manifest HTTP', 'tbd');
+      const projectDir = getProjectDir('Manifest HTTP');
       expect(projectDir).not.toBeNull();
 
       const manifestPath = path.join(projectDir, MANIFEST_FILENAME);
       expect(fs.existsSync(manifestPath)).toBe(true);
 
-      const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-      expect(manifest.schemaVersion).toBe(2);
+      const content = fs.readFileSync(manifestPath, 'utf8');
+      const manifest = JSON.parse(content);
+      expect(manifest.schemaVersion).toBe(3);
       expect(manifest.title).toBe('Manifest HTTP');
       expect(manifest.description).toBe('Test description');
+      expect(manifest).not.toHaveProperty('status');
+      expect(content).not.toMatch(/"status"\s*:/);
       expect(manifest.assetCategories.map((c) => c.directorySlug)).toEqual([
-        'source', 'exports', 'extras', 'references', 'thumbnails',
+        'final', 'wip', 'krz', 'wm', 'wm-lq',
       ]);
     });
 
@@ -1526,7 +1531,7 @@ describe('project HTTP workflow', () => {
       expect(res.text).not.toContain(projectsRoot);
     });
 
-    it('detail page shows relative project directory after creation', async () => {
+    it('detail page shows the flat project directory after creation', async () => {
       const createRes = await agent
         .post('/projects')
         .send('title=Detail+Dir+Test')
@@ -1538,15 +1543,16 @@ describe('project HTTP workflow', () => {
 
       const detail = await agent.get(createRes.headers.location).expect(200);
       expect(detail.text).toContain('Project directory');
-      expect(detail.text).toMatch(/tbd(?:&#92;|\/)\d+-detail-dir-test/);
+      // Flat layout: the displayed path is the bare directory name
+      expect(detail.text).toMatch(/\d+-detail-dir-test/);
+      expect(detail.text).not.toMatch(/tbd(?:&#92;|\/)/);
       expect(detail.text).not.toMatch(/[A-Z]:\\/);
     });
 
     it('filesystem conflict during creation renders safe error with preserved values', async () => {
       // Block the expected path for project id=1 (first project in a fresh DB)
       const slug = parseSlug('Conflict+Create');
-      const statusDir = STATUS_DIR_MAP.tbd;
-      const conflictPath = path.join(projectsRoot, statusDir, `000001-${slug}`);
+      const conflictPath = path.join(projectsRoot, `000001-${slug}`);
       fs.writeFileSync(conflictPath, 'blocker');
 
       const res = await agent
@@ -1573,16 +1579,16 @@ describe('project HTTP workflow', () => {
       return title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
     }
 
-    function getProjectDir(title, status = 'tbd') {
+    function getProjectDir(title) {
+      // Flat layout: project directories are direct children of PROJECTS_ROOT
       const slug = parseSlug(title);
-      const statusDir = STATUS_DIR_MAP[status];
-      const entries = fs.readdirSync(path.join(projectsRoot, statusDir));
+      const entries = fs.readdirSync(projectsRoot);
       const matching = entries.filter((e) => e.endsWith(`-${slug}`));
       if (matching.length === 0) return null;
-      return path.join(projectsRoot, statusDir, matching[0]);
+      return path.join(projectsRoot, matching[0]);
     }
 
-    it('valid metadata edit rewrites manifest and redirects', async () => {
+    it('status-only edit is DB/UI-only and leaves the flat directory untouched', async () => {
       // Create a project
       const createRes = await agent
         .post('/projects')
@@ -1594,26 +1600,34 @@ describe('project HTTP workflow', () => {
         .expect(302);
       const location = createRes.headers.location;
 
-      // Edit metadata only (no slug/status change)
+      const projectDir = getProjectDir('HTTP Meta Edit');
+      expect(projectDir).not.toBeNull();
+      const manifestPath = path.join(projectDir, MANIFEST_FILENAME);
+      const manifestBefore = fs.readFileSync(manifestPath, 'utf8');
+      const customFile = path.join(projectDir, 'user-data.txt');
+      fs.writeFileSync(customFile, 'keep me');
+
+      // Change status only (same title, no slug change, no metadata change)
       const res = await agent
         .post(location)
         .send('title=HTTP+Meta+Edit')
-        .send('description=Updated+desc')
-        .send('notes=New+notes')
-        .send('status=tbd')
-        .send('priority=high')
+        .send('status=in-progress')
+        .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
       expect(res.headers.location).toBe(location);
 
-      // Manifest was rewritten
-      const projectDir = getProjectDir('HTTP Meta Edit', 'tbd');
-      expect(projectDir).not.toBeNull();
-      const manifest = readManifestSync(projectDir);
-      expect(manifest.description).toBe('Updated desc');
-      expect(manifest.notes).toBe('New notes');
-      expect(manifest.priority).toBe('high');
+      // Status is DB-only — manifest and directory are untouched
+      const row = db.prepare('SELECT status, project_dir FROM projects WHERE title = ?')
+        .get('HTTP Meta Edit');
+      expect(row.status).toBe('in-progress');
+      expect(row.project_dir.split(path.sep)).toHaveLength(1);
+
+      expect(fs.existsSync(projectDir)).toBe(true);
+      expect(fs.existsSync(customFile)).toBe(true);
+      expect(fs.readFileSync(manifestPath, 'utf8')).toBe(manifestBefore);
+      expect(fs.existsSync(path.join(projectsRoot, 'active'))).toBe(false);
     });
 
     it('title change renames the directory', async () => {
@@ -1627,7 +1641,7 @@ describe('project HTTP workflow', () => {
         .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
       const location = createRes.headers.location;
-      const oldDir = getProjectDir('Old HTTP Name', 'tbd');
+      const oldDir = getProjectDir('Old HTTP Name');
       expect(oldDir).not.toBeNull();
 
       // Add a custom file to prove contents survive
@@ -1647,8 +1661,8 @@ describe('project HTTP workflow', () => {
       // Old directory gone
       expect(fs.existsSync(oldDir)).toBe(false);
 
-      // New directory exists
-      const newDir = getProjectDir('New HTTP Name', 'tbd');
+      // New directory exists (flat rename)
+      const newDir = getProjectDir('New HTTP Name');
       expect(newDir).not.toBeNull();
       expect(fs.existsSync(newDir)).toBe(true);
 
@@ -1662,7 +1676,7 @@ describe('project HTTP workflow', () => {
       expect(detail.text).not.toContain('Old HTTP Name');
     });
 
-    it('status change moves the directory', async () => {
+    it('status-only change is DB/UI-only and leaves the flat directory untouched', async () => {
       const createRes = await agent
         .post('/projects')
         .send('title=Status+Move+HTTP')
@@ -1673,13 +1687,13 @@ describe('project HTTP workflow', () => {
         .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
       const location = createRes.headers.location;
-      const oldDir = getProjectDir('Status Move HTTP', 'tbd');
+      const oldDir = getProjectDir('Status Move HTTP');
       expect(oldDir).not.toBeNull();
 
       // Add a custom file
       fs.writeFileSync(path.join(oldDir, 'move-test.txt'), 'moved');
 
-      // Change status to in-progress (maps to 'active')
+      // Change status only (same title → no slug change → no rename)
       await agent
         .post(location)
         .send('title=Status+Move+HTTP')
@@ -1690,23 +1704,24 @@ describe('project HTTP workflow', () => {
         .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
-      // Old directory gone
-      expect(fs.existsSync(oldDir)).toBe(false);
-
-      // New directory under 'active'
-      const newDir = getProjectDir('Status Move HTTP', 'in-progress');
-      expect(newDir).not.toBeNull();
-      expect(newDir).toContain(path.join(projectsRoot, 'active'));
+      // Directory untouched at the same flat location
+      expect(fs.existsSync(oldDir)).toBe(true);
+      expect(path.dirname(oldDir)).toBe(path.resolve(projectsRoot));
 
       // Custom file survived
-      expect(fs.existsSync(path.join(newDir, 'move-test.txt'))).toBe(true);
+      expect(fs.existsSync(path.join(oldDir, 'move-test.txt'))).toBe(true);
 
-      // Manifest reflects new status
-      const manifest = readManifestSync(newDir);
-      expect(manifest.status).toBe('in-progress');
+      // Status is DB-only; the manifest is not rewritten with status
+      const row = db.prepare('SELECT status, project_dir FROM projects WHERE title = ?')
+        .get('Status Move HTTP');
+      expect(row.status).toBe('in-progress');
+      expect(row.project_dir).toBe(path.basename(oldDir));
+      const manifest = readManifestSync(oldDir);
+      expect(manifest).not.toHaveProperty('status');
+      expect(fs.existsSync(path.join(projectsRoot, 'active'))).toBe(false);
     });
 
-    it('combined title/status change works correctly', async () => {
+    it('combined title/status change renames the flat directory', async () => {
       const createRes = await agent
         .post('/projects')
         .send('title=Combined+HTTP+Start')
@@ -1716,7 +1731,7 @@ describe('project HTTP workflow', () => {
         .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
       const location = createRes.headers.location;
-      const oldDir = getProjectDir('Combined HTTP Start', 'planned');
+      const oldDir = getProjectDir('Combined HTTP Start');
       expect(oldDir).not.toBeNull();
 
       // Change both title and status
@@ -1732,10 +1747,11 @@ describe('project HTTP workflow', () => {
       // Old directory gone
       expect(fs.existsSync(oldDir)).toBe(false);
 
-      // New directory under 'ready'
-      const newDir = getProjectDir('Combined HTTP Final', 'ready');
+      // New flat directory (no status parent)
+      const newDir = getProjectDir('Combined HTTP Final');
       expect(newDir).not.toBeNull();
-      expect(newDir).toContain(path.join(projectsRoot, 'ready'));
+      expect(path.dirname(newDir)).toBe(path.resolve(projectsRoot));
+      expect(fs.existsSync(path.join(projectsRoot, 'ready'))).toBe(false);
 
       // Detail page shows everything
       const detail = await agent.get(location).expect(200);
@@ -1797,9 +1813,10 @@ describe('project HTTP workflow', () => {
         .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
-      // Before rename — detail shows old dir
+      // Before rename — detail shows the flat dir
       let detail = await agent.get(createRes.headers.location).expect(200);
-      expect(detail.text).toMatch(/tbd(?:&#92;|\/)\d+-old-path-name/);
+      expect(detail.text).toMatch(/\d+-old-path-name/);
+      expect(detail.text).not.toMatch(/tbd(?:&#92;|\/)/);
 
       // Rename
       await agent
@@ -1811,14 +1828,14 @@ describe('project HTTP workflow', () => {
         .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
-      // After rename — detail shows new dir
+      // After rename — detail shows the new flat dir
       detail = await agent.get(createRes.headers.location).expect(200);
-      expect(detail.text).toMatch(/tbd(?:&#92;|\/)\d+-new-path-name/);
+      expect(detail.text).toMatch(/\d+-new-path-name/);
       expect(detail.text).not.toMatch(/old-path-name/);
       expect(detail.text).not.toMatch(/[A-Z]:\\/);
     });
 
-    it('status change updates the displayed relative path', async () => {
+    it('status change does not change the displayed flat project directory', async () => {
       const createRes = await agent
         .post('/projects')
         .send('title=Status+Path+Change')
@@ -1828,9 +1845,10 @@ describe('project HTTP workflow', () => {
         .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
-      // Before — under planned/
+      // Before — flat dir
       let detail = await agent.get(createRes.headers.location).expect(200);
-      expect(detail.text).toMatch(/planned(?:&#92;|\/)\d+-status-path-change/);
+      expect(detail.text).toMatch(/\d+-status-path-change/);
+      expect(detail.text).not.toMatch(/planned(?:&#92;|\/)/);
 
       // Change status
       await agent
@@ -1842,10 +1860,11 @@ describe('project HTTP workflow', () => {
         .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
-      // After — under active/
+      // After — the same flat dir is still displayed
       detail = await agent.get(createRes.headers.location).expect(200);
-      expect(detail.text).toMatch(/active(?:&#92;|\/)\d+-status-path-change/);
-      expect(detail.text).not.toMatch(/planned/);
+      expect(detail.text).toMatch(/\d+-status-path-change/);
+      expect(detail.text).not.toMatch(/active(?:&#92;|\/)/);
+      expect(detail.text).not.toMatch(/planned(?:&#92;|\/)/);
       expect(detail.text).not.toMatch(/[A-Z]:\\/);
     });
 
@@ -1860,7 +1879,7 @@ describe('project HTTP workflow', () => {
         .expect(302);
 
       // Remove the project directory to trigger a filesystem error on update
-      const projectDir = getProjectDir('Update Fail Safe', 'tbd');
+      const projectDir = getProjectDir('Update Fail Safe');
       expect(projectDir).not.toBeNull();
       fs.rmSync(projectDir, { recursive: true, force: true });
 
@@ -1888,24 +1907,16 @@ describe('project HTTP workflow', () => {
       return title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
     }
 
-    function getProjectDir(title, status = 'tbd') {
+    function getProjectDir(title) {
+      // Flat layout: project directories are direct children of PROJECTS_ROOT
       const slug = parseSlug(title);
-      const statusDir = STATUS_DIR_MAP[status];
-      const entries = fs.readdirSync(path.join(projectsRoot, statusDir));
+      const entries = fs.readdirSync(projectsRoot);
       const matching = entries.filter((e) => e.endsWith(`-${slug}`));
       if (matching.length === 0) return null;
-      return path.join(projectsRoot, statusDir, matching[0]);
+      return path.join(projectsRoot, matching[0]);
     }
 
-    function getArchiveDir(title) {
-      const slug = parseSlug(title);
-      const entries = fs.readdirSync(path.join(projectsRoot, 'archived'));
-      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
-      if (matching.length === 0) return null;
-      return path.join(projectsRoot, 'archived', matching[0]);
-    }
-
-    it('archive moves the directory to archived/', async () => {
+    it('archive is a database transition that preserves the flat directory', async () => {
       const createRes = await agent
         .post('/projects')
         .send('title=HTTP+Archive+Move')
@@ -1915,23 +1926,28 @@ describe('project HTTP workflow', () => {
         .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
       const id = createRes.headers.location.replace('/projects/', '');
-      const oldDir = getProjectDir('HTTP Archive Move', 'tbd');
-      expect(oldDir).not.toBeNull();
-      expect(fs.existsSync(oldDir)).toBe(true);
+      const projectDir = getProjectDir('HTTP Archive Move');
+      expect(projectDir).not.toBeNull();
+      expect(fs.existsSync(projectDir)).toBe(true);
+
+      const manifestPath = path.join(projectDir, MANIFEST_FILENAME);
+      const manifestBefore = fs.readFileSync(manifestPath, 'utf8');
+      fs.writeFileSync(path.join(projectDir, 'http-extra.txt'), 'http content');
 
       await agent
         .post(`/projects/${id}/archive`)
         .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
-      // Old directory gone
-      expect(fs.existsSync(oldDir)).toBe(false);
-
-      // New directory under archived/
-      const archiveDir = getArchiveDir('HTTP Archive Move');
-      expect(archiveDir).not.toBeNull();
-      expect(fs.existsSync(archiveDir)).toBe(true);
-      expect(archiveDir).toContain(path.join(projectsRoot, 'archived'));
+      // Directory stays in place at the same flat location
+      expect(fs.existsSync(projectDir)).toBe(true);
+      expect(fs.statSync(projectDir).isDirectory()).toBe(true);
+      expect(path.dirname(projectDir)).toBe(path.resolve(projectsRoot));
+      expect(fs.existsSync(path.join(projectDir, 'http-extra.txt'))).toBe(true);
+      // Manifest untouched � archiving does not rewrite it
+      expect(fs.readFileSync(manifestPath, 'utf8')).toBe(manifestBefore);
+      // No archived/ directory was created
+      expect(fs.existsSync(path.join(projectsRoot, 'archived'))).toBe(false);
     });
 
     it('status becomes archived', async () => {
@@ -1955,7 +1971,7 @@ describe('project HTTP workflow', () => {
       expect(row.archived_at).toBeTruthy();
     });
 
-    it('relative path is updated', async () => {
+    it('project_dir is preserved across archive', async () => {
       const createRes = await agent
         .post('/projects')
         .send('title=HTTP+Archive+Path')
@@ -1966,19 +1982,22 @@ describe('project HTTP workflow', () => {
         .expect(302);
       const id = createRes.headers.location.replace('/projects/', '');
 
+      const before = db.prepare('SELECT project_dir FROM projects WHERE id = ?').get(Number(id));
+      expect(before.project_dir.split(path.sep)).toHaveLength(1);
+
       await agent
         .post(`/projects/${id}/archive`)
         .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
-      const row = db.prepare('SELECT project_dir FROM projects WHERE id = ?').get(Number(id));
-      expect(row.project_dir).toMatch(path.join('archived', ''));
+      const after = db.prepare('SELECT project_dir FROM projects WHERE id = ?').get(Number(id));
+      expect(after.project_dir).toBe(before.project_dir);
     });
 
-    it('manifest reflects archived status', async () => {
+    it('archive succeeds when the project directory is missing', async () => {
       const createRes = await agent
         .post('/projects')
-        .send('title=HTTP+Archive+Manifest')
+        .send('title=HTTP+No+Dir+Archive')
         .send('status=tbd')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
@@ -1986,98 +2005,19 @@ describe('project HTTP workflow', () => {
         .expect(302);
       const id = createRes.headers.location.replace('/projects/', '');
 
-      await agent
-        .post(`/projects/${id}/archive`)
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-
-      const archiveDir = getArchiveDir('HTTP Archive Manifest');
-      expect(archiveDir).not.toBeNull();
-      const manifest = readManifestSync(archiveDir);
-      expect(manifest).not.toBeNull();
-      expect(manifest.status).toBe('archived');
-    });
-
-    it('existing files survive archive', async () => {
-      const createRes = await agent
-        .post('/projects')
-        .send('title=HTTP+Files+Survive')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-      const id = createRes.headers.location.replace('/projects/', '');
-      const oldDir = getProjectDir('HTTP Files Survive', 'tbd');
-      expect(oldDir).not.toBeNull();
-
-      // Add custom files
-      fs.writeFileSync(path.join(oldDir, 'http-extra.txt'), 'http content');
-      fs.mkdirSync(path.join(oldDir, 'source'), { recursive: true });
-      fs.writeFileSync(path.join(oldDir, 'source', 'render.png'), 'png data');
-
-      await agent
-        .post(`/projects/${id}/archive`)
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-
-      // Files survived at new location
-      const archiveDir = getArchiveDir('HTTP Files Survive');
-      expect(archiveDir).not.toBeNull();
-      expect(fs.existsSync(path.join(archiveDir, 'http-extra.txt'))).toBe(true);
-      expect(fs.readFileSync(path.join(archiveDir, 'http-extra.txt'), 'utf8')).toBe('http content');
-      expect(fs.existsSync(path.join(archiveDir, 'source', 'render.png'))).toBe(true);
-    });
-
-    it('error responses contain no absolute filesystem paths', async () => {
-      const createRes = await agent
-        .post('/projects')
-        .send('title=HTTP+No+Path+Archive')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-      const id = createRes.headers.location.replace('/projects/', '');
-
-      // Remove the directory to cause a failure
-      const projectDir = getProjectDir('HTTP No Path Archive', 'tbd');
+      // Remove the directory entirely � archive must still succeed
+      const projectDir = getProjectDir('HTTP No Dir Archive');
       expect(projectDir).not.toBeNull();
       fs.rmSync(projectDir, { recursive: true, force: true });
 
-      const res = await agent
-        .post(`/projects/${id}/archive`)
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(500);
-      expect(res.text).not.toMatch(/[A-Z]:\\/);
-    });
-
-    it('archive changes the displayed relative path to archived/', async () => {
-      const createRes = await agent
-        .post('/projects')
-        .send('title=Archive+Path+Display')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-      const id = createRes.headers.location.replace('/projects/', '');
-
-      // Before archive — under tbd/
-      let detail = await agent.get(`/projects/${id}`).expect(200);
-      expect(detail.text).toMatch(/tbd(?:&#92;|\/)\d+-archive-path-display/);
-
-      // Archive
       await agent
         .post(`/projects/${id}/archive`)
         .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
-      // After archive — under archived/
-      detail = await agent.get(`/projects/${id}`).expect(200);
-      expect(detail.text).toMatch(/archived(?:&#92;|\/)\d+-archive-path-display/);
-      expect(detail.text).not.toMatch(/tbd(?:&#92;|\/)/);
-      expect(detail.text).not.toMatch(/[A-Z]:\\/);
+      const row = db.prepare('SELECT status, archived_at FROM projects WHERE id = ?').get(Number(id));
+      expect(row.status).toBe('archived');
+      expect(row.archived_at).toBeTruthy();
     });
 
     it('archive remains POST-only', async () => {
@@ -2091,7 +2031,7 @@ describe('project HTTP workflow', () => {
         .expect(302);
       const id = createRes.headers.location.replace('/projects/', '');
 
-      // GET should not archive — 404 from route matching
+      // GET should not archive � 404 from route matching
       await agent
         .get(`/projects/${id}/archive`)
         .expect(404);
@@ -2125,9 +2065,9 @@ describe('project HTTP workflow', () => {
 
       const getProjectDirForTitle = () => {
         const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-        const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
+        const entries = fs.readdirSync(projectsRoot);
         const matching = entries.filter((e) => e.endsWith(`-${slug}`));
-        return path.join(projectsRoot, 'tbd', matching[0]);
+        return path.join(projectsRoot, matching[0]);
       };
       const projectDir = getProjectDirForTitle();
 
@@ -2453,26 +2393,25 @@ describe('project HTTP workflow', () => {
   });
 
   // ─── Phase 7D-3: Project status preserves filesystem behavior ──────
+  // --- Phase 7D-3: Project status never affects filesystem layout ------
   //
-  // Project status governs filesystem directory placement. Changing a
-  // project's status must move its directory to the corresponding status
-  // directory. This is independent of release planning fields.
+  // Project status is database/UI metadata only. Status changes must never
+  // move, rename, or inspect the flat project directory.
 
   describe('project status filesystem behavior', () => {
     function parseSlug(title) {
       return title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
     }
 
-    function getProjectDir(title, status = 'tbd') {
+    function getProjectDir(title) {
       const slug = parseSlug(title);
-      const statusDir = STATUS_DIR_MAP[status];
-      const entries = fs.readdirSync(path.join(projectsRoot, statusDir));
+      const entries = fs.readdirSync(projectsRoot);
       const matching = entries.filter((e) => e.endsWith(`-${slug}`));
       if (matching.length === 0) return null;
-      return path.join(projectsRoot, statusDir, matching[0]);
+      return path.join(projectsRoot, matching[0]);
     }
 
-    it('changing project status moves the directory', async () => {
+    it('changing project status does not move the flat directory', async () => {
       const createRes = await agent
         .post('/projects')
         .send('title=FS+Status+Test')
@@ -2493,11 +2432,11 @@ describe('project HTTP workflow', () => {
       const originalRelPath = beforeRow.project_dir;
       const originalDir = path.resolve(projectsRoot, originalRelPath);
 
-      // Assert the exact canonical original relative path
-      expect(originalRelPath).toMatch(/^tbd[/\\]000001-fs-status-test$/);
+      // Flat contract: the stored path is the bare directory name
+      expect(originalRelPath).toMatch(/^000001-fs-status-test$/);
 
-      // Assert the resolved directory exists under PROJECTS_ROOT
-      expect(originalDir.startsWith(path.resolve(projectsRoot))).toBe(true);
+      // Assert the resolved directory is a direct child of PROJECTS_ROOT
+      expect(path.dirname(originalDir)).toBe(path.resolve(projectsRoot));
       expect(fs.existsSync(originalDir)).toBe(true);
       expect(fs.statSync(originalDir).isDirectory()).toBe(true);
 
@@ -2515,27 +2454,18 @@ describe('project HTTP workflow', () => {
         .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
-      // Derive the exact expected relative path using the application's directory convention
-      const dirName = path.basename(originalRelPath);
-      const expectedRelPath = path.join('planned', dirName);
-
+      // Status is DB-only; project_dir is unchanged
       const afterRow = db.prepare('SELECT * FROM projects WHERE id = ?').get(Number(id));
-      expect(afterRow.project_dir).toBe(expectedRelPath);
+      expect(afterRow.status).toBe('planned');
+      expect(afterRow.project_dir).toBe(originalRelPath);
 
-      // Original path no longer exists
-      expect(fs.existsSync(originalDir)).toBe(false);
-
-      // Exact new path exists
-      const newDir = path.resolve(projectsRoot, expectedRelPath);
-      expect(fs.existsSync(newDir)).toBe(true);
-      expect(fs.statSync(newDir).isDirectory()).toBe(true);
-
-      // New path remains inside PROJECTS_ROOT
-      expect(newDir.startsWith(path.resolve(projectsRoot))).toBe(true);
-
-      // Distinctive file exists at the new path with unchanged contents
-      expect(fs.existsSync(path.join(newDir, 'status-move.txt'))).toBe(true);
-      expect(fs.readFileSync(path.join(newDir, 'status-move.txt'), 'utf8')).toBe('moved content');
+      // The directory still exists at the same flat location with its contents
+      expect(fs.existsSync(originalDir)).toBe(true);
+      expect(fs.statSync(originalDir).isDirectory()).toBe(true);
+      expect(fs.existsSync(userFile)).toBe(true);
+      expect(fs.readFileSync(userFile, 'utf8')).toBe('moved content');
+      // No status directory was created
+      expect(fs.existsSync(path.join(projectsRoot, 'planned'))).toBe(false);
     });
   });
 
@@ -2758,9 +2688,6 @@ describe('asset-category dependency wiring through createApp', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-di-'));
     projectsRoot = path.join(tmpDir, 'projects');
     fs.mkdirSync(projectsRoot, { recursive: true });
-    for (const dir of Object.values(STATUS_DIR_MAP)) {
-      fs.mkdirSync(path.join(projectsRoot, dir), { recursive: true });
-    }
     const dbPath = path.join(tmpDir, 'test.db');
     db = openDatabase(dbPath);
     runMigrations(db, MIGRATIONS_DIR);
@@ -2809,8 +2736,7 @@ describe('asset-category dependency wiring through createApp', () => {
     expect(copyCallCount).toBe(1);
 
     const dirName = formatProjectDirName(1, 'di-check');
-    const relPath = buildProjectRelPath('tbd', dirName);
-    const absPath = resolveProjectDir(projectsRoot, relPath);
+    const absPath = resolveProjectDir(projectsRoot, dirName);
     expect(fs.existsSync(path.join(absPath, 'fake'))).toBe(true);
 
     const manifest = readManifestSync(absPath);

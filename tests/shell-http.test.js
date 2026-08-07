@@ -14,7 +14,6 @@ import { fileURLToPath } from 'node:url';
 import slugify from '@sindresorhus/slugify';
 import { createApp } from '../src/app.js';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
-import { STATUS_DIR_MAP } from '../src/storage/project-storage.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
 import { authenticate, AUTH_CONFIG } from './helpers/auth.js';
 
@@ -70,9 +69,6 @@ describe('application shell — navigation model', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-shell-'));
     projectsRoot = path.join(tmpDir, 'projects');
     fs.mkdirSync(projectsRoot, { recursive: true });
-    for (const dir of Object.values(STATUS_DIR_MAP)) {
-      fs.mkdirSync(path.join(projectsRoot, dir), { recursive: true });
-    }
     const dbPath = path.join(tmpDir, 'test.db');
     db = openDatabase(dbPath);
     runMigrations(db, MIGRATIONS_DIR);
@@ -91,10 +87,10 @@ describe('application shell — navigation model', () => {
     projectId = projRes.headers.location.replace('/projects/', '');
 
     const slug = slugify('Shell Test Project', { lowercase: true });
-    const entries = fs.readdirSync(path.join(projectsRoot, 'tbd'));
+    const entries = fs.readdirSync(projectsRoot);
     const dirName = entries.find((e) => e.endsWith(`-${slug}`));
     fs.writeFileSync(
-      path.join(projectsRoot, 'tbd', dirName, 'cover.png'),
+      path.join(projectsRoot, dirName, 'cover.png'),
       Buffer.from('png'),
     );
     await agent.post(`/projects/${projectId}/scan`).type('form').send({ _csrf: csrfToken }).expect(302);

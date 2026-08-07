@@ -46,16 +46,12 @@ describe('asset category assignment baseline schema', () => {
   }
 
   describe('applying from scratch', () => {
-    it('records all current migrations', () => {
+    it('records the single consolidated migration', () => {
       db = openDatabase(dbPath);
       runMigrations(db, MIGRATIONS_DIR);
 
       const applied = db.prepare('SELECT filename FROM schema_migrations ORDER BY rowid').pluck().all();
-      expect(applied).toEqual([
-        '001_initial.sql',
-        '002_unify_release_statuses.sql',
-        '003_drop_release_status.sql',
-      ]);
+      expect(applied).toEqual(['001_initial.sql']);
     });
 
     it('creates category_id and nested_path without natural-sort columns', () => {
@@ -87,7 +83,7 @@ describe('asset category assignment baseline schema', () => {
       projectId = project.id;
       categoryId = db.prepare(`
         INSERT INTO project_asset_categories (project_id, display_name, directory_slug)
-        VALUES (?, 'Source', 'source')
+        VALUES (?, 'Final', 'final')
         RETURNING id
       `).get(projectId).id;
     });

@@ -85,16 +85,12 @@ describe('database and migrations', () => {
     expect(indexes).toContain('idx_projects_project_dir');
   });
 
-  it('records all migrations and is idempotent across repeated runs', () => {
+  it('records the single consolidated migration and is idempotent across repeated runs', () => {
     db = openDatabase(dbPath);
     runMigrations(db, MIGRATIONS_DIR);
     runMigrations(db, MIGRATIONS_DIR);
     const applied = db.prepare('SELECT filename FROM schema_migrations ORDER BY rowid').pluck().all();
-    expect(applied).toEqual([
-      '001_initial.sql',
-      '002_unify_release_statuses.sql',
-      '003_drop_release_status.sql',
-    ]);
+    expect(applied).toEqual(['001_initial.sql']);
   });
 
   it('creates the complete fresh-install table set with foreign keys enabled', () => {
@@ -225,15 +221,22 @@ describe('database and migrations', () => {
     db = openDatabase(dbPath);
     runMigrations(db, MIGRATIONS_DIR);
     const indexes = db
-      .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'releases'")
-      .pluck()
+      .prepare("SELECT name, sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'releases'")
       .all();
 
-    expect(indexes).toContain('idx_releases_project_id');
-    expect(indexes).toContain('idx_releases_planned_date');
-    expect(indexes).toContain('idx_releases_overdue');
-    expect(indexes).toContain('idx_releases_archived');
-    expect(indexes).not.toContain('idx_releases_status');
+    expect(indexes.map((index) => index.name)).toContain('idx_releases_project_id');
+    expect(indexes.map((index) => index.name)).toContain('idx_releases_planned_date');
+    expect(indexes.map((index) => index.name)).toContain('idx_releases_overdue');
+    expect(indexes.map((index) => index.name)).toContain('idx_releases_archived');
+    expect(indexes.map((index) => index.name)).not.toContain('idx_releases_status');
+
+    const plannedDate = indexes.find((index) => index.name === 'idx_releases_planned_date');
+    expect(plannedDate.sql).toMatch(/WHERE archived_at IS NULL AND published_date IS NULL/i);
+
+    const overdue = indexes.find((index) => index.name === 'idx_releases_overdue');
+    expect(overdue.sql).toMatch(
+      /WHERE archived_at IS NULL AND published_date IS NULL AND planned_date IS NOT NULL/i
+    );
   });
 
   it('releases table has expected columns', () => {
@@ -285,78 +288,6 @@ describe('database and migrations', () => {
 
     expect(db.prepare('SELECT id, title, notes FROM releases WHERE id = ?').get(release.lastInsertRowid))
       .toMatchObject({ title: 'Default Release', notes: 'Release notes' });
-    expect(db.prepare('SELECT name FROM pragma_table_info(\'releases\')').pluck().all()).not.toContain('status');
-  });
-
-  it('removes legacy release statuses and preserves release assets', () => {
-    db = openDatabase(dbPath);
-    db.exec(`
-      CREATE TABLE schema_migrations (
-        filename TEXT PRIMARY KEY,
-        applied_at TEXT NOT NULL
-      );
-      INSERT INTO schema_migrations (filename, applied_at) VALUES ('001_initial.sql', datetime('now'));
-
-      CREATE TABLE projects (id INTEGER PRIMARY KEY, title TEXT NOT NULL);
-      CREATE TABLE assets (id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL);
-      CREATE TABLE releases (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        project_id INTEGER NOT NULL,
-        title TEXT NOT NULL,
-        description TEXT NOT NULL DEFAULT '',
-        notes TEXT NOT NULL DEFAULT '',
-        status TEXT NOT NULL DEFAULT 'idea'
-          CHECK (status IN ('idea', 'planned', 'drafting', 'ready', 'published', 'cancelled')),
-        planned_date TEXT,
-        planned_time TEXT,
-        published_date TEXT,
-        patreon_url TEXT,
-        created_at TEXT NOT NULL DEFAULT (datetime('now')),
-        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-        archived_at TEXT,
-        FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE RESTRICT
-      );
-      CREATE INDEX idx_releases_project_id ON releases(project_id);
-      CREATE INDEX idx_releases_status ON releases(status);
-      CREATE INDEX idx_releases_planned_date ON releases(planned_date DESC)
-        WHERE status IN ('idea', 'planned', 'drafting', 'ready');
-      CREATE INDEX idx_releases_overdue ON releases(planned_date)
-        WHERE status IN ('idea', 'planned', 'drafting', 'ready') AND planned_date IS NOT NULL;
-      CREATE INDEX idx_releases_archived ON releases(archived_at)
-        WHERE archived_at IS NOT NULL;
-      CREATE TABLE release_assets (
-        release_id INTEGER NOT NULL,
-        asset_id INTEGER NOT NULL,
-        role TEXT NOT NULL DEFAULT 'attachment'
-          CHECK (role IN ('primary', 'preview', 'attachment', 'source')),
-        sort_order INTEGER NOT NULL DEFAULT 0 CHECK (sort_order >= 0),
-        created_at TEXT NOT NULL DEFAULT (datetime('now')),
-        PRIMARY KEY (release_id, asset_id),
-        FOREIGN KEY (release_id) REFERENCES releases(id) ON DELETE CASCADE,
-        FOREIGN KEY (asset_id) REFERENCES assets(id) ON DELETE CASCADE
-      );
-      CREATE INDEX idx_release_assets_asset_id ON release_assets(asset_id);
-      CREATE INDEX idx_release_assets_release_sort ON release_assets(release_id, sort_order);
-
-      INSERT INTO projects (id, title) VALUES (1, 'Legacy Project');
-      INSERT INTO assets (id, project_id) VALUES (10, 1);
-      INSERT INTO releases (id, project_id, title, status)
-      VALUES (11, 1, 'Legacy TBD', 'idea'), (12, 1, 'Legacy In Progress', 'drafting');
-      INSERT INTO release_assets (release_id, asset_id, role, sort_order)
-      VALUES (12, 10, 'attachment', 3);
-    `);
-
-    runMigrations(db, MIGRATIONS_DIR);
-
-    expect(db.prepare('SELECT id, project_id, title, description, notes FROM releases ORDER BY id').all()).toEqual([
-      { id: 11, project_id: 1, title: 'Legacy TBD', description: '', notes: '' },
-      { id: 12, project_id: 1, title: 'Legacy In Progress', description: '', notes: '' },
-    ]);
-    expect(db.prepare('SELECT release_id, asset_id, role, sort_order FROM release_assets').all()).toEqual([
-      { release_id: 12, asset_id: 10, role: 'attachment', sort_order: 3 },
-    ]);
-    expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'releases_legacy'").get()).toBeUndefined();
-    expect(db.pragma('foreign_key_check')).toEqual([]);
     expect(db.prepare('SELECT name FROM pragma_table_info(\'releases\')').pluck().all()).not.toContain('status');
   });
 
@@ -531,11 +462,11 @@ describe('database and migrations', () => {
       .all();
 
     expect(rows).toEqual([
-      { display_name: 'Source', directory_slug: 'source', display_order: 0, enabled: 1 },
-      { display_name: 'Exports', directory_slug: 'exports', display_order: 1, enabled: 1 },
-      { display_name: 'Extras', directory_slug: 'extras', display_order: 2, enabled: 1 },
-      { display_name: 'References', directory_slug: 'references', display_order: 3, enabled: 1 },
-      { display_name: 'Thumbnails', directory_slug: 'thumbnails', display_order: 4, enabled: 1 },
+      { display_name: 'Final', directory_slug: 'final', display_order: 0, enabled: 1 },
+      { display_name: 'WIP', directory_slug: 'wip', display_order: 1, enabled: 1 },
+      { display_name: 'KRZ', directory_slug: 'krz', display_order: 2, enabled: 1 },
+      { display_name: 'WM', directory_slug: 'wm', display_order: 3, enabled: 1 },
+      { display_name: 'WM-LQ', directory_slug: 'wm-lq', display_order: 4, enabled: 1 },
     ]);
   });
 
@@ -547,7 +478,7 @@ describe('database and migrations', () => {
       .pluck()
       .all();
 
-    for (const obsolete of ['raw', 'wip', 'promo', 'final', 'exports/full', 'exports/web']) {
+    for (const obsolete of ['raw', 'promo', 'source', 'exports', 'extras', 'references', 'thumbnails', 'exports/full', 'exports/web']) {
       expect(slugs).not.toContain(obsolete);
     }
     expect(slugs).toHaveLength(5);

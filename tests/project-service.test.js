@@ -15,13 +15,11 @@ import {
 import { MANIFEST_FILENAME, readManifestSync, writeManifestSync } from '../src/storage/manifest.js';
 import {
   formatProjectDirName,
-  buildProjectRelPath,
   resolveProjectDir,
   renameProjectDirSync,
   ensureNoConflict,
   createProjectCategoryDirs,
   verifyProjectDirOwnership,
-  STATUS_DIR_MAP,
 } from '../src/storage/project-storage.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
@@ -37,10 +35,6 @@ describe('project service', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-service-'));
     projectsRoot = path.join(tmpDir, 'projects');
     fs.mkdirSync(projectsRoot, { recursive: true });
-    // Create status directories (as the real startup would)
-    for (const dir of Object.values(STATUS_DIR_MAP)) {
-      fs.mkdirSync(path.join(projectsRoot, dir), { recursive: true });
-    }
     const dbPath = path.join(tmpDir, 'test.db');
     db = openDatabase(dbPath);
     runMigrations(db, MIGRATIONS_DIR);
@@ -93,7 +87,8 @@ describe('project service', () => {
       const project = fakeService.create(validInput({ title: 'Fake DI Project' }));
       expect(copyCallCount).toBe(1);
 
-      fakeService.update(project.id, validInput({ title: 'Fake DI Project', description: 'changed' }));
+      // A title change (rename path) must use the exact injected service
+      fakeService.update(project.id, validInput({ title: 'Fake DI Project Renamed' }));
       expect(listCallCount).toBeGreaterThan(0);
     });
   });
@@ -268,7 +263,9 @@ describe('project service', () => {
   describe('filesystem creation', () => {
     function getProjectDir(project) {
       const dirName = formatProjectDirName(project.id, project.slug);
-      const relPath = buildProjectRelPath(project.status, dirName);
+      // Status never participates — the project directory is a direct
+      // child of PROJECTS_ROOT.
+      const relPath = dirName;
       return { dirName, relPath, absPath: resolveProjectDir(projectsRoot, relPath) };
     }
 
@@ -296,10 +293,17 @@ describe('project service', () => {
       expect(found.slug).toBe('fs-test');
     });
 
-    it('uses the correct status root directory', () => {
-      const project = service.create(validInput({ title: 'Status Dir Test', status: 'in-progress' }));
-      const { relPath } = getProjectDir(project);
-      expect(relPath.startsWith('active' + path.sep)).toBe(true);
+    it('produces the same flat path shape for every status', () => {
+      for (const status of ['tbd', 'planned', 'in-progress', 'ready']) {
+        const project = service.create(validInput({ title: `Status Shape ${status}`, status }));
+        const { relPath, absPath } = getProjectDir(project);
+
+        expect(relPath).toBe(formatProjectDirName(project.id, project.slug));
+        expect(relPath.split(path.sep)).toHaveLength(1);
+        expect(path.dirname(absPath)).toBe(path.resolve(projectsRoot));
+        expect(fs.existsSync(absPath)).toBe(true);
+        expect(fs.statSync(absPath).isDirectory()).toBe(true);
+      }
     });
 
     it('uses a six-digit ID prefix in the directory name', () => {
@@ -310,7 +314,7 @@ describe('project service', () => {
     });
 
     it('creates a category directory for each enabled default', () => {
-      const expectedSubdirs = ['source', 'exports', 'extras', 'references', 'thumbnails'];
+      const expectedSubdirs = ['final', 'wip', 'krz', 'wm', 'wm-lq'];
       const project = service.create(validInput({ title: 'Subdirs Test' }));
       const { absPath } = getProjectDir(project);
 
@@ -324,7 +328,7 @@ describe('project service', () => {
       expect(fs.existsSync(path.join(absPath, 'exports', 'web'))).toBe(false);
     });
 
-    it('writes a manifest with the exact expected project data', () => {
+    it('writes a schema-version-3 manifest with the exact expected project data and no status', () => {
       const input = validInput({
         title: 'Manifest Test',
         description: 'Desc content',
@@ -344,11 +348,12 @@ describe('project service', () => {
       const content = fs.readFileSync(manifestPath, 'utf8');
       const manifest = JSON.parse(content);
 
-      expect(manifest.schemaVersion).toBe(2);
+      expect(manifest.schemaVersion).toBe(3);
       expect(manifest.id).toBe(project.id);
       expect(manifest.title).toBe('Manifest Test');
       expect(manifest.slug).toBe('manifest-test');
-      expect(manifest.status).toBe('planned');
+      expect(manifest).not.toHaveProperty('status');
+      expect(content).not.toMatch(/"status"\s*:/);
       expect(manifest.priority).toBe('high');
       expect(manifest.description).toBe('Desc content');
       expect(manifest.notes).toBe('Note content');
@@ -358,7 +363,7 @@ describe('project service', () => {
       expect(manifest.tags).toEqual([]);
       expect(manifest.thumbnail).toBeNull();
       expect(manifest.assetCategories.map((c) => c.directorySlug)).toEqual([
-        'source', 'exports', 'extras', 'references', 'thumbnails',
+        'final', 'wip', 'krz', 'wm', 'wm-lq',
       ]);
     });
 
@@ -366,6 +371,7 @@ describe('project service', () => {
       const project = service.create(validInput({ title: 'Rel Path Test', status: 'tbd' }));
       const { relPath } = getProjectDir(project);
       expect(project.project_dir).toBe(relPath);
+      expect(relPath.split(path.sep)).toHaveLength(1);
 
       // Verify it's stored in the DB
       const found = service.findById(project.id);
@@ -415,8 +421,7 @@ describe('project service', () => {
       expect(record).toBeUndefined();
 
       // Verify no directory exists for this slug (ID is unknown after rollback)
-      const statusDir = path.join(projectsRoot, 'tbd');
-      const entries = fs.readdirSync(statusDir);
+      const entries = fs.readdirSync(projectsRoot);
       const matching = entries.filter((e) => e.endsWith('-manifest-fail'));
       expect(matching).toHaveLength(0);
     });
@@ -438,8 +443,7 @@ describe('project service', () => {
       expect(project).toBeUndefined();
 
       // Verify no directory exists for this slug
-      const statusDir = path.join(projectsRoot, 'tbd');
-      const entries = fs.readdirSync(statusDir);
+      const entries = fs.readdirSync(projectsRoot);
       const matching = entries.filter((e) => e.endsWith('-setdir-fail'));
       expect(matching).toHaveLength(0);
     });
@@ -490,7 +494,7 @@ describe('project service', () => {
   describe('filesystem update', () => {
     function getProjectDir(project) {
       const dirName = formatProjectDirName(project.id, project.slug);
-      const relPath = buildProjectRelPath(project.status, dirName);
+      const relPath = dirName;
       return { dirName, relPath, absPath: resolveProjectDir(projectsRoot, relPath) };
     }
 
@@ -498,38 +502,87 @@ describe('project service', () => {
       return service.create(validInput(overrides));
     }
 
-    it('non-title metadata edit rewrites manifest without moving directory', () => {
-      const project = createTestProject({ title: 'Meta Edit' });
-      const { absPath: originalPath } = getProjectDir(project);
+    it('pure status-only update is DB/UI-only and leaves the manifest byte-identical', () => {
+      const project = createTestProject({ title: 'Meta Edit', status: 'tbd' });
+      const { absPath: originalPath, relPath: originalRel } = getProjectDir(project);
 
       // Add a custom file to prove directory identity
       const userFile = path.join(originalPath, 'user-data.txt');
       fs.writeFileSync(userFile, 'custom content');
 
+      const manifestPath = path.join(originalPath, MANIFEST_FILENAME);
+      const manifestBefore = fs.readFileSync(manifestPath, 'utf8');
+
       const updated = service.update(project.id, validInput({
         title: 'Meta Edit',
-        description: 'New description',
-        notes: 'Updated notes',
-        priority: 'high',
+        status: 'in-progress',
       }));
 
-      // Directory was NOT moved
-      const { absPath } = getProjectDir(updated);
+      // Directory was NOT moved or touched
+      const { absPath, relPath } = getProjectDir(updated);
       expect(absPath).toBe(originalPath);
+      expect(relPath).toBe(originalRel);
+      expect(updated.project_dir).toBe(originalRel);
       expect(fs.existsSync(originalPath)).toBe(true);
-
-      // Manifest was rewritten with new data
-      const manifest = readManifestSync(originalPath);
-      expect(manifest.description).toBe('New description');
-      expect(manifest.notes).toBe('Updated notes');
-      expect(manifest.priority).toBe('high');
-
-      // Custom file survived
       expect(fs.existsSync(userFile)).toBe(true);
       expect(fs.readFileSync(userFile, 'utf8')).toBe('custom content');
 
-      // updated_at changed
-      expect(manifest.updatedAt).not.toBeNull();
+      // Status lives only in the database — the manifest is not rewritten
+      expect(updated.status).toBe('in-progress');
+      expect(service.findById(project.id).status).toBe('in-progress');
+      expect(fs.readFileSync(manifestPath, 'utf8')).toBe(manifestBefore);
+    });
+
+    it('metadata-only update rewrites project.json without renaming the directory', () => {
+      const project = createTestProject({ title: 'Meta Only', description: 'Old desc' });
+      const { absPath: originalPath, relPath: originalRel } = getProjectDir(project);
+
+      const manifestPath = path.join(originalPath, MANIFEST_FILENAME);
+      const manifestBefore = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+
+      // Change only description — title/slug/status unchanged
+      const updated = service.update(project.id, validInput({
+        title: 'Meta Only',
+        description: 'New description',
+      }));
+
+      // No rename — directory and project_dir unchanged
+      const { absPath, relPath } = getProjectDir(updated);
+      expect(absPath).toBe(originalPath);
+      expect(relPath).toBe(originalRel);
+      expect(updated.project_dir).toBe(originalRel);
+
+      // Manifest rewritten in place with the new value; status still absent
+      const manifestAfter = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+      expect(manifestAfter.description).toBe('New description');
+      expect(manifestAfter.title).toBe('Meta Only');
+      expect(manifestAfter.slug).toBe('meta-only');
+      expect(manifestAfter).not.toHaveProperty('status');
+
+      // The rewrite actually happened — the file changed
+      expect(manifestAfter).not.toEqual(manifestBefore);
+
+      // Status unchanged in DB
+      expect(updated.status).toBe('tbd');
+    });
+
+    it('status-only update succeeds when the project directory is missing', () => {
+      const project = createTestProject({ title: 'Missing Dir Status', status: 'tbd' });
+      const { relPath: originalRel } = getProjectDir(project);
+
+      // Remove the directory entirely
+      fs.rmSync(resolveProjectDir(projectsRoot, originalRel), { recursive: true, force: true });
+
+      const updated = service.update(project.id, validInput({
+        title: 'Missing Dir Status',
+        status: 'ready',
+      }));
+
+      // DB-only transition succeeds without any filesystem inspection
+      expect(updated.status).toBe('ready');
+      expect(updated.project_dir).toBe(originalRel);
+      expect(service.findById(project.id).status).toBe('ready');
+      expect(service.findById(project.id).project_dir).toBe(originalRel);
     });
 
     it('title change renames the directory (slug change)', () => {
@@ -563,44 +616,12 @@ describe('project service', () => {
       expect(found.project_dir).toBe(updated.project_dir);
     });
 
-    it('status change moves the directory', () => {
-      const project = createTestProject({ title: 'Status Move', status: 'tbd' });
-      const { absPath: oldPath, relPath: oldRel } = getProjectDir(project);
-
-      // Custom file
-      const userFile = path.join(oldPath, 'custom-file.psd');
-      fs.writeFileSync(userFile, 'design file');
-
-      const updated = service.update(project.id, validInput({
-        title: 'Status Move',
-        status: 'in-progress',
-      }));
-
-      // Old path is gone, new path exists under 'active/'
-      const { absPath: newPath, relPath: newRel } = getProjectDir(updated);
-      expect(newRel.startsWith('active' + path.sep)).toBe(true);
-      expect(newPath).not.toBe(oldPath);
-      expect(fs.existsSync(oldPath)).toBe(false);
-      expect(fs.existsSync(newPath)).toBe(true);
-
-      // Custom file survived
-      expect(fs.existsSync(path.join(newPath, 'custom-file.psd'))).toBe(true);
-
-      // Manifest has new status
-      const manifest = readManifestSync(newPath);
-      expect(manifest.status).toBe('in-progress');
-
-      // DB has updated path
-      const found = service.findById(updated.id);
-      expect(found.project_dir).toBe(newRel);
-    });
-
-    it('combined title/status change performs one final move', () => {
+    it('combined title/status change renames only because of the title', () => {
       const project = createTestProject({ title: 'Combined Start', status: 'planned' });
       const { absPath: oldPath } = getProjectDir(project);
 
       // Custom file
-      const userFile = path.join(oldPath, 'source', 'asset.blend');
+      const userFile = path.join(oldPath, 'final', 'asset.blend');
       fs.writeFileSync(userFile, 'blend file');
 
       const updated = service.update(project.id, validInput({
@@ -611,16 +632,25 @@ describe('project service', () => {
       const { absPath: newPath, relPath: newRel } = getProjectDir(updated);
       expect(fs.existsSync(oldPath)).toBe(false);
       expect(fs.existsSync(newPath)).toBe(true);
-      expect(newRel.startsWith('ready' + path.sep)).toBe(true);
+      // Flat rename: the new directory name is the formatted ID + new slug
+      expect(newRel).toBe(formatProjectDirName(project.id, 'combined-final'));
+      expect(newRel.split(path.sep)).toHaveLength(1);
+      expect(updated.project_dir).toBe(newRel);
 
       // Custom file in subdirectory survived
-      expect(fs.existsSync(path.join(newPath, 'source', 'asset.blend'))).toBe(true);
-      expect(fs.readFileSync(path.join(newPath, 'source', 'asset.blend'), 'utf8')).toBe('blend file');
+      expect(fs.existsSync(path.join(newPath, 'final', 'asset.blend'))).toBe(true);
+      expect(fs.readFileSync(path.join(newPath, 'final', 'asset.blend'), 'utf8')).toBe('blend file');
 
-      // Manifest is correct
+      // Manifest is rewritten at the new location with the new title, but
+      // status itself is never written to the manifest
       const manifest = readManifestSync(newPath);
       expect(manifest.title).toBe('Combined Final');
-      expect(manifest.status).toBe('ready');
+      expect(manifest.slug).toBe('combined-final');
+      expect(manifest).not.toHaveProperty('status');
+
+      // Status is DB-only
+      expect(updated.status).toBe('ready');
+      expect(service.findById(project.id).status).toBe('ready');
     });
 
     it('existing manually added files survive rename', () => {
@@ -649,7 +679,7 @@ describe('project service', () => {
       }
     });
 
-    it('existing manually added files survive status move', () => {
+    it('existing manually added files survive a combined title/status change', () => {
       const project = createTestProject({ title: 'Files Survive Move', status: 'tbd' });
       const { absPath: oldPath } = getProjectDir(project);
 
@@ -661,7 +691,7 @@ describe('project service', () => {
       }
 
       const updated = service.update(project.id, validInput({
-        title: 'Files Survive Move',
+        title: 'Files Survive Move Renamed',
         status: 'ready',
       }));
       const { absPath: newPath } = getProjectDir(updated);
@@ -674,30 +704,19 @@ describe('project service', () => {
     it('destination conflict leaves prior state intact', () => {
       const project = createTestProject({ title: 'Conflict Src', status: 'tbd' });
       const { absPath: srcPath } = getProjectDir(project);
-      // Create a manifest so pre-flight manifest check passes
-      fs.writeFileSync(path.join(srcPath, 'project.json'), JSON.stringify({
-        schemaVersion: 2, id: project.id, title: 'Conflict Src', slug: 'conflict-src', status: 'tbd',
-        assetCategories: [],
-      }));
 
       // Create a directory at the target path to simulate a conflict
-      // Target: "active/0000XX-conflict-src"
-      const conflictDir = path.join(projectsRoot, 'active',
-        formatProjectDirName(project.id, 'conflict-src'));
+      // Target: "0000XX-conflict-dst" (flat, direct child of PROJECTS_ROOT)
+      const conflictDir = path.join(projectsRoot,
+        formatProjectDirName(project.id, 'conflict-dst'));
       fs.mkdirSync(conflictDir, { recursive: true });
       fs.writeFileSync(path.join(conflictDir, 'placeholder'), 'exists');
 
-      // EnsureNoConflict blocks the move since the target already exists
-      try {
-        service.update(project.id, validInput({
-          title: 'Conflict Src',
-          status: 'in-progress',
-        }));
-        expect(true).toBe(false); // Should have thrown
-      } catch (err) {
-        // Pre-flight catches destination conflict before any mutation
-        expect(err.message).toMatch(/exists|conflict|failed/i);
-      }
+      // EnsureNoConflict blocks the rename since the target already exists
+      expect(() => service.update(project.id, validInput({
+        title: 'Conflict Dst', // slug change → flat rename into the conflict dir
+        status: 'in-progress',
+      }))).toThrow(/exists|conflict|failed/i);
 
       // Original directory is untouched
       expect(fs.existsSync(srcPath)).toBe(true);
@@ -751,7 +770,7 @@ describe('project service', () => {
       expect(fs.existsSync(path.join(absPath, 'proof.txt'))).toBe(true);
     });
 
-    it('manifest and database agree after success', () => {
+    it('manifest and database agree after a title/status rename', () => {
       const project = createTestProject({
         title: 'Agreement Test',
         status: 'tbd',
@@ -781,7 +800,7 @@ describe('project service', () => {
 
       expect(manifest.title).toBe(updated.title);
       expect(manifest.slug).toBe(updated.slug);
-      expect(manifest.status).toBe(updated.status);
+      expect(manifest).not.toHaveProperty('status');
       expect(manifest.description).toBe(updated.description);
       expect(manifest.priority).toBe(updated.priority);
       expect(manifest.plannedDate).toBe('2027-01-15T00:00:00.000Z');
@@ -800,7 +819,7 @@ describe('project service', () => {
 
       // Pre-flight validation rejects the mismatch before any mutation
       expect(() => service.update(project.id, validInput({
-        title: 'Manifest Mismatch', // same slug — triggers status move
+        title: 'Manifest Mismatch Renamed', // triggers the flat rename
         status: 'in-progress',
       }))).toThrow('Existing manifest does not match the expected project');
     });
@@ -815,12 +834,12 @@ describe('project service', () => {
       fs.writeFileSync(manifestPath, JSON.stringify(corrupt, null, 2));
 
       expect(() => service.update(project.id, validInput({
-        title: 'Structurally Invalid',
+        title: 'Structurally Invalid Renamed', // triggers the flat rename
         status: 'in-progress',
       }))).toThrow('Existing manifest does not match the expected project');
     });
 
-    it('missing source directory is reported safely', () => {
+    it('missing source directory is reported safely when a rename is required', () => {
       const project = createTestProject({ title: 'Missing Dir' });
       const { absPath } = getProjectDir(project);
 
@@ -828,7 +847,7 @@ describe('project service', () => {
       fs.rmSync(absPath, { recursive: true, force: true });
 
       expect(() => service.update(project.id, validInput({
-        title: 'Missing Dir', // same slug — triggers status move
+        title: 'Missing Dir Renamed', // triggers the flat rename
         status: 'in-progress',
       }))).toThrow('Project directory not found');
     });
@@ -883,7 +902,7 @@ describe('project service', () => {
 
       try {
         service.update(project.id, validInput({
-          title: 'Manifest Fail Update', // same slug
+          title: 'Manifest Fail Update Renamed', // triggers slug change
           status: 'ready',
         }));
         expect(true).toBe(false);
@@ -918,7 +937,7 @@ describe('project service', () => {
 
       try {
         service.update(project.id, validInput({
-          title: 'Set Dir Fail Update', // same slug
+          title: 'Set Dir Fail Update Renamed', // triggers slug change
           status: 'ready',
         }));
         expect(true).toBe(false);
@@ -952,7 +971,7 @@ describe('project service', () => {
 
       try {
         service.update(project.id, validInput({
-          title: 'Comp Log New',
+          title: 'Comp Log New', // triggers slug change
           status: 'in-progress',
         }));
         expect(true).toBe(false);
@@ -1008,7 +1027,7 @@ describe('project service', () => {
 
       try {
         service.update(project.id, validInput({
-          title: 'Path Safety', // same slug
+          title: 'Path Safety Renamed', // triggers the flat rename
           status: 'in-progress',
         }));
         expect(true).toBe(false);
@@ -1019,426 +1038,64 @@ describe('project service', () => {
     });
   });
 
-  // ─── Backfill (Phase 3 — existing record reconciliation) ──────────────
-
-  describe('backfill', () => {
-    function getProjectDir(project) {
-      const dirName = formatProjectDirName(project.id, project.slug);
-      const relPath = buildProjectRelPath(project.status, dirName);
-      return { dirName, relPath, absPath: resolveProjectDir(projectsRoot, relPath) };
-    }
-
-    function insertNullDirRecord(overrides = {}) {
-      return service.repository.create({
-        title: 'Backfill Test',
-        slug: 'backfill-test',
-        description: '',
-        notes: '',
-        status: 'tbd',
-        priority: 'normal',
-        plannedDate: null,
-        publishedDate: null,
-        patreonUrl: null,
-        ...overrides,
-      });
-    }
-
-    it('creates a canonical directory for a record with no path', () => {
-      const project = insertNullDirRecord({ title: 'Backfill Dir', slug: 'backfill-dir' });
-      expect(project.project_dir).toBeNull();
-
-      const result = service.backfillProjectDirs();
-      const { absPath } = getProjectDir(project);
-
-      expect(result.backfilled).toBe(1);
-      expect(result.adopted).toBe(0);
-      expect(result.conflicts).toBe(0);
-      expect(result.errors).toHaveLength(0);
-      expect(fs.existsSync(absPath)).toBe(true);
-      expect(fs.statSync(absPath).isDirectory()).toBe(true);
-    });
-
-    it('reports a destination conflict without adopting when a foreign directory appears just before the exclusive root creation', () => {
-      // Backfill's preflight sees no destination, then — immediately before
-      // the exclusive, non-recursive root mkdirSync — a concurrent process
-      // creates a non-empty foreign directory at the exact destination.
-      // Fresh backfill must use the same exclusive-creation guarantee as
-      // normal project creation: this must surface as EEXIST, not silently
-      // succeed and adopt the foreign directory as ours.
-      const project = insertNullDirRecord({ title: 'Backfill Race', slug: 'backfill-race' });
-      const { absPath } = getProjectDir(project);
-
-      const originalMkdirSync = fs.mkdirSync;
-      let intercepted = false;
-      const mkdirSpy = vi.spyOn(fs, 'mkdirSync').mockImplementation((dirPath, options) => {
-        if (!intercepted && dirPath === absPath && !(options && options.recursive)) {
-          intercepted = true;
-          originalMkdirSync(absPath, { recursive: true });
-          fs.writeFileSync(path.join(absPath, 'foreign-file.txt'), 'do not touch');
-          return originalMkdirSync(dirPath, options); // Now throws EEXIST for real.
-        }
-        return originalMkdirSync(dirPath, options);
-      });
-
-      let result;
-      try {
-        result = service.backfillProjectDirs();
-      } finally {
-        mkdirSpy.mockRestore();
-      }
-
-      expect(intercepted).toBe(true);
-      expect(result.backfilled).toBe(0);
-      expect(result.adopted).toBe(0);
-      expect(result.conflicts).toBe(0);
-      expect(result.errors).toHaveLength(1);
-      expect(result.errors[0].id).toBe(project.id);
-
-      // No ownership was captured, so no cleanup ran — the foreign
-      // directory and its contents are untouched.
-      expect(fs.existsSync(absPath)).toBe(true);
-      const entries = fs.readdirSync(absPath);
-      expect(entries).toEqual(['foreign-file.txt']);
-      expect(fs.readFileSync(path.join(absPath, 'foreign-file.txt'), 'utf8')).toBe('do not touch');
-
-      // No category directory or manifest was written into it.
-      expect(fs.existsSync(path.join(absPath, MANIFEST_FILENAME))).toBe(false);
-
-      // Database state remains correct: project_dir is still null.
-      const updated = service.repository.findById(project.id);
-      expect(updated.project_dir).toBeNull();
-
-      fs.rmSync(absPath, { recursive: true, force: true });
-    });
-
-    it('does not invent category directories for a project with no category rows', () => {
-      const project = insertNullDirRecord({ title: 'Subdirs Backfill', slug: 'subdirs-backfill' });
-      service.backfillProjectDirs();
-
-      const { absPath } = getProjectDir(project);
-
-      // insertNullDirRecord bypasses the service.create() flow (and its
-      // default-copy step), so this project has no project_asset_categories
-      // rows — backfill must not invent any category directories for it.
-      const entries = fs.readdirSync(absPath);
-      expect(entries).toEqual([MANIFEST_FILENAME]);
-    });
-
-    it('writes a manifest with correct project data', () => {
-      const project = insertNullDirRecord({
-        title: 'Manifest Backfill',
-        slug: 'manifest-backfill',
-        description: 'Test description',
-      });
-      service.backfillProjectDirs();
-
-      const { absPath } = getProjectDir(project);
-      const manifest = readManifestSync(absPath);
-
-      expect(manifest).not.toBeNull();
-      expect(manifest.schemaVersion).toBe(2);
-      expect(manifest.id).toBe(project.id);
-      expect(manifest.title).toBe('Manifest Backfill');
-      expect(manifest.slug).toBe('manifest-backfill');
-      expect(manifest.description).toBe('Test description');
-      expect(manifest.status).toBe('tbd');
-      expect(manifest.assetCategories).toEqual([]);
-    });
-
-    it('stores the relative path in the database', () => {
-      const project = insertNullDirRecord({ title: 'Path Backfill', slug: 'path-backfill' });
-      service.backfillProjectDirs();
-
-      const updated = service.repository.findById(project.id);
-      const { relPath } = getProjectDir(project);
-      expect(updated.project_dir).toBe(relPath);
-    });
-
-    it('is idempotent — second backfill does not create duplicates', () => {
-      const project = insertNullDirRecord({ title: 'Idempotent', slug: 'idempotent' });
-      const first = service.backfillProjectDirs();
-      expect(first.backfilled).toBe(1);
-
-      const second = service.backfillProjectDirs();
-      expect(second.backfilled).toBe(0);
-      expect(second.adopted).toBe(0);
-      expect(second.conflicts).toBe(0);
-      expect(second.errors).toHaveLength(0);
-    });
-
-    it('reports destination conflict safely without modifying DB', () => {
-      const project = insertNullDirRecord({ title: 'Conflict', slug: 'conflict' });
-      const { absPath } = getProjectDir(project);
-
-      // Create a file at the destination path (not a directory)
-      fs.writeFileSync(absPath, 'not a directory');
-
-      const result = service.backfillProjectDirs();
-      expect(result.conflicts).toBe(1);
-      expect(result.backfilled).toBe(0);
-
-      // DB path should still be null
-      const updated = service.repository.findById(project.id);
-      expect(updated.project_dir).toBeNull();
-
-      // Clean up
-      fs.rmSync(absPath);
-    });
-
-    it('refuses to adopt a directory with a nonmatching manifest', () => {
-      const project = insertNullDirRecord({ title: 'Mismatch', slug: 'mismatch' });
-      const { absPath } = getProjectDir(project);
-
-      // Create directory with a wrong manifest
-      fs.mkdirSync(absPath, { recursive: true });
-      const wrongManifest = {
-        schemaVersion: 2,
-        id: 99999,
-        title: 'Wrong',
-        slug: 'wrong',
-        status: 'tbd',
-      };
-      const manifestPath = path.join(absPath, MANIFEST_FILENAME);
-      fs.writeFileSync(manifestPath, JSON.stringify(wrongManifest, null, 2) + '\n');
-
-      const result = service.backfillProjectDirs();
-      expect(result.conflicts).toBe(1);
-      expect(result.backfilled).toBe(0);
-
-      // DB path should still be null
-      const updated = service.repository.findById(project.id);
-      expect(updated.project_dir).toBeNull();
-
-      // Original manifest should be untouched
-      const stored = readManifestSync(absPath);
-      expect(stored.id).toBe(99999);
-
-      // Clean up
-      fs.rmSync(absPath, { recursive: true, force: true });
-    });
-
-    it('refuses to adopt a directory whose manifest is missing assetCategories', () => {
-      const project = insertNullDirRecord({ title: 'No Categories Field', slug: 'no-categories-field' });
-      const { absPath } = getProjectDir(project);
-
-      fs.mkdirSync(absPath, { recursive: true });
-      const badManifest = {
-        schemaVersion: 2,
-        id: project.id,
-        title: 'No Categories Field',
-        slug: 'no-categories-field',
-        status: 'tbd',
-        priority: 'normal',
-        description: '',
-        notes: '',
-        tags: [],
-        createdAt: '2026-07-26T14:00:00.000Z',
-        updatedAt: '2026-07-26T14:00:00.000Z',
-        plannedDate: null,
-        publishedDate: null,
-        patreonUrl: null,
-        thumbnail: null,
-        // assetCategories intentionally omitted
-      };
-      const manifestPath = path.join(absPath, MANIFEST_FILENAME);
-      fs.writeFileSync(manifestPath, JSON.stringify(badManifest, null, 2) + '\n');
-
-      const result = service.backfillProjectDirs();
-      expect(result.conflicts).toBe(1);
-      expect(result.backfilled).toBe(0);
-
-      const updated = service.repository.findById(project.id);
-      expect(updated.project_dir).toBeNull();
-
-      fs.rmSync(absPath, { recursive: true, force: true });
-    });
-
-    it('rejects a symlink destination', () => {
-      const project = insertNullDirRecord({ title: 'Symlink Reject', slug: 'symlink-reject' });
-      const { absPath } = getProjectDir(project);
-
-      // Create a real directory, then replace with symlink
-      const realDir = path.join(path.dirname(absPath), 'symlink-target');
-      fs.mkdirSync(realDir, { recursive: true });
-      fs.symlinkSync(realDir, absPath, 'junction');
-
-      const result = service.backfillProjectDirs();
-      expect(result.conflicts).toBe(1);
-      expect(result.backfilled).toBe(0);
-
-      const updated = service.repository.findById(project.id);
-      expect(updated.project_dir).toBeNull();
-
-      // Clean up
-      fs.rmSync(realDir, { recursive: true, force: true });
-      if (fs.existsSync(absPath)) {
-        fs.rmSync(absPath);
-      }
-    });
-
-    it('adopts an existing matching directory', () => {
-      const project = insertNullDirRecord({ title: 'Adopt Me', slug: 'adopt-me' });
-      const { relPath, absPath } = getProjectDir(project);
-
-      // Manually create the directory with a valid manifest
-      fs.mkdirSync(absPath, { recursive: true });
-      createProjectCategoryDirs(absPath, []);
-      writeManifestSync(absPath, project, projectsRoot);
-
-      // Add a custom file to prove it was adopted, not overridden
-      const userFile = path.join(absPath, 'my-notes.txt');
-      fs.writeFileSync(userFile, 'custom content');
-
-      const result = service.backfillProjectDirs();
-      expect(result.adopted).toBe(1);
-      expect(result.backfilled).toBe(0);
-      expect(result.conflicts).toBe(0);
-
-      // DB path should be set
-      const updated = service.repository.findById(project.id);
-      expect(updated.project_dir).toBe(relPath);
-
-      // Custom file should survive
-      expect(fs.existsSync(userFile)).toBe(true);
-      expect(fs.readFileSync(userFile, 'utf8')).toBe('custom content');
-    });
-
-    it('does not modify existing complete records', () => {
-      // Create a project normally through the service (full flow)
-      const project = service.create(validInput({ title: 'Complete Record' }));
-      expect(project.project_dir).toBeTruthy();
-
-      const result = service.backfillProjectDirs();
-      expect(result.backfilled).toBe(0);
-      expect(result.adopted).toBe(0);
-      expect(result.conflicts).toBe(0);
-      expect(result.errors).toHaveLength(0);
-    });
-
-    it('leaves database path unset when filesystem creation fails', () => {
-      const project = insertNullDirRecord({
-        title: 'FS Fail',
-        slug: 'fs-fail',
-      });
-      const originalMkdir = fs.mkdirSync;
-      fs.mkdirSync = vi.fn(() => { throw new Error('Disk full'); });
-
-      try {
-        const result = service.backfillProjectDirs();
-        expect(result.backfilled).toBe(0);
-        expect(result.errors).toHaveLength(1);
-        expect(result.errors[0].id).toBe(project.id);
-      } finally {
-        fs.mkdirSync = originalMkdir;
-      }
-
-      const updated = service.repository.findById(project.id);
-      expect(updated.project_dir).toBeNull();
-    });
-
-    it('compensates when directory is created but path update fails', () => {
-      const project = insertNullDirRecord({
-        title: 'DB Fail After Dir',
-        slug: 'db-fail-after-dir',
-      });
-      const originalSetDir = service.repository.setProjectDir;
-      service.repository.setProjectDir = vi.fn(() => {
-        throw new Error('Database connection lost');
-      });
-
-      try {
-        const result = service.backfillProjectDirs();
-        expect(result.backfilled).toBe(0);
-        expect(result.errors).toHaveLength(1);
-        expect(result.errors[0].id).toBe(project.id);
-      } finally {
-        service.repository.setProjectDir = originalSetDir;
-      }
-
-      // Directory should have been cleaned up
-      const { absPath } = getProjectDir(project);
-      expect(fs.existsSync(absPath)).toBe(false);
-
-      // DB path should still be null
-      const updated = service.repository.findById(project.id);
-      expect(updated.project_dir).toBeNull();
-    });
-
-    it('rejects a schema-version-1 manifest on adoption (no v1 compatibility)', () => {
-      const project = insertNullDirRecord({ title: 'Schema V1', slug: 'schema-v1' });
-      const { absPath } = getProjectDir(project);
-
-      fs.mkdirSync(absPath, { recursive: true });
-      const badManifest = {
-        schemaVersion: 1,
-        id: project.id,
-        title: 'Schema V1',
-        slug: 'schema-v1',
-        status: 'tbd',
-      };
-      const manifestPath = path.join(absPath, MANIFEST_FILENAME);
-      fs.writeFileSync(manifestPath, JSON.stringify(badManifest, null, 2) + '\n');
-
-      const result = service.backfillProjectDirs();
-      expect(result.conflicts).toBe(1);
-
-      const updated = service.repository.findById(project.id);
-      expect(updated.project_dir).toBeNull();
-
-      fs.rmSync(absPath, { recursive: true, force: true });
-    });
-
-    it('assigns correct status directory for non-tbd records', () => {
-      const project = insertNullDirRecord({
-        title: 'Status Dir Check',
-        slug: 'status-dir-check',
-        status: 'in-progress',
-      });
-
-      const result = service.backfillProjectDirs();
-      expect(result.backfilled).toBe(1);
-
-      const updated = service.repository.findById(project.id);
-      expect(updated.project_dir).toContain(path.join('active', ''));
-      expect(path.basename(updated.project_dir)).toBe('000001-status-dir-check');
-
-      const { absPath } = getProjectDir(project);
-      expect(absPath).toContain(path.join(projectsRoot, 'active'));
-      expect(fs.existsSync(absPath)).toBe(true);
-    });
-  });
-
   // ─── Filesystem archive flow ─────────────────────────────────────────
 
   describe('filesystem archive', () => {
     function getProjectDir(project) {
       const dirName = formatProjectDirName(project.id, project.slug);
-      const relPath = buildProjectRelPath(project.status, dirName);
+      const relPath = dirName;
       return { dirName, relPath, absPath: resolveProjectDir(projectsRoot, relPath) };
-    }
-
-    function getArchiveDir(project) {
-      const dirName = formatProjectDirName(project.id, project.slug);
-      const relPath = buildProjectRelPath('archived', dirName);
-      const absPath = resolveProjectDir(projectsRoot, relPath);
-      return { dirName, relPath, absPath };
     }
 
     function createTestProject(overrides = {}) {
       return service.create(validInput(overrides));
     }
 
-    it('archive moves the directory to archived/', () => {
-      const project = createTestProject({ title: 'Dir Move Archive' });
-      const { absPath: originalPath } = getProjectDir(project);
-      const { absPath: archivePath } = getArchiveDir(project);
+    it('archive is a database transition that preserves the flat project directory', () => {
+      const project = createTestProject({ title: 'Dir Preserve Archive' });
+      const { absPath, relPath } = getProjectDir(project);
+
+      // Custom files to prove nothing moves
+      const userFile = path.join(absPath, 'custom.txt');
+      fs.writeFileSync(userFile, 'still here');
+      const manifestBefore = fs.readFileSync(path.join(absPath, MANIFEST_FILENAME), 'utf8');
 
       const archived = service.archive(project.id);
 
-      expect(archived).toBeTruthy();
-      expect(fs.existsSync(originalPath)).toBe(false);
-      expect(fs.existsSync(archivePath)).toBe(true);
-      expect(fs.statSync(archivePath).isDirectory()).toBe(true);
+      // DB transition happened
+      expect(archived.status).toBe('archived');
+      expect(archived.archived_at).toBeTruthy();
+
+      // project_dir preserved � no archived/ move, no rename
+      expect(archived.project_dir).toBe(relPath);
+      expect(service.findById(project.id).project_dir).toBe(relPath);
+      expect(relPath.split(path.sep)).toHaveLength(1);
+      expect(path.dirname(absPath)).toBe(path.resolve(projectsRoot));
+
+      // Directory still at the same flat location with all contents
+      expect(fs.existsSync(absPath)).toBe(true);
+      expect(fs.statSync(absPath).isDirectory()).toBe(true);
+      expect(fs.existsSync(userFile)).toBe(true);
+      expect(fs.readFileSync(userFile, 'utf8')).toBe('still here');
+      // Manifest is untouched by archiving
+      expect(fs.readFileSync(path.join(absPath, MANIFEST_FILENAME), 'utf8')).toBe(manifestBefore);
+      // No archived/ directory was created
+      expect(fs.existsSync(path.join(projectsRoot, 'archived'))).toBe(false);
+    });
+
+    it('archive succeeds when the project directory is missing', () => {
+      const project = createTestProject({ title: 'Missing Dir Archive' });
+      const { relPath } = getProjectDir(project);
+
+      // Remove the directory entirely
+      fs.rmSync(resolveProjectDir(projectsRoot, relPath), { recursive: true, force: true });
+
+      const archived = service.archive(project.id);
+
+      expect(archived.status).toBe('archived');
+      expect(archived.archived_at).toBeTruthy();
+      expect(archived.project_dir).toBe(relPath);
+      expect(service.findById(project.id).archived_at).toBeTruthy();
     });
 
     it('status becomes archived', () => {
@@ -1453,208 +1110,11 @@ describe('project service', () => {
       expect(archived.archived_at).toBeTruthy();
     });
 
-    it('relative path is updated', () => {
-      const project = createTestProject({ title: 'Path Update' });
-      const { relPath: archiveRel } = getArchiveDir(project);
-      const archived = service.archive(project.id);
-      expect(archived.project_dir).toBe(archiveRel);
-    });
-
-    it('manifest reflects archived status', () => {
-      const project = createTestProject({ title: 'Manifest Status' });
-      const { absPath: archivePath } = getArchiveDir(project);
-      service.archive(project.id);
-
-      const manifest = readManifestSync(archivePath);
-      expect(manifest).not.toBeNull();
-      expect(manifest.status).toBe('archived');
-      expect(manifest.id).toBe(project.id);
-    });
-
-    it('existing files survive archive', () => {
-      const project = createTestProject({ title: 'Files Survive' });
-      const { absPath: originalPath } = getProjectDir(project);
-
-      const extraFiles = ['custom.txt', path.join('source', 'render.png')];
-      for (const f of extraFiles) {
-        const fullPath = path.join(originalPath, f);
-        fs.mkdirSync(path.dirname(fullPath), { recursive: true });
-        fs.writeFileSync(fullPath, `content of ${f}`);
-      }
-
-      const { absPath: archivePath } = getArchiveDir(project);
-      service.archive(project.id);
-
-      for (const f of extraFiles) {
-        const fullPath = path.join(archivePath, f);
-        expect(fs.existsSync(fullPath)).toBe(true);
-        expect(fs.readFileSync(fullPath, 'utf8')).toBe(`content of ${f}`);
-      }
-    });
-
-    it('move failure leaves the database unarchived', () => {
-      const project = createTestProject({ title: 'Move Fail' });
-      const { absPath: originalPath, relPath: originalRel } = getProjectDir(project);
-
-      const renameSpy = vi.spyOn(fs, 'renameSync').mockImplementationOnce(() => {
-        throw new Error('rename failed');
-      });
-
-      let err;
-      try {
-        service.archive(project.id);
-      } catch (e) {
-        err = e;
-      } finally {
-        renameSpy.mockRestore();
-      }
-      expect(err).toBeTruthy();
-      expect(err.message).toContain('failed');
-
-      // DB still has original values
-      const found = service.findById(project.id);
-      expect(found.status).not.toBe('archived');
-      expect(found.archived_at).toBeNull();
-      expect(found.project_dir).toBe(originalRel);
-
-      // Directory still at original location
-      expect(fs.existsSync(originalPath)).toBe(true);
-    });
-
-    it('database failure after move restores the original directory', () => {
-      const project = createTestProject({ title: 'DB Fail Archive' });
-      const { absPath: originalPath, relPath: originalRel } = getProjectDir(project);
-      const { absPath: archivePath } = getArchiveDir(project);
-
-      const archiveSpy = vi.spyOn(service.repository, 'archive').mockImplementation(() => {
-        throw new Error('DB archive failed');
-      });
-
-      let err;
-      try {
-        service.archive(project.id);
-      } catch (e) {
-        err = e;
-      } finally {
-        archiveSpy.mockRestore();
-      }
-      expect(err).toBeTruthy();
-      expect(err.message).toContain('failed');
-
-      // Directory moved back to original location
-      expect(fs.existsSync(originalPath)).toBe(true);
-      expect(fs.statSync(originalPath).isDirectory()).toBe(true);
-
-      // Archive directory is gone
-      expect(fs.existsSync(archivePath)).toBe(false);
-
-      // DB unchanged
-      const found = service.findById(project.id);
-      expect(found.status).not.toBe('archived');
-      expect(found.archived_at).toBeNull();
-      expect(found.project_dir).toBe(originalRel);
-    });
-
-    it('manifest failure triggers compensation', () => {
-      const project = createTestProject({ title: 'Manifest Fail' });
-      const { absPath: originalPath, relPath: originalRel } = getProjectDir(project);
-      const { absPath: archivePath } = getArchiveDir(project);
-
-      // Add custom file to prove restore
-      fs.writeFileSync(path.join(originalPath, 'survivor.txt'), 'should survive');
-
-      // Spy on renameSync: first call (dir move) succeeds, second call (manifest) fails
-      const renameSpy = vi.spyOn(fs, 'renameSync');
-      renameSpy.mockImplementationOnce(() => undefined);
-      renameSpy.mockImplementationOnce(() => { throw new Error('manifest write failed'); });
-
-      let err;
-      try {
-        service.archive(project.id);
-      } catch (e) {
-        err = e;
-      } finally {
-        renameSpy.mockRestore();
-      }
-      expect(err).toBeTruthy();
-      expect(err.message).toContain('failed');
-
-      // Directory moved back to original location
-      expect(fs.existsSync(originalPath)).toBe(true);
-      expect(fs.statSync(originalPath).isDirectory()).toBe(true);
-
-      // Custom file survived the move-back
-      expect(fs.existsSync(path.join(originalPath, 'survivor.txt'))).toBe(true);
-      expect(fs.readFileSync(path.join(originalPath, 'survivor.txt'), 'utf8')).toBe('should survive');
-
-      // Archive directory gone
-      expect(fs.existsSync(archivePath)).toBe(false);
-
-      // DB restored to original values
-      const found = service.findById(project.id);
-      expect(found.status).not.toBe('archived');
-      expect(found.archived_at).toBeNull();
-      expect(found.project_dir).toBe(originalRel);
-    });
-
-    it('destination conflict leaves state intact', () => {
-      const project = createTestProject({ title: 'Conflict Archive' });
-      const { absPath: originalPath, relPath: originalRel } = getProjectDir(project);
-      const { absPath: archivePath } = getArchiveDir(project);
-
-      // Pre-create something at the destination
-      fs.mkdirSync(archivePath, { recursive: true });
-      fs.writeFileSync(path.join(archivePath, 'blocker.txt'), 'blocking');
-
-      let err;
-      try {
-        service.archive(project.id);
-      } catch (e) {
-        err = e;
-      }
-      expect(err).toBeTruthy();
-
-      // Original directory untouched
-      expect(fs.existsSync(originalPath)).toBe(true);
-      expect(fs.readdirSync(originalPath).length).toBeGreaterThan(0);
-
-      // DB unchanged
-      const found = service.findById(project.id);
-      expect(found.status).not.toBe('archived');
-      expect(found.archived_at).toBeNull();
-      expect(found.project_dir).toBe(originalRel);
-    });
-
-    it('missing source directory returns a safe error', () => {
-      const project = createTestProject({ title: 'Missing Dir Archive' });
-      const { absPath } = getProjectDir(project);
-
-      fs.rmSync(absPath, { recursive: true, force: true });
-
-      expect(() => service.archive(project.id)).toThrow('Project directory not found');
-    });
-
     it('already-archived project is rejected', () => {
       const project = createTestProject({ title: 'Double Archive' });
       service.archive(project.id);
 
       expect(() => service.archive(project.id)).toThrow('already archived');
-    });
-
-    it('absolute paths are not rendered in error messages', () => {
-      const project = createTestProject({ title: 'Archive Path Safety' });
-      const { absPath } = getProjectDir(project);
-
-      fs.rmSync(absPath, { recursive: true, force: true });
-
-      let err;
-      try {
-        service.archive(project.id);
-      } catch (e) {
-        err = e;
-      }
-      expect(err).toBeTruthy();
-      expect(err.message).not.toMatch(/[A-Z]:\\/);
     });
 
     it('missing project throws ProjectNotFoundError', () => {

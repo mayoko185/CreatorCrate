@@ -30,7 +30,7 @@ import {
   UNCATEGORIZED,
 } from '../src/services/asset-action-service.js';
 import { createProjectOperationCoordinator, ProjectOperationError } from '../src/services/project-operation-coordinator.js';
-import { resolveProjectDir, STATUS_DIR_MAP } from '../src/storage/project-storage.js';
+import { resolveProjectDir } from '../src/storage/project-storage.js';
 import { getCacheDir } from '../src/storage/preview-cache.js';
 import { MANIFEST_FILENAME } from '../src/storage/manifest.js';
 
@@ -145,9 +145,6 @@ describe('asset action service', () => {
     previewRoot = path.join(tmpDir, 'previews');
     fs.mkdirSync(projectsRoot, { recursive: true });
     fs.mkdirSync(previewRoot, { recursive: true });
-    for (const dir of Object.values(STATUS_DIR_MAP)) {
-      fs.mkdirSync(path.join(projectsRoot, dir), { recursive: true });
-    }
 
     const dbPath = path.join(tmpDir, 'test.db');
     db = openDatabase(dbPath);

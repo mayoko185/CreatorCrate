@@ -49,7 +49,7 @@ describe('asset category repository', () => {
     it('lists seeded defaults ordered by display_order then id', () => {
       const defaults = repository.listDefaults();
       expect(defaults.map((d) => d.directory_slug)).toEqual([
-        'source', 'exports', 'extras', 'references', 'thumbnails',
+        'final', 'wip', 'krz', 'wm', 'wm-lq',
       ]);
       expect(defaults.map((d) => d.display_order)).toEqual([0, 1, 2, 3, 4]);
     });
@@ -70,11 +70,11 @@ describe('asset category repository', () => {
     it('edits display name and directory slug', () => {
       const [first] = repository.listDefaults();
       const updated = repository.updateDefaultNameSlug(first.id, {
-        displayName: 'Renamed Source',
-        directorySlug: 'renamed-source',
+        displayName: 'Renamed Final',
+        directorySlug: 'renamed-final',
       });
-      expect(updated.display_name).toBe('Renamed Source');
-      expect(updated.directory_slug).toBe('renamed-source');
+      expect(updated.display_name).toBe('Renamed Final');
+      expect(updated.directory_slug).toBe('renamed-final');
     });
 
     it('sets enabled state', () => {
@@ -181,7 +181,7 @@ describe('asset category repository', () => {
         .map(({ id, display_name, directory_slug, enabled }) => ({ id, display_name, directory_slug, enabled }))
         .sort((a, b) => a.id - b.id);
       db.prepare('UPDATE app_meta SET value = ? WHERE key = ?')
-        .run('exports', 'asset_browser.default_category');
+        .run('wip', 'asset_browser.default_category');
 
       repository.reorderDefaults(defaultsBefore.map((category) => category.id).reverse());
 
@@ -190,7 +190,7 @@ describe('asset category repository', () => {
         .map(({ id, display_name, directory_slug, enabled }) => ({ id, display_name, directory_slug, enabled }))
         .sort((a, b) => a.id - b.id)).toEqual(metadataBefore);
       expect(db.prepare('SELECT value FROM app_meta WHERE key = ?').pluck()
-        .get('asset_browser.default_category')).toBe('exports');
+        .get('asset_browser.default_category')).toBe('wip');
       expect(repository.listProjectCategories(project.id)).toEqual(projectCategoriesBefore);
     });
   });
@@ -213,14 +213,14 @@ describe('asset category repository', () => {
     it('copies only enabled defaults, preserving relative order with contiguous local positions', () => {
       const project = createProject();
       const defaults = repository.listDefaults();
-      // Disable the middle default ('extras').
-      const extras = defaults.find((d) => d.directory_slug === 'extras');
-      repository.setDefaultEnabled(extras.id, false);
+      // Disable the middle default ('krz').
+      const krz = defaults.find((d) => d.directory_slug === 'krz');
+      repository.setDefaultEnabled(krz.id, false);
 
       const copied = repository.copyEnabledDefaultsForProject(project.id);
 
       expect(copied.map((c) => c.directory_slug)).toEqual([
-        'source', 'exports', 'references', 'thumbnails',
+        'final', 'wip', 'wm', 'wm-lq',
       ]);
       expect(copied.map((c) => c.display_order)).toEqual([0, 1, 2, 3]);
       expect(copied.every((c) => c.enabled === 1)).toBe(true);
