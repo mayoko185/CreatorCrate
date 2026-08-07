@@ -1,6 +1,7 @@
 {% extends "layout.njk" %}
 {% import "partials/page-heading.njk" as pageHeading %}
 {% import "partials/icons.njk" as icons %}
+{% import "partials/asset-presentation.njk" as assetPresentation %}
 
 {% macro releaseUsageInline(asset) %}
   {% if asset.releaseSummary.mode == 'none' %}
@@ -140,6 +141,7 @@
 
 {% macro assetCard(asset, isArchived, submittedSelectedAssetIds, project, context, contextFields, renameFailure, _csrf, autoRenameSurface, autoRenameInitialIndex, autoRenameTotal) %}
   {% set renameAttempt = renameFailure and renameFailure.assetId == asset.id %}
+  {% set selected = (asset.id ~ '') in submittedSelectedAssetIds %}
   <li class="asset-grid-item{% if not asset.is_present %} is-missing{% endif %}"{% if autoRenameSurface %}
       data-auto-rename-asset
       data-auto-rename-asset-id="{{ asset.id }}"
@@ -151,17 +153,20 @@
       aria-setsize="{{ autoRenameTotal }}"
       aria-label="Reorder {{ asset.filename }}"
       aria-describedby="auto-rename-instructions"{% endif %}>
-    <article class="asset-card{% if (asset.id ~ '') in submittedSelectedAssetIds %} is-selected{% endif %}"
-              data-asset-id="{{ asset.id }}" role="option" aria-selected="{% if (asset.id ~ '') in submittedSelectedAssetIds %}true{% else %}false{% endif %}"{% if not isArchived and asset.is_present %} data-asset-selectable-card{% if not autoRenameSurface %} tabindex="0"{% endif %}
-              aria-label="Toggle selection for {{ asset.filename }}"{% endif %}>
-      <div class="asset-card-top">
+    {% call(slot) assetPresentation.gridCard(asset, {
+      selected: selected,
+      selectable: not isArchived and asset.is_present,
+      selectableTabIndex: not autoRenameSurface,
+      titleRowHidden: renameAttempt
+    }) %}
+      {% if slot == 'top-start' %}
         {% if not isArchived %}
           {% if asset.is_present %}
-            <label class="asset-selection-control{% if (asset.id ~ '') in submittedSelectedAssetIds %} is-selected{% endif %}" for="asset-card-select-{{ asset.id }}">
+            <label class="asset-selection-control{% if selected %} is-selected{% endif %}" for="asset-card-select-{{ asset.id }}">
               <input type="checkbox" form="bulk-select-form" id="asset-card-select-{{ asset.id }}" name="selectedAssetIds" value="{{ asset.id }}"
                      class="asset-select-checkbox"
                      aria-label="Select {{ asset.filename }}"
-                     {% if (asset.id ~ '') in submittedSelectedAssetIds %}checked{% endif %}>
+                     {% if selected %}checked{% endif %}>
               <span class="asset-selection-control-mark" aria-hidden="true">✓</span>
             </label>
           {% else %}
@@ -174,75 +179,38 @@
         {% if autoRenameSurface %}
           <span class="auto-rename-order-indicator" data-auto-rename-order-indicator>{{ autoRenameInitialIndex + 1 }} of {{ autoRenameTotal }}</span>
         {% endif %}
-        {% if asset.is_present %}
-          <span class="asset-indicator asset-icon-control asset-tooltip asset-tooltip--left asset-indicator--present" role="img" tabindex="0"
-                aria-label="{{ asset.presenceLabel }}" data-tooltip="{{ asset.presenceLabel }}">P</span>
-        {% else %}
-          <span class="asset-indicator asset-icon-control asset-tooltip asset-tooltip--left asset-indicator--missing" role="img" tabindex="0"
-                aria-label="{{ asset.presenceLabel }}" data-tooltip="{{ asset.presenceLabel }}">!</span>
-        {% endif %}
+      {% elif slot == 'top-end' %}
         <span class="asset-card-usage">{{ releaseUsageInline(asset) }}</span>
-        <a class="asset-details-link asset-tooltip asset-tooltip--right" href="{{ asset.viewerUrl }}"
-           aria-label="View details for {{ asset.filename }}" data-tooltip="View asset details">
-           {{ icons.icon('details') }}<span class="sr-only">View details</span>
-         </a>
-      </div>
-
-      <div class="asset-card-media{% if asset.preview.kind == 'krita' %} asset-media--krita{% endif %}"{% if asset.hasThumbnail %} data-preview-enhancement data-preview-state="loading"{% endif %}>
-        {% if asset.hasThumbnail %}
-          <a class="asset-card-media-link" href="{{ asset.viewerUrl }}" aria-label="View details for {{ asset.filename }}">
-            <img class="asset-card-thumb"
-                 src="{{ asset.preview_url }}"
-                 alt="{{ asset.previewAltText }}"
-                 loading="lazy"
-                 decoding="async"
-                 data-preview-image>
-          </a>
-          <span class="asset-card-placeholder asset-card-fallback" data-preview-fallback hidden>{{ asset.typeLabel }}</span>
-        {% elif not asset.is_present %}
-          <span class="asset-card-placeholder asset-card-placeholder-missing">Missing at last scan</span>
-        {% elif asset.preview_state == 'unsupported' %}
-          <span class="asset-card-placeholder">{{ asset.typeLabel }} — preview not supported</span>
-        {% else %}
-          <span class="asset-card-placeholder">Preview unavailable</span>
+      {% elif slot == 'title-row' %}
+        {% if not isArchived and asset.is_present %}
+          <a class="button button-small asset-rename-trigger" data-asset-rename-trigger
+             href="{{ asset.viewerUrl }}" aria-label="Rename {{ asset.filename }}">Rename</a>
         {% endif %}
-      </div>
-
-      <div class="asset-card-body">
-        <div class="asset-card-title-controls">
-          <div class="asset-card-title-row" data-asset-title-row{% if renameAttempt %} hidden{% endif %}>
-            <span class="asset-card-title-text">{{ asset.displayFilename }}</span>
-            {% if not isArchived and asset.is_present %}
-              <a class="button button-small asset-rename-trigger" data-asset-rename-trigger
-                 href="{{ asset.viewerUrl }}" aria-label="Rename {{ asset.filename }}">Rename</a>
-            {% endif %}
-          </div>
-          {% if not isArchived and asset.is_present %}
-            <form method="post" action="/projects/{{ project.id }}/assets/{{ asset.id }}/rename"
-                  class="asset-card-rename-editor" data-asset-rename-editor{% if not renameAttempt %} hidden inert{% endif %}>
-              <input type="hidden" name="_csrf" value="{{ _csrf }}"{% if not renameAttempt %} disabled{% endif %}>
-              <input type="hidden" name="origin" value="assets"{% if not renameAttempt %} disabled{% endif %}>
-              {% for key in contextFields %}
-                {% if context[key] is not none and context[key] != '' %}
-                  <input type="hidden" name="{{ key }}" value="{{ context[key] }}"{% if not renameAttempt %} disabled{% endif %}>
-                {% endif %}
-              {% endfor %}
-              <span class="asset-card-rename-field{% if asset.extension %} has-extension{% endif %}">
-                <input type="text" name="filename" value="{% if renameAttempt %}{{ renameFailure.submittedFilename }}{% else %}{{ asset.displayFilename }}{% endif %}"
-                       class="asset-card-rename-input" data-asset-rename-input required maxlength="255"
-                       aria-label="New basename for {{ asset.filename }}" autocomplete="off"{% if not renameAttempt %} disabled{% endif %}>
-                {% if asset.extension %}<span class="asset-rename-extension" aria-hidden="true">.{{ asset.extension }}</span>{% endif %}
-              </span>
-              <button type="submit" class="button button-small" data-asset-rename-confirm{% if not renameAttempt %} disabled{% endif %}>Confirm</button>
-              <button type="button" class="button button-small button-secondary" data-asset-rename-cancel{% if not renameAttempt %} disabled{% endif %}>Cancel</button>
-            </form>
-            {% if renameAttempt %}
-              <span class="asset-action-error" role="alert">{{ renameFailure.message }}</span>
-            {% endif %}
+      {% elif slot == 'title-controls' %}
+        {% if not isArchived and asset.is_present %}
+          <form method="post" action="/projects/{{ project.id }}/assets/{{ asset.id }}/rename"
+                class="asset-card-rename-editor" data-asset-rename-editor{% if not renameAttempt %} hidden inert{% endif %}>
+            <input type="hidden" name="_csrf" value="{{ _csrf }}"{% if not renameAttempt %} disabled{% endif %}>
+            <input type="hidden" name="origin" value="assets"{% if not renameAttempt %} disabled{% endif %}>
+            {% for key in contextFields %}
+              {% if context[key] is not none and context[key] != '' %}
+                <input type="hidden" name="{{ key }}" value="{{ context[key] }}"{% if not renameAttempt %} disabled{% endif %}>
+              {% endif %}
+            {% endfor %}
+            <span class="asset-card-rename-field{% if asset.extension %} has-extension{% endif %}">
+              <input type="text" name="filename" value="{% if renameAttempt %}{{ renameFailure.submittedFilename }}{% else %}{{ asset.displayFilename }}{% endif %}"
+                     class="asset-card-rename-input" data-asset-rename-input required maxlength="255"
+                     aria-label="New basename for {{ asset.filename }}" autocomplete="off"{% if not renameAttempt %} disabled{% endif %}>
+              {% if asset.extension %}<span class="asset-rename-extension" aria-hidden="true">.{{ asset.extension }}</span>{% endif %}
+            </span>
+            <button type="submit" class="button button-small" data-asset-rename-confirm{% if not renameAttempt %} disabled{% endif %}>Confirm</button>
+            <button type="button" class="button button-small button-secondary" data-asset-rename-cancel{% if not renameAttempt %} disabled{% endif %}>Cancel</button>
+          </form>
+          {% if renameAttempt %}
+            <span class="asset-action-error" role="alert">{{ renameFailure.message }}</span>
           {% endif %}
-        </div>
-        {% if asset.locationLabel %}<span class="asset-card-location">{{ asset.locationLabel }}</span>{% endif %}
-        <span class="asset-card-meta">{{ asset.typeLabel }} · {{ asset.formattedSize }}</span>
+        {% endif %}
+      {% elif slot == 'body' %}
         {% if asset.tags and asset.tags.length > 0 %}
           <ul class="asset-card-tags" aria-label="Assigned tags">
             {% for tag in asset.tags %}
@@ -250,24 +218,30 @@
             {% endfor %}
           </ul>
         {% endif %}
-      </div>
-    </article>
+      {% endif %}
+    {% endcall %}
   </li>
 {% endmacro %}
 
 {% macro assetListCard(asset, isArchived, submittedSelectedAssetIds, project, context, contextFields, renameFailure, _csrf) %}
   {% set renameAttempt = renameFailure and renameFailure.assetId == asset.id %}
   {% set selectionLabel = asset.relative_path or asset.filename %}
+  {% set selected = not isArchived and asset.is_present and (asset.id ~ '') in submittedSelectedAssetIds %}
   <li class="asset-list-item{% if not asset.is_present %} is-missing{% endif %}">
-    <article class="asset-list-card asset-list-card--project{% if not isArchived and asset.is_present and (asset.id ~ '') in submittedSelectedAssetIds %} is-selected{% endif %}" data-asset-id="{{ asset.id }}"{% if not isArchived and asset.is_present %} data-asset-selectable-card aria-selected="{% if (asset.id ~ '') in submittedSelectedAssetIds %}true{% else %}false{% endif %}"{% endif %}>
-      <div class="asset-list-card-top">
+    {% call(slot) assetPresentation.listCard(asset, {
+      cardClass: 'asset-list-card--project',
+      selected: selected,
+      selectable: not isArchived and asset.is_present,
+      mediaContextLabel: project.title
+    }) %}
+      {% if slot == 'top' %}
         {% if not isArchived %}
           {% if asset.is_present %}
-            <label class="asset-selection-control{% if (asset.id ~ '') in submittedSelectedAssetIds %} is-selected{% endif %}" for="asset-list-card-select-{{ asset.id }}">
+            <label class="asset-selection-control{% if selected %} is-selected{% endif %}" for="asset-list-card-select-{{ asset.id }}">
               <input type="checkbox" form="bulk-select-form" id="asset-list-card-select-{{ asset.id }}" name="selectedAssetIds" value="{{ asset.id }}"
                      class="asset-select-checkbox"
                      aria-label="Select {{ selectionLabel }}"
-                     {% if (asset.id ~ '') in submittedSelectedAssetIds %}checked{% endif %}>
+                     {% if selected %}checked{% endif %}>
               <span class="asset-selection-control-mark" aria-hidden="true">✓</span>
             </label>
           {% else %}
@@ -277,69 +251,7 @@
             </label>
           {% endif %}
         {% endif %}
-      </div>
-
-      <div class="asset-list-card-media"{% if asset.hasThumbnail %} data-preview-enhancement data-preview-state="loading"{% endif %}>
-        {% if asset.hasThumbnail %}
-          <a class="asset-list-card-media-link" href="{{ asset.viewerUrl }}" aria-label="View preview of {{ asset.filename }} from {{ project.title }}">
-            <img class="asset-list-card-media-image"
-                 src="{{ asset.preview_url }}"
-                 alt=""
-                 loading="lazy"
-                 decoding="async"
-                 data-preview-image>
-          </a>
-          <span class="asset-list-card-media-fallback" data-preview-fallback hidden>{{ asset.typeLabel }}</span>
-        {% elif not asset.is_present %}
-          <span class="asset-list-card-media-placeholder asset-list-card-media-placeholder--missing">Missing at last scan</span>
-        {% elif asset.preview_state == 'unsupported' %}
-          <span class="asset-list-card-media-placeholder">{{ asset.typeLabel }} — preview not supported</span>
-        {% else %}
-          <span class="asset-list-card-media-placeholder">Preview unavailable</span>
-        {% endif %}
-      </div>
-
-      <div class="asset-list-card-body">
-        <div class="asset-list-card-header">
-          <div class="asset-list-card-heading">
-            <h2 class="asset-list-card-title">
-              <a class="asset-file-link" href="{{ asset.viewerUrl }}">{{ asset.displayFilename }}</a>
-            </h2>
-            {% if asset.locationLabel %}<span class="asset-list-card-location asset-location" data-asset-containing-location>{{ asset.locationLabel }}</span>{% endif %}
-          </div>
-          <span class="asset-list-card-presence">
-            {% if asset.is_present %}
-              <span class="asset-indicator asset-icon-control asset-tooltip asset-indicator--present" role="img" tabindex="0"
-                    aria-label="{{ asset.presenceLabel }}" data-tooltip="{{ asset.presenceLabel }}">P</span>
-            {% else %}
-              <span class="asset-indicator asset-icon-control asset-tooltip asset-indicator--missing" role="img" tabindex="0"
-                    aria-label="{{ asset.presenceLabel }}" data-tooltip="{{ asset.presenceLabel }}">!</span>
-            {% endif %}
-          </span>
-        </div>
-
-        <dl class="asset-list-card-metadata">
-          <div class="asset-list-card-meta asset-list-card-meta--category">
-            <dt>Category</dt>
-            <dd>
-              {{ asset.categoryLabel }}
-              {% if asset.categoryDisabled %}<em class="asset-category-disabled-marker">(disabled)</em>{% endif %}
-            </dd>
-          </div>
-          <div class="asset-list-card-meta asset-list-card-meta--type">
-            <dt>Type</dt>
-            <dd><span class="asset-type-label">{{ asset.typeLabel }}</span></dd>
-          </div>
-          <div class="asset-list-card-meta asset-list-card-meta--size">
-            <dt>Size</dt>
-            <dd>{{ asset.formattedSize }}</dd>
-          </div>
-          <div class="asset-list-card-meta asset-list-card-meta--modified">
-            <dt>Modified</dt>
-            <dd>{{ asset.modified_at or '—' }}</dd>
-          </div>
-        </dl>
-
+      {% elif slot == 'associations' %}
         <div class="asset-list-card-associations">
           <section class="asset-list-card-association asset-list-card-association--tags">
             <h3 class="asset-list-card-association-label">Tags</h3>
@@ -362,34 +274,28 @@
             </div>
           </section>
         </div>
-
-        <div class="asset-list-card-actions">
-          <a class="asset-details-link asset-tooltip" href="{{ asset.viewerUrl }}"
-             aria-label="View details for {{ asset.filename }}" data-tooltip="View asset details">
-            {{ icons.icon('details') }}<span class="sr-only">View details</span>
-          </a>
-          {% if not isArchived and asset.is_present %}
-            <form method="post" action="/projects/{{ project.id }}/assets/{{ asset.id }}/rename" class="row-rename-form asset-list-card-rename-form">
-              <input type="hidden" name="_csrf" value="{{ _csrf }}">
-              <input type="hidden" name="origin" value="assets">
-              {% for key in contextFields %}
-                {% if context[key] is not none and context[key] != '' %}
-                  <input type="hidden" name="{{ key }}" value="{{ context[key] }}">
-                {% endif %}
-              {% endfor %}
-              <input type="text" name="filename" value="{% if renameAttempt %}{{ renameFailure.submittedFilename }}{% else %}{{ asset.displayFilename }}{% endif %}"
-                     class="row-rename-input asset-list-card-rename-input" required maxlength="255"
-                     aria-label="New basename for {{ asset.filename }}" autocomplete="off">
-              {% if asset.extension %}<span class="asset-rename-extension" aria-hidden="true">.{{ asset.extension }}</span>{% endif %}
-              <button type="submit" class="button button-small">Rename</button>
-            </form>
-            {% if renameAttempt %}
-              <span class="asset-action-error" role="alert">{{ renameFailure.message }}</span>
-            {% endif %}
+      {% elif slot == 'actions' %}
+        {% if not isArchived and asset.is_present %}
+          <form method="post" action="/projects/{{ project.id }}/assets/{{ asset.id }}/rename" class="row-rename-form asset-list-card-rename-form">
+            <input type="hidden" name="_csrf" value="{{ _csrf }}">
+            <input type="hidden" name="origin" value="assets">
+            {% for key in contextFields %}
+              {% if context[key] is not none and context[key] != '' %}
+                <input type="hidden" name="{{ key }}" value="{{ context[key] }}">
+              {% endif %}
+            {% endfor %}
+            <input type="text" name="filename" value="{% if renameAttempt %}{{ renameFailure.submittedFilename }}{% else %}{{ asset.displayFilename }}{% endif %}"
+                   class="row-rename-input asset-list-card-rename-input" required maxlength="255"
+                   aria-label="New basename for {{ asset.filename }}" autocomplete="off">
+            {% if asset.extension %}<span class="asset-rename-extension" aria-hidden="true">.{{ asset.extension }}</span>{% endif %}
+            <button type="submit" class="button button-small">Rename</button>
+          </form>
+          {% if renameAttempt %}
+            <span class="asset-action-error" role="alert">{{ renameFailure.message }}</span>
           {% endif %}
-        </div>
-      </div>
-    </article>
+        {% endif %}
+      {% endif %}
+    {% endcall %}
   </li>
 {% endmacro %}
 
@@ -571,9 +477,9 @@
         {% if pageSize != 25 or preservePageSizeQuery %}
           <input type="hidden" name="pageSize" value="{{ pageSize }}">
         {% endif %}
-        <fieldset class="field asset-viewer-filter-field asset-project-category-filter" data-asset-category-filter>
+        <fieldset class="field asset-viewer-filter-field asset-filter-multiselect-field asset-project-category-filter" data-asset-category-filter>
           <legend>Category</legend>
-          <details class="asset-filter-multiselect" data-asset-viewer-filter-disclosure>
+          <details class="asset-filter-multiselect asset-filter-multiselect--sized" data-asset-viewer-filter-disclosure>
             <summary id="asset-category-filter-trigger"
                      aria-controls="asset-category-filter-options"
                      aria-expanded="false"
@@ -643,30 +549,95 @@
           </details>
         </fieldset>
 
+      {% set tagFilterSummary = "All tags" %}
+      {% for tag in tagOptions %}
+        {% if filters.tag == tag.value %}
+          {% set tagFilterSummary = tag.displayName %}
+        {% endif %}
+      {% endfor %}
+      {% set extensionFilterSummary = "All extensions" %}
+      {% if filters.extension %}
+        {% set extensionFilterSummary = "." ~ filters.extension %}
+      {% endif %}
+
         <div class="field">
           <label for="search">Search</label>
           <input id="search" name="search" type="search" value="{{ filters.search or '' }}" maxlength="{{ searchMaxLength }}">
         </div>
 
-        <div class="field">
-          <label for="tag">Tag</label>
-          <select id="tag" name="tag"{% if tagOptions.length == 0 %} disabled{% endif %}>
-            <option value=""{% if not filters.tag %} selected{% endif %}>All tags</option>
-            {% for tag in tagOptions %}
-              <option value="{{ tag.value }}"{% if filters.tag == tag.value %} selected{% endif %}>{{ tag.displayName }}</option>
-            {% endfor %}
-          </select>
-        </div>
+        <fieldset class="field asset-viewer-filter-field asset-filter-multiselect-field">
+          <legend>Tag</legend>
+          <details class="asset-filter-multiselect asset-filter-multiselect--sized" data-asset-viewer-filter-disclosure>
+            <summary id="asset-tag-filter-trigger"
+                     aria-controls="asset-tag-filter-options"
+                     aria-expanded="false"
+                     aria-label="Tag filter: {{ tagFilterSummary }}"
+                     title="{{ tagFilterSummary }}">
+              <span class="asset-filter-multiselect-summary">
+                <span class="asset-filter-multiselect-summary-current">{{ tagFilterSummary }}</span>
+                <span class="asset-filter-multiselect-summary-width" aria-hidden="true">
+                  <span>All tags</span>
+                  {% for tag in tagOptions %}<span>{{ tag.displayName }}</span>{% endfor %}
+                </span>
+              </span>
+            </summary>
+            <div id="asset-tag-filter-options" class="asset-filter-multiselect-panel" role="radiogroup" aria-label="Tag options">
+              <div class="asset-filter-multiselect-option">
+                <label for="asset-tag-option-all">
+                  <input id="asset-tag-option-all" name="tag" type="radio" value=""{% if not filters.tag %} checked{% endif %}>
+                  <span>All tags</span>
+                </label>
+              </div>
+              {% if tagOptions.length > 0 %}
+                {% for tag in tagOptions %}
+                  <div class="asset-filter-multiselect-option">
+                    <label for="asset-tag-option-{{ loop.index }}">
+                      <input id="asset-tag-option-{{ loop.index }}" name="tag" type="radio" value="{{ tag.value }}"{% if filters.tag == tag.value %} checked{% endif %}>
+                      <span>{{ tag.displayName }}</span>
+                    </label>
+                  </div>
+                {% endfor %}
+              {% else %}
+                <p class="asset-filter-multiselect-empty">No tags available</p>
+              {% endif %}
+            </div>
+          </details>
+        </fieldset>
 
-        <div class="field">
-          <label for="extension">Extension</label>
-          <select id="extension" name="extension">
-            <option value="" {% if not filters.extension %}selected{% endif %}>All extensions</option>
-            {% for choice in extensionChoices %}
-              <option value="{{ choice.value }}" {% if choice.selected %}selected{% endif %}>.{{ choice.label }}</option>
-            {% endfor %}
-          </select>
-        </div>
+        <fieldset class="field asset-viewer-filter-field asset-filter-multiselect-field">
+          <legend>Extension</legend>
+          <details class="asset-filter-multiselect asset-filter-multiselect--sized" data-asset-viewer-filter-disclosure>
+            <summary id="asset-extension-filter-trigger"
+                     aria-controls="asset-extension-filter-options"
+                     aria-expanded="false"
+                     aria-label="Extension filter: {{ extensionFilterSummary }}"
+                     title="{{ extensionFilterSummary }}">
+              <span class="asset-filter-multiselect-summary">
+                <span class="asset-filter-multiselect-summary-current">{{ extensionFilterSummary }}</span>
+                <span class="asset-filter-multiselect-summary-width" aria-hidden="true">
+                  <span>All extensions</span>
+                  {% for choice in extensionChoices %}<span>.{{ choice.label }}</span>{% endfor %}
+                </span>
+              </span>
+            </summary>
+            <div id="asset-extension-filter-options" class="asset-filter-multiselect-panel" role="radiogroup" aria-label="Extension options">
+              <div class="asset-filter-multiselect-option">
+                <label for="asset-extension-option-all">
+                  <input id="asset-extension-option-all" name="extension" type="radio" value=""{% if not filters.extension %} checked{% endif %}>
+                  <span>All extensions</span>
+                </label>
+              </div>
+              {% for choice in extensionChoices %}
+                <div class="asset-filter-multiselect-option">
+                  <label for="asset-extension-option-{{ loop.index }}">
+                    <input id="asset-extension-option-{{ loop.index }}" name="extension" type="radio" value="{{ choice.value }}"{% if choice.selected %} checked{% endif %}>
+                    <span>.{{ choice.label }}</span>
+                  </label>
+                </div>
+              {% endfor %}
+            </div>
+          </details>
+        </fieldset>
 
         <div class="field">
           <label for="presence">Show</label>

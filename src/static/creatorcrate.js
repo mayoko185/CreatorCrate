@@ -1381,12 +1381,14 @@ export function enhanceConfirmations(scope = globalThis.document) {
   return controls.length;
 }
 
-// ─── Phase 3 chunk 3: page-local asset selection ──────────────────────────
+// ─── Phase 3 chunk 3: shared asset selection ──────────────────────────
 //
-// Scoped entirely to [data-asset-selection-form] — the project asset
-// browser's bulk-add-to-release form. The unrelated release asset-selection
-// page (releases/assets.njk) uses its own checkboxes/markup and carries no
-// such attribute, so it is untouched by this module. Selection state lives
+// Shared selectable-card enhancement scoped to [data-asset-selection-form].
+// Two pages opt in: the project asset browser's bulk-add-to-release form
+// (projects/assets.njk) and the release asset-selection page
+// (releases/assets.njk). Both render [data-asset-selectable-card] cards via
+// the shared asset-presentation partial and submit selected ids as
+// checkboxes/hidden inputs named "selectedAssetIds". Selection state lives
 // only in the DOM's checked/unchecked state for the lifetime of this page;
 // the separate grid-size preference below is presentation-only storage.
 
@@ -1407,6 +1409,7 @@ const ASSET_PROJECT_FILTER_SELECTOR = '[data-asset-project-filter]';
 const ASSET_PROJECT_FILTER_OPTION_SELECTOR = '[data-asset-project-filter-option]';
 const ASSET_PROJECT_FILTER_SEARCH_SELECTOR = '[data-asset-project-filter-search]';
 const ASSET_PROJECT_FILTER_SUMMARY_SELECTOR = '[data-asset-project-filter-summary]';
+const ASSET_PROJECT_FILTER_CURRENT_SUMMARY_SELECTOR = '[data-asset-project-filter-current-summary]';
 const ASSET_PROJECT_FILTER_EMPTY_SELECTOR = '[data-asset-project-filter-no-results]';
 const PROJECT_ASSET_CATEGORY_FILTER_SELECTOR = '[data-asset-category-filter]';
 const ASSET_VIEWER_FILTER_DISCLOSURE_SELECTOR = '[data-asset-viewer-filter-disclosure]';
@@ -1796,8 +1799,9 @@ function updateAssetProjectFilterSummary(filter, options) {
     ? assetProjectFilterTitle(selectedOption)
     : 'All projects';
   const summary = filter.querySelector?.(ASSET_PROJECT_FILTER_SUMMARY_SELECTOR);
+  const currentSummary = filter.querySelector?.(ASSET_PROJECT_FILTER_CURRENT_SUMMARY_SELECTOR) || summary;
   const trigger = filter.querySelector?.('summary');
-  if (summary) summary.textContent = selectedTitle || 'All projects';
+  if (currentSummary) currentSummary.textContent = selectedTitle || 'All projects';
   trigger?.setAttribute?.('aria-label', `Project filter: ${selectedTitle || 'All projects'}`);
   trigger?.setAttribute?.('title', selectedTitle || 'All projects');
 }

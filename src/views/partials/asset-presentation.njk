@@ -1,0 +1,196 @@
+{% import "partials/icons.njk" as icons %}
+
+{% macro presenceIndicator(asset, tooltipPosition='') %}
+  {% set presenceLabel = asset.presenceLabel %}
+  {% if not presenceLabel %}
+    {% set presenceLabel = 'Present' if asset.is_present else 'Missing at last scan' %}
+  {% endif %}
+  {% if asset.is_present %}
+    <span class="asset-indicator asset-icon-control asset-tooltip{% if tooltipPosition == 'left' %} asset-tooltip--left{% endif %} asset-indicator--present" role="img" tabindex="0"
+          aria-label="{{ presenceLabel }}" data-tooltip="{{ presenceLabel }}">P</span>
+  {% else %}
+    <span class="asset-indicator asset-icon-control asset-tooltip{% if tooltipPosition == 'left' %} asset-tooltip--left{% endif %} asset-indicator--missing" role="img" tabindex="0"
+          aria-label="{{ presenceLabel }}" data-tooltip="{{ presenceLabel }}">!</span>
+  {% endif %}
+{% endmacro %}
+
+{% macro gridCard(asset, options={}) %}
+  {% set filenameLabel = asset.filename or asset.displayFilename or 'Unnamed asset' %}
+  {% set displayName = asset.displayFilename or asset.filename or 'Unnamed asset' %}
+  {% set previewUrl = asset.preview_url or asset.thumbnail_url %}
+  {% set previewAvailable = asset.is_present and previewUrl and asset.preview_state != 'unsupported' and asset.preview_state != 'missing' %}
+  <article class="asset-card{% if options.cardClass %} {{ options.cardClass }}{% endif %}{% if options.selected %} is-selected{% endif %}"
+           data-asset-id="{{ asset.id }}" role="option" aria-selected="{% if options.selected %}true{% else %}false{% endif %}"{% if options.selectable %} data-asset-selectable-card{% if options.selectableTabIndex %} tabindex="0"{% endif %}
+           aria-label="Toggle selection for {{ filenameLabel }}"{% endif %}>
+    <div class="asset-card-top">
+      {% if caller %}{{ caller('top-start') }}{% endif %}
+      {{ presenceIndicator(asset, 'left') }}
+      {% if caller %}{{ caller('top-end') }}{% endif %}
+      {% if asset.viewerUrl %}
+        <a class="asset-details-link asset-tooltip asset-tooltip--right" href="{{ asset.viewerUrl }}"
+           aria-label="View details for {{ filenameLabel }}" data-tooltip="View asset details">
+          {{ icons.icon('details') }}<span class="sr-only">View details</span>
+        </a>
+      {% endif %}
+    </div>
+
+    <div class="asset-card-media{% if asset.preview and asset.preview.kind == 'krita' %} asset-media--krita{% endif %}"{% if previewAvailable %} data-preview-enhancement data-preview-state="loading"{% endif %}>
+      {% if previewAvailable %}
+        {% if asset.viewerUrl %}
+          <a class="asset-card-media-link" href="{{ asset.viewerUrl }}" aria-label="View details for {{ filenameLabel }}">
+            <img class="asset-card-thumb"
+                 src="{{ previewUrl }}"
+                 alt="{{ asset.previewAltText or ('Preview of ' ~ filenameLabel) }}"
+                 loading="lazy"
+                 decoding="async"
+                 data-preview-image>
+          </a>
+        {% else %}
+          <img class="asset-card-thumb"
+               src="{{ previewUrl }}"
+               alt="{{ asset.previewAltText or ('Preview of ' ~ filenameLabel) }}"
+               loading="lazy"
+               decoding="async"
+               data-preview-image>
+        {% endif %}
+        <span class="asset-card-placeholder asset-card-fallback" data-preview-fallback hidden>{{ asset.typeLabel or 'File' }}</span>
+      {% elif not asset.is_present %}
+        <span class="asset-card-placeholder asset-card-placeholder-missing">Missing at last scan</span>
+      {% elif asset.preview_state == 'unsupported' %}
+        <span class="asset-card-placeholder">{{ asset.typeLabel or 'File' }} — preview not supported</span>
+      {% else %}
+        <span class="asset-card-placeholder">Preview unavailable</span>
+      {% endif %}
+    </div>
+
+    <div class="asset-card-body">
+      <div class="asset-card-title-controls">
+        <div class="asset-card-title-row" data-asset-title-row{% if options.titleRowHidden %} hidden{% endif %}>
+          {% if options.filenameLink and asset.viewerUrl %}
+            <a class="asset-card-title-text asset-file-link" href="{{ asset.viewerUrl }}">{{ displayName }}</a>
+          {% else %}
+            <span class="asset-card-title-text">{{ displayName }}</span>
+          {% endif %}
+          {% if caller %}{{ caller('title-row') }}{% endif %}
+        </div>
+        {% if caller %}{{ caller('title-controls') }}{% endif %}
+      </div>
+      {% if asset.locationLabel %}<span class="asset-card-location">{{ asset.locationLabel }}</span>{% endif %}
+      {% if asset.typeLabel or asset.formattedSize %}
+        <span class="asset-card-meta">{{ asset.typeLabel }}{% if asset.typeLabel and asset.formattedSize %} · {% endif %}{{ asset.formattedSize }}</span>
+      {% endif %}
+      {% if caller %}{{ caller('body') }}{% endif %}
+    </div>
+  </article>
+{% endmacro %}
+
+{% macro listCard(asset, options={}) %}
+  {% set filenameLabel = asset.filename or asset.displayFilename or 'Unnamed asset' %}
+  {% set displayName = asset.displayFilename or asset.filename or 'Unnamed asset' %}
+  {% set previewUrl = asset.preview_url or asset.thumbnail_url %}
+  {% set previewAvailable = asset.is_present and previewUrl and asset.preview_state != 'unsupported' and asset.preview_state != 'missing' %}
+  {% set hasCategory = asset.categoryLabel %}
+  {% set hasType = asset.typeLabel %}
+  {% set hasSize = asset.formattedSize %}
+  {% set hasModified = asset.modified_at is defined %}
+  <article class="asset-list-card{% if options.cardClass %} {{ options.cardClass }}{% endif %}{% if options.selected %} is-selected{% endif %}" data-asset-id="{{ asset.id }}"{% if options.selectable %} data-asset-selectable-card aria-selected="{% if options.selected %}true{% else %}false{% endif %}"{% endif %}>
+    {% if caller %}
+      <div class="asset-list-card-top">
+        {{ caller('top') }}
+      </div>
+    {% endif %}
+
+    <div class="asset-list-card-media"{% if previewAvailable %} data-preview-enhancement data-preview-state="loading"{% endif %}>
+      {% if previewAvailable %}
+        {% if asset.viewerUrl %}
+          <a class="asset-list-card-media-link" href="{{ asset.viewerUrl }}" aria-label="View preview of {{ filenameLabel }}{% if options.mediaContextLabel %} from {{ options.mediaContextLabel }}{% endif %}">
+            <img class="asset-list-card-media-image"
+                 src="{{ previewUrl }}"
+                 alt=""
+                 loading="lazy"
+                 decoding="async"
+                 data-preview-image>
+          </a>
+        {% else %}
+          <img class="asset-list-card-media-image"
+               src="{{ previewUrl }}"
+               alt=""
+               loading="lazy"
+               decoding="async"
+               data-preview-image>
+        {% endif %}
+        <span class="asset-list-card-media-fallback" data-preview-fallback hidden>{{ asset.typeLabel or 'File' }}</span>
+      {% elif not asset.is_present %}
+        <span class="asset-list-card-media-placeholder asset-list-card-media-placeholder--missing">Missing at last scan</span>
+      {% elif asset.preview_state == 'unsupported' %}
+        <span class="asset-list-card-media-placeholder">{{ asset.typeLabel or 'File' }} — preview not supported</span>
+      {% else %}
+        <span class="asset-list-card-media-placeholder">Preview unavailable</span>
+      {% endif %}
+    </div>
+
+    <div class="asset-list-card-body">
+      <div class="asset-list-card-header">
+        <div class="asset-list-card-heading">
+          <h2 class="asset-list-card-title">
+            {% if asset.viewerUrl %}
+              <a class="asset-file-link" href="{{ asset.viewerUrl }}">{{ displayName }}</a>
+            {% else %}
+              {{ displayName }}
+            {% endif %}
+          </h2>
+          {% if asset.locationLabel %}<span class="asset-list-card-location asset-location" data-asset-containing-location>{{ asset.locationLabel }}</span>{% endif %}
+        </div>
+        <span class="asset-list-card-presence">
+          {{ presenceIndicator(asset) }}
+        </span>
+      </div>
+
+      {% if hasCategory or hasType or hasSize or hasModified %}
+        <dl class="asset-list-card-metadata">
+          {% if hasCategory %}
+            <div class="asset-list-card-meta asset-list-card-meta--category">
+              <dt>Category</dt>
+              <dd>
+                {{ asset.categoryLabel }}
+                {% if asset.categoryDisabled %}<em class="asset-category-disabled-marker">(disabled)</em>{% endif %}
+              </dd>
+            </div>
+          {% endif %}
+          {% if hasType %}
+            <div class="asset-list-card-meta asset-list-card-meta--type">
+              <dt>Type</dt>
+              <dd><span class="asset-type-label">{{ asset.typeLabel }}</span></dd>
+            </div>
+          {% endif %}
+          {% if hasSize %}
+            <div class="asset-list-card-meta asset-list-card-meta--size">
+              <dt>Size</dt>
+              <dd>{{ asset.formattedSize }}</dd>
+            </div>
+          {% endif %}
+          {% if hasModified %}
+            <div class="asset-list-card-meta asset-list-card-meta--modified">
+              <dt>Modified</dt>
+              <dd>{{ asset.modified_at or '—' }}</dd>
+            </div>
+          {% endif %}
+        </dl>
+      {% endif %}
+
+      {% if caller %}{{ caller('associations') }}{% endif %}
+
+      {% if asset.viewerUrl or caller %}
+        <div class="asset-list-card-actions">
+          {% if asset.viewerUrl %}
+            <a class="asset-details-link asset-tooltip" href="{{ asset.viewerUrl }}"
+               aria-label="View details for {{ filenameLabel }}" data-tooltip="View asset details">
+              {{ icons.icon('details') }}<span class="sr-only">View details</span>
+            </a>
+          {% endif %}
+          {% if caller %}{{ caller('actions') }}{% endif %}
+        </div>
+      {% endif %}
+    </div>
+  </article>
+{% endmacro %}

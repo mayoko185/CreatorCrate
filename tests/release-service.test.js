@@ -1303,10 +1303,12 @@ describe('release service', () => {
       expect(page.assets.map((asset) => asset.id)).toEqual([categorized.id, uncategorized.id]);
       expect(page.categories.map((category) => category.id)).toEqual([source.id]);
       expect(page.activeCategoryId).toBeNull();
+      expect(page.assetPage.map((asset) => asset.id)).toEqual([categorized.id, uncategorized.id]);
+      expect(page.assetTotal).toBe(2);
       expect(page.candidateTotal).toBe(2);
     });
 
-    it('filters candidates by category while preserving complete assets, selection state, and order per release', () => {
+    it('filters the merged project asset page while preserving selection state and release order', () => {
       const source = addCategory(projectId, 'Source', 'source');
       const other = addCategory(projectId, 'Other', 'other', 1);
       const first = addAsset('a-first.txt', source.id);
@@ -1329,19 +1331,53 @@ describe('release service', () => {
 
       expect(firstPage.activeCategoryId).toBe(source.id);
       expect(firstPage.assets.map((asset) => asset.id)).toEqual([first.id, second.id, unselectedSource.id, otherAsset.id]);
+      expect(firstPage.assetPage.map((asset) => asset.id)).toEqual([first.id, second.id, unselectedSource.id]);
+      expect(firstPage.assetTotal).toBe(3);
       expect(firstPage.candidates.map((asset) => asset.id)).toEqual([unselectedSource.id]);
       expect(firstPage.candidateTotal).toBe(1);
       expect(firstPage.releaseAssets.map((asset) => asset.asset_id)).toEqual([second.id, first.id]);
       expect(firstPage.releaseAssets.map((asset) => asset.sort_order)).toEqual([0, 1]);
       expect(firstPage.releaseAssets.map((asset) => asset.role)).toEqual(['preview', 'primary']);
+      expect(firstPage.assetPresentation.selected.map((asset) => asset.id)).toEqual([second.id, first.id]);
+      expect(firstPage.assetPresentation.selected.map((asset) => asset.releaseContext)).toEqual([
+        { selected: true, role: 'preview', sortOrder: 0 },
+        { selected: true, role: 'primary', sortOrder: 1 },
+      ]);
+      expect(firstPage.assetPresentation.candidates.map((asset) => asset.id)).toEqual([unselectedSource.id]);
+      expect(firstPage.assetPresentation.candidates[0].releaseContext).toEqual({
+        selected: false,
+        role: null,
+        sortOrder: null,
+      });
+      expect(firstPage.assetPresentation.selected[0]).toMatchObject({
+        categoryLabel: 'Source',
+        categoryDisabled: false,
+        category: { id: source.id, displayName: 'Source', enabled: true },
+      });
+      expect(firstPage.assetPresentation.candidates[0].categoryLabel).toBe('Source');
+      expect(firstPage.assetPresentation.assets.map((asset) => asset.id)).toEqual([
+        first.id,
+        second.id,
+        unselectedSource.id,
+      ]);
+      expect(firstPage.assetPresentation.assets.map((asset) => asset.releaseContext.selected)).toEqual([
+        true,
+        true,
+        false,
+      ]);
 
       expect(secondPage.assets.map((asset) => asset.id)).toEqual([first.id, second.id, unselectedSource.id, otherAsset.id]);
       expect(secondPage.releaseAssets.map((asset) => asset.asset_id)).toEqual([first.id]);
+      expect(secondPage.assetPage.map((asset) => asset.id)).toEqual([
+        first.id,
+        second.id,
+        unselectedSource.id,
+      ]);
       expect(firstPage.assets.map((asset) => asset.id)).toContain(otherAsset.id);
       expect(firstPage.categories.map((category) => category.id)).toEqual([source.id, other.id]);
     });
 
-    it('returns complete assets and empty candidates for a valid empty category', () => {
+    it('returns complete assets and an empty merged page for a valid empty category', () => {
       const empty = addCategory(projectId, 'Empty', 'empty');
       const release = service.createRelease(projectId, validInput());
       const uncategorized = addAsset('uncategorized.txt');
@@ -1350,6 +1386,9 @@ describe('release service', () => {
 
       expect(page.activeCategoryId).toBe(empty.id);
       expect(page.assets.map((asset) => asset.id)).toEqual([uncategorized.id]);
+      expect(page.assetPage).toEqual([]);
+      expect(page.assetTotal).toBe(0);
+      expect(page.assetPresentation.assets).toEqual([]);
       expect(page.candidates).toEqual([]);
       expect(page.candidateTotal).toBe(0);
     });
@@ -1832,6 +1871,76 @@ describe('release service', () => {
           { assetId: missingAsset.id, role: 'attachment', sortOrder: 1 },
         ]);
       }).toThrow(ReleaseValidationError);
+    });
+  });
+
+  describe('membership-only asset selection', () => {
+    it('retains persisted role/order and appends newly selected IDs', () => {
+      const release = service.createRelease(projectId, validInput());
+      const first = assetRepo.upsert(projectId, 'first.txt', sampleAsset(projectId, { relativePath: 'first.txt' }));
+      const second = assetRepo.upsert(projectId, 'second.txt', sampleAsset(projectId, { relativePath: 'second.txt' }));
+      const third = assetRepo.upsert(projectId, 'third.txt', sampleAsset(projectId, { relativePath: 'third.txt' }));
+
+      service.selectAssets(release.id, [
+        { assetId: first.id, role: 'primary', sortOrder: 5 },
+        { assetId: second.id, role: 'source', sortOrder: 9 },
+      ]);
+
+      service.selectAssets(release.id, [
+        { assetId: third.id },
+        { assetId: first.id },
+        { assetId: second.id },
+      ], { membershipOnly: true });
+
+      expect(service.listReleaseAssets(release.id).map(({ asset_id, role, sort_order }) => ({ asset_id, role, sort_order }))).toEqual([
+        { asset_id: first.id, role: 'primary', sort_order: 0 },
+        { asset_id: second.id, role: 'source', sort_order: 1 },
+        { asset_id: third.id, role: 'attachment', sort_order: 2 },
+      ]);
+    });
+
+    it('preserves a checked missing asset and removes it only when omitted', () => {
+      const release = service.createRelease(projectId, validInput());
+      const present = assetRepo.upsert(projectId, 'present.txt', sampleAsset(projectId, { relativePath: 'present.txt' }));
+      const missing = assetRepo.upsert(projectId, 'missing.txt', sampleAsset(projectId, { relativePath: 'missing.txt' }));
+      const added = assetRepo.upsert(projectId, 'added.txt', sampleAsset(projectId, { relativePath: 'added.txt' }));
+
+      service.selectAssets(release.id, [
+        { assetId: present.id, role: 'primary', sortOrder: 0 },
+        { assetId: missing.id, role: 'preview', sortOrder: 1 },
+      ]);
+      assetRepo.markMissingByProjectIdAndPathNotIn(projectId, ['present.txt', 'added.txt']);
+
+      service.selectAssets(release.id, [
+        { assetId: added.id },
+        { assetId: missing.id },
+        { assetId: present.id },
+      ], { membershipOnly: true });
+
+      expect(service.listReleaseAssets(release.id).map(({ asset_id, role, sort_order }) => ({ asset_id, role, sort_order }))).toEqual([
+        { asset_id: present.id, role: 'primary', sort_order: 0 },
+        { asset_id: missing.id, role: 'preview', sort_order: 1 },
+        { asset_id: added.id, role: 'attachment', sort_order: 2 },
+      ]);
+
+      service.selectAssets(release.id, [
+        { assetId: present.id },
+        { assetId: added.id },
+      ], { membershipOnly: true });
+
+      expect(service.listReleaseAssets(release.id).map(({ asset_id }) => asset_id)).toEqual([present.id, added.id]);
+    });
+
+    it('rejects a newly selected missing asset in membership-only mode', () => {
+      const release = service.createRelease(projectId, validInput());
+      const missing = assetRepo.upsert(projectId, 'missing-new.txt', sampleAsset(projectId, { relativePath: 'missing-new.txt' }));
+      assetRepo.markMissingByProjectIdAndPathNotIn(projectId, []);
+
+      expect(() => service.selectAssets(
+        release.id,
+        [{ assetId: missing.id }],
+        { membershipOnly: true },
+      )).toThrow(ReleaseValidationError);
     });
   });
 

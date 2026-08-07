@@ -41,41 +41,59 @@
       <input type="search" id="search" name="search" value="{{ query.search or '' }}">
     </div>
 
-    <fieldset class="field asset-viewer-filter-field">
+    <fieldset class="field asset-viewer-filter-field asset-filter-multiselect-field">
       <legend>Status</legend>
-      <details class="asset-filter-multiselect" data-asset-viewer-filter-disclosure>
+      <details class="asset-filter-multiselect asset-filter-multiselect--sized" data-asset-viewer-filter-disclosure>
         <summary id="project-status-filter-trigger"
                  aria-controls="project-status-filter-options"
                  aria-expanded="false"
                  aria-label="Status filter: {{ renderFilterSummary(query.statuses, statusOptions, 'All active', 'statuses', '') }}">
-          <span class="asset-filter-multiselect-summary">{{ renderFilterSummary(query.statuses, statusOptions, 'All active', 'statuses', '') }}</span>
+          <span class="asset-filter-multiselect-summary">
+            <span class="asset-filter-multiselect-summary-current">{{ renderFilterSummary(query.statuses, statusOptions, 'All active', 'statuses', '') }}</span>
+            <span class="asset-filter-multiselect-summary-width" aria-hidden="true">
+              <span>All active</span>
+              {% for option in statusOptions %}<span>{{ option.label or option.displayName }}</span>{% endfor %}
+              <span>{{ statusOptions.length }} statuses selected</span>
+            </span>
+          </span>
         </summary>
         <div id="project-status-filter-options" class="asset-filter-multiselect-panel" role="group" aria-label="Status options">
           {% for option in statusOptions %}
             <div class="asset-filter-multiselect-option">
-              <input id="project-status-option-{{ loop.index }}" name="status" type="checkbox" value="{{ option.value }}"{% if option.selected %} checked{% endif %}>
-              <label for="project-status-option-{{ loop.index }}">{{ option.label }}</label>
+              <label for="project-status-option-{{ loop.index }}">
+                <input id="project-status-option-{{ loop.index }}" name="status" type="checkbox" value="{{ option.value }}"{% if option.selected %} checked{% endif %}>
+                <span>{{ option.label }}</span>
+              </label>
             </div>
           {% endfor %}
         </div>
       </details>
     </fieldset>
 
-    <fieldset class="field asset-viewer-filter-field">
+    <fieldset class="field asset-viewer-filter-field asset-filter-multiselect-field">
       <legend>Tag</legend>
-      <details class="asset-filter-multiselect" data-asset-viewer-filter-disclosure>
+      <details class="asset-filter-multiselect asset-filter-multiselect--sized" data-asset-viewer-filter-disclosure>
         <summary id="project-tag-filter-trigger"
                  aria-controls="project-tag-filter-options"
                  aria-expanded="false"
                  aria-label="Tag filter: {{ renderFilterSummary(query.tagIds, tagOptions, 'All tags', 'tags', '') }}">
-          <span class="asset-filter-multiselect-summary">{{ renderFilterSummary(query.tagIds, tagOptions, 'All tags', 'tags', '') }}</span>
+          <span class="asset-filter-multiselect-summary">
+            <span class="asset-filter-multiselect-summary-current">{{ renderFilterSummary(query.tagIds, tagOptions, 'All tags', 'tags', '') }}</span>
+            <span class="asset-filter-multiselect-summary-width" aria-hidden="true">
+              <span>All tags</span>
+              {% for option in tagOptions %}<span>{{ option.label or option.displayName }}</span>{% endfor %}
+              <span>{{ tagOptions.length }} tags selected</span>
+            </span>
+          </span>
         </summary>
         <div id="project-tag-filter-options" class="asset-filter-multiselect-panel" role="group" aria-label="Tag options">
           {% if tagOptions.length > 0 %}
             {% for option in tagOptions %}
               <div class="asset-filter-multiselect-option">
-                <input id="project-tag-option-{{ loop.index }}" name="tag" type="checkbox" value="{{ option.value }}"{% if option.selected %} checked{% endif %}>
-                <label for="project-tag-option-{{ loop.index }}">{{ option.displayName }}</label>
+                <label for="project-tag-option-{{ loop.index }}">
+                  <input id="project-tag-option-{{ loop.index }}" name="tag" type="checkbox" value="{{ option.value }}"{% if option.selected %} checked{% endif %}>
+                  <span>{{ option.displayName }}</span>
+                </label>
               </div>
             {% endfor %}
           {% else %}

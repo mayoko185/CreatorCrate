@@ -8,7 +8,7 @@
  *  - Release detail organization, destructive-section separation
  *  - Release form shared contract (form sections, labels, actions)
  *  - Publish workflow page (heading, sections, notice patterns)
- *  - Release asset curation (shared heading, notices, tables, empty states)
+ *  - Release asset curation (shared heading, notices, membership cards, empty states)
  *  - Shared-component consistency across release pages
  *  - Accessibility (one h1, labels, headings)
  *  - No route or form behavior regression
@@ -470,11 +470,12 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
 
       const res = await agent.get(createRes.headers.location).expect(200);
       const selectedSection = extractSectionByHeading(res.text, 'Selected Assets');
-      expect(selectedSection).toContain('<div class="table-scroll" tabindex="0" aria-label="Selected release assets">');
-      expect(selectedSection).toContain('<table class="data-table">');
+      expect(selectedSection).toContain('<ul class="asset-grid" role="listbox" aria-label="Selected release assets">');
+      expect(selectedSection).not.toContain('<table class="data-table">');
+      expect(selectedSection).not.toContain('table-scroll');
       expect(selectedSection).toContain('detail-selected.txt');
-      expect(selectedSection).toContain('<td>Primary</td>');
-      expect(selectedSection).toContain('<span class="status-badge status-badge--success">Present</span>');
+      expect(selectedSection).toContain('<strong>Role</strong> Primary');
+      expect(selectedSection).toContain('aria-label="Present"');
     });
   });
 
@@ -671,7 +672,7 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
       expect(res.text).toContain('archived');
     });
 
-    it('asset page keeps selected assets tabular and renders candidates as an accessible grid', async () => {
+    it('asset page keeps membership directly on one accessible all-assets card collection', async () => {
       const projRes = await agent.post('/projects')
         .send('title=Asset+Table+Test')
         .send('status=tbd')
@@ -714,29 +715,40 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
 
       const res = await agent.get(`${relRes.headers.location}/assets`).expect(200);
       const selectedSection = extractSectionByHeading(res.text, 'Selected Assets');
-      const candidateSection = extractSectionByHeading(res.text, 'Available Assets');
+      const selectedId = byFilename('selected-primary-with-long-action-name.txt').id;
+      const previewId = byFilename('selected-preview.txt').id;
+      const candidateId = byFilename('candidate-available.txt').id;
 
-      expect(selectedSection).toContain('<div class="table-scroll" tabindex="0" aria-label="Selected release assets">');
-      expect(selectedSection).toContain('<table class="data-table">');
+      expect(selectedSection).toContain('<ul class="asset-grid" role="listbox" aria-label="Release assets">');
+      expect(selectedSection).not.toContain('<table class="data-table">');
+      expect(selectedSection).not.toContain('table-scroll');
       expect(selectedSection).toContain('selected-primary-with-long-action-name.txt');
       expect(selectedSection).toContain('<label for="role-');
       expect(selectedSection).toContain('Role for selected-primary-with-long-action-name.txt');
-      expect(selectedSection).toContain('/remove-selected');
-      expect(selectedSection).toContain('/move-up');
-      expect(selectedSection).toContain('/move-down');
-      expect(selectedSection).toContain('class="row-actions release-asset-actions"');
-      expect(selectedSection).toContain('aria-label="Remove selected-primary-with-long-action-name.txt"');
-      expect(selectedSection).toContain('aria-label="Move selected-primary-with-long-action-name.txt up');
-      expect(selectedSection).toContain('aria-label="Move selected-primary-with-long-action-name.txt down');
-
-      expect(candidateSection).toContain('<ul class="candidate-grid" aria-label="Available release assets">');
-      expect(candidateSection).toContain('<li class="candidate-grid-item">');
-      expect(candidateSection).toContain('<div class="candidate-grid-tile">');
-      expect(candidateSection).toContain('<strong class="candidate-grid-filename">candidate-available.txt</strong>');
-      expect(candidateSection).toContain('<code class="candidate-grid-path">candidate-available.txt</code>');
-      expect(candidateSection).toContain('candidate-available.txt');
-      expect(candidateSection).toContain('aria-label="Add candidate-available.txt"');
-      expect(candidateSection).not.toContain('selected-primary-with-long-action-name.txt');
+      expect(selectedSection).not.toContain('/move-up');
+      expect(selectedSection).not.toContain('/move-down');
+      expect(selectedSection).not.toContain('class="row-actions release-asset-actions"');
+      expect(selectedSection).toContain('candidate-available.txt');
+      // Membership is conveyed by the checkbox and selected-state styling,
+      // not by a verbose badge in the grid card.
+      expect(selectedSection).not.toContain('Membership</strong> Not selected');
+      expect(selectedSection).not.toContain('release-asset-membership-status');
+      expect(selectedSection).toContain(`id="release-asset-select-${selectedId}"`);
+      expect(selectedSection).toContain(`id="release-asset-select-${previewId}"`);
+      expect(selectedSection).toContain(`id="release-asset-select-${candidateId}"`);
+      const cardFor = (assetId) => selectedSection.match(
+        new RegExp(`<article[^>]*data-asset-id="${assetId}"[\\s\\S]*?<\\/article>`),
+      )?.[0] || '';
+      expect(cardFor(selectedId)).toMatch(new RegExp(`id="release-asset-select-${selectedId}"[\\s\\S]*?checked`));
+      expect(cardFor(previewId)).toMatch(new RegExp(`id="release-asset-select-${previewId}"[\\s\\S]*?checked`));
+      expect(cardFor(candidateId)).not.toMatch(/checked/);
+      expect(selectedSection).toMatch(new RegExp(`data-asset-id="${selectedId}"[^>]*aria-selected="true"`));
+      expect(selectedSection).toMatch(new RegExp(`data-asset-id="${candidateId}"[^>]*aria-selected="false"`));
+      expect(selectedSection).not.toContain('data-release-asset-picker');
+      expect(selectedSection).not.toContain('Asset membership');
+      expect(selectedSection).not.toContain('release-asset-picker');
+      expect(res.text).not.toContain('Available Assets');
+      expect(res.text).not.toContain('candidate-grid');
     });
 
     it('asset page empty state uses shared partial', async () => {

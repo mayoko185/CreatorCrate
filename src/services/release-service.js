@@ -4,6 +4,7 @@ import { createAssetRepository } from '../data/asset-repository.js';
 import { createAssetCategoryRepository } from '../data/asset-category-repository.js';
 import { AssetCategoryNotFoundError } from './asset-category-service.js';
 import { AssetCategoryValidationError } from './asset-category-validation.js';
+import { buildReleaseAssetPagePresentation } from './release-asset-presenter.js';
 import { formatLocalDate, formatLocalTime, getLocalTodayIso } from '../util/date.js';
 import { isValidWebUrl } from '../util/url.js';
 
@@ -150,6 +151,20 @@ function readCategoryFilter(rawQuery) {
   if (Object.hasOwn(rawQuery, 'categoryId')) return rawQuery.categoryId;
   if (Object.hasOwn(rawQuery, 'category')) return rawQuery.category;
   return undefined;
+}
+
+function matchesReleaseAssetFilters(asset, filters, categoryId) {
+  if (categoryId !== null && asset.category_id !== categoryId) return false;
+
+  if (filters.extension && String(asset.extension || '').toLowerCase() !== filters.extension) {
+    return false;
+  }
+
+  if (filters.search && !String(asset.filename || '').toLowerCase().includes(filters.search.toLowerCase())) {
+    return false;
+  }
+
+  return true;
 }
 
 export function createReleaseService({ db, evaluateReleaseReadiness }) {
@@ -653,6 +668,34 @@ export function createReleaseService({ db, evaluateReleaseReadiness }) {
     },
 
     /**
+     * Build the normalized, selected-only asset presentation for the release
+     * detail page. The editable asset-management collection is intentionally
+     * not loaded here.
+     *
+     * @param {number} releaseId
+     * @param {Array} [selectedAssets]
+     * @returns {{ selected: Array, candidates: Array, assets: Array }}
+     */
+    getReleaseAssetPresentation(releaseId, selectedAssets = null) {
+      const release = repository.findById(releaseId);
+      if (!release) {
+        throw new ReleaseNotFoundError(releaseId);
+      }
+
+      const rows = Array.isArray(selectedAssets)
+        ? selectedAssets
+        : repository.listReleaseAssets(releaseId);
+      const categories = assetCategoryRepository.listProjectCategories(release.project_id);
+
+      return buildReleaseAssetPagePresentation({
+        selectedAssets: rows,
+        assets: [],
+        candidateAssets: [],
+        categories,
+      });
+    },
+
+    /**
      * Validate selection input.
      * @param {Array<{assetId: number, role?: string, sortOrder?: number}>} selections
      * @param {number} releaseId
@@ -718,7 +761,7 @@ export function createReleaseService({ db, evaluateReleaseReadiness }) {
      * @param {Array<{assetId: number, role?: string, sortOrder?: number}>} selections
      * @returns {Array}
      */
-    selectAssets(releaseId, selections) {
+    selectAssets(releaseId, selections, { membershipOnly = false } = {}) {
       const release = repository.findById(releaseId);
       if (!release) {
         throw new ReleaseNotFoundError(releaseId);
@@ -757,24 +800,48 @@ export function createReleaseService({ db, evaluateReleaseReadiness }) {
         throw new ReleaseValidationError(errors);
       }
 
-      // Preserve existing selections for missing assets that were not re-selected in the form.
-      // This prevents silent removal of selections when a missing asset is unchecked in the form.
       const selectedAssetIdSet = new Set(assetIds);
-      const preservedSelections = [];
+      let finalSelections;
 
-      for (const existing of existingReleaseAssets) {
-        if (existing.is_present === 0 && !selectedAssetIdSet.has(existing.asset_id)) {
-          // This existing selection is for a missing asset and was not re-selected in the form.
-          // Preserve it to maintain release history.
-          preservedSelections.push({
+      if (membershipOnly) {
+        // The unified picker submits membership only. Existing selected rows
+        // retain their server-owned role and relative order; newly submitted
+        // IDs append in the order received with the default attachment role.
+        // Omitting an existing missing row is an explicit removal, unlike the
+        // legacy metadata form below.
+        const existingIds = new Set(existingReleaseAssets.map((row) => row.asset_id));
+        finalSelections = existingReleaseAssets
+          .filter((existing) => selectedAssetIdSet.has(existing.asset_id))
+          .map((existing, sortOrder) => ({
             assetId: existing.asset_id,
             role: existing.role,
-            sortOrder: existing.sort_order,
+            sortOrder,
+          }));
+
+        for (const { assetId } of cleaned) {
+          if (existingIds.has(assetId)) continue;
+          finalSelections.push({
+            assetId,
+            role: 'attachment',
+            sortOrder: finalSelections.length,
           });
         }
+      } else {
+        // Legacy metadata submissions preserve existing missing selections so
+        // older clients cannot silently discard release history.
+        const preservedSelections = [];
+        for (const existing of existingReleaseAssets) {
+          if (existing.is_present === 0 && !selectedAssetIdSet.has(existing.asset_id)) {
+            preservedSelections.push({
+              assetId: existing.asset_id,
+              role: existing.role,
+              sortOrder: existing.sort_order,
+            });
+          }
+        }
+        finalSelections = [...cleaned, ...preservedSelections];
       }
 
-      const finalSelections = [...cleaned, ...preservedSelections];
       try {
         repository.replaceReleaseAssets(releaseId, finalSelections);
       } catch (err) {
@@ -1229,17 +1296,20 @@ export function createReleaseService({ db, evaluateReleaseReadiness }) {
      *   - release
      *   - project
      *   - releaseAssets — complete selected assets (unpaginated, includes missing)
-     *   - assets — complete project asset list for Bulk Selection
-     *   - categories — all project-owned categories for a future filter control
+     *   - assets — complete project asset list used for eligibility states
+     *   - categories — all project-owned categories for the filter control
+     *   - categoryNavigation — whole-project category counts for the disclosure
      *   - activeCategoryId — selected project category ID, or null
-     *   - candidates — current bounded candidate page
-     *   - candidateTotal — total matching candidates
-     *   - candidatePage — current page number
-     *   - candidatePageSize — page size
-     *   - candidatePageCount — total pages
-     *   - candidateFilters — normalized filter values
-     *   - candidateExtensions — available extension values for filter dropdown
-     *   - pageUrl — URL builder for pagination
+     *   - assetPage — current filtered/page project asset collection
+     *   - assetTotal — total filtered project asset collection
+     *   - assetPage — current page number
+     *   - assetPageSize — page size
+     *   - assetPageCount — total pages
+     *   - assetFilters — normalized filter values
+     *   - assetExtensions — available project extension values
+     *   - eligibleAssetCount — present project assets, selected or not
+     *   - eligibleCandidateCount — present project assets not selected
+     *   - assetPresentation — selected assets plus merged page asset views
      *
      * @param {number} releaseId
      * @param {Object} rawQuery - raw query parameters for candidate filters
@@ -1250,14 +1320,14 @@ export function createReleaseService({ db, evaluateReleaseReadiness }) {
      *   assets: Array,
      *   categories: Array,
      *   activeCategoryId: number|null,
-     *   candidates: Array,
-     *   candidateTotal: number,
-     *   candidatePage: number,
-     *   candidatePageSize: number,
-     *   candidatePageCount: number,
-     *   candidateFilters: { search: string|null, extension: string|null },
-     *   candidateExtensions: string[],
-     *   pageUrl: Function,
+     *   assetPage: Array,
+     *   assetTotal: number,
+     *   assetPageNumber: number,
+     *   assetPageSize: number,
+     *   assetPageCount: number,
+     *   assetFilters: { search: string|null, extension: string|null },
+     *   assetExtensions: string[],
+     *   assetPresentation: { selected: Array, candidates: Array, assets: Array },
      * }}
      */
     getReleaseAssetManagementPage(releaseId, rawQuery = {}) {
@@ -1273,8 +1343,8 @@ export function createReleaseService({ db, evaluateReleaseReadiness }) {
         throw err;
       }
 
-      // Complete selected assets (unpaginated, includes missing)
-      const releaseAssets = repository.listReleaseAssets(releaseId);
+       // Complete selected assets (unpaginated, includes missing).
+       const releaseAssets = repository.listReleaseAssets(releaseId);
 
       const activeCategoryId = normalizeOptionalCategoryId(readCategoryFilter(rawQuery));
       const categories = assetCategoryRepository.listProjectCategories(release.project_id);
@@ -1287,61 +1357,88 @@ export function createReleaseService({ db, evaluateReleaseReadiness }) {
 
       const assets = this.findProjectAssets(release.project_id);
 
-      // Normalize candidate filters
-      const candidateFilters = this.normalizeCandidateQuery(rawQuery);
-
-      // Count matching candidates
-      const candidateTotal = repository.countReleaseCandidates(
-        releaseId,
-        release.project_id,
-        {
-          search: candidateFilters.search,
-          extension: candidateFilters.extension,
-          categoryId: activeCategoryId,
+      // Whole-project category counts for the filter disclosure, computed from
+      // the already-loaded complete project asset collection — never one query
+      // per category. Present and missing assets both contribute, matching the
+      // project asset browser's navigation semantics. Zero-count categories
+      // render with 0, as on the reference page.
+      const categoryCounts = {};
+      let uncategorizedCount = 0;
+      for (const asset of assets) {
+        if (asset.category_id === null || asset.category_id === undefined) {
+          uncategorizedCount += 1;
+        } else {
+          categoryCounts[asset.category_id] = (categoryCounts[asset.category_id] || 0) + 1;
         }
-      );
+      }
+      const categoryNavigation = {
+        totalCount: assets.length,
+        uncategorizedCount,
+        byCategoryId: categoryCounts,
+      };
+      const selectedAssetIds = new Set(releaseAssets.map((asset) => asset.asset_id));
+      const eligibleAssetCount = assets.filter((asset) => asset.is_present === 1).length;
+      const eligibleCandidateCount = assets.filter(
+        (asset) => asset.is_present === 1 && !selectedAssetIds.has(asset.id),
+      ).length;
 
-      // Pagination metadata
-      const candidatePageCount = Math.max(1, Math.ceil(candidateTotal / candidateFilters.pageSize));
-      const candidatePage = Math.min(candidateFilters.page, candidatePageCount);
-
-      // Fetch candidate page
-      const candidates = repository.findReleaseCandidatePage(
-        releaseId,
-        release.project_id,
-        {
-          search: candidateFilters.search,
-          extension: candidateFilters.extension,
-          categoryId: activeCategoryId,
-          page: candidatePage,
-          pageSize: candidateFilters.pageSize,
-        }
+      // The editable page is one project-asset collection. Present assets are
+      // eligible for selection; selected missing assets remain in the same
+      // collection as an explicit exception so they can be retained or removed.
+      const assetFilters = this.normalizeCandidateQuery(rawQuery);
+      const filteredAssets = assets.filter((asset) => {
+        const selectedMissing = selectedAssetIds.has(asset.id) && asset.is_present !== 1;
+        return selectedMissing || (asset.is_present === 1
+          && matchesReleaseAssetFilters(asset, assetFilters, activeCategoryId));
+      });
+      const assetTotal = filteredAssets.length;
+      const assetPageCount = Math.max(1, Math.ceil(assetTotal / assetFilters.pageSize));
+      const assetPageNumber = Math.min(assetFilters.page, assetPageCount);
+      const assetPage = filteredAssets.slice(
+        (assetPageNumber - 1) * assetFilters.pageSize,
+        assetPageNumber * assetFilters.pageSize,
       );
-
-      // Available extensions for filter dropdown
-      const candidateExtensions = repository.getReleaseCandidateExtensions(
-        releaseId,
-        release.project_id,
-        { categoryId: activeCategoryId },
-      );
+      const pageCandidates = assetPage.filter((asset) => !selectedAssetIds.has(asset.id));
+      const candidateTotal = filteredAssets.filter((asset) => !selectedAssetIds.has(asset.id)).length;
+      const assetExtensions = assetRepository.getExtensions(release.project_id);
+      const assetPresentation = buildReleaseAssetPagePresentation({
+        selectedAssets: releaseAssets,
+        assets: assetPage,
+        candidateAssets: pageCandidates,
+        categories,
+      });
 
       return {
         release,
         project,
-        releaseAssets,
-        assets,
-        categories,
-        activeCategoryId,
-        candidates,
-        candidateTotal,
-        candidatePage,
-        candidatePageSize: candidateFilters.pageSize,
-        candidatePageCount,
-        candidateFilters: {
-          search: candidateFilters.search,
-          extension: candidateFilters.extension,
-        },
-        candidateExtensions,
+         releaseAssets,
+         assets,
+         categories,
+         categoryNavigation,
+         activeCategoryId,
+         assetPage,
+         assetTotal,
+         assetPageNumber,
+         assetPageSize: assetFilters.pageSize,
+         assetPageCount,
+         assetFilters: {
+           search: assetFilters.search,
+           extension: assetFilters.extension,
+         },
+         assetExtensions,
+         candidates: pageCandidates,
+         candidateTotal,
+         candidatePage: assetPageNumber,
+         candidatePageSize: assetFilters.pageSize,
+         candidatePageCount: assetPageCount,
+         candidateFilters: {
+           search: assetFilters.search,
+           extension: assetFilters.extension,
+         },
+         candidateExtensions: assetExtensions,
+         eligibleAssetCount,
+         eligibleCandidateCount,
+         assetPresentation,
       };
     },
 

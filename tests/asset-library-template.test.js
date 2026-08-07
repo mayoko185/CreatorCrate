@@ -204,7 +204,7 @@ describe('cross-project Asset Viewer template', () => {
     expect(html).toMatch(/<form class="filters asset-viewer-filters" method="get" action="\/assets">/);
     expect(html).toContain('<input type="hidden" name="view" value="list">');
     expect(html).toContain('aria-label="Project filter: Beta Project"');
-    expect(html).toMatch(/<span class="asset-filter-multiselect-summary" data-asset-project-filter-summary>Beta Project<\/span>/);
+    expect(html).toMatch(/<span class="asset-filter-multiselect-summary" data-asset-project-filter-summary>\s*<span class="asset-filter-multiselect-summary-current" data-asset-project-filter-current-summary>Beta Project<\/span>[\s\S]*?<span class="asset-filter-multiselect-summary-width" aria-hidden="true">[\s\S]*?<\/span>\s*<\/span>/);
     expect(html).toMatch(/<input id="asset-project-option-2" name="project" type="radio" value="2" checked>/);
     expect(html).toContain('aria-label="Category filter: Renders"');
     expect(html).toMatch(/<input[^>]+name="category"[^>]+value="renders" checked>/);
@@ -243,7 +243,7 @@ describe('cross-project Asset Viewer template', () => {
 
     expect(selectedHtml).toContain('aria-expanded="false"');
     expect(selectedHtml).toContain('aria-label="Project filter: Beta Project"');
-    expect(selectedHtml).toMatch(/<span class="asset-filter-multiselect-summary" data-asset-project-filter-summary>Beta Project<\/span>/);
+    expect(selectedHtml).toMatch(/<span class="asset-filter-multiselect-summary" data-asset-project-filter-summary>\s*<span class="asset-filter-multiselect-summary-current" data-asset-project-filter-current-summary>Beta Project<\/span>[\s\S]*?<span class="asset-filter-multiselect-summary-width" aria-hidden="true">[\s\S]*?<\/span>\s*<\/span>/);
     expect(selectedHtml).toMatch(/<input id="asset-project-option-all" name="project" type="radio" value="">/);
     expect(selectedHtml).toMatch(/<input id="asset-project-option-2" name="project" type="radio" value="2" checked>/);
     expect(selectedHtml).not.toMatch(/<input id="asset-project-filter-search"[^>]+name="project"/);
@@ -289,6 +289,19 @@ describe('cross-project Asset Viewer template', () => {
     expect((html.match(/name="category"[^>]+checked/g) || [])).toHaveLength(2);
     expect((html.match(/name="tag"[^>]+checked/g) || [])).toHaveLength(2);
     expect((html.match(/name="extension"[^>]+checked/g) || [])).toHaveLength(2);
+    for (const [optionsId, inputName] of [
+      ['asset-project-filter-options', 'project'],
+      ['asset-category-filter-options', 'category'],
+      ['asset-tag-filter-options', 'tag'],
+      ['asset-extension-filter-options', 'extension'],
+    ]) {
+      const disclosure = (html.match(/<details[^>]*data-asset-viewer-filter-disclosure[\s\S]*?<\/details>/g) || [])
+        .find((candidate) => candidate.includes(`aria-controls="${optionsId}"`)) || '';
+      expect(disclosure).toContain('asset-filter-multiselect--sized');
+      expect(disclosure).toContain('asset-filter-multiselect-summary-current');
+      expect(disclosure).toContain('class="asset-filter-multiselect-summary-width" aria-hidden="true"');
+      expect(disclosure).toMatch(new RegExp(`<label for="[^"]+">\\s*<input[^>]+name="${inputName}"`));
+    }
     expect(html).not.toContain('id="asset-search"');
     expect(html).not.toMatch(/<input[^>]+name="search"/);
     expect(html).not.toMatch(/<select[^>]+(?:id="asset-(tag|category|extension)"|name="(tag|category|extension)")/);
@@ -641,7 +654,14 @@ describe('cross-project Asset Viewer template', () => {
     expect(css).toMatch(/@media \(max-width: 540px\)[\s\S]*?\.asset-filter-multiselect-panel\s*\{[\s\S]*?width:\s*100%/);
     expect(css).toMatch(/\.asset-viewer-project-filter \.asset-project-filter-panel\s*\{[\s\S]*?max-height:\s*20rem[\s\S]*?overflow:\s*hidden/);
     expect(css).toMatch(/\.asset-viewer-project-filter \.asset-project-filter-option-list\s*\{[\s\S]*?overflow-y:\s*auto/);
-    expect(css).toMatch(/\.asset-viewer-project-filter \.asset-filter-multiselect-summary\s*\{[\s\S]*?text-overflow:\s*ellipsis/);
+    expect(css).toMatch(/\.asset-filter-multiselect-field\s*\{[^}]*flex:\s*0 1 auto[^}]*width:\s*max-content/);
+    expect(css).toMatch(/\.asset-filter-multiselect--sized\s*\{[^}]*width:\s*max-content[^}]*max-width:\s*100%/);
+    expect(css).toMatch(/\.asset-filter-multiselect--sized \.asset-filter-multiselect-summary\s*\{[\s\S]*?display:\s*grid[\s\S]*?grid-template-columns:\s*max-content/);
+    expect(css).toMatch(/\.asset-filter-multiselect--sized \.asset-filter-multiselect-summary-width\s*\{[\s\S]*?max-height:\s*0[\s\S]*?overflow:\s*hidden[\s\S]*?visibility:\s*hidden[\s\S]*?pointer-events:\s*none/);
+    expect(css).toMatch(/\.asset-filter-multiselect--sized \.asset-filter-multiselect-panel\s*\{[\s\S]*?width:\s*max-content[\s\S]*?max-width:\s*min\(/);
+    expect(css).toMatch(/\.asset-filter-multiselect--sized \.asset-filter-multiselect-option > label\s*\{[\s\S]*?width:\s*100%/);
+    expect(css).toMatch(/\.asset-viewer-project-filter \.asset-filter-multiselect-summary-current\s*\{[\s\S]*?text-overflow:\s*ellipsis/);
+    expect(css).toMatch(/@media \(max-width: 540px\)[\s\S]*?\.asset-filter-multiselect-field\s*\{[\s\S]*?width:\s*100%[\s\S]*?max-width:\s*100%/);
   });
 
   it('keeps transformed Grid cards and hover information below the global navigation root', () => {

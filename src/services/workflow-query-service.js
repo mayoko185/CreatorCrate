@@ -36,7 +36,15 @@ import {
   AUTO_RENAME_UNAVAILABLE_REASONS,
   createAssetBrowserPreferenceService,
 } from './asset-browser-preference-service.js';
-import { classifyPreviewable, buildAssetRevisionToken } from './preview-service.js';
+import { classifyPreviewable } from './preview-service.js';
+import {
+  buildAssetLocationLabel,
+  buildAssetOriginalUrl,
+  buildAssetPreviewModel,
+  buildDisplayFilename,
+  buildPreviewAltText,
+  formatFileSize,
+} from './asset-presentation.js';
 import { getLocalTodayIso } from '../util/date.js';
 
 const DEFAULT_LIMITS = Object.freeze({
@@ -308,34 +316,6 @@ function isLeapYear(year) {
 function totalFromCounts(counts) {
   if (!counts) return 0;
   return Object.values(counts).reduce((sum, n) => sum + (Number.isFinite(n) ? n : 0), 0);
-}
-
-/**
- * Format a byte count into a human-readable string using binary units.
- * @param {number} bytes
- * @returns {string}
- */
-function formatFileSize(bytes) {
-  if (!Number.isFinite(bytes) || bytes < 0) return '\u2014';
-  if (bytes === 0) return '0 B';
-  if (bytes < 1024) return `${bytes} B`;
-  const units = ['KB', 'MB', 'GB', 'TB'];
-  let value = bytes / 1024;
-  let i = 0;
-  while (value >= 1024 && i < units.length - 1) {
-    value /= 1024;
-    i++;
-  }
-  const decimals = value < 10 ? 1 : 0;
-  return `${value.toFixed(decimals)} ${units[i]}`;
-}
-
-function buildPreviewAltText(asset) {
-  const filename = typeof asset.filename === 'string' ? asset.filename.trim() : '';
-  const identifier = filename || (
-    Number.isInteger(asset.id) && asset.id > 0 ? `Asset ${asset.id}` : 'Unnamed asset'
-  );
-  return `Preview of ${identifier}`;
 }
 
 /**
@@ -1555,54 +1535,6 @@ export function createWorkflowQueryService({
     return extensionChoices.includes(normalized) ? normalized : null;
   }
 
-  function buildPreviewUrls(asset, revision) {
-    if (!revision) {
-      return { thumbnail: null, preview: null };
-    }
-
-    const query = new URLSearchParams({ v: revision }).toString();
-    return {
-      thumbnail: `/projects/${asset.project_id}/assets/${asset.id}/thumbnail?${query}`,
-      preview: `/projects/${asset.project_id}/assets/${asset.id}/preview?${query}`,
-    };
-  }
-
-  function buildAssetPreviewModel(asset) {
-    if (!asset.is_present) {
-      return {
-        state: 'missing',
-        previewable: false,
-        kind: null,
-        sourceMetadataValid: false,
-        revision: null,
-        urls: { thumbnail: null, preview: null },
-      };
-    }
-
-    const classification = classifyPreviewable(asset);
-    if (!classification.supported) {
-      return {
-        state: 'unsupported',
-        previewable: false,
-        kind: null,
-        sourceMetadataValid: false,
-        revision: null,
-        urls: { thumbnail: null, preview: null },
-      };
-    }
-
-    const revision = buildAssetRevisionToken(asset);
-    const urls = buildPreviewUrls(asset, revision);
-    return {
-      state: 'previewable',
-      previewable: true,
-      kind: classification.kind,
-      sourceMetadataValid: revision !== null,
-      revision,
-      urls,
-    };
-  }
-
   function attachReleasePreviewUrls(entries) {
     if (!Array.isArray(entries) || entries.length === 0) return [];
 
@@ -1688,13 +1620,6 @@ export function createWorkflowQueryService({
       ...release,
       thumbnails: thumbnailsByReleaseId.get(release.id) || [],
     }));
-  }
-
-  function buildOriginalUrl(asset) {
-    if (!asset.is_present) return null;
-    const classification = classifyPreviewable(asset);
-    if (!classification.supported || classification.kind !== 'image') return null;
-    return `/projects/${asset.project_id}/assets/${asset.id}/original`;
   }
 
   function appendQuery(basePath, query) {
@@ -1792,34 +1717,6 @@ export function createWorkflowQueryService({
       uncategorizedActive: filters.category === 'uncategorized' && filters.presence === 'all',
       missingActive: filters.category === 'all' && filters.presence === 'missing',
     };
-  }
-
-  /**
-   * Render-ready location label for the browser table / viewer, from the
-   * chunk-1 `nested_path` + category model. Never parses `relative_path`.
-   *
-   *   - non-empty nested_path -> the nested_path itself (works for both
-   *     categorized nested assets and uncategorized assets under unknown
-   *     directories)
-   *   - empty nested_path + no category -> "Project root"
-   *   - empty nested_path + a category (i.e. sitting at the category root)
-   *     -> '' (no useful secondary location beyond the category label
-   *     already shown, so the template omits the location element entirely)
-   * @param {{ nested_path: string, category_id: number|null }} asset
-   * @returns {string}
-   */
-  function buildAssetLocationLabel(asset) {
-    if (asset.nested_path) return asset.nested_path;
-    return asset.category_id === null || asset.category_id === undefined ? 'Project root' : '';
-  }
-
-  function buildDisplayFilename(filename) {
-    if (typeof filename !== 'string') return '';
-    const lastDot = filename.lastIndexOf('.');
-    // A leading dot is the filename itself for assets such as `.gitignore`;
-    // a trailing dot does not introduce a meaningful extension.
-    if (lastDot <= 0 || lastDot === filename.length - 1) return filename;
-    return filename.slice(0, lastDot);
   }
 
   /**
@@ -1955,7 +1852,7 @@ export function createWorkflowQueryService({
       preview_revision: preview.revision,
       thumbnail_url: preview.urls.thumbnail,
       preview_url: preview.urls.preview,
-      original_url: buildOriginalUrl(asset),
+      original_url: buildAssetOriginalUrl(asset),
       ...buildAssetRowPresentation({ ...asset, release_usage: releaseUsage }),
     };
   }

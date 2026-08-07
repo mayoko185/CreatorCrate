@@ -222,15 +222,23 @@
       <input type="hidden" name="view" value="{{ currentView }}">
     {% endif %}
 
-    <fieldset class="field asset-viewer-filter-field asset-viewer-project-filter">
+    <fieldset class="field asset-viewer-filter-field asset-viewer-project-filter asset-filter-multiselect-field">
       <legend>Project</legend>
-      <details class="asset-filter-multiselect asset-project-filter-disclosure" data-asset-project-filter data-asset-viewer-filter-disclosure>
+      <details class="asset-filter-multiselect asset-filter-multiselect--sized asset-project-filter-disclosure" data-asset-project-filter data-asset-viewer-filter-disclosure>
         <summary id="asset-project-filter-trigger"
                  aria-controls="asset-project-filter-options"
                  aria-expanded="false"
                  aria-label="Project filter: {{ projectFilterSummary }}"
                  title="{{ projectFilterSummary }}">
-          <span class="asset-filter-multiselect-summary" data-asset-project-filter-summary>{{ projectFilterSummary }}</span>
+          <span class="asset-filter-multiselect-summary" data-asset-project-filter-summary>
+            <span class="asset-filter-multiselect-summary-current" data-asset-project-filter-current-summary>{{ projectFilterSummary }}</span>
+            <span class="asset-filter-multiselect-summary-width" aria-hidden="true">
+              <span>All projects</span>
+              {% for project in projectOptions %}
+                <span>{{ project.title }}</span>
+              {% endfor %}
+            </span>
+          </span>
         </summary>
         <div id="asset-project-filter-options" class="asset-filter-multiselect-panel asset-project-filter-panel" role="group" aria-label="Project options">
           <label class="asset-project-filter-search-label" for="asset-project-filter-search">Search projects</label>
@@ -239,14 +247,18 @@
           <div class="asset-project-filter-option-list" data-asset-project-filter-option-list role="radiogroup" aria-label="Project choices">
             <div class="asset-filter-multiselect-option asset-project-filter-option"
                  data-asset-project-filter-option data-project-title="All projects">
-              <input id="asset-project-option-all" name="project" type="radio" value=""{% if not projectFilterHasSelection %} checked{% endif %}>
-              <label for="asset-project-option-all">All projects</label>
+              <label for="asset-project-option-all">
+                <input id="asset-project-option-all" name="project" type="radio" value=""{% if not projectFilterHasSelection %} checked{% endif %}>
+                <span>All projects</span>
+              </label>
             </div>
             {% for project in projectOptions %}
               <div class="asset-filter-multiselect-option asset-project-filter-option"
                    data-asset-project-filter-option data-project-title="{{ project.title }}">
-                <input id="asset-project-option-{{ project.id }}" name="project" type="radio" value="{{ project.id }}"{% if project.id == filters.projectId %} checked{% endif %}>
-                <label for="asset-project-option-{{ project.id }}">{{ project.title }}</label>
+                <label for="asset-project-option-{{ project.id }}">
+                  <input id="asset-project-option-{{ project.id }}" name="project" type="radio" value="{{ project.id }}"{% if project.id == filters.projectId %} checked{% endif %}>
+                  <span>{{ project.title }}</span>
+                </label>
               </div>
             {% endfor %}
           </div>
@@ -256,21 +268,32 @@
       </details>
     </fieldset>
 
-    <fieldset class="field asset-viewer-filter-field">
+    <fieldset class="field asset-viewer-filter-field asset-filter-multiselect-field">
       <legend>Category</legend>
-      <details class="asset-filter-multiselect" data-asset-viewer-filter-disclosure>
+      <details class="asset-filter-multiselect asset-filter-multiselect--sized" data-asset-viewer-filter-disclosure>
         <summary id="asset-category-filter-trigger"
                  aria-controls="asset-category-filter-options"
                  aria-expanded="false"
                  aria-label="Category filter: {{ renderFilterSummary(filters.categories, categoryOptions, 'Any category', 'categories', '') }}">
-          <span class="asset-filter-multiselect-summary">{{ renderFilterSummary(filters.categories, categoryOptions, 'Any category', 'categories', '') }}</span>
+          <span class="asset-filter-multiselect-summary">
+            <span class="asset-filter-multiselect-summary-current">{{ renderFilterSummary(filters.categories, categoryOptions, 'Any category', 'categories', '') }}</span>
+            <span class="asset-filter-multiselect-summary-width" aria-hidden="true">
+              <span>Any category</span>
+              {% for option in categoryOptions %}
+                {% if option.value != 'all' %}<span>{{ option.label or option.displayName }}</span>{% endif %}
+              {% endfor %}
+              <span>{{ categoryOptions.length }} categories selected</span>
+            </span>
+          </span>
         </summary>
         <div id="asset-category-filter-options" class="asset-filter-multiselect-panel" role="group" aria-label="Category options">
           {% for option in categoryOptions %}
             {% if option.value != 'all' %}
               <div class="asset-filter-multiselect-option">
-                <input id="asset-category-option-{{ loop.index }}" name="category" type="checkbox" value="{{ option.value }}"{% if option.selected %} checked{% endif %}>
-                <label for="asset-category-option-{{ loop.index }}">{{ option.label }}</label>
+                <label for="asset-category-option-{{ loop.index }}">
+                  <input id="asset-category-option-{{ loop.index }}" name="category" type="checkbox" value="{{ option.value }}"{% if option.selected %} checked{% endif %}>
+                  <span>{{ option.label }}</span>
+                </label>
               </div>
             {% endif %}
           {% endfor %}
@@ -278,21 +301,30 @@
       </details>
     </fieldset>
 
-    <fieldset class="field asset-viewer-filter-field">
+    <fieldset class="field asset-viewer-filter-field asset-filter-multiselect-field">
       <legend>Tag</legend>
-      <details class="asset-filter-multiselect" data-asset-viewer-filter-disclosure>
+      <details class="asset-filter-multiselect asset-filter-multiselect--sized" data-asset-viewer-filter-disclosure>
         <summary id="asset-tag-filter-trigger"
                  aria-controls="asset-tag-filter-options"
                  aria-expanded="false"
                  aria-label="Tag filter: {{ renderFilterSummary(filters.tags, tagOptions, 'Any tag', 'tags', '') }}">
-          <span class="asset-filter-multiselect-summary">{{ renderFilterSummary(filters.tags, tagOptions, 'Any tag', 'tags', '') }}</span>
+          <span class="asset-filter-multiselect-summary">
+            <span class="asset-filter-multiselect-summary-current">{{ renderFilterSummary(filters.tags, tagOptions, 'Any tag', 'tags', '') }}</span>
+            <span class="asset-filter-multiselect-summary-width" aria-hidden="true">
+              <span>Any tag</span>
+              {% for option in tagOptions %}<span>{{ option.label or option.displayName }}</span>{% endfor %}
+              <span>{{ tagOptions.length }} tags selected</span>
+            </span>
+          </span>
         </summary>
         <div id="asset-tag-filter-options" class="asset-filter-multiselect-panel" role="group" aria-label="Tag options">
           {% if tagOptions.length > 0 %}
             {% for option in tagOptions %}
               <div class="asset-filter-multiselect-option">
-                <input id="asset-tag-option-{{ loop.index }}" name="tag" type="checkbox" value="{{ option.value }}"{% if option.selected %} checked{% endif %}>
-                <label for="asset-tag-option-{{ loop.index }}">{{ option.displayName }}</label>
+                <label for="asset-tag-option-{{ loop.index }}">
+                  <input id="asset-tag-option-{{ loop.index }}" name="tag" type="checkbox" value="{{ option.value }}"{% if option.selected %} checked{% endif %}>
+                  <span>{{ option.displayName }}</span>
+                </label>
               </div>
             {% endfor %}
           {% else %}
@@ -302,20 +334,29 @@
       </details>
     </fieldset>
 
-    <fieldset class="field asset-viewer-filter-field">
+    <fieldset class="field asset-viewer-filter-field asset-filter-multiselect-field">
       <legend>Extension</legend>
-      <details class="asset-filter-multiselect" data-asset-viewer-filter-disclosure>
+      <details class="asset-filter-multiselect asset-filter-multiselect--sized" data-asset-viewer-filter-disclosure>
         <summary id="asset-extension-filter-trigger"
                  aria-controls="asset-extension-filter-options"
                  aria-expanded="false"
                  aria-label="Extension filter: {{ renderFilterSummary(filters.extensions, extensionOptions, 'Any extension', 'extensions', '.') }}">
-          <span class="asset-filter-multiselect-summary">{{ renderFilterSummary(filters.extensions, extensionOptions, 'Any extension', 'extensions', '.') }}</span>
+          <span class="asset-filter-multiselect-summary">
+            <span class="asset-filter-multiselect-summary-current">{{ renderFilterSummary(filters.extensions, extensionOptions, 'Any extension', 'extensions', '.') }}</span>
+            <span class="asset-filter-multiselect-summary-width" aria-hidden="true">
+              <span>Any extension</span>
+              {% for option in extensionOptions %}<span>.{{ option.label or option.displayName }}</span>{% endfor %}
+              <span>{{ extensionOptions.length }} extensions selected</span>
+            </span>
+          </span>
         </summary>
         <div id="asset-extension-filter-options" class="asset-filter-multiselect-panel" role="group" aria-label="Extension options">
           {% for option in extensionOptions %}
             <div class="asset-filter-multiselect-option">
-              <input id="asset-extension-option-{{ loop.index }}" name="extension" type="checkbox" value="{{ option.value }}"{% if option.selected %} checked{% endif %}>
-              <label for="asset-extension-option-{{ loop.index }}">.{{ option.label }}</label>
+              <label for="asset-extension-option-{{ loop.index }}">
+                <input id="asset-extension-option-{{ loop.index }}" name="extension" type="checkbox" value="{{ option.value }}"{% if option.selected %} checked{% endif %}>
+                <span>.{{ option.label }}</span>
+              </label>
             </div>
           {% endfor %}
         </div>

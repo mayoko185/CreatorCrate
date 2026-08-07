@@ -1,7 +1,103 @@
 {% extends "layout.njk" %}
 {% import "partials/page-heading.njk" as pageHeading %}
+{% import "partials/asset-presentation.njk" as assetCards %}
+{% import "partials/view-switcher.njk" as viewSwitcher %}
 
 {% set page_title = "Releases — " ~ release.title ~ " — Assets" %}
+
+{% macro releaseAssetSelectionControl(asset, readOnly) %}
+  {% if not readOnly and (asset.is_present or asset.releaseContext.selected) %}
+    {% set selectionLabel = "Deselect " ~ asset.filename if asset.releaseContext.selected else "Select " ~ asset.filename %}
+    <label class="asset-selection-control{% if asset.releaseContext.selected %} is-selected{% endif %}" for="release-asset-select-{{ asset.id }}">
+      <input type="checkbox" form="release-assets-form" id="release-asset-select-{{ asset.id }}" name="selectedAssetIds" value="{{ asset.id }}"
+             class="asset-select-checkbox"
+             aria-label="{{ selectionLabel }}"
+             {% if asset.releaseContext.selected %}checked{% endif %}>
+      <span class="asset-selection-control-mark" aria-hidden="true">✓</span>
+    </label>
+  {% endif %}
+{% endmacro %}
+
+{% macro releaseRoleControl(asset, roles, _csrf, assetActionUrl) %}
+  {% if asset.releaseContext.selected %}
+    {% set role = asset.releaseContext.role or 'attachment' %}
+    <form method="post" action="{{ assetActionUrl(asset.id, 'role') }}" class="inline-form release-asset-role-form">
+      <input type="hidden" name="_csrf" value="{{ _csrf }}">
+      <label for="role-{{ asset.id }}" class="sr-only">Role for {{ asset.filename }}</label>
+      <select id="role-{{ asset.id }}" name="role" data-autosubmit>
+        {% for option in roles %}
+          <option value="{{ option }}" {% if role == option %}selected{% endif %}>{{ option | title }}</option>
+        {% endfor %}
+      </select>
+      <noscript><button class="button button-small" type="submit">Set</button></noscript>
+    </form>
+  {% endif %}
+{% endmacro %}
+
+{# Used by the list card associations slot #}
+{% macro releaseAssetInfo(asset) %}
+  <div class="asset-list-card-associations">
+    {% if asset.releaseContext.selected %}
+      <div class="asset-list-card-association asset-list-card-association--role">
+        <h3 class="asset-list-card-association-label">Role</h3>
+        <div class="asset-list-card-association-content">
+          <span>{{ (asset.releaseContext.role or 'attachment') | title }}</span>
+        </div>
+      </div>
+      <div class="asset-list-card-association asset-list-card-association--order">
+        <h3 class="asset-list-card-association-label">Order</h3>
+        <div class="asset-list-card-association-content">
+          <span>{{ asset.releaseContext.sortOrder }}</span>
+        </div>
+      </div>
+    {% endif %}
+    {% if asset.relative_path %}
+      <div class="asset-list-card-association asset-list-card-association--path">
+        <h3 class="asset-list-card-association-label">Path</h3>
+        <div class="asset-list-card-association-content">
+          <code>{{ asset.relative_path }}</code>
+        </div>
+      </div>
+    {% endif %}
+  </div>
+{% endmacro %}
+
+{# Grid card — canonical shared body geometry; membership via checkbox and
+   selected-state styling; role in body slot (compact, selected only) #}
+{% macro releaseGridCard(asset, readOnly, roles, _csrf, assetActionUrl) %}
+  {% call(slot) assetCards.gridCard(asset, {
+    selected: asset.releaseContext.selected,
+    selectable: not readOnly and (asset.is_present or asset.releaseContext.selected),
+    selectableTabIndex: true
+  }) %}
+    {% if slot == 'top-start' %}
+      {{ releaseAssetSelectionControl(asset, readOnly) }}
+    {% elif slot == 'body' %}
+      {% if not readOnly %}
+        {{ releaseRoleControl(asset, roles, _csrf, assetActionUrl) }}
+      {% endif %}
+    {% endif %}
+  {% endcall %}
+{% endmacro %}
+
+{# List card — associations slot carries role (if selected) and path #}
+{% macro releaseListCard(asset, readOnly, roles, _csrf, assetActionUrl) %}
+  {% call(slot) assetCards.listCard(asset, {
+    cardClass: 'asset-list-card--release',
+    selected: asset.releaseContext.selected,
+    selectable: not readOnly and (asset.is_present or asset.releaseContext.selected)
+  }) %}
+    {% if slot == 'top' %}
+      {{ releaseAssetSelectionControl(asset, readOnly) }}
+    {% elif slot == 'associations' %}
+      {{ releaseAssetInfo(asset) }}
+    {% elif slot == 'actions' %}
+      {% if not readOnly %}
+        {{ releaseRoleControl(asset, roles, _csrf, assetActionUrl) }}
+      {% endif %}
+    {% endif %}
+  {% endcall %}
+{% endmacro %}
 
 {% block content %}
   {% set projectArchived = project and project.archived_at %}
@@ -72,291 +168,234 @@
   {# ── Selected Assets ──────────────────────────────────────────────── #}
   <section>
     <h2>Selected Assets</h2>
-    {% if releaseAssets.length > 0 %}
-      <div class="table-scroll" tabindex="0" aria-label="Selected release assets">
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th>Filename</th>
-              <th>Role</th>
-              <th>Path</th>
-              <th>Status</th>
-              <th class="num">Order</th>
-              {% if not readOnly %}
-                <th>Actions</th>
-              {% endif %}
-            </tr>
-          </thead>
-          <tbody>
-            {% for ra in releaseAssets %}
-              <tr>
-                <td class="asset-filename">{{ ra.filename }}</td>
-                <td>
-                  {% if not readOnly %}
-                    <form method="post" action="/releases/{{ release.id }}/assets/{{ ra.asset_id }}/role" class="inline-form">
-                      <input type="hidden" name="_csrf" value="{{ _csrf }}">
-                      <label for="role-{{ ra.asset_id }}" class="sr-only">Role for {{ ra.filename }}</label>
-                      <select id="role-{{ ra.asset_id }}" name="role" data-autosubmit>
-                        {% for role in roles %}
-                          <option value="{{ role }}" {% if ra.role == role %}selected{% endif %}>{{ role | title }}</option>
-                        {% endfor %}
-                      </select>
-                      <noscript><button class="button button-small" type="submit">Set</button></noscript>
-                    </form>
-                  {% else %}
-                    {{ ra.role | title }}
-                  {% endif %}
-                </td>
-                <td class="asset-path"><code>{{ ra.relative_path }}</code></td>
-                <td>
-                  {% if ra.is_present == 1 %}
-                    {% set status = 'present' %}{% include "partials/status-badge.njk" %}
-                  {% else %}
-                    {% set status = 'missing' %}{% include "partials/status-badge.njk" %}
-                  {% endif %}
-                </td>
-                <td class="num">{{ ra.sort_order }}</td>
-                {% if not readOnly %}
-                  <td>
-                    <div class="row-actions release-asset-actions">
-                      <form method="post" action="/releases/{{ release.id }}/assets/{{ ra.asset_id }}/remove-selected" class="inline-form">
-                        <input type="hidden" name="_csrf" value="{{ _csrf }}">
-                        <button class="button button-small button-danger" type="submit" aria-label="Remove {{ ra.filename }}">Remove</button>
-                      </form>
-                      <form method="post" action="/releases/{{ release.id }}/assets/{{ ra.asset_id }}/move-up" class="inline-form">
-                        <input type="hidden" name="_csrf" value="{{ _csrf }}">
-                        {% if loop.first %}
-                          <button class="button button-small" type="submit" disabled aria-label="Move {{ ra.filename }} up (disabled — already first)" title="This asset is already first in the list">Up</button>
-                        {% else %}
-                          <button class="button button-small" type="submit" aria-label="Move {{ ra.filename }} up">Up</button>
-                        {% endif %}
-                      </form>
-                      <form method="post" action="/releases/{{ release.id }}/assets/{{ ra.asset_id }}/move-down" class="inline-form">
-                        <input type="hidden" name="_csrf" value="{{ _csrf }}">
-                        {% if loop.last %}
-                          <button class="button button-small" type="submit" disabled aria-label="Move {{ ra.filename }} down (disabled — already last)" title="This asset is already last in the list">Down</button>
-                        {% else %}
-                          <button class="button button-small" type="submit" aria-label="Move {{ ra.filename }} down">Down</button>
-                        {% endif %}
-                      </form>
-                    </div>
-                  </td>
-                {% endif %}
-              </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      </div>
-    {% else %}
-      {% set emptyHeading = "No assets selected" %}
-      {% set emptyDescription = "Add assets from the available assets below." %}
-      {% set emptyHeadingLevel = "h3" %}
-      {% include "partials/empty-state.njk" %}
+    {% set selectedAssets = assetPresentation.selected or [] %}
+    {% set pageAssets = assetPresentation.assets or [] %}
+    {% set selectedCount = selectedAssets.length %}
+    {% set displayAssets = selectedAssets if readOnly else pageAssets %}
+    {% set activeFilters = assetFilters or candidateFilters %}
+    {% set totalAssets = assetTotal if assetTotal is defined else candidateTotal %}
+    {% set currentPage = assetPageNumber if assetPageNumber is defined else candidatePage %}
+    {% set totalPages = assetPageCount if assetPageCount is defined else candidatePageCount %}
+    {% set currentPageSize = assetPageSize if assetPageSize is defined else candidatePageSize %}
+    {% set extensionOptions = assetExtensions or candidateExtensions %}
+    {% set categoryTotalCount = categoryNavigation and categoryNavigation.totalCount %}
+    {% set categoryFilterSummary = "All categories" %}
+    {% if categoryTotalCount is not none %}
+      {% set categoryFilterSummary = "All categories (" ~ categoryTotalCount ~ ")" %}
     {% endif %}
-  </section>
-
-  {# ── Available Assets (Candidates) ─────────────────────────────────── #}
-  <section>
-    <h2>Available Assets</h2>
-
-    {# Filter form #}
-    <form method="get" action="/releases/{{ release.id }}/assets" class="filters">
-      <div class="field">
-          <label for="candidate-search">Search available assets</label>
-          <input type="text" id="candidate-search" name="search" value="{{ candidateFilters.search or '' }}" placeholder="Filter by filename…">
-      </div>
-      <div class="field">
-        <label for="candidate-extension">Extension</label>
-          <select id="candidate-extension" name="extension">
-          <option value="">All extensions</option>
-          {% for ext in candidateExtensions %}
-            <option value="{{ ext }}" {% if candidateFilters.extension == ext %}selected{% endif %}>{{ ext }}</option>
-          {% endfor %}
-        </select>
-      </div>
-      <div class="field">
-        <label for="candidate-category">Category</label>
-        <select id="candidate-category" name="category">
-          <option value="" {% if activeCategoryId == null %}selected{% endif %}>All categories</option>
-          {% for category in categories %}
-            <option value="{{ category.id }}" {% if activeCategoryId == category.id %}selected{% endif %}>{{ category.display_name }}</option>
-          {% endfor %}
-        </select>
-      </div>
-      <div class="field">
-        <label for="candidate-page-size">Page size</label>
-          <select id="candidate-page-size" name="pageSize">
-          <option value="25" {% if candidatePageSize == 25 %}selected{% endif %}>25</option>
-          <option value="50" {% if candidatePageSize == 50 %}selected{% endif %}>50</option>
-          <option value="100" {% if candidatePageSize == 100 %}selected{% endif %}>100</option>
-        </select>
-      </div>
-      <div class="field">
-        <button class="button" type="submit">Filter</button>
-      </div>
-      {% if candidateFilters.search or candidateFilters.extension or activeCategoryId != null %}
-        <div class="field">
-          <a class="button button-secondary" href="/releases/{{ release.id }}/assets">Clear</a>
-        </div>
+    {% for category in categoryFilterOptions %}
+      {% if activeCategoryId == category.id %}
+        {% set categoryFilterSummary = category.displayName ~ " (" ~ category.assetCount ~ ")" %}
       {% endif %}
-    </form>
+    {% endfor %}
+    {% set categoryFilterOptions = categoryFilterOptions or [] %}
+    {% set extensionFilterSummary = "All extensions" %}
+    {% if activeFilters.extension %}
+      {% set extensionFilterSummary = "." ~ activeFilters.extension %}
+    {% endif %}
 
-    <p class="results-meta">{{ candidateTotal }} candidate{% if candidateTotal != 1 %}s{% endif %} available</p>
+    {% if not readOnly %}
+      <p class="results-meta release-asset-results-meta">
+        {{ totalAssets }} project asset{% if totalAssets != 1 %}s{% endif %} {% if totalAssets == 1 %}matches{% else %}match{% endif %} the current filters.
+      </p>
 
-    {% if candidates.length > 0 %}
-      <ul class="candidate-grid" aria-label="Available release assets">
-        {% for asset in candidates %}
-          <li class="candidate-grid-item">
-            {% if not readOnly %}
-              <form method="post" action="/releases/{{ release.id }}/assets/add" class="candidate-asset-form">
-                <input type="hidden" name="_csrf" value="{{ _csrf }}">
-                <input type="hidden" name="assetId" value="{{ asset.id }}">
-            {% endif %}
-                <div class="candidate-grid-tile">
-                  <div class="candidate-grid-preview">
-                    {% if asset.preview_url or asset.thumbnail_url %}
-                      <img src="{{ asset.preview_url or asset.thumbnail_url }}" alt="Preview of {{ asset.filename }}" loading="lazy" decoding="async">
-                    {% elif asset.is_present == 1 and (
-                      (asset.extension == 'png' and asset.mime_type == 'image/png')
-                      or (asset.extension == 'jpg' and asset.mime_type == 'image/jpeg')
-                      or (asset.extension == 'jpeg' and asset.mime_type == 'image/jpeg')
-                      or (asset.extension == 'webp' and asset.mime_type == 'image/webp')
-                      or (asset.extension == 'gif' and asset.mime_type == 'image/gif')
-                      or (asset.extension == 'kra' and asset.mime_type == 'application/x-krita')
-                      or (asset.extension == 'krz' and asset.mime_type == 'application/x-krita')
-                    ) %}
-                      <img src="/projects/{{ project.id }}/assets/{{ asset.id }}/thumbnail" alt="Preview of {{ asset.filename }}" loading="lazy" decoding="async">
-                    {% else %}
-                      <span class="candidate-grid-fallback" aria-label="No preview available for {{ asset.filename }}">
-                        <span aria-hidden="true">.{{ asset.extension or 'file' }}</span>
-                      </span>
-                    {% endif %}
-                  </div>
-                  <div class="candidate-grid-info">
-                    <strong class="candidate-grid-filename">{{ asset.filename }}</strong>
-                    <code class="candidate-grid-path">{{ asset.relative_path }}</code>
-                  </div>
-                  {% if not readOnly %}
-                    <button class="button button-small" type="submit" aria-label="Add {{ asset.filename }}">Add</button>
-                  {% endif %}
-                </div>
-            {% if not readOnly %}
-              </form>
-            {% endif %}
-          </li>
+      <form id="release-assets-form" method="post" action="{{ pageUrl({}) }}" class="release-assets-form" data-asset-selection-form>
+        <input type="hidden" name="_csrf" value="{{ _csrf }}">
+        {% for assetId in offPageSelectedAssetIds or [] %}
+          <input type="hidden" name="selectedAssetIds" value="{{ assetId }}">
         {% endfor %}
-      </ul>
 
-      {# Pagination #}
-      {% if candidatePageCount > 1 %}
-        <nav class="pagination" aria-label="Candidate pagination">
-          {% if candidatePage > 1 %}
-            <a class="button button-small" href="{{ pageUrl({ page: candidatePage - 1 }) }}">Previous</a>
-          {% endif %}
-          <span class="pagination-info">Page {{ candidatePage }} of {{ candidatePageCount }}</span>
-          {% if candidatePage < candidatePageCount %}
-            <a class="button button-small" href="{{ pageUrl({ page: candidatePage + 1 }) }}">Next</a>
-          {% endif %}
-        </nav>
-      {% endif %}
-    {% else %}
-      {% set emptyHeading = "No matching assets" %}
-      {% set emptyDescription = "No available assets match the current filters." %}
-      {% set emptyHeadingLevel = "h3" %}
-      {% include "partials/empty-state.njk" %}
+        <div class="form-actions">
+          <button class="button button-primary" type="submit">Save Selection</button>
+          <a class="button button-secondary" href="/releases/{{ release.id }}">Back</a>
+        </div>
+      </form>
     {% endif %}
-  </section>
 
-  {% if not readOnly %}
-  {# ── Existing bulk-selection form (kept for backward compatibility) ─ #}
-  <section>
-    <h2>Bulk Selection</h2>
-    <p class="results-meta">{{ assets.length }} asset{% if assets.length != 1 %}s{% endif %} in project</p>
+    <div class="asset-browser-layout">
+      <div class="asset-browser-content">
+        <div class="asset-viewer-display-controls">
+          {{ viewSwitcher.render(view, pageUrl, "Asset display") }}
+          {% if view == 'grid' %}
+            {% include "partials/asset-grid-size-control.njk" %}
+          {% endif %}
+        </div>
 
-    <form method="post" action="/releases/{{ release.id }}/assets" class="release-assets-form">
-      <input type="hidden" name="_csrf" value="{{ _csrf }}">
-      <p id="bulk-selection-help" class="help-text">Select assets, then adjust each selected asset's role and order before saving.</p>
-      <div class="table-scroll" tabindex="0" aria-label="Bulk asset selection">
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th>Select</th>
-              <th>Filename</th>
-              <th>Path</th>
-              <th>Status</th>
-              <th>Role</th>
-              <th class="num">Order</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for asset in assets %}
-              {% set isSelected = false %}
-              {% set currentRole = 'attachment' %}
-              {% set currentSortOrder = 0 %}
-              {% for ra in releaseAssets %}
-                {% if ra.asset_id == asset.id %}
-                  {% set isSelected = true %}
-                  {% set currentRole = ra.role %}
-                  {% set currentSortOrder = ra.sort_order %}
-                {% endif %}
+        {% if not readOnly %}
+          <form method="get" action="/releases/{{ release.id }}/assets" class="filters release-asset-filters">
+            <input type="hidden" name="view" value="{{ view }}">
+            <div class="field">
+              <label for="asset-search">Find project assets</label>
+              <input type="search" id="asset-search" name="search" value="{{ activeFilters.search or '' }}" placeholder="Filter by filename…" autocomplete="off">
+            </div>
+            <fieldset class="field asset-viewer-filter-field asset-filter-multiselect-field">
+              <legend>Extension</legend>
+              <details class="asset-filter-multiselect asset-filter-multiselect--sized" data-asset-viewer-filter-disclosure>
+                <summary id="release-asset-extension-filter-trigger"
+                         aria-controls="release-asset-extension-filter-options"
+                         aria-expanded="false"
+                         aria-label="Extension filter: {{ extensionFilterSummary }}"
+                         title="{{ extensionFilterSummary }}">
+                  <span class="asset-filter-multiselect-summary">
+                    <span class="asset-filter-multiselect-summary-current">{{ extensionFilterSummary }}</span>
+                    <span class="asset-filter-multiselect-summary-width" aria-hidden="true">
+                      <span>All extensions</span>
+                      {% for ext in extensionOptions %}<span>.{{ ext }}</span>{% endfor %}
+                    </span>
+                  </span>
+                </summary>
+                <div id="release-asset-extension-filter-options" class="asset-filter-multiselect-panel" role="radiogroup" aria-label="Extension options">
+                  <div class="asset-filter-multiselect-option">
+                    <label for="release-asset-extension-option-all">
+                      <input id="release-asset-extension-option-all" name="extension" type="radio" value=""{% if not activeFilters.extension %} checked{% endif %}>
+                      <span>All extensions</span>
+                    </label>
+                  </div>
+                  {% for ext in extensionOptions %}
+                    <div class="asset-filter-multiselect-option">
+                      <label for="release-asset-extension-option-{{ loop.index }}">
+                        <input id="release-asset-extension-option-{{ loop.index }}" name="extension" type="radio" value="{{ ext }}"{% if activeFilters.extension == ext %} checked{% endif %}>
+                        <span>.{{ ext }}</span>
+                      </label>
+                    </div>
+                  {% endfor %}
+                </div>
+              </details>
+            </fieldset>
+            <fieldset class="field asset-viewer-filter-field asset-filter-multiselect-field">
+              <legend>Category</legend>
+              <details class="asset-filter-multiselect asset-filter-multiselect--sized" data-asset-viewer-filter-disclosure>
+                <summary id="release-asset-category-filter-trigger"
+                         aria-controls="release-asset-category-filter-options"
+                         aria-expanded="false"
+                         aria-label="Category filter: {{ categoryFilterSummary }}"
+                         title="{{ categoryFilterSummary }}">
+                  <span class="asset-filter-multiselect-summary">
+                    <span class="asset-filter-multiselect-summary-current">{{ categoryFilterSummary }}</span>
+                    <span class="asset-filter-multiselect-summary-width" aria-hidden="true">
+                      {% if categoryTotalCount is not none %}
+                        <span>All categories ({{ categoryTotalCount }})</span>
+                      {% else %}
+                        <span>All categories</span>
+                      {% endif %}
+                      {% for category in categoryFilterOptions %}<span>{{ category.displayName }} ({{ category.assetCount }})</span>{% endfor %}
+                    </span>
+                  </span>
+                </summary>
+                <div id="release-asset-category-filter-options" class="asset-filter-multiselect-panel" role="radiogroup" aria-label="Category options">
+                  <div class="asset-filter-multiselect-option">
+                    <label for="release-asset-category-option-all">
+                      <input id="release-asset-category-option-all" name="category" type="radio" value=""{% if activeCategoryId == null %} checked{% endif %}>
+                      {% if categoryTotalCount is not none %}
+                        <span>All categories ({{ categoryTotalCount }})</span>
+                      {% else %}
+                        <span>All categories</span>
+                      {% endif %}
+                    </label>
+                  </div>
+                  {% for category in categoryFilterOptions %}
+                    <div class="asset-filter-multiselect-option">
+                      <label for="release-asset-category-option-{{ category.id }}">
+                        <input id="release-asset-category-option-{{ category.id }}" name="category" type="radio" value="{{ category.id }}"{% if activeCategoryId == category.id %} checked{% endif %}>
+                        <span>{{ category.displayName }} ({{ category.assetCount }})</span>
+                      </label>
+                    </div>
+                  {% endfor %}
+                </div>
+              </details>
+            </fieldset>
+            <div class="field">
+              <label for="asset-page-size">Page size</label>
+              <select id="asset-page-size" name="pageSize">
+                <option value="25" {% if currentPageSize == 25 %}selected{% endif %}>25</option>
+                <option value="50" {% if currentPageSize == 50 %}selected{% endif %}>50</option>
+                <option value="100" {% if currentPageSize == 100 %}selected{% endif %}>100</option>
+              </select>
+            </div>
+            <div class="field">
+              <button class="button" type="submit">Filter</button>
+            </div>
+            {% if activeFilters.search or activeFilters.extension or activeCategoryId != null %}
+              <div class="field">
+                <a class="button button-secondary" href="{{ pageUrl({ search: '', extension: '', category: '', page: 1 }) }}">Clear</a>
+              </div>
+            {% endif %}
+          </form>
+        {% endif %}
+
+        {% if displayAssets.length > 0 %}
+          {% if view == 'grid' %}
+            <ul class="asset-grid" role="listbox" aria-label="Release assets">
+              {% for asset in displayAssets %}
+                <li class="asset-grid-item{% if not asset.is_present %} is-missing{% endif %}">
+                  {{ releaseGridCard(asset, readOnly, roles, _csrf, releaseAssetActionUrl) }}
+                </li>
               {% endfor %}
-              <tr class="{% if asset.is_present == 0 %}is-missing{% endif %}" data-asset-id="{{ asset.id }}">
-                <td>
-                  {% if asset.is_present == 1 %}
-                    <label for="bulk-select-{{ asset.id }}" class="sr-only">Select {{ asset.filename }}</label>
-                    <input type="checkbox" id="bulk-select-{{ asset.id }}" name="selectedAssetIds[]" value="{{ asset.id }}" {% if isSelected %}checked{% endif %} class="asset-checkbox" aria-describedby="bulk-selection-help">
-                  {% else %}
-                    <span class="missing-indicator" title="Asset is missing from disk">✗</span>
-                  {% endif %}
-                </td>
-                <td class="asset-filename">{{ asset.filename }}</td>
-                <td class="asset-path"><code>{{ asset.relative_path }}</code></td>
-                <td>
-                  {% if asset.is_present == 1 %}
-                    {% set status = 'present' %}{% include "partials/status-badge.njk" %}
-                  {% else %}
-                    {% set status = 'missing' %}{% include "partials/status-badge.njk" %}
-                  {% endif %}
-                </td>
-                <td>
-                  {% if asset.is_present == 1 %}
-                    <label for="bulk-role-{{ asset.id }}" class="sr-only">Role for {{ asset.filename }}</label>
-                    <select id="bulk-role-{{ asset.id }}" name="roles[]" {% if not isSelected %}disabled{% endif %} class="asset-role" aria-describedby="bulk-selection-help">
-                      {% for role in roles %}
-                        <option value="{{ role }}" {% if currentRole == role %}selected{% endif %}>{{ role | title }}</option>
-                      {% endfor %}
-                    </select>
-                  {% else %}
-                    <span class="meta">-</span>
-                  {% endif %}
-                </td>
-                <td class="num">
-                  {% if asset.is_present == 1 %}
-                    <label for="bulk-sort-order-{{ asset.id }}" class="sr-only">Order for {{ asset.filename }}</label>
-                    <input type="number" id="bulk-sort-order-{{ asset.id }}" name="sortOrder[]" value="{{ currentSortOrder }}" min="0" {% if not isSelected %}disabled{% endif %} class="asset-sort-order numeric-input-compact" aria-describedby="bulk-selection-help">
-                  {% else %}
-                    —
-                  {% endif %}
-                </td>
-              </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      </div>
+            </ul>
+          {% else %}
+            <ul class="asset-list asset-list--release" role="list" aria-label="Release assets">
+              {% for asset in displayAssets %}
+                <li class="asset-list-item{% if not asset.is_present %} is-missing{% endif %}">
+                  {{ releaseListCard(asset, readOnly, roles, _csrf, releaseAssetActionUrl) }}
+                </li>
+              {% endfor %}
+            </ul>
+          {% endif %}
 
-      <div class="form-actions">
-        <button class="button button-primary" type="submit">Save Selection</button>
-        <a class="button button-secondary" href="/releases/{{ release.id }}">Back</a>
+          {% if not readOnly and totalPages > 1 %}
+            <nav class="pagination" aria-label="Release asset pages">
+              {% if currentPage > 1 %}
+                <a class="pagination-prev" href="{{ pageUrl({ page: currentPage - 1 }) }}">Previous</a>
+              {% endif %}
+              <span class="pagination-info">Page {{ currentPage }} of {{ totalPages }}</span>
+              {% if currentPage < totalPages %}
+                <a class="pagination-next" href="{{ pageUrl({ page: currentPage + 1 }) }}">Next</a>
+              {% endif %}
+            </nav>
+          {% endif %}
+
+          {% if not readOnly and totalPages > 1 %}
+            <form class="page-size-form" method="get" action="/releases/{{ release.id }}/assets">
+              <label for="pageSize">Assets per page:</label>
+              <select id="pageSize" name="pageSize" data-autosubmit>
+                <option value="10" {% if currentPageSize == 10 %}selected{% endif %}>10</option>
+                <option value="25" {% if currentPageSize == 25 %}selected{% endif %}>25</option>
+                <option value="50" {% if currentPageSize == 50 %}selected{% endif %}>50</option>
+                <option value="100" {% if currentPageSize == 100 %}selected{% endif %}>100</option>
+              </select>
+              {% if activeFilters.search %}
+                <input type="hidden" name="search" value="{{ activeFilters.search }}">
+              {% endif %}
+              {% if activeFilters.extension %}
+                <input type="hidden" name="extension" value="{{ activeFilters.extension }}">
+              {% endif %}
+              {% if activeCategoryId != null %}
+                <input type="hidden" name="category" value="{{ activeCategoryId }}">
+              {% endif %}
+              {% if view == 'list' %}
+                <input type="hidden" name="view" value="list">
+              {% endif %}
+              <button class="button button-small" type="submit">Apply</button>
+            </form>
+          {% endif %}
+        {% else %}
+          {% if readOnly %}
+            {% set emptyHeading = "No assets selected" %}
+            {% set emptyDescription = "No assets are associated with this release." %}
+          {% elif totalAssets == 0 and (activeFilters.search or activeFilters.extension or activeCategoryId != null) %}
+            {% set emptyHeading = "No matching project assets" %}
+            {% set emptyDescription = "No eligible project assets match the current filters." %}
+          {% elif eligibleAssetCount == 0 %}
+            {% set emptyHeading = "No project assets" %}
+            {% set emptyDescription = "This project has no present assets eligible for this release." %}
+          {% elif not readOnly %}
+            {% set emptyHeading = "No project assets" %}
+            {% set emptyDescription = "No project assets are available for this release." %}
+          {% endif %}
+          {% set emptyHeadingLevel = "h3" %}
+          {% include "partials/empty-state.njk" %}
+        {% endif %}
       </div>
-    </form>
+    </div>
   </section>
-
-  {% else %}
-    {% if assets.length == 0 %}
-      {% set emptyHeading = "No project assets" %}
-      {% set emptyDescription = "No assets found in this project. Scan the project to discover files." %}
-      {% set emptyHeadingLevel = "h3" %}
-      {% include "partials/empty-state.njk" %}
-    {% endif %}
-  {% endif %}
 {% endblock %}

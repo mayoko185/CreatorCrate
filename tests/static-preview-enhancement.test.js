@@ -1808,7 +1808,8 @@ describe('Asset Viewer Project filter enhancement', () => {
           .forEach((listener) => listener.handler());
       },
     };
-    const summaryText = { textContent: '' };
+    const summaryText = { textContent: 'reserved summary content' };
+    const currentSummaryText = { textContent: '' };
     const summaryAttrs = {};
     const summary = {
       setAttribute(name, value) { summaryAttrs[name] = String(value); },
@@ -1825,6 +1826,7 @@ describe('Asset Viewer Project filter enhancement', () => {
       querySelector(selector) {
         if (selector === '[data-asset-project-filter-search]') return search;
         if (selector === '[data-asset-project-filter-summary]') return summaryText;
+        if (selector === '[data-asset-project-filter-current-summary]') return currentSummaryText;
         if (selector === '[data-asset-project-filter-no-results]') return empty;
         if (selector === 'summary') return summary;
         return null;
@@ -1854,6 +1856,7 @@ describe('Asset Viewer Project filter enhancement', () => {
       beta,
       empty,
       summaryText,
+      currentSummaryText,
       summaryAttrs,
       toggleListeners,
     };
@@ -1863,7 +1866,8 @@ describe('Asset Viewer Project filter enhancement', () => {
     const fixture = makeProjectFilterFixture();
 
     expect(enhanceAssetProjectFilter(fixture.scope)).toBe(1);
-    expect(fixture.summaryText.textContent).toBe('All projects');
+    expect(fixture.currentSummaryText.textContent).toBe('All projects');
+    expect(fixture.summaryText.textContent).toBe('reserved summary content');
     expect(fixture.all.input.checked).toBe(true);
     expect(fixture.search.listeners.filter(({ type }) => type === 'input')).toHaveLength(1);
 
@@ -1892,7 +1896,8 @@ describe('Asset Viewer Project filter enhancement', () => {
     const fixture = makeProjectFilterFixture('2');
 
     enhanceAssetProjectFilter(fixture.scope);
-    expect(fixture.summaryText.textContent).toBe('Beta Project');
+    expect(fixture.currentSummaryText.textContent).toBe('Beta Project');
+    expect(fixture.summaryText.textContent).toBe('reserved summary content');
     expect(fixture.beta.input.checked).toBe(true);
     expect(fixture.all.input.checked).toBe(false);
     expect(fixture.summaryAttrs['aria-label']).toBe('Project filter: Beta Project');
@@ -1911,7 +1916,8 @@ describe('Asset Viewer Project filter enhancement', () => {
     fixture.all.input.checked = true;
     fixture.beta.input.checked = false;
     fixture.all.input.dispatch('change');
-    expect(fixture.summaryText.textContent).toBe('All projects');
+    expect(fixture.currentSummaryText.textContent).toBe('All projects');
+    expect(fixture.summaryText.textContent).toBe('reserved summary content');
     expect(fixture.summaryAttrs['aria-label']).toBe('Project filter: All projects');
     expect(fixture.alpha.input.value).toBe('1');
     expect(fixture.beta.input.value).toBe('2');

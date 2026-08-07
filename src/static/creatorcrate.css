@@ -564,81 +564,6 @@
       .is-missing td { opacity: 0.6; }
       .missing-indicator { color: var(--danger); font-weight: bold; }
       .release-assets-form { margin-top: 1rem; }
-      .candidate-grid {
-        list-style: none;
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(min(100%, 12rem), 1fr));
-        gap: var(--space-md);
-        margin: var(--space-lg) 0;
-        padding: 0;
-      }
-      .candidate-grid-item {
-        min-width: 0;
-      }
-      .candidate-asset-form {
-        display: flex;
-        height: 100%;
-        margin: 0;
-      }
-      .candidate-grid-tile {
-        display: flex;
-        flex-direction: column;
-        gap: var(--space-sm);
-        box-sizing: border-box;
-        width: 100%;
-        min-width: 0;
-        height: 100%;
-        padding: var(--space-md);
-        border: 1px solid var(--border);
-        border-radius: var(--radius-md);
-        background: var(--surface);
-      }
-      .candidate-grid-preview {
-        display: grid;
-        place-items: center;
-        min-width: 0;
-        aspect-ratio: 4 / 3;
-        overflow: hidden;
-        border-radius: var(--radius-sm);
-        background: var(--bg);
-      }
-      .candidate-grid-preview img {
-        display: block;
-        width: 100%;
-        height: 100%;
-        object-fit: contain;
-      }
-      .candidate-grid-fallback {
-        display: grid;
-        place-items: center;
-        width: 100%;
-        height: 100%;
-        min-height: 5rem;
-        color: var(--muted);
-        font-size: 1.25rem;
-        font-weight: 600;
-        text-transform: uppercase;
-      }
-      .candidate-grid-info {
-        display: grid;
-        gap: var(--space-xs);
-        min-width: 0;
-      }
-      .candidate-grid-filename,
-      .candidate-grid-path {
-        min-width: 0;
-        margin: 0;
-        overflow-wrap: anywhere;
-        word-break: break-word;
-      }
-      .candidate-grid-path {
-        color: var(--muted);
-        font-size: 0.8rem;
-      }
-      .candidate-grid-tile > .button {
-        width: 100%;
-        margin-top: auto;
-      }
       .needs-attention, .upcoming-releases, .workflow-summary,
       .release-summary, .asset-health, .workflow-actions {
         margin: 1.5rem 0;
@@ -795,7 +720,7 @@
       .asset-thumb[data-preview-state="loading"] .asset-thumb-image { opacity: 0.65; }
       .asset-thumb-fallback,
       .asset-thumb-type {
-        font-size: 0.625rem;
+        font-size: 0.75rem;
         font-weight: 600;
         text-transform: uppercase;
         color: var(--muted);
@@ -1442,6 +1367,18 @@
         background: var(--surface);
         border: 1px solid var(--border);
         border-radius: var(--radius-lg);
+        transition: background var(--transition-fast), border-color var(--transition-fast),
+          box-shadow var(--transition-fast), transform var(--transition-fast);
+      }
+      .asset-card:hover,
+      .asset-card:focus-within {
+        background: var(--surface-hover);
+        border-color: var(--border-strong);
+        box-shadow: var(--shadow-md);
+      }
+      .asset-card:focus-within {
+        outline: 2px solid var(--focus-ring);
+        outline-offset: -2px;
       }
       .asset-card-top {
         display: flex;
@@ -1583,11 +1520,6 @@
         .asset-card-rename-field { flex-basis: 100%; }
       }
       .asset-card[data-asset-selectable-card] { cursor: pointer; }
-      .asset-card[data-asset-selectable-card]:hover { background: var(--surface-hover); }
-      .asset-card[data-asset-selectable-card]:focus-visible {
-        outline: 2px solid var(--focus-ring);
-        outline-offset: -2px;
-      }
       .asset-card-title-text {
         font-weight: 600;
         color: var(--text);
@@ -1682,35 +1614,35 @@
         color: var(--muted);
         font-size: 0.875rem;
       }
-      .asset-project-category-filter {
+      .asset-filter-multiselect-field {
         flex: 0 1 auto;
         width: max-content;
         min-width: 0;
         max-width: min(100%, 26rem);
       }
-      .asset-project-category-filter .asset-filter-multiselect {
+      .asset-filter-multiselect--sized {
         width: max-content;
         max-width: 100%;
       }
-      .asset-project-category-filter .asset-filter-multiselect summary {
+      .asset-filter-multiselect--sized summary {
         width: max-content;
         max-width: 100%;
       }
-      .asset-project-category-filter .asset-filter-multiselect-summary {
+      .asset-filter-multiselect--sized .asset-filter-multiselect-summary {
         display: grid;
         grid-template-columns: max-content;
         width: max-content;
         max-width: 100%;
       }
-      .asset-project-category-filter .asset-filter-multiselect-summary-current,
-      .asset-project-category-filter .asset-filter-multiselect-summary-width {
+      .asset-filter-multiselect--sized .asset-filter-multiselect-summary-current,
+      .asset-filter-multiselect--sized .asset-filter-multiselect-summary-width {
         grid-area: 1 / 1;
       }
-      .asset-project-category-filter .asset-filter-multiselect-summary-current {
+      .asset-filter-multiselect--sized .asset-filter-multiselect-summary-current {
         min-width: 0;
         max-width: 100%;
       }
-      .asset-project-category-filter .asset-filter-multiselect-summary-width {
+      .asset-filter-multiselect--sized .asset-filter-multiselect-summary-width {
         display: flex;
         flex-direction: column;
         width: max-content;
@@ -1721,14 +1653,14 @@
         white-space: nowrap;
         pointer-events: none;
       }
-      .asset-project-category-filter .asset-filter-multiselect-panel {
+      .asset-filter-multiselect--sized .asset-filter-multiselect-panel {
         width: max-content;
         max-width: min(26rem, calc(100vw - 1rem));
       }
-      .asset-project-category-filter .asset-filter-multiselect-option {
+      .asset-filter-multiselect--sized .asset-filter-multiselect-option {
         padding: 0;
       }
-      .asset-project-category-filter .asset-filter-multiselect-option > label {
+      .asset-filter-multiselect--sized .asset-filter-multiselect-option > label {
         display: flex;
         align-items: flex-start;
         gap: var(--space-sm);
@@ -1736,7 +1668,7 @@
         box-sizing: border-box;
         padding: var(--space-xs) var(--space-sm);
       }
-      .asset-project-category-filter .asset-filter-multiselect-option > label > span {
+      .asset-filter-multiselect--sized .asset-filter-multiselect-option > label > span {
         min-width: 0;
       }
       .asset-filter-multiselect {
@@ -1843,7 +1775,7 @@
       .asset-viewer-project-filter {
         z-index: 45;
       }
-      .asset-viewer-project-filter .asset-filter-multiselect-summary {
+      .asset-viewer-project-filter .asset-filter-multiselect-summary-current {
         display: block;
         min-width: 0;
         overflow: hidden;
@@ -2390,26 +2322,26 @@
           max-width: none;
           min-width: 0;
         }
-        .asset-project-category-filter {
+        .asset-filter-multiselect-field {
           width: 100%;
           max-width: 100%;
         }
-        .asset-project-category-filter .asset-filter-multiselect,
-        .asset-project-category-filter .asset-filter-multiselect summary {
+        .asset-filter-multiselect-field .asset-filter-multiselect,
+        .asset-filter-multiselect-field .asset-filter-multiselect summary {
           width: 100%;
           max-width: 100%;
         }
-        .asset-project-category-filter .asset-filter-multiselect-summary {
+        .asset-filter-multiselect-field .asset-filter-multiselect-summary {
           grid-template-columns: minmax(0, 1fr);
           width: auto;
           min-width: 0;
         }
-        .asset-project-category-filter .asset-filter-multiselect-summary-width {
+        .asset-filter-multiselect-field .asset-filter-multiselect-summary-width {
           width: 100%;
           max-width: 100%;
           overflow: hidden;
         }
-        .asset-project-category-filter .asset-filter-multiselect-panel {
+        .asset-filter-multiselect-field .asset-filter-multiselect-panel {
           width: 100%;
           max-width: 100%;
         }
@@ -2475,6 +2407,29 @@
       }
       .asset-list-card--project {
         position: relative;
+      }
+      .asset-list-card--release {
+        position: relative;
+      }
+      .asset-list-card--release.is-selected {
+        border-color: var(--accent);
+        box-shadow: inset 0 0 0 2px var(--accent), var(--shadow-md);
+      }
+      .asset-list-card--release[data-asset-selectable-card] {
+        cursor: pointer;
+      }
+      .asset-list-card--release .asset-list-card-top {
+        position: absolute;
+        inset-block-start: var(--space-sm);
+        inset-inline-start: var(--space-sm);
+        z-index: 1;
+        display: flex;
+        align-items: flex-start;
+        min-width: 0;
+        pointer-events: none;
+      }
+      .asset-list-card--release .asset-list-card-top .asset-selection-control {
+        pointer-events: auto;
       }
       .asset-list-card--project.is-selected {
         border-color: var(--accent);
@@ -4236,6 +4191,65 @@
       }
       .release-asset-actions .button-small {
         min-height: 1.8rem;
+      }
+      .release-asset-filters {
+        margin-bottom: var(--space-md);
+      }
+      .release-asset-card-details {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--space-xs) var(--space-md);
+        width: 100%;
+        min-width: 0;
+        color: var(--muted);
+        font-size: 0.8125rem;
+      }
+      .release-asset-card-detail {
+        min-width: 0;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+      }
+      .release-asset-card-detail strong {
+        margin-right: var(--space-xs);
+        color: var(--text);
+      }
+      .release-asset-membership-status.is-selected {
+        color: var(--accent);
+        font-weight: 600;
+      }
+      .release-asset-card-path {
+        flex-basis: 100%;
+      }
+      .release-asset-card-path code {
+        color: var(--muted);
+        overflow-wrap: anywhere;
+        word-break: break-word;
+      }
+      .release-asset-card-controls {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: var(--space-sm) var(--space-md);
+        width: 100%;
+        min-width: 0;
+        padding-top: var(--space-sm);
+        border-top: 1px solid var(--border);
+      }
+      .release-asset-role-form {
+        display: inline-flex;
+        align-items: center;
+        gap: var(--space-xs);
+        min-width: 0;
+      }
+      .asset-list-card--release .asset-list-card-actions {
+        display: flex;
+        align-items: flex-start;
+        flex-wrap: wrap;
+        gap: var(--space-sm) var(--space-md);
+        min-width: 0;
+        max-width: 100%;
+        padding-top: var(--space-sm);
+        border-top: 1px solid var(--border);
       }
 
       /* Agenda breakpoint: below this, the grid is replaced by the agenda

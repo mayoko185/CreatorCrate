@@ -1,7 +1,41 @@
 {% extends "layout.njk" %}
 {% import "partials/page-heading.njk" as pageHeading %}
+{% import "partials/asset-presentation.njk" as assetCards %}
+{% import "partials/view-switcher.njk" as viewSwitcher %}
 
 {% set page_title = "Releases — " ~ release.title %}
+
+{% macro releaseAssetMetadata(asset, includeCategory=true) %}
+  <div class="release-asset-card-details">
+    {% set role = asset.releaseContext.role or 'attachment' %}
+    <span class="release-asset-card-detail"><strong>Role</strong> {{ role | title }}</span>
+    {% if asset.releaseContext.sortOrder is not none %}
+      <span class="release-asset-card-detail"><strong>Order</strong> {{ asset.releaseContext.sortOrder }}</span>
+    {% endif %}
+    {% if includeCategory and asset.categoryLabel %}
+      <span class="release-asset-card-detail"><strong>Category</strong> {{ asset.categoryLabel }}{% if asset.categoryDisabled %} (disabled){% endif %}</span>
+    {% endif %}
+    {% if asset.relative_path %}
+      <span class="release-asset-card-detail release-asset-card-path"><strong>Path</strong> <code>{{ asset.relative_path }}</code></span>
+    {% endif %}
+  </div>
+{% endmacro %}
+
+{% macro releaseGridCard(asset) %}
+  {% call(slot) assetCards.gridCard(asset, { filenameLink: true }) %}
+    {% if slot == 'body' %}
+      {{ releaseAssetMetadata(asset) }}
+    {% endif %}
+  {% endcall %}
+{% endmacro %}
+
+{% macro releaseListCard(asset) %}
+  {% call(slot) assetCards.listCard(asset) %}
+    {% if slot == 'associations' %}
+      {{ releaseAssetMetadata(asset, false) }}
+    {% endif %}
+  {% endcall %}
+{% endmacro %}
 
 {% block content %}
   {% set projectArchived = project and project.archived_at %}
@@ -10,6 +44,9 @@
   {% set isArchived = projectArchived or releaseArchived %}
   {% if not projectArchived and not releaseArchived %}
     {% call pageHeading.render("Release record") %}
+      {% if not isPublished %}
+        <a class="button" href="/releases/{{ release.id }}/assets">Manage Assets</a>
+      {% endif %}
       <a class="button" href="/releases/{{ release.id }}/edit">Edit</a>
       {% if project and project.id %}
         <a class="button button-secondary" href="/projects/{{ project.id }}">Back to Project</a>
@@ -113,9 +150,6 @@
   <section>
     <h2>Assets</h2>
     <p>
-      {% if not projectArchived and not releaseArchived and not isPublished %}
-        <a class="button" href="/releases/{{ release.id }}/assets">Manage Assets</a>
-      {% endif %}
       <span class="meta">{{ assetCount }} asset{% if assetCount != 1 %}s{% endif %} selected</span>
     </p>
   </section>
@@ -134,52 +168,37 @@
     </section>
   {% endif %}
 
-  {% if releaseAssets.length > 0 %}
-    <section>
-      <h2>Selected Assets</h2>
-      <div class="table-scroll" tabindex="0" aria-label="Selected release assets">
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th>Filename</th>
-              <th>Role</th>
-              <th>Path</th>
-              <th>Status</th>
-              {% if not projectArchived and not releaseArchived and not isPublished %}
-                <th>Actions</th>
-              {% endif %}
-            </tr>
-          </thead>
-          <tbody>
-            {% for ra in releaseAssets %}
-              <tr>
-                <td class="asset-filename">{{ ra.filename }}</td>
-                <td>{{ ra.role | title }}</td>
-                <td class="asset-path"><code>{{ ra.relative_path }}</code></td>
-                <td>
-                  {% if ra.is_present == 1 %}
-                    {% set status = 'present' %}{% include "partials/status-badge.njk" %}
-                  {% else %}
-                    {% set status = 'missing' %}{% include "partials/status-badge.njk" %}
-                  {% endif %}
-                </td>
-                {% if not projectArchived and not releaseArchived and not isPublished %}
-                  <td class="row-actions">
-                    {% if ra.is_present == 0 %}
-                      <form method="post" action="/releases/{{ release.id }}/assets/{{ ra.asset_id }}/remove" class="inline-form">
-                        <input type="hidden" name="_csrf" value="{{ _csrf }}">
-                        <button class="button button-danger button-small" type="submit" data-confirm="Remove this missing asset from the release?">Remove</button>
-                      </form>
-                    {% endif %}
-                  </td>
-                {% endif %}
-              </tr>
-            {% endfor %}
-          </tbody>
-        </table>
+  <section>
+    <h2>Selected Assets</h2>
+    {% set selectedAssets = assetPresentation.selected or [] %}
+    {% if selectedAssets.length > 0 %}
+      <div class="asset-viewer-display-controls">
+        {{ viewSwitcher.render(view, pageUrl, "Asset display") }}
       </div>
-    </section>
-  {% endif %}
+      {% if view == 'grid' %}
+        <ul class="asset-grid" role="listbox" aria-label="Selected release assets">
+          {% for asset in selectedAssets %}
+            <li class="asset-grid-item{% if not asset.is_present %} is-missing{% endif %}">
+              {{ releaseGridCard(asset) }}
+            </li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <ul class="asset-list asset-list--release" role="list" aria-label="Selected release assets">
+          {% for asset in selectedAssets %}
+            <li class="asset-list-item{% if not asset.is_present %} is-missing{% endif %}">
+              {{ releaseListCard(asset) }}
+            </li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+    {% else %}
+      {% set emptyHeading = "No assets selected" %}
+      {% set emptyDescription = "No assets are associated with this release." %}
+      {% set emptyHeadingLevel = "h3" %}
+      {% include "partials/empty-state.njk" %}
+    {% endif %}
+  </section>
 
   {# ─── Published summary ──────────────────────────────────────────── #}
   {% if isPublished and not isArchived %}

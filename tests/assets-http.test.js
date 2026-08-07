@@ -194,7 +194,13 @@ describe('asset browser HTTP workflow', () => {
   }
 
   function assetTagFilterHtml(html) {
-    return html.match(/<select id="tag"[\s\S]*?<\/select>/)?.[0] || '';
+    return (html.match(/<details class="asset-filter-multiselect[^>]*>[\s\S]*?<\/details>/g) || [])
+      .find((candidate) => candidate.includes('aria-controls="asset-tag-filter-options"')) || '';
+  }
+
+  function assetExtensionFilterHtml(html) {
+    return (html.match(/<details class="asset-filter-multiselect[^>]*>[\s\S]*?<\/details>/g) || [])
+      .find((candidate) => candidate.includes('aria-controls="asset-extension-filter-options"')) || '';
   }
 
   function expectAnchorHref(html, className, expected) {
@@ -274,7 +280,9 @@ describe('asset browser HTTP workflow', () => {
     expect(res2.text).toContain('Back to Project');
     expect(res2.text).toContain('class="page-heading"');
     expect((res2.text.match(/<h1\b/g) || []).length).toBe(1);
-    expect(res2.text).toContain('<select id="tag" name="tag" disabled>');
+    expect(res2.text).toMatch(/<input id="asset-tag-option-all" name="tag" type="radio" value="" checked>/);
+    expect(res2.text).toContain('No tags available');
+    expect(res2.text).toMatch(/<input id="asset-extension-option-all" name="extension" type="radio" value="" checked>/);
   });
 
   it('renders page-local assigned asset tags in grid and list views without changing asset results', async () => {
@@ -403,12 +411,28 @@ describe('asset browser HTTP workflow', () => {
     expect(pageOne.text).toContain('c.txt');
     expect(pageOne.text).not.toContain('a.txt');
     expect(pageOne.text).not.toContain('d.txt');
-    expect(filter).toContain(`<option value="${shared.id}" selected>Shared Filter</option>`);
-    expect(filter.indexOf('Alpha Filter')).toBeLessThan(filter.indexOf('Project Only Filter'));
-    expect(filter.indexOf('Project Only Filter')).toBeLessThan(filter.indexOf('Shared Filter'));
-    expect(filter.indexOf('Shared Filter')).toBeLessThan(filter.indexOf('Zebra Filter'));
+    expect(filter).toContain('asset-filter-multiselect--sized');
+    expect(filter).toContain('class="asset-filter-multiselect-summary-current"');
+    expect(filter).toContain('class="asset-filter-multiselect-summary-width" aria-hidden="true"');
+    expect(filter).toContain('aria-label="Tag filter: Shared Filter"');
+    expect(filter).toMatch(new RegExp(`<label for="[^"]+">\\s*<input[^>]+name="tag"[^>]+value="${shared.id}"[^>]*checked`));
+    expect(filter).toMatch(/<label for="[^"]+">\s*<input[^>]+name="tag"/);
+    expect(filter).toContain('All tags');
+    expect(filter).toContain('Alpha Filter');
+    expect(filter).toContain('Project Only Filter');
+    expect(filter).toContain('Shared Filter');
+    expect(filter).toContain('Zebra Filter');
+    const tagOptions = filter.slice(filter.indexOf('id="asset-tag-filter-options"'));
+    expect(tagOptions.indexOf('Alpha Filter')).toBeLessThan(tagOptions.indexOf('Project Only Filter'));
+    expect(tagOptions.indexOf('Project Only Filter')).toBeLessThan(tagOptions.indexOf('Shared Filter'));
+    expect(tagOptions.indexOf('Shared Filter')).toBeLessThan(tagOptions.indexOf('Zebra Filter'));
     expect(filter).not.toContain('normalized_name');
     expect(pageSizeForm).toContain(`<input type="hidden" name="tag" value="${shared.id}">`);
+    const filterForm = pageOne.text.match(/<form class="filters" method="get" action="\/projects\/\d+\/assets">[\s\S]*?<\/form>/)?.[0] || '';
+    expect(filterForm).toContain('<input type="hidden" name="view" value="list">');
+    expect(filterForm).not.toContain('name="page"');
+    const ids = [...pageOne.text.matchAll(/\bid="([^"]+)"/g)].map((match) => match[1]);
+    expect(new Set(ids).size).toBe(ids.length);
     expect(nextUrl.searchParams.get('tag')).toBe(String(shared.id));
     expect(nextUrl.searchParams.get('page')).toBe('2');
     expect(nextUrl.searchParams.get('pageSize')).toBe('2');
@@ -479,8 +503,9 @@ describe('asset browser HTTP workflow', () => {
         .expect(200);
       const filter = assetTagFilterHtml(response.text);
       expect(response.text).toContain('2 assets found');
-      expect(filter).toContain('<option value="" selected>All tags</option>');
-      expect(filter).not.toContain(`value="${tag.id}" selected`);
+      expect(filter).toContain('aria-label="Tag filter: All tags"');
+      expect(filter).toMatch(/<input id="asset-tag-option-all"[^>]*value=""[^>]*checked/);
+      expect(filter).not.toMatch(new RegExp(`name="tag"[^>]+value="${tag.id}"[^>]*checked`));
     }
 
     app.locals.tagService.deleteTag(tag.id);
@@ -515,7 +540,7 @@ describe('asset browser HTTP workflow', () => {
     expect(page.text).toContain('value="desc" selected');
     expect(page.text).toContain('<input type="hidden" name="pageSize" value="50">');
     expect(page.text).toContain('<input type="hidden" name="view" value="list">');
-    expect(page.text).toContain(`<option value="${tag.id}" selected>Action Context Tag</option>`);
+    expect(assetTagFilterHtml(page.text)).toMatch(new RegExp(`name="tag"[^>]+value="${tag.id}"[^>]*checked`));
 
     const scan = await agent
       .post(`/projects/${id}/scan`)
@@ -1712,7 +1737,15 @@ describe('asset browser HTTP workflow', () => {
     expect(res2.text).not.toContain('hero-source.kra');
     expect(res2.text).not.toContain('other.png');
     expect(res2.text).toContain('value="hero"');
-    expect(res2.text).toContain('value="png" selected');
+    const extensionFilter = assetExtensionFilterHtml(res2.text);
+    expect(extensionFilter).toContain('asset-filter-multiselect--sized');
+    expect(extensionFilter).toContain('class="asset-filter-multiselect-summary-current">.png</span>');
+    expect(extensionFilter).toContain('class="asset-filter-multiselect-summary-width" aria-hidden="true"');
+    expect(extensionFilter).toMatch(/<label for="[^"]+">\s*<input[^>]+name="extension"[^>]+value="png"[^>]*checked/);
+    expect(extensionFilter).toContain('>All extensions</span>');
+    expect(extensionFilter).toContain('>.png</span>');
+    expect(extensionFilter).toContain('>.kra</span>');
+    expect(res2.text).not.toMatch(/<select[^>]+(?:id="extension"|name="extension")/);
   });
 
   it('keeps extension choices stable when another filter returns no rows', async () => {
@@ -3242,7 +3275,7 @@ describe('asset browser HTTP workflow', () => {
     expect(filterForm).toContain('value="asc"');
     expect(filterForm).toContain('value="desc"');
 
-    const categoryFieldset = res2.text.match(/<fieldset class="field asset-viewer-filter-field asset-project-category-filter"[\s\S]*?<\/fieldset>/)?.[0];
+    const categoryFieldset = res2.text.match(/<fieldset class="field asset-viewer-filter-field[^"]*asset-project-category-filter[^"]*"[\s\S]*?<\/fieldset>/)?.[0];
     expect(categoryFieldset).toBeDefined();
     expect(categoryFieldset).not.toContain('Manage Categories');
 
@@ -3272,14 +3305,16 @@ describe('asset browser HTTP workflow', () => {
     expect(res2.text).not.toContain('class="asset-browser-nav"');
 
     const style = await readStylesheetSource(res2.text);
-    expect(style).toMatch(/\.asset-project-category-filter\s*\{[^}]*flex:\s*0 1 auto[^}]*width:\s*max-content[^}]*max-width:\s*min\(100%,\s*26rem\)/);
-    const categorySummaryWidthRule = style.match(/(?:^|})\s*\.asset-project-category-filter \.asset-filter-multiselect-summary-width\s*\{([^}]*)\}/)?.[1] || '';
+    expect(categoryFieldset).toContain('asset-filter-multiselect-field');
+    expect(categoryFieldset).toContain('asset-filter-multiselect--sized');
+    expect(categoryFieldset).toContain('class="asset-filter-multiselect-summary-width" aria-hidden="true"');
+    const categorySummaryWidthRule = style.match(/(?:^|})\s*\.asset-filter-multiselect--sized \.asset-filter-multiselect-summary-width\s*\{([^}]*)\}/)?.[1] || '';
     expect(categorySummaryWidthRule).toMatch(/max-height:\s*0/);
     expect(categorySummaryWidthRule).toMatch(/overflow:\s*hidden/);
     expect(categorySummaryWidthRule).toMatch(/visibility:\s*hidden/);
     const categorySummaryRule = style.match(/(?:^|})\s*\.asset-filter-multiselect summary\s*\{([^}]*)\}/)?.[1] || '';
     expect(categorySummaryRule).toMatch(/min-height:\s*2\.5rem/);
-    expect(style).toMatch(/@media\s*\(max-width:\s*540px\)[\s\S]*?\.asset-project-category-filter\s*\{[^}]*width:\s*100%[^}]*max-width:\s*100%/);
+    expect(style).toMatch(/@media\s*\(max-width:\s*540px\)[\s\S]*?\.asset-filter-multiselect-field\s*\{[^}]*width:\s*100%[^}]*max-width:\s*100%/);
 
     const gridCards = [...res2.text.matchAll(/<article class="asset-card[\s\S]*?<\/article>/g)].map((match) => match[0]).join('\n');
     expect(gridCards).not.toContain('Renders');

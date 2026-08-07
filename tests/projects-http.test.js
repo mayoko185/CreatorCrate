@@ -42,11 +42,11 @@ function extractProjectTags(card) {
 }
 
 function extractTagFilter(html) {
-  return html.match(/<fieldset class="field asset-viewer-filter-field">\s*<legend>Tag<\/legend>[\s\S]*?<\/fieldset>/)?.[0] || '';
+  return html.match(/<fieldset class="field asset-viewer-filter-field[^"]*">\s*<legend>Tag<\/legend>[\s\S]*?<\/fieldset>/)?.[0] || '';
 }
 
 function extractStatusFilter(html) {
-  return html.match(/<fieldset class="field asset-viewer-filter-field">\s*<legend>Status<\/legend>[\s\S]*?<\/fieldset>/)?.[0] || '';
+  return html.match(/<fieldset class="field asset-viewer-filter-field[^"]*">\s*<legend>Status<\/legend>[\s\S]*?<\/fieldset>/)?.[0] || '';
 }
 
 function extractReleaseList(html) {
@@ -209,6 +209,12 @@ describe('project HTTP workflow', () => {
     expect(extractTagFilter(res.text)).toContain('aria-label="Tag filter: 2 tags selected"');
     expect(extractTagFilter(res.text)).toMatch(new RegExp(`name="tag"[^>]+value="${firstTag.id}" checked`));
     expect(extractTagFilter(res.text)).toMatch(new RegExp(`name="tag"[^>]+value="${secondTag.id}" checked`));
+    for (const [filter, inputName] of [[extractStatusFilter(res.text), 'status'], [extractTagFilter(res.text), 'tag']]) {
+      expect(filter).toContain('asset-filter-multiselect--sized');
+      expect(filter).toContain('class="asset-filter-multiselect-summary-current"');
+      expect(filter).toContain('class="asset-filter-multiselect-summary-width" aria-hidden="true"');
+      expect(filter).toMatch(new RegExp(`<label for="[^"]+">\\s*<input[^>]+name="${inputName}"`));
+    }
     expect(res.text).not.toMatch(/<select[^>]+(?:id="status"|id="tag"|name="status"|name="tag")/);
   });
 

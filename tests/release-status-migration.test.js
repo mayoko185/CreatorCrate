@@ -433,7 +433,7 @@ describe('release status removal migration', () => {
       notes: 'Legacy notes',
       status: 'idea',
       plannedDate: '2025-06-01',
-      plannedTime: '08:00',
+      plannedTime: '14:30',
       publishedDate: null,
       patreonUrl: null,
       createdAt: '2025-05-01 00:00:00',
@@ -503,6 +503,11 @@ describe('release status removal migration', () => {
         { id: 13, title: 'Legacy published', notes: 'Published notes', published_date: '2025-05-06', archived_at: null },
         { id: 14, title: 'Legacy cancelled', notes: 'Cancelled notes', published_date: null, archived_at: '2025-05-08 09:10:11' },
       ]);
+    // Regression guard: planned_time must survive the 001 → 002 → 003 upgrade
+    // path. Migration 002 rebuilds the releases table; dropping planned_time
+    // from its INSERT/SELECT column lists silently nulls any seeded value.
+    expect(db.prepare('SELECT id, planned_time FROM releases WHERE id = 11').get())
+      .toEqual({ id: 11, planned_time: '14:30' });
     expect(db.prepare(
       'SELECT release_id, asset_id, role, sort_order, created_at FROM release_assets'
     ).all()).toEqual(releaseAssetsBefore);

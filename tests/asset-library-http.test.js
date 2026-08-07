@@ -181,8 +181,8 @@ describe('cross-project Asset Viewer HTTP route', () => {
     expect(response.text).not.toContain(`/projects/${beta.id}/assets/${missing.id}/preview`);
 
     expect(response.text).toMatch(/<input id="asset-project-option-\d+" name="project" type="radio" value="\d+">/);
-    expect(response.text).toMatch(/<label for="asset-project-option-\d+">Alpha Project<\/label>/);
-    expect(response.text).toMatch(/<label for="asset-project-option-\d+">Beta Project<\/label>/);
+    expect(response.text).toMatch(/<label for="(asset-project-option-\d+)">\s*<input id="\1" name="project" type="radio" value="\d+">\s*<span>Alpha Project<\/span>\s*<\/label>/);
+    expect(response.text).toMatch(/<label for="(asset-project-option-\d+)">\s*<input id="\1" name="project" type="radio" value="\d+">\s*<span>Beta Project<\/span>\s*<\/label>/);
     expect(response.text).toMatch(/<input id="asset-project-option-all" name="project" type="radio" value="" checked>/);
     expect(response.text).toContain('aria-label="Project filter: All projects"');
     expect(response.text).toMatch(/name="category"[^>]+value="source"/);

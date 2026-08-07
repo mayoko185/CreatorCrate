@@ -9,11 +9,13 @@ import {
   ReleaseValidationError,
   ReleaseNotFoundError,
 } from '../services/release-service.js';
+import { buildReleaseAssetPagePresentation } from '../services/release-asset-presenter.js';
 
 const SORT_OPTIONS = ['updated', 'created', 'planned', 'title'];
 const PAGE_SIZE = 25;
 const RELEASES_PAGE_DEFAULTS = 'releases';
 const RELEASE_MANAGEMENT_PAGE_DEFAULTS = 'releaseManagement';
+const RELEASE_ASSET_DEFAULT_VIEW = 'grid';
 
 export { handleReleaseListOrBoard, buildPageUrl, buildCreateReleaseFormModel };
 
@@ -126,7 +128,6 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
 
     const project = projectService.findById(release.project_id);
     const releaseAssets = releaseService.listReleaseAssets(id);
-    const assetCount = releaseAssets.length;
 
     // Published releases show a publication summary instead of readiness.
     // Archived releases (or archived-parent) also skip readiness.
@@ -134,14 +135,15 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
     const isArchived = release.archived_at || (project && project.archived_at);
     const readiness = isPublished || isArchived ? null : workflowQueryService.getReleaseReadiness(id);
 
-    res.render('releases/detail.njk', {
+    res.render('releases/detail.njk', buildReleaseDetailRenderModel({
       appName,
+      releaseService,
       release,
       project,
       releaseAssets,
-      assetCount,
+      req,
       readiness,
-    });
+    }));
   });
 
   // GET /releases/:id/edit — Edit form
@@ -217,15 +219,16 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
         }
         const project = projectService.findById(existing.project_id);
         const releaseAssets = releaseService.listReleaseAssets(id);
-        res.status(422).render('releases/detail.njk', {
+        res.status(422).render('releases/detail.njk', buildReleaseDetailRenderModel({
           appName,
+          releaseService,
           release: existing,
           project,
           releaseAssets,
-          assetCount: releaseAssets.length,
+          req,
           readiness: null,
           errors: { general: err.message },
-        });
+        }));
         return;
       }
       next(err);
@@ -329,15 +332,16 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
         }
         const project = projectService.findById(release.project_id);
         const releaseAssets = releaseService.listReleaseAssets(id);
-        res.status(422).render('releases/detail.njk', {
+        res.status(422).render('releases/detail.njk', buildReleaseDetailRenderModel({
           appName,
+          releaseService,
           release,
           project,
           releaseAssets,
-          assetCount: releaseAssets.length,
+          req,
           readiness: null,
           errors: { general: err.message },
-        });
+        }));
         return;
       }
       next(err);
@@ -366,15 +370,16 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
         const project = projectService.findById(release.project_id);
         const releaseAssets = releaseService.listReleaseAssets(id);
         const readiness = workflowQueryService.getReleaseReadiness(id);
-        res.status(422).render('releases/detail.njk', {
+        res.status(422).render('releases/detail.njk', buildReleaseDetailRenderModel({
           appName,
+          releaseService,
           release,
           project,
           releaseAssets,
-          assetCount: releaseAssets.length,
+          req,
           errors: err.errors,
           readiness,
-        });
+        }));
         return;
       }
       if (err instanceof ReleaseArchivedError || err instanceof ReleaseParentArchivedError) {
@@ -384,15 +389,16 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
         }
         const project = projectService.findById(release.project_id);
         const releaseAssets = releaseService.listReleaseAssets(id);
-        res.status(422).render('releases/detail.njk', {
+        res.status(422).render('releases/detail.njk', buildReleaseDetailRenderModel({
           appName,
+          releaseService,
           release,
           project,
           releaseAssets,
-          assetCount: releaseAssets.length,
+          req,
           readiness: null,
           errors: { general: err.message },
-        });
+        }));
         return;
       }
       next(err);
@@ -419,35 +425,10 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
     // Compose the full asset-management view-model through the service
     const viewModel = releaseService.getReleaseAssetManagementPage(id, req.query);
 
-    // Use the service-composed asset list for the existing bulk-selection form.
-    const assets = viewModel.assets;
-
-    // Build candidate page URL that preserves only candidate filters
-    const candidateQuery = {};
-    if (viewModel.candidateFilters.search) candidateQuery.search = viewModel.candidateFilters.search;
-    if (viewModel.candidateFilters.extension) candidateQuery.extension = viewModel.candidateFilters.extension;
-    if (viewModel.activeCategoryId !== null) candidateQuery.category = String(viewModel.activeCategoryId);
-    if (viewModel.candidatePage > 1) candidateQuery.page = String(viewModel.candidatePage);
-    if (viewModel.candidatePageSize !== 25) candidateQuery.pageSize = String(viewModel.candidatePageSize);
-    const pageUrl = buildPageUrl(req, candidateQuery);
-
     res.render('releases/assets.njk', {
       appName,
-      release: viewModel.release,
-      project: viewModel.project,
-      releaseAssets: viewModel.releaseAssets,
-      assets,
-      categories: viewModel.categories,
-      activeCategoryId: viewModel.activeCategoryId,
-      candidates: viewModel.candidates,
-      candidateTotal: viewModel.candidateTotal,
-      candidatePage: viewModel.candidatePage,
-      candidatePageSize: viewModel.candidatePageSize,
-      candidatePageCount: viewModel.candidatePageCount,
-      candidateFilters: viewModel.candidateFilters,
-      candidateExtensions: viewModel.candidateExtensions,
+      ...buildAssetPageRenderModel(id, req, viewModel),
       roles: ['primary', 'preview', 'attachment', 'source'],
-      pageUrl,
     });
   });
 
@@ -464,15 +445,17 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
     }
 
     try {
-      // Parse selections from form: selectedAssetIds[] = assetId, roles[N] = role, sortOrder[N] = sortOrder
+      // The unified picker submits only selectedAssetIds[]. Keep accepting the
+      // legacy role/order fields for compatibility with older clients and
+      // direct integrations, but do not make membership depend on them.
       // Note: express urlencoded with extended:true parses foo[1]=bar as object { '1': 'bar' }
       // But for arrays, selectedAssetIds[] becomes ['1', '2', ...] and roles/sortOrder indices are 0-based
       // to match the array position, NOT the asset ID. We use positional matching.
       //
       // When a role or sortOrder field is missing (e.g. disabled in a no-JS browser
-      // submission for a newly-checked row), default to safe values rather than
-      // rejecting the submission. The browser will not submit disabled controls, so
-      // server must treat them as "use default".
+       // submission for a newly-checked row), default to safe values rather than
+       // rejecting the submission. The browser will not submit disabled controls, so
+       // the server must treat them as "use default".
       // Normalize to array: handle both single-value (selectedAssetIds=5) and
       // array (selectedAssetIds[]=5&selectedAssetIds[]=6) form submissions.
       const normalized = normalizeSelectedAssetIds(req.body.selectedAssetIds);
@@ -482,100 +465,82 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
         throw new ReleaseValidationError({ general: 'Invalid asset selection format.' });
       }
 
-      // Express parses roles[1]=primary as { '0': 'primary' } (0-indexed to match array position)
-      const roles = req.body.roles || {};
-      const sortOrders = req.body.sortOrder || {};
-
       const selections = [];
-      for (let i = 0; i < normalized.ids.length; i++) {
-        const rawAssetId = normalized.ids[i];
+      const membershipOnly = req.body.roles === undefined && req.body.sortOrder === undefined;
 
-        // Validate asset ID
-        const assetId = parseStrictInt(rawAssetId);
-        if (assetId === null) {
-          throw new ReleaseValidationError({ general: 'Invalid asset selection.' });
+      if (membershipOnly) {
+        for (const rawAssetId of normalized.ids) {
+          const assetId = parseStrictInt(rawAssetId);
+          if (assetId === null) {
+            throw new ReleaseValidationError({ general: 'Invalid asset selection.' });
+          }
+          selections.push({ assetId });
         }
+      } else {
+        // Express parses roles[1]=primary as { '0': 'primary' } (0-indexed to
+        // match the array position). Legacy submissions retain their explicit
+        // role/order behavior.
+        const roles = req.body.roles || {};
+        const sortOrders = req.body.sortOrder || {};
+        for (let i = 0; i < normalized.ids.length; i++) {
+          const rawAssetId = normalized.ids[i];
+          const assetId = parseStrictInt(rawAssetId);
+          if (assetId === null) {
+            throw new ReleaseValidationError({ general: 'Invalid asset selection.' });
+          }
 
-        // Get role and sortOrder by positional index. Missing values default to
-        // 'attachment' / 0 so a no-JS submission still succeeds.
-        const role = typeof roles[i] === 'string' && roles[i].trim() !== ''
-          ? roles[i].trim().toLowerCase()
-          : 'attachment';
-        const sortOrderRaw = sortOrders[i];
-        const sortOrder = parseNonNegativeInt(sortOrderRaw) ?? 0;
-
-        selections.push({ assetId, role, sortOrder });
+          const role = typeof roles[i] === 'string' && roles[i].trim() !== ''
+            ? roles[i].trim().toLowerCase()
+            : 'attachment';
+          const sortOrderRaw = sortOrders[i];
+          const sortOrder = parseNonNegativeInt(sortOrderRaw) ?? 0;
+          selections.push({ assetId, role, sortOrder });
+        }
       }
 
-      releaseService.selectAssets(id, selections);
-      res.redirect(`/releases/${id}/assets`);
+      releaseService.selectAssets(id, selections, { membershipOnly });
+      const viewModel = releaseService.getReleaseAssetManagementPage(id, req.query);
+      res.redirect(buildAssetRedirectUrl(id, viewModel, req.query));
     } catch (err) {
       if (err instanceof ReleaseNotFoundError) {
         return next(createNotFound());
       }
-      if (err instanceof ReleaseValidationError || err instanceof ReleasePublishedError) {
+      if (err instanceof ReleaseValidationError) {
         const viewModel = releaseService.getReleaseAssetManagementPage(id, req.query);
         // Render the SUBMITTED selections so the user does not lose input.
         // Do NOT load persisted releaseAssets here — that would clobber the
         // user's changes after a validation failure.
         const submittedAssets = buildSubmittedReleaseAssets(req);
-        const assets = viewModel.assets;
-        const candidateQuery = {};
-        if (viewModel.candidateFilters.search) candidateQuery.search = viewModel.candidateFilters.search;
-        if (viewModel.candidateFilters.extension) candidateQuery.extension = viewModel.candidateFilters.extension;
-        if (viewModel.activeCategoryId !== null) candidateQuery.category = String(viewModel.activeCategoryId);
-        if (viewModel.candidatePage > 1) candidateQuery.page = String(viewModel.candidatePage);
-        if (viewModel.candidatePageSize !== 25) candidateQuery.pageSize = String(viewModel.candidatePageSize);
-        const pageUrl = buildAssetPageUrl(id, candidateQuery);
         res.status(422).render('releases/assets.njk', {
           appName,
-          release: viewModel.release,
-          project: viewModel.project,
-          releaseAssets: submittedAssets,
-          assets,
-          categories: viewModel.categories,
-          activeCategoryId: viewModel.activeCategoryId,
-          candidates: viewModel.candidates,
-          candidateTotal: viewModel.candidateTotal,
-          candidatePage: viewModel.candidatePage,
-          candidatePageSize: viewModel.candidatePageSize,
-          candidatePageCount: viewModel.candidatePageCount,
-          candidateFilters: viewModel.candidateFilters,
-          candidateExtensions: viewModel.candidateExtensions,
+          ...buildAssetPageRenderModel(id, req, viewModel, {
+            releaseAssets: submittedAssets,
+            assetPresentation: buildSubmittedReleaseAssetPresentation(viewModel, submittedAssets),
+            errors: err.errors || { general: err.message },
+          }),
           roles: ['primary', 'preview', 'attachment', 'source'],
-          errors: err.errors || { general: err.message },
-          pageUrl,
+        });
+        return;
+      }
+      if (err instanceof ReleasePublishedError) {
+        const viewModel = releaseService.getReleaseAssetManagementPage(id, req.query);
+        res.status(422).render('releases/assets.njk', {
+          appName,
+          ...buildAssetPageRenderModel(id, req, viewModel, {
+            errors: { general: err.message },
+          }),
+          roles: ['primary', 'preview', 'attachment', 'source'],
         });
         return;
       }
       if (err instanceof ReleaseArchivedError || err instanceof ReleaseParentArchivedError) {
         const viewModel = releaseService.getReleaseAssetManagementPage(id, req.query);
-        const assets = viewModel.assets;
-        const candidateQuery = {};
-        if (viewModel.candidateFilters.search) candidateQuery.search = viewModel.candidateFilters.search;
-        if (viewModel.candidateFilters.extension) candidateQuery.extension = viewModel.candidateFilters.extension;
-        if (viewModel.activeCategoryId !== null) candidateQuery.category = String(viewModel.activeCategoryId);
-        if (viewModel.candidatePage > 1) candidateQuery.page = String(viewModel.candidatePage);
-        if (viewModel.candidatePageSize !== 25) candidateQuery.pageSize = String(viewModel.candidatePageSize);
-        const pageUrl = buildAssetPageUrl(id, candidateQuery);
         res.status(422).render('releases/assets.njk', {
           appName,
-          release: viewModel.release,
-          project: viewModel.project,
-          releaseAssets: viewModel.releaseAssets,
-          assets,
-          categories: viewModel.categories,
-          activeCategoryId: viewModel.activeCategoryId,
-          candidates: viewModel.candidates,
-          candidateTotal: viewModel.candidateTotal,
-          candidatePage: viewModel.candidatePage,
-          candidatePageSize: viewModel.candidatePageSize,
-          candidatePageCount: viewModel.candidatePageCount,
-          candidateFilters: viewModel.candidateFilters,
-          candidateExtensions: viewModel.candidateExtensions,
+          ...buildAssetPageRenderModel(id, req, viewModel, {
+            errors: { general: err.message },
+          }),
           roles: ['primary', 'preview', 'attachment', 'source'],
-          errors: { general: err.message },
-          pageUrl,
         });
         return;
       }
@@ -612,30 +577,32 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
       if (err instanceof ReleaseArchivedError || err instanceof ReleaseParentArchivedError) {
         const project = projectService.findById(release.project_id);
         const releaseAssets = releaseService.listReleaseAssets(id);
-        res.status(422).render('releases/detail.njk', {
+        res.status(422).render('releases/detail.njk', buildReleaseDetailRenderModel({
           appName,
+          releaseService,
           release,
           project,
           releaseAssets,
-          assetCount: releaseAssets.length,
+          req,
           errors: { general: err.message },
           readiness: null,
-        });
+        }));
         return;
       }
       if (err instanceof ReleasePublishedError || err instanceof ReleaseValidationError) {
         const project = projectService.findById(release.project_id);
         const releaseAssets = releaseService.listReleaseAssets(id);
         const readiness = workflowQueryService.getReleaseReadiness(id);
-        res.status(422).render('releases/detail.njk', {
+        res.status(422).render('releases/detail.njk', buildReleaseDetailRenderModel({
           appName,
+          releaseService,
           release,
           project,
           releaseAssets,
-          assetCount: releaseAssets.length,
+          req,
           errors: err.errors || { general: err.message },
           readiness,
-        });
+        }));
         return;
       }
       next(err);
@@ -664,7 +631,7 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
     try {
       releaseService.addCandidateAsset(id, assetId);
       const viewModel = releaseService.getReleaseAssetManagementPage(id, req.query);
-      res.redirect(buildAssetRedirectUrl(id, viewModel.candidateFilters, viewModel.candidatePage, viewModel.candidatePageSize));
+      res.redirect(buildAssetRedirectUrl(id, viewModel, req.query));
     } catch (err) {
       if (err instanceof ReleaseNotFoundError || err instanceof AssetNotFoundError) {
         return next(createNotFound());
@@ -690,7 +657,7 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
     try {
       releaseService.removeSelectedAsset(id, assetId);
       const viewModel = releaseService.getReleaseAssetManagementPage(id, req.query);
-      res.redirect(buildAssetRedirectUrl(id, viewModel.candidateFilters, viewModel.candidatePage, viewModel.candidatePageSize));
+      res.redirect(buildAssetRedirectUrl(id, viewModel, req.query));
     } catch (err) {
       if (err instanceof ReleaseNotFoundError || err instanceof AssetNotFoundError) {
         return next(createNotFound());
@@ -718,7 +685,7 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
     try {
       releaseService.updateAssetRole(id, assetId, role);
       const viewModel = releaseService.getReleaseAssetManagementPage(id, req.query);
-      res.redirect(buildAssetRedirectUrl(id, viewModel.candidateFilters, viewModel.candidatePage, viewModel.candidatePageSize));
+      res.redirect(buildAssetRedirectUrl(id, viewModel, req.query));
     } catch (err) {
       if (err instanceof ReleaseNotFoundError || err instanceof AssetNotFoundError) {
         return next(createNotFound());
@@ -744,7 +711,7 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
     try {
       releaseService.moveAssetUp(id, assetId);
       const viewModel = releaseService.getReleaseAssetManagementPage(id, req.query);
-      res.redirect(buildAssetRedirectUrl(id, viewModel.candidateFilters, viewModel.candidatePage, viewModel.candidatePageSize));
+      res.redirect(buildAssetRedirectUrl(id, viewModel, req.query));
     } catch (err) {
       if (err instanceof ReleaseNotFoundError || err instanceof AssetNotFoundError) {
         return next(createNotFound());
@@ -770,7 +737,7 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
     try {
       releaseService.moveAssetDown(id, assetId);
       const viewModel = releaseService.getReleaseAssetManagementPage(id, req.query);
-      res.redirect(buildAssetRedirectUrl(id, viewModel.candidateFilters, viewModel.candidatePage, viewModel.candidatePageSize));
+      res.redirect(buildAssetRedirectUrl(id, viewModel, req.query));
     } catch (err) {
       if (err instanceof ReleaseNotFoundError || err instanceof AssetNotFoundError) {
         return next(createNotFound());
@@ -1042,9 +1009,161 @@ function buildCreateReleaseFormModel({ appName, projectService, values = {}, err
   };
 }
 
+function resolveReleaseAssetView(rawQuery) {
+  return rawQuery && rawQuery.view === 'list' ? 'list' : RELEASE_ASSET_DEFAULT_VIEW;
+}
+
+function buildReleaseDetailPageUrl(releaseId, rawQuery = {}) {
+  const currentView = rawQuery && (rawQuery.view === 'grid' || rawQuery.view === 'list')
+    ? rawQuery.view
+    : null;
+
+  return function pageUrl(overrides = {}) {
+    const query = {};
+    if (currentView === 'list') query.view = currentView;
+
+    for (const [key, value] of Object.entries(overrides)) {
+      if (key !== 'view') continue;
+      if (value === 'list') {
+        query.view = value;
+      } else if (value === 'grid') {
+        delete query.view;
+      }
+    }
+
+    const search = new URLSearchParams(query).toString();
+    return search ? `/releases/${releaseId}?${search}` : `/releases/${releaseId}`;
+  };
+}
+
+function buildReleaseDetailRenderModel({
+  appName,
+  releaseService,
+  release,
+  project,
+  releaseAssets,
+  req,
+  readiness = null,
+  errors = {},
+}) {
+  const selectedAssets = Array.isArray(releaseAssets) ? releaseAssets : [];
+  return {
+    appName,
+    release,
+    project,
+    releaseAssets: selectedAssets,
+    assetCount: selectedAssets.length,
+    assetPresentation: releaseService.getReleaseAssetPresentation(release.id, selectedAssets),
+    view: resolveReleaseAssetView(req?.query),
+    pageUrl: buildReleaseDetailPageUrl(release.id, req?.query),
+    readiness,
+    errors,
+  };
+}
+
+function buildReleaseAssetPageQuery(viewModel, rawQuery = {}) {
+  const filters = viewModel.assetFilters || viewModel.candidateFilters || {};
+  const page = viewModel.assetPageNumber ?? viewModel.candidatePage ?? 1;
+  const pageSize = viewModel.assetPageSize ?? viewModel.candidatePageSize ?? 25;
+  const query = {};
+  if (filters.search) query.search = filters.search;
+  if (filters.extension) query.extension = filters.extension;
+  if (viewModel.activeCategoryId !== null) query.category = String(viewModel.activeCategoryId);
+  if (page > 1) query.page = String(page);
+  if (pageSize !== 25) query.pageSize = String(pageSize);
+  if (rawQuery && (rawQuery.view === 'grid' || rawQuery.view === 'list')) query.view = rawQuery.view;
+  return query;
+}
+
+function buildOffPageSelectedAssetIds(releaseAssets, assetPresentation) {
+  const visibleIds = new Set(
+    (Array.isArray(assetPresentation?.assets) ? assetPresentation.assets : [])
+      .map((asset) => String(asset.id)),
+  );
+  return (Array.isArray(releaseAssets) ? releaseAssets : [])
+    .map((asset) => asset?.asset_id)
+    .filter((assetId) => assetId !== undefined && assetId !== null && !visibleIds.has(String(assetId)));
+}
+
+function buildAssetPageRenderModel(
+  releaseId,
+  req,
+  viewModel,
+  { releaseAssets = viewModel.releaseAssets, assetPresentation = viewModel.assetPresentation, errors = {} } = {},
+) {
+  const pagePresentation = assetPresentation || {};
+  return {
+    release: viewModel.release,
+    project: viewModel.project,
+    releaseAssets,
+    assetPresentation: pagePresentation,
+    assets: viewModel.assets,
+    categories: viewModel.categories,
+    categoryNavigation: viewModel.categoryNavigation,
+    categoryFilterOptions: buildCategoryFilterOptions(viewModel.categories, viewModel.categoryNavigation),
+    activeCategoryId: viewModel.activeCategoryId,
+    assetPage: viewModel.assetPage,
+    assetTotal: viewModel.assetTotal,
+    assetPageNumber: viewModel.assetPageNumber,
+    assetPageSize: viewModel.assetPageSize,
+    assetPageCount: viewModel.assetPageCount,
+    assetFilters: viewModel.assetFilters,
+    assetExtensions: viewModel.assetExtensions,
+    candidates: viewModel.candidates,
+    candidateTotal: viewModel.candidateTotal,
+    candidatePage: viewModel.candidatePage,
+    candidatePageSize: viewModel.candidatePageSize,
+    candidatePageCount: viewModel.candidatePageCount,
+    candidateFilters: viewModel.candidateFilters,
+    candidateExtensions: viewModel.candidateExtensions,
+    eligibleAssetCount: viewModel.eligibleAssetCount,
+    eligibleCandidateCount: viewModel.eligibleCandidateCount,
+    offPageSelectedAssetIds: buildOffPageSelectedAssetIds(releaseAssets, pagePresentation),
+    view: resolveReleaseAssetView(req.query),
+    errors,
+    pageUrl: buildAssetPageUrl(releaseId, buildReleaseAssetPageQuery(viewModel, req.query)),
+    releaseAssetActionUrl: (assetId, action) => buildReleaseAssetActionUrl(
+      releaseId,
+      viewModel,
+      req.query,
+      assetId,
+      action,
+    ),
+  };
+}
+
+function buildSubmittedReleaseAssetPresentation(viewModel, submittedAssets) {
+  const sourceById = new Map();
+  for (const row of [
+    ...(Array.isArray(viewModel.assets) ? viewModel.assets : []),
+    ...(Array.isArray(viewModel.releaseAssets) ? viewModel.releaseAssets : []),
+  ]) {
+    const id = row?.asset_id ?? row?.id;
+    if (id !== undefined && id !== null) sourceById.set(String(id), row);
+  }
+
+  const selectedAssets = (Array.isArray(submittedAssets) ? submittedAssets : []).map((submitted) => {
+    const source = sourceById.get(String(submitted.asset_id));
+    return source
+      ? { ...source, asset_id: submitted.asset_id, role: submitted.role, sort_order: submitted.sort_order }
+      : submitted;
+  });
+
+  const selectedIds = new Set(selectedAssets.map((asset) => String(asset.asset_id)));
+  const assetPage = Array.isArray(viewModel.assetPage)
+    ? viewModel.assetPage
+    : (Array.isArray(viewModel.assets) ? viewModel.assets : []);
+  return buildReleaseAssetPagePresentation({
+    selectedAssets,
+    assets: assetPage,
+    candidateAssets: assetPage.filter((asset) => !selectedIds.has(String(asset.id))),
+    categories: viewModel.categories,
+  });
+}
+
 /**
  * Render the asset management page with an error message.
- * Preserves candidate filter state from the current request.
+ * Preserves candidate filter and explicit view state from the current request.
  * Pagination URLs always target the GET route (/releases/:id/assets),
  * never the POST mutation path.
  * @param {import('express').Request} req
@@ -1056,32 +1175,10 @@ function buildCreateReleaseFormModel({ appName, projectService, values = {}, err
 function renderAssetPageWithError(req, res, releaseId, errors, deps = {}) {
   const { releaseService, appName } = deps;
   const viewModel = releaseService.getReleaseAssetManagementPage(releaseId, req.query);
-  const assets = viewModel.assets;
-  const candidateQuery = {};
-  if (viewModel.candidateFilters.search) candidateQuery.search = viewModel.candidateFilters.search;
-  if (viewModel.candidateFilters.extension) candidateQuery.extension = viewModel.candidateFilters.extension;
-  if (viewModel.activeCategoryId !== null) candidateQuery.category = String(viewModel.activeCategoryId);
-  if (viewModel.candidatePage > 1) candidateQuery.page = String(viewModel.candidatePage);
-  if (viewModel.candidatePageSize !== 25) candidateQuery.pageSize = String(viewModel.candidatePageSize);
-  const pageUrl = buildAssetPageUrl(releaseId, candidateQuery);
   res.status(422).render('releases/assets.njk', {
     appName,
-    release: viewModel.release,
-    project: viewModel.project,
-    releaseAssets: viewModel.releaseAssets,
-    assets,
-    categories: viewModel.categories,
-    activeCategoryId: viewModel.activeCategoryId,
-    candidates: viewModel.candidates,
-    candidateTotal: viewModel.candidateTotal,
-    candidatePage: viewModel.candidatePage,
-    candidatePageSize: viewModel.candidatePageSize,
-    candidatePageCount: viewModel.candidatePageCount,
-    candidateFilters: viewModel.candidateFilters,
-    candidateExtensions: viewModel.candidateExtensions,
+    ...buildAssetPageRenderModel(releaseId, req, viewModel, { errors }),
     roles: ['primary', 'preview', 'attachment', 'source'],
-    errors,
-    pageUrl,
   });
 }
 
@@ -1366,8 +1463,13 @@ function buildAssetPageUrl(releaseId, baseQuery) {
   const basePath = `/releases/${releaseId}/assets`;
   return function pageUrl(overrides) {
     const query = { ...baseQuery };
+    if (overrides.view !== undefined) {
+      delete query.page;
+    }
     for (const [key, value] of Object.entries(overrides)) {
       if (value === undefined || value === null || value === '' || (key === 'page' && value == 1)) {
+        delete query[key];
+      } else if (key === 'view' && value === RELEASE_ASSET_DEFAULT_VIEW) {
         delete query[key];
       } else {
         query[key] = String(value);
@@ -1380,26 +1482,28 @@ function buildAssetPageUrl(releaseId, baseQuery) {
 
 /**
  * Build a redirect URL for the asset-management GET page that preserves
- * normalized candidate filter state. Only allow-listed parameters are
- * included: search, extension, page, pageSize.
+ * normalized candidate filter and explicit view state. Only allow-listed
+ * parameters are included: search, extension, page, pageSize, view.
  *
  * page is omitted when it is 1 (the default).
  * Unknown parameters and invalid values are stripped.
  *
  * @param {number} releaseId
- * @param {object} candidateFilters - normalized filters from the view model
- * @param {number} candidatePage
- * @param {number} candidatePageSize
+ * @param {object} viewModel - normalized release asset page model
+ * @param {object} [rawQuery]
  * @returns {string}
  */
-function buildAssetRedirectUrl(releaseId, candidateFilters, candidatePage, candidatePageSize) {
-  const query = {};
-  if (candidateFilters.search) query.search = candidateFilters.search;
-  if (candidateFilters.extension) query.extension = candidateFilters.extension;
-  if (candidatePage > 1) query.page = String(candidatePage);
-  if (candidatePageSize !== 25) query.pageSize = String(candidatePageSize);
+function buildAssetRedirectUrl(releaseId, viewModel, rawQuery = {}) {
+  const query = buildReleaseAssetPageQuery(viewModel, rawQuery);
   const search = new URLSearchParams(query).toString();
   return search ? `/releases/${releaseId}/assets?${search}` : `/releases/${releaseId}/assets`;
+}
+
+function buildReleaseAssetActionUrl(releaseId, viewModel, rawQuery, assetId, action) {
+  const query = buildReleaseAssetPageQuery(viewModel, rawQuery);
+  const search = new URLSearchParams(query).toString();
+  const path = `/releases/${releaseId}/assets/${assetId}/${action}`;
+  return search ? `${path}?${search}` : path;
 }
 
 function buildPageUrl(req, baseQuery = req.query) {
@@ -1428,4 +1532,25 @@ function buildPageUrl(req, baseQuery = req.query) {
     const search = new URLSearchParams(query).toString();
     return search ? `${cleanPath}?${search}` : cleanPath;
   };
+}
+
+/**
+ * Build the render-ready Category disclosure option model for the release
+ * asset-management page. Each project category carries its whole-project
+ * asset count (present + missing, independent of the active filters),
+ * matching the project asset browser's navigation semantics.
+ *
+ * @param {Array} categories - project-owned category rows
+ * @param {{ byCategoryId?: Object<number, number>, totalCount?: number, uncategorizedCount?: number }} [categoryNavigation]
+ * @returns {Array<{ id: number, displayName: string, assetCount: number }>}
+ */
+function buildCategoryFilterOptions(categories, categoryNavigation = {}) {
+  const byCategoryId = categoryNavigation && typeof categoryNavigation.byCategoryId === 'object'
+    ? categoryNavigation.byCategoryId
+    : {};
+  return (Array.isArray(categories) ? categories : []).map((category) => ({
+    id: category.id,
+    displayName: category.display_name,
+    assetCount: byCategoryId[category.id] || 0,
+  }));
 }
