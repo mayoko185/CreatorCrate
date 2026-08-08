@@ -13,6 +13,36 @@
     {% set projectFilterSummary = project.title %}
   {% endif %}
 {% endfor %}
+{% set presenceFilterSummary = 'All assets' %}
+{% if presenceOptions is defined %}
+  {% for option in presenceOptions %}
+    {% if option.selected %}{% set presenceFilterSummary = option.label %}{% endif %}
+  {% endfor %}
+{% endif %}
+{% set usageFilterSummary = 'All assets' %}
+{% if usageOptions is defined %}
+  {% for option in usageOptions %}
+    {% if option.selected %}{% set usageFilterSummary = option.label %}{% endif %}
+  {% endfor %}
+{% endif %}
+{% set sortFilterSummary = 'Filename' %}
+{% if sortOptions is defined %}
+  {% for option in sortOptions %}
+    {% if option.selected %}{% set sortFilterSummary = option.label %}{% endif %}
+  {% endfor %}
+{% endif %}
+{% set orderFilterSummary = filters.order %}
+{% if orderOptions is defined %}
+  {% for option in orderOptions %}
+    {% if option.selected or option.value == filters.order %}{% set orderFilterSummary = option.label %}{% endif %}
+  {% endfor %}
+{% endif %}
+{% set pageSizeFilterSummary = pageSize %}
+{% if pageSizeOptions is defined %}
+  {% for option in pageSizeOptions %}
+    {% if option.selected or option.value == pageSize %}{% set pageSizeFilterSummary = option.label %}{% endif %}
+  {% endfor %}
+{% endif %}
 
 {% macro renderPresence(asset) %}
   {% if asset.is_present %}
@@ -215,9 +245,14 @@
     {% if currentView == 'grid' %}
       {% include "partials/asset-grid-size-control.njk" %}
     {% endif %}
+
+    <div class="project-filter-actions">
+      <button class="button" type="submit" form="asset-filters">Filter</button>
+      <a class="button button-secondary" href="{{ clearFiltersUrl }}">Reset</a>
+    </div>
   </div>
 
-  <form class="filters asset-viewer-filters" method="get" action="/assets">
+  <form id="asset-filters" class="filters asset-viewer-filters" method="get" action="/assets">
     {% if currentView == 'list' or preserveViewQuery %}
       <input type="hidden" name="view" value="{{ currentView }}">
     {% endif %}
@@ -363,61 +398,188 @@
       </details>
     </fieldset>
 
-    <div class="field">
-      <label for="asset-presence">Presence</label>
-      <select id="asset-presence" name="presence">
-        {% for option in presenceOptions %}
-          <option value="{{ option.value }}"{% if option.selected %} selected{% endif %}>{{ option.label }}</option>
-        {% endfor %}
-      </select>
-    </div>
-
-    <div class="field">
-      <label for="asset-usage">Release usage</label>
-      <select id="asset-usage" name="usage">
-        {% for option in usageOptions %}
-          <option value="{{ option.value }}"{% if option.selected %} selected{% endif %}>{{ option.label }}</option>
-        {% endfor %}
-      </select>
-    </div>
-
-    <div class="field">
-      <label for="asset-sort">Sort by</label>
-      <select id="asset-sort" name="sort">
-        {% for option in sortOptions %}
-          <option value="{{ option.value }}"{% if option.selected %} selected{% endif %}>{{ option.label }}</option>
-        {% endfor %}
-      </select>
-    </div>
-
-    <div class="field">
-      <label for="asset-order">Sort order</label>
-      {% if orderOptions is defined and orderOptions.length > 0 %}
-        <select id="asset-order" name="order">
-          {% for option in orderOptions %}
-            <option value="{{ option.value }}"{% if option.selected or option.value == filters.order %} selected{% endif %}>{{ option.label }}</option>
+    {% if presenceOptions is defined and presenceOptions.length > 0 %}
+      <fieldset class="field asset-viewer-filter-field asset-filter-multiselect-field">
+        <legend>Presence</legend>
+        <details class="asset-filter-multiselect asset-filter-multiselect--sized" data-asset-viewer-filter-disclosure>
+          <summary id="asset-presence-filter-trigger"
+                   aria-controls="asset-presence-filter-options"
+                   aria-expanded="false"
+                   aria-label="Presence filter: {{ presenceFilterSummary }}">
+            <span class="asset-filter-multiselect-summary">
+              <span class="asset-filter-multiselect-summary-current">{{ presenceFilterSummary }}</span>
+              <span class="asset-filter-multiselect-summary-width" aria-hidden="true">
+                {% for option in presenceOptions %}<span>{{ option.label }}</span>{% endfor %}
+              </span>
+            </span>
+          </summary>
+          <div id="asset-presence-filter-options" class="asset-filter-multiselect-panel" role="group" aria-label="Presence options">
+            {% for option in presenceOptions %}
+              <div class="asset-filter-multiselect-option">
+                <label for="asset-presence-option-{{ loop.index }}">
+                  <input id="asset-presence-option-{{ loop.index }}" name="presence" type="radio" value="{{ option.value }}"{% if option.selected %} checked{% endif %}>
+                  <span>{{ option.label }}</span>
+                </label>
+              </div>
+            {% endfor %}
+          </div>
+        </details>
+      </fieldset>
+    {% else %}
+      <div class="field">
+        <label for="asset-presence">Presence</label>
+        <select id="asset-presence" name="presence">
+          {% for option in presenceOptions %}
+            <option value="{{ option.value }}"{% if option.selected %} selected{% endif %}>{{ option.label }}</option>
           {% endfor %}
         </select>
-      {% else %}
+      </div>
+    {% endif %}
+
+    {% if usageOptions is defined and usageOptions.length > 0 %}
+      <fieldset class="field asset-viewer-filter-field asset-filter-multiselect-field">
+        <legend>Release usage</legend>
+        <details class="asset-filter-multiselect asset-filter-multiselect--sized" data-asset-viewer-filter-disclosure>
+          <summary id="asset-usage-filter-trigger"
+                   aria-controls="asset-usage-filter-options"
+                   aria-expanded="false"
+                   aria-label="Release usage filter: {{ usageFilterSummary }}">
+            <span class="asset-filter-multiselect-summary">
+              <span class="asset-filter-multiselect-summary-current">{{ usageFilterSummary }}</span>
+              <span class="asset-filter-multiselect-summary-width" aria-hidden="true">
+                {% for option in usageOptions %}<span>{{ option.label }}</span>{% endfor %}
+              </span>
+            </span>
+          </summary>
+          <div id="asset-usage-filter-options" class="asset-filter-multiselect-panel" role="group" aria-label="Release usage options">
+            {% for option in usageOptions %}
+              <div class="asset-filter-multiselect-option">
+                <label for="asset-usage-option-{{ loop.index }}">
+                  <input id="asset-usage-option-{{ loop.index }}" name="usage" type="radio" value="{{ option.value }}"{% if option.selected %} checked{% endif %}>
+                  <span>{{ option.label }}</span>
+                </label>
+              </div>
+            {% endfor %}
+          </div>
+        </details>
+      </fieldset>
+    {% else %}
+      <div class="field">
+        <label for="asset-usage">Release usage</label>
+        <select id="asset-usage" name="usage">
+          {% for option in usageOptions %}
+            <option value="{{ option.value }}"{% if option.selected %} selected{% endif %}>{{ option.label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    {% endif %}
+
+    {% if sortOptions is defined and sortOptions.length > 0 %}
+      <fieldset class="field asset-viewer-filter-field asset-filter-multiselect-field">
+        <legend>Sort by</legend>
+        <details class="asset-filter-multiselect asset-filter-multiselect--sized" data-asset-viewer-filter-disclosure>
+          <summary id="asset-sort-filter-trigger"
+                   aria-controls="asset-sort-filter-options"
+                   aria-expanded="false"
+                   aria-label="Sort by filter: {{ sortFilterSummary }}">
+            <span class="asset-filter-multiselect-summary">
+              <span class="asset-filter-multiselect-summary-current">{{ sortFilterSummary }}</span>
+              <span class="asset-filter-multiselect-summary-width" aria-hidden="true">
+                {% for option in sortOptions %}<span>{{ option.label }}</span>{% endfor %}
+              </span>
+            </span>
+          </summary>
+          <div id="asset-sort-filter-options" class="asset-filter-multiselect-panel" role="group" aria-label="Sort by options">
+            {% for option in sortOptions %}
+              <div class="asset-filter-multiselect-option">
+                <label for="asset-sort-option-{{ loop.index }}">
+                  <input id="asset-sort-option-{{ loop.index }}" name="sort" type="radio" value="{{ option.value }}"{% if option.selected %} checked{% endif %}>
+                  <span>{{ option.label }}</span>
+                </label>
+              </div>
+            {% endfor %}
+          </div>
+        </details>
+      </fieldset>
+    {% else %}
+      <div class="field">
+        <label for="asset-sort">Sort by</label>
+        <select id="asset-sort" name="sort">
+          {% for option in sortOptions %}
+            <option value="{{ option.value }}"{% if option.selected %} selected{% endif %}>{{ option.label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    {% endif %}
+
+    {% if orderOptions is defined and orderOptions.length > 0 %}
+      <fieldset class="field asset-viewer-filter-field asset-filter-multiselect-field">
+        <legend>Sort order</legend>
+        <details class="asset-filter-multiselect asset-filter-multiselect--sized" data-asset-viewer-filter-disclosure>
+          <summary id="asset-order-filter-trigger"
+                   aria-controls="asset-order-filter-options"
+                   aria-expanded="false"
+                   aria-label="Sort order filter: {{ orderFilterSummary }}">
+            <span class="asset-filter-multiselect-summary">
+              <span class="asset-filter-multiselect-summary-current">{{ orderFilterSummary }}</span>
+              <span class="asset-filter-multiselect-summary-width" aria-hidden="true">
+                {% for option in orderOptions %}<span>{{ option.label }}</span>{% endfor %}
+              </span>
+            </span>
+          </summary>
+          <div id="asset-order-filter-options" class="asset-filter-multiselect-panel" role="group" aria-label="Sort order options">
+            {% for option in orderOptions %}
+              <div class="asset-filter-multiselect-option">
+                <label for="asset-order-option-{{ loop.index }}">
+                  <input id="asset-order-option-{{ loop.index }}" name="order" type="radio" value="{{ option.value }}"{% if option.selected or option.value == filters.order %} checked{% endif %}>
+                  <span>{{ option.label }}</span>
+                </label>
+              </div>
+            {% endfor %}
+          </div>
+        </details>
+      </fieldset>
+    {% else %}
+      <div class="field">
+        <label for="asset-order">Sort order</label>
         <input id="asset-order" name="order" type="text" value="{{ filters.order }}">
-      {% endif %}
-    </div>
+      </div>
+    {% endif %}
 
-    <div class="field">
-      <label for="asset-page-size">Page size</label>
-      {% if pageSizeOptions is defined and pageSizeOptions.length > 0 %}
-        <select id="asset-page-size" name="pageSize">
-          {% for option in pageSizeOptions %}
-            <option value="{{ option.value }}"{% if option.selected or option.value == pageSize %} selected{% endif %}>{{ option.label }}</option>
-          {% endfor %}
-        </select>
-      {% else %}
+    {% if pageSizeOptions is defined and pageSizeOptions.length > 0 %}
+      <fieldset class="field asset-viewer-filter-field asset-filter-multiselect-field">
+        <legend>Page size</legend>
+        <details class="asset-filter-multiselect asset-filter-multiselect--sized" data-asset-viewer-filter-disclosure>
+          <summary id="asset-page-size-filter-trigger"
+                   aria-controls="asset-page-size-filter-options"
+                   aria-expanded="false"
+                   aria-label="Page size filter: {{ pageSizeFilterSummary }}">
+            <span class="asset-filter-multiselect-summary">
+              <span class="asset-filter-multiselect-summary-current">{{ pageSizeFilterSummary }}</span>
+              <span class="asset-filter-multiselect-summary-width" aria-hidden="true">
+                {% for option in pageSizeOptions %}<span>{{ option.label }}</span>{% endfor %}
+              </span>
+            </span>
+          </summary>
+          <div id="asset-page-size-filter-options" class="asset-filter-multiselect-panel" role="group" aria-label="Page size options">
+            {% for option in pageSizeOptions %}
+              <div class="asset-filter-multiselect-option">
+                <label for="asset-page-size-option-{{ loop.index }}">
+                  <input id="asset-page-size-option-{{ loop.index }}" name="pageSize" type="radio" value="{{ option.value }}"{% if option.selected or option.value == pageSize %} checked{% endif %}>
+                  <span>{{ option.label }}</span>
+                </label>
+              </div>
+            {% endfor %}
+          </div>
+        </details>
+      </fieldset>
+    {% else %}
+      <div class="field">
+        <label for="asset-page-size">Page size</label>
         <input id="asset-page-size" name="pageSize" type="number" value="{{ pageSize }}">
-      {% endif %}
-    </div>
+      </div>
+    {% endif %}
 
-    <button class="button" type="submit">Filter</button>
-    <a class="button button-secondary" href="{{ clearFiltersUrl }}">Clear filters</a>
   </form>
 
   <p class="results-meta">{{ total }} asset{% if total != 1 %}s{% endif %} found</p>
@@ -546,7 +708,7 @@
       {% set emptyHeading = "No assets match the current filters" %}
       {% set emptyDescription = "No assets in active projects match the selected filters." %}
       {% set emptyActionUrl = clearFiltersUrl %}
-      {% set emptyActionLabel = "Clear filters" %}
+      {% set emptyActionLabel = "Reset" %}
     {% endif %}
     {% set emptyHeadingLevel = "h2" %}
     {% include "partials/empty-state.njk" %}

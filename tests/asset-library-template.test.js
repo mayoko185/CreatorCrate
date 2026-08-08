@@ -201,7 +201,8 @@ describe('cross-project Asset Viewer template', () => {
       ],
     });
 
-    expect(html).toMatch(/<form class="filters asset-viewer-filters" method="get" action="\/assets">/);
+    expect(html).toMatch(/<form id="asset-filters" class="filters asset-viewer-filters" method="get" action="\/assets">/);
+    expect(html).toMatch(/<div class="asset-viewer-display-controls">[\s\S]*?<div class="project-filter-actions">\s*<button class="button" type="submit" form="asset-filters">Filter<\/button>\s*<a class="button button-secondary" href="[^"]+">Reset<\/a>\s*<\/div>\s*<\/div>\s*<form id="asset-filters"/);
     expect(html).toContain('<input type="hidden" name="view" value="list">');
     expect(html).toContain('aria-label="Project filter: Beta Project"');
     expect(html).toMatch(/<span class="asset-filter-multiselect-summary" data-asset-project-filter-summary>\s*<span class="asset-filter-multiselect-summary-current" data-asset-project-filter-current-summary>Beta Project<\/span>[\s\S]*?<span class="asset-filter-multiselect-summary-width" aria-hidden="true">[\s\S]*?<\/span>\s*<\/span>/);
@@ -217,12 +218,38 @@ describe('cross-project Asset Viewer template', () => {
     expect(html).toMatch(/id="asset-project-filter-search"[^>]*type="search"/);
     expect(html).toContain('aria-label="Extension filter: .png"');
     expect(html).toMatch(/<input[^>]+name="extension"[^>]+value="png" checked>/);
-    expect(html).toMatch(/<option value="missing" selected>Missing<\/option>/);
-    expect(html).toMatch(/<option value="used" selected>Used in releases<\/option>/);
-    expect(html).toMatch(/<option value="project" selected>Project<\/option>/);
-    expect(html).toMatch(/<option value="desc" selected>Descending<\/option>/);
-    expect(html).toMatch(/<option value="50" selected>50<\/option>/);
-    expect(html).toContain('>Clear filters</a>');
+    expect(html).toContain('aria-label="Presence filter: Missing"');
+    expect(html).toContain('aria-label="Release usage filter: Used in releases"');
+    expect(html).toContain('aria-label="Sort by filter: Project"');
+    expect(html).toContain('aria-label="Sort order filter: Descending"');
+    expect(html).toContain('aria-label="Page size filter: 50"');
+    for (const label of ['Missing', 'Used in releases', 'Project', 'Descending', '50']) {
+      expect(html).toContain(`<span class="asset-filter-multiselect-summary-current">${label}</span>`);
+    }
+    expect(html).toMatch(/<input[^>]+name="presence"[^>]+type="radio"[^>]+value="missing" checked>/);
+    expect(html).toMatch(/<input[^>]+name="usage"[^>]+type="radio"[^>]+value="used" checked>/);
+    expect(html).toMatch(/<input[^>]+name="sort"[^>]+type="radio"[^>]+value="project" checked>/);
+    expect(html).toMatch(/<input[^>]+name="order"[^>]+type="radio"[^>]+value="desc" checked>/);
+    expect(html).toMatch(/<input[^>]+name="pageSize"[^>]+type="radio"[^>]+value="50" checked>/);
+    for (const [name, count] of [['presence', 3], ['usage', 3], ['sort', 2], ['order', 2], ['pageSize', 4]]) {
+      expect((html.match(new RegExp(`name="${name}"[^>]+type="radio"`, 'g')) || [])).toHaveLength(count);
+    }
+    expect(html).not.toMatch(/<select[^>]+id="asset-(presence|usage|sort|order|page-size)"/);
+    for (const [triggerId, optionsId] of [
+      ['asset-presence-filter-trigger', 'asset-presence-filter-options'],
+      ['asset-usage-filter-trigger', 'asset-usage-filter-options'],
+      ['asset-sort-filter-trigger', 'asset-sort-filter-options'],
+      ['asset-order-filter-trigger', 'asset-order-filter-options'],
+      ['asset-page-size-filter-trigger', 'asset-page-size-filter-options'],
+    ]) {
+      const disclosure = (html.match(/<details[^>]*data-asset-viewer-filter-disclosure[\s\S]*?<\/details>/g) || [])
+        .find((candidate) => candidate.includes(`aria-controls="${optionsId}"`)) || '';
+      expect(disclosure).toContain(`id="${triggerId}"`);
+      expect(disclosure).toContain(`aria-controls="${optionsId}"`);
+      expect(disclosure).toContain('aria-expanded="false"');
+      expect(disclosure).toContain('class="asset-filter-multiselect-summary-width" aria-hidden="true"');
+    }
+    expect(html).toContain('>Reset</a>');
   });
 
   it('renders Project as a searchable single-select disclosure with safe radio values', () => {
@@ -232,7 +259,7 @@ describe('cross-project Asset Viewer template', () => {
     expect(emptyHtml).not.toMatch(/<select[^>]+(?:id="asset-project"|name="project")/);
     expect(emptyHtml).toContain('<legend>Project</legend>');
     expect(emptyHtml).toContain('data-asset-project-filter');
-    expect((emptyHtml.match(/data-asset-viewer-filter-disclosure/g) || [])).toHaveLength(4);
+    expect((emptyHtml.match(/data-asset-viewer-filter-disclosure/g) || [])).toHaveLength(9);
     expect(emptyHtml).toContain('id="asset-project-filter-search" class="asset-project-filter-search" type="search"');
     expect(emptyHtml).toMatch(/<input id="asset-project-option-all" name="project" type="radio" value="" checked>/);
     expect(emptyHtml).toMatch(/<input id="asset-project-option-1" name="project" type="radio" value="1">/);
@@ -279,7 +306,7 @@ describe('cross-project Asset Viewer template', () => {
     expect(html).toContain('2 categories selected');
     expect(html).toContain('2 tags selected');
     expect(html).toContain('2 extensions selected');
-    expect((html.match(/data-asset-viewer-filter-disclosure/g) || [])).toHaveLength(4);
+    expect((html.match(/data-asset-viewer-filter-disclosure/g) || [])).toHaveLength(9);
     for (const id of ['asset-category-filter-trigger', 'asset-tag-filter-trigger', 'asset-extension-filter-trigger']) {
       expect(html).toContain(`id="${id}"`);
     }
@@ -306,6 +333,32 @@ describe('cross-project Asset Viewer template', () => {
     expect(html).not.toMatch(/<input[^>]+name="search"/);
     expect(html).not.toMatch(/<select[^>]+(?:id="asset-(tag|category|extension)"|name="(tag|category|extension)")/);
     expect(html).not.toMatch(/type="hidden"[^>]+name="(tag|category|extension)"/);
+  });
+
+  it('retains legacy fallback fields when single-select option collections are empty', () => {
+    const html = renderPage({
+      presenceOptions: [],
+      usageOptions: [],
+      sortOptions: [],
+      orderOptions: [],
+      pageSizeOptions: [],
+    });
+
+    expect(html).toContain('<select id="asset-presence" name="presence">');
+    expect(html).toContain('<select id="asset-usage" name="usage">');
+    expect(html).toContain('<select id="asset-sort" name="sort">');
+    expect(html).toContain('<input id="asset-order" name="order" type="text" value="asc">');
+    expect(html).toContain('<input id="asset-page-size" name="pageSize" type="number" value="25">');
+    expect((html.match(/data-asset-viewer-filter-disclosure/g) || [])).toHaveLength(4);
+    for (const id of [
+      'asset-presence-filter-trigger',
+      'asset-usage-filter-trigger',
+      'asset-sort-filter-trigger',
+      'asset-order-filter-trigger',
+      'asset-page-size-filter-trigger',
+    ]) {
+      expect(html).not.toContain(`id="${id}"`);
+    }
   });
 
   it('renders exact three-region Grid cards with retained indicators, preview info, and title-only footers', () => {
@@ -701,7 +754,7 @@ describe('cross-project Asset Viewer template', () => {
     expect(html).not.toContain('sort=tag');
   });
 
-  it('uses supplied URLs for clear and pagination links without rebuilding query strings in the template', () => {
+  it('uses supplied URLs for reset and pagination links without rebuilding query strings in the template', () => {
     const model = {
       filters: {
         projectId: 2,
@@ -755,7 +808,7 @@ describe('cross-project Asset Viewer template', () => {
     expect(html).toContain('Page 2 of 3');
   });
 
-  it('renders distinct unfiltered and filtered empty states, with a clear link only for filtered results', () => {
+  it('renders distinct unfiltered and filtered empty states, with a reset link only for filtered results', () => {
     const unfiltered = renderPage({ assets: [], total: 0 });
     expect(unfiltered).toContain('No assets across active projects');
     expect(unfiltered).not.toContain('No assets match the current filters');
@@ -769,7 +822,7 @@ describe('cross-project Asset Viewer template', () => {
       filters: { search: 'missing-name' },
     });
     expect(filtered).toContain('No assets match the current filters');
-    expect(filtered).toMatch(/<div class="empty-state-actions">[\s\S]*>Clear filters<\/a>/);
+    expect(filtered).toMatch(/<div class="empty-state-actions">[\s\S]*>Reset<\/a>/);
     expect(filtered).not.toContain('No assets across active projects');
   });
 

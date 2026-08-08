@@ -186,11 +186,16 @@ describe('cross-project Asset Viewer HTTP route', () => {
     expect(response.text).not.toContain('value="hidden"');
     expect(response.text).toMatch(/name="extension"[^>]+value="bin"/);
     expect(response.text).toMatch(/name="extension"[^>]+value="png"/);
-    expect(response.text).toContain('<option value="asc" selected>Ascending</option>');
-    expect(response.text).toContain('<option value="10">10</option>');
-    expect(response.text).toContain('<option value="25" selected>25</option>');
-    expect(response.text).toContain('<option value="50">50</option>');
-    expect(response.text).toContain('<option value="100">100</option>');
+    expect(response.text).toMatch(/<input[^>]+name="order"[^>]+type="radio"[^>]+value="asc" checked>/);
+    expect(response.text).toMatch(/<input[^>]+name="pageSize"[^>]+type="radio"[^>]+value="10">/);
+    expect(response.text).toMatch(/<input[^>]+name="pageSize"[^>]+type="radio"[^>]+value="25" checked>/);
+    expect(response.text).toMatch(/<input[^>]+name="pageSize"[^>]+type="radio"[^>]+value="50">/);
+    expect(response.text).toMatch(/<input[^>]+name="pageSize"[^>]+type="radio"[^>]+value="100">/);
+    expect(response.text).toContain('aria-label="Presence filter: All assets"');
+    expect(response.text).toContain('aria-label="Release usage filter: All assets"');
+    expect(response.text).toContain('aria-label="Sort by filter: Filename"');
+    expect(response.text).toContain('aria-label="Sort order filter: Ascending"');
+    expect(response.text).toContain('aria-label="Page size filter: 25"');
     expect(response.text).toContain('aria-label="Category filter: Any category"');
     expect(response.text).toContain('aria-label="Tag filter: Any tag"');
     expect(response.text).toContain('aria-label="Extension filter: Any extension"');
@@ -235,7 +240,7 @@ describe('cross-project Asset Viewer HTTP route', () => {
     expect(list.text).toContain('<ul class="asset-list-card-tags" aria-label="Effective tags">');
     expect(list.text).toMatch(new RegExp(`name="tag"[^>]+value="${shared.id}"`));
     expect((list.text.match(/<span class="asset-tag-origin">/g) || [])).toHaveLength(2);
-    expect((list.text.match(/>Project<\/span>/g) || [])).toHaveLength(2);
+    expect((list.text.match(/<span class="asset-tag-origin"><span class="sr-only">Inherited from <\/span>Project<\/span>/g) || [])).toHaveLength(2);
     expect(list.text).not.toContain('http-shared-secret');
     expect(list.text).not.toContain('<select id="asset-tag"');
   });
@@ -536,9 +541,9 @@ describe('cross-project Asset Viewer HTTP route', () => {
       `<input id="asset-project-option-${alpha.id}" name="project" type="radio" value="${alpha.id}" checked>`,
     ));
     expect(response.text).toContain('aria-label="Project filter: Filtered Alpha"');
-    expect(response.text).toContain('<option value="project" selected>Project</option>');
-    expect(response.text).toContain('<option value="desc" selected>Descending</option>');
-    expect(response.text).toContain('<option value="50" selected>50</option>');
+    expect(response.text).toMatch(/<input[^>]+name="sort"[^>]+type="radio"[^>]+value="project" checked>/);
+    expect(response.text).toMatch(/<input[^>]+name="order"[^>]+type="radio"[^>]+value="desc" checked>/);
+    expect(response.text).toMatch(/<input[^>]+name="pageSize"[^>]+type="radio"[^>]+value="50" checked>/);
     expect(response.text).toContain('<input type="hidden" name="view" value="list">');
     expect(response.text).not.toContain('id="asset-search"');
     expect(response.text).not.toMatch(/<input[^>]+name="search"/);
@@ -554,9 +559,9 @@ describe('cross-project Asset Viewer HTTP route', () => {
 
     const canonical = await request(app).get(redirect.headers.location).expect(200);
     expect(canonical.headers.location).toBeUndefined();
-    expect(canonical.text).toContain('<option value="project" selected>Project</option>');
-    expect(canonical.text).toContain('<option value="desc" selected>Descending</option>');
-    expect(canonical.text).toContain('<option value="50" selected>50</option>');
+    expect(canonical.text).toMatch(/<input[^>]+name="sort"[^>]+type="radio"[^>]+value="project" checked>/);
+    expect(canonical.text).toMatch(/<input[^>]+name="order"[^>]+type="radio"[^>]+value="desc" checked>/);
+    expect(canonical.text).toMatch(/<input[^>]+name="pageSize"[^>]+type="radio"[^>]+value="50" checked>/);
     expect(canonical.text).toContain('<input type="hidden" name="view" value="list">');
 
     const final = await request(app).get(redirect.headers.location).expect(200);
@@ -583,9 +588,9 @@ describe('cross-project Asset Viewer HTTP route', () => {
 
     const assetViewer = await request(app).get('/assets').expect(200);
     expect(assetViewer.headers.location).toBeUndefined();
-    expect(assetViewer.text).toContain('<option value="filename" selected>Filename</option>');
-    expect(assetViewer.text).toContain('<option value="asc" selected>Ascending</option>');
-    expect(assetViewer.text).toContain('<option value="25" selected>25</option>');
+    expect(assetViewer.text).toMatch(/<input[^>]+name="sort"[^>]+type="radio"[^>]+value="filename" checked>/);
+    expect(assetViewer.text).toMatch(/<input[^>]+name="order"[^>]+type="radio"[^>]+value="asc" checked>/);
+    expect(assetViewer.text).toMatch(/<input[^>]+name="pageSize"[^>]+type="radio"[^>]+value="25" checked>/);
     expect(assetViewer.text).toMatch(/<ul class="asset-grid"/);
 
     writeAssetViewerDefaults({ view: 'list', sort: 'project', order: 'desc', pageSize: '50' });
@@ -605,9 +610,9 @@ describe('cross-project Asset Viewer HTTP route', () => {
     const explicitSort = await request(app).get('/assets?sort=size').expect(302);
     expect(explicitSort.headers.location).toBe('/assets?sort=size&order=desc&pageSize=50&view=list');
     const explicitSortPage = await request(app).get(explicitSort.headers.location).expect(200);
-    expect(explicitSortPage.text).toContain('<option value="size" selected>Size</option>');
-    expect(explicitSortPage.text).toContain('<option value="desc" selected>Descending</option>');
-    expect(explicitSortPage.text).toContain('<option value="50" selected>50</option>');
+    expect(explicitSortPage.text).toMatch(/<input[^>]+name="sort"[^>]+type="radio"[^>]+value="size" checked>/);
+    expect(explicitSortPage.text).toMatch(/<input[^>]+name="order"[^>]+type="radio"[^>]+value="desc" checked>/);
+    expect(explicitSortPage.text).toMatch(/<input[^>]+name="pageSize"[^>]+type="radio"[^>]+value="50" checked>/);
     expect(explicitSortPage.text).toContain('<input type="hidden" name="view" value="list">');
 
     const explicitControls = await request(app)
@@ -615,8 +620,8 @@ describe('cross-project Asset Viewer HTTP route', () => {
       .expect(302);
     expect(explicitControls.headers.location).toBe('/assets?sort=size&order=asc&pageSize=10&view=list');
     const explicitControlsPage = await request(app).get(explicitControls.headers.location).expect(200);
-    expect(explicitControlsPage.text).toContain('<option value="asc" selected>Ascending</option>');
-    expect(explicitControlsPage.text).toContain('<option value="10" selected>10</option>');
+    expect(explicitControlsPage.text).toMatch(/<input[^>]+name="order"[^>]+type="radio"[^>]+value="asc" checked>/);
+    expect(explicitControlsPage.text).toMatch(/<input[^>]+name="pageSize"[^>]+type="radio"[^>]+value="10" checked>/);
 
     const explicitView = await request(app).get('/assets?project=999&view=grid').expect(302);
     expect(explicitView.headers.location).toBe(
@@ -627,7 +632,7 @@ describe('cross-project Asset Viewer HTTP route', () => {
     expect(explicitViewPage.text).toContain('<input type="hidden" name="view" value="grid">');
     expect(explicitViewPage.text).toContain('aria-label="Project filter: All projects"');
     expect(explicitViewPage.text).toMatch(/<input id="asset-project-option-all" name="project" type="radio" value="" checked>/);
-    expect(explicitViewPage.text).toContain('<option value="project" selected>Project</option>');
+    expect(explicitViewPage.text).toMatch(/<input[^>]+name="sort"[^>]+type="radio"[^>]+value="project" checked>/);
   });
 
   it('replaces invalid explicit values with fallbacks instead of rescuing them from saved values', async () => {
@@ -696,8 +701,8 @@ describe('cross-project Asset Viewer HTTP route', () => {
     expect(response.text).not.toContain('used.PNG');
     expect(response.text).toMatch(/name="category"[^>]+value="source" checked/);
     expect(response.text).toMatch(new RegExp(`name="tag"[^>]+value="${tag.id}" checked`));
-    expect(response.text).toContain('<option value="present" selected>Present</option>');
-    expect(response.text).toContain('<option value="unused" selected>Not used in releases</option>');
+    expect(response.text).toMatch(/<input[^>]+name="presence"[^>]+type="radio"[^>]+value="present" checked>/);
+    expect(response.text).toMatch(/<input[^>]+name="usage"[^>]+type="radio"[^>]+value="unused" checked>/);
   });
 
   it('canonicalizes invalid and unknown query state once while preserving normalized search and extension', async () => {
@@ -733,7 +738,8 @@ describe('cross-project Asset Viewer HTTP route', () => {
     expect(response.text).toContain('Page 2 of 2');
     expect(response.text).toContain('href="/assets?pageSize=10&amp;view=list"');
     expect(response.text).toContain('href="/assets?page=2&amp;pageSize=10&amp;view=grid"');
-    expect(response.text).toContain('href="/assets?pageSize=10&amp;view=list">Clear filters</a>');
+    expect(response.text).toContain('<button class="button" type="submit" form="asset-filters">Filter</button>');
+    expect(response.text).toContain('href="/assets?pageSize=10&amp;view=list">Reset</a>');
   });
 
   it('canonicalizes clamped pagination together with effective saved defaults in one redirect', async () => {
@@ -787,11 +793,11 @@ describe('cross-project Asset Viewer HTTP route', () => {
     ));
     expect(response.text).toContain('aria-label="Project filter: URL Context Project"');
     expect(response.text).toContain(
-      'href="/assets?sort=project&amp;order=desc&amp;pageSize=50&amp;view=list">Clear filters</a>',
+      'href="/assets?sort=project&amp;order=desc&amp;pageSize=50&amp;view=list">Reset</a>',
     );
-    expect(response.text).toContain('<option value="project" selected>Project</option>');
-    expect(response.text).toContain('<option value="desc" selected>Descending</option>');
-    expect(response.text).toContain('<option value="50" selected>50</option>');
+    expect(response.text).toMatch(/<input[^>]+name="sort"[^>]+type="radio"[^>]+value="project" checked>/);
+    expect(response.text).toMatch(/<input[^>]+name="order"[^>]+type="radio"[^>]+value="desc" checked>/);
+    expect(response.text).toMatch(/<input[^>]+name="pageSize"[^>]+type="radio"[^>]+value="50" checked>/);
   });
 
   it('discards unknown parameters while retaining effective saved presentation values', async () => {
@@ -816,7 +822,7 @@ describe('cross-project Asset Viewer HTTP route', () => {
     const filtered = await request(app).get('/assets?search=does-not-exist').expect(200);
     expect(filtered.text).toContain('No assets match the current filters');
     expect(filtered.text).not.toContain('No assets across active projects');
-    expect(filtered.text).toContain('>Clear filters</a>');
+    expect(filtered.text).toContain('>Reset</a>');
   });
 
   it('leaves the existing project-scoped asset detail route available', async () => {
