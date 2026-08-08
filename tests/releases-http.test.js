@@ -252,6 +252,82 @@ describe('release HTTP workflow', () => {
       expect(container).toMatch(/<input[^>]*id="publishedDate"[^>]*>/);
     });
 
+    it('release form keeps scheduling fields in a single row in planned date, time, published date order', async () => {
+      const projectId = await createTestProject('Scheduling Order Project');
+
+      const res = await agent.get(`/releases/new?projectId=${projectId}`).expect(200);
+      const schedulingMatch = res.text.match(/<div class="field-row scheduling-row">[\s\S]*?<\/div>\s*(?=<div class="form-section">)/);
+      expect(schedulingMatch).not.toBeNull();
+      const schedulingRow = schedulingMatch[0];
+
+      const dateMatch = schedulingRow.match(/<div class="field scheduling-field[^"]*"[^\u003e]*>\s*<label for="plannedDate">/);
+      const timeMatch = schedulingRow.match(/<div class="field scheduling-field[^"]*"[^\u003e]*>\s*<label for="plannedTime">/);
+      const publishedMatch = schedulingRow.match(/<div class="field scheduling-field[^"]*"[^\u003e]*>\s*<label for="publishedDate">/);
+      expect(dateMatch).not.toBeNull();
+      expect(timeMatch).not.toBeNull();
+      expect(publishedMatch).not.toBeNull();
+
+      const datePos = schedulingRow.indexOf(dateMatch[0]);
+      const timePos = schedulingRow.indexOf(timeMatch[0]);
+      const publishedPos = schedulingRow.indexOf(publishedMatch[0]);
+      expect(datePos).toBeLessThan(timePos);
+      expect(timePos).toBeLessThan(publishedPos);
+
+      expect(schedulingRow).toContain('id="plannedDate"');
+      expect(schedulingRow).toContain('id="plannedTime"');
+      expect(schedulingRow).toContain('id="publishedDate"');
+      expect(schedulingRow).toContain('Target publication date for this release');
+      expect(schedulingRow).toContain('Local time this release is scheduled to go live');
+      expect(schedulingRow).toContain('When this release was published');
+    });
+
+    it('renders scheduling picker triggers and non-modal panels without changing native inputs', async () => {
+      const projectId = await createTestProject('Date Picker Markup Project');
+
+      const res = await agent.get(`/releases/new?projectId=${projectId}`).expect(200);
+      const schedulingMatch = res.text.match(/<div class="field-row scheduling-row">[\s\S]*?<\/div>\s*(?=<div class="form-section">)/);
+      expect(schedulingMatch).not.toBeNull();
+      const schedulingRow = schedulingMatch[0];
+
+      // Native inputs remain the form source of truth.
+      expect(schedulingRow).toMatch(/<input[^>]*type="date"[^>]*id="plannedDate"[^>]*name="plannedDate"[^>]*>/);
+      expect(schedulingRow).toMatch(/<input[^>]*type="time"[^>]*id="plannedTime"[^>]*name="plannedTime"[^>]*>/);
+      expect(schedulingRow).toMatch(/<input[^>]*type="date"[^>]*id="publishedDate"[^>]*name="publishedDate"[^>]*>/);
+
+      // Each scheduling input gets an external, non-submitting trigger.
+      expect(schedulingRow).toMatch(/<button[^>]*aria-controls="plannedDate-calendar"[^>]*>/);
+      expect(schedulingRow).toMatch(/<button(?=[^>]*data-time-picker-trigger)(?=[^>]*aria-controls="plannedTime-picker")(?=[^>]*aria-haspopup="dialog")(?=[^>]*aria-label="Open time picker for scheduled time")[^>]*>/);
+      expect(schedulingRow).toMatch(/<button[^>]*aria-controls="publishedDate-calendar"[^>]*>/);
+      expect(schedulingRow.match(/<div class="picker-control">/g) || []).toHaveLength(3);
+      expect(schedulingRow.match(/<div class="picker-input-row">/g) || []).toHaveLength(3);
+      expect(schedulingRow.match(/<input class="picker-input"[^>]*>/g) || []).toHaveLength(3);
+      const pickerRows = schedulingRow.match(/<div class="picker-input-row">[\s\S]*?<\/div>/g) || [];
+      expect(pickerRows).toHaveLength(3);
+      expect(pickerRows.every((row) => /<input class="picker-input"[^>]*>/.test(row)
+        && /<button[^>]*class="picker-trigger[^\"]*"[^>]*>/.test(row))).toBe(true);
+      const pickerTriggers = schedulingRow.match(/<button[^>]*class="picker-trigger[^"]*"[^>]*>/g) || [];
+      expect(pickerTriggers).toHaveLength(3);
+      expect(pickerTriggers.every((button) => /\btype="button"/.test(button))).toBe(true);
+      expect(schedulingRow).toMatch(/<button[^>]*class="picker-trigger date-picker-trigger"[^>]*aria-controls="plannedDate-calendar"[^>]*>/);
+      expect(schedulingRow).toMatch(/<button[^>]*class="picker-trigger time-picker-trigger"[^>]*data-time-picker-trigger[^>]*>/);
+      expect(schedulingRow).toMatch(/<button[^>]*class="picker-trigger date-picker-trigger"[^>]*aria-controls="publishedDate-calendar"[^>]*>/);
+      expect(schedulingRow).not.toContain('class="date-picker"');
+      expect(schedulingRow).not.toContain('class="time-picker"');
+
+      // Each date field gets a distinct panel bound to its input.
+      expect(schedulingRow).toMatch(/<div[^>]*id="plannedDate-calendar"[^>]*data-date-picker-panel[^>]*data-date-picker-for="plannedDate"[^>]*>/);
+      expect(schedulingRow).toMatch(/<div[^>]*id="publishedDate-calendar"[^>]*data-date-picker-panel[^>]*data-date-picker-for="publishedDate"[^>]*>/);
+      expect(schedulingRow).toMatch(/<div[^>]*id="plannedTime-picker"[^>]*class="date-picker-panel time-picker-panel"[^>]*role="dialog"[^>]*aria-label="Scheduled time picker"[^>]*hidden[^>]*data-time-picker-panel[^>]*data-time-picker-for="plannedTime"[^>]*>/);
+
+      // Triggers are associated with a real dialog and initially collapsed.
+      expect(schedulingRow).toMatch(/<button[^>]*aria-haspopup="dialog"[^>]*aria-expanded="false"[^>]*>/);
+
+      // Panels are non-modal dialogs that start hidden.
+      expect(schedulingRow).toMatch(/<div[^>]*role="dialog"[^>]*aria-label="Scheduled date calendar"[^>]*hidden[^>]*>/);
+      expect(schedulingRow).toMatch(/<div[^>]*role="dialog"[^>]*aria-label="Published date calendar"[^>]*hidden[^>]*>/);
+      expect(schedulingRow).not.toContain('aria-modal="true"');
+    });
+
     it('release form shows generic release-link help text in the correct field container', async () => {
       const projRes = await agent
         .post('/projects')
@@ -10188,6 +10264,130 @@ describe('release HTTP workflow', () => {
       const res = await agent.get(releaseLocation).expect(200);
       const archiveForms = res.text.match(/action="\/releases\/\d+\/archive"/g);
       expect(archiveForms).toBeNull();
+    });
+  });
+
+  describe('release edit delete action', () => {
+    async function createReleaseForDelete() {
+      const projectId = await createTestProject('Delete Test Project');
+      const createRes = await agent
+        .post('/releases')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .send(`projectId=${projectId}`)
+        .send('title=Delete+Test+Release')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const releaseLocation = createRes.headers.location;
+      const releaseId = Number(releaseLocation.replace('/releases/', ''));
+      return { projectId, releaseId, releaseLocation };
+    }
+
+    it('edit page renders the destructive delete form', async () => {
+      const { releaseLocation } = await createReleaseForDelete();
+      const res = await agent.get(`${releaseLocation}/edit`).expect(200);
+
+      expect(res.text).toContain('Danger zone');
+      expect(res.text).toContain('Delete Release');
+      expect(res.text).toMatch(/action="\/releases\/\d+\/delete"/);
+      expect(res.text).toContain('data-confirm="Delete this release permanently? This action is irreversible and cannot be undone."');
+      expect(res.text).toContain('button-danger');
+    });
+
+    it('create page does not render the delete form', async () => {
+      const projectId = await createTestProject('Create No Delete Project');
+      const res = await agent.get(`/releases/new?projectId=${projectId}`).expect(200);
+
+      expect(res.text).not.toContain('Danger zone');
+      expect(res.text).not.toContain('Delete Release');
+      expect(res.text).not.toMatch(/action="\/releases\/\d+\/delete"/);
+    });
+
+    it('POST /releases/:id/delete removes the release and redirects to /releases', async () => {
+      const { releaseId, releaseLocation } = await createReleaseForDelete();
+
+      await agent
+        .post(`${releaseLocation}/delete`)
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302)
+        .expect('location', '/releases');
+
+      const after = await agent.get(releaseLocation).expect(404);
+      expect(after.status).toBe(404);
+      expect(releaseRepository.findById(releaseId)).toBeUndefined();
+    });
+
+    it('POST /releases/:id/delete cascades to release_assets without deleting assets', async () => {
+      const { projectId, releaseId, releaseLocation } = await createReleaseForDelete();
+      const assetRepo = createAssetRepository(db);
+      const projectDir = getProjectDir(projectsRoot, projectId, 'delete-test-project');
+      fs.mkdirSync(projectDir, { recursive: true });
+      fs.writeFileSync(path.join(projectDir, 'asset.png'), 'png');
+      await agent
+        .post(`/projects/${projectId}/scan`)
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .expect(302);
+      const assets = assetRepo.findByProjectId(projectId);
+      const assetId = assets[0].id;
+
+      await agent
+        .post(`${releaseLocation}/assets`)
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .send(`selectedAssetIds[]=${assetId}`)
+        .send('roles[]=primary')
+        .send('sortOrder[]=0')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      expect(getReleaseAssets(db, releaseId)).toHaveLength(1);
+
+      await agent
+        .post(`${releaseLocation}/delete`)
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302)
+        .expect('location', '/releases');
+
+      expect(getReleaseAssets(db, releaseId)).toHaveLength(0);
+      expect(assetRepo.findById(assetId)).toBeDefined();
+    });
+
+    it('POST /releases/:id/delete returns 404 for non-existent release', async () => {
+      await agent
+        .post('/releases/99999/delete')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(404);
+    });
+
+    it('POST /releases/:id/delete returns 422 when release is archived', async () => {
+      const { releaseLocation } = await createReleaseForDelete();
+      await agent
+        .post(`${releaseLocation}/archive`)
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .expect(302);
+
+      const res = await agent
+        .post(`${releaseLocation}/delete`)
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(422);
+      expect(res.text).toContain('is archived and cannot be modified');
+    });
+
+    it('POST /releases/:id/delete returns 422 when parent project is archived', async () => {
+      const { projectId, releaseLocation } = await createReleaseForDelete();
+      await agent
+        .post(`/projects/${projectId}/archive`)
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .expect(302);
+
+      const res = await agent
+        .post(`${releaseLocation}/delete`)
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(422);
+      expect(res.text).toContain('is archived and cannot be modified');
     });
   });
 

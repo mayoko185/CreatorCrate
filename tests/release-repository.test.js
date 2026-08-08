@@ -155,6 +155,25 @@ describe('release repository', () => {
     });
   });
 
+  describe('delete', () => {
+    it('removes the release row and cascades to release_assets', () => {
+      const release = releaseRepo.create({ projectId, ...sampleRelease({ title: 'To Delete' }) });
+      const asset = assetRepo.upsert(projectId, 'asset.txt', sampleAsset(projectId, { relativePath: 'asset.txt' }));
+      releaseRepo.createWithAssetSelections(
+        { projectId, ...sampleRelease({ title: 'Other' }) },
+        [{ assetId: asset.id, role: 'attachment', sortOrder: 0 }],
+      );
+
+      expect(releaseRepo.delete(release.id)).toBe(true);
+      expect(releaseRepo.findById(release.id)).toBeUndefined();
+      expect(assetRepo.findById(asset.id)).toBeDefined();
+    });
+
+    it('returns false for a non-existent id', () => {
+      expect(releaseRepo.delete(99999)).toBe(false);
+    });
+  });
+
   describe('findByProjectId', () => {
     it('returns releases for a project', () => {
       releaseRepo.create({ projectId, ...sampleRelease({ title: 'R1' }) });

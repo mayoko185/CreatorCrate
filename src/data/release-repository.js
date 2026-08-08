@@ -141,6 +141,10 @@ export function createReleaseRepository(db) {
     WHERE id = ? AND archived_at IS NULL
     RETURNING ${COLUMNS.join(', ')}
   `);
+  const deleteRelease = db.prepare(`
+    DELETE FROM releases
+    WHERE id = ?
+  `);
   const setPublishedDate = db.prepare(`
     UPDATE releases
     SET published_date = ?, updated_at = datetime('now')
@@ -600,6 +604,18 @@ export function createReleaseRepository(db) {
      */
     archive(id) {
       return archive.get(id);
+    },
+
+    /**
+     * Hard-delete a release by id. Associated release_assets rows are removed
+     * by the existing ON DELETE CASCADE foreign key; project assets are not
+     * affected.
+     * @param {number} id
+     * @returns {boolean} true when a row was deleted, false otherwise
+     */
+    delete(id) {
+      const result = deleteRelease.run(id);
+      return result.changes > 0;
     },
 
     /**

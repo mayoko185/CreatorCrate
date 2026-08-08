@@ -830,6 +830,59 @@ describe('release service', () => {
     });
   });
 
+  describe('deleteRelease', () => {
+    it('permanently deletes a release', () => {
+      const created = service.createRelease(projectId, validInput());
+      const deleted = service.deleteRelease(created.id);
+      expect(deleted).toBe(true);
+      expect(service.findRelease(created.id)).toBeUndefined();
+    });
+
+    it('throws ReleaseNotFoundError for non-existent id', () => {
+      expect(() => {
+        service.deleteRelease(99999);
+      }).toThrow(ReleaseNotFoundError);
+    });
+
+    it('throws ReleaseArchivedError when release is already archived', () => {
+      const created = service.createRelease(projectId, validInput());
+      service.archiveRelease(created.id);
+      expect(() => {
+        service.deleteRelease(created.id);
+      }).toThrow(ReleaseArchivedError);
+    });
+
+    it('throws ReleaseParentArchivedError when parent project is archived', () => {
+      const created = service.createRelease(projectId, validInput());
+      db.prepare('UPDATE projects SET archived_at = datetime(\'now\') WHERE id = ?').run(projectId);
+      expect(() => {
+        service.deleteRelease(created.id);
+      }).toThrow(ReleaseParentArchivedError);
+    });
+
+    it('removes release_assets rows while leaving project assets intact', () => {
+      const release = service.createRelease(projectId, validInput());
+      const asset = assetRepo.upsert(projectId, 'file.txt', sampleAsset(projectId, { relativePath: 'file.txt' }));
+      service.selectAssets(release.id, [{ assetId: asset.id, role: 'primary', sortOrder: 0 }]);
+
+      service.deleteRelease(release.id);
+
+      expect(db.prepare('SELECT COUNT(*) AS c FROM release_assets WHERE release_id = ?').get(release.id).c).toBe(0);
+      expect(assetRepo.findById(asset.id)).toBeDefined();
+    });
+
+    it('allows deleting a published release', () => {
+      const { release, asset } = createPublishableRelease(service, assetRepo, projectId, { title: 'Published To Delete' });
+      service.publishRelease(release.id);
+
+      const deleted = service.deleteRelease(release.id);
+
+      expect(deleted).toBe(true);
+      expect(service.findRelease(release.id)).toBeUndefined();
+      expect(assetRepo.findById(asset.id)).toBeDefined();
+    });
+  });
+
   describe('findRelease', () => {
     it('returns a release by id', () => {
       const created = service.createRelease(projectId, validInput({ title: 'Find Me' }));

@@ -405,6 +405,42 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
     }
   });
 
+  // POST /releases/:id/delete — Permanently delete a release
+  router.post('/:id/delete', (req, res, next) => {
+    const id = parseId(req.params.id);
+    if (id === null) {
+      return next(createNotFound());
+    }
+
+    try {
+      releaseService.deleteRelease(id);
+      res.redirect('/releases');
+    } catch (err) {
+      if (err instanceof ReleaseNotFoundError) {
+        return next(createNotFound());
+      }
+      if (err instanceof ReleaseArchivedError || err instanceof ReleaseParentArchivedError) {
+        const existing = releaseService.findRelease(id);
+        if (!existing) {
+          return next(createNotFound());
+        }
+        const { rows: projects } = projectService.list({ includeArchived: false, limit: 100 });
+        res.status(422).render('releases/form.njk', {
+          appName,
+          release: existing,
+          values: releaseToFormValues(existing),
+          errors: { general: err.message },
+          projects,
+          selectedProjectId: existing.project_id,
+          action: 'Edit',
+          submitUrl: `/releases/${id}`,
+        });
+        return;
+      }
+      next(err);
+    }
+  });
+
   // GET /releases/:id/assets — Asset management page (Phase 9-1)
   router.get('/:id/assets', (req, res, next) => {
     const id = parseId(req.params.id);

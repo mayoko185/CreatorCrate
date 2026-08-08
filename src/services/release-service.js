@@ -611,6 +611,32 @@ export function createReleaseService({ db, evaluateReleaseReadiness }) {
     },
 
     /**
+     * Permanently delete a release and its release-assets associations.
+     * The existing release_assets foreign key uses ON DELETE CASCADE, so
+     * junction rows are removed automatically; underlying project assets
+     * are left intact. Deleting a published release is allowed when it is
+     * not archived and the parent project is not archived.
+     * @param {number} id
+     * @returns {boolean} true when the release was deleted
+     */
+    deleteRelease(id) {
+      const release = repository.findById(id);
+      if (!release) {
+        throw new ReleaseNotFoundError(id);
+      }
+
+      // Reject mutations when the parent project has been archived.
+      // Archived projects are immutable.
+      guardParentProjectNotArchived(release.project_id);
+
+      if (release.archived_at) {
+        throw new ReleaseArchivedError(id);
+      }
+
+      return repository.delete(id);
+    },
+
+    /**
      * @param {number} id
      * @returns {ReleaseRecord|undefined}
      */

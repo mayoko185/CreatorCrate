@@ -18,6 +18,8 @@ import {
   enhanceAssetViewerFilterDisclosures,
   enhanceAssetViewerInfoCards,
   enhanceProjectInfoCards,
+  enhanceDatePickers,
+  enhanceTimePickers,
 } from '../src/static/creatorcrate.js';
 
 function makeElement(props = {}) {
@@ -2659,5 +2661,695 @@ describe('asset grid size enhancement', () => {
       if (previousDocument === undefined) delete globalThis.document;
       else globalThis.document = previousDocument;
     }
+  });
+});
+
+describe('Release form date picker enhancement', () => {
+  function makeDatePickerScope({ plannedValue = '', publishedValue = '' } = {}) {
+    const listeners = [];
+    const fields = [];
+    const timeFields = [];
+
+    function createElement(tagName) {
+      return {
+        tagName: tagName.toUpperCase(),
+        parentElement: null,
+        parentNode: null,
+        children: [],
+        dataset: {},
+        classList: {
+          values: new Set(),
+          add(name) { this.values.add(name); },
+          remove(name) { this.values.delete(name); },
+          toggle(name, force) {
+            if (force === true) { this.values.add(name); }
+            else if (force === false) { this.values.delete(name); }
+            else if (this.values.has(name)) { this.values.delete(name); }
+            else { this.values.add(name); }
+          },
+          contains(name) { return this.values.has(name); },
+        },
+        get className() { return [...this.classList.values].join(' '); },
+        set className(value) {
+          this.classList.values.clear();
+          for (const name of String(value || '').split(/\s+/).filter(Boolean)) {
+            this.classList.values.add(name);
+          }
+        },
+        style: {},
+        attrs: {},
+        textContent: '',
+        setAttribute(name, value) { this.attrs[name] = String(value); },
+        getAttribute(name) { return this.attrs[name] ?? null; },
+        hasAttribute(name) { return Object.hasOwn(this.attrs, name); },
+        removeAttribute(name) { delete this.attrs[name]; },
+        appendChild(child) {
+          child.parentElement = this;
+          child.parentNode = this;
+          this.children.push(child);
+        },
+        removeChild(child) {
+          const index = this.children.indexOf(child);
+          if (index >= 0) this.children.splice(index, 1);
+          child.parentElement = null;
+          child.parentNode = null;
+        },
+        get firstChild() { return this.children[0] || null; },
+        addEventListener(type, handler) { listeners.push({ target: this, type, handler }); },
+        matches(selector) {
+          const tag = this.tagName.toLowerCase();
+          const classSet = this.classList.values;
+          const classNameClasses = new Set(String(this.className || '').split(/\s+/).filter(Boolean));
+          const hasClass = (name) => classSet.has(name) || classNameClasses.has(name);
+          const simple = selector.split(',').map((s) => s.trim());
+          return simple.some((part) => {
+            // Strip a single trailing :not(...) clause from the part.
+            const notMatch = part.match(/^(.+):not\(([^)]+)\)$/);
+            let base = part;
+            let notSelector = null;
+            if (notMatch) {
+              base = notMatch[1].trim();
+              notSelector = notMatch[2].trim();
+            }
+            const pieces = base.split('.');
+            const first = pieces[0];
+            const requiredClasses = pieces.slice(1).filter(Boolean);
+            const matchBase = () => {
+              if (base === '' || base === tag) return true;
+              if (first === '' || first === tag) {
+                return requiredClasses.every((name) => hasClass(name));
+              }
+              if (base.startsWith('#') && this.id === base.slice(1)) return true;
+              if (base.startsWith('[') && base.endsWith(']')) {
+                const attr = base.slice(1, -1);
+                return this.hasAttribute(attr) || Object.hasOwn(this.dataset, attr);
+              }
+              if (base === ':disabled' && this.disabled) return true;
+              return false;
+            };
+            if (!matchBase()) return false;
+            if (notSelector) {
+              if (notSelector.startsWith('.')) {
+                const notClasses = notSelector.slice(1).split('.').filter(Boolean);
+                if (notClasses.every((name) => hasClass(name))) return false;
+              } else if (notSelector === ':disabled' && this.disabled) {
+                return false;
+              }
+            }
+            return true;
+          });
+        },
+        querySelector(selector) {
+          for (const child of this.children) {
+            if (child.matches?.(selector)) return child;
+            const found = child.querySelector?.(selector);
+            if (found) return found;
+          }
+          return null;
+        },
+        querySelectorAll(selector) {
+          const found = [];
+          const walk = (node) => {
+            if (node.matches?.(selector)) found.push(node);
+            for (const child of node.children || []) walk(child);
+          };
+          walk(this);
+          return found;
+        },
+        contains(candidate) {
+          let current = candidate;
+          while (current) {
+            if (current === this) return true;
+            current = current.parentElement;
+          }
+          return false;
+        },
+        dispatch(type, props = {}) {
+          const event = {
+            type,
+            target: this,
+            defaultPrevented: false,
+            preventDefault() { this.defaultPrevented = true; },
+            stopPropagation() {},
+            ...props,
+          };
+          listeners
+            .filter((entry) => entry.target === this && entry.type === type)
+            .forEach((entry) => entry.handler(event));
+          return event;
+        },
+      };
+    }
+
+    function makeButton({ parent, attrs = {}, text = '' } = {}) {
+      const node = createElement('button');
+      node.type = 'button';
+      node.disabled = false;
+      node.textContent = text;
+      node.parentElement = parent;
+      node.parentNode = parent;
+      Object.assign(node.attrs, attrs);
+      node.focus = function () {
+        this.focused = { value: true };
+        documentStub.activeElement = this;
+      };
+      return node;
+    }
+
+    // Patch the renderer's document.createElement calls for this fixture.
+    const previousDocument = globalThis.document;
+    const documentStub = {
+      activeElement: null,
+      createElement: createElement,
+      addEventListener(type, handler) { listeners.push({ target: documentStub, type, handler }); },
+      dispatch(type, target, props = {}) {
+        const event = {
+          type,
+          target,
+          defaultPrevented: false,
+          preventDefault() { this.defaultPrevented = true; },
+          stopPropagation() {},
+          ...props,
+        };
+        listeners
+          .filter((entry) => entry.target === documentStub && entry.type === type)
+          .forEach((entry) => entry.handler(event));
+        return event;
+      },
+    };
+    globalThis.document = documentStub;
+
+    function makeInput({ parent, value = '', id = '', type = 'date', attrs = {} } = {}) {
+      const node = createElement('input');
+      node.type = type;
+      node.id = id;
+      node.value = value;
+      node.parentElement = parent;
+      node.parentNode = parent;
+      Object.assign(node.attrs, attrs);
+      // Mirror data attributes as both attrs and dataset so selector matches work.
+      if (Object.hasOwn(attrs, 'data-date-picker-input')) {
+        node.dataset.datePickerInput = '';
+      }
+      if (Object.hasOwn(attrs, 'data-time-picker-input')) {
+        node.dataset.timePickerInput = '';
+      }
+      node.dispatched = [];
+      node.dispatchEvent = function (event) { this.dispatched.push(event); };
+      node.focus = function () {
+        this.focused = { value: true };
+        documentStub.activeElement = this;
+      };
+      return node;
+    }
+
+    function makePanel({ parent, id = '', fieldFor = '', kind = 'date' } = {}) {
+      const node = createElement('div');
+      node.id = id;
+      node.role = 'dialog';
+      node.hidden = true;
+      node.parentElement = parent;
+      node.parentNode = parent;
+      if (kind === 'time') {
+        node.dataset.timePickerPanel = '';
+        node.dataset.timePickerFor = fieldFor;
+        node.attrs['data-time-picker-panel'] = '';
+        node.attrs['data-time-picker-for'] = fieldFor;
+      } else {
+        node.dataset.datePickerPanel = '';
+        node.dataset.datePickerFor = fieldFor;
+        node.attrs['data-date-picker-panel'] = '';
+        node.attrs['data-date-picker-for'] = fieldFor;
+      }
+      node.attrs.hidden = 'hidden';
+      return node;
+    }
+
+    function makeField({ id, inputValue = '' }) {
+      const field = createElement('div');
+      field.dataset.datePickerField = '';
+      field.matches = function (selector) { return selector === '[data-date-picker-field]'; };
+
+      const picker = createElement('div');
+      picker.className = 'picker-control';
+      picker.parentElement = field;
+      picker.parentNode = field;
+
+      const inputRow = createElement('div');
+      inputRow.className = 'picker-input-row';
+      inputRow.parentElement = picker;
+      inputRow.parentNode = picker;
+
+      const input = makeInput({ parent: inputRow, value: inputValue, id, attrs: { class: 'picker-input', 'data-date-picker-input': '' } });
+      const trigger = makeButton({
+        parent: inputRow,
+        text: '📅',
+        attrs: {
+          class: 'picker-trigger date-picker-trigger',
+          'aria-haspopup': 'dialog',
+          'aria-expanded': 'false',
+          'aria-controls': `${id}-calendar`,
+        },
+      });
+      trigger.className = 'picker-trigger date-picker-trigger';
+      trigger.classList.add('picker-trigger');
+      trigger.classList.add('date-picker-trigger');
+      const panel = makePanel({ parent: picker, id: `${id}-calendar`, fieldFor: id });
+
+      inputRow.appendChild(input);
+      inputRow.appendChild(trigger);
+      picker.appendChild(inputRow);
+      picker.appendChild(panel);
+      field.appendChild(picker);
+
+      fields.push({ field, input, trigger, panel });
+      return field;
+    }
+
+    function makeTimeField({ inputValue = '' } = {}) {
+      const field = createElement('div');
+      field.dataset.timePickerField = '';
+
+      const picker = createElement('div');
+      picker.className = 'picker-control';
+      picker.parentElement = field;
+      picker.parentNode = field;
+
+      const inputRow = createElement('div');
+      inputRow.className = 'picker-input-row';
+      inputRow.parentElement = picker;
+      inputRow.parentNode = picker;
+
+      const input = makeInput({
+        parent: inputRow,
+        value: inputValue,
+        id: 'plannedTime',
+        type: 'time',
+        attrs: { class: 'picker-input', 'data-time-picker-input': '' },
+      });
+      const trigger = makeButton({
+        parent: inputRow,
+        text: '◷',
+        attrs: {
+          class: 'picker-trigger time-picker-trigger',
+          'data-time-picker-trigger': '',
+        },
+      });
+      trigger.className = 'picker-trigger time-picker-trigger';
+      trigger.classList.add('picker-trigger');
+      trigger.classList.add('time-picker-trigger');
+
+      inputRow.appendChild(input);
+      inputRow.appendChild(trigger);
+      picker.appendChild(inputRow);
+      const panel = makePanel({ parent: picker, id: 'plannedTime-picker', fieldFor: 'plannedTime', kind: 'time' });
+      picker.appendChild(panel);
+      field.appendChild(picker);
+
+      timeFields.push({ field, input, trigger, panel });
+      return field;
+    }
+
+    const scope = {
+      dataset: {},
+      listeners,
+      querySelectorAll(selector) {
+        if (selector === '[data-date-picker-field]') return fields.map((f) => f.field);
+        if (selector === '[data-time-picker-field]') return timeFields.map((f) => f.field);
+        return [];
+      },
+      addEventListener(type, handler) { listeners.push({ target: scope, type, handler }); },
+      dispatch(type, target, props = {}) {
+        const event = {
+          type,
+          target,
+          defaultPrevented: false,
+          preventDefault() { this.defaultPrevented = true; },
+          stopPropagation() {},
+          ...props,
+        };
+        listeners
+          .filter((entry) => entry.target === scope && entry.type === type)
+          .forEach((entry) => entry.handler(event));
+        return event;
+      },
+    };
+
+    const plannedField = makeField({ id: 'plannedDate', inputValue: plannedValue });
+    const publishedField = makeField({ id: 'publishedDate', inputValue: publishedValue });
+    makeTimeField();
+
+    return {
+      scope,
+      planned: fields.find((f) => f.input.id === 'plannedDate'),
+      published: fields.find((f) => f.input.id === 'publishedDate'),
+      time: timeFields[0],
+      all: fields,
+      listeners,
+      documentStub,
+      restoreDocument() {
+        if (previousDocument === undefined) delete globalThis.document;
+        else globalThis.document = previousDocument;
+      },
+    };
+  }
+
+  it('binds only once per field and returns the field count', () => {
+    const fixture = makeDatePickerScope();
+    try {
+      expect(enhanceDatePickers(fixture.scope)).toBe(2);
+      expect(enhanceDatePickers(fixture.scope)).toBe(2);
+      const fieldBindings = fixture.listeners.filter((entry) => entry.target === fixture.planned.trigger && entry.type === 'click');
+      expect(fieldBindings).toHaveLength(1);
+    } finally {
+      fixture.restoreDocument();
+    }
+  });
+
+  it('opens the corresponding custom time picker once and does not double-bind', () => {
+    const fixture = makeDatePickerScope();
+    try {
+      expect(enhanceTimePickers(fixture.scope)).toBe(1);
+      expect(enhanceTimePickers(fixture.scope)).toBe(1);
+      fixture.time.trigger.dispatch('click');
+
+      expect(fixture.time.panel.hidden).toBe(false);
+      expect(fixture.time.trigger.attrs['aria-expanded']).toBe('true');
+      expect(fixture.time.panel.querySelectorAll('.time-picker-option')).toHaveLength(84);
+      const roles = fixture.time.panel.querySelectorAll('[role]').map((node) => node.getAttribute('role'));
+      expect(roles).not.toContain('listbox');
+      expect(roles).not.toContain('option');
+      const options = fixture.time.panel.querySelectorAll('.time-picker-option');
+      expect(options.every((option) => option.getAttribute('role') === null)).toBe(true);
+      expect(options.some((option) => option.getAttribute('aria-pressed') === 'true')).toBe(true);
+      expect(fixture.listeners.filter((entry) => entry.target === fixture.time.trigger && entry.type === 'click')).toHaveLength(1);
+    } finally {
+      fixture.restoreDocument();
+    }
+  });
+
+  it('selects hour and minute values through the custom panel and closes cleanly', () => {
+    const fixture = makeDatePickerScope();
+    try {
+      enhanceTimePickers(fixture.scope);
+      fixture.time.trigger.dispatch('click');
+      const hour = fixture.time.panel.querySelectorAll('.time-picker-option')
+        .find((option) => option.getAttribute('data-time-hour') === '14');
+      const minute = fixture.time.panel.querySelectorAll('.time-picker-option')
+        .find((option) => option.getAttribute('data-time-minute') === '30');
+      hour.dispatch('click');
+      minute.dispatch('click');
+
+      expect(fixture.time.input.value).toBe('14:30');
+      expect(fixture.time.input.dispatched.map((event) => event.type)).toEqual(['input', 'change', 'input', 'change']);
+      expect(fixture.time.panel.hidden).toBe(false);
+
+      fixture.time.panel.querySelector('.date-picker-close').dispatch('click');
+      expect(fixture.time.panel.hidden).toBe(true);
+      expect(fixture.time.trigger.attrs['aria-expanded']).toBe('false');
+      expect(fixture.time.trigger.focused.value).toBe(true);
+    } finally {
+      fixture.restoreDocument();
+    }
+  });
+
+  it('closes the custom time picker without outside-click focus theft and restores focus on Escape', () => {
+    const fixture = makeDatePickerScope();
+    try {
+      enhanceTimePickers(fixture.scope);
+      fixture.time.trigger.dispatch('click');
+      const outside = { parentElement: null, parentNode: null };
+      fixture.documentStub.activeElement = outside;
+      globalThis.document.dispatch('click', outside);
+      expect(fixture.time.panel.hidden).toBe(true);
+      expect(fixture.time.trigger.focused).toBeUndefined();
+      expect(fixture.documentStub.activeElement).toBe(outside);
+
+      fixture.time.trigger.dispatch('click');
+      const escapeEvent = fixture.time.panel.dispatch('keydown', { key: 'Escape' });
+      expect(escapeEvent.defaultPrevented).toBe(true);
+      expect(fixture.time.panel.hidden).toBe(true);
+      expect(fixture.time.trigger.focused.value).toBe(true);
+    } finally {
+      fixture.restoreDocument();
+    }
+  });
+
+  it('opens the intended calendar and toggles its own trigger aria-expanded', () => {
+    const fixture = makeDatePickerScope();
+    try {
+      enhanceDatePickers(fixture.scope);
+      fixture.planned.trigger.dispatch('click');
+
+      expect(fixture.planned.panel.hidden).toBe(false);
+      expect(fixture.published.panel.hidden).toBe(true);
+      expect(fixture.planned.trigger.attrs['aria-expanded']).toBe('true');
+      expect(fixture.published.trigger.attrs['aria-expanded']).toBe('false');
+      expect(fixture.planned.panel.children.length).toBeGreaterThan(0);
+    } finally {
+      fixture.restoreDocument();
+    }
+  });
+
+  it('opening the second calendar closes the first', () => {
+    const fixture = makeDatePickerScope();
+    try {
+      enhanceDatePickers(fixture.scope);
+      fixture.planned.trigger.dispatch('click');
+      expect(fixture.planned.panel.hidden).toBe(false);
+
+      fixture.published.trigger.dispatch('click');
+      expect(fixture.planned.panel.hidden).toBe(true);
+      expect(fixture.planned.trigger.attrs['aria-expanded']).toBe('false');
+      expect(fixture.published.panel.hidden).toBe(false);
+      expect(fixture.published.trigger.attrs['aria-expanded']).toBe('true');
+    } finally {
+      fixture.restoreDocument();
+    }
+  });
+
+  it('closes an open calendar without outside-click focus theft', () => {
+    const fixture = makeDatePickerScope();
+    try {
+      enhanceDatePickers(fixture.scope);
+      fixture.planned.trigger.dispatch('click');
+      expect(fixture.planned.panel.hidden).toBe(false);
+
+      const outside = { parentElement: null, parentNode: null };
+      fixture.documentStub.activeElement = outside;
+      globalThis.document.dispatch('click', outside);
+
+      expect(fixture.planned.panel.hidden).toBe(true);
+      expect(fixture.planned.trigger.attrs['aria-expanded']).toBe('false');
+      expect(fixture.planned.trigger.focused).toBeUndefined();
+      expect(fixture.documentStub.activeElement).toBe(outside);
+    } finally {
+      fixture.restoreDocument();
+    }
+  });
+
+  it('closes on Escape inside the panel and refocuses the trigger', () => {
+    const fixture = makeDatePickerScope();
+    try {
+      enhanceDatePickers(fixture.scope);
+      fixture.planned.trigger.dispatch('click');
+      const escapeEvent = fixture.planned.panel.dispatch('keydown', { key: 'Escape' });
+
+      expect(escapeEvent.defaultPrevented).toBe(true);
+      expect(fixture.planned.panel.hidden).toBe(true);
+      expect(fixture.planned.trigger.focused.value).toBe(true);
+    } finally {
+      fixture.restoreDocument();
+    }
+  });
+
+  it('navigates previous and next month without submitting anything', () => {
+    const fixture = makeDatePickerScope({ plannedValue: '2025-06-15' });
+    try {
+      enhanceDatePickers(fixture.scope);
+      fixture.planned.trigger.dispatch('click');
+
+      const monthTitle = () => fixture.planned.panel.querySelector('.date-picker-month-title');
+      expect(monthTitle().textContent).toContain('June');
+
+      const prevButton = fixture.planned.panel.querySelector('.date-picker-prev');
+      prevButton.dispatch('click');
+      expect(monthTitle().textContent).toContain('May');
+
+      const nextButton = fixture.planned.panel.querySelector('.date-picker-next');
+      nextButton.dispatch('click');
+      expect(monthTitle().textContent).toContain('June');
+
+      // No form submission occurs from month navigation buttons.
+      expect(fixture.listeners.some((entry) => entry.type === 'submit')).toBe(false);
+    } finally {
+      fixture.restoreDocument();
+    }
+  });
+
+  it('selecting a day updates only the corresponding input with exact YYYY-MM-DD and closes', () => {
+    const fixture = makeDatePickerScope({ plannedValue: '', publishedValue: '' });
+    try {
+      enhanceDatePickers(fixture.scope);
+      fixture.published.trigger.dispatch('click');
+
+      const dayButton = fixture.published.panel.querySelectorAll('.date-picker-day')
+        .find((day) => !day.classList.contains('is-out-of-month') && !day.disabled);
+      expect(dayButton).not.toBeUndefined();
+      const selectedIso = dayButton.getAttribute('data-date');
+      expect(selectedIso).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+
+      dayButton.dispatch('click');
+
+      expect(fixture.published.input.value).toBe(selectedIso);
+      expect(fixture.planned.input.value).toBe('');
+      expect(fixture.published.input.dispatched.map((e) => e.type)).toEqual(['input', 'change']);
+      expect(fixture.published.panel.hidden).toBe(true);
+    } finally {
+      fixture.restoreDocument();
+    }
+  });
+
+  it('clear removes the value, dispatches events, and closes the calendar', () => {
+    const fixture = makeDatePickerScope({ plannedValue: '2024-03-10' });
+    try {
+      enhanceDatePickers(fixture.scope);
+      fixture.planned.trigger.dispatch('click');
+      const clearButton = fixture.planned.panel.querySelector('.date-picker-clear');
+      clearButton.dispatch('click');
+
+      expect(fixture.planned.input.value).toBe('');
+      expect(fixture.planned.input.dispatched.map((e) => e.type)).toEqual(['input', 'change']);
+      expect(fixture.planned.panel.hidden).toBe(true);
+      expect(fixture.planned.trigger.focused.value).toBe(true);
+    } finally {
+      fixture.restoreDocument();
+    }
+  });
+
+  it('keeps mobile date and time panels explicitly inside the viewport', () => {
+    const css = fs.readFileSync(
+      fileURLToPath(new URL('../src/static/creatorcrate.css', import.meta.url)),
+      'utf8',
+    );
+    const narrowPanelRule = css.match(
+      /@media\s*\(max-width:\s*767px\)\s*\{\s*\.date-picker-panel\s*\{([^}]*)\}/,
+    );
+
+    expect(narrowPanelRule).not.toBeNull();
+    expect(narrowPanelRule[1]).toMatch(/position:\s*fixed/);
+    expect(narrowPanelRule[1]).toMatch(/top:\s*var\(--space-md\)/);
+    expect(narrowPanelRule[1]).toMatch(/max-height:\s*calc\(100vh\s*-\s*2\s*\*\s*var\(--space-md\)\)/);
+    expect(narrowPanelRule[1]).toMatch(/overflow-y:\s*auto/);
+    expect(narrowPanelRule[1]).not.toMatch(/top:\s*calc\(100%/);
+  });
+
+  it('renders January 1000 safely and disables previous-month navigation', () => {
+    const fixture = makeDatePickerScope({ plannedValue: '1000-01-15' });
+    try {
+      enhanceDatePickers(fixture.scope);
+
+      expect(() => fixture.planned.trigger.dispatch('click')).not.toThrow();
+      expect(fixture.planned.panel.querySelector('.date-picker-month-title').textContent).toContain('January 1000');
+      expect(fixture.planned.panel.querySelector('.date-picker-prev').disabled).toBe(true);
+
+      const previousMonthCells = fixture.planned.panel.querySelectorAll('.date-picker-day')
+        .filter((cell) => cell.classList.contains('is-out-of-month')
+          && cell.getAttribute('aria-label')?.includes('previous month'));
+      expect(previousMonthCells.length).toBeGreaterThan(0);
+      expect(previousMonthCells.every((cell) => cell.disabled
+        && cell.getAttribute('aria-disabled') === 'true'
+        && !cell.getAttribute('aria-label').includes('undefined'))).toBe(true);
+    } finally {
+      fixture.restoreDocument();
+    }
+  });
+
+  it('keeps December 9999 next-month navigation safely bounded', () => {
+    const fixture = makeDatePickerScope({ plannedValue: '9999-12-15' });
+    try {
+      enhanceDatePickers(fixture.scope);
+
+      expect(() => fixture.planned.trigger.dispatch('click')).not.toThrow();
+      expect(fixture.planned.panel.querySelector('.date-picker-month-title').textContent).toContain('December 9999');
+      expect(fixture.planned.panel.querySelector('.date-picker-next').disabled).toBe(true);
+      expect(fixture.planned.panel.querySelectorAll('.date-picker-day')
+        .filter((cell) => cell.classList.contains('is-out-of-month'))
+        .every((cell) => !cell.getAttribute('aria-label').includes('undefined'))).toBe(true);
+    } finally {
+      fixture.restoreDocument();
+    }
+  });
+
+  it('uses the populated value to determine the initial displayed month', () => {
+    const fixture = makeDatePickerScope({ plannedValue: '2023-09-21' });
+    try {
+      enhanceDatePickers(fixture.scope);
+      fixture.planned.trigger.dispatch('click');
+      const monthTitle = fixture.planned.panel.querySelector('.date-picker-month-title');
+      expect(monthTitle.textContent).toContain('September');
+      expect(monthTitle.textContent).toContain('2023');
+    } finally {
+      fixture.restoreDocument();
+    }
+  });
+
+  it('marks today and selected day with appropriate classes and aria attributes', () => {
+    const today = new Date();
+    const iso = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+    const fixture = makeDatePickerScope({ plannedValue: iso });
+    try {
+      enhanceDatePickers(fixture.scope);
+      fixture.planned.trigger.dispatch('click');
+      const selected = fixture.planned.panel.querySelector('.date-picker-day.is-selected');
+      const todayCell = fixture.planned.panel.querySelector('.date-picker-day.is-today');
+      expect(selected).not.toBeNull();
+      expect(selected.getAttribute('data-date')).toBe(iso);
+      expect(selected.getAttribute('aria-selected')).toBe('true');
+      expect(todayCell).not.toBeNull();
+      expect(todayCell.getAttribute('aria-current')).toBe('date');
+
+      const roles = fixture.planned.panel.querySelectorAll('[role]').map((node) => node.getAttribute('role'));
+      expect(roles).not.toContain('grid');
+      expect(roles).not.toContain('row');
+      expect(roles).not.toContain('gridcell');
+      expect(roles).not.toContain('columnheader');
+    } finally {
+      fixture.restoreDocument();
+    }
+  });
+
+  it('scopes native scheduling picker-indicator hiding to the enhanced controls', () => {
+    const css = fs.readFileSync(
+      fileURLToPath(new URL('../src/static/creatorcrate.css', import.meta.url)),
+      'utf8',
+    );
+
+    for (const pseudo of ['-webkit-calendar-picker-indicator', '-moz-calendar-picker-indicator']) {
+      const rules = css
+        .split('}')
+        .map((rule) => `${rule}}`)
+        .filter((rule) => rule.includes(`::${pseudo}`));
+      expect(rules.length).toBeGreaterThan(0);
+      expect(rules.every((rule) => rule.includes('.scheduling-section'))).toBe(true);
+      expect(rules.every((rule) => /display:\s*none/.test(rule))).toBe(true);
+    }
+  });
+
+  it('uses shared visual picker primitives while keeping date and time hooks separate', () => {
+    const css = fs.readFileSync(
+      fileURLToPath(new URL('../src/static/creatorcrate.css', import.meta.url)),
+      'utf8',
+    );
+
+    expect(css).toMatch(/\.picker-control\s*\{/);
+    expect(css).toMatch(/\.scheduling-field \.picker-input-row\s*\{[^}]*position:\s*relative;[^}]*border:/);
+    expect(css).toMatch(/\.picker-trigger\s*\{[^}]*position:\s*absolute;/);
+    expect(css).toMatch(/\.picker-option\s*\{/);
+    expect(css).toMatch(/\.time-picker-options\s*\{/);
+    expect(css).toMatch(/\.time-picker-column\s*\{[^}]*overflow-y:\s*auto;/);
+    expect(css).toMatch(/\.time-picker-column::\-webkit-scrollbar\s*\{/);
+    expect(css).not.toMatch(/\.date-picker\s*,\s*\.time-picker/);
+    expect(css).not.toMatch(/\.time-picker\s*\{/);
   });
 });
