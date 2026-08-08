@@ -68,6 +68,20 @@ describe('project repository', () => {
     expect(found.archived_at).toBeTruthy();
   });
 
+  it('creates and updates a project with the completed status', () => {
+    const created = repository.create(sampleProject({ title: 'Finished Piece', status: 'completed' }));
+    expect(created.status).toBe('completed');
+    const found = repository.findById(created.id);
+    expect(found.status).toBe('completed');
+
+    const other = repository.create(sampleProject({ title: 'Transitioning' }));
+    const updated = repository.update(other.id, {
+      ...sampleProject({ title: 'Transitioning' }),
+      status: 'completed',
+    });
+    expect(updated.status).toBe('completed');
+  });
+
   it('detects slug conflicts', () => {
     repository.create(sampleProject({ title: 'Conflict Test' }));
     expect(repository.slugExists('conflict-test')).toBe(true);
@@ -79,13 +93,18 @@ describe('project repository', () => {
     repository.create(sampleProject({ title: 'A', status: 'planned' }));
     repository.create(sampleProject({ title: 'B', status: 'ready' }));
     repository.create(sampleProject({ title: 'C', status: 'tbd' }));
+    repository.create(sampleProject({ title: 'D', status: 'completed' }));
 
     const planned = repository.list({ status: 'planned' });
     expect(planned.rows).toHaveLength(1);
     expect(planned.rows[0].title).toBe('A');
 
+    const completed = repository.list({ status: 'completed' });
+    expect(completed.rows).toHaveLength(1);
+    expect(completed.rows[0].title).toBe('D');
+
     const all = repository.list();
-    expect(all.rows).toHaveLength(3);
+    expect(all.rows).toHaveLength(4);
   });
 
   it('filters by multiple statuses while retaining archived selection semantics', () => {

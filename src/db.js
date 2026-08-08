@@ -50,6 +50,14 @@ export function runMigrations(db, migrationsDir) {
       continue;
     }
 
+    // `PRAGMA foreign_keys` cannot be changed inside a transaction, so toggle
+    // it outside the per-migration transaction. Table-rebuild migrations
+    // (e.g. altering a CHECK constraint) require FKs OFF: rebuilding a parent
+    // table with FKs ON would cascade-delete child rows. The result is still
+    // recorded atomically, and FKs are restored immediately after each file.
+    const priorForeignKeys = db.pragma('foreign_keys', { simple: true });
+    db.pragma('foreign_keys = OFF');
+
     const apply = db.transaction(() => {
       db.exec(sql);
       db.prepare(
@@ -61,6 +69,8 @@ export function runMigrations(db, migrationsDir) {
       apply();
     } catch (err) {
       throw new DatabaseError(`Migration "${filename}" failed.`, { cause: err });
+    } finally {
+      db.pragma(`foreign_keys = ${priorForeignKeys ? 'ON' : 'OFF'}`);
     }
   }
 }

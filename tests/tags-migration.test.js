@@ -89,7 +89,7 @@ describe('tags schema in the baseline migration', () => {
     expect(() => runMigrations(db, MIGRATIONS_DIR)).not.toThrow();
 
     const applied = db.prepare('SELECT filename FROM schema_migrations ORDER BY rowid').pluck().all();
-    expect(applied).toEqual(['001_initial.sql']);
+    expect(applied).toEqual(['001_initial.sql', '002_add_completed_status.sql']);
     expect(db.pragma('foreign_keys', { simple: true })).toBe(1);
     expect(db.pragma('foreign_key_check')).toEqual([]);
   });

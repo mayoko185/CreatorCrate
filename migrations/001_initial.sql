@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS projects (
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     archived_at TEXT,
     project_dir TEXT,
-    CONSTRAINT projects_status CHECK (status IN ('tbd', 'planned', 'in-progress', 'ready', 'archived')),
+    CONSTRAINT projects_status CHECK (status IN ('tbd', 'planned', 'in-progress', 'ready', 'completed', 'archived')),
     CONSTRAINT projects_priority CHECK (priority IN ('low', 'normal', 'high')),
     CONSTRAINT projects_planned_date_format CHECK (planned_date IS NULL OR planned_date LIKE '____-__-__'),
     CONSTRAINT projects_published_date_format CHECK (published_date IS NULL OR published_date LIKE '____-__-__')

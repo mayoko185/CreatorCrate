@@ -1,5 +1,5 @@
-export const STATUSES = ['tbd', 'planned', 'in-progress', 'ready', 'archived'];
-export const WORKFLOW_STATUSES = ['tbd', 'planned', 'in-progress', 'ready'];
+export const STATUSES = ['tbd', 'planned', 'in-progress', 'ready', 'completed', 'archived'];
+export const WORKFLOW_STATUSES = ['tbd', 'planned', 'in-progress', 'ready', 'completed'];
 export const PRIORITIES = ['low', 'normal', 'high'];
 
 const COLUMNS = [

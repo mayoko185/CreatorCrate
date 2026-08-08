@@ -2806,6 +2806,7 @@
       .status-badge--neutral { background: rgba(136, 136, 136, 0.2); color: #aaa; }
       .status-badge--active, .status-badge--success { background: rgba(52, 211, 153, 0.18); color: var(--success); }
       .status-badge--warning { background: rgba(167, 139, 250, 0.18); color: var(--warning); }
+.status-badge--completed { background: rgba(167, 139, 250, 0.22); color: var(--warning); }
       .status-badge--error, .status-badge--danger { background: rgba(251, 113, 133, 0.18); color: var(--badge-danger-fg); }
       .status-badge--draft { background: rgba(34, 211, 238, 0.18); color: var(--accent); }
       .status-badge--published { background: rgba(52, 211, 153, 0.22); color: var(--success); }

@@ -108,7 +108,7 @@ describe('page defaults service', () => {
     expect(PAGE_DEFAULT_DEFINITIONS.new_project).toEqual({
       status: {
         key: 'page_defaults.new_project.status',
-        values: ['tbd', 'planned', 'in-progress', 'ready'],
+        values: ['tbd', 'planned', 'in-progress', 'ready', 'completed'],
         fallback: 'tbd',
       },
       priority: {

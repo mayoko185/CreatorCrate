@@ -45,7 +45,7 @@ describe('asset-browser preferences in the baseline schema', () => {
     expect(() => runMigrations(db, MIGRATIONS_DIR)).not.toThrow();
 
     const applied = db.prepare('SELECT filename FROM schema_migrations ORDER BY rowid').pluck().all();
-    expect(applied).toEqual(['001_initial.sql']);
+    expect(applied).toEqual(['001_initial.sql', '002_add_completed_status.sql']);
   });
 
   it('creates the preference table with timestamps, project cascade, and no category foreign key', () => {

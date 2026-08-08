@@ -117,6 +117,7 @@ const DEFAULT_VALUE_LABELS = Object.freeze({
       planned: 'Planned',
       'in-progress': 'In progress',
       ready: 'Ready',
+      completed: 'Completed',
     }),
     priority: Object.freeze({ low: 'Low', normal: 'Normal', high: 'High' }),
   }),
