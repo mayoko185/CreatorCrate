@@ -238,17 +238,6 @@ describe('release-management HTTP route (Phase 2A)', () => {
     expect(res.text).not.toContain('Scheduled Release');
   });
 
-  it('readiness filtering works', async () => {
-    const projectId = await createProject('Mgmt Readiness Project');
-    await createRelease(projectId, 'Blocked Ready Release', 'ready');
-
-    const res = await agent.get('/release-management?readiness=blocked-ready').expect(200);
-    expect(res.text).toContain('Blocked Ready Release');
-
-    const resPublishable = await agent.get('/release-management?readiness=publishable').expect(200);
-    expect(resPublishable.text).not.toContain('Blocked Ready Release');
-  });
-
   it('includeArchived works', async () => {
     const projectId = await createProject('Mgmt Archived Project');
     const releaseLocation = await createRelease(projectId, 'To Be Archived Release', 'tbd');
@@ -328,7 +317,7 @@ describe('release-management HTTP route (Phase 2A)', () => {
     }
 
     const res = await agent
-      .get(`/release-management?project=${projectId}&schedule=unscheduled&readiness=all&includeArchived=1&page=2&pageSize=10&view=list`)
+      .get(`/release-management?project=${projectId}&schedule=unscheduled&includeArchived=1&page=2&pageSize=10&view=list`)
       .expect(200);
 
     expect(res.text).toContain('Page 2 of 3');
@@ -629,40 +618,6 @@ describe('release-management HTTP route (Phase 2A)', () => {
       const boardQuery = parseQuery(boardMatch[1]);
     expect(boardQuery.status).toBeUndefined();
       expect(boardQuery.view).toBe('board');
-    });
-
-    it('default readiness=all is omitted from generated links', async () => {
-      const res = await agent
-        .get('/release-management?readiness=all')
-        .expect(200);
-
-      // Board link must not contain readiness=all
-      const boardMatch = res.text.match(/<a\s[^>]*href="(\/release-management\?[^"]*)"[^>]*>Board<\/a>/);
-      expect(boardMatch).not.toBeNull();
-      const boardQuery = parseQuery(boardMatch[1]);
-      expect(boardQuery.readiness).toBeUndefined();
-    });
-
-    it('valid readiness filter is preserved in generated links', async () => {
-      const res = await agent
-        .get('/release-management?readiness=publishable')
-        .expect(200);
-
-      const boardMatch = res.text.match(/<a\s[^>]*href="(\/release-management\?[^"]*)"[^>]*>Board<\/a>/);
-      expect(boardMatch).not.toBeNull();
-      const boardQuery = parseQuery(boardMatch[1]);
-      expect(boardQuery.readiness).toBe('publishable');
-    });
-
-    it('invalid readiness is not preserved in generated links', async () => {
-      const res = await agent
-        .get('/release-management?readiness=bogus')
-        .expect(200);
-
-      const boardMatch = res.text.match(/<a\s[^>]*href="(\/release-management\?[^"]*)"[^>]*>Board<\/a>/);
-      expect(boardMatch).not.toBeNull();
-      const boardQuery = parseQuery(boardMatch[1]);
-      expect(boardQuery.readiness).toBeUndefined();
     });
 
     // ─── Phase 7D-4: Canonical page state in generated URLs ──────────────

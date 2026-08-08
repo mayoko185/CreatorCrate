@@ -28,7 +28,6 @@ function validInput(overrides = {}) {
     description: 'Test description',
     notes: 'Test notes',
     status: 'tbd',
-    priority: 'normal',
     plannedDate: null,
     publishedDate: null,
     patreonUrl: null,
@@ -84,7 +83,7 @@ describe('project creation integration', () => {
       expect(project.slug).toBe('full-record');
       expect(project.description).toBe('Desc');
       expect(project.status).toBe('tbd');
-      expect(project.priority).toBe('normal');
+      expect(project).not.toHaveProperty('priority');
       expect(project.created_at).toBeTruthy();
       expect(project.updated_at).toBeTruthy();
       expect(project.archived_at).toBeNull();
@@ -160,7 +159,6 @@ describe('project creation integration', () => {
         description: 'Desc for manifest',
         notes: 'Notes for manifest',
         status: 'planned',
-        priority: 'high',
         plannedDate: '2026-09-15',
         patreonUrl: 'https://patreon.com/artist',
       }));
@@ -175,7 +173,8 @@ describe('project creation integration', () => {
       expect(manifest.slug).toBe('manifest-data');
       expect(manifest).not.toHaveProperty('status');
       expect(content).not.toMatch(/"status"\s*:/);
-      expect(manifest.priority).toBe('high');
+      expect(manifest).not.toHaveProperty('priority');
+      expect(content).not.toMatch(/"priority"\s*:/);
       expect(manifest.description).toBe('Desc for manifest');
       expect(manifest.notes).toBe('Notes for manifest');
       expect(manifest.plannedDate).toBe('2026-09-15T00:00:00.000Z');

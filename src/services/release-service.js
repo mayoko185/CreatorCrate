@@ -167,7 +167,7 @@ function matchesReleaseAssetFilters(asset, filters, categoryId) {
   return true;
 }
 
-export function createReleaseService({ db, evaluateReleaseReadiness }) {
+export function createReleaseService({ db }) {
   const repository = createReleaseRepository(db);
   const projectRepository = createProjectRepository(db);
   const assetRepository = createAssetRepository(db);
@@ -522,8 +522,8 @@ export function createReleaseService({ db, evaluateReleaseReadiness }) {
 
     /**
      * Publish a release. Sets published_date to today if not provided.
-     * Only releases whose owning project is ready can be published.
-     * Enforces the shared readiness policy before publishing.
+     * Publication is independent of project workflow status and asset
+     * selection state.
      * @param {number} id
      * @param {string} [publishedDate] - ISO date string YYYY-MM-DD, defaults to today
      * @returns {ReleaseRecord}
@@ -544,30 +544,6 @@ export function createReleaseService({ db, evaluateReleaseReadiness }) {
 
       if (release.published_date != null) {
         throw new ReleaseValidationError({ general: 'Release is already published.' });
-      }
-
-      if (release.project_status !== 'ready') {
-        throw new ReleaseValidationError({ general: 'Only releases whose project status is "ready" can be published.' });
-      }
-
-      // ── Phase 7C-1: Enforce release readiness ──────────────────────────
-      // Load readiness facts through the repository and evaluate them
-      // through the shared readiness policy. No policy logic is duplicated
-      // here — publishRelease only interprets the result.
-      const facts = repository.findReadinessFactsById(id);
-      if (!facts) {
-        throw new ReleaseNotFoundError(id);
-      }
-
-      const readiness = evaluateReleaseReadiness(facts);
-      if (!readiness.publishable) {
-        const errors = {};
-        for (const check of readiness.checks) {
-          if (!check.passed) {
-            errors[check.key] = check.details;
-          }
-        }
-        throw new ReleaseValidationError({ readiness: errors });
       }
 
       const date = publishedDate || getLocalTodayIso();

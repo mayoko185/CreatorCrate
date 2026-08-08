@@ -4,8 +4,6 @@ import {
   ProjectValidationError,
   STATUSES,
   WORKFLOW_STATUSES,
-  PRIORITIES,
-  DEFAULT_PRIORITY,
 } from '../services/project-service.js';
 import { buildOpenLocallyUri } from '../util/open-locally.js';
 
@@ -73,7 +71,6 @@ export function createProjectsRouter({ appName, projectService, workflowQuerySer
         view: parsedQuery.view,
         statuses: STATUSES,
         statusOptions: buildStatusFilterOptions(parsedQuery.statuses),
-        priorities: PRIORITIES,
         sortOptions: SORT_OPTIONS,
         tagOptions,
         projectOptions,
@@ -91,7 +88,6 @@ export function createProjectsRouter({ appName, projectService, workflowQuerySer
       values: createNewProjectFormValues(req.query || {}, getPageDefaultsService(req)),
       errors: {},
       statuses: WORKFLOW_STATUSES,
-      priorities: PRIORITIES,
       action: 'Create',
       submitUrl: '/projects',
     });
@@ -110,7 +106,6 @@ export function createProjectsRouter({ appName, projectService, workflowQuerySer
           values: createFormValues(req.body),
           errors: err.errors,
           statuses: WORKFLOW_STATUSES,
-          priorities: PRIORITIES,
           action: 'Create',
           submitUrl: '/projects',
         });
@@ -123,7 +118,6 @@ export function createProjectsRouter({ appName, projectService, workflowQuerySer
         values: createFormValues(req.body),
         errors: { general: 'Project creation failed. Please try again.' },
         statuses: WORKFLOW_STATUSES,
-        priorities: PRIORITIES,
         action: 'Create',
         submitUrl: '/projects',
       });
@@ -183,7 +177,6 @@ export function createProjectsRouter({ appName, projectService, workflowQuerySer
       values: projectToFormValues(project),
       errors: {},
       statuses: WORKFLOW_STATUSES,
-      priorities: PRIORITIES,
       action: 'Edit',
       submitUrl: `/projects/${project.id}`,
     });
@@ -211,10 +204,9 @@ export function createProjectsRouter({ appName, projectService, workflowQuerySer
         res.status(422).render('projects/form.njk', {
           appName,
           project: existing || { id },
-          values: req.body,
+          values: createFormValues(req.body),
           errors: err.errors,
           statuses: WORKFLOW_STATUSES,
-          priorities: PRIORITIES,
           action: 'Edit',
           submitUrl: `/projects/${id}`,
         });
@@ -225,10 +217,9 @@ export function createProjectsRouter({ appName, projectService, workflowQuerySer
       res.status(500).render('projects/form.njk', {
         appName,
         project: existing || { id },
-        values: req.body,
+        values: createFormValues(req.body),
         errors: { general: 'Project update failed. Please try again.' },
         statuses: WORKFLOW_STATUSES,
-        priorities: PRIORITIES,
         action: 'Edit',
         submitUrl: `/projects/${id}`,
       });
@@ -390,7 +381,6 @@ function parseProjectInput(body) {
     description: body.description,
     notes: body.notes,
     status: body.status,
-    priority: body.priority,
     plannedDate: body.plannedDate || null,
     publishedDate: body.publishedDate || null,
     patreonUrl: body.patreonUrl || null,
@@ -398,22 +388,20 @@ function parseProjectInput(body) {
 }
 
 function createFormValues(values) {
-  return {
-    ...values,
-    priority: values.priority === undefined ? DEFAULT_PRIORITY : values.priority,
-  };
+  const formValues = { ...values };
+  delete formValues.priority;
+  return formValues;
 }
 
-// New-project initial values only. Saved New Project status/priority defaults
-// seed the first render; a saved value that is missing, invalid, or obsolete
-// falls back to the service's application fallback. Any status/priority carried
-// on the query string takes precedence over the saved default. This path is
-// never used for submission re-rendering, so submitted values are unaffected.
+// New-project initial values only. The saved New Project status default seeds
+// the first render; a saved value that is missing, invalid, or obsolete falls
+// back to the service's application fallback. Any status carried on the query
+// string takes precedence over the saved default. This path is never used for
+// submission re-rendering, so submitted values are unaffected.
 function createNewProjectFormValues(query, pageDefaultsService) {
   return {
     ...createFormValues(query),
     status: pageDefaultsService.resolve('new_project', 'status', query.status),
-    priority: pageDefaultsService.resolve('new_project', 'priority', query.priority),
   };
 }
 
@@ -437,7 +425,6 @@ function projectToFormValues(project) {
     description: project.description,
     notes: project.notes,
     status: project.status,
-    priority: project.priority,
     plannedDate: project.planned_date || '',
     publishedDate: project.published_date || '',
     patreonUrl: project.patreon_url || '',

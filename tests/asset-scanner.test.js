@@ -14,7 +14,6 @@ import { createAssetScanner } from '../src/services/asset-scanner.js';
 import { createProjectPrimaryImageRepository } from '../src/data/project-primary-image-repository.js';
 import { createProjectPrimaryImageService } from '../src/services/project-primary-image-service.js';
 import { createWorkflowQueryService } from '../src/services/workflow-query-service.js';
-import { evaluateReleaseReadiness } from '../src/services/release-readiness-policy.js';
 import { createProjectOperationCoordinator, ProjectOperationError } from '../src/services/project-operation-coordinator.js';
 import {
   formatProjectDirName,
@@ -97,7 +96,6 @@ describe('asset scanner', () => {
     });
     workflowQueryService = createWorkflowQueryService({
       db,
-      evaluateReleaseReadiness,
       projectPrimaryImageRepository: primaryImageRepository,
     });
   });

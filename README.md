@@ -12,7 +12,7 @@ CreatorCrate is a self-hosted workspace for one creator to organize art projects
 
 ## What it does
 
-- Manage projects with statuses, priorities, dates, notes, search, sorting, pagination, and archiving.
+- Manage projects with statuses, dates, notes, search, sorting, pagination, and archiving.
 - Create and maintain a canonical project directory and atomic `project.json` manifest for every project.
 - Scan project files into an asset index, organize them with categories, and browse supported media through generated previews and original files.
 - Build releases from project assets, choose asset roles and ordering, publish completed work, and view releases on a calendar.

@@ -80,19 +80,23 @@ describe('projects status migration (002_add_completed_status)', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('fresh install applies both migrations and includes completed in the CHECK', () => {
+  it('fresh install applies all migrations and includes completed in the CHECK', () => {
     db = openDatabase(path.join(tmpDir, 'fresh.db'));
     runMigrations(db, MIGRATIONS_DIR);
 
     expect(db.prepare('SELECT filename FROM schema_migrations ORDER BY rowid').pluck().all())
-      .toEqual(['001_initial.sql', '002_add_completed_status.sql']);
+      .toEqual([
+        '001_initial.sql',
+        '002_add_completed_status.sql',
+        '003_remove_project_priority.sql',
+      ]);
 
     const checkValues = projectsStatusCheckValues(db);
     expect(checkValues).toContain("'completed'");
 
     // The new status is writable on a fresh install.
     db.prepare(
-      "INSERT INTO projects (title, slug, status, priority) VALUES (?, ?, 'completed', 'normal')"
+      "INSERT INTO projects (title, slug, status) VALUES (?, ?, 'completed')"
     ).run('Fresh', 'fresh');
     expect(
       db.prepare('SELECT status FROM projects WHERE slug = ?').pluck().get('fresh')
@@ -123,11 +127,15 @@ describe('projects status migration (002_add_completed_status)', () => {
         .run('Nope', 'nope')
     ).toThrow();
 
-    // Run pending migrations — only 002 should apply.
+    // Run pending migrations — 002 updates status and 003 removes priority.
     runMigrations(db, MIGRATIONS_DIR);
 
     expect(db.prepare('SELECT filename FROM schema_migrations ORDER BY rowid').pluck().all())
-      .toEqual(['001_initial.sql', '002_add_completed_status.sql']);
+      .toEqual([
+        '001_initial.sql',
+        '002_add_completed_status.sql',
+        '003_remove_project_priority.sql',
+      ]);
 
     // The rebuild must preserve every parent and child row (id-stable).
     expect(db.prepare('SELECT id, title, status FROM projects').get()).toEqual({
@@ -140,7 +148,7 @@ describe('projects status migration (002_add_completed_status)', () => {
 
     // AUTOINCREMENT continues past the largest copied id.
     const next = db.prepare(
-      "INSERT INTO projects (title, slug, status, priority) VALUES (?, ?, 'completed', 'normal')"
+      "INSERT INTO projects (title, slug, status) VALUES (?, ?, 'completed')"
     ).run('Newly Completed', 'newly-completed');
     expect(next.lastInsertRowid).toBe(2);
 

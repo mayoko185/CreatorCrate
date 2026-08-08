@@ -42,15 +42,6 @@
           </select>
         </div>
 
-        <div class="field">
-          <label for="board-readiness">Readiness</label>
-          <select id="board-readiness" name="readiness">
-            <option value="all" {% if query.readiness == 'all' or not query.readiness %}selected{% endif %}>All</option>
-            <option value="publishable" {% if query.readiness == 'publishable' %}selected{% endif %}>Publishable</option>
-            <option value="blocked-ready" {% if query.readiness == 'blocked-ready' %}selected{% endif %}>Blocked (ready)</option>
-          </select>
-        </div>
-
         <div class="field field--checkbox">
           <input type="checkbox" id="board-includeArchived" name="includeArchived" value="1" {% if query.includeArchived == '1' %}checked{% endif %}>
           <label for="board-includeArchived">Include archived releases</label>
@@ -86,19 +77,6 @@
                           <span class="missing-indicator" title="{{ release.missing_asset_count }} missing">⚠ {{ release.missing_asset_count }}</span>
                         {% endif %}
                       </span>
-                      {% if release._readiness %}
-                        <span class="card-readiness">
-                          {%- if release._readiness.publishable -%}
-                            <span class="readiness-publishable">Publishable</span>
-                          {%- else -%}
-                            <span class="readiness-blocked">
-                              {%- for label in release._readiness.blockerLabels -%}
-                                {{ label }}{% if not loop.last %}; {% endif %}
-                              {%- endfor -%}
-                            </span>
-                          {%- endif -%}
-                        </span>
-                      {% endif %}
                     </div>
                   </div>
                 {% endfor %}
@@ -142,15 +120,6 @@
       </div>
 
       <div class="field">
-        <label for="list-readiness">Readiness</label>
-        <select id="list-readiness" name="readiness">
-          <option value="all" {% if query.readiness == 'all' or not query.readiness %}selected{% endif %}>All</option>
-          <option value="publishable" {% if query.readiness == 'publishable' %}selected{% endif %}>Publishable</option>
-          <option value="blocked-ready" {% if query.readiness == 'blocked-ready' %}selected{% endif %}>Blocked (ready)</option>
-        </select>
-      </div>
-
-      <div class="field">
         <label for="list-sort">Sort</label>
         <select id="list-sort" name="sort">
           {% for opt in sortOptions %}
@@ -183,7 +152,6 @@
             <th>Title</th>
             <th>Project</th>
             <th>Project status</th>
-            <th>Readiness</th>
             <th>Planned</th>
             <th>Published</th>
             <th class="num">Assets</th>
@@ -196,28 +164,6 @@
               <td><a href="/releases/{{ release.id }}">{{ release.title }}</a></td>
               <td>{{ release.project_title }}</td>
               <td>{% set status = release.project_status %}{% include "partials/status-badge.njk" %}</td>
-              <td class="num">
-                {% if release._readiness %}
-                  {% if release._readiness.publishable %}
-                    <span class="readiness-publishable">Publishable</span>
-                  {% else %}
-                    <span class="readiness-blocked">
-                      {%- for label in release._readiness.blockerLabels -%}
-                        {{ label }}{% if not loop.last %}; {% endif %}
-                      {%- endfor -%}
-                    </span>
-                    {% if release._readiness.correctiveLinks %}
-                      <span class="readiness-links">
-                        {% for link in release._readiness.correctiveLinks %}
-                          <a href="{{ link.href }}" class="readiness-link">{{ link.label }}</a>{% if not loop.last %} {% endif %}
-                        {% endfor %}
-                      </span>
-                    {% endif %}
-                  {% endif %}
-                {% else %}
-                  <span class="readiness-none">—</span>
-                {% endif %}
-              </td>
               <td>{{ release.planned_date or '—' }}{% if release.planned_time %} {{ release.planned_time }}{% endif %}</td>
               <td>{{ release.published_date or '—' }}</td>
               <td>
@@ -249,7 +195,7 @@
         {% endif %}
       </nav>
     {% else %}
-      {% set releaseFiltersActive = query.search or query.project or query.schedule or query.includeArchived == '1' or (query.readiness and query.readiness != 'all') %}
+      {% set releaseFiltersActive = query.search or query.project or query.schedule or query.includeArchived == '1' %}
       {% if releaseFiltersActive and hasAnyReleases %}
         {% set emptyHeading = "No releases match the current filters" %}
         {% set emptyDescription = "Reset the filters to return to the full release list." %}

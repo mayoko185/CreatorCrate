@@ -6,7 +6,6 @@ import { fileURLToPath } from 'node:url';
 import { createApp } from '../src/app.js';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { createReleaseService } from '../src/services/release-service.js';
-import { evaluateReleaseReadiness } from '../src/services/release-readiness-policy.js';
 import { ensureAuthEnablement } from '../src/auth/auth-state.js';
 import { getDisabledModeCsrf } from './helpers/auth.js';
 
@@ -70,7 +69,7 @@ describe('Releases HTTP route', () => {
     const releaseId = Number(res.headers.location.replace('/releases/', ''));
 
     if (status !== 'tbd') {
-      const releaseService = createReleaseService({ db, evaluateReleaseReadiness });
+      const releaseService = createReleaseService({ db });
       releaseService.updateRelease(releaseId, { status });
     }
 

@@ -51,7 +51,6 @@ describe('page defaults service', () => {
     expect(service.resolve('assetViewer', 'order')).toBe('asc');
     expect(service.resolve('assetViewer', 'pageSize')).toBe('25');
     expect(service.resolve('new_project', 'status')).toBe('tbd');
-    expect(service.resolve('new_project', 'priority')).toBe('normal');
   });
 
   it('defines the exact Project Assets option allowlists, keys, and fallbacks', () => {
@@ -110,11 +109,6 @@ describe('page defaults service', () => {
         key: 'page_defaults.new_project.status',
         values: ['tbd', 'planned', 'in-progress', 'ready', 'completed'],
         fallback: 'tbd',
-      },
-      priority: {
-        key: 'page_defaults.new_project.priority',
-        values: ['low', 'normal', 'high'],
-        fallback: 'normal',
       },
     });
   });
@@ -179,14 +173,21 @@ describe('page defaults service', () => {
 
   it('accepts valid New Projects saved values', () => {
     repository.setValue(PAGE_DEFAULT_DEFINITIONS.new_project.status.key, 'ready');
-    repository.setValue(PAGE_DEFAULT_DEFINITIONS.new_project.priority.key, 'high');
 
     expect(service.getSavedDefault('new_project', 'status')).toBe('ready');
-    expect(service.getSavedDefault('new_project', 'priority')).toBe('high');
     expect(service.resolvePageDefaults('new_project')).toEqual({
       status: 'ready',
-      priority: 'high',
     });
+  });
+
+  it('ignores legacy New Project Priority storage while resolving supported defaults', () => {
+    const legacyKey = 'page_defaults.new_project.priority';
+    repository.setValue(legacyKey, 'high');
+    repository.setValue(PAGE_DEFAULT_DEFINITIONS.new_project.status.key, 'ready');
+
+    expect(PAGE_DEFAULT_DEFINITIONS.new_project).not.toHaveProperty('priority');
+    expect(service.resolvePageDefaults('new_project')).toEqual({ status: 'ready' });
+    expect(repository.getValue(legacyKey)).toBe('high');
   });
 
   it('accepts valid Release Management saved values', () => {
@@ -250,23 +251,13 @@ describe('page defaults service', () => {
     expect(repository.getValue(key)).toBe('invalid-sort');
   });
 
-  it('uses New Projects fallbacks for invalid stored values without rewriting them', () => {
-    const invalidValues = {
-      status: 'cancelled',
-      priority: 'urgent',
-    };
-    for (const [option, value] of Object.entries(invalidValues)) {
-      repository.setValue(PAGE_DEFAULT_DEFINITIONS.new_project[option].key, value);
-    }
+  it('uses the New Project status fallback for invalid stored values without rewriting it', () => {
+    const key = PAGE_DEFAULT_DEFINITIONS.new_project.status.key;
+    repository.setValue(key, 'cancelled');
 
-    expect(service.resolvePageDefaults('new_project')).toEqual({
-      status: 'tbd',
-      priority: 'normal',
-    });
-    for (const [option, value] of Object.entries(invalidValues)) {
-      expect(repository.getValue(PAGE_DEFAULT_DEFINITIONS.new_project[option].key)).toBe(value);
-      expect(service.getSavedDefault('new_project', option)).toBeUndefined();
-    }
+    expect(service.resolvePageDefaults('new_project')).toEqual({ status: 'tbd' });
+    expect(repository.getValue(key)).toBe('cancelled');
+    expect(service.getSavedDefault('new_project', 'status')).toBeUndefined();
   });
 
   it('ignores an obsolete stored New Release status default without rewriting it', () => {

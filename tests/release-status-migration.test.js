@@ -84,7 +84,7 @@ describe('release schema in the consolidated baseline migration', () => {
     runMigrations(db, MIGRATIONS_DIR);
 
     expect(db.prepare('SELECT filename FROM schema_migrations ORDER BY rowid').pluck().all())
-      .toEqual(['001_initial.sql', '002_add_completed_status.sql']);
+      .toEqual(['001_initial.sql', '002_add_completed_status.sql', '003_remove_project_priority.sql']);
     expect(tableInfo(db, 'releases')).toEqual(EXPECTED_RELEASE_COLUMNS);
     expect(tableInfo(db, 'releases').map((column) => column.name)).not.toContain('status');
 
@@ -124,7 +124,7 @@ describe('release schema in the consolidated baseline migration', () => {
     runMigrations(db, MIGRATIONS_DIR);
 
     expect(db.prepare('SELECT filename FROM schema_migrations ORDER BY rowid').pluck().all())
-      .toEqual(['001_initial.sql', '002_add_completed_status.sql']);
+      .toEqual(['001_initial.sql', '002_add_completed_status.sql', '003_remove_project_priority.sql']);
     expect(releaseSchemaSignature(db)).toEqual(firstSignature);
     expect(db.pragma('foreign_key_check')).toEqual([]);
   });

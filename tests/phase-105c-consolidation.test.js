@@ -419,27 +419,6 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
       expect(res.text).toContain('read-only');
     });
 
-    it('uses shared panel class for readiness section', async () => {
-      const projRes = await agent.post('/projects')
-        .send('title=Panel+Test+Release')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-      const projectId = projRes.headers.location.replace('/projects/', '');
-
-      const createRes = await agent.post('/releases')
-        .send(`projectId=${projectId}`)
-        .send('title=Panel+Release')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-
-      const res = await agent.get(createRes.headers.location).expect(200);
-      expect(res.text).toContain('class="panel panel--readiness"');
-    });
-
     it('release detail uses data-table for selected assets', async () => {
       const projRes = await agent.post('/projects')
         .send('title=Table+Test+Release')

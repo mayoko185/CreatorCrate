@@ -51,7 +51,7 @@ describe('asset category assignment baseline schema', () => {
       runMigrations(db, MIGRATIONS_DIR);
 
       const applied = db.prepare('SELECT filename FROM schema_migrations ORDER BY rowid').pluck().all();
-      expect(applied).toEqual(['001_initial.sql', '002_add_completed_status.sql']);
+      expect(applied).toEqual(['001_initial.sql', '002_add_completed_status.sql', '003_remove_project_priority.sql']);
     });
 
     it('creates category_id and nested_path without natural-sort columns', () => {

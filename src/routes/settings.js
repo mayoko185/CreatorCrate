@@ -107,7 +107,6 @@ const DEFAULT_OPTION_LABELS = Object.freeze({
     pageSize: 'Default page size',
   }),
   status: 'New project status',
-  priority: 'New project priority',
 });
 
 const DEFAULT_VALUE_LABELS = Object.freeze({
@@ -119,7 +118,6 @@ const DEFAULT_VALUE_LABELS = Object.freeze({
       ready: 'Ready',
       completed: 'Completed',
     }),
-    priority: Object.freeze({ low: 'Low', normal: 'Normal', high: 'High' }),
   }),
   projects: Object.freeze({
     view: Object.freeze({ grid: 'Grid', list: 'List' }),

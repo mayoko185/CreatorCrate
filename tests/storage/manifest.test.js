@@ -27,7 +27,6 @@ function makeProject(overrides = {}) {
     description: '',
     notes: '',
     status: 'in-progress',
-    priority: 'normal',
     created_at: '2026-07-26 14:00:00',
     updated_at: '2026-07-26 14:00:00',
     planned_date: null,
@@ -90,7 +89,6 @@ describe('serializeManifest', () => {
       'notes',
       'patreonUrl',
       'plannedDate',
-      'priority',
       'publishedDate',
       'schemaVersion',
       'slug',
@@ -109,6 +107,13 @@ describe('serializeManifest', () => {
     const json = formatManifestJson(manifest);
     expect(json).not.toMatch(/"status"\s*:/);
     expect(json).not.toContain('in-progress');
+  });
+
+  it('does not serialize project priority', () => {
+    const manifest = serializeManifest(makeProject({ priority: 'high' }));
+
+    expect(manifest).not.toHaveProperty('priority');
+    expect(formatManifestJson(manifest)).not.toMatch(/"priority"\s*:/);
   });
 
   it('sets schemaVersion to exactly 3', () => {
@@ -257,7 +262,6 @@ describe('deserializeManifest', () => {
       id: 42,
       title: 'Test',
       slug: 'test',
-      priority: 'normal',
       description: 'desc',
       notes: 'notes',
       tags: [],
@@ -280,6 +284,7 @@ describe('deserializeManifest', () => {
     expect(data.published_date).toBeNull();
     expect(data.patreon_url).toBe('https://patreon.com/user');
     expect(data.thumbnail).toBeNull();
+    expect(data).not.toHaveProperty('priority');
   });
 
   it('does not expose status as project metadata', () => {
@@ -321,7 +326,6 @@ describe('deserializeManifest', () => {
       title: 'Test',
       slug: 'test',
       status: 'tbd',
-      priority: 'normal',
       description: '',
       notes: '',
       tags: [],
@@ -356,7 +360,6 @@ describe('deserializeManifest', () => {
       id: 42,
       title: 'Test',
       slug: 'test',
-      priority: 'normal',
       description: '',
       notes: '',
       tags: [],
@@ -373,6 +376,12 @@ describe('deserializeManifest', () => {
 
   it('accepts a valid manifest with an empty assetCategories array', () => {
     expect(() => deserializeManifest(validBaseManifest())).not.toThrow();
+  });
+
+  it('tolerates a legacy priority field without restoring it', () => {
+    const data = deserializeManifest(validBaseManifest({ priority: 'high' }));
+
+    expect(data).not.toHaveProperty('priority');
   });
 
   it('accepts a valid manifest with populated assetCategories', () => {

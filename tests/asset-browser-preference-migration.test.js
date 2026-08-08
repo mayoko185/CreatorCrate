@@ -16,7 +16,6 @@ function createProject(repository, title) {
     description: '',
     notes: '',
     status: 'tbd',
-    priority: 'normal',
     plannedDate: null,
     publishedDate: null,
     patreonUrl: null,
@@ -45,7 +44,11 @@ describe('asset-browser preferences in the baseline schema', () => {
     expect(() => runMigrations(db, MIGRATIONS_DIR)).not.toThrow();
 
     const applied = db.prepare('SELECT filename FROM schema_migrations ORDER BY rowid').pluck().all();
-    expect(applied).toEqual(['001_initial.sql', '002_add_completed_status.sql']);
+    expect(applied).toEqual([
+      '001_initial.sql',
+      '002_add_completed_status.sql',
+      '003_remove_project_priority.sql',
+    ]);
   });
 
   it('creates the preference table with timestamps, project cascade, and no category foreign key', () => {

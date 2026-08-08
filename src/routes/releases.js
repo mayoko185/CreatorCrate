@@ -129,12 +129,6 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
     const project = projectService.findById(release.project_id);
     const releaseAssets = releaseService.listReleaseAssets(id);
 
-    // Published releases show a publication summary instead of readiness.
-    // Archived releases (or archived-parent) also skip readiness.
-    const isPublished = release.published_date != null;
-    const isArchived = release.archived_at || (project && project.archived_at);
-    const readiness = isPublished || isArchived ? null : workflowQueryService.getReleaseReadiness(id);
-
     res.render('releases/detail.njk', buildReleaseDetailRenderModel({
       appName,
       releaseService,
@@ -142,7 +136,6 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
       project,
       releaseAssets,
       req,
-      readiness,
     }));
   });
 
@@ -226,7 +219,6 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
           project,
           releaseAssets,
           req,
-          readiness: null,
           errors: { general: err.message },
         }));
         return;
@@ -253,13 +245,11 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
     if (release.archived_at || (project && project.archived_at)) {
       return res.redirect(`/releases/${id}`);
     }
-    if (release.published_date != null || release.project_status !== 'ready') {
+    if (release.published_date != null) {
       return res.redirect(`/releases/${id}`);
     }
 
-    // The owning project is ready — render review page (publishable or blocked-ready)
     const releaseAssets = releaseService.listReleaseAssets(id);
-    const readiness = workflowQueryService.getReleaseReadiness(id);
 
     // Resolve publication date for prefill: persisted date, otherwise local today
     const today = getLocalTodayIso();
@@ -271,7 +261,6 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
       project,
       releaseAssets,
       assetCount: releaseAssets.length,
-      readiness,
       prefillDate,
       errors: {},
     });
@@ -307,8 +296,6 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
         }
         const project = projectService.findById(release.project_id);
         const releaseAssets = releaseService.listReleaseAssets(id);
-        const readiness = workflowQueryService.getReleaseReadiness(id);
-
         // Resolve prefill date: submitted value (even if invalid), then persisted, then today
         const today = getLocalTodayIso();
         const prefillDate = submittedDate || release.published_date || today;
@@ -319,7 +306,6 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
           project,
           releaseAssets,
           assetCount: releaseAssets.length,
-          readiness,
           prefillDate,
           errors: err.errors || { general: err.message },
         });
@@ -339,7 +325,6 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
           project,
           releaseAssets,
           req,
-          readiness: null,
           errors: { general: err.message },
         }));
         return;
@@ -369,7 +354,6 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
         }
         const project = projectService.findById(release.project_id);
         const releaseAssets = releaseService.listReleaseAssets(id);
-        const readiness = workflowQueryService.getReleaseReadiness(id);
         res.status(422).render('releases/detail.njk', buildReleaseDetailRenderModel({
           appName,
           releaseService,
@@ -378,7 +362,6 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
           releaseAssets,
           req,
           errors: err.errors,
-          readiness,
         }));
         return;
       }
@@ -396,7 +379,6 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
           project,
           releaseAssets,
           req,
-          readiness: null,
           errors: { general: err.message },
         }));
         return;
@@ -585,7 +567,7 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
   });
 
   // POST /releases/:id/assets/:assetId/remove — Remove a single selected asset from a release
-  // This is a corrective mutation for missing assets that block readiness.
+  // This is a corrective mutation for missing selected assets.
   // Only selected assets that are currently missing can be removed through this route.
   router.post('/:id/assets/:assetId/remove', (req, res, next) => {
     const id = parseId(req.params.id);
@@ -621,14 +603,12 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
           releaseAssets,
           req,
           errors: { general: err.message },
-          readiness: null,
         }));
         return;
       }
       if (err instanceof ReleasePublishedError || err instanceof ReleaseValidationError) {
         const project = projectService.findById(release.project_id);
         const releaseAssets = releaseService.listReleaseAssets(id);
-        const readiness = workflowQueryService.getReleaseReadiness(id);
         res.status(422).render('releases/detail.njk', buildReleaseDetailRenderModel({
           appName,
           releaseService,
@@ -637,7 +617,6 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
           releaseAssets,
           req,
           errors: err.errors || { general: err.message },
-          readiness,
         }));
         return;
       }
@@ -960,8 +939,6 @@ function buildReleaseManagementUrlQuery(
   }
   if (currentPage > 1) query.page = String(currentPage);
   if (normalizedFilters.pageSize !== PAGE_SIZE) query.pageSize = String(normalizedFilters.pageSize);
-  if (normalizedFilters.readiness !== 'all') query.readiness = normalizedFilters.readiness;
-
   return query;
 }
 
@@ -976,7 +953,6 @@ function buildReleaseManagementRenderQuery(normalizedFilters, presentation, curr
     order: presentation.order,
     page: currentPage > 1 ? String(currentPage) : undefined,
     pageSize: String(normalizedFilters.pageSize),
-    readiness: normalizedFilters.readiness,
   };
 }
 
@@ -985,7 +961,6 @@ function buildReleaseManagementClearOverrides() {
     search: null,
     project: null,
     schedule: null,
-    readiness: null,
     includeArchived: null,
     page: null,
   };
@@ -1079,7 +1054,6 @@ function buildReleaseDetailRenderModel({
   project,
   releaseAssets,
   req,
-  readiness = null,
   errors = {},
 }) {
   const selectedAssets = Array.isArray(releaseAssets) ? releaseAssets : [];
@@ -1092,7 +1066,6 @@ function buildReleaseDetailRenderModel({
     assetPresentation: releaseService.getReleaseAssetPresentation(release.id, selectedAssets),
     view: resolveReleaseAssetView(req?.query),
     pageUrl: buildReleaseDetailPageUrl(release.id, req?.query),
-    readiness,
     errors,
   };
 }

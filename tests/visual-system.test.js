@@ -325,13 +325,6 @@ describe('Phase 10.6B: Visual-polish hardening', () => {
       expect(css).toMatch(/\.card-meta\s*\{[^}]*font-size:\s*0\.75rem/);
     });
 
-    it('card-readiness text is at least 0.75rem', async () => {
-      const res = await request(app).get('/release-management?view=board').expect(200);
-      const css = await extractStyle(app, res.text);
-      expect(css).toMatch(/\.card-readiness \.readiness-publishable\s*\{[^}]*font-size:\s*0\.75rem/);
-      expect(css).toMatch(/\.card-readiness \.readiness-blocked\s*\{[^}]*font-size:\s*0\.75rem/);
-    });
-
     it('the page-title header (the page\'s sole h1) has consistent sizing across pages', async () => {
       const res = await request(app).get('/').expect(200);
       const css = await extractStyle(app, res.text);

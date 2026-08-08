@@ -12,7 +12,6 @@ import { formatProjectDirName } from '../src/storage/project-storage.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
 import { createReleaseRepository } from '../src/data/release-repository.js';
 import { createReleaseService } from '../src/services/release-service.js';
-import { evaluateReleaseReadiness } from '../src/services/release-readiness-policy.js';
 import { getLocalTodayIso } from '../src/util/date.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
@@ -125,8 +124,8 @@ function insertProjectDirect(db, overrides = {}) {
   } = overrides;
   const row = db
     .prepare(
-      `INSERT INTO projects (title, slug, description, notes, status, priority, archived_at, updated_at)
-       VALUES (?, ?, '', '', ?, 'normal', ?, COALESCE(?, datetime('now')))
+      `INSERT INTO projects (title, slug, description, notes, status, archived_at, updated_at)
+       VALUES (?, ?, '', '', ?, ?, COALESCE(?, datetime('now')))
        RETURNING id`
     )
     .get(title, slug, status, archivedAt, updatedAt);
@@ -410,234 +409,6 @@ describe('release HTTP workflow', () => {
       // Bounded pattern: cannot cross </dd>, <dt>, or opening <dd>
       const releaseLinkDt = res.text.match(/<dt>Release link<\/dt>\s*<dd>(?:(?!<\/dd>)(?!<dt>)(?!<dd>).)*<small>\(release link\)<\/small>(?:(?!<\/dd>)(?!<dt>)(?!<dd>).)*<\/dd>/);
       expect(releaseLinkDt).not.toBeNull();
-    });
-  });
-
-  // ─── Phase 7D-3: No readiness impact from legacy project planning values
-  //
-  // Project-level planning fields (planned_date, published_date, patreon_url)
-  // must not affect release readiness evaluation. Readiness is determined
-  // solely by release-level fields and asset selection.
-
-  describe('legacy project planning values do not affect readiness', () => {
-    /**
-     * Create a project and a publishable release (with assets selected).
-     * Returns { projectId, releaseId, releaseLocation, assetId }.
-     */
-    async function setupPublishableForLegacyTest() {
-      const projRes = await agent
-        .post('/projects')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-        .send('title=Legacy+Readiness+Project')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .expect(302);
-      const projectId = projRes.headers.location.replace('/projects/', '');
-
-      const slug = 'legacy-readiness-project';
-      const projectDir = getProjectDir(projectsRoot, projectId, slug);
-      fs.writeFileSync(path.join(projectDir, 'asset.png'), 'png');
-      await agent.post(`/projects/${projectId}/scan`)
-      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
-
-      const assetRepo = createAssetRepository(db);
-      const assets = assetRepo.findByProjectId(Number(projectId));
-      const assetId = String(assets[0].id);
-
-      const createRes = await agent
-        .post('/releases')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-        .send(`projectId=${projectId}`)
-        .send('title=Legacy+Readiness+Release')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .expect(302);
-      const releaseLocation = createRes.headers.location;
-      const releaseId = Number(releaseLocation.replace('/releases/', ''));
-      setProjectStatusForReleaseTest(db, releaseLocation, 'ready');
-
-      // Select the asset
-      await agent
-        .post(releaseLocation + '/assets')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-        .send(`selectedAssetIds[]=${assetId}`)
-        .send('roles[]=primary')
-        .send('sortOrder[]=0')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .expect(302);
-
-      return { projectId: Number(projectId), releaseId, releaseLocation, assetId: Number(assetId) };
-    }
-
-    /**
-     * Load readiness facts through the production repository projection and
-     * evaluate the policy. Returns { facts, result }.
-     */
-    function getReadinessFactsAndResult(releaseId) {
-      const facts = releaseRepository.findReadinessFactsById(releaseId);
-      if (!facts) return null;
-      const result = evaluateReleaseReadiness(facts);
-      return { facts, result };
-    }
-
-    it('project planned_date does not affect release readiness', async () => {
-      const { projectId, releaseId, releaseLocation } = await setupPublishableForLegacyTest();
-
-      // Capture readiness facts and policy result before setting the field
-      const before = getReadinessFactsAndResult(releaseId);
-      expect(before).not.toBeNull();
-      expect(before.result.publishable).toBe(true);
-
-      // Set the project planned_date
-      await agent
-        .post(`/projects/${projectId}`)
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-        .send('title=Legacy+Readiness+Project')
-        .send('status=ready')
-        .send('priority=normal')
-        .send('plannedDate=2020-01-01')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .expect(302);
-
-      // Reload readiness facts and re-evaluate
-      const after = getReadinessFactsAndResult(releaseId);
-      expect(after).not.toBeNull();
-
-      // Assert exact equality — no change to readiness
-      expect(after.result.publishable).toBe(before.result.publishable);
-      expect(after.result.checks).toEqual(before.result.checks);
-      expect(after.result.facts).toEqual(before.result.facts);
-
-      // HTTP assertion: release detail remains correct
-      const detail = await agent.get(releaseLocation).expect(200);
-      expect(detail.text).toContain('Publishable');
-    });
-
-    it('project published_date does not affect release readiness', async () => {
-      const { projectId, releaseId, releaseLocation } = await setupPublishableForLegacyTest();
-
-      const before = getReadinessFactsAndResult(releaseId);
-      expect(before).not.toBeNull();
-      expect(before.result.publishable).toBe(true);
-
-      await agent
-        .post(`/projects/${projectId}`)
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-        .send('title=Legacy+Readiness+Project')
-        .send('status=ready')
-        .send('priority=normal')
-        .send('publishedDate=2020-06-15')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .expect(302);
-
-      const after = getReadinessFactsAndResult(releaseId);
-      expect(after).not.toBeNull();
-
-      expect(after.result.publishable).toBe(before.result.publishable);
-      expect(after.result.checks).toEqual(before.result.checks);
-      expect(after.result.facts).toEqual(before.result.facts);
-
-      const detail = await agent.get(releaseLocation).expect(200);
-      expect(detail.text).toContain('Publishable');
-    });
-
-    it('project patreon_url does not affect release readiness', async () => {
-      const { projectId, releaseId, releaseLocation } = await setupPublishableForLegacyTest();
-
-      const before = getReadinessFactsAndResult(releaseId);
-      expect(before).not.toBeNull();
-      expect(before.result.publishable).toBe(true);
-
-      await agent
-        .post(`/projects/${projectId}`)
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-        .send('title=Legacy+Readiness+Project')
-        .send('status=ready')
-        .send('priority=normal')
-        .send('patreonUrl=https://patreon.com/creator')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .expect(302);
-
-      const after = getReadinessFactsAndResult(releaseId);
-      expect(after).not.toBeNull();
-
-      expect(after.result.publishable).toBe(before.result.publishable);
-      expect(after.result.checks).toEqual(before.result.checks);
-      expect(after.result.facts).toEqual(before.result.facts);
-
-      const detail = await agent.get(releaseLocation).expect(200);
-      expect(detail.text).toContain('Publishable');
-    });
-
-    it('cross-project junction rows are excluded from readiness facts', async () => {
-      // Create two projects and a release on project A with an asset from
-      // project B in the junction table. The production projection's
-      // LEFT JOIN assets ON a.id = ra.asset_id AND a.project_id = r.project_id
-      // must exclude the cross-project row from all counts.
-      const projARes = await agent
-        .post('/projects')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-        .send('title=Cross+Project+A')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .expect(302);
-      const projectAId = Number(projARes.headers.location.replace('/projects/', ''));
-
-      const projBRes = await agent
-        .post('/projects')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-        .send('title=Cross+Project+B')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .expect(302);
-      const projectBId = Number(projBRes.headers.location.replace('/projects/', ''));
-
-      // Scan an asset into project B
-      const slugB = 'cross-project-b';
-      const projectBDir = getProjectDir(projectsRoot, projectBId, slugB);
-      fs.writeFileSync(path.join(projectBDir, 'asset-b.png'), 'png');
-      await agent.post(`/projects/${projectBId}/scan`)
-      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
-
-      const assetRepo = createAssetRepository(db);
-      const assetsB = assetRepo.findByProjectId(projectBId);
-      const assetBId = assetsB[0].id;
-
-      // Create a release on project A
-      const createRes = await agent
-        .post('/releases')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-        .send(`projectId=${projectAId}`)
-        .send('title=Cross+Project+Release')
-        .send('status=ready')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .expect(302);
-      const releaseLocation = createRes.headers.location;
-      const releaseId = Number(releaseLocation.replace('/releases/', ''));
-
-      // Insert a malformed cross-project junction row directly
-      db.prepare('INSERT INTO release_assets (release_id, asset_id, role, sort_order) VALUES (?, ?, ?, ?)')
-        .run(releaseId, assetBId, 'primary', 0);
-
-      // Load facts through the production repository projection
-      const facts = releaseRepository.findReadinessFactsById(releaseId);
-      expect(facts).not.toBeNull();
-
-      // The cross-project asset must be excluded from every count
-      expect(facts.selected_asset_count).toBe(0);
-      expect(facts.present_selected_asset_count).toBe(0);
-      expect(facts.missing_selected_asset_count).toBe(0);
-      expect(facts.primary_role_count).toBe(0);
-      expect(facts.preview_role_count).toBe(0);
-      expect(facts.attachment_role_count).toBe(0);
-      expect(facts.source_role_count).toBe(0);
-
-      // The policy must see zero selected assets → not publishable
-      const result = evaluateReleaseReadiness(facts);
-      expect(result.publishable).toBe(false);
-      expect(result.checks.find((c) => c.key === 'assets_selected').passed).toBe(false);
     });
   });
 
@@ -1027,6 +798,8 @@ describe('release HTTP workflow', () => {
     expect(res.text).toContain('Manage Assets');
     expect(res.text).toContain(`<a class="button button-secondary" href="/projects/${projectId}">Back to Project</a>`);
     expect(res.text).toContain(`<dd><a href="/projects/${projectId}">Detail Test Project</a></dd>`);
+    expect(res.text).not.toContain('Readiness');
+    expect(res.text).not.toContain('panel--readiness');
   });
 
   it('release detail renders the associated project status and shows Ready for a ready project', async () => {
@@ -1191,7 +964,7 @@ describe('release HTTP workflow', () => {
       expect(countTags(res.text, 'h1')).toBe(1);
     });
 
-    it('publish page uses shared panel class for readiness section', async () => {
+    it('publish page omits the removed policy panel and leaves publication enabled', async () => {
       const projRes = await agent.post('/projects')
         .send('title=Publish+Panel+Test')
         .send('status=tbd')
@@ -1229,7 +1002,9 @@ describe('release HTTP workflow', () => {
         .expect(302);
 
       const res = await agent.get(`${relRes.headers.location}/publish`).expect(200);
-      expect(res.text).toContain('class="panel panel--readiness"');
+      expect(res.text).not.toContain('Readiness');
+      expect(res.text).not.toContain('panel--readiness');
+      expect(res.text).toMatch(/<button class="button button-primary" type="submit">\s*Publish/);
     });
 
     it('publish page uses the associated project status badge', async () => {
@@ -2232,7 +2007,7 @@ describe('release HTTP workflow', () => {
     expect(afterRows).toEqual(beforeRows);
   });
 
-  it('publish only works for ready status releases', async () => {
+  it('publish does not require a ready project status', async () => {
     const projRes = await agent
       .post('/projects')
       .send('_csrf=' + encodeURIComponent(csrfToken))
@@ -2253,12 +2028,14 @@ describe('release HTTP workflow', () => {
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
-    // Publishing tbd status should fail — readiness policy reports status_ready
     const publishRes = await agent
       .post(`${tbdRes.headers.location}/publish`)
       .send('_csrf=' + encodeURIComponent(csrfToken))
-      .expect(422);
-    expect(publishRes.text).toContain('ready');
+      .expect(302);
+    expect(publishRes.headers.location).toBe(tbdRes.headers.location);
+    expect(db.prepare('SELECT published_date FROM releases WHERE id = ?').get(
+      Number(tbdRes.headers.location.replace('/releases/', ''))
+    ).published_date).toBeTruthy();
   });
 
   // ─── Error rendering safety ───────────────────────────────────────────────
@@ -3836,9 +3613,9 @@ describe('release HTTP workflow', () => {
     expect(detail.text).toContain(today);
   });
 
-  // ─── Phase 7C-1: Readiness enforcement HTTP tests ───────────────────────
+  // ─── Publish path regression tests ──────────────────────────────────────
 
-  it('direct POST with zero assets returns 422 and renders readiness blockers', async () => {
+  it('direct POST with zero assets succeeds without a policy payload', async () => {
     const projRes = await agent
       .post('/projects')
       .send('_csrf=' + encodeURIComponent(csrfToken))
@@ -3858,19 +3635,20 @@ describe('release HTTP workflow', () => {
       .expect(302);
     setProjectStatusForReleaseTest(db, createRes.headers.location, 'ready');
 
-    // Direct POST with no assets selected — must be blocked
+    // Direct POST with no assets selected — no independent publish invariant
+    // rejects this state.
     const res = await agent
       .post(`${createRes.headers.location}/publish`)
       .send('_csrf=' + encodeURIComponent(csrfToken))
-      .expect(422);
+      .expect(302);
 
-    // Must render the detail page with readiness panel and blocker feedback
-    expect(res.text).toContain('panel--readiness');
-    expect(res.text).toContain('Cannot publish');
-    expect(res.text).toContain('No assets selected');
+    expect(res.headers.location).toBe(createRes.headers.location);
+    expect(db.prepare('SELECT published_date FROM releases WHERE id = ?').get(
+      Number(createRes.headers.location.replace('/releases/', ''))
+    ).published_date).toBeTruthy();
   });
 
-  it('direct POST with missing selected asset returns 422', async () => {
+  it('direct POST with a missing selected asset succeeds', async () => {
     const { releaseLocation, projectId } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
 
     // Mark the selected asset as missing
@@ -3880,10 +3658,12 @@ describe('release HTTP workflow', () => {
     const res = await agent
       .post(`${releaseLocation}/publish`)
       .send('_csrf=' + encodeURIComponent(csrfToken))
-      .expect(422);
+      .expect(302);
 
-    expect(res.text).toContain('Cannot publish');
-    expect(res.text).toContain('missing');
+    expect(res.headers.location).toBe(releaseLocation);
+    expect(db.prepare('SELECT published_date FROM releases WHERE id = ?').get(
+      Number(releaseLocation.replace('/releases/', ''))
+    ).published_date).toBeTruthy();
   });
 
   it('fully publishable release succeeds via POST', async () => {
@@ -3893,45 +3673,6 @@ describe('release HTTP workflow', () => {
       .post(`${releaseLocation}/publish`)
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .expect(302);
-  });
-
-  it('rejected publish does not change database state', async () => {
-    const projRes = await agent
-      .post('/projects')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-      .send('title=Rejected+State+Test')
-      .send('status=tbd')
-      .send('priority=normal')
-      .set('Content-Type', 'application/x-www-form-urlencoded')
-      .expect(302);
-    const projectId = projRes.headers.location.replace('/projects/', '');
-
-    const createRes = await agent
-      .post('/releases')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-      .send(`projectId=${projectId}`)
-      .send('title=Rejected+State+Release')
-      .set('Content-Type', 'application/x-www-form-urlencoded')
-      .expect(302);
-    setProjectStatusForReleaseTest(db, createRes.headers.location, 'ready');
-
-    // Verify initial state
-    const before = await agent.get(createRes.headers.location).expect(200);
-    expect(releaseRepository.findById(Number(createRes.headers.location.replace('/releases/', ''))).project_status)
-      .toBe('ready');
-    expect(before.text).not.toContain('readiness-badge readiness-publishable">Published</p>');
-
-    // Attempt publish (will fail — no assets)
-    await agent
-      .post(`${createRes.headers.location}/publish`)
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-      .expect(422);
-
-    // State must be unchanged
-    const after = await agent.get(createRes.headers.location).expect(200);
-    expect(releaseRepository.findById(Number(createRes.headers.location.replace('/releases/', ''))).project_status)
-      .toBe('ready');
-    expect(after.text).not.toContain('readiness-badge readiness-publishable">Published</p>');
   });
 
   it('archived release publish rejection remains intact', async () => {
@@ -3997,15 +3738,24 @@ describe('release HTTP workflow', () => {
       expect(detail.text).not.toMatch(/href="\/releases\/\d+\/assets"/);
     });
 
-    it('release detail still exposes mutation controls for an active project (regression)', async () => {
+    it('release detail still exposes editable controls for an active project (regression)', async () => {
       const { releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
 
       const detail = await agent.get(releaseLocation).expect(200);
       // Mutation controls are visible.
       expect(detail.text).toMatch(/href="\/releases\/\d+\/edit"/);
       expect(detail.text).toMatch(/action="\/releases\/\d+\/archive"/);
-      expect(detail.text).toMatch(/href="\/releases\/\d+\/publish"/);
       expect(detail.text).toMatch(/href="\/releases\/\d+\/assets"/);
+    });
+
+    it('release detail exposes Review & Publish for an eligible non-ready project', async () => {
+      const { releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
+      setProjectStatusForReleaseTest(db, releaseLocation, 'planned');
+
+      const detail = await agent.get(releaseLocation).expect(200);
+      expect(detail.text).toContain(
+        `<a class="button button-primary" href="${releaseLocation}/publish">Review &amp; Publish</a>`,
+      );
     });
 
     it('asset selection page hides Save and disables inputs when parent project is archived', async () => {
@@ -4234,514 +3984,6 @@ describe('release HTTP workflow', () => {
     });
   });
 
-  // ─── Phase 7B-1: Release Detail Readiness Panel ──────────────────────────
-
-  describe('release detail readiness panel', () => {
-    it('fully publishable release shows Publishable and all checks pass', async () => {
-      const { releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
-      const res = await agent.get(releaseLocation).expect(200);
-
-      expect(res.text).toContain('Publishable');
-      expect(releaseRepository.findById(Number(releaseLocation.replace('/releases/', ''))).project_status)
-        .toBe('ready');
-      expect(res.text).toContain('Assets selected');
-      expect(res.text).toContain('Selected assets present');
-      expect(res.text).toContain('Scope is mutable');
-      // All checks pass — no "Needs attention"
-      expect(res.text).not.toContain('Needs attention');
-    });
-
-    it('non-ready status shows blocked with status detail', async () => {
-      const projRes = await agent
-        .post('/projects')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-        .send('title=Non+Ready+Status+Test')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .expect(302);
-      const projectId = projRes.headers.location.replace('/projects/', '');
-
-      const createRes = await agent
-        .post('/releases')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-        .send(`projectId=${projectId}`)
-        .send('title=Non+Ready+Release')
-        .send('status=tbd')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .expect(302);
-
-      const res = await agent.get(createRes.headers.location).expect(200);
-      expect(res.text).toContain('Needs attention');
-      expect(releaseRepository.findById(Number(createRes.headers.location.replace('/releases/', ''))).project_status)
-        .toBe('tbd');
-      expect(res.text).not.toContain('Publishable');
-    });
-
-    it('zero selected assets shows blocked with count', async () => {
-      const projRes = await agent
-        .post('/projects')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-        .send('title=Zero+Selected+Test')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .expect(302);
-      const projectId = projRes.headers.location.replace('/projects/', '');
-
-      const createRes = await agent
-        .post('/releases')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-        .send(`projectId=${projectId}`)
-        .send('title=Zero+Selected+Release')
-        .send('status=ready')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .expect(302);
-
-      const res = await agent.get(createRes.headers.location).expect(200);
-      expect(res.text).toContain('Needs attention');
-      expect(res.text).toContain('0 selected');
-    });
-
-    it('missing selected asset shows blocked with missing count', async () => {
-      const { releaseLocation, projectId, assetId } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
-
-      // Mark the selected asset as missing
-      const assetRepo = createAssetRepository(db);
-      assetRepo.markMissingByProjectIdAndPathNotIn(Number(projectId), []);
-
-      const res = await agent.get(releaseLocation).expect(200);
-      expect(res.text).toContain('Needs attention');
-      expect(res.text).toContain('1 missing');
-    });
-
-    it('archived release shows scope blocked', async () => {
-      const { releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
-
-      // Archive the release
-      await agent
-        .post(`${releaseLocation}/archive`)
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-
-      const res = await agent.get(releaseLocation).expect(200);
-      // Archived releases show the archived notice instead of readiness panel
-      expect(res.text).toContain('archived and read-only');
-      expect(res.text).not.toContain('Needs attention');
-    });
-
-    it('archived parent project shows scope blocked', async () => {
-      const { releaseLocation, projectId } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
-
-      // Archive the parent project
-      await agent
-        .post(`/projects/${projectId}/archive`)
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-
-      const res = await agent.get(releaseLocation).expect(200);
-      // Archived parent shows the parent archived notice instead of readiness panel
-      expect(res.text).toContain('parent project is archived');
-      expect(res.text).not.toContain('Needs attention');
-    });
-
-    it('multiple blockers render simultaneously', async () => {
-      const projRes = await agent
-        .post('/projects')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-        .send('title=Multiple+Blockers+Test')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .expect(302);
-      const projectId = projRes.headers.location.replace('/projects/', '');
-
-      // Create release with tbd status and no assets — two blockers
-      const createRes = await agent
-        .post('/releases')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-        .send(`projectId=${projectId}`)
-        .send('title=Multiple+Blockers+Release')
-        .send('status=tbd')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .expect(302);
-
-      const res = await agent.get(createRes.headers.location).expect(200);
-      expect(res.text).toContain('Needs attention');
-      expect(releaseRepository.findById(Number(createRes.headers.location.replace('/releases/', ''))).project_status)
-        .toBe('tbd');
-      expect(res.text).toContain('0 selected');
-    });
-
-    it('all four check labels render', async () => {
-      const { releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
-      const res = await agent.get(releaseLocation).expect(200);
-
-      expect(releaseRepository.findById(Number(releaseLocation.replace('/releases/', ''))).project_status)
-        .toBe('ready');
-      expect(res.text).toContain('Assets selected');
-      expect(res.text).toContain('Selected assets present');
-      expect(res.text).toContain('Scope is mutable');
-    });
-
-    it('factual selected count renders', async () => {
-      const { releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
-      const res = await agent.get(releaseLocation).expect(200);
-
-      expect(res.text).toContain('1 selected');
-    });
-
-    it('last-completed-scan wording renders when blocked', async () => {
-      const projRes = await agent
-        .post('/projects')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-        .send('title=Scan+Wording+Test')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .expect(302);
-      const projectId = projRes.headers.location.replace('/projects/', '');
-
-      const createRes = await agent
-        .post('/releases')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-        .send(`projectId=${projectId}`)
-        .send('title=Scan+Wording+Release')
-        .send('status=tbd')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .expect(302);
-
-      const res = await agent.get(createRes.headers.location).expect(200);
-      expect(res.text).toContain('Asset presence reflects the last completed scan');
-      expect(res.text).toContain('not performing a live filesystem check');
-    });
-
-    it('corrective links appear when valid', async () => {
-      const projRes = await agent
-        .post('/projects')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-        .send('title=Corrective+Links+Test')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .expect(302);
-      const projectId = projRes.headers.location.replace('/projects/', '');
-
-      const createRes = await agent
-        .post('/releases')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-        .send(`projectId=${projectId}`)
-        .send('title=Corrective+Links+Release')
-        .send('status=tbd')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .expect(302);
-
-      const res = await agent.get(createRes.headers.location).expect(200);
-      // Check within the readiness panel section
-      const panelMatch = res.text.match(/<section class="panel panel--readiness">[\s\S]*?<\/section>/);
-      expect(panelMatch).not.toBeNull();
-      const panelHtml = panelMatch[0];
-      // Non-ready status → Edit release link
-      expect(panelHtml).toMatch(/href="\/releases\/\d+\/edit"/);
-      // No assets selected → Manage assets link
-      expect(panelHtml).toMatch(/href="\/releases\/\d+\/assets"/);
-    });
-
-    it('corrective links hidden for archived release', async () => {
-      const { releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
-
-      // Archive the release
-      await agent
-        .post(`${releaseLocation}/archive`)
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-
-      const res = await agent.get(releaseLocation).expect(200);
-      // Archived releases have no readiness panel at all
-      expect(res.text).not.toMatch(/<section class="panel panel--readiness">/);
-      expect(res.text).not.toMatch(/href="\/releases\/\d+\/edit"/);
-      expect(res.text).not.toMatch(/href="\/releases\/\d+\/assets"/);
-    });
-
-    it('corrective links hidden for archived parent project', async () => {
-      const { releaseLocation, projectId } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
-
-      await agent
-        .post(`/projects/${projectId}/archive`)
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-
-      const res = await agent.get(releaseLocation).expect(200);
-      // Archived parent releases have no readiness panel at all
-      expect(res.text).not.toMatch(/<section class="panel panel--readiness">/);
-      expect(res.text).not.toMatch(/href="\/releases\/\d+\/edit"/);
-      expect(res.text).not.toMatch(/href="\/releases\/\d+\/assets"/);
-    });
-
-    it('missing release remains 404', async () => {
-      await agent.get('/releases/99999').expect(404);
-    });
-
-    it('no absolute filesystem paths render', async () => {
-      const projRes = await agent
-        .post('/projects')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-        .send('title=No+Path+Readiness+Test')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .expect(302);
-      const projectId = projRes.headers.location.replace('/projects/', '');
-
-      const createRes = await agent
-        .post('/releases')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-        .send(`projectId=${projectId}`)
-        .send('title=No+Path+Readiness+Release')
-        .send('status=tbd')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .expect(302);
-
-      const res = await agent.get(createRes.headers.location).expect(200);
-      expect(res.text).not.toMatch(/[A-Z]:\\/);
-    });
-
-    // ─── Phase 7A regression: publication is not enforced yet ──────────────
-
-    it('rejects publish for a blocked release (readiness enforced)', async () => {
-      const projRes = await agent
-        .post('/projects')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-        .send('title=Enforced+Test')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .expect(302);
-      const projectId = projRes.headers.location.replace('/projects/', '');
-
-      // Create a release with ready status (publishable by status) but no
-      // assets selected — readiness panel shows blocked, publish must fail.
-      const createRes = await agent
-        .post('/releases')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-        .send(`projectId=${projectId}`)
-        .send('title=Enforced+Release')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .expect(302);
-      setProjectStatusForReleaseTest(db, createRes.headers.location, 'ready');
-
-      // Verify the readiness panel shows it's blocked (no assets selected)
-      const detail = await agent.get(createRes.headers.location).expect(200);
-      expect(detail.text).toContain('Needs attention');
-      expect(detail.text).toContain('0 selected');
-
-      // Publish must now be rejected — readiness IS enforced
-      const publishRes = await agent
-        .post(`${createRes.headers.location}/publish`)
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(422);
-      expect(publishRes.text).toContain('Cannot publish');
-    });
-  });
-
-  // ─── Phase 7C-3: Readiness Enforcement UI and Regression Verification ──────
-
-  describe('publish action UI gating', () => {
-    it('blocked release has no Publish button', async () => {
-      const projRes = await agent
-        .post('/projects')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-        .send('title=Blocked+No+Publish+Test')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .expect(302);
-      const projectId = projRes.headers.location.replace('/projects/', '');
-
-      // Create a ready release with no assets — blocked by assets_selected
-      const createRes = await agent
-        .post('/releases')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-        .send(`projectId=${projectId}`)
-        .send('title=Blocked+No+Publish')
-        .send('status=ready')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .expect(302);
-
-      const detail = await agent.get(createRes.headers.location).expect(200);
-      // Readiness panel shows blocked
-      expect(detail.text).toContain('Needs attention');
-      // Publish button must NOT be present
-      expect(detail.text).not.toMatch(/href="\/releases\/\d+\/publish"/);
-    });
-
-    it('publishable release has Publish button', async () => {
-      const { releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
-
-      const detail = await agent.get(releaseLocation).expect(200);
-      // Readiness panel shows publishable
-      expect(detail.text).toContain('Publishable');
-      // Publish button must be present
-      expect(detail.text).toMatch(/href="\/releases\/\d+\/publish"/);
-    });
-
-    it('forged blocked POST still returns 422', async () => {
-      const projRes = await agent
-        .post('/projects')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-        .send('title=Forged+POST+Test')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .expect(302);
-      const projectId = projRes.headers.location.replace('/projects/', '');
-
-      const createRes = await agent
-        .post('/releases')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-        .send(`projectId=${projectId}`)
-        .send('title=Forged+POST+Release')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .expect(302);
-      setProjectStatusForReleaseTest(db, createRes.headers.location, 'ready');
-
-      // Direct POST with no assets — server must reject
-      const res = await agent
-        .post(`${createRes.headers.location}/publish`)
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(422);
-      expect(res.text).toContain('Cannot publish');
-    });
-
-    it('one remaining blocker keeps release blocked', async () => {
-      const projRes = await agent
-        .post('/projects')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-        .send('title=One+Blocker+Test')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .expect(302);
-      const projectId = projRes.headers.location.replace('/projects/', '');
-
-      // Create a release with tbd status — blocked by status_ready
-      const createRes = await agent
-        .post('/releases')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-        .send(`projectId=${projectId}`)
-        .send('title=One+Blocker+Release')
-        .send('status=tbd')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .expect(302);
-
-      const detail = await agent.get(createRes.headers.location).expect(200);
-      // Must show blocked
-      expect(detail.text).toContain('Needs attention');
-      // No Publish button
-      expect(detail.text).not.toMatch(/href="\/releases\/\d+\/publish"/);
-    });
-
-    it('all blockers resolved makes release publishable', async () => {
-      const { releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
-
-      const detail = await agent.get(releaseLocation).expect(200);
-      expect(detail.text).toContain('Publishable');
-      expect(detail.text).toMatch(/href="\/releases\/\d+\/publish"/);
-    });
-
-    it('publication date metadata behavior remains correct', async () => {
-      const { releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
-
-      // Publish with explicit date
-      await agent
-        .post(`${releaseLocation}/publish`)
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-        .send('publishedDate=2025-11-01')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .expect(302);
-
-      const detail = await agent.get(releaseLocation).expect(200);
-      expect(detail.text).toContain('Published');
-      expect(detail.text).toContain('2025-11-01');
-      // Publish button must be gone after publication
-      expect(detail.text).not.toMatch(/href="\/releases\/\d+\/publish"/);
-    });
-
-    it('archive guards remain correct — archived release has no Publish button', async () => {
-      const { releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
-
-      // Archive the release
-      await agent
-        .post(`${releaseLocation}/archive`)
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-
-      const detail = await agent.get(releaseLocation).expect(200);
-      // Archived release notice shown
-      expect(detail.text).toContain('archived and read-only');
-      // No Publish button
-      expect(detail.text).not.toMatch(/href="\/releases\/\d+\/publish"/);
-    });
-
-    it('archived parent project hides Publish button', async () => {
-      const { releaseLocation, projectId } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
-
-      // Archive the parent project
-      await agent
-        .post(`/projects/${projectId}/archive`)
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-
-      const detail = await agent.get(releaseLocation).expect(200);
-      // Archived parent notice shown
-      expect(detail.text).toContain('parent project is archived');
-      // No Publish button
-      expect(detail.text).not.toMatch(/href="\/releases\/\d+\/publish"/);
-    });
-
-    it('published release has no Publish button', async () => {
-      const { releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
-
-      await agent
-        .post(`${releaseLocation}/publish`)
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-
-      const detail = await agent.get(releaseLocation).expect(200);
-      expect(detail.text).toContain('Published');
-      expect(detail.text).not.toMatch(/href="\/releases\/\d+\/publish"/);
-    });
-
-    it('obsolete submitted status does not create a publishable release', async () => {
-      const projRes = await agent
-        .post('/projects')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-        .send('title=Cancelled+No+Publish+Test')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .expect(302);
-      const projectId = projRes.headers.location.replace('/projects/', '');
-
-      const createRes = await agent
-        .post('/releases')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-        .send(`projectId=${projectId}`)
-        .send('title=Cancelled+No+Publish')
-        .send('status=cancelled')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .expect(302);
-
-      const detail = await agent.get(createRes.headers.location).expect(200);
-      // Readiness remains blocked because the owning project is not ready.
-      expect(detail.text).toContain('Needs attention');
-      expect(releaseRepository.findById(Number(createRes.headers.location.replace('/releases/', ''))).project_status)
-        .toBe('tbd');
-      // No Publish button
-      expect(detail.text).not.toMatch(/href="\/releases\/\d+\/publish"/);
-    });
-  });
-
   // ─── Phase 7C-2: Explicit Missing Asset Selection Removal ─────────────────
 
   describe('missing asset removal', () => {
@@ -4925,47 +4167,6 @@ describe('release HTTP workflow', () => {
       expect(afterRows[0]).toMatchObject({ asset_id: secondAsset.id, role: 'attachment', sort_order: 1 });
     });
 
-    it('readiness changes from blocked to publishable when last missing asset is removed', async () => {
-      const { releaseLocation, assetId, projectId } = await setupMissingAsset();
-
-      // Add a second present asset so removing the missing one leaves a selection
-      const slug = 'missing-remove-test';
-      const projectDir = getProjectDir(projectsRoot, projectId, slug);
-      fs.writeFileSync(path.join(projectDir, 'second.png'), 'png');
-      await agent.post(`/projects/${projectId}/scan`)
-      .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
-
-      const assetRepo = createAssetRepository(db);
-      const allAssets = assetRepo.findByProjectId(Number(projectId));
-      const secondAsset = allAssets.find((a) => a.id !== assetId);
-      await agent
-        .post(releaseLocation + '/assets')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-        .send(`selectedAssetIds[]=${assetId}`)
-        .send(`selectedAssetIds[]=${secondAsset.id}`)
-        .send('roles[]=primary')
-        .send('roles[]=attachment')
-        .send('sortOrder[]=0')
-        .send('sortOrder[]=1')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .expect(302);
-
-      // Mark the first asset as missing again
-      assetRepo.markMissingByProjectIdAndPathNotIn(Number(projectId), ['second.png']);
-
-      // Verify readiness shows blocked
-      const before = await agent.get(releaseLocation).expect(200);
-      expect(before.text).toContain('Needs attention');
-
-      await agent
-        .post(`${releaseLocation}/assets/${assetId}/remove`)
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-
-      const after = await agent.get(releaseLocation).expect(200);
-      expect(after.text).toContain('Publishable');
-    });
-
     it('archived scope hides Remove controls and rejects direct POST', async () => {
       const { releaseLocation, assetId } = await setupMissingAsset();
 
@@ -5028,16 +4229,16 @@ describe('release HTTP workflow', () => {
       return obj;
     }
 
-    it('calendar navigation does not inherit unsupported readiness state', async () => {
+    it('calendar navigation does not inherit unsupported release state', async () => {
       const res = await agent
-        .get('/calendar?readiness=publishable')
+        .get('/calendar?unsupported=publishable')
         .expect(200);
 
-      // Calendar nav links must not contain readiness
+      // Calendar nav links must not contain unsupported release state
       const prevMatch = res.text.match(/<a\s[^>]*href="(\/calendar\?[^"]*)"[^>]*>← Previous<\/a>/);
       expect(prevMatch).not.toBeNull();
       const prevQuery = parseQuery(prevMatch[1]);
-      expect(prevQuery.readiness).toBeUndefined();
+      expect(prevQuery.unsupported).toBeUndefined();
       // Calendar nav must not contain list/board filters
       expect(prevQuery.view).toBeUndefined();
       expect(prevQuery.status).toBeUndefined();
@@ -5047,7 +4248,7 @@ describe('release HTTP workflow', () => {
       expect(prevQuery.sort).toBeUndefined();
       expect(prevQuery.order).toBeUndefined();
       expect(prevQuery.pageSize).toBeUndefined();
-      expect(prevQuery.readiness).toBeUndefined();
+      expect(prevQuery.unsupported).toBeUndefined();
       // Calendar nav must not contain page state
       expect(prevQuery.page).toBeUndefined();
       // Only month should be present
@@ -5058,7 +4259,7 @@ describe('release HTTP workflow', () => {
       const nextMatch = res.text.match(/<a\s[^>]*href="(\/calendar\?[^"]*)"[^>]*>Next →<\/a>/);
       expect(nextMatch).not.toBeNull();
       const nextQuery = parseQuery(nextMatch[1]);
-      expect(nextQuery.readiness).toBeUndefined();
+      expect(nextQuery.unsupported).toBeUndefined();
       expect(nextQuery.view).toBeUndefined();
       expect(nextQuery.status).toBeUndefined();
       expect(nextQuery.project).toBeUndefined();
@@ -5363,7 +4564,7 @@ describe('release HTTP workflow', () => {
       expect(res.text).toMatch(/locked and read-only/);
     });
 
-    it('published detail hides Publish button', async () => {
+    it('published detail hides Review & Publish action', async () => {
       const { releaseLocation } = await setupPublishedRelease();
       const res = await agent.get(releaseLocation).expect(200);
       expect(res.text).not.toMatch(/\/publish/);
@@ -5553,7 +4754,7 @@ describe('release HTTP workflow', () => {
       expect(after).toEqual(before);
     });
 
-    it('archive POST on archived release returns 422 with readiness null', async () => {
+    it('archive POST on archived release returns 422 with the detail view', async () => {
       const { releaseLocation } = await setupArchivedRelease();
       const res = await agent
         .post(releaseLocation + '/archive')
@@ -5570,7 +4771,7 @@ describe('release HTTP workflow', () => {
       expect(res.text).not.toMatch(/\/publish/);
     });
 
-    it('publish POST on archived release returns 422 with readiness null', async () => {
+    it('publish POST on archived release returns 422 with the detail view', async () => {
       const { releaseLocation } = await setupArchivedRelease();
       const res = await agent
         .post(releaseLocation + '/publish')
@@ -5658,7 +4859,7 @@ describe('release HTTP workflow', () => {
       expect(after).toEqual(before);
     });
 
-    it('archived-parent archive POST returns 422 with readiness null', async () => {
+    it('archived-parent archive POST returns 422 with the detail view', async () => {
       const { releaseLocation } = await setupArchivedParentRelease();
       const res = await agent
         .post(releaseLocation + '/archive')
@@ -5675,7 +4876,7 @@ describe('release HTTP workflow', () => {
       expect(res.text).not.toMatch(/\/publish/);
     });
 
-    it('archived-parent publish POST returns 422 with readiness null', async () => {
+    it('archived-parent publish POST returns 422 with the detail view', async () => {
       const { releaseLocation } = await setupArchivedParentRelease();
       const res = await agent
         .post(releaseLocation + '/publish')
@@ -5729,7 +4930,6 @@ describe('release HTTP workflow', () => {
         .get(`${releaseLocation}/publish`)
         .expect(200);
       expect(res.text).toContain('Review &amp; Publish');
-      expect(res.text).toContain('Publishable');
     });
 
     it('blocked-ready GET returns 200', async () => {
@@ -5756,7 +4956,7 @@ describe('release HTTP workflow', () => {
         .get(`${createRes.headers.location}/publish`)
         .expect(200);
       expect(res.text).toContain('Review &amp; Publish');
-      expect(res.text).toContain('Needs attention');
+      expect(res.text).toContain('No assets selected');
     });
 
     it('GET performs no database or junction mutation', async () => {
@@ -5775,7 +4975,7 @@ describe('release HTTP workflow', () => {
       expect(afterJunction).toEqual(beforeJunction);
     });
 
-    it('ordered assets, roles, order, presence, and caveat render', async () => {
+    it('ordered assets, roles, order, and presence render', async () => {
       const { releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
       const res = await agent
         .get(`${releaseLocation}/publish`)
@@ -5787,11 +4987,9 @@ describe('release HTTP workflow', () => {
       expect(res.text).toContain('0');
       // Presence renders
       expect(res.text).toContain('Present');
-      // Caveat renders
-      expect(res.text).toContain('not performing a live filesystem check');
     });
 
-    describe('lifecycle eligibility redirects', () => {
+    describe('lifecycle eligibility', () => {
       const NON_READY_PROJECT_STATUSES = [
         { projectStatus: 'tbd', label: 'tbd' },
         { projectStatus: 'planned', label: 'planned' },
@@ -5799,7 +4997,7 @@ describe('release HTTP workflow', () => {
       ];
 
       for (const { projectStatus, label } of NON_READY_PROJECT_STATUSES) {
-        it(`GET redirects when project status is ${label}`, async () => {
+        it(`GET review opens when project status is ${label}`, async () => {
           const projRes = await agent
             .post('/projects')
       .send('_csrf=' + encodeURIComponent(csrfToken))
@@ -5829,10 +5027,9 @@ describe('release HTTP workflow', () => {
 
           const res = await agent
             .get(`${releaseLocation}/publish`)
-            .expect(302);
+            .expect(200);
 
-          // Exact Location header
-          expect(res.headers.location).toBe(releaseLocation);
+          expect(res.text).toContain('Review &amp; Publish');
           // No mutation
           const afterRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
           expect(afterRelease).toEqual(beforeRelease);
@@ -6066,7 +5263,7 @@ describe('release HTTP workflow', () => {
       });
     });
 
-    it('readiness changes after GET cause POST rejection', async () => {
+    it('asset changes after GET do not block POST publication', async () => {
       const { releaseLocation, projectId } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
 
       // Load the review page (GET)
@@ -6074,7 +5271,7 @@ describe('release HTTP workflow', () => {
         .get(`${releaseLocation}/publish`)
         .expect(200);
 
-      // Change readiness: remove the asset file and scan
+       // Change asset presence: remove the asset file and scan
       const slug = 'readiness-test-project';
       const projectDir = getProjectDir(projectsRoot, projectId, slug);
       fs.unlinkSync(path.join(projectDir, 'asset.png'));
@@ -6083,16 +5280,15 @@ describe('release HTTP workflow', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
-      // POST should now be rejected
       const res = await agent
         .post(`${releaseLocation}/publish`)
       .send('_csrf=' + encodeURIComponent(csrfToken))
         .set('Content-Type', 'application/x-www-form-urlencoded')
-        .expect(422);
-      expect(res.text).toContain('Cannot publish');
+        .expect(302);
+      expect(res.headers.location).toBe(releaseLocation);
     });
 
-    it('stale POST leaves row and junctions unchanged', async () => {
+    it('stale POST publishes and leaves junction rows unchanged', async () => {
       const { releaseLocation, projectId, assetId } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
       const releaseId = Number(releaseLocation.replace('/releases/', ''));
       const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
@@ -6107,20 +5303,21 @@ describe('release HTTP workflow', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
-      // POST publish — should be rejected
-      await agent
+      const res = await agent
         .post(`${releaseLocation}/publish`)
       .send('_csrf=' + encodeURIComponent(csrfToken))
         .set('Content-Type', 'application/x-www-form-urlencoded')
-        .expect(422);
+        .expect(302);
+      expect(res.headers.location).toBe(releaseLocation);
 
       const afterRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
       const afterJunction = getReleaseAssets(db, releaseId);
-      expect(afterRelease).toEqual(beforeRelease);
+      expect(afterRelease.published_date).toBeTruthy();
+      expect(afterRelease).not.toEqual(beforeRelease);
       expect(afterJunction).toEqual(beforeJunction);
     });
 
-    it('direct forged POST still cannot bypass readiness', async () => {
+    it('direct forged POST does not require page state', async () => {
       const projRes = await agent
         .post('/projects')
       .send('_csrf=' + encodeURIComponent(csrfToken))
@@ -6140,12 +5337,11 @@ describe('release HTTP workflow', () => {
         .expect(302);
       setProjectStatusForReleaseTest(db, createRes.headers.location, 'ready');
 
-      // Direct POST with no assets — server must reject
       const res = await agent
         .post(`${createRes.headers.location}/publish`)
       .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(422);
-      expect(res.text).toContain('Cannot publish');
+        .expect(302);
+      expect(res.headers.location).toBe(createRes.headers.location);
     });
 
     it('successful publication redirects to the release detail', async () => {
@@ -7696,8 +6892,8 @@ describe('release HTTP workflow', () => {
       expect(afterRows).toEqual(beforeRows);
     });
 
-    it('stale readiness protection still works after Phase 9-2 mutations', async () => {
-      const { releaseLocation, releaseId, projectId, assetRepo, allAssets } = await setupReleaseWithTwoAssets();
+    it('published release keeps its publication summary after Phase 9-2 mutations', async () => {
+      const { releaseLocation } = await setupReleaseWithTwoAssets();
 
       // Publish
       await agent
@@ -7707,7 +6903,7 @@ describe('release HTTP workflow', () => {
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
-      // Verify readiness is not shown (published)
+      // Published releases show their publication summary, not a policy panel.
       const detail = await agent.get(releaseLocation).expect(200);
       expect(detail.text).not.toContain('Publishable');
       expect(detail.text).toContain('Publication Summary');
@@ -8036,7 +7232,7 @@ describe('release HTTP workflow', () => {
       const beforeJunction = getReleaseAssets(db, releaseId);
 
       // Create a stubbed releaseService that throws a plain Error on addCandidateAsset
-      const realService = createReleaseService({ db, evaluateReleaseReadiness });
+      const realService = createReleaseService({ db });
       const stubbedService = Object.create(realService, {
         addCandidateAsset: {
           value() { throw new Error('Unexpected internal failure'); },

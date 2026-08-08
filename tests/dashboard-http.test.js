@@ -151,39 +151,6 @@ describe('Phase 6B HTTP dashboard', () => {
       expect(res.text).toMatch(/href="\/releases\/\d+"[^>]*>Way Overdue/);
     });
 
-    it('shows ready releases in the attention section', async () => {
-      const projectId = await createProject(app, { title: 'Ready Project' });
-      await createRelease(app, {
-        projectId,
-        title: 'Ready To Publish',
-        status: 'ready',
-        plannedDate: '2099-01-01',
-      });
-
-      const res = await app.testAgent.get('/').expect(200);
-      // Without assets, this release is blocked — appears in "Ready but blocked"
-      expect(res.text).toContain('Ready but blocked (1)');
-      expect(res.text).toContain('Ready To Publish');
-      expect(res.text).toContain('no assets selected');
-      expect(res.text).toMatch(/<span class="status-badge status-badge--active">Ready<\/span>/);
-    });
-
-    it('shows ready-to-publish releases with present assets', async () => {
-      const projectId = await createProject(app, { title: 'Ready Publish Project' });
-      const releaseId = await createRelease(app, {
-        projectId,
-        title: 'Publishable Release',
-        status: 'ready',
-        plannedDate: '2099-01-01',
-      });
-      // Use the existing helper to create a present asset and link it
-      attachPresentAssetToRelease(db, projectId, Number(releaseId), { name: 'asset.txt', present: true });
-
-      const res = await app.testAgent.get('/').expect(200);
-      expect(res.text).toContain('Ready to publish (1)');
-      expect(res.text).toContain('Publishable Release');
-    });
-
     it('shows active releases without planned date', async () => {
       const projectId = await createProject(app, { title: 'No Date Project' });
       await createRelease(app, {
@@ -241,6 +208,8 @@ describe('Phase 6B HTTP dashboard', () => {
       const res = await app.testAgent.get('/').expect(200);
       expect(res.text).toContain('All releases are in good shape');
       expect(res.text).toContain('empty-state');
+      expect(res.text).not.toContain('Ready to publish');
+      expect(res.text).not.toContain('Ready but blocked');
     });
 
     it('hides archived releases from the attention lists', async () => {
@@ -368,6 +337,18 @@ describe('Phase 6B HTTP dashboard', () => {
       expect(res.text).toContain('Projects');
       expect(res.text).toContain('Assets');
       expect(res.text).toContain('Missing assets');
+    });
+
+    it('renders recent project metadata without Priority', async () => {
+      await createProject(app, { title: 'Recent Dashboard Project', status: 'ready' });
+
+      const res = await app.testAgent.get('/').expect(200);
+      const recentProjects = res.text.match(/<section class="recent-projects">[\s\S]*?<\/section>/)?.[0] || '';
+
+      expect(recentProjects).toContain('Recent Dashboard Project');
+      expect(recentProjects).toContain('Ready');
+      expect(recentProjects).toContain('updated');
+      expect(recentProjects).not.toMatch(/\bpriority\b/i);
     });
 
     it('does not render obsolete release-status counts or a Cancelled workflow group', async () => {

@@ -6,7 +6,6 @@ import { fileURLToPath } from 'node:url';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { createReleaseRepository } from '../src/data/release-repository.js';
 import { createWorkflowQueryService } from '../src/services/workflow-query-service.js';
-import { evaluateReleaseReadiness } from '../src/services/release-readiness-policy.js';
 import { createTagRepository } from '../src/data/tag-repository.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
@@ -14,9 +13,9 @@ const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 function insertProject(db, { title, status = 'tbd', archivedAt = null }) {
   const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-');
   return db.prepare(`
-    INSERT INTO projects (title, slug, description, notes, status, priority,
+    INSERT INTO projects (title, slug, description, notes, status,
                           planned_date, published_date, patreon_url, archived_at)
-    VALUES (?, ?, '', '', ?, 'normal', NULL, NULL, NULL, ?)
+    VALUES (?, ?, '', '', ?, NULL, NULL, NULL, ?)
     RETURNING *
   `).get(title, slug, status, archivedAt);
 }
@@ -104,7 +103,7 @@ describe('workflow query service — asset library page model', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-asset-library-'));
     db = openDatabase(path.join(tmpDir, 'test.db'));
     runMigrations(db, MIGRATIONS_DIR);
-    service = createWorkflowQueryService({ db, evaluateReleaseReadiness });
+    service = createWorkflowQueryService({ db });
   });
 
   afterEach(() => {
@@ -299,7 +298,6 @@ describe('workflow query service — asset library page model', () => {
     };
     const libraryService = createWorkflowQueryService({
       db,
-      evaluateReleaseReadiness,
       releaseRepository: trackedReleaseRepository,
     });
 
@@ -363,7 +361,6 @@ describe('workflow query service — asset library page model', () => {
     const inheritedBatchCalls = [];
     const taggedService = createWorkflowQueryService({
       db,
-      evaluateReleaseReadiness,
       tagRepository: {
         list() {
           return tagRepository.list();
@@ -431,7 +428,6 @@ describe('workflow query service — asset library page model', () => {
     let catalogCalls = 0;
     const taggedService = createWorkflowQueryService({
       db,
-      evaluateReleaseReadiness,
       tagRepository: {
         list() {
           catalogCalls += 1;

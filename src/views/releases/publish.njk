@@ -14,29 +14,6 @@
     </div>
   {% endif %}
 
-  {% if errors.readiness %}
-    <div class="error-summary" role="alert">
-      <p>Cannot publish due to the following blockers:</p>
-      <ul>
-        {% for key, details in errors.readiness %}
-          <li>
-            {% if key == 'project_status_ready' %}
-              Project status is "{{ details.projectStatus }}", must be "ready".
-            {% elif key == 'assets_selected' %}
-              No assets selected ({{ details.selectedAssetCount }} selected).
-            {% elif key == 'selected_assets_present' %}
-              {{ details.missingSelectedAssetCount }} selected asset(s) are missing.
-            {% elif key == 'scope_mutable' %}
-              {% if details.releaseArchived %}Release is archived.{% elif details.projectArchived %}Parent project is archived.{% endif %}
-            {% else %}
-              {{ key }}: {{ details | dump }}
-            {% endif %}
-          </li>
-        {% endfor %}
-      </ul>
-    </div>
-  {% endif %}
-
   {% if errors.publishedDate %}
     <div class="error-summary" role="alert">
       <p>{{ errors.publishedDate }}</p>
@@ -65,58 +42,6 @@
         <dd>{{ release.planned_date }}</dd>
       {% endif %}
     </dl>
-  </section>
-
-  {# ─── Readiness result and blockers ─── #}
-  <section class="panel panel--readiness">
-    <h2>Readiness</h2>
-
-    {% if readiness.publishable %}
-      <p class="readiness-badge readiness-publishable">Publishable</p>
-    {% else %}
-      <p class="readiness-badge readiness-blocked">Needs attention</p>
-    {% endif %}
-
-    <ul class="readiness-checks">
-      {% for check in readiness.checks %}
-        <li class="readiness-check {% if check.passed %}check-passed{% else %}check-blocked{% endif %}">
-          <span class="check-icon">{% if check.passed %}&#10003;{% else %}&#10007;{% endif %}</span>
-          <span class="check-label">
-            {% if check.key == 'project_status_ready' %}Project status is ready
-            {% elif check.key == 'assets_selected' %}Assets selected
-            {% elif check.key == 'selected_assets_present' %}Selected assets present
-            {% elif check.key == 'scope_mutable' %}Scope is mutable
-            {% else %}{{ check.key }}
-            {% endif %}
-          </span>
-          <span class="check-detail">
-            {% if check.key == 'project_status_ready' %}
-              Project status: {{ check.details.projectStatus }}
-            {% elif check.key == 'assets_selected' %}
-              {{ check.details.selectedAssetCount }} selected
-            {% elif check.key == 'selected_assets_present' %}
-              {% if check.details.missingSelectedAssetCount > 0 %}
-                {{ check.details.missingSelectedAssetCount }} missing
-              {% else %}
-                All present
-              {% endif %}
-            {% elif check.key == 'scope_mutable' %}
-              {% if check.details.releaseArchived %}
-                Release is archived
-              {% elif check.details.projectArchived %}
-                Project is archived
-              {% else %}
-                Mutable
-              {% endif %}
-            {% endif %}
-          </span>
-        </li>
-      {% endfor %}
-    </ul>
-
-    <p class="readiness-note">
-      Asset presence reflects the last completed scan. This page is not performing a live filesystem check.
-    </p>
   </section>
 
   {# ─── Selected assets ─── #}
@@ -185,8 +110,7 @@
       </div>
 
       <div class="form-actions">
-        <button class="button button-primary" type="submit"
-          {% if not readiness.publishable %}disabled{% endif %}>
+        <button class="button button-primary" type="submit">
           Publish
         </button>
         <a class="button button-secondary" href="/releases/{{ release.id }}">Cancel</a>

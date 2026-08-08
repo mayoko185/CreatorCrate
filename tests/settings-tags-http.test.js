@@ -64,9 +64,9 @@ describe('settings — tags HTTP', () => {
   function createProject(title = 'Settings Tags Project') {
     return Number(db.prepare(`
       INSERT INTO projects (
-        title, slug, description, notes, status, priority,
+        title, slug, description, notes, status,
         planned_date, published_date, patreon_url
-      ) VALUES (?, ?, '', '', 'tbd', 'normal', NULL, NULL, NULL)
+      ) VALUES (?, ?, '', '', 'tbd', NULL, NULL, NULL)
     `).run(title, title.toLowerCase().replaceAll(' ', '-')).lastInsertRowid);
   }
 

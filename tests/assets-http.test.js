@@ -11,7 +11,6 @@ import { createAssetCategoryRepository } from '../src/data/asset-category-reposi
 import { createAssetBrowserPreferenceRepository } from '../src/data/asset-browser-preference-repository.js';
 import { buildAssetRevisionToken } from '../src/services/preview-service.js';
 import { createReleaseService } from '../src/services/release-service.js';
-import { evaluateReleaseReadiness } from '../src/services/release-readiness-policy.js';
 import { ensureAuthEnablement } from '../src/auth/auth-state.js';
 import { AssetActionError } from '../src/services/asset-action-service.js';
 import { PAGE_DEFAULT_DEFINITIONS } from '../src/services/page-defaults-service.js';
@@ -661,9 +660,9 @@ describe('asset browser HTTP workflow', () => {
 
     it('resolves a bare specific default before the full browser query', async () => {
       const project = db.prepare(`
-        INSERT INTO projects (title, slug, description, notes, status, priority,
+        INSERT INTO projects (title, slug, description, notes, status,
                               planned_date, published_date, patreon_url, archived_at)
-        VALUES ('Early Default Project', 'early-default-project', '', '', 'tbd', 'normal', NULL, NULL, NULL, NULL)
+        VALUES ('Early Default Project', 'early-default-project', '', '', 'tbd', NULL, NULL, NULL, NULL)
         RETURNING *
       `).get();
       const fullBrowserQuery = vi.fn(() => {
@@ -2612,7 +2611,6 @@ describe('asset browser HTTP workflow', () => {
           getProjectAssetViewer: () => { throw new Error('viewer service exploded'); },
           getReleaseList: () => ({}),
           getReleaseBoard: () => ({}),
-          getReleaseReadiness: () => ({}),
         },
       }
     );
@@ -4285,7 +4283,7 @@ describe('asset browser HTTP workflow', () => {
         `<input type="hidden" name="selectedAssetIds" value="${first.id}">`,
       ]);
 
-      const releaseService = createReleaseService({ db, evaluateReleaseReadiness });
+      const releaseService = createReleaseService({ db });
       expect(releaseService.listReleases(id, { includeArchived: true })).toEqual([]);
     });
 
@@ -4312,7 +4310,7 @@ describe('asset browser HTTP workflow', () => {
         `<input type="hidden" name="selectedAssetIds" value="${second.id}">`,
         `<input type="hidden" name="selectedAssetIds" value="${first.id}">`,
       ]);
-      expect(createReleaseService({ db, evaluateReleaseReadiness }).listReleases(id, { includeArchived: true })).toEqual([]);
+      expect(createReleaseService({ db }).listReleases(id, { includeArchived: true })).toEqual([]);
 
       const created = await agent
         .post('/releases')
@@ -4326,7 +4324,7 @@ describe('asset browser HTTP workflow', () => {
       const releaseId = Number(created.headers.location.split('/')[2]);
 
       expect(created.headers.location).toBe(`/releases/${releaseId}/assets`);
-      expect(createReleaseService({ db, evaluateReleaseReadiness }).listReleaseAssets(releaseId).map((asset) => ({
+      expect(createReleaseService({ db }).listReleaseAssets(releaseId).map((asset) => ({
         asset_id: asset.asset_id,
         role: asset.role,
         sort_order: asset.sort_order,
@@ -4351,7 +4349,7 @@ describe('asset browser HTTP workflow', () => {
       expect(rejected.text).toContain('At least one asset must be selected.');
       expect(rejected.text).toContain(`action="/projects/${id}/assets/add-to-release"`);
       expect(rejected.text).not.toContain('Releases — Create Release');
-      const releaseService = createReleaseService({ db, evaluateReleaseReadiness });
+      const releaseService = createReleaseService({ db });
       expect(releaseService.listReleases(id, { includeArchived: true })).toEqual([]);
     });
 
@@ -4384,7 +4382,7 @@ describe('asset browser HTTP workflow', () => {
       expect(crossProject.text).toContain(`action="/projects/${id}/assets/add-to-release"`);
       expect(crossProject.text).not.toContain('Releases — Create Release');
 
-      const releaseService = createReleaseService({ db, evaluateReleaseReadiness });
+      const releaseService = createReleaseService({ db });
       expect(releaseService.listReleases(id, { includeArchived: true })).toEqual([]);
     });
 
@@ -4402,7 +4400,7 @@ describe('asset browser HTTP workflow', () => {
         .expect(422);
 
       expect(rejected.text).toContain('Cannot create release for archived project.');
-      const releaseService = createReleaseService({ db, evaluateReleaseReadiness });
+      const releaseService = createReleaseService({ db });
       expect(releaseService.listReleases(id, { includeArchived: true })).toEqual([]);
     });
   });

@@ -124,13 +124,17 @@ describe('project service', () => {
       .toThrow(ProjectValidationError);
   });
 
-  it.each(['', null, 'urgent'])('rejects an invalid priority %j', (priority) => {
-    expect(() => service.create(validInput({ priority }))).toThrow(ProjectValidationError);
-  });
+  it('ignores legacy priority input without exposing it in service-owned project shapes', () => {
+    const project = service.create(validInput({ title: 'Legacy Priority Input', priority: 'urgent' }));
+    expect(project).not.toHaveProperty('priority');
 
-  it.each(['low', 'normal', 'high'])('preserves explicit %s priority on create', (priority) => {
-    const project = service.create(validInput({ title: `Explicit ${priority}`, priority }));
-    expect(project.priority).toBe(priority);
+    const updated = service.update(project.id, validInput({
+      title: 'Legacy Priority Input',
+      status: 'planned',
+      priority: 'high',
+    }));
+    expect(updated).not.toHaveProperty('priority');
+    expect(service.findById(project.id)).not.toHaveProperty('priority');
   });
 
   it.each([
@@ -238,15 +242,6 @@ describe('project service', () => {
     expect(() => service.update(999, validInput())).toThrow(ProjectNotFoundError);
   });
 
-  it('does not default an omitted priority during update', () => {
-    const created = service.create(validInput({ title: 'Strict Update Priority', priority: 'high' }));
-    const input = validInput({ title: 'Strict Update Priority', status: 'planned' });
-    delete input.priority;
-
-    expect(() => service.update(created.id, input)).toThrow(ProjectValidationError);
-    expect(service.findById(created.id).priority).toBe('high');
-  });
-
   it('archives an existing project', () => {
     const created = service.create(validInput());
     const archived = service.archive(created.id);
@@ -269,16 +264,13 @@ describe('project service', () => {
       return { dirName, relPath, absPath: resolveProjectDir(projectsRoot, relPath) };
     }
 
-    it('defaults omitted create priority to normal in the database and manifest', () => {
-      const input = validInput({ title: 'Default Priority' });
-      delete input.priority;
-
-      const project = service.create(input);
-      expect(project.priority).toBe('normal');
-      expect(service.findById(project.id).priority).toBe('normal');
+    it('does not add priority to the database or manifest', () => {
+      const project = service.create(validInput({ title: 'No Priority' }));
+      expect(project).not.toHaveProperty('priority');
+      expect(service.findById(project.id)).not.toHaveProperty('priority');
 
       const { absPath } = getProjectDir(project);
-      expect(readManifestSync(absPath).priority).toBe('normal');
+      expect(readManifestSync(absPath)).not.toHaveProperty('priority');
     });
 
     it('creates a database record and project directory', () => {
@@ -334,7 +326,6 @@ describe('project service', () => {
         description: 'Desc content',
         notes: 'Note content',
         status: 'planned',
-        priority: 'high',
         plannedDate: '2026-08-15',
         publishedDate: null,
         patreonUrl: 'https://patreon.com/creator',
@@ -354,7 +345,8 @@ describe('project service', () => {
       expect(manifest.slug).toBe('manifest-test');
       expect(manifest).not.toHaveProperty('status');
       expect(content).not.toMatch(/"status"\s*:/);
-      expect(manifest.priority).toBe('high');
+      expect(manifest).not.toHaveProperty('priority');
+      expect(content).not.toMatch(/"priority"\s*:/);
       expect(manifest.description).toBe('Desc content');
       expect(manifest.notes).toBe('Note content');
       expect(manifest.plannedDate).toBe('2026-08-15T00:00:00.000Z');
@@ -732,14 +724,15 @@ describe('project service', () => {
       expect(fs.existsSync(path.join(srcPath, 'project.json'))).toBe(true);
     });
 
-    it('unchanged slug causes no rename', () => {
+    it('legacy priority input is not treated as a metadata change', () => {
       const project = createTestProject({ title: 'No Slug Change' });
       const { absPath: originalPath, relPath: originalRel } = getProjectDir(project);
+      const manifestBefore = fs.readFileSync(path.join(originalPath, MANIFEST_FILENAME), 'utf8');
 
       const updated = service.update(project.id, validInput({
         title: 'No Slug Change', // same title = same slug
         status: 'tbd',           // same status
-        priority: 'high',         // metadata-only change
+        priority: 'high',        // legacy input is ignored
       }));
 
       const { absPath } = getProjectDir(updated);
@@ -750,6 +743,8 @@ describe('project service', () => {
 
       // Project_dir unchanged
       expect(updated.project_dir).toBe(originalRel);
+      expect(fs.readFileSync(path.join(originalPath, MANIFEST_FILENAME), 'utf8'))
+        .toBe(manifestBefore);
     });
 
     it('unchanged status causes no move', () => {
@@ -775,14 +770,12 @@ describe('project service', () => {
         title: 'Agreement Test',
         status: 'tbd',
         description: 'Original desc',
-        priority: 'low',
       });
 
       const updated = service.update(project.id, validInput({
         title: 'Agreement Test Renamed',
         status: 'ready',
         description: 'New desc',
-        priority: 'high',
         plannedDate: '2027-01-15',
       }));
 
@@ -791,7 +784,7 @@ describe('project service', () => {
       expect(updated.slug).toBe('agreement-test-renamed');
       expect(updated.status).toBe('ready');
       expect(updated.description).toBe('New desc');
-      expect(updated.priority).toBe('high');
+      expect(updated).not.toHaveProperty('priority');
       expect(updated.planned_date).toBe('2027-01-15');
 
       // Read manifest at final location
@@ -802,7 +795,7 @@ describe('project service', () => {
       expect(manifest.slug).toBe(updated.slug);
       expect(manifest).not.toHaveProperty('status');
       expect(manifest.description).toBe(updated.description);
-      expect(manifest.priority).toBe(updated.priority);
+      expect(manifest).not.toHaveProperty('priority');
       expect(manifest.plannedDate).toBe('2027-01-15T00:00:00.000Z');
       expect(manifest.id).toBe(updated.id);
     });
@@ -1129,7 +1122,6 @@ function validInput(overrides = {}) {
     description: 'A description',
     notes: 'Some notes',
     status: 'tbd',
-    priority: 'normal',
     plannedDate: null,
     publishedDate: null,
     patreonUrl: null,

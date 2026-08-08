@@ -35,11 +35,10 @@
                 <a class="project-list-card-link project-card-link" data-project-card-link href="/projects/{{ project.id }}">{{ project.title }}</a>
               </h2>
             </div>
-            <div class="project-list-card-indicators" aria-label="Project status and priority">
+            <div class="project-list-card-indicators" aria-label="Project status">
               <span class="project-list-card-status">
                 {% set status = project.status %}{% include "partials/status-badge.njk" %}
               </span>
-              <span class="project-list-card-priority">Priority: {{ project.priority | title }}</span>
             </div>
           </div>
 
@@ -47,10 +46,6 @@
             <div class="project-list-card-meta">
               <dt>Status</dt>
               <dd>{% set status = project.status %}{% include "partials/status-badge.njk" %}</dd>
-            </div>
-            <div class="project-list-card-meta">
-              <dt>Priority</dt>
-              <dd>{{ project.priority | title }}</dd>
             </div>
             <div class="project-list-card-meta project-list-card-meta--date">
               <dt>Updated</dt>
@@ -108,10 +103,6 @@
               <div class="project-grid-card-info-row">
                 <dt>Status</dt>
                 <dd>{% set status = project.status %}{% include "partials/status-badge.njk" %}</dd>
-              </div>
-              <div class="project-grid-card-info-row">
-                <dt>Priority</dt>
-                <dd>{{ project.priority | title }}</dd>
               </div>
               <div class="project-grid-card-info-row">
                 <dt>Updated</dt>

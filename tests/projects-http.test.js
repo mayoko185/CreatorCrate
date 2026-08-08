@@ -21,6 +21,7 @@ import { makeZip } from './helpers/zip-fixture.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 const PROJECTS_TEMPLATE_PATH = fileURLToPath(new URL('../src/views/projects/index.njk', import.meta.url));
+const LEGACY_NEW_PROJECT_PRIORITY_KEY = 'page_defaults.new_project.priority';
 
 function extractProjectCard(html, projectId) {
   const cards = html.match(/<article\b[^>]*data-project-card[^>]*>[\s\S]*?<\/article>/g) || [];
@@ -96,11 +97,10 @@ describe('project HTTP workflow', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  async function createProject({ title, status = 'tbd', priority = 'normal', plannedDate, publishedDate }) {
+  async function createProject({ title, status = 'tbd', plannedDate, publishedDate }) {
     const fields = new URLSearchParams({
       title,
       status,
-      priority,
       _csrf: csrfToken,
     });
     if (plannedDate) fields.set('plannedDate', plannedDate);
@@ -138,6 +138,14 @@ describe('project HTTP workflow', () => {
       VALUES (?, ?)
       ON CONFLICT(key) DO UPDATE SET value = excluded.value
     `).run(key, value);
+  }
+
+  function writeLegacyNewProjectPriority(value) {
+    db.prepare(`
+      INSERT INTO app_meta (key, value)
+      VALUES (?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value
+    `).run(LEGACY_NEW_PROJECT_PRIORITY_KEY, value);
   }
 
   function seedPrimaryImage(projectId, filename = 'cover.png') {
@@ -408,19 +416,16 @@ describe('project HTTP workflow', () => {
     const availableId = await createProject({
       title: 'Available Primary Image',
       status: 'ready',
-      priority: 'high',
       plannedDate: '2026-09-01',
       publishedDate: '2026-10-01',
     });
     const noneId = await createProject({
       title: 'No Image Missing Dates',
       status: 'tbd',
-      priority: 'low',
     });
     const unavailableId = await createProject({
       title: 'Unavailable Primary Image',
       status: 'planned',
-      priority: 'normal',
     });
 
     seedPrimaryImage(availableId);
@@ -459,12 +464,13 @@ describe('project HTTP workflow', () => {
     expect(availableCard).not.toContain('project-grid-card-status');
     expect(availableCard).not.toContain('project-grid-card-priority');
     expect(availableCard).not.toMatch(/Priority:\s*High/);
+    expect(availableCard).not.toMatch(/<dt>Priority<\/dt>/);
     expect(availableCard).toMatch(
       /<div class="project-grid-card-preview[\s\S]*?<div class="project-grid-card-info" data-project-info-card[^>]*>[\s\S]*?<h3 class="project-grid-card-info-heading">Project information<\/h3>[\s\S]*?<dt>Status<\/dt>/
     );
     expect(availableCard).toContain('data-project-grid-preview');
     expect(availableCard).toContain('<dl class="project-grid-card-info-list">');
-    expect((availableCard.match(/class="project-grid-card-info-row"/g) || [])).toHaveLength(5);
+    expect((availableCard.match(/class="project-grid-card-info-row"/g) || [])).toHaveLength(4);
     expect(availableCard).toContain('<div class="project-grid-card-info-section">');
     expect(availableCard).toContain('<span class="project-grid-card-info-section-label">Tags</span>');
     expect(availableCard).toContain('class="project-grid-card-info-empty">No tags assigned</span>');
@@ -482,7 +488,6 @@ describe('project HTTP workflow', () => {
 
     const availableRow = db.prepare('SELECT updated_at FROM projects WHERE id = ?').get(availableId);
     expect(availableCard).toMatch(/<dt>Status<\/dt>\s*<dd>[\s\S]*Ready[\s\S]*<\/dd>/);
-    expect(availableCard).toMatch(/<dt>Priority<\/dt>\s*<dd>High<\/dd>/);
     expect(availableCard).toContain(`<dt>Updated</dt>`);
     expect(availableCard).toContain(availableRow.updated_at);
     expect(availableCard).toMatch(/<dt>Planned<\/dt>\s*<dd>2026-09-01<\/dd>/);
@@ -514,11 +519,11 @@ describe('project HTTP workflow', () => {
     );
     expect(availableListCard).toContain('class="project-list-card-status"');
     expect(availableListCard).toContain('>Ready</span>');
-    expect(availableListCard).toContain('class="project-list-card-priority">Priority: High</span>');
+    expect(availableListCard).not.toContain('project-list-card-priority');
     expect(availableListCard).toContain('<dl class="project-list-card-metadata">');
     expect(availableListCard).not.toContain('project-card-meta--tags');
     expect(availableListCard).toContain('<dt>Status</dt>');
-    expect(availableListCard).toContain('<dt>Priority</dt>');
+    expect(availableListCard).not.toMatch(/<dt>Priority<\/dt>/);
     expect(availableListCard).toContain('<dt>Updated</dt>');
     expect(availableListCard).toContain('<dt>Planned</dt>');
     expect(availableListCard).toContain('<dt>Published</dt>');
@@ -559,6 +564,8 @@ describe('project HTTP workflow', () => {
     expect(css).not.toMatch(/\.project-grid-card-top\s*\{/);
     expect(css).not.toMatch(/\.project-grid-card-status\s*\{/);
     expect(css).not.toMatch(/\.project-grid-card-priority\s*\{/);
+    expect(css).not.toMatch(/\.project-list-card-priority\s*\{/);
+    expect(css).not.toMatch(/\.project-detail-priority\s*\{/);
     expect(css).toMatch(/\.project-grid-card-preview\s*\{[\s\S]*?position:\s*relative;[\s\S]*?overflow:\s*visible/);
     expect(css).toMatch(/\.project-grid-card-preview\s*\{[\s\S]*?--project-info-top:\s*0px;[\s\S]*?--project-info-left:\s*0px/);
     expect(css).toMatch(/\.project-grid-card-info\s*\{[\s\S]*?display:\s*none[\s\S]*?position:\s*absolute[\s\S]*?z-index:\s*30/);
@@ -944,90 +951,80 @@ describe('project HTTP workflow', () => {
     expect(res.text).toContain('Create Project');
     expect(res.text).toContain('Title');
     expect(res.text).not.toContain('value="archived"');
-    expect(res.text).toContain('<option value="normal" selected>Normal</option>');
-    expect(res.text).not.toContain('<option value="low" selected>Low</option>');
+    expect(res.text).toContain('<option value="tbd" selected>Tbd</option>');
+    expect(res.text).not.toContain('id="priority"');
+    expect(res.text).not.toContain('name="priority"');
   });
 
-  it('new-project form seeds valid saved New Project status and priority defaults', async () => {
+  it('new-project form seeds the valid saved New Project status default', async () => {
     saveNewProjectDefault('status', 'ready');
-    saveNewProjectDefault('priority', 'high');
 
     const res = await agent.get('/projects/new').expect(200);
 
     expect(res.text).toContain('<option value="ready" selected>Ready</option>');
     expect(res.text).not.toContain('<option value="tbd" selected>Tbd</option>');
-    expect(res.text).toContain('<option value="high" selected>High</option>');
-    expect(res.text).not.toContain('<option value="normal" selected>Normal</option>');
+    expect(res.text).not.toContain('id="priority"');
   });
 
-  it('new-project form uses tbd/normal fallbacks when no defaults are saved', async () => {
+  it('new-project form uses the tbd fallback when no status default is saved', async () => {
     const res = await agent.get('/projects/new').expect(200);
 
     expect(res.text).toContain('<option value="tbd" selected>Tbd</option>');
-    expect(res.text).toContain('<option value="normal" selected>Normal</option>');
     expect(res.text).not.toContain('<option value="ready" selected>Ready</option>');
-    expect(res.text).not.toContain('<option value="high" selected>High</option>');
+    expect(res.text).not.toContain('id="priority"');
   });
 
-  it('new-project form falls back to tbd/normal when stored defaults are invalid', async () => {
+  it('new-project form falls back to tbd when the stored status default is invalid', async () => {
     writeStoredNewProjectDefault('status', 'archived');
-    writeStoredNewProjectDefault('priority', 'urgent');
+    writeLegacyNewProjectPriority('urgent');
 
     const res = await agent.get('/projects/new').expect(200);
 
     expect(res.text).toContain('<option value="tbd" selected>Tbd</option>');
-    expect(res.text).toContain('<option value="normal" selected>Normal</option>');
+    expect(res.text).not.toContain('id="priority"');
   });
 
-  it('rejected create submission preserves submitted status/priority over saved defaults', async () => {
+  it('rejected create submission preserves the submitted status over the saved default', async () => {
     saveNewProjectDefault('status', 'ready');
-    saveNewProjectDefault('priority', 'high');
 
     const res = await agent
       .post('/projects')
       .send('title=')
       .send('status=in-progress')
-      .send('priority=low')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .expect(422);
 
     expect(res.text).toContain('<option value="in-progress" selected>In Progress</option>');
-    expect(res.text).toContain('<option value="low" selected>Low</option>');
     expect(res.text).not.toContain('<option value="ready" selected>Ready</option>');
-    expect(res.text).not.toContain('<option value="high" selected>High</option>');
+    expect(res.text).not.toContain('id="priority"');
   });
 
-  it('successful create uses submitted status/priority, not saved defaults', async () => {
+  it('successful create uses the submitted status, not the saved default', async () => {
     saveNewProjectDefault('status', 'ready');
-    saveNewProjectDefault('priority', 'high');
 
     const res = await agent
       .post('/projects')
       .send('title=Submitted+Wins')
       .send('status=planned')
-      .send('priority=low')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .expect(302);
 
     const id = Number(res.headers.location.replace('/projects/', ''));
-    const project = db.prepare('SELECT status, priority FROM projects WHERE id = ?').get(id);
+    const project = db.prepare('SELECT status FROM projects WHERE id = ?').get(id);
     expect(project.status).toBe('planned');
-    expect(project.priority).toBe('low');
   });
 
-  it('edit form shows stored project values even when New Project defaults differ', async () => {
+  it('edit form shows the stored project status even when the New Project default differs', async () => {
     saveNewProjectDefault('status', 'ready');
-    saveNewProjectDefault('priority', 'high');
-    const id = await createProject({ title: 'Editable', status: 'in-progress', priority: 'low' });
+    const id = await createProject({ title: 'Editable', status: 'in-progress' });
 
     const res = await agent.get(`/projects/${id}/edit`).expect(200);
 
     expect(res.text).toContain('<option value="in-progress" selected>In Progress</option>');
-    expect(res.text).toContain('<option value="low" selected>Low</option>');
     expect(res.text).not.toContain('<option value="ready" selected>Ready</option>');
-    expect(res.text).not.toContain('<option value="high" selected>High</option>');
+    expect(res.text).not.toContain('id="priority"');
   });
 
   it('valid create request redirects to detail', async () => {
@@ -1037,60 +1034,10 @@ describe('project HTTP workflow', () => {
       .send('description=A+test')
       .send('notes=notes')
       .send('status=tbd')
-      .send('priority=normal')
       .set('Content-Type', 'application/x-www-form-urlencoded')
         .send('_csrf=' + encodeURIComponent(csrfToken))
       .expect(302);
     expect(res.headers.location).toMatch(/^\/projects\/\d+$/);
-  });
-
-  it('omitted create priority defaults to normal in the database and manifest', async () => {
-    const res = await agent
-      .post('/projects')
-      .send('title=Default+Priority')
-      .send('status=tbd')
-      .set('Content-Type', 'application/x-www-form-urlencoded')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-      .expect(302);
-
-    const id = Number(res.headers.location.replace('/projects/', ''));
-    const row = db.prepare('SELECT priority, project_dir FROM projects WHERE id = ?').get(id);
-    expect(row.priority).toBe('normal');
-
-    const manifest = readManifestSync(resolveProjectDir(projectsRoot, row.project_dir));
-    expect(manifest.priority).toBe('normal');
-  });
-
-  it.each(['low', 'high'])('explicit %s priority remains unchanged on create', async (priority) => {
-    const res = await agent
-      .post('/projects')
-      .send(`title=Explicit+${priority}`)
-      .send('status=tbd')
-      .send(`priority=${priority}`)
-      .set('Content-Type', 'application/x-www-form-urlencoded')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-      .expect(302);
-
-    const id = Number(res.headers.location.replace('/projects/', ''));
-    const row = db.prepare('SELECT priority, project_dir FROM projects WHERE id = ?').get(id);
-    expect(row.priority).toBe(priority);
-
-    const manifest = readManifestSync(resolveProjectDir(projectsRoot, row.project_dir));
-    expect(manifest.priority).toBe(priority);
-  });
-
-  it.each(['', 'urgent'])('invalid create priority %j returns a controlled validation error', async (priority) => {
-    const res = await agent
-      .post('/projects')
-      .send(`title=Invalid+Priority+${priority || 'Empty'}`)
-      .send('status=tbd')
-      .send(`priority=${encodeURIComponent(priority)}`)
-      .set('Content-Type', 'application/x-www-form-urlencoded')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-      .expect(422);
-
-    expect(res.text).toContain('Priority must be one of');
-    expect(res.text).not.toContain('<option value="normal" selected>Normal</option>');
   });
 
   it('invalid create request rerenders with values and errors', async () => {
@@ -1100,7 +1047,6 @@ describe('project HTTP workflow', () => {
       .send('description=A')
       .send('notes=Create+notes')
       .send('status=ready')
-      .send('priority=high')
       .send('plannedDate=2026-08-01')
       .send('publishedDate=2026-08-15')
       .send('patreonUrl=example.com/not-patreon')
@@ -1112,7 +1058,7 @@ describe('project HTTP workflow', () => {
     expect(res.text).toContain('A');
     expect(res.text).toContain('Create notes');
     expect(res.text).toContain('<option value="ready" selected>Ready</option>');
-    expect(res.text).toContain('<option value="high" selected>High</option>');
+    expect(res.text).not.toContain('id="priority"');
     expect(res.text).toContain('value="2026-08-01"');
     expect(res.text).toContain('value="2026-08-15"');
     expect(res.text).toContain('value="example.com/not-patreon"');
@@ -1193,12 +1139,12 @@ describe('project HTTP workflow', () => {
       .post('/projects')
       .send('title=Editable+Project')
       .send('status=tbd')
-      .send('priority=normal')
       .set('Content-Type', 'application/x-www-form-urlencoded')
         .send('_csrf=' + encodeURIComponent(csrfToken));
     const res = await agent.get(`${createRes.headers.location}/edit`).expect(200);
     expect(res.text).toContain('Projects — Edit Editable Project');
     expect(res.text).not.toContain('value="archived"');
+    expect(res.text).not.toContain('id="priority"');
   });
 
   it('valid update redirects to detail', async () => {
@@ -1206,14 +1152,12 @@ describe('project HTTP workflow', () => {
       .post('/projects')
       .send('title=Old+Name')
       .send('status=tbd')
-      .send('priority=normal')
       .set('Content-Type', 'application/x-www-form-urlencoded')
         .send('_csrf=' + encodeURIComponent(csrfToken));
     const res = await agent
       .post(createRes.headers.location)
       .send('title=New+Name')
       .send('status=planned')
-      .send('priority=high')
       .set('Content-Type', 'application/x-www-form-urlencoded')
         .send('_csrf=' + encodeURIComponent(csrfToken))
       .expect(302);
@@ -1228,14 +1172,12 @@ describe('project HTTP workflow', () => {
       .post('/projects')
       .send('title=Update+Archive')
       .send('status=tbd')
-      .send('priority=normal')
       .set('Content-Type', 'application/x-www-form-urlencoded')
         .send('_csrf=' + encodeURIComponent(csrfToken));
     const res = await agent
       .post(createRes.headers.location)
       .send('title=Update+Archive')
       .send('status=archived')
-      .send('priority=normal')
       .set('Content-Type', 'application/x-www-form-urlencoded')
         .send('_csrf=' + encodeURIComponent(csrfToken))
       .expect(422);
@@ -1250,7 +1192,6 @@ describe('project HTTP workflow', () => {
       .post('/projects')
       .send('title=Invalid+Published+Project')
       .send('status=published')
-      .send('priority=normal')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .expect(422);
@@ -1263,7 +1204,6 @@ describe('project HTTP workflow', () => {
       .post('/projects')
       .send('title=Edit+Preserves+Initial')
       .send('status=tbd')
-      .send('priority=normal')
       .set('Content-Type', 'application/x-www-form-urlencoded')
         .send('_csrf=' + encodeURIComponent(csrfToken))
       .expect(302);
@@ -1274,7 +1214,6 @@ describe('project HTTP workflow', () => {
       .send('description=Submitted+description')
       .send('notes=Submitted+notes')
       .send('status=in-progress')
-      .send('priority=low')
       .send('plannedDate=2026-10-01')
       .send('publishedDate=2026-10-15')
       .send('patreonUrl=example.com/not-patreon')
@@ -1287,7 +1226,7 @@ describe('project HTTP workflow', () => {
     expect(res.text).toContain('Submitted description');
     expect(res.text).toContain('Submitted notes');
     expect(res.text).toContain('<option value="in-progress" selected>In Progress</option>');
-    expect(res.text).toContain('<option value="low" selected>Low</option>');
+    expect(res.text).not.toContain('id="priority"');
     expect(res.text).toContain('value="2026-10-01"');
     expect(res.text).toContain('value="2026-10-15"');
     expect(res.text).toContain('value="example.com/not-patreon"');
@@ -1295,35 +1234,6 @@ describe('project HTTP workflow', () => {
     expect(res.text).toContain('Status and scheduling');
     expect(res.text).toContain('Links');
     expect(res.text).toContain(`href="${createRes.headers.location}"`);
-  });
-
-  it('editing an existing high-priority project does not reset it to normal', async () => {
-    const createRes = await agent
-      .post('/projects')
-      .send('title=High+Priority+Edit')
-      .send('status=tbd')
-      .send('priority=high')
-      .set('Content-Type', 'application/x-www-form-urlencoded')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-      .expect(302);
-    const location = createRes.headers.location;
-
-    const edit = await agent.get(`${location}/edit`).expect(200);
-    expect(edit.text).toContain('<option value="high" selected>High</option>');
-    expect(edit.text).not.toContain('<option value="normal" selected>Normal</option>');
-
-    await agent
-      .post(location)
-      .send('title=High+Priority+Edit')
-      .send('status=planned')
-      .send('priority=high')
-      .set('Content-Type', 'application/x-www-form-urlencoded')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-      .expect(302);
-
-    const id = Number(location.replace('/projects/', ''));
-    const row = db.prepare('SELECT priority FROM projects WHERE id = ?').get(id);
-    expect(row.priority).toBe('high');
   });
 
   it('missing project returns 404', async () => {

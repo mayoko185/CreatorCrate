@@ -1,9 +1,8 @@
-import { WORKFLOW_STATUSES, PRIORITIES } from '../data/project-repository.js';
+import { WORKFLOW_STATUSES } from '../data/project-repository.js';
 import {
   ASSET_LIBRARY_DEFAULTS,
   ASSET_LIBRARY_PAGE_SIZE_VALUES,
 } from '../routes/asset-library-query.js';
-import { DEFAULT_PRIORITY } from './project-service.js';
 
 const PROJECTS = 'projects';
 const RELEASES = 'releases';
@@ -58,7 +57,6 @@ export const PAGE_DEFAULT_DEFINITIONS = Object.freeze({
   }),
   [NEW_PROJECT]: Object.freeze({
     status: definition('page_defaults.new_project.status', WORKFLOW_STATUSES, WORKFLOW_STATUSES[0]),
-    priority: definition('page_defaults.new_project.priority', PRIORITIES, DEFAULT_PRIORITY),
   }),
 });
 

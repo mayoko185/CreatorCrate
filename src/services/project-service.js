@@ -6,7 +6,6 @@ import {
   createProjectRepository,
   STATUSES,
   WORKFLOW_STATUSES,
-  PRIORITIES,
 } from '../data/project-repository.js';
 import {
   formatProjectDirName,
@@ -24,7 +23,7 @@ import {
 } from '../storage/manifest.js';
 import { isValidWebUrl } from '../util/url.js';
 
-export { STATUSES, WORKFLOW_STATUSES, PRIORITIES, DEFAULT_PRIORITY };
+export { STATUSES, WORKFLOW_STATUSES };
 
 export class ProjectValidationError extends Error {
   constructor(errors) {
@@ -46,7 +45,6 @@ const TITLE_MIN = 1;
 const TITLE_MAX = 200;
 const DESCRIPTION_MAX = 4000;
 const NOTES_MAX = 10000;
-const DEFAULT_PRIORITY = 'normal';
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -118,11 +116,6 @@ export function createProjectService(
       errors.status = `Status must be one of: ${WORKFLOW_STATUSES.join(', ')}.`;
     }
 
-    const priority = input.priority;
-    if (!PRIORITIES.includes(priority)) {
-      errors.priority = `Priority must be one of: ${PRIORITIES.join(', ')}.`;
-    }
-
     const plannedDate = input.plannedDate || null;
     if (!isValidDate(plannedDate)) {
       errors.plannedDate = 'Planned date must be a valid date (YYYY-MM-DD).';
@@ -153,7 +146,6 @@ export function createProjectService(
       description,
       notes,
       status,
-      priority,
       plannedDate,
       publishedDate,
       patreonUrl,
@@ -229,16 +221,11 @@ export function createProjectService(
   return {
     STATUSES,
     WORKFLOW_STATUSES,
-    PRIORITIES,
 
     repository,
 
     create(input) {
-      const normalizedInput = {
-        ...input,
-        priority: input.priority === undefined ? DEFAULT_PRIORITY : input.priority,
-      };
-      const normalized = validate(normalizedInput);
+      const normalized = validate(input);
 
       let project;
       let relPath;
@@ -348,7 +335,7 @@ export function createProjectService(
       const dirNeedsChange = slugChanged;
 
       // The manifest serializes every non-status field (title, slug,
-      // priority, description, notes, planned/published date, patreon URL).
+      // description, notes, planned/published date, patreon URL).
       // A metadata-only update must rewrite project.json even when the
       // slug is unchanged; only a pure status-only update skips the
       // filesystem entirely. Fields are compared via their DB→input
@@ -358,7 +345,6 @@ export function createProjectService(
         ['slug', 'slug'],
         ['description', 'description'],
         ['notes', 'notes'],
-        ['priority', 'priority'],
         ['planned_date', 'plannedDate'],
         ['published_date', 'publishedDate'],
         ['patreon_url', 'patreonUrl'],
@@ -428,7 +414,6 @@ export function createProjectService(
         description: project.description,
         notes: project.notes,
         status: project.status,
-        priority: project.priority,
         plannedDate: project.planned_date,
         publishedDate: project.published_date,
         patreonUrl: project.patreon_url,

@@ -354,6 +354,7 @@ describe('Phase 10.5A: Shared page-level components', () => {
 
       const res = await agent.get(createRes.headers.location).expect(200);
       expect(res.text).toContain('status-badge');
+      expect(res.text).not.toMatch(/\bpriority\b/i);
     });
 
     it('status-badge variant classes are defined in CSS', async () => {
@@ -376,8 +377,8 @@ describe('Phase 10.5A: Shared page-level components', () => {
   describe('table responsiveness', () => {
     it('project list uses project card grid markup', async () => {
       db.prepare(
-        `INSERT INTO projects (title, slug, description, notes, status, priority, planned_date, published_date, patreon_url)
-         VALUES (?, ?, '', '', 'tbd', 'normal', NULL, NULL, NULL)`
+        `INSERT INTO projects (title, slug, description, notes, status, planned_date, published_date, patreon_url)
+         VALUES (?, ?, '', '', 'tbd', NULL, NULL, NULL)`
       ).run('Table Test', 'table-test');
       const res = await agent.get('/projects').expect(200);
       expect(res.text).toContain('<ul class="project-grid">');

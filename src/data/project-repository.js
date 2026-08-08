@@ -1,6 +1,5 @@
 export const STATUSES = ['tbd', 'planned', 'in-progress', 'ready', 'completed', 'archived'];
 export const WORKFLOW_STATUSES = ['tbd', 'planned', 'in-progress', 'ready', 'completed'];
-export const PRIORITIES = ['low', 'normal', 'high'];
 
 const COLUMNS = [
   'id',
@@ -9,7 +8,6 @@ const COLUMNS = [
   'description',
   'notes',
   'status',
-  'priority',
   'planned_date',
   'published_date',
   'patreon_url',
@@ -29,7 +27,6 @@ const SELECT_ALL = `SELECT ${COLUMNS.join(', ')} FROM projects`;
  * @property {string} description
  * @property {string} notes
  * @property {string} status
- * @property {string} priority
  * @property {string|null} planned_date
  * @property {string|null} published_date
  * @property {string|null} patreon_url
@@ -45,14 +42,14 @@ export function createProjectRepository(db) {
   const countBySlug = db.prepare('SELECT COUNT(*) AS c FROM projects WHERE slug = ?');
   const insert = db.prepare(`
     INSERT INTO projects (
-      title, slug, description, notes, status, priority,
+      title, slug, description, notes, status,
       planned_date, published_date, patreon_url
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     RETURNING ${COLUMNS.join(', ')}
   `);
   const update = db.prepare(`
     UPDATE projects
-    SET title = ?, slug = ?, description = ?, notes = ?, status = ?, priority = ?,
+    SET title = ?, slug = ?, description = ?, notes = ?, status = ?,
         planned_date = ?, published_date = ?, patreon_url = ?,
         updated_at = datetime('now')
     WHERE id = ? AND archived_at IS NULL
@@ -143,7 +140,6 @@ export function createProjectRepository(db) {
         input.description,
         input.notes,
         input.status,
-        input.priority,
         input.plannedDate ?? null,
         input.publishedDate ?? null,
         input.patreonUrl ?? null,
@@ -163,7 +159,6 @@ export function createProjectRepository(db) {
         input.description,
         input.notes,
         input.status,
-        input.priority,
         input.plannedDate ?? null,
         input.publishedDate ?? null,
         input.patreonUrl ?? null,

@@ -32,11 +32,11 @@ describe('project repository', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('creates a project with explicitly supplied status and priority', () => {
+  it('creates a project without a priority field', () => {
     const project = repository.create(sampleProject({ title: 'Sunset Sketch' }));
     expect(project.title).toBe('Sunset Sketch');
     expect(project.status).toBe('tbd');
-    expect(project.priority).toBe('normal');
+    expect(project).not.toHaveProperty('priority');
     expect(project.slug).toBe('sunset-sketch');
     expect(project.archived_at).toBeNull();
   });
@@ -53,10 +53,10 @@ describe('project repository', () => {
     const updated = repository.update(created.id, {
       ...sampleProject({ title: 'Mountain Landscape' }),
       status: 'in-progress',
-      priority: 'high',
     });
     expect(updated.title).toBe('Mountain Landscape');
     expect(updated.status).toBe('in-progress');
+    expect(updated).not.toHaveProperty('priority');
   });
 
   it('archives a project and preserves the record', () => {
@@ -504,7 +504,6 @@ function sampleProject(overrides = {}) {
     description: '',
     notes: '',
     status: 'tbd',
-    priority: 'normal',
     plannedDate: null,
     publishedDate: null,
     patreonUrl: null,

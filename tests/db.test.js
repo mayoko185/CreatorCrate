@@ -90,7 +90,11 @@ describe('database and migrations', () => {
     runMigrations(db, MIGRATIONS_DIR);
     runMigrations(db, MIGRATIONS_DIR);
     const applied = db.prepare('SELECT filename FROM schema_migrations ORDER BY rowid').pluck().all();
-    expect(applied).toEqual(['001_initial.sql', '002_add_completed_status.sql']);
+    expect(applied).toEqual([
+      '001_initial.sql',
+      '002_add_completed_status.sql',
+      '003_remove_project_priority.sql',
+    ]);
   });
 
   it('creates the complete fresh-install table set with foreign keys enabled', () => {
@@ -129,8 +133,8 @@ describe('database and migrations', () => {
     runMigrations(db, MIGRATIONS_DIR);
 
     expect(() => db.prepare(`
-      INSERT INTO projects (title, slug, status, priority)
-      VALUES ('Published Project', 'published-project', 'published', 'normal')
+      INSERT INTO projects (title, slug, status)
+      VALUES ('Published Project', 'published-project', 'published')
     `).run()).toThrow(/CHECK constraint failed/i);
   });
 
@@ -277,8 +281,8 @@ describe('database and migrations', () => {
     runMigrations(db, MIGRATIONS_DIR);
 
     const projectId = db.prepare(`
-      INSERT INTO projects (title, slug, status, priority)
-      VALUES ('Status Project', 'status-project', 'tbd', 'normal')
+      INSERT INTO projects (title, slug, status)
+      VALUES ('Status Project', 'status-project', 'tbd')
     `).run().lastInsertRowid;
 
     const release = db.prepare(`
@@ -385,9 +389,9 @@ describe('database and migrations', () => {
 
     // Create project
     const projectId = db.prepare(`
-      INSERT INTO projects (title, slug, description, notes, status, priority, planned_date, published_date, patreon_url)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run('Test Project', 'test-project', '', '', 'tbd', 'normal', null, null, null).lastInsertRowid;
+      INSERT INTO projects (title, slug, description, notes, status, planned_date, published_date, patreon_url)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run('Test Project', 'test-project', '', '', 'tbd', null, null, null).lastInsertRowid;
 
     // Create release
     const releaseId = db.prepare(`
@@ -417,9 +421,9 @@ describe('database and migrations', () => {
     runMigrations(db, MIGRATIONS_DIR);
 
     const projectId = db.prepare(`
-      INSERT INTO projects (title, slug, description, notes, status, priority, planned_date, published_date, patreon_url)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run('Test Project', 'test-project', '', '', 'tbd', 'normal', null, null, null).lastInsertRowid;
+      INSERT INTO projects (title, slug, description, notes, status, planned_date, published_date, patreon_url)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run('Test Project', 'test-project', '', '', 'tbd', null, null, null).lastInsertRowid;
 
     const releaseId = db.prepare(`
       INSERT INTO releases (project_id, title, description, notes, planned_date, patreon_url)
@@ -495,9 +499,9 @@ describe('database and migrations', () => {
     expect(ddl).toMatch(/FOREIGN KEY\s*\(project_id\)\s*REFERENCES\s*projects\(id\)/i);
 
     const projectId = db.prepare(`
-      INSERT INTO projects (title, slug, description, notes, status, priority, planned_date, published_date, patreon_url)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run('Test Project', 'test-project', '', '', 'tbd', 'normal', null, null, null).lastInsertRowid;
+      INSERT INTO projects (title, slug, description, notes, status, planned_date, published_date, patreon_url)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run('Test Project', 'test-project', '', '', 'tbd', null, null, null).lastInsertRowid;
 
     const categoryId = db.prepare(`
       INSERT INTO project_asset_categories (project_id, display_name, directory_slug, display_order, enabled)

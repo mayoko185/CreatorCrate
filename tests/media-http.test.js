@@ -40,7 +40,6 @@ import {
 } from '../src/services/media-service.js';
 import { createPreviewService, buildAssetRevisionToken } from '../src/services/preview-service.js';
 import { createWorkflowQueryService } from '../src/services/workflow-query-service.js';
-import { evaluateReleaseReadiness } from '../src/services/release-readiness-policy.js';
 import { Readable } from 'node:stream';
 import http from 'node:http';
 import { makeZip } from './helpers/zip-fixture.js';
@@ -787,7 +786,7 @@ describe('media routes — revision eligibility parity', () => {
   }
 
   async function collectRevisionState(project, assetId) {
-    const workflow = createWorkflowQueryService({ db: h.db, evaluateReleaseReadiness });
+    const workflow = createWorkflowQueryService({ db: h.db });
     const browser = workflow.getProjectAssetBrowser(project.id, { pageSize: 100 });
     const browserAsset = browser.assets.find((asset) => asset.id === assetId);
     const viewer = workflow.getProjectAssetViewer(project.id, assetId);

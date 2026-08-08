@@ -50,7 +50,6 @@ import { getLocalTodayIso } from '../util/date.js';
 const DEFAULT_LIMITS = Object.freeze({
   // Dashboard sections
   overdue: 5,
-  ready: 5,
   missingPlannedDate: 5,
   missingSelectedAssets: 5,
   upcoming: 10,
@@ -361,16 +360,12 @@ function groupByDate(releases) {
 /**
  * @param {object} deps
  * @param {import('better-sqlite3').Database} deps.db
- * @param {Function} [deps.evaluateReleaseReadiness] — pure readiness policy
- *   function injected for Phase 7A read-service composition. When omitted,
- *   the service still works but getReleaseReadiness will throw a clear error.
  * @param {object} [deps.releaseRepository] — release repository for page-local
  *   batch enrichment
  * @param {object} [deps.tagRepository] — shared project/asset tag repository
  */
 export function createWorkflowQueryService({
   db,
-  evaluateReleaseReadiness,
   projectPrimaryImageRepository,
   assetBrowserPreferenceService: injectedAssetBrowserPreferenceService,
   releaseRepository: injectedReleaseRepository,
@@ -405,7 +400,6 @@ export function createWorkflowQueryService({
    * @returns {{
    *   releasesNeedingAttention: {
    *     overdue: Array,
-   *     ready: Array,
    *     missingPlannedDate: Array,
    *     missingSelectedAssets: Array,
    *     releasesWithoutAssets: Array,
@@ -433,38 +427,6 @@ export function createWorkflowQueryService({
     const upcomingRaw = releaseRepository.findUpcoming(limits.upcoming, today);
     const upcoming = groupByDate(upcomingRaw);
 
-    // ── Phase 7B-2: Dashboard Publishability Groups ──────────────────────
-    // Batch-load readiness facts for releases under ready projects, then
-    // evaluate each through the shared policy. This is a single batch query
-    // — no N+1 readiness queries per release.
-    const readyFacts = releaseRepository.findReadyDashboardFacts(limits.ready);
-    const readyToPublish = [];
-    const readyButBlocked = [];
-
-    for (const facts of readyFacts) {
-      const result = evaluateReleaseReadiness(facts);
-      const release = {
-        id: facts.release_id,
-        project_id: facts.project_id,
-        title: facts.title,
-        project_title: facts.project_title,
-        planned_date: facts.planned_date,
-        updated_at: facts.updated_at,
-        project_status: facts.project_status,
-      };
-
-      if (result.publishable) {
-        readyToPublish.push(release);
-      } else {
-        // Collect only the failed blocker keys and their details for
-        // concise presentation — no policy logic duplicated here.
-        const blockers = result.checks
-          .filter((c) => !c.passed)
-          .map((c) => ({ key: c.key, details: c.details }));
-        readyButBlocked.push({ ...release, blockers });
-      }
-    }
-
     const projectCounts = projectRepository.countByStatus();
     const totalAssets = assetRepository.getTotalCount();
     const missingTotal = assetRepository.getTotalMissingCount();
@@ -480,15 +442,11 @@ export function createWorkflowQueryService({
     return {
       releasesNeedingAttention: {
         overdue,
-        readyToPublish,
-        readyButBlocked,
         missingPlannedDate,
         missingSelectedAssets,
         releasesWithoutAssets,
         totalCount:
           overdue.length
-          + readyToPublish.length
-          + readyButBlocked.length
           + missingPlannedDate.length
           + missingSelectedAssets.length
           + releasesWithoutAssets.length,
@@ -1073,10 +1031,7 @@ export function createWorkflowQueryService({
     let pageSize = pageSizeRaw !== null ? pageSizeRaw : 25;
     if (pageSize > 100) pageSize = 100;
 
-    const readinessValues = ['all', 'publishable', 'blocked-ready'];
-    const readiness = readinessValues.includes(raw.readiness) ? raw.readiness : 'all';
-
-    return { search, projectId, schedule, includeArchived, sortBy, order, page, pageSize, readiness };
+    return { search, projectId, schedule, includeArchived, sortBy, order, page, pageSize };
   }
 
   /**
@@ -1120,12 +1075,7 @@ export function createWorkflowQueryService({
       offset,
     });
 
-    // ── Phase 7B-3: Compact Release Readiness Indicators ──────────────
-    // Batch-attach readiness facts for all releases under ready projects on this
-    // page — no N+1 readiness queries per release.
-    const enhanced = _attachReadiness(releases);
-
-    return { releases: enhanced, total, page, pageSize: filters.pageSize, pageCount, today, hasAnyReleases };
+    return { releases, total, page, pageSize: filters.pageSize, pageCount, today, hasAnyReleases };
   }
 
   /**
@@ -1149,18 +1099,13 @@ export function createWorkflowQueryService({
       activeScheduleFilter,
     });
 
-    // ── Phase 7B-3: Compact Release Readiness Indicators ──────────────
-    // Batch-attach readiness facts for all releases under ready projects on the
-    // board — no N+1 readiness queries per release.
-    const enhanced = _attachReadiness(rows);
-
     // Group by project workflow status. Publication is a separate data axis,
     // so published releases take the Published grouping regardless of the
     // owning project's workflow status.
     const boardGroups = ['tbd', 'planned', 'in-progress', 'ready', 'published'];
     const columns = Object.fromEntries(boardGroups.map((group) => [group, []]));
 
-    for (const release of enhanced) {
+    for (const release of rows) {
       const group = release.published_date != null ? 'published' : release.project_status;
       if (columns[group]) {
         columns[group].push(release);
@@ -2318,145 +2263,6 @@ export function createWorkflowQueryService({
     };
   }
 
-  // ─── Phase 7B-3: Batch Readiness Attachment ────────────────────────────
-
-  /**
-   * Stable mapping from policy blocker key to concise human-readable label
-   * for list/board/calendar presentation. No scores, percentages, subjective
-   * requirements, or raw policy objects are included.
-   */
-  const BLOCKER_LABELS = {
-    assets_selected: 'No assets selected',
-    selected_assets_present: 'Missing selected assets',
-    scope_mutable: 'Archived scope',
-  };
-
-  /**
-   * Batch-attach compact readiness indicators to an array of releases.
-   *
-   * For releases under ready projects, evaluates readiness via the shared policy
-   * and attaches a `_readiness` property with:
-   *   - publishable: boolean
-   *   - blockerCount: number (only when not publishable)
-   *   - blockerKeys: string[]  (only when not publishable)
-   *   - blockerLabels: string[] (only when not publishable) — concise
-   *     human-readable labels derived from stable policy keys, suitable
-   *     for list/board/calendar presentation
-   *   - correctiveLinks: Array<{ href: string, label: string }> (only
-   *     when not publishable and scope is mutable) — links to resolve
-   *     asset-related blockers; omitted for archived-scope releases
-   *
-   * For releases whose project is not ready, no `_readiness` property is attached so
-   * templates can distinguish "no claim" from "blocked".
-   *
-   * This is a single batch query: all readiness facts are loaded in one
-   * round-trip, then evaluated through the shared pure policy per release.
-   * No N+1 readiness queries.
-   *
-   * @param {Array} releases — release rows from findPage/findBoard
-   * @returns {Array} same releases with optional _readiness attached
-   */
-  function _attachReadiness(releases) {
-    if (typeof evaluateReleaseReadiness !== 'function') return releases;
-    if (!Array.isArray(releases) || releases.length === 0) return releases;
-
-    // Collect IDs of releases whose owning project is ready
-    const readyIds = releases
-      .filter((r) => r.project_status === 'ready')
-      .map((r) => r.id);
-
-    if (readyIds.length === 0) return releases;
-
-    // Single batch query — no N+1
-    const factsList = releaseRepository.findReadinessFactsByIds(readyIds);
-
-    // Index facts by release_id for O(1) lookup
-    const factsByReleaseId = new Map();
-    for (const facts of factsList) {
-      factsByReleaseId.set(facts.release_id, facts);
-    }
-
-    // Index by release_id
-    const readinessByReleaseId = new Map();
-    for (const facts of factsList) {
-      const result = evaluateReleaseReadiness(facts);
-      const indicator = { publishable: result.publishable };
-      if (!result.publishable) {
-        const blockers = result.checks.filter((c) => !c.passed);
-        indicator.blockerCount = blockers.length;
-        indicator.blockerKeys = blockers.map((c) => c.key);
-        indicator.blockerLabels = blockers.map((c) => BLOCKER_LABELS[c.key] || c.key);
-
-        // Corrective links for asset-related blockers on mutable scope
-        const scopeMutable = !facts.release_archived_at && !facts.project_archived_at;
-        if (scopeMutable) {
-          const links = [];
-          for (const check of blockers) {
-            if (check.key === 'assets_selected') {
-              links.push({ href: `/releases/${facts.release_id}/assets`, label: 'Manage assets' });
-            } else if (check.key === 'selected_assets_present') {
-              links.push({ href: `/projects/${facts.project_id}/assets`, label: 'Asset browser' });
-            }
-          }
-          if (links.length > 0) {
-            indicator.correctiveLinks = links;
-          }
-        }
-      }
-      readinessByReleaseId.set(facts.release_id, indicator);
-    }
-
-    return releases.map((release) => {
-      if (release.project_status !== 'ready') return release;
-      const indicator = readinessByReleaseId.get(release.id);
-      if (!indicator) return release;
-      return { ...release, _readiness: indicator };
-    });
-  }
-
-  // ─── Phase 7A: Release Readiness ──────────────────────────────────────
-
-  /**
-   * Evaluate whether a release is ready to be published.
-   *
-   * Strictly validates the release ID, loads readiness facts from the
-   * release repository, and passes them to the shared pure readiness
-   * policy. Returns the policy result unchanged.
-   *
-   * This is a read-only composition — it does not mutate releases, call
-   * publishRelease, call the scanner, access the filesystem, or calculate
-   * readiness independently.
-   *
-   * @param {unknown} releaseId — validated as a strict positive integer
-   * @returns {import('./release-readiness-policy.js').ReadinessResult}
-   * @throws {Error} with status 404 when the release is not found
-   * @throws {Error} when evaluateReleaseReadiness is not wired
-   */
-  function getReleaseReadiness(releaseId) {
-    if (typeof evaluateReleaseReadiness !== 'function') {
-      throw new Error(
-        'getReleaseReadiness requires evaluateReleaseReadiness to be wired. ' +
-        'Pass it as { evaluateReleaseReadiness } to createWorkflowQueryService.'
-      );
-    }
-
-    const id = parseStrictPositiveInt(releaseId);
-    if (id === null) {
-      const err = new Error(`Release ${JSON.stringify(releaseId)} not found`);
-      err.status = 404;
-      throw err;
-    }
-
-    const facts = releaseRepository.findReadinessFactsById(id);
-    if (!facts) {
-      const err = new Error(`Release ${id} not found`);
-      err.status = 404;
-      throw err;
-    }
-
-    return evaluateReleaseReadiness(facts);
-  }
-
   return {
     getDashboardData,
     getProjectWorkspace,
@@ -2472,7 +2278,6 @@ export function createWorkflowQueryService({
     getProjectAutoRenameCategory,
     getProjectAssetBrowserContext,
     getProjectAssetViewer,
-    getReleaseReadiness,
     normalizeListFilters,
     // Exposed for tests
     parseMonth,

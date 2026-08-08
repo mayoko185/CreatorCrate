@@ -34,7 +34,6 @@ import { createProjectPrimaryImageService } from './services/project-primary-ima
 import { createProjectOperationCoordinator } from './services/project-operation-coordinator.js';
 import { createReleaseService } from './services/release-service.js';
 import { createWorkflowQueryService } from './services/workflow-query-service.js';
-import { evaluateReleaseReadiness } from './services/release-readiness-policy.js';
 import { createPreviewService } from './services/preview-service.js';
 import { createMediaService } from './services/media-service.js';
 import { createBackupService } from './services/backup-service.js';
@@ -245,10 +244,9 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   app.locals.projectPrimaryImageRepository = projectPrimaryImageRepository;
   app.locals.projectPrimaryImageService = projectPrimaryImageService;
 
-  const releaseService = opts.releaseService || createReleaseService({ db, evaluateReleaseReadiness });
+  const releaseService = opts.releaseService || createReleaseService({ db });
   const workflowQueryService = opts.workflowQueryService || createWorkflowQueryService({
     db,
-    evaluateReleaseReadiness,
     projectPrimaryImageRepository,
     assetBrowserPreferenceService,
     tagRepository,

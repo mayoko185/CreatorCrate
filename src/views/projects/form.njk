@@ -41,26 +41,14 @@
     <div class="form-section">
       <h2>Status and scheduling</h2>
 
-      <div class="field-row">
-        <div class="field {% if errors.status %}field-error{% endif %}">
-          <label for="status">Status <span class="required" aria-label="required">*</span></label>
-          <select id="status" name="status" required{% if errors.status %} aria-describedby="status-error" aria-invalid="true"{% endif %}>
-            {% for s in statuses %}
-              <option value="{{ s }}" {% if values.status == s %}selected{% endif %}>{{ s | replace('-', ' ') | title }}</option>
-            {% endfor %}
-          </select>
-          {% if errors.status %}<span class="field-error-message" id="status-error">{{ errors.status }}</span>{% endif %}
-        </div>
-
-        <div class="field {% if errors.priority %}field-error{% endif %}">
-          <label for="priority">Priority <span class="required" aria-label="required">*</span></label>
-          <select id="priority" name="priority" required{% if errors.priority %} aria-describedby="priority-error" aria-invalid="true"{% endif %}>
-            {% for p in priorities %}
-              <option value="{{ p }}" {% if values.priority == p %}selected{% endif %}>{{ p | title }}</option>
-            {% endfor %}
-          </select>
-          {% if errors.priority %}<span class="field-error-message" id="priority-error">{{ errors.priority }}</span>{% endif %}
-        </div>
+      <div class="field {% if errors.status %}field-error{% endif %}">
+        <label for="status">Status <span class="required" aria-label="required">*</span></label>
+        <select id="status" name="status" required{% if errors.status %} aria-describedby="status-error" aria-invalid="true"{% endif %}>
+          {% for s in statuses %}
+            <option value="{{ s }}" {% if values.status == s %}selected{% endif %}>{{ s | replace('-', ' ') | title }}</option>
+          {% endfor %}
+        </select>
+        {% if errors.status %}<span class="field-error-message" id="status-error">{{ errors.status }}</span>{% endif %}
       </div>
 
       <div class="field-row">

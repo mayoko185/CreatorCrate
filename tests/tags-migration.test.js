@@ -32,9 +32,9 @@ describe('tags schema in the baseline migration', () => {
   function createProject(title) {
     return Number(db.prepare(`
       INSERT INTO projects (
-        title, slug, description, notes, status, priority,
+        title, slug, description, notes, status,
         planned_date, published_date, patreon_url
-      ) VALUES (?, ?, '', '', 'tbd', 'normal', NULL, NULL, NULL)
+      ) VALUES (?, ?, '', '', 'tbd', NULL, NULL, NULL)
     `).run(title, title.toLowerCase().replaceAll(' ', '-')).lastInsertRowid);
   }
 
@@ -89,7 +89,7 @@ describe('tags schema in the baseline migration', () => {
     expect(() => runMigrations(db, MIGRATIONS_DIR)).not.toThrow();
 
     const applied = db.prepare('SELECT filename FROM schema_migrations ORDER BY rowid').pluck().all();
-    expect(applied).toEqual(['001_initial.sql', '002_add_completed_status.sql']);
+    expect(applied).toEqual(['001_initial.sql', '002_add_completed_status.sql', '003_remove_project_priority.sql']);
     expect(db.pragma('foreign_keys', { simple: true })).toBe(1);
     expect(db.pragma('foreign_key_check')).toEqual([]);
   });

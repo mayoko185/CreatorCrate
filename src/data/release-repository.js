@@ -70,32 +70,6 @@ const ACTIVE_PARENT_PROJECT = `EXISTS (
  */
 const DASHBOARD_ACTIVE = `${ACTIVE_UNPUBLISHED} AND ${ACTIVE_PARENT_PROJECT}`;
 
-// ─── Phase 7D-1: Readiness classification projection ────────────────────
-//
-// The shared readiness policy (`evaluateReleaseReadiness`) is the single
-// source of truth for what "publishable" means. The conditions below are a
-// narrow, repository-only SQL projection of that policy so list/board
-// pagination can filter in the database instead of loading every release.
-//
-// Keep the projection in sync with the policy's material blockers:
-//   - the owning project must have status 'ready'
-//   - release must not be archived
-//   - parent project must not be archived (enforced by activeScheduleFilter)
-//   - at least one selected asset must exist
-//   - no selected asset may be missing
-//
-// UI indicators still come from `_attachReadiness` calling the policy.
-
-const READINESS_VALUES = Object.freeze(['all', 'publishable', 'blocked-ready']);
-
-function selectedAssetCountSubquery(table = 'releases') {
-  return `(SELECT COUNT(DISTINCT a.id) FROM release_assets ra JOIN assets a ON a.id = ra.asset_id AND a.project_id = ${table}.project_id WHERE ra.release_id = ${table}.id)`;
-}
-
-function missingAssetCountSubquery(table = 'releases') {
-  return `(SELECT COUNT(DISTINCT a.id) FROM release_assets ra JOIN assets a ON a.id = ra.asset_id AND a.project_id = ${table}.project_id WHERE ra.release_id = ${table}.id AND a.is_present = 0)`;
-}
-
 /**
  * @typedef {object} ReleaseRecord
  * @property {number} id
@@ -196,28 +170,6 @@ export function createReleaseRepository(db) {
     SELECT COUNT(*) AS c FROM release_assets ra
     JOIN assets a ON a.id = ra.asset_id AND a.project_id = (SELECT project_id FROM releases WHERE id = ?)
     WHERE ra.release_id = ?
-  `);
-
-  const readinessFactsById = db.prepare(`
-    SELECT
-      r.id AS release_id,
-      r.project_id,
-      p.status AS project_status,
-      r.archived_at AS release_archived_at,
-      p.archived_at AS project_archived_at,
-      COUNT(DISTINCT CASE WHEN a.id IS NOT NULL THEN a.id END) AS selected_asset_count,
-      COUNT(DISTINCT CASE WHEN a.is_present = 1 THEN a.id END) AS present_selected_asset_count,
-      COUNT(DISTINCT CASE WHEN a.is_present = 0 THEN a.id END) AS missing_selected_asset_count,
-      COUNT(DISTINCT CASE WHEN a.id IS NOT NULL AND ra.role = 'primary' THEN a.id END) AS primary_role_count,
-      COUNT(DISTINCT CASE WHEN a.id IS NOT NULL AND ra.role = 'preview' THEN a.id END) AS preview_role_count,
-      COUNT(DISTINCT CASE WHEN a.id IS NOT NULL AND ra.role = 'attachment' THEN a.id END) AS attachment_role_count,
-      COUNT(DISTINCT CASE WHEN a.id IS NOT NULL AND ra.role = 'source' THEN a.id END) AS source_role_count
-    FROM releases r
-    JOIN projects p ON p.id = r.project_id
-    LEFT JOIN release_assets ra ON ra.release_id = r.id
-    LEFT JOIN assets a ON a.id = ra.asset_id AND a.project_id = r.project_id
-    WHERE r.id = ?
-    GROUP BY r.id
   `);
 
   const raFindByAsset = db.prepare(`
@@ -730,94 +682,6 @@ export function createReleaseRepository(db) {
     },
 
     /**
-     * Unpublished releases whose owning project is ready. These are waiting
-     * to be published.
-     * Bounded; ordered by planned_date ascending (NULLs last), then by
-     * updated_at descending as a tie-breaker.
-     * @param {number} limit
-     * @returns {ReleaseRecord[]}
-     */
-    findReady(limit) {
-      const sql = `
-        SELECT ${RELEASE_COLUMNS_WITH_ALIAS('r')}, p.status AS project_status
-        FROM releases r
-        JOIN projects p ON p.id = r.project_id
-        WHERE r.archived_at IS NULL
-          AND r.published_date IS NULL
-          AND p.archived_at IS NULL
-          AND p.status = 'ready'
-        ORDER BY (r.planned_date IS NULL), r.planned_date ASC, r.updated_at DESC
-        LIMIT ?
-      `;
-      return db.prepare(sql).all(limit);
-    },
-
-    /**
-     * Batch readiness facts for all releases under ready projects on the dashboard.
-     * Returns one row per ready release with the same fact columns as
-     * findReadinessFactsById, plus display fields (title, planned_date,
-     * updated_at, project_title). Excludes archived releases and releases
-     * under archived parent projects. Bounded; deterministic ordering.
-     *
-     * This is the single batch query that prevents N+1 readiness evaluation
-     * in the dashboard — the service layer calls evaluateReleaseReadiness
-     * on each returned fact row without additional per-release queries.
-     *
-     * @param {number} limit
-     * @returns {Array<{
-     *   release_id: number,
-     *   project_id: number,
-     *   title: string,
-     *   project_status: string,
-     *   planned_date: string|null,
-     *   updated_at: string,
-     *   release_archived_at: string|null,
-     *   project_title: string,
-     *   project_archived_at: string|null,
-     *   selected_asset_count: number,
-     *   present_selected_asset_count: number,
-     *   missing_selected_asset_count: number,
-     *   primary_role_count: number,
-     *   preview_role_count: number,
-     *   attachment_role_count: number,
-     *   source_role_count: number,
-     * }>}
-     */
-    findReadyDashboardFacts(limit) {
-      const sql = `
-        SELECT
-          r.id AS release_id,
-          r.project_id,
-          r.title,
-          p.status AS project_status,
-          r.planned_date,
-          r.updated_at,
-          r.archived_at AS release_archived_at,
-          p.title AS project_title,
-          p.archived_at AS project_archived_at,
-          COUNT(DISTINCT CASE WHEN a.id IS NOT NULL THEN a.id END) AS selected_asset_count,
-          COUNT(DISTINCT CASE WHEN a.is_present = 1 THEN a.id END) AS present_selected_asset_count,
-          COUNT(DISTINCT CASE WHEN a.is_present = 0 THEN a.id END) AS missing_selected_asset_count,
-          COUNT(DISTINCT CASE WHEN a.id IS NOT NULL AND ra.role = 'primary' THEN a.id END) AS primary_role_count,
-          COUNT(DISTINCT CASE WHEN a.id IS NOT NULL AND ra.role = 'preview' THEN a.id END) AS preview_role_count,
-          COUNT(DISTINCT CASE WHEN a.id IS NOT NULL AND ra.role = 'attachment' THEN a.id END) AS attachment_role_count,
-          COUNT(DISTINCT CASE WHEN a.id IS NOT NULL AND ra.role = 'source' THEN a.id END) AS source_role_count
-        FROM releases r
-        JOIN projects p ON p.id = r.project_id
-        LEFT JOIN release_assets ra ON ra.release_id = r.id
-        LEFT JOIN assets a ON a.id = ra.asset_id AND a.project_id = r.project_id
-         WHERE p.status = 'ready'
-           AND r.published_date IS NULL
-           AND r.archived_at IS NULL
-          AND p.archived_at IS NULL
-        GROUP BY r.id
-        ORDER BY (r.planned_date IS NULL), r.planned_date ASC, r.updated_at DESC, r.id DESC
-        LIMIT ?
-      `;
-      return db.prepare(sql).all(limit);
-    },
-
-    /**
      * Active releases with no planned date. These need scheduling attention.
      * Bounded; ordered by updated_at descending (most recently touched first).
      * @param {number} limit
@@ -1043,113 +907,6 @@ export function createReleaseRepository(db) {
     },
 
     /**
-     * Repository-level readiness facts for a release. Returns factual data
-     * only — no policy decisions, labels, scores, or UI text. Returns
-     * undefined when the release does not exist.
-     *
-     * @param {number} releaseId
-     * @returns {{
-     *   release_id: number,
-     *   project_id: number,
-     *   project_status: string,
-     *   release_archived_at: string|null,
-     *   project_archived_at: string|null,
-     *   selected_asset_count: number,
-     *   present_selected_asset_count: number,
-     *   missing_selected_asset_count: number,
-     *   primary_role_count: number,
-     *   preview_role_count: number,
-     *   attachment_role_count: number,
-     *   source_role_count: number,
-     * }|undefined}
-     */
-    findReadinessFactsById(releaseId) {
-      return readinessFactsById.get(releaseId);
-    },
-
-    /**
-     * Batch readiness facts for an array of release IDs.
-     * Returns one row per release with the same fact columns as
-     * findReadinessFactsById. Releases with no release_assets rows still
-     * appear with zero counts (LEFT JOIN). Cross-project corrupt junction
-     * rows are ignored via the asset project_id guard.
-     *
-     * This is the single batch query that prevents N+1 readiness evaluation
-     * in planning views — the service layer calls evaluateReleaseReadiness
-     * on each returned fact row.
-     *
-     * IDs are deduplicated and processed in bounded chunks to stay below
-     * SQLite's variable limit (~999 per query). Results are combined and
-     * returned in deterministic order (r.id ASC).
-     *
-     * @param {number[]} ids — release IDs (empty array returns [])
-     * @returns {Array<{
-     *   release_id: number,
-     *   project_id: number,
-     *   project_status: string,
-     *   release_archived_at: string|null,
-     *   project_archived_at: string|null,
-     *   selected_asset_count: number,
-     *   present_selected_asset_count: number,
-     *   missing_selected_asset_count: number,
-     *   primary_role_count: number,
-     *   preview_role_count: number,
-     *   attachment_role_count: number,
-     *   source_role_count: number,
-     * }>}
-     */
-    findReadinessFactsByIds(ids) {
-      if (!Array.isArray(ids) || ids.length === 0) return [];
-
-      // Deduplicate and keep only valid positive integers
-      const unique = [...new Set(ids.filter((id) => Number.isInteger(id) && id > 0))];
-      if (unique.length === 0) return [];
-
-      // Sort numerically so chunk boundaries produce globally ordered results
-      // when each chunk sorts internally by r.id ASC. Without this, insertion
-      // order from Set iteration can place high IDs in early chunks and low
-      // IDs in later chunks, breaking the release_id ASC contract.
-      unique.sort((a, b) => a - b);
-
-      const CHUNK_SIZE = 500;
-      const results = [];
-
-      for (let i = 0; i < unique.length; i += CHUNK_SIZE) {
-        const chunk = unique.slice(i, i + CHUNK_SIZE);
-        const placeholders = chunk.map(() => '?').join(',');
-        const sql = `
-          SELECT
-            r.id AS release_id,
-            r.project_id,
-            p.status AS project_status,
-            r.archived_at AS release_archived_at,
-            p.archived_at AS project_archived_at,
-            COUNT(DISTINCT CASE WHEN a.id IS NOT NULL THEN a.id END) AS selected_asset_count,
-            COUNT(DISTINCT CASE WHEN a.is_present = 1 THEN a.id END) AS present_selected_asset_count,
-            COUNT(DISTINCT CASE WHEN a.is_present = 0 THEN a.id END) AS missing_selected_asset_count,
-            COUNT(DISTINCT CASE WHEN a.id IS NOT NULL AND ra.role = 'primary' THEN a.id END) AS primary_role_count,
-            COUNT(DISTINCT CASE WHEN a.id IS NOT NULL AND ra.role = 'preview' THEN a.id END) AS preview_role_count,
-            COUNT(DISTINCT CASE WHEN a.id IS NOT NULL AND ra.role = 'attachment' THEN a.id END) AS attachment_role_count,
-            COUNT(DISTINCT CASE WHEN a.id IS NOT NULL AND ra.role = 'source' THEN a.id END) AS source_role_count
-          FROM releases r
-          JOIN projects p ON p.id = r.project_id
-          LEFT JOIN release_assets ra ON ra.release_id = r.id
-          LEFT JOIN assets a ON a.id = ra.asset_id AND a.project_id = r.project_id
-          WHERE r.id IN (${placeholders})
-          GROUP BY r.id
-          ORDER BY r.id ASC
-        `;
-        const chunkResults = db.prepare(sql).all(...chunk);
-        results.push(...chunkResults);
-      }
-
-      // Defensive: ensure globally sorted even if chunk boundaries shift
-      results.sort((a, b) => a.release_id - b.release_id);
-
-      return results;
-    },
-
-    /**
      * Find releases that use a given asset.
      * @param {number} assetId
      * @returns {ReleaseAssetRecord[]}
@@ -1317,37 +1074,6 @@ export function createReleaseRepository(db) {
     // ─── Phase 6C: Release Planning Views ─────────────────────────────────
 
     /**
-     * Apply a narrow SQL readiness classification to an existing set of
-     * WHERE conditions. This is the repository-side projection of the
-     * shared readiness policy used only for list/board filtering; the JS
-     * policy remains authoritative for publishing and UI indicators.
-     *
-     * Unknown readiness values are ignored (treated as 'all').
-     *
-     * @param {string[]} conditions
-     * @param {Object} filters
-     * @param {string} [filters.readiness] - 'all'|'publishable'|'blocked-ready'
-     */
-    _applyReadinessFilter(conditions, filters) {
-      if (!['publishable', 'blocked-ready'].includes(filters.readiness)) return;
-
-      const selected = selectedAssetCountSubquery('releases');
-      const missing = missingAssetCountSubquery('releases');
-
-      conditions.push("projects.status = 'ready'");
-      conditions.push('releases.archived_at IS NULL');
-      conditions.push('releases.published_date IS NULL');
-      conditions.push(ACTIVE_PARENT_PROJECT);
-
-      if (filters.readiness === 'publishable') {
-        conditions.push(`${selected} > 0`);
-        conditions.push(`${missing} = 0`);
-      } else {
-        conditions.push(`(${selected} = 0 OR ${missing} > 0)`);
-      }
-    },
-
-    /**
      * Build the WHERE conditions and params for release list queries.
      * Returns { conditions: string[], params: any[] }.
      * @param {Object} filters
@@ -1428,7 +1154,6 @@ export function createReleaseRepository(db) {
      * @param {boolean} filters.includeArchived
      * @param {string} filters.today
      * @param {boolean} filters.activeScheduleFilter
-     * @param {'all'|'publishable'|'blocked-ready'} [filters.readiness]
      * @param {string} [filters.sortBy='updated']
      * @param {string} [filters.order='desc']
      * @param {number} [filters.limit=25]
@@ -1452,8 +1177,6 @@ export function createReleaseRepository(db) {
       const { conditions, params } = this._buildFilterConditions({
         search, projectId, schedule, includeArchived, today, activeScheduleFilter,
       });
-      this._applyReadinessFilter(conditions, filters);
-
       const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
       const orderClause = buildOrderClauseWithTable('releases', sortBy, order);
 
@@ -1486,7 +1209,6 @@ export function createReleaseRepository(db) {
      * Count of matching releases for pagination metadata.
      * Uses the same filter conditions as findPage but without LIMIT/OFFSET.
      * @param {Object} filters - same shape as findPage (without limit/offset/sort)
-     * @param {'all'|'publishable'|'blocked-ready'} [filters.readiness]
      * @returns {number}
      */
     countFiltered(filters) {
@@ -1502,8 +1224,6 @@ export function createReleaseRepository(db) {
       const { conditions, params } = this._buildFilterConditions({
         search, projectId, schedule, includeArchived, today, activeScheduleFilter,
       });
-      this._applyReadinessFilter(conditions, filters);
-
       const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
       const sql = `SELECT COUNT(*) AS c FROM releases JOIN projects ON projects.id = releases.project_id ${where}`;
       const row = db.prepare(sql).get(...params);
@@ -1519,7 +1239,6 @@ export function createReleaseRepository(db) {
      * @param {boolean} filters.includeArchived
      * @param {string} filters.today
      * @param {boolean} filters.activeScheduleFilter
-     * @param {'all'|'publishable'|'blocked-ready'} [filters.readiness]
      * @returns {Array<ReleaseRecord & {project_title: string, selected_asset_count: number, missing_asset_count: number}>}
      */
     findBoard(filters) {
@@ -1535,8 +1254,6 @@ export function createReleaseRepository(db) {
       const { conditions, params } = this._buildFilterConditions({
         search, projectId, schedule, includeArchived, today, activeScheduleFilter,
       });
-      this._applyReadinessFilter(conditions, filters);
-
       const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
 
       const selectedCountSubquery = `(SELECT COUNT(DISTINCT a.id) FROM release_assets ra JOIN assets a ON a.id = ra.asset_id AND a.project_id = releases.project_id WHERE ra.release_id = releases.id)`;

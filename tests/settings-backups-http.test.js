@@ -46,8 +46,8 @@ function activeNavKeys(html) {
 function insertProject(db, title) {
   return db
     .prepare(
-      `INSERT INTO projects (title, slug, description, notes, status, priority, planned_date, published_date, patreon_url)
-       VALUES (?, ?, '', '', 'tbd', 'normal', NULL, NULL, NULL)`
+      `INSERT INTO projects (title, slug, description, notes, status, planned_date, published_date, patreon_url)
+       VALUES (?, ?, '', '', 'tbd', NULL, NULL, NULL)`
     )
     .run(title, title.toLowerCase().replace(/\s+/g, '-')).lastInsertRowid;
 }

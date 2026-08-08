@@ -38,8 +38,8 @@ function hasClass(html, className) {
 function insertProject(db, title, { archivedAt = null, status = 'tbd' } = {}) {
   const slug = `${title.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   return db.prepare(`
-    INSERT INTO projects (title, slug, description, notes, status, priority, archived_at)
-    VALUES (?, ?, '', '', ?, 'normal', ?)
+    INSERT INTO projects (title, slug, description, notes, status, archived_at)
+    VALUES (?, ?, '', '', ?, ?)
     RETURNING id
   `).get(title, slug, status, archivedAt);
 }

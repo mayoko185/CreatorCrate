@@ -55,7 +55,6 @@
     <div class="project-detail-summary">
       <div class="project-detail-meta">
         {% set status = project.status %}{% include "partials/status-badge.njk" %}
-        <span class="project-detail-priority">{{ project.priority | title }} priority</span>
         {% if project.patreon_url %}
           <a class="project-detail-link" href="{{ project.patreon_url }}" target="_blank" rel="noopener">Project link</a>
         {% endif %}
@@ -165,7 +164,7 @@
       </ul>
     {% else %}
       {% set emptyHeading = "No release records for this project." %}
-      {% set emptyDescription = "Create one only when you need asset packaging, readiness checks, or a separate release history entry." %}
+      {% set emptyDescription = "Create one only when you need asset packaging or a separate release history entry." %}
       {% set emptyHeadingLevel = "h3" %}
       {% include "partials/empty-state.njk" %}
     {% endif %}
