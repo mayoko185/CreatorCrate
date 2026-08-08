@@ -248,6 +248,7 @@ export function createProjectRepository(db) {
      * @param {string} [options.search]
      * @param {number} [options.tagId]
      * @param {number[]} [options.tagIds]
+     * @param {number} [options.projectId]
      * @param {boolean} [options.includeArchived]
      * @param {string} [options.sortBy]
      * @param {string} [options.order]
@@ -262,6 +263,7 @@ export function createProjectRepository(db) {
         search,
         tagId,
         tagIds,
+        projectId,
         includeArchived = false,
         sortBy = 'updated',
         order = 'desc',
@@ -274,6 +276,11 @@ export function createProjectRepository(db) {
 
       const conditions = [];
       const params = [];
+
+      if (projectId != null) {
+        conditions.push('projects.id = ?');
+        params.push(projectId);
+      }
 
       if (!includeArchived) {
         conditions.push('archived_at IS NULL');
@@ -348,10 +355,14 @@ const ALLOWED_SORTS = {
   updated: { column: 'updated_at' },
   created: { column: 'created_at' },
   title: { column: 'title COLLATE NOCASE' },
+  published: { column: 'published_date', nullsLast: true },
 };
 
 function buildOrderClause(sortBy, order) {
   const sort = ALLOWED_SORTS[sortBy] || ALLOWED_SORTS.updated;
   const direction = order === 'asc' ? 'ASC' : 'DESC';
+  if (sort.nullsLast) {
+    return `ORDER BY (${sort.column} IS NULL) ASC, ${sort.column} ${direction}`;
+  }
   return `ORDER BY ${sort.column} ${direction}`;
 }

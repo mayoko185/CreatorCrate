@@ -1557,6 +1557,12 @@
       .asset-viewer-display-controls .asset-grid-size-controls {
         margin-bottom: 0;
       }
+      .asset-viewer-display-controls .project-filter-actions {
+        display: flex;
+        align-items: center;
+        gap: var(--space-sm);
+        margin-left: auto;
+      }
       .asset-viewer-grid-size-controls {
         display: flex;
         flex: 0 1 11rem;
@@ -1596,6 +1602,11 @@
       .asset-viewer-filters {
         position: relative;
         z-index: 20;
+      }
+      /* Projects page: keep Sort/Sort order selects visually aligned with
+         the Status/Tag disclosure summaries (min-height: 2.5rem). */
+      #project-filters .field select {
+        min-height: 2.5rem;
       }
       .asset-viewer-filter-field {
         position: relative;
@@ -2700,6 +2711,14 @@
         .filters {
           flex-direction: column;
         }
+        .asset-viewer-display-controls .project-filter-actions {
+          width: 100%;
+          margin-left: 0;
+        }
+        .asset-viewer-display-controls .project-filter-actions .button {
+          flex: 1 1 auto;
+          justify-content: center;
+        }
         .field {
           min-width: 0;
           width: 100%;
@@ -3173,33 +3192,6 @@
         width: auto;
         max-width: 100%;
         height: auto;
-      }
-      .project-grid-card-top {
-        position: relative;
-        z-index: 2;
-        display: flex;
-        align-items: center;
-        justify-content: flex-start;
-        gap: var(--space-sm);
-        min-width: 0;
-        padding: var(--space-xs) var(--space-sm);
-      }
-      .project-grid-card-status {
-        display: inline-flex;
-        align-items: center;
-        min-width: 0;
-      }
-      .project-grid-card-priority {
-        min-width: 0;
-        max-width: 100%;
-        margin-left: auto;
-        color: var(--muted);
-        font-size: 0.75rem;
-        font-weight: 600;
-        letter-spacing: 0.04em;
-        text-transform: uppercase;
-        overflow-wrap: anywhere;
-        word-break: break-word;
       }
       .project-grid-card-preview {
         position: relative;

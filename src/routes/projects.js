@@ -9,7 +9,7 @@ import {
 } from '../services/project-service.js';
 import { buildOpenLocallyUri } from '../util/open-locally.js';
 
-const SORT_OPTIONS = ['updated', 'created', 'title'];
+const SORT_OPTIONS = ['updated', 'created', 'title', 'published'];
 const VIEW_OPTIONS = ['grid', 'list'];
 const PAGE_SIZE = 25;
 const NOTICES = {
@@ -44,8 +44,10 @@ export function createProjectsRouter({ appName, projectService, workflowQuerySer
       const { rows } = workflowQueryService.getProjectList({ ...parsedQuery, offset, limit: PAGE_SIZE });
       const pageUrl = buildPageUrl(req, parsedQuery, currentPage, pageDefaultsService);
       const filtersActive = Boolean(
-        parsedQuery.search || parsedQuery.statuses.length > 0 || parsedQuery.tagIds.length > 0,
+        parsedQuery.search || parsedQuery.statuses.length > 0 || parsedQuery.tagIds.length > 0 || parsedQuery.projectId != null,
       );
+      const projectOptions = workflowQueryService.getProjectsPageFilterOptions();
+      const selectedProject = projectOptions.find((project) => project.id === parsedQuery.projectId) || null;
 
       res.render('projects/index.njk', {
         appName,
@@ -63,6 +65,7 @@ export function createProjectsRouter({ appName, projectService, workflowQuerySer
           search: parsedQuery.search,
           statuses: parsedQuery.statuses,
           tagIds: parsedQuery.tagIds.map(String),
+          projectId: parsedQuery.projectId,
           sort: parsedQuery.sortBy,
           order: parsedQuery.order,
           view: parsedQuery.view,
@@ -73,6 +76,8 @@ export function createProjectsRouter({ appName, projectService, workflowQuerySer
         priorities: PRIORITIES,
         sortOptions: SORT_OPTIONS,
         tagOptions,
+        projectOptions,
+        selectedProject,
       });
     } catch (err) {
       next(err);
@@ -301,6 +306,7 @@ function parseListQuery(raw, pageDefaultsService, tagOptions = []) {
   const statuses = parseStatusFilterValues(rawQuery.status);
   const search = typeof rawQuery.search === 'string' ? rawQuery.search.trim() : '';
   const tagIds = parseTagFilterIds(rawQuery.tag, tagOptions);
+  const projectId = parseProjectFilterId(rawQuery.project);
   const sortBy = resolvedPresentation.sort;
   const order = resolvedPresentation.order;
   const view = resolvedPresentation.view;
@@ -318,6 +324,7 @@ function parseListQuery(raw, pageDefaultsService, tagOptions = []) {
     search,
     tagId: tagIds.length === 1 ? tagIds[0] : undefined,
     tagIds,
+    projectId,
     sortBy,
     order,
     view,
@@ -348,6 +355,16 @@ function parseTagFilterIds(value, tagOptions) {
   }, new Set());
 
   return [...selected].sort((left, right) => left - right);
+}
+
+function parseProjectFilterId(value) {
+  if (value === undefined || value === null || value === '') return null;
+
+  const candidate = String(value).trim();
+  if (!/^[1-9]\d*$/.test(candidate)) return null;
+
+  const id = Number(candidate);
+  return Number.isSafeInteger(id) && id > 0 ? id : null;
 }
 
 function hasPresentationQuery(raw) {
@@ -435,7 +452,7 @@ function buildPageUrl(req, parsedQuery, currentPage, pageDefaultsService) {
   return function pageUrl(overrides) {
     const query = { ...baseQuery };
     for (const [key, value] of Object.entries(overrides)) {
-      if (!['search', 'status', 'tag', 'sort', 'order', 'page', 'view'].includes(key)) continue;
+      if (!['search', 'status', 'tag', 'project', 'sort', 'order', 'page', 'view'].includes(key)) continue;
       if (value === undefined || value === null || value === '') {
         delete query[key];
       } else if (Array.isArray(value) && value.length === 0) {
@@ -465,6 +482,7 @@ function buildCanonicalPageQuery(req, parsedQuery, currentPage, pageDefaultsServ
   if (parsedQuery.search) query.search = parsedQuery.search;
   if (parsedQuery.statuses.length > 0) query.status = parsedQuery.statuses;
   if (parsedQuery.tagIds.length > 0) query.tag = parsedQuery.tagIds.map(String);
+  if (parsedQuery.projectId != null) query.project = String(parsedQuery.projectId);
 
   if (
     parsedQuery.sortBy !== fallbackSort

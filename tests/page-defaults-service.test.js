@@ -123,6 +123,33 @@ describe('page defaults service', () => {
     expect(PAGE_DEFAULT_DEFINITIONS).not.toHaveProperty('new_release');
   });
 
+  it('defines the exact Projects option allowlists, keys, and fallbacks', () => {
+    expect(PAGE_DEFAULT_DEFINITIONS.projects).toEqual({
+      view: {
+        key: 'page_defaults.projects.view',
+        values: ['grid', 'list'],
+        fallback: 'grid',
+      },
+      sort: {
+        key: 'page_defaults.projects.sort',
+        values: ['updated', 'created', 'title', 'published'],
+        fallback: 'created',
+      },
+      order: {
+        key: 'page_defaults.projects.order',
+        values: ['asc', 'desc'],
+        fallback: 'desc',
+      },
+    });
+  });
+
+  it('accepts published as a valid Projects sort default', () => {
+    repository.setValue(PAGE_DEFAULT_DEFINITIONS.projects.sort.key, 'published');
+
+    expect(service.getSavedDefault('projects', 'sort')).toBe('published');
+    expect(service.resolve('projects', 'sort')).toBe('published');
+  });
+
   it('defines the exact Release Management allowlists, keys, and fallbacks', () => {
     expect(PAGE_DEFAULT_DEFINITIONS.releaseManagement).toEqual({
       view: {
@@ -318,7 +345,7 @@ describe('page defaults service', () => {
   });
 
   it('rejects a value that belongs to another page allowlist', () => {
-    expect(() => service.saveDefault('projects', 'sort', 'published'))
+    expect(() => service.saveDefault('projects', 'sort', 'bogus'))
       .toThrow(PageDefaultValidationError);
     expect(() => service.saveDefault('projects', 'view', 'published'))
       .toThrow(PageDefaultValidationError);

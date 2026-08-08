@@ -184,6 +184,86 @@ describe('project repository', () => {
     expect(result.rows.map((project) => project.id)).not.toContain(assetOnlyProject.id);
   });
 
+  it('filters by a single project id while excluding other projects', () => {
+    const first = repository.create(sampleProject({ title: 'Project Filter First' }));
+    const second = repository.create(sampleProject({ title: 'Project Filter Second' }));
+    const third = repository.create(sampleProject({ title: 'Project Filter Third' }));
+
+    const result = repository.list({ projectId: second.id, sortBy: 'title', order: 'asc' });
+
+    expect(result.total).toBe(1);
+    expect(result.rows.map((project) => project.id)).toEqual([second.id]);
+    expect(result.rows.map((project) => project.id)).not.toContain(first.id);
+    expect(result.rows.map((project) => project.id)).not.toContain(third.id);
+  });
+
+  it('composes project id filter with status, search, and tag predicates', () => {
+    const tag = tagRepository.create({ displayName: 'Composed', normalizedName: 'composed' });
+    const match = repository.create(sampleProject({
+      title: 'Composed Match',
+      status: 'planned',
+      description: 'find me',
+    }));
+    const sameProjectWrongStatus = repository.create(sampleProject({
+      title: 'Same Project Wrong Status',
+      status: 'ready',
+    }));
+    const wrongProjectRightStatus = repository.create(sampleProject({
+      title: 'Wrong Project Right Status',
+      status: 'planned',
+      description: 'find me',
+    }));
+
+    tagRepository.assignToProject(match.id, tag.id);
+    tagRepository.assignToProject(sameProjectWrongStatus.id, tag.id);
+    tagRepository.assignToProject(wrongProjectRightStatus.id, tag.id);
+
+    const composed = repository.list({
+      projectId: match.id,
+      status: 'planned',
+      search: 'find me',
+      tagId: tag.id,
+    });
+
+    expect(composed.total).toBe(1);
+    expect(composed.rows[0].id).toBe(match.id);
+  });
+
+  it('sorts by published date with null values always last in both directions', () => {
+    const oldest = repository.create(sampleProject({
+      title: 'Oldest Published',
+      publishedDate: '2025-01-01',
+    }));
+    const newest = repository.create(sampleProject({
+      title: 'Newest Published',
+      publishedDate: '2025-12-31',
+    }));
+    const middle = repository.create(sampleProject({
+      title: 'Middle Published',
+      publishedDate: '2025-06-15',
+    }));
+    const unpublished = repository.create(sampleProject({
+      title: 'Unpublished',
+      publishedDate: null,
+    }));
+
+    const ascending = repository.list({ sortBy: 'published', order: 'asc' });
+    expect(ascending.rows.map((project) => project.id)).toEqual([
+      oldest.id,
+      middle.id,
+      newest.id,
+      unpublished.id,
+    ]);
+
+    const descending = repository.list({ sortBy: 'published', order: 'desc' });
+    expect(descending.rows.map((project) => project.id)).toEqual([
+      newest.id,
+      middle.id,
+      oldest.id,
+      unpublished.id,
+    ]);
+  });
+
   it('composes tag, search, status, and archived predicates and stops matching after tag deletion', () => {
     const tag = tagRepository.create({ displayName: 'Needle', normalizedName: 'needle' });
     const planned = repository.create(sampleProject({ title: 'Needle Planned', status: 'planned' }));

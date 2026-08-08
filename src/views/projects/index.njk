@@ -4,6 +4,14 @@
 {% import "partials/view-switcher.njk" as viewSwitcher %}
 
 {% set page_title = "Projects" %}
+{% set projectFilterHasSelection = false %}
+{% set projectFilterSummary = 'All projects' %}
+{% for project in projectOptions %}
+  {% if project.id == query.projectId %}
+    {% set projectFilterHasSelection = true %}
+    {% set projectFilterSummary = project.title %}
+  {% endif %}
+{% endfor %}
 
 {% macro renderFilterSummary(selectedValues, options, emptyLabel, countLabel, prefix) -%}
   {%- if selectedValues.length == 0 -%}
@@ -30,16 +38,63 @@
     {% if view == 'grid' %}
       {% include "partials/asset-grid-size-control.njk" %}
     {% endif %}
+
+    <div class="project-filter-actions">
+      <button class="button" type="submit" form="project-filters">Filter</button>
+      <a class="button button-secondary" href="{{ resetFiltersUrl }}">Reset</a>
+    </div>
   </div>
 
-  <form class="filters asset-viewer-filters" method="get" action="/projects">
+  <form id="project-filters" class="filters asset-viewer-filters" method="get" action="/projects">
     {% if view == 'list' or preserveViewQuery %}
       <input type="hidden" name="view" value="{{ view }}">
     {% endif %}
-    <div class="field">
-      <label for="search">Search</label>
-      <input type="search" id="search" name="search" value="{{ query.search or '' }}">
-    </div>
+
+    <fieldset class="field asset-viewer-filter-field asset-filter-multiselect-field asset-viewer-project-filter">
+      <legend>Project</legend>
+      <details class="asset-filter-multiselect asset-filter-multiselect--sized asset-project-filter-disclosure" data-asset-project-filter data-asset-viewer-filter-disclosure>
+        <summary id="project-project-filter-trigger"
+                 aria-controls="project-project-filter-options"
+                 aria-expanded="false"
+                 aria-label="Project filter: {{ projectFilterSummary }}"
+                 title="{{ projectFilterSummary }}">
+          <span class="asset-filter-multiselect-summary" data-asset-project-filter-summary>
+            <span class="asset-filter-multiselect-summary-current" data-asset-project-filter-current-summary>{{ projectFilterSummary }}</span>
+            <span class="asset-filter-multiselect-summary-width" aria-hidden="true">
+              <span>All projects</span>
+              {% for project in projectOptions %}
+                <span>{{ project.title }}</span>
+              {% endfor %}
+            </span>
+          </span>
+        </summary>
+        <div id="project-project-filter-options" class="asset-filter-multiselect-panel asset-project-filter-panel" role="group" aria-label="Project options">
+          <label class="asset-project-filter-search-label" for="project-project-filter-search">Search projects</label>
+          <input id="project-project-filter-search" class="asset-project-filter-search" type="search"
+                 autocomplete="off" data-asset-project-filter-search>
+          <div class="asset-project-filter-option-list" data-asset-project-filter-option-list role="radiogroup" aria-label="Project choices">
+            <div class="asset-filter-multiselect-option asset-project-filter-option"
+                 data-asset-project-filter-option data-project-title="All projects">
+              <label for="project-project-option-all">
+                <input id="project-project-option-all" name="project" type="radio" value=""{% if not projectFilterHasSelection %} checked{% endif %}>
+                <span>All projects</span>
+              </label>
+            </div>
+            {% for project in projectOptions %}
+              <div class="asset-filter-multiselect-option asset-project-filter-option"
+                   data-asset-project-filter-option data-project-title="{{ project.title }}">
+                <label for="project-project-option-{{ project.id }}">
+                  <input id="project-project-option-{{ project.id }}" name="project" type="radio" value="{{ project.id }}"{% if project.id == query.projectId %} checked{% endif %}>
+                  <span>{{ project.title }}</span>
+                </label>
+              </div>
+            {% endfor %}
+          </div>
+          <p class="asset-filter-multiselect-empty asset-project-filter-no-results"
+             data-asset-project-filter-no-results role="status" aria-live="polite" hidden>No matching projects</p>
+        </div>
+      </details>
+    </fieldset>
 
     <fieldset class="field asset-viewer-filter-field asset-filter-multiselect-field">
       <legend>Status</legend>
@@ -119,9 +174,6 @@
         <option value="asc" {% if query.order == 'asc' %}selected{% endif %}>Asc</option>
       </select>
     </div>
-
-    <button class="button" type="submit">Filter</button>
-    <a class="button button-secondary" href="{{ resetFiltersUrl }}">Reset Filters</a>
   </form>
 
   <p class="results-meta">{{ total }} project{% if total != 1 %}s{% endif %} found</p>
@@ -151,7 +203,7 @@
       {% set emptyHeading = "No projects found" %}
       {% set emptyDescription = "No projects match the current filters." %}
       {% set emptyActionUrl = resetFiltersUrl %}
-      {% set emptyActionLabel = "Reset Filters" %}
+      {% set emptyActionLabel = "Reset" %}
       {% set emptyHeadingLevel = "h2" %}
     {% else %}
       {% set emptyHeading = "No projects yet" %}

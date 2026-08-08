@@ -820,6 +820,22 @@ export function createWorkflowQueryService({
   }
 
   /**
+   * Return the active-project option source for the Projects filter.
+   * Mirrors listActiveAssetFilterOptions projection and title ordering
+   * so both cross-project surfaces share the same semantics. Options are
+   * independent of any current filter selection so the dropdown stays
+   * stable even when the list is narrowed to one project.
+   *
+   * @returns {Array<{ id: number, title: string }>}
+   */
+  function getProjectsPageFilterOptions() {
+    return projectRepository
+      .listActiveAssetFilterOptions()
+      .map((project) => ({ id: project.id, title: project.title }))
+      .sort(compareProjectOptions);
+  }
+
+  /**
    * Project-list read model foundation. Repository pagination and filtering
    * happen first; only the returned page rows receive primary-image and tag data.
    * Reads retain unavailable selections and never mutate primary-image state.
@@ -2446,6 +2462,7 @@ export function createWorkflowQueryService({
     getProjectWorkspace,
     getProjectList,
     getProjectTagFilterOptions,
+    getProjectsPageFilterOptions,
     getAssetLibraryPage,
     getReleaseList,
     getReleaseBoard,
