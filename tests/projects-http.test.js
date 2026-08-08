@@ -54,6 +54,51 @@ function extractStatusFilter(html) {
   return html.match(/<fieldset class="field asset-viewer-filter-field[^"]*">\s*<legend>Status<\/legend>[\s\S]*?<\/fieldset>/)?.[0] || '';
 }
 
+function extractProjectFormStatusField(html) {
+  return html.match(/<fieldset class="field[^"]*asset-viewer-filter-field[^"]*asset-filter-multiselect-field[^"]*">\s*<legend>Status[\s\S]*?<\/fieldset>/)?.[0] || '';
+}
+
+function extractProjectFormTagsField(html) {
+  return html.match(/<fieldset class="field[^"]*asset-viewer-filter-field[^"]*asset-filter-multiselect-field[^"]*">\s*<legend>Tags[\s\S]*?<\/fieldset>/)?.[0] || '';
+}
+
+function expectProjectFormStatusDisclosure(html, selectedStatus) {
+  const field = extractProjectFormStatusField(html);
+  expect(field).not.toBe('');
+  expect(field).toContain('asset-filter-multiselect asset-filter-multiselect--sized');
+  expect(field).toContain('data-asset-viewer-filter-disclosure');
+  expect(field).toContain('data-asset-viewer-filter-single-select');
+  expect(field).toContain('aria-controls="project-status-form-options"');
+  expect(field).toContain('class="asset-filter-multiselect-summary"');
+  expect(field).toContain('class="asset-filter-multiselect-summary-width" aria-hidden="true"');
+  expect(field).toContain('class="asset-filter-multiselect-panel" role="group" aria-label="Status options"');
+  expect(field).not.toContain('<select');
+
+  const radios = field.match(/<input[^>]*name="status"[^>]*type="radio"[^>]*>/g) || [];
+  expect(radios).toHaveLength(5);
+  expect(radios.every((radio) => /\brequired\b/.test(radio))).toBe(true);
+
+  const checked = field.match(/<input[^>]*name="status"[^>]*checked[^>]*>/g) || [];
+  expect(checked).toHaveLength(selectedStatus ? 1 : 0);
+
+  if (selectedStatus) {
+    const label = selectedStatus.replaceAll('-', ' ').replace(/\b\w/g, (character) => character.toUpperCase());
+    expect(field).toMatch(new RegExp(`name="status"[^>]*value="${selectedStatus}"[^>]*checked`));
+    expect(field).toContain(`class="asset-filter-multiselect-summary-current">${label}</span>`);
+  }
+
+  return field;
+}
+
+function expectProjectFormSectionCards(html) {
+  const cards = html.match(/<div class="settings-section(?: scheduling-section)?">\s*<h3>[^<]+<\/h3>/g) || [];
+  expect(cards).toHaveLength(3);
+  expect(html).toMatch(/<div class="settings-section">\s*<h3>Basic information<\/h3>/);
+  expect(html).toMatch(/<div class="settings-section scheduling-section">\s*<h3>Status and scheduling<\/h3>/);
+  expect(html).toMatch(/<div class="settings-section">\s*<h3>Links<\/h3>/);
+  expect(html).not.toContain('class="form-section"');
+}
+
 function extractProjectFilter(html) {
   return html.match(/<fieldset class="field asset-viewer-filter-field[^"]*">\s*<legend>Project<\/legend>[\s\S]*?<\/fieldset>/)?.[0] || '';
 }
@@ -946,14 +991,74 @@ describe('project HTTP workflow', () => {
     expect((extractTagFilter(pageTwo.text).match(/name="tag"[^>]+checked/g) || [])).toHaveLength(2);
   });
 
-  it('new-project form renders', async () => {
+  it('new-project form renders with available tags and no selected tags', async () => {
+    const alpha = app.locals.tagService.createTag({ name: 'Form Alpha' });
+    const beta = app.locals.tagService.createTag({ name: 'Form Beta' });
+
     const res = await agent.get('/projects/new').expect(200);
     expect(res.text).toContain('Create Project');
     expect(res.text).toContain('Title');
-    expect(res.text).not.toContain('value="archived"');
-    expect(res.text).toContain('<option value="tbd" selected>Tbd</option>');
+    expectProjectFormSectionCards(res.text);
+    const statusField = expectProjectFormStatusDisclosure(res.text, 'tbd');
+    expect(statusField).not.toContain('value="archived"');
     expect(res.text).not.toContain('id="priority"');
     expect(res.text).not.toContain('name="priority"');
+
+    const tagsField = extractProjectFormTagsField(res.text);
+    expect(tagsField).not.toBe('');
+    expect(tagsField).toContain('data-asset-viewer-filter-disclosure');
+    expect(tagsField).toContain('data-asset-viewer-filter-multi-select');
+    expect(tagsField).not.toContain('data-asset-viewer-filter-single-select');
+    expect(tagsField).toContain('name="tagIds[]"');
+    expect(tagsField).toContain(`value="${alpha.id}"`);
+    expect(tagsField).toContain(`value="${beta.id}"`);
+    expect(tagsField).toContain('Form Alpha');
+    expect(tagsField).toContain('Form Beta');
+    expect(tagsField).toContain('type="checkbox"');
+    expect(tagsField).not.toContain('required');
+    expect(tagsField).toContain('No tags selected');
+    expect((tagsField.match(/name="tagIds\[\]"[^\u003e]*checked/g) || [])).toHaveLength(0);
+
+    expect(res.text.indexOf('project-status-form-trigger'))
+      .toBeLessThan(res.text.indexOf('project-tags-form-trigger'));
+    expect(res.text.indexOf('project-tags-form-trigger'))
+      .toBeLessThan(res.text.indexOf('plannedDate'));
+    expect(res.text.indexOf('plannedDate'))
+      .toBeLessThan(res.text.indexOf('publishedDate'));
+  });
+
+  it('new-project form renders an empty tag catalog with a Settings link', async () => {
+    const res = await agent.get('/projects/new').expect(200);
+    const tagsField = extractProjectFormTagsField(res.text);
+    expect(tagsField).toContain('No tags available');
+    expect(tagsField).toContain('href="/settings/tags"');
+    expect(tagsField).toContain('Add tags in Settings');
+    expect(tagsField).toContain('Add new tags in <a href="/settings/tags">Settings › Tags</a>');
+  });
+
+  it('project form places actions in the page heading and associates the submit button with the form', async () => {
+    const create = await agent.get('/projects/new').expect(200);
+    const createActions = extractPageHeadingActions(create.text);
+    expect(createActions).toContain('<button class="button button-primary" type="submit" form="project-form">Create</button>');
+    expect(createActions).toContain('<a class="button button-secondary" href="/projects">Cancel</a>');
+    expect(create.text).toContain('<form id="project-form" method="post" action="/projects" class="project-form" novalidate>');
+    expect(create.text.indexOf('<div class="page-heading-actions">')).toBeLessThan(create.text.indexOf('<form id="project-form"'));
+    expect(create.text).not.toContain('<div class="form-actions">');
+
+    const createRes = await agent
+      .post('/projects')
+      .send('title=Heading+Actions+Project')
+      .send('status=tbd')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .expect(302);
+    const location = createRes.headers.location;
+    const edit = await agent.get(`${location}/edit`).expect(200);
+    const editActions = extractPageHeadingActions(edit.text);
+    expect(editActions).toContain('<button class="button button-primary" type="submit" form="project-form">Edit</button>');
+    expect(editActions).toContain(`<a class="button button-secondary" href="${location}">Cancel</a>`);
+    expect(edit.text).toContain(`<form id="project-form" method="post" action="${location}" class="project-form" novalidate>`);
+    expect(edit.text).not.toContain('<div class="form-actions">');
   });
 
   it('new-project form seeds the valid saved New Project status default', async () => {
@@ -961,16 +1066,14 @@ describe('project HTTP workflow', () => {
 
     const res = await agent.get('/projects/new').expect(200);
 
-    expect(res.text).toContain('<option value="ready" selected>Ready</option>');
-    expect(res.text).not.toContain('<option value="tbd" selected>Tbd</option>');
+    expectProjectFormStatusDisclosure(res.text, 'ready');
     expect(res.text).not.toContain('id="priority"');
   });
 
   it('new-project form uses the tbd fallback when no status default is saved', async () => {
     const res = await agent.get('/projects/new').expect(200);
 
-    expect(res.text).toContain('<option value="tbd" selected>Tbd</option>');
-    expect(res.text).not.toContain('<option value="ready" selected>Ready</option>');
+    expectProjectFormStatusDisclosure(res.text, 'tbd');
     expect(res.text).not.toContain('id="priority"');
   });
 
@@ -980,7 +1083,7 @@ describe('project HTTP workflow', () => {
 
     const res = await agent.get('/projects/new').expect(200);
 
-    expect(res.text).toContain('<option value="tbd" selected>Tbd</option>');
+    expectProjectFormStatusDisclosure(res.text, 'tbd');
     expect(res.text).not.toContain('id="priority"');
   });
 
@@ -995,8 +1098,7 @@ describe('project HTTP workflow', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .expect(422);
 
-    expect(res.text).toContain('<option value="in-progress" selected>In Progress</option>');
-    expect(res.text).not.toContain('<option value="ready" selected>Ready</option>');
+    expectProjectFormStatusDisclosure(res.text, 'in-progress');
     expect(res.text).not.toContain('id="priority"');
   });
 
@@ -1022,8 +1124,7 @@ describe('project HTTP workflow', () => {
 
     const res = await agent.get(`/projects/${id}/edit`).expect(200);
 
-    expect(res.text).toContain('<option value="in-progress" selected>In Progress</option>');
-    expect(res.text).not.toContain('<option value="ready" selected>Ready</option>');
+    expectProjectFormStatusDisclosure(res.text, 'in-progress');
     expect(res.text).not.toContain('id="priority"');
   });
 
@@ -1038,6 +1139,68 @@ describe('project HTTP workflow', () => {
         .send('_csrf=' + encodeURIComponent(csrfToken))
       .expect(302);
     expect(res.headers.location).toMatch(/^\/projects\/\d+$/);
+  });
+
+  it('create persists multiple selected tags and redirects to detail', async () => {
+    const alpha = app.locals.tagService.createTag({ name: 'Create Alpha' });
+    const beta = app.locals.tagService.createTag({ name: 'Create Beta' });
+
+    const res = await agent
+      .post('/projects')
+      .send('title=Tagged+Create')
+      .send('status=tbd')
+      .send(`tagIds[]=${alpha.id}`)
+      .send(`tagIds[]=${beta.id}`)
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .expect(302);
+
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const assigned = app.locals.projectTagService.listProjectTags(id).map((tag) => tag.id);
+    expect(assigned).toHaveLength(2);
+    expect(assigned).toContain(alpha.id);
+    expect(assigned).toContain(beta.id);
+  });
+
+  it('create with no tags leaves no assignments', async () => {
+    const res = await agent
+      .post('/projects')
+      .send('title=Untagged+Create')
+      .send('status=tbd')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .expect(302);
+
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const assigned = app.locals.projectTagService.listProjectTags(id);
+    expect(assigned).toHaveLength(0);
+  });
+
+  it('create with a stale deleted tag returns 422 without creating the project', async () => {
+    const alpha = app.locals.tagService.createTag({ name: 'Stale Create Alpha' });
+    const beta = app.locals.tagService.createTag({ name: 'Stale Create Beta' });
+
+    app.locals.tagService.deleteTag(alpha.id);
+
+    const beforeCount = db.prepare('SELECT COUNT(*) AS count FROM projects').get().count;
+    const res = await agent
+      .post('/projects')
+      .send('title=Stale+Tag+Create')
+      .send('status=tbd')
+      .send(`tagIds[]=${alpha.id}`)
+      .send(`tagIds[]=${beta.id}`)
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .expect(422);
+
+    const afterCount = db.prepare('SELECT COUNT(*) AS count FROM projects').get().count;
+    expect(afterCount).toBe(beforeCount);
+    expect(res.text).toContain('One or more selected tags no longer exists. Refresh and try again.');
+
+    const tagsField = extractProjectFormTagsField(res.text);
+    expect(tagsField).toMatch(new RegExp(`value="${beta.id}"[^\u003e]*checked`));
+    expect(tagsField).toContain('Stale Create Beta');
+    expect(tagsField).toContain('2 tags selected');
   });
 
   it('invalid create request rerenders with values and errors', async () => {
@@ -1057,7 +1220,7 @@ describe('project HTTP workflow', () => {
     expect(res.text).toContain('value="Create Preserves"');
     expect(res.text).toContain('A');
     expect(res.text).toContain('Create notes');
-    expect(res.text).toContain('<option value="ready" selected>Ready</option>');
+    expectProjectFormStatusDisclosure(res.text, 'ready');
     expect(res.text).not.toContain('id="priority"');
     expect(res.text).toContain('value="2026-08-01"');
     expect(res.text).toContain('value="2026-08-15"');
@@ -1167,6 +1330,106 @@ describe('project HTTP workflow', () => {
     expect(detail.text).toContain('New Name');
   });
 
+  it('edit replaces existing tag assignments with the submitted set', async () => {
+    const alpha = app.locals.tagService.createTag({ name: 'Edit Alpha' });
+    const beta = app.locals.tagService.createTag({ name: 'Edit Beta' });
+    const gamma = app.locals.tagService.createTag({ name: 'Edit Gamma' });
+    const createRes = await agent
+      .post('/projects')
+      .send('title=Tag+Edit')
+      .send('status=tbd')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .expect(302);
+    const id = Number(createRes.headers.location.replace('/projects/', ''));
+    app.locals.projectTagService.replaceProjectTags(id, [alpha.id, beta.id]);
+
+    await agent
+      .post(createRes.headers.location)
+      .send('title=Tag+Edit')
+      .send('status=tbd')
+      .send(`tagIds[]=${beta.id}`)
+      .send(`tagIds[]=${gamma.id}`)
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .expect(302);
+
+    const assigned = app.locals.projectTagService.listProjectTags(id).map((tag) => tag.id);
+    expect(assigned).toHaveLength(2);
+    expect(assigned).not.toContain(alpha.id);
+    expect(assigned).toContain(beta.id);
+    expect(assigned).toContain(gamma.id);
+  });
+
+  it('edit with no tags clears existing assignments', async () => {
+    const alpha = app.locals.tagService.createTag({ name: 'Edit Clear' });
+    const createRes = await agent
+      .post('/projects')
+      .send('title=Tag+Clear')
+      .send('status=tbd')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .expect(302);
+    const id = Number(createRes.headers.location.replace('/projects/', ''));
+    app.locals.projectTagService.replaceProjectTags(id, [alpha.id]);
+
+    await agent
+      .post(createRes.headers.location)
+      .send('title=Tag+Clear')
+      .send('status=tbd')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .expect(302);
+
+    const assigned = app.locals.projectTagService.listProjectTags(id);
+    expect(assigned).toHaveLength(0);
+  });
+
+  it('edit with a stale deleted tag returns 422 without mutating the project or its tags', async () => {
+    const alpha = app.locals.tagService.createTag({ name: 'Stale Edit Alpha' });
+    const beta = app.locals.tagService.createTag({ name: 'Stale Edit Beta' });
+    const gamma = app.locals.tagService.createTag({ name: 'Stale Edit Gamma' });
+
+    const createRes = await agent
+      .post('/projects')
+      .send('title=Stale+Tag+Edit')
+      .send('status=tbd')
+      .send('plannedDate=2026-08-01')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .expect(302);
+    const id = Number(createRes.headers.location.replace('/projects/', ''));
+    app.locals.projectTagService.replaceProjectTags(id, [alpha.id, beta.id]);
+
+    app.locals.tagService.deleteTag(alpha.id);
+
+    const res = await agent
+      .post(createRes.headers.location)
+      .send('title=Stale+Tag+Edit+Modified')
+      .send('status=planned')
+      .send('plannedDate=2026-09-01')
+      .send(`tagIds[]=${alpha.id}`)
+      .send(`tagIds[]=${gamma.id}`)
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .expect(422);
+
+    expect(res.text).toContain('One or more selected tags no longer exists. Refresh and try again.');
+
+    const project = db.prepare('SELECT title, status, planned_date FROM projects WHERE id = ?').get(id);
+    expect(project.title).toBe('Stale Tag Edit');
+    expect(project.status).toBe('tbd');
+    expect(project.planned_date).toBe('2026-08-01');
+
+    const rawAssigned = db.prepare('SELECT tag_id FROM project_tags WHERE project_id = ? ORDER BY tag_id').all(id).map((row) => row.tag_id);
+    expect(rawAssigned).toEqual([beta.id]);
+
+    const tagsField = extractProjectFormTagsField(res.text);
+    expect(tagsField).toMatch(new RegExp(`value="${gamma.id}"[^\u003e]*checked`));
+    expect(tagsField).toContain('Stale Edit Gamma');
+    expect(tagsField).toContain('2 tags selected');
+  });
+
   it('rejects archived status on update', async () => {
     const createRes = await agent
       .post('/projects')
@@ -1186,7 +1449,7 @@ describe('project HTTP workflow', () => {
 
   it('rejects published status and does not render it as a project choice', async () => {
     const form = await agent.get('/projects/new').expect(200);
-    expect(form.text).not.toContain('<option value="published"');
+    expect(form.text).not.toMatch(/<input[^>]*name="status"[^>]*value="published"/);
 
     const res = await agent
       .post('/projects')
@@ -1196,7 +1459,11 @@ describe('project HTTP workflow', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .expect(422);
     expect(res.text).toContain('Status must be one of');
-    expect(res.text).not.toContain('<option value="published"');
+    const statusField = expectProjectFormStatusDisclosure(res.text, null);
+    expect(statusField).not.toMatch(/<input[^>]*name="status"[^>]*value="published"/);
+    expect(statusField).toContain('field-error');
+    expect(statusField).toContain('class="field-error-message" id="status-error"');
+    expect(statusField).toMatch(/<input[^>]*name="status"[^>]*aria-describedby="status-error"[^>]*aria-invalid="true"/);
   });
 
   it('invalid edit request rerenders with submitted values and errors', async () => {
@@ -1225,7 +1492,7 @@ describe('project HTTP workflow', () => {
     expect(res.text).toContain('value="Edit Preserves Submitted"');
     expect(res.text).toContain('Submitted description');
     expect(res.text).toContain('Submitted notes');
-    expect(res.text).toContain('<option value="in-progress" selected>In Progress</option>');
+    expectProjectFormStatusDisclosure(res.text, 'in-progress');
     expect(res.text).not.toContain('id="priority"');
     expect(res.text).toContain('value="2026-10-01"');
     expect(res.text).toContain('value="2026-10-15"');
@@ -1234,6 +1501,80 @@ describe('project HTTP workflow', () => {
     expect(res.text).toContain('Status and scheduling');
     expect(res.text).toContain('Links');
     expect(res.text).toContain(`href="${createRes.headers.location}"`);
+  });
+
+  it('edit form checks currently assigned tags and renders the multi-tag summary', async () => {
+    const alpha = app.locals.tagService.createTag({ name: 'Edit Render Alpha' });
+    const beta = app.locals.tagService.createTag({ name: 'Edit Render Beta' });
+    const gamma = app.locals.tagService.createTag({ name: 'Edit Render Gamma' });
+    const createRes = await agent
+      .post('/projects')
+      .send('title=Edit+Render+Tags')
+      .send('status=tbd')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .expect(302);
+    const id = Number(createRes.headers.location.replace('/projects/', ''));
+    app.locals.projectTagService.replaceProjectTags(id, [alpha.id, beta.id]);
+
+    const res = await agent.get(`${createRes.headers.location}/edit`).expect(200);
+    const tagsField = extractProjectFormTagsField(res.text);
+    expect(tagsField).toMatch(new RegExp(`value="${alpha.id}"[^\u003e]*checked`));
+    expect(tagsField).toMatch(new RegExp(`value="${beta.id}"[^\u003e]*checked`));
+    expect(tagsField).not.toMatch(new RegExp(`value="${gamma.id}"[^\u003e]*checked`));
+    expect(tagsField).toContain('2 tags selected');
+    expect(tagsField).toContain('Edit Render Alpha');
+    expect(tagsField).toContain('Edit Render Beta');
+    expect(tagsField).toContain('Edit Render Gamma');
+  });
+
+  it('invalid edit submission preserves selected tag IDs in the form model', async () => {
+    const alpha = app.locals.tagService.createTag({ name: 'Preserve Alpha' });
+    const beta = app.locals.tagService.createTag({ name: 'Preserve Beta' });
+    const createRes = await agent
+      .post('/projects')
+      .send('title=Preserve+Tags')
+      .send('status=tbd')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .expect(302);
+
+    const res = await agent
+      .post(createRes.headers.location)
+      .send('title=Preserve+Tags')
+      .send('status=tbd')
+      .send('patreonUrl=not-a-url')
+      .send(`tagIds[]=${alpha.id}`)
+      .send(`tagIds[]=${beta.id}`)
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .expect(422);
+
+    expect(res.text).toContain('Project link must be a valid absolute HTTP or HTTPS URL.');
+    const tagsField = extractProjectFormTagsField(res.text);
+    expect(tagsField).toMatch(new RegExp(`value="${alpha.id}"[^\u003e]*checked`));
+    expect(tagsField).toMatch(new RegExp(`value="${beta.id}"[^\u003e]*checked`));
+    expect(tagsField).toContain('2 tags selected');
+  });
+
+  it('invalid create submission preserves selected tag IDs in the form model', async () => {
+    const alpha = app.locals.tagService.createTag({ name: 'Create Preserve Alpha' });
+
+    const res = await agent
+      .post('/projects')
+      .send('title=')
+      .send('status=tbd')
+      .send(`tagIds[]=${alpha.id}`)
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .expect(422);
+
+    expect(res.text).toContain('Title is required.');
+    expect(res.text).toContain('id="project-form"');
+    const tagsField = extractProjectFormTagsField(res.text);
+    expect(tagsField).toMatch(new RegExp(`value="${alpha.id}"[^\u003e]*checked`));
+    expect(tagsField).toContain('Create Preserve Alpha');
+    expect(tagsField).toMatch(/\b1 tag selected\b/);
   });
 
   it('missing project returns 404', async () => {
@@ -2260,6 +2601,34 @@ describe('project HTTP workflow', () => {
       expect(container).not.toBeNull();
       expect(container).toContain('When the project was published');
       expect(container).toMatch(/<input[^>]*id="publishedDate"[^>]*>/);
+    });
+
+    it('project form renders canonical date-picker controls for planned and published dates', async () => {
+      const res = await agent.get('/projects/new').expect(200);
+      const schedulingMatch = res.text.match(/<div class="field-row scheduling-row">[\s\S]*?<\/div>\s*(?=<div class="settings-section">)/);
+      expect(schedulingMatch).not.toBeNull();
+      const schedulingRow = schedulingMatch[0];
+
+      expect(schedulingRow).toContain('id="project-status-form-trigger"');
+      expect(schedulingRow).toMatch(/<input[^>]*name="status"[^>]*type="radio"[^>]*value="tbd"[^>]*checked/);
+      expect(schedulingRow).toMatch(/<input class="picker-input"[^>]*type="date"[^>]*id="plannedDate"[^>]*name="plannedDate"[^>]*aria-describedby="plannedDate-help"[^>]*data-date-picker-input>/);
+      expect(schedulingRow).toMatch(/<input class="picker-input"[^>]*type="date"[^>]*id="publishedDate"[^>]*name="publishedDate"[^>]*aria-describedby="publishedDate-help"[^>]*data-date-picker-input>/);
+      expect(schedulingRow).toContain('Target date for the creative project');
+      expect(schedulingRow).toContain('When the project was published');
+      expect(schedulingRow).not.toContain('plannedTime');
+      expect(schedulingRow).not.toContain('time-picker');
+
+      expect(schedulingRow.match(/<div class="picker-control">/g) || []).toHaveLength(2);
+      expect(schedulingRow.match(/<div class="picker-input-row">/g) || []).toHaveLength(2);
+      expect(schedulingRow.match(/<input class="picker-input"[^>]*>/g) || []).toHaveLength(2);
+      const pickerTriggers = schedulingRow.match(/<button[^>]*class="picker-trigger[^"]*"[^>]*>/g) || [];
+      expect(pickerTriggers).toHaveLength(2);
+      expect(pickerTriggers.every((button) => /\btype="button"/.test(button))).toBe(true);
+      expect(schedulingRow).toMatch(/<button[^>]*class="picker-trigger date-picker-trigger"[^>]*aria-controls="plannedDate-calendar"[^>]*>/);
+      expect(schedulingRow).toMatch(/<button[^>]*class="picker-trigger date-picker-trigger"[^>]*aria-controls="publishedDate-calendar"[^>]*>/);
+      expect(schedulingRow).toMatch(/<div[^>]*id="plannedDate-calendar"[^>]*class="date-picker-panel"[^>]*role="dialog"[^>]*aria-label="Planned date calendar"[^>]*hidden[^>]*data-date-picker-panel[^>]*data-date-picker-for="plannedDate"[^>]*>/);
+      expect(schedulingRow).toMatch(/<div[^>]*id="publishedDate-calendar"[^>]*class="date-picker-panel"[^>]*role="dialog"[^>]*aria-label="Published date calendar"[^>]*hidden[^>]*data-date-picker-panel[^>]*data-date-picker-for="publishedDate"[^>]*>/);
+      expect(schedulingRow).not.toContain('aria-modal="true"');
     });
 
     it('project form shows generic project-link help text in the correct field container', async () => {

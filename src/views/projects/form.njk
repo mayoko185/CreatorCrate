@@ -6,7 +6,10 @@
 {% set formDescription = "Create a tracked project record." if action == 'Create' else "Update project metadata and planning fields." %}
 
 {% block content %}
-  {{ pageHeading.render(formDescription) }}
+  {% call pageHeading.render(formDescription) %}
+    <button class="button button-primary" type="submit" form="project-form">{{ action }}</button>
+    <a class="button button-secondary" href="{% if project %}/projects/{{ project.id }}{% else %}/projects{% endif %}">Cancel</a>
+  {% endcall %}
 
   {% if errors.general %}
     <div class="error-summary" role="alert">
@@ -14,10 +17,10 @@
     </div>
   {% endif %}
 
-  <form method="post" action="{{ submitUrl }}" class="project-form" novalidate>
+  <form id="project-form" method="post" action="{{ submitUrl }}" class="project-form" novalidate>
     <input type="hidden" name="_csrf" value="{{ _csrf }}">
-    <div class="form-section">
-      <h2>Basic information</h2>
+    <div class="settings-section">
+      <h3>Basic information</h3>
 
       <div class="field {% if errors.title %}field-error{% endif %}">
         <label for="title">Title <span class="required" aria-label="required">*</span></label>
@@ -38,38 +41,125 @@
       </div>
     </div>
 
-    <div class="form-section">
-      <h2>Status and scheduling</h2>
+    <div class="settings-section scheduling-section">
+      <h3>Status and scheduling</h3>
 
-      <div class="field {% if errors.status %}field-error{% endif %}">
-        <label for="status">Status <span class="required" aria-label="required">*</span></label>
-        <select id="status" name="status" required{% if errors.status %} aria-describedby="status-error" aria-invalid="true"{% endif %}>
-          {% for s in statuses %}
-            <option value="{{ s }}" {% if values.status == s %}selected{% endif %}>{{ s | replace('-', ' ') | title }}</option>
-          {% endfor %}
-        </select>
-        {% if errors.status %}<span class="field-error-message" id="status-error">{{ errors.status }}</span>{% endif %}
-      </div>
+      {% set statusSummary = '' %}
+      {% for s in statuses %}
+        {% if values.status == s %}
+          {% set statusSummary = s | replace('-', ' ') | title %}
+        {% endif %}
+      {% endfor %}
 
-      <div class="field-row">
-        <div class="field {% if errors.plannedDate %}field-error{% endif %}">
+      {% set tagSummary = 'No tags selected' %}
+      {% if selectedTagIds.length == 1 %}
+        {% for tag in tags %}
+          {% if selectedTagIds[0] == (tag.id | string) %}
+            {% set tagSummary = tag.displayName %}
+          {% endif %}
+        {% endfor %}
+      {% elif selectedTagIds.length > 1 %}
+        {% set tagSummary = selectedTagIds.length ~ ' tags selected' %}
+      {% endif %}
+
+      <div class="field-row scheduling-row">
+        <fieldset class="field scheduling-field asset-viewer-filter-field asset-filter-multiselect-field{% if errors.status %} field-error{% endif %}">
+          <legend>Status <span class="required" aria-label="required">*</span></legend>
+          <details class="asset-filter-multiselect asset-filter-multiselect--sized" data-asset-viewer-filter-disclosure data-asset-viewer-filter-single-select>
+            <summary id="project-status-form-trigger"
+                     aria-controls="project-status-form-options"
+                     aria-expanded="false"
+                     aria-label="Status: {{ statusSummary }}">
+              <span class="asset-filter-multiselect-summary">
+                <span class="asset-filter-multiselect-summary-current">{{ statusSummary }}</span>
+                <span class="asset-filter-multiselect-summary-width" aria-hidden="true">
+                  {% for s in statuses %}<span>{{ s | replace('-', ' ') | title }}</span>{% endfor %}
+                </span>
+              </span>
+            </summary>
+            <div id="project-status-form-options" class="asset-filter-multiselect-panel" role="group" aria-label="Status options">
+              {% for s in statuses %}
+                <div class="asset-filter-multiselect-option">
+                  <label for="project-status-form-option-{{ loop.index }}">
+                    <input id="project-status-form-option-{{ loop.index }}" name="status" type="radio" value="{{ s }}"{% if values.status == s %} checked{% endif %} required{% if errors.status %} aria-describedby="status-error" aria-invalid="true"{% endif %}>
+                    <span>{{ s | replace('-', ' ') | title }}</span>
+                  </label>
+                </div>
+              {% endfor %}
+            </div>
+          </details>
+          {% if errors.status %}<span class="field-error-message" id="status-error">{{ errors.status }}</span>{% endif %}
+        </fieldset>
+
+        <fieldset class="field scheduling-field asset-viewer-filter-field asset-filter-multiselect-field{% if errors.tagIds %} field-error{% endif %}">
+          <legend>Tags</legend>
+          <details class="asset-filter-multiselect asset-filter-multiselect--sized" data-asset-viewer-filter-disclosure data-asset-viewer-filter-multi-select>
+            <summary id="project-tags-form-trigger"
+                     aria-controls="project-tags-form-options"
+                     aria-expanded="false"
+                     aria-label="Tags: {{ tagSummary }}">
+              <span class="asset-filter-multiselect-summary">
+                <span class="asset-filter-multiselect-summary-current">{{ tagSummary }}</span>
+                <span class="asset-filter-multiselect-summary-width" aria-hidden="true">
+                  <span>No tags selected</span>
+                  {% for tag in tags %}<span>{{ tag.displayName }}</span>{% endfor %}
+                  {% if selectedTagIds.length == 1 %}<span>1 tag selected</span>{% else %}<span>{{ selectedTagIds.length }} tags selected</span>{% endif %}
+                </span>
+              </span>
+            </summary>
+            <div id="project-tags-form-options" class="asset-filter-multiselect-panel" role="group" aria-label="Tag options">
+              {% if tags.length > 0 %}
+                {% for tag in tags %}
+                  <div class="asset-filter-multiselect-option">
+                    <label for="project-tags-form-option-{{ loop.index }}">
+                       <input id="project-tags-form-option-{{ loop.index }}" name="tagIds[]" type="checkbox" value="{{ tag.id }}"{% if (tag.id | string) in selectedTagIds %} checked{% endif %}{% if errors.tagIds %} aria-describedby="tagIds-error" aria-invalid="true"{% endif %}>
+                      <span>{{ tag.displayName }}</span>
+                    </label>
+                  </div>
+                {% endfor %}
+              {% else %}
+                <p class="asset-filter-multiselect-empty">No tags available. <a href="/settings/tags">Add tags in Settings</a>.</p>
+              {% endif %}
+            </div>
+          </details>
+          {% if errors.tagIds %}<span class="field-error-message" id="tagIds-error">{{ errors.tagIds }}</span>{% endif %}
+          <span class="help-text">Add new tags in <a href="/settings/tags">Settings › Tags</a>.</span>
+        </fieldset>
+
+        <div class="field scheduling-field {% if errors.plannedDate %}field-error{% endif %}" data-date-picker-field>
           <label for="plannedDate">Planned date</label>
-          <input type="date" id="plannedDate" name="plannedDate" value="{{ values.plannedDate or '' }}" aria-describedby="plannedDate-help{% if errors.plannedDate %} plannedDate-error{% endif %}"{% if errors.plannedDate %} aria-invalid="true"{% endif %}>
+          <div class="picker-control">
+            <div class="picker-input-row">
+              <input class="picker-input" type="date" id="plannedDate" name="plannedDate" value="{{ values.plannedDate or '' }}" aria-describedby="plannedDate-help{% if errors.plannedDate %} plannedDate-error{% endif %}"{% if errors.plannedDate %} aria-invalid="true"{% endif %} data-date-picker-input>
+              <button type="button" class="picker-trigger date-picker-trigger" aria-haspopup="dialog" aria-expanded="false" aria-controls="plannedDate-calendar" aria-label="Open calendar for planned date">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" focusable="false"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>
+              </button>
+            </div>
+            <div id="plannedDate-calendar" class="date-picker-panel" role="dialog" aria-label="Planned date calendar" hidden data-date-picker-panel data-date-picker-for="plannedDate"></div>
+          </div>
           <span class="help-text" id="plannedDate-help">Target date for the creative project</span>
           {% if errors.plannedDate %}<span class="field-error-message" id="plannedDate-error">{{ errors.plannedDate }}</span>{% endif %}
         </div>
 
-        <div class="field {% if errors.publishedDate %}field-error{% endif %}">
+        <div class="field scheduling-field {% if errors.publishedDate %}field-error{% endif %}" data-date-picker-field>
           <label for="publishedDate">Published date</label>
-          <input type="date" id="publishedDate" name="publishedDate" value="{{ values.publishedDate or '' }}" aria-describedby="publishedDate-help{% if errors.publishedDate %} publishedDate-error{% endif %}"{% if errors.publishedDate %} aria-invalid="true"{% endif %}>
+          <div class="picker-control">
+            <div class="picker-input-row">
+              <input class="picker-input" type="date" id="publishedDate" name="publishedDate" value="{{ values.publishedDate or '' }}" aria-describedby="publishedDate-help{% if errors.publishedDate %} publishedDate-error{% endif %}"{% if errors.publishedDate %} aria-invalid="true"{% endif %} data-date-picker-input>
+              <button type="button" class="picker-trigger date-picker-trigger" aria-haspopup="dialog" aria-expanded="false" aria-controls="publishedDate-calendar" aria-label="Open calendar for published date">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" focusable="false"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>
+              </button>
+            </div>
+            <div id="publishedDate-calendar" class="date-picker-panel" role="dialog" aria-label="Published date calendar" hidden data-date-picker-panel data-date-picker-for="publishedDate"></div>
+          </div>
           <span class="help-text" id="publishedDate-help">When the project was published</span>
           {% if errors.publishedDate %}<span class="field-error-message" id="publishedDate-error">{{ errors.publishedDate }}</span>{% endif %}
         </div>
       </div>
     </div>
 
-    <div class="form-section">
-      <h2>Links</h2>
+    <div class="settings-section">
+      <h3>Links</h3>
 
       <div class="field {% if errors.patreonUrl %}field-error{% endif %}">
         <label for="patreonUrl">Project link</label>
@@ -79,10 +169,6 @@
       </div>
     </div>
 
-    <div class="form-actions">
-      <button class="button button-primary" type="submit">{{ action }}</button>
-      <a class="button button-secondary" href="{% if project %}/projects/{{ project.id }}{% else %}/projects{% endif %}">Cancel</a>
-    </div>
   </form>
 
   {% if action == 'Edit' and project and not project.archived_at %}

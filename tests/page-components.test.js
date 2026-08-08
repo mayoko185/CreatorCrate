@@ -142,13 +142,18 @@ describe('Phase 10.5A: Shared page-level components', () => {
       return match ? match[0] : '';
     }
 
-    it('project form has exactly one h1 from the header and renders no empty page-heading wrapper', async () => {
+    it('project form has exactly one h1 from the header and carries form actions in page-heading', async () => {
       const res = await agent.get('/projects/new').expect(200);
       expect(countTags(res.text, 'h1')).toBe(1);
       expect(res.text).toContain('<h1 class="app-section-title">Projects — Create Project</h1>');
-      // The project form has no navigation or badge for page-heading to carry —
-      // it must not render an empty wrapper.
-      expect(hasClass(res.text, 'page-heading')).toBe(false);
+      // The project form now renders Create/Save and Cancel inside the
+      // page-heading actions wrapper; it must not be empty.
+      expect(hasClass(res.text, 'page-heading')).toBe(true);
+      const heading = extractPageHeading(res.text);
+      expect(countTags(heading, 'h1')).toBe(0);
+      expect(heading).toContain('<div class="page-heading-actions">');
+      expect(heading).toContain('form="project-form"');
+      expect(heading).toContain('>Cancel</a>');
     });
 
     it('release form has exactly one h1 and renders no empty page-heading wrapper', async () => {

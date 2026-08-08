@@ -2145,6 +2145,93 @@ describe('Asset Viewer filter disclosure dismissal', () => {
     return { scope, scopeListeners, disclosures, outside };
   }
 
+  function makeSingleSelectDisclosureFixture() {
+    const scopeListeners = [];
+    const summaryAttrs = { 'aria-label': 'Status: Planned' };
+    const currentSummary = { textContent: 'Planned' };
+    const radios = [];
+    const summary = {
+      setAttribute(name, value) { summaryAttrs[name] = String(value); },
+      getAttribute(name) { return summaryAttrs[name] || null; },
+    };
+    const disclosure = {
+      open: false,
+      dataset: { assetViewerFilterSingleSelect: '' },
+      querySelector(selector) {
+        if (selector === 'summary') return summary;
+        if (selector === '.asset-filter-multiselect-summary-current') return currentSummary;
+        if (selector === 'input[type="radio"]:checked') return radios.find((radio) => radio.checked) || null;
+        return null;
+      },
+    };
+
+    for (const [value, labelText] of [['planned', 'Planned'], ['published', 'Published']]) {
+      const label = { textContent: labelText };
+      radios.push({
+        type: 'radio',
+        name: 'status',
+        value,
+        checked: value === 'planned',
+        closest(selector) {
+          if (selector === 'label') return label;
+          return selector === '[data-asset-viewer-filter-disclosure]' ? disclosure : null;
+        },
+      });
+    }
+
+    const scope = {
+      querySelectorAll(selector) {
+        return selector === '[data-asset-viewer-filter-disclosure]' ? [disclosure] : [];
+      },
+      addEventListener(type, handler, options) {
+        scopeListeners.push({ type, handler, options });
+      },
+      dispatch(type, target, props = {}) {
+        const event = {
+          type,
+          target,
+          defaultPrevented: false,
+          preventDefault() { this.defaultPrevented = true; },
+          ...props,
+        };
+        scopeListeners
+          .filter((listener) => listener.type === type)
+          .forEach((listener) => listener.handler(event));
+        return event;
+      },
+    };
+
+    return { scope, scopeListeners, disclosure, summaryAttrs, currentSummary, radios };
+  }
+
+  it('initializes an opt-in single-select disclosure without replacing its server-rendered summary', () => {
+    const fixture = makeSingleSelectDisclosureFixture();
+
+    expect(enhanceAssetViewerFilterDisclosures(fixture.scope)).toBe(1);
+    expect(fixture.currentSummary.textContent).toBe('Planned');
+    expect(fixture.radios.find((radio) => radio.checked).value).toBe('planned');
+    expect(fixture.scopeListeners.filter(({ type }) => type === 'change')).toHaveLength(1);
+  });
+
+  it('updates the visible summary immediately while preserving the selected radio submission state', () => {
+    const fixture = makeSingleSelectDisclosureFixture();
+    const planned = fixture.radios.find((radio) => radio.value === 'planned');
+    const published = fixture.radios.find((radio) => radio.value === 'published');
+
+    enhanceAssetViewerFilterDisclosures(fixture.scope);
+    planned.checked = false;
+    published.checked = true;
+    const changeEvent = fixture.scope.dispatch('change', published);
+
+    expect(changeEvent.defaultPrevented).toBe(false);
+    expect(fixture.currentSummary.textContent).toBe('Published');
+    expect(fixture.summaryAttrs['aria-label']).toBe('Status: Published');
+    expect(published.checked).toBe(true);
+    expect(published.name).toBe('status');
+    expect(published.value).toBe('published');
+    expect(planned.checked).toBe(false);
+  });
+
   it('closes every Asset Viewer disclosure on outside click and keeps the listener set scoped and unique', () => {
     const fixture = makeDisclosureFixture();
 
@@ -2202,6 +2289,126 @@ describe('Asset Viewer filter disclosure dismissal', () => {
     expect(category.open).toBe(false);
     expect(category.summary.attrs['aria-expanded']).toBe('false');
     expect(category.summary.focused).toBe(true);
+  });
+
+  function makeMultiSelectDisclosureFixture() {
+    const scopeListeners = [];
+    const summaryAttrs = { 'aria-label': 'Tags: No tags selected' };
+    const currentSummary = { textContent: 'No tags selected' };
+    const checkboxes = [];
+    const summary = {
+      setAttribute(name, value) { summaryAttrs[name] = String(value); },
+      getAttribute(name) { return summaryAttrs[name] || null; },
+    };
+    const disclosure = {
+      open: false,
+      dataset: { assetViewerFilterMultiSelect: '' },
+      querySelector(selector) {
+        if (selector === 'summary') return summary;
+        if (selector === '.asset-filter-multiselect-summary-current') return currentSummary;
+        return null;
+      },
+      querySelectorAll(selector) {
+        return selector === 'input[type="checkbox"]' ? checkboxes : [];
+      },
+    };
+
+    for (const [value, labelText] of [['1', 'Alpha'], ['2', 'Beta'], ['3', 'Gamma']]) {
+      const label = { textContent: labelText };
+      const input = {
+        type: 'checkbox',
+        name: 'tagIds[]',
+        value,
+        checked: false,
+        closest(selector) {
+          if (selector === 'label') return label;
+          return selector === '[data-asset-viewer-filter-disclosure]' ? disclosure : null;
+        },
+      };
+      checkboxes.push(input);
+    }
+
+    const scope = {
+      querySelectorAll(selector) {
+        return selector === '[data-asset-viewer-filter-disclosure]' ? [disclosure] : [];
+      },
+      addEventListener(type, handler, options) {
+        scopeListeners.push({ type, handler, options });
+      },
+      dispatch(type, target, props = {}) {
+        const event = {
+          type,
+          target,
+          defaultPrevented: false,
+          preventDefault() { this.defaultPrevented = true; },
+          ...props,
+        };
+        scopeListeners
+          .filter((listener) => listener.type === type)
+          .forEach((listener) => listener.handler(event));
+        return event;
+      },
+    };
+
+    return { scope, scopeListeners, disclosure, summaryAttrs, currentSummary, checkboxes };
+  }
+
+  it('initializes a multi-select disclosure without replacing the server-rendered summary', () => {
+    const fixture = makeMultiSelectDisclosureFixture();
+    fixture.checkboxes[0].checked = true;
+
+    expect(enhanceAssetViewerFilterDisclosures(fixture.scope)).toBe(1);
+    expect(fixture.currentSummary.textContent).toBe('Alpha');
+    expect(fixture.summaryAttrs['aria-label']).toBe('Tags: Alpha');
+  });
+
+  it('updates the visible multi-select summary for one, multiple, and zero selections', () => {
+    const fixture = makeMultiSelectDisclosureFixture();
+
+    enhanceAssetViewerFilterDisclosures(fixture.scope);
+    expect(fixture.currentSummary.textContent).toBe('No tags selected');
+
+    fixture.checkboxes[0].checked = true;
+    const alphaEvent = fixture.scope.dispatch('change', fixture.checkboxes[0]);
+    expect(alphaEvent.defaultPrevented).toBe(false);
+    expect(fixture.currentSummary.textContent).toBe('Alpha');
+    expect(fixture.summaryAttrs['aria-label']).toBe('Tags: Alpha');
+
+    fixture.checkboxes[1].checked = true;
+    fixture.scope.dispatch('change', fixture.checkboxes[1]);
+    expect(fixture.currentSummary.textContent).toBe('2 tags selected');
+    expect(fixture.summaryAttrs['aria-label']).toBe('Tags: 2 tags selected');
+
+    fixture.checkboxes[0].checked = false;
+    fixture.checkboxes[1].checked = false;
+    fixture.scope.dispatch('change', fixture.checkboxes[0]);
+    fixture.scope.dispatch('change', fixture.checkboxes[1]);
+    expect(fixture.currentSummary.textContent).toBe('No tags selected');
+    expect(fixture.summaryAttrs['aria-label']).toBe('Tags: No tags selected');
+  });
+
+  it('keeps checkbox checked states native and submittable in multi-select disclosures', () => {
+    const fixture = makeMultiSelectDisclosureFixture();
+
+    enhanceAssetViewerFilterDisclosures(fixture.scope);
+    fixture.checkboxes[0].checked = true;
+    fixture.scope.dispatch('change', fixture.checkboxes[0]);
+
+    expect(fixture.checkboxes[0].checked).toBe(true);
+    expect(fixture.checkboxes[0].name).toBe('tagIds[]');
+    expect(fixture.checkboxes[0].value).toBe('1');
+    expect(fixture.checkboxes[1].checked).toBe(false);
+  });
+
+  it('keeps disclosure dismissal behavior active when multi-select options are changed', () => {
+    const fixture = makeMultiSelectDisclosureFixture();
+    const outside = { closest() { return null; } };
+
+    enhanceAssetViewerFilterDisclosures(fixture.scope);
+    fixture.disclosure.open = true;
+    fixture.scope.dispatch('click', outside);
+    expect(fixture.disclosure.open).toBe(false);
+    expect(fixture.summaryAttrs['aria-expanded']).toBe('false');
   });
 });
 

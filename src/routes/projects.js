@@ -5,6 +5,11 @@ import {
   STATUSES,
   WORKFLOW_STATUSES,
 } from '../services/project-service.js';
+import {
+  ProjectNotFoundError as ProjectTagProjectNotFoundError,
+  ProjectTagValidationError,
+  TagNotFoundError as ProjectTagTagNotFoundError,
+} from '../services/project-tag-service.js';
 import { buildOpenLocallyUri } from '../util/open-locally.js';
 
 const SORT_OPTIONS = ['updated', 'created', 'title', 'published'];
@@ -81,22 +86,33 @@ export function createProjectsRouter({ appName, projectService, workflowQuerySer
     }
   });
 
-  router.get('/new', (req, res) => {
-    res.render('projects/form.njk', {
-      appName,
-      project: null,
-      values: createNewProjectFormValues(req.query || {}, getPageDefaultsService(req)),
-      errors: {},
-      statuses: WORKFLOW_STATUSES,
-      action: 'Create',
-      submitUrl: '/projects',
-    });
+  router.get('/new', (req, res, next) => {
+    try {
+      const { tags, selectedTagIds } = buildTagFormModel(req);
+      res.render('projects/form.njk', {
+        appName,
+        project: null,
+        values: createNewProjectFormValues(req.query || {}, getPageDefaultsService(req)),
+        errors: {},
+        statuses: WORKFLOW_STATUSES,
+        action: 'Create',
+        submitUrl: '/projects',
+        tags,
+        selectedTagIds,
+      });
+    } catch (err) {
+      next(err);
+    }
   });
 
   router.post('/', (req, res, next) => {
+    const parsedTags = parseProjectFormTagIds(req.body?.tagIds);
+
     try {
+      validateSubmittedTagsExist(req, parsedTags);
       const input = parseProjectInput(req.body);
       const project = projectService.create(input);
+      persistProjectTags(req, project.id, parsedTags);
       res.redirect(`/projects/${project.id}`);
     } catch (err) {
       if (err instanceof ProjectValidationError) {
@@ -108,6 +124,8 @@ export function createProjectsRouter({ appName, projectService, workflowQuerySer
           statuses: WORKFLOW_STATUSES,
           action: 'Create',
           submitUrl: '/projects',
+          tags: loadAvailableTags(req),
+          selectedTagIds: buildSubmittedSelectedTagIds(parsedTags),
         });
         return;
       }
@@ -120,6 +138,8 @@ export function createProjectsRouter({ appName, projectService, workflowQuerySer
         statuses: WORKFLOW_STATUSES,
         action: 'Create',
         submitUrl: '/projects',
+        tags: loadAvailableTags(req),
+        selectedTagIds: buildSubmittedSelectedTagIds(parsedTags),
       });
     }
   });
@@ -171,15 +191,22 @@ export function createProjectsRouter({ appName, projectService, workflowQuerySer
       return res.redirect(`/projects/${project.id}`);
     }
 
-    res.render('projects/form.njk', {
-      appName,
-      project,
-      values: projectToFormValues(project),
-      errors: {},
-      statuses: WORKFLOW_STATUSES,
-      action: 'Edit',
-      submitUrl: `/projects/${project.id}`,
-    });
+    try {
+      const { tags, selectedTagIds } = buildTagFormModel(req, project.id);
+      res.render('projects/form.njk', {
+        appName,
+        project,
+        values: projectToFormValues(project),
+        errors: {},
+        statuses: WORKFLOW_STATUSES,
+        action: 'Edit',
+        submitUrl: `/projects/${project.id}`,
+        tags,
+        selectedTagIds,
+      });
+    } catch (err) {
+      next(err);
+    }
   });
 
   router.post('/:id', (req, res, next) => {
@@ -188,12 +215,16 @@ export function createProjectsRouter({ appName, projectService, workflowQuerySer
       return next(createNotFound());
     }
 
+    const parsedTags = parseProjectFormTagIds(req.body?.tagIds);
+
     try {
+      validateSubmittedTagsExist(req, parsedTags);
       const input = parseProjectInput(req.body);
       const project = projectService.update(id, input);
       if (!project) {
         return next(createNotFound());
       }
+      persistProjectTags(req, project.id, parsedTags);
       res.redirect(`/projects/${project.id}`);
     } catch (err) {
       if (err instanceof ProjectNotFoundError) {
@@ -209,6 +240,8 @@ export function createProjectsRouter({ appName, projectService, workflowQuerySer
           statuses: WORKFLOW_STATUSES,
           action: 'Edit',
           submitUrl: `/projects/${id}`,
+          tags: loadAvailableTags(req),
+          selectedTagIds: buildSubmittedSelectedTagIds(parsedTags),
         });
         return;
       }
@@ -222,6 +255,8 @@ export function createProjectsRouter({ appName, projectService, workflowQuerySer
         statuses: WORKFLOW_STATUSES,
         action: 'Edit',
         submitUrl: `/projects/${id}`,
+        tags: loadAvailableTags(req),
+        selectedTagIds: buildSubmittedSelectedTagIds(parsedTags),
       });
     }
   });
@@ -283,12 +318,154 @@ function buildStatusFilterOptions(selectedStatuses) {
   }));
 }
 
+function getTagService(req) {
+  const service = req.app?.locals?.tagService;
+  if (!service) {
+    throw new Error('Project form requires app.locals.tagService.');
+  }
+  return service;
+}
+
 function getProjectTagService(req) {
   const service = req.app?.locals?.projectTagService;
   if (!service) {
     throw new Error('Project detail requires app.locals.projectTagService.');
   }
   return service;
+}
+
+function toTagView(tag) {
+  return {
+    id: tag.id,
+    displayName: tag.display_name,
+  };
+}
+
+function loadAvailableTags(req) {
+  return getTagService(req).listTags().map(toTagView);
+}
+
+function loadAssignedTagIds(req, projectId) {
+  return getProjectTagService(req)
+    .listProjectTags(projectId)
+    .map((tag) => String(tag.id));
+}
+
+function buildTagFormModel(req, projectId) {
+  const tags = loadAvailableTags(req);
+  const selectedTagIds = projectId === undefined ? [] : loadAssignedTagIds(req, projectId);
+  return { tags, selectedTagIds };
+}
+
+function normalizeTagIdField(raw) {
+  if (raw === undefined) return { valid: true, ids: [] };
+  if (raw === null) return { valid: false, ids: [] };
+  if (typeof raw === 'string') {
+    return raw === '' ? { valid: true, ids: [] } : { valid: true, ids: [raw] };
+  }
+  if (Array.isArray(raw)) {
+    if (raw.some((value) => typeof value !== 'string' && typeof value !== 'number')) {
+      return { valid: false, ids: [] };
+    }
+    return { valid: true, ids: raw.map(String) };
+  }
+  if (typeof raw === 'object') {
+    const keys = Object.keys(raw);
+    if (keys.some((key) => !/^\d+$/.test(key))) return { valid: false, ids: [] };
+    const values = Object.values(raw);
+    if (values.some((value) => typeof value !== 'string' && typeof value !== 'number')) {
+      return { valid: false, ids: [] };
+    }
+    return { valid: true, ids: values.map(String) };
+  }
+  return { valid: false, ids: [] };
+}
+
+function parseProjectFormTagIds(raw) {
+  const normalized = normalizeTagIdField(raw);
+  if (!normalized.valid) {
+    return {
+      valid: false,
+      tagIds: [],
+      submittedTagIds: [],
+      error: 'Tag selections must be submitted as a flat list of tag IDs.',
+    };
+  }
+
+  const tagIds = [];
+  for (const rawId of normalized.ids) {
+    if (!/^[1-9]\d*$/.test(rawId)) {
+      return {
+        valid: false,
+        tagIds: [],
+        submittedTagIds: normalized.ids,
+        error: 'Tag selections must contain canonical positive integer IDs.',
+      };
+    }
+    const tagId = Number(rawId);
+    if (!Number.isSafeInteger(tagId) || String(tagId) !== rawId) {
+      return {
+        valid: false,
+        tagIds: [],
+        submittedTagIds: normalized.ids,
+        error: 'Tag selections must contain safe positive integer IDs.',
+      };
+    }
+    tagIds.push(tagId);
+  }
+
+  return {
+    valid: true,
+    tagIds,
+    submittedTagIds: normalized.ids,
+    error: null,
+  };
+}
+
+function buildSubmittedSelectedTagIds(parsedTags) {
+  return parsedTags.valid ? parsedTags.submittedTagIds : parsedTags.submittedTagIds;
+}
+
+function validateSubmittedTagsExist(req, parsedTags) {
+  if (!parsedTags.valid || parsedTags.tagIds.length === 0) {
+    return;
+  }
+
+  const availableTagIds = new Set(getTagService(req).listTags().map((tag) => tag.id));
+  if (!parsedTags.tagIds.every((tagId) => availableTagIds.has(tagId))) {
+    throw new ProjectValidationError({
+      tagIds: 'One or more selected tags no longer exists. Refresh and try again.',
+    });
+  }
+}
+
+function persistProjectTags(req, projectId, parsedTags) {
+  if (!parsedTags.valid) {
+    return;
+  }
+
+  try {
+    getProjectTagService(req).replaceProjectTags(projectId, parsedTags.tagIds);
+  } catch (err) {
+    if (err instanceof ProjectTagProjectNotFoundError) {
+      // The project was just created/updated by projectService, so this should
+      // not happen in normal operation. Re-throw as a standard 404 path.
+      throw createNotFound();
+    }
+    if (err instanceof ProjectTagTagNotFoundError) {
+      // A selected tag was removed between form render and submission. Treat
+      // as a stale-selection error without breaking project creation/update.
+      throw new ProjectValidationError({
+        tagIds: 'One or more selected tags no longer exists. Refresh and try again.',
+      });
+    }
+    if (err instanceof ProjectTagValidationError) {
+      throw new ProjectValidationError(err.errors || {
+        tagIds: err.message || 'Tag selection is invalid.',
+      });
+    }
+    throw err;
+  }
 }
 
 function parseListQuery(raw, pageDefaultsService, tagOptions = []) {
@@ -393,11 +570,6 @@ function createFormValues(values) {
   return formValues;
 }
 
-// New-project initial values only. The saved New Project status default seeds
-// the first render; a saved value that is missing, invalid, or obsolete falls
-// back to the service's application fallback. Any status carried on the query
-// string takes precedence over the saved default. This path is never used for
-// submission re-rendering, so submitted values are unaffected.
 function createNewProjectFormValues(query, pageDefaultsService) {
   return {
     ...createFormValues(query),

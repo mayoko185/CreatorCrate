@@ -1413,6 +1413,9 @@ const ASSET_PROJECT_FILTER_CURRENT_SUMMARY_SELECTOR = '[data-asset-project-filte
 const ASSET_PROJECT_FILTER_EMPTY_SELECTOR = '[data-asset-project-filter-no-results]';
 const PROJECT_ASSET_CATEGORY_FILTER_SELECTOR = '[data-asset-category-filter]';
 const ASSET_VIEWER_FILTER_DISCLOSURE_SELECTOR = '[data-asset-viewer-filter-disclosure]';
+const ASSET_VIEWER_FILTER_SINGLE_SELECT_SELECTOR = '[data-asset-viewer-filter-single-select]';
+const ASSET_VIEWER_FILTER_MULTI_SELECT_SELECTOR = '[data-asset-viewer-filter-multi-select]';
+const ASSET_VIEWER_FILTER_SINGLE_SELECT_SUMMARY_SELECTOR = '.asset-filter-multiselect-summary-current';
 const ASSET_VIEWER_INFO_SELECTOR = '[data-asset-info-card]';
 const ASSET_VIEWER_PREVIEW_SELECTOR = '[data-asset-viewer-preview]';
 const ASSET_VIEWER_INFO_GUTTER = 8;
@@ -1834,6 +1837,74 @@ function updateAssetViewerFilterDisclosureState(disclosure) {
   disclosure?.querySelector?.('summary')?.setAttribute?.('aria-expanded', String(disclosure.open === true));
 }
 
+function isAssetViewerFilterSingleSelect(disclosure) {
+  return Object.hasOwn(disclosure?.dataset || {}, 'assetViewerFilterSingleSelect');
+}
+
+function isAssetViewerFilterMultiSelect(disclosure) {
+  return Object.hasOwn(disclosure?.dataset || {}, 'assetViewerFilterMultiSelect');
+}
+
+function assetViewerFilterSingleSelectLabel(input) {
+  const labelText = String(input?.closest?.('label')?.textContent || '').trim().replace(/\s+/g, ' ');
+  return labelText || String(input?.value ?? '').trim();
+}
+
+function assetViewerFilterMultiSelectLabel(input) {
+  return String(input?.closest?.('label')?.textContent || '').trim().replace(/\s+/g, ' ');
+}
+
+function updateAssetViewerFilterSingleSelectSummary(disclosure) {
+  if (!isAssetViewerFilterSingleSelect(disclosure)) return;
+
+  const selectedInput = disclosure.querySelector?.('input[type="radio"]:checked');
+  const selectedLabel = assetViewerFilterSingleSelectLabel(selectedInput);
+  if (!selectedInput || selectedLabel === '') return;
+
+  const currentSummary = disclosure.querySelector?.(ASSET_VIEWER_FILTER_SINGLE_SELECT_SUMMARY_SELECTOR);
+  if (currentSummary) currentSummary.textContent = selectedLabel;
+
+  const summary = disclosure.querySelector?.('summary');
+  const ariaLabel = summary?.getAttribute?.('aria-label');
+  if (typeof ariaLabel !== 'string' || ariaLabel === '') return;
+
+  const separator = ariaLabel.indexOf(':');
+  summary.setAttribute(
+    'aria-label',
+    separator >= 0 ? `${ariaLabel.slice(0, separator + 1)} ${selectedLabel}` : selectedLabel,
+  );
+}
+
+function updateAssetViewerFilterMultiSelectSummary(disclosure) {
+  if (!isAssetViewerFilterMultiSelect(disclosure)) return;
+
+  const inputs = Array.from(disclosure.querySelectorAll?.('input[type="checkbox"]') || []);
+  const selectedInputs = inputs.filter((input) => input.checked);
+  const summary = disclosure.querySelector?.('summary');
+  const currentSummary = disclosure.querySelector?.(ASSET_VIEWER_FILTER_SINGLE_SELECT_SUMMARY_SELECTOR);
+  if (!summary || !currentSummary) return;
+
+  let summaryText;
+  if (selectedInputs.length === 0) {
+    summaryText = 'No tags selected';
+  } else if (selectedInputs.length === 1) {
+    summaryText = assetViewerFilterMultiSelectLabel(selectedInputs[0]) || '1 tag selected';
+  } else {
+    summaryText = `${selectedInputs.length} tags selected`;
+  }
+
+  currentSummary.textContent = summaryText;
+
+  const ariaLabel = summary.getAttribute?.('aria-label');
+  if (typeof ariaLabel === 'string' && ariaLabel !== '') {
+    const separator = ariaLabel.indexOf(':');
+    summary.setAttribute(
+      'aria-label',
+      separator >= 0 ? `${ariaLabel.slice(0, separator + 1)} ${summaryText}` : summaryText,
+    );
+  }
+}
+
 function getAssetViewerFilterDisclosures(scope) {
   return Array.from(scope?.querySelectorAll?.(ASSET_VIEWER_FILTER_DISCLOSURE_SELECTOR) || []);
 }
@@ -1855,7 +1926,11 @@ export function enhanceAssetViewerFilterDisclosures(scope = globalThis.document)
   if (!scope || typeof scope.querySelectorAll !== 'function') return 0;
 
   const disclosures = getAssetViewerFilterDisclosures(scope);
-  disclosures.forEach(updateAssetViewerFilterDisclosureState);
+  disclosures.forEach((disclosure) => {
+    updateAssetViewerFilterDisclosureState(disclosure);
+    updateAssetViewerFilterSingleSelectSummary(disclosure);
+    updateAssetViewerFilterMultiSelectSummary(disclosure);
+  });
   if (disclosures.length === 0) return 0;
 
   if (!isEnhancementBound(scope, 'assetViewerFilterDisclosuresBound')) {
@@ -1865,6 +1940,18 @@ export function enhanceAssetViewerFilterDisclosures(scope = globalThis.document)
       const currentDisclosures = getAssetViewerFilterDisclosures(scope);
       const current = findAssetViewerFilterDisclosure(currentDisclosures, event.target);
       closeAssetViewerFilterDisclosures(currentDisclosures, current);
+    });
+
+    scope.addEventListener?.('change', (event) => {
+      const currentDisclosures = getAssetViewerFilterDisclosures(scope);
+      const disclosure = findAssetViewerFilterDisclosure(currentDisclosures, event.target);
+      if (!disclosure) return;
+
+      if (event.target?.type === 'radio') {
+        updateAssetViewerFilterSingleSelectSummary(disclosure);
+      } else if (event.target?.type === 'checkbox') {
+        updateAssetViewerFilterMultiSelectSummary(disclosure);
+      }
     });
 
     scope.addEventListener?.('keydown', (event) => {

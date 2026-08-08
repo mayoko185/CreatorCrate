@@ -421,7 +421,12 @@
 
       /* ── Release form: scheduling group (Phase 16-?) ── */
       .scheduling-section .field-row { gap: var(--space-md); align-items: flex-start; }
-      .scheduling-field { flex: 0 1 14rem; min-width: 10rem; max-width: 14rem; }
+      .scheduling-field { flex: 1 1 14rem; min-width: min(100%, 12rem); max-width: 16rem; }
+      .scheduling-row .asset-filter-multiselect-field.scheduling-field {
+        flex: 0 1 auto;
+        min-width: 0;
+        max-width: none;
+      }
       .scheduling-field .picker-input {
         width: 100%;
         min-width: 0;
@@ -460,7 +465,7 @@
         display: none;
       }
       @media (max-width: 767px) {
-        .scheduling-row { display: grid; grid-template-columns: 1fr; }
+        .scheduling-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr)); }
         .scheduling-field { max-width: none; }
       }
 
@@ -5393,6 +5398,25 @@
         margin: 0 0 var(--space-md);
         font-size: 1rem;
         color: var(--text);
+      }
+      .project-form .settings-section {
+        display: flex;
+        flex-direction: column;
+        gap: var(--space-lg);
+        padding: 0 var(--space-md) var(--space-lg);
+      }
+      .project-form .settings-section > h3 {
+        margin-left: calc(-1 * var(--space-md));
+        margin-right: calc(-1 * var(--space-md));
+      }
+      .project-form .settings-section .help-text {
+        padding: 0;
+      }
+      .project-form .scheduling-section {
+        overflow: visible;
+      }
+      .project-form .scheduling-section > .scheduling-row {
+        gap: var(--space-sm);
       }
       .field-static-value {
         padding: var(--space-sm) 0;
