@@ -5412,6 +5412,9 @@
       .project-form .settings-section .help-text {
         padding: 0;
       }
+      .project-form > .release-project-section {
+        overflow: visible;
+      }
       .project-form .scheduling-section {
         overflow: visible;
       }

@@ -1755,7 +1755,11 @@ describe('asset grid rename enhancement', () => {
 });
 
 describe('Asset Viewer Project filter enhancement', () => {
-  function makeProjectFilterFixture(selectedValue = '') {
+  function makeProjectFilterFixture(selectedValue = '', {
+    fieldName = 'project',
+    includeAll = true,
+    emptyLabel = 'Select a project',
+  } = {}) {
     const makeInput = (value, checked = false) => {
       const listeners = [];
       return {
@@ -1780,7 +1784,7 @@ describe('Asset Viewer Project filter enhancement', () => {
         hidden: false,
         attrs,
         querySelector(selector) {
-          if (selector === 'input[name="project"]') return input;
+          if (selector === `input[name="${fieldName}"]`) return input;
           if (selector === 'label') return label;
           return null;
         },
@@ -1796,10 +1800,10 @@ describe('Asset Viewer Project filter enhancement', () => {
       };
     };
 
-    const all = makeOption('All projects', '');
+    const all = includeAll ? makeOption('All projects', '') : undefined;
     const alpha = makeOption('Alpha Project', '1');
     const beta = makeOption('Beta Project', '2');
-    const options = [all, alpha, beta];
+    const options = includeAll ? [all, alpha, beta] : [alpha, beta];
     const searchListeners = [];
     const search = {
       value: '',
@@ -1823,7 +1827,12 @@ describe('Asset Viewer Project filter enhancement', () => {
     };
     const toggleListeners = [];
     const filter = {
-      dataset: {},
+      dataset: fieldName === 'project' && includeAll
+        ? {}
+        : {
+          assetProjectFilterName: fieldName,
+          assetProjectFilterEmptyLabel: emptyLabel,
+        },
       open: false,
       querySelector(selector) {
         if (selector === '[data-asset-project-filter-search]') return search;
@@ -1924,6 +1933,26 @@ describe('Asset Viewer Project filter enhancement', () => {
     expect(fixture.alpha.input.value).toBe('1');
     expect(fixture.beta.input.value).toBe('2');
     expect(fixture.search.name).toBeUndefined();
+  });
+
+  it('supports a declarative projectId field without an All projects fallback', () => {
+    const fixture = makeProjectFilterFixture('', {
+      fieldName: 'projectId',
+      includeAll: false,
+      emptyLabel: 'Select a project',
+    });
+
+    expect(enhanceAssetProjectFilter(fixture.scope)).toBe(1);
+    expect(fixture.all).toBeUndefined();
+    expect(fixture.alpha.input.checked).toBe(false);
+    expect(fixture.beta.input.checked).toBe(false);
+    expect(fixture.currentSummaryText.textContent).toBe('Select a project');
+    expect(fixture.summaryAttrs['aria-label']).toBe('Project filter: Select a project');
+
+    fixture.beta.input.checked = true;
+    fixture.beta.input.dispatch('change');
+    expect(fixture.currentSummaryText.textContent).toBe('Beta Project');
+    expect(fixture.summaryAttrs['aria-label']).toBe('Project filter: Beta Project');
   });
 });
 

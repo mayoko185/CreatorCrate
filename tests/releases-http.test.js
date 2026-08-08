@@ -26,10 +26,32 @@ function hasClass(html, className) {
   return re.test(html);
 }
 
-function selectedOptionValue(html, selectId) {
-  const select = html.match(new RegExp(`<select id="${selectId}"[\\s\\S]*?</select>`))?.[0];
-  if (!select) throw new Error(`Select ${selectId} was not rendered.`);
-  return select.match(/<option value="([^"]+)"\s+selected(?:\s|>)/)?.[1];
+function extractPageHeading(html) {
+  return html.match(/<header class="page-heading">[\s\S]*?<\/header>/)?.[0] || '';
+}
+
+function expectReleaseFormSectionCards(html) {
+  const cards = html.match(/<div class="settings-section(?: release-project-section| scheduling-section)?">\s*<h3>[^<]+<\/h3>/g) || [];
+  expect(cards).toHaveLength(4);
+  expect(html).toMatch(/<div class="settings-section release-project-section">\s*<h3>Project<\/h3>/);
+  expect(html).toMatch(/<div class="settings-section">\s*<h3>Basic information<\/h3>/);
+  expect(html).toMatch(/<div class="settings-section scheduling-section">\s*<h3>Scheduling<\/h3>/);
+  expect(html).toMatch(/<div class="settings-section">\s*<h3>Links<\/h3>/);
+  expect(html).not.toContain('class="form-section"');
+}
+
+function extractReleaseProjectField(html) {
+  return html.match(/<fieldset class="field[^"]*asset-viewer-filter-field[^"]*asset-filter-multiselect-field[^"]*asset-viewer-project-filter[^"]*">[\s\S]*?<\/fieldset>/)?.[0] || '';
+}
+
+function releaseProjectRadioInputs(html) {
+  return extractReleaseProjectField(html).match(/<input[^>]*name="projectId"[^>]*type="radio"[^>]*>/g) || [];
+}
+
+function selectedProjectRadioValue(html) {
+  const field = extractReleaseProjectField(html);
+  if (!field) throw new Error('Release Project disclosure was not rendered.');
+  return field.match(/<input[^>]*name="projectId"[^>]*type="radio"[^>]*value="([^"]+)"[^>]*checked(?:\s|>)/)?.[1];
 }
 
 /**
@@ -185,6 +207,20 @@ describe('release HTTP workflow', () => {
     return Number(res.headers.location.replace('/projects/', ''));
   }
 
+  describe('release form layout', () => {
+    it('matches the Projects form section cards and places create actions in the page heading', async () => {
+      const projectId = await createTestProject('Release Form Layout Project');
+      const res = await agent.get(`/releases/new?projectId=${projectId}`).expect(200);
+      const heading = extractPageHeading(res.text);
+
+      expect(heading).toContain('<button class="button button-primary" type="submit" form="release-form">Create</button>');
+      expect(heading).toContain(`<a class="button button-secondary" href="/projects/${projectId}">Cancel</a>`);
+      expect(res.text).toContain('<form id="release-form"');
+      expect(res.text).not.toContain('class="form-actions"');
+      expectReleaseFormSectionCards(res.text);
+    });
+  });
+
   // ─── Phase 7D-3: Release planning field wording ──────────────────────
   //
   // Release planning fields (planned_date, published_date, patreon_url)
@@ -255,7 +291,7 @@ describe('release HTTP workflow', () => {
       const projectId = await createTestProject('Scheduling Order Project');
 
       const res = await agent.get(`/releases/new?projectId=${projectId}`).expect(200);
-      const schedulingMatch = res.text.match(/<div class="field-row scheduling-row">[\s\S]*?<\/div>\s*(?=<div class="form-section">)/);
+      const schedulingMatch = res.text.match(/<div class="field-row scheduling-row">[\s\S]*?<\/div>\s*(?=<div class="settings-section">)/);
       expect(schedulingMatch).not.toBeNull();
       const schedulingRow = schedulingMatch[0];
 
@@ -284,7 +320,7 @@ describe('release HTTP workflow', () => {
       const projectId = await createTestProject('Date Picker Markup Project');
 
       const res = await agent.get(`/releases/new?projectId=${projectId}`).expect(200);
-      const schedulingMatch = res.text.match(/<div class="field-row scheduling-row">[\s\S]*?<\/div>\s*(?=<div class="form-section">)/);
+      const schedulingMatch = res.text.match(/<div class="field-row scheduling-row">[\s\S]*?<\/div>\s*(?=<div class="settings-section">)/);
       expect(schedulingMatch).not.toBeNull();
       const schedulingRow = schedulingMatch[0];
 
@@ -510,6 +546,27 @@ describe('release HTTP workflow', () => {
     expect(res.text).toMatch(/id="plannedDate"[^>]*value="\d{4}-\d{2}-\d{2}"/);
     expect(res.text).toMatch(/id="plannedTime"[^>]*value="\d{2}:\d{2}"/);
     expect(res.text).not.toContain('id="status"');
+
+    const projectField = extractReleaseProjectField(res.text);
+    expect(projectField).not.toBe('');
+    expect(projectField).toContain('asset-filter-multiselect');
+    expect(projectField).toContain('asset-project-filter-disclosure');
+    expect(projectField).toContain('data-asset-project-filter');
+    expect(projectField).toContain('data-asset-project-filter-name="projectId"');
+    expect(projectField).toContain('data-asset-project-filter-search');
+    expect(projectField).toContain('data-asset-project-filter-option');
+    expect(projectField).toContain('data-asset-project-filter-no-results');
+    expect(projectField).toContain('role="radiogroup"');
+    expect(projectField).toContain('name="projectId"');
+    expect(projectField).not.toContain('<select');
+    expect(projectField).not.toMatch(/name="projectId"[^>]*value=""/);
+    expect(projectField).not.toContain('All projects');
+    expect(releaseProjectRadioInputs(res.text)).toHaveLength(1);
+    expect(releaseProjectRadioInputs(res.text).every((radio) => /\brequired\b/.test(radio))).toBe(true);
+    expect(selectedProjectRadioValue(res.text)).toBeUndefined();
+
+    const css = (await agent.get('/creatorcrate.css').expect(200)).text;
+    expect(css).toMatch(/\.project-form\s*>\s*\.release-project-section\s*\{[^}]*overflow:\s*visible/);
   });
 
   it('new-release form ignores status defaults and query parameters', async () => {
@@ -745,6 +802,7 @@ describe('release HTTP workflow', () => {
   });
 
   it('missing project returns error', async () => {
+    await createTestProject('Missing Project Error Baseline');
     const res = await agent
       .post('/releases')
       .send('_csrf=' + encodeURIComponent(csrfToken))
@@ -754,6 +812,11 @@ describe('release HTTP workflow', () => {
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(422);
     expect(res.text).toContain('Project not found');
+    const projectField = extractReleaseProjectField(res.text);
+    expect(projectField).toContain('field-error');
+    expect(projectField).toContain('id="projectId-error"');
+    expect(projectField).toMatch(/name="projectId"[^>]*aria-describedby="projectId-error"[^>]*aria-invalid="true"/);
+    expect(selectedProjectRadioValue(res.text)).toBeUndefined();
   });
 
   it('malformed projectId is rejected', async () => {
@@ -1116,7 +1179,7 @@ describe('release HTTP workflow', () => {
 
         expect(res.text).not.toMatch(/href="\/projects\/[^"]*"[^>]*>Cancel<\/a>/);
         expect(res.text).toContain('<a class="button button-secondary" href="/release-management">Cancel</a>');
-        expect(selectedOptionValue(res.text, 'projectId')).toBeUndefined();
+        expect(selectedProjectRadioValue(res.text)).toBeUndefined();
         expect(res.text).not.toContain('Something went wrong');
       });
     });
@@ -1140,7 +1203,7 @@ describe('release HTTP workflow', () => {
 
       expect(res.text).not.toMatch(/href="\/projects\/[^"]*"[^>]*>Cancel<\/a>/);
       expect(res.text).toContain('<a class="button button-secondary" href="/release-management">Cancel</a>');
-      expect(selectedOptionValue(res.text, 'projectId')).toBeUndefined();
+      expect(selectedProjectRadioValue(res.text)).toBeUndefined();
     });
 
     it('create form Cancel does not build an unsafe href from a malformed projectId', async () => {
@@ -1160,6 +1223,7 @@ describe('release HTTP workflow', () => {
       // A malformed (non-integer) projectId is normalized to absent context,
       // so it never reaches the href at all — not merely escaped within it.
       expect(res.text).not.toContain('<script>alert(1)</script>');
+      expect(selectedProjectRadioValue(res.text)).toBeUndefined();
       expect(res.text).not.toMatch(/href="\/projects\/[^"]*"[^>]*>Cancel<\/a>/);
       expect(res.text).toContain('<a class="button button-secondary" href="/release-management">Cancel</a>');
     });
@@ -1178,7 +1242,7 @@ describe('release HTTP workflow', () => {
 
       expect(res.text).not.toMatch(/href="\/projects\/[^"]*"[^>]*>Cancel<\/a>/);
       expect(res.text).toContain('<a class="button button-secondary" href="/release-management">Cancel</a>');
-      expect(selectedOptionValue(res.text, 'projectId')).toBeUndefined();
+      expect(selectedProjectRadioValue(res.text)).toBeUndefined();
     });
 
     it('archived projectId is not accepted as active release-creation context', async () => {
@@ -1212,7 +1276,7 @@ describe('release HTTP workflow', () => {
 
       expect(res.text).not.toContain(`href="/projects/${projectId}"`);
       expect(res.text).toContain('<a class="button button-secondary" href="/release-management">Cancel</a>');
-      expect(res.text).not.toContain(`value="${projectId}" selected`);
+      expect(res.text).not.toMatch(new RegExp(`name="projectId"[^>]*value="${projectId}"[^>]*checked`));
       expect(res.text).not.toContain('Cancel Archived Project');
     });
 
@@ -1239,8 +1303,9 @@ describe('release HTTP workflow', () => {
 
       const res = await agent.get(`/releases/new?projectId=${projectAId}`).expect(200);
 
-      expect(res.text).toContain(`<option value="${projectAId}" selected>`);
-      expect(res.text).not.toContain(`<option value="${projectBId}" selected>`);
+      expect(res.text).toMatch(new RegExp(`name="projectId"[^>]*value="${projectAId}"[^>]*checked`));
+      expect(res.text).not.toMatch(new RegExp(`name="projectId"[^>]*value="${projectBId}"[^>]*checked`));
+      expect(releaseProjectRadioInputs(res.text).filter((radio) => /\bchecked\b/.test(radio))).toHaveLength(1);
       expect(res.text).toContain(`<a class="button button-secondary" href="/projects/${projectAId}">Cancel</a>`);
       expect(res.text).not.toContain('>Back to Project</a>');
     });
@@ -1301,7 +1366,7 @@ describe('release HTTP workflow', () => {
 
       expect(res.text).not.toContain(`value="${inconsistentId}"`);
       expect(res.text).not.toContain('Inconsistent Archived Row');
-      expect(selectedOptionValue(res.text, 'projectId')).toBeUndefined();
+      expect(selectedProjectRadioValue(res.text)).toBeUndefined();
       expect(res.text).not.toContain(`href="/projects/${inconsistentId}"`);
       expect(res.text).toContain('<a class="button button-secondary" href="/release-management">Cancel</a>');
     });
@@ -1345,15 +1410,14 @@ describe('release HTTP workflow', () => {
 
       const res = await agent.get(`/releases/new?projectId=${targetId}`).expect(200);
 
-      const optionMatches = res.text.match(new RegExp(`<option value="${targetId}"[^>]*>`, 'g')) || [];
-      expect(optionMatches).toHaveLength(1);
-      expect(optionMatches[0]).toContain('selected');
+      const radioMatches = res.text.match(new RegExp(`<input[^>]*name="projectId"[^>]*type="radio"[^>]*value="${targetId}"[^>]*>`, 'g')) || [];
+      expect(radioMatches).toHaveLength(1);
+      expect(radioMatches[0]).toContain('checked');
       expect(res.text).toContain(`<a class="button button-secondary" href="/projects/${targetId}">Cancel</a>`);
 
       // At most 101 project options: 100 from the filtered page plus the one
       // directly appended beyond-100 project. No duplicates, no overcount.
-      const allProjectOptions = res.text.match(/<option value="\d+"/g) || [];
-      expect(allProjectOptions.length).toBeLessThanOrEqual(101);
+      expect(releaseProjectRadioInputs(res.text).length).toBeLessThanOrEqual(101);
     });
 
     it('a full original page containing a locally-filtered archived-status row still finds and appends a valid active project beyond the page', async () => {
@@ -1380,14 +1444,14 @@ describe('release HTTP workflow', () => {
 
       const res = await agent.get(`/releases/new?projectId=${targetId}`).expect(200);
 
-      const optionMatches = res.text.match(new RegExp(`<option value="${targetId}"[^>]*>`, 'g')) || [];
-      expect(optionMatches).toHaveLength(1);
-      expect(optionMatches[0]).toContain('selected');
+      const radioMatches = res.text.match(new RegExp(`<input[^>]*name="projectId"[^>]*type="radio"[^>]*value="${targetId}"[^>]*>`, 'g')) || [];
+      expect(radioMatches).toHaveLength(1);
+      expect(radioMatches[0]).toContain('checked');
       expect(res.text).not.toContain('Full Page Inconsistent Archived');
       expect(res.text).toContain(`<a class="button button-secondary" href="/projects/${targetId}">Cancel</a>`);
 
-      const selectedOptions = res.text.match(/<option value="\d+"\s*selected>/g) || [];
-      expect(selectedOptions).toHaveLength(1);
+      const selectedProjectRadios = releaseProjectRadioInputs(res.text).filter((radio) => /\bchecked\b/.test(radio));
+      expect(selectedProjectRadios).toHaveLength(1);
     });
 
     it('an archived project outside the first 100 options is not appended to the selector', async () => {
@@ -1411,7 +1475,7 @@ describe('release HTTP workflow', () => {
 
       expect(res.text).not.toContain(`value="${archivedBeyondId}"`);
       expect(res.text).not.toContain('Archived Beyond Target');
-      expect(selectedOptionValue(res.text, 'projectId')).toBeUndefined();
+      expect(selectedProjectRadioValue(res.text)).toBeUndefined();
       expect(res.text).toContain('<a class="button button-secondary" href="/release-management">Cancel</a>');
     });
 
@@ -1423,7 +1487,7 @@ describe('release HTTP workflow', () => {
 
       const res = await agent.get('/releases/new?projectId=999999').expect(200);
 
-      expect(selectedOptionValue(res.text, 'projectId')).toBeUndefined();
+      expect(selectedProjectRadioValue(res.text)).toBeUndefined();
       expect(res.text).toContain('<a class="button button-secondary" href="/release-management">Cancel</a>');
     });
 
@@ -1445,7 +1509,7 @@ describe('release HTTP workflow', () => {
 
         const res = await agent.get(`/releases/new?projectId=${rawValue}`).expect(200);
 
-        expect(selectedOptionValue(res.text, 'projectId')).toBeUndefined();
+        expect(selectedProjectRadioValue(res.text)).toBeUndefined();
         expect(res.text).not.toContain(`/projects/${rawValue}`);
         expect(res.text).toContain('<a class="button button-secondary" href="/release-management">Cancel</a>');
         expect(res.text).not.toContain('Something went wrong');
@@ -1474,7 +1538,7 @@ describe('release HTTP workflow', () => {
 
       expect(res.text).not.toMatch(/href="\/projects\/[^"]*"[^>]*>Cancel<\/a>/);
       expect(res.text).toContain('<a class="button button-secondary" href="/release-management">Cancel</a>');
-      expect(res.text).not.toMatch(/<option value="\d+"[^>]*selected>/);
+      expect(res.text).not.toMatch(/<input[^>]*name="projectId"[^>]*type="radio"[^>]*value="\d+"[^>]*checked/);
     });
 
     it('numerically unsafe projectId: 422, safe fallback, rounded value not rendered or selected', async () => {
@@ -1488,7 +1552,7 @@ describe('release HTTP workflow', () => {
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(422);
 
-      expect(res.text).not.toMatch(/<option value="\d+"[^>]*selected>/);
+      expect(res.text).not.toMatch(/<input[^>]*name="projectId"[^>]*type="radio"[^>]*value="\d+"[^>]*checked/);
       expect(res.text).not.toContain(`/projects/${unsafeValue}`);
       expect(res.text).toContain('<a class="button button-secondary" href="/release-management">Cancel</a>');
     });
@@ -1512,6 +1576,7 @@ describe('release HTTP workflow', () => {
       expect(res.text).toContain('Cannot create release for archived project.');
       expect(res.text).not.toContain(`value="${inconsistentId}"`);
       expect(res.text).not.toContain('POST Inconsistent Archived Row');
+      expect(selectedProjectRadioValue(res.text)).toBeUndefined();
       expect(res.text).toContain('<a class="button button-secondary" href="/release-management">Cancel</a>');
     });
 
@@ -1542,6 +1607,7 @@ describe('release HTTP workflow', () => {
 
       expect(res.text).not.toContain(`value="${projectId}"`);
       expect(res.text).not.toContain('POST Archived At Project');
+      expect(selectedProjectRadioValue(res.text)).toBeUndefined();
       expect(res.text).toContain('<a class="button button-secondary" href="/release-management">Cancel</a>');
     });
 
@@ -1566,7 +1632,7 @@ describe('release HTTP workflow', () => {
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(422);
 
-      expect(res.text).toContain(`<option value="${projectId}" selected>`);
+      expect(res.text).toMatch(new RegExp(`name="projectId"[^>]*value="${projectId}"[^>]*checked`));
       expect(res.text).toContain(`<a class="button button-secondary" href="/projects/${projectId}">Cancel</a>`);
       expect(res.text).toContain('Keep This Description');
       expect(res.text).toContain('Title is required');
@@ -1594,9 +1660,10 @@ describe('release HTTP workflow', () => {
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(422);
 
-      const optionMatches = res.text.match(new RegExp(`<option value="${targetId}"[^>]*>`, 'g')) || [];
-      expect(optionMatches).toHaveLength(1);
-      expect(optionMatches[0]).toContain('selected');
+      const radioMatches = res.text.match(new RegExp(`<input[^>]*name="projectId"[^>]*type="radio"[^>]*value="${targetId}"[^>]*>`, 'g')) || [];
+      expect(radioMatches).toHaveLength(1);
+      expect(radioMatches[0]).toContain('checked');
+      expect(releaseProjectRadioInputs(res.text).filter((radio) => /\bchecked\b/.test(radio))).toHaveLength(1);
       expect(res.text).toContain(`<a class="button button-secondary" href="/projects/${targetId}">Cancel</a>`);
     });
   });
@@ -1625,7 +1692,13 @@ describe('release HTTP workflow', () => {
 
     const res = await agent.get(`${createRes.headers.location}/edit`).expect(200);
     expect(res.text).toContain('Releases — Edit Before Edit');
-    expect(res.text).toContain(`<a class="button button-secondary" href="/projects/${projectId}">Back to Project</a>`);
+    const heading = extractPageHeading(res.text);
+    expect(heading).toContain('<button class="button button-primary" type="submit" form="release-form">Edit</button>');
+    expect(heading).toContain(`<a class="button button-secondary" href="${createRes.headers.location}">Cancel</a>`);
+    expect(heading).toContain(`<a class="button button-secondary" href="/projects/${projectId}">Back to Project</a>`);
+    expect(res.text).not.toContain('class="form-actions"');
+    expect(res.text).not.toContain('data-asset-project-filter');
+    expect(res.text).not.toMatch(/name="projectId"/);
   });
 
   it('existing release editing does not expose a release-owned status field', async () => {

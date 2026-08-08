@@ -1,38 +1,88 @@
 {% extends "layout.njk" %}
+{% import "partials/page-heading.njk" as pageHeading %}
 
 {% set title = action ~ ' Release' %}
 {% set page_title = "Releases — Edit " ~ release.title if action == 'Edit' else "Releases — " ~ title %}
+{% set formDescription = "Create a tracked release record." if action == 'Create' else "Update release metadata and scheduling fields." %}
 
 {% block content %}
+  {% call pageHeading.render(formDescription) %}
+    <button class="button button-primary" type="submit" form="release-form">{{ action }}</button>
+    <a class="button button-secondary" href="{% if release %}/releases/{{ release.id }}{% elif selectedProjectId %}/projects/{{ selectedProjectId }}{% else %}/release-management{% endif %}">Cancel</a>
+    {% if release and release.project_id %}
+      <a class="button button-secondary" href="/projects/{{ release.project_id }}">Back to Project</a>
+    {% endif %}
+  {% endcall %}
+
   {% if errors.general %}
     <div class="error-summary" role="alert">
       <p>{{ errors.general }}</p>
     </div>
   {% endif %}
 
-  <form method="post" action="{{ submitUrl }}" class="project-form" novalidate>
+  <form id="release-form" method="post" action="{{ submitUrl }}" class="project-form" novalidate>
     <input type="hidden" name="_csrf" value="{{ _csrf }}">
     {% for assetId in values.selectedAssetIds %}
       <input type="hidden" name="selectedAssetIds" value="{{ assetId }}">
     {% endfor %}
     {% if not release %}
-      <div class="form-section">
-        <h2>Project</h2>
-        <div class="field {% if errors.projectId %}field-error{% endif %}">
-          <label for="projectId">Project <span class="required" aria-label="required">*</span></label>
-          <select id="projectId" name="projectId" required{% if errors.projectId %} aria-describedby="projectId-error" aria-invalid="true"{% endif %}>
-            <option value="">Select a project</option>
-            {% for project in projects %}
-              <option value="{{ project.id }}" {% if selectedProjectId == project.id %}selected{% endif %}>{{ project.title }}</option>
-            {% endfor %}
-          </select>
+      {% set projectSummary = 'Select a project' %}
+      {% for project in projects %}
+        {% if selectedProjectId == project.id %}
+          {% set projectSummary = project.title %}
+        {% endif %}
+      {% endfor %}
+
+      <div class="settings-section release-project-section">
+        <h3>Project</h3>
+        <fieldset class="field asset-viewer-filter-field asset-filter-multiselect-field asset-viewer-project-filter{% if errors.projectId %} field-error{% endif %}">
+          <legend>Project <span class="required" aria-label="required">*</span></legend>
+          <details class="asset-filter-multiselect asset-filter-multiselect--sized asset-project-filter-disclosure"
+                   data-asset-project-filter
+                   data-asset-project-filter-name="projectId"
+                   data-asset-project-filter-empty-label="Select a project"
+                   data-asset-viewer-filter-disclosure>
+            <summary id="release-project-filter-trigger"
+                     aria-controls="release-project-filter-options"
+                     aria-expanded="false"
+                     aria-label="Project filter: {{ projectSummary }}"
+                     title="{{ projectSummary }}">
+              <span class="asset-filter-multiselect-summary" data-asset-project-filter-summary>
+                <span class="asset-filter-multiselect-summary-current" data-asset-project-filter-current-summary>{{ projectSummary }}</span>
+                <span class="asset-filter-multiselect-summary-width" aria-hidden="true">
+                  <span>Select a project</span>
+                  {% for project in projects %}
+                    <span>{{ project.title }}</span>
+                  {% endfor %}
+                </span>
+              </span>
+            </summary>
+            <div id="release-project-filter-options" class="asset-filter-multiselect-panel asset-project-filter-panel" role="group" aria-label="Project options">
+              <label class="asset-project-filter-search-label" for="release-project-filter-search">Search projects</label>
+              <input id="release-project-filter-search" class="asset-project-filter-search" type="search"
+                     autocomplete="off" data-asset-project-filter-search>
+              <div class="asset-project-filter-option-list" data-asset-project-filter-option-list role="radiogroup" aria-label="Project choices">
+                {% for project in projects %}
+                  <div class="asset-filter-multiselect-option asset-project-filter-option"
+                       data-asset-project-filter-option data-project-title="{{ project.title }}">
+                    <label for="release-project-option-{{ project.id }}">
+                      <input id="release-project-option-{{ project.id }}" name="projectId" type="radio" value="{{ project.id }}"{% if selectedProjectId == project.id %} checked{% endif %} required{% if errors.projectId %} aria-describedby="projectId-error" aria-invalid="true"{% endif %}>
+                      <span>{{ project.title }}</span>
+                    </label>
+                  </div>
+                {% endfor %}
+              </div>
+              <p class="asset-filter-multiselect-empty asset-project-filter-no-results"
+                 data-asset-project-filter-no-results role="status" aria-live="polite" hidden>No matching projects</p>
+            </div>
+          </details>
           {% if errors.projectId %}<span class="field-error-message" id="projectId-error">{{ errors.projectId }}</span>{% endif %}
-        </div>
+        </fieldset>
       </div>
     {% endif %}
 
-    <div class="form-section">
-      <h2>Basic information</h2>
+    <div class="settings-section">
+      <h3>Basic information</h3>
 
       <div class="field {% if errors.title %}field-error{% endif %}">
         <label for="title">Title <span class="required" aria-label="required">*</span></label>
@@ -53,8 +103,8 @@
       </div>
     </div>
 
-    <div class="form-section scheduling-section">
-      <h2>Scheduling</h2>
+    <div class="settings-section scheduling-section">
+      <h3>Scheduling</h3>
 
       <div class="field-row scheduling-row">
         <div class="field scheduling-field {% if errors.plannedDate or errors.plannedTime %}field-error{% endif %}" data-date-picker-field>
@@ -104,8 +154,8 @@
       </div>
     </div>
 
-    <div class="form-section">
-      <h2>Links</h2>
+    <div class="settings-section">
+      <h3>Links</h3>
 
       <div class="field {% if errors.patreonUrl %}field-error{% endif %}">
         <label for="patreonUrl">Release link</label>
@@ -115,15 +165,6 @@
       </div>
     </div>
 
-    <div class="form-actions">
-      <button class="button button-primary" type="submit">{{ action }}</button>
-        {# Without project context, Cancel falls back to the release-management
-           surface rather than returning to an in-progress release form. #}
-      <a class="button button-secondary" href="{% if release %}/releases/{{ release.id }}{% elif selectedProjectId %}/projects/{{ selectedProjectId }}{% else %}/release-management{% endif %}">Cancel</a>
-      {% if release and release.project_id %}
-        <a class="button button-secondary" href="/projects/{{ release.project_id }}">Back to Project</a>
-      {% endif %}
-    </div>
   </form>
 
   {% if release %}

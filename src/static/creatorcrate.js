@@ -1776,8 +1776,21 @@ export function enhanceProjectGridSize(scope = globalThis.document) {
   return enhanceGridSize(scope, PROJECT_GRID_SIZE_CONFIG);
 }
 
-function assetProjectFilterInput(option) {
-  return option?.querySelector?.('input[name="project"]') || null;
+function assetProjectFilterFieldName(filter) {
+  return filter?.dataset?.assetProjectFilterName
+    || filter?.getAttribute?.('data-asset-project-filter-name')
+    || 'project';
+}
+
+function assetProjectFilterEmptyLabel(filter, hasEmptyOption) {
+  const configuredLabel = filter?.dataset?.assetProjectFilterEmptyLabel
+    || filter?.getAttribute?.('data-asset-project-filter-empty-label');
+  if (configuredLabel) return configuredLabel;
+  return hasEmptyOption ? 'All projects' : 'Select a project';
+}
+
+function assetProjectFilterInput(option, fieldName = 'project') {
+  return option?.querySelector?.(`input[name="${fieldName}"]`) || null;
 }
 
 function assetProjectFilterValue(input) {
@@ -1791,30 +1804,34 @@ function assetProjectFilterTitle(option) {
 }
 
 function updateAssetProjectFilterSummary(filter, options) {
-  let selectedOption = options.find((option) => assetProjectFilterInput(option)?.checked);
-  if (!selectedOption) {
-    selectedOption = options.find((option) => assetProjectFilterValue(assetProjectFilterInput(option)) === '');
-    if (selectedOption) assetProjectFilterInput(selectedOption).checked = true;
+  const fieldName = assetProjectFilterFieldName(filter);
+  const emptyOption = options.find((option) => assetProjectFilterValue(assetProjectFilterInput(option, fieldName)) === '');
+  let selectedOption = options.find((option) => assetProjectFilterInput(option, fieldName)?.checked);
+  if (!selectedOption && emptyOption) {
+    selectedOption = emptyOption;
+    assetProjectFilterInput(selectedOption, fieldName).checked = true;
   }
 
-  const selectedInput = assetProjectFilterInput(selectedOption);
+  const selectedInput = assetProjectFilterInput(selectedOption, fieldName);
+  const emptyLabel = assetProjectFilterEmptyLabel(filter, Boolean(emptyOption));
   const selectedTitle = selectedInput && assetProjectFilterValue(selectedInput) !== ''
     ? assetProjectFilterTitle(selectedOption)
-    : 'All projects';
+    : emptyLabel;
   const summary = filter.querySelector?.(ASSET_PROJECT_FILTER_SUMMARY_SELECTOR);
   const currentSummary = filter.querySelector?.(ASSET_PROJECT_FILTER_CURRENT_SUMMARY_SELECTOR) || summary;
   const trigger = filter.querySelector?.('summary');
-  if (currentSummary) currentSummary.textContent = selectedTitle || 'All projects';
-  trigger?.setAttribute?.('aria-label', `Project filter: ${selectedTitle || 'All projects'}`);
-  trigger?.setAttribute?.('title', selectedTitle || 'All projects');
+  if (currentSummary) currentSummary.textContent = selectedTitle || emptyLabel;
+  trigger?.setAttribute?.('aria-label', `Project filter: ${selectedTitle || emptyLabel}`);
+  trigger?.setAttribute?.('title', selectedTitle || emptyLabel);
 }
 
 function updateAssetProjectFilterOptions(filter, options) {
+  const fieldName = assetProjectFilterFieldName(filter);
   const search = filter.querySelector?.(ASSET_PROJECT_FILTER_SEARCH_SELECTOR);
   const empty = filter.querySelector?.(ASSET_PROJECT_FILTER_EMPTY_SELECTOR);
   const query = String(search?.value || '').trim().toLowerCase();
   const projectOptions = options.filter((option) => (
-    assetProjectFilterValue(assetProjectFilterInput(option)) !== ''
+    assetProjectFilterValue(assetProjectFilterInput(option, fieldName)) !== ''
   ));
   let matchingProjectCount = 0;
 
@@ -1824,7 +1841,7 @@ function updateAssetProjectFilterOptions(filter, options) {
     if (matches) matchingProjectCount += 1;
   });
 
-  const allProjects = options.find((option) => assetProjectFilterValue(assetProjectFilterInput(option)) === '');
+  const allProjects = options.find((option) => assetProjectFilterValue(assetProjectFilterInput(option, fieldName)) === '');
   setHidden(allProjects, false);
   setHidden(empty, query === '' || matchingProjectCount > 0);
 }
@@ -1992,12 +2009,13 @@ export function enhanceAssetProjectFilter(scope = globalThis.document) {
   filters.forEach((filter) => {
     const options = Array.from(filter.querySelectorAll?.(ASSET_PROJECT_FILTER_OPTION_SELECTOR) || []);
     const search = filter.querySelector?.(ASSET_PROJECT_FILTER_SEARCH_SELECTOR);
+    const fieldName = assetProjectFilterFieldName(filter);
 
     if (!isEnhancementBound(filter, 'assetProjectFilterBound')) {
       markEnhancementBound(filter, 'assetProjectFilterBound');
       search?.addEventListener?.('input', () => updateAssetProjectFilterOptions(filter, options));
       options.forEach((option) => {
-        assetProjectFilterInput(option)?.addEventListener?.('change', () => {
+        assetProjectFilterInput(option, fieldName)?.addEventListener?.('change', () => {
           updateAssetProjectFilterSummary(filter, options);
         });
       });

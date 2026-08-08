@@ -298,6 +298,8 @@ describe('project HTTP workflow', () => {
     expect(projectFilter).toContain('data-asset-project-filter-summary');
     expect(projectFilter).toContain('data-asset-project-filter-current-summary');
     expect(projectFilter).toContain('aria-label="Project filter: All projects"');
+    expect(projectFilter).toContain('name="project"');
+    expect(projectFilter).toMatch(/name="project"[^>]*value=""[^>]*checked/);
     expect(projectFilter).not.toMatch(/name="project"[^>]+value="[0-9]+"[^>]*checked/);
   });
 
