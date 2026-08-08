@@ -29,8 +29,8 @@ function activeSettingsNavLabels(html) {
 }
 
 function listedTagNames(html) {
-  const tagList = html.match(/<h3>Tags<\/h3>[\s\S]*?<ul>([\s\S]*?)<\/ul>/)?.[1] || '';
-  return [...tagList.matchAll(/<li>\s*([^<]+?)\s*<a href="/g)]
+  const tagList = html.match(/<h3>Tags<\/h3>[\s\S]*?<ul class="settings-tag-list">([\s\S]*?)<\/ul>/)?.[1] || '';
+  return [...tagList.matchAll(/<span class="settings-tag-name">\s*([^<]+?)\s*<\/span>/g)]
     .map((match) => match[1].trim());
 }
 
@@ -87,6 +87,7 @@ describe('settings — tags HTTP', () => {
     expect(res.text).toContain('No tags yet');
     expect(res.text).toContain('<label for="tag-name">Tag name');
     expect(res.text).toContain(`id="tag-name" name="name"`);
+    expect(res.text).toContain('<div class="field settings-tags-name-field">');
     expect(res.text).toContain(`maxlength="${TAG_NAME_MAX}"`);
     expect(res.text).not.toContain('normalized_name');
     expect(res.text).not.toContain('Delete');
@@ -106,6 +107,21 @@ describe('settings — tags HTTP', () => {
       expect(res.text).toContain(`aria-label="Delete tag ${tag.display_name}"`);
     }
     expect(res.text).not.toContain('normalized_name');
+  });
+
+  it('renders the populated list as intentional settings rows with scoped classes', async () => {
+    await createTag('Landscape');
+    await createTag('Character Art');
+
+    const res = await agent.get('/settings/tags').expect(200);
+
+    expect(res.text).toContain('<ul class="settings-tag-list">');
+    const rowCount = (res.text.match(/<li class="settings-tag-row">/g) || []).length;
+    expect(rowCount).toBe(2);
+    expect((res.text.match(/<span class="settings-tag-name">/g) || []).length).toBe(2);
+    expect((res.text.match(/<span class="settings-tag-actions">/g) || []).length).toBe(2);
+    expect(res.text).toContain('<span class="settings-tag-name">Landscape</span>');
+    expect(res.text).toContain('<span class="settings-tag-name">Character Art</span>');
   });
 
   it('renders existing tags in service order without exposing normalized names', async () => {

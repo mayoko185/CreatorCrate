@@ -74,6 +74,15 @@ function defaultKey(page, option) {
   return PAGE_DEFAULT_DEFINITIONS[page][option].key;
 }
 
+const DEFAULT_SECTION_ANCHORS = [
+  { title: 'New Projects', anchor: 'defaults-new-projects' },
+  { title: 'Projects', anchor: 'defaults-projects' },
+  { title: 'Releases', anchor: 'defaults-releases' },
+  { title: 'Release Management', anchor: 'defaults-release-management' },
+  { title: 'Project Assets', anchor: 'defaults-project-assets' },
+  { title: 'Asset Viewer', anchor: 'defaults-asset-viewer' },
+];
+
 describe('settings — page defaults HTTP', () => {
   let tmpDir;
   let db;
@@ -98,12 +107,16 @@ describe('settings — page defaults HTTP', () => {
     const res = await agent.get('/settings/defaults').expect(200);
 
     expect(res.text).toContain('Settings — Defaults');
-    expect(res.text).toContain('<h2>New Projects</h2>');
-    expect(res.text).toContain('<h2>Projects</h2>');
-    expect(res.text).toContain('<h2>Releases</h2>');
-    expect(res.text).toContain('<h2>Release Management</h2>');
-    expect(res.text).toContain('<h2>Project Assets</h2>');
-    expect(res.text).toContain('<h2>Asset Viewer</h2>');
+    for (const { title, anchor } of DEFAULT_SECTION_ANCHORS) {
+      expect(res.text).toContain(
+        `<section id="${anchor}" class="settings-section" aria-labelledby="${anchor}-heading">`
+      );
+      expect(res.text).toContain(`<h3 id="${anchor}-heading">${title}</h3>`);
+    }
+    expect((res.text.match(/<section id="defaults-[^"]+" class="settings-section" aria-labelledby="defaults-[^"]+-heading">/g) || [])).toHaveLength(6);
+    expect(res.text).not.toContain('<div class="form-section">');
+    expect(res.text).toContain('<section class="settings-section asset-browser-default-section" aria-labelledby="project-assets-default-category-heading">');
+    expect(res.text).toContain('<h3 id="project-assets-default-category-heading">Asset browser default</h3>');
     expect(res.text).toContain('These defaults apply only to new projects. Changing them does not modify existing projects.');
     expect(res.text).not.toContain('New Releases');
     expect((res.text.match(/<select /g) || [])).toHaveLength(19);

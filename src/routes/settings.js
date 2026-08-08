@@ -85,12 +85,12 @@ function resolveNotice(code) {
 }
 
 const PAGE_DEFAULT_SECTIONS = Object.freeze([
-  Object.freeze({ page: 'new_project', title: 'New Projects' }),
-  Object.freeze({ page: 'projects', title: 'Projects' }),
-  Object.freeze({ page: 'releases', title: 'Releases' }),
-  Object.freeze({ page: 'releaseManagement', title: 'Release Management' }),
-  Object.freeze({ page: 'projectAssets', title: 'Project Assets' }),
-  Object.freeze({ page: 'assetViewer', title: 'Asset Viewer' }),
+  Object.freeze({ page: 'new_project', title: 'New Projects', anchor: 'defaults-new-projects' }),
+  Object.freeze({ page: 'projects', title: 'Projects', anchor: 'defaults-projects' }),
+  Object.freeze({ page: 'releases', title: 'Releases', anchor: 'defaults-releases' }),
+  Object.freeze({ page: 'releaseManagement', title: 'Release Management', anchor: 'defaults-release-management' }),
+  Object.freeze({ page: 'projectAssets', title: 'Project Assets', anchor: 'defaults-project-assets' }),
+  Object.freeze({ page: 'assetViewer', title: 'Asset Viewer', anchor: 'defaults-asset-viewer' }),
 ]);
 
 const PROJECT_ASSET_CATEGORY_FIELD = 'defaultCategory';
@@ -283,9 +283,10 @@ function buildDefaultsPageModel(service, {
     submittedValue: hasSubmittedValues ? submittedValues[PROJECT_ASSET_CATEGORY_FIELD] : undefined,
     error: preferenceError,
   });
-  const sections = PAGE_DEFAULT_SECTIONS.map(({ page, title }) => ({
+  const sections = PAGE_DEFAULT_SECTIONS.map(({ page, title, anchor }) => ({
     page,
     title,
+    anchor,
     fields: Object.keys(PAGE_DEFAULT_DEFINITIONS[page]).map((option) => {
       const definition = PAGE_DEFAULT_DEFINITIONS[page][option];
       const name = pageDefaultFieldName(page, option);

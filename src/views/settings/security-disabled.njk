@@ -32,8 +32,8 @@
 
       <form method="post" action="/settings/security/enable" class="project-form" novalidate>
         <input type="hidden" name="_csrf" value="{{ _csrf }}">
-        <div class="form-section">
-          <h2>Enable authentication</h2>
+        <div class="settings-section">
+          <h3>Enable authentication</h3>
           <p class="help-text">Use at least 12 characters for the password. Passwords are never displayed or stored in plaintext.</p>
 
           <div class="field {% if errors.length > 0 %}field-error{% endif %}">
@@ -52,11 +52,11 @@
             <label for="confirmPassword">Confirm password <span class="required" aria-label="required">*</span></label>
             <input type="password" id="confirmPassword" name="confirmPassword" autocomplete="new-password" required{% if errors.length > 0 %} aria-describedby="enable-errors" aria-invalid="true"{% endif %}>
           </div>
-        </div>
 
-        <div class="form-actions">
-          <button type="submit" class="button button-primary">Enable Authentication</button>
-          <a href="/settings" class="button button-secondary">Cancel</a>
+          <div class="form-actions settings-enable-action-row">
+            <button type="submit" class="button button-primary">Enable Authentication</button>
+            <a href="/settings" class="button button-secondary">Cancel</a>
+          </div>
         </div>
       </form>
     </div>

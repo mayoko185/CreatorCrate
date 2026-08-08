@@ -30,7 +30,7 @@
 
         <form method="post" action="/settings/tags" class="project-form" novalidate>
           <input type="hidden" name="_csrf" value="{{ _csrf }}">
-          <div class="field{% if errors.name %} field-error{% endif %}">
+          <div class="field settings-tags-name-field{% if errors.name %} field-error{% endif %}">
             <label for="tag-name">Tag name <span class="required" aria-label="required">*</span></label>
             <input type="text" id="tag-name" name="name" value="{{ submittedName or '' }}" maxlength="{{ tagNameMax }}" required{% if errors.name %} aria-describedby="tag-name-error" aria-invalid="true"{% endif %}>
             {% if errors.name %}<span class="field-error-message" id="tag-name-error">{{ errors.name }}</span>{% endif %}
@@ -45,12 +45,14 @@
       <div class="settings-section">
         <h3>Tags</h3>
         {% if tags.length > 0 %}
-          <ul>
+          <ul class="settings-tag-list">
             {% for tag in tags %}
-              <li>
-                {{ tag.display_name }}
-                <a href="/settings/tags/{{ tag.id }}/edit" class="button button-small button-secondary" aria-label="Rename tag {{ tag.display_name }}">Rename</a>
-                <a href="/settings/tags/{{ tag.id }}/delete" class="button button-small button-danger" aria-label="Delete tag {{ tag.display_name }}">Delete</a>
+              <li class="settings-tag-row">
+                <span class="settings-tag-name">{{ tag.display_name }}</span>
+                <span class="settings-tag-actions">
+                  <a href="/settings/tags/{{ tag.id }}/edit" class="button button-small button-secondary" aria-label="Rename tag {{ tag.display_name }}">Rename</a>
+                  <a href="/settings/tags/{{ tag.id }}/delete" class="button button-small button-danger" aria-label="Delete tag {{ tag.display_name }}">Delete</a>
+                </span>
               </li>
             {% endfor %}
           </ul>

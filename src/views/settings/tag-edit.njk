@@ -18,7 +18,7 @@
 
     <div class="settings-content">
       <div class="settings-section">
-        <h2>Rename tag</h2>
+        <h3>Rename tag</h3>
         <p class="help-text">Current tag: <strong>{{ tag.display_name }}</strong></p>
 
         {% if errorMessages.length > 0 %}
@@ -32,7 +32,7 @@
 
         <form method="post" action="/settings/tags/{{ tag.id }}/edit" class="project-form" novalidate>
           <input type="hidden" name="_csrf" value="{{ _csrf }}">
-          <div class="field{% if errors.name %} field-error{% endif %}">
+          <div class="field settings-tags-name-field{% if errors.name %} field-error{% endif %}">
             <label for="tag-name">Tag name <span class="required" aria-label="required">*</span></label>
             <input type="text" id="tag-name" name="name" value="{{ submittedName or '' }}" maxlength="{{ tagNameMax }}" required{% if errors.name %} aria-describedby="tag-name-error" aria-invalid="true"{% endif %}>
             {% if errors.name %}<span class="field-error-message" id="tag-name-error">{{ errors.name }}</span>{% endif %}

@@ -31,8 +31,8 @@
         <input type="hidden" name="_csrf" value="{{ _csrf }}">
 
         {% for section in sections %}
-          <div class="form-section">
-            <h2>{{ section.title }}</h2>
+          <section id="{{ section.anchor }}" class="settings-section" aria-labelledby="{{ section.anchor }}-heading">
+            <h3 id="{{ section.anchor }}-heading">{{ section.title }}</h3>
             {% if section.page == 'new_release' %}
               <p class="help-text">This default applies only to newly created release records. Changing it does not modify existing releases.</p>
             {% elseif section.page == 'new_project' %}
@@ -97,7 +97,7 @@
                 </div>
               </section>
             {% endif %}
-          </div>
+          </section>
         {% endfor %}
 
         <div class="form-actions">

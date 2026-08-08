@@ -4680,6 +4680,9 @@
         overflow: hidden;
         margin-bottom: var(--space-lg);
       }
+      .settings-content > .project-form > .settings-section[id^="defaults-"] {
+        scroll-margin-top: calc(var(--shell-header-height) + var(--space-md));
+      }
       .settings-section h3 {
         margin: 0;
         padding: var(--space-sm) var(--space-md);
@@ -5827,4 +5830,51 @@
       }
       .open-locally-path-row > .inline-form {
         flex: 0 0 auto;
+      }
+
+      .settings-tags-name-field {
+        padding-left: var(--space-md);
+        padding-right: var(--space-md);
+      }
+      .settings-tags-name-field .help-text,
+      .settings-tags-name-field .field-error-message {
+        padding-left: 0;
+        padding-right: 0;
+      }
+
+      /* ── Populated tag list rows ── */
+      .settings-tag-list {
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+      .settings-tag-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        flex-wrap: wrap;
+        gap: var(--space-sm) var(--space-md);
+        padding: var(--space-sm) var(--space-md);
+        border-bottom: 1px solid var(--border);
+      }
+      .settings-tag-row:last-child {
+        border-bottom: none;
+      }
+      .settings-tag-name {
+        min-width: 0;
+        overflow-wrap: anywhere;
+        font-size: 0.9375rem;
+      }
+      .settings-tag-actions {
+        display: flex;
+        gap: var(--space-sm);
+        flex-shrink: 0;
+      }
+
+      /* Enable-authentication buttons sit inside the settings card and hug its
+         bottom-left corner, cancelling the section's left (space-md) and bottom
+         (space-lg) padding — matching the asset-categories action row. */
+      .settings-enable-action-row {
+        align-self: flex-start;
+        margin: 0 0 calc(-1 * var(--space-lg)) calc(-1 * var(--space-md));
       }

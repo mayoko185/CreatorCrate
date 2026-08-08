@@ -366,6 +366,51 @@ describe('Phase 10.6B: Visual-polish hardening', () => {
       expect(css).toContain('--space-2xl: 2rem');
     });
 
+    it('keeps Defaults section anchors clear of the sticky header at every viewport width', async () => {
+      const res = await request(app).get('/settings/defaults').expect(200);
+      const css = await extractStyle(app, res.text);
+      const selector = '.settings-content > .project-form > .settings-section[id^="defaults-"]';
+      const selectorIndex = css.indexOf(selector);
+
+      expect(selectorIndex).toBeGreaterThanOrEqual(0);
+
+      let nestingDepth = 0;
+      for (const character of css.slice(0, selectorIndex)) {
+        if (character === '{') nestingDepth += 1;
+        if (character === '}') nestingDepth -= 1;
+      }
+      expect(nestingDepth).toBe(0);
+
+      const ruleStart = css.indexOf('{', selectorIndex + selector.length);
+      const ruleEnd = css.indexOf('}', ruleStart);
+      expect(ruleStart).toBeGreaterThan(selectorIndex);
+      expect(ruleEnd).toBeGreaterThan(ruleStart);
+      expect(css.slice(ruleStart, ruleEnd)).toContain(
+        'scroll-margin-top: calc(var(--shell-header-height) + var(--space-md));'
+      );
+    });
+
+    it('scopes Settings Tags name-field padding away from form actions', async () => {
+      const res = await request(app).get('/settings/tags').expect(200);
+      const css = await extractStyle(app, res.text);
+
+      expect(css).toMatch(/\.settings-tags-name-field\s*\{[^}]*padding-left:\s*var\(--space-md\);[^}]*padding-right:\s*var\(--space-md\);/);
+      expect(css).toMatch(/\.settings-tags-name-field\s+\.help-text,\s*\.settings-tags-name-field\s+\.field-error-message\s*\{[^}]*padding-left:\s*0;[^}]*padding-right:\s*0;/);
+      expect(css).not.toMatch(/\.form-actions\s*\{[^}]*\bpadding(?:-(?:left|right))?\s*:/);
+    });
+
+    it('styles the populated tag list as intentional settings rows', async () => {
+      const res = await request(app).get('/settings/tags').expect(200);
+      const css = await extractStyle(app, res.text);
+
+      expect(css).toMatch(/\.settings-tag-list\s*\{[^}]*list-style:\s*none;/);
+      expect(css).toMatch(/\.settings-tag-row\s*\{[^}]*display:\s*flex;[^}]*justify-content:\s*space-between;/);
+      expect(css).toMatch(/\.settings-tag-row\s*\{[^}]*padding:\s*var\(--space-sm\)\s*var\(--space-md\);/);
+      expect(css).toMatch(/\.settings-tag-row\s*\{[^}]*border-bottom:\s*1px solid var\(--border\);/);
+      expect(css).toMatch(/\.settings-tag-row:last-child\s*\{[^}]*border-bottom:\s*none;/);
+      expect(css).toMatch(/\.settings-tag-actions\s*\{[^}]*display:\s*flex;/);
+    });
+
     it('panels use consistent spacing tokens', async () => {
       const res = await request(app).get('/').expect(200);
       const css = await extractStyle(app, res.text);
