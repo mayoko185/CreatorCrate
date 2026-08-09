@@ -1,0 +1,69 @@
+{% extends "layout.njk" %}
+{% import "partials/page-heading.njk" as pageHeading %}
+
+{% set page_title = "Notes — " ~ note.title %}
+
+{% block content %}
+  {% call pageHeading.render("Note") %}
+    <a class="button" href="/notes/{{ note.id }}/edit">Edit</a>
+    <a class="button button-secondary" href="/notes">Back to Notes</a>
+  {% endcall %}
+
+  <section class="notes-detail-content">
+    <h2>Content</h2>
+    {% if note.content %}
+      <div class="notes-content">{{ contentHtml | safe }}</div>
+    {% else %}
+      <p class="help-text">No content yet.</p>
+    {% endif %}
+  </section>
+
+  {% if projects.length > 0 %}
+    <section class="notes-detail-projects">
+      <h2>Projects</h2>
+      <ul class="project-list">
+        {% for project in projects %}
+          <li><a href="/projects/{{ project.id }}">{{ project.title }}</a></li>
+        {% endfor %}
+      </ul>
+    </section>
+  {% endif %}
+
+  {% if assets.length > 0 %}
+    <section class="notes-detail-assets">
+      <h2>Assets</h2>
+      <ul class="asset-list notes-detail-asset-list">
+        {% for asset in assets %}
+          <li class="asset-list-item{% if not asset.isPresent %} is-missing{% endif %}">
+            <div class="notes-detail-asset">
+              <a class="notes-detail-asset-link" href="{{ asset.viewerUrl }}">{{ asset.filename }}</a>
+              <span>Project: {{ asset.projectTitle }}</span>
+              <span>{{ asset.relativePath }}</span>
+              {% if not asset.isPresent %}<span>Missing</span>{% endif %}
+            </div>
+          </li>
+        {% endfor %}
+      </ul>
+    </section>
+  {% endif %}
+
+  <section>
+    <h2>Details</h2>
+    <dl class="detail-list">
+      <dt>Created</dt>
+      <dd>{{ note.created_at }}</dd>
+
+      <dt>Updated</dt>
+      <dd>{{ note.updated_at }}</dd>
+    </dl>
+  </section>
+
+  <section class="destructive-section">
+    <h2>Danger zone</h2>
+    <p>Deleting this note is permanent and cannot be undone.</p>
+    <form method="post" action="/notes/{{ note.id }}/delete" class="inline-form">
+      <input type="hidden" name="_csrf" value="{{ _csrf }}">
+      <button class="button button-danger" type="submit" data-confirm="Delete this note permanently? This action is irreversible and cannot be undone.">Delete Note</button>
+    </form>
+  </section>
+{% endblock %}

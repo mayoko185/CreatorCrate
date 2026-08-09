@@ -199,18 +199,18 @@ describe('application shell (Phase 10.4B) — landmarks & structure', () => {
       expect(res.text).toContain('<aside class="app-sidebar">');
     });
 
-    it('renders all six destinations in primary-navigation order', async () => {
+    it('renders all seven destinations in primary-navigation order', async () => {
       const res = await agent.get('/').expect(200);
       expect(navHrefs(res.text)).toEqual([
-        '/', '/projects', '/assets', '/releases', '/calendar', '/settings',
+        '/', '/projects', '/assets', '/releases', '/calendar', '/notes', '/settings',
       ]);
     });
 
     it('renders a decorative icon + label span for every nav link', async () => {
       const res = await agent.get('/').expect(200);
       // Each link carries an aria-hidden svg and a non-hidden label span.
-      expect((res.text.match(/class="app-nav-label"/g) || []).length).toBe(6);
-      expect((res.text.match(/class="app-nav-link" data-nav-key="[^"]+"/g) || []).length).toBe(6);
+      expect((res.text.match(/class="app-nav-label"/g) || []).length).toBe(7);
+      expect((res.text.match(/class="app-nav-link" data-nav-key="[^"]+"/g) || []).length).toBe(7);
     });
   });
 
@@ -272,7 +272,7 @@ describe('application shell (Phase 10.4B) — landmarks & structure', () => {
       const res = await agent.get('/').expect(200);
       // Extract each nav anchor and assert it has no aria-label.
       const links = res.text.match(/<a href="[^"]+" class="app-nav-link"[^>]*>/g) || [];
-      expect(links.length).toBe(6);
+      expect(links.length).toBe(7);
       for (const anchor of links) {
         expect(anchor).not.toMatch(/aria-label=/);
       }
@@ -291,6 +291,7 @@ describe('application shell (Phase 10.4B) — landmarks & structure', () => {
       expect(res.text).toContain('class="app-nav-label">Asset Viewer</span>');
     expect(res.text).toContain('class="app-nav-label">Releases</span>');
       expect(res.text).toContain('class="app-nav-label">Calendar</span>');
+      expect(res.text).toContain('class="app-nav-label">Notes</span>');
       expect(res.text).toContain('class="app-nav-label">Settings</span>');
     });
 
@@ -318,7 +319,7 @@ describe('application shell (Phase 10.4B) — landmarks & structure', () => {
       expect(navBlock).not.toBeNull();
       const svgCount = (navBlock[0].match(/<svg/g) || []).length;
       const hiddenCount = (navBlock[0].match(/aria-hidden="true"/g) || []).length;
-      expect(svgCount).toBe(6);
+      expect(svgCount).toBe(7);
       expect(svgCount).toBe(hiddenCount);
     });
   });

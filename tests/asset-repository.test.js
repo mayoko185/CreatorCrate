@@ -1198,6 +1198,52 @@ describe('asset repository', () => {
     });
   });
 
+  describe('findAssetsForNoteAssociation', () => {
+    it('returns project context for all indexed assets, including archived and missing rows', () => {
+      const archivedProject = createProject('Archived Note Assets');
+      const present = assetRepo.upsert(projectId, 'notes/present.txt', {
+        filename: 'present.txt',
+        extension: 'txt',
+        mimeType: 'text/plain',
+        sizeBytes: 10,
+        modifiedAt: null,
+      });
+      const missing = assetRepo.upsert(archivedProject.id, 'history/missing.bin', {
+        filename: 'missing.bin',
+        extension: 'bin',
+        mimeType: 'application/octet-stream',
+        sizeBytes: 20,
+        modifiedAt: null,
+      });
+      assetRepo.markAllMissing(archivedProject.id);
+      projectRepo.archive(archivedProject.id);
+
+      const all = assetRepo.findAssetsForNoteAssociation();
+      expect(all).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          id: present.id,
+          project_id: projectId,
+          project_title: 'Test Project',
+          relative_path: 'notes/present.txt',
+          filename: 'present.txt',
+          is_present: 1,
+        }),
+        expect.objectContaining({
+          id: missing.id,
+          project_id: archivedProject.id,
+          project_title: 'Archived Note Assets',
+          relative_path: 'history/missing.bin',
+          filename: 'missing.bin',
+          is_present: 0,
+        }),
+      ]));
+
+      expect(assetRepo.findAssetsForNoteAssociation([missing.id, present.id, missing.id])
+        .map((asset) => asset.id))
+        .toEqual([missing.id, present.id]);
+    });
+  });
+
   describe('findAllAssets and countAllAssets', () => {
     function insertCategory(forProjectId, {
       displayName,

@@ -115,13 +115,13 @@ describe('application shell — navigation model', () => {
     it('renders only existing top-level destinations', async () => {
       const res = await agent.get('/').expect(200);
       expect(navHrefs(res.text)).toEqual([
-        '/', '/projects', '/assets', '/releases', '/calendar', '/settings',
+        '/', '/projects', '/assets', '/releases', '/calendar', '/notes', '/settings',
       ]);
     });
 
     it('renders a decorative icon for every nav item', async () => {
       const res = await agent.get('/').expect(200);
-      expect(countNavIcons(res.text)).toBe(6);
+      expect(countNavIcons(res.text)).toBe(7);
       expect(res.text).toContain('aria-hidden="true"');
     });
   });

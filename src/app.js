@@ -13,17 +13,21 @@ import { createAssetTagsRouter } from './routes/asset-tags.js';
 import { createReleasesRouter } from './routes/releases.js';
 import { createReleaseManagementRouter } from './routes/release-management.js';
 import { createCalendarRouter } from './routes/calendar.js';
+import { createNotesRouter } from './routes/notes.js';
 import { createMediaRouter } from './routes/media.js';
 import { createSettingsRouter } from './routes/settings.js';
 import { createDownloadsRouter } from './routes/downloads.js';
 import { createProjectService } from './services/project-service.js';
 import { createAssetCategoryRepository } from './data/asset-category-repository.js';
+import { createNoteRepository } from './data/note-repository.js';
 import { createAssetCategoryService } from './services/asset-category-service.js';
 import { createAssetBrowserPreferenceRepository } from './data/asset-browser-preference-repository.js';
 import { createAppMetaRepository } from './data/app-meta-repository.js';
 import { createTagRepository } from './data/tag-repository.js';
 import { createProjectPrimaryImageRepository } from './data/project-primary-image-repository.js';
 import { createAssetBrowserPreferenceService } from './services/asset-browser-preference-service.js';
+import { createNoteService } from './services/note-service.js';
+import { createMarkdownRenderer } from './services/markdown-renderer.js';
 import { createPageDefaultsService } from './services/page-defaults-service.js';
 import { createOpenLocallySettingsService } from './services/open-locally-settings-service.js';
 import { createPreviewCategorySettingsService } from './services/preview-category-settings-service.js';
@@ -52,6 +56,7 @@ import { createAuthTransitionService } from './auth/auth-transition-service.js';
 import { buildShellModel } from './shell/navigation.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const TOAST_UI_EDITOR_DIST = path.join(__dirname, '../node_modules/@toast-ui/editor/dist');
 
 const SESSION_COOKIE_NAME = 'cc_session';
 
@@ -107,6 +112,9 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   app.use(express.json());
   app.use(express.urlencoded({ extended: true }));
   app.use(express.static(path.join(__dirname, 'static'), {
+    index: false,
+  }));
+  app.use('/vendor/toast-ui/editor', express.static(TOAST_UI_EDITOR_DIST, {
     index: false,
   }));
 
@@ -171,6 +179,17 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     projectPrimaryImageRepository,
   });
   app.locals.assetScanner = assetScanner;
+
+  const noteRepository = opts.noteRepository || createNoteRepository(db);
+  const noteService = opts.noteService || createNoteService({
+    noteRepository,
+    projectRepository: projectService.repository,
+    assetRepository: assetScanner.repository,
+  });
+  const markdownRenderer = opts.markdownRenderer || createMarkdownRenderer();
+  app.locals.noteRepository = noteRepository;
+  app.locals.noteService = noteService;
+  app.locals.markdownRenderer = markdownRenderer;
 
   const tagRepository = opts.tagRepository || createTagRepository(db);
   const tagService = opts.tagService || createTagService({ tagRepository });
@@ -463,6 +482,14 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   // /releases so /releases/calendar's compatibility redirect and this route
   // never overlap.
   app.use('/calendar', createCalendarRouter({ appName, workflowQueryService }));
+
+  app.use('/notes', createNotesRouter({
+    appName,
+    noteService,
+    markdownRenderer,
+    projectService,
+    assetRepository: assetScanner.repository,
+  }));
 
   app.use('/settings', createSettingsRouter({
     appName,

@@ -212,10 +212,10 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
     it('mobile nav renders the same destinations as desktop', async () => {
       const res = await agent.get('/').expect(200);
       expect(mobileNavHrefs(res.text)).toEqual([
-        '/', '/projects', '/assets', '/releases', '/calendar', '/settings',
+        '/', '/projects', '/assets', '/releases', '/calendar', '/notes', '/settings',
       ]);
       expect(desktopNavHrefs(res.text)).toEqual([
-        '/', '/projects', '/assets', '/releases', '/calendar', '/settings',
+        '/', '/projects', '/assets', '/releases', '/calendar', '/notes', '/settings',
       ]);
     });
 
@@ -224,10 +224,10 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
       expect(mobileNavHrefs(res.text)).toEqual(desktopNavHrefs(res.text));
     });
 
-    it('exactly six items in each nav (no duplicated routes)', async () => {
+    it('exactly seven items in each nav (no duplicated routes)', async () => {
       const res = await agent.get('/').expect(200);
-      expect(mobileNavHrefs(res.text)).toHaveLength(6);
-      expect(desktopNavHrefs(res.text)).toHaveLength(6);
+      expect(mobileNavHrefs(res.text)).toHaveLength(7);
+      expect(desktopNavHrefs(res.text)).toHaveLength(7);
     });
 
     it('renders exactly one Calendar link in the mobile nav', async () => {

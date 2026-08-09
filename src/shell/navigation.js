@@ -88,6 +88,13 @@ const NAVIGATION_ITEMS = [
     matches: ['/calendar'],
   },
   {
+    key: 'notes',
+    label: 'Notes',
+    href: '/notes',
+    icon: 'notes',
+    matches: ['/notes', '/notes/new', '/notes/:id', '/notes/:id/edit'],
+  },
+  {
     key: 'settings',
     label: 'Settings',
     href: '/settings',

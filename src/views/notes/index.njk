@@ -1,0 +1,62 @@
+{% extends "layout.njk" %}
+{% import "partials/page-heading.njk" as pageHeading %}
+
+{% set page_title = "Notes" %}
+
+{% block content %}
+  {% call pageHeading.render() %}
+    <a class="button button-primary" href="/notes/new">New Note</a>
+  {% endcall %}
+
+  {% if notice %}
+    {% set noticeVariant = notice.variant %}
+    {% set noticeText = notice.text %}
+    {% include "partials/notice.njk" %}
+  {% endif %}
+
+  {% if notes.length > 0 %}
+    {% if notes.length > 1 %}
+      <form id="notes-reorder-form" method="post" action="/notes/reorder" class="notes-reorder-form" data-note-reorder-form>
+        <input type="hidden" name="_csrf" value="{{ _csrf }}">
+        <input type="hidden" name="orderedNoteIds" data-note-order-input value="">
+      </form>
+    {% endif %}
+
+    <div class="table-scroll" tabindex="0" aria-label="Notes list">
+      <table class="data-table notes-table">
+        <thead>
+          <tr>
+            {% if notes.length > 1 %}<th scope="col" class="notes-reorder-heading">Order</th>{% endif %}
+            <th>Title</th>
+            <th>Updated</th>
+            <th>Preview</th>
+          </tr>
+        </thead>
+        <tbody{% if notes.length > 1 %} data-note-reorder-list data-reorder-url="/notes/reorder" data-reorder-form-target="notes-reorder-form"{% endif %}>
+          {% for note in notes %}
+            <tr{% if notes.length > 1 %} data-note-reorder-item data-note-id="{{ note.id }}" data-note-label="{{ note.title }}" draggable="true" aria-posinset="{{ loop.index }}" aria-setsize="{{ notes.length }}"{% endif %}>
+              {% if notes.length > 1 %}
+                <td class="notes-reorder-cell">
+                  <button type="button" class="notes-reorder-handle" data-note-reorder-handle draggable="true" aria-label="Reorder {{ note.title }}" title="Drag to reorder">
+                    <span aria-hidden="true">⠿</span>
+                  </button>
+                </td>
+              {% endif %}
+              <td class="notes-title"><a class="notes-title-link" href="/notes/{{ note.id }}">{{ note.title }}</a></td>
+              <td>{{ note.updatedAt or '—' }}</td>
+              <td class="notes-excerpt">{{ note.excerpt or 'No content yet.' }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% if notes.length > 1 %}<div class="notes-reorder-live-region sr-only" data-note-reorder-live aria-live="polite" aria-atomic="true"></div>{% endif %}
+  {% else %}
+    {% set emptyHeading = "No notes yet" %}
+    {% set emptyDescription = "Create your first note to keep ideas and working context in one place." %}
+    {% set emptyActionUrl = "/notes/new" %}
+    {% set emptyActionLabel = "New Note" %}
+    {% set emptyHeadingLevel = "h2" %}
+    {% include "partials/empty-state.njk" %}
+  {% endif %}
+{% endblock %}

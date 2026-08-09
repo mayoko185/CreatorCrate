@@ -1,0 +1,134 @@
+{% extends "layout.njk" %}
+{% import "partials/page-heading.njk" as pageHeading %}
+
+{% set title = action ~ ' Note' %}
+{% set page_title = "Notes — Edit " ~ note.title if action == 'Edit' else "Notes — " ~ title %}
+{% set formDescription = "Capture a standalone note." if action == 'Create' else "Update this note." %}
+
+{% block page_assets %}
+  <link rel="stylesheet" href="/vendor/toast-ui/editor/toastui-editor.css">
+  <link rel="stylesheet" href="/vendor/toast-ui/editor/theme/toastui-editor-dark.css">
+  <script src="/vendor/toast-ui/editor/toastui-editor.js"></script>
+{% endblock %}
+
+{% block content %}
+  {% call pageHeading.render(formDescription) %}
+    <button class="button button-primary" type="submit" form="note-form">{{ action }}</button>
+    <a class="button button-secondary" href="{% if note %}/notes/{{ note.id }}{% else %}/notes{% endif %}">Cancel</a>
+  {% endcall %}
+
+  {% if errors.general %}
+    <div class="error-summary" role="alert">
+      <p>{{ errors.general }}</p>
+    </div>
+  {% endif %}
+
+  <form id="note-form" method="post" action="{{ submitUrl }}" class="project-form notes-form" data-notes-editor-form novalidate>
+    <input type="hidden" name="_csrf" value="{{ _csrf }}">
+
+    <div class="settings-section">
+      <h3>Basic information</h3>
+
+      <div class="field {% if errors.title %}field-error{% endif %}">
+        <label for="title">Title <span class="required" aria-label="required">*</span></label>
+        <input type="text" id="title" name="title" value="{{ values.title or '' }}" maxlength="200" required{% if errors.title %} aria-describedby="title-error" aria-invalid="true"{% endif %}>
+        {% if errors.title %}<span class="field-error-message" id="title-error">{{ errors.title }}</span>{% endif %}
+      </div>
+
+      <div class="field {% if errors.content %}field-error{% endif %}">
+        <label id="content-label" for="content">Content</label>
+        <div class="notes-editor" data-notes-editor-host-wrapper>
+          <div id="content-editor" class="notes-editor-host" data-notes-editor-host aria-labelledby="content-label" aria-describedby="content-help{% if errors.content %} content-error{% endif %}"></div>
+          <textarea id="content" name="content" data-notes-editor-source rows="16" aria-describedby="content-help{% if errors.content %} content-error{% endif %}"{% if errors.content %} aria-invalid="true"{% endif %}>{{ values.content or '' }}</textarea>
+        </div>
+        <span class="help-text" id="content-help">Markdown source is stored unchanged.</span>
+        {% if errors.content %}<span class="field-error-message" id="content-error">{{ errors.content }}</span>{% endif %}
+      </div>
+    </div>
+
+    {% set projectError = errors.projectIds or errors.associations %}
+    {% set projectSummary = 'No projects selected' %}
+    {% if selectedProjectIds.length == 1 %}
+      {% for project in projects %}
+        {% if selectedProjectIds[0] == (project.id | string) %}
+          {% set projectSummary = project.title %}
+        {% endif %}
+      {% endfor %}
+    {% elif selectedProjectIds.length > 1 %}
+      {% set projectSummary = selectedProjectIds.length ~ ' projects selected' %}
+    {% endif %}
+
+    <div class="settings-section">
+      <h3>Associations</h3>
+
+      <fieldset class="field asset-viewer-filter-field asset-filter-multiselect-field{% if projectError %} field-error{% endif %}">
+        <legend>Projects</legend>
+        <details class="asset-filter-multiselect asset-filter-multiselect--sized">
+          <summary id="note-projects-form-trigger"
+                   aria-controls="note-projects-form-options"
+                   aria-label="Projects: {{ projectSummary }}">
+            <span class="asset-filter-multiselect-summary">
+              <span class="asset-filter-multiselect-summary-current">{{ projectSummary }}</span>
+              <span class="asset-filter-multiselect-summary-width" aria-hidden="true">
+                <span>No projects selected</span>
+                {% for project in projects %}<span>{{ project.title }}</span>{% endfor %}
+                <span>{{ projects.length }} projects selected</span>
+              </span>
+            </span>
+          </summary>
+          <div id="note-projects-form-options" class="asset-filter-multiselect-panel" role="group" aria-label="Project options">
+            {% if projects.length > 0 %}
+              {% for project in projects %}
+                <div class="asset-filter-multiselect-option">
+                  <label for="note-project-option-{{ project.id }}">
+                    <input id="note-project-option-{{ project.id }}" name="projectIds[]" type="checkbox" value="{{ project.id }}"{% if (project.id | string) in selectedProjectIds %} checked{% endif %}{% if projectError %} aria-describedby="projectIds-error" aria-invalid="true"{% endif %}>
+                    <span>{{ project.title }}</span>
+                  </label>
+                </div>
+              {% endfor %}
+            {% else %}
+              <p class="asset-filter-multiselect-empty">No projects available. <a href="/projects/new">Create a project</a>.</p>
+            {% endif %}
+          </div>
+        </details>
+        {% if projectError %}<span class="field-error-message" id="projectIds-error">{{ projectError }}</span>{% endif %}
+      </fieldset>
+
+      {% set assetError = errors.assetIds or errors.associations %}
+
+      <fieldset class="field asset-viewer-filter-field asset-filter-multiselect-field{% if assetError %} field-error{% endif %}">
+        <legend>Assets</legend>
+        <input type="hidden" name="assetIds[]" value="">
+        {% if assetGroups.length > 0 %}
+          <div class="notes-asset-groups">
+            {% for group in assetGroups %}
+              <details class="asset-filter-multiselect asset-filter-multiselect--sized notes-asset-group">
+                <summary id="note-assets-project-{{ group.id }}-trigger"
+                         aria-controls="note-assets-project-{{ group.id }}-options">
+                  <span class="asset-filter-multiselect-summary">
+                    {{ group.title }} ({{ group.assets.length }} assets)
+                  </span>
+                </summary>
+                <div id="note-assets-project-{{ group.id }}-options" class="asset-filter-multiselect-panel" role="group" aria-label="{{ group.title }} asset options">
+                  {% for asset in group.assets %}
+                    <div class="asset-filter-multiselect-option">
+                      <label for="note-asset-option-{{ asset.id }}">
+                        <input id="note-asset-option-{{ asset.id }}" name="assetIds[]" type="checkbox" value="{{ asset.id }}"{% if (asset.id | string) in selectedAssetIds %} checked{% endif %}{% if assetError %} aria-describedby="assetIds-error" aria-invalid="true"{% endif %}>
+                        <span>{{ asset.filename }}</span>
+                        {% if asset.showRelativePath %}<span class="notes-asset-option-path">{{ asset.relativePath }}</span>{% endif %}
+                        {% if not asset.isPresent %}<span class="notes-asset-option-state">Missing</span>{% endif %}
+                      </label>
+                    </div>
+                  {% endfor %}
+                </div>
+              </details>
+            {% endfor %}
+          </div>
+        {% else %}
+          <p class="asset-filter-multiselect-empty">No assets available.</p>
+        {% endif %}
+        {% if assetError %}<span class="field-error-message" id="assetIds-error">{{ assetError }}</span>{% endif %}
+      </fieldset>
+    </div>
+  </form>
+{% endblock %}

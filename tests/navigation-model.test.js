@@ -24,10 +24,10 @@ function activeKeys(path, opts = {}) {
 describe('navigation model — destinations', () => {
   it('exposes only destinations that resolve to real page routes', () => {
     const { navigation } = buildShellModel({ appName: APP_NAME, path: '/' });
-    // Dashboard, Projects, Asset Viewer, Releases, Calendar, Settings. No Health
+    // Dashboard, Projects, Asset Viewer, Releases, Calendar, Notes, Settings. No Health
     // (JSON-only), no dead links.
     expect(navigation.map((n) => n.href)).toEqual([
-      '/', '/projects', '/assets', '/releases', '/calendar', '/settings',
+      '/', '/projects', '/assets', '/releases', '/calendar', '/notes', '/settings',
     ]);
   });
 
@@ -71,24 +71,52 @@ describe('navigation model — Phase 2E: dedicated Calendar item', () => {
     expect(item.href).toBe('/releases');
   });
 
-  it('item order is exactly Dashboard, Projects, Asset Viewer, Releases, Calendar, Settings', () => {
+  it('item order is exactly Dashboard, Projects, Asset Viewer, Releases, Calendar, Notes, Settings', () => {
     expect(NAVIGATION_ITEMS.map((i) => i.label)).toEqual([
       'Dashboard',
       'Projects',
       'Asset Viewer',
       'Releases',
       'Calendar',
+      'Notes',
       'Settings',
     ]);
   });
 
-  it('Calendar appears immediately after Releases and before Settings', () => {
+  it('Calendar appears immediately after Releases and Notes appears before Settings', () => {
     const keys = NAVIGATION_ITEMS.map((i) => i.key);
     const releasesIdx = keys.indexOf('releases');
     const calendarIdx = keys.indexOf('calendar');
+    const notesIdx = keys.indexOf('notes');
     const settingsIdx = keys.indexOf('settings');
     expect(calendarIdx).toBe(releasesIdx + 1);
-    expect(settingsIdx).toBe(calendarIdx + 1);
+    expect(notesIdx).toBe(calendarIdx + 1);
+    expect(settingsIdx).toBe(notesIdx + 1);
+  });
+});
+
+describe('navigation model — Notes active state', () => {
+  it('defines Notes with the top-level destination and notes icon', () => {
+    expect(NAVIGATION_ITEMS.filter((item) => item.key === 'notes')).toHaveLength(1);
+    expect(NAVIGATION_ITEMS.find((item) => item.key === 'notes')).toMatchObject({
+      label: 'Notes',
+      href: '/notes',
+      icon: 'notes',
+      matches: ['/notes', '/notes/new', '/notes/:id', '/notes/:id/edit'],
+    });
+  });
+
+  it('is active across the Notes section route family', () => {
+    expect(activeKeys('/notes')).toEqual(['notes']);
+    expect(activeKeys('/notes/new')).toEqual(['notes']);
+    expect(activeKeys('/notes/42')).toEqual(['notes']);
+    expect(activeKeys('/notes/42/edit')).toEqual(['notes']);
+    expect(activeKeys('/notes?view=list')).toEqual(['notes']);
+  });
+
+  it('does not activate Notes for sibling prefixes', () => {
+    expect(activeKeys('/notes-old')).toEqual([]);
+    expect(activeKeys('/notebook')).toEqual([]);
   });
 });
 

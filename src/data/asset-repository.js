@@ -23,6 +23,26 @@ const ASSET_COLUMNS = [
   'updated_at',
 ];
 
+const NOTE_ASSOCIATION_ASSET_SELECT = `
+  SELECT
+    a.id,
+    a.project_id,
+    a.relative_path,
+    a.filename,
+    a.is_present,
+    p.title AS project_title
+  FROM assets a
+  JOIN projects p ON p.id = a.project_id
+`;
+const NOTE_ASSOCIATION_ASSET_ORDER = `
+  ORDER BY
+    p.title COLLATE NOCASE ASC,
+    p.id ASC,
+    a.filename COLLATE NOCASE ASC,
+    a.relative_path COLLATE NOCASE ASC,
+    a.id ASC
+`;
+
 const ALLOWED_SORTS = {
   filename: { column: 'filename COLLATE NOCASE' },
   size: { column: 'size_bytes' },
@@ -309,6 +329,10 @@ export function createAssetRepository(db) {
     FROM assets
     WHERE id = ?
   `);
+
+  const findAllForNoteAssociationStmt = db.prepare(
+    `${NOTE_ASSOCIATION_ASSET_SELECT}${NOTE_ASSOCIATION_ASSET_ORDER}`
+  );
 
   const findByPathStmt = db.prepare(`
     SELECT ${ASSET_COLUMNS.join(', ')}
@@ -681,6 +705,27 @@ export function createAssetRepository(db) {
       const unique = [...new Set(ids)];
       const placeholders = unique.map(() => '?').join(',');
       const sql = `SELECT ${ASSET_COLUMNS.join(', ')} FROM assets WHERE id IN (${placeholders})`;
+      return db.prepare(sql).all(...unique);
+    },
+
+    /**
+     * Find indexed assets with the project context required by the Notes
+     * association picker and detail page. Omitting ids returns every indexed
+     * asset, including rows in archived projects and rows marked missing;
+     * supplying ids restricts the same read model to those asset IDs.
+     *
+     * @param {number[]} [ids]
+     * @returns {Array<{id: number, project_id: number, relative_path: string, filename: string, is_present: number, project_title: string}>}
+     */
+    findAssetsForNoteAssociation(ids) {
+      if (ids === undefined) return findAllForNoteAssociationStmt.all();
+      if (!Array.isArray(ids) || ids.length === 0) return [];
+
+      const unique = [...new Set(ids)];
+      const placeholders = unique.map(() => '?').join(',');
+      const sql = `${NOTE_ASSOCIATION_ASSET_SELECT}
+    WHERE a.id IN (${placeholders})
+    ${NOTE_ASSOCIATION_ASSET_ORDER}`;
       return db.prepare(sql).all(...unique);
     },
 

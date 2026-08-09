@@ -15,6 +15,8 @@ import { fileURLToPath } from 'node:url';
 
 const dependencyInstrumentation = vi.hoisted(() => ({
   appMetaRepositories: [],
+  noteRepositories: [],
+  noteServices: [],
   tagRepositories: [],
   preferenceRepositories: [],
   projectServices: [],
@@ -30,6 +32,7 @@ const dependencyInstrumentation = vi.hoisted(() => ({
   workflowQueryServices: [],
   openLocallySettingsServices: [],
   assetRouters: [],
+  noteRouters: [],
   projectAssetCategoryRouters: [],
   settingsRouters: [],
 }));
@@ -58,6 +61,18 @@ vi.mock('../src/data/app-meta-repository.js', async (importOriginal) => {
   };
 });
 
+vi.mock('../src/data/note-repository.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    createNoteRepository(...args) {
+      const repository = actual.createNoteRepository(...args);
+      dependencyInstrumentation.noteRepositories.push({ args, repository });
+      return repository;
+    },
+  };
+});
+
 vi.mock('../src/data/tag-repository.js', async (importOriginal) => {
   const actual = await importOriginal();
   return {
@@ -77,6 +92,18 @@ vi.mock('../src/services/project-service.js', async (importOriginal) => {
     createProjectService(...args) {
       const service = actual.createProjectService(...args);
       dependencyInstrumentation.projectServices.push({ args, service });
+      return service;
+    },
+  };
+});
+
+vi.mock('../src/services/note-service.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    createNoteService(...args) {
+      const service = actual.createNoteService(...args);
+      dependencyInstrumentation.noteServices.push({ args, service });
       return service;
     },
   };
@@ -226,6 +253,18 @@ vi.mock('../src/routes/assets.js', async (importOriginal) => {
   };
 });
 
+vi.mock('../src/routes/notes.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    createNotesRouter(...args) {
+      const router = actual.createNotesRouter(...args);
+      dependencyInstrumentation.noteRouters.push({ args, router });
+      return router;
+    },
+  };
+});
+
 vi.mock('../src/routes/project-asset-categories.js', async (importOriginal) => {
   const actual = await importOriginal();
   return {
@@ -308,6 +347,36 @@ describe('app construction — asset actions chunk 3 wiring', () => {
     const app = buildApp();
     expect(app.locals.assetScanner).toBeTruthy();
     expect(typeof app.locals.assetScanner.scanProjectAssets).toBe('function');
+  });
+
+  it('constructs and wires the Notes repository, service, and router explicitly', () => {
+    const app = buildApp();
+
+    expect(dependencyInstrumentation.noteRepositories).toHaveLength(1);
+    expect(dependencyInstrumentation.noteServices).toHaveLength(1);
+    expect(dependencyInstrumentation.noteRouters).toHaveLength(1);
+
+    const { args: repositoryArgs, repository: noteRepository } = dependencyInstrumentation.noteRepositories[0];
+    const { args: serviceArgs, service: noteService } = dependencyInstrumentation.noteServices[0];
+    const { args: routerArgs } = dependencyInstrumentation.noteRouters[0];
+
+    expect(repositoryArgs[0]).toBe(db);
+    expect(serviceArgs[0]).toEqual({
+      noteRepository,
+      projectRepository: dependencyInstrumentation.projectServices[0].service.repository,
+      assetRepository: app.locals.assetScanner.repository,
+    });
+    expect(app.locals.noteRepository).toBe(noteRepository);
+    expect(app.locals.noteService).toBe(noteService);
+    expect(app.locals.markdownRenderer).toBeTruthy();
+    expect(typeof app.locals.markdownRenderer.renderMarkdown).toBe('function');
+    expect(routerArgs[0]).toEqual({
+      appName: 'CreatorCrate',
+      noteService,
+      markdownRenderer: app.locals.markdownRenderer,
+      projectService: dependencyInstrumentation.projectServices[0].service,
+      assetRepository: app.locals.assetScanner.repository,
+    });
   });
 
   it('constructs the preference service once and keeps it available without route wiring', () => {

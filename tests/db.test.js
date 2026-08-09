@@ -95,6 +95,8 @@ describe('database and migrations', () => {
       '002_add_completed_status.sql',
       '003_remove_project_priority.sql',
       '004_add_primary_image_provenance.sql',
+      '005_add_notes_table.sql',
+      '006_add_note_associations.sql',
     ]);
   });
 
@@ -114,6 +116,9 @@ describe('database and migrations', () => {
       'asset_category_defaults',
       'asset_tags',
       'assets',
+      'note_assets',
+      'note_projects',
+      'notes',
       'project_asset_browser_preferences',
       'project_asset_categories',
       'project_primary_images',

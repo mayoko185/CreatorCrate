@@ -7,6 +7,8 @@ import {
   enhanceProjectCards,
   enhanceAutoSubmit,
   enhanceCategoryReorder,
+  enhanceNoteReorder,
+  enhanceNotesEditor,
   enhanceCategoryDetails,
   enhanceConfirmations,
   enhanceAssetSelection,
@@ -286,6 +288,15 @@ describe('static preview enhancement helpers', () => {
     expect(source).not.toMatch(/sessionStorage|XMLHttpRequest/i);
     expect(source).toMatch(/fetch\(/i);
   });
+
+  it('initializes the Notes reorder enhancement from the shared client boot', () => {
+    const source = fs.readFileSync(
+      fileURLToPath(new URL('../src/static/creatorcrate.js', import.meta.url)),
+      'utf8'
+    );
+
+    expect(source).toContain('enhanceNoteReorder(document)');
+  });
 });
 
 describe('project card navigation enhancement', () => {
@@ -415,6 +426,8 @@ class TestFormData {
     if (form.control) values.enabled = ['0', ...(form.control.checked ? ['1'] : [])];
     const orderInput = form.querySelector?.('[data-category-order-input]');
     if (orderInput) values.orderedCategoryIds = [orderInput.value || ''];
+    const noteOrderInput = form.querySelector?.('[data-note-order-input]');
+    if (noteOrderInput) values.orderedNoteIds = [noteOrderInput.value || ''];
     this.values = values;
   }
 
@@ -793,6 +806,67 @@ function makeCategoryReorderFixture({
   };
 }
 
+function makeNoteReorderFixture({
+  action = '/notes/reorder',
+  csrfToken = 'csrf-note-reorder',
+  noteIds = ['11', '22', '33'],
+} = {}) {
+  const document = makeCategoryNode({ tagName: 'document' });
+  document.ownerDocument = document;
+  document.getElementById = (id) => document
+    .querySelectorAll('[data-note-reorder-form]')
+    .find((form) => form.getAttribute('id') === id) || null;
+  const section = makeCategoryNode();
+  const form = makeCategoryNode({
+    tagName: 'form',
+    attrs: { id: 'notes-reorder-form', 'data-note-reorder-form': '' },
+  });
+  form.action = action;
+  form.method = 'post';
+  form.csrfToken = csrfToken;
+  const orderInput = makeCategoryNode({ tagName: 'input', attrs: { 'data-note-order-input': '' } });
+  const live = makeCategoryNode({ attrs: { 'data-note-reorder-live': '' } });
+  const list = makeCategoryNode({ tagName: 'tbody', attrs: {
+    'data-note-reorder-list': '',
+    'data-reorder-form-target': 'notes-reorder-form',
+  } });
+  const items = noteIds.map((id, index) => {
+    const item = makeCategoryNode({
+      tagName: 'tr',
+      attrs: {
+        'data-note-reorder-item': '',
+        'data-note-id': id,
+        'data-note-label': `Note ${id}`,
+      },
+      rect: { top: index * 50, height: 40 },
+    });
+    const handle = makeCategoryNode({ tagName: 'button', attrs: { 'data-note-reorder-handle': '' } });
+    item.appendChild(handle);
+    item.handle = handle;
+    return item;
+  });
+
+  document.appendChild(section);
+  section.appendChild(form);
+  form.appendChild(orderInput);
+  section.appendChild(list);
+  items.forEach((item) => list.appendChild(item));
+  section.appendChild(live);
+  let submitCount = 0;
+  form.requestSubmit = () => { submitCount += 1; };
+  return {
+    document,
+    section,
+    form,
+    orderInput,
+    live,
+    list,
+    items,
+    get submitCount() { return submitCount; },
+    order() { return list.querySelectorAll('[data-note-reorder-item]').map((item) => item.dataset.noteId); },
+  };
+}
+
 describe('project category reorder enhancement', () => {
   it('is scoped and no-ops when the project reorder list is absent', () => {
     const scope = { querySelectorAll: (selector) => {
@@ -1103,6 +1177,106 @@ describe('project category reorder enhancement', () => {
       expect(fixture.order()).toEqual(['2', '1', '3']);
       expect(fixture.form.getAttribute('aria-busy')).toBe(null);
     });
+  });
+});
+
+describe('Notes reorder enhancement', () => {
+  it('is scoped and no-ops when the Notes reorder list is absent', () => {
+    const scope = {
+      querySelectorAll(selector) {
+        expect(selector).toBe('[data-note-reorder-list]');
+        return [];
+      },
+    };
+
+    expect(enhanceNoteReorder(scope)).toBe(0);
+  });
+
+  it('moves only from the explicit handle, posts the complete order, and keeps links out of drag behavior', async () => {
+    const fixture = makeNoteReorderFixture();
+    const link = makeCategoryNode({ tagName: 'a' });
+    fixture.items[0].appendChild(link);
+    const calls = [];
+
+    await withBrowserGlobals(async (action, options) => {
+      calls.push({ action, options });
+      return { ok: true };
+    }, async () => {
+      expect(enhanceNoteReorder(fixture.document)).toBe(1);
+
+      const linkDrag = fixture.items[0].dispatch('dragstart', {
+        target: link,
+        dataTransfer: { setData() {} },
+      });
+      expect(linkDrag.defaultPrevented).toBe(true);
+
+      fixture.items[0].handle.dispatch('dragstart', { dataTransfer: { setData() {} } });
+      fixture.list.dispatch('dragover', {
+        target: fixture.items[2],
+        clientY: 130,
+        dataTransfer: {},
+      });
+      fixture.list.dispatch('drop', { target: fixture.items[2] });
+      await flushAsync();
+
+      expect(fixture.order()).toEqual(['22', '33', '11']);
+      expect(fixture.orderInput.value).toBe('22,33,11');
+      expect(calls).toHaveLength(1);
+      expect(calls[0].action).toBe('/notes/reorder');
+      expect(calls[0].options.method).toBe('POST');
+      expect(calls[0].options.body).toBeInstanceOf(URLSearchParams);
+      expect(calls[0].options.body.getAll('_csrf')).toEqual(['csrf-note-reorder']);
+      expect(calls[0].options.body.getAll('orderedNoteIds')).toEqual(['22,33,11']);
+      expect(fixture.submitCount).toBe(0);
+    });
+  });
+
+  it('supports keyboard moves, ARIA positions, announcements, focus, and rollback', async () => {
+    const fixture = makeNoteReorderFixture();
+    const calls = [];
+
+    await withBrowserGlobals(async (action, options) => {
+      calls.push({ action, options });
+      return { ok: true };
+    }, async () => {
+      enhanceNoteReorder(fixture.document);
+
+      fixture.items[1].handle.dispatch('keydown', { key: 'ArrowUp' });
+      expect(fixture.order()).toEqual(['22', '11', '33']);
+      expect(fixture.items[1].handle.focused).toBe(true);
+      expect(fixture.items[1].getAttribute('aria-posinset')).toBe('1');
+      expect(fixture.live.textContent).toContain('moved to position 1 of 3');
+      await flushAsync();
+      expect(calls).toHaveLength(1);
+      expect(calls[0].options.body.getAll('orderedNoteIds')).toEqual(['22,11,33']);
+
+      fixture.items[2].handle.dispatch('keydown', { key: 'End' });
+      expect(calls).toHaveLength(1);
+      expect(fixture.order()).toEqual(['22', '11', '33']);
+    });
+
+    const failure = makeNoteReorderFixture();
+    await withBrowserGlobals(async () => ({ ok: false, status: 503 }), async () => {
+      enhanceNoteReorder(failure.document);
+      failure.items[1].handle.dispatch('keydown', { key: 'ArrowUp' });
+      await flushAsync();
+      expect(failure.order()).toEqual(['11', '22', '33']);
+      expect(failure.items[1].getAttribute('aria-posinset')).toBe('2');
+      expect(failure.live.textContent).toContain('previous order was restored');
+    });
+  });
+
+  it('is idempotent and ignores boundary keyboard moves', () => {
+    const fixture = makeNoteReorderFixture();
+
+    expect(enhanceNoteReorder(fixture.document)).toBe(1);
+    expect(enhanceNoteReorder(fixture.document)).toBe(1);
+    expect(fixture.items[0].handle.listeners.filter((listener) => listener.type === 'keydown')).toHaveLength(1);
+    expect(fixture.list.listeners.filter((listener) => listener.type === 'dragover')).toHaveLength(1);
+
+    fixture.items[0].handle.dispatch('keydown', { key: 'ArrowUp' });
+    fixture.items[2].handle.dispatch('keydown', { key: 'ArrowDown' });
+    expect(fixture.order()).toEqual(['11', '22', '33']);
   });
 });
 
@@ -3602,5 +3776,165 @@ describe('Release form date picker enhancement', () => {
     expect(css).toMatch(/\.time-picker-column::\-webkit-scrollbar\s*\{/);
     expect(css).not.toMatch(/\.date-picker\s*,\s*\.time-picker/);
     expect(css).not.toMatch(/\.time-picker\s*\{/);
+  });
+});
+
+function makeNotesEditorFixture(value = '') {
+  const formListeners = [];
+  const textareaAttributes = new Map();
+  const textarea = {
+    value,
+    hidden: false,
+    setAttribute(name, attributeValue) {
+      textareaAttributes.set(name, String(attributeValue));
+    },
+  };
+  const host = {
+    listeners: [],
+    addEventListener(type, handler) {
+      this.listeners.push({ type, handler });
+    },
+  };
+  const form = {
+    dataset: {},
+    listeners: formListeners,
+    querySelector(selector) {
+      if (selector === '[data-notes-editor-host]') return host;
+      if (selector === '[data-notes-editor-source]') return textarea;
+      return null;
+    },
+    addEventListener(type, handler) {
+      formListeners.push({ type, handler });
+    },
+  };
+  const scope = {
+    querySelectorAll(selector) {
+      expect(selector).toBe('[data-notes-editor-form]');
+      return [form];
+    },
+  };
+
+  return { form, host, scope, textarea, textareaAttributes };
+}
+
+function makeToastUiEditorStub() {
+  const instances = [];
+  class FakeEditor {
+    constructor(options) {
+      this.options = options;
+      this.markdown = '';
+      this.removeHookCalls = [];
+      this.destroyCalls = 0;
+      instances.push(this);
+    }
+
+    getMarkdown() {
+      return this.markdown;
+    }
+
+    removeHook(name) {
+      this.removeHookCalls.push(name);
+    }
+
+    destroy() {
+      this.destroyCalls += 1;
+    }
+  }
+
+  FakeEditor.instances = instances;
+  return FakeEditor;
+}
+
+function withToastUi(Editor, callback) {
+  const hadToastUi = Object.hasOwn(globalThis, 'toastui');
+  const previousToastUi = globalThis.toastui;
+  globalThis.toastui = { Editor };
+  try {
+    return callback();
+  } finally {
+    if (hadToastUi) globalThis.toastui = previousToastUi;
+    else delete globalThis.toastui;
+  }
+}
+
+describe('Notes editor progressive enhancement', () => {
+  it('no-ops when the Notes editor target is absent', () => {
+    const Editor = makeToastUiEditorStub();
+    const scope = {
+      querySelectorAll(selector) {
+        expect(selector).toBe('[data-notes-editor-form]');
+        return [];
+      },
+    };
+
+    withToastUi(Editor, () => {
+      expect(enhanceNotesEditor(scope)).toBe(0);
+      expect(Editor.instances).toHaveLength(0);
+    });
+  });
+
+  it('starts in WYSIWYG mode with Markdown switching, focused formatting, disabled telemetry, and no image support', () => {
+    const Editor = makeToastUiEditorStub();
+    const initialMarkdown = '# Existing\n\n**source**';
+    const fixture = makeNotesEditorFixture(initialMarkdown);
+
+    withToastUi(Editor, () => {
+      expect(enhanceNotesEditor(fixture.scope)).toBe(1);
+
+      const [editor] = Editor.instances;
+      expect(editor.options.el).toBe(fixture.host);
+      expect(editor.options.initialValue).toBe(initialMarkdown);
+      expect(editor.options.initialEditType).toBe('wysiwyg');
+      expect(editor.options.hideModeSwitch).toBe(false);
+      expect(editor.options.usageStatistics).toBe(false);
+      expect(editor.options.toolbarItems.flat()).toEqual(expect.arrayContaining([
+        'heading',
+        'bold',
+        'italic',
+        'strike',
+        'quote',
+        'ul',
+        'ol',
+        'task',
+        'link',
+        'table',
+        'code',
+        'codeblock',
+      ]));
+      expect(editor.options.toolbarItems.flat()).not.toContain('image');
+      expect(editor.options.hooks).toBeUndefined();
+      expect(editor.removeHookCalls).toEqual(['addImageBlobHook']);
+      expect(fixture.textarea.hidden).toBe(true);
+      expect(fixture.textareaAttributes.get('hidden')).toBe('');
+    });
+  });
+
+  it('synchronizes getMarkdown into the named textarea at submit time', () => {
+    const Editor = makeToastUiEditorStub();
+    const fixture = makeNotesEditorFixture('initial source');
+
+    withToastUi(Editor, () => {
+      enhanceNotesEditor(fixture.scope);
+      const [editor] = Editor.instances;
+      editor.markdown = '## WYSIWYG result\n\n- item';
+
+      fixture.form.listeners.find((listener) => listener.type === 'submit').handler();
+
+      expect(fixture.textarea.value).toBe('## WYSIWYG result\n\n- item');
+    });
+  });
+
+  it('initializes once and binds one submit synchronization listener', () => {
+    const Editor = makeToastUiEditorStub();
+    const fixture = makeNotesEditorFixture();
+
+    withToastUi(Editor, () => {
+      expect(enhanceNotesEditor(fixture.scope)).toBe(1);
+      expect(enhanceNotesEditor(fixture.scope)).toBe(1);
+
+      expect(Editor.instances).toHaveLength(1);
+      expect(fixture.form.listeners.filter((listener) => listener.type === 'submit')).toHaveLength(1);
+      expect(Editor.instances[0].removeHookCalls).toHaveLength(1);
+    });
   });
 });

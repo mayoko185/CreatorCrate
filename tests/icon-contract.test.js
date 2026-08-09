@@ -22,7 +22,7 @@ function renderIcon(name) {
 }
 
 describe('icon contract — known keys', () => {
-  for (const key of ['dashboard', 'projects', 'releases', 'settings', 'slideshow', 'chevron-left', 'chevron-right', 'close', 'original-size', 'pause', 'fullscreen', 'fullscreen-exit']) {
+  for (const key of ['dashboard', 'projects', 'releases', 'settings', 'notes', 'slideshow', 'chevron-left', 'chevron-right', 'close', 'original-size', 'pause', 'fullscreen', 'fullscreen-exit']) {
     it(`"${key}" resolves to a decorative inline svg`, () => {
       const out = renderIcon(key);
       expect(out).toContain('<svg');
@@ -34,6 +34,14 @@ describe('icon contract — known keys', () => {
       expect(out).not.toMatch(/xlink:href|https?:\/\//);
     });
   }
+});
+
+describe('icon contract — Notes icon', () => {
+  it('uses a document outline with text lines', () => {
+    const out = renderIcon('notes');
+    expect(out).toContain('<path d="M6 3h8l4 4v14H6z"/>');
+    expect(out).toContain('<path d="M14 3v5h5M9 12h6M9 16h6M9 20h4"/>');
+  });
 });
 
 describe('icon contract — unknown / unsafe keys', () => {

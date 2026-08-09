@@ -817,6 +817,147 @@
         word-break: break-word;
       }
       .description, .notes { white-space: pre-wrap; }
+      .notes-table .notes-title-link {
+        color: var(--link);
+        font-weight: 600;
+        text-decoration: none;
+      }
+      .notes-table .notes-title-link:visited { color: var(--link); }
+      .notes-table .notes-title-link:hover { filter: brightness(1.15); }
+      .notes-table .notes-title-link:focus-visible {
+        outline: 2px solid var(--focus-ring);
+        outline-offset: 2px;
+      }
+      .notes-reorder-form { display: none; }
+      .notes-table .notes-reorder-heading,
+      .notes-table .notes-reorder-cell {
+        width: 2.5rem;
+        padding-right: var(--space-sm);
+        padding-left: var(--space-sm);
+        text-align: center;
+      }
+      .notes-table tbody[data-note-reorder-list] tr[data-note-reorder-item] {
+        transition: opacity var(--transition-fast), box-shadow var(--transition-fast), background var(--transition-fast);
+      }
+      .notes-table tbody[data-note-reorder-list] tr[data-note-reorder-item].is-dragging {
+        opacity: 0.55;
+      }
+      .notes-table tbody[data-note-reorder-list] tr[data-note-reorder-item].is-drop-before td {
+        box-shadow: 0 -3px 0 var(--accent);
+      }
+      .notes-table tbody[data-note-reorder-list] tr[data-note-reorder-item].is-drop-after td {
+        box-shadow: 0 3px 0 var(--accent);
+      }
+      .notes-reorder-handle {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 2rem;
+        min-height: 2rem;
+        padding: 0;
+        color: var(--muted);
+        background: transparent;
+        border: 1px solid transparent;
+        border-radius: var(--radius-sm);
+        cursor: grab;
+        font-size: 1.25rem;
+        line-height: 1;
+      }
+      .notes-reorder-handle:hover {
+        color: var(--text);
+        background: var(--surface-card);
+        border-color: var(--border);
+      }
+      .notes-reorder-handle:active { cursor: grabbing; }
+      .notes-reorder-handle:focus-visible {
+        outline: 2px solid var(--focus-ring);
+        outline-offset: 2px;
+      }
+      .notes-editor,
+      .notes-editor-host {
+        width: 100%;
+      }
+      .notes-editor .toastui-editor-defaultUI {
+        width: 100%;
+        border-color: var(--border-strong);
+        border-radius: var(--radius-md);
+        overflow: hidden;
+      }
+      .notes-detail-content { margin: var(--space-xl) 0; }
+      .notes-detail-content h2 { margin-top: 0; }
+      .notes-content {
+        margin: 0;
+        padding: var(--space-lg);
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
+        overflow-wrap: anywhere;
+      }
+      .notes-content > :first-child { margin-top: 0; }
+      .notes-content > :last-child { margin-bottom: 0; }
+      .notes-content p,
+      .notes-content ul,
+      .notes-content ol,
+      .notes-content blockquote,
+      .notes-content pre,
+      .notes-content table {
+        margin: 0 0 var(--space-md);
+      }
+      .notes-content h1,
+      .notes-content h2,
+      .notes-content h3,
+      .notes-content h4,
+      .notes-content h5,
+      .notes-content h6 {
+        margin: var(--space-lg) 0 var(--space-sm);
+        line-height: 1.25;
+      }
+      .notes-content ul,
+      .notes-content ol {
+        padding-left: var(--space-xl);
+      }
+      .notes-content blockquote {
+        padding: var(--space-sm) var(--space-md);
+        color: var(--muted);
+        border-left: 3px solid var(--accent);
+      }
+      .notes-content code {
+        padding: 0.1em 0.35em;
+        background: var(--bg);
+        border-radius: var(--radius-sm);
+        font-family: var(--mono);
+        font-size: 0.9em;
+      }
+      .notes-content pre {
+        padding: var(--space-md);
+        overflow-x: auto;
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+      }
+      .notes-content pre code {
+        padding: 0;
+        background: transparent;
+        font-size: 0.875rem;
+      }
+      .notes-content table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+      .notes-content th,
+      .notes-content td {
+        padding: var(--space-sm) var(--space-md);
+        text-align: left;
+        border: 1px solid var(--border);
+      }
+      .notes-content th {
+        color: var(--muted);
+        background: var(--bg);
+      }
+      .notes-content a {
+        color: var(--link);
+        overflow-wrap: anywhere;
+      }
       /* .asset-filename (plain <td>) is shared with the release asset-selection
          tables (releases/assets.njk, detail.njk, publish.njk) — do not give it
          link styling here. The project asset browser's filename link uses the
