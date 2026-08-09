@@ -79,6 +79,10 @@
           </div>
         </div>
       {% else %}
+        <div class="project-grid-card-status" aria-label="Project status">
+          {% set status = project.status %}{% include "partials/status-badge.njk" %}
+        </div>
+
         <div class="project-grid-card-preview project-card-media{% if project.primaryImage.state == 'available' %} project-card-media--image{% if project.primaryImage.mediaModifier %} project-card-media--{{ project.primaryImage.mediaModifier }}{% endif %}{% else %} project-card-media--fallback{% endif %}"
              data-project-grid-preview
              {% if project.primaryImage.state == 'available' %}data-preview-enhancement data-preview-state="loading"{% elif project.primaryImage.state == 'unavailable' %}data-primary-image-state="unavailable"{% else %}data-primary-image-state="none"{% endif %}>

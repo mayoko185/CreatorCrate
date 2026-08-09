@@ -54,6 +54,31 @@ function extractStatusFilter(html) {
   return html.match(/<fieldset class="field asset-viewer-filter-field[^"]*">\s*<legend>Status<\/legend>[\s\S]*?<\/fieldset>/)?.[0] || '';
 }
 
+function extractSortFilter(html) {
+  return html.match(/<fieldset class="field asset-viewer-filter-field[^"]*">\s*<legend>Sort<\/legend>[\s\S]*?<\/fieldset>/)?.[0] || '';
+}
+
+function extractOrderFilter(html) {
+  return html.match(/<fieldset class="field asset-viewer-filter-field[^"]*">\s*<legend>Sort order<\/legend>[\s\S]*?<\/fieldset>/)?.[0] || '';
+}
+
+function formatProjectSortLabel(value) {
+  return value.replaceAll('-', ' ').replace(/\b\w/g, (character) => character.toUpperCase());
+}
+
+function expectProjectSortOrderSelection(html, sort, order) {
+  const sortFilter = extractSortFilter(html);
+  const orderFilter = extractOrderFilter(html);
+  const orderLabel = order === 'asc' ? 'Asc' : 'Desc';
+
+  expect(sortFilter).not.toBe('');
+  expect(orderFilter).not.toBe('');
+  expect(sortFilter).toMatch(new RegExp(`name="sort"[^>]*value="${sort}"[^>]*checked`));
+  expect(sortFilter).toContain(`class="asset-filter-multiselect-summary-current">${formatProjectSortLabel(sort)}</span>`);
+  expect(orderFilter).toMatch(new RegExp(`name="order"[^>]*value="${order}"[^>]*checked`));
+  expect(orderFilter).toContain(`class="asset-filter-multiselect-summary-current">${orderLabel}</span>`);
+}
+
 function extractProjectFormStatusField(html) {
   return html.match(/<fieldset class="field[^"]*asset-viewer-filter-field[^"]*asset-filter-multiselect-field[^"]*">\s*<legend>Status[\s\S]*?<\/fieldset>/)?.[0] || '';
 }
@@ -244,13 +269,24 @@ describe('project HTTP workflow', () => {
     expect(res.text).toContain('No projects yet');
     expect(res.text).not.toContain('<input type="hidden" name="view"');
     expect(res.text).toContain('href="/projects?view=list"');
-    expect(res.text).toContain('<option value="created" selected>Created</option>');
-    expect(res.text).toContain('<option value="desc" selected>Desc</option>');
+    expectProjectSortOrderSelection(res.text, 'created', 'desc');
     expect(extractStatusFilter(res.text)).toContain('aria-label="Status filter: All active"');
     expect(extractTagFilter(res.text)).toContain('aria-label="Tag filter: All tags"');
     expect(extractTagFilter(res.text)).toContain('No tags available');
     expect(extractProjectFilter(res.text)).toContain('aria-label="Project filter: All projects"');
     expect(extractProjectFilter(res.text)).toMatch(/No matching projects|No projects available/);
+  });
+
+  it('renders Projects defaults as a corner utility with the registered destination', async () => {
+    const response = await agent.get('/projects').expect(200);
+    const defaultsLink = response.text.match(/<a class="[^"]*\basset-viewer-defaults-link\b[^"]*"[\s\S]*?<\/a>/)?.[0];
+
+    expect(defaultsLink).toBeDefined();
+    expect(defaultsLink).toContain('class="asset-viewer-defaults-link button button-small button-secondary asset-tooltip asset-tooltip--right"');
+    expect(defaultsLink).toContain('href="/settings/defaults#defaults-projects"');
+    expect(defaultsLink).toContain('aria-label="Projects defaults"');
+    expect(defaultsLink).toContain('data-tooltip="Projects defaults"');
+    expect(defaultsLink).toContain('<svg');
   });
 
   it('renders status and tag multiselects with Asset Viewer disclosure hooks and checked values', async () => {
@@ -261,14 +297,14 @@ describe('project HTTP workflow', () => {
       .get(`/projects?status=planned&status=ready&tag=${secondTag.id}&tag=${firstTag.id}`)
       .expect(200);
 
-    expect(res.text).toContain('<form id="project-filters" class="filters asset-viewer-filters" method="get" action="/projects">');
+    expect(res.text).toContain('<form id="project-filters" class="filters asset-viewer-filters asset-viewer-filters--projects" method="get" action="/projects">');
     expect(res.text).toContain('<button class="button" type="submit" form="project-filters">Filter</button>');
     expect(res.text.indexOf('<div class="asset-viewer-display-controls"')).toBeLessThan(res.text.indexOf('<form id="project-filters"'));
     expect(res.text).toMatch(/project-filter-actions[^>]*>\s*<button class="button" type="submit" form="project-filters">Filter<\/button>/);
-    expect((res.text.match(/data-asset-viewer-filter-disclosure/g) || [])).toHaveLength(3);
+    expect((res.text.match(/data-asset-viewer-filter-disclosure/g) || [])).toHaveLength(5);
 
     const css = await fetchProjectCss(app);
-    expect(css).toMatch(/#project-filters\s+\.field\s+select\s*\{[^}]*min-height:\s*2\.5rem/);
+    expect(css).not.toMatch(/#project-filters\s+\.field\s+select\s*\{/);
     expect(css).toMatch(/\.asset-viewer-project-filter\s+\.asset-project-filter-panel\s*\{[^}]*max-height:\s*20rem/);
     expect(css).toMatch(/\.asset-viewer-project-filter\s+\.asset-project-filter-option-list\s*\{[^}]*overflow-y:\s*auto/);
     expect(css).toMatch(/\.asset-viewer-project-filter\s+\.asset-filter-multiselect-summary-current\s*\{[^}]*text-overflow:\s*ellipsis/);
@@ -301,6 +337,43 @@ describe('project HTTP workflow', () => {
     expect(projectFilter).toContain('name="project"');
     expect(projectFilter).toMatch(/name="project"[^>]*value=""[^>]*checked/);
     expect(projectFilter).not.toMatch(/name="project"[^>]+value="[0-9]+"[^>]*checked/);
+  });
+
+  it('renders Sort and Sort order as separate single-select radio disclosures', async () => {
+    const res = await agent.get('/projects?sort=title&order=asc').expect(200);
+    const sortFilter = extractSortFilter(res.text);
+    const orderFilter = extractOrderFilter(res.text);
+
+    expectProjectSortOrderSelection(res.text, 'title', 'asc');
+    expect(sortFilter).toContain('data-asset-viewer-filter-disclosure');
+    expect(sortFilter).toContain('data-asset-viewer-filter-single-select');
+    expect(sortFilter).toContain('aria-controls="project-sort-filter-options"');
+    expect(sortFilter).toContain('aria-label="Sort filter: Title"');
+    expect(sortFilter).toContain('class="asset-filter-multiselect-summary-width" aria-hidden="true"');
+    expect(sortFilter).toContain('class="asset-filter-multiselect-panel" role="group" aria-label="Sort options"');
+
+    const sortRadios = sortFilter.match(/<input[^>]*name="sort"[^>]*type="radio"[^>]*>/g) || [];
+    expect(sortRadios).toHaveLength(4);
+    for (const value of ['updated', 'created', 'title', 'published']) {
+      expect(sortFilter).toMatch(new RegExp(`name="sort"[^>]*value="${value}"`));
+    }
+    expect(sortFilter).not.toContain('<select');
+
+    expect(orderFilter).toContain('data-asset-viewer-filter-disclosure');
+    expect(orderFilter).toContain('data-asset-viewer-filter-single-select');
+    expect(orderFilter).toContain('aria-controls="project-order-filter-options"');
+    expect(orderFilter).toContain('aria-label="Sort order filter: Asc"');
+    expect(orderFilter).toContain('class="asset-filter-multiselect-summary-width" aria-hidden="true"');
+    expect(orderFilter).toContain('class="asset-filter-multiselect-panel" role="group" aria-label="Sort order options"');
+    expect(orderFilter).toContain('<span>Desc</span>');
+    expect(orderFilter).toContain('<span>Asc</span>');
+
+    const orderRadios = orderFilter.match(/<input[^>]*name="order"[^>]*type="radio"[^>]*>/g) || [];
+    expect(orderRadios).toHaveLength(2);
+    expect(orderFilter).toMatch(/name="order"[^>]*value="desc"/);
+    expect(orderFilter).toMatch(/name="order"[^>]*value="asc"/);
+    expect(orderFilter).not.toContain('<select');
+    expect(res.text).not.toMatch(/<select[^>]+(?:id="sort"|id="order"|name="sort"|name="order")/);
   });
 
   it('reset removes all selected status, tag, and project values', async () => {
@@ -357,8 +430,7 @@ describe('project HTTP workflow', () => {
 
     const rendered = await agent.get(redirect.headers.location).expect(200);
     expect(rendered.text).toContain('<input type="hidden" name="view" value="list">');
-    expect(rendered.text).toContain('<option value="title" selected>Title</option>');
-    expect(rendered.text).toContain('<option value="asc" selected>Asc</option>');
+    expectProjectSortOrderSelection(rendered.text, 'title', 'asc');
   });
 
   it('uses application fallbacks for invalid stored Projects defaults', async () => {
@@ -369,14 +441,13 @@ describe('project HTTP workflow', () => {
     const res = await agent.get('/projects').expect(200);
     expect(res.text).not.toContain('<input type="hidden" name="view"');
     expect(res.text).toContain('href="/projects?view=list"');
-    expect(res.text).toContain('<option value="created" selected>Created</option>');
-    expect(res.text).toContain('<option value="desc" selected>Desc</option>');
+    expectProjectSortOrderSelection(res.text, 'created', 'desc');
     expect(res.headers.location).toBeUndefined();
   });
 
   it('accepts published as a valid Projects sort and renders the Published option selected', async () => {
     const res = await agent.get('/projects?sort=published').expect(200);
-    expect(res.text).toContain('<option value="published" selected>Published</option>');
+    expectProjectSortOrderSelection(res.text, 'published', 'desc');
   });
 
   it('sorts projects by published date with unpublished projects always last', async () => {
@@ -397,8 +468,7 @@ describe('project HTTP workflow', () => {
     });
 
     const asc = await agent.get('/projects?sort=published&order=asc').expect(200);
-    expect(asc.text).toContain('<option value="published" selected>Published</option>');
-    expect(asc.text).toContain('<option value="asc" selected>Asc</option>');
+    expectProjectSortOrderSelection(asc.text, 'published', 'asc');
     const ascPositions = [
       asc.text.indexOf(`data-project-card-link href="/projects/${oldestId}"`),
       asc.text.indexOf(`data-project-card-link href="/projects/${middleId}"`),
@@ -409,8 +479,7 @@ describe('project HTTP workflow', () => {
     expect(ascPositions).toEqual([...ascPositions].sort((a, b) => a - b));
 
     const desc = await agent.get('/projects?sort=published&order=desc').expect(200);
-    expect(desc.text).toContain('<option value="published" selected>Published</option>');
-    expect(desc.text).toContain('<option value="desc" selected>Desc</option>');
+    expectProjectSortOrderSelection(desc.text, 'published', 'desc');
     const descPositions = [
       desc.text.indexOf(`data-project-card-link href="/projects/${newestId}"`),
       desc.text.indexOf(`data-project-card-link href="/projects/${middleId}"`),
@@ -428,8 +497,7 @@ describe('project HTTP workflow', () => {
 
     const res = await agent.get('/projects?view=grid&sort=updated').expect(200);
     expect(res.text).not.toContain('<ul class="project-list">');
-    expect(res.text).toContain('<option value="updated" selected>Updated</option>');
-    expect(res.text).toContain('<option value="asc" selected>Asc</option>');
+    expectProjectSortOrderSelection(res.text, 'updated', 'asc');
     expect(res.text).toContain('<input type="hidden" name="view" value="grid">');
     expect(res.text).toContain('href="/projects?sort=updated&amp;order=asc&amp;view=grid"');
   });
@@ -441,8 +509,7 @@ describe('project HTTP workflow', () => {
 
     const res = await agent.get('/projects?view=invalid&sort=invalid&order=invalid').expect(200);
     expect(res.text).toContain('<input type="hidden" name="view" value="grid">');
-    expect(res.text).toContain('<option value="created" selected>Created</option>');
-    expect(res.text).toContain('<option value="desc" selected>Desc</option>');
+    expectProjectSortOrderSelection(res.text, 'created', 'desc');
     expect(res.text).not.toContain('sort=invalid');
     expect(res.text).not.toContain('order=invalid');
     expect(res.text).not.toContain('view=invalid');
@@ -455,8 +522,7 @@ describe('project HTTP workflow', () => {
 
     const res = await agent.get('/projects').expect(200);
     expect(res.headers.location).toBeUndefined();
-    expect(res.text).toContain('<option value="created" selected>Created</option>');
-    expect(res.text).toContain('<option value="desc" selected>Desc</option>');
+    expectProjectSortOrderSelection(res.text, 'created', 'desc');
   });
 
   it('renders one semantic project card per row with primary-image states and retained metadata', async () => {
@@ -508,7 +574,9 @@ describe('project HTTP workflow', () => {
     expect(availableCard).not.toContain('/original');
     expect(availableCard).not.toContain('/thumbnail');
     expect(availableCard).not.toContain('project-grid-card-top');
-    expect(availableCard).not.toContain('project-grid-card-status');
+    expect(availableCard).toMatch(
+      /<div class="project-grid-card-status" aria-label="Project status">\s*<span class="status-badge status-badge--active">Ready<\/span>\s*<\/div>\s*<div class="project-grid-card-preview[\s\S]*?<a class="project-grid-card-preview-link"/
+    );
     expect(availableCard).not.toContain('project-grid-card-priority');
     expect(availableCard).not.toMatch(/Priority:\s*High/);
     expect(availableCard).not.toMatch(/<dt>Priority<\/dt>/);
@@ -609,7 +677,8 @@ describe('project HTTP workflow', () => {
     expect(css).toMatch(/\.project-grid-card\s*\{[\s\S]*?position:\s*relative;[\s\S]*?overflow:\s*visible/);
     expect(css).toMatch(/\.project-grid-card:hover,[\s\S]*?\.project-grid-card:focus-within\s*\{[\s\S]*?z-index:\s*60/);
     expect(css).not.toMatch(/\.project-grid-card-top\s*\{/);
-    expect(css).not.toMatch(/\.project-grid-card-status\s*\{/);
+    expect(css).toMatch(/\.project-grid-card-status\s*\{[\s\S]*?display:\s*flex;[\s\S]*?align-items:\s*flex-start;[\s\S]*?padding:\s*var\(--space-sm\)\s+var\(--space-sm\)\s+0;/);
+    expect(css).not.toMatch(/\.project-grid-card-status\s*\{[^}]*position:\s*absolute;/);
     expect(css).not.toMatch(/\.project-grid-card-priority\s*\{/);
     expect(css).not.toMatch(/\.project-list-card-priority\s*\{/);
     expect(css).not.toMatch(/\.project-detail-priority\s*\{/);
@@ -884,12 +953,12 @@ describe('project HTTP workflow', () => {
       .run(newerCreatedId);
 
     const created = await agent.get('/projects').expect(200);
-    expect(created.text).toContain('<option value="created" selected>Created</option>');
+    expectProjectSortOrderSelection(created.text, 'created', 'desc');
     expect(created.text.indexOf(`data-project-card-link href="/projects/${newerCreatedId}"`))
       .toBeLessThan(created.text.indexOf(`data-project-card-link href="/projects/${olderCreatedId}"`));
 
     const updated = await agent.get('/projects?sort=updated&order=asc').expect(200);
-    expect(updated.text).toContain('<option value="updated" selected>Updated</option>');
+    expectProjectSortOrderSelection(updated.text, 'updated', 'asc');
     expect(updated.text.indexOf(`data-project-card-link href="/projects/${newerCreatedId}"`))
       .toBeLessThan(updated.text.indexOf(`data-project-card-link href="/projects/${olderCreatedId}"`));
   });
@@ -952,8 +1021,7 @@ describe('project HTTP workflow', () => {
       `href="/projects?status=planned&amp;tag=${tag.id}&amp;sort=title&amp;order=asc&amp;view=grid"`
     );
     expect(pageOne.text).toContain('<input type="hidden" name="view" value="list">');
-    expect(pageOne.text).toContain('<option value="title" selected>Title</option>');
-    expect(pageOne.text).toContain('<option value="asc" selected>Asc</option>');
+    expectProjectSortOrderSelection(pageOne.text, 'title', 'asc');
     expect(pageOne.text).not.toContain('unknown=discarded');
   });
 

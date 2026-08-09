@@ -2,6 +2,7 @@
 {% import "partials/page-heading.njk" as pageHeading %}
 {% import "partials/project-card.njk" as projectCard %}
 {% import "partials/view-switcher.njk" as viewSwitcher %}
+{% import "partials/icons.njk" as icons %}
 
 {% set page_title = "Projects" %}
 {% set projectFilterHasSelection = false %}
@@ -45,7 +46,12 @@
     </div>
   </div>
 
-  <form id="project-filters" class="filters asset-viewer-filters" method="get" action="/projects">
+  <form id="project-filters" class="filters asset-viewer-filters asset-viewer-filters--projects" method="get" action="/projects">
+    <a class="asset-viewer-defaults-link button button-small button-secondary asset-tooltip asset-tooltip--right"
+       href="/settings/defaults#defaults-projects" aria-label="Projects defaults"
+       data-tooltip="Projects defaults">
+      {{ icons.icon('settings') }}
+    </a>
     {% if view == 'list' or preserveViewQuery %}
       <input type="hidden" name="view" value="{{ view }}">
     {% endif %}
@@ -158,22 +164,75 @@
       </details>
     </fieldset>
 
-    <div class="field">
-      <label for="sort">Sort</label>
-      <select id="sort" name="sort">
-        {% for opt in sortOptions %}
-          <option value="{{ opt }}" {% if query.sort == opt or (not query.sort and opt == 'created') %}selected{% endif %}>{{ opt | replace('-', ' ') | title }}</option>
-        {% endfor %}
-      </select>
-    </div>
+    {% set sortSummary = '' %}
+    {% for opt in sortOptions %}
+      {% if query.sort == opt or (not query.sort and opt == 'created') %}
+        {% set sortSummary = opt | replace('-', ' ') | title %}
+      {% endif %}
+    {% endfor %}
+    {% set orderSummary = 'Desc' %}
+    {% if query.order == 'asc' %}
+      {% set orderSummary = 'Asc' %}
+    {% endif %}
 
-    <div class="field">
-      <label for="order">Sort order</label>
-      <select id="order" name="order">
-        <option value="desc" {% if query.order != 'asc' %}selected{% endif %}>Desc</option>
-        <option value="asc" {% if query.order == 'asc' %}selected{% endif %}>Asc</option>
-      </select>
-    </div>
+    <fieldset class="field asset-viewer-filter-field asset-filter-multiselect-field">
+      <legend>Sort</legend>
+      <details class="asset-filter-multiselect asset-filter-multiselect--sized" data-asset-viewer-filter-disclosure data-asset-viewer-filter-single-select>
+        <summary id="project-sort-filter-trigger"
+                 aria-controls="project-sort-filter-options"
+                 aria-expanded="false"
+                 aria-label="Sort filter: {{ sortSummary }}">
+          <span class="asset-filter-multiselect-summary">
+            <span class="asset-filter-multiselect-summary-current">{{ sortSummary }}</span>
+            <span class="asset-filter-multiselect-summary-width" aria-hidden="true">
+              {% for opt in sortOptions %}<span>{{ opt | replace('-', ' ') | title }}</span>{% endfor %}
+            </span>
+          </span>
+        </summary>
+        <div id="project-sort-filter-options" class="asset-filter-multiselect-panel" role="group" aria-label="Sort options">
+          {% for opt in sortOptions %}
+            <div class="asset-filter-multiselect-option">
+              <label for="project-sort-option-{{ loop.index }}">
+                <input id="project-sort-option-{{ loop.index }}" name="sort" type="radio" value="{{ opt }}"{% if query.sort == opt or (not query.sort and opt == 'created') %} checked{% endif %}>
+                <span>{{ opt | replace('-', ' ') | title }}</span>
+              </label>
+            </div>
+          {% endfor %}
+        </div>
+      </details>
+    </fieldset>
+
+    <fieldset class="field asset-viewer-filter-field asset-filter-multiselect-field">
+      <legend>Sort order</legend>
+      <details class="asset-filter-multiselect asset-filter-multiselect--sized" data-asset-viewer-filter-disclosure data-asset-viewer-filter-single-select>
+        <summary id="project-order-filter-trigger"
+                 aria-controls="project-order-filter-options"
+                 aria-expanded="false"
+                 aria-label="Sort order filter: {{ orderSummary }}">
+          <span class="asset-filter-multiselect-summary">
+            <span class="asset-filter-multiselect-summary-current">{{ orderSummary }}</span>
+            <span class="asset-filter-multiselect-summary-width" aria-hidden="true">
+              <span>Desc</span>
+              <span>Asc</span>
+            </span>
+          </span>
+        </summary>
+        <div id="project-order-filter-options" class="asset-filter-multiselect-panel" role="group" aria-label="Sort order options">
+          <div class="asset-filter-multiselect-option">
+            <label for="project-order-option-desc">
+              <input id="project-order-option-desc" name="order" type="radio" value="desc"{% if query.order != 'asc' %} checked{% endif %}>
+              <span>Desc</span>
+            </label>
+          </div>
+          <div class="asset-filter-multiselect-option">
+            <label for="project-order-option-asc">
+              <input id="project-order-option-asc" name="order" type="radio" value="asc"{% if query.order == 'asc' %} checked{% endif %}>
+              <span>Asc</span>
+            </label>
+          </div>
+        </div>
+      </details>
+    </fieldset>
   </form>
 
   <p class="results-meta">{{ total }} project{% if total != 1 %}s{% endif %} found</p>
