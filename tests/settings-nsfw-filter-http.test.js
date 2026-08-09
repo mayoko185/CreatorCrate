@@ -9,7 +9,7 @@ import {
   NSFW_FILTER_ENABLED_KEY,
   NSFW_TAG_NAME,
 } from '../src/services/nsfw-filter-settings-service.js';
-import { authenticate, AUTH_CONFIG } from './helpers/auth.js';
+import { authenticate, AUTH_CONFIG, extractCsrfToken } from './helpers/auth.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 const APP_NAME = 'CreatorCrate';
@@ -63,7 +63,7 @@ describe('settings — NSFW Filter HTTP', () => {
 
   function securityPageStructure(html) {
     const settingsContent = html.match(/<div class="settings-content">([\s\S]*?)<\/div>\s*\r?\n\s*<\/main>/)?.[1] || '';
-    const match = settingsContent.match(/<form method="post" action="\/settings\/nsfw-filter" class="project-form" novalidate>\s*<div class="settings-section">\s*<h3>([^<]+)<\/h3>\s*<p class="help-text" id="([^"]+)">([\s\S]*?)<\/p>\s*<div class="field field--switch[^"]*">[\s\S]*?<\/div>\s*<div class="form-actions">[\s\S]*?<\/div>\s*<\/div>\s*<\/form>/);
+    const match = settingsContent.match(/<form method="post" action="\/settings\/nsfw-filter" class="project-form" novalidate>[\s\S]*?<div class="settings-section">\s*<h3>([^<]+)<\/h3>\s*<p class="help-text" id="([^"]+)">([\s\S]*?)<\/p>\s*<div class="field field--switch[^"]*">[\s\S]*?<\/div>\s*<div class="form-actions">[\s\S]*?<\/div>\s*<\/div>\s*<\/form>/);
     if (!match) return null;
     return { heading: match[1], helpId: match[2], helpText: match[3], full: match[0] };
   }
@@ -187,5 +187,54 @@ describe('settings — NSFW Filter HTTP', () => {
       .expect(403);
     expect(readMeta(db)).toBeUndefined();
     expect(listNsfwTags(db)).toEqual([]);
+  });
+
+  describe('CSRF regression', () => {
+    it('renders a CSRF token in the form', async () => {
+      const res = await agent.get('/settings/nsfw-filter').expect(200);
+      const formMatch = res.text.match(/<form method="post" action="\/settings\/nsfw-filter"[\s\S]*?<\/form>/);
+      expect(formMatch).not.toBeNull();
+      const csrfInForm = (formMatch[0].match(/name="_csrf"/g) || []).length;
+      expect(csrfInForm).toBe(1);
+    });
+
+    it('enables the filter using the token rendered in the page', async () => {
+      const page = await agent.get('/settings/nsfw-filter').expect(200);
+      const renderedToken = extractCsrfToken(page.text);
+
+      await agent
+        .post('/settings/nsfw-filter')
+        .type('form')
+        .send({ enabled: '1', _csrf: renderedToken })
+        .expect(302);
+
+      expect(readMeta(db)).toBe('1');
+    });
+
+    it('disables the filter using the token rendered in the page', async () => {
+      await setFilter(true);
+      expect(readMeta(db)).toBe('1');
+
+      const page = await agent.get('/settings/nsfw-filter').expect(200);
+      const renderedToken = extractCsrfToken(page.text);
+
+      await agent
+        .post('/settings/nsfw-filter')
+        .type('form')
+        .send({ enabled: '0', _csrf: renderedToken })
+        .expect(302);
+
+      expect(readMeta(db)).toBe('0');
+    });
+
+    it('rejects a POST without a CSRF token', async () => {
+      await agent
+        .post('/settings/nsfw-filter')
+        .type('form')
+        .send({ enabled: '1' })
+        .expect(403);
+
+      expect(readMeta(db)).toBeUndefined();
+    });
   });
 });

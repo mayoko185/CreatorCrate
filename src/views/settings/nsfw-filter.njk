@@ -28,6 +28,7 @@
       {% endif %}
 
       <form method="post" action="/settings/nsfw-filter" class="project-form" novalidate>
+        <input type="hidden" name="_csrf" value="{{ _csrf }}">
         <div class="settings-section">
           <h3>NSFW Filter</h3>
           <p class="help-text" id="nsfw-filter-help">Enabling the filter will add the <strong>NSFW</strong> tag as an available option if it does not already exist.</p>
