@@ -121,6 +121,14 @@ function hasOwn(object, key) {
 }
 
 function appendCanonicalAssetBrowserParam(query, key, value) {
+  if (key === 'tag' && Array.isArray(value)) {
+    const values = value
+      .filter((item) => item !== undefined && item !== null && item !== '')
+      .map((item) => String(item));
+    if (values.length > 0) query[key] = values;
+    return;
+  }
+
   if (value === undefined || value === null || value === '') return;
   const normalized = String(value);
   if (key === 'presence' && normalized === 'all') return;
@@ -131,6 +139,19 @@ function appendCanonicalAssetBrowserParam(query, key, value) {
   if (key === 'pageSize' && normalized === String(ASSET_BROWSER_DEFAULT_PAGE_SIZE)) return;
   if (key === 'view' && normalized === 'grid') return;
   query[key] = normalized;
+}
+
+export function buildAssetBrowserQueryString(query = {}) {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(query)) {
+    const values = Array.isArray(value) ? value : [value];
+    for (const item of values) {
+      if (item !== undefined && item !== null && item !== '') {
+        params.append(key, String(item));
+      }
+    }
+  }
+  return params.toString();
 }
 
 /**
@@ -195,7 +216,10 @@ function buildAssetBrowserFilters(context) {
     order: context.order,
     view: context.view,
   };
-  if (context.tag !== null && context.tag !== undefined) filters.tag = context.tag;
+  const selectedTags = Array.isArray(context.tag) ? context.tag : [context.tag];
+  if (selectedTags.some((tag) => tag !== null && tag !== undefined)) {
+    filters.tags = selectedTags;
+  }
   return filters;
 }
 
@@ -1369,7 +1393,7 @@ export function createWorkflowQueryService({
    * @param {string[]} extensionChoices - normalized extensions available in the project scope
    * @param {Array<{id: number}>} projectCategories - the requesting project's own category rows
    * @param {Array<{id: number}>} tagCatalog - the global reusable tag rows
-   * @returns {{ search: string|null, tag: number|null, extension: string|null, presence: 'all'|'present'|'missing', usage: 'all'|'used'|'unused', category: 'all'|'uncategorized'|number, categorySelection: string, categoryWasSupplied: boolean, sort: 'filename'|'modified'|'size'|'category', order: 'asc'|'desc', page: number, pageSize: number, view: 'list'|'grid', queryWasNonBare: boolean }}
+   * @returns {{ search: string|null, tag: number[], extension: string|null, presence: 'all'|'present'|'missing', usage: 'all'|'used'|'unused', category: 'all'|'uncategorized'|number, categorySelection: string, categoryWasSupplied: boolean, sort: 'filename'|'modified'|'size'|'category', order: 'asc'|'desc', page: number, pageSize: number, view: 'list'|'grid', queryWasNonBare: boolean }}
    */
   function normalizeAssetBrowserQuery(raw = {}, extensionChoices = [], projectCategories = [], tagCatalog = []) {
     const safeRaw = raw && typeof raw === 'object' ? raw : {};
@@ -1380,7 +1404,7 @@ export function createWorkflowQueryService({
     const usage = usageValues.includes(safeRaw.usage) ? safeRaw.usage : 'all';
 
     const search = normalizeAssetBrowserSearch(safeRaw.search);
-    const tag = normalizeAssetBrowserTag(safeRaw.tag, tagCatalog, hasOwn(safeRaw, 'tag'));
+    const tag = normalizeAssetBrowserTags(safeRaw.tag, tagCatalog, hasOwn(safeRaw, 'tag'));
     const extension = normalizeAssetBrowserExtension(safeRaw.extension, extensionChoices);
     const category = normalizeAssetBrowserCategory(
       safeRaw.category,
@@ -1416,13 +1440,19 @@ export function createWorkflowQueryService({
     };
   }
 
-  function normalizeAssetBrowserTag(raw, tagCatalog, tagWasSupplied) {
-    if (!tagWasSupplied || raw === '') return null;
-    if (Array.isArray(raw) || (typeof raw !== 'string' && typeof raw !== 'number')) return null;
+  function normalizeAssetBrowserTags(raw, tagCatalog, tagWasSupplied) {
+    if (!tagWasSupplied) return [];
 
-    const id = parseStrictPositiveInt(raw);
-    if (id === null) return null;
-    return tagCatalog.some((tag) => tag.id === id) ? id : null;
+    const values = Array.isArray(raw) ? raw : [raw];
+    const selected = new Set();
+    for (const value of values) {
+      if (value === '' || (typeof value !== 'string' && typeof value !== 'number')) continue;
+
+      const id = parseStrictPositiveInt(value);
+      if (id !== null && tagCatalog.some((tag) => tag.id === id)) selected.add(id);
+    }
+
+    return [...selected].sort((left, right) => left - right);
   }
 
   /**
@@ -1584,7 +1614,7 @@ export function createWorkflowQueryService({
   }
 
   function appendQuery(basePath, query) {
-    const search = new URLSearchParams(query).toString();
+    const search = buildAssetBrowserQueryString(query);
     return search ? `${basePath}?${search}` : basePath;
   }
 
@@ -1843,7 +1873,7 @@ export function createWorkflowQueryService({
    *   pageCount: number,
    *   filters: object,
    *   extensionChoices: Array<{ value: string, label: string, selected: boolean }>,
-   *   tagOptions: Array<{ value: number, displayName: string }>,
+   *   tagOptions: Array<{ value: number, displayName: string, selected: boolean }>,
    *   categoryNavigation: object,
    *   emptyState: object|null,
    *   ordering: string,
@@ -1858,10 +1888,6 @@ export function createWorkflowQueryService({
     const extensions = assetRepository.listProjectAssetExtensions(projectId);
     const navCounts = assetRepository.getProjectAssetNavigationCounts(projectId);
     const tagCatalog = tagRepository.list();
-    const tagOptions = tagCatalog.map((tag) => ({
-      value: tag.id,
-      displayName: tag.display_name,
-    }));
 
     // Archived projects are read-only — bulk release-association targets are
     // never rendered there, so skip the (otherwise bounded) query entirely.
@@ -1875,6 +1901,11 @@ export function createWorkflowQueryService({
       }));
 
     const filters = normalizeAssetBrowserQuery(rawQuery, extensions, projectCategories, tagCatalog);
+    const tagOptions = tagCatalog.map((tag) => ({
+      value: tag.id,
+      displayName: tag.display_name,
+      selected: filters.tag.includes(tag.id),
+    }));
 
     // When the browser is filtered to one concrete category, expose that
     // category's on-disk folder name so "Open locally" can target the

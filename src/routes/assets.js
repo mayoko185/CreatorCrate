@@ -7,6 +7,7 @@ import { PRIMARY_IMAGE_ERROR_CODES } from '../services/project-primary-image-ser
 import { AUTO_RENAME_ERROR_CODES } from '../services/auto-rename-service.js';
 import {
   buildCanonicalAssetBrowserQuery,
+  buildAssetBrowserQueryString,
   isPrimaryImageAssetUsable,
 } from '../services/workflow-query-service.js';
 import { buildAssetRevisionToken, classifyPreviewable } from '../services/preview-service.js';
@@ -1262,7 +1263,7 @@ function buildAssetDefaultsRedirectUrl(projectId, categoryId, presentation, page
   };
   const query = buildCanonicalAssetBrowserQuery(context, 1);
   appendForcedAssetPresentationQuery(query, context, presentation, {}, pageDefaultsService);
-  const search = new URLSearchParams(query).toString();
+  const search = buildAssetBrowserQueryString(query);
   return search ? `/projects/${projectId}/assets?${search}` : `/projects/${projectId}/assets`;
 }
 
@@ -1324,7 +1325,7 @@ function buildAssetsPageUrl(projectId, allowedParams, pageDefaultsService) {
       overrides,
       pageDefaultsService,
     );
-    const search = new URLSearchParams(query).toString();
+    const search = buildAssetBrowserQueryString(query);
     return search ? `${basePath}?${search}` : basePath;
   };
 }
@@ -1480,7 +1481,7 @@ function buildAssetsRedirectUrl(
     extraQuery,
     pageDefaultsService,
   );
-  const search = new URLSearchParams(query).toString();
+  const search = buildAssetBrowserQueryString(query);
   return search ? `/projects/${projectId}/assets?${search}` : `/projects/${projectId}/assets`;
 }
 
@@ -1796,7 +1797,7 @@ function handleAutoRenameFailure(err, {
  */
 function buildAssetViewerRedirectUrl(workflowQueryService, projectId, assetId, rawContext, extraQuery = {}) {
   const query = buildCanonicalContextQuery(workflowQueryService, projectId, rawContext, extraQuery);
-  const search = new URLSearchParams(query).toString();
+  const search = buildAssetBrowserQueryString(query);
   return search ? `/projects/${projectId}/assets/${assetId}?${search}` : `/projects/${projectId}/assets/${assetId}`;
 }
 

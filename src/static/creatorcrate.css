@@ -1889,12 +1889,30 @@
         position: relative;
         z-index: 20;
       }
+      .asset-viewer-filters--project-assets {
+        padding-inline-end: calc(var(--space-lg) + 1.6rem);
+      }
+      .asset-viewer-filters--project-assets > .asset-viewer-defaults-link {
+        position: absolute;
+        top: var(--space-sm);
+        right: var(--space-sm);
+        z-index: 1;
+        padding: 0.2rem;
+      }
+      .asset-viewer-filters--project-assets > .asset-viewer-defaults-link svg {
+        display: block;
+        width: 1rem;
+        height: 1rem;
+      }
       /* Projects page: keep Sort/Sort order selects visually aligned with
          the Status/Tag disclosure summaries (min-height: 2.5rem). */
-      #project-filters .field select {
-        min-height: 2.5rem;
-      }
-      .asset-viewer-filter-field {
+       #project-filters .field select {
+         min-height: 2.5rem;
+       }
+       #asset-filters .field input[type="search"] {
+         height: 2.5rem;
+       }
+       .asset-viewer-filter-field {
         position: relative;
         flex: 1 1 12rem;
         min-width: min(100%, 12rem);

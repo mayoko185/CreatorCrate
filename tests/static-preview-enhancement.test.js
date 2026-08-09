@@ -1324,15 +1324,30 @@ describe('page-local asset selection enhancement', () => {
     const scope = makeAssetSelectionScope(form);
 
     enhanceAssetSelection(scope);
-    expect(countEl.textContent).toBe('0 selected');
+    expect(countEl.textContent).toBe('0 of 2 selected');
 
     cb1.checked = true;
     cb1.dispatch('change');
-    expect(countEl.textContent).toBe('1 selected');
+    expect(countEl.textContent).toBe('1 of 2 selected');
 
     cb2.checked = true;
     cb2.dispatch('change');
-    expect(countEl.textContent).toBe('2 selected');
+    expect(countEl.textContent).toBe('2 of 2 selected');
+  });
+
+  it('uses the rendered visible-asset total for the live count', () => {
+    const checkbox = makeCheckbox();
+    const countEl = makeControl();
+    countEl.getAttribute = (name) => name === 'data-selected-total' ? '3' : null;
+    const form = makeAssetSelectionForm({ enabledCheckboxes: [checkbox], selectedCount: countEl });
+    const scope = makeAssetSelectionScope(form);
+
+    enhanceAssetSelection(scope);
+    expect(countEl.textContent).toBe('0 of 3 selected');
+
+    checkbox.checked = true;
+    checkbox.dispatch('change');
+    expect(countEl.textContent).toBe('1 of 3 selected');
   });
 
   it('submit is disabled until at least one asset is selected and a release is chosen', () => {
@@ -1370,7 +1385,7 @@ describe('page-local asset selection enhancement', () => {
 
     enhanceAssetSelection(scope);
 
-    expect(countEl.textContent).toBe('1 selected');
+    expect(countEl.textContent).toBe('1 of 1 selected');
     expect(submit.disabled).toBe(false);
   });
 
@@ -1543,11 +1558,11 @@ describe('page-local asset selection enhancement', () => {
 
     click(targets.blankMedia);
     expect(checkbox.checked).toBe(true);
-    expect(selectedCount.textContent).toBe('1 selected');
+    expect(selectedCount.textContent).toBe('1 of 1 selected');
     expect(card.attributes['aria-selected']).toBe('true');
     click(targets.blankMedia);
     expect(checkbox.checked).toBe(false);
-    expect(selectedCount.textContent).toBe('0 selected');
+    expect(selectedCount.textContent).toBe('0 of 1 selected');
     expect(card.attributes['aria-selected']).toBe('false');
 
     click(targets.fallback);
@@ -1587,7 +1602,7 @@ describe('page-local asset selection enhancement', () => {
     checkbox.checked = true;
     checkbox.dispatch('change');
     expect(card.attributes['aria-selected']).toBe('true');
-    expect(selectedCount.textContent).toBe('1 selected');
+    expect(selectedCount.textContent).toBe('1 of 1 selected');
     expect(listeners.filter((entry) => entry.type === 'click')).toHaveLength(1);
   });
 });

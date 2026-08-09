@@ -152,16 +152,21 @@ function appendProjectAssetCategoryCondition(conditions, params, category) {
 }
 
 function appendProjectAssetTagCondition(conditions, params, tag) {
-  if (Number.isSafeInteger(tag) && tag > 0) {
-    conditions.push(`EXISTS (
-      SELECT 1
-      FROM asset_tags asset_tag_filter
-      WHERE asset_tag_filter.asset_id = a.id
-        AND asset_tag_filter.tag_id = ?
-    )`);
-    params.push(tag);
-  }
-  // null / undefined = no tag restriction
+  if (tag === undefined || tag === null || tag === '') return;
+
+  const values = Array.isArray(tag) ? tag : [tag];
+  const selected = [...new Set(values.filter((value) => Number.isSafeInteger(value) && value > 0))]
+    .sort((left, right) => left - right);
+  if (selected.length === 0) return;
+
+  const placeholders = selected.map(() => '?').join(',');
+  conditions.push(`EXISTS (
+    SELECT 1
+    FROM asset_tags asset_tag_filter
+    WHERE asset_tag_filter.asset_id = a.id
+      AND asset_tag_filter.tag_id IN (${placeholders})
+  )`);
+  params.push(...selected);
 }
 
 function appendGlobalAssetTagCondition(conditions, params, tag) {
@@ -246,13 +251,13 @@ function buildProjectAssetBrowserConditions(projectId, filters = {}) {
   conditions.unshift('a.project_id = ?');
   params.unshift(projectId);
   appendProjectAssetCategoryCondition(conditions, params, filters.category);
-  appendProjectAssetTagCondition(conditions, params, filters.tag);
+  appendProjectAssetTagCondition(conditions, params, filters.tags ?? filters.tag);
   return { conditions, params };
 }
 
 function buildAllAssetBrowserConditions(filters = {}) {
-  // Keep project-scoped browser predicates scalar and unchanged. The global
-  // browser owns its selected-set predicates below.
+  // Project-scoped browser predicates remain direct asset-tag predicates; the
+  // global browser additionally includes inherited project-tag assignments.
   const { conditions, params } = buildSharedAssetBrowserConditions({
     ...filters,
     extension: undefined,
@@ -1207,7 +1212,8 @@ export function createAssetRepository(db) {
      * @param {'all'|'present'|'missing'} [filters.presence]
      * @param {'all'|'used'|'unused'} [filters.usage]
      * @param {'all'|'uncategorized'|number} [filters.category]
-     * @param {number|null} [filters.tag]
+     * @param {number|number[]} [filters.tag]
+     * @param {number[]} [filters.tags]
      * @returns {{ conditions: string[], params: any[] }}
      */
      _buildAssetBrowserConditions(projectId, filters) {
@@ -1225,14 +1231,15 @@ export function createAssetRepository(db) {
      * @param {string|null} [filters.extension=null]
      * @param {'all'|'present'|'missing'} [filters.presence='all']
      * @param {'all'|'used'|'unused'} [filters.usage='all']
-     * @param {number|null} [filters.tag=null]
+     * @param {number|number[]|null} [filters.tag=null]
+     * @param {number[]} [filters.tags]
      * @param {number} [filters.page=1]
      * @param {number} [filters.pageSize=25]
      * @returns {Array<{id: number, project_id: number, relative_path: string, filename: string, extension: string, mime_type: string, size_bytes: number, modified_at: string|null, is_present: number, last_seen_at: string|null, missing_since: string|null, release_usage_count: number}>}
      */
     findProjectAssetPage(projectId, filters = {}) {
       const {
-        search = null, extension = null, presence = 'all', usage = 'all', category = 'all', tag = null,
+        search = null, extension = null, presence = 'all', usage = 'all', category = 'all', tag = null, tags,
         sort = 'filename', order = 'asc', page = 1, pageSize = 25,
       } = filters;
 
@@ -1242,7 +1249,7 @@ export function createAssetRepository(db) {
         presence,
         usage,
         category,
-        tag,
+        tag: tags ?? tag,
       });
 
       const offset = (Math.max(1, page) - 1) * Math.max(1, pageSize);
@@ -1405,7 +1412,8 @@ export function createAssetRepository(db) {
      * @param {string|null} [filters.extension=null]
      * @param {'all'|'present'|'missing'} [filters.presence='all']
      * @param {'all'|'used'|'unused'} [filters.usage='all']
-     * @param {number|null} [filters.tag=null]
+     * @param {number|number[]|null} [filters.tag=null]
+     * @param {number[]} [filters.tags]
      * @returns {number}
      */
     countProjectAssets(projectId, filters = {}) {
@@ -1416,6 +1424,7 @@ export function createAssetRepository(db) {
         usage = 'all',
         category = 'all',
         tag = null,
+        tags,
       } = filters;
 
       const { conditions, params } = this._buildAssetBrowserConditions(projectId, {
@@ -1424,7 +1433,7 @@ export function createAssetRepository(db) {
         presence,
         usage,
         category,
-        tag,
+        tag: tags ?? tag,
       });
 
       const sql = `SELECT COUNT(*) AS c FROM assets a WHERE ${conditions.join(' AND ')}`;

@@ -3,6 +3,37 @@
 {% import "partials/icons.njk" as icons %}
 {% import "partials/asset-presentation.njk" as assetPresentation %}
 
+{% macro renderFilterSummary(selectedValues, options, emptyLabel, countLabel, prefix) -%}
+  {%- if selectedValues.length == 0 -%}
+    {{ emptyLabel }}
+  {%- elif selectedValues.length == 1 -%}
+    {%- for option in options -%}
+      {%- if option.selected -%}
+        {{ prefix or '' }}{{ option.label or option.displayName }}
+      {%- endif -%}
+    {%- endfor -%}
+  {%- else -%}
+    {{ selectedValues.length }} {{ countLabel }} selected
+  {%- endif -%}
+{%- endmacro %}
+
+{% macro renderContextFields(context, contextFields, disabled) %}
+  {% for key in contextFields %}
+    {% set fieldValue = context[key] %}
+    {% if fieldValue is not none and fieldValue != '' %}
+      {% if fieldValue is iterable and fieldValue is not string %}
+        {% for value in fieldValue %}
+          {% if value is not none and value != '' %}
+            <input type="hidden" name="{{ key }}" value="{{ value }}"{% if disabled %} disabled{% endif %}>
+          {% endif %}
+        {% endfor %}
+      {% else %}
+        <input type="hidden" name="{{ key }}" value="{{ fieldValue }}"{% if disabled %} disabled{% endif %}>
+      {% endif %}
+    {% endif %}
+  {% endfor %}
+{% endmacro %}
+
 {% macro releaseUsageInline(asset) %}
   {% if asset.releaseSummary.mode == 'none' %}
     <span class="asset-indicator asset-icon-control asset-tooltip asset-indicator--unused" role="img" tabindex="0"
@@ -119,11 +150,7 @@
           <form method="post" action="/projects/{{ project.id }}/assets/{{ asset.id }}/rename" class="row-rename-form">
             <input type="hidden" name="_csrf" value="{{ _csrf }}">
             <input type="hidden" name="origin" value="assets">
-            {% for key in contextFields %}
-              {% if context[key] is not none and context[key] != '' %}
-                <input type="hidden" name="{{ key }}" value="{{ context[key] }}">
-              {% endif %}
-            {% endfor %}
+            {{ renderContextFields(context, contextFields, false) }}
             <input type="text" name="filename" value="{% if renameAttempt %}{{ renameFailure.submittedFilename }}{% else %}{{ asset.displayFilename }}{% endif %}"
                    class="row-rename-input" required maxlength="255"
                    aria-label="New basename for {{ asset.filename }}" autocomplete="off">
@@ -192,11 +219,7 @@
                 class="asset-card-rename-editor" data-asset-rename-editor{% if not renameAttempt %} hidden inert{% endif %}>
             <input type="hidden" name="_csrf" value="{{ _csrf }}"{% if not renameAttempt %} disabled{% endif %}>
             <input type="hidden" name="origin" value="assets"{% if not renameAttempt %} disabled{% endif %}>
-            {% for key in contextFields %}
-              {% if context[key] is not none and context[key] != '' %}
-                <input type="hidden" name="{{ key }}" value="{{ context[key] }}"{% if not renameAttempt %} disabled{% endif %}>
-              {% endif %}
-            {% endfor %}
+            {{ renderContextFields(context, contextFields, not renameAttempt) }}
             <span class="asset-card-rename-field{% if asset.extension %} has-extension{% endif %}">
               <input type="text" name="filename" value="{% if renameAttempt %}{{ renameFailure.submittedFilename }}{% else %}{{ asset.displayFilename }}{% endif %}"
                      class="asset-card-rename-input" data-asset-rename-input required maxlength="255"
@@ -279,11 +302,7 @@
           <form method="post" action="/projects/{{ project.id }}/assets/{{ asset.id }}/rename" class="row-rename-form asset-list-card-rename-form">
             <input type="hidden" name="_csrf" value="{{ _csrf }}">
             <input type="hidden" name="origin" value="assets">
-            {% for key in contextFields %}
-              {% if context[key] is not none and context[key] != '' %}
-                <input type="hidden" name="{{ key }}" value="{{ context[key] }}">
-              {% endif %}
-            {% endfor %}
+            {{ renderContextFields(context, contextFields, false) }}
             <input type="text" name="filename" value="{% if renameAttempt %}{{ renameFailure.submittedFilename }}{% else %}{{ asset.displayFilename }}{% endif %}"
                    class="row-rename-input asset-list-card-rename-input" required maxlength="255"
                    aria-label="New basename for {{ asset.filename }}" autocomplete="off">
@@ -316,11 +335,7 @@
     {% if not project.archived_at %}
       <form method="post" action="/projects/{{ project.id }}/scan" class="inline-form">
         <input type="hidden" name="_csrf" value="{{ _csrf }}">
-        {% for key in contextFields %}
-          {% if context[key] is not none and context[key] != '' %}
-            <input type="hidden" name="{{ key }}" value="{{ context[key] }}">
-          {% endif %}
-        {% endfor %}
+        {{ renderContextFields(context, contextFields, false) }}
         <button class="button button-primary" type="submit">Scan Now</button>
         </form>
       {% endif %}
@@ -436,16 +451,11 @@
     {% include "partials/notice.njk" %}
   {% endif %}
 
-  <p class="results-meta">
-    {% if completeCategorySurface %}
+  {% if completeCategorySurface %}
+    <p class="results-meta">
       {{ total }} asset{% if total != 1 %}s{% endif %} in the complete {{ autoRenameCategory.displayName if autoRenameCategory else filters.category }} category
-    {% else %}
-      {{ total }} asset{% if total != 1 %}s{% endif %} found
-      {% if filters.search or filters.tag or filters.extension or filters.presence != 'all' or filters.usage != 'all' or filters.category != 'all' %}
-        (filtered)
-      {% endif %}
-    {% endif %}
-  </p>
+    </p>
+  {% endif %}
 
   <div class="asset-browser-layout">
     <div class="asset-browser-content">
@@ -474,9 +484,19 @@
         {% if filters.view == 'grid' %}
           {% include "partials/asset-grid-size-control.njk" %}
         {% endif %}
+
+        <div class="project-filter-actions">
+          <button class="button" type="submit" form="asset-filters">Filter</button>
+          <a class="button button-secondary" href="{{ pageUrl({ search: '', tag: '', extension: '', presence: 'all', usage: 'all', category: 'all', sort: 'filename', order: 'asc', page: 1, pageSize: 25 }) }}">Reset</a>
+        </div>
       </div>
 
-        <form class="filters" method="get" action="/projects/{{ project.id }}/assets">
+      <form class="filters asset-viewer-filters asset-viewer-filters--project-assets" method="get" action="/projects/{{ project.id }}/assets" id="asset-filters">
+        <a class="asset-viewer-defaults-link button button-small button-secondary asset-tooltip asset-tooltip--right"
+           href="/settings/defaults#defaults-project-assets" aria-label="Project Assets defaults"
+           data-tooltip="Project Assets defaults">
+          {{ icons.icon('settings') }}
+        </a>
         {% if filters.view == 'list' or preserveViewQuery %}
           <input type="hidden" name="view" value="{{ filters.view }}">
         {% endif %}
@@ -555,12 +575,7 @@
           </details>
         </fieldset>
 
-      {% set tagFilterSummary = "All tags" %}
-      {% for tag in tagOptions %}
-        {% if filters.tag == tag.value %}
-          {% set tagFilterSummary = tag.displayName %}
-        {% endif %}
-      {% endfor %}
+      {% set tagFilterSelection = filters.tags or [] %}
       {% set extensionFilterSummary = "All extensions" %}
       {% if filters.extension %}
         {% set extensionFilterSummary = "." ~ filters.extension %}
@@ -577,28 +592,23 @@
             <summary id="asset-tag-filter-trigger"
                      aria-controls="asset-tag-filter-options"
                      aria-expanded="false"
-                     aria-label="Tag filter: {{ tagFilterSummary }}"
-                     title="{{ tagFilterSummary }}">
+                     aria-label="Tag filter: {{ renderFilterSummary(tagFilterSelection, tagOptions, 'All tags', 'tags', '') }}"
+                     title="{{ renderFilterSummary(tagFilterSelection, tagOptions, 'All tags', 'tags', '') }}">
               <span class="asset-filter-multiselect-summary">
-                <span class="asset-filter-multiselect-summary-current">{{ tagFilterSummary }}</span>
+                <span class="asset-filter-multiselect-summary-current">{{ renderFilterSummary(tagFilterSelection, tagOptions, 'All tags', 'tags', '') }}</span>
                 <span class="asset-filter-multiselect-summary-width" aria-hidden="true">
                   <span>All tags</span>
                   {% for tag in tagOptions %}<span>{{ tag.displayName }}</span>{% endfor %}
+                  <span>{{ tagOptions.length }} tags selected</span>
                 </span>
               </span>
             </summary>
-            <div id="asset-tag-filter-options" class="asset-filter-multiselect-panel" role="radiogroup" aria-label="Tag options">
-              <div class="asset-filter-multiselect-option">
-                <label for="asset-tag-option-all">
-                  <input id="asset-tag-option-all" name="tag" type="radio" value=""{% if not filters.tag %} checked{% endif %}>
-                  <span>All tags</span>
-                </label>
-              </div>
+            <div id="asset-tag-filter-options" class="asset-filter-multiselect-panel" role="group" aria-label="Tag options">
               {% if tagOptions.length > 0 %}
                 {% for tag in tagOptions %}
                   <div class="asset-filter-multiselect-option">
                     <label for="asset-tag-option-{{ loop.index }}">
-                      <input id="asset-tag-option-{{ loop.index }}" name="tag" type="radio" value="{{ tag.value }}"{% if filters.tag == tag.value %} checked{% endif %}>
+                      <input id="asset-tag-option-{{ loop.index }}" name="tag" type="checkbox" value="{{ tag.value }}"{% if tag.selected %} checked{% endif %}>
                       <span>{{ tag.displayName }}</span>
                     </label>
                   </div>
@@ -645,45 +655,191 @@
           </details>
         </fieldset>
 
-        <div class="field">
-          <label for="presence">Show</label>
-          <select id="presence" name="presence">
-            <option value="all" {% if filters.presence == 'all' %}selected{% endif %}>All assets</option>
-            <option value="present" {% if filters.presence == 'present' %}selected{% endif %}>Present at last scan</option>
-            <option value="missing" {% if filters.presence == 'missing' %}selected{% endif %}>Missing at last scan</option>
-          </select>
-        </div>
+        {% set presenceFilterSummary = "All assets" %}
+        {% if filters.presence == 'present' %}
+          {% set presenceFilterSummary = "Present at last scan" %}
+        {% elif filters.presence == 'missing' %}
+          {% set presenceFilterSummary = "Missing at last scan" %}
+        {% endif %}
+        <fieldset class="field asset-viewer-filter-field asset-filter-multiselect-field">
+          <legend>Show</legend>
+          <details class="asset-filter-multiselect asset-filter-multiselect--sized" data-asset-viewer-filter-disclosure>
+            <summary id="asset-presence-filter-trigger"
+                     aria-controls="asset-presence-filter-options"
+                     aria-expanded="false"
+                     aria-label="Show filter: {{ presenceFilterSummary }}"
+                     title="{{ presenceFilterSummary }}">
+              <span class="asset-filter-multiselect-summary">
+                <span class="asset-filter-multiselect-summary-current">{{ presenceFilterSummary }}</span>
+                <span class="asset-filter-multiselect-summary-width" aria-hidden="true">
+                  <span>All assets</span>
+                  <span>Present at last scan</span>
+                  <span>Missing at last scan</span>
+                </span>
+              </span>
+            </summary>
+            <div id="asset-presence-filter-options" class="asset-filter-multiselect-panel" role="radiogroup" aria-label="Show options">
+              <div class="asset-filter-multiselect-option">
+                <label for="asset-presence-option-all">
+                  <input id="asset-presence-option-all" name="presence" type="radio" value="all"{% if filters.presence == 'all' %} checked{% endif %}>
+                  <span>All assets</span>
+                </label>
+              </div>
+              <div class="asset-filter-multiselect-option">
+                <label for="asset-presence-option-present">
+                  <input id="asset-presence-option-present" name="presence" type="radio" value="present"{% if filters.presence == 'present' %} checked{% endif %}>
+                  <span>Present at last scan</span>
+                </label>
+              </div>
+              <div class="asset-filter-multiselect-option">
+                <label for="asset-presence-option-missing">
+                  <input id="asset-presence-option-missing" name="presence" type="radio" value="missing"{% if filters.presence == 'missing' %} checked{% endif %}>
+                  <span>Missing at last scan</span>
+                </label>
+              </div>
+            </div>
+          </details>
+        </fieldset>
 
-        <div class="field">
-          <label for="usage">Usage</label>
-          <select id="usage" name="usage">
-            <option value="all" {% if filters.usage == 'all' %}selected{% endif %}>All assets</option>
-            <option value="used" {% if filters.usage == 'used' %}selected{% endif %}>Used by a release</option>
-            <option value="unused" {% if filters.usage == 'unused' %}selected{% endif %}>Not used by a release</option>
-          </select>
-        </div>
+        {% set usageFilterSummary = "All assets" %}
+        {% if filters.usage == 'used' %}
+          {% set usageFilterSummary = "Used by a release" %}
+        {% elif filters.usage == 'unused' %}
+          {% set usageFilterSummary = "Not used by a release" %}
+        {% endif %}
+        <fieldset class="field asset-viewer-filter-field asset-filter-multiselect-field">
+          <legend>Usage</legend>
+          <details class="asset-filter-multiselect asset-filter-multiselect--sized" data-asset-viewer-filter-disclosure>
+            <summary id="asset-usage-filter-trigger"
+                     aria-controls="asset-usage-filter-options"
+                     aria-expanded="false"
+                     aria-label="Usage filter: {{ usageFilterSummary }}"
+                     title="{{ usageFilterSummary }}">
+              <span class="asset-filter-multiselect-summary">
+                <span class="asset-filter-multiselect-summary-current">{{ usageFilterSummary }}</span>
+                <span class="asset-filter-multiselect-summary-width" aria-hidden="true">
+                  <span>All assets</span>
+                  <span>Used by a release</span>
+                  <span>Not used by a release</span>
+                </span>
+              </span>
+            </summary>
+            <div id="asset-usage-filter-options" class="asset-filter-multiselect-panel" role="radiogroup" aria-label="Usage options">
+              <div class="asset-filter-multiselect-option">
+                <label for="asset-usage-option-all">
+                  <input id="asset-usage-option-all" name="usage" type="radio" value="all"{% if filters.usage == 'all' %} checked{% endif %}>
+                  <span>All assets</span>
+                </label>
+              </div>
+              <div class="asset-filter-multiselect-option">
+                <label for="asset-usage-option-used">
+                  <input id="asset-usage-option-used" name="usage" type="radio" value="used"{% if filters.usage == 'used' %} checked{% endif %}>
+                  <span>Used by a release</span>
+                </label>
+              </div>
+              <div class="asset-filter-multiselect-option">
+                <label for="asset-usage-option-unused">
+                  <input id="asset-usage-option-unused" name="usage" type="radio" value="unused"{% if filters.usage == 'unused' %} checked{% endif %}>
+                  <span>Not used by a release</span>
+                </label>
+              </div>
+            </div>
+          </details>
+        </fieldset>
 
-        <div class="field">
-          <label for="sort">Sort by</label>
-          <select id="sort" name="sort">
-            <option value="filename" {% if filters.sort == 'filename' %}selected{% endif %}>Filename</option>
-            <option value="modified" {% if filters.sort == 'modified' %}selected{% endif %}>Modified date</option>
-            <option value="size" {% if filters.sort == 'size' %}selected{% endif %}>File size</option>
-            <option value="category" {% if filters.sort == 'category' %}selected{% endif %}>Category &amp; location</option>
-          </select>
-        </div>
+        {% set sortFilterSummary = "Filename" %}
+        {% if filters.sort == 'modified' %}
+          {% set sortFilterSummary = "Modified date" %}
+        {% elif filters.sort == 'size' %}
+          {% set sortFilterSummary = "File size" %}
+        {% elif filters.sort == 'category' %}
+          {% set sortFilterSummary = "Category & location" %}
+        {% endif %}
+        <fieldset class="field asset-viewer-filter-field asset-filter-multiselect-field">
+          <legend>Sort by</legend>
+          <details class="asset-filter-multiselect asset-filter-multiselect--sized" data-asset-viewer-filter-disclosure>
+            <summary id="asset-sort-filter-trigger"
+                     aria-controls="asset-sort-filter-options"
+                     aria-expanded="false"
+                     aria-label="Sort by filter: {{ sortFilterSummary }}"
+                     title="{{ sortFilterSummary }}">
+              <span class="asset-filter-multiselect-summary">
+                <span class="asset-filter-multiselect-summary-current">{{ sortFilterSummary }}</span>
+                <span class="asset-filter-multiselect-summary-width" aria-hidden="true">
+                  <span>Filename</span>
+                  <span>Modified date</span>
+                  <span>File size</span>
+                  <span>Category &amp; location</span>
+                </span>
+              </span>
+            </summary>
+            <div id="asset-sort-filter-options" class="asset-filter-multiselect-panel" role="radiogroup" aria-label="Sort by options">
+              <div class="asset-filter-multiselect-option">
+                <label for="asset-sort-option-filename">
+                  <input id="asset-sort-option-filename" name="sort" type="radio" value="filename"{% if filters.sort == 'filename' %} checked{% endif %}>
+                  <span>Filename</span>
+                </label>
+              </div>
+              <div class="asset-filter-multiselect-option">
+                <label for="asset-sort-option-modified">
+                  <input id="asset-sort-option-modified" name="sort" type="radio" value="modified"{% if filters.sort == 'modified' %} checked{% endif %}>
+                  <span>Modified date</span>
+                </label>
+              </div>
+              <div class="asset-filter-multiselect-option">
+                <label for="asset-sort-option-size">
+                  <input id="asset-sort-option-size" name="sort" type="radio" value="size"{% if filters.sort == 'size' %} checked{% endif %}>
+                  <span>File size</span>
+                </label>
+              </div>
+              <div class="asset-filter-multiselect-option">
+                <label for="asset-sort-option-category">
+                  <input id="asset-sort-option-category" name="sort" type="radio" value="category"{% if filters.sort == 'category' %} checked{% endif %}>
+                  <span>Category &amp; location</span>
+                </label>
+              </div>
+            </div>
+          </details>
+        </fieldset>
 
-        <div class="field">
-          <label for="order">Order</label>
-          <select id="order" name="order">
-            <option value="asc" {% if filters.order == 'asc' %}selected{% endif %}>Ascending</option>
-            <option value="desc" {% if filters.order == 'desc' %}selected{% endif %}>Descending</option>
-          </select>
-        </div>
+        {% set orderFilterSummary = "Ascending" %}
+        {% if filters.order == 'desc' %}
+          {% set orderFilterSummary = "Descending" %}
+        {% endif %}
+        <fieldset class="field asset-viewer-filter-field asset-filter-multiselect-field">
+          <legend>Order</legend>
+          <details class="asset-filter-multiselect asset-filter-multiselect--sized" data-asset-viewer-filter-disclosure>
+            <summary id="asset-order-filter-trigger"
+                     aria-controls="asset-order-filter-options"
+                     aria-expanded="false"
+                     aria-label="Order filter: {{ orderFilterSummary }}"
+                     title="{{ orderFilterSummary }}">
+              <span class="asset-filter-multiselect-summary">
+                <span class="asset-filter-multiselect-summary-current">{{ orderFilterSummary }}</span>
+                <span class="asset-filter-multiselect-summary-width" aria-hidden="true">
+                  <span>Ascending</span>
+                  <span>Descending</span>
+                </span>
+              </span>
+            </summary>
+            <div id="asset-order-filter-options" class="asset-filter-multiselect-panel" role="radiogroup" aria-label="Order options">
+              <div class="asset-filter-multiselect-option">
+                <label for="asset-order-option-asc">
+                  <input id="asset-order-option-asc" name="order" type="radio" value="asc"{% if filters.order == 'asc' %} checked{% endif %}>
+                  <span>Ascending</span>
+                </label>
+              </div>
+              <div class="asset-filter-multiselect-option">
+                <label for="asset-order-option-desc">
+                  <input id="asset-order-option-desc" name="order" type="radio" value="desc"{% if filters.order == 'desc' %} checked{% endif %}>
+                  <span>Descending</span>
+                </label>
+              </div>
+            </div>
+          </details>
+        </fieldset>
 
-        <button class="button" type="submit">Filter</button>
-        <a class="button button-secondary" href="{{ pageUrl({ search: '', tag: '', extension: '', presence: 'all', usage: 'all', category: 'all', sort: 'filename', order: 'asc', page: 1, pageSize: 25 }) }}">Reset</a>
-        </form>
+      </form>
 
       {% if assets.length > 0 %}
         {% if completeCategorySurface %}
@@ -716,15 +872,11 @@
                      so per-row rename forms can remain outside this form. #}
                   <form id="bulk-select-form" method="post" action="/projects/{{ project.id }}/assets/add-to-release" class="bulk-select-form" data-asset-selection-form>
                     <input type="hidden" name="_csrf" value="{{ _csrf }}">
-                    {% for key in contextFields %}
-                      {% if context[key] is not none and context[key] != '' %}
-                        <input type="hidden" name="{{ key }}" value="{{ context[key] }}">
-                      {% endif %}
-                    {% endfor %}
+                    {{ renderContextFields(context, contextFields, false) }}
 
                     <div class="asset-selection-header">
                       <span class="asset-actions-selection-label">Selected assets</span>
-                      <span class="selected-count" data-selected-count>0 selected</span>
+                      <span class="selected-count" data-selected-count data-selected-total="{{ assets.length }}">0 of {{ assets.length }} selected</span>
                     </div>
                     <div class="asset-selection-controls">
                       <div class="asset-selection-tools" role="group" aria-label="Selection controls">
@@ -782,15 +934,11 @@
           <div class="asset-actions-panel asset-actions-panel--selection-only" data-asset-actions-panel>
             <form id="bulk-select-form" method="post" action="/projects/{{ project.id }}/assets/add-to-release" class="bulk-select-form" data-asset-selection-form>
               <input type="hidden" name="_csrf" value="{{ _csrf }}">
-              {% for key in contextFields %}
-                {% if context[key] is not none and context[key] != '' %}
-                  <input type="hidden" name="{{ key }}" value="{{ context[key] }}">
-                {% endif %}
-              {% endfor %}
+              {{ renderContextFields(context, contextFields, false) }}
 
               <div class="asset-selection-header">
                 <span class="asset-actions-selection-label">Selected assets</span>
-                <span class="selected-count" data-selected-count>0 selected</span>
+                <span class="selected-count" data-selected-count data-selected-total="{{ assets.length }}">0 of {{ assets.length }} selected</span>
               </div>
               <div class="asset-selection-controls">
                 <div class="asset-selection-tools" role="group" aria-label="Selection controls">
@@ -913,8 +1061,10 @@
             {% if filters.search %}
               <input type="hidden" name="search" value="{{ filters.search }}">
             {% endif %}
-            {% if filters.tag %}
-              <input type="hidden" name="tag" value="{{ filters.tag }}">
+            {% if filters.tags %}
+              {% for tagId in filters.tags %}
+                <input type="hidden" name="tag" value="{{ tagId }}">
+              {% endfor %}
             {% endif %}
             {% if filters.extension %}
               <input type="hidden" name="extension" value="{{ filters.extension }}">

@@ -3027,17 +3027,43 @@ describe('workflow query service', () => {
         pageSize: 25,
       });
 
-      expect(result.filters.tag).toBe(beta.id);
+      expect(result.filters.tags).toEqual([beta.id]);
       expect(result.assets.map((asset) => asset.id)).toEqual([matching.id, secondMatching.id]);
       expect(new Set(result.assets.map((asset) => asset.id)).size).toBe(result.assets.length);
       expect(result.total).toBe(result.assets.length);
       expect(result.tagOptions).toEqual([
-        { value: alpha.id, displayName: 'Alpha' },
-        { value: beta.id, displayName: 'Beta' },
-        { value: zeta.id, displayName: 'zeta' },
+        { value: alpha.id, displayName: 'Alpha', selected: false },
+        { value: beta.id, displayName: 'Beta', selected: true },
+        { value: zeta.id, displayName: 'zeta', selected: false },
       ]);
       expect(result.tagOptions[0]).not.toHaveProperty('normalizedName');
       expect(result.tagOptions[0]).not.toHaveProperty('normalized_name');
+    });
+
+    it('normalizes repeated tag values, filters by any selected direct asset tag, and keeps options selected', () => {
+      const project = insertProject(db, { title: 'Multiple Asset Tags' });
+      const alphaAsset = insertAsset(db, { projectId: project.id, relativePath: 'alpha.png', filename: 'alpha.png', extension: 'png', isPresent: 1 });
+      const betaAsset = insertAsset(db, { projectId: project.id, relativePath: 'beta.png', filename: 'beta.png', extension: 'png', isPresent: 1 });
+      insertAsset(db, { projectId: project.id, relativePath: 'untagged.png', filename: 'untagged.png', extension: 'png', isPresent: 1 });
+      const alpha = tagRepository.create({ displayName: 'Alpha', normalizedName: 'multiple-alpha' });
+      const beta = tagRepository.create({ displayName: 'Beta', normalizedName: 'multiple-beta' });
+      const gamma = tagRepository.create({ displayName: 'Gamma', normalizedName: 'multiple-gamma' });
+
+      tagRepository.assignToAsset(alphaAsset.id, alpha.id);
+      tagRepository.assignToAsset(betaAsset.id, beta.id);
+
+      const result = service.getProjectAssetBrowser(project.id, {
+        tag: [String(beta.id), '999999', String(alpha.id), '1junk', String(beta.id)],
+      });
+
+      expect(result.filters.tags).toEqual([alpha.id, beta.id]);
+      expect(result.assets.map((asset) => asset.filename)).toEqual(['alpha.png', 'beta.png']);
+      expect(result.total).toBe(2);
+      expect(result.tagOptions).toEqual([
+        { value: alpha.id, displayName: 'Alpha', selected: true },
+        { value: beta.id, displayName: 'Beta', selected: true },
+        { value: gamma.id, displayName: 'Gamma', selected: false },
+      ]);
     });
 
     it('normalizes empty, malformed, nonexistent, and deleted asset tag IDs to all assets', () => {
@@ -3047,15 +3073,15 @@ describe('workflow query service', () => {
       const tag = tagRepository.create({ displayName: 'Existing', normalizedName: 'existing' });
       tagRepository.assignToAsset(tagged.id, tag.id);
 
-      for (const rawTag of ['', '0', '-1', '1.5', '1junk', '999999', ['1']]) {
+      for (const rawTag of ['', '0', '-1', '1.5', '1junk', '999999', ['0', '1junk']]) {
         const result = service.getProjectAssetBrowser(project.id, { tag: rawTag });
-        expect(result.filters.tag).toBeUndefined();
+        expect(result.filters.tags).toBeUndefined();
         expect(result.total).toBe(2);
       }
 
       tagRepository.deleteById(tag.id);
       const deleted = service.getProjectAssetBrowser(project.id, { tag: String(tag.id) });
-      expect(deleted.filters.tag).toBeUndefined();
+      expect(deleted.filters.tags).toBeUndefined();
       expect(deleted.total).toBe(2);
       expect(deleted.tagOptions).toEqual([]);
     });
@@ -3106,7 +3132,7 @@ describe('workflow query service', () => {
       expect(result.page).toBe(1);
       expect(result.pageCount).toBe(1);
       expect(result.filters).toMatchObject({
-        tag: tag.id,
+         tags: [tag.id],
         search: 'hero',
         extension: 'png',
         presence: 'present',

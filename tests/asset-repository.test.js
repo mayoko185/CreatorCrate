@@ -1079,7 +1079,7 @@ describe('asset repository', () => {
       const second = assetRepo.upsert(projectId, 'second.png', {
         filename: 'second.png', extension: 'png', mimeType: 'image/png', sizeBytes: 1, modifiedAt: null,
       });
-      assetRepo.upsert(projectId, 'other.png', {
+      const other = assetRepo.upsert(projectId, 'other.png', {
         filename: 'other.png', extension: 'png', mimeType: 'image/png', sizeBytes: 1, modifiedAt: null,
       });
       const foreign = assetRepo.upsert(otherProject.id, 'foreign.png', {
@@ -1089,6 +1089,7 @@ describe('asset repository', () => {
       tagRepo.assignToAsset(first.id, shared.id);
       tagRepo.assignToAsset(first.id, additional.id);
       tagRepo.assignToAsset(second.id, shared.id);
+      tagRepo.assignToAsset(other.id, additional.id);
       tagRepo.assignToProject(projectId, projectOnly.id);
       tagRepo.assignToAsset(foreign.id, shared.id);
 
@@ -1098,6 +1099,14 @@ describe('asset repository', () => {
       expect(new Set(filtered.map((asset) => asset.id)).size).toBe(filtered.length);
       expect(assetRepo.countProjectAssets(projectId, { tag: shared.id })).toBe(filtered.length);
       expect(assetRepo.findProjectAssetPage(projectId, { tag: projectOnly.id, pageSize: 100 })).toEqual([]);
+
+      const multiple = assetRepo.findProjectAssetPage(projectId, {
+        tag: [shared.id, additional.id, shared.id],
+        pageSize: 100,
+      });
+      expect(multiple.map((asset) => asset.filename)).toEqual(['first.png', 'other.png', 'second.png']);
+      expect(new Set(multiple.map((asset) => asset.id)).size).toBe(multiple.length);
+      expect(assetRepo.countProjectAssets(projectId, { tag: [shared.id, additional.id] })).toBe(multiple.length);
 
       tagRepo.deleteById(shared.id);
       expect(assetRepo.countProjectAssets(projectId, { tag: shared.id })).toBe(0);

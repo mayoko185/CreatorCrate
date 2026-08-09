@@ -1502,7 +1502,11 @@ function updateAssetSelectionState(form, scope = form) {
 
   const countEl = form.querySelector('[data-selected-count]');
   if (countEl) {
-    countEl.textContent = `${selectedCount} selected`;
+    const renderedTotal = Number.parseInt(countEl.getAttribute?.('data-selected-total'), 10);
+    const totalCount = Number.isSafeInteger(renderedTotal) && renderedTotal >= 0
+      ? renderedTotal
+      : checkboxes.length;
+    countEl.textContent = `${selectedCount} of ${totalCount} selected`;
   }
 
   const releaseSelect = form.querySelector('[data-release-select]');
