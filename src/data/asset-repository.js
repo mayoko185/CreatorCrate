@@ -1479,6 +1479,62 @@ export function createAssetRepository(db) {
 
       return { total, uncategorized, missing, byCategoryId };
     },
+
+    /**
+     * Minimal ordered asset rows for the project-scoped slideshow sequence.
+     * Uses identical filter predicates and ordering as findProjectAssetPage
+     * but fetches the complete matching set (no LIMIT/OFFSET) and only the
+     * columns required to build preview URLs.
+     *
+     * @param {number} projectId
+     * @param {object} [filters]
+     * @returns {Array<{id: number, project_id: number, relative_path: string, filename: string, extension: string, mime_type: string, is_present: number, size_bytes: number, modified_at: string|null}>}
+     */
+    findProjectAssetSlideshowSequence(projectId, filters = {}) {
+      const {
+        search = null, extension = null, presence = 'all', usage = 'all', category = 'all',
+        tag = null, tags, sort = 'filename', order = 'asc',
+      } = filters;
+
+      const { conditions, params } = this._buildAssetBrowserConditions(projectId, {
+        search, extension, presence, usage, category, tag: tags ?? tag,
+      });
+
+      const orderClause = buildAssetBrowserOrderClause(sort, order);
+      const sql = `
+        SELECT a.id, a.project_id, a.relative_path, a.filename, a.extension, a.mime_type, a.is_present, a.size_bytes, a.modified_at
+        FROM assets a
+        ${CATEGORY_JOIN}
+        WHERE ${conditions.join(' AND ')}
+        ${orderClause}
+      `;
+      return db.prepare(sql).all(...params);
+    },
+
+    /**
+     * Minimal ordered asset rows for the cross-project slideshow sequence.
+     * Uses identical filter predicates and ordering as findAllAssets but
+     * fetches the complete matching set (no LIMIT/OFFSET) and only the
+     * columns required to build preview URLs.
+     *
+     * @param {object} [filters]
+     * @returns {Array<{id: number, project_id: number, relative_path: string, filename: string, extension: string, mime_type: string, is_present: number, size_bytes: number, modified_at: string|null}>}
+     */
+    findAllAssetsSlideshowSequence(filters = {}) {
+      const sort = filters.sort ?? filters.sortBy ?? 'filename';
+      const order = filters.order ?? 'asc';
+      const { conditions, params } = buildAllAssetBrowserConditions(filters);
+
+      const sql = `
+        SELECT a.id, a.project_id, a.relative_path, a.filename, a.extension, a.mime_type, a.is_present, a.size_bytes, a.modified_at
+        FROM assets a
+        JOIN projects p ON p.id = a.project_id
+        ${CATEGORY_JOIN}
+        WHERE ${conditions.join(' AND ')}
+        ${buildAssetBrowserOrderClause(sort, order, { includeProjectSort: true })}
+      `;
+      return db.prepare(sql).all(...params);
+    },
   };
 }
 

@@ -29,7 +29,7 @@ const DASHBOARD_FIXED_STATEMENT_EXECUTIONS = 12;
 // for non-archived projects — archived projects skip it entirely).
 // Phase 4: the browser performs one global tag-catalog lookup and one
 // page-local asset-tag batch lookup.
-const ASSET_BROWSER_FIXED_STATEMENT_EXECUTIONS = 10;
+const ASSET_BROWSER_FIXED_STATEMENT_EXECUTIONS = 11;
 const ASSET_VIEWER_FIXED_STATEMENT_EXECUTIONS = 5;
 // getReleaseList composes: countFiltered (filtered total),
 // countFiltered({ includeArchived: true }) (hasAnyReleases existence), and

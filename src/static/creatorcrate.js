@@ -2795,6 +2795,672 @@ export function enhanceTimePickers(scope = globalThis.document) {
   return fields.length;
 }
 
+// ─── Slideshow enhancer ───────────────────────────────────────────────────────
+
+const SLIDESHOW_TRIGGER_SELECTOR = '[data-slideshow-trigger]';
+const SLIDESHOW_SCAFFOLD_SELECTOR = '[data-slideshow-scaffold]';
+const SLIDESHOW_SEQUENCE_SELECTOR = '[data-slideshow-sequence]';
+const SLIDESHOW_PREVIEW_SELECTOR = '[data-slideshow-preview]';
+const SLIDESHOW_PREV_SELECTOR = '[data-slideshow-prev]';
+const SLIDESHOW_NEXT_SELECTOR = '[data-slideshow-next]';
+const SLIDESHOW_STATUS_SELECTOR = '[data-slideshow-status]';
+const SLIDESHOW_PLAY_PAUSE_SELECTOR = '[data-slideshow-play-pause]';
+const SLIDESHOW_SPEED_SELECTOR = '[data-slideshow-speed]';
+const SLIDESHOW_FULLSCREEN_SELECTOR = '[data-slideshow-fullscreen]';
+const SLIDESHOW_CLOSE_SELECTOR = '[data-slideshow-close]';
+const SLIDESHOW_ORIGINAL_SIZE_SELECTOR = '[data-slideshow-original-size]';
+const SLIDESHOW_MEDIA_STATUS_SELECTOR = '[data-slideshow-media-status]';
+const SLIDESHOW_CHROME_HIDE_DELAY = 2500;
+
+function parseSlideshowSequence(scaffold) {
+  try {
+    const el = scaffold?.querySelector?.(SLIDESHOW_SEQUENCE_SELECTOR);
+    if (!el) return [];
+    const parsed = JSON.parse(el.textContent || '[]');
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+export function enhanceSlideshow(scope = globalThis.document) {
+  if (!scope || typeof scope.querySelectorAll !== 'function') return 0;
+
+  const trigger = scope.querySelector?.(SLIDESHOW_TRIGGER_SELECTOR);
+  const scaffold = scope.querySelector?.(SLIDESHOW_SCAFFOLD_SELECTOR);
+  if (!trigger || !scaffold) return 0;
+
+  if (isEnhancementBound(trigger, 'slideshowBound')) return 1;
+  markEnhancementBound(trigger, 'slideshowBound');
+
+  const playPauseBtn = scaffold.querySelector?.(SLIDESHOW_PLAY_PAUSE_SELECTOR);
+  const speedSelect = scaffold.querySelector?.(SLIDESHOW_SPEED_SELECTOR);
+  const fullscreenBtn = scaffold.querySelector?.(SLIDESHOW_FULLSCREEN_SELECTOR);
+  const originalSizeBtn = scaffold.querySelector?.(SLIDESHOW_ORIGINAL_SIZE_SELECTOR);
+  const fullscreenDocument = scaffold.ownerDocument || scope;
+  const fullscreenApiAvailable = Boolean(
+    fullscreenBtn
+    && typeof scaffold.requestFullscreen === 'function'
+    && fullscreenDocument
+    && typeof fullscreenDocument.exitFullscreen === 'function'
+    && 'fullscreenElement' in fullscreenDocument
+    && typeof fullscreenDocument.addEventListener === 'function'
+  );
+
+  const sequence = parseSlideshowSequence(scaffold);
+
+  let currentIndex = 0;
+  let isOpen = false;
+  let timerId = null;
+  let chromeHideTimerId = null;
+  let isPlaying = false;
+  let isOriginalMode = false;
+  let originalImage = null;
+  let originalRequestToken = 0;
+  let pendingOriginalLoadHandler = null;
+  let pendingOriginalErrorHandler = null;
+  let panX = 0;
+  let panY = 0;
+  let maxPanX = 0;
+  let maxPanY = 0;
+  let dragPointerId = null;
+  let dragStartX = 0;
+  let dragStartY = 0;
+  let dragStartPanX = 0;
+  let dragStartPanY = 0;
+  let recomputeOriginalPanBounds = null;
+
+  function isFullscreenActive() {
+    return fullscreenApiAvailable && fullscreenDocument.fullscreenElement === scaffold;
+  }
+
+  function clearChromeHideTimer() {
+    if (chromeHideTimerId !== null) {
+      clearTimeout(chromeHideTimerId);
+      chromeHideTimerId = null;
+    }
+  }
+
+  function setChromeHidden(hidden) {
+    if (hidden) {
+      scaffold.setAttribute?.('data-slideshow-ui-hidden', '');
+    } else {
+      scaffold.removeAttribute?.('data-slideshow-ui-hidden');
+    }
+  }
+
+  function hideSlideshowChrome() {
+    chromeHideTimerId = null;
+    setChromeHidden(isOpen && isFullscreenActive());
+  }
+
+  function scheduleChromeHide() {
+    clearChromeHideTimer();
+    if (!isOpen || !isFullscreenActive()) return;
+    chromeHideTimerId = setTimeout(hideSlideshowChrome, SLIDESHOW_CHROME_HIDE_DELAY);
+  }
+
+  function showSlideshowChrome() {
+    setChromeHidden(false);
+    scheduleChromeHide();
+  }
+
+  function setFullscreenState(active) {
+    if (!fullscreenBtn) return;
+    const label = active ? 'Exit fullscreen' : 'Enter fullscreen';
+    fullscreenBtn.setAttribute?.('aria-label', label);
+    fullscreenBtn.setAttribute?.('aria-pressed', active ? 'true' : 'false');
+    fullscreenBtn.setAttribute?.('title', label);
+    if (active) {
+      fullscreenBtn.setAttribute?.('data-slideshow-fullscreen-active', '');
+    } else {
+      fullscreenBtn.removeAttribute?.('data-slideshow-fullscreen-active');
+    }
+  }
+
+  function syncFullscreenState() {
+    const active = isFullscreenActive();
+    setFullscreenState(active && isOpen);
+    if (active && isOpen) {
+      showSlideshowChrome();
+      recomputeOriginalPanBounds?.();
+    } else {
+      clearChromeHideTimer();
+      setChromeHidden(false);
+    }
+  }
+
+  function requestSlideshowFullscreen() {
+    try {
+      const pending = scaffold.requestFullscreen();
+      if (pending && typeof pending.catch === 'function') {
+        pending.catch(() => {
+          syncFullscreenState();
+        });
+      }
+    } catch {
+      syncFullscreenState();
+    }
+    syncFullscreenState();
+  }
+
+  function exitSlideshowFullscreen() {
+    try {
+      const pending = fullscreenDocument.exitFullscreen();
+      if (pending && typeof pending.catch === 'function') {
+        pending.catch(() => {
+          syncFullscreenState();
+        });
+      }
+    } catch {
+      syncFullscreenState();
+    }
+    syncFullscreenState();
+  }
+
+  function toggleFullscreen() {
+    if (!fullscreenApiAvailable || !isOpen) return;
+    if (isFullscreenActive()) exitSlideshowFullscreen();
+    else requestSlideshowFullscreen();
+  }
+
+  if (fullscreenBtn) {
+    if (!fullscreenApiAvailable) {
+      fullscreenBtn.disabled = true;
+      fullscreenBtn.setAttribute?.('hidden', '');
+    } else {
+      fullscreenBtn.removeAttribute?.('hidden');
+      fullscreenBtn.disabled = sequence.length === 0;
+      fullscreenDocument.addEventListener('fullscreenchange', syncFullscreenState);
+      syncFullscreenState();
+    }
+  }
+
+  if (sequence.length === 0) {
+    trigger.disabled = true;
+    if (playPauseBtn) playPauseBtn.disabled = true;
+    if (speedSelect) speedSelect.disabled = true;
+    if (originalSizeBtn) originalSizeBtn.disabled = true;
+    return 0;
+  }
+
+  if (playPauseBtn) playPauseBtn.disabled = false;
+  if (speedSelect) speedSelect.disabled = false;
+  if (fullscreenBtn && fullscreenApiAvailable) fullscreenBtn.disabled = false;
+
+  const preview = scaffold.querySelector?.(SLIDESHOW_PREVIEW_SELECTOR);
+  const status = scaffold.querySelector?.(SLIDESHOW_STATUS_SELECTOR);
+  const mediaStatus = scaffold.querySelector?.(SLIDESHOW_MEDIA_STATUS_SELECTOR);
+  const prevBtn = scaffold.querySelector?.(SLIDESHOW_PREV_SELECTOR);
+  const nextBtn = scaffold.querySelector?.(SLIDESHOW_NEXT_SELECTOR);
+  const closeBtn = scaffold.querySelector?.(SLIDESHOW_CLOSE_SELECTOR);
+
+  const img = scope.createElement?.('img');
+  const captionEl = scope.createElement?.('p');
+  if (img) {
+    img.setAttribute?.('class', 'slideshow-img slideshow-preview-img');
+    img.draggable = false;
+    preview?.appendChild?.(img);
+  }
+  if (captionEl) {
+    captionEl.setAttribute?.('class', 'slideshow-caption');
+    preview?.appendChild?.(captionEl);
+  }
+
+  function getSpeed() {
+    return parseInt(speedSelect?.value || '', 10) || 4000;
+  }
+
+  function setMediaStatus(message) {
+    if (!mediaStatus) return;
+    if (message) {
+      mediaStatus.textContent = message;
+      mediaStatus.removeAttribute?.('hidden');
+      mediaStatus.hidden = false;
+    } else {
+      mediaStatus.textContent = '';
+      mediaStatus.setAttribute?.('hidden', '');
+      mediaStatus.hidden = true;
+    }
+  }
+
+  function setOriginalSizeControl(active) {
+    if (!originalSizeBtn) return;
+    const available = Boolean(sequence[currentIndex]?.originalUrl);
+    const label = active
+      ? 'Fit to screen'
+      : available
+        ? 'View original size'
+        : 'Original size unavailable';
+    originalSizeBtn.disabled = !available && !active;
+    originalSizeBtn.setAttribute?.('aria-label', label);
+    originalSizeBtn.setAttribute?.('title', label);
+    originalSizeBtn.setAttribute?.('aria-pressed', active ? 'true' : 'false');
+    if (active) {
+      originalSizeBtn.setAttribute?.('data-slideshow-original-size-active', '');
+    } else {
+      originalSizeBtn.removeAttribute?.('data-slideshow-original-size-active');
+    }
+  }
+
+  function renderItem(index) {
+    const item = sequence[index];
+    if (!item) return;
+    currentIndex = index;
+    if (img) {
+      img.src = item.previewUrl;
+      img.setAttribute?.('alt', item.filename);
+    }
+    if (captionEl) captionEl.textContent = item.filename;
+    if (status) status.textContent = `${index + 1} of ${sequence.length}`;
+    setOriginalSizeControl(false);
+    setMediaStatus('');
+  }
+
+  function clearAutoplay() {
+    if (timerId !== null) {
+      clearTimeout(timerId);
+      timerId = null;
+    }
+  }
+
+  function setPlayPauseState(playing) {
+    isPlaying = playing;
+    if (playPauseBtn) {
+      playPauseBtn.setAttribute?.('aria-label', playing ? 'Pause' : 'Play');
+      if (playing) {
+        playPauseBtn.setAttribute?.('data-slideshow-playing', '');
+      } else {
+        playPauseBtn.removeAttribute?.('data-slideshow-playing');
+      }
+    }
+  }
+
+  function scheduleNext() {
+    clearAutoplay();
+    timerId = setTimeout(() => {
+      timerId = null;
+      renderItem(currentIndex === sequence.length - 1 ? 0 : currentIndex + 1);
+      if (isPlaying) scheduleNext();
+    }, getSpeed());
+  }
+
+  function startAutoplay() {
+    if (isOriginalMode) return;
+    setPlayPauseState(true);
+    if (sequence.length > 1) scheduleNext();
+  }
+
+  function stopAutoplay() {
+    clearAutoplay();
+    setPlayPauseState(false);
+  }
+
+  function clearOriginalLoadListeners() {
+    if (!originalImage) return;
+    if (pendingOriginalLoadHandler) {
+      originalImage.removeEventListener?.('load', pendingOriginalLoadHandler);
+      pendingOriginalLoadHandler = null;
+    }
+    if (pendingOriginalErrorHandler) {
+      originalImage.removeEventListener?.('error', pendingOriginalErrorHandler);
+      pendingOriginalErrorHandler = null;
+    }
+  }
+
+  function releasePanPointer() {
+    if (dragPointerId !== null && typeof preview?.releasePointerCapture === 'function') {
+      try {
+        preview.releasePointerCapture(dragPointerId);
+      } catch {
+        // Pointer capture may already have been released by the browser.
+      }
+    }
+    dragPointerId = null;
+    preview?.removeAttribute?.('data-slideshow-dragging');
+  }
+
+  function updateOriginalImageTransform() {
+    if (!originalImage?.style) return;
+    originalImage.style.transform = `translate(calc(-50% + ${panX}px), calc(-50% + ${panY}px))`;
+  }
+
+  function setPanEnabled(enabled) {
+    if (!preview) return;
+    if (enabled) preview.setAttribute?.('data-slideshow-pan-enabled', '');
+    else preview.removeAttribute?.('data-slideshow-pan-enabled');
+  }
+
+  function getViewportSize() {
+    const rect = preview?.getBoundingClientRect?.();
+    const documentElement = fullscreenDocument?.documentElement;
+    const view = fullscreenDocument?.defaultView;
+    const firstPositive = (...values) => {
+      for (const value of values) {
+        const number = Number(value);
+        if (Number.isFinite(number) && number > 0) return number;
+      }
+      return 0;
+    };
+    return {
+      width: firstPositive(
+        preview?.clientWidth,
+        rect?.width,
+        scaffold?.clientWidth,
+        documentElement?.clientWidth,
+        view?.innerWidth,
+      ),
+      height: firstPositive(
+        preview?.clientHeight,
+        rect?.height,
+        scaffold?.clientHeight,
+        documentElement?.clientHeight,
+        view?.innerHeight,
+      ),
+    };
+  }
+
+  function clampPan(value, limit) {
+    return Math.max(-limit, Math.min(limit, value));
+  }
+
+  function resetPan() {
+    releasePanPointer();
+    panX = 0;
+    panY = 0;
+    maxPanX = 0;
+    maxPanY = 0;
+    updateOriginalImageTransform();
+    setPanEnabled(false);
+  }
+
+  recomputeOriginalPanBounds = () => {
+    const naturalWidth = Number(originalImage?.naturalWidth);
+    const naturalHeight = Number(originalImage?.naturalHeight);
+    if (!isOriginalMode || !originalImage || naturalWidth <= 0 || naturalHeight <= 0) {
+      maxPanX = 0;
+      maxPanY = 0;
+      panX = 0;
+      panY = 0;
+      setPanEnabled(false);
+      updateOriginalImageTransform();
+      return;
+    }
+
+    const viewport = getViewportSize();
+    maxPanX = viewport.width > 0 ? Math.max(0, (naturalWidth - viewport.width) / 2) : 0;
+    maxPanY = viewport.height > 0 ? Math.max(0, (naturalHeight - viewport.height) / 2) : 0;
+    panX = clampPan(panX, maxPanX);
+    panY = clampPan(panY, maxPanY);
+    setPanEnabled(maxPanX > 0 || maxPanY > 0);
+    updateOriginalImageTransform();
+  };
+
+  setOriginalSizeControl(false);
+
+  function createOriginalImage() {
+    if (originalImage || !scope.createElement || !preview) return originalImage;
+    originalImage = scope.createElement('img');
+    originalImage.setAttribute?.('class', 'slideshow-img slideshow-original-img');
+    originalImage.setAttribute?.('alt', '');
+    originalImage.draggable = false;
+    preview.appendChild?.(originalImage);
+    return originalImage;
+  }
+
+  function clearOriginalImage() {
+    originalRequestToken += 1;
+    clearOriginalLoadListeners();
+    preview?.removeAttribute?.('data-slideshow-original-loaded');
+    if (!originalImage) return;
+    originalImage.removeAttribute?.('src');
+    originalImage.removeAttribute?.('data-slideshow-original-request');
+    if (originalImage.style) {
+      originalImage.style.width = '';
+      originalImage.style.height = '';
+      originalImage.style.transform = '';
+    }
+  }
+
+  function leaveOriginalSize(message = '') {
+    isOriginalMode = false;
+    resetPan();
+    clearOriginalImage();
+    preview?.removeAttribute?.('data-slideshow-mode');
+    preview?.removeAttribute?.('data-slideshow-pan-enabled');
+    setOriginalSizeControl(false);
+    setMediaStatus(message);
+  }
+
+  function setOriginalImageDimensions() {
+    const width = Number(originalImage?.naturalWidth);
+    const height = Number(originalImage?.naturalHeight);
+    if (!originalImage || !Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+      return false;
+    }
+    if (originalImage.style) {
+      originalImage.style.width = `${width}px`;
+      originalImage.style.height = `${height}px`;
+    }
+    return true;
+  }
+
+  function handleOriginalLoad(requestToken) {
+    if (!isOriginalMode || requestToken !== originalRequestToken) return;
+    clearOriginalLoadListeners();
+    if (!setOriginalImageDimensions()) {
+      leaveOriginalSize('Original size unavailable; showing fit to screen.');
+      return;
+    }
+    preview?.setAttribute?.('data-slideshow-original-loaded', '');
+    recomputeOriginalPanBounds?.();
+    setMediaStatus('');
+  }
+
+  function handleOriginalError(requestToken) {
+    if (!isOriginalMode || requestToken !== originalRequestToken) return;
+    leaveOriginalSize('Original size unavailable; showing fit to screen.');
+  }
+
+  function enterOriginalSize() {
+    const item = sequence[currentIndex];
+    if (!item?.originalUrl || !originalSizeBtn || originalSizeBtn.disabled) return;
+
+    stopAutoplay();
+    isOriginalMode = true;
+    resetPan();
+    preview?.setAttribute?.('data-slideshow-mode', 'original');
+    preview?.removeAttribute?.('data-slideshow-original-loaded');
+    setOriginalSizeControl(true);
+    setMediaStatus('Loading original...');
+
+    const image = createOriginalImage();
+    if (!image) {
+      leaveOriginalSize('Original size unavailable; showing fit to screen.');
+      return;
+    }
+
+    clearOriginalLoadListeners();
+    const requestToken = ++originalRequestToken;
+    pendingOriginalLoadHandler = () => handleOriginalLoad(requestToken);
+    pendingOriginalErrorHandler = () => handleOriginalError(requestToken);
+    image.addEventListener?.('load', pendingOriginalLoadHandler);
+    image.addEventListener?.('error', pendingOriginalErrorHandler);
+    image.setAttribute?.('data-slideshow-original-request', String(requestToken));
+    image.setAttribute?.('alt', item.filename);
+    image.src = item.originalUrl;
+
+    if (image.complete && Number(image.naturalWidth) > 0) {
+      handleOriginalLoad(requestToken);
+    }
+  }
+
+  function pointerCoordinate(event, key) {
+    const value = Number(event?.[key]);
+    return Number.isFinite(value) ? value : 0;
+  }
+
+  function beginPan(event) {
+    if (!isOriginalMode || !preview?.hasAttribute?.('data-slideshow-original-loaded')) return;
+    if (maxPanX <= 0 && maxPanY <= 0) return;
+    if (event?.button !== undefined && event.button !== 0) return;
+
+    dragPointerId = event?.pointerId ?? 0;
+    dragStartX = pointerCoordinate(event, 'clientX');
+    dragStartY = pointerCoordinate(event, 'clientY');
+    dragStartPanX = panX;
+    dragStartPanY = panY;
+    preview.setAttribute?.('data-slideshow-dragging', '');
+    if (typeof preview.setPointerCapture === 'function') {
+      try {
+        preview.setPointerCapture(dragPointerId);
+      } catch {
+        // Pointer capture is an enhancement; dragging still works while over the preview.
+      }
+    }
+    event?.preventDefault?.();
+  }
+
+  function updatePan(event) {
+    if (dragPointerId === null) return;
+    if (event?.pointerId !== undefined && event.pointerId !== dragPointerId) return;
+    panX = clampPan(dragStartPanX + pointerCoordinate(event, 'clientX') - dragStartX, maxPanX);
+    panY = clampPan(dragStartPanY + pointerCoordinate(event, 'clientY') - dragStartY, maxPanY);
+    updateOriginalImageTransform();
+    event?.preventDefault?.();
+  }
+
+  function endPan(event) {
+    if (dragPointerId === null) return;
+    if (event?.pointerId !== undefined && event.pointerId !== dragPointerId) return;
+    releasePanPointer();
+  }
+
+  function openSlideshow() {
+    isOpen = true;
+    leaveOriginalSize();
+    showSlideshowChrome();
+    scaffold.removeAttribute?.('hidden');
+    scaffold.removeAttribute?.('inert');
+    scaffold.hidden = false;
+    trigger.setAttribute?.('aria-expanded', 'true');
+    renderItem(0);
+    closeBtn?.focus?.();
+    const reducedMotion = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches === true;
+    if (!reducedMotion) startAutoplay();
+    else setPlayPauseState(false);
+  }
+
+  function closeSlideshow() {
+    stopAutoplay();
+    leaveOriginalSize();
+    const wasFullscreen = isFullscreenActive();
+    isOpen = false;
+    clearChromeHideTimer();
+    setChromeHidden(false);
+    if (wasFullscreen) exitSlideshowFullscreen();
+    setFullscreenState(false);
+    scaffold.setAttribute?.('hidden', '');
+    scaffold.setAttribute?.('inert', '');
+    scaffold.hidden = true;
+    trigger.setAttribute?.('aria-expanded', 'false');
+    trigger.focus?.();
+  }
+
+  function navigatePrev() {
+    stopAutoplay();
+    leaveOriginalSize();
+    renderItem(currentIndex === 0 ? sequence.length - 1 : currentIndex - 1);
+  }
+
+  function navigateNext() {
+    stopAutoplay();
+    leaveOriginalSize();
+    renderItem(currentIndex === sequence.length - 1 ? 0 : currentIndex + 1);
+  }
+
+  function getFocusableControls() {
+    return [fullscreenBtn, closeBtn, prevBtn, playPauseBtn, speedSelect, nextBtn, originalSizeBtn].filter(
+      (el) => el && !el.disabled
+    );
+  }
+
+  function handleSlideshowActivity() {
+    if (!isOpen) return;
+    showSlideshowChrome();
+  }
+
+  trigger.addEventListener?.('click', openSlideshow);
+  closeBtn?.addEventListener?.('click', closeSlideshow);
+  prevBtn?.addEventListener?.('click', navigatePrev);
+  nextBtn?.addEventListener?.('click', navigateNext);
+  originalSizeBtn?.addEventListener?.('click', () => {
+    if (isOriginalMode) leaveOriginalSize();
+    else enterOriginalSize();
+  });
+  if (fullscreenApiAvailable) fullscreenBtn?.addEventListener?.('click', toggleFullscreen);
+
+  scaffold.addEventListener?.('pointermove', handleSlideshowActivity);
+  scaffold.addEventListener?.('pointerdown', handleSlideshowActivity);
+  scaffold.addEventListener?.('pointerup', endPan);
+  scaffold.addEventListener?.('pointercancel', endPan);
+  scaffold.addEventListener?.('click', handleSlideshowActivity);
+  scaffold.addEventListener?.('focusin', handleSlideshowActivity);
+  preview?.addEventListener?.('pointerdown', beginPan);
+  preview?.addEventListener?.('pointermove', updatePan);
+  preview?.addEventListener?.('pointerup', endPan);
+  preview?.addEventListener?.('pointercancel', endPan);
+
+  const slideshowWindow = fullscreenDocument?.defaultView;
+  slideshowWindow?.addEventListener?.('resize', () => {
+    recomputeOriginalPanBounds?.();
+  });
+
+  playPauseBtn?.addEventListener?.('click', () => {
+    if (isPlaying) stopAutoplay();
+    else startAutoplay();
+  });
+
+  speedSelect?.addEventListener?.('change', () => {
+    handleSlideshowActivity();
+    if (isPlaying) {
+      clearAutoplay();
+      scheduleNext();
+    }
+  });
+
+  scope.addEventListener?.('keydown', (event) => {
+    if (!isOpen) return;
+    handleSlideshowActivity();
+    if (event.key === 'Escape') {
+      event.preventDefault?.();
+      closeSlideshow();
+    } else if (event.key === 'ArrowLeft') {
+      event.preventDefault?.();
+      navigatePrev();
+    } else if (event.key === 'ArrowRight') {
+      event.preventDefault?.();
+      navigateNext();
+    } else if (event.key === 'Tab') {
+      const focusables = getFocusableControls();
+      if (focusables.length === 0) return;
+      const active = scope.activeElement;
+      const idx = focusables.indexOf(active);
+      if (event.shiftKey) {
+        const prevIdx = idx <= 0 ? focusables.length - 1 : idx - 1;
+        event.preventDefault?.();
+        focusables[prevIdx].focus?.();
+      } else {
+        const nextIdx = idx >= focusables.length - 1 ? 0 : idx + 1;
+        event.preventDefault?.();
+        focusables[nextIdx].focus?.();
+      }
+    }
+  });
+
+  return 1;
+}
+
 if (typeof document !== 'undefined') {
   const run = () => {
     enhancePreviewMedia(document);
@@ -2815,6 +3481,7 @@ if (typeof document !== 'undefined') {
     enhanceProjectInfoCards(document);
     enhanceDatePickers(document);
     enhanceTimePickers(document);
+    enhanceSlideshow(document);
   };
 
   if (document.readyState === 'loading') {

@@ -1391,6 +1391,7 @@ function buildBrowserRenderModel(project, data, pageDefaultsService, req) {
     context,
     contextFields: data.contextFields || ASSET_BROWSER_CONTEXT_FIELDS,
     pageUrl: buildAssetsPageUrl(project.id, context, pageDefaultsService),
+    slideshowSequenceJson: JSON.stringify(data.slideshowSequence || []).replace(/<\//g, '<\\/'),
   };
 }
 

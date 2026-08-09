@@ -237,6 +237,12 @@ describe('asset browser HTTP workflow', () => {
     return match[0];
   }
 
+  function extractSlideshowSequence(html) {
+    const match = html.match(/<script[^>]*data-slideshow-sequence[^>]*>([\s\S]*?)<\/script>/);
+    if (!match) throw new Error('Rendered page did not include a data-slideshow-sequence element.');
+    return JSON.parse(match[1]);
+  }
+
   // Phase 12 CSP hardening moved styling out of an inline <style> block and
   // into an external stylesheet (linked via <link rel="stylesheet">) so no
   // 'unsafe-inline' style-src is required. This fetches the actually-served
@@ -308,10 +314,14 @@ describe('asset browser HTTP workflow', () => {
     expect(defaultsLink).not.toContain('title=');
 
     const style = await readStylesheetSource(response.text);
-    const defaultsCardRule = style.match(/(?:^|})\s*\.asset-viewer-filters--project-assets\s*\{([^}]*)\}/)?.[1] || '';
-    const defaultsLinkRule = style.match(/(?:^|})\s*\.asset-viewer-filters--project-assets > \.asset-viewer-defaults-link\s*\{([^}]*)\}/)?.[1] || '';
+    const defaultsCardMatch = style.match(/(?:^|})\s*(\.asset-viewer-filters--project-assets[^{]*)\{([^}]*)\}/);
+    const defaultsCardRule = defaultsCardMatch?.[2] || '';
+    const defaultsLinkMatch = style.match(/(?:^|})\s*(\.asset-viewer-filters--project-assets\s*>\s*\.asset-viewer-defaults-link[^{]*)\{([^}]*)\}/);
+    const defaultsLinkRule = defaultsLinkMatch?.[2] || '';
+    expect(defaultsCardMatch?.[1]).toMatch(/\.asset-viewer-filters--asset-viewer/);
     expect(defaultsCardRule).toMatch(/padding-inline-end:\s*calc\(var\(--space-lg\) \+ 1\.6rem\)/);
     expect(defaultsCardRule).not.toMatch(/padding-top/);
+    expect(defaultsLinkMatch?.[1]).toMatch(/\.asset-viewer-filters--asset-viewer\s*>\s*\.asset-viewer-defaults-link/);
     expect(defaultsLinkRule).toMatch(/position:\s*absolute/);
     expect(defaultsLinkRule).toMatch(/top:\s*var\(--space-sm\)/);
     expect(defaultsLinkRule).toMatch(/right:\s*var\(--space-sm\)/);
@@ -1523,6 +1533,163 @@ describe('asset browser HTTP workflow', () => {
     // pageSize clamps to 100; 5 assets render without error.
     expectNoAssetResultsCount(res2.text);
     expect(res2.text).toContain('file0.png');
+  });
+
+  // ─── Slideshow sequence ────────────────────────────────────────────────
+
+  it('project assets: slideshow sequence includes all previewable assets regardless of visible page', async () => {
+    const res = await createProject('Slideshow Beyond Page');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('Slideshow Beyond Page');
+    const png = await makePng();
+
+    for (let i = 1; i <= 4; i++) {
+      writeIndexedAsset(id, projectDir, `img${i}.png`, png);
+    }
+
+    const page1 = await agent.get(`/projects/${id}/assets?page=1&pageSize=2`).expect(200);
+    const seq1 = extractSlideshowSequence(page1.text);
+
+    expect(page1.text).toMatch(/data-asset-id="\d+"/);
+    const visibleIds = [...page1.text.matchAll(/data-asset-id="(\d+)"/g)].map((m) => Number(m[1]));
+    expect(visibleIds).toHaveLength(2);
+    expect(seq1.length).toBe(4);
+
+    const page2 = await agent.get(`/projects/${id}/assets?page=2&pageSize=2`).expect(200);
+    const seq2 = extractSlideshowSequence(page2.text);
+    expect(seq2.length).toBe(4);
+    expect(seq1.map((e) => e.id)).toEqual(seq2.map((e) => e.id));
+  });
+
+  it('project assets: slideshow sequence honors active filters', async () => {
+    const res = await createProject('Slideshow Filter Honor');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('Slideshow Filter Honor');
+    const png = await makePng();
+
+    writeIndexedAsset(id, projectDir, 'alpha.png', png);
+    writeIndexedAsset(id, projectDir, 'bravo.jpg', Buffer.from('notrealpng'), { extension: 'jpg', mimeType: 'image/jpeg' });
+    writeIndexedAsset(id, projectDir, 'charlie.png', png);
+
+    const filteredRes = await agent.get(`/projects/${id}/assets?extension=png`).expect(200);
+    const seq = extractSlideshowSequence(filteredRes.text);
+    const filenames = seq.map((e) => e.filename);
+    expect(filenames.every((f) => f.endsWith('.png'))).toBe(true);
+    expect(filenames).not.toContain('bravo.jpg');
+  });
+
+  it('project assets: slideshow sequence ordering matches canonical page ordering', async () => {
+    const res = await createProject('Slideshow Order Match');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('Slideshow Order Match');
+    const png = await makePng();
+
+    writeIndexedAsset(id, projectDir, 'zeta.png', png);
+    writeIndexedAsset(id, projectDir, 'alpha.png', png);
+    writeIndexedAsset(id, projectDir, 'mu.png', png);
+
+    const res2 = await agent.get(`/projects/${id}/assets?sort=filename&order=asc`).expect(200);
+    const seq = extractSlideshowSequence(res2.text);
+    const filenames = seq.map((e) => e.filename);
+    expect(filenames).toEqual([...filenames].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' })));
+  });
+
+  it('project assets: slideshow sequence uses preview derivative URLs, not originals or thumbnails', async () => {
+    const res = await createProject('Slideshow Derivative URL');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('Slideshow Derivative URL');
+    const png = await makePng();
+
+    writeIndexedAsset(id, projectDir, 'img.png', png);
+
+    const pageRes = await agent.get(`/projects/${id}/assets`).expect(200);
+    const seq = extractSlideshowSequence(pageRes.text);
+    expect(seq.length).toBeGreaterThan(0);
+    for (const entry of seq) {
+      expect(entry.previewUrl).toContain('/preview?');
+      expect(entry.previewUrl).not.toContain('/original');
+      expect(entry.previewUrl).not.toContain('/thumbnail?');
+      expect(entry.originalUrl).toContain('/original');
+      expect(entry.thumbnailUrl).toBeUndefined();
+    }
+  });
+
+  it('project assets: originalUrl is exposed only for supported image assets', async () => {
+    const res = await createProject('Slideshow Original Eligibility');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('Slideshow Original Eligibility');
+    const png = await makePng();
+
+    const image = writeIndexedAsset(id, projectDir, 'image.png', png);
+    const krita = writeIndexedAsset(
+      id,
+      projectDir,
+      'design.kra',
+      Buffer.from('not a real archive'),
+      { extension: 'kra', mimeType: 'application/x-krita' },
+    );
+
+    const pageRes = await agent.get(`/projects/${id}/assets`).expect(200);
+    const seq = extractSlideshowSequence(pageRes.text);
+    const imageEntry = seq.find((entry) => entry.id === image.id);
+    const kritaEntry = seq.find((entry) => entry.id === krita.id);
+
+    expect(imageEntry).toMatchObject({
+      previewUrl: expect.stringContaining('/preview?'),
+      originalUrl: `/projects/${id}/assets/${image.id}/original`,
+    });
+    expect(imageEntry.previewUrl).not.toContain('/original');
+    expect(kritaEntry).toBeDefined();
+    expect(kritaEntry.originalUrl).toBeUndefined();
+    expect(kritaEntry.previewUrl).toContain('/preview?');
+
+    const globalRes = await agent.get('/assets?view=list').expect(200);
+    const globalImageEntry = extractSlideshowSequence(globalRes.text).find((entry) => entry.id === image.id);
+    expect(globalImageEntry).toMatchObject({
+      previewUrl: expect.stringContaining('/preview?'),
+      originalUrl: `/projects/${id}/assets/${image.id}/original`,
+    });
+  });
+
+  it('project assets: slideshow sequence excludes missing and unsupported assets', async () => {
+    const res = await createProject('Slideshow Exclude Non-Displayable');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('Slideshow Exclude Non-Displayable');
+    const png = await makePng();
+
+    const good = writeIndexedAsset(id, projectDir, 'good.png', png);
+    writeIndexedAsset(id, projectDir, 'bad.bin', Buffer.from('binary'), { extension: 'bin', mimeType: 'application/octet-stream' });
+    assetRepo.upsert(id, 'missing.png', {
+      filename: 'missing.png', extension: 'png', mimeType: 'image/png',
+      sizeBytes: 100, modifiedAt: '2026-01-01 00:00:00',
+    });
+    db.prepare('UPDATE assets SET is_present = 0 WHERE project_id = ? AND filename = ?').run(id, 'missing.png');
+
+    const pageRes = await agent.get(`/projects/${id}/assets?presence=all`).expect(200);
+    const seq = extractSlideshowSequence(pageRes.text);
+    const ids = seq.map((e) => e.id);
+    expect(ids).toContain(good.id);
+    expect(seq.every((e) => e.previewUrl && e.previewUrl.includes('/preview?'))).toBe(true);
+    expect(ids).not.toContain(expect.stringContaining('missing'));
+    for (const entry of seq) {
+      expect(entry.previewUrl).toBeTruthy();
+    }
+  });
+
+  it('project assets: normal visible pagination is unchanged by slideshow sequence', async () => {
+    const res = await createProject('Slideshow Pagination Unchanged');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('Slideshow Pagination Unchanged');
+    const png = await makePng();
+
+    for (let i = 1; i <= 3; i++) {
+      writeIndexedAsset(id, projectDir, `asset${i}.png`, png);
+    }
+
+    const page1 = await agent.get(`/projects/${id}/assets?page=1&pageSize=2`).expect(200);
+    const visibleCount = [...page1.text.matchAll(/data-asset-id="\d+"/g)].length;
+    expect(visibleCount).toBe(2);
+    expect(page1.text).toContain('data-slideshow-sequence');
   });
 
   // ─── Empty states ────────────────────────────────────────────────
@@ -3708,10 +3875,14 @@ describe('asset browser HTTP workflow', () => {
     expect(categorySummaryRule).toMatch(/min-height:\s*2\.5rem/);
     const searchHeightRule = style.match(/(?:^|})\s*#asset-filters \.field input\[type="search"\]\s*\{([^}]*)\}/)?.[1] || '';
     expect(searchHeightRule).toMatch(/height:\s*2\.5rem/);
-    const defaultsCardRule = style.match(/(?:^|})\s*\.asset-viewer-filters--project-assets\s*\{([^}]*)\}/)?.[1] || '';
+    const defaultsCardMatch = style.match(/(?:^|})\s*(\.asset-viewer-filters--project-assets[^{]*)\{([^}]*)\}/);
+    const defaultsCardRule = defaultsCardMatch?.[2] || '';
+    expect(defaultsCardMatch?.[1]).toMatch(/\.asset-viewer-filters--asset-viewer/);
     expect(defaultsCardRule).toMatch(/padding-inline-end:\s*calc\(var\(--space-lg\) \+ 1\.6rem\)/);
     expect(defaultsCardRule).not.toMatch(/padding-top/);
-    const defaultsLinkRule = style.match(/(?:^|})\s*\.asset-viewer-filters--project-assets > \.asset-viewer-defaults-link\s*\{([^}]*)\}/)?.[1] || '';
+    const defaultsLinkMatch = style.match(/(?:^|})\s*(\.asset-viewer-filters--project-assets\s*>\s*\.asset-viewer-defaults-link[^{]*)\{([^}]*)\}/);
+    const defaultsLinkRule = defaultsLinkMatch?.[2] || '';
+    expect(defaultsLinkMatch?.[1]).toMatch(/\.asset-viewer-filters--asset-viewer\s*>\s*\.asset-viewer-defaults-link/);
     expect(defaultsLinkRule).toMatch(/position:\s*absolute/);
     expect(defaultsLinkRule).toMatch(/top:\s*var\(--space-sm\)/);
     expect(defaultsLinkRule).toMatch(/right:\s*var\(--space-sm\)/);

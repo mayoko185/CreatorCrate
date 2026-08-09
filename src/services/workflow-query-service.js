@@ -41,6 +41,7 @@ import {
   buildAssetLocationLabel,
   buildAssetOriginalUrl,
   buildAssetPreviewModel,
+  buildAssetViewerUrl,
   buildDisplayFilename,
   buildPreviewAltText,
   formatFileSize,
@@ -939,6 +940,9 @@ export function createWorkflowQueryService({
 
     const hasAnyAssets = assetRepository.countAllAssets() > 0;
     const total = assetRepository.countAllAssets(repositoryFilters);
+    const slideshowSequence = buildSlideshowSequence(
+      assetRepository.findAllAssetsSlideshowSequence(repositoryFilters),
+    );
     const pageCount = Math.max(1, Math.ceil(total / pageSize));
     const page = Math.min(requestedPage, pageCount);
     const offset = (page - 1) * pageSize;
@@ -1006,6 +1010,7 @@ export function createWorkflowQueryService({
       usageOptions,
       sortOptions,
       viewOptions,
+      slideshowSequence,
     };
   }
 
@@ -1878,8 +1883,26 @@ export function createWorkflowQueryService({
    *   emptyState: object|null,
    *   ordering: string,
    *   searchMaxLength: number,
+   *   slideshowSequence: Array<{id: number, filename: string, previewUrl: string, viewerUrl: string, originalUrl?: string}>,
    * }}
    */
+  function buildSlideshowSequence(rows) {
+    const result = [];
+    for (const asset of rows) {
+      const preview = buildAssetPreviewModel(asset);
+      if (!preview.urls.preview) continue;
+      const originalUrl = buildAssetOriginalUrl(asset);
+      result.push({
+        id: asset.id,
+        filename: asset.filename,
+        previewUrl: preview.urls.preview,
+        viewerUrl: buildAssetViewerUrl(asset.project_id, asset.id),
+        ...(originalUrl ? { originalUrl } : {}),
+      });
+    }
+    return result;
+  }
+
   function getProjectAssetBrowser(projectId, rawQuery = {}) {
     const project = projectRepository.findById(projectId);
     if (!project) return null;
@@ -1916,6 +1939,10 @@ export function createWorkflowQueryService({
     const activeCategoryDirectorySlug = activeCategory ? activeCategory.directory_slug : null;
 
     const total = assetRepository.countProjectAssets(projectId, filters);
+
+    const slideshowSequence = buildSlideshowSequence(
+      assetRepository.findProjectAssetSlideshowSequence(projectId, filters),
+    );
 
     const pageCount = Math.max(1, Math.ceil(total / filters.pageSize));
     const page = Math.min(filters.page, pageCount);
@@ -2003,6 +2030,7 @@ export function createWorkflowQueryService({
       releaseTargets,
       ordering: ASSET_BROWSER_ORDERING,
       searchMaxLength: ASSET_BROWSER_SEARCH_MAX_LENGTH,
+      slideshowSequence,
     };
   }
 

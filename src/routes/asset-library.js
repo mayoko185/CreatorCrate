@@ -105,6 +105,7 @@ function buildAssetLibraryRenderModel(page, state) {
       usage: 'all',
       page: 1,
     }),
+    slideshowSequenceJson: JSON.stringify(page.slideshowSequence || []).replace(/<\//g, '<\\/'),
   };
 }
 

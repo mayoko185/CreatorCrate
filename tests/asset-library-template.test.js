@@ -9,6 +9,7 @@ const VIEWS_DIR = fileURLToPath(new URL('../src/views', import.meta.url));
 const TEMPLATE_PATH = path.join(VIEWS_DIR, 'assets', 'index.njk');
 const PROJECT_ASSET_VIEWER_PATH = path.join(VIEWS_DIR, 'projects', 'asset-viewer.njk');
 const STYLESHEET_PATH = path.join(VIEWS_DIR, '..', 'static', 'creatorcrate.css');
+const css = fs.readFileSync(STYLESHEET_PATH, 'utf8');
 
 const alphaAsset = {
   id: 101,
@@ -201,8 +202,8 @@ describe('cross-project Asset Viewer template', () => {
       ],
     });
 
-    expect(html).toMatch(/<form id="asset-filters" class="filters asset-viewer-filters" method="get" action="\/assets">/);
-    expect(html).toMatch(/<div class="asset-viewer-display-controls">[\s\S]*?<div class="project-filter-actions">\s*<button class="button" type="submit" form="asset-filters">Filter<\/button>\s*<a class="button button-secondary" href="[^"]+">Reset<\/a>\s*<\/div>\s*<\/div>\s*<form id="asset-filters"/);
+    expect(html).toMatch(/<form id="asset-filters" class="filters asset-viewer-filters asset-viewer-filters--asset-viewer" method="get" action="\/assets">/);
+    expect(html).toMatch(/<div class="asset-viewer-display-controls">[\s\S]*?<div class="project-filter-actions">[\s\S]*?<button class="button" type="submit" form="asset-filters">Filter<\/button>\s*<a class="button button-secondary" href="[^"]+">Reset<\/a>\s*<\/div>\s*<\/div>\s*<form id="asset-filters"/);
     expect(html).toContain('<input type="hidden" name="view" value="list">');
     expect(html).toContain('aria-label="Project filter: Beta Project"');
     expect(html).toMatch(/<span class="asset-filter-multiselect-summary" data-asset-project-filter-summary>\s*<span class="asset-filter-multiselect-summary-current" data-asset-project-filter-current-summary>Beta Project<\/span>[\s\S]*?<span class="asset-filter-multiselect-summary-width" aria-hidden="true">[\s\S]*?<\/span>\s*<\/span>/);
@@ -250,6 +251,14 @@ describe('cross-project Asset Viewer template', () => {
       expect(disclosure).toContain('class="asset-filter-multiselect-summary-width" aria-hidden="true"');
     }
     expect(html).toContain('>Reset</a>');
+  });
+
+  it('renders the Asset Viewer defaults link with correct href and accessibility text', () => {
+    const html = renderPage();
+
+    expect(html).toContain('href="/settings/defaults#defaults-asset-viewer"');
+    expect(html).toContain('aria-label="Asset Viewer defaults"');
+    expect(html).toContain('data-tooltip="Asset Viewer defaults"');
   });
 
   it('renders Project as a searchable single-select disclosure with safe radio values', () => {
@@ -831,5 +840,247 @@ describe('cross-project Asset Viewer template', () => {
 
     expect(source).toContain('{% set page_title = "Assets — " ~ project.title ~ " — " ~ asset.filename %}');
     expect(source).toContain('action="/projects/{{ project.id }}/assets/{{ asset.id }}/primary-image"');
+  });
+});
+
+const PROJECT_ASSETS_PATH = path.join(VIEWS_DIR, 'projects', 'assets.njk');
+
+function renderProjectAssetsPage(overrides = {}) {
+  const project = overrides.project ?? { id: 1, title: 'Test Project', archived_at: null };
+  const filters = {
+    view: 'grid', category: 'all', presence: 'all', usage: 'all',
+    sort: 'filename', order: 'asc',
+    ...overrides.filters,
+  };
+  const env = nunjucks.configure(VIEWS_DIR, { autoescape: true, noCache: true });
+  return env.render('projects/assets.njk', {
+    project,
+    assets: [],
+    total: 0,
+    page: 1,
+    pageSize: 25,
+    pageCount: 0,
+    hasPreviousPage: false,
+    hasNextPage: false,
+    filters,
+    context: {},
+    contextFields: [],
+    categoryNavigation: { totalCount: 0, missingCount: 0, uncategorizedCount: 0, enabled: [], disabled: [] },
+    categoryOptions: [],
+    tagOptions: [],
+    presenceOptions: [],
+    usageOptions: [],
+    sortOptions: [],
+    orderOptions: [],
+    pageSizeOptions: [],
+    preserveViewQuery: false,
+    preservePageSizeQuery: false,
+    pageUrl: () => '/test',
+    _csrf: 'test-csrf',
+    appName: 'CreatorCrate',
+    auth: { enabled: false, authenticated: false },
+    shell: { appName: 'CreatorCrate', activeSection: 'Projects', navigation: [] },
+    ...overrides,
+    filters,
+    project,
+  });
+}
+
+describe('slideshow scaffold — static UI', () => {
+  it('asset-viewer page: slideshow trigger exists before Filter in DOM order', () => {
+    const html = renderPage();
+    const filterActionsDiv = html.match(/<div class="project-filter-actions">[\s\S]*?<\/div>/)?.[0] ?? '';
+    const triggerPos = filterActionsDiv.indexOf('data-slideshow-trigger');
+    const filterPos = filterActionsDiv.indexOf('type="submit" form="asset-filters"');
+    expect(triggerPos).toBeGreaterThan(-1);
+    expect(filterPos).toBeGreaterThan(-1);
+    expect(triggerPos).toBeLessThan(filterPos);
+  });
+
+  it('asset-viewer page: slideshow trigger has accessible label and tooltip', () => {
+    const html = renderPage();
+    expect(html).toContain('data-slideshow-trigger');
+    expect(html).toContain('aria-label="Start slideshow"');
+    expect(html).toContain('title="Start slideshow"');
+  });
+
+  it('both asset pages use the shared Filter button sizing for Slideshow', () => {
+    for (const html of [renderPage(), renderProjectAssetsPage()]) {
+      const triggerClass = html.match(/<button class="([^"]*\bslideshow-trigger\b[^"]*)"[^>]*data-slideshow-trigger/)?.[1] ?? '';
+      expect(triggerClass).toContain('button');
+      expect(triggerClass).toContain('button-secondary');
+      expect(triggerClass).not.toContain('button-small');
+    }
+
+    expect(css).toMatch(/\.slideshow-trigger\s*\{[^}]*margin-inline-end:\s*var\(--space-xs\)/);
+    expect(css).not.toMatch(/\.slideshow-trigger\s*\{[^}]*line-height:/);
+    expect(css).toMatch(/\.asset-viewer-display-controls\s+\.project-filter-actions\s*\{[^}]*gap:\s*var\(--space-sm\)/);
+  });
+
+  it('asset-viewer page: slideshow scaffold is present, hidden, and inert', () => {
+    const html = renderPage();
+    expect(html).toContain('data-slideshow-scaffold');
+    expect(html).toMatch(/data-slideshow-scaffold[^>]* hidden/);
+    expect(html).toMatch(/data-slideshow-scaffold[^>]* inert/);
+  });
+
+  it('asset-viewer page: scaffold contains all required control hooks', () => {
+    const html = renderPage();
+    expect(html).toContain('data-slideshow-preview');
+    expect(html).toContain('data-slideshow-prev');
+    expect(html).toContain('data-slideshow-next');
+    expect(html).toContain('data-slideshow-play-pause');
+    expect(html).toContain('data-slideshow-speed');
+    expect(html).toContain('data-slideshow-status');
+    expect(html).toContain('data-slideshow-close');
+    expect(html).toContain('data-slideshow-fullscreen');
+    expect(html).toContain('data-slideshow-original-size');
+    expect(html).toContain('aria-label="View original size"');
+    expect(html).toContain('aria-pressed="false"');
+    expect(html).toContain('data-slideshow-media-status');
+    expect(html).toContain('aria-label="Enter fullscreen"');
+  });
+
+  it('asset-viewer page: speed select preserves 2 s, 4 s default, and 6 s options', () => {
+    const html = renderPage();
+    const speedSelect = html.match(/<select[^>]*data-slideshow-speed[^>]*>[\s\S]*?<\/select>/)?.[0] ?? '';
+    expect(speedSelect).toContain('value="2000"');
+    expect(speedSelect).toMatch(/value="4000" selected/);
+    expect(speedSelect).toContain('value="6000"');
+  });
+
+  it('asset-viewer page: existing Filter, Reset, and Defaults controls remain present', () => {
+    const html = renderPage();
+    expect(html).toContain('type="submit" form="asset-filters"');
+    expect(html).toContain('>Filter</button>');
+    expect(html).toContain('>Reset</a>');
+    expect(html).toContain('href="/settings/defaults#defaults-asset-viewer"');
+  });
+
+  it('project assets page: slideshow trigger exists before Filter in DOM order', () => {
+    const html = renderProjectAssetsPage();
+    const filterActionsDiv = html.match(/<div class="project-filter-actions">[\s\S]*?<\/div>/)?.[0] ?? '';
+    const triggerPos = filterActionsDiv.indexOf('data-slideshow-trigger');
+    const filterPos = filterActionsDiv.indexOf('type="submit" form="asset-filters"');
+    expect(triggerPos).toBeGreaterThan(-1);
+    expect(filterPos).toBeGreaterThan(-1);
+    expect(triggerPos).toBeLessThan(filterPos);
+  });
+
+  it('project assets page: slideshow trigger has accessible label and tooltip', () => {
+    const html = renderProjectAssetsPage();
+    expect(html).toContain('data-slideshow-trigger');
+    expect(html).toContain('aria-label="Start slideshow"');
+    expect(html).toContain('title="Start slideshow"');
+  });
+
+  it('project assets page: slideshow scaffold is present, hidden, and inert', () => {
+    const html = renderProjectAssetsPage();
+    expect(html).toContain('data-slideshow-scaffold');
+    expect(html).toMatch(/data-slideshow-scaffold[^>]* hidden/);
+    expect(html).toMatch(/data-slideshow-scaffold[^>]* inert/);
+  });
+
+  it('project assets page: fullscreen control and speed options are present', () => {
+    const html = renderProjectAssetsPage();
+    expect(html).toContain('data-slideshow-fullscreen');
+    expect(html).toContain('data-slideshow-original-size');
+    expect(html).toContain('aria-label="View original size"');
+    expect(html).toContain('data-slideshow-media-status');
+    expect(html).toContain('aria-label="Enter fullscreen"');
+    const speedSelect = html.match(/<select[^>]*data-slideshow-speed[^>]*>[\s\S]*?<\/select>/)?.[0] ?? '';
+    expect(speedSelect).toContain('value="2000"');
+    expect(speedSelect).toMatch(/value="4000" selected/);
+    expect(speedSelect).toContain('value="6000"');
+  });
+
+  it('project assets page: existing Filter, Reset, and Defaults controls remain present', () => {
+    const html = renderProjectAssetsPage();
+    expect(html).toContain('type="submit" form="asset-filters"');
+    expect(html).toContain('>Filter</button>');
+    expect(html).toContain('>Reset</a>');
+    expect(html).toContain('href="/settings/defaults#defaults-project-assets"');
+  });
+});
+
+describe('slideshow sequence — data contract', () => {
+  it('asset-viewer page: renders slideshow sequence script element inside the scaffold', () => {
+    const html = renderPage({ slideshowSequenceJson: '[]' });
+    expect(html).toContain('data-slideshow-sequence');
+    const scriptMatch = html.match(/<script[^>]*data-slideshow-sequence[^>]*>([\s\S]*?)<\/script>/);
+    expect(scriptMatch).not.toBeNull();
+    expect(() => JSON.parse(scriptMatch[1])).not.toThrow();
+  });
+
+  it('asset-viewer page: sequence defaults to empty array when slideshowSequenceJson is not provided', () => {
+    const html = renderPage();
+    const scriptMatch = html.match(/<script[^>]*data-slideshow-sequence[^>]*>([\s\S]*?)<\/script>/);
+    expect(scriptMatch).not.toBeNull();
+    expect(JSON.parse(scriptMatch[1])).toEqual([]);
+  });
+
+  it('asset-viewer page: sequence contains expected entry fields', () => {
+    const sequence = [
+      { id: 101, filename: 'hero.png', previewUrl: '/projects/1/assets/101/preview?v=abc', viewerUrl: '/projects/1/assets/101', originalUrl: '/projects/1/assets/101/original' },
+    ];
+    const html = renderPage({ slideshowSequenceJson: JSON.stringify(sequence) });
+    const scriptMatch = html.match(/<script[^>]*data-slideshow-sequence[^>]*>([\s\S]*?)<\/script>/);
+    const parsed = JSON.parse(scriptMatch[1]);
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0]).toMatchObject({ id: 101, filename: 'hero.png' });
+    expect(parsed[0].previewUrl).toContain('/preview?');
+    expect(parsed[0].viewerUrl).toContain('/projects/1/assets/101');
+    expect(parsed[0].originalUrl).toContain('/projects/1/assets/101/original');
+    expect(parsed[0].previewUrl).not.toContain('/original');
+    expect(parsed[0].thumbnailUrl).toBeUndefined();
+  });
+
+  it('asset-viewer page: sequence script element is inside the scaffold element', () => {
+    const sequence = [{ id: 1, filename: 'a.png', previewUrl: '/projects/1/assets/1/preview?v=x', viewerUrl: '/projects/1/assets/1' }];
+    const html = renderPage({ slideshowSequenceJson: JSON.stringify(sequence) });
+    const scaffoldMatch = html.match(/<div[^>]*data-slideshow-scaffold[^>]*>([\s\S]*?)<\/div>/);
+    expect(scaffoldMatch).not.toBeNull();
+    expect(scaffoldMatch[0]).toContain('data-slideshow-sequence');
+  });
+
+  it('asset-viewer page: sequence JSON is escaped so </script> in filenames cannot break the element', () => {
+    const sequence = [{ id: 1, filename: '</script><script>alert(1)', previewUrl: '/projects/1/assets/1/preview?v=x', viewerUrl: '/projects/1/assets/1' }];
+    const escapedJson = JSON.stringify(sequence).replace(/<\//g, '<\\/');
+    const html = renderPage({ slideshowSequenceJson: escapedJson });
+    const scriptMatch = html.match(/<script[^>]*data-slideshow-sequence[^>]*>([\s\S]*?)<\/script>/);
+    expect(scriptMatch).not.toBeNull();
+    const parsed = JSON.parse(scriptMatch[1]);
+    expect(parsed[0].filename).toBe('</script><script>alert(1)');
+  });
+
+  it('project assets page: renders slideshow sequence script element inside the scaffold', () => {
+    const html = renderProjectAssetsPage({ slideshowSequenceJson: '[]' });
+    expect(html).toContain('data-slideshow-sequence');
+    const scriptMatch = html.match(/<script[^>]*data-slideshow-sequence[^>]*>([\s\S]*?)<\/script>/);
+    expect(scriptMatch).not.toBeNull();
+    expect(() => JSON.parse(scriptMatch[1])).not.toThrow();
+  });
+
+  it('project assets page: sequence defaults to empty array when slideshowSequenceJson is not provided', () => {
+    const html = renderProjectAssetsPage();
+    const scriptMatch = html.match(/<script[^>]*data-slideshow-sequence[^>]*>([\s\S]*?)<\/script>/);
+    expect(scriptMatch).not.toBeNull();
+    expect(JSON.parse(scriptMatch[1])).toEqual([]);
+  });
+
+  it('project assets page: sequence contains expected entry fields', () => {
+    const sequence = [
+      { id: 42, filename: 'cover.png', previewUrl: '/projects/5/assets/42/preview?v=xyz', viewerUrl: '/projects/5/assets/42', originalUrl: '/projects/5/assets/42/original' },
+    ];
+    const html = renderProjectAssetsPage({ slideshowSequenceJson: JSON.stringify(sequence) });
+    const scriptMatch = html.match(/<script[^>]*data-slideshow-sequence[^>]*>([\s\S]*?)<\/script>/);
+    const parsed = JSON.parse(scriptMatch[1]);
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0]).toMatchObject({ id: 42, filename: 'cover.png' });
+    expect(parsed[0].previewUrl).toContain('/preview?');
+    expect(parsed[0].viewerUrl).toContain('/projects/5/assets/42');
+    expect(parsed[0].originalUrl).toContain('/projects/5/assets/42/original');
+    expect(parsed[0].previewUrl).not.toContain('/original');
+    expect(parsed[0].thumbnailUrl).toBeUndefined();
   });
 });
