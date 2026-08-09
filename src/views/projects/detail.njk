@@ -38,7 +38,7 @@
   <section class="project-detail-hero">
     <div class="project-detail-media{% if project.primaryImage.state == 'available' and project.primaryImage.mediaModifier %} project-card-media--{{ project.primaryImage.mediaModifier }}{% endif %}"{% if project.primaryImage.state == 'available' %} data-preview-enhancement data-preview-state="loading"{% else %} data-primary-image-state="{{ project.primaryImage.state }}"{% endif %}>
       {% if project.primaryImage.state == 'available' %}
-        <img class="project-detail-media-image{% if project.primaryImage.mediaModifier %} project-card-media-image--{{ project.primaryImage.mediaModifier }}{% endif %}" data-preview-image src="{{ project.primaryImage.previewUrl }}" alt="{{ project.primaryImage.alt }}" loading="lazy" decoding="async">
+        <img class="project-detail-media-image{% if project.nsfwBlur %} project-image--nsfw-blurred{% endif %}{% if project.primaryImage.mediaModifier %} project-card-media-image--{{ project.primaryImage.mediaModifier }}{% endif %}" data-preview-image src="{{ project.primaryImage.previewUrl }}" alt="{{ project.primaryImage.alt }}" loading="lazy" decoding="async">
         <span class="project-detail-media-placeholder" data-preview-fallback hidden>Image unavailable</span>
       {% elif project.primaryImage.state == 'unavailable' %}
         <span class="project-detail-media-placeholder">Image unavailable</span>

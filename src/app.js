@@ -27,6 +27,7 @@ import { createAssetBrowserPreferenceService } from './services/asset-browser-pr
 import { createPageDefaultsService } from './services/page-defaults-service.js';
 import { createOpenLocallySettingsService } from './services/open-locally-settings-service.js';
 import { createPreviewCategorySettingsService } from './services/preview-category-settings-service.js';
+import { createNsfwFilterSettingsService } from './services/nsfw-filter-settings-service.js';
 import { createProjectAssetCategoryService } from './services/project-asset-category-service.js';
 import { createAssetScanner } from './services/asset-scanner.js';
 import { createAssetActionService } from './services/asset-action-service.js';
@@ -183,6 +184,11 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   app.locals.tagService = tagService;
   app.locals.projectTagService = projectTagService;
   app.locals.assetTagService = assetTagService;
+  const nsfwFilterSettingsService = opts.nsfwFilterSettingsService || createNsfwFilterSettingsService({
+    appMetaRepository,
+    tagService,
+  });
+  app.locals.nsfwFilterSettingsService = nsfwFilterSettingsService;
 
   // Phase 2 chunk 2: project-specific category mutations. Reuses the
   // project repository (via projectService.repository) and the asset

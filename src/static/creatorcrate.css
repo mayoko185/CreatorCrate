@@ -3461,6 +3461,14 @@
         width: 100%;
         height: auto;
       }
+      .project-image--nsfw-blurred {
+        filter: blur(2rem);
+        clip-path: inset(0);
+      }
+      .settings-section .form-actions {
+        margin-left: calc(-1 * var(--space-md));
+        margin-bottom: calc(-1 * var(--space-lg));
+      }
       /* Krita previews are already bounded derivatives; preserve their
          intrinsic ratio instead of stretching them to the card width. */
       .project-card--grid .project-card-media--krita {

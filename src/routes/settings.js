@@ -81,6 +81,8 @@ const NOTICES = {
   tag_created: { variant: 'success', text: 'Tag created successfully.' },
   tag_renamed: { variant: 'success', text: 'Tag renamed successfully.' },
   tag_deleted: { variant: 'success', text: 'Tag deleted successfully.' },
+  nsfw_filter_enabled: { variant: 'success', text: 'NSFW Filter enabled.' },
+  nsfw_filter_disabled: { variant: 'success', text: 'NSFW Filter disabled.' },
   open_locally_saved: { variant: 'success', text: 'Open locally mapping saved.' },
   open_locally_cleared: { variant: 'success', text: 'Open locally mapping removed.' },
 };
@@ -215,6 +217,14 @@ function getOpenLocallySettingsService(req) {
   return service;
 }
 
+function getNsfwFilterSettingsService(req) {
+  const service = req.app?.locals?.nsfwFilterSettingsService;
+  if (!service) {
+    throw new Error('Settings NSFW Filter requires app.locals.nsfwFilterSettingsService.');
+  }
+  return service;
+}
+
 function renderTagsPage(req, res, {
   appName,
   status = 200,
@@ -271,6 +281,20 @@ function renderOpenLocallyPage(req, res, {
     submittedValue,
     errors,
     errorMessages: Object.values(errors),
+  });
+}
+
+function renderNsfwFilterPage(req, res, {
+  appName,
+  status = 200,
+  notice = null,
+  errors = [],
+} = {}) {
+  res.status(status).render('settings/nsfw-filter.njk', {
+    appName,
+    enabled: getNsfwFilterSettingsService(req).isEnabled(),
+    notice,
+    errors,
   });
 }
 
@@ -692,6 +716,37 @@ export function createSettingsRouter({
     }
 
     res.redirect('/settings/defaults?notice=defaults_saved');
+  });
+
+  router.get('/nsfw-filter', (req, res) => {
+    renderNsfwFilterPage(req, res, {
+      appName,
+      notice: resolveNotice(req.query.notice),
+    });
+  });
+
+  router.post('/nsfw-filter', (req, res, next) => {
+    let enabled;
+    try {
+      enabled = parseEnabledField(req.body?.enabled, { defaultValue: false });
+    } catch (err) {
+      if (err instanceof AssetCategoryValidationError) {
+        renderNsfwFilterPage(req, res, {
+          appName,
+          status: 422,
+          errors: Object.values(err.errors),
+        });
+        return;
+      }
+      return next(err);
+    }
+
+    try {
+      getNsfwFilterSettingsService(req).setEnabled(enabled);
+      res.redirect(`/settings/nsfw-filter?notice=${enabled ? 'nsfw_filter_enabled' : 'nsfw_filter_disabled'}`);
+    } catch (err) {
+      return next(err);
+    }
   });
 
   router.get('/tags', (req, res) => {

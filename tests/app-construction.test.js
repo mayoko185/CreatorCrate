@@ -368,17 +368,24 @@ describe('app construction — asset actions chunk 3 wiring', () => {
       setValue: () => undefined,
     };
     const pageDefaultsService = { resolve: () => 'grid' };
+    const nsfwFilterSettingsService = {};
     const assetBrowserPreferenceService = {
       getProjectPreference: () => ({ mode: 'inherit', categoryId: null }),
       resolveEffectiveCategory: () => null,
     };
 
-    const app = buildApp({ appMetaRepository, pageDefaultsService, assetBrowserPreferenceService });
+    const app = buildApp({
+      appMetaRepository,
+      pageDefaultsService,
+      nsfwFilterSettingsService,
+      assetBrowserPreferenceService,
+    });
 
     expect(dependencyInstrumentation.appMetaRepositories).toHaveLength(0);
     expect(dependencyInstrumentation.pageDefaultsServices).toHaveLength(0);
     expect(dependencyInstrumentation.preferenceServices).toHaveLength(0);
     expect(app.locals.pageDefaultsService).toBe(pageDefaultsService);
+    expect(app.locals.nsfwFilterSettingsService).toBe(nsfwFilterSettingsService);
     expect(app.locals.assetBrowserPreferenceService).toBe(assetBrowserPreferenceService);
     expect(dependencyInstrumentation.preferenceRepositories).toHaveLength(1);
     expect(dependencyInstrumentation.preferenceRepositories[0].args[1])
@@ -429,14 +436,22 @@ describe('app construction — asset actions chunk 3 wiring', () => {
     const tagService = {};
     const projectTagService = {};
     const assetTagService = {};
+    const nsfwFilterSettingsService = {};
 
-    const app = buildApp({ tagRepository, tagService, projectTagService, assetTagService });
+    const app = buildApp({
+      tagRepository,
+      tagService,
+      projectTagService,
+      assetTagService,
+      nsfwFilterSettingsService,
+    });
 
     expect(dependencyInstrumentation.tagRepositories).toHaveLength(0);
     expect(dependencyInstrumentation.tagServices).toHaveLength(0);
     expect(dependencyInstrumentation.projectTagServices).toHaveLength(0);
     expect(dependencyInstrumentation.assetTagServices).toHaveLength(0);
     expect(app.locals.tagService).toBe(tagService);
+    expect(app.locals.nsfwFilterSettingsService).toBe(nsfwFilterSettingsService);
     expect(app.locals.projectTagService).toBe(projectTagService);
     expect(app.locals.assetTagService).toBe(assetTagService);
   });

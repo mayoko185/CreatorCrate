@@ -10,11 +10,13 @@ import {
   ProjectTagValidationError,
   TagNotFoundError as ProjectTagTagNotFoundError,
 } from '../services/project-tag-service.js';
+import { NSFW_TAG_NAME } from '../services/nsfw-filter-settings-service.js';
 import { buildOpenLocallyUri } from '../util/open-locally.js';
 
 const SORT_OPTIONS = ['updated', 'created', 'title', 'published'];
 const VIEW_OPTIONS = ['grid', 'list'];
 const PAGE_SIZE = 25;
+const NSFW_TAG_NORMALIZED_NAME = NSFW_TAG_NAME.toLowerCase();
 const NOTICES = {
   project_tags_updated: { variant: 'success', text: 'Project tags updated successfully.' },
 };
@@ -44,6 +46,7 @@ export function createProjectsRouter({ appName, projectService, workflowQuerySer
       }
 
       const offset = (currentPage - 1) * PAGE_SIZE;
+      const nsfwFilterEnabled = getNsfwFilterSettingsService(req).isEnabled();
       const { rows } = workflowQueryService.getProjectList({ ...parsedQuery, offset, limit: PAGE_SIZE });
       const pageUrl = buildPageUrl(req, parsedQuery, currentPage, pageDefaultsService);
       const filtersActive = Boolean(
@@ -54,7 +57,7 @@ export function createProjectsRouter({ appName, projectService, workflowQuerySer
 
       res.render('projects/index.njk', {
         appName,
-        projects: rows,
+        projects: rows.map((project) => withNsfwBlur(project, project.tags, nsfwFilterEnabled)),
         total,
         hasAnyProjects: totalProjects > 0,
         filtersActive,
@@ -155,13 +158,14 @@ export function createProjectsRouter({ appName, projectService, workflowQuerySer
       return next(createNotFound());
     }
 
-    const projectTags = getProjectTagService(req)
-      .listProjectTags(id)
+    const assignedProjectTags = getProjectTagService(req).listProjectTags(id);
+    const nsfwFilterEnabled = getNsfwFilterSettingsService(req).isEnabled();
+    const projectTags = assignedProjectTags
       .map((tag) => ({ displayName: tag.display_name }));
 
     res.render('projects/detail.njk', {
       appName,
-      project: workspace.project,
+      project: withNsfwBlur(workspace.project, assignedProjectTags, nsfwFilterEnabled),
       releaseSummary: workspace.releaseSummary,
       assetHealth: workspace.assetHealth,
       projectTags,
@@ -298,6 +302,27 @@ function getOpenLocallySettingsService(req) {
     throw new Error('Project detail requires app.locals.openLocallySettingsService.');
   }
   return service;
+}
+
+function getNsfwFilterSettingsService(req) {
+  const service = req.app?.locals?.nsfwFilterSettingsService;
+  if (!service) {
+    throw new Error('Projects pages require app.locals.nsfwFilterSettingsService.');
+  }
+  return service;
+}
+
+function isNsfwTag(tag) {
+  return [tag?.displayName, tag?.display_name, tag?.normalizedName, tag?.normalized_name].some((value) => (
+    typeof value === 'string' && value.trim().toLowerCase() === NSFW_TAG_NORMALIZED_NAME
+  ));
+}
+
+function withNsfwBlur(project, tags, filterEnabled) {
+  return {
+    ...project,
+    nsfwBlur: Boolean(filterEnabled && Array.isArray(tags) && tags.some(isNsfwTag)),
+  };
 }
 
 function getProjectTagFilterOptions(workflowQueryService) {

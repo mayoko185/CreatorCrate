@@ -654,6 +654,118 @@ describe('project HTTP workflow', () => {
     expect(unavailableListCard).toContain(`class="project-list-card-media-link project-list-card-media-link--fallback" href="/projects/${unavailableId}"`);
   });
 
+  it('blurs only NSFW-tagged project primary images across project surfaces when enabled', async () => {
+    const nsfwTag = app.locals.tagService.createTag({ name: 'NSFW' });
+    const nsfwProjectId = await createProject({ title: 'NSFW Project', status: 'ready' });
+    const safeProjectId = await createProject({ title: 'Safe Project', status: 'ready' });
+    seedPrimaryImage(nsfwProjectId);
+    seedPrimaryImage(safeProjectId, 'safe.png');
+    app.locals.projectTagService.replaceProjectTags(nsfwProjectId, [nsfwTag.id]);
+    app.locals.nsfwFilterSettingsService.setEnabled(true);
+
+    const css = await fetchProjectCss(app);
+    expect(css).toContain('.project-image--nsfw-blurred');
+    expect(css).toContain('filter: blur(2rem)');
+    expect(css).toContain('clip-path: inset(0)');
+    expect(css).not.toContain('.project-card-media--nsfw-clipped');
+    expect(css).toMatch(/\.project-image--nsfw-blurred\s*\{[\s\S]*?filter:\s*blur\(2rem\)[\s\S]*?clip-path:\s*inset\(0\)/);
+    const hasCardLevelBlur = /\.project-card(?:--grid|--list)?\s*\{[^}]*filter:\s*blur\(2rem\)/.test(css)
+      || /\.project-grid-card-preview\s*\{[^}]*filter:\s*blur\(2rem\)/.test(css)
+      || /\.project-list-card-media\s*\{[^}]*filter:\s*blur\(2rem\)/.test(css)
+      || /\.project-detail-media\s*\{[^}]*filter:\s*blur\(2rem\)/.test(css)
+      || /\.project-card-media\s*\{[^}]*filter:\s*blur\(2rem\)/.test(css);
+    expect(hasCardLevelBlur).toBe(false);
+    const hasNsfwSpecificWrapperClip = /\.project-card-media--nsfw-clipped/.test(css)
+      || /\.project-grid-card-preview\.project-image--nsfw-blurred/.test(css)
+      || /\.project-list-card-media\.project-image--nsfw-blurred/.test(css)
+      || /\.project-detail-media\.project-image--nsfw-blurred/.test(css);
+    expect(hasNsfwSpecificWrapperClip).toBe(false);
+    expect(css).not.toMatch(/\.project-image--nsfw-blurred\s*\{[^}]*overflow:/);
+    expect(css).toMatch(/\.project-detail-media\s*\{[^}]*overflow:\s*hidden/);
+
+    const grid = await agent.get('/projects').expect(200);
+    const nsfwGridCard = extractProjectCard(grid.text, nsfwProjectId);
+    const safeGridCard = extractProjectCard(grid.text, safeProjectId);
+    expect(nsfwGridCard).toMatch(/<img class="[^"]*project-image--nsfw-blurred[^"]*" data-preview-image/);
+    expect(nsfwGridCard).not.toMatch(/<article[^>]*project-image--nsfw-blurred/);
+    expect(nsfwGridCard).not.toMatch(/<div[^>]*project-image--nsfw-blurred/);
+    expect(nsfwGridCard).not.toMatch(/class="[^"]*project-grid-card-preview[^"]*project-card-media--nsfw-clipped/);
+    expect(nsfwGridCard).not.toMatch(/class="[^"]*project-card-media--nsfw-clipped/);
+    expect(safeGridCard).not.toContain('project-image--nsfw-blurred');
+    expect(safeGridCard).not.toContain('project-card-media--nsfw-clipped');
+    expect(nsfwGridCard).toContain(`data-project-card-link href="/projects/${nsfwProjectId}">NSFW Project</a>`);
+    expect(nsfwGridCard).toContain('>Ready</span>');
+    expect(nsfwGridCard).toContain('>NSFW</li>');
+
+    const list = await agent.get('/projects?view=list').expect(200);
+    const nsfwListCard = extractProjectCard(list.text, nsfwProjectId);
+    const safeListCard = extractProjectCard(list.text, safeProjectId);
+    expect(nsfwListCard).toMatch(/<img class="[^"]*project-image--nsfw-blurred[^"]*" data-preview-image/);
+    expect(nsfwListCard).not.toMatch(/class="[^"]*project-list-card-media[^"]*project-card-media--nsfw-clipped/);
+    expect(nsfwListCard).not.toMatch(/class="[^"]*project-card-media--nsfw-clipped/);
+    expect(safeListCard).not.toContain('project-image--nsfw-blurred');
+    expect(safeListCard).not.toContain('project-card-media--nsfw-clipped');
+    expect(nsfwListCard).toContain(`data-project-card-link href="/projects/${nsfwProjectId}">NSFW Project</a>`);
+    expect(nsfwListCard).toContain('<dt>Status</dt>');
+    expect(nsfwListCard).toContain('>Ready</span>');
+    expect(nsfwListCard).not.toMatch(/<div[^>]*project-image--nsfw-blurred/);
+
+    const detail = await agent.get(`/projects/${nsfwProjectId}`).expect(200);
+    expect(detail.text).toMatch(/<img class="project-detail-media-image project-image--nsfw-blurred" data-preview-image/);
+    expect(detail.text).not.toMatch(/class="[^"]*project-detail-media[^"]*project-card-media--nsfw-clipped/);
+    expect(detail.text).not.toMatch(/class="[^"]*project-card-media--nsfw-clipped/);
+    expect(detail.text).toContain('NSFW Project');
+    expect(detail.text).toContain('<li class="tag-chip">NSFW</li>');
+    expect(detail.text).toContain('<section class="project-detail-info">');
+    expect(detail.text).toContain(`href="/projects/${nsfwProjectId}/assets"`);
+    expect(detail.text).not.toMatch(/<div[^>]*project-image--nsfw-blurred/);
+
+    const safeDetail = await agent.get(`/projects/${safeProjectId}`).expect(200);
+    expect(safeDetail.text).not.toContain('project-image--nsfw-blurred');
+    expect(safeDetail.text).not.toContain('project-card-media--nsfw-clipped');
+    expect(safeDetail.text).toContain('Safe Project');
+
+    app.locals.nsfwFilterSettingsService.setEnabled(false);
+
+    const disabledGrid = await agent.get('/projects').expect(200);
+    const disabledGridCard = extractProjectCard(disabledGrid.text, nsfwProjectId);
+    expect(disabledGridCard).not.toContain('project-image--nsfw-blurred');
+    expect(disabledGridCard).not.toContain('project-card-media--nsfw-clipped');
+    expect(disabledGridCard).toContain('<img');
+
+    const disabledList = await agent.get('/projects?view=list').expect(200);
+    const disabledListCard = extractProjectCard(disabledList.text, nsfwProjectId);
+    expect(disabledListCard).not.toContain('project-image--nsfw-blurred');
+    expect(disabledListCard).not.toContain('project-card-media--nsfw-clipped');
+    expect(disabledListCard).toContain('<img');
+
+    const disabledDetail = await agent.get(`/projects/${nsfwProjectId}`).expect(200);
+    expect(disabledDetail.text).not.toContain('project-image--nsfw-blurred');
+    expect(disabledDetail.text).not.toContain('project-card-media--nsfw-clipped');
+    expect(disabledDetail.text).toContain('<img class="project-detail-media-image" data-preview-image');
+  });
+
+  it('recognizes a differently cased NSFW project tag for blur decisions', async () => {
+    const equivalentTag = app.locals.tagService.createTag({ name: 'nSfW' });
+    const projectId = await createProject({ title: 'Equivalent NSFW Project', status: 'ready' });
+    seedPrimaryImage(projectId);
+    app.locals.projectTagService.replaceProjectTags(projectId, [equivalentTag.id]);
+    app.locals.nsfwFilterSettingsService.setEnabled(true);
+
+    const grid = await agent.get('/projects').expect(200);
+    expect(extractProjectCard(grid.text, projectId)).toMatch(
+      /<img class="[^"]*project-image--nsfw-blurred[^"]*" data-preview-image/,
+    );
+
+    const list = await agent.get('/projects?view=list').expect(200);
+    expect(extractProjectCard(list.text, projectId)).toMatch(
+      /<img class="[^"]*project-image--nsfw-blurred[^"]*" data-preview-image/,
+    );
+
+    const detail = await agent.get(`/projects/${projectId}`).expect(200);
+    expect(detail.text).toMatch(/<img class="project-detail-media-image project-image--nsfw-blurred" data-preview-image/);
+  });
+
   it('serves scoped responsive project-card presentation contracts', async () => {
     const page = await agent.get('/projects').expect(200);
     const css = (await agent.get('/creatorcrate.css').expect(200)).text;
@@ -665,6 +777,7 @@ describe('project HTTP workflow', () => {
     expect(css).not.toMatch(/\.project-list\s+li\s*\{[^}]*border-bottom:\s*1px solid var\(--border\)/);
     expect(css).toMatch(/@media\s*\(max-width:\s*540px\)[\s\S]*?\.project-list\s*>\s*li:not\(\.project-list-item\)\s*\{[^}]*padding:\s*var\(--space-sm\) 0;/);
     expect(css).toMatch(/\.project-card-media-image\s*\{[^}]*width:\s*100%;[^}]*height:\s*auto;/);
+    expect(css).toMatch(/\.project-image--nsfw-blurred\s*\{[\s\S]*?filter:\s*blur\(2rem\);[\s\S]*?clip-path:\s*inset\(0\);/);
     expect(css).not.toMatch(/\.project-card[^{}]*\{[^}]*aspect-ratio\s*:/);
     expect(css).not.toMatch(/\.project-card[^{}]*\{[^}]*object-fit\s*:\s*cover/);
     expect(css).toMatch(/\.project-card-link\s*\{[^}]*overflow-wrap:\s*anywhere/);

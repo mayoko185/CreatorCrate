@@ -10,7 +10,7 @@
         {% if project.primaryImage.state == 'available' %}
           <div class="project-list-card-media project-card-media project-card-media--image{% if project.primaryImage.mediaModifier %} project-card-media--{{ project.primaryImage.mediaModifier }}{% endif %}" data-preview-enhancement data-preview-state="loading">
             <a class="project-list-card-media-link" href="/projects/{{ project.id }}" aria-label="View preview of {{ project.title }}">
-              <img class="project-list-card-media-image project-card-media-image project-card-media-image--list{% if project.primaryImage.mediaModifier %} project-card-media-image--{{ project.primaryImage.mediaModifier }}{% endif %}" data-preview-image src="{{ imageUrl }}" alt="{{ project.primaryImage.alt }}" loading="lazy" decoding="async">
+              <img class="project-list-card-media-image project-card-media-image project-card-media-image--list{% if project.nsfwBlur %} project-image--nsfw-blurred{% endif %}{% if project.primaryImage.mediaModifier %} project-card-media-image--{{ project.primaryImage.mediaModifier }}{% endif %}" data-preview-image src="{{ imageUrl }}" alt="{{ project.primaryImage.alt }}" loading="lazy" decoding="async">
               <span class="project-list-card-media-fallback project-card-media-fallback" data-preview-fallback hidden>Image unavailable</span>
             </a>
           </div>
@@ -88,7 +88,7 @@
              {% if project.primaryImage.state == 'available' %}data-preview-enhancement data-preview-state="loading"{% elif project.primaryImage.state == 'unavailable' %}data-primary-image-state="unavailable"{% else %}data-primary-image-state="none"{% endif %}>
           {% if project.primaryImage.state == 'available' %}
             <a class="project-grid-card-preview-link" href="/projects/{{ project.id }}" aria-label="View preview of {{ project.title }}">
-              <img class="project-card-media-image{% if project.primaryImage.mediaModifier %} project-card-media-image--{{ project.primaryImage.mediaModifier }}{% endif %}" data-preview-image src="{{ imageUrl }}" alt="{{ project.primaryImage.alt }}" loading="lazy" decoding="async">
+              <img class="project-card-media-image{% if project.nsfwBlur %} project-image--nsfw-blurred{% endif %}{% if project.primaryImage.mediaModifier %} project-card-media-image--{{ project.primaryImage.mediaModifier }}{% endif %}" data-preview-image src="{{ imageUrl }}" alt="{{ project.primaryImage.alt }}" loading="lazy" decoding="async">
               <span class="project-card-media-fallback" data-preview-fallback hidden>Image unavailable</span>
             </a>
           {% elif project.primaryImage.state == 'unavailable' %}
