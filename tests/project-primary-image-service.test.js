@@ -6,7 +6,10 @@ import { fileURLToPath } from 'node:url';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { createProjectRepository } from '../src/data/project-repository.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
-import { createProjectPrimaryImageRepository } from '../src/data/project-primary-image-repository.js';
+import {
+  createProjectPrimaryImageRepository,
+  PRIMARY_IMAGE_PROVENANCE,
+} from '../src/data/project-primary-image-repository.js';
 import {
   createProjectPrimaryImageService,
   PRIMARY_IMAGE_ERROR_CODES,
@@ -84,15 +87,37 @@ describe('project primary-image service', () => {
 
   it('accepts an eligible present PNG and returns it as the selected asset', () => {
     const asset = createAsset(project.id, 'cover.png');
+    const setSpy = vi.spyOn(primaryImageRepository, 'setPrimaryImage');
 
     expect(service.setPrimaryImage(project.id, asset.id)).toEqual({
       project_id: project.id,
       asset_id: asset.id,
+      provenance: PRIMARY_IMAGE_PROVENANCE.MANUAL,
     });
+    expect(setSpy).toHaveBeenCalledWith(
+      project.id,
+      asset.id,
+      PRIMARY_IMAGE_PROVENANCE.MANUAL,
+    );
     expect(service.getPrimaryImage(project.id)).toMatchObject({
       id: asset.id,
       project_id: project.id,
       is_present: 1,
+      provenance: PRIMARY_IMAGE_PROVENANCE.MANUAL,
+    });
+  });
+
+  it('exposes an existing automatic selection to current-image callers', () => {
+    const asset = createAsset(project.id, 'automatic.png');
+    primaryImageRepository.setPrimaryImage(
+      project.id,
+      asset.id,
+      PRIMARY_IMAGE_PROVENANCE.AUTOMATIC,
+    );
+
+    expect(service.getPrimaryImage(project.id)).toMatchObject({
+      id: asset.id,
+      provenance: PRIMARY_IMAGE_PROVENANCE.AUTOMATIC,
     });
   });
 
@@ -136,6 +161,7 @@ describe('project primary-image service', () => {
     await expect(probedService.setPrimaryImage(project.id, asset.id)).resolves.toEqual({
       project_id: project.id,
       asset_id: asset.id,
+      provenance: PRIMARY_IMAGE_PROVENANCE.MANUAL,
     });
     expect(previewProbe).toHaveBeenCalledWith(
       expect.objectContaining({ id: project.id }),
@@ -295,6 +321,27 @@ describe('project primary-image service', () => {
     ).pluck().get(project.id)).toBe(1);
   });
 
+  it('overwrites automatic provenance when the normal manual selection flow replaces it', () => {
+    const automaticAsset = createAsset(project.id, 'automatic.png');
+    const manualAsset = createAsset(project.id, 'manual.png');
+    primaryImageRepository.setPrimaryImage(
+      project.id,
+      automaticAsset.id,
+      PRIMARY_IMAGE_PROVENANCE.AUTOMATIC,
+    );
+
+    expect(service.setPrimaryImage(project.id, manualAsset.id)).toEqual({
+      project_id: project.id,
+      asset_id: manualAsset.id,
+      provenance: PRIMARY_IMAGE_PROVENANCE.MANUAL,
+    });
+    expect(primaryImageRepository.findByProjectId(project.id)).toEqual({
+      project_id: project.id,
+      asset_id: manualAsset.id,
+      provenance: PRIMARY_IMAGE_PROVENANCE.MANUAL,
+    });
+  });
+
   it('clears the current selection and rejects a stale clear without mutation', () => {
     const first = createAsset(project.id, 'first.png');
     const second = createAsset(project.id, 'second.png');
@@ -380,6 +427,7 @@ describe('project primary-image service', () => {
     expect(primaryImageRepository.findByProjectId(project.id)).toEqual({
       project_id: project.id,
       asset_id: asset.id,
+      provenance: PRIMARY_IMAGE_PROVENANCE.MANUAL,
     });
   });
 

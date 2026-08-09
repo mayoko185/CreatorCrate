@@ -517,6 +517,18 @@ export function createProjectService(
       return repository.list(options);
     },
 
+    /**
+     * Enumerate current projects using the repository's canonical active
+     * asset-browser predicate. Filesystem/path validation remains the
+     * scanner's responsibility, so this does not introduce a second
+     * archived-or-missing-directory rule.
+     *
+     * @returns {Array<{ id: number, title: string }>}
+     */
+    listScanEligibleProjects() {
+      return repository.listActiveAssetFilterOptions();
+    },
+
     countByStatus() {
       return repository.countByStatus();
     },

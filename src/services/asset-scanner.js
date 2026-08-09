@@ -3,7 +3,10 @@ import path from 'node:path';
 import { resolveProjectDir } from '../storage/project-storage.js';
 import { ProjectNotFoundError } from './project-service.js';
 import { createAssetRepository } from '../data/asset-repository.js';
+import { PRIMARY_IMAGE_PROVENANCE } from '../data/project-primary-image-repository.js';
 import { mimeFromExtension } from './asset-metadata.js';
+import { classifyPreviewable } from './preview-service.js';
+import { PREVIEW_CATEGORY_DISABLED_VALUE } from './preview-category-settings-service.js';
 
 /**
  * Files to skip during scanning.
@@ -237,13 +240,80 @@ function classifyAsset(relativePath, categories) {
  *   Shared per-project lock (Phase: asset actions chunk 3) — also injected
  *   into the asset action service so a scan and a rename/move can never
  *   interleave for the same project.
+ * @param {object} deps.previewCategorySettingsService
+ * @param {object} deps.projectPrimaryImageRepository
  */
-export function createAssetScanner(db, projectsRoot, { projectService, assetCategoryService, projectOperationCoordinator }) {
+export function createAssetScanner(
+  db,
+  projectsRoot,
+  {
+    projectService,
+    assetCategoryService,
+    projectOperationCoordinator,
+    previewCategorySettingsService,
+    projectPrimaryImageRepository,
+  }
+) {
   if (!projectOperationCoordinator) {
     throw new Error('createAssetScanner requires a projectOperationCoordinator dependency.');
   }
+  if (!previewCategorySettingsService || typeof previewCategorySettingsService.getPreviewCategory !== 'function') {
+    throw new Error('createAssetScanner requires a previewCategorySettingsService dependency.');
+  }
+  if (!projectPrimaryImageRepository
+    || typeof projectPrimaryImageRepository.findByProjectId !== 'function'
+    || typeof projectPrimaryImageRepository.setPrimaryImage !== 'function') {
+    throw new Error('createAssetScanner requires a projectPrimaryImageRepository dependency.');
+  }
 
   const repository = createAssetRepository(db);
+
+  function isEnabledCategory(category) {
+    return category?.enabled === 1 || category?.enabled === true;
+  }
+
+  function isEligibleAutomaticPreview(asset, projectId, categoryId) {
+    if (!asset
+      || asset.project_id !== projectId
+      || asset.category_id !== categoryId
+      || (asset.is_present !== 1 && asset.is_present !== true)) {
+      return false;
+    }
+
+    const classification = classifyPreviewable(asset);
+    return classification.supported && classification.kind === 'image';
+  }
+
+  function applyAutomaticPreviewSelection(projectId, categories) {
+    const configuredSlug = previewCategorySettingsService.getPreviewCategory();
+    if (!configuredSlug || configuredSlug === PREVIEW_CATEGORY_DISABLED_VALUE) return;
+
+    const current = projectPrimaryImageRepository.findByProjectId(projectId);
+    // Legacy rows and every non-automatic provenance are authoritative. This
+    // also keeps malformed/unknown provenance fail-closed as manual.
+    if (current && current.provenance !== PRIMARY_IMAGE_PROVENANCE.AUTOMATIC) return;
+
+    const globalCategory = assetCategoryService.listDefaults().find((category) => (
+      category.directory_slug === configuredSlug && isEnabledCategory(category)
+    ));
+    if (!globalCategory) return;
+
+    const projectCategory = categories.find((category) => (
+      category.directory_slug === globalCategory.directory_slug && isEnabledCategory(category)
+    ));
+    if (!projectCategory) return;
+
+    const candidate = repository
+      .findProjectAssetsByCategoryInBrowserOrder(projectId, projectCategory.id)
+      .find((asset) => isEligibleAutomaticPreview(asset, projectId, projectCategory.id));
+    if (!candidate || current?.asset_id === candidate.id) return;
+
+    projectPrimaryImageRepository.setPrimaryImage(
+      projectId,
+      candidate.id,
+      PRIMARY_IMAGE_PROVENANCE.AUTOMATIC,
+    );
+  }
 
   /**
    * Scan a project's directory and sync the asset index.
@@ -319,7 +389,9 @@ export function createAssetScanner(db, projectsRoot, { projectService, assetCate
     // transaction: insert new paths, restore/update existing ones (including
     // a path-derived-field repair when size/mtime are unchanged), and mark
     // undiscovered paths missing.
-    return repository.reconcileScannedAssets(projectId, classified);
+    const result = repository.reconcileScannedAssets(projectId, classified);
+    applyAutomaticPreviewSelection(projectId, categories);
+    return result;
   }
 
   /**

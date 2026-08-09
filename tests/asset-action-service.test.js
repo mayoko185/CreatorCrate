@@ -268,6 +268,7 @@ describe('asset action service', () => {
       expect(primaryImageRepository.findByProjectId(project.id)).toEqual({
         project_id: project.id,
         asset_id: asset.id,
+        provenance: 'manual',
       });
       expect(setSpy).not.toHaveBeenCalled();
       expect(clearSpy).not.toHaveBeenCalled();

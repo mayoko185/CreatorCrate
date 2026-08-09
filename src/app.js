@@ -26,6 +26,7 @@ import { createProjectPrimaryImageRepository } from './data/project-primary-imag
 import { createAssetBrowserPreferenceService } from './services/asset-browser-preference-service.js';
 import { createPageDefaultsService } from './services/page-defaults-service.js';
 import { createOpenLocallySettingsService } from './services/open-locally-settings-service.js';
+import { createPreviewCategorySettingsService } from './services/preview-category-settings-service.js';
 import { createProjectAssetCategoryService } from './services/project-asset-category-service.js';
 import { createAssetScanner } from './services/asset-scanner.js';
 import { createAssetActionService } from './services/asset-action-service.js';
@@ -118,6 +119,12 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   const assetCategoryService = opts.assetCategoryService || createAssetCategoryService(assetCategoryRepository);
   const assetBrowserPreferenceRepository =
     opts.assetBrowserPreferenceRepository || createAssetBrowserPreferenceRepository(db, { appMetaRepository });
+  const previewCategorySettingsService =
+    opts.previewCategorySettingsService || createPreviewCategorySettingsService({
+      appMetaRepository,
+      assetCategoryService,
+    });
+  app.locals.previewCategorySettingsService = previewCategorySettingsService;
 
   const pageDefaultsService =
     opts.pageDefaultsService || createPageDefaultsService({ appMetaRepository });
@@ -134,6 +141,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     assetCategoryService,
     assetBrowserPreferenceRepository,
   });
+  app.locals.projectService = projectService;
 
   const assetBrowserPreferenceService =
     opts.assetBrowserPreferenceService ||
@@ -152,7 +160,14 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   // ad-hoc scripts) that construct createApp directly without app-context.
   const projectOperationCoordinator = opts.projectOperationCoordinator || createProjectOperationCoordinator();
 
-  const assetScanner = createAssetScanner(db, projectsRoot, { projectService, assetCategoryService, projectOperationCoordinator });
+  const projectPrimaryImageRepository = createProjectPrimaryImageRepository(db);
+  const assetScanner = createAssetScanner(db, projectsRoot, {
+    projectService,
+    assetCategoryService,
+    projectOperationCoordinator,
+    previewCategorySettingsService,
+    projectPrimaryImageRepository,
+  });
   app.locals.assetScanner = assetScanner;
 
   const tagRepository = opts.tagRepository || createTagRepository(db);
@@ -233,7 +248,6 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   app.locals.previewRoot = previewRoot;
   app.locals.previewService = previewService;
 
-  const projectPrimaryImageRepository = createProjectPrimaryImageRepository(db);
   const projectPrimaryImageService = createProjectPrimaryImageService({
     db,
     projectRepository: projectService.repository,
@@ -459,8 +473,10 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     databasePath,
     appDataRoot,
     backupRetentionCount: opts.backupRetentionCount,
+    autoScanIntervalMinutes: opts.autoScanIntervalMinutes,
     authSettings: opts.authSettings,
     assetBrowserPreferenceService,
+    previewCategorySettingsService,
   }));
 
   app.use((_req, _res, next) => {

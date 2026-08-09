@@ -119,3 +119,48 @@
     </form>
   </section>
 {% endmacro %}
+
+{% macro preview(model, action, controlId, csrf) %}
+  <section class="settings-section asset-browser-default-section" aria-labelledby="{{ controlId }}-heading">
+    <h3 id="{{ controlId }}-heading">Preview category</h3>
+    <p class="asset-browser-default-description" id="{{ controlId }}-help">
+      Choose the global asset category for preview selection. The stable directory slug is stored.
+    </p>
+
+    {% if model.errorMessage %}
+      <div class="error-summary" role="alert" id="{{ controlId }}-error">
+        <p>Could not save the preview category. {{ model.errorMessage }}</p>
+      </div>
+    {% endif %}
+
+    <p class="asset-browser-default-summary">
+      <span><span class="asset-browser-default-summary-label">Saved:</span> <strong>{{ model.storedLabel }}</strong></span>
+    </p>
+
+    <form method="post" action="{{ action }}" class="project-form asset-browser-default-form" novalidate>
+      <input type="hidden" name="_csrf" value="{{ csrf }}">
+      <div class="asset-browser-default-control-row">
+        <div class="field asset-browser-default-field-row">
+          <label for="{{ controlId }}">Preview category</label>
+          <select id="{{ controlId }}" name="previewCategory" class="form-control"
+                  aria-describedby="{{ controlId }}-help{% if model.errorMessage %} {{ controlId }}-error{% endif %}"
+                  {% if model.errorMessage %}aria-invalid="true"{% endif %} required>
+            {% if model.selectionPlaceholder %}
+              <option value="{{ model.selectionPlaceholder.value }}" disabled{% if not model.submittedOption %} selected{% endif %}>{{ model.selectionPlaceholder.label }}</option>
+            {% endif %}
+            {% if model.submittedOption %}
+              <option value="{{ model.submittedOption.value }}" selected>{{ model.submittedOption.label }}</option>
+            {% endif %}
+            <option value="{{ model.disabledValue }}"{% if model.selectedValue == model.disabledValue %} selected{% endif %}>Disabled</option>
+            {% for category in model.enabledCategories %}
+              <option value="{{ category.directorySlug }}"{% if model.selectedValue == category.directorySlug %} selected{% endif %}>{{ category.displayName }}</option>
+            {% endfor %}
+          </select>
+        </div>
+      </div>
+      <div class="form-actions asset-browser-default-action-row">
+        <button type="submit" class="button button-primary">Save preview category</button>
+      </div>
+    </form>
+  </section>
+{% endmacro %}

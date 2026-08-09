@@ -30,6 +30,13 @@
         _csrf
       ) }}
 
+      {{ assetBrowserPreferenceForm.preview(
+        previewCategory,
+        "/settings/asset-categories/preview-category",
+        "global-preview-category",
+        _csrf
+      ) }}
+
       <div class="settings-section category-management-section category-management-add">
         <h3>Add a default</h3>
         {% if addErrors.displayName or addErrors.directorySlug or addErrors.enabled %}

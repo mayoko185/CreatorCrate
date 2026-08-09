@@ -6,7 +6,10 @@ import { fileURLToPath } from 'node:url';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { createProjectRepository } from '../src/data/project-repository.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
-import { createProjectPrimaryImageRepository } from '../src/data/project-primary-image-repository.js';
+import {
+  createProjectPrimaryImageRepository,
+  PRIMARY_IMAGE_PROVENANCE,
+} from '../src/data/project-primary-image-repository.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 
@@ -72,11 +75,37 @@ describe('project primary-image repository', () => {
     expect(repository.setPrimaryImage(project.id, asset.id)).toEqual({
       project_id: project.id,
       asset_id: asset.id,
+      provenance: PRIMARY_IMAGE_PROVENANCE.MANUAL,
     });
     expect(repository.findByProjectId(project.id)).toEqual({
       project_id: project.id,
       asset_id: asset.id,
+      provenance: PRIMARY_IMAGE_PROVENANCE.MANUAL,
     });
+  });
+
+  it('supports an explicit automatic provenance for future scan assignment', () => {
+    const asset = createAsset(project.id, 'automatic.png');
+
+    expect(repository.setPrimaryImage(
+      project.id,
+      asset.id,
+      PRIMARY_IMAGE_PROVENANCE.AUTOMATIC,
+    )).toEqual({
+      project_id: project.id,
+      asset_id: asset.id,
+      provenance: PRIMARY_IMAGE_PROVENANCE.AUTOMATIC,
+    });
+    expect(repository.findByProjectId(project.id).provenance)
+      .toBe(PRIMARY_IMAGE_PROVENANCE.AUTOMATIC);
+  });
+
+  it('rejects unsupported provenance before writing a selection', () => {
+    const asset = createAsset(project.id, 'invalid-provenance.png');
+
+    expect(() => repository.setPrimaryImage(project.id, asset.id, 'scanner'))
+      .toThrow('Unsupported primary-image provenance: scanner.');
+    expect(repository.findByProjectId(project.id)).toBeUndefined();
   });
 
   it('replaces a selection while keeping exactly one row', () => {
@@ -89,6 +118,7 @@ describe('project primary-image repository', () => {
     expect(repository.findByProjectId(project.id)).toEqual({
       project_id: project.id,
       asset_id: second.id,
+      provenance: PRIMARY_IMAGE_PROVENANCE.MANUAL,
     });
     expect(db.prepare(
       'SELECT COUNT(*) FROM project_primary_images WHERE project_id = ?'
@@ -114,6 +144,7 @@ describe('project primary-image repository', () => {
     expect(repository.findByProjectId(project.id)).toEqual({
       project_id: project.id,
       asset_id: second.id,
+      provenance: PRIMARY_IMAGE_PROVENANCE.MANUAL,
     });
   });
 
@@ -124,8 +155,16 @@ describe('project primary-image repository', () => {
     repository.setPrimaryImage(otherProject.id, secondAsset.id);
 
     expect(repository.findByProjectIds([otherProject.id, project.id, otherProject.id])).toEqual([
-      { project_id: project.id, asset_id: firstAsset.id },
-      { project_id: otherProject.id, asset_id: secondAsset.id },
+      {
+        project_id: project.id,
+        asset_id: firstAsset.id,
+        provenance: PRIMARY_IMAGE_PROVENANCE.MANUAL,
+      },
+      {
+        project_id: otherProject.id,
+        asset_id: secondAsset.id,
+        provenance: PRIMARY_IMAGE_PROVENANCE.MANUAL,
+      },
     ]);
   });
 
@@ -156,6 +195,7 @@ describe('project primary-image repository', () => {
     expect(repository.findByProjectId(project.id)).toEqual({
       project_id: project.id,
       asset_id: asset.id,
+      provenance: PRIMARY_IMAGE_PROVENANCE.MANUAL,
     });
   });
 });

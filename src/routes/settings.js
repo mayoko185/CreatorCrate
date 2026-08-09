@@ -16,6 +16,10 @@ import {
 } from '../services/page-defaults-service.js';
 import { TAG_NAME_MAX, TagNotFoundError, TagValidationError } from '../services/tag-service.js';
 import { OpenLocallySettingsValidationError } from '../services/open-locally-settings-service.js';
+import {
+  PreviewCategoryValidationError,
+  PREVIEW_CATEGORY_DISABLED_VALUE,
+} from '../services/preview-category-settings-service.js';
 
 function createNotFound() {
   const err = new Error('Not found');
@@ -72,6 +76,7 @@ const NOTICES = {
     text: 'Could not save the asset category default. Please try again.',
   },
   global_default_saved: { variant: 'success', text: 'Global asset-browser default saved.' },
+  preview_category_saved: { variant: 'success', text: 'Preview category saved.' },
   defaults_saved: { variant: 'success', text: 'Page defaults saved successfully.' },
   tag_created: { variant: 'success', text: 'Tag created successfully.' },
   tag_renamed: { variant: 'success', text: 'Tag renamed successfully.' },
@@ -337,6 +342,98 @@ function buildDefaultsPageModel(service, {
   };
 }
 
+function previewCategoryIsEnabled(category) {
+  return category?.enabled === 1 || category?.enabled === true;
+}
+
+function previewCategorySlug(category) {
+  return category?.directory_slug ?? category?.directorySlug;
+}
+
+function previewCategoryDisplayName(category) {
+  return category?.display_name ?? category?.displayName ?? `Category ${category?.id}`;
+}
+
+function previewCategoryErrorMessage(error) {
+  if (typeof error?.errors?.value === 'string') return error.errors.value;
+  if (error?.errors && typeof error.errors === 'object') {
+    const first = Object.values(error.errors).find((value) => typeof value === 'string');
+    if (first) return first;
+  }
+  return typeof error?.message === 'string' ? error.message : null;
+}
+
+function buildPreviewCategoryModel({
+  previewCategorySettingsService,
+  categories,
+  submittedValue,
+  error,
+} = {}) {
+  const allCategories = Array.isArray(categories) ? categories : [];
+  const enabledCategories = allCategories
+    .filter(previewCategoryIsEnabled)
+    .map((category) => ({
+      displayName: previewCategoryDisplayName(category),
+      directorySlug: previewCategorySlug(category),
+    }))
+    .filter((category) => typeof category.directorySlug === 'string' && category.directorySlug.length > 0);
+  const storedValue = previewCategorySettingsService.getPreviewCategory();
+  const validValues = new Set([
+    PREVIEW_CATEGORY_DISABLED_VALUE,
+    ...enabledCategories.map((category) => category.directorySlug),
+  ]);
+  const storedCategory = allCategories.find((category) => previewCategorySlug(category) === storedValue);
+  const storedAvailable = validValues.has(storedValue);
+  const submittedValueProvided = typeof submittedValue === 'string';
+  const selectedValue = submittedValueProvided
+    ? submittedValue
+    : (storedAvailable ? storedValue : '');
+  const submittedOption = submittedValueProvided
+    && submittedValue.length > 0
+    && !validValues.has(submittedValue)
+    ? {
+        value: submittedValue,
+        label: 'Submitted value is unavailable; choose a valid replacement.',
+      }
+    : null;
+  let selectionPlaceholder = null;
+  if (selectedValue === '') {
+    const unavailableLabel = !submittedValueProvided && !storedAvailable
+      ? storedCategory
+        ? `${previewCategoryDisplayName(storedCategory)} (disabled)`
+        : (typeof storedValue === 'string' && storedValue.length > 0
+          ? `Category "${storedValue}" (unavailable)`
+          : 'Invalid saved preview category')
+      : null;
+    selectionPlaceholder = {
+      value: '',
+      label: unavailableLabel
+        ? `Saved setting unavailable — ${unavailableLabel}.`
+        : 'Choose a valid replacement…',
+    };
+  }
+
+  let storedLabel = 'Invalid saved preview category';
+  if (storedValue === PREVIEW_CATEGORY_DISABLED_VALUE) {
+    storedLabel = 'Disabled';
+  } else if (storedCategory) {
+    storedLabel = `${previewCategoryDisplayName(storedCategory)}${previewCategoryIsEnabled(storedCategory) ? '' : ' (disabled)'}`;
+  } else if (typeof storedValue === 'string' && storedValue.length > 0) {
+    storedLabel = `Category "${storedValue}" (unavailable)`;
+  }
+
+  return {
+    disabledValue: PREVIEW_CATEGORY_DISABLED_VALUE,
+    enabledCategories,
+    storedValue,
+    storedLabel,
+    selectedValue,
+    submittedOption,
+    selectionPlaceholder,
+    errorMessage: previewCategoryErrorMessage(error),
+  };
+}
+
 function validateSubmittedPageDefaults(service, submittedValues) {
   const errors = {};
   const validatedValues = {};
@@ -488,11 +585,16 @@ export function createSettingsRouter({
   databasePath,
   appDataRoot,
   backupRetentionCount,
+  autoScanIntervalMinutes,
   authSettings,
   assetBrowserPreferenceService,
+  previewCategorySettingsService,
 } = {}) {
   if (!assetBrowserPreferenceService) {
     throw new Error('createSettingsRouter requires an assetBrowserPreferenceService dependency.');
+  }
+  if (!previewCategorySettingsService) {
+    throw new Error('createSettingsRouter requires a previewCategorySettingsService dependency.');
   }
 
   const router = express.Router();
@@ -511,6 +613,7 @@ export function createSettingsRouter({
       backupCount: backups.length,
       invalidBackupCount: backups.filter((b) => !b.valid).length,
       retentionCount: backupRetentionCount,
+      autoScanIntervalMinutes,
       paths: { projectsRoot, databasePath, appDataRoot },
       session: authSettings
         ? {
@@ -936,6 +1039,8 @@ export function createSettingsRouter({
     addErrors = {},
     preferenceSubmittedValue,
     preferenceError = null,
+    previewCategorySubmittedValue,
+    previewCategoryError = null,
     enabledControl = null,
   } = {}) {
     const categories = assetCategoryService.listDefaults();
@@ -945,10 +1050,17 @@ export function createSettingsRouter({
       submittedValue: preferenceSubmittedValue,
       error: preferenceError,
     });
+    const previewCategory = buildPreviewCategoryModel({
+      previewCategorySettingsService,
+      categories,
+      submittedValue: previewCategorySubmittedValue,
+      error: previewCategoryError,
+    });
     res.status(status).render('settings/asset-categories.njk', {
       appName,
       categories,
       assetBrowserPreference,
+      previewCategory,
       notice,
       editingId,
       editValues,
@@ -986,6 +1098,24 @@ export function createSettingsRouter({
           status: 422,
           preferenceSubmittedValue: submittedValue,
           preferenceError: err,
+        });
+        return;
+      }
+      renderCategoriesPage(res, { status: 500 });
+    }
+  });
+
+  router.post('/asset-categories/preview-category', (req, res) => {
+    const submittedValue = typeof req.body?.previewCategory === 'string' ? req.body.previewCategory : '';
+    try {
+      previewCategorySettingsService.setPreviewCategory(submittedValue);
+      res.redirect('/settings/asset-categories?notice=preview_category_saved');
+    } catch (err) {
+      if (err instanceof PreviewCategoryValidationError) {
+        renderCategoriesPage(res, {
+          status: 422,
+          previewCategorySubmittedValue: submittedValue,
+          previewCategoryError: err,
         });
         return;
       }

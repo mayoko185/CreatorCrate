@@ -8,11 +8,17 @@ import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { createProjectRepository } from '../src/data/project-repository.js';
 import { createAssetCategoryRepository } from '../src/data/asset-category-repository.js';
 import { createAssetBrowserPreferenceRepository } from '../src/data/asset-browser-preference-repository.js';
+import { createAppMetaRepository } from '../src/data/app-meta-repository.js';
 import { createAssetCategoryService } from '../src/services/asset-category-service.js';
 import { createProjectService, ProjectNotFoundError } from '../src/services/project-service.js';
 import { createAssetScanner } from '../src/services/asset-scanner.js';
 import { createProjectPrimaryImageRepository } from '../src/data/project-primary-image-repository.js';
 import { createProjectPrimaryImageService } from '../src/services/project-primary-image-service.js';
+import {
+  createPreviewCategorySettingsService,
+  PREVIEW_CATEGORY_DISABLED_VALUE,
+  PREVIEW_CATEGORY_KEY,
+} from '../src/services/preview-category-settings-service.js';
 import { createWorkflowQueryService } from '../src/services/workflow-query-service.js';
 import { createProjectOperationCoordinator, ProjectOperationError } from '../src/services/project-operation-coordinator.js';
 import {
@@ -32,6 +38,8 @@ describe('asset scanner', () => {
   let workflowQueryService;
   let projectsRoot;
   let projectOperationCoordinator;
+  let assetCategoryService;
+  let previewCategorySettingsService;
 
   /** Create a project and its flat directory on disk (mimics real creation). */
   function createProjectWithDir(title, status = 'tbd') {
@@ -80,14 +88,26 @@ describe('asset scanner', () => {
     db = openDatabase(dbPath);
     runMigrations(db, MIGRATIONS_DIR);
     projectRepo = createProjectRepository(db);
-    const assetCategoryService = createAssetCategoryService(createAssetCategoryRepository(db));
+    assetCategoryService = createAssetCategoryService(createAssetCategoryRepository(db));
+    const appMetaRepository = createAppMetaRepository(db);
+    db.prepare('DELETE FROM app_meta WHERE key = ?').run(PREVIEW_CATEGORY_KEY);
+    previewCategorySettingsService = createPreviewCategorySettingsService({
+      appMetaRepository,
+      assetCategoryService,
+    });
     projectService = createProjectService(db, projectsRoot, {
       assetCategoryService,
       assetBrowserPreferenceRepository: createAssetBrowserPreferenceRepository(db),
     });
     projectOperationCoordinator = createProjectOperationCoordinator();
-    assetScanner = createAssetScanner(db, projectsRoot, { projectService, assetCategoryService, projectOperationCoordinator });
     primaryImageRepository = createProjectPrimaryImageRepository(db);
+    assetScanner = createAssetScanner(db, projectsRoot, {
+      projectService,
+      assetCategoryService,
+      projectOperationCoordinator,
+      previewCategorySettingsService,
+      projectPrimaryImageRepository: primaryImageRepository,
+    });
     primaryImageService = createProjectPrimaryImageService({
       db,
       projectRepository: projectRepo,
@@ -902,9 +922,11 @@ describe('asset scanner', () => {
       expect(primaryImageRepository.findByProjectId(project.id)).toEqual({
         project_id: project.id,
         asset_id: asset.id,
+        provenance: 'manual',
       });
       expect(getPrimaryImageModel(project.id)).toEqual({
         selectedAssetId: asset.id,
+        provenance: 'manual',
         state: 'unavailable',
         kind: 'image',
         mediaModifier: null,
@@ -948,6 +970,7 @@ describe('asset scanner', () => {
       expect(primaryImageRepository.findByProjectId(project.id)).toEqual({
         project_id: project.id,
         asset_id: original.id,
+        provenance: 'manual',
       });
       expect(getPrimaryImageModel(project.id)).toMatchObject({
         selectedAssetId: original.id,
@@ -966,6 +989,319 @@ describe('asset scanner', () => {
       assetScanner.scanProjectAssets(project.id);
 
       expect(fs.existsSync(manifestPath)).toBe(false);
+    });
+  });
+
+  describe('automatic Preview primary image selection', () => {
+    const PREVIEW_SLUG = 'preview-auto';
+    const SECOND_PREVIEW_SLUG = 'preview-alt';
+
+    function addGlobalDefault(directorySlug) {
+      const existing = assetCategoryService.listDefaults()
+        .find((category) => category.directory_slug === directorySlug);
+      return existing || assetCategoryService.addDefault({
+        displayName: `Preview ${directorySlug}`,
+        directorySlug,
+        enabled: true,
+      });
+    }
+
+    function addProjectCategory(projectId, directorySlug, { enabled = true } = {}) {
+      return db.prepare(`
+        INSERT INTO project_asset_categories (
+          project_id, display_name, directory_slug, display_order, enabled
+        ) VALUES (?, ?, ?, 0, ?)
+        RETURNING id, project_id, display_name, directory_slug, display_order, enabled
+      `).get(projectId, `Preview ${directorySlug}`, directorySlug, enabled ? 1 : 0);
+    }
+
+    function configurePreviewCategory(projectId, directorySlug = PREVIEW_SLUG) {
+      addGlobalDefault(directorySlug);
+      const category = addProjectCategory(projectId, directorySlug);
+      previewCategorySettingsService.setPreviewCategory(directorySlug);
+      return category;
+    }
+
+    function setPreviewCategory(directorySlug) {
+      addGlobalDefault(directorySlug);
+      previewCategorySettingsService.setPreviewCategory(directorySlug);
+    }
+
+    function writeCategoryAsset(absPath, directorySlug, filename) {
+      const categoryPath = path.join(absPath, directorySlug);
+      fs.mkdirSync(categoryPath, { recursive: true });
+      fs.writeFileSync(path.join(categoryPath, filename), `${filename} content`);
+    }
+
+    it('does not change the primary image when Preview category is Disabled', () => {
+      const { project, absPath } = createProjectWithDir('Preview Disabled');
+      configurePreviewCategory(project.id);
+      previewCategorySettingsService.setPreviewCategory(PREVIEW_CATEGORY_DISABLED_VALUE);
+      writeCategoryAsset(absPath, PREVIEW_SLUG, 'cover.png');
+
+      assetScanner.scanProjectAssets(project.id);
+
+      expect(primaryImageRepository.findByProjectId(project.id)).toBeUndefined();
+    });
+
+    it('treats a missing Preview category setting as Disabled', () => {
+      const { project, absPath } = createProjectWithDir('Preview Setting Missing');
+      configurePreviewCategory(project.id);
+      db.prepare('DELETE FROM app_meta WHERE key = ?').run(PREVIEW_CATEGORY_KEY);
+      writeCategoryAsset(absPath, PREVIEW_SLUG, 'cover.png');
+
+      assetScanner.scanProjectAssets(project.id);
+
+      expect(previewCategorySettingsService.getPreviewCategory())
+        .toBe(PREVIEW_CATEGORY_DISABLED_VALUE);
+      expect(primaryImageRepository.findByProjectId(project.id)).toBeUndefined();
+    });
+
+    it('automatically selects the first eligible image when no selection exists', () => {
+      const { project, absPath } = createProjectWithDir('Preview First Candidate');
+      const category = configurePreviewCategory(project.id);
+      writeCategoryAsset(absPath, PREVIEW_SLUG, 'cover.png');
+
+      const result = assetScanner.scanProjectAssets(project.id);
+      const asset = assetScanner.repository.findByProjectIdAndPath(project.id, `${PREVIEW_SLUG}/cover.png`);
+
+      expect(result).toEqual({ added: 1, updated: 0, removed: 0, total: 1 });
+      expect(asset.category_id).toBe(category.id);
+      expect(primaryImageRepository.findByProjectId(project.id)).toEqual({
+        project_id: project.id,
+        asset_id: asset.id,
+        provenance: 'automatic',
+      });
+    });
+
+    it('uses canonical asset-browser filename ordering for multiple eligible images', () => {
+      const { project, absPath } = createProjectWithDir('Preview Canonical Order');
+      configurePreviewCategory(project.id);
+      writeCategoryAsset(absPath, PREVIEW_SLUG, 'zulu.png');
+      writeCategoryAsset(absPath, PREVIEW_SLUG, 'middle.png');
+      writeCategoryAsset(absPath, PREVIEW_SLUG, 'alpha.png');
+
+      assetScanner.scanProjectAssets(project.id);
+
+      const selected = primaryImageRepository.findByProjectId(project.id);
+      const expected = assetScanner.repository.findByProjectIdAndPath(
+        project.id,
+        `${PREVIEW_SLUG}/alpha.png`,
+      );
+      expect(selected.asset_id).toBe(expected.id);
+      expect(selected.provenance).toBe('automatic');
+    });
+
+    it('does not auto-select non-image or Krita candidates', () => {
+      const { project, absPath } = createProjectWithDir('Preview Unsupported Candidates');
+      configurePreviewCategory(project.id);
+      writeCategoryAsset(absPath, PREVIEW_SLUG, 'document.kra');
+      writeCategoryAsset(absPath, PREVIEW_SLUG, 'notes.txt');
+
+      assetScanner.scanProjectAssets(project.id);
+
+      expect(primaryImageRepository.findByProjectId(project.id)).toBeUndefined();
+    });
+
+    it('does not treat an absent asset as an automatic candidate', () => {
+      const { project, absPath } = createProjectWithDir('Preview Missing Candidate');
+      configurePreviewCategory(project.id);
+      previewCategorySettingsService.setPreviewCategory(PREVIEW_CATEGORY_DISABLED_VALUE);
+      writeCategoryAsset(absPath, PREVIEW_SLUG, 'missing.png');
+      assetScanner.scanProjectAssets(project.id);
+      fs.rmSync(path.join(absPath, PREVIEW_SLUG, 'missing.png'));
+      setPreviewCategory(PREVIEW_SLUG);
+
+      assetScanner.scanProjectAssets(project.id);
+
+      const asset = assetScanner.repository.findByProjectIdAndPath(
+        project.id,
+        `${PREVIEW_SLUG}/missing.png`,
+      );
+      expect(asset.is_present).toBe(0);
+      expect(primaryImageRepository.findByProjectId(project.id)).toBeUndefined();
+    });
+
+    it('does not create a selection when the configured category has no eligible candidate', () => {
+      const { project, absPath } = createProjectWithDir('Preview No Eligible Candidate');
+      configurePreviewCategory(project.id);
+      writeCategoryAsset(absPath, PREVIEW_SLUG, 'notes.txt');
+
+      assetScanner.scanProjectAssets(project.id);
+
+      expect(primaryImageRepository.findByProjectId(project.id)).toBeUndefined();
+    });
+
+    it('never replaces an existing manual selection', () => {
+      const { project, absPath } = createProjectWithDir('Preview Manual Authority');
+      configurePreviewCategory(project.id);
+      writeCategoryAsset(absPath, PREVIEW_SLUG, 'zulu.png');
+      assetScanner.scanProjectAssets(project.id);
+      const manualAsset = assetScanner.repository.findByProjectIdAndPath(
+        project.id,
+        `${PREVIEW_SLUG}/zulu.png`,
+      );
+      primaryImageService.setPrimaryImage(project.id, manualAsset.id);
+      writeCategoryAsset(absPath, PREVIEW_SLUG, 'alpha.png');
+
+      assetScanner.scanProjectAssets(project.id);
+
+      expect(primaryImageRepository.findByProjectId(project.id)).toEqual({
+        project_id: project.id,
+        asset_id: manualAsset.id,
+        provenance: 'manual',
+      });
+    });
+
+    it('keeps a manual selection when its asset is missing', () => {
+      const { project, absPath } = createProjectWithDir('Preview Missing Manual');
+      configurePreviewCategory(project.id);
+      previewCategorySettingsService.setPreviewCategory(PREVIEW_CATEGORY_DISABLED_VALUE);
+      writeCategoryAsset(absPath, PREVIEW_SLUG, 'manual.png');
+      assetScanner.scanProjectAssets(project.id);
+      const manualAsset = assetScanner.repository.findByProjectIdAndPath(
+        project.id,
+        `${PREVIEW_SLUG}/manual.png`,
+      );
+      primaryImageService.setPrimaryImage(project.id, manualAsset.id);
+      fs.rmSync(path.join(absPath, PREVIEW_SLUG, 'manual.png'));
+      writeCategoryAsset(absPath, PREVIEW_SLUG, 'automatic.png');
+      setPreviewCategory(PREVIEW_SLUG);
+
+      assetScanner.scanProjectAssets(project.id);
+
+      expect(primaryImageRepository.findByProjectId(project.id)).toEqual({
+        project_id: project.id,
+        asset_id: manualAsset.id,
+        provenance: 'manual',
+      });
+    });
+
+    it('replaces an automatic selection with the current preferred candidate', () => {
+      const { project, absPath } = createProjectWithDir('Preview Automatic Replacement');
+      configurePreviewCategory(project.id);
+      writeCategoryAsset(absPath, PREVIEW_SLUG, 'zulu.png');
+      assetScanner.scanProjectAssets(project.id);
+      writeCategoryAsset(absPath, PREVIEW_SLUG, 'alpha.png');
+
+      assetScanner.scanProjectAssets(project.id);
+
+      const preferred = assetScanner.repository.findByProjectIdAndPath(
+        project.id,
+        `${PREVIEW_SLUG}/alpha.png`,
+      );
+      expect(primaryImageRepository.findByProjectId(project.id)).toEqual({
+        project_id: project.id,
+        asset_id: preferred.id,
+        provenance: 'automatic',
+      });
+    });
+
+    it('keeps an automatic selection when no eligible candidate remains', () => {
+      const { project, absPath } = createProjectWithDir('Preview Automatic Retained');
+      configurePreviewCategory(project.id);
+      writeCategoryAsset(absPath, PREVIEW_SLUG, 'cover.png');
+      assetScanner.scanProjectAssets(project.id);
+      const before = primaryImageRepository.findByProjectId(project.id);
+      fs.rmSync(path.join(absPath, PREVIEW_SLUG, 'cover.png'));
+
+      assetScanner.scanProjectAssets(project.id);
+
+      expect(primaryImageRepository.findByProjectId(project.id)).toEqual(before);
+      expect(assetScanner.repository.findById(before.asset_id).is_present).toBe(0);
+    });
+
+    it('does not rewrite an already-correct automatic selection', () => {
+      const { project, absPath } = createProjectWithDir('Preview Automatic Noop');
+      configurePreviewCategory(project.id);
+      writeCategoryAsset(absPath, PREVIEW_SLUG, 'cover.png');
+      assetScanner.scanProjectAssets(project.id);
+      const setSpy = vi.spyOn(primaryImageRepository, 'setPrimaryImage');
+
+      try {
+        assetScanner.scanProjectAssets(project.id);
+        expect(setSpy).not.toHaveBeenCalled();
+      } finally {
+        setSpy.mockRestore();
+      }
+    });
+
+    it('does nothing when the project lacks the configured category', () => {
+      const { project, absPath } = createProjectWithDir('Preview Category Missing');
+      addGlobalDefault(PREVIEW_SLUG);
+      setPreviewCategory(PREVIEW_SLUG);
+      addProjectCategory(project.id, 'other-category');
+      writeCategoryAsset(absPath, 'other-category', 'cover.png');
+
+      assetScanner.scanProjectAssets(project.id);
+
+      expect(primaryImageRepository.findByProjectId(project.id)).toBeUndefined();
+    });
+
+    it('does nothing when the configured project category is disabled', () => {
+      const { project, absPath } = createProjectWithDir('Preview Category Disabled');
+      addGlobalDefault(PREVIEW_SLUG);
+      setPreviewCategory(PREVIEW_SLUG);
+      addProjectCategory(project.id, PREVIEW_SLUG, { enabled: false });
+      writeCategoryAsset(absPath, PREVIEW_SLUG, 'cover.png');
+
+      assetScanner.scanProjectAssets(project.id);
+
+      expect(primaryImageRepository.findByProjectId(project.id)).toBeUndefined();
+    });
+
+    it('chooses from the newly configured category when the current selection is automatic', () => {
+      const { project, absPath } = createProjectWithDir('Preview Category Change');
+      addGlobalDefault(PREVIEW_SLUG);
+      addGlobalDefault(SECOND_PREVIEW_SLUG);
+      addProjectCategory(project.id, PREVIEW_SLUG);
+      addProjectCategory(project.id, SECOND_PREVIEW_SLUG);
+      setPreviewCategory(PREVIEW_SLUG);
+      writeCategoryAsset(absPath, PREVIEW_SLUG, 'first.png');
+      writeCategoryAsset(absPath, SECOND_PREVIEW_SLUG, 'second.png');
+      assetScanner.scanProjectAssets(project.id);
+
+      setPreviewCategory(SECOND_PREVIEW_SLUG);
+      assetScanner.scanProjectAssets(project.id);
+
+      const preferred = assetScanner.repository.findByProjectIdAndPath(
+        project.id,
+        `${SECOND_PREVIEW_SLUG}/second.png`,
+      );
+      expect(primaryImageRepository.findByProjectId(project.id)).toEqual({
+        project_id: project.id,
+        asset_id: preferred.id,
+        provenance: 'automatic',
+      });
+    });
+
+    it('preserves the normal reconciliation counts and result contract', () => {
+      const { project, absPath } = createProjectWithDir('Preview Result Contract');
+      configurePreviewCategory(project.id);
+      writeCategoryAsset(absPath, PREVIEW_SLUG, 'cover.png');
+      writeCategoryAsset(absPath, PREVIEW_SLUG, 'notes.txt');
+
+      const result = assetScanner.scanProjectAssets(project.id);
+
+      expect(result).toEqual({ added: 2, updated: 0, removed: 0, total: 2 });
+      expect(primaryImageRepository.findByProjectId(project.id).provenance).toBe('automatic');
+    });
+
+    it('performs automatic selection while the project coordinator is active', () => {
+      const { project, absPath } = createProjectWithDir('Preview Coordinator Boundary');
+      configurePreviewCategory(project.id);
+      writeCategoryAsset(absPath, PREVIEW_SLUG, 'cover.png');
+      const original = primaryImageRepository.setPrimaryImage.bind(primaryImageRepository);
+      const setSpy = vi.spyOn(primaryImageRepository, 'setPrimaryImage').mockImplementation((...args) => {
+        expect(projectOperationCoordinator.isActive(project.id)).toBe(true);
+        return original(...args);
+      });
+
+      try {
+        assetScanner.scanProjectAssets(project.id);
+      } finally {
+        setSpy.mockRestore();
+      }
     });
   });
 

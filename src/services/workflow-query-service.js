@@ -30,7 +30,10 @@ import { createProjectRepository } from '../data/project-repository.js';
 import { createAssetRepository } from '../data/asset-repository.js';
 import { createAssetCategoryRepository } from '../data/asset-category-repository.js';
 import { createAssetBrowserPreferenceRepository } from '../data/asset-browser-preference-repository.js';
-import { createProjectPrimaryImageRepository } from '../data/project-primary-image-repository.js';
+import {
+  createProjectPrimaryImageRepository,
+  PRIMARY_IMAGE_PROVENANCE,
+} from '../data/project-primary-image-repository.js';
 import { createTagRepository } from '../data/tag-repository.js';
 import {
   AUTO_RENAME_UNAVAILABLE_REASONS,
@@ -569,6 +572,7 @@ export function createWorkflowQueryService({
   function buildEmptyPrimaryImageModel() {
     return {
       selectedAssetId: null,
+      provenance: null,
       state: 'none',
       kind: null,
       mediaModifier: null,
@@ -583,6 +587,8 @@ export function createWorkflowQueryService({
     const selectedAssetId = selection?.asset_id ?? null;
     if (selectedAssetId === null) return buildEmptyPrimaryImageModel();
 
+    const provenance = selection.provenance ?? PRIMARY_IMAGE_PROVENANCE.MANUAL;
+
     const ownedAsset = asset && asset.project_id === projectId ? asset : null;
     const classification = ownedAsset ? classifyPreviewable(ownedAsset) : null;
     const kind = classification?.kind ?? null;
@@ -594,6 +600,7 @@ export function createWorkflowQueryService({
     if (!ownedAsset || !ownedAsset.is_present || !supportedPrimaryKind) {
       return {
         selectedAssetId,
+        provenance,
         state: 'unavailable',
         kind,
         mediaModifier,
@@ -607,6 +614,7 @@ export function createWorkflowQueryService({
     const preview = buildAssetPreviewModel(ownedAsset);
     return {
       selectedAssetId,
+      provenance,
       state: 'available',
       kind,
       mediaModifier,

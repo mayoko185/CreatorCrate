@@ -20,9 +20,19 @@ import { authenticate, AUTH_CONFIG, extractCsrfToken } from './helpers/auth.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 const APP_NAME = 'CreatorCrate';
+const AUTH_SETTINGS = {
+  sessionTtlHours: 24,
+  cookieSecure: false,
+  trustProxy: false,
+  hstsEnabled: false,
+};
 
 function countH1(html) {
   return (html.match(/<h1[\s>]/g) || []).length;
+}
+
+function renderedPath(value) {
+  return value.split(path.sep).join('&#92;');
 }
 
 function navHrefs(html) {
@@ -81,7 +91,16 @@ describe('settings — backup management HTTP', () => {
     maintenanceState = { active: false };
     app = createApp(
       { appName: APP_NAME, db, projectsRoot },
-      { backupService, maintenanceState, appDataRoot, databasePath, migrationsDir: MIGRATIONS_DIR, authConfig: AUTH_CONFIG },
+      {
+        backupService,
+        maintenanceState,
+        appDataRoot,
+        databasePath,
+        migrationsDir: MIGRATIONS_DIR,
+        authConfig: AUTH_CONFIG,
+        authSettings: AUTH_SETTINGS,
+        autoScanIntervalMinutes: null,
+      },
     );
 
     const auth = await authenticate(app);
@@ -111,6 +130,48 @@ describe('settings — backup management HTTP', () => {
     it('GET /settings/backups/:filename/restore returns 404 for an unknown backup', async () => {
       await agent.get('/settings/backups/creatorcrate-2026-01-01T000000Z.sqlite/restore')
         .expect(404);
+    });
+  });
+
+  // ─── Deployment-controlled overview ───────────────────────────────────────
+
+  describe('deployment-controlled overview', () => {
+    it('shows automatic scanning as Off and preserves existing deployment values', async () => {
+      const res = await agent.get('/settings').expect(200);
+
+      expect(res.text).toContain('Deployment-controlled');
+      expect(res.text).toContain('auto_scan_interval_minutes');
+      expect(res.text).toContain('>Off</span>');
+      expect(res.text).toContain('projects_root');
+      expect(res.text).toContain(renderedPath(projectsRoot));
+      expect(res.text).toContain('database_path');
+      expect(res.text).toContain(renderedPath(databasePath));
+      expect(res.text).toContain('trust_proxy');
+      expect(res.text).toContain('hsts_enabled');
+      expect(res.text).not.toContain(
+        'These values are set by the deployment environment and cannot be changed from this page.'
+      );
+    });
+
+    it('shows the configured automatic scan interval when enabled', async () => {
+      const configuredApp = createApp(
+        { appName: APP_NAME, db, projectsRoot },
+        {
+          backupService,
+          maintenanceState,
+          appDataRoot,
+          databasePath,
+          migrationsDir: MIGRATIONS_DIR,
+          authConfig: AUTH_CONFIG,
+          authSettings: AUTH_SETTINGS,
+          autoScanIntervalMinutes: 15,
+        },
+      );
+      const configuredAuth = await authenticate(configuredApp);
+      const res = await configuredAuth.agent.get('/settings').expect(200);
+
+      expect(res.text).toContain('auto_scan_interval_minutes');
+      expect(res.text).toContain('15 minutes');
     });
   });
 

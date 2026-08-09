@@ -7,6 +7,20 @@ import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { createProjectRepository } from '../src/data/project-repository.js';
 
 const MIGRATIONS_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'migrations');
+const LEGACY_MIGRATION_FILENAMES = [
+  '001_initial.sql',
+  '002_add_completed_status.sql',
+  '003_remove_project_priority.sql',
+];
+
+function createLegacyMigrationsDir(parentDir) {
+  const legacyDir = path.join(parentDir, 'legacy-migrations');
+  fs.mkdirSync(legacyDir);
+  for (const filename of LEGACY_MIGRATION_FILENAMES) {
+    fs.copyFileSync(path.join(MIGRATIONS_DIR, filename), path.join(legacyDir, filename));
+  }
+  return legacyDir;
+}
 
 function createProject(projectRepository, title) {
   return projectRepository.create({
@@ -44,6 +58,56 @@ describe('project primary-image baseline schema', () => {
     closeDatabase(db);
     db = undefined;
     fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('preserves an existing selection and asset relationship while backfilling manual provenance', () => {
+    db = openDatabase(path.join(tmpDir, 'test.db'));
+    runMigrations(db, createLegacyMigrationsDir(tmpDir));
+    const projectRepository = createProjectRepository(db);
+    const project = createProject(projectRepository, 'Legacy Primary Project');
+    const assetId = insertAsset(db, project.id, 'legacy.png');
+    db.prepare(
+      'INSERT INTO project_primary_images (project_id, asset_id) VALUES (?, ?)'
+    ).run(project.id, assetId);
+
+    runMigrations(db, MIGRATIONS_DIR);
+
+    expect(db.prepare(
+      'SELECT project_id, asset_id, provenance FROM project_primary_images WHERE project_id = ?'
+    ).get(project.id)).toEqual({
+      project_id: project.id,
+      asset_id: assetId,
+      provenance: 'manual',
+    });
+    expect(db.prepare('SELECT id FROM assets WHERE id = ?').pluck().get(assetId)).toBe(assetId);
+    expect(db.pragma('foreign_key_check')).toEqual([]);
+  });
+
+  it('defaults fresh rows to manual and rejects unsupported provenance values', () => {
+    db = openDatabase(path.join(tmpDir, 'test.db'));
+    runMigrations(db, MIGRATIONS_DIR);
+    const projectRepository = createProjectRepository(db);
+    const project = createProject(projectRepository, 'Provenance Constraint Project');
+    const assetId = insertAsset(db, project.id, 'constraint.png');
+
+    db.prepare(
+      'INSERT INTO project_primary_images (project_id, asset_id) VALUES (?, ?)'
+    ).run(project.id, assetId);
+
+    const column = db.pragma("table_info('project_primary_images')")
+      .find(({ name }) => name === 'provenance');
+    expect(column).toMatchObject({
+      type: 'TEXT',
+      notnull: 1,
+      dflt_value: "'manual'",
+    });
+    expect(db.prepare(
+      'SELECT provenance FROM project_primary_images WHERE project_id = ?'
+    ).pluck().get(project.id)).toBe('manual');
+    expect(() => db.prepare(`
+      INSERT INTO project_primary_images (project_id, asset_id, provenance)
+      VALUES (?, ?, 'scanner')
+    `).run(project.id, assetId)).toThrow(/CHECK constraint failed/i);
   });
 
   it('enforces one selection per project and rejects cross-project references', () => {

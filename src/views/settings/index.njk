@@ -59,11 +59,11 @@
         <h3>Deployment-controlled</h3>
         <div class="kv"><span class="kv-key">projects_root</span><span class="kv-value"><code>{{ paths.projectsRoot }}</code></span></div>
         <div class="kv"><span class="kv-key">database_path</span><span class="kv-value"><code>{{ paths.databasePath }}</code></span></div>
+        <div class="kv"><span class="kv-key">auto_scan_interval_minutes</span><span class="kv-value">{% if autoScanIntervalMinutes %}{{ autoScanIntervalMinutes }} minutes{% else %}Off{% endif %}</span></div>
         {% if session %}
           <div class="kv"><span class="kv-key">trust_proxy</span><span class="kv-value">{{ session.trustProxy }}</span></div>
           <div class="kv"><span class="kv-key">hsts_enabled</span><span class="kv-value">{{ session.hstsEnabled }}</span></div>
         {% endif %}
-        <p class="help-text">These values are set by the deployment environment and cannot be changed from this page.</p>
       </div>
     </div>
   </div>

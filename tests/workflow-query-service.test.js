@@ -11,7 +11,10 @@ import {
 import { createAssetRepository } from '../src/data/asset-repository.js';
 import { createAssetCategoryRepository } from '../src/data/asset-category-repository.js';
 import { createAssetBrowserPreferenceRepository } from '../src/data/asset-browser-preference-repository.js';
-import { createProjectPrimaryImageRepository } from '../src/data/project-primary-image-repository.js';
+import {
+  createProjectPrimaryImageRepository,
+  PRIMARY_IMAGE_PROVENANCE,
+} from '../src/data/project-primary-image-repository.js';
 import { createTagRepository } from '../src/data/tag-repository.js';
 import { createReleaseRepository } from '../src/data/release-repository.js';
 import { getLocalTodayIso } from '../src/util/date.js';
@@ -211,6 +214,7 @@ describe('workflow query service', () => {
 
       expect(row.primaryImage).toEqual({
         selectedAssetId: null,
+        provenance: null,
         state: 'none',
         kind: null,
         mediaModifier: null,
@@ -273,6 +277,7 @@ describe('workflow query service', () => {
 
       expect(primaryImage).toMatchObject({
         selectedAssetId: asset.id,
+        provenance: PRIMARY_IMAGE_PROVENANCE.MANUAL,
         state: 'available',
         revision: expect.any(String),
         alt: 'Preview of cover.png',
@@ -304,6 +309,7 @@ describe('workflow query service', () => {
 
       expect(primaryImage).toEqual({
         selectedAssetId: asset.id,
+        provenance: PRIMARY_IMAGE_PROVENANCE.MANUAL,
         state: 'unavailable',
         kind: 'image',
         mediaModifier: null,
@@ -313,6 +319,27 @@ describe('workflow query service', () => {
         alt: 'Preview of missing.png',
       });
       expect(primaryImageRepository.findByProjectId(project.id)).toEqual(selection);
+    });
+
+    it('exposes automatic provenance in the primary-image query model', () => {
+      const project = insertProject(db, { title: 'Automatic Primary Selection' });
+      const asset = insertAsset(db, {
+        projectId: project.id,
+        relativePath: 'automatic.png',
+        filename: 'automatic.png',
+        extension: 'png',
+        mimeType: 'image/png',
+      });
+      primaryImageRepository.setPrimaryImage(
+        project.id,
+        asset.id,
+        PRIMARY_IMAGE_PROVENANCE.AUTOMATIC,
+      );
+
+      expect(getProjectRow(project.id).primaryImage).toMatchObject({
+        selectedAssetId: asset.id,
+        provenance: PRIMARY_IMAGE_PROVENANCE.AUTOMATIC,
+      });
     });
 
     it('keeps a present selected KRA format-available without probing during listing', () => {

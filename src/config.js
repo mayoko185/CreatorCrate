@@ -23,6 +23,11 @@ const DEFAULTS = {
 };
 
 const MAX_SESSION_TTL_HOURS = 720; // 30 days
+const MINUTE_IN_MILLISECONDS = 60 * 1000;
+const MAX_NODE_TIMER_DELAY_MILLISECONDS = 2_147_483_647;
+const MAX_AUTO_SCAN_INTERVAL_MINUTES = Math.floor(
+  MAX_NODE_TIMER_DELAY_MILLISECONDS / MINUTE_IN_MILLISECONDS
+);
 
 export class ConfigError extends Error {
   constructor(message) {
@@ -34,6 +39,26 @@ export class ConfigError extends Error {
 function getEnv(rawEnv, key) {
   const value = rawEnv[key];
   return value === undefined || value === '' ? DEFAULTS[key] : value;
+}
+
+function parseOptionalPositiveIntegerEnv(rawEnv, key) {
+  const rawValue = rawEnv[key];
+  if (rawValue === undefined || rawValue === '') return null;
+
+  if (typeof rawValue !== 'string' || !/^[1-9]\d*$/.test(rawValue)) {
+    throw new ConfigError(
+      `Invalid ${key} "${rawValue}". Expected a positive integer number of minutes, or an empty value to disable automatic scanning.`
+    );
+  }
+
+  const value = Number(rawValue);
+  if (!Number.isSafeInteger(value)) {
+    throw new ConfigError(
+      `Invalid ${key} "${rawValue}". Expected a positive integer number of minutes, or an empty value to disable automatic scanning.`
+    );
+  }
+
+  return value;
 }
 
 export function createConfig(rawEnv = process.env) {
@@ -80,6 +105,21 @@ export function createConfig(rawEnv = process.env) {
   if (!Number.isInteger(backupRetentionCount) || backupRetentionCount < 0) {
     throw new ConfigError(
       `Invalid BACKUP_RETENTION_COUNT "${retentionRaw}". Expected a non-negative integer (0 disables automatic pruning).`
+    );
+  }
+
+  // Deployment-controlled setting only. An absent or empty value disables
+  // automatic scanning; src/server.js owns the recurring scheduler lifecycle.
+  const autoScanIntervalMinutes = parseOptionalPositiveIntegerEnv(
+    rawEnv,
+    'AUTO_SCAN_INTERVAL_MINUTES'
+  );
+  if (
+    autoScanIntervalMinutes !== null &&
+    autoScanIntervalMinutes > MAX_AUTO_SCAN_INTERVAL_MINUTES
+  ) {
+    throw new ConfigError(
+      `Invalid AUTO_SCAN_INTERVAL_MINUTES "${rawEnv.AUTO_SCAN_INTERVAL_MINUTES}". Expected a positive integer number of minutes no greater than ${MAX_AUTO_SCAN_INTERVAL_MINUTES}, or an empty value to disable automatic scanning.`
     );
   }
 
@@ -131,6 +171,7 @@ export function createConfig(rawEnv = process.env) {
     previewRoot,
     backupDir,
     backupRetentionCount,
+    autoScanIntervalMinutes,
     auth: Object.freeze({
       sessionTtlHours,
       cookieSecure,

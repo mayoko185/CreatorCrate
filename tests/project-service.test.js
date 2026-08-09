@@ -102,6 +102,16 @@ describe('project service', () => {
     }
   });
 
+  it('lists scan-eligible projects through the canonical active-project query', () => {
+    const active = service.create(validInput({ title: 'Scan Active' }));
+    const archived = service.create(validInput({ title: 'Scan Archived' }));
+    service.archive(archived.id);
+
+    expect(service.listScanEligibleProjects()).toEqual([
+      { id: active.id, title: 'Scan Active' },
+    ]);
+  });
+
   it('rejects archived status on create', () => {
     expect(() => service.create(validInput({ status: 'archived' }))).toThrow(ProjectValidationError);
   });

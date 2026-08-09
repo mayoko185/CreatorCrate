@@ -173,6 +173,39 @@ describe('createConfig', () => {
     expect(() => createConfig(env({ BACKUP_RETENTION_COUNT: value }))).toThrow(ConfigError);
   });
 
+  // ─── Automatic scan interval (deployment-controlled, scheduler deferred) ──
+
+  it('disables automatic scanning when AUTO_SCAN_INTERVAL_MINUTES is absent', () => {
+    const config = createConfig(env());
+    expect(config.autoScanIntervalMinutes).toBeNull();
+  });
+
+  it('disables automatic scanning when AUTO_SCAN_INTERVAL_MINUTES is empty', () => {
+    const config = createConfig(env({ AUTO_SCAN_INTERVAL_MINUTES: '' }));
+    expect(config.autoScanIntervalMinutes).toBeNull();
+  });
+
+  it('parses a positive AUTO_SCAN_INTERVAL_MINUTES value as a number', () => {
+    const config = createConfig(env({ AUTO_SCAN_INTERVAL_MINUTES: '15' }));
+    expect(config.autoScanIntervalMinutes).toBe(15);
+  });
+
+  it('accepts the largest AUTO_SCAN_INTERVAL_MINUTES value within Node timer limits', () => {
+    const config = createConfig(env({ AUTO_SCAN_INTERVAL_MINUTES: '35791' }));
+    expect(config.autoScanIntervalMinutes).toBe(35791);
+  });
+
+  it('rejects AUTO_SCAN_INTERVAL_MINUTES above Node timer limits', () => {
+    expect(() => createConfig(env({ AUTO_SCAN_INTERVAL_MINUTES: '35792' }))).toThrow(ConfigError);
+  });
+
+  it.each(['0', '-1', '1.5', 'abc', '01', '+15', ' 15', '15 '])(
+    'rejects invalid AUTO_SCAN_INTERVAL_MINUTES %s',
+    (value) => {
+      expect(() => createConfig(env({ AUTO_SCAN_INTERVAL_MINUTES: value }))).toThrow(ConfigError);
+    }
+  );
+
   // ─── Authentication settings (Phase 13: optional, browser-managed) ────
   // Identity (username/password hash) and the session secret are no longer
   // environment configuration at all — see src/auth/auth-state.js and

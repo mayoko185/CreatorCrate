@@ -1,6 +1,9 @@
 import { createProjectRepository } from '../data/project-repository.js';
 import { createAssetRepository } from '../data/asset-repository.js';
-import { createProjectPrimaryImageRepository } from '../data/project-primary-image-repository.js';
+import {
+  createProjectPrimaryImageRepository,
+  PRIMARY_IMAGE_PROVENANCE,
+} from '../data/project-primary-image-repository.js';
 import { classifyPreviewable } from './preview-service.js';
 
 export const PRIMARY_IMAGE_ERROR_CODES = Object.freeze({
@@ -151,8 +154,17 @@ export function createProjectPrimaryImageService({
   const setPrimaryImageTx = db.transaction((projectId, assetId, kritaQuality = null) => {
     requireMutableProject(projectId);
     const asset = requireEligiblePresentAsset(projectId, assetId, { kritaQuality });
-    const stored = primaryImages.setPrimaryImage(projectId, asset.id);
-    if (!stored || stored.project_id !== projectId || stored.asset_id !== assetId) {
+    const stored = primaryImages.setPrimaryImage(
+      projectId,
+      asset.id,
+      PRIMARY_IMAGE_PROVENANCE.MANUAL,
+    );
+    if (
+      !stored
+      || stored.project_id !== projectId
+      || stored.asset_id !== assetId
+      || stored.provenance !== PRIMARY_IMAGE_PROVENANCE.MANUAL
+    ) {
       throw new Error('Primary image repository returned an invalid selection.');
     }
     return stored;
@@ -233,7 +245,10 @@ export function createProjectPrimaryImageService({
     if (!asset || asset.project_id !== projectId) {
       throw new Error('Primary image selection references an unavailable asset.');
     }
-    return asset;
+    return {
+      ...asset,
+      provenance: selection.provenance ?? PRIMARY_IMAGE_PROVENANCE.MANUAL,
+    };
   });
 
   return {

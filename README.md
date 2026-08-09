@@ -72,12 +72,19 @@ Copy `.env.example` for local runs. The Compose file supplies the in-container p
 | `PROJECTS_ROOT` | Project directories and original media | `./data/projects` |
 | `DATABASE_PATH` | SQLite database location | `./data/app/creatorcrate.db` |
 | `BACKUP_RETENTION_COUNT` | Managed database backups to retain; `0` disables pruning | `10` when unset |
+| `AUTO_SCAN_INTERVAL_MINUTES` | Optional deployment environment variable controlling the recurring scan interval for eligible projects; must be a positive whole number from `1` to `35791` minutes | Automatic scanning disabled when unset or empty; no default automatic scan interval |
 | `SESSION_TTL_HOURS` | Fixed server-side session lifetime | `24` when unset |
 | `COOKIE_SECURE` | Require HTTPS cookies | `false` when unset |
 | `TRUST_PROXY` | Trust forwarded client addresses for login throttling | `false` when unset |
 | `HSTS_ENABLED` | Send HSTS headers | `false` when unset |
 
-`TZ` is also accepted by the Compose service and defaults to `UTC`. If you need the optional auth, session, or backup settings inside Docker, add them explicitly to the service environment.
+`AUTO_SCAN_INTERVAL_MINUTES` controls how often CreatorCrate automatically scans eligible projects. Automatic scans use the same normal project-scanning behavior as manual scans and begin on the configured recurring interval, not immediately at startup. Malformed values or values outside the supported `1`-to-`35791` minute range fail configuration validation. For example:
+
+```text
+AUTO_SCAN_INTERVAL_MINUTES=60
+```
+
+`TZ` is also accepted by the Compose service and defaults to `UTC`. If you need the optional auth, session, backup, or automatic-scanning settings inside Docker, add them explicitly to the service environment.
 
 ## Data and workflows
 

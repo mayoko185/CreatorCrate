@@ -3,8 +3,8 @@
  *
  * Covers dependency injection into the Settings router, the global-default
  * list/add/edit/enable/disable/reorder/delete operations, validation and
- * conflict handling, the database-only guarantee (no filesystem or project
- * mutation), and authentication/CSRF behavior.
+ * conflict handling, the Preview category setting, the database-only guarantee
+ * (no filesystem or project mutation), and authentication/CSRF behavior.
  */
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
@@ -15,6 +15,10 @@ import { createApp } from '../src/app.js';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { resolveProjectDir } from '../src/storage/project-storage.js';
 import { authenticate, AUTH_CONFIG } from './helpers/auth.js';
+import {
+  PREVIEW_CATEGORY_KEY,
+  PREVIEW_CATEGORY_DISABLED_VALUE,
+} from '../src/services/preview-category-settings-service.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 const APP_NAME = 'CreatorCrate';
@@ -83,6 +87,10 @@ async function createProject(agent, csrfToken, title) {
 
 function getGlobalBrowserDefault(db) {
   return db.prepare('SELECT value FROM app_meta WHERE key = ?').pluck().get('asset_browser.default_category');
+}
+
+function getPreviewCategory(db) {
+  return db.prepare('SELECT value FROM app_meta WHERE key = ?').pluck().get(PREVIEW_CATEGORY_KEY);
 }
 
 function getProjectBrowserPreference(db, projectId) {
@@ -357,7 +365,108 @@ describe('settings — asset category defaults HTTP', () => {
         .send({ displayName: 'Ambiguous All', directorySlug: 'all', enabled: 'on', _csrf: csrfToken }).expect(302);
       const res = await agent.get('/settings/asset-categories').expect(200);
       expect(res.text).toMatch(/directory slug .*all.*reserved|reserved.*all.*sentinel/i);
-      expect((res.text.match(/<option value="all"/g) || []).length).toBe(1);
+      const browserDefaultSection = res.text.match(
+        /<section class="settings-section asset-browser-default-section" aria-labelledby="global-asset-browser-default-heading">[\s\S]*?<\/section>/
+      )?.[0] || '';
+      expect((browserDefaultSection.match(/<option value="all"/g) || []).length).toBe(1);
+    });
+  });
+
+  describe('preview category control', () => {
+    function previewSection(html) {
+      return html.match(
+        /<section class="settings-section asset-browser-default-section" aria-labelledby="global-preview-category-heading">[\s\S]*?<\/section>/
+      )?.[0] || '';
+    }
+
+    it('appears directly after Default category and selects Disabled when unset', async () => {
+      ctx = setupTmp();
+      const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
+      const { agent } = await authenticate(app);
+
+      const res = await agent.get('/settings/asset-categories').expect(200);
+      expect(res.text).toMatch(
+        /id="global-asset-browser-default-heading"[\s\S]*?<\/section>\s*<section class="settings-section asset-browser-default-section" aria-labelledby="global-preview-category-heading"/
+      );
+      expect(res.text.indexOf('global-preview-category-heading')).toBeLessThan(
+        res.text.indexOf('category-management-add')
+      );
+      expect(previewSection(res.text)).toContain(
+        `<option value="${PREVIEW_CATEGORY_DISABLED_VALUE}" selected>Disabled`
+      );
+      expect(getPreviewCategory(ctx.db)).toBeUndefined();
+    });
+
+    it('offers enabled defaults and excludes disabled defaults', async () => {
+      ctx = setupTmp();
+      const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
+      const { agent, csrfToken } = await authenticate(app);
+      const final = ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE directory_slug = ?').get('final');
+      await agent.post(`/settings/asset-categories/${final.id}/disable`).type('form').send({ _csrf: csrfToken }).expect(302);
+
+      const section = previewSection((await agent.get('/settings/asset-categories').expect(200)).text);
+      expect(section).toContain('<option value="wip">WIP</option>');
+      expect(section).not.toContain('<option value="final">Final</option>');
+    });
+
+    it('persists a valid global slug and reflects it on the page without changing the browser default', async () => {
+      ctx = setupTmp();
+      const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
+      const { agent, csrfToken } = await authenticate(app);
+      const browserDefaultBefore = getGlobalBrowserDefault(ctx.db);
+
+      const response = await agent.post('/settings/asset-categories/preview-category').type('form')
+        .send({ previewCategory: 'wip', _csrf: csrfToken }).expect(302);
+      expect(response.headers.location).toBe('/settings/asset-categories?notice=preview_category_saved');
+      expect(getPreviewCategory(ctx.db)).toBe('wip');
+      expect(getGlobalBrowserDefault(ctx.db)).toBe(browserDefaultBefore);
+
+      const section = previewSection((await agent.get('/settings/asset-categories').expect(200)).text);
+      expect(section).toContain('<option value="wip" selected>WIP</option>');
+      expect(section).toContain('Saved:</span> <strong>WIP</strong>');
+      expect((await agent.get(response.headers.location).expect(200)).text).toContain('Preview category saved.');
+    });
+
+    it('persists Disabled and turns the preview setting off', async () => {
+      ctx = setupTmp();
+      const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
+      const { agent, csrfToken } = await authenticate(app);
+
+      await agent.post('/settings/asset-categories/preview-category').type('form')
+        .send({ previewCategory: 'wip', _csrf: csrfToken }).expect(302);
+      await agent.post('/settings/asset-categories/preview-category').type('form')
+        .send({ previewCategory: PREVIEW_CATEGORY_DISABLED_VALUE, _csrf: csrfToken }).expect(302);
+
+      expect(getPreviewCategory(ctx.db)).toBe(PREVIEW_CATEGORY_DISABLED_VALUE);
+      const section = previewSection((await agent.get('/settings/asset-categories').expect(200)).text);
+      expect(section).toContain(`<option value="${PREVIEW_CATEGORY_DISABLED_VALUE}" selected>Disabled`);
+    });
+
+    it('rejects unknown, malformed, and disabled submissions with retained values and no overwrite', async () => {
+      ctx = setupTmp();
+      const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
+      const { agent, csrfToken } = await authenticate(app);
+      const final = ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE directory_slug = ?').get('final');
+      await agent.post('/settings/asset-categories/preview-category').type('form')
+        .send({ previewCategory: 'wip', _csrf: csrfToken }).expect(302);
+
+      const unknown = await agent.post('/settings/asset-categories/preview-category').type('form')
+        .send({ previewCategory: 'unknown-slug', _csrf: csrfToken }).expect(422);
+      expect(unknown.text).toContain('unknown-slug');
+      expect(unknown.text).toContain('Preview category must be Disabled or an enabled global category slug');
+      expect(getPreviewCategory(ctx.db)).toBe('wip');
+
+      const malformed = await agent.post('/settings/asset-categories/preview-category').type('form')
+        .send({ previewCategory: 'category:12', _csrf: csrfToken }).expect(422);
+      expect(malformed.text).toContain('category:12');
+      expect(getPreviewCategory(ctx.db)).toBe('wip');
+
+      await agent.post(`/settings/asset-categories/${final.id}/disable`).type('form').send({ _csrf: csrfToken }).expect(302);
+      const disabled = await agent.post('/settings/asset-categories/preview-category').type('form')
+        .send({ previewCategory: 'final', _csrf: csrfToken }).expect(422);
+      expect(disabled.text).toContain('final');
+      expect(disabled.text).toContain('selected preview category is disabled');
+      expect(getPreviewCategory(ctx.db)).toBe('wip');
     });
   });
 

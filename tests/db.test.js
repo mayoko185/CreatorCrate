@@ -94,6 +94,7 @@ describe('database and migrations', () => {
       '001_initial.sql',
       '002_add_completed_status.sql',
       '003_remove_project_priority.sql',
+      '004_add_primary_image_provenance.sql',
     ]);
   });
 

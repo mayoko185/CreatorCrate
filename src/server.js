@@ -8,6 +8,7 @@ import { validateMounts, FilesystemError } from './filesystem.js';
 import { ensurePreviewRoot, StorageError } from './storage/path-manager.js';
 import { openDatabase, runMigrations, closeDatabase, DatabaseError } from './db.js';
 import { createBackupService } from './services/backup-service.js';
+import { createAutomaticProjectScanScheduler } from './services/automatic-project-scan-scheduler.js';
 import { createApplicationContext } from './app-context.js';
 import { createManagedCredentialProvider, CredentialError } from './auth/credential-provider.js';
 import { ensureAuthEnablement, AuthStateError } from './auth/auth-state.js';
@@ -125,6 +126,7 @@ async function main() {
       migrationsDir,
       backupService,
       backupRetentionCount: config.backupRetentionCount,
+      autoScanIntervalMinutes: config.autoScanIntervalMinutes,
       maintenanceState,
       authConfig,
       authSettings: config.auth,
@@ -132,12 +134,22 @@ async function main() {
     },
   }, db);
 
+  const automaticProjectScanScheduler = createAutomaticProjectScanScheduler({
+    intervalMinutes: config.autoScanIntervalMinutes,
+    getScanDependencies: () => ({
+      projectService: appContext.app.locals.projectService,
+      assetScanner: appContext.app.locals.assetScanner,
+    }),
+  });
+
   const server = http.createServer((req, res) => appContext.handleRequest(req, res));
   server.listen(config.port, () => {
     console.log(`${config.appName} listening on port ${config.port} in ${config.nodeEnv} mode`);
+    automaticProjectScanScheduler.start();
   });
 
   function shutdown() {
+    automaticProjectScanScheduler.stop();
     server.close(() => {
       // Close whichever connection is currently active — a live restore may
       // have replaced the startup handle with a new one by now.
