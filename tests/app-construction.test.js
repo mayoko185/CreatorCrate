@@ -318,7 +318,7 @@ describe('app construction — asset actions chunk 3 wiring', () => {
     expect(typeof app.locals.assetBrowserPreferenceService.resolveEffectiveCategory).toBe('function');
   });
 
-  it('constructs one shared app-meta repository and page-defaults service without route wiring', () => {
+  it('constructs one shared app-meta repository and wires it to app locals and Settings', () => {
     const app = buildApp();
 
     expect(dependencyInstrumentation.appMetaRepositories).toHaveLength(1);
@@ -332,7 +332,10 @@ describe('app construction — asset actions chunk 3 wiring', () => {
     expect(appMetaRepositoryArgs[0]).toBe(db);
     expect(preferenceRepositoryArgs[1]).toEqual({ appMetaRepository });
     expect(pageDefaultsServiceArgs[0]).toEqual({ appMetaRepository });
+    expect(app.locals.appMetaRepository).toBe(appMetaRepository);
     expect(app.locals.pageDefaultsService).toBe(service);
+    expect(dependencyInstrumentation.settingsRouters[0].args[0].appMetaRepository)
+      .toBe(appMetaRepository);
     expect(dependencyInstrumentation.settingsRouters[0].args[0].pageDefaultsService).toBeUndefined();
   });
 

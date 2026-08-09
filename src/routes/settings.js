@@ -2,7 +2,7 @@ import express from 'express';
 import { BackupError } from '../services/backup-service.js';
 import { invalidateAllSessionsForDb } from '../services/auth-service.js';
 import { clearSessionCookie } from '../middleware/auth.js';
-import { formatRelativeTime } from '../util/date.js';
+import { formatLocalDate, formatLocalTime, formatRelativeTime } from '../util/date.js';
 import {
   AssetCategoryValidationError,
   AssetCategoryNotFoundError,
@@ -20,6 +20,10 @@ import {
   PreviewCategoryValidationError,
   PREVIEW_CATEGORY_DISABLED_VALUE,
 } from '../services/preview-category-settings-service.js';
+import {
+  AUTO_SCAN_LAST_COMPLETED_AT_KEY,
+  AUTO_SCAN_NEXT_SCHEDULED_AT_KEY,
+} from '../services/automatic-project-scan-scheduler.js';
 
 function createNotFound() {
   const err = new Error('Not found');
@@ -223,6 +227,22 @@ function getNsfwFilterSettingsService(req) {
     throw new Error('Settings NSFW Filter requires app.locals.nsfwFilterSettingsService.');
   }
   return service;
+}
+
+function formatScanTimestamp(value) {
+  if (typeof value !== 'string' || value.length === 0) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return `${formatLocalDate(date)} ${formatLocalTime(date)}`;
+}
+
+function buildAutomaticScanTiming(appMetaRepository, intervalMinutes) {
+  if (!Number.isSafeInteger(intervalMinutes) || intervalMinutes <= 0) return null;
+
+  return {
+    lastScan: formatScanTimestamp(appMetaRepository.getValue(AUTO_SCAN_LAST_COMPLETED_AT_KEY)),
+    nextScan: formatScanTimestamp(appMetaRepository.getValue(AUTO_SCAN_NEXT_SCHEDULED_AT_KEY)),
+  };
 }
 
 function renderTagsPage(req, res, {
@@ -610,6 +630,7 @@ export function createSettingsRouter({
   appDataRoot,
   backupRetentionCount,
   autoScanIntervalMinutes,
+  appMetaRepository,
   authSettings,
   assetBrowserPreferenceService,
   previewCategorySettingsService,
@@ -619,6 +640,9 @@ export function createSettingsRouter({
   }
   if (!previewCategorySettingsService) {
     throw new Error('createSettingsRouter requires a previewCategorySettingsService dependency.');
+  }
+  if (!appMetaRepository || typeof appMetaRepository.getValue !== 'function') {
+    throw new Error('createSettingsRouter requires an appMetaRepository dependency.');
   }
 
   const router = express.Router();
@@ -638,6 +662,7 @@ export function createSettingsRouter({
       invalidBackupCount: backups.filter((b) => !b.valid).length,
       retentionCount: backupRetentionCount,
       autoScanIntervalMinutes,
+      automaticScanTiming: buildAutomaticScanTiming(appMetaRepository, autoScanIntervalMinutes),
       paths: { projectsRoot, databasePath, appDataRoot },
       session: authSettings
         ? {

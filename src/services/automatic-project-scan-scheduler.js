@@ -1,6 +1,9 @@
 const MINUTE_IN_MILLISECONDS = 60 * 1000;
 const MAX_NODE_TIMER_DELAY_MILLISECONDS = 2_147_483_647;
 
+export const AUTO_SCAN_LAST_COMPLETED_AT_KEY = 'auto_scan.last_completed_at';
+export const AUTO_SCAN_NEXT_SCHEDULED_AT_KEY = 'auto_scan.next_scheduled_at';
+
 function formatError(error) {
   return error instanceof Error ? error.message : String(error);
 }
@@ -20,10 +23,11 @@ function isPromiseLike(value) {
  *
  * @param {object} deps
  * @param {number|null} deps.intervalMinutes - null disables scheduling
- * @param {() => {projectService: object, assetScanner: object}} deps.getScanDependencies
+ * @param {() => {projectService: object, assetScanner: object, appMetaRepository: object}} deps.getScanDependencies
  * @param {typeof setInterval} [deps.setIntervalFn]
  * @param {typeof clearInterval} [deps.clearIntervalFn]
  * @param {Console} [deps.logger]
+ * @param {() => Date|number|string} [deps.now]
  * @returns {{ start(): boolean, stop(): boolean, runCycle(): Promise<object> }}
  */
 export function createAutomaticProjectScanScheduler({
@@ -32,6 +36,7 @@ export function createAutomaticProjectScanScheduler({
   setIntervalFn = setInterval,
   clearIntervalFn = clearInterval,
   logger = console,
+  now = () => new Date(),
 } = {}) {
   if (intervalMinutes !== null && (!Number.isSafeInteger(intervalMinutes) || intervalMinutes <= 0)) {
     throw new Error('Automatic project scan interval must be null or a positive safe integer.');
@@ -50,10 +55,55 @@ export function createAutomaticProjectScanScheduler({
   if (typeof getScanDependencies !== 'function') {
     throw new Error('Automatic project scan scheduler requires a dependency getter.');
   }
+  if (typeof now !== 'function') {
+    throw new Error('Automatic project scan scheduler requires a clock function.');
+  }
 
   let timerHandle = null;
   let cycleRunning = false;
   let stopped = false;
+
+  function resolveAppMetaRepository() {
+    const repository = getScanDependencies()?.appMetaRepository;
+    if (!repository || typeof repository.setValue !== 'function') {
+      throw new Error('Automatic project scan scheduler requires an app-meta repository.');
+    }
+    return repository;
+  }
+
+  function resolveNow() {
+    const value = now();
+    const date = value instanceof Date ? new Date(value.getTime()) : new Date(value);
+    if (!Number.isFinite(date.getTime())) {
+      throw new Error('Automatic project scan scheduler clock returned an invalid date.');
+    }
+    return date;
+  }
+
+  function persistNextScheduledAt(referenceDate) {
+    const nextScheduledAt = new Date(
+      referenceDate.getTime() + intervalMilliseconds
+    ).toISOString();
+    resolveAppMetaRepository().setValue(AUTO_SCAN_NEXT_SCHEDULED_AT_KEY, nextScheduledAt);
+  }
+
+  function persistCycleTimestamps() {
+    const completedAt = resolveNow();
+    const repository = resolveAppMetaRepository();
+    repository.setValue(AUTO_SCAN_LAST_COMPLETED_AT_KEY, completedAt.toISOString());
+    repository.setValue(
+      AUTO_SCAN_NEXT_SCHEDULED_AT_KEY,
+      new Date(completedAt.getTime() + intervalMilliseconds).toISOString(),
+    );
+  }
+
+  function persistTimingSafely(operation) {
+    try {
+      operation();
+    } catch (error) {
+      logger.error(`[CreatorCrate] Automatic scan timing persistence failed: ${formatError(error)}`);
+    }
+  }
 
   async function runCycle() {
     if (intervalMinutes === null) {
@@ -101,6 +151,7 @@ export function createAutomaticProjectScanScheduler({
         `[CreatorCrate] Automatic project scan cycle completed: ` +
         `${summary.scanned} scanned, ${summary.failed} failed.`
       );
+      persistTimingSafely(persistCycleTimestamps);
       return summary;
     } catch (error) {
       // Enumeration or another cycle-level failure must not make the timer's
@@ -126,6 +177,7 @@ export function createAutomaticProjectScanScheduler({
     }
 
     stopped = false;
+    persistTimingSafely(() => persistNextScheduledAt(resolveNow()));
     timerHandle = setIntervalFn(triggerCycle, intervalMilliseconds);
     logger.log(
       `[CreatorCrate] Automatic project scanning enabled: every ${intervalMinutes} minute` +

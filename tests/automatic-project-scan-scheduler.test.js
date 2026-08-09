@@ -1,9 +1,25 @@
 import { describe, it, expect, vi } from 'vitest';
 import { createApplicationContext } from '../src/app-context.js';
-import { createAutomaticProjectScanScheduler } from '../src/services/automatic-project-scan-scheduler.js';
+import {
+  AUTO_SCAN_LAST_COMPLETED_AT_KEY,
+  AUTO_SCAN_NEXT_SCHEDULED_AT_KEY,
+  createAutomaticProjectScanScheduler,
+} from '../src/services/automatic-project-scan-scheduler.js';
 
 function makeLogger() {
   return { log: vi.fn(), error: vi.fn() };
+}
+
+function makeAppMetaRepository(initialValues = {}) {
+  const values = new Map(Object.entries(initialValues));
+  return {
+    values,
+    getValue: vi.fn((key) => values.get(key)),
+    setValue: vi.fn((key, value) => {
+      values.set(key, value);
+      return value;
+    }),
+  };
 }
 
 function makeTimerHarness() {
@@ -19,8 +35,8 @@ function makeTimerHarness() {
 
 function makeDependencies(scanner, projectService = {
   listScanEligibleProjects: () => [],
-}) {
-  return { projectService, assetScanner: scanner };
+}, appMetaRepository = makeAppMetaRepository()) {
+  return { projectService, assetScanner: scanner, appMetaRepository };
 }
 
 describe('automatic project scan scheduler', () => {
@@ -46,23 +62,30 @@ describe('automatic project scan scheduler', () => {
 
   it('schedules enabled scanning at the configured minute interval without an immediate scan', () => {
     const timer = makeTimerHarness();
+    const appMetaRepository = makeAppMetaRepository();
     const scanner = {
       listScanEligibleProjects: vi.fn(),
       scanProjectAssets: vi.fn(),
     };
-    const getScanDependencies = vi.fn(() => makeDependencies(scanner));
+    const getScanDependencies = vi.fn(() => makeDependencies(scanner, undefined, appMetaRepository));
     const scheduler = createAutomaticProjectScanScheduler({
       intervalMinutes: 15,
       getScanDependencies,
       setIntervalFn: timer.setIntervalFn,
       clearIntervalFn: timer.clearIntervalFn,
       logger: makeLogger(),
+      now: () => new Date('2026-01-01T00:00:00.000Z'),
     });
 
     expect(scheduler.start()).toBe(true);
     expect(timer.setIntervalFn).toHaveBeenCalledOnce();
     expect(timer.setIntervalFn).toHaveBeenCalledWith(expect.any(Function), 15 * 60 * 1000);
-    expect(getScanDependencies).not.toHaveBeenCalled();
+    expect(getScanDependencies).toHaveBeenCalledOnce();
+    expect(appMetaRepository.setValue).toHaveBeenCalledWith(
+      AUTO_SCAN_NEXT_SCHEDULED_AT_KEY,
+      '2026-01-01T00:15:00.000Z',
+    );
+    expect(scanner.scanProjectAssets).not.toHaveBeenCalled();
   });
 
   it('rejects an interval whose timer delay exceeds Node timer limits', () => {
@@ -114,7 +137,34 @@ describe('automatic project scan scheduler', () => {
     ]);
   });
 
+  it('records completion and the next scheduled time after an automatic cycle', async () => {
+    const appMetaRepository = makeAppMetaRepository();
+    const scheduler = createAutomaticProjectScanScheduler({
+      intervalMinutes: 15,
+      getScanDependencies: () => makeDependencies(
+        { scanProjectAssets: vi.fn() },
+        { listScanEligibleProjects: vi.fn(() => [{ id: 1 }]) },
+        appMetaRepository,
+      ),
+      logger: makeLogger(),
+      now: () => new Date('2026-01-01T01:00:00.000Z'),
+    });
+
+    await expect(scheduler.runCycle()).resolves.toEqual({ scanned: 1, failed: 0 });
+    expect(appMetaRepository.setValue).toHaveBeenNthCalledWith(
+      1,
+      AUTO_SCAN_LAST_COMPLETED_AT_KEY,
+      '2026-01-01T01:00:00.000Z',
+    );
+    expect(appMetaRepository.setValue).toHaveBeenNthCalledWith(
+      2,
+      AUTO_SCAN_NEXT_SCHEDULED_AT_KEY,
+      '2026-01-01T01:15:00.000Z',
+    );
+  });
+
   it('isolates one project failure and continues with later projects', async () => {
+    const appMetaRepository = makeAppMetaRepository();
     const scanner = {
       listScanEligibleProjects: vi.fn(),
       scanProjectAssets: vi.fn(async (projectId) => {
@@ -127,8 +177,9 @@ describe('automatic project scan scheduler', () => {
     const logger = makeLogger();
     const scheduler = createAutomaticProjectScanScheduler({
       intervalMinutes: 1,
-      getScanDependencies: () => makeDependencies(scanner, projectService),
+      getScanDependencies: () => makeDependencies(scanner, projectService, appMetaRepository),
       logger,
+      now: () => new Date('2026-01-01T01:00:00.000Z'),
     });
 
     await expect(scheduler.runCycle()).resolves.toEqual({ scanned: 2, failed: 1 });
@@ -137,9 +188,20 @@ describe('automatic project scan scheduler', () => {
     expect(logger.error).toHaveBeenCalledWith(
       '[CreatorCrate] Automatic scan failed for project 2: directory unavailable'
     );
+    expect(appMetaRepository.setValue).toHaveBeenNthCalledWith(
+      1,
+      AUTO_SCAN_LAST_COMPLETED_AT_KEY,
+      '2026-01-01T01:00:00.000Z',
+    );
+    expect(appMetaRepository.setValue).toHaveBeenNthCalledWith(
+      2,
+      AUTO_SCAN_NEXT_SCHEDULED_AT_KEY,
+      '2026-01-01T01:01:00.000Z',
+    );
   });
 
   it('skips overlapping cycle invocation', async () => {
+    const appMetaRepository = makeAppMetaRepository();
     let releaseScan;
     let scanStarted;
     const scanStartedPromise = new Promise((resolve) => { scanStarted = resolve; });
@@ -155,17 +217,20 @@ describe('automatic project scan scheduler', () => {
     };
     const scheduler = createAutomaticProjectScanScheduler({
       intervalMinutes: 1,
-      getScanDependencies: () => makeDependencies(scanner, projectService),
+      getScanDependencies: () => makeDependencies(scanner, projectService, appMetaRepository),
       logger: makeLogger(),
+      now: () => new Date('2026-01-01T01:00:00.000Z'),
     });
 
     const firstCycle = scheduler.runCycle();
     await scanStartedPromise;
     await expect(scheduler.runCycle()).resolves.toEqual({ skipped: true, reason: 'overlap' });
     expect(scanner.scanProjectAssets).toHaveBeenCalledOnce();
+    expect(appMetaRepository.setValue).not.toHaveBeenCalled();
 
     releaseScan();
     await firstCycle;
+    expect(appMetaRepository.setValue).toHaveBeenCalledTimes(2);
   });
 
   it('resets overlap state after successful and failed cycles', async () => {
@@ -233,8 +298,20 @@ describe('automatic project scan scheduler', () => {
     };
     let buildIndex = 0;
     const apps = [
-      { locals: { projectService: firstProjectService, assetScanner: firstScanner } },
-      { locals: { projectService: secondProjectService, assetScanner: secondScanner } },
+      {
+        locals: {
+          projectService: firstProjectService,
+          assetScanner: firstScanner,
+          appMetaRepository: makeAppMetaRepository(),
+        },
+      },
+      {
+        locals: {
+          projectService: secondProjectService,
+          assetScanner: secondScanner,
+          appMetaRepository: makeAppMetaRepository(),
+        },
+      },
     ];
     const appContext = createApplicationContext(
       { appName: 'CreatorCrate', appOpts: {} },
@@ -246,6 +323,7 @@ describe('automatic project scan scheduler', () => {
       getScanDependencies: () => ({
         projectService: appContext.app.locals.projectService,
         assetScanner: appContext.app.locals.assetScanner,
+        appMetaRepository: appContext.app.locals.appMetaRepository,
       }),
       logger: makeLogger(),
     });
@@ -258,23 +336,29 @@ describe('automatic project scan scheduler', () => {
     expect(secondScanner.scanProjectAssets).toHaveBeenCalledWith(2);
     expect(firstScanner.scanProjectAssets).toHaveBeenCalledTimes(1);
     expect(secondScanner.scanProjectAssets).toHaveBeenCalledTimes(1);
+    expect(apps[0].locals.appMetaRepository.setValue).toHaveBeenCalledTimes(2);
+    expect(apps[1].locals.appMetaRepository.setValue).toHaveBeenCalledTimes(2);
   });
 
   it('clears the recurring timer when stopped', () => {
     const timer = makeTimerHarness();
+    const appMetaRepository = makeAppMetaRepository();
     const scheduler = createAutomaticProjectScanScheduler({
       intervalMinutes: 1,
-      getScanDependencies: () => makeDependencies({}),
+      getScanDependencies: () => makeDependencies({}, undefined, appMetaRepository),
       setIntervalFn: timer.setIntervalFn,
       clearIntervalFn: timer.clearIntervalFn,
       logger: makeLogger(),
+      now: () => new Date('2026-01-01T01:00:00.000Z'),
     });
 
     scheduler.start();
+    const persistedAtStart = [...appMetaRepository.setValue.mock.calls];
     expect(scheduler.stop()).toBe(true);
     expect(timer.clearIntervalFn).toHaveBeenCalledOnce();
     expect(timer.clearIntervalFn).toHaveBeenCalledWith(timer.handle);
     expect(scheduler.stop()).toBe(false);
     expect(timer.clearIntervalFn).toHaveBeenCalledOnce();
+    expect(appMetaRepository.setValue.mock.calls).toEqual(persistedAtStart);
   });
 });

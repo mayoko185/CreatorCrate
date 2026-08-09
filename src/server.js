@@ -139,6 +139,7 @@ async function main() {
     getScanDependencies: () => ({
       projectService: appContext.app.locals.projectService,
       assetScanner: appContext.app.locals.assetScanner,
+      appMetaRepository: appContext.app.locals.appMetaRepository,
     }),
   });
 

@@ -15,7 +15,12 @@ import { fileURLToPath } from 'node:url';
 import { createApp } from '../src/app.js';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { createBackupService, BackupError } from '../src/services/backup-service.js';
+import {
+  AUTO_SCAN_LAST_COMPLETED_AT_KEY,
+  AUTO_SCAN_NEXT_SCHEDULED_AT_KEY,
+} from '../src/services/automatic-project-scan-scheduler.js';
 import { resolveBackupDir } from '../src/storage/backup-storage.js';
+import { formatLocalDate, formatLocalTime } from '../src/util/date.js';
 import { authenticate, AUTH_CONFIG, extractCsrfToken } from './helpers/auth.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
@@ -142,6 +147,8 @@ describe('settings — backup management HTTP', () => {
       expect(res.text).toContain('Deployment-controlled');
       expect(res.text).toContain('auto_scan_interval_minutes');
       expect(res.text).toContain('>Off</span>');
+      expect(res.text).not.toContain('Last scan');
+      expect(res.text).not.toContain('Next scan');
       expect(res.text).toContain('projects_root');
       expect(res.text).toContain(renderedPath(projectsRoot));
       expect(res.text).toContain('database_path');
@@ -172,6 +179,43 @@ describe('settings — backup management HTTP', () => {
 
       expect(res.text).toContain('auto_scan_interval_minutes');
       expect(res.text).toContain('15 minutes');
+      expect(res.text).toContain('Last scan');
+      expect(res.text).toContain('Next scan');
+      expect(res.text.match(/>Not yet<\/span>/g)).toHaveLength(2);
+    });
+
+    it('renders persisted automatic scan timestamps when enabled', async () => {
+      const configuredApp = createApp(
+        { appName: APP_NAME, db, projectsRoot },
+        {
+          backupService,
+          maintenanceState,
+          appDataRoot,
+          databasePath,
+          migrationsDir: MIGRATIONS_DIR,
+          authConfig: AUTH_CONFIG,
+          authSettings: AUTH_SETTINGS,
+          autoScanIntervalMinutes: 15,
+        },
+      );
+      const lastScan = new Date(2026, 0, 1, 10, 15);
+      const nextScan = new Date(2026, 0, 1, 10, 30);
+      configuredApp.locals.appMetaRepository.setValue(
+        AUTO_SCAN_LAST_COMPLETED_AT_KEY,
+        lastScan.toISOString(),
+      );
+      configuredApp.locals.appMetaRepository.setValue(
+        AUTO_SCAN_NEXT_SCHEDULED_AT_KEY,
+        nextScan.toISOString(),
+      );
+
+      const configuredAuth = await authenticate(configuredApp);
+      const res = await configuredAuth.agent.get('/settings').expect(200);
+
+      expect(res.text).toContain('Last scan');
+      expect(res.text).toContain(`${formatLocalDate(lastScan)} ${formatLocalTime(lastScan)}`);
+      expect(res.text).toContain('Next scan');
+      expect(res.text).toContain(`${formatLocalDate(nextScan)} ${formatLocalTime(nextScan)}`);
     });
   });
 

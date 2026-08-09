@@ -60,6 +60,10 @@
         <div class="kv"><span class="kv-key">projects_root</span><span class="kv-value"><code>{{ paths.projectsRoot }}</code></span></div>
         <div class="kv"><span class="kv-key">database_path</span><span class="kv-value"><code>{{ paths.databasePath }}</code></span></div>
         <div class="kv"><span class="kv-key">auto_scan_interval_minutes</span><span class="kv-value">{% if autoScanIntervalMinutes %}{{ autoScanIntervalMinutes }} minutes{% else %}Off{% endif %}</span></div>
+        {% if automaticScanTiming %}
+          <div class="kv"><span class="kv-key">Last scan</span><span class="kv-value">{% if automaticScanTiming.lastScan %}{{ automaticScanTiming.lastScan }}{% else %}Not yet{% endif %}</span></div>
+          <div class="kv"><span class="kv-key">Next scan</span><span class="kv-value">{% if automaticScanTiming.nextScan %}{{ automaticScanTiming.nextScan }}{% else %}Not yet{% endif %}</span></div>
+        {% endif %}
         {% if session %}
           <div class="kv"><span class="kv-key">trust_proxy</span><span class="kv-value">{{ session.trustProxy }}</span></div>
           <div class="kv"><span class="kv-key">hsts_enabled</span><span class="kv-value">{{ session.hstsEnabled }}</span></div>

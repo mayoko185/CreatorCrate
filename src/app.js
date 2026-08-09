@@ -114,8 +114,9 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   // threaded explicitly — the repository receives the database, the service
   // receives the repository, and projectService receives the already-built
   // service. Nothing downstream constructs its own repository. The same
-  // instance is what a future Settings router will receive too.
+  // instance is passed to the Settings router too.
   const appMetaRepository = opts.appMetaRepository || createAppMetaRepository(db);
+  app.locals.appMetaRepository = appMetaRepository;
   const assetCategoryRepository = opts.assetCategoryRepository || createAssetCategoryRepository(db);
   const assetCategoryService = opts.assetCategoryService || createAssetCategoryService(assetCategoryRepository);
   const assetBrowserPreferenceRepository =
@@ -480,6 +481,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     appDataRoot,
     backupRetentionCount: opts.backupRetentionCount,
     autoScanIntervalMinutes: opts.autoScanIntervalMinutes,
+    appMetaRepository,
     authSettings: opts.authSettings,
     assetBrowserPreferenceService,
     previewCategorySettingsService,
