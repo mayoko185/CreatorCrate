@@ -6,6 +6,12 @@ export const VITE_ENTRY_KEY = 'client/main.js';
 export const VITE_PUBLIC_PATH = '/vite';
 export const VITE_DIST_ROOT = fileURLToPath(new URL('../dist/client', import.meta.url));
 export const VITE_MANIFEST_PATH = path.join(VITE_DIST_ROOT, '.vite', 'manifest.json');
+export const VITE_DEV_CLIENT_PATH = '/@vite/client';
+export const VITE_DEV_ENTRY_PATH = `/${VITE_ENTRY_KEY}`;
+export const VITE_DEV_ASSETS = Object.freeze({
+  client: VITE_DEV_CLIENT_PATH,
+  entry: VITE_DEV_ENTRY_PATH,
+});
 
 const IMPORT_FIELDS = ['imports', 'dynamicImports'];
 

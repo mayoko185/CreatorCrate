@@ -10,6 +10,7 @@ import { openDatabase, runMigrations, closeDatabase, DatabaseError } from './db.
 import { createBackupService } from './services/backup-service.js';
 import { createAutomaticProjectScanScheduler } from './services/automatic-project-scan-scheduler.js';
 import { createApplicationContext } from './app-context.js';
+import { ASSET_MODES, resolveAssetMode } from './app.js';
 import { createManagedCredentialProvider, CredentialError } from './auth/credential-provider.js';
 import { ensureAuthEnablement, AuthStateError } from './auth/auth-state.js';
 import {
@@ -23,6 +24,49 @@ export function loadProductionAssetManifest(options = {}) {
     ...options,
     requiredEntries: [VITE_ENTRY_KEY],
   });
+}
+
+export async function createDevelopmentViteServer({
+  nodeEnv,
+  parentServer,
+  loadVite = () => import('vite'),
+} = {}) {
+  if (resolveAssetMode(nodeEnv) !== ASSET_MODES.DEVELOPMENT) return null;
+  if (!parentServer) {
+    throw new TypeError('createDevelopmentViteServer requires a parent HTTP server.');
+  }
+  if (typeof loadVite !== 'function') {
+    throw new TypeError('createDevelopmentViteServer requires a Vite module loader.');
+  }
+
+  const vite = await loadVite();
+  if (!vite || typeof vite.createServer !== 'function') {
+    throw new TypeError('The Vite module must expose createServer().');
+  }
+
+  return vite.createServer({
+    configFile: false,
+    server: {
+      hmr: { server: parentServer },
+      middlewareMode: { server: parentServer },
+    },
+    appType: 'custom',
+  });
+}
+
+export function createApplicationRequestHandler(appContext, viteServer = null) {
+  if (!appContext || typeof appContext.handleRequest !== 'function') {
+    throw new TypeError('createApplicationRequestHandler requires an application context.');
+  }
+  if (viteServer && typeof viteServer.middlewares !== 'function') {
+    throw new TypeError('createApplicationRequestHandler requires Vite middlewares().');
+  }
+
+  if (!viteServer) {
+    return (req, res) => appContext.handleRequest(req, res);
+  }
+
+  return (req, res) => viteServer.middlewares(req, res, () => appContext.handleRequest(req, res));
 }
 
 async function main() {
@@ -157,9 +201,21 @@ async function main() {
       authSettings: config.auth,
       authState: { csrfPepper: authState.csrfPepper },
       assetManifest,
-      useViteAssets: config.nodeEnv === 'production',
+      assetMode: resolveAssetMode(config.nodeEnv),
     },
   }, db);
+
+  const server = http.createServer();
+  let viteServer;
+  try {
+    viteServer = await createDevelopmentViteServer({
+      nodeEnv: config.nodeEnv,
+      parentServer: server,
+    });
+  } catch (err) {
+    closeDatabase(appContext.db);
+    throw err;
+  }
 
   const automaticProjectScanScheduler = createAutomaticProjectScanScheduler({
     intervalMinutes: config.autoScanIntervalMinutes,
@@ -170,20 +226,26 @@ async function main() {
     }),
   });
 
-  const server = http.createServer((req, res) => appContext.handleRequest(req, res));
+  server.on('request', createApplicationRequestHandler(appContext, viteServer));
   server.listen(config.port, () => {
     console.log(`${config.appName} listening on port ${config.port} in ${config.nodeEnv} mode`);
     automaticProjectScanScheduler.start();
   });
 
-  function shutdown() {
+  let shuttingDown = false;
+  async function shutdown() {
+    if (shuttingDown) return;
+    shuttingDown = true;
     automaticProjectScanScheduler.stop();
-    server.close(() => {
+    try {
+      await viteServer?.close();
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
       // Close whichever connection is currently active — a live restore may
       // have replaced the startup handle with a new one by now.
       closeDatabase(appContext.db);
       process.exit(0);
-    });
+    }
   }
 
   process.on('SIGTERM', shutdown);

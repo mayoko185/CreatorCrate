@@ -7,7 +7,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}CreatorCrate{% if hasPageHeading %} — {{ currentPageHeading }}{% endif %}{% endblock %}</title>
     {% set viteEntryAssets = {} %}
-    {% if useViteAssets %}
+    {% if assetMode == 'production' %}
       {% set viteEntryAssets = viteAssets.entry('client/main.js') %}
       {% for stylesheetUrl in viteEntryAssets.css %}
         <link rel="stylesheet" href="{{ stylesheetUrl }}">
@@ -15,13 +15,16 @@
       {% for preloadUrl in viteEntryAssets.preload %}
         <link rel="modulepreload" href="{{ preloadUrl }}">
       {% endfor %}
-    {% else %}
+    {% elif assetMode == 'test' %}
       <link rel="stylesheet" href="/creatorcrate.css">
     {% endif %}
     {% block page_assets %}{% endblock %}
     <link rel="icon" type="image/svg+xml" href="/logo.svg">
-    {% if useViteAssets %}
+    {% if assetMode == 'production' %}
       <script type="module" src="{{ viteEntryAssets.js }}"></script>
+    {% elif assetMode == 'development' %}
+      <script type="module" src="{{ viteDevAssets.client }}"></script>
+      <script type="module" src="{{ viteDevAssets.entry }}"></script>
     {% else %}
       <script type="module" src="/creatorcrate.js"></script>
     {% endif %}

@@ -6,7 +6,13 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createApp } from '../src/app.js';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
-import { createAssetManifest, VITE_ENTRY_KEY } from '../src/asset-manifest.js';
+import {
+  createAssetManifest,
+  VITE_DEV_ASSETS,
+  VITE_ENTRY_KEY,
+} from '../src/asset-manifest.js';
+import { ASSET_MODES } from '../src/app.js';
+import { DEVELOPMENT_SECURITY_CSP, SECURITY_CSP } from '../src/middleware/security-headers.js';
 import { loadProductionAssetManifest } from '../src/server.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
@@ -56,7 +62,7 @@ describe('Vite production asset app integration', () => {
     runMigrations(db, MIGRATIONS_DIR);
     app = createApp(
       { appName: 'CreatorCrate', db },
-      { appDataRoot, assetManifest: assets, useViteAssets: true, viteDistRoot: distRoot },
+      { appDataRoot, assetManifest: assets, assetMode: ASSET_MODES.PRODUCTION, viteDistRoot: distRoot },
     );
   });
 
@@ -110,6 +116,24 @@ describe('Vite production asset app integration', () => {
     expect(response.text).toContain('<script src="/vendor/toast-ui/editor/toastui-editor.js"></script>');
     expect(response.text).not.toContain('href="/creatorcrate.css"');
     expect(response.text).not.toContain('src="/creatorcrate.js"');
+    expect(response.text).not.toContain('/@vite/client');
+    expect(response.headers['content-security-policy']).toBe(SECURITY_CSP);
+  });
+
+  it('renders same-origin Vite development client and source entry without legacy main assets', async () => {
+    const developmentApp = createApp(
+      { appName: 'CreatorCrate', db },
+      { appDataRoot, assetManifest: assets, assetMode: ASSET_MODES.DEVELOPMENT, viteDistRoot: distRoot },
+    );
+    const response = await request(developmentApp).get('/').expect(200);
+
+    expect(response.text).toContain(`<script type="module" src="${VITE_DEV_ASSETS.client}"></script>`);
+    expect(response.text).toContain(`<script type="module" src="${VITE_DEV_ASSETS.entry}"></script>`);
+    expect(response.text).not.toContain('<link rel="stylesheet" href="/creatorcrate.css">');
+    expect(response.text).not.toContain('<script type="module" src="/creatorcrate.js"></script>');
+    expect(response.text).not.toContain('/vite/assets/main-TEST.js');
+    expect(response.text).not.toContain('/vite/assets/main-TEST.css');
+    expect(response.headers['content-security-policy']).toBe(DEVELOPMENT_SECURITY_CSP);
   });
 
   it('fails production startup clearly when the manifest is absent', () => {
@@ -120,14 +144,16 @@ describe('Vite production asset app integration', () => {
   it('keeps the legacy main assets for explicit non-production rendering', async () => {
     const legacyApp = createApp(
       { appName: 'CreatorCrate', db },
-      { appDataRoot, assetManifest: assets, useViteAssets: false, viteDistRoot: distRoot },
+      { appDataRoot, assetManifest: assets, assetMode: ASSET_MODES.TEST, viteDistRoot: distRoot },
     );
     const response = await request(legacyApp).get('/').expect(200);
 
     expect(response.text).toContain('<link rel="stylesheet" href="/creatorcrate.css">');
     expect(response.text).toContain('<script type="module" src="/creatorcrate.js"></script>');
+    expect(response.text).not.toContain('/@vite/client');
     expect(response.text).not.toContain('/vite/assets/main-TEST.js');
     expect(response.text).not.toContain('/vite/assets/main-TEST.css');
+    expect(response.headers['content-security-policy']).toBe(SECURITY_CSP);
   });
 
   it('exposes the injected resolver to the application and Nunjucks-facing locals', () => {

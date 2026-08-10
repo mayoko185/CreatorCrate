@@ -54,12 +54,47 @@ import { createAuthRouter } from './routes/auth.js';
 import { createLoginThrottler } from './auth/login-throttle.js';
 import { createAuthTransitionService } from './auth/auth-transition-service.js';
 import { buildShellModel } from './shell/navigation.js';
-import { createUnavailableAssetManifest, VITE_DIST_ROOT, VITE_PUBLIC_PATH } from './asset-manifest.js';
+import {
+  createUnavailableAssetManifest,
+  VITE_DEV_ASSETS,
+  VITE_DIST_ROOT,
+  VITE_PUBLIC_PATH,
+} from './asset-manifest.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const TOAST_UI_EDITOR_DIST = path.join(__dirname, '../node_modules/@toast-ui/editor/dist');
 
 const SESSION_COOKIE_NAME = 'cc_session';
+
+export const ASSET_MODES = Object.freeze({
+  PRODUCTION: 'production',
+  DEVELOPMENT: 'development',
+  TEST: 'test',
+});
+
+const ASSET_MODE_VALUES = new Set(Object.values(ASSET_MODES));
+
+export function resolveAssetMode(nodeEnv) {
+  if (nodeEnv === 'production') return ASSET_MODES.PRODUCTION;
+  if (nodeEnv === 'development') return ASSET_MODES.DEVELOPMENT;
+  return ASSET_MODES.TEST;
+}
+
+function resolveAppAssetMode(opts) {
+  if (opts.useViteAssets !== undefined && typeof opts.useViteAssets !== 'boolean') {
+    throw new TypeError('createApp requires useViteAssets to be a boolean when provided.');
+  }
+
+  const assetMode = opts.assetMode ?? (
+    opts.useViteAssets === true ? ASSET_MODES.PRODUCTION : ASSET_MODES.TEST
+  );
+  if (!ASSET_MODE_VALUES.has(assetMode)) {
+    throw new TypeError(
+      `createApp requires assetMode to be one of: ${Object.values(ASSET_MODES).join(', ')}.`
+    );
+  }
+  return assetMode;
+}
 
 export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {}) {
   const app = express();
@@ -76,18 +111,20 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     express: app,
     noCache: true,
   });
-  const useViteAssets = opts.useViteAssets === undefined ? false : opts.useViteAssets;
-  if (typeof useViteAssets !== 'boolean') {
-    throw new TypeError('createApp requires useViteAssets to be a boolean when provided.');
-  }
+  const assetMode = resolveAppAssetMode(opts);
+  const useViteAssets = assetMode === ASSET_MODES.PRODUCTION;
   const assetManifest = opts.assetManifest || createUnavailableAssetManifest();
   if (typeof assetManifest.entry !== 'function') {
     throw new TypeError('createApp requires an assetManifest resolver with an entry() method.');
   }
   env.addGlobal('viteAssets', assetManifest);
+  env.addGlobal('viteDevAssets', VITE_DEV_ASSETS);
+  env.addGlobal('assetMode', assetMode);
   env.addGlobal('useViteAssets', useViteAssets);
   app.locals.assetManifest = assetManifest;
   app.locals.viteAssets = assetManifest;
+  app.locals.viteDevAssets = VITE_DEV_ASSETS;
+  app.locals.assetMode = assetMode;
   app.locals.useViteAssets = useViteAssets;
   app.set('view engine', 'njk');
 
@@ -121,7 +158,10 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     res.json({ status: 'error', message: 'Service temporarily unavailable for maintenance.' });
   });
 
-  app.use(createSecurityHeadersMiddleware({ hstsEnabled: authConfig ? authConfig.hstsEnabled : false }));
+  app.use(createSecurityHeadersMiddleware({
+    assetMode,
+    hstsEnabled: authConfig ? authConfig.hstsEnabled : false,
+  }));
 
   app.use(express.json());
   app.use(express.urlencoded({ extended: true }));

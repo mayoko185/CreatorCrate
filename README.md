@@ -39,6 +39,15 @@ Open <http://localhost:3000>. Run the test suite with:
 pnpm test
 ```
 
+For real-browser frontend smoke coverage, install the dedicated Chromium binary explicitly and run the separate Playwright suite:
+
+```bash
+pnpm test:browser:install
+pnpm test:browser
+```
+
+The browser suite uses temporary application data, projects, and SQLite state; it does not use the local `data/` directories.
+
 ### Docker Compose
 
 CreatorCrate uses two host bind mounts: one for application data and one for project files. Create the directories first, then add the required paths to `.env`:
@@ -136,6 +145,8 @@ Restoring a database does not change the current authentication enablement or op
 | Start development server | `pnpm dev` |
 | Run tests once | `pnpm test` |
 | Run tests interactively | `pnpm test:watch` |
+| Run Chromium browser smoke tests | `pnpm test:browser` |
+| Install the Chromium browser for smoke tests | `pnpm test:browser:install` |
 | Run the project check | `pnpm check` |
 | Generate a password hash for scripted deployments | `pnpm auth:hash` |
 | Reset browser-managed authentication after lockout | `pnpm auth:reset` |

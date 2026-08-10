@@ -9,6 +9,18 @@ const CSP = [
   "form-action 'self'",
 ].join('; ');
 
+const DEVELOPMENT_CSP = [
+  "default-src 'self'",
+  "img-src 'self' data:",
+  "style-src 'self' 'unsafe-inline'",
+  "script-src 'self'",
+  "connect-src 'self' ws: wss:",
+  "object-src 'none'",
+  "base-uri 'self'",
+  "frame-ancestors 'none'",
+  "form-action 'self'",
+].join('; ');
+
 function isStaticAsset(req) {
   return req.method === 'GET' && /\.[A-Za-z0-9]+$/.test(req.path);
 }
@@ -20,9 +32,10 @@ function isNoStoreHtmlPath(req, authEnabled) {
   return false;
 }
 
-export function createSecurityHeadersMiddleware({ hstsEnabled = false } = {}) {
+export function createSecurityHeadersMiddleware({ assetMode = 'production', hstsEnabled = false } = {}) {
+  const csp = assetMode === 'development' ? DEVELOPMENT_CSP : CSP;
   return (_req, res, next) => {
-    res.setHeader('Content-Security-Policy', CSP);
+    res.setHeader('Content-Security-Policy', csp);
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'same-origin');
     res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
@@ -45,3 +58,4 @@ export function createCachePolicyMiddleware() {
 }
 
 export const SECURITY_CSP = CSP;
+export const DEVELOPMENT_SECURITY_CSP = DEVELOPMENT_CSP;

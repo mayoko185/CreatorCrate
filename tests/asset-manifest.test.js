@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -7,7 +7,11 @@ import {
   createAssetManifest,
   VITE_ENTRY_KEY,
 } from '../src/asset-manifest.js';
-import { loadProductionAssetManifest } from '../src/server.js';
+import {
+  createApplicationRequestHandler,
+  createDevelopmentViteServer,
+  loadProductionAssetManifest,
+} from '../src/server.js';
 
 function createFixtureManifest() {
   return {
@@ -187,5 +191,65 @@ describe('Vite asset manifest resolver', () => {
     });
     expect(() => assets.entry('../outside.js')).toThrow(AssetManifestError);
     expect(() => assets.entry('../outside.js')).toThrow(/safe relative path|path segments/);
+  });
+});
+
+describe('Vite development server lifecycle contract', () => {
+  it('does not load Vite for test or production modes', async () => {
+    const loadVite = vi.fn();
+    const parentServer = {};
+
+    await expect(createDevelopmentViteServer({
+      nodeEnv: 'test',
+      parentServer,
+      loadVite,
+    })).resolves.toBeNull();
+    await expect(createDevelopmentViteServer({
+      nodeEnv: 'production',
+      parentServer,
+      loadVite,
+    })).resolves.toBeNull();
+
+    expect(loadVite).not.toHaveBeenCalled();
+  });
+
+  it('creates Vite in middleware mode on the existing HTTP server only in development', async () => {
+    const parentServer = {};
+    const viteServer = { middlewares: vi.fn() };
+    const createServer = vi.fn().mockResolvedValue(viteServer);
+    const loadVite = vi.fn().mockResolvedValue({ createServer });
+
+    await expect(createDevelopmentViteServer({
+      nodeEnv: 'development',
+      parentServer,
+      loadVite,
+    })).resolves.toBe(viteServer);
+
+    expect(createServer).toHaveBeenCalledWith({
+      configFile: false,
+      server: {
+        hmr: { server: parentServer },
+        middlewareMode: { server: parentServer },
+      },
+      appType: 'custom',
+    });
+  });
+
+  it('lets Vite handle development assets and falls through to Express application routes', () => {
+    const appContext = { handleRequest: vi.fn() };
+    const viteServer = {
+      middlewares: vi.fn((_req, _res, next) => next()),
+    };
+    const request = {};
+    const response = {};
+
+    createApplicationRequestHandler(appContext, viteServer)(request, response);
+
+    expect(viteServer.middlewares).toHaveBeenCalledWith(request, response, expect.any(Function));
+    expect(appContext.handleRequest).toHaveBeenCalledWith(request, response);
+
+    const legacyHandler = createApplicationRequestHandler(appContext);
+    legacyHandler(request, response);
+    expect(appContext.handleRequest).toHaveBeenCalledTimes(2);
   });
 });
