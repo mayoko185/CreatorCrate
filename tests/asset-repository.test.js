@@ -1244,6 +1244,119 @@ describe('asset repository', () => {
     });
   });
 
+  describe('searchAssetsForPicker', () => {
+    it('returns bounded canonical pages for only one project without omissions or duplicates', () => {
+      const otherProject = createProject('Picker Foreign Project');
+      const expected = [];
+      for (let index = 1; index <= 12; index += 1) {
+        expected.push(assetRepo.upsert(projectId, `picker/asset-${String(index).padStart(2, '0')}.png`, {
+          filename: `asset-${String(index).padStart(2, '0')}.png`,
+          extension: 'png', mimeType: 'image/png', sizeBytes: index, modifiedAt: null,
+        }));
+      }
+      const foreign = assetRepo.upsert(otherProject.id, 'picker/asset-00.png', {
+        filename: 'asset-00.png', extension: 'png', mimeType: 'image/png', sizeBytes: 1, modifiedAt: null,
+      });
+
+      const first = assetRepo.searchAssetsForPicker({ projectId, limit: 5 });
+      const second = assetRepo.searchAssetsForPicker({
+        projectId, limit: 5, cursor: first.nextCursor,
+      });
+      const third = assetRepo.searchAssetsForPicker({
+        projectId, limit: 5, cursor: second.nextCursor,
+      });
+
+      expect(first.rows).toHaveLength(5);
+      expect(second.rows).toHaveLength(5);
+      expect(third.rows).toHaveLength(2);
+      expect([...first.rows, ...second.rows, ...third.rows].map((asset) => asset.id))
+        .toEqual(expected.map((asset) => asset.id));
+      expect(new Set([...first.rows, ...second.rows, ...third.rows].map((asset) => asset.id)).size).toBe(12);
+      expect([...first.rows, ...second.rows, ...third.rows].every((asset) => asset.project_id === projectId))
+        .toBe(true);
+      expect([...first.rows, ...second.rows, ...third.rows].map((asset) => asset.id)).not.toContain(foreign.id);
+      expect(first.rows[0]).toEqual({
+        id: expected[0].id,
+        project_id: projectId,
+        filename: 'asset-01.png',
+        relative_path: 'picker/asset-01.png',
+        is_present: 1,
+      });
+      expect(third.nextCursor).toBeNull();
+    });
+
+    it('includes missing assets and assets owned by archived projects', () => {
+      const archivedProject = createProject('Archived Picker Project');
+      const missing = assetRepo.upsert(archivedProject.id, 'history/missing.png', {
+        filename: 'missing.png', extension: 'png', mimeType: 'image/png', sizeBytes: 1, modifiedAt: null,
+      });
+      assetRepo.markAllMissing(archivedProject.id);
+      projectRepo.archive(archivedProject.id);
+
+      expect(assetRepo.searchAssetsForPicker({ projectId: archivedProject.id, limit: 5 }).rows)
+        .toEqual([{
+          id: missing.id,
+          project_id: archivedProject.id,
+          filename: 'missing.png',
+          relative_path: 'history/missing.png',
+          is_present: 0,
+        }]);
+    });
+
+    it('searches case-insensitively across filename and relative path with LIKE metacharacters escaped', () => {
+      const filenameMatch = assetRepo.upsert(projectId, 'source/Sun_100%.png', {
+        filename: 'Sun_100%.png', extension: 'png', mimeType: 'image/png', sizeBytes: 1, modifiedAt: null,
+      });
+      const pathMatch = assetRepo.upsert(projectId, 'archive/hidden-item.png', {
+        filename: 'plain.png', extension: 'png', mimeType: 'image/png', sizeBytes: 1, modifiedAt: null,
+      });
+      const escapeMatch = assetRepo.upsert(projectId, 'archive\\backslash.png', {
+        filename: 'backslash.png', extension: 'png', mimeType: 'image/png', sizeBytes: 1, modifiedAt: null,
+      });
+      assetRepo.upsert(projectId, 'plain.png', {
+        filename: 'plain.png', extension: 'png', mimeType: 'image/png', sizeBytes: 1, modifiedAt: null,
+      });
+
+      expect(assetRepo.searchAssetsForPicker({ projectId, query: 'sun', limit: 10 }).rows.map((asset) => asset.id))
+        .toEqual([filenameMatch.id]);
+      expect(assetRepo.searchAssetsForPicker({ projectId, query: 'HIDDEN-', limit: 10 }).rows.map((asset) => asset.id))
+        .toEqual([pathMatch.id]);
+      expect(assetRepo.searchAssetsForPicker({ projectId, query: '%', limit: 10 }).rows.map((asset) => asset.id))
+        .toEqual([filenameMatch.id]);
+      expect(assetRepo.searchAssetsForPicker({ projectId, query: '_', limit: 10 }).rows.map((asset) => asset.id))
+        .toEqual([filenameMatch.id]);
+      expect(assetRepo.searchAssetsForPicker({ projectId, query: '\\', limit: 10 }).rows.map((asset) => asset.id))
+        .toEqual([escapeMatch.id]);
+    });
+
+    it('uses the canonical filename/id tie-breaker and rejects malformed or mismatched cursors', () => {
+      const first = assetRepo.upsert(projectId, 'one/same.png', {
+        filename: 'same.png', extension: 'png', mimeType: 'image/png', sizeBytes: 1, modifiedAt: null,
+      });
+      const second = assetRepo.upsert(projectId, 'two/same.png', {
+        filename: 'same.png', extension: 'png', mimeType: 'image/png', sizeBytes: 1, modifiedAt: null,
+      });
+      const otherProject = createProject('Cursor Foreign Project');
+
+      const page = assetRepo.searchAssetsForPicker({ projectId, query: 'same', limit: 1 });
+      const continuation = assetRepo.searchAssetsForPicker({
+        projectId, query: 'same', limit: 1, cursor: page.nextCursor,
+      });
+
+      expect(page.rows.map((asset) => asset.id)).toEqual([first.id]);
+      expect(continuation.rows.map((asset) => asset.id)).toEqual([second.id]);
+      expect(continuation.nextCursor).toBeNull();
+      expect(() => assetRepo.searchAssetsForPicker({ projectId, cursor: 'not-a-cursor' }))
+        .toThrow(/Invalid asset picker cursor/);
+      expect(() => assetRepo.searchAssetsForPicker({
+        projectId, query: 'other', limit: 1, cursor: page.nextCursor,
+      })).toThrow(/Invalid asset picker cursor/);
+      expect(() => assetRepo.searchAssetsForPicker({
+        projectId: otherProject.id, query: 'same', limit: 1, cursor: page.nextCursor,
+      })).toThrow(/Invalid asset picker cursor/);
+    });
+  });
+
   describe('findAllAssets and countAllAssets', () => {
     function insertCategory(forProjectId, {
       displayName,

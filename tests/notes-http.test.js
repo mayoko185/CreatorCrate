@@ -42,6 +42,14 @@ function markAssetMissing(db, assetId) {
   `).run(assetId);
 }
 
+function archiveProject(db, projectId) {
+  db.prepare(`
+    UPDATE projects
+    SET status = 'archived', archived_at = datetime('now')
+    WHERE id = ?
+  `).run(projectId);
+}
+
 describe('top-level Notes HTTP slice', () => {
   let db;
   let app;
@@ -113,7 +121,7 @@ describe('top-level Notes HTTP slice', () => {
     expect(response.text).toContain('No projects available.');
     expect(response.text).toContain('<legend>Assets</legend>');
     expect(response.text).toContain('name="assetIds[]"');
-    expect(response.text).toContain('No assets available.');
+    expect(response.text).not.toContain('No assets available.');
   });
 
   it('GET /notes/new renders accessible project options', async () => {
@@ -134,41 +142,155 @@ describe('top-level Notes HTTP slice', () => {
     await agent.get('/vendor/toast-ui/editor/toastui-editor.css').expect(404);
   });
 
-  it('GET /notes/new renders all asset options grouped by project with useful context', async () => {
-    const firstProjectId = insertProject(db, 'Alpha Assets');
-    const secondProjectId = insertProject(db, 'Beta Assets');
-    const firstSharedId = insertAsset(db, firstProjectId, 'shared.txt', {
-      relativePath: 'docs/shared.txt',
-      extension: 'txt',
-      mimeType: 'text/plain',
-    });
-    const secondSharedId = insertAsset(db, firstProjectId, 'shared.txt', {
-      relativePath: 'archive/shared.txt',
-      extension: 'txt',
-      mimeType: 'text/plain',
-    });
-    const missingId = insertAsset(db, secondProjectId, 'missing.bin', {
-      extension: 'bin',
-      mimeType: 'application/octet-stream',
-    });
-    markAssetMissing(db, missingId);
+  it('GET /notes/new renders no asset options when the library contains unrelated assets', async () => {
+    const projectId = insertProject(db, 'Large Asset Library');
+    const filenames = Array.from({ length: 40 }, (_value, index) => `unselected-${index}.png`);
+    for (const filename of filenames) insertAsset(db, projectId, filename);
 
     const response = await agent.get('/notes/new').expect(200);
 
-    expect(response.text).toContain(`<summary id="note-assets-project-${firstProjectId}-trigger"`);
-    expect(response.text).toContain('Alpha Assets (2 assets)');
-    expect(response.text).toContain('Beta Assets (1 assets)');
-    expect(response.text).toContain(
-      `<input id="note-asset-option-${firstSharedId}" name="assetIds[]" type="checkbox" value="${firstSharedId}"`,
-    );
-    expect(response.text).toContain(
-      `<input id="note-asset-option-${secondSharedId}" name="assetIds[]" type="checkbox" value="${secondSharedId}"`,
-    );
-    expect(response.text).toContain('docs/shared.txt');
-    expect(response.text).toContain('archive/shared.txt');
-    expect(response.text).toContain('>missing.bin</span>');
-    expect(response.text).toContain('>Missing</span>');
-    expect(response.text).not.toMatch(/name="assetIds\[\]"[^>]*checked/);
+    expect(response.text).toContain('<input type="hidden" name="assetIds[]" value="">');
+    expect(response.text.match(/<input[^>]+name="assetIds\[\]"[^>]+type="checkbox"/g) || []).toHaveLength(0);
+    expect(response.text).not.toContain('notes-selected-assets');
+    for (const filename of filenames) expect(response.text).not.toContain(filename);
+  });
+
+  describe('asset picker project endpoint', () => {
+    it('requires a trimmed 2–100 character query', async () => {
+      for (const query of [undefined, '', ' ', 'a', 'a'.repeat(101)]) {
+        const response = await agent.get('/notes/asset-picker/projects').query(
+          query === undefined ? {} : { q: query },
+        ).expect(400);
+        expect(response.body.status).toBe('error');
+      }
+    });
+
+    it('trims case-insensitive matches, includes archived projects, and returns only picker fields', async () => {
+      const activeId = insertProject(db, 'Alpha Illustrations');
+      const archivedId = insertProject(db, 'ALPHA Archive');
+      archiveProject(db, archivedId);
+      insertProject(db, 'Unrelated Project');
+
+      const response = await agent.get('/notes/asset-picker/projects').query({ q: '  alpha  ' }).expect(200);
+
+      expect(Object.keys(response.body)).toEqual(['items', 'nextCursor']);
+      expect(response.body.items).toEqual([
+        { id: archivedId, title: 'ALPHA Archive', archived: true },
+        { id: activeId, title: 'Alpha Illustrations', archived: false },
+      ]);
+      expect(response.body.items.map((item) => Object.keys(item).sort()))
+        .toEqual([['archived', 'id', 'title'], ['archived', 'id', 'title']]);
+      expect(response.body.nextCursor).toBeNull();
+    });
+
+    it('enforces the default and maximum bounds and supports continuation cursors', async () => {
+      for (let index = 0; index < 21; index += 1) {
+        insertProject(db, `Bound Project ${String(index).padStart(2, '0')}`);
+      }
+
+      const defaultPage = await agent.get('/notes/asset-picker/projects').query({ q: 'bound' }).expect(200);
+      const maximumPage = await agent.get('/notes/asset-picker/projects').query({ q: 'bound', limit: '20' }).expect(200);
+      const continuation = await agent.get('/notes/asset-picker/projects').query({
+        q: 'bound', limit: '20', cursor: maximumPage.body.nextCursor,
+      }).expect(200);
+
+      expect(defaultPage.body.items).toHaveLength(20);
+      expect(defaultPage.body.nextCursor).toEqual(expect.any(String));
+      expect(maximumPage.body.items).toHaveLength(20);
+      expect(continuation.body.items).toHaveLength(1);
+      expect(continuation.body.nextCursor).toBeNull();
+    });
+
+    it('rejects invalid limits and malformed or query-mismatched cursors', async () => {
+      insertProject(db, 'Cursor Project One');
+      insertProject(db, 'Cursor Project Two');
+
+      for (const limit of ['0', '-1', '1.5', '21', 'not-a-number']) {
+        await agent.get('/notes/asset-picker/projects').query({ q: 'cursor', limit }).expect(400);
+      }
+      await agent.get('/notes/asset-picker/projects').query({ q: 'cursor', cursor: 'not-a-cursor' }).expect(400);
+
+      const first = await agent.get('/notes/asset-picker/projects').query({ q: 'cursor', limit: '1' }).expect(200);
+      await agent.get('/notes/asset-picker/projects').query({
+        q: 'project', limit: '1', cursor: first.body.nextCursor,
+      }).expect(400);
+    });
+  });
+
+  describe('asset picker asset endpoint', () => {
+    it('returns project-scoped minimal picker rows, including missing assets', async () => {
+      const projectId = insertProject(db, 'Picker Assets');
+      const matchingId = insertAsset(db, projectId, 'alpha-file.png', { relativePath: 'source/alpha-file.png' });
+      const missingId = insertAsset(db, projectId, 'alpha-missing.bin');
+      insertAsset(db, insertProject(db, 'Foreign Picker Assets'), 'alpha-foreign.png');
+      markAssetMissing(db, missingId);
+
+      const response = await agent.get('/notes/asset-picker/assets').query({ projectId, q: 'ALPHA' }).expect(200);
+
+      expect(Object.keys(response.body)).toEqual(['project', 'items', 'nextCursor']);
+      expect(response.body.project).toEqual({ id: projectId, title: 'Picker Assets', archived: false });
+      expect(response.body.items).toEqual([
+        { id: matchingId, filename: 'alpha-file.png', relativePath: 'source/alpha-file.png', isPresent: true },
+        { id: missingId, filename: 'alpha-missing.bin', relativePath: 'alpha-missing.bin', isPresent: false },
+      ]);
+      expect(response.body.items.map((item) => Object.keys(item).sort())).toEqual([
+        ['filename', 'id', 'isPresent', 'relativePath'],
+        ['filename', 'id', 'isPresent', 'relativePath'],
+      ]);
+    });
+
+    it('allows archived projects and empty queries while searching filenames and relative paths', async () => {
+      const projectId = insertProject(db, 'Archived Picker Assets');
+      const filenameId = insertAsset(db, projectId, 'filename-needle.png', { relativePath: 'art/output.png' });
+      const pathId = insertAsset(db, projectId, 'ordinary.png', { relativePath: 'nested/path-needle/ordinary.png' });
+      archiveProject(db, projectId);
+
+      const browse = await agent.get('/notes/asset-picker/assets').query({ projectId, q: '' }).expect(200);
+      const filename = await agent.get('/notes/asset-picker/assets').query({ projectId, q: '  FILENAME-NEEDLE  ' }).expect(200);
+      const relativePath = await agent.get('/notes/asset-picker/assets').query({ projectId, q: 'path-needle' }).expect(200);
+
+      expect(browse.body.project.archived).toBe(true);
+      expect(browse.body.items.map((item) => item.id)).toEqual([filenameId, pathId]);
+      expect(filename.body.items.map((item) => item.id)).toEqual([filenameId]);
+      expect(relativePath.body.items.map((item) => item.id)).toEqual([pathId]);
+    });
+
+    it('enforces asset page bounds and validates continuation cursor scope', async () => {
+      const projectId = insertProject(db, 'Paged Picker Assets');
+      const otherProjectId = insertProject(db, 'Other Paged Picker Assets');
+      for (let index = 0; index < 26; index += 1) {
+        insertAsset(db, projectId, `page-${String(index).padStart(2, '0')}.png`);
+      }
+
+      const first = await agent.get('/notes/asset-picker/assets').query({ projectId }).expect(200);
+      const second = await agent.get('/notes/asset-picker/assets').query({
+        projectId, cursor: first.body.nextCursor,
+      }).expect(200);
+
+      expect(first.body.items).toHaveLength(25);
+      expect(first.body.nextCursor).toEqual(expect.any(String));
+      expect(second.body.items).toHaveLength(1);
+      expect(second.body.nextCursor).toBeNull();
+      await agent.get('/notes/asset-picker/assets').query({ projectId, limit: '26' }).expect(400);
+      await agent.get('/notes/asset-picker/assets').query({ projectId, limit: 'not-an-integer' }).expect(400);
+      await agent.get('/notes/asset-picker/assets').query({ projectId, cursor: 'not-a-cursor' }).expect(400);
+      await agent.get('/notes/asset-picker/assets').query({
+        projectId, q: 'page', cursor: first.body.nextCursor,
+      }).expect(400);
+      await agent.get('/notes/asset-picker/assets').query({
+        projectId: otherProjectId, cursor: first.body.nextCursor,
+      }).expect(400);
+    });
+
+    it('rejects malformed project IDs and unknown projects', async () => {
+      for (const projectId of [undefined, '', '0', '01', '1.0', '-1', 'not-an-id']) {
+        await agent.get('/notes/asset-picker/assets').query(
+          projectId === undefined ? {} : { projectId },
+        ).expect(400);
+      }
+      await agent.get('/notes/asset-picker/assets').query({ projectId: '999999' }).expect(404);
+      await agent.get('/notes/asset-picker/assets').query({ projectId: '1', q: 'a'.repeat(101) }).expect(400);
+    });
   });
 
   it('POST /notes creates a note, redirects to detail, and stores Markdown source unchanged', async () => {
@@ -310,7 +432,7 @@ describe('top-level Notes HTTP slice', () => {
     expect(app.locals.noteService.listNotes()).toHaveLength(0);
   });
 
-  it('POST /notes preserves attempted project and asset selections and complete option data after validation failure', async () => {
+  it('POST /notes rehydrates only submitted assets after a validation failure', async () => {
     const firstProjectId = insertProject(db, 'Validation Asset First');
     const secondProjectId = insertProject(db, 'Validation Asset Second');
     const firstAssetId = insertAsset(db, firstProjectId, 'first-validation.txt', {
@@ -318,6 +440,11 @@ describe('top-level Notes HTTP slice', () => {
       mimeType: 'text/plain',
     });
     const secondAssetId = insertAsset(db, secondProjectId, 'second-validation.txt', {
+      extension: 'txt',
+      mimeType: 'text/plain',
+    });
+    const unrelatedFilenames = Array.from({ length: 30 }, (_value, index) => `unrelated-validation-${index}.txt`);
+    for (const filename of unrelatedFilenames) insertAsset(db, firstProjectId, filename, {
       extension: 'txt',
       mimeType: 'text/plain',
     });
@@ -343,6 +470,8 @@ describe('top-level Notes HTTP slice', () => {
     expect(response.text).toContain('>Validation Asset Second</span>');
     expect(response.text).toContain('first-validation.txt');
     expect(response.text).toContain('second-validation.txt');
+    expect(response.text.match(/id="note-asset-option-/g) || []).toHaveLength(2);
+    for (const filename of unrelatedFilenames) expect(response.text).not.toContain(filename);
   });
 
   it('POST /notes deduplicates duplicate submitted project IDs', async () => {
@@ -734,6 +863,11 @@ describe('top-level Notes HTTP slice', () => {
       extension: 'bin',
       mimeType: 'application/octet-stream',
     });
+    const unrelatedFilenames = Array.from({ length: 30 }, (_value, index) => `unrelated-edit-${index}.txt`);
+    for (const filename of unrelatedFilenames) insertAsset(db, firstProjectId, filename, {
+      extension: 'txt',
+      mimeType: 'text/plain',
+    });
     const note = app.locals.noteService.createNote({
       title: 'Asset Edit Note',
       assetIds: [firstAssetId, secondAssetId],
@@ -744,6 +878,8 @@ describe('top-level Notes HTTP slice', () => {
     expect(response.text).toMatch(new RegExp(`id="note-asset-option-${firstAssetId}"[^>]*checked`));
     expect(response.text).toMatch(new RegExp(`id="note-asset-option-${secondAssetId}"[^>]*checked`));
     expect(response.text).not.toMatch(/name="projectIds\[\]"[^>]*checked/);
+    expect(response.text.match(/id="note-asset-option-/g) || []).toHaveLength(2);
+    for (const filename of unrelatedFilenames) expect(response.text).not.toContain(filename);
   });
 
   it('POST /notes/:id updates title/content and project associations without clearing assets', async () => {
@@ -1031,6 +1167,7 @@ describe('top-level Notes HTTP slice', () => {
       mimeType: 'application/octet-stream',
     });
     markAssetMissing(db, assetId);
+    archiveProject(db, projectId);
     const note = app.locals.noteService.createNote({ title: 'Historical asset note', assetIds: [assetId] });
 
     const response = await agent.get(`/notes/${note.id}`).expect(200);
@@ -1045,6 +1182,7 @@ describe('top-level Notes HTTP slice', () => {
     const editResponse = await agent.get(`/notes/${note.id}/edit`).expect(200);
     expect(editResponse.text).toMatch(new RegExp(`id="note-asset-option-${assetId}"[^>]*checked`));
     expect(editResponse.text).toContain('>Missing</span>');
+    expect(editResponse.text).toContain('>Archived project</span>');
   });
 
   it('GET and POST edit routes return 404 for a nonexistent note', async () => {

@@ -1,3 +1,11 @@
+import {
+  AssetPickerCursorError,
+  decodeAssetPickerCursor,
+  encodeAssetPickerCursor,
+  normalizeAssetPickerLimit,
+  normalizeAssetPickerQuery,
+} from './asset-picker-pagination.js';
+
 export const STATUSES = ['tbd', 'planned', 'in-progress', 'ready', 'completed', 'archived'];
 export const WORKFLOW_STATUSES = ['tbd', 'planned', 'in-progress', 'ready', 'completed'];
 
@@ -219,6 +227,63 @@ export function createProjectRepository(db) {
      */
     listActiveAssetFilterOptions() {
       return listActiveAssetFilterOptionsStmt.all();
+    },
+
+    /**
+     * Bounded project-title lookup for asset selection. Archived projects are
+     * intentionally included because their assets remain eligible for Notes.
+     *
+     * @param {{ query?: string, limit?: number, cursor?: string }} [options]
+     * @returns {{ rows: Array<{id: number, title: string, is_archived: number}>, nextCursor: string|null }}
+     */
+    searchAssetPickerProjects(options = {}) {
+      const query = normalizeAssetPickerQuery(options.query);
+      const limit = normalizeAssetPickerLimit(options.limit);
+      const cursor = decodeAssetPickerCursor(options.cursor, 'asset-picker-projects');
+      const conditions = [];
+      const params = [];
+
+      if (query) {
+        conditions.push("title COLLATE NOCASE LIKE ? ESCAPE '\\'");
+        params.push(`%${escapeLike(query)}%`);
+      }
+
+      if (cursor) {
+        if (
+          cursor.query !== query ||
+          typeof cursor.title !== 'string' ||
+          !Number.isSafeInteger(cursor.id) ||
+          cursor.id <= 0
+        ) {
+          throw new AssetPickerCursorError();
+        }
+        conditions.push('(title COLLATE NOCASE > ? OR (title COLLATE NOCASE = ? AND id > ?))');
+        params.push(cursor.title, cursor.title, cursor.id);
+      }
+
+      const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+      const rows = db.prepare(`
+        SELECT
+          id,
+          title,
+          CASE WHEN archived_at IS NOT NULL OR status = 'archived' THEN 1 ELSE 0 END AS is_archived
+        FROM projects
+        ${where}
+        ORDER BY title COLLATE NOCASE ASC, id ASC
+        LIMIT ?
+      `).all(...params, limit + 1);
+      const hasMore = rows.length > limit;
+      const page = hasMore ? rows.slice(0, limit) : rows;
+      const last = page.at(-1);
+
+      return {
+        rows: page,
+        nextCursor: hasMore
+          ? encodeAssetPickerCursor({
+            scope: 'asset-picker-projects', query, title: last.title, id: last.id,
+          })
+          : null,
+      };
     },
 
     /**

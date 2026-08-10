@@ -96,33 +96,20 @@
       <fieldset class="field asset-viewer-filter-field asset-filter-multiselect-field{% if assetError %} field-error{% endif %}">
         <legend>Assets</legend>
         <input type="hidden" name="assetIds[]" value="">
-        {% if assetGroups.length > 0 %}
-          <div class="notes-asset-groups">
-            {% for group in assetGroups %}
-              <details class="asset-filter-multiselect asset-filter-multiselect--sized notes-asset-group">
-                <summary id="note-assets-project-{{ group.id }}-trigger"
-                         aria-controls="note-assets-project-{{ group.id }}-options">
-                  <span class="asset-filter-multiselect-summary">
-                    {{ group.title }} ({{ group.assets.length }} assets)
-                  </span>
-                </summary>
-                <div id="note-assets-project-{{ group.id }}-options" class="asset-filter-multiselect-panel" role="group" aria-label="{{ group.title }} asset options">
-                  {% for asset in group.assets %}
-                    <div class="asset-filter-multiselect-option">
-                      <label for="note-asset-option-{{ asset.id }}">
-                        <input id="note-asset-option-{{ asset.id }}" name="assetIds[]" type="checkbox" value="{{ asset.id }}"{% if (asset.id | string) in selectedAssetIds %} checked{% endif %}{% if assetError %} aria-describedby="assetIds-error" aria-invalid="true"{% endif %}>
-                        <span>{{ asset.filename }}</span>
-                        {% if asset.showRelativePath %}<span class="notes-asset-option-path">{{ asset.relativePath }}</span>{% endif %}
-                        {% if not asset.isPresent %}<span class="notes-asset-option-state">Missing</span>{% endif %}
-                      </label>
-                    </div>
-                  {% endfor %}
-                </div>
-              </details>
+        {% if selectedAssets.length > 0 %}
+          <div class="notes-selected-assets">
+            {% for asset in selectedAssets %}
+              <div class="asset-filter-multiselect-option">
+                <label for="note-asset-option-{{ asset.id }}">
+                  <input id="note-asset-option-{{ asset.id }}" name="assetIds[]" type="checkbox" value="{{ asset.id }}"{% if (asset.id | string) in selectedAssetIds %} checked{% endif %}{% if assetError %} aria-describedby="assetIds-error" aria-invalid="true"{% endif %}>
+                  <span>{{ asset.filename }}</span>
+                  <span class="notes-asset-option-path">{{ asset.projectTitle }}: {{ asset.relativePath }}</span>
+                  {% if asset.isProjectArchived %}<span class="notes-asset-option-state">Archived project</span>{% endif %}
+                  {% if not asset.isPresent %}<span class="notes-asset-option-state">Missing</span>{% endif %}
+                </label>
+              </div>
             {% endfor %}
           </div>
-        {% else %}
-          <p class="asset-filter-multiselect-empty">No assets available.</p>
         {% endif %}
         {% if assetError %}<span class="field-error-message" id="assetIds-error">{{ assetError }}</span>{% endif %}
       </fieldset>

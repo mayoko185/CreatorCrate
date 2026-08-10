@@ -97,6 +97,7 @@ describe('database and migrations', () => {
       '004_add_primary_image_provenance.sql',
       '005_add_notes_table.sql',
       '006_add_note_associations.sql',
+      '007_add_asset_picker_order_index.sql',
     ]);
   });
 
@@ -184,6 +185,7 @@ describe('database and migrations', () => {
     expect(indexes).toContain('idx_assets_filename');
     expect(indexes).toContain('idx_assets_modified_at');
     expect(indexes).toContain('idx_assets_project_path');
+    expect(indexes).toContain('idx_assets_picker_project_filename');
   });
 
   it('assets table has expected columns', () => {

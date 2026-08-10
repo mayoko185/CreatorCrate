@@ -391,6 +391,59 @@ describe('project repository', () => {
     expect(options.map((option) => option.id)).not.toContain(statusOnlyArchived.id);
   });
 
+  describe('searchAssetPickerProjects', () => {
+    it('returns bounded, title-only matches including archived projects with deterministic continuation', () => {
+      const titles = [
+        'Alpha 01', 'Alpha 02', 'Alpha 03', 'Alpha 04', 'Alpha 05', 'Alpha 06',
+      ];
+      const projects = titles.map((title) => repository.create(sampleProject({ title })));
+      const archived = repository.create(sampleProject({ title: 'Alpha Archived' }));
+      repository.archive(archived.id);
+      repository.create(sampleProject({ title: 'Beta Excluded' }));
+
+      const first = repository.searchAssetPickerProjects({ query: 'ALPHA', limit: 3 });
+      const second = repository.searchAssetPickerProjects({
+        query: 'ALPHA', limit: 3, cursor: first.nextCursor,
+      });
+      const third = repository.searchAssetPickerProjects({
+        query: 'ALPHA', limit: 3, cursor: second.nextCursor,
+      });
+
+      expect(first.rows).toHaveLength(3);
+      expect(first.rows.map((project) => Object.keys(project).sort())).toEqual([
+        ['id', 'is_archived', 'title'],
+        ['id', 'is_archived', 'title'],
+        ['id', 'is_archived', 'title'],
+      ]);
+      expect([...first.rows, ...second.rows, ...third.rows].map((project) => project.id)).toEqual([
+        ...projects.map((project) => project.id), archived.id,
+      ]);
+      expect([...first.rows, ...second.rows, ...third.rows].find((project) => project.id === archived.id))
+        .toMatchObject({ is_archived: 1 });
+      expect(first.nextCursor).toEqual(expect.any(String));
+      expect(second.nextCursor).toEqual(expect.any(String));
+      expect(third.nextCursor).toBeNull();
+    });
+
+    it('treats title LIKE metacharacters literally and rejects malformed or query-mismatched cursors', () => {
+      const percent = repository.create(sampleProject({ title: '100% Complete' }));
+      const underscore = repository.create(sampleProject({ title: 'A_B Project' }));
+      repository.create(sampleProject({ title: 'Plain Project' }));
+
+      expect(repository.searchAssetPickerProjects({ query: '%', limit: 10 }).rows.map((project) => project.id))
+        .toEqual([percent.id]);
+      expect(repository.searchAssetPickerProjects({ query: '_', limit: 10 }).rows.map((project) => project.id))
+        .toEqual([underscore.id]);
+      expect(() => repository.searchAssetPickerProjects({ cursor: 'not-a-cursor' }))
+        .toThrow(/Invalid asset picker cursor/);
+
+      const page = repository.searchAssetPickerProjects({ query: 'project', limit: 1 });
+      expect(() => repository.searchAssetPickerProjects({
+        query: 'plain', limit: 1, cursor: page.nextCursor,
+      })).toThrow(/Invalid asset picker cursor/);
+    });
+  });
+
   describe('project_dir', () => {
     it('defaults to null for new projects', () => {
       const project = repository.create(sampleProject({ title: 'Dir Test' }));

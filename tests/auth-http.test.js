@@ -405,6 +405,11 @@ describe('authenticated app — login/logout/CSRF/routes', () => {
       expect(res.headers.location).toBe('/login?next=%2Fprojects');
     });
 
+    it('protects Notes asset-picker searches with the normal authentication boundary', async () => {
+      const res = await request(app).get('/notes/asset-picker/projects?q=pr').expect(302);
+      expect(res.headers.location).toBe('/login?next=%2Fnotes%2Fasset-picker%2Fprojects%3Fq%3Dpr');
+    });
+
     it('redirects unauthenticated browser GET for settings', async () => {
       const res = await request(app).get('/settings/backups').expect(302);
       expect(res.headers.location).toBe('/login?next=%2Fsettings%2Fbackups');

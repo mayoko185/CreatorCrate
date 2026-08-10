@@ -1,3 +1,11 @@
+import {
+  AssetPickerCursorError,
+  decodeAssetPickerCursor,
+  encodeAssetPickerCursor,
+  normalizeAssetPickerLimit,
+  normalizeAssetPickerQuery,
+} from './asset-picker-pagination.js';
+
 /**
  * Asset repository — SQL operations for the assets table.
  *
@@ -30,7 +38,8 @@ const NOTE_ASSOCIATION_ASSET_SELECT = `
     a.relative_path,
     a.filename,
     a.is_present,
-    p.title AS project_title
+    p.title AS project_title,
+    CASE WHEN p.archived_at IS NOT NULL OR p.status = 'archived' THEN 1 ELSE 0 END AS project_is_archived
   FROM assets a
   JOIN projects p ON p.id = a.project_id
 `;
@@ -715,7 +724,7 @@ export function createAssetRepository(db) {
      * supplying ids restricts the same read model to those asset IDs.
      *
      * @param {number[]} [ids]
-     * @returns {Array<{id: number, project_id: number, relative_path: string, filename: string, is_present: number, project_title: string}>}
+     * @returns {Array<{id: number, project_id: number, relative_path: string, filename: string, is_present: number, project_title: string, project_is_archived: number}>}
      */
     findAssetsForNoteAssociation(ids) {
       if (ids === undefined) return findAllForNoteAssociationStmt.all();
@@ -727,6 +736,66 @@ export function createAssetRepository(db) {
     WHERE a.id IN (${placeholders})
     ${NOTE_ASSOCIATION_ASSET_ORDER}`;
       return db.prepare(sql).all(...unique);
+    },
+
+    /**
+     * Bounded project-scoped asset lookup for asset selection. Missing assets
+     * and assets in archived projects remain eligible by design.
+     *
+     * @param {{ projectId: number, query?: string, limit?: number, cursor?: string }} options
+     * @returns {{ rows: Array<{id: number, project_id: number, filename: string, relative_path: string, is_present: number}>, nextCursor: string|null }}
+     */
+    searchAssetsForPicker(options = {}) {
+      const { projectId } = options;
+      if (!Number.isSafeInteger(projectId) || projectId <= 0) {
+        throw new TypeError('Asset picker project ID must be a positive safe integer.');
+      }
+
+      const query = normalizeAssetPickerQuery(options.query);
+      const limit = normalizeAssetPickerLimit(options.limit);
+      const cursor = decodeAssetPickerCursor(options.cursor, 'asset-picker-assets');
+      const conditions = ['a.project_id = ?'];
+      const params = [projectId];
+
+      if (query) {
+        const term = `%${escapeLike(query)}%`;
+        conditions.push("(a.filename COLLATE NOCASE LIKE ? ESCAPE '\\' OR a.relative_path COLLATE NOCASE LIKE ? ESCAPE '\\')");
+        params.push(term, term);
+      }
+
+      if (cursor) {
+        if (
+          cursor.projectId !== projectId ||
+          cursor.query !== query ||
+          typeof cursor.filename !== 'string' ||
+          !Number.isSafeInteger(cursor.id) ||
+          cursor.id <= 0
+        ) {
+          throw new AssetPickerCursorError();
+        }
+        conditions.push('(a.filename COLLATE NOCASE > ? OR (a.filename COLLATE NOCASE = ? AND a.id > ?))');
+        params.push(cursor.filename, cursor.filename, cursor.id);
+      }
+
+      const rows = db.prepare(`
+        SELECT a.id, a.project_id, a.filename, a.relative_path, a.is_present
+        FROM assets a
+        WHERE ${conditions.join(' AND ')}
+        ORDER BY a.filename COLLATE NOCASE ASC, a.id ASC
+        LIMIT ?
+      `).all(...params, limit + 1);
+      const hasMore = rows.length > limit;
+      const page = hasMore ? rows.slice(0, limit) : rows;
+      const last = page.at(-1);
+
+      return {
+        rows: page,
+        nextCursor: hasMore
+          ? encodeAssetPickerCursor({
+            scope: 'asset-picker-assets', projectId, query, filename: last.filename, id: last.id,
+          })
+          : null,
+      };
     },
 
     /**

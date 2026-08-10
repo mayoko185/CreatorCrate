@@ -1,4 +1,5 @@
 import express from 'express';
+import { AssetPickerCursorError } from '../data/asset-picker-pagination.js';
 import { NoteNotFoundError, NoteValidationError } from '../services/note-service.js';
 import { buildAssetViewerUrl } from '../services/asset-presentation.js';
 
@@ -24,6 +25,9 @@ export function createNotesRouter({ appName, noteService, markdownRenderer, proj
   if (!projectService || typeof projectService.list !== 'function' || typeof projectService.findById !== 'function') {
     throw new Error('createNotesRouter requires a projectService dependency.');
   }
+  if (!projectService.repository || typeof projectService.repository.searchAssetPickerProjects !== 'function') {
+    throw new Error('createNotesRouter requires a projectService repository with asset-picker search support.');
+  }
   if (!assetRepository || typeof assetRepository.findAssetsForNoteAssociation !== 'function') {
     throw new Error('createNotesRouter requires an assetRepository dependency.');
   }
@@ -32,6 +36,7 @@ export function createNotesRouter({ appName, noteService, markdownRenderer, proj
   }
 
   const router = express.Router();
+  const projectRepository = projectService.repository;
 
   // GET /notes — ordered Notes index
   router.get('/', (req, res, next) => {
@@ -72,6 +77,46 @@ export function createNotesRouter({ appName, noteService, markdownRenderer, proj
     }
   });
 
+  // GET /notes/asset-picker/projects — bounded project search for the future
+  // browser picker. Keep this before /:id so asset-picker is never a note ID.
+  router.get('/asset-picker/projects', (req, res, next) => {
+    try {
+      const query = parseRequiredPickerQuery(req.query.q);
+      const limit = parsePickerLimit(req.query.limit, { defaultValue: 20, max: 20 });
+      const cursor = parsePickerCursor(req.query.cursor);
+      const result = projectRepository.searchAssetPickerProjects({ query, limit, cursor });
+      return res.json({
+        items: result.rows.map(toPickerProject),
+        nextCursor: result.nextCursor,
+      });
+    } catch (err) {
+      return handlePickerError(err, res, next);
+    }
+  });
+
+  // GET /notes/asset-picker/assets — bounded project-scoped asset search.
+  router.get('/asset-picker/assets', (req, res, next) => {
+    try {
+      const projectId = parseCanonicalPositiveInteger(req.query.projectId, 'projectId');
+      const query = parseOptionalPickerQuery(req.query.q);
+      const limit = parsePickerLimit(req.query.limit, { defaultValue: 25, max: 25 });
+      const cursor = parsePickerCursor(req.query.cursor);
+      const project = projectService.findById(projectId);
+      if (!project) {
+        return res.status(404).json({ status: 'error', message: 'Project not found.' });
+      }
+
+      const result = assetRepository.searchAssetsForPicker({ projectId, query, limit, cursor });
+      return res.json({
+        project: toPickerProject(project),
+        items: result.rows.map(toPickerAsset),
+        nextCursor: result.nextCursor,
+      });
+    } catch (err) {
+      return handlePickerError(err, res, next);
+    }
+  });
+
   // GET /notes/new — Create form
   router.get('/new', (_req, res, next) => {
     try {
@@ -80,7 +125,7 @@ export function createNotesRouter({ appName, noteService, markdownRenderer, proj
         note: null,
         values: emptyFormValues(),
         projects: listProjectOptions(projectService),
-        assetGroups: listAssetOptions(assetRepository),
+        selectedAssets: [],
         errors: {},
         action: 'Create',
         submitUrl: '/notes',
@@ -99,12 +144,13 @@ export function createNotesRouter({ appName, noteService, markdownRenderer, proj
       return res.redirect(`/notes/${note.id}`);
     } catch (err) {
       if (err instanceof NoteValidationError) {
+        const values = buildFormValues(body);
         return res.status(422).render('notes/form.njk', buildNoteFormModel({
           appName,
           note: null,
-          values: buildFormValues(body),
+          values,
           projects: listProjectOptions(projectService),
-          assetGroups: listAssetOptions(assetRepository),
+          selectedAssets: listSelectedAssetOptions(assetRepository, values.assetIds),
           errors: err.errors || { general: err.message },
           action: 'Create',
           submitUrl: '/notes',
@@ -144,12 +190,13 @@ export function createNotesRouter({ appName, noteService, markdownRenderer, proj
 
     try {
       const note = noteService.getNote(id);
+      const values = noteToFormValues(note);
       return res.render('notes/form.njk', buildNoteFormModel({
         appName,
         note,
-        values: noteToFormValues(note),
+        values,
         projects: listProjectOptions(projectService),
-        assetGroups: listAssetOptions(assetRepository),
+        selectedAssets: listSelectedAssetOptions(assetRepository, values.assetIds),
         errors: {},
         action: 'Edit',
         submitUrl: `/notes/${id}`,
@@ -184,12 +231,13 @@ export function createNotesRouter({ appName, noteService, markdownRenderer, proj
       if (err instanceof NoteValidationError) {
         try {
           const note = noteService.getNote(id);
+          const values = buildFormValues(body);
           return res.status(422).render('notes/form.njk', buildNoteFormModel({
             appName,
             note,
-            values: buildFormValues(body),
+            values,
             projects: listProjectOptions(projectService),
-            assetGroups: listAssetOptions(assetRepository),
+            selectedAssets: listSelectedAssetOptions(assetRepository, values.assetIds),
             errors: err.errors || { general: err.message },
             action: 'Edit',
             submitUrl: `/notes/${id}`,
@@ -226,13 +274,13 @@ export function createNotesRouter({ appName, noteService, markdownRenderer, proj
   return router;
 }
 
-function buildNoteFormModel({ appName, note, values, projects, assetGroups, errors, action, submitUrl }) {
+function buildNoteFormModel({ appName, note, values, projects, selectedAssets, errors, action, submitUrl }) {
   return {
     appName,
     note,
     values,
     projects,
-    assetGroups,
+    selectedAssets,
     selectedProjectIds: values.projectIds.map(String),
     selectedAssetIds: values.assetIds.map(String),
     errors,
@@ -295,10 +343,6 @@ function resolveAssociatedProjects(note, projectService) {
     .map(toProjectOption);
 }
 
-function listAssetOptions(assetRepository) {
-  return groupAssetOptions(assetRepository.findAssetsForNoteAssociation());
-}
-
 function resolveAssociatedAssets(note, assetRepository) {
   return assetRepository
     .findAssetsForNoteAssociation(note.assetIds || [])
@@ -309,39 +353,15 @@ function resolveAssociatedAssets(note, assetRepository) {
     }));
 }
 
-function groupAssetOptions(rows) {
-  const groups = [];
-  const groupByProjectId = new Map();
+function listSelectedAssetOptions(assetRepository, ids) {
+  if (!Array.isArray(ids) || ids.length === 0) return [];
 
-  for (const asset of rows || []) {
-    let group = groupByProjectId.get(asset.project_id);
-    if (!group) {
-      group = {
-        id: asset.project_id,
-        title: asset.project_title,
-        assets: [],
-      };
-      groupByProjectId.set(asset.project_id, group);
-      groups.push(group);
-    }
-    group.assets.push(toAssetOption(asset));
-  }
-
-  return groups.map((group) => {
-    const filenameCounts = new Map();
-    for (const asset of group.assets) {
-      const key = asset.filename.toLowerCase();
-      filenameCounts.set(key, (filenameCounts.get(key) || 0) + 1);
-    }
-
-    return {
-      ...group,
-      assets: group.assets.map((asset) => ({
-        ...asset,
-        showRelativePath: filenameCounts.get(asset.filename.toLowerCase()) > 1,
-      })),
-    };
-  });
+  return assetRepository.findAssetsForNoteAssociation(ids).map((asset) => ({
+    ...toAssetOption(asset),
+    projectId: asset.project_id,
+    projectTitle: asset.project_title,
+    isProjectArchived: Boolean(asset.project_is_archived),
+  }));
 }
 
 function toAssetOption(asset) {
@@ -356,6 +376,89 @@ function toAssetOption(asset) {
 
 function toProjectOption(project) {
   return { id: project.id, title: project.title };
+}
+
+class PickerRequestError extends Error {}
+
+function parseRequiredPickerQuery(value) {
+  const query = parseOptionalPickerQuery(value);
+  if (query.length < 2) {
+    throw new PickerRequestError('q must contain 2 to 100 characters.');
+  }
+  return query;
+}
+
+function parseOptionalPickerQuery(value) {
+  if (value === undefined) return '';
+  if (typeof value !== 'string') {
+    throw new PickerRequestError('q must be a string.');
+  }
+
+  const query = value.trim();
+  if (query.length > 100) {
+    throw new PickerRequestError('q must contain at most 100 characters.');
+  }
+  return query;
+}
+
+function parsePickerLimit(value, { defaultValue, max }) {
+  if (value === undefined) return defaultValue;
+  if (typeof value !== 'string' || !/^[1-9]\d*$/.test(value)) {
+    throw new PickerRequestError(`limit must be an integer from 1 to ${max}.`);
+  }
+
+  const limit = Number(value);
+  if (!Number.isSafeInteger(limit) || limit > max) {
+    throw new PickerRequestError(`limit must be an integer from 1 to ${max}.`);
+  }
+  return limit;
+}
+
+function parsePickerCursor(value) {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string') {
+    throw new PickerRequestError('cursor must be a string.');
+  }
+  return value;
+}
+
+function parseCanonicalPositiveInteger(value, fieldName) {
+  if (typeof value !== 'string' || !/^[1-9]\d*$/.test(value)) {
+    throw new PickerRequestError(`${fieldName} must be a canonical positive integer.`);
+  }
+
+  const id = Number(value);
+  if (!Number.isSafeInteger(id) || String(id) !== value) {
+    throw new PickerRequestError(`${fieldName} must be a canonical positive integer.`);
+  }
+  return id;
+}
+
+function toPickerProject(project) {
+  return {
+    id: project.id,
+    title: project.title,
+    archived: Boolean(project.is_archived ?? (project.archived_at != null || project.status === 'archived')),
+  };
+}
+
+function toPickerAsset(asset) {
+  return {
+    id: asset.id,
+    filename: asset.filename,
+    relativePath: asset.relative_path,
+    isPresent: Boolean(asset.is_present),
+  };
+}
+
+function handlePickerError(err, res, next) {
+  if (err instanceof PickerRequestError) {
+    return res.status(400).json({ status: 'error', message: err.message });
+  }
+  if (err instanceof AssetPickerCursorError) {
+    return res.status(400).json({ status: 'error', message: 'Invalid cursor.' });
+  }
+  return next(err);
 }
 
 function normalizeProjectIds(raw) {
