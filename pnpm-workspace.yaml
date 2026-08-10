@@ -1,0 +1,5 @@
+engineStrict: true
+strictDepBuilds: true
+
+allowBuilds:
+  better-sqlite3: true

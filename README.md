@@ -23,7 +23,7 @@ CreatorCrate is a self-hosted workspace for one creator to organize art projects
 
 ### Local development
 
-**Requirements:** Node.js 22 or later and pnpm 9.12 (via Corepack).
+**Requirements:** Node.js 24.19.0 and pnpm 11.21.0 (via Corepack).
 
 ```bash
 corepack enable
@@ -153,7 +153,7 @@ The Compose service has a built-in health check against `http://localhost:3000/h
 
 ## Contributing
 
-Use pnpm and Node 22+. Before submitting a change, run the narrowest relevant tests; the full suite is:
+Use pnpm 11.21.0 and Node.js 24.19.0. Before submitting a change, run the narrowest relevant tests; the full suite is:
 
 ```bash
 pnpm test

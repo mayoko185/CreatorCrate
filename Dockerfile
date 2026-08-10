@@ -1,9 +1,10 @@
 # syntax=docker/dockerfile:1
-FROM node:22.9.0-bookworm-slim AS base
+FROM node:24.19.0-bookworm-slim AS base
 
+ENV COREPACK_HOME=/usr/local/share/corepack
 ENV NODE_ENV=production
 
-RUN corepack enable && corepack prepare pnpm@9.12.0 --activate
+RUN corepack enable && corepack install --global pnpm@11.21.0
 
 RUN groupadd -r creatorcrate && useradd -r -g creatorcrate creatorcrate
 
@@ -11,13 +12,17 @@ WORKDIR /app
 
 FROM base AS deps
 
-COPY package.json pnpm-lock.yaml .npmrc ./
+RUN apt-get update \
+  && apt-get install --no-install-recommends --yes python3 make g++ \
+  && rm -rf /var/lib/apt/lists/*
+
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile --prod
 
 FROM deps AS test
 
 ENV NODE_ENV=test
-COPY package.json pnpm-lock.yaml .npmrc ./
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile
 COPY src ./src
 COPY migrations ./migrations
