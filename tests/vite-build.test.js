@@ -65,8 +65,8 @@ describe('Vite 8 CreatorCrate browser build', () => {
     const stylesheet = fs.readFileSync(assetPath(cssFiles[0]), 'utf8');
     expect(javascript).toContain('data-preview-enhancement');
     expect(javascript).toContain('data-slideshow-scaffold');
-    expect(javascript).toContain('toastui');
-    expect(javascript).not.toMatch(/@toast-ui\/editor|toast-ui\/editor/);
+    expect(javascript).toMatch(/import\(/);
+    expect(javascript).not.toContain('globalThis.toastui');
     expect(javascript).not.toContain('creatorcrateViteFoundation');
     expect(stylesheet).toMatch(/--bg\s*:/);
     expect(stylesheet).toContain('.asset-browser-layout');
@@ -76,6 +76,25 @@ describe('Vite 8 CreatorCrate browser build', () => {
       (record) => record.isEntry === true && record.file?.endsWith('.js')
     );
     expect(javascriptEntries).toHaveLength(1);
+
+    const dynamicEditorKeys = list(entry.dynamicImports);
+    expect(dynamicEditorKeys).toHaveLength(1);
+    const dynamicEditor = manifest[dynamicEditorKeys[0]];
+    expect(dynamicEditor).toBeDefined();
+    expect(dynamicEditor.isDynamicEntry).toBe(true);
+    expect(dynamicEditor.src).toMatch(/@toast-ui\/editor\/dist\/esm\/index\.js$/);
+    expectNonEmptyAsset(dynamicEditor.file);
+    expect(javascript).toContain('`/vite/`');
+    expect(javascript).toContain(`import(\`./${path.basename(dynamicEditor.file)}\`)`);
+
+    const editorStyles = Object.values(manifest).filter(
+      (record) => record.src?.includes('@toast-ui/editor/dist/') && record.file?.endsWith('.css')
+    );
+    expect(editorStyles.map((record) => record.src)).toEqual(expect.arrayContaining([
+      expect.stringMatching(/@toast-ui\/editor\/dist\/toastui-editor\.css$/),
+      expect.stringMatching(/@toast-ui\/editor\/dist\/theme\/toastui-editor-dark\.css$/),
+    ]));
+    editorStyles.forEach((record) => expectNonEmptyAsset(record.file));
   });
 
   it('keeps manifest references valid and bundles entry dependencies', () => {

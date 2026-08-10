@@ -112,8 +112,7 @@ describe('Vite production asset app integration', () => {
       expect(response.text.split(tag).length - 1).toBe(1);
     }
     expect(response.text).toContain(`<script type="module" src="${entry.js}"></script>`);
-    expect(response.text).toContain('<link rel="stylesheet" href="/vendor/toast-ui/editor/toastui-editor.css">');
-    expect(response.text).toContain('<script src="/vendor/toast-ui/editor/toastui-editor.js"></script>');
+    expect(response.text).not.toContain('/vendor/toast-ui/editor/');
     expect(response.text).not.toContain('href="/creatorcrate.css"');
     expect(response.text).not.toContain('src="/creatorcrate.js"');
     expect(response.text).not.toContain('/@vite/client');

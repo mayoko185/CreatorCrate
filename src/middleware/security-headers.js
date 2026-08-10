@@ -2,6 +2,7 @@ const CSP = [
   "default-src 'self'",
   "img-src 'self' data:",
   "style-src 'self'",
+  "style-src-attr 'unsafe-inline'",
   "script-src 'self'",
   "object-src 'none'",
   "base-uri 'self'",

@@ -103,9 +103,7 @@ describe('top-level Notes HTTP slice', () => {
     expect(response.text).toContain('data-notes-editor-form');
     expect(response.text).toContain('data-notes-editor-host');
     expect(response.text).toContain('<textarea id="content" name="content" data-notes-editor-source');
-    expect(response.text).toContain('/vendor/toast-ui/editor/toastui-editor.css');
-    expect(response.text).toContain('/vendor/toast-ui/editor/theme/toastui-editor-dark.css');
-    expect(response.text).toContain('/vendor/toast-ui/editor/toastui-editor.js');
+    expect(response.text).not.toContain('/vendor/toast-ui/editor/');
     expect(response.text).toMatch(/<input[^>]+type="hidden"[^>]+name="_csrf"[^>]+value="[^"]+"/);
     expect(response.text).toContain('<label for="title">Title');
     expect(response.text).toContain('<input type="text" id="title" name="title"');
@@ -132,15 +130,8 @@ describe('top-level Notes HTTP slice', () => {
     expect(response.text).not.toMatch(/name="projectIds\[\]"[^>]*checked/);
   });
 
-  it('serves the pinned TOAST UI browser assets through the vendor mount', async () => {
-    const editorCss = await agent.get('/vendor/toast-ui/editor/toastui-editor.css').expect(200);
-    const editorDarkCss = await agent.get('/vendor/toast-ui/editor/theme/toastui-editor-dark.css').expect(200);
-    const editorJs = await agent.get('/vendor/toast-ui/editor/toastui-editor.js').expect(200);
-
-    expect(editorCss.headers['content-type']).toMatch(/text\/css/);
-    expect(editorDarkCss.headers['content-type']).toMatch(/text\/css/);
-    expect(editorJs.headers['content-type']).toMatch(/javascript/);
-    expect(editorJs.text).toContain('ToastUIEditorCore');
+  it('does not expose the obsolete TOAST UI vendor mount', async () => {
+    await agent.get('/vendor/toast-ui/editor/toastui-editor.css').expect(404);
   });
 
   it('GET /notes/new renders all asset options grouped by project with useful context', async () => {

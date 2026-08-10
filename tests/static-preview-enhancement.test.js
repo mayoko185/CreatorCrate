@@ -3845,21 +3845,27 @@ function makeToastUiEditorStub() {
   return FakeEditor;
 }
 
-function withToastUi(Editor, callback) {
-  const hadToastUi = Object.hasOwn(globalThis, 'toastui');
-  const previousToastUi = globalThis.toastui;
-  globalThis.toastui = { Editor };
-  try {
-    return callback();
-  } finally {
-    if (hadToastUi) globalThis.toastui = previousToastUi;
-    else delete globalThis.toastui;
-  }
+function makeEditorLoader(Editor) {
+  let calls = 0;
+  return {
+    loadEditor() {
+      calls += 1;
+      return Promise.resolve(Editor);
+    },
+    get calls() {
+      return calls;
+    },
+  };
+}
+
+async function settleNotesEditorImport() {
+  await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 describe('Notes editor progressive enhancement', () => {
   it('no-ops when the Notes editor target is absent', () => {
     const Editor = makeToastUiEditorStub();
+    const loader = makeEditorLoader(Editor);
     const scope = {
       querySelectorAll(selector) {
         expect(selector).toBe('[data-notes-editor-form]');
@@ -3867,74 +3873,94 @@ describe('Notes editor progressive enhancement', () => {
       },
     };
 
-    withToastUi(Editor, () => {
-      expect(enhanceNotesEditor(scope)).toBe(0);
-      expect(Editor.instances).toHaveLength(0);
-    });
+    expect(enhanceNotesEditor(scope, loader)).toBe(0);
+    expect(loader.calls).toBe(0);
+    expect(Editor.instances).toHaveLength(0);
   });
 
-  it('starts in WYSIWYG mode with Markdown switching, focused formatting, disabled telemetry, and no image support', () => {
+  it('starts in WYSIWYG mode with Markdown switching, focused formatting, disabled telemetry, and no image support', async () => {
     const Editor = makeToastUiEditorStub();
+    const loader = makeEditorLoader(Editor);
     const initialMarkdown = '# Existing\n\n**source**';
     const fixture = makeNotesEditorFixture(initialMarkdown);
 
-    withToastUi(Editor, () => {
-      expect(enhanceNotesEditor(fixture.scope)).toBe(1);
+    expect(enhanceNotesEditor(fixture.scope, loader)).toBe(1);
+    await settleNotesEditorImport();
 
-      const [editor] = Editor.instances;
-      expect(editor.options.el).toBe(fixture.host);
-      expect(editor.options.initialValue).toBe(initialMarkdown);
-      expect(editor.options.initialEditType).toBe('wysiwyg');
-      expect(editor.options.hideModeSwitch).toBe(false);
-      expect(editor.options.usageStatistics).toBe(false);
-      expect(editor.options.toolbarItems.flat()).toEqual(expect.arrayContaining([
-        'heading',
-        'bold',
-        'italic',
-        'strike',
-        'quote',
-        'ul',
-        'ol',
-        'task',
-        'link',
-        'table',
-        'code',
-        'codeblock',
-      ]));
-      expect(editor.options.toolbarItems.flat()).not.toContain('image');
-      expect(editor.options.hooks).toBeUndefined();
-      expect(editor.removeHookCalls).toEqual(['addImageBlobHook']);
-      expect(fixture.textarea.hidden).toBe(true);
-      expect(fixture.textareaAttributes.get('hidden')).toBe('');
-    });
+    const [editor] = Editor.instances;
+    expect(editor.options.el).toBe(fixture.host);
+    expect(editor.options.initialValue).toBe(initialMarkdown);
+    expect(editor.options.initialEditType).toBe('wysiwyg');
+    expect(editor.options.hideModeSwitch).toBe(false);
+    expect(editor.options.usageStatistics).toBe(false);
+    expect(editor.options.toolbarItems.flat()).toEqual(expect.arrayContaining([
+      'heading',
+      'bold',
+      'italic',
+      'strike',
+      'quote',
+      'ul',
+      'ol',
+      'task',
+      'link',
+      'table',
+      'code',
+      'codeblock',
+    ]));
+    expect(editor.options.toolbarItems.flat()).not.toContain('image');
+    expect(editor.options.hooks).toBeUndefined();
+    expect(editor.removeHookCalls).toEqual(['addImageBlobHook']);
+    expect(fixture.textarea.hidden).toBe(true);
+    expect(fixture.textareaAttributes.get('hidden')).toBe('');
   });
 
-  it('synchronizes getMarkdown into the named textarea at submit time', () => {
+  it('synchronizes getMarkdown into the named textarea at submit time', async () => {
     const Editor = makeToastUiEditorStub();
+    const loader = makeEditorLoader(Editor);
     const fixture = makeNotesEditorFixture('initial source');
 
-    withToastUi(Editor, () => {
-      enhanceNotesEditor(fixture.scope);
-      const [editor] = Editor.instances;
-      editor.markdown = '## WYSIWYG result\n\n- item';
+    enhanceNotesEditor(fixture.scope, loader);
+    await settleNotesEditorImport();
+    const [editor] = Editor.instances;
+    editor.markdown = '## WYSIWYG result\n\n- item';
 
-      fixture.form.listeners.find((listener) => listener.type === 'submit').handler();
+    fixture.form.listeners.find((listener) => listener.type === 'submit').handler();
 
-      expect(fixture.textarea.value).toBe('## WYSIWYG result\n\n- item');
-    });
+    expect(fixture.textarea.value).toBe('## WYSIWYG result\n\n- item');
   });
 
-  it('initializes once and binds one submit synchronization listener', () => {
+  it('initializes once and binds one submit synchronization listener', async () => {
     const Editor = makeToastUiEditorStub();
+    const loader = makeEditorLoader(Editor);
     const fixture = makeNotesEditorFixture();
 
-    withToastUi(Editor, () => {
-      expect(enhanceNotesEditor(fixture.scope)).toBe(1);
-      expect(enhanceNotesEditor(fixture.scope)).toBe(1);
+    expect(enhanceNotesEditor(fixture.scope, loader)).toBe(1);
+    expect(enhanceNotesEditor(fixture.scope, loader)).toBe(1);
+    expect(loader.calls).toBe(1);
+    await settleNotesEditorImport();
 
-      expect(Editor.instances).toHaveLength(1);
-      expect(fixture.form.listeners.filter((listener) => listener.type === 'submit')).toHaveLength(1);
-      expect(Editor.instances[0].removeHookCalls).toHaveLength(1);
-    });
+    expect(Editor.instances).toHaveLength(1);
+    expect(fixture.form.listeners.filter((listener) => listener.type === 'submit')).toHaveLength(1);
+    expect(Editor.instances[0].removeHookCalls).toHaveLength(1);
+  });
+
+  it('keeps the Markdown textarea usable when the editor import fails', async () => {
+    const fixture = makeNotesEditorFixture('fallback source');
+    const warnings = [];
+    const originalWarn = globalThis.console.warn;
+    globalThis.console.warn = (...args) => warnings.push(args);
+
+    try {
+      expect(enhanceNotesEditor(fixture.scope, {
+        loadEditor: () => Promise.reject(new Error('import failed')),
+      })).toBe(1);
+      await settleNotesEditorImport();
+    } finally {
+      globalThis.console.warn = originalWarn;
+    }
+
+    expect(fixture.textarea.hidden).toBe(false);
+    expect(fixture.textarea.value).toBe('fallback source');
+    expect(warnings).toHaveLength(1);
   });
 });

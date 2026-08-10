@@ -38,6 +38,10 @@ const test = base.extend({
 
   productionServer: async ({}, use) => {
     await buildProductionAssets();
+    if (process.env.CREATORCRATE_BROWSER_BASE_URL) {
+      await use({ baseURL: process.env.CREATORCRATE_BROWSER_BASE_URL });
+      return;
+    }
     const server = await startCreatorCrateServer({ nodeEnv: 'production' });
     try {
       await use(server);
@@ -72,6 +76,18 @@ test.describe('CreatorCrate development browser smoke', () => {
     await exerciseProjectFilterEnhancement(page);
 
     expect(navigationCount()).toBe(1);
+    assertNoToastUiRequests(diagnostics);
+    assertNoBrowserDiagnostics(diagnostics);
+  });
+
+  test('mounts the real Notes editor, persists Markdown, and rehydrates it on edit', async ({ page, devServer }) => {
+    const diagnostics = observeBrowser(page, devServer.baseURL);
+
+    await page.goto(`${devServer.baseURL}/notes/new`, { waitUntil: 'domcontentloaded' });
+    await exerciseNotesEditor(page);
+
+    expect(getToastUiRequests(diagnostics).length).toBeGreaterThan(0);
+    expect(getLegacyToastUiRequests(diagnostics)).toEqual([]);
     assertNoBrowserDiagnostics(diagnostics);
   });
 
@@ -190,6 +206,7 @@ test.describe('CreatorCrate production browser smoke', () => {
 
     await page.goto(`${productionServer.baseURL}/projects`, { waitUntil: 'domcontentloaded' });
     await expect(page.locator('main#main-content')).toBeVisible();
+    const editorAssetPaths = await readProductionEditorAssetPaths();
 
     const html = await page.content();
     expect(html).not.toContain('/@vite/client');
@@ -216,6 +233,8 @@ test.describe('CreatorCrate production browser smoke', () => {
 
     await expect.poll(() => readBodyBackground(page)).toBe('rgb(13, 15, 19)');
     await exerciseProjectFilterEnhancement(page);
+    expect(getRequestedPaths(diagnostics).filter((resourcePath) => editorAssetPaths.has(resourcePath))).toEqual([]);
+    assertNoToastUiRequests(diagnostics);
 
     await exerciseServerNavigation(page, productionServer.baseURL);
     const [response] = await Promise.all([
@@ -230,6 +249,21 @@ test.describe('CreatorCrate production browser smoke', () => {
     await expectNoWebSocket(page, diagnostics);
     assertNoBrowserDiagnostics(diagnostics);
   });
+
+  test('mounts the real Notes editor and saves through production dynamic chunks', async ({ page, productionServer }) => {
+    const diagnostics = observeBrowser(page, productionServer.baseURL);
+    const editorAssetPaths = await readProductionEditorAssetPaths();
+
+    await page.goto(`${productionServer.baseURL}/notes/new`, { waitUntil: 'domcontentloaded' });
+    await exerciseNotesEditor(page);
+
+    await expect.poll(
+      () => [...editorAssetPaths].every((resourcePath) => diagnostics.successfulResponsePaths.has(resourcePath)),
+    ).toBe(true);
+    expect(getRequestedPaths(diagnostics).filter((resourcePath) => resourcePath.includes('/vendor/toast-ui/editor'))).toEqual([]);
+    expect(getLegacyToastUiRequests(diagnostics)).toEqual([]);
+    assertNoBrowserDiagnostics(diagnostics);
+  });
 });
 
 async function buildProductionAssets() {
@@ -242,6 +276,24 @@ async function buildProductionAssets() {
     },
     maxBuffer: 8 * 1024 * 1024,
   });
+}
+
+async function readProductionEditorAssetPaths() {
+  const manifestPath = path.join(PROJECT_ROOT, 'dist', 'client', '.vite', 'manifest.json');
+  const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
+  const entry = manifest['client/main.js'];
+  const dynamicEditorKey = entry.dynamicImports.find((key) => manifest[key]?.isDynamicEntry === true);
+  const dynamicEditor = manifest[dynamicEditorKey];
+  const editorStyles = Object.values(manifest).filter(
+    (record) => record.src?.includes('@toast-ui/editor/dist/') && record.file?.endsWith('.css'),
+  );
+
+  expect(dynamicEditorKey).toBeDefined();
+  expect(dynamicEditor).toBeDefined();
+  return new Set([
+    `/vite/${dynamicEditor.file}`,
+    ...editorStyles.map((record) => `/vite/${record.file}`),
+  ]);
 }
 
 async function startCreatorCrateServer({ nodeEnv }) {
@@ -402,6 +454,7 @@ function observeBrowser(page, baseURL) {
     consoleErrors: [],
     failedRequests: [],
     failedResponses: [],
+    requestedUrls: new Set(),
     successfulResponsePaths: new Set(),
     webSockets: [],
   };
@@ -419,6 +472,9 @@ function observeBrowser(page, baseURL) {
       resourceType: request.resourceType(),
       failure: request.failure()?.errorText || 'unknown request failure',
     });
+  });
+  page.on('request', (request) => {
+    if (isFrontendResource(request, origin)) diagnostics.requestedUrls.add(request.url());
   });
   page.on('response', (response) => {
     const request = response.request();
@@ -466,6 +522,24 @@ function assertNoBrowserDiagnostics(diagnostics) {
   expect(diagnostics.consoleErrors, 'unexpected console.error events').toEqual([]);
   expect(diagnostics.failedRequests, 'failed frontend requests').toEqual([]);
   expect(diagnostics.failedResponses, 'non-success frontend responses').toEqual([]);
+}
+
+function getToastUiRequests(diagnostics) {
+  return [...diagnostics.requestedUrls].filter((url) => (
+    url.includes('@toast-ui') || url.includes('toastui-editor')
+  ));
+}
+
+function getLegacyToastUiRequests(diagnostics) {
+  return [...diagnostics.requestedUrls].filter((url) => url.includes('/vendor/toast-ui/editor'));
+}
+
+function assertNoToastUiRequests(diagnostics) {
+  expect(getToastUiRequests(diagnostics)).toEqual([]);
+}
+
+function getRequestedPaths(diagnostics) {
+  return [...diagnostics.requestedUrls].map((url) => new URL(url).pathname);
 }
 
 async function waitForViteWebSocket(diagnostics) {
@@ -545,6 +619,122 @@ async function submitProjectSortFilter(page) {
   await page.locator('#project-sort-filter-trigger').click();
   await page.locator('#project-sort-filter-options input[name="sort"][value="title"]').check();
   return page.locator('button[type="submit"][form="project-filters"]').click();
+}
+
+async function exerciseNotesEditor(page) {
+  const editor = page.locator('[data-notes-editor-host] .toastui-editor-defaultUI');
+  await expect(editor).toBeVisible();
+  await expect(page.locator('#content')).toBeHidden();
+
+  const modeSwitch = editor.locator('.toastui-editor-mode-switch');
+  await expect(modeSwitch).toContainText('WYSIWYG');
+  await expect(modeSwitch).toContainText('Markdown');
+  await expect(modeSwitch.locator('.tab-item.active')).toContainText('WYSIWYG');
+
+  const cssState = await editor.evaluate((element) => {
+    const toolbar = element.querySelector('.toastui-editor-defaultUI-toolbar');
+    return {
+      editorBoxSizing: getComputedStyle(element).boxSizing,
+      toolbarDisplay: toolbar ? getComputedStyle(toolbar).display : 'missing',
+    };
+  });
+  expect(cssState.editorBoxSizing).toBe('border-box');
+  expect(cssState.toolbarDisplay).toBe('flex');
+
+  const imageControls = await editor.locator('.toastui-editor-defaultUI-toolbar button').evaluateAll((buttons) => (
+    buttons
+      .filter((button) => /\bimage\b|\bupload\b/i.test([
+        button.getAttribute('aria-label'),
+        button.getAttribute('title'),
+        button.getAttribute('data-tooltip-content'),
+        button.className,
+      ].filter(Boolean).join(' ')))
+      .map((button) => button.outerHTML)
+  ));
+  expect(imageControls).toEqual([]);
+
+  await page.locator('#title').fill('Browser Notes Round Trip');
+  const wysiwygSurface = editor.locator('.toastui-editor-ww-container .toastui-editor-contents[contenteditable="true"]');
+  await expect(wysiwygSurface).toBeVisible();
+  await replaceNotesEditorText(page, wysiwygSurface, ['WYSIWYG-authored paragraph']);
+
+  await selectNotesEditorMode(modeSwitch, 'Markdown');
+  const markdownSurface = editor.locator('.toastui-editor-md-container .ProseMirror[contenteditable="true"]');
+  await expect(markdownSurface).toBeVisible();
+  await expect(markdownSurface).toContainText('WYSIWYG-authored paragraph');
+  await replaceNotesEditorText(page, markdownSurface, ['WYSIWYG-authored paragraph', '**Bold text**']);
+
+  await selectNotesEditorMode(modeSwitch, 'WYSIWYG');
+  await expect(wysiwygSurface).toContainText('WYSIWYG-authored paragraph');
+  await expect(wysiwygSurface).toContainText('Bold text');
+  await selectNotesEditorMode(modeSwitch, 'Markdown');
+  await expect(markdownSurface).toContainText('**Bold text**');
+
+  const noteSubmissions = [];
+  const recordNoteSubmission = (request) => {
+    const url = new URL(request.url());
+    if (request.method() === 'POST' && url.pathname.startsWith('/notes/')) {
+      noteSubmissions.push(request.postData() || '');
+    } else if (request.method() === 'POST' && url.pathname === '/notes') {
+      noteSubmissions.push(request.postData() || '');
+    }
+  };
+  page.on('request', recordNoteSubmission);
+
+  try {
+    await Promise.all([
+      page.waitForURL(/\/notes\/\d+$/),
+      page.locator('button[type="submit"][form="note-form"]').click(),
+    ]);
+
+    const initialSubmission = new URLSearchParams(noteSubmissions.at(-1));
+    expect(initialSubmission.get('content')).toContain('**Bold text**');
+    await expect(page.locator('.notes-content')).toContainText('Bold text');
+    await expect(page.locator('.notes-content strong')).toHaveText('Bold text');
+
+    const detailPath = new URL(page.url()).pathname;
+    await page.goto(`${page.url()}/edit`, { waitUntil: 'domcontentloaded' });
+    await expect(editor).toBeVisible();
+    await selectNotesEditorMode(modeSwitch, 'Markdown');
+    await expect(markdownSurface).toContainText('**Bold text**');
+
+    await selectNotesEditorMode(modeSwitch, 'WYSIWYG');
+    await replaceNotesEditorText(page, wysiwygSurface, ['Edited WYSIWYG paragraph']);
+    await selectNotesEditorMode(modeSwitch, 'Markdown');
+    await replaceNotesEditorText(page, markdownSurface, ['Edited WYSIWYG paragraph', '**Edited bold**']);
+    await expect(markdownSurface).toContainText('**Edited bold**');
+
+    await Promise.all([
+      page.waitForURL(new RegExp(`${detailPath.replaceAll('/', '\\/')}$`)),
+      page.locator('button[type="submit"][form="note-form"]').click(),
+    ]);
+
+    const editedSubmission = new URLSearchParams(noteSubmissions.at(-1));
+    expect(editedSubmission.get('content')).toContain('**Edited bold**');
+    await expect(page.locator('.notes-content')).toContainText('Edited bold');
+    await expect(page.locator('.notes-content strong')).toHaveText('Edited bold');
+  } finally {
+    page.off('request', recordNoteSubmission);
+  }
+}
+
+async function selectNotesEditorMode(modeSwitch, mode) {
+  const tab = modeSwitch.locator('.tab-item').filter({ hasText: mode });
+  await expect(tab).toHaveCount(1);
+  await tab.click();
+  await expect(modeSwitch.locator('.tab-item.active')).toContainText(mode);
+}
+
+async function replaceNotesEditorText(page, surface, lines) {
+  await surface.click();
+  await page.keyboard.press('Control+A');
+  for (const [index, line] of lines.entries()) {
+    if (index > 0) {
+      await page.keyboard.press('Enter');
+      await page.keyboard.press('Enter');
+    }
+    await page.keyboard.type(line);
+  }
 }
 
 function delay(milliseconds) {

@@ -62,7 +62,6 @@ import {
 } from './asset-manifest.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const TOAST_UI_EDITOR_DIST = path.join(__dirname, '../node_modules/@toast-ui/editor/dist');
 
 const SESSION_COOKIE_NAME = 'cc_session';
 
@@ -173,9 +172,6 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     dotfiles: 'ignore',
     maxAge: '1y',
     immutable: true,
-  }));
-  app.use('/vendor/toast-ui/editor', express.static(TOAST_UI_EDITOR_DIST, {
-    index: false,
   }));
 
   // Phase 1 (asset categories): dependencies are constructed once here and

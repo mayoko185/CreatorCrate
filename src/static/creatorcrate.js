@@ -887,54 +887,100 @@ const NOTE_EDITOR_TOOLBAR_ITEMS = [
   ['code', 'codeblock'],
 ];
 
-function toastUiEditorConstructor() {
-  return globalThis.toastui?.Editor;
+let toastUiEditorLoad;
+const pendingNotesEditorForms = new WeakSet();
+
+function loadToastUiEditor() {
+  if (!toastUiEditorLoad) {
+    toastUiEditorLoad = Promise.all([
+      import('@toast-ui/editor'),
+      import('@toast-ui/editor/dist/toastui-editor.css'),
+      import('@toast-ui/editor/dist/theme/toastui-editor-dark.css'),
+    ]).then(([editorModule]) => {
+      const Editor = editorModule.default;
+      if (typeof Editor !== 'function') {
+        throw new TypeError('The Notes editor module did not expose its default Editor constructor.');
+      }
+      return Editor;
+    });
+  }
+  return toastUiEditorLoad;
 }
 
-export function enhanceNotesEditor(scope = globalThis.document) {
-  if (!scope || typeof scope.querySelectorAll !== 'function') return 0;
+function initializeNotesEditor({ form, host, textarea }, Editor) {
+  let editor = null;
+  try {
+    editor = new Editor({
+      el: host,
+      initialValue: textarea.value,
+      initialEditType: 'wysiwyg',
+      hideModeSwitch: false,
+      usageStatistics: false,
+      autofocus: false,
+      height: 'auto',
+      minHeight: '20rem',
+      theme: 'dark',
+      toolbarItems: NOTE_EDITOR_TOOLBAR_ITEMS,
+    });
 
-  const forms = scope.querySelectorAll(NOTE_EDITOR_FORM_SELECTOR);
-  forms.forEach((form) => {
-    if (isEnhancementBound(form, 'notesEditorBound')) return;
-
-    const host = form.querySelector?.(NOTE_EDITOR_HOST_SELECTOR);
-    const textarea = form.querySelector?.(NOTE_EDITOR_SOURCE_SELECTOR);
-    const Editor = toastUiEditorConstructor();
-    if (!host || !textarea || typeof Editor !== 'function') return;
-
-    let editor = null;
-    try {
-      editor = new Editor({
-        el: host,
-        initialValue: textarea.value,
-        initialEditType: 'wysiwyg',
-        hideModeSwitch: false,
-        usageStatistics: false,
-        autofocus: false,
-        height: 'auto',
-        minHeight: '20rem',
-        theme: 'dark',
-        toolbarItems: NOTE_EDITOR_TOOLBAR_ITEMS,
-      });
-
-      if (typeof editor.getMarkdown !== 'function' || typeof editor.removeHook !== 'function') {
-        editor.destroy?.();
-        return;
-      }
-
-      editor.removeHook('addImageBlobHook');
-    } catch {
-      editor?.destroy?.();
+    if (typeof editor.getMarkdown !== 'function' || typeof editor.removeHook !== 'function') {
+      editor.destroy?.();
       return;
     }
 
-    form.addEventListener('submit', () => {
-      textarea.value = editor.getMarkdown();
+    editor.removeHook('addImageBlobHook');
+  } catch {
+    editor?.destroy?.();
+    return;
+  }
+
+  form.addEventListener('submit', () => {
+    textarea.value = editor.getMarkdown();
+  });
+  textarea.hidden = true;
+  textarea.setAttribute?.('hidden', '');
+  markEnhancementBound(form, 'notesEditorBound');
+}
+
+export function enhanceNotesEditor(scope = globalThis.document, { loadEditor = loadToastUiEditor } = {}) {
+  if (!scope || typeof scope.querySelectorAll !== 'function') return 0;
+
+  const forms = scope.querySelectorAll(NOTE_EDITOR_FORM_SELECTOR);
+  const targets = [];
+  forms.forEach((form) => {
+    if (isEnhancementBound(form, 'notesEditorBound') || pendingNotesEditorForms.has(form)) return;
+
+    const host = form.querySelector?.(NOTE_EDITOR_HOST_SELECTOR);
+    const textarea = form.querySelector?.(NOTE_EDITOR_SOURCE_SELECTOR);
+    if (!host || !textarea || typeof form.addEventListener !== 'function') return;
+
+    pendingNotesEditorForms.add(form);
+    targets.push({ form, host, textarea });
+  });
+
+  if (targets.length === 0) return forms.length;
+
+  let editorLoad;
+  try {
+    editorLoad = Promise.resolve(loadEditor());
+  } catch (error) {
+    editorLoad = Promise.reject(error);
+  }
+
+  editorLoad.then((Editor) => {
+    if (typeof Editor !== 'function') {
+      throw new TypeError('The Notes editor loader did not return an Editor constructor.');
+    }
+    targets.forEach((target) => {
+      pendingNotesEditorForms.delete(target.form);
+      initializeNotesEditor(target, Editor);
     });
-    textarea.hidden = true;
-    textarea.setAttribute?.('hidden', '');
-    markEnhancementBound(form, 'notesEditorBound');
+  }).catch((error) => {
+    targets.forEach((target) => pendingNotesEditorForms.delete(target.form));
+    globalThis.console?.warn?.(
+      '[CreatorCrate] Notes editor enhancement failed; the Markdown textarea remains available.',
+      error,
+    );
   });
 
   return forms.length;

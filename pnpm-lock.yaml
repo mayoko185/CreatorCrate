@@ -11,9 +11,6 @@ importers:
       '@sindresorhus/slugify':
         specifier: ^2.2.1
         version: 2.2.1
-      '@toast-ui/editor':
-        specifier: 3.2.2
-        version: 3.2.2
       better-sqlite3:
         specifier: 13.0.3
         version: 13.0.3
@@ -42,6 +39,9 @@ importers:
       '@playwright/test':
         specifier: 1.62.1
         version: 1.62.1
+      '@toast-ui/editor':
+        specifier: 3.2.2
+        version: 3.2.2
       supertest:
         specifier: ^7.0.0
         version: 7.2.2
