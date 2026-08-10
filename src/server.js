@@ -2,7 +2,7 @@ import 'dotenv/config';
 
 import http from 'node:http';
 import process from 'node:process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createConfig, ConfigError } from './config.js';
 import { validateMounts, FilesystemError } from './filesystem.js';
 import { ensurePreviewRoot, StorageError } from './storage/path-manager.js';
@@ -12,6 +12,18 @@ import { createAutomaticProjectScanScheduler } from './services/automatic-projec
 import { createApplicationContext } from './app-context.js';
 import { createManagedCredentialProvider, CredentialError } from './auth/credential-provider.js';
 import { ensureAuthEnablement, AuthStateError } from './auth/auth-state.js';
+import {
+  AssetManifestError,
+  createAssetManifest,
+  VITE_ENTRY_KEY,
+} from './asset-manifest.js';
+
+export function loadProductionAssetManifest(options = {}) {
+  return createAssetManifest({
+    ...options,
+    requiredEntries: [VITE_ENTRY_KEY],
+  });
+}
 
 async function main() {
   let config;
@@ -44,6 +56,19 @@ async function main() {
       process.exit(1);
     }
     throw err;
+  }
+
+  let assetManifest;
+  if (config.nodeEnv === 'production') {
+    try {
+      assetManifest = loadProductionAssetManifest();
+    } catch (err) {
+      if (err instanceof AssetManifestError) {
+        console.error(`Asset manifest error: ${err.message}`);
+        process.exit(1);
+      }
+      throw err;
+    }
   }
 
   const db = openDatabase(config.databasePath);
@@ -131,6 +156,8 @@ async function main() {
       authConfig,
       authSettings: config.auth,
       authState: { csrfPepper: authState.csrfPepper },
+      assetManifest,
+      useViteAssets: config.nodeEnv === 'production',
     },
   }, db);
 
@@ -163,7 +190,9 @@ async function main() {
   process.on('SIGINT', shutdown);
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}

@@ -6,10 +6,25 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}CreatorCrate{% if hasPageHeading %} — {{ currentPageHeading }}{% endif %}{% endblock %}</title>
-    <link rel="stylesheet" href="/creatorcrate.css">
+    {% set viteEntryAssets = {} %}
+    {% if useViteAssets %}
+      {% set viteEntryAssets = viteAssets.entry('client/main.js') %}
+      {% for stylesheetUrl in viteEntryAssets.css %}
+        <link rel="stylesheet" href="{{ stylesheetUrl }}">
+      {% endfor %}
+      {% for preloadUrl in viteEntryAssets.preload %}
+        <link rel="modulepreload" href="{{ preloadUrl }}">
+      {% endfor %}
+    {% else %}
+      <link rel="stylesheet" href="/creatorcrate.css">
+    {% endif %}
     {% block page_assets %}{% endblock %}
     <link rel="icon" type="image/svg+xml" href="/logo.svg">
-    <script type="module" src="/creatorcrate.js"></script>
+    {% if useViteAssets %}
+      <script type="module" src="{{ viteEntryAssets.js }}"></script>
+    {% else %}
+      <script type="module" src="/creatorcrate.js"></script>
+    {% endif %}
   </head>
   <body class="{% block body_class %}{% endblock %}">
     {% import "partials/icons.njk" as icons %}

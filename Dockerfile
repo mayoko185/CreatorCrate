@@ -19,6 +19,16 @@ RUN apt-get update \
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile --prod
 
+FROM deps AS frontend-build
+
+ENV NODE_ENV=development
+
+RUN pnpm install --frozen-lockfile
+COPY vite.config.js ./
+COPY client ./client
+COPY src/static ./src/static
+RUN pnpm build && test -f /app/dist/client/.vite/manifest.json
+
 FROM deps AS test
 
 ENV NODE_ENV=test
@@ -28,11 +38,14 @@ COPY src ./src
 COPY migrations ./migrations
 COPY tests ./tests
 COPY vitest.config.js ./
+COPY vite.config.js ./
+COPY client ./client
 RUN pnpm test
 
 FROM base AS runtime
 
 COPY --from=deps /app/node_modules ./node_modules
+COPY --from=frontend-build /app/dist/client ./dist/client
 COPY src ./src
 COPY migrations ./migrations
 COPY downloads ./downloads

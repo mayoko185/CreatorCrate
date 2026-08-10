@@ -54,6 +54,7 @@ import { createAuthRouter } from './routes/auth.js';
 import { createLoginThrottler } from './auth/login-throttle.js';
 import { createAuthTransitionService } from './auth/auth-transition-service.js';
 import { buildShellModel } from './shell/navigation.js';
+import { createUnavailableAssetManifest, VITE_DIST_ROOT, VITE_PUBLIC_PATH } from './asset-manifest.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const TOAST_UI_EDITOR_DIST = path.join(__dirname, '../node_modules/@toast-ui/editor/dist');
@@ -75,6 +76,19 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     express: app,
     noCache: true,
   });
+  const useViteAssets = opts.useViteAssets === undefined ? false : opts.useViteAssets;
+  if (typeof useViteAssets !== 'boolean') {
+    throw new TypeError('createApp requires useViteAssets to be a boolean when provided.');
+  }
+  const assetManifest = opts.assetManifest || createUnavailableAssetManifest();
+  if (typeof assetManifest.entry !== 'function') {
+    throw new TypeError('createApp requires an assetManifest resolver with an entry() method.');
+  }
+  env.addGlobal('viteAssets', assetManifest);
+  env.addGlobal('useViteAssets', useViteAssets);
+  app.locals.assetManifest = assetManifest;
+  app.locals.viteAssets = assetManifest;
+  app.locals.useViteAssets = useViteAssets;
   app.set('view engine', 'njk');
 
   // Phase 11.2: exclusive maintenance boundary. While a restore owns this
@@ -113,6 +127,12 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   app.use(express.urlencoded({ extended: true }));
   app.use(express.static(path.join(__dirname, 'static'), {
     index: false,
+  }));
+  app.use(VITE_PUBLIC_PATH, express.static(opts.viteDistRoot || VITE_DIST_ROOT, {
+    index: false,
+    dotfiles: 'ignore',
+    maxAge: '1y',
+    immutable: true,
   }));
   app.use('/vendor/toast-ui/editor', express.static(TOAST_UI_EDITOR_DIST, {
     index: false,
