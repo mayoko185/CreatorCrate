@@ -11,7 +11,7 @@
 {% block content %}
   {% call pageHeading.render(formDescription) %}
     <button class="button button-primary" type="submit" form="note-form">{{ action }}</button>
-    <a class="button button-secondary" href="{% if note %}/notes/{{ note.id }}{% else %}/notes{% endif %}">Cancel</a>
+    <a class="button button-secondary" href="{% if note %}/notes/{{ note.id }}{% elif chapter %}/notes/chapters/{{ chapter.id }}{% else %}/notes{% endif %}">Cancel</a>
   {% endcall %}
 
   {% if errors.general %}
@@ -22,6 +22,12 @@
 
   <form id="note-form" method="post" action="{{ submitUrl }}" class="project-form notes-form" data-notes-editor-form novalidate>
     <input type="hidden" name="_csrf" value="{{ _csrf }}">
+    {% if chapter %}
+      {% if action == 'Create' %}
+        <input type="hidden" name="chapterId" value="{{ values.chapterId }}">
+      {% endif %}
+      <p class="help-text">This Page will belong to <a href="/notes/chapters/{{ chapter.id }}">{{ chapter.title }}</a> in <a href="/notes/books/{{ book.id }}">{{ book.title }}</a>.</p>
+    {% endif %}
 
     <div class="settings-section">
       <h3>Basic information</h3>

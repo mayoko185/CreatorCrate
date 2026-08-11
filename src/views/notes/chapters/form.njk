@@ -1,0 +1,28 @@
+{% extends "layout.njk" %}
+{% import "partials/page-heading.njk" as pageHeading %}
+
+{% set title = action ~ " Chapter" %}
+{% set page_title = "Notes — Edit " ~ chapter.title if action == "Edit" else "Notes — " ~ title %}
+
+{% block content %}
+  {% call pageHeading.render() %}
+    <button class="button button-primary" type="submit" form="chapter-form">{{ action }}</button>
+    <a class="button button-secondary" href="{% if chapter %}/notes/chapters/{{ chapter.id }}{% else %}/notes/books/{{ book.id }}{% endif %}">Cancel</a>
+  {% endcall %}
+
+  {% if errors.general %}
+    <div class="error-summary" role="alert"><p>{{ errors.general }}</p></div>
+  {% endif %}
+
+  <form id="chapter-form" method="post" action="{{ submitUrl }}" class="project-form" novalidate>
+    <input type="hidden" name="_csrf" value="{{ _csrf }}">
+    <div class="settings-section">
+      <h2>Basic information</h2>
+      <div class="field {% if errors.title %}field-error{% endif %}">
+        <label for="title">Title <span class="required" aria-label="required">*</span></label>
+        <input type="text" id="title" name="title" value="{{ values.title or '' }}" maxlength="200" required{% if errors.title %} aria-describedby="title-error" aria-invalid="true"{% endif %}>
+        {% if errors.title %}<span class="field-error-message" id="title-error">{{ errors.title }}</span>{% endif %}
+      </div>
+    </div>
+  </form>
+{% endblock %}

@@ -20,6 +20,8 @@ import { createDownloadsRouter } from './routes/downloads.js';
 import { createProjectService } from './services/project-service.js';
 import { createAssetCategoryRepository } from './data/asset-category-repository.js';
 import { createNoteRepository } from './data/note-repository.js';
+import { createChapterRepository } from './data/chapter-repository.js';
+import { createBookRepository } from './data/book-repository.js';
 import { createAssetCategoryService } from './services/asset-category-service.js';
 import { createAssetBrowserPreferenceRepository } from './data/asset-browser-preference-repository.js';
 import { createAppMetaRepository } from './data/app-meta-repository.js';
@@ -27,6 +29,8 @@ import { createTagRepository } from './data/tag-repository.js';
 import { createProjectPrimaryImageRepository } from './data/project-primary-image-repository.js';
 import { createAssetBrowserPreferenceService } from './services/asset-browser-preference-service.js';
 import { createNoteService } from './services/note-service.js';
+import { createBookService } from './services/book-service.js';
+import { createChapterService } from './services/chapter-service.js';
 import { createMarkdownRenderer } from './services/markdown-renderer.js';
 import { createPageDefaultsService } from './services/page-defaults-service.js';
 import { createOpenLocallySettingsService } from './services/open-locally-settings-service.js';
@@ -236,15 +240,24 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   });
   app.locals.assetScanner = assetScanner;
 
+  const bookRepository = opts.bookRepository || createBookRepository(db);
+  const bookService = opts.bookService || createBookService({ bookRepository });
+  app.locals.bookRepository = bookRepository;
+  app.locals.bookService = bookService;
+
   const noteRepository = opts.noteRepository || createNoteRepository(db);
+  const chapterRepository = opts.chapterRepository || createChapterRepository(db);
   const noteService = opts.noteService || createNoteService({
     noteRepository,
     projectRepository: projectService.repository,
     assetRepository: assetScanner.repository,
+    chapterRepository,
   });
+  const chapterService = opts.chapterService || createChapterService({ chapterRepository, bookRepository });
   const markdownRenderer = opts.markdownRenderer || createMarkdownRenderer();
   app.locals.noteRepository = noteRepository;
   app.locals.noteService = noteService;
+  app.locals.chapterService = chapterService;
   app.locals.markdownRenderer = markdownRenderer;
 
   const tagRepository = opts.tagRepository || createTagRepository(db);
@@ -541,6 +554,8 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
 
   app.use('/notes', createNotesRouter({
     appName,
+    bookService,
+    chapterService,
     noteService,
     markdownRenderer,
     projectService,

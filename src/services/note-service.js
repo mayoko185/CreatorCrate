@@ -1,3 +1,6 @@
+import { NoteError } from '../data/note-repository.js';
+import { ChapterNotFoundError } from './chapter-service.js';
+
 export const NOTE_TITLE_MAX = 200;
 
 const REORDER_VALIDATION_CODES = new Set([
@@ -104,13 +107,23 @@ function isForeignKeyConstraint(error) {
     || /foreign key constraint failed/i.test(error?.message || '');
 }
 
+function isNoteRepositoryError(error) {
+  return error instanceof NoteError;
+}
+
 /**
  * @param {object} deps
  * @param {object} deps.noteRepository
  * @param {object} deps.projectRepository
  * @param {object} deps.assetRepository
+ * @param {object} deps.chapterRepository
  */
-export function createNoteService({ noteRepository, projectRepository, assetRepository } = {}) {
+export function createNoteService({
+  noteRepository,
+  projectRepository,
+  assetRepository,
+  chapterRepository,
+} = {}) {
   if (!noteRepository) {
     throw new Error('createNoteService requires a noteRepository dependency.');
   }
@@ -120,6 +133,9 @@ export function createNoteService({ noteRepository, projectRepository, assetRepo
   if (!assetRepository) {
     throw new Error('createNoteService requires an assetRepository dependency.');
   }
+  if (!chapterRepository) {
+    throw new Error('createNoteService requires a chapterRepository dependency.');
+  }
 
   function requireNote(id) {
     assertPositiveIntegerId(id);
@@ -128,6 +144,15 @@ export function createNoteService({ noteRepository, projectRepository, assetRepo
       throw new NoteNotFoundError(id);
     }
     return note;
+  }
+
+  function requireChapter(id, fieldLabel = 'chapterId') {
+    assertPositiveIntegerId(id, fieldLabel);
+    const chapter = chapterRepository.findById(id);
+    if (!chapter) {
+      throw new ChapterNotFoundError(id);
+    }
+    return chapter;
   }
 
   function validateAssociationReferences(projectIds, assetIds) {
@@ -153,6 +178,11 @@ export function createNoteService({ noteRepository, projectRepository, assetRepo
   function normalizeCreateInput(input) {
     assertPlainObject(input, 'input');
     const errors = {};
+    if (typeof input.chapterId !== 'number'
+      || !Number.isSafeInteger(input.chapterId)
+      || input.chapterId <= 0) {
+      errors.chapterId = 'chapterId must be a positive integer.';
+    }
     const title = normalizeTitle(input.title, errors);
     const content = normalizeContent(input.content, errors);
     const projectIds = normalizeAssociationIds(input.projectIds, 'projectIds', errors, {
@@ -163,13 +193,23 @@ export function createNoteService({ noteRepository, projectRepository, assetRepo
     });
 
     throwValidationIfNeeded(errors);
+    requireChapter(input.chapterId);
     validateAssociationReferences(projectIds, assetIds);
-    return { title, content, projectIds, assetIds };
+    return {
+      chapterId: input.chapterId,
+      title,
+      content,
+      projectIds,
+      assetIds,
+    };
   }
 
   function normalizeUpdateInput(input, existing) {
     assertPlainObject(input, 'input');
     const errors = {};
+    if (Object.hasOwn(input, 'chapterId')) {
+      errors.chapterId = 'chapterId cannot be changed by updating a Note.';
+    }
     const title = normalizeTitle(input.title, errors, existing.title);
     const content = normalizeContent(input.content, errors, existing.content);
     const projectIds = Object.hasOwn(input, 'projectIds')
@@ -217,8 +257,6 @@ export function createNoteService({ noteRepository, projectRepository, assetRepo
       throw new NoteValidationError({ orderedIds: 'orderedIds must be an array.' });
     }
 
-    const notes = noteRepository.list();
-    const currentIds = notes.map((note) => note.id);
     const seen = new Set();
 
     for (const id of orderedIds) {
@@ -229,19 +267,6 @@ export function createNoteService({ noteRepository, projectRepository, assetRepo
         throw new NoteValidationError({ orderedIds: 'Note order must not contain duplicate IDs.' });
       }
       seen.add(id);
-    }
-
-    if (orderedIds.length !== currentIds.length) {
-      throw new NoteValidationError({
-        orderedIds: 'Note order must contain every current note exactly once.',
-      });
-    }
-
-    const currentIdSet = new Set(currentIds);
-    if (orderedIds.some((id) => !currentIdSet.has(id))) {
-      throw new NoteValidationError({
-        orderedIds: 'Note order must contain every current note exactly once.',
-      });
     }
   }
 
@@ -259,6 +284,11 @@ export function createNoteService({ noteRepository, projectRepository, assetRepo
       return noteRepository.list();
     },
 
+    listNotesForChapter(chapterId) {
+      requireChapter(chapterId);
+      return noteRepository.listForChapter(chapterId);
+    },
+
     updateNote(id, input) {
       const existing = requireNote(id);
       const values = normalizeUpdateInput(input, existing);
@@ -274,15 +304,39 @@ export function createNoteService({ noteRepository, projectRepository, assetRepo
       return deleted;
     },
 
-    reorderNotes(orderedIds) {
+    reorderNotes(chapterId, orderedIds) {
+      requireChapter(chapterId);
       validateReorderInput(orderedIds);
       try {
-        return noteRepository.reorder(orderedIds);
+        return noteRepository.reorder(chapterId, orderedIds);
       } catch (error) {
-        if (REORDER_VALIDATION_CODES.has(error?.code)) {
+        if (isNoteRepositoryError(error) && REORDER_VALIDATION_CODES.has(error.code)) {
           throw new NoteValidationError({
             orderedIds: 'Note order must contain every current note exactly once.',
           });
+        }
+        throw error;
+      }
+    },
+
+    moveNoteToChapter(noteId, targetChapterId) {
+      requireNote(noteId);
+      requireChapter(targetChapterId, 'targetChapterId');
+      try {
+        const moved = noteRepository.moveToChapter(noteId, targetChapterId);
+        if (!moved) {
+          throw new NoteNotFoundError(noteId);
+        }
+        return moved;
+      } catch (error) {
+        if (error instanceof NoteNotFoundError) {
+          throw error;
+        }
+        if (isNoteRepositoryError(error) && error.code === 'TARGET_CHAPTER_NOT_FOUND') {
+          throw new ChapterNotFoundError(targetChapterId);
+        }
+        if (isNoteRepositoryError(error)) {
+          throw new NoteValidationError({ noteId: 'Note move could not be completed.' });
         }
         throw error;
       }

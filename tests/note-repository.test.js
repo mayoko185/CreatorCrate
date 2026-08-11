@@ -13,6 +13,10 @@ describe('note repository', () => {
   let dbPath;
   let db;
   let repository;
+  let defaultChapterId;
+  let rawCreate;
+  let rawReorder;
+  let rawSaveWithAssociations;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-notes-'));
@@ -20,6 +24,21 @@ describe('note repository', () => {
     db = openDatabase(dbPath);
     runMigrations(db, MIGRATIONS_DIR);
     repository = createNoteRepository(db);
+    const defaultBookId = Number(db.prepare(
+      "INSERT INTO books (title, sort_order) VALUES ('Default Book', 0)"
+    ).run().lastInsertRowid);
+    defaultChapterId = Number(db.prepare(
+      "INSERT INTO chapters (book_id, title, sort_order) VALUES (?, 'Default Chapter', 0)"
+    ).run(defaultBookId).lastInsertRowid);
+    rawCreate = repository.create.bind(repository);
+    rawReorder = repository.reorder.bind(repository);
+    rawSaveWithAssociations = repository.saveWithAssociations.bind(repository);
+    repository.create = (input = {}) => rawCreate({ chapterId: defaultChapterId, ...input });
+    repository.reorder = (orderedIds) => rawReorder(defaultChapterId, orderedIds);
+    repository.saveWithAssociations = (input = {}) => rawSaveWithAssociations({
+      chapterId: defaultChapterId,
+      ...input,
+    });
   });
 
   afterEach(() => {
@@ -34,6 +53,7 @@ describe('note repository', () => {
       const columns = db.prepare("PRAGMA table_info('notes')").all();
       const names = columns.map((c) => c.name);
       expect(names).toContain('id');
+      expect(names).toContain('chapter_id');
       expect(names).toContain('title');
       expect(names).toContain('content');
       expect(names).toContain('sort_order');
@@ -43,32 +63,37 @@ describe('note repository', () => {
 
     it('enforces sort_order >= 0', () => {
       expect(() => {
-        db.exec("INSERT INTO notes (title, content, sort_order) VALUES ('t', 'c', -1)");
+        db.prepare('INSERT INTO notes (chapter_id, title, content, sort_order) VALUES (?, ?, ?, ?)')
+          .run(defaultChapterId, 't', 'c', -1);
       }).toThrow(/constraint/i);
     });
 
     it('defaults title and content to empty strings', () => {
-      db.exec("INSERT INTO notes (sort_order) VALUES (0)");
+      db.prepare('INSERT INTO notes (chapter_id, sort_order) VALUES (?, 0)').run(defaultChapterId);
       const row = db.prepare('SELECT title, content FROM notes WHERE id = 1').get();
       expect(row.title).toBe('');
       expect(row.content).toBe('');
     });
 
     it('defaults sort_order to 0', () => {
-      db.exec("INSERT INTO notes (title, content) VALUES ('t', 'c')");
+      db.prepare("INSERT INTO notes (chapter_id, title, content) VALUES (?, 't', 'c')")
+        .run(defaultChapterId);
       const row = db.prepare('SELECT sort_order FROM notes WHERE id = 1').get();
       expect(row.sort_order).toBe(0);
     });
 
     it('auto-increments id', () => {
-      db.exec("INSERT INTO notes (title, content) VALUES ('a', 'b')");
-      db.exec("INSERT INTO notes (title, content) VALUES ('c', 'd')");
+      db.prepare("INSERT INTO notes (chapter_id, title, content) VALUES (?, 'a', 'b')")
+        .run(defaultChapterId);
+      db.prepare("INSERT INTO notes (chapter_id, title, content) VALUES (?, 'c', 'd')")
+        .run(defaultChapterId);
       const ids = db.prepare('SELECT id FROM notes ORDER BY id').all().map((r) => r.id);
       expect(ids).toEqual([1, 2]);
     });
 
     it('sets created_at and updated_at automatically', () => {
-      db.exec("INSERT INTO notes (title, content) VALUES ('t', 'c')");
+      db.prepare("INSERT INTO notes (chapter_id, title, content) VALUES (?, 't', 'c')")
+        .run(defaultChapterId);
       const row = db.prepare('SELECT created_at, updated_at FROM notes WHERE id = 1').get();
       expect(row.created_at).toBeTruthy();
       expect(row.updated_at).toBeTruthy();
@@ -76,7 +101,8 @@ describe('note repository', () => {
 
     it('allows content to hold multi-line markdown text', () => {
       const markdown = '# Heading\n\nParagraph with **bold**.\n\n- item 1\n- item 2\n';
-      db.prepare("INSERT INTO notes (title, content, sort_order) VALUES (?, ?, 0)").run('t', markdown);
+      db.prepare("INSERT INTO notes (chapter_id, title, content, sort_order) VALUES (?, ?, ?, 0)")
+        .run(defaultChapterId, 't', markdown);
       const row = db.prepare('SELECT content FROM notes WHERE id = 1').get();
       expect(row.content).toBe(markdown);
     });
@@ -114,9 +140,9 @@ describe('note repository', () => {
       const third = repository.create({ title: 'Third' });
       // sort_orders are 0, 1, 2
       repository.deleteById(second.id);
-      // surviving: sort_orders 0 and 2, MAX(sort_order) = 2
+      // deletion compacts the source Chapter before the next append
       const fourth = repository.create({ title: 'Fourth' });
-      expect(fourth.sort_order).toBe(3);
+      expect(fourth.sort_order).toBe(2);
     });
   });
 
@@ -241,8 +267,8 @@ describe('note repository', () => {
       const orderedIds = [n3.id, n1.id, n5.id, n2.id, n4.id];
 
       db.exec(`
-        CREATE UNIQUE INDEX notes_sort_order_unique
-        ON notes(sort_order)
+        CREATE UNIQUE INDEX notes_chapter_sort_order_unique
+        ON notes(chapter_id, sort_order)
       `);
 
       const reordered = repository.reorder(orderedIds);
@@ -953,6 +979,270 @@ describe('note repository', () => {
       expect(repository.findById(note.id)).toMatchObject({ title: 'Before', content: 'original' });
       expect(repository.listProjectsForNote(note.id)).toEqual([firstProjectId]);
       expect(repository.listAssetsForNote(note.id)).toEqual([firstAssetId]);
+    });
+  });
+
+  // ─── Chapter hierarchy ─────────────────────────────────────────────────
+
+  describe('Chapter hierarchy', () => {
+    function createBook(title, sortOrder) {
+      return Number(db.prepare('INSERT INTO books (title, sort_order) VALUES (?, ?)')
+        .run(title, sortOrder).lastInsertRowid);
+    }
+
+    function createChapter(bookId, title, sortOrder) {
+      return Number(db.prepare(`
+        INSERT INTO chapters (book_id, title, sort_order)
+        VALUES (?, ?, ?)
+      `).run(bookId, title, sortOrder).lastInsertRowid);
+    }
+
+    function createProject(title) {
+      return Number(db.prepare(`
+        INSERT INTO projects (title, slug, status) VALUES (?, ?, 'tbd')
+      `).run(title, title.toLowerCase().replaceAll(' ', '-')).lastInsertRowid);
+    }
+
+    function createAsset(projectId, relativePath) {
+      const filename = relativePath.split('/').pop();
+      return Number(db.prepare(`
+        INSERT INTO assets (project_id, relative_path, filename)
+        VALUES (?, ?, ?)
+      `).run(projectId, relativePath, filename).lastInsertRowid);
+    }
+
+    it('requires Chapter membership and appends independently in each Chapter', () => {
+      expect(() => rawCreate({ title: 'Missing Chapter' })).toThrow(/NOT NULL/i);
+      expect(() => rawCreate({ chapterId: 999999, title: 'Missing Parent' })).toThrow(/FOREIGN KEY/i);
+
+      const bookId = createBook('Scoped Book', 1);
+      const firstChapterId = createChapter(bookId, 'First', 0);
+      const secondChapterId = createChapter(bookId, 'Second', 1);
+      const first = rawCreate({ chapterId: firstChapterId, title: 'First note' });
+      const second = rawCreate({ chapterId: firstChapterId, title: 'Second note' });
+      const other = rawCreate({ chapterId: secondChapterId, title: 'Other note' });
+
+      expect([first.chapter_id, first.sort_order]).toEqual([firstChapterId, 0]);
+      expect([second.chapter_id, second.sort_order]).toEqual([firstChapterId, 1]);
+      expect([other.chapter_id, other.sort_order]).toEqual([secondChapterId, 0]);
+    });
+
+    it('lists only one Chapter by sort_order then id and keeps list() hierarchy-aware', () => {
+      const firstBookId = createBook('First Book', 2);
+      const secondBookId = createBook('Second Book', 1);
+      const lateChapterId = createChapter(firstBookId, 'Late Chapter', 1);
+      const earlyChapterId = createChapter(firstBookId, 'Early Chapter', 0);
+      const secondBookChapterId = createChapter(secondBookId, 'Only Chapter', 0);
+      const insert = db.prepare(`
+        INSERT INTO notes (chapter_id, title, content, sort_order)
+        VALUES (?, ?, '', ?)
+      `);
+      const late = Number(insert.run(lateChapterId, 'Late', 0).lastInsertRowid);
+      const earlySecond = Number(insert.run(earlyChapterId, 'Early second', 1).lastInsertRowid);
+      const earlyFirst = Number(insert.run(earlyChapterId, 'Early first', 0).lastInsertRowid);
+      const otherBook = Number(insert.run(secondBookChapterId, 'Other book', 0).lastInsertRowid);
+
+      expect(repository.listForChapter(earlyChapterId).map((note) => note.id))
+        .toEqual([earlyFirst, earlySecond]);
+      expect(repository.listForChapter(lateChapterId).map((note) => note.id)).toEqual([late]);
+      expect(repository.list().map((note) => note.id)).toEqual([
+        otherBook,
+        earlyFirst,
+        earlySecond,
+        late,
+      ]);
+    });
+
+    it('lists project and asset associations in hierarchy order', () => {
+      const firstBookId = createBook('Association First Book', 4);
+      const secondBookId = createBook('Association Second Book', 3);
+      const lateChapterId = createChapter(firstBookId, 'Late', 1);
+      const earlyChapterId = createChapter(firstBookId, 'Early', 0);
+      const otherBookChapterId = createChapter(secondBookId, 'Only', 0);
+      const late = rawCreate({ chapterId: lateChapterId, title: 'Late' });
+      const early = rawCreate({ chapterId: earlyChapterId, title: 'Early' });
+      const otherBook = rawCreate({ chapterId: otherBookChapterId, title: 'Other book' });
+      const projectId = createProject('Hierarchy Association Project');
+      const assetId = createAsset(projectId, 'source/hierarchy.png');
+
+      for (const note of [late, early, otherBook]) {
+        repository.replaceProjects(note.id, [projectId]);
+        repository.replaceAssets(note.id, [assetId]);
+      }
+
+      expect(repository.listForProject(projectId).map((note) => note.id))
+        .toEqual([otherBook.id, early.id, late.id]);
+      expect(repository.listForAsset(assetId).map((note) => note.id))
+        .toEqual([otherBook.id, early.id, late.id]);
+    });
+
+    it('reorders an exact Chapter permutation without affecting other Chapters or timestamps', () => {
+      const bookId = createBook('Reorder Book', 3);
+      const chapterId = createChapter(bookId, 'Reorder', 0);
+      const otherChapterId = createChapter(bookId, 'Other', 1);
+      const first = rawCreate({ chapterId, title: 'First' });
+      const second = rawCreate({ chapterId, title: 'Second' });
+      const third = rawCreate({ chapterId, title: 'Third' });
+      const other = rawCreate({ chapterId: otherChapterId, title: 'Other' });
+      const beforeTimestamps = repository.listForChapter(chapterId)
+        .map((note) => [note.id, note.updated_at]);
+
+      const reordered = rawReorder(chapterId, [third.id, first.id, second.id]);
+
+      expect(reordered.map((note) => [note.id, note.sort_order])).toEqual([
+        [third.id, 0],
+        [first.id, 1],
+        [second.id, 2],
+      ]);
+      expect(repository.listForChapter(otherChapterId)).toEqual([other]);
+      expect(repository.listForChapter(chapterId).map((note) => [note.id, note.updated_at]))
+        .toEqual(beforeTimestamps.sort((a, b) => [third.id, first.id, second.id].indexOf(a[0])
+          - [third.id, first.id, second.id].indexOf(b[0])));
+    });
+
+    it('rejects duplicate, missing, extra, and cross-Chapter reorder IDs without mutation', () => {
+      const bookId = createBook('Validation Book', 4);
+      const chapterId = createChapter(bookId, 'Target', 0);
+      const otherChapterId = createChapter(bookId, 'Other', 1);
+      const first = rawCreate({ chapterId, title: 'First' });
+      const second = rawCreate({ chapterId, title: 'Second' });
+      const other = rawCreate({ chapterId: otherChapterId, title: 'Other' });
+      const beforeTarget = repository.listForChapter(chapterId);
+      const beforeOther = repository.listForChapter(otherChapterId);
+
+      for (const orderedIds of [
+        [first.id, first.id],
+        [first.id],
+        [first.id, 999999],
+        [first.id, other.id],
+      ]) {
+        expect(() => rawReorder(chapterId, orderedIds)).toThrow(NoteError);
+        expect(repository.listForChapter(chapterId)).toEqual(beforeTarget);
+        expect(repository.listForChapter(otherChapterId)).toEqual(beforeOther);
+      }
+    });
+
+    it('deletes atomically, cascades associations, compacts only its source Chapter, and preserves timestamps', () => {
+      const bookId = createBook('Delete Book', 5);
+      const chapterId = createChapter(bookId, 'Source', 0);
+      const otherChapterId = createChapter(bookId, 'Other', 1);
+      const first = rawCreate({ chapterId, title: 'First' });
+      const deleted = rawCreate({ chapterId, title: 'Deleted' });
+      const last = rawCreate({ chapterId, title: 'Last' });
+      const other = rawCreate({ chapterId: otherChapterId, title: 'Other' });
+      const projectId = createProject('Delete Project');
+      const assetId = createAsset(projectId, 'source/delete.png');
+      repository.replaceProjects(deleted.id, [projectId]);
+      repository.replaceAssets(deleted.id, [assetId]);
+      const sourceTimestamps = repository.listForChapter(chapterId)
+        .filter((note) => note.id !== deleted.id)
+        .map((note) => [note.id, note.updated_at]);
+
+      expect(repository.deleteById(deleted.id)).toBe(true);
+      expect(repository.findById(deleted.id)).toBeUndefined();
+      expect(repository.listProjectsForNote(deleted.id)).toEqual([]);
+      expect(repository.listAssetsForNote(deleted.id)).toEqual([]);
+      expect(repository.listForChapter(chapterId).map((note) => [note.id, note.sort_order]))
+        .toEqual([[first.id, 0], [last.id, 1]]);
+      expect(repository.listForChapter(chapterId).map((note) => [note.id, note.updated_at]))
+        .toEqual(sourceTimestamps);
+      expect(repository.listForChapter(otherChapterId)).toEqual([other]);
+      expect(repository.deleteById(999999)).toBe(false);
+    });
+
+    it('moves a Note to empty and populated Chapters by append while preserving content, timestamps, and associations', () => {
+      const bookId = createBook('Move Book', 6);
+      const sourceChapterId = createChapter(bookId, 'Source', 0);
+      const emptyChapterId = createChapter(bookId, 'Empty', 1);
+      const populatedChapterId = createChapter(bookId, 'Populated', 2);
+      const first = rawCreate({ chapterId: sourceChapterId, title: 'First', content: 'first body' });
+      const moved = rawCreate({ chapterId: sourceChapterId, title: 'Moved', content: 'moved body' });
+      const destination = rawCreate({ chapterId: populatedChapterId, title: 'Destination' });
+      const projectId = createProject('Move Project');
+      const assetId = createAsset(projectId, 'source/move.png');
+      repository.replaceProjects(moved.id, [projectId]);
+      repository.replaceAssets(moved.id, [assetId]);
+      const beforeMove = repository.findById(moved.id);
+
+      const movedToEmpty = repository.moveToChapter(moved.id, emptyChapterId);
+      expect(movedToEmpty).toMatchObject({
+        id: moved.id,
+        chapter_id: emptyChapterId,
+        sort_order: 0,
+        title: beforeMove.title,
+        content: beforeMove.content,
+        created_at: beforeMove.created_at,
+        updated_at: beforeMove.updated_at,
+      });
+      expect(repository.listForChapter(sourceChapterId).map((note) => [note.id, note.sort_order]))
+        .toEqual([[first.id, 0]]);
+      expect(repository.listProjectsForNote(moved.id)).toEqual([projectId]);
+      expect(repository.listAssetsForNote(moved.id)).toEqual([assetId]);
+
+      const movedToPopulated = repository.moveToChapter(moved.id, populatedChapterId);
+      expect(movedToPopulated).toMatchObject({ chapter_id: populatedChapterId, sort_order: 1 });
+      expect(repository.listForChapter(populatedChapterId).map((note) => note.id))
+        .toEqual([destination.id, moved.id]);
+      expect(repository.findById(moved.id)).toMatchObject({
+        title: beforeMove.title,
+        content: beforeMove.content,
+        created_at: beforeMove.created_at,
+        updated_at: beforeMove.updated_at,
+      });
+    });
+
+    it('defines same-Chapter move as a no-op and distinguishes missing Notes from missing destinations', () => {
+      const bookId = createBook('Move Validation Book', 7);
+      const chapterId = createChapter(bookId, 'Source', 0);
+      const note = rawCreate({ chapterId, title: 'Note' });
+      const before = repository.findById(note.id);
+
+      expect(repository.moveToChapter(note.id, chapterId)).toEqual(before);
+      expect(repository.moveToChapter(999999, chapterId)).toBeUndefined();
+      try {
+        repository.moveToChapter(note.id, 999999);
+        throw new Error('Expected a missing destination Chapter error.');
+      } catch (error) {
+        expect(error).toBeInstanceOf(NoteError);
+        expect(error.code).toBe('TARGET_CHAPTER_NOT_FOUND');
+      }
+      expect(repository.findById(note.id)).toEqual(before);
+    });
+
+    it('rolls back a cross-Chapter move when source compaction fails', () => {
+      const bookId = createBook('Move Rollback Book', 8);
+      const sourceChapterId = createChapter(bookId, 'Source', 0);
+      const destinationChapterId = createChapter(bookId, 'Destination', 1);
+      const moved = rawCreate({ chapterId: sourceChapterId, title: 'Moved' });
+      const survivor = rawCreate({ chapterId: sourceChapterId, title: 'Survivor' });
+      const destination = rawCreate({ chapterId: destinationChapterId, title: 'Destination' });
+      const projectId = createProject('Rollback Project');
+      const assetId = createAsset(projectId, 'source/rollback.png');
+      repository.replaceProjects(moved.id, [projectId]);
+      repository.replaceAssets(moved.id, [assetId]);
+      const beforeSource = repository.listForChapter(sourceChapterId);
+      const beforeDestination = repository.listForChapter(destinationChapterId);
+      const beforeProjects = repository.listProjectsForNote(moved.id);
+      const beforeAssets = repository.listAssetsForNote(moved.id);
+
+      db.exec(`
+        CREATE TRIGGER fail_note_move_compaction
+        BEFORE UPDATE OF sort_order ON notes
+        WHEN OLD.chapter_id = ${sourceChapterId} AND OLD.sort_order >= 4 AND NEW.sort_order = 0
+        BEGIN
+          SELECT RAISE(ABORT, 'forced note move compaction failure');
+        END
+      `);
+
+      expect(() => repository.moveToChapter(moved.id, destinationChapterId))
+        .toThrow(/forced note move compaction failure/);
+      expect(repository.findById(moved.id)).toMatchObject({ chapter_id: sourceChapterId, sort_order: 0 });
+      expect(repository.listForChapter(sourceChapterId)).toEqual(beforeSource);
+      expect(repository.listForChapter(destinationChapterId)).toEqual(beforeDestination);
+      expect(repository.listProjectsForNote(moved.id)).toEqual(beforeProjects);
+      expect(repository.listAssetsForNote(moved.id)).toEqual(beforeAssets);
+      expect(repository.findById(survivor.id)).toMatchObject({ chapter_id: sourceChapterId, sort_order: 1 });
+      expect(repository.findById(destination.id)).toMatchObject({ chapter_id: destinationChapterId, sort_order: 0 });
     });
   });
 });

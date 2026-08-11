@@ -1,24 +1,42 @@
 import express from 'express';
 import { AssetPickerCursorError } from '../data/asset-picker-pagination.js';
 import { NoteNotFoundError, NoteValidationError } from '../services/note-service.js';
+import { BookNotEmptyError, BookNotFoundError, BookValidationError } from '../services/book-service.js';
+import { ChapterNotFoundError, ChapterValidationError } from '../services/chapter-service.js';
 import { buildAssetViewerUrl } from '../services/asset-presentation.js';
 
 const NOTE_EXCERPT_MAX_LENGTH = 160;
 
 const NOTICES = {
+  book_reordered: { variant: 'success', text: 'Book order updated.' },
+  book_reorder_invalid: {
+    variant: 'error',
+    text: 'The submitted book order is invalid. Submit every book exactly once.',
+  },
+  book_reorder_failed: { variant: 'error', text: 'Could not update the book order. No changes were made.' },
   note_reordered: { variant: 'success', text: 'Note order updated.' },
   note_reorder_invalid: {
     variant: 'error',
     text: 'The submitted note order is invalid. Submit every note exactly once.',
   },
   note_reorder_failed: { variant: 'error', text: 'Could not update the note order. No changes were made.' },
+  chapter_reorder_invalid: {
+    variant: 'error',
+    text: 'The submitted chapter order is invalid. Submit every chapter exactly once.',
+  },
 };
 
 function resolveNotice(code) {
   return Object.prototype.hasOwnProperty.call(NOTICES, code) ? NOTICES[code] : null;
 }
 
-export function createNotesRouter({ appName, noteService, markdownRenderer, projectService, assetRepository } = {}) {
+export function createNotesRouter({ appName, bookService, chapterService, noteService, markdownRenderer, projectService, assetRepository } = {}) {
+  if (!bookService || typeof bookService.listBooks !== 'function') {
+    throw new Error('createNotesRouter requires a bookService dependency.');
+  }
+  if (!chapterService || typeof chapterService.listChapters !== 'function') {
+    throw new Error('createNotesRouter requires a chapterService dependency.');
+  }
   if (!noteService || typeof noteService.listNotes !== 'function') {
     throw new Error('createNotesRouter requires a noteService dependency.');
   }
@@ -38,12 +56,12 @@ export function createNotesRouter({ appName, noteService, markdownRenderer, proj
   const router = express.Router();
   const projectRepository = projectService.repository;
 
-  // GET /notes — ordered Notes index
+  // GET /notes — ordered Books landing
   router.get('/', (req, res, next) => {
     try {
-      renderNotesIndex(res, {
+      renderBooksIndex(res, {
         appName,
-        noteService,
+        bookService,
         notice: resolveNotice(req.query.notice),
       });
     } catch (err) {
@@ -51,29 +69,335 @@ export function createNotesRouter({ appName, noteService, markdownRenderer, proj
     }
   });
 
-  // POST /notes/reorder — persist the complete canonical Notes order.
-  // Registered before the dynamic /:id routes so "reorder" cannot be parsed
-  // as a note ID.
-  router.post('/reorder', (req, res, next) => {
+  // Book routes are registered before the legacy dynamic /:id Note routes.
+  router.get('/books/new', (_req, res) => {
+    res.render('notes/books/form.njk', buildBookFormModel({
+      appName,
+      book: null,
+      values: { title: '' },
+      errors: {},
+      action: 'Create',
+      submitUrl: '/notes/books',
+    }));
+  });
+
+  router.post('/books', (req, res, next) => {
+    const body = req.body || {};
+
     try {
-      const orderedIds = parseOrderedNoteIds(req.body?.orderedNoteIds);
-      noteService.reorderNotes(orderedIds);
-      return res.redirect('/notes?notice=note_reordered');
+      const book = bookService.createBook({ title: body.title });
+      return res.redirect(`/notes/books/${book.id}`);
     } catch (err) {
-      if (err instanceof NoteValidationError) {
+      if (err instanceof BookValidationError) {
+        return res.status(422).render('notes/books/form.njk', buildBookFormModel({
+          appName,
+          book: null,
+          values: { title: body.title ?? '' },
+          errors: err.errors || { general: err.message },
+          action: 'Create',
+          submitUrl: '/notes/books',
+        }));
+      }
+      return next(err);
+    }
+  });
+
+  // This literal route must precede POST /books/:bookId.
+  router.post('/books/reorder', (req, res, next) => {
+    try {
+      const orderedIds = parseOrderedBookIds(req.body?.orderedBookIds);
+      bookService.reorderBooks(orderedIds);
+      return res.redirect('/notes?notice=book_reordered');
+    } catch (err) {
+      if (err instanceof BookValidationError) {
         try {
-          renderNotesIndex(res, {
+          renderBooksIndex(res, {
             status: 422,
             appName,
-            noteService,
-            notice: resolveNotice('note_reorder_invalid'),
+            bookService,
+            notice: resolveNotice('book_reorder_invalid'),
           });
           return;
         } catch (renderError) {
           return next(renderError);
         }
       }
-      return res.redirect('/notes?notice=note_reorder_failed');
+      return res.redirect('/notes?notice=book_reorder_failed');
+    }
+  });
+
+  router.get('/books/:bookId/edit', (req, res, next) => {
+    const id = parseId(req.params.bookId);
+    if (id === null) return next(createNotFound());
+
+    try {
+      const book = bookService.getBook(id);
+      return res.render('notes/books/form.njk', buildBookFormModel({
+        appName,
+        book,
+        values: { title: book.title },
+        errors: {},
+        action: 'Edit',
+        submitUrl: `/notes/books/${id}`,
+      }));
+    } catch (err) {
+      if (err instanceof BookNotFoundError) return next(createNotFound());
+      if (err instanceof BookNotEmptyError) return next(err);
+      return next(err);
+    }
+  });
+
+  router.post('/books/:bookId', (req, res, next) => {
+    const id = parseId(req.params.bookId);
+    if (id === null) return next(createNotFound());
+    const body = req.body || {};
+
+    try {
+      const book = bookService.updateBook(id, { title: body.title });
+      return res.redirect(`/notes/books/${book.id}`);
+    } catch (err) {
+      if (err instanceof BookNotFoundError) return next(createNotFound());
+      if (err instanceof BookValidationError) {
+        try {
+          const book = bookService.getBook(id);
+          return res.status(422).render('notes/books/form.njk', buildBookFormModel({
+            appName,
+            book,
+            values: { title: body.title ?? '' },
+            errors: err.errors || { general: err.message },
+            action: 'Edit',
+            submitUrl: `/notes/books/${id}`,
+          }));
+        } catch (lookupError) {
+          if (lookupError instanceof BookNotFoundError) return next(createNotFound());
+          return next(lookupError);
+        }
+      }
+      return next(err);
+    }
+  });
+
+  router.post('/books/:bookId/delete', (req, res, next) => {
+    const id = parseId(req.params.bookId);
+    if (id === null) return next(createNotFound());
+
+    try {
+      bookService.deleteBook(id);
+      return res.redirect('/notes');
+    } catch (err) {
+      if (err instanceof BookNotFoundError) return next(createNotFound());
+      return next(err);
+    }
+  });
+
+  router.get('/books/:bookId/chapters/new', (req, res, next) => {
+    const bookId = parseId(req.params.bookId);
+    if (bookId === null) return next(createNotFound());
+
+    try {
+      const book = bookService.getBook(bookId);
+      return res.render('notes/chapters/form.njk', buildChapterFormModel({
+        appName,
+        book,
+        chapter: null,
+        values: { title: '' },
+        errors: {},
+        action: 'Create',
+        submitUrl: `/notes/books/${bookId}/chapters`,
+      }));
+    } catch (err) {
+      if (err instanceof BookNotFoundError) return next(createNotFound());
+      return next(err);
+    }
+  });
+
+  router.post('/books/:bookId/chapters', (req, res, next) => {
+    const bookId = parseId(req.params.bookId);
+    if (bookId === null) return next(createNotFound());
+    const body = req.body || {};
+
+    try {
+      bookService.getBook(bookId);
+      const chapter = chapterService.createChapter({ bookId, title: body.title });
+      return res.redirect(`/notes/chapters/${chapter.id}`);
+    } catch (err) {
+      if (err instanceof BookNotFoundError) return next(createNotFound());
+      if (err instanceof ChapterValidationError) {
+        try {
+          const book = bookService.getBook(bookId);
+          return res.status(422).render('notes/chapters/form.njk', buildChapterFormModel({
+            appName,
+            book,
+            chapter: null,
+            values: { title: body.title ?? '' },
+            errors: err.errors || { general: err.message },
+            action: 'Create',
+            submitUrl: `/notes/books/${bookId}/chapters`,
+          }));
+        } catch (lookupError) {
+          if (lookupError instanceof BookNotFoundError) return next(createNotFound());
+          return next(lookupError);
+        }
+      }
+      return next(err);
+    }
+  });
+
+  router.post('/books/:bookId/chapters/reorder', (req, res, next) => {
+    const bookId = parseId(req.params.bookId);
+    if (bookId === null) return next(createNotFound());
+
+    try {
+      const orderedIds = parseOrderedChapterIds(req.body?.orderedChapterIds);
+      chapterService.reorderChapters(bookId, orderedIds);
+      return res.redirect(`/notes/books/${bookId}`);
+    } catch (err) {
+      if (err instanceof BookNotFoundError) return next(createNotFound());
+      if (err instanceof ChapterValidationError) {
+        try {
+          renderBookDetail(res, {
+            status: 422,
+            appName,
+            bookService,
+            chapterService,
+            bookId,
+            notice: resolveNotice('chapter_reorder_invalid'),
+          });
+          return;
+        } catch (renderError) {
+          if (renderError instanceof BookNotFoundError) return next(createNotFound());
+          return next(renderError);
+        }
+      }
+      return next(err);
+    }
+  });
+
+  router.get('/books/:bookId', (req, res, next) => {
+    const id = parseId(req.params.bookId);
+    if (id === null) return next(createNotFound());
+
+    try {
+      renderBookDetail(res, { appName, bookService, chapterService, bookId: id });
+      return;
+    } catch (err) {
+      if (err instanceof BookNotFoundError) return next(createNotFound());
+      return next(err);
+    }
+  });
+
+  router.get('/chapters/:chapterId', (req, res, next) => {
+    const chapterId = parseId(req.params.chapterId);
+    if (chapterId === null) return next(createNotFound());
+
+    try {
+      renderChapterDetail(res, {
+        appName, bookService, chapterService, noteService, chapterId,
+      });
+      return;
+    } catch (err) {
+      if (err instanceof ChapterNotFoundError || err instanceof BookNotFoundError) return next(createNotFound());
+      return next(err);
+    }
+  });
+
+  // Keep this literal hierarchy route before the dynamic /:id Note routes.
+  router.post('/chapters/:chapterId/notes/reorder', (req, res, next) => {
+    const chapterId = parseId(req.params.chapterId);
+    if (chapterId === null) return next(createNotFound());
+
+    try {
+      const orderedIds = parseOrderedNoteIds(req.body?.orderedNoteIds);
+      noteService.reorderNotes(chapterId, orderedIds);
+      return res.redirect(`/notes/chapters/${chapterId}`);
+    } catch (err) {
+      if (err instanceof ChapterNotFoundError) return next(createNotFound());
+      if (err instanceof NoteValidationError) {
+        try {
+          renderChapterDetail(res, {
+            status: 422,
+            appName,
+            bookService,
+            chapterService,
+            noteService,
+            chapterId,
+            notice: resolveNotice('note_reorder_invalid'),
+          });
+          return;
+        } catch (renderError) {
+          if (renderError instanceof ChapterNotFoundError || renderError instanceof BookNotFoundError) {
+            return next(createNotFound());
+          }
+          return next(renderError);
+        }
+      }
+      return next(err);
+    }
+  });
+
+  router.get('/chapters/:chapterId/edit', (req, res, next) => {
+    const chapterId = parseId(req.params.chapterId);
+    if (chapterId === null) return next(createNotFound());
+
+    try {
+      const chapter = chapterService.getChapter(chapterId);
+      return res.render('notes/chapters/form.njk', buildChapterFormModel({
+        appName,
+        book: null,
+        chapter,
+        values: { title: chapter.title },
+        errors: {},
+        action: 'Edit',
+        submitUrl: `/notes/chapters/${chapterId}`,
+      }));
+    } catch (err) {
+      if (err instanceof ChapterNotFoundError) return next(createNotFound());
+      return next(err);
+    }
+  });
+
+  router.post('/chapters/:chapterId', (req, res, next) => {
+    const chapterId = parseId(req.params.chapterId);
+    if (chapterId === null) return next(createNotFound());
+    const body = req.body || {};
+
+    try {
+      const chapter = chapterService.updateChapter(chapterId, { title: body.title });
+      return res.redirect(`/notes/chapters/${chapter.id}`);
+    } catch (err) {
+      if (err instanceof ChapterNotFoundError) return next(createNotFound());
+      if (err instanceof ChapterValidationError) {
+        try {
+          const chapter = chapterService.getChapter(chapterId);
+          return res.status(422).render('notes/chapters/form.njk', buildChapterFormModel({
+            appName,
+            book: null,
+            chapter,
+            values: { title: body.title ?? '' },
+            errors: err.errors || { general: err.message },
+            action: 'Edit',
+            submitUrl: `/notes/chapters/${chapterId}`,
+          }));
+        } catch (lookupError) {
+          if (lookupError instanceof ChapterNotFoundError) return next(createNotFound());
+          return next(lookupError);
+        }
+      }
+      return next(err);
+    }
+  });
+
+  router.post('/chapters/:chapterId/delete', (req, res, next) => {
+    const chapterId = parseId(req.params.chapterId);
+    if (chapterId === null) return next(createNotFound());
+
+    try {
+      const chapter = chapterService.getChapter(chapterId);
+      chapterService.deleteChapter(chapterId);
+      return res.redirect(`/notes/books/${chapter.book_id}`);
+    } catch (err) {
+      if (err instanceof ChapterNotFoundError) return next(createNotFound());
+      return next(err);
     }
   });
 
@@ -117,13 +441,20 @@ export function createNotesRouter({ appName, noteService, markdownRenderer, proj
     }
   });
 
-  // GET /notes/new — Create form
-  router.get('/new', (_req, res, next) => {
+  // GET /notes/new?chapterId=:chapterId — Create form
+  router.get('/new', (req, res, next) => {
+    const chapterId = parseId(req.query.chapterId);
+    if (chapterId === null) return next(createNotFound());
+
     try {
-      res.render('notes/form.njk', buildNoteFormModel({
+      const chapter = chapterService.getChapter(chapterId);
+      const book = bookService.getBook(chapter.book_id);
+      return res.render('notes/form.njk', buildNoteFormModel({
         appName,
+        book,
+        chapter,
         note: null,
-        values: emptyFormValues(),
+        values: emptyFormValues(chapterId),
         projects: listProjectOptions(projectService),
         selectedAssets: [],
         errors: {},
@@ -131,30 +462,75 @@ export function createNotesRouter({ appName, noteService, markdownRenderer, proj
         submitUrl: '/notes',
       }));
     } catch (err) {
-      next(err);
+      if (err instanceof ChapterNotFoundError || err instanceof BookNotFoundError) {
+        return next(createNotFound());
+      }
+      return next(err);
     }
   });
 
   // POST /notes — Create a note with independent project and asset associations.
   router.post('/', (req, res, next) => {
     const body = req.body || {};
+    const chapterId = parseId(body.chapterId);
+    if (chapterId === null) return next(createNotFound());
 
     try {
-      const note = noteService.createNote(parseNoteInput(body));
+      const note = noteService.createNote({ chapterId, ...parseNoteInput(body) });
       return res.redirect(`/notes/${note.id}`);
     } catch (err) {
+      if (err instanceof ChapterNotFoundError) return next(createNotFound());
       if (err instanceof NoteValidationError) {
-        const values = buildFormValues(body);
-        return res.status(422).render('notes/form.njk', buildNoteFormModel({
-          appName,
-          note: null,
-          values,
-          projects: listProjectOptions(projectService),
-          selectedAssets: listSelectedAssetOptions(assetRepository, values.assetIds),
-          errors: err.errors || { general: err.message },
-          action: 'Create',
-          submitUrl: '/notes',
-        }));
+        try {
+          const chapter = chapterService.getChapter(chapterId);
+          const book = bookService.getBook(chapter.book_id);
+          const values = buildFormValues(body, { chapterId });
+          return res.status(422).render('notes/form.njk', buildNoteFormModel({
+            appName,
+            book,
+            chapter,
+            note: null,
+            values,
+            projects: listProjectOptions(projectService),
+            selectedAssets: listSelectedAssetOptions(assetRepository, values.assetIds),
+            errors: err.errors || { general: err.message },
+            action: 'Create',
+            submitUrl: '/notes',
+          }));
+        } catch (lookupError) {
+          if (lookupError instanceof ChapterNotFoundError || lookupError instanceof BookNotFoundError) {
+            return next(createNotFound());
+          }
+          return next(lookupError);
+        }
+      }
+      return next(err);
+    }
+  });
+
+  // POST /notes/:id/move - move a Page to another Chapter.
+  // Registered before the dynamic Note routes.
+  router.post('/:id/move', (req, res, next) => {
+    const id = parseId(req.params.id);
+    if (id === null) {
+      return next(createNotFound());
+    }
+
+    const targetChapterId = parseId(req.body?.targetChapterId);
+    if (targetChapterId === null) {
+      const error = new NoteValidationError({
+        targetChapterId: 'targetChapterId must be a canonical positive integer.',
+      });
+      error.status = 422;
+      return next(error);
+    }
+
+    try {
+      noteService.moveNoteToChapter(id, targetChapterId);
+      return res.redirect(`/notes/chapters/${targetChapterId}`);
+    } catch (err) {
+      if (err instanceof NoteNotFoundError || err instanceof ChapterNotFoundError) {
+        return next(createNotFound());
       }
       return next(err);
     }
@@ -169,12 +545,17 @@ export function createNotesRouter({ appName, noteService, markdownRenderer, proj
 
     try {
       const note = noteService.getNote(id);
+      const chapter = chapterService.getChapter(note.chapter_id);
+      const book = bookService.getBook(chapter.book_id);
       const contentHtml = markdownRenderer.renderMarkdown(note.content);
       const projects = resolveAssociatedProjects(note, projectService);
       const assets = resolveAssociatedAssets(note, assetRepository);
-      return res.render('notes/detail.njk', { appName, note, contentHtml, projects, assets });
+      const chapterOptions = listChapterOptions(bookService, chapterService);
+      return res.render('notes/detail.njk', {
+        appName, book, chapter, note, contentHtml, projects, assets, chapterOptions,
+      });
     } catch (err) {
-      if (err instanceof NoteNotFoundError) {
+      if (err instanceof NoteNotFoundError || err instanceof ChapterNotFoundError || err instanceof BookNotFoundError) {
         return next(createNotFound());
       }
       return next(err);
@@ -189,10 +570,14 @@ export function createNotesRouter({ appName, noteService, markdownRenderer, proj
     }
 
     try {
-      const note = noteService.getNote(id);
+      const { note, chapter, book } = loadNoteHierarchy({
+        noteService, chapterService, bookService, id,
+      });
       const values = noteToFormValues(note);
       return res.render('notes/form.njk', buildNoteFormModel({
         appName,
+        book,
+        chapter,
         note,
         values,
         projects: listProjectOptions(projectService),
@@ -202,7 +587,7 @@ export function createNotesRouter({ appName, noteService, markdownRenderer, proj
         submitUrl: `/notes/${id}`,
       }));
     } catch (err) {
-      if (err instanceof NoteNotFoundError) {
+      if (err instanceof NoteNotFoundError || err instanceof ChapterNotFoundError || err instanceof BookNotFoundError) {
         return next(createNotFound());
       }
       return next(err);
@@ -217,23 +602,29 @@ export function createNotesRouter({ appName, noteService, markdownRenderer, proj
     }
 
     const body = req.body || {};
+    let hierarchy;
 
     try {
+      hierarchy = loadNoteHierarchy({
+        noteService, chapterService, bookService, id,
+      });
       const note = noteService.updateNote(id, parseNoteInput(body));
       if (!note) {
         return next(createNotFound());
       }
       return res.redirect(`/notes/${note.id}`);
     } catch (err) {
-      if (err instanceof NoteNotFoundError) {
+      if (err instanceof NoteNotFoundError || err instanceof ChapterNotFoundError || err instanceof BookNotFoundError) {
         return next(createNotFound());
       }
       if (err instanceof NoteValidationError) {
         try {
-          const note = noteService.getNote(id);
+          const { note, chapter, book } = hierarchy;
           const values = buildFormValues(body);
           return res.status(422).render('notes/form.njk', buildNoteFormModel({
             appName,
+            book,
+            chapter,
             note,
             values,
             projects: listProjectOptions(projectService),
@@ -243,7 +634,7 @@ export function createNotesRouter({ appName, noteService, markdownRenderer, proj
             submitUrl: `/notes/${id}`,
           }));
         } catch (lookupError) {
-          if (lookupError instanceof NoteNotFoundError) {
+          if (lookupError instanceof NoteNotFoundError || lookupError instanceof ChapterNotFoundError || lookupError instanceof BookNotFoundError) {
             return next(createNotFound());
           }
           return next(lookupError);
@@ -261,10 +652,12 @@ export function createNotesRouter({ appName, noteService, markdownRenderer, proj
     }
 
     try {
+      const note = noteService.getNote(id);
+      const chapter = chapterService.getChapter(note.chapter_id);
       noteService.deleteNote(id);
-      return res.redirect('/notes');
+      return res.redirect(`/notes/chapters/${chapter.id}`);
     } catch (err) {
-      if (err instanceof NoteNotFoundError) {
+      if (err instanceof NoteNotFoundError || err instanceof ChapterNotFoundError) {
         return next(createNotFound());
       }
       return next(err);
@@ -274,9 +667,13 @@ export function createNotesRouter({ appName, noteService, markdownRenderer, proj
   return router;
 }
 
-function buildNoteFormModel({ appName, note, values, projects, selectedAssets, errors, action, submitUrl }) {
+function buildNoteFormModel({
+  appName, book = null, chapter = null, note, values, projects, selectedAssets, errors, action, submitUrl,
+}) {
   return {
     appName,
+    book,
+    chapter,
     note,
     values,
     projects,
@@ -287,6 +684,14 @@ function buildNoteFormModel({ appName, note, values, projects, selectedAssets, e
     action,
     submitUrl,
   };
+}
+
+function buildBookFormModel({ appName, book, values, errors, action, submitUrl }) {
+  return { appName, book, values, errors, action, submitUrl };
+}
+
+function buildChapterFormModel({ appName, book, chapter, values, errors, action, submitUrl }) {
+  return { appName, book, chapter, values, errors, action, submitUrl };
 }
 
 function parseNoteInput(body) {
@@ -303,16 +708,17 @@ function parseNoteInput(body) {
   return input;
 }
 
-function emptyFormValues() {
-  return { title: '', content: '', projectIds: [], assetIds: [] };
+function emptyFormValues(chapterId = undefined) {
+  return { title: '', content: '', projectIds: [], assetIds: [], chapterId };
 }
 
-function buildFormValues(body) {
+function buildFormValues(body, { chapterId = undefined } = {}) {
   return {
     title: body.title ?? '',
     content: body.content ?? '',
     projectIds: normalizeProjectIds(body.projectIds),
     assetIds: normalizeAssetIds(body.assetIds),
+    chapterId,
   };
 }
 
@@ -323,6 +729,20 @@ function noteToFormValues(note) {
     projectIds: note.projectIds || [],
     assetIds: note.assetIds || [],
   };
+}
+
+function loadNoteHierarchy({ noteService, chapterService, bookService, id }) {
+  const note = noteService.getNote(id);
+  const chapter = chapterService.getChapter(note.chapter_id);
+  const book = bookService.getBook(chapter.book_id);
+  return { note, chapter, book };
+}
+
+function listChapterOptions(bookService, chapterService) {
+  return bookService.listBooks().map((book) => ({
+    book,
+    chapters: chapterService.listChapters(book.id),
+  }));
 }
 
 function listProjectOptions(projectService) {
@@ -512,9 +932,62 @@ function buildNoteListItem(note) {
   };
 }
 
-function renderNotesIndex(res, { appName, noteService, notice = null, status = 200 }) {
-  const notes = noteService.listNotes().map(buildNoteListItem);
-  res.status(status).render('notes/index.njk', { appName, notes, notice });
+function renderBooksIndex(res, { appName, bookService, notice = null, status = 200 }) {
+  const books = bookService.listBooks();
+  res.status(status).render('notes/books/index.njk', { appName, books, notice });
+}
+
+function renderBookDetail(res, { appName, bookService, chapterService, bookId, notice = null, status = 200 }) {
+  const book = bookService.getBook(bookId);
+  const chapters = chapterService.listChapters(bookId);
+  res.status(status).render('notes/books/detail.njk', { appName, book, chapters, notice });
+}
+
+function renderChapterDetail(res, {
+  appName, bookService, chapterService, noteService, chapterId, notice = null, status = 200,
+}) {
+  const chapter = chapterService.getChapter(chapterId);
+  const book = bookService.getBook(chapter.book_id);
+  const chapterNotes = noteService.listNotesForChapter(chapterId);
+  const notes = chapterNotes.map((note, index) => ({
+    ...note,
+    moveUpOrderedNoteIds: index > 0
+      ? chapterNotes.map((candidate, candidateIndex) => {
+        if (candidateIndex === index - 1) return note.id;
+        if (candidateIndex === index) return chapterNotes[index - 1].id;
+        return candidate.id;
+      }).join(',')
+      : null,
+    moveDownOrderedNoteIds: index < chapterNotes.length - 1
+      ? chapterNotes.map((candidate, candidateIndex) => {
+        if (candidateIndex === index) return chapterNotes[index + 1].id;
+        if (candidateIndex === index + 1) return note.id;
+        return candidate.id;
+      }).join(',')
+      : null,
+  }));
+  res.status(status).render('notes/chapters/detail.njk', {
+    appName, book, chapter, notes, notice,
+  });
+}
+
+function parseOrderedBookIds(raw) {
+  if (raw === undefined || raw === null) {
+    throw new BookValidationError({ orderedBookIds: 'Submit the complete ordered book ID list.' });
+  }
+  if (Array.isArray(raw) || typeof raw !== 'string') {
+    throw new BookValidationError({ orderedBookIds: 'Book IDs must be submitted as one comma-separated value.' });
+  }
+  if (raw === '') return [];
+  if (!/^[1-9]\d*(?:,[1-9]\d*)*$/.test(raw)) {
+    throw new BookValidationError({ orderedBookIds: 'Book IDs must be canonical positive integers separated by commas.' });
+  }
+
+  const ids = raw.split(',').map((value) => Number(value));
+  if (ids.some((id) => !Number.isSafeInteger(id) || id <= 0)) {
+    throw new BookValidationError({ orderedBookIds: 'Book IDs must be safe positive integers.' });
+  }
+  return ids;
 }
 
 /**
@@ -546,6 +1019,25 @@ function parseOrderedNoteIds(raw) {
     throw new NoteValidationError({
       orderedNoteIds: 'Note IDs must be safe positive integers.',
     });
+  }
+  return ids;
+}
+
+function parseOrderedChapterIds(raw) {
+  if (raw === undefined || raw === null) {
+    throw new ChapterValidationError({ orderedChapterIds: 'Submit the complete ordered chapter ID list.' });
+  }
+  if (Array.isArray(raw) || typeof raw !== 'string') {
+    throw new ChapterValidationError({ orderedChapterIds: 'Chapter IDs must be submitted as one comma-separated value.' });
+  }
+  if (raw === '') return [];
+  if (!/^[1-9]\d*(?:,[1-9]\d*)*$/.test(raw)) {
+    throw new ChapterValidationError({ orderedChapterIds: 'Chapter IDs must be canonical positive integers separated by commas.' });
+  }
+
+  const ids = raw.split(',').map((value) => Number(value));
+  if (ids.some((id) => !Number.isSafeInteger(id) || id <= 0)) {
+    throw new ChapterValidationError({ orderedChapterIds: 'Chapter IDs must be safe positive integers.' });
   }
   return ids;
 }

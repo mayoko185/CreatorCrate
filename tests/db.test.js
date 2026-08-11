@@ -98,6 +98,7 @@ describe('database and migrations', () => {
       '005_add_notes_table.sql',
       '006_add_note_associations.sql',
       '007_add_asset_picker_order_index.sql',
+      '008_add_note_hierarchy.sql',
     ]);
   });
 
@@ -117,6 +118,8 @@ describe('database and migrations', () => {
       'asset_category_defaults',
       'asset_tags',
       'assets',
+      'books',
+      'chapters',
       'note_assets',
       'note_projects',
       'notes',

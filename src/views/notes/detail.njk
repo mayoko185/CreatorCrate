@@ -1,13 +1,38 @@
 {% extends "layout.njk" %}
 {% import "partials/page-heading.njk" as pageHeading %}
 
-{% set page_title = "Notes — " ~ note.title %}
+{% set page_title = "Notes — Page — " ~ note.title %}
 
 {% block content %}
-  {% call pageHeading.render("Note") %}
+  {% call pageHeading.render("Page") %}
     <a class="button" href="/notes/{{ note.id }}/edit">Edit</a>
-    <a class="button button-secondary" href="/notes">Back to Notes</a>
+    <a class="button button-secondary" href="/notes/chapters/{{ chapter.id }}">Back to Chapter</a>
   {% endcall %}
+
+  <nav class="notes-detail-hierarchy" aria-label="Page hierarchy">
+    <span>Book:</span>
+    <a href="/notes/books/{{ book.id }}">{{ book.title }}</a>
+    <span>Chapter:</span>
+    <a href="/notes/chapters/{{ chapter.id }}">{{ chapter.title }}</a>
+  </nav>
+
+  <section class="settings-section">
+    <h2>Move Page</h2>
+    <form method="post" action="/notes/{{ note.id }}/move" class="inline-form">
+      <input type="hidden" name="_csrf" value="{{ _csrf }}">
+      <label for="target-chapter">Target Chapter</label>
+      <select id="target-chapter" name="targetChapterId" required>
+        {% for option in chapterOptions %}
+          <optgroup label="{{ option.book.title }}">
+            {% for targetChapter in option.chapters %}
+              <option value="{{ targetChapter.id }}"{% if targetChapter.id == chapter.id %} selected{% endif %}>{{ targetChapter.title }}</option>
+            {% endfor %}
+          </optgroup>
+        {% endfor %}
+      </select>
+      <button class="button button-secondary" type="submit">Move Page</button>
+    </form>
+  </section>
 
   <section class="notes-detail-content">
     <h2>Content</h2>

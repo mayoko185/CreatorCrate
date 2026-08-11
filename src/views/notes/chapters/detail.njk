@@ -1,0 +1,73 @@
+{% extends "layout.njk" %}
+{% import "partials/page-heading.njk" as pageHeading %}
+
+{% set page_title = "Notes — " ~ chapter.title %}
+
+{% block content %}
+  {% call pageHeading.render() %}
+    <a class="button button-primary" href="/notes/new?chapterId={{ chapter.id }}">New Page</a>
+    <a class="button" href="/notes/chapters/{{ chapter.id }}/edit">Edit Chapter</a>
+    <a class="button button-secondary" href="/notes/books/{{ book.id }}">Back to {{ book.title }}</a>
+  {% endcall %}
+
+  {% if notice %}
+    {% set noticeVariant = notice.variant %}
+    {% set noticeText = notice.text %}
+    {% include "partials/notice.njk" %}
+  {% endif %}
+
+  <section class="settings-section">
+    <h2>Book</h2>
+    <p><a href="/notes/books/{{ book.id }}">{{ book.title }}</a></p>
+  </section>
+
+  <section class="settings-section">
+    <h2>Pages</h2>
+    {% if notes.length > 0 %}
+      <div class="table-scroll" tabindex="0" aria-label="Pages list">
+        <table class="data-table">
+          <thead><tr><th>Title</th>{% if notes.length > 1 %}<th>Order</th>{% endif %}</tr></thead>
+          <tbody>
+            {% for note in notes %}
+              <tr>
+                <td><a href="/notes/{{ note.id }}">{{ note.title }}</a></td>
+                {% if notes.length > 1 %}
+                  <td>
+                    {% if note.moveUpOrderedNoteIds %}
+                      <form method="post" action="/notes/chapters/{{ chapter.id }}/notes/reorder" class="inline-form">
+                        <input type="hidden" name="_csrf" value="{{ _csrf }}">
+                        <input type="hidden" name="orderedNoteIds" value="{{ note.moveUpOrderedNoteIds }}">
+                        <button class="button button-small button-secondary" type="submit">Move up</button>
+                      </form>
+                    {% endif %}
+                    {% if note.moveDownOrderedNoteIds %}
+                      <form method="post" action="/notes/chapters/{{ chapter.id }}/notes/reorder" class="inline-form">
+                        <input type="hidden" name="_csrf" value="{{ _csrf }}">
+                        <input type="hidden" name="orderedNoteIds" value="{{ note.moveDownOrderedNoteIds }}">
+                        <button class="button button-small button-secondary" type="submit">Move down</button>
+                      </form>
+                    {% endif %}
+                  </td>
+                {% endif %}
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      {% set emptyHeading = "No Pages yet" %}
+      {% set emptyDescription = "Create a Page to start this chapter." %}
+      {% set emptyHeadingLevel = "h3" %}
+      {% include "partials/empty-state.njk" %}
+    {% endif %}
+  </section>
+
+  <section class="destructive-section">
+    <h2>Danger zone</h2>
+    <p>An empty chapter can be permanently deleted.</p>
+    <form method="post" action="/notes/chapters/{{ chapter.id }}/delete" class="inline-form">
+      <input type="hidden" name="_csrf" value="{{ _csrf }}">
+      <button class="button button-danger" type="submit" data-confirm="Delete this empty chapter permanently? This action cannot be undone.">Delete Chapter</button>
+    </form>
+  </section>
+{% endblock %}

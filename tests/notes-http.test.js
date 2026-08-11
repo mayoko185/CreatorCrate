@@ -50,6 +50,18 @@ function archiveProject(db, projectId) {
   `).run(projectId);
 }
 
+function createChapterContext(app) {
+  const book = app.locals.bookService.createBook({ title: 'Page Book' });
+  const chapter = app.locals.chapterService.createChapter({ bookId: book.id, title: 'Page Chapter' });
+  return { book, chapter };
+}
+
+function createPage(app, input = {}) {
+  const { book, chapter } = createChapterContext(app);
+  const note = app.locals.noteService.createNote({ chapterId: chapter.id, ...input });
+  return { book, chapter, note };
+}
+
 describe('top-level Notes HTTP slice', () => {
   let db;
   let app;
@@ -80,34 +92,29 @@ describe('top-level Notes HTTP slice', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('GET /notes renders the page shell, active navigation, and empty-state action', async () => {
+  it('GET /notes renders the page shell and active navigation', async () => {
     const response = await agent.get('/notes').expect(200);
 
     expect(response.text).toContain('<title>CreatorCrate — Notes</title>');
     expect(response.text).toContain('<h1 class="app-section-title">Notes</h1>');
     expect(response.text).toContain('<header class="page-heading">');
-    expect(response.text).toContain('<a class="button button-primary" href="/notes/new">New Note</a>');
-    expect(response.text).toContain('<h2 class="empty-state-heading">No notes yet</h2>');
-    expect(response.text).toContain('Create your first note to keep ideas and working context in one place.');
     expect(response.text).toContain(
       '<a href="/notes" class="app-nav-link" data-nav-key="notes" aria-current="page">',
     );
-    expect(response.text).not.toContain('class="notes-table"');
-    expect(response.text).not.toContain('data-note-reorder-list');
-    expect(response.text).not.toContain('data-note-reorder-handle');
-    expect(response.text).not.toContain('data-notes-editor-form');
-    expect(response.text).not.toContain('/vendor/toast-ui/editor/');
   });
 
-  it('GET /notes/new renders the shared form contract and one CSRF field', async () => {
-    const response = await agent.get('/notes/new').expect(200);
+  it('GET /notes/new renders the Chapter-scoped form contract and one CSRF field', async () => {
+    const { book, chapter } = createChapterContext(app);
+    const response = await agent.get('/notes/new').query({ chapterId: chapter.id }).expect(200);
 
     expect(response.text).toContain('<title>CreatorCrate — Notes — Create Note</title>');
     expect(response.text).toContain('<h1 class="app-section-title">Notes — Create Note</h1>');
     expect(response.text).toContain('<header class="page-heading">');
     expect(response.text).toContain('<button class="button button-primary" type="submit" form="note-form">Create</button>');
-    expect(response.text).toContain('<a class="button button-secondary" href="/notes">Cancel</a>');
+    expect(response.text).toContain(`<a class="button button-secondary" href="/notes/chapters/${chapter.id}">Cancel</a>`);
     expect(response.text).toContain('<form id="note-form" method="post" action="/notes"');
+    expect(response.text).toContain(`<input type="hidden" name="chapterId" value="${chapter.id}">`);
+    expect(response.text).toContain(`>Page Chapter</a> in <a href="/notes/books/${book.id}">Page Book</a>`);
     expect(response.text).toContain('data-notes-editor-form');
     expect(response.text).toContain('data-notes-editor-host');
     expect(response.text).toContain('<textarea id="content" name="content" data-notes-editor-source');
@@ -125,10 +132,11 @@ describe('top-level Notes HTTP slice', () => {
   });
 
   it('GET /notes/new renders accessible project options', async () => {
+    const { chapter } = createChapterContext(app);
     const firstProjectId = insertProject(db, 'Alpha Project');
     const secondProjectId = insertProject(db, 'Beta Project');
 
-    const response = await agent.get('/notes/new').expect(200);
+    const response = await agent.get('/notes/new').query({ chapterId: chapter.id }).expect(200);
 
     expect(response.text).toContain(`<label for="note-project-option-${firstProjectId}">`);
     expect(response.text).toContain(`<input id="note-project-option-${firstProjectId}" name="projectIds[]" type="checkbox" value="${firstProjectId}"`);
@@ -143,16 +151,23 @@ describe('top-level Notes HTTP slice', () => {
   });
 
   it('GET /notes/new renders no asset options when the library contains unrelated assets', async () => {
+    const { chapter } = createChapterContext(app);
     const projectId = insertProject(db, 'Large Asset Library');
     const filenames = Array.from({ length: 40 }, (_value, index) => `unselected-${index}.png`);
     for (const filename of filenames) insertAsset(db, projectId, filename);
 
-    const response = await agent.get('/notes/new').expect(200);
+    const response = await agent.get('/notes/new').query({ chapterId: chapter.id }).expect(200);
 
     expect(response.text).toContain('<input type="hidden" name="assetIds[]" value="">');
     expect(response.text.match(/<input[^>]+name="assetIds\[\]"[^>]+type="checkbox"/g) || []).toHaveLength(0);
     expect(response.text).not.toContain('notes-selected-assets');
     for (const filename of filenames) expect(response.text).not.toContain(filename);
+  });
+
+  it('GET /notes/new requires an existing canonical Chapter ID', async () => {
+    for (const chapterId of [undefined, '0', '01', 'not-an-id', '999999']) {
+      await agent.get('/notes/new').query(chapterId === undefined ? {} : { chapterId }).expect(404);
+    }
   });
 
   describe('asset picker project endpoint', () => {
@@ -294,17 +309,19 @@ describe('top-level Notes HTTP slice', () => {
   });
 
   it('POST /notes creates a note, redirects to detail, and stores Markdown source unchanged', async () => {
+    const { chapter } = createChapterContext(app);
     const content = '# Heading\n\n**bold** & <tag>\n- item';
 
     const response = await agent
       .post('/notes')
       .type('form')
-      .send({ _csrf: csrfToken, title: 'Canonical Note', content })
+      .send({ _csrf: csrfToken, chapterId: String(chapter.id), title: 'Canonical Note', content })
       .expect(302);
 
     expect(response.headers.location).toMatch(/^\/notes\/\d+$/);
     const noteId = Number(response.headers.location.replace('/notes/', ''));
     expect(app.locals.noteService.getNote(noteId)).toMatchObject({
+      chapter_id: chapter.id,
       title: 'Canonical Note',
       content,
       projectIds: [],
@@ -313,12 +330,13 @@ describe('top-level Notes HTTP slice', () => {
   });
 
   it('POST /notes normalizes one project checkbox scalar', async () => {
+    const { chapter } = createChapterContext(app);
     const projectId = insertProject(db, 'Single Project');
 
     const response = await agent
       .post('/notes')
       .type('form')
-      .send({ _csrf: csrfToken, title: 'Single project note', content: '', projectIds: String(projectId) })
+      .send({ _csrf: csrfToken, chapterId: String(chapter.id), title: 'Single project note', content: '', projectIds: String(projectId) })
       .expect(302);
 
     const noteId = Number(response.headers.location.replace('/notes/', ''));
@@ -326,6 +344,7 @@ describe('top-level Notes HTTP slice', () => {
   });
 
   it('POST /notes creates a note with multiple projects', async () => {
+    const { chapter } = createChapterContext(app);
     const firstProjectId = insertProject(db, 'First Project');
     const secondProjectId = insertProject(db, 'Second Project');
 
@@ -334,6 +353,7 @@ describe('top-level Notes HTTP slice', () => {
       .type('form')
       .send({
         _csrf: csrfToken,
+        chapterId: String(chapter.id),
         title: 'Multiple project note',
         content: '',
         projectIds: [String(firstProjectId), String(secondProjectId)],
@@ -345,6 +365,7 @@ describe('top-level Notes HTTP slice', () => {
   });
 
   it('POST /notes normalizes one asset checkbox scalar without implicitly associating its project', async () => {
+    const { chapter } = createChapterContext(app);
     const projectId = insertProject(db, 'Asset Parent');
     const assetId = insertAsset(db, projectId, 'scalar-asset.txt', {
       extension: 'txt',
@@ -354,7 +375,7 @@ describe('top-level Notes HTTP slice', () => {
     const response = await agent
       .post('/notes')
       .type('form')
-      .send({ _csrf: csrfToken, title: 'Scalar asset note', content: '', assetIds: String(assetId) })
+      .send({ _csrf: csrfToken, chapterId: String(chapter.id), title: 'Scalar asset note', content: '', assetIds: String(assetId) })
       .expect(302);
 
     const noteId = Number(response.headers.location.replace('/notes/', ''));
@@ -365,6 +386,7 @@ describe('top-level Notes HTTP slice', () => {
   });
 
   it('POST /notes creates multiple assets from multiple projects independently of project selections', async () => {
+    const { chapter } = createChapterContext(app);
     const firstProjectId = insertProject(db, 'First Asset Project');
     const secondProjectId = insertProject(db, 'Second Asset Project');
     const firstAssetId = insertAsset(db, firstProjectId, 'first.txt', {
@@ -381,6 +403,7 @@ describe('top-level Notes HTTP slice', () => {
       .type('form')
       .send({
         _csrf: csrfToken,
+        chapterId: String(chapter.id),
         title: 'Multiple asset note',
         content: '',
         projectIds: String(secondProjectId),
@@ -397,6 +420,7 @@ describe('top-level Notes HTTP slice', () => {
   });
 
   it('POST /notes deduplicates duplicate submitted asset IDs', async () => {
+    const { chapter } = createChapterContext(app);
     const projectId = insertProject(db, 'Duplicate Asset Project');
     const assetId = insertAsset(db, projectId, 'duplicate.txt', {
       extension: 'txt',
@@ -408,6 +432,7 @@ describe('top-level Notes HTTP slice', () => {
       .type('form')
       .send({
         _csrf: csrfToken,
+        chapterId: String(chapter.id),
         title: 'Duplicate asset note',
         content: '',
         assetIds: [String(assetId), String(assetId)],
@@ -420,19 +445,23 @@ describe('top-level Notes HTTP slice', () => {
   });
 
   it('POST /notes renders a normal validation response for a nonexistent asset', async () => {
+    const { chapter } = createChapterContext(app);
     const response = await agent
       .post('/notes')
       .type('form')
-      .send({ _csrf: csrfToken, title: 'Missing asset note', content: 'body', assetIds: '999999' })
+      .send({ _csrf: csrfToken, chapterId: String(chapter.id), title: 'Missing asset note', content: 'body', assetIds: '999999' })
       .expect(422);
 
     expect(response.text).toContain('Asset 999999 not found.');
+    expect(response.text).toContain('value="Missing asset note"');
+    expect(response.text).toContain('>body</textarea>');
     expect(response.text).not.toContain('SQLITE');
     expect(response.text).not.toContain('FOREIGN KEY');
     expect(app.locals.noteService.listNotes()).toHaveLength(0);
   });
 
   it('POST /notes rehydrates only submitted assets after a validation failure', async () => {
+    const { chapter } = createChapterContext(app);
     const firstProjectId = insertProject(db, 'Validation Asset First');
     const secondProjectId = insertProject(db, 'Validation Asset Second');
     const firstAssetId = insertAsset(db, firstProjectId, 'first-validation.txt', {
@@ -454,6 +483,7 @@ describe('top-level Notes HTTP slice', () => {
       .type('form')
       .send({
         _csrf: csrfToken,
+        chapterId: String(chapter.id),
         title: '',
         content: 'Attempted asset content',
         projectIds: String(secondProjectId),
@@ -462,6 +492,7 @@ describe('top-level Notes HTTP slice', () => {
       .expect(422);
 
     expect(response.text).toContain('Title is required.');
+    expect(response.text).toContain(`<input type="hidden" name="chapterId" value="${chapter.id}">`);
     expect(response.text).toContain('Attempted asset content');
     expect(response.text).toMatch(new RegExp(`id="note-project-option-${secondProjectId}"[^>]*checked`));
     expect(response.text).toMatch(new RegExp(`id="note-asset-option-${firstAssetId}"[^>]*checked`));
@@ -475,6 +506,7 @@ describe('top-level Notes HTTP slice', () => {
   });
 
   it('POST /notes deduplicates duplicate submitted project IDs', async () => {
+    const { chapter } = createChapterContext(app);
     const projectId = insertProject(db, 'Duplicate Project');
 
     const response = await agent
@@ -482,6 +514,7 @@ describe('top-level Notes HTTP slice', () => {
       .type('form')
       .send({
         _csrf: csrfToken,
+        chapterId: String(chapter.id),
         title: 'Duplicate project note',
         content: '',
         projectIds: [String(projectId), String(projectId)],
@@ -494,10 +527,11 @@ describe('top-level Notes HTTP slice', () => {
   });
 
   it('POST /notes renders a normal validation response for a nonexistent project', async () => {
+    const { chapter } = createChapterContext(app);
     const response = await agent
       .post('/notes')
       .type('form')
-      .send({ _csrf: csrfToken, title: 'Missing project note', content: 'body', projectIds: '999999' })
+      .send({ _csrf: csrfToken, chapterId: String(chapter.id), title: 'Missing project note', content: 'body', projectIds: '999999' })
       .expect(422);
 
     expect(response.text).toContain('Project 999999 not found.');
@@ -507,6 +541,7 @@ describe('top-level Notes HTTP slice', () => {
   });
 
   it('POST /notes preserves attempted project selections and the full option list after validation failure', async () => {
+    const { chapter } = createChapterContext(app);
     const firstProjectId = insertProject(db, 'Validation First');
     const secondProjectId = insertProject(db, 'Validation Second');
 
@@ -515,6 +550,7 @@ describe('top-level Notes HTTP slice', () => {
       .type('form')
       .send({
         _csrf: csrfToken,
+        chapterId: String(chapter.id),
         title: '',
         content: 'Attempted project content',
         projectIds: [String(firstProjectId), String(secondProjectId)],
@@ -530,12 +566,13 @@ describe('top-level Notes HTTP slice', () => {
   });
 
   it('POST /notes rerenders validation errors with submitted values', async () => {
+    const { chapter } = createChapterContext(app);
     const attemptedContent = 'Attempted **Markdown**\nsecond line';
 
     const response = await agent
       .post('/notes')
       .type('form')
-      .send({ _csrf: csrfToken, title: '', content: attemptedContent })
+      .send({ _csrf: csrfToken, chapterId: String(chapter.id), title: '', content: attemptedContent })
       .expect(422);
 
     expect(response.text).toContain('Title is required.');
@@ -545,253 +582,52 @@ describe('top-level Notes HTTP slice', () => {
     expect(app.locals.noteService.listNotes()).toHaveLength(0);
   });
 
-  it('renders every note in the service canonical order with plain escaped excerpts', async () => {
-    const first = app.locals.noteService.createNote({
-      title: 'First Note',
-      content: 'First body',
-    });
-    const second = app.locals.noteService.createNote({
-      title: 'Second Note',
-      content: '<script>alert("unsafe")</script>\n\n# Markdown **text**',
-    });
-    app.locals.noteService.reorderNotes([second.id, first.id]);
-
-    const response = await agent.get('/notes').expect(200);
-    const table = response.text.match(/<table class="data-table notes-table">[\s\S]*?<\/table>/)?.[0];
-
-    expect(table).toBeDefined();
-    expect(table.indexOf('Second Note')).toBeLessThan(table.indexOf('First Note'));
-    expect(table).toContain(`<a class="notes-title-link" href="/notes/${second.id}">Second Note</a>`);
-    expect(table).toContain(`<a class="notes-title-link" href="/notes/${first.id}">First Note</a>`);
-    expect(table).toContain(second.updated_at);
-    expect(table).toContain('&lt;script&gt;alert(');
-    expect(table).toContain('# Markdown **text**');
-    expect(table).not.toContain('<script>');
-    expect(table).not.toContain('<strong>text</strong>');
-  });
-
-  it('does not split surrogate pairs in truncated excerpts', async () => {
-    const emoji = '\u{1F600}';
-    const content = `${emoji}${'a'.repeat(156)}${emoji} trailing text`;
-    const note = app.locals.noteService.createNote({ title: 'Unicode Note', content });
-
-    const response = await agent.get('/notes').expect(200);
-    const excerpt = response.text.match(/<td class="notes-excerpt">([\s\S]*?)<\/td>/)?.[1];
-
-    expect(excerpt).toBe(`${emoji}${'a'.repeat(156)}…`);
-    expect(excerpt).toContain(emoji);
-    expect(excerpt).not.toContain('\uFFFD');
-    expect(excerpt).not.toMatch(
-      /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/,
-    );
-    expect(excerpt).toMatch(/…$/);
-    expect(response.text).toContain(`<a class="notes-title-link" href="/notes/${note.id}">Unicode Note</a>`);
-  });
-
-  it('renders Notes reorder hooks only for multiple notes while preserving detail links', async () => {
-    const notes = [
-      app.locals.noteService.createNote({ title: 'First Note', content: 'First body' }),
-      app.locals.noteService.createNote({ title: 'Second Note', content: 'Second body' }),
-      app.locals.noteService.createNote({ title: 'Third Note', content: 'Third body' }),
-    ];
-
-    const response = await agent.get('/notes').expect(200);
-    const rows = response.text.match(/<tr\b[^>]*data-note-reorder-item[^>]*>[\s\S]*?<\/tr>/g) || [];
-
-    expect(response.text).toContain('<form id="notes-reorder-form"');
-    expect(response.text).toContain('action="/notes/reorder"');
-    expect(response.text).toContain('name="orderedNoteIds"');
-    expect(response.text).toContain('data-note-reorder-list');
-    expect(response.text).toContain('data-note-reorder-live');
-    expect(rows).toHaveLength(notes.length);
-    expect(rows.map((row) => row.match(/data-note-id="(\d+)"/)?.[1]))
-      .toEqual(notes.map((note) => String(note.id)));
-
-    for (const [index, row] of rows.entries()) {
-      const note = notes[index];
-      expect(row).toContain('data-note-reorder-handle');
-      expect(row).toContain('draggable="true"');
-      expect(row).toContain(`aria-label="Reorder ${note.title}"`);
-      expect(row).toContain(`aria-posinset="${index + 1}"`);
-      expect(row).toContain(`aria-setsize="${notes.length}"`);
-      expect(row).toContain(`<a class="notes-title-link" href="/notes/${note.id}">${note.title}</a>`);
-    }
-  });
-
-  it('POST /notes/reorder is static, CSRF-protected, persists the full order, and renders it on the next GET', async () => {
-    const notes = [
-      app.locals.noteService.createNote({ title: 'First Note', content: 'First body' }),
-      app.locals.noteService.createNote({ title: 'Second Note', content: 'Second body' }),
-      app.locals.noteService.createNote({ title: 'Third Note', content: 'Third body' }),
-    ];
-    const orderedIds = [notes[2].id, notes[0].id, notes[1].id];
-
+  it('POST /notes rejects missing or malformed Chapter IDs and a Chapter removed after rendering', async () => {
     await agent
-      .post('/notes/reorder')
-      .type('form')
-      .send({ orderedNoteIds: orderedIds.join(',') })
-      .expect(403);
-    expect(app.locals.noteService.listNotes().map((note) => note.id))
-      .toEqual(notes.map((note) => note.id));
-
-    const response = await agent
-      .post('/notes/reorder')
-      .type('form')
-      .send({ _csrf: csrfToken, orderedNoteIds: orderedIds.join(',') })
-      .expect(302);
-
-    expect(response.headers.location).toBe('/notes?notice=note_reordered');
-    expect(app.locals.noteService.listNotes().map((note) => note.id)).toEqual(orderedIds);
-    expect(app.locals.noteService.listNotes().map((note) => note.sort_order)).toEqual([0, 1, 2]);
-
-    const noticePage = await agent.get(response.headers.location).expect(200);
-    expect(noticePage.text).toContain('Note order updated.');
-
-    const page = await agent.get('/notes').expect(200);
-    const table = page.text.match(/<table class="data-table notes-table">[\s\S]*?<\/table>/)?.[0] || '';
-    const positions = orderedIds.map((id) => table.indexOf(`/notes/${id}`));
-    expect(positions).toEqual([...positions].sort((left, right) => left - right));
-  });
-
-  it('rejects missing, duplicate, and unknown reorder IDs without changing the previous order', async () => {
-    const notes = [
-      app.locals.noteService.createNote({ title: 'First Note' }),
-      app.locals.noteService.createNote({ title: 'Second Note' }),
-      app.locals.noteService.createNote({ title: 'Third Note' }),
-    ];
-    const validOrder = [notes[1].id, notes[2].id, notes[0].id];
-    app.locals.noteService.reorderNotes(validOrder);
-    const before = app.locals.noteService.listNotes().map((note) => ({
-      id: note.id,
-      sort_order: note.sort_order,
-      title: note.title,
-      content: note.content,
-    }));
-
-    const payloads = [
-      {},
-      { orderedNoteIds: `${validOrder[0]},${validOrder[0]},${validOrder[2]}` },
-      { orderedNoteIds: `${validOrder[0]},${validOrder[1]},999999` },
-    ];
-
-    for (const payload of payloads) {
-      const response = await agent
-        .post('/notes/reorder')
-        .type('form')
-        .send({ _csrf: csrfToken, ...payload })
-        .expect(422);
-
-      expect(response.text).toContain('submitted note order is invalid');
-      expect(response.text).not.toContain('999999');
-      expect(app.locals.noteService.listNotes().map((note) => ({
-        id: note.id,
-        sort_order: note.sort_order,
-        title: note.title,
-        content: note.content,
-      }))).toEqual(before);
-    }
-  });
-
-  it('supports empty and one-note reorder requests without rendering meaningless controls', async () => {
-    await agent
-      .post('/notes/reorder')
-      .type('form')
-      .send({ _csrf: csrfToken, orderedNoteIds: '' })
-      .expect(302);
-
-    const emptyPage = await agent.get('/notes').expect(200);
-    expect(emptyPage.text).toContain('<h2 class="empty-state-heading">No notes yet</h2>');
-    expect(emptyPage.text).not.toContain('data-note-reorder-list');
-    expect(emptyPage.text).not.toContain('data-note-reorder-handle');
-
-    const note = app.locals.noteService.createNote({ title: 'Only Note', content: 'Body' });
-    await agent
-      .post('/notes/reorder')
-      .type('form')
-      .send({ _csrf: csrfToken, orderedNoteIds: String(note.id) })
-      .expect(302);
-
-    const onePage = await agent.get('/notes').expect(200);
-    expect(onePage.text).toContain(`<a class="notes-title-link" href="/notes/${note.id}">Only Note</a>`);
-    expect(onePage.text).not.toContain('data-note-reorder-list');
-    expect(onePage.text).not.toContain('data-note-reorder-handle');
-    expect(onePage.text).not.toContain('>Order</th>');
-  });
-
-  it('does not change associations, appends after a reorder, and keeps remaining order after deletion', async () => {
-    const projectId = insertProject(db, 'Ordering Association Project');
-    const assetId = insertAsset(db, projectId, 'ordering-note-asset.png');
-    const first = app.locals.noteService.createNote({
-      title: 'First Note',
-      content: 'First content',
-      projectIds: [projectId],
-      assetIds: [assetId],
-    });
-    const second = app.locals.noteService.createNote({
-      title: 'Second Note',
-      content: 'Second content',
-      projectIds: [projectId],
-    });
-    const associationsBefore = {
-      projects: db.prepare('SELECT note_id, project_id FROM note_projects ORDER BY note_id, project_id').all(),
-      assets: db.prepare('SELECT note_id, asset_id FROM note_assets ORDER BY note_id, asset_id').all(),
-    };
-    const noteFieldsBefore = db.prepare(
-      'SELECT id, title, content, created_at, updated_at FROM notes ORDER BY id'
-    ).all();
-
-    await agent
-      .post('/notes/reorder')
-      .type('form')
-      .send({ _csrf: csrfToken, orderedNoteIds: `${second.id},${first.id}` })
-      .expect(302);
-
-    expect(db.prepare('SELECT note_id, project_id FROM note_projects ORDER BY note_id, project_id').all())
-      .toEqual(associationsBefore.projects);
-    expect(db.prepare('SELECT note_id, asset_id FROM note_assets ORDER BY note_id, asset_id').all())
-      .toEqual(associationsBefore.assets);
-    expect(db.prepare('SELECT id, title, content, created_at, updated_at FROM notes ORDER BY id').all())
-      .toEqual(noteFieldsBefore);
-    expect(app.locals.noteService.getNote(first.id)).toMatchObject({
-      title: 'First Note',
-      content: 'First content',
-      projectIds: [projectId],
-      assetIds: [assetId],
-    });
-
-    const appendResponse = await agent
       .post('/notes')
       .type('form')
-      .send({ _csrf: csrfToken, title: 'Appended Note', content: 'Appended content' })
-      .expect(302);
-    const appendedId = Number(appendResponse.headers.location.replace('/notes/', ''));
-    const appended = app.locals.noteService.getNote(appendedId);
-    expect(app.locals.noteService.listNotes().map((note) => note.id))
-      .toEqual([second.id, first.id, appended.id]);
-    expect(app.locals.noteService.listNotes().map((note) => note.sort_order)).toEqual([0, 1, 2]);
+      .send({ _csrf: csrfToken, title: 'Unfiled', content: '' })
+      .expect(404);
+    await agent
+      .post('/notes')
+      .type('form')
+      .send({ _csrf: csrfToken, chapterId: '01', title: 'Malformed', content: '' })
+      .expect(404);
+
+    const { chapter } = createChapterContext(app);
+    await agent.get('/notes/new').query({ chapterId: chapter.id }).expect(200);
+    app.locals.chapterService.deleteChapter(chapter.id);
 
     await agent
-      .post(`/notes/${second.id}/delete`)
+      .post('/notes')
       .type('form')
-      .send({ _csrf: csrfToken })
-      .expect(302);
+      .send({ _csrf: csrfToken, chapterId: String(chapter.id), title: 'Removed parent', content: '' })
+      .expect(404);
+  });
 
-    expect(app.locals.noteService.listNotes().map((note) => note.id))
-      .toEqual([first.id, appended.id]);
-    expect(app.locals.noteService.getNote(first.id).projectIds).toEqual([projectId]);
-    expect(app.locals.noteService.getNote(first.id).assetIds).toEqual([assetId]);
+  it('POST /notes remains CSRF-protected with Chapter context', async () => {
+    const { chapter } = createChapterContext(app);
+
+    await agent
+      .post('/notes')
+      .type('form')
+      .send({ chapterId: String(chapter.id), title: 'No CSRF', content: '' })
+      .expect(403);
   });
 
   it('renders sanitized Markdown detail content with edit and delete affordances', async () => {
     const content = '<script>alert("unsafe")</script>\n\n# Markdown **text**\nline two';
-    const note = app.locals.noteService.createNote({ title: 'Detail Note', content });
+    const { book, chapter } = createChapterContext(app);
+    const note = app.locals.noteService.createNote({ chapterId: chapter.id, title: 'Detail Note', content });
 
     const response = await agent.get(`/notes/${note.id}`).expect(200);
 
-    expect(response.text).toContain('<title>CreatorCrate — Notes — Detail Note</title>');
-    expect(response.text).toContain('<h1 class="app-section-title">Notes — Detail Note</h1>');
+    expect(response.text).toContain('<title>CreatorCrate — Notes — Page — Detail Note</title>');
+    expect(response.text).toContain('<h1 class="app-section-title">Notes — Page — Detail Note</h1>');
     expect(response.text).toContain(`<a class="button" href="/notes/${note.id}/edit">Edit</a>`);
-    expect(response.text).toContain('<a class="button button-secondary" href="/notes">Back to Notes</a>');
+    expect(response.text).toContain(`<a class="button button-secondary" href="/notes/chapters/${chapter.id}">Back to Chapter</a>`);
+    expect(response.text).toContain(`<a href="/notes/books/${book.id}">Page Book</a>`);
+    expect(response.text).toContain(`<a href="/notes/chapters/${chapter.id}">Page Chapter</a>`);
     expect(response.text).toContain(`<form method="post" action="/notes/${note.id}/delete" class="inline-form">`);
     expect(response.text).toContain('>Delete Note</button>');
     expect(response.text).toContain('&lt;script&gt;alert(');
@@ -817,7 +653,7 @@ describe('top-level Notes HTTP slice', () => {
 
   it('GET /notes/:id/edit populates the shared form with existing values', async () => {
     const content = '# Existing\n**bold** & <script>alert("unsafe")</script>';
-    const note = app.locals.noteService.createNote({
+    const { book, chapter, note } = createPage(app, {
       title: 'Existing Note',
       content,
     });
@@ -831,6 +667,9 @@ describe('top-level Notes HTTP slice', () => {
     expect(response.text).toContain('<textarea id="content" name="content" data-notes-editor-source');
     expect(response.text).toContain('value="Existing Note"');
     expect(response.text).toContain('# Existing\n**bold** &amp; &lt;script&gt;alert(&quot;unsafe&quot;)&lt;/script&gt;');
+    expect(response.text).toContain(`>Page Chapter</a> in <a href="/notes/books/${book.id}">Page Book</a>`);
+    expect(response.text).toContain(`/notes/chapters/${chapter.id}`);
+    expect(response.text).not.toContain('name="chapterId"');
     expect(response.text).not.toContain('<strong>bold</strong>');
     expect(app.locals.noteService.getNote(note.id).content).toBe(content);
     expect(response.text).toContain('<legend>Projects</legend>');
@@ -840,7 +679,7 @@ describe('top-level Notes HTTP slice', () => {
   it('GET /notes/:id/edit preselects existing project associations', async () => {
     const firstProjectId = insertProject(db, 'Existing First');
     const secondProjectId = insertProject(db, 'Existing Second');
-    const note = app.locals.noteService.createNote({
+    const { note } = createPage(app, {
       title: 'Associated Note',
       content: 'content',
       projectIds: [firstProjectId, secondProjectId],
@@ -868,7 +707,7 @@ describe('top-level Notes HTTP slice', () => {
       extension: 'txt',
       mimeType: 'text/plain',
     });
-    const note = app.locals.noteService.createNote({
+    const { note } = createPage(app, {
       title: 'Asset Edit Note',
       assetIds: [firstAssetId, secondAssetId],
     });
@@ -885,7 +724,8 @@ describe('top-level Notes HTTP slice', () => {
   it('POST /notes/:id updates title/content and project associations without clearing assets', async () => {
     const projectId = insertProject(db, 'Associated Project');
     const assetId = insertAsset(db, projectId);
-    const note = app.locals.noteService.createNote({ title: 'Before', content: 'Before content' });
+    const { chapter, note } = createPage(app, { title: 'Before', content: 'Before content' });
+    const { chapter: otherChapter } = createChapterContext(app);
     app.locals.noteRepository.replaceProjects(note.id, [projectId]);
     app.locals.noteRepository.replaceAssets(note.id, [assetId]);
 
@@ -898,6 +738,7 @@ describe('top-level Notes HTTP slice', () => {
         content: 'After content\nline two',
         projectIds: String(projectId),
         assetIds: String(assetId),
+        chapterId: String(otherChapter.id),
       })
       .expect(302);
 
@@ -908,12 +749,13 @@ describe('top-level Notes HTTP slice', () => {
       projectIds: [projectId],
       assetIds: [assetId],
     });
+    expect(app.locals.noteService.getNote(note.id).chapter_id).toBe(chapter.id);
   });
 
   it('POST /notes/:id adds and removes project associations', async () => {
     const firstProjectId = insertProject(db, 'Removed Project');
     const secondProjectId = insertProject(db, 'Added Project');
-    const note = app.locals.noteService.createNote({ title: 'Before', projectIds: [firstProjectId] });
+    const { note } = createPage(app, { title: 'Before', projectIds: [firstProjectId] });
 
     const response = await agent
       .post(`/notes/${note.id}`)
@@ -936,7 +778,7 @@ describe('top-level Notes HTTP slice', () => {
       extension: 'txt',
       mimeType: 'text/plain',
     });
-    const note = app.locals.noteService.createNote({
+    const { note } = createPage(app, {
       title: 'Before',
       projectIds: [firstProjectId],
       assetIds: [firstAssetId],
@@ -966,7 +808,7 @@ describe('top-level Notes HTTP slice', () => {
       extension: 'txt',
       mimeType: 'text/plain',
     });
-    const note = app.locals.noteService.createNote({ title: 'Independent asset', assetIds: [assetId] });
+    const { note } = createPage(app, { title: 'Independent asset', assetIds: [assetId] });
 
     await agent
       .post(`/notes/${note.id}`)
@@ -992,7 +834,7 @@ describe('top-level Notes HTTP slice', () => {
       extension: 'txt',
       mimeType: 'text/plain',
     });
-    const note = app.locals.noteService.createNote({
+    const { note } = createPage(app, {
       title: 'Clear assets',
       projectIds: [projectId],
       assetIds: [assetId],
@@ -1018,7 +860,7 @@ describe('top-level Notes HTTP slice', () => {
 
   it('POST /notes/:id with no project values clears all project associations', async () => {
     const projectId = insertProject(db, 'Cleared Project');
-    const note = app.locals.noteService.createNote({ title: 'Clear projects', projectIds: [projectId] });
+    const { note } = createPage(app, { title: 'Clear projects', projectIds: [projectId] });
 
     await agent
       .post(`/notes/${note.id}`)
@@ -1030,7 +872,7 @@ describe('top-level Notes HTTP slice', () => {
   });
 
   it('POST /notes/:id rerenders validation errors with attempted edit values', async () => {
-    const note = app.locals.noteService.createNote({ title: 'Existing', content: 'Stored content' });
+    const { book, chapter, note } = createPage(app, { title: 'Existing', content: 'Stored content' });
     const attemptedContent = 'Attempted edit\nsecond line';
 
     const response = await agent
@@ -1042,16 +884,20 @@ describe('top-level Notes HTTP slice', () => {
     expect(response.text).toContain('Title is required.');
     expect(response.text).toContain(`<form id="note-form" method="post" action="/notes/${note.id}"`);
     expect(response.text).toContain(attemptedContent);
+    expect(response.text).toContain(`>Page Chapter</a> in <a href="/notes/books/${book.id}">Page Book</a>`);
+    expect(response.text).toContain(`/notes/chapters/${chapter.id}`);
+    expect(response.text).not.toContain('name="chapterId"');
     expect(app.locals.noteService.getNote(note.id)).toMatchObject({
       title: 'Existing',
       content: 'Stored content',
     });
+    expect(app.locals.noteService.getNote(note.id).chapter_id).toBe(chapter.id);
   });
 
   it('POST /notes/:id validation failure preserves attempted project selections', async () => {
     const firstProjectId = insertProject(db, 'Stored Project');
     const secondProjectId = insertProject(db, 'Attempted Project');
-    const note = app.locals.noteService.createNote({ title: 'Existing', projectIds: [firstProjectId] });
+    const { note } = createPage(app, { title: 'Existing', projectIds: [firstProjectId] });
 
     const response = await agent
       .post(`/notes/${note.id}`)
@@ -1083,7 +929,7 @@ describe('top-level Notes HTTP slice', () => {
       extension: 'txt',
       mimeType: 'text/plain',
     });
-    const note = app.locals.noteService.createNote({
+    const { note } = createPage(app, {
       title: 'Existing both',
       projectIds: [storedProjectId],
       assetIds: [storedAssetId],
@@ -1112,7 +958,9 @@ describe('top-level Notes HTTP slice', () => {
   it('renders associated projects on note detail with project links', async () => {
     const firstProjectId = insertProject(db, 'Detail First');
     const secondProjectId = insertProject(db, 'Detail Second');
+    const { chapter } = createChapterContext(app);
     const note = app.locals.noteService.createNote({
+      chapterId: chapter.id,
       title: 'Project Detail Note',
       projectIds: [firstProjectId, secondProjectId],
     });
@@ -1129,6 +977,7 @@ describe('top-level Notes HTTP slice', () => {
   it('renders associated assets on note detail with project context and canonical viewer links', async () => {
     const firstProjectId = insertProject(db, 'Detail Asset First');
     const secondProjectId = insertProject(db, 'Detail Asset Second');
+    const { chapter } = createChapterContext(app);
     const firstAssetId = insertAsset(db, firstProjectId, 'detail-first.txt', {
       relativePath: 'source/detail-first.txt',
       extension: 'txt',
@@ -1139,6 +988,7 @@ describe('top-level Notes HTTP slice', () => {
       mimeType: 'application/x-krita',
     });
     const note = app.locals.noteService.createNote({
+      chapterId: chapter.id,
       title: 'Asset Detail Note',
       assetIds: [firstAssetId, secondAssetId],
     });
@@ -1162,13 +1012,18 @@ describe('top-level Notes HTTP slice', () => {
 
   it('preserves a missing historical asset on Notes detail with its viewer link', async () => {
     const projectId = insertProject(db, 'Historical Asset Project');
+    const { chapter } = createChapterContext(app);
     const assetId = insertAsset(db, projectId, 'historical.bin', {
       extension: 'bin',
       mimeType: 'application/octet-stream',
     });
     markAssetMissing(db, assetId);
     archiveProject(db, projectId);
-    const note = app.locals.noteService.createNote({ title: 'Historical asset note', assetIds: [assetId] });
+    const note = app.locals.noteService.createNote({
+      chapterId: chapter.id,
+      title: 'Historical asset note',
+      assetIds: [assetId],
+    });
 
     const response = await agent.get(`/notes/${note.id}`).expect(200);
     const assetsSection = response.text.match(/<section class="notes-detail-assets">[\s\S]*?<\/section>/)?.[0];
@@ -1194,10 +1049,42 @@ describe('top-level Notes HTTP slice', () => {
       .expect(404);
   });
 
-  it('POST /notes/:id/delete requires CSRF and cascades association rows', async () => {
+  it('POST /notes/:id remains CSRF-protected', async () => {
+    const { note } = createPage(app, { title: 'Protected Page', content: 'Stored content' });
+
+    await agent
+      .post(`/notes/${note.id}`)
+      .type('form')
+      .send({ title: 'Updated', content: 'Changed content' })
+      .expect(403);
+
+    expect(app.locals.noteService.getNote(note.id)).toMatchObject({
+      title: 'Protected Page',
+      content: 'Stored content',
+    });
+  });
+
+  it('GET and POST edit routes return 404 when a Page Book is missing', async () => {
+    const { book, note } = createPage(app, { title: 'Orphaned Page', content: 'Content' });
+    db.pragma('foreign_keys = OFF');
+    db.prepare('DELETE FROM books WHERE id = ?').run(book.id);
+    db.pragma('foreign_keys = ON');
+
+    await agent.get(`/notes/${note.id}/edit`).expect(404);
+    await agent
+      .post(`/notes/${note.id}`)
+      .type('form')
+      .send({ _csrf: csrfToken, title: 'Updated', content: 'Content' })
+      .expect(404);
+  });
+
+  it('POST /notes/:id/delete returns to the owning Chapter, compacts Pages, and cascades association rows', async () => {
     const projectId = insertProject(db, 'Delete Association Project');
     const assetId = insertAsset(db, projectId, 'delete-note-asset.png');
-    const note = app.locals.noteService.createNote({ title: 'Delete me', content: 'Content' });
+    const { chapter } = createChapterContext(app);
+    const first = app.locals.noteService.createNote({ chapterId: chapter.id, title: 'First Page', content: 'Content' });
+    const note = app.locals.noteService.createNote({ chapterId: chapter.id, title: 'Delete me', content: 'Content' });
+    const last = app.locals.noteService.createNote({ chapterId: chapter.id, title: 'Last Page', content: 'Content' });
     app.locals.noteRepository.replaceProjects(note.id, [projectId]);
     app.locals.noteRepository.replaceAssets(note.id, [assetId]);
 
@@ -1210,17 +1097,164 @@ describe('top-level Notes HTTP slice', () => {
       .send({ _csrf: csrfToken })
       .expect(302);
 
-    expect(response.headers.location).toBe('/notes');
+    expect(response.headers.location).toBe(`/notes/chapters/${chapter.id}`);
     expect(app.locals.noteRepository.findById(note.id)).toBeUndefined();
     expect(db.prepare('SELECT * FROM note_projects WHERE note_id = ?').all(note.id)).toEqual([]);
     expect(db.prepare('SELECT * FROM note_assets WHERE note_id = ?').all(note.id)).toEqual([]);
+
+    const chapterPage = await agent.get(response.headers.location).expect(200);
+    expect(chapterPage.text).toContain(`<a href="/notes/${first.id}">First Page</a>`);
+    expect(chapterPage.text).toContain(`<a href="/notes/${last.id}">Last Page</a>`);
+    expect(chapterPage.text).not.toContain(`<a href="/notes/${note.id}">Delete me</a>`);
+    expect(chapterPage.text.indexOf('First Page')).toBeLessThan(chapterPage.text.indexOf('Last Page'));
   });
 
-  it('POST /notes/:id/delete returns 404 for a nonexistent note', async () => {
+  it('POST /notes/:id/delete returns 404 for malformed and nonexistent Page IDs', async () => {
+    await agent
+      .post('/notes/01/delete')
+      .type('form')
+      .send({ _csrf: csrfToken })
+      .expect(404);
+
     await agent
       .post('/notes/9999/delete')
       .type('form')
       .send({ _csrf: csrfToken })
+      .expect(404);
+  });
+
+  it('POST /notes/:id/move moves a Page across Chapters and preserves its data', async () => {
+    const sourceBook = app.locals.bookService.createBook({ title: 'Source Book' });
+    const sourceChapter = app.locals.chapterService.createChapter({
+      bookId: sourceBook.id,
+      title: 'Source Chapter',
+    });
+    const targetBook = app.locals.bookService.createBook({ title: 'Target Book' });
+    const targetChapter = app.locals.chapterService.createChapter({
+      bookId: targetBook.id,
+      title: 'Target Chapter',
+    });
+    const projectId = insertProject(db, 'Move Page Project');
+    const assetId = insertAsset(db, projectId, 'move-page-asset.png');
+    const first = app.locals.noteService.createNote({
+      chapterId: sourceChapter.id,
+      title: 'First Source Page',
+      content: 'First content',
+    });
+    const moved = app.locals.noteService.createNote({
+      chapterId: sourceChapter.id,
+      title: 'Moved Page',
+      content: '**Preserve this Markdown**',
+      projectIds: [projectId],
+      assetIds: [assetId],
+    });
+    const last = app.locals.noteService.createNote({
+      chapterId: sourceChapter.id,
+      title: 'Last Source Page',
+      content: 'Last content',
+    });
+    const existing = app.locals.noteService.createNote({
+      chapterId: targetChapter.id,
+      title: 'Existing Target Page',
+      content: 'Existing content',
+    });
+    const before = app.locals.noteService.getNote(moved.id);
+
+    const detail = await agent.get(`/notes/${moved.id}`).expect(200);
+    expect(detail.text).toContain(`<form method="post" action="/notes/${moved.id}/move" class="inline-form">`);
+    expect(detail.text).toContain('<select id="target-chapter" name="targetChapterId" required>');
+    expect(detail.text).toContain('<optgroup label="Source Book">');
+    expect(detail.text).toContain(`<option value="${sourceChapter.id}" selected>Source Chapter</option>`);
+    expect(detail.text).toContain('<optgroup label="Target Book">');
+    expect(detail.text).toContain(`<option value="${targetChapter.id}">Target Chapter</option>`);
+    expect(detail.text).toContain('>Move Page</button>');
+
+    const response = await agent
+      .post(`/notes/${moved.id}/move`)
+      .type('form')
+      .send({ _csrf: csrfToken, targetChapterId: String(targetChapter.id) })
+      .expect(302);
+
+    expect(response.headers.location).toBe(`/notes/chapters/${targetChapter.id}`);
+
+    const after = app.locals.noteService.getNote(moved.id);
+    expect(after).toMatchObject({
+      chapter_id: targetChapter.id,
+      title: before.title,
+      content: before.content,
+      projectIds: before.projectIds,
+      assetIds: before.assetIds,
+      created_at: before.created_at,
+      updated_at: before.updated_at,
+    });
+    expect(app.locals.noteService.listNotesForChapter(sourceChapter.id).map((note) => note.id))
+      .toEqual([first.id, last.id]);
+    expect(app.locals.noteService.listNotesForChapter(targetChapter.id).map((note) => note.id))
+      .toEqual([existing.id, moved.id]);
+    expect(db.prepare('SELECT id, sort_order FROM notes WHERE chapter_id = ? ORDER BY sort_order').all(sourceChapter.id))
+      .toEqual([
+        { id: first.id, sort_order: 0 },
+        { id: last.id, sort_order: 1 },
+      ]);
+    expect(db.prepare('SELECT id, sort_order FROM notes WHERE chapter_id = ? ORDER BY sort_order').all(targetChapter.id))
+      .toEqual([
+        { id: existing.id, sort_order: 0 },
+        { id: moved.id, sort_order: 1 },
+      ]);
+
+    const sourcePage = await agent.get(`/notes/chapters/${sourceChapter.id}`).expect(200);
+    expect(sourcePage.text).not.toContain(`<a href="/notes/${moved.id}">Moved Page</a>`);
+    const targetPage = await agent.get(response.headers.location).expect(200);
+    expect(targetPage.text.indexOf('Existing Target Page')).toBeLessThan(targetPage.text.indexOf('Moved Page'));
+  });
+
+  it('POST /notes/:id/move allows a same-Chapter no-op and requires CSRF', async () => {
+    const { chapter, note } = createPage(app, { title: 'Same Chapter Page', content: 'Content' });
+    const before = app.locals.noteService.getNote(note.id);
+
+    await agent
+      .post(`/notes/${note.id}/move`)
+      .type('form')
+      .send({ targetChapterId: String(chapter.id) })
+      .expect(403);
+    expect(app.locals.noteService.getNote(note.id)).toEqual(before);
+
+    const response = await agent
+      .post(`/notes/${note.id}/move`)
+      .type('form')
+      .send({ _csrf: csrfToken, targetChapterId: String(chapter.id) })
+      .expect(302);
+
+    expect(response.headers.location).toBe(`/notes/chapters/${chapter.id}`);
+    expect(app.locals.noteService.listNotesForChapter(chapter.id).map((page) => page.id)).toEqual([note.id]);
+    expect(app.locals.noteService.getNote(note.id)).toEqual(before);
+  });
+
+  it('POST /notes/:id/move rejects malformed and missing Page or Chapter IDs', async () => {
+    const { chapter, note } = createPage(app, { title: 'Validation Page', content: 'Content' });
+
+    for (const targetChapterId of ['01', '0', 'not-an-id']) {
+      await agent
+        .post(`/notes/${note.id}/move`)
+        .type('form')
+        .send({ _csrf: csrfToken, targetChapterId })
+        .expect(422);
+    }
+
+    await agent
+      .post(`/notes/${note.id}/move`)
+      .type('form')
+      .send({ _csrf: csrfToken, targetChapterId: '999999' })
+      .expect(404);
+    await agent
+      .post('/notes/01/move')
+      .type('form')
+      .send({ _csrf: csrfToken, targetChapterId: String(chapter.id) })
+      .expect(404);
+    await agent
+      .post('/notes/999999/move')
+      .type('form')
+      .send({ _csrf: csrfToken, targetChapterId: String(chapter.id) })
       .expect(404);
   });
 
@@ -1235,5 +1269,314 @@ describe('top-level Notes HTTP slice', () => {
       expect(page.text).not.toContain('New Note');
       expect(page.text).not.toContain('href="/notes/new"');
     }
+  });
+
+  describe('Book Chapters', () => {
+    it('renders only the Book Chapters in canonical order and has an empty state', async () => {
+      const book = app.locals.bookService.createBook({ title: 'Chapter Book' });
+      const otherBook = app.locals.bookService.createBook({ title: 'Other Book' });
+      const first = app.locals.chapterService.createChapter({ bookId: book.id, title: 'First Chapter' });
+      const second = app.locals.chapterService.createChapter({ bookId: book.id, title: 'Second Chapter' });
+      app.locals.chapterService.createChapter({ bookId: otherBook.id, title: 'Unrelated Chapter' });
+
+      const response = await agent.get(`/notes/books/${book.id}`).expect(200);
+
+      expect(response.text).toContain('New Chapter');
+      expect(response.text).toContain('Edit Book');
+      expect(response.text).toContain(`/notes/chapters/${first.id}`);
+      expect(response.text.indexOf('First Chapter')).toBeLessThan(response.text.indexOf('Second Chapter'));
+      expect(response.text).not.toContain('Unrelated Chapter');
+      expect(response.text).not.toContain('<h2>Details</h2>');
+
+      const emptyBook = app.locals.bookService.createBook({ title: 'Empty Chapter Book' });
+      const emptyResponse = await agent.get(`/notes/books/${emptyBook.id}`).expect(200);
+      expect(emptyResponse.text).toContain('No chapters yet');
+    });
+
+    it('renders and creates a Chapter with a trimmed title', async () => {
+      const book = app.locals.bookService.createBook({ title: 'Create Chapter Book' });
+
+      const form = await agent.get(`/notes/books/${book.id}/chapters/new`).expect(200);
+      expect(form.text).toContain(`<form id="chapter-form" method="post" action="/notes/books/${book.id}/chapters"`);
+      expect(form.text).toMatch(/name="_csrf"\s+value="[^"]+"/);
+
+      const response = await agent
+        .post(`/notes/books/${book.id}/chapters`)
+        .type('form')
+        .send({ _csrf: csrfToken, title: '  Created Chapter  ' })
+        .expect(302);
+
+      expect(response.headers.location).toMatch(/^\/notes\/chapters\/\d+$/);
+      const chapterId = Number(response.headers.location.replace('/notes/chapters/', ''));
+      expect(app.locals.chapterService.getChapter(chapterId)).toMatchObject({
+        book_id: book.id,
+        title: 'Created Chapter',
+      });
+    });
+
+    it('validates Chapter creation and returns 404 for missing or malformed Books', async () => {
+      const book = app.locals.bookService.createBook({ title: 'Validated Chapter Book' });
+
+      for (const title of ['', 'x'.repeat(201)]) {
+        const response = await agent
+          .post(`/notes/books/${book.id}/chapters`)
+          .type('form')
+          .send({ _csrf: csrfToken, title })
+          .expect(422);
+        expect(response.text).toContain('Title');
+      }
+      expect(app.locals.chapterService.listChapters(book.id)).toEqual([]);
+
+      await agent.get('/notes/books/not-an-id/chapters/new').expect(404);
+      await agent.get('/notes/books/999999/chapters/new').expect(404);
+      await agent
+        .post('/notes/books/999999/chapters')
+        .type('form')
+        .send({ _csrf: csrfToken, title: 'Missing Book Chapter' })
+        .expect(404);
+    });
+
+    it('renders an empty Chapter with parent Book context and a New Page action', async () => {
+      const book = app.locals.bookService.createBook({ title: 'Parent Book' });
+      const chapter = app.locals.chapterService.createChapter({ bookId: book.id, title: 'Detail Chapter' });
+
+      const response = await agent.get(`/notes/chapters/${chapter.id}`).expect(200);
+      expect(response.text).toContain('Detail Chapter');
+      expect(response.text).toContain(`<a href="/notes/books/${book.id}">Parent Book</a>`);
+      expect(response.text).toContain('Edit Chapter');
+      expect(response.text).toContain('No Pages yet');
+      expect(response.text).toContain(`<a class="button button-primary" href="/notes/new?chapterId=${chapter.id}">New Page</a>`);
+    });
+
+    it('renders a Chapter Page with a shallow Page link', async () => {
+      const { chapter } = createChapterContext(app);
+      const note = app.locals.noteService.createNote({ chapterId: chapter.id, title: 'Only Page' });
+
+      const response = await agent.get(`/notes/chapters/${chapter.id}`).expect(200);
+
+      expect(response.text).toContain('Only Page');
+      expect(response.text).toContain(`<a href="/notes/${note.id}">Only Page</a>`);
+    });
+
+    it('renders only Chapter Pages in canonical Chapter-local order', async () => {
+      const { chapter } = createChapterContext(app);
+      const first = app.locals.noteService.createNote({ chapterId: chapter.id, title: 'First Chapter Page' });
+      const second = app.locals.noteService.createNote({ chapterId: chapter.id, title: 'Second Chapter Page' });
+      const { chapter: otherChapter } = createChapterContext(app);
+      const unrelated = app.locals.noteService.createNote({ chapterId: otherChapter.id, title: 'Other Chapter Page' });
+
+      const response = await agent.get(`/notes/chapters/${chapter.id}`).expect(200);
+
+      expect(response.text).toContain(`<a href="/notes/${first.id}">First Chapter Page</a>`);
+      expect(response.text).toContain(`<a href="/notes/${second.id}">Second Chapter Page</a>`);
+      expect(response.text.indexOf('First Chapter Page')).toBeLessThan(response.text.indexOf('Second Chapter Page'));
+      expect(response.text).not.toContain(`<a href="/notes/${unrelated.id}">Other Chapter Page</a>`);
+    });
+
+    it('returns 404 for missing or malformed Chapters', async () => {
+
+      await agent.get('/notes/chapters/not-an-id').expect(404);
+      await agent.get('/notes/chapters/999999').expect(404);
+    });
+
+    it('edits a Chapter and rerenders validation failures', async () => {
+      const book = app.locals.bookService.createBook({ title: 'Edit Chapter Book' });
+      const chapter = app.locals.chapterService.createChapter({ bookId: book.id, title: 'Before Rename' });
+
+      const form = await agent.get(`/notes/chapters/${chapter.id}/edit`).expect(200);
+      expect(form.text).toContain(`action="/notes/chapters/${chapter.id}"`);
+      expect(form.text).toContain('value="Before Rename"');
+
+      const response = await agent
+        .post(`/notes/chapters/${chapter.id}`)
+        .type('form')
+        .send({ _csrf: csrfToken, title: '  After Rename  ' })
+        .expect(302);
+      expect(response.headers.location).toBe(`/notes/chapters/${chapter.id}`);
+      expect(app.locals.chapterService.getChapter(chapter.id).title).toBe('After Rename');
+
+      const invalid = await agent
+        .post(`/notes/chapters/${chapter.id}`)
+        .type('form')
+        .send({ _csrf: csrfToken, title: '' })
+        .expect(422);
+      expect(invalid.text).toContain('Title is required.');
+      expect(invalid.text).toContain('value=""');
+
+      await agent.get('/notes/chapters/999999/edit').expect(404);
+      await agent
+        .post('/notes/chapters/999999')
+        .type('form')
+        .send({ _csrf: csrfToken, title: 'Missing' })
+        .expect(404);
+    });
+
+    it('deletes an empty Chapter, rejects non-empty Chapters, and preserves CSRF protection', async () => {
+      const book = app.locals.bookService.createBook({ title: 'Delete Chapter Book' });
+      const empty = app.locals.chapterService.createChapter({ bookId: book.id, title: 'Empty Chapter' });
+
+      await agent.post(`/notes/chapters/${empty.id}/delete`).type('form').send({}).expect(403);
+      const deleted = await agent
+        .post(`/notes/chapters/${empty.id}/delete`)
+        .type('form')
+        .send({ _csrf: csrfToken })
+        .expect(302);
+      expect(deleted.headers.location).toBe(`/notes/books/${book.id}`);
+      expect(app.locals.chapterService.listChapters(book.id).map((chapter) => chapter.id)).not.toContain(empty.id);
+
+      const nonEmpty = app.locals.chapterService.createChapter({ bookId: book.id, title: 'Non-empty Chapter' });
+      db.prepare(`
+        INSERT INTO notes (chapter_id, title, content, sort_order)
+        VALUES (?, 'Chapter Note', '', 0)
+      `).run(nonEmpty.id);
+      await agent
+        .post(`/notes/chapters/${nonEmpty.id}/delete`)
+        .type('form')
+        .send({ _csrf: csrfToken })
+        .expect(409);
+      expect(app.locals.chapterService.listChapters(book.id).map((chapter) => chapter.id)).toContain(nonEmpty.id);
+
+      await agent
+        .post('/notes/chapters/999999/delete')
+        .type('form')
+        .send({ _csrf: csrfToken })
+        .expect(404);
+    });
+
+    it('reorders Chapters only within their Book and renders the resulting order', async () => {
+      const book = app.locals.bookService.createBook({ title: 'Reorder Chapter Book' });
+      const otherBook = app.locals.bookService.createBook({ title: 'Other Reorder Book' });
+      const first = app.locals.chapterService.createChapter({ bookId: book.id, title: 'First Ordered Chapter' });
+      const second = app.locals.chapterService.createChapter({ bookId: book.id, title: 'Second Ordered Chapter' });
+      const other = app.locals.chapterService.createChapter({ bookId: otherBook.id, title: 'Other Ordered Chapter' });
+      const orderedIds = [second.id, first.id];
+
+      await agent
+        .post(`/notes/books/${book.id}/chapters/reorder`)
+        .type('form')
+        .send({ orderedChapterIds: orderedIds.join(',') })
+        .expect(403);
+      expect(app.locals.chapterService.listChapters(book.id).map((chapter) => chapter.id))
+        .toEqual([first.id, second.id]);
+
+      await agent
+        .post(`/notes/books/${book.id}/chapters/reorder`)
+        .type('form')
+        .send({ _csrf: csrfToken, orderedChapterIds: orderedIds.join(',') })
+        .expect(302)
+        .expect('Location', `/notes/books/${book.id}`);
+      expect(app.locals.chapterService.listChapters(book.id).map((chapter) => chapter.id)).toEqual(orderedIds);
+
+      for (const orderedChapterIds of [`${second.id},${other.id}`, 'not-an-id']) {
+        const response = await agent
+          .post(`/notes/books/${book.id}/chapters/reorder`)
+          .type('form')
+          .send({ _csrf: csrfToken, orderedChapterIds })
+          .expect(422);
+        expect(response.text).toContain('submitted chapter order is invalid');
+        expect(app.locals.chapterService.listChapters(book.id).map((chapter) => chapter.id)).toEqual(orderedIds);
+      }
+
+      const bookPage = await agent.get(`/notes/books/${book.id}`).expect(200);
+      expect(bookPage.text.indexOf('Second Ordered Chapter')).toBeLessThan(bookPage.text.indexOf('First Ordered Chapter'));
+    });
+
+    it('reorders Pages only within their Chapter and returns to that Chapter', async () => {
+      const { chapter } = createChapterContext(app);
+      const first = app.locals.noteService.createNote({ chapterId: chapter.id, title: 'First Ordered Page' });
+      const second = app.locals.noteService.createNote({ chapterId: chapter.id, title: 'Second Ordered Page' });
+      const { chapter: otherChapter } = createChapterContext(app);
+      const other = app.locals.noteService.createNote({ chapterId: otherChapter.id, title: 'Other Chapter Page' });
+      const updatedAtBefore = db.prepare('SELECT id, updated_at FROM notes ORDER BY id').all();
+      const orderedIds = [second.id, first.id];
+
+      const controlsPage = await agent.get(`/notes/chapters/${chapter.id}`).expect(200);
+      expect(controlsPage.text).toContain(`action="/notes/chapters/${chapter.id}/notes/reorder"`);
+      expect(controlsPage.text).toContain(`name="orderedNoteIds" value="${orderedIds.join(',')}"`);
+      expect(controlsPage.text).toContain('Move up');
+      expect(controlsPage.text).toContain('Move down');
+
+      const response = await agent
+        .post(`/notes/chapters/${chapter.id}/notes/reorder`)
+        .type('form')
+        .send({ _csrf: csrfToken, orderedNoteIds: orderedIds.join(',') })
+        .expect(302);
+
+      expect(response.headers.location).toBe(`/notes/chapters/${chapter.id}`);
+      expect(app.locals.noteService.listNotesForChapter(chapter.id).map((note) => note.id)).toEqual(orderedIds);
+      expect(app.locals.noteService.listNotesForChapter(otherChapter.id).map((note) => note.id)).toEqual([other.id]);
+      expect(db.prepare('SELECT id, updated_at FROM notes ORDER BY id').all()).toEqual(updatedAtBefore);
+
+      const chapterPage = await agent.get(response.headers.location).expect(200);
+      expect(chapterPage.text.indexOf('Second Ordered Page')).toBeLessThan(chapterPage.text.indexOf('First Ordered Page'));
+    });
+
+    it('renders no Page reorder controls for empty or single-Page Chapters', async () => {
+      const { chapter } = createChapterContext(app);
+
+      const emptyPage = await agent.get(`/notes/chapters/${chapter.id}`).expect(200);
+      expect(emptyPage.text).not.toContain(`/notes/chapters/${chapter.id}/notes/reorder`);
+
+      await agent
+        .post(`/notes/chapters/${chapter.id}/notes/reorder`)
+        .type('form')
+        .send({ _csrf: csrfToken, orderedNoteIds: '' })
+        .expect(302)
+        .expect('Location', `/notes/chapters/${chapter.id}`);
+
+      const note = app.locals.noteService.createNote({ chapterId: chapter.id, title: 'Only Page' });
+      const singlePage = await agent.get(`/notes/chapters/${chapter.id}`).expect(200);
+      expect(singlePage.text).not.toContain(`/notes/chapters/${chapter.id}/notes/reorder`);
+      expect(singlePage.text).not.toContain('Move up');
+      expect(singlePage.text).not.toContain('Move down');
+
+      await agent
+        .post(`/notes/chapters/${chapter.id}/notes/reorder`)
+        .type('form')
+        .send({ _csrf: csrfToken, orderedNoteIds: String(note.id) })
+        .expect(302);
+    });
+
+    it('requires CSRF and rejects malformed or non-local Page reorder payloads', async () => {
+      const { chapter } = createChapterContext(app);
+      const first = app.locals.noteService.createNote({ chapterId: chapter.id, title: 'First Page' });
+      const second = app.locals.noteService.createNote({ chapterId: chapter.id, title: 'Second Page' });
+      const { chapter: otherChapter } = createChapterContext(app);
+      const other = app.locals.noteService.createNote({ chapterId: otherChapter.id, title: 'Other Page' });
+      const before = app.locals.noteService.listNotesForChapter(chapter.id).map((note) => note.id);
+      const reorderUrl = `/notes/chapters/${chapter.id}/notes/reorder`;
+
+      await agent
+        .post(reorderUrl)
+        .type('form')
+        .send({ orderedNoteIds: `${second.id},${first.id}` })
+        .expect(403);
+
+      for (const payload of [
+        { orderedNoteIds: 'not-an-id' },
+        { orderedNoteIds: `${first.id},${first.id}` },
+        { orderedNoteIds: String(first.id) },
+        { orderedNoteIds: `${first.id},${second.id},999999` },
+        { orderedNoteIds: `${first.id},${other.id}` },
+      ]) {
+        const response = await agent
+          .post(reorderUrl)
+          .type('form')
+          .send({ _csrf: csrfToken, ...payload })
+          .expect(422);
+
+        expect(response.text).toContain('submitted note order is invalid');
+        expect(response.text).not.toContain('999999');
+        expect(app.locals.noteService.listNotesForChapter(chapter.id).map((note) => note.id)).toEqual(before);
+      }
+
+      for (const chapterId of ['01', '999999']) {
+        await agent
+          .post(`/notes/chapters/${chapterId}/notes/reorder`)
+          .type('form')
+          .send({ _csrf: csrfToken, orderedNoteIds: `${first.id},${second.id}` })
+          .expect(404);
+      }
+    });
   });
 });

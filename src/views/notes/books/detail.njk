@@ -1,0 +1,42 @@
+{% extends "layout.njk" %}
+{% import "partials/page-heading.njk" as pageHeading %}
+
+{% set page_title = "Notes — " ~ book.title %}
+
+{% block content %}
+  {% call pageHeading.render("Book") %}
+    <a class="button button-primary" href="/notes/books/{{ book.id }}/chapters/new">New Chapter</a>
+    <a class="button" href="/notes/books/{{ book.id }}/edit">Edit Book</a>
+  {% endcall %}
+
+  {% if notice %}
+    {% set noticeVariant = notice.variant %}
+    {% set noticeText = notice.text %}
+    {% include "partials/notice.njk" %}
+  {% endif %}
+
+  <section class="settings-section">
+    <h2>Chapters</h2>
+    {% if chapters.length > 0 %}
+      <div class="table-scroll" tabindex="0" aria-label="Chapters list">
+        <table class="data-table">
+          <thead><tr><th>Title</th><th>Actions</th></tr></thead>
+          <tbody>
+            {% for chapter in chapters %}
+              <tr>
+                <td><a href="/notes/chapters/{{ chapter.id }}">{{ chapter.title }}</a></td>
+                <td><a class="button button-small button-secondary" href="/notes/chapters/{{ chapter.id }}">Manage</a></td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      {% set emptyHeading = "No chapters yet" %}
+      {% set emptyDescription = "Create a chapter to start organizing this book." %}
+      {% set emptyActionUrl = "/notes/books/" ~ book.id ~ "/chapters/new" %}
+      {% set emptyActionLabel = "New Chapter" %}
+      {% include "partials/empty-state.njk" %}
+    {% endif %}
+  </section>
+{% endblock %}

@@ -6,9 +6,17 @@
  * must not be reached through project or asset repositories.
  */
 
-const COLUMNS = ['id', 'title', 'content', 'sort_order', 'created_at', 'updated_at'];
+const COLUMNS = ['id', 'chapter_id', 'title', 'content', 'sort_order', 'created_at', 'updated_at'];
 const SELECT_ALL = `SELECT ${COLUMNS.join(', ')} FROM notes`;
-const NOTE_ORDER = 'ORDER BY notes.sort_order ASC, notes.id ASC';
+const HIERARCHY_ORDER = `
+  ORDER BY
+    books.sort_order ASC,
+    books.id ASC,
+    chapters.sort_order ASC,
+    chapters.id ASC,
+    notes.sort_order ASC,
+    notes.id ASC
+`;
 const NOTE_COLUMNS_QUALIFIED = COLUMNS.map((c) => `notes.${c}`).join(', ');
 
 export class NoteError extends Error {
@@ -24,10 +32,20 @@ export class NoteError extends Error {
  */
 export function createNoteRepository(db) {
   const findByIdStmt = db.prepare(`${SELECT_ALL} WHERE id = ?`);
-  const listStmt = db.prepare(`${SELECT_ALL} ORDER BY sort_order ASC, id ASC`);
+  const findChapterStmt = db.prepare('SELECT id FROM chapters WHERE id = ?');
+  const listStmt = db.prepare(`
+    SELECT ${NOTE_COLUMNS_QUALIFIED}
+    FROM notes
+    JOIN chapters ON chapters.id = notes.chapter_id
+    JOIN books ON books.id = chapters.book_id
+    ${HIERARCHY_ORDER}
+  `);
+  const listForChapterStmt = db.prepare(
+    `${SELECT_ALL} WHERE chapter_id = ? ORDER BY sort_order ASC, id ASC`
+  );
   const insertStmt = db.prepare(`
-    INSERT INTO notes (title, content, sort_order)
-    VALUES (?, ?, ?)
+    INSERT INTO notes (chapter_id, title, content, sort_order)
+    VALUES (?, ?, ?, ?)
     RETURNING ${COLUMNS.join(', ')}
   `);
   const updateStmt = db.prepare(`
@@ -37,23 +55,29 @@ export function createNoteRepository(db) {
     RETURNING ${COLUMNS.join(', ')}
   `);
   const deleteByIdStmt = db.prepare('DELETE FROM notes WHERE id = ?');
-  const maxSortOrderStmt = db.prepare('SELECT MAX(sort_order) AS max_order FROM notes');
+  const maxSortOrderStmt = db.prepare(
+    'SELECT MAX(sort_order) AS max_order FROM notes WHERE chapter_id = ?'
+  );
   const shiftOrdersStmt = db.prepare(`
     UPDATE notes
     SET sort_order = sort_order + ?
+    WHERE chapter_id = ?
+  `);
+  const moveToChapterStmt = db.prepare(`
+    UPDATE notes
+    SET chapter_id = ?, sort_order = ?
+    WHERE id = ?
+    RETURNING ${COLUMNS.join(', ')}
   `);
 
-  const reorderTx = db.transaction((orderedIds) => {
-    const current = listStmt.all();
-    const currentIds = current.map((row) => row.id);
-
+  function validateExactOrder(chapterId, orderedIds, currentIds) {
     if (!Array.isArray(orderedIds)) {
       throw new NoteError('Note reorder input must be an array.', { code: 'INVALID_INPUT' });
     }
 
     if (orderedIds.length !== currentIds.length) {
       throw new NoteError(
-        `Reorder sequence length ${orderedIds.length} does not match current note count ${currentIds.length}.`,
+        `Reorder sequence length ${orderedIds.length} does not match current note count for Chapter ${chapterId}.`,
         { code: 'INVALID_SEQUENCE_LENGTH' }
       );
     }
@@ -72,46 +96,91 @@ export function createNoteRepository(db) {
     const currentSet = new Set(currentIds);
     for (const id of orderedIds) {
       if (!currentSet.has(id)) {
-        throw new NoteError(`Note ID ${id} does not exist.`, { code: 'UNKNOWN_ID' });
+        throw new NoteError(`Note ID ${id} does not exist for Chapter ${chapterId}.`, {
+          code: 'UNKNOWN_ID',
+        });
       }
     }
+  }
 
-    if (orderedIds.length > 0) {
-      // Move every current position outside the final range first to avoid
-      // colliding with a potential unique order constraint during the update.
-      const maxSortOrder = Math.max(...current.map((row) => row.sort_order));
-      const temporaryOffset = maxSortOrder + current.length + 1;
-      const shifted = shiftOrdersStmt.run(temporaryOffset);
-      if (shifted.changes !== current.length) {
-        throw new NoteError(
-          `Reorder preparation affected ${shifted.changes} rows, expected ${current.length}.`,
-          { code: 'UPDATE_CHANGES_MISMATCH' }
-        );
-      }
+  function rewriteChapterOrder(chapterId, orderedRows) {
+    if (orderedRows.length === 0) return;
 
-      const whenClauses = orderedIds.map(() => 'WHEN ? THEN ?').join(' ');
-      const idPlaceholders = orderedIds.map(() => '?').join(', ');
-      const setFinalOrderStmt = db.prepare(`
-        UPDATE notes
-        SET sort_order = CASE id ${whenClauses} ELSE sort_order END
-        WHERE id IN (${idPlaceholders})
-      `);
-      const finalOrderParams = [];
-      for (let i = 0; i < orderedIds.length; i++) {
-        finalOrderParams.push(orderedIds[i], i);
-      }
-      finalOrderParams.push(...orderedIds);
-
-      const finalized = setFinalOrderStmt.run(...finalOrderParams);
-      if (finalized.changes !== current.length) {
-        throw new NoteError(
-          `Reorder finalization affected ${finalized.changes} rows, expected ${current.length}.`,
-          { code: 'UPDATE_CHANGES_MISMATCH' }
-        );
-      }
+    const maxSortOrder = Math.max(...orderedRows.map((row) => row.sort_order));
+    const temporaryOffset = maxSortOrder + orderedRows.length + 1;
+    const shifted = shiftOrdersStmt.run(temporaryOffset, chapterId);
+    if (shifted.changes !== orderedRows.length) {
+      throw new NoteError(
+        `Reorder preparation affected ${shifted.changes} rows, expected ${orderedRows.length}.`,
+        { code: 'UPDATE_CHANGES_MISMATCH' }
+      );
     }
 
-    return listStmt.all();
+    const whenClauses = orderedRows.map(() => 'WHEN ? THEN ?').join(' ');
+    const setFinalOrderStmt = db.prepare(`
+      UPDATE notes
+      SET sort_order = CASE id ${whenClauses} ELSE sort_order END
+      WHERE chapter_id = ?
+    `);
+    const finalOrderParams = [];
+    for (let index = 0; index < orderedRows.length; index++) {
+      finalOrderParams.push(orderedRows[index].id, index);
+    }
+    finalOrderParams.push(chapterId);
+
+    const finalized = setFinalOrderStmt.run(...finalOrderParams);
+    if (finalized.changes !== orderedRows.length) {
+      throw new NoteError(
+        `Reorder finalization affected ${finalized.changes} rows, expected ${orderedRows.length}.`,
+        { code: 'UPDATE_CHANGES_MISMATCH' }
+      );
+    }
+  }
+
+  function compactChapterOrder(chapterId) {
+    rewriteChapterOrder(chapterId, listForChapterStmt.all(chapterId));
+  }
+
+  const reorderTx = db.transaction((chapterId, orderedIds) => {
+    const current = listForChapterStmt.all(chapterId);
+    const currentIds = current.map((row) => row.id);
+
+    validateExactOrder(chapterId, orderedIds, currentIds);
+    const currentById = new Map(current.map((row) => [row.id, row]));
+    rewriteChapterOrder(chapterId, orderedIds.map((id) => currentById.get(id)));
+    return listForChapterStmt.all(chapterId);
+  });
+
+  const deleteAndCompactTx = db.transaction((id) => {
+    const note = findByIdStmt.get(id);
+    if (!note) return false;
+
+    const deleted = deleteByIdStmt.run(id);
+    if (deleted.changes !== 1) {
+      throw new NoteError(`Note ${id} could not be deleted.`, { code: 'DELETE_CHANGES_MISMATCH' });
+    }
+
+    compactChapterOrder(note.chapter_id);
+    return true;
+  });
+
+  const moveToChapterTx = db.transaction((noteId, targetChapterId) => {
+    const note = findByIdStmt.get(noteId);
+    if (!note) return undefined;
+
+    if (!findChapterStmt.get(targetChapterId)) {
+      throw new NoteError(`Chapter ${targetChapterId} does not exist.`, {
+        code: 'TARGET_CHAPTER_NOT_FOUND',
+      });
+    }
+
+    if (note.chapter_id === targetChapterId) return note;
+
+    const { max_order: maxOrder } = maxSortOrderStmt.get(targetChapterId);
+    const sortOrder = maxOrder === null ? 0 : maxOrder + 1;
+    const moved = moveToChapterStmt.get(targetChapterId, sortOrder, noteId);
+    compactChapterOrder(note.chapter_id);
+    return moved;
   });
 
   // ─── Association statements ──────────────────────────────────────────────
@@ -138,8 +207,10 @@ export function createNoteRepository(db) {
     SELECT ${NOTE_COLUMNS_QUALIFIED}
     FROM notes
     JOIN note_projects np ON np.note_id = notes.id
+    JOIN chapters ON chapters.id = notes.chapter_id
+    JOIN books ON books.id = chapters.book_id
     WHERE np.project_id = ?
-    ${NOTE_ORDER}
+    ${HIERARCHY_ORDER}
   `);
 
   const insertNoteAssetStmt = db.prepare(`
@@ -160,8 +231,10 @@ export function createNoteRepository(db) {
     SELECT ${NOTE_COLUMNS_QUALIFIED}
     FROM notes
     JOIN note_assets na ON na.note_id = notes.id
+    JOIN chapters ON chapters.id = notes.chapter_id
+    JOIN books ON books.id = chapters.book_id
     WHERE na.asset_id = ?
-    ${NOTE_ORDER}
+    ${HIERARCHY_ORDER}
   `);
 
   function replaceProjectsInTransaction(noteId, projectIds) {
@@ -223,11 +296,12 @@ export function createNoteRepository(db) {
   const replaceAssetsTx = db.transaction(replaceAssetsInTransaction);
 
   function createNote(input = {}) {
-    const result = maxSortOrderStmt.get();
+    const { chapterId } = input;
+    const result = maxSortOrderStmt.get(chapterId);
     const sortOrder = result.max_order === null ? 0 : result.max_order + 1;
     const title = typeof input.title === 'string' ? input.title : '';
     const content = typeof input.content === 'string' ? input.content : '';
-    return insertStmt.get(title, content, sortOrder);
+    return insertStmt.get(chapterId, title, content, sortOrder);
   }
 
   function updateNote(id, input = {}) {
@@ -238,7 +312,9 @@ export function createNoteRepository(db) {
     return updateStmt.get(title, content, id);
   }
 
-  const saveWithAssociationsTx = db.transaction(({ id, title, content, projectIds, assetIds } = {}) => {
+  const saveWithAssociationsTx = db.transaction(({
+    id, chapterId, title, content, projectIds, assetIds,
+  } = {}) => {
     if (!Array.isArray(projectIds)) {
       throw new NoteError('Project IDs must be an array.', { code: 'INVALID_INPUT' });
     }
@@ -247,7 +323,7 @@ export function createNoteRepository(db) {
     }
 
     const note = id === undefined
-      ? createNote({ title, content })
+      ? createNote({ chapterId, title, content })
       : updateNote(id, { title, content });
 
     if (!note) return undefined;
@@ -261,10 +337,10 @@ export function createNoteRepository(db) {
 
   return {
     /**
-     * Create a note, appending it after the current highest sort_order.
+     * Create a note, appending it after the current highest Chapter-local sort_order.
      *
-     * @param {{ title?: string, content?: string }} input
-     * @returns {{ id: number, title: string, content: string, sort_order: number, created_at: string, updated_at: string }}
+     * @param {{ chapterId: number, title?: string, content?: string }} input
+     * @returns {{ id: number, chapter_id: number, title: string, content: string, sort_order: number, created_at: string, updated_at: string }}
      */
     create(input = {}) {
       return createNote(input);
@@ -272,19 +348,31 @@ export function createNoteRepository(db) {
 
     /**
      * @param {number} id
-     * @returns {{ id: number, title: string, content: string, sort_order: number, created_at: string, updated_at: string }|undefined}
+     * @returns {{ id: number, chapter_id: number, title: string, content: string, sort_order: number, created_at: string, updated_at: string }|undefined}
      */
     findById(id) {
       return findByIdStmt.get(id);
     },
 
     /**
-     * List all notes in manual order.
+     * List all Notes in deterministic hierarchy order. This is a temporary
+     * compatibility method for the flat Notes service and has no global
+     * sort_order meaning.
      *
-     * @returns {Array<{ id: number, title: string, content: string, sort_order: number, created_at: string, updated_at: string }>}
+     * @returns {Array<{ id: number, chapter_id: number, title: string, content: string, sort_order: number, created_at: string, updated_at: string }>}
      */
     list() {
       return listStmt.all();
+    },
+
+    /**
+     * List Notes in one Chapter by local manual order.
+     *
+     * @param {number} chapterId
+     * @returns {Array<{ id: number, chapter_id: number, title: string, content: string, sort_order: number, created_at: string, updated_at: string }>}
+     */
+    listForChapter(chapterId) {
+      return listForChapterStmt.all(chapterId);
     },
 
     /**
@@ -293,7 +381,7 @@ export function createNoteRepository(db) {
      *
      * @param {number} id
      * @param {{ title?: string, content?: string }} input
-     * @returns {{ id: number, title: string, content: string, sort_order: number, created_at: string, updated_at: string }|undefined}
+     * @returns {{ id: number, chapter_id: number, title: string, content: string, sort_order: number, created_at: string, updated_at: string }|undefined}
      */
     update(id, input = {}) {
       return updateNote(id, input);
@@ -301,29 +389,46 @@ export function createNoteRepository(db) {
 
     /**
      * @param {number} id
-     * @returns {boolean} true when a note row was deleted
+     * @returns {boolean} true when a Note row was deleted and its source Chapter compacted
      */
     deleteById(id) {
-      return deleteByIdStmt.run(id).changes > 0;
+      return deleteAndCompactTx(id);
     },
 
     /**
-     * Persist a complete reorder of all notes. `orderedIds` must be an exact
-     * permutation of the current note IDs; positions are rewritten to contiguous
-     * 0..n-1 values in the given order.
+     * Persist a complete Chapter-local reorder. `orderedIds` must be an exact
+     * permutation of the Notes in `chapterId`; positions are rewritten to
+     * contiguous 0..n-1 values in the given order. Throws NoteError with
+     * INVALID_INPUT, INVALID_SEQUENCE_LENGTH, INVALID_ID, DUPLICATE_ID,
+     * UNKNOWN_ID, or UPDATE_CHANGES_MISMATCH when it cannot complete.
      *
+     * @param {number} chapterId
      * @param {number[]} orderedIds
-     * @returns {Array<{ id: number, title: string, content: string, sort_order: number, created_at: string, updated_at: string }>}
+     * @returns {Array<{ id: number, chapter_id: number, title: string, content: string, sort_order: number, created_at: string, updated_at: string }>}
      */
-    reorder(orderedIds) {
-      return reorderTx(orderedIds);
+    reorder(chapterId, orderedIds) {
+      return reorderTx(chapterId, orderedIds);
+    },
+
+    /**
+     * Move a Note to the end of another Chapter without changing content
+     * timestamps or associations. Returns undefined for a missing Note;
+     * throws NoteError with TARGET_CHAPTER_NOT_FOUND for a missing destination.
+     * Moving to the current Chapter is a no-op and returns the unchanged Note.
+     *
+     * @param {number} noteId
+     * @param {number} targetChapterId
+     * @returns {{ id: number, chapter_id: number, title: string, content: string, sort_order: number, created_at: string, updated_at: string }|undefined}
+     */
+    moveToChapter(noteId, targetChapterId) {
+      return moveToChapterTx(noteId, targetChapterId);
     },
 
     /**
      * Persist a note mutation and its complete project/asset associations in
      * one transaction. An omitted id creates a note; a supplied id updates it.
      *
-     * @param {{ id?: number, title?: string, content?: string, projectIds: number[], assetIds: number[] }} input
+     * @param {{ id?: number, chapterId?: number, title?: string, content?: string, projectIds: number[], assetIds: number[] }} input
      * @returns {{ note: object, projectIds: number[], assetIds: number[] }|undefined}
      */
     saveWithAssociations(input) {
@@ -356,11 +461,10 @@ export function createNoteRepository(db) {
     },
 
     /**
-     * List all notes associated with a project, in the Notes system's canonical
-     * global order (sort_order ASC, id ASC).
+     * List all Notes associated with a Project in hierarchy order.
      *
      * @param {number} projectId
-     * @returns {Array<{ id: number, title: string, content: string, sort_order: number, created_at: string, updated_at: string }>}
+     * @returns {Array<{ id: number, chapter_id: number, title: string, content: string, sort_order: number, created_at: string, updated_at: string }>}
      */
     listForProject(projectId) {
       return listForProjectStmt.all(projectId);
@@ -392,11 +496,10 @@ export function createNoteRepository(db) {
     },
 
     /**
-     * List all notes associated with an asset, in the Notes system's canonical
-     * global order (sort_order ASC, id ASC).
+     * List all Notes associated with an Asset in hierarchy order.
      *
-     * @param {param} assetId
-     * @returns {Array<{ id: number, title: string, content: string, sort_order: number, created_at: string, updated_at: string }>}
+     * @param {number} assetId
+     * @returns {Array<{ id: number, chapter_id: number, title: string, content: string, sort_order: number, created_at: string, updated_at: string }>}
      */
     listForAsset(assetId) {
       return listForAssetStmt.all(assetId);

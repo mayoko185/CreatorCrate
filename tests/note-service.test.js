@@ -4,7 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
-import { createNoteRepository } from '../src/data/note-repository.js';
+import { createNoteRepository, NoteError } from '../src/data/note-repository.js';
+import { createChapterRepository } from '../src/data/chapter-repository.js';
 import { createProjectRepository } from '../src/data/project-repository.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
 import {
@@ -13,6 +14,7 @@ import {
   NoteNotFoundError,
   NoteValidationError,
 } from '../src/services/note-service.js';
+import { ChapterNotFoundError } from '../src/services/chapter-service.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 const MISSING_ID = 999999;
@@ -21,9 +23,11 @@ describe('note service', () => {
   let tmpDir;
   let db;
   let noteRepository;
+  let chapterRepository;
   let projectRepository;
   let assetRepository;
   let service;
+  let chapterId;
   let nextProjectNumber;
   let nextAssetNumber;
 
@@ -32,9 +36,20 @@ describe('note service', () => {
     db = openDatabase(path.join(tmpDir, 'test.db'));
     runMigrations(db, MIGRATIONS_DIR);
     noteRepository = createNoteRepository(db);
+    chapterRepository = createChapterRepository(db);
     projectRepository = createProjectRepository(db);
     assetRepository = createAssetRepository(db);
-    service = createNoteService({ noteRepository, projectRepository, assetRepository });
+    const bookId = Number(db.prepare(`
+      INSERT INTO books (title, sort_order)
+      VALUES ('Test book', 0)
+    `).run().lastInsertRowid);
+    chapterId = chapterRepository.create({ bookId, title: 'Test chapter' }).id;
+    service = createNoteService({
+      noteRepository,
+      projectRepository,
+      assetRepository,
+      chapterRepository,
+    });
     nextProjectNumber = 1;
     nextAssetNumber = 1;
   });
@@ -63,7 +78,11 @@ describe('note service', () => {
     `).run(projectId, relativePath, filename).lastInsertRowid);
   }
 
-  it('requires note, project, and asset repository dependencies', () => {
+  function createNote(input) {
+    return service.createNote({ chapterId, ...input });
+  }
+
+  it('requires note, project, asset, and chapter repository dependencies', () => {
     expect(() => createNoteService()).toThrow(
       'createNoteService requires a noteRepository dependency.'
     );
@@ -73,10 +92,38 @@ describe('note service', () => {
     expect(() => createNoteService({ noteRepository, projectRepository })).toThrow(
       'createNoteService requires an assetRepository dependency.'
     );
+    expect(() => createNoteService({ noteRepository, projectRepository, assetRepository })).toThrow(
+      'createNoteService requires a chapterRepository dependency.'
+    );
+  });
+
+  it('requires chapterId on create', () => {
+    expect(() => service.createNote({ title: 'Missing chapter' })).toThrow(NoteValidationError);
+    expect(noteRepository.list()).toEqual([]);
+  });
+
+  it.each([0, -1, 1.5, '1', NaN, Infinity, Number.MAX_SAFE_INTEGER + 1])
+    ('rejects invalid chapterId %p', (invalidChapterId) => {
+      let error;
+      try {
+        service.createNote({ title: 'Invalid chapter', chapterId: invalidChapterId });
+      } catch (caught) {
+        error = caught;
+      }
+
+      expect(error).toBeInstanceOf(NoteValidationError);
+      expect(error.errors).toEqual({ chapterId: 'chapterId must be a positive integer.' });
+      expect(noteRepository.list()).toEqual([]);
+    });
+
+  it('rejects a nonexistent Chapter before persistence', () => {
+    expect(() => service.createNote({ title: 'Missing Chapter', chapterId: MISSING_ID }))
+      .toThrow(ChapterNotFoundError);
+    expect(noteRepository.list()).toEqual([]);
   });
 
   it('creates a note with a normalized title and plain Markdown content', () => {
-    const note = service.createNote({
+    const note = createNote({
       title: '  Project plan  ',
       content: '# Heading\n\n- **draft**\n',
     });
@@ -89,10 +136,34 @@ describe('note service', () => {
     });
   });
 
+  it('passes Chapter membership through atomic persistence and exposes it on reads', () => {
+    const projectId = createProject();
+    const assetId = createAsset(projectId);
+    const saveWithAssociations = vi.spyOn(noteRepository, 'saveWithAssociations');
+
+    const created = createNote({
+      title: 'Scoped note',
+      projectIds: [projectId],
+      assetIds: [assetId],
+    });
+
+    expect(saveWithAssociations).toHaveBeenCalledWith(expect.objectContaining({
+      chapterId,
+      projectIds: [projectId],
+      assetIds: [assetId],
+    }));
+    expect(created.chapter_id).toBe(chapterId);
+    expect(service.getNote(created.id).chapter_id).toBe(chapterId);
+    expect(service.listNotes()).toEqual([expect.objectContaining({
+      id: created.id,
+      chapter_id: chapterId,
+    })]);
+  });
+
   it('creates a note with project associations', () => {
     const projectId = createProject();
 
-    const note = service.createNote({ title: 'Project note', projectIds: [projectId] });
+    const note = createNote({ title: 'Project note', projectIds: [projectId] });
 
     expect(note.projectIds).toEqual([projectId]);
     expect(note.assetIds).toEqual([]);
@@ -102,7 +173,7 @@ describe('note service', () => {
     const projectId = createProject();
     const assetId = createAsset(projectId);
 
-    const note = service.createNote({ title: 'Asset note', assetIds: [assetId] });
+    const note = createNote({ title: 'Asset note', assetIds: [assetId] });
 
     expect(note.projectIds).toEqual([]);
     expect(note.assetIds).toEqual([assetId]);
@@ -113,7 +184,7 @@ describe('note service', () => {
     const unrelatedProjectId = createProject();
     const assetId = createAsset(projectId);
 
-    const note = service.createNote({
+    const note = createNote({
       title: 'Mixed note',
       projectIds: [unrelatedProjectId],
       assetIds: [assetId],
@@ -125,7 +196,7 @@ describe('note service', () => {
   });
 
   it('accepts explicit empty association arrays', () => {
-    const note = service.createNote({ title: 'Unlinked note', projectIds: [], assetIds: [] });
+    const note = createNote({ title: 'Unlinked note', projectIds: [], assetIds: [] });
 
     expect(note.projectIds).toEqual([]);
     expect(note.assetIds).toEqual([]);
@@ -137,7 +208,7 @@ describe('note service', () => {
     const a1 = createAsset(p1);
     const a2 = createAsset(p2);
 
-    const note = service.createNote({
+    const note = createNote({
       title: 'Deduplicated note',
       projectIds: [p2, p2, p1, p1],
       assetIds: [a2, a2, a1, a1],
@@ -148,53 +219,53 @@ describe('note service', () => {
   });
 
   it.each([undefined, null, 123, [], {}])('rejects invalid title input %p', (title) => {
-    expect(() => service.createNote({ title, content: '' })).toThrow(NoteValidationError);
+    expect(() => createNote({ title, content: '' })).toThrow(NoteValidationError);
     expect(noteRepository.list()).toEqual([]);
   });
 
   it('rejects an empty or overlong title', () => {
-    expect(() => service.createNote({ title: '   ' })).toThrow(NoteValidationError);
-    expect(() => service.createNote({ title: 'x'.repeat(NOTE_TITLE_MAX + 1) }))
+    expect(() => createNote({ title: '   ' })).toThrow(NoteValidationError);
+    expect(() => createNote({ title: 'x'.repeat(NOTE_TITLE_MAX + 1) }))
       .toThrow(NoteValidationError);
     expect(noteRepository.list()).toEqual([]);
   });
 
   it.each([null, 123, [], {}])('rejects non-string content input %p', (content) => {
-    expect(() => service.createNote({ title: 'Valid title', content })).toThrow(NoteValidationError);
+    expect(() => createNote({ title: 'Valid title', content })).toThrow(NoteValidationError);
     expect(noteRepository.list()).toEqual([]);
   });
 
   it('rejects scalar association input instead of coercing it', () => {
-    expect(() => service.createNote({ title: 'Invalid associations', projectIds: 1 }))
+    expect(() => createNote({ title: 'Invalid associations', projectIds: 1 }))
       .toThrow(NoteValidationError);
-    expect(() => service.createNote({ title: 'Invalid associations', assetIds: 1 }))
+    expect(() => createNote({ title: 'Invalid associations', assetIds: 1 }))
       .toThrow(NoteValidationError);
     expect(noteRepository.list()).toEqual([]);
   });
 
   it.each([0, -1, 1.5, '1', NaN, Infinity, Number.MAX_SAFE_INTEGER + 1])
     ('rejects invalid project ID %p', (projectId) => {
-      expect(() => service.createNote({ title: 'Invalid project', projectIds: [projectId] }))
+      expect(() => createNote({ title: 'Invalid project', projectIds: [projectId] }))
         .toThrow(NoteValidationError);
       expect(noteRepository.list()).toEqual([]);
     });
 
   it.each([0, -1, 1.5, '1', NaN, Infinity, Number.MAX_SAFE_INTEGER + 1])
     ('rejects invalid asset ID %p', (assetId) => {
-      expect(() => service.createNote({ title: 'Invalid asset', assetIds: [assetId] }))
+      expect(() => createNote({ title: 'Invalid asset', assetIds: [assetId] }))
         .toThrow(NoteValidationError);
       expect(noteRepository.list()).toEqual([]);
     });
 
   it('rejects a nonexistent project reference before persistence', () => {
-    expect(() => service.createNote({ title: 'Missing project', projectIds: [MISSING_ID] }))
+    expect(() => createNote({ title: 'Missing project', projectIds: [MISSING_ID] }))
       .toThrow(NoteValidationError);
 
     expect(noteRepository.list()).toEqual([]);
   });
 
   it('rejects a nonexistent asset reference before persistence', () => {
-    expect(() => service.createNote({ title: 'Missing asset', assetIds: [MISSING_ID] }))
+    expect(() => createNote({ title: 'Missing asset', assetIds: [MISSING_ID] }))
       .toThrow(NoteValidationError);
 
     expect(noteRepository.list()).toEqual([]);
@@ -203,7 +274,7 @@ describe('note service', () => {
   it('returns note details with project and asset association IDs', () => {
     const projectId = createProject();
     const assetId = createAsset(projectId);
-    const created = service.createNote({ title: 'Detail', projectIds: [projectId], assetIds: [assetId] });
+    const created = createNote({ title: 'Detail', projectIds: [projectId], assetIds: [assetId] });
 
     expect(service.getNote(created.id)).toEqual(created);
   });
@@ -215,7 +286,7 @@ describe('note service', () => {
   });
 
   it('updates title and content', () => {
-    const created = service.createNote({ title: 'Before', content: 'before' });
+    const created = createNote({ title: 'Before', content: 'before' });
 
     const updated = service.updateNote(created.id, {
       title: '  After  ',
@@ -224,6 +295,7 @@ describe('note service', () => {
 
     expect(updated).toMatchObject({
       id: created.id,
+      chapter_id: chapterId,
       title: 'After',
       content: 'after\n',
       projectIds: [],
@@ -231,12 +303,36 @@ describe('note service', () => {
     });
   });
 
+  it('preserves Chapter membership and rejects implicit moves on update', () => {
+    const created = createNote({ title: 'Fixed chapter', content: 'before' });
+    const otherChapterId = chapterRepository.create({
+      bookId: chapterRepository.findById(chapterId).book_id,
+      title: 'Other chapter',
+    }).id;
+
+    const updated = service.updateNote(created.id, { content: 'after' });
+    expect(updated.chapter_id).toBe(chapterId);
+
+    let error;
+    try {
+      service.updateNote(created.id, { chapterId: otherChapterId });
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(error).toBeInstanceOf(NoteValidationError);
+    expect(error.errors).toEqual({
+      chapterId: 'chapterId cannot be changed by updating a Note.',
+    });
+    expect(service.getNote(created.id).chapter_id).toBe(chapterId);
+  });
+
   it('replaces associations on update and allows independent sets', () => {
     const firstProjectId = createProject();
     const secondProjectId = createProject();
     const firstAssetId = createAsset(firstProjectId);
     const secondAssetId = createAsset(secondProjectId);
-    const created = service.createNote({
+    const created = createNote({
       title: 'Before',
       projectIds: [firstProjectId],
       assetIds: [firstAssetId],
@@ -254,7 +350,7 @@ describe('note service', () => {
   it('clears associations with empty replacement arrays', () => {
     const projectId = createProject();
     const assetId = createAsset(projectId);
-    const created = service.createNote({
+    const created = createNote({
       title: 'Clear me',
       projectIds: [projectId],
       assetIds: [assetId],
@@ -269,7 +365,7 @@ describe('note service', () => {
   it('preserves omitted note fields and associations on partial update', () => {
     const projectId = createProject();
     const assetId = createAsset(projectId);
-    const created = service.createNote({
+    const created = createNote({
       title: 'Keep me',
       content: 'keep',
       projectIds: [projectId],
@@ -289,7 +385,7 @@ describe('note service', () => {
   it('leaves the prior note and associations intact after a failed update', () => {
     const projectId = createProject();
     const assetId = createAsset(projectId);
-    const created = service.createNote({
+    const created = createNote({
       title: 'Stable',
       content: 'original',
       projectIds: [projectId],
@@ -311,7 +407,7 @@ describe('note service', () => {
     const projectId = createProject();
     const assetId = createAsset(projectId);
 
-    expect(() => service.createNote({
+    expect(() => createNote({
       title: 'Should not persist',
       content: 'body',
       projectIds: [projectId],
@@ -323,10 +419,32 @@ describe('note service', () => {
     expect(noteRepository.listAssetsForNote(1)).toEqual([]);
   });
 
+  it('rolls back the Note and project association when asset creation fails', () => {
+    const projectId = createProject();
+    const assetId = createAsset(projectId);
+    db.exec(`
+      CREATE TRIGGER fail_note_asset_create
+      BEFORE INSERT ON note_assets
+      BEGIN
+        SELECT RAISE(ABORT, 'forced note asset create failure');
+      END
+    `);
+
+    expect(() => createNote({
+      title: 'Atomic create',
+      projectIds: [projectId],
+      assetIds: [assetId],
+    })).toThrow(/forced note asset create failure/);
+
+    expect(noteRepository.list()).toEqual([]);
+    expect(noteRepository.listProjectsForNote(1)).toEqual([]);
+    expect(noteRepository.listAssetsForNote(1)).toEqual([]);
+  });
+
   it('deletes a note and returns true', () => {
     const projectId = createProject();
     const assetId = createAsset(projectId);
-    const created = service.createNote({ title: 'Delete me', projectIds: [projectId], assetIds: [assetId] });
+    const created = createNote({ title: 'Delete me', projectIds: [projectId], assetIds: [assetId] });
 
     expect(service.deleteNote(created.id)).toBe(true);
     expect(noteRepository.findById(created.id)).toBeUndefined();
@@ -335,57 +453,236 @@ describe('note service', () => {
   });
 
   it('preserves canonical global list ordering', () => {
-    const first = service.createNote({ title: 'First' });
-    const second = service.createNote({ title: 'Second' });
-    const third = service.createNote({ title: 'Third' });
+    const first = createNote({ title: 'First' });
+    const second = createNote({ title: 'Second' });
+    const third = createNote({ title: 'Third' });
 
     expect(service.listNotes().map((note) => note.id)).toEqual([first.id, second.id, third.id]);
     expect(service.listNotes().map((note) => note.title)).toEqual(['First', 'Second', 'Third']);
   });
 
-  it('reorders notes through the repository and returns canonical order', () => {
-    const first = service.createNote({ title: 'First' });
-    const second = service.createNote({ title: 'Second' });
-    const third = service.createNote({ title: 'Third' });
-    const orderedIds = [third.id, first.id, second.id];
+  it('lists Notes for a Chapter using the canonical repository result', () => {
+    const first = createNote({ title: 'First' });
+    const second = createNote({ title: 'Second' });
+    const otherChapterId = chapterRepository.create({
+      bookId: chapterRepository.findById(chapterId).book_id,
+      title: 'Other chapter',
+    }).id;
+    service.createNote({ chapterId: otherChapterId, title: 'Other note' });
+    const listForChapter = vi.spyOn(noteRepository, 'listForChapter');
 
-    const reordered = service.reorderNotes(orderedIds);
+    const notes = service.listNotesForChapter(chapterId);
 
-    expect(reordered.map((note) => note.id)).toEqual(orderedIds);
-    expect(reordered.map((note) => note.sort_order)).toEqual([0, 1, 2]);
-    expect(service.listNotes().map((note) => note.id)).toEqual(orderedIds);
+    expect(listForChapter).toHaveBeenCalledWith(chapterId);
+    expect(notes).toBe(listForChapter.mock.results[0].value);
+    expect(notes.map((note) => note.id)).toEqual([first.id, second.id]);
   });
 
-  it('translates reorder validation failures into NoteValidationError', () => {
-    const first = service.createNote({ title: 'First' });
-    const second = service.createNote({ title: 'Second' });
+  it.each([0, -1, 1.5, '1', NaN, Infinity, Number.MAX_SAFE_INTEGER + 1])
+    ('rejects invalid Chapter list chapterId %p', (invalidChapterId) => {
+      const listForChapter = vi.spyOn(noteRepository, 'listForChapter');
 
-    expect(() => service.reorderNotes('not an array')).toThrow(NoteValidationError);
-    expect(() => service.reorderNotes([first.id, first.id])).toThrow(NoteValidationError);
-    expect(() => service.reorderNotes([first.id])).toThrow(NoteValidationError);
-    expect(() => service.reorderNotes([first.id, MISSING_ID])).toThrow(NoteValidationError);
+      expect(() => service.listNotesForChapter(invalidChapterId)).toThrow(NoteValidationError);
+      expect(listForChapter).not.toHaveBeenCalled();
+    });
+
+  it('rejects a nonexistent Chapter list before delegating', () => {
+    const listForChapter = vi.spyOn(noteRepository, 'listForChapter');
+
+    expect(() => service.listNotesForChapter(MISSING_ID)).toThrow(ChapterNotFoundError);
+    expect(listForChapter).not.toHaveBeenCalled();
+  });
+
+  it('reorders only Notes in the requested Chapter and returns the repository result', () => {
+    const first = createNote({ title: 'First' });
+    const second = createNote({ title: 'Second' });
+    const third = createNote({ title: 'Third' });
+    const otherChapterId = chapterRepository.create({
+      bookId: chapterRepository.findById(chapterId).book_id,
+      title: 'Other chapter',
+    }).id;
+    const otherFirst = service.createNote({ chapterId: otherChapterId, title: 'Other first' });
+    const otherSecond = service.createNote({ chapterId: otherChapterId, title: 'Other second' });
+    const orderedIds = [third.id, first.id, second.id];
+    const reorder = vi.spyOn(noteRepository, 'reorder');
+
+    const reordered = service.reorderNotes(chapterId, orderedIds);
+
+    expect(reorder).toHaveBeenCalledWith(chapterId, orderedIds);
+    expect(reordered.map((note) => note.id)).toEqual(orderedIds);
+    expect(reordered.map((note) => note.sort_order)).toEqual([0, 1, 2]);
+    expect(reordered).toEqual(noteRepository.listForChapter(chapterId));
+    expect(noteRepository.listForChapter(otherChapterId).map((note) => note.id))
+      .toEqual([otherFirst.id, otherSecond.id]);
+  });
+
+  it.each([0, -1, 1.5, '1', NaN, Infinity, Number.MAX_SAFE_INTEGER + 1])
+    ('rejects invalid reorder chapterId %p', (invalidChapterId) => {
+      let error;
+      try {
+        service.reorderNotes(invalidChapterId, []);
+      } catch (caught) {
+        error = caught;
+      }
+
+      expect(error).toBeInstanceOf(NoteValidationError);
+      expect(error.errors).toEqual({ chapterId: 'chapterId must be a positive integer.' });
+    });
+
+  it('rejects a nonexistent reorder Chapter before delegating', () => {
+    expect(() => service.reorderNotes(MISSING_ID, [])).toThrow(ChapterNotFoundError);
+  });
+
+  it.each(['not an array', [0], ['1'], [1.5], [NaN]])
+    ('rejects malformed reorder orderedIds %p', (orderedIds) => {
+      expect(() => service.reorderNotes(chapterId, orderedIds)).toThrow(NoteValidationError);
+    });
+
+  it('rejects duplicate reorder IDs using the service validation convention', () => {
+    const first = createNote({ title: 'First' });
+    const second = createNote({ title: 'Second' });
+
+    expect(() => service.reorderNotes(chapterId, [first.id, first.id])).toThrow(NoteValidationError);
     expect(service.listNotes().map((note) => note.id)).toEqual([first.id, second.id]);
   });
 
-  it('translates a repository reorder validation error without exposing it', () => {
-    const first = service.createNote({ title: 'First' });
-    const second = service.createNote({ title: 'Second' });
-    vi.spyOn(noteRepository, 'reorder').mockImplementation(() => {
-      const error = new Error('repository detail');
-      error.code = 'INVALID_SEQUENCE_LENGTH';
-      throw error;
+  it('translates repository missing and extra reorder IDs without exposing details', () => {
+    const first = createNote({ title: 'First' });
+    const second = createNote({ title: 'Second' });
+
+    expect(() => service.reorderNotes(chapterId, [first.id])).toThrow(NoteValidationError);
+    expect(() => service.reorderNotes(chapterId, [first.id, second.id, MISSING_ID]))
+      .toThrow(NoteValidationError);
+    expect(noteRepository.listForChapter(chapterId).map((note) => note.id))
+      .toEqual([first.id, second.id]);
+  });
+
+  it('translates cross-Chapter reorder IDs and leaves both Chapters unchanged', () => {
+    const first = createNote({ title: 'First' });
+    const otherChapterId = chapterRepository.create({
+      bookId: chapterRepository.findById(chapterId).book_id,
+      title: 'Other chapter',
+    }).id;
+    const other = service.createNote({ chapterId: otherChapterId, title: 'Other' });
+
+    expect(() => service.reorderNotes(chapterId, [other.id])).toThrow(NoteValidationError);
+    expect(noteRepository.listForChapter(chapterId).map((note) => note.id)).toEqual([first.id]);
+    expect(noteRepository.listForChapter(otherChapterId).map((note) => note.id)).toEqual([other.id]);
+  });
+
+  it('delegates an empty Chapter reorder and returns its empty result', () => {
+    const emptyChapterId = chapterRepository.create({
+      bookId: chapterRepository.findById(chapterId).book_id,
+      title: 'Empty chapter',
+    }).id;
+    const reorder = vi.spyOn(noteRepository, 'reorder');
+
+    expect(service.reorderNotes(emptyChapterId, [])).toEqual([]);
+    expect(reorder).toHaveBeenCalledWith(emptyChapterId, []);
+  });
+
+  it('moves a Note to another Chapter without changing its state or associations', () => {
+    const projectId = createProject();
+    const assetId = createAsset(projectId);
+    const created = createNote({
+      title: 'Move me',
+      content: 'Preserve this content',
+      projectIds: [projectId],
+      assetIds: [assetId],
+    });
+    const targetChapterId = chapterRepository.create({
+      bookId: chapterRepository.findById(chapterId).book_id,
+      title: 'Destination chapter',
+    }).id;
+    const moveToChapter = vi.spyOn(noteRepository, 'moveToChapter');
+
+    const moved = service.moveNoteToChapter(created.id, targetChapterId);
+
+    expect(moveToChapter).toHaveBeenCalledWith(created.id, targetChapterId);
+    expect(moved).toMatchObject({
+      id: created.id,
+      chapter_id: targetChapterId,
+      title: created.title,
+      content: created.content,
+      created_at: created.created_at,
+      updated_at: created.updated_at,
+    });
+    expect(service.getNote(created.id)).toMatchObject({
+      chapter_id: targetChapterId,
+      title: created.title,
+      content: created.content,
+      projectIds: [projectId],
+      assetIds: [assetId],
+      created_at: created.created_at,
+      updated_at: created.updated_at,
+    });
+  });
+
+  it.each([undefined, 0, -1, 1.5, '1', NaN, Infinity, Number.MAX_SAFE_INTEGER + 1])
+    ('rejects invalid move noteId %p', (invalidNoteId) => {
+      let error;
+      try {
+        service.moveNoteToChapter(invalidNoteId, chapterId);
+      } catch (caught) {
+        error = caught;
+      }
+
+      expect(error).toBeInstanceOf(NoteValidationError);
+      expect(error.errors).toEqual({ id: 'id must be a positive integer.' });
     });
 
-    let error;
-    try {
-      service.reorderNotes([second.id, first.id]);
-    } catch (caught) {
-      error = caught;
-    }
+  it('throws NoteNotFoundError when moving a missing Note', () => {
+    const moveToChapter = vi.spyOn(noteRepository, 'moveToChapter');
 
-    expect(error).toBeInstanceOf(NoteValidationError);
-    expect(error.errors.orderedIds).toBeTruthy();
-    expect(error.message).not.toContain('repository detail');
+    expect(() => service.moveNoteToChapter(MISSING_ID, chapterId)).toThrow(NoteNotFoundError);
+    expect(moveToChapter).not.toHaveBeenCalled();
+  });
+
+  it.each([undefined, 0, -1, 1.5, '1', NaN, Infinity, Number.MAX_SAFE_INTEGER + 1])
+    ('rejects invalid move targetChapterId %p', (invalidTargetChapterId) => {
+      let error;
+      try {
+        service.moveNoteToChapter(createNote({ title: 'Source' }).id, invalidTargetChapterId);
+      } catch (caught) {
+        error = caught;
+      }
+
+      expect(error).toBeInstanceOf(NoteValidationError);
+      expect(error.errors).toEqual({
+        targetChapterId: 'targetChapterId must be a positive integer.',
+      });
+    });
+
+  it('throws ChapterNotFoundError for a missing move target before delegating', () => {
+    const created = createNote({ title: 'Source' });
+    const moveToChapter = vi.spyOn(noteRepository, 'moveToChapter');
+
+    expect(() => service.moveNoteToChapter(created.id, MISSING_ID)).toThrow(ChapterNotFoundError);
+    expect(moveToChapter).not.toHaveBeenCalled();
+  });
+
+  it('returns the unchanged Note for a same-Chapter move', () => {
+    const created = createNote({ title: 'Stay here', content: 'No-op' });
+    const before = noteRepository.findById(created.id);
+
+    expect(service.moveNoteToChapter(created.id, chapterId)).toEqual(before);
+    expect(noteRepository.findById(created.id)).toEqual(before);
+  });
+
+  it('translates a target Chapter race from the repository', () => {
+    const created = createNote({ title: 'Race source' });
+    const targetChapterId = chapterRepository.create({
+      bookId: chapterRepository.findById(chapterId).book_id,
+      title: 'Race target',
+    }).id;
+    vi.spyOn(noteRepository, 'moveToChapter').mockImplementationOnce(() => {
+      throw new NoteError(`Chapter ${targetChapterId} does not exist.`, {
+        code: 'TARGET_CHAPTER_NOT_FOUND',
+      });
+    });
+
+    expect(() => service.moveNoteToChapter(created.id, targetChapterId)).toThrow(ChapterNotFoundError);
+    expect(service.getNote(created.id).chapter_id).toBe(chapterId);
   });
 
   it('rolls back note fields and project associations when asset persistence fails', () => {
@@ -393,7 +690,7 @@ describe('note service', () => {
     const secondProjectId = createProject();
     const firstAssetId = createAsset(firstProjectId);
     const secondAssetId = createAsset(secondProjectId);
-    const created = service.createNote({
+    const created = createNote({
       title: 'Before',
       content: 'original',
       projectIds: [firstProjectId],

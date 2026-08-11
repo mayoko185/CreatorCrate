@@ -365,6 +365,7 @@ describe('app construction — asset actions chunk 3 wiring', () => {
       noteRepository,
       projectRepository: dependencyInstrumentation.projectServices[0].service.repository,
       assetRepository: app.locals.assetScanner.repository,
+      chapterRepository: serviceArgs[0].chapterRepository,
     });
     expect(app.locals.noteRepository).toBe(noteRepository);
     expect(app.locals.noteService).toBe(noteService);
@@ -372,6 +373,8 @@ describe('app construction — asset actions chunk 3 wiring', () => {
     expect(typeof app.locals.markdownRenderer.renderMarkdown).toBe('function');
     expect(routerArgs[0]).toEqual({
       appName: 'CreatorCrate',
+      bookService: app.locals.bookService,
+      chapterService: app.locals.chapterService,
       noteService,
       markdownRenderer: app.locals.markdownRenderer,
       projectService: dependencyInstrumentation.projectServices[0].service,
