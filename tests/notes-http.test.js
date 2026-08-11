@@ -114,13 +114,14 @@ describe('top-level Notes HTTP slice', () => {
     expect(response.text).toContain(`<a class="button button-secondary" href="/notes/chapters/${chapter.id}">Cancel</a>`);
     expect(response.text).toContain('<form id="note-form" method="post" action="/notes"');
     expect(response.text).toContain(`<input type="hidden" name="chapterId" value="${chapter.id}">`);
-    expect(response.text).toContain(`>Page Chapter</a> in <a href="/notes/books/${book.id}">Page Book</a>`);
+    expect(response.text).toContain(`<a href="/notes/books/${book.id}">Page Book</a>`);
+    expect(response.text).toContain(`<a href="/notes/chapters/${chapter.id}">Page Chapter</a>`);
     expect(response.text).toContain('data-notes-editor-form');
     expect(response.text).toContain('data-notes-editor-host');
     expect(response.text).toContain('<textarea id="content" name="content" data-notes-editor-source');
     expect(response.text).not.toContain('/vendor/toast-ui/editor/');
     expect(response.text).toMatch(/<input[^>]+type="hidden"[^>]+name="_csrf"[^>]+value="[^"]+"/);
-    expect(response.text).toContain('<label for="title">Title');
+    expect(response.text).toContain('<label for="title">Page title');
     expect(response.text).toContain('<input type="text" id="title" name="title"');
     expect(response.text).toContain('<label id="content-label" for="content">Content</label>');
     expect(response.text).toContain('<textarea id="content" name="content"');
@@ -667,7 +668,8 @@ describe('top-level Notes HTTP slice', () => {
     expect(response.text).toContain('<textarea id="content" name="content" data-notes-editor-source');
     expect(response.text).toContain('value="Existing Note"');
     expect(response.text).toContain('# Existing\n**bold** &amp; &lt;script&gt;alert(&quot;unsafe&quot;)&lt;/script&gt;');
-    expect(response.text).toContain(`>Page Chapter</a> in <a href="/notes/books/${book.id}">Page Book</a>`);
+    expect(response.text).toContain(`<a href="/notes/books/${book.id}">Page Book</a>`);
+    expect(response.text).toContain(`<a href="/notes/chapters/${chapter.id}">Page Chapter</a>`);
     expect(response.text).toContain(`/notes/chapters/${chapter.id}`);
     expect(response.text).not.toContain('name="chapterId"');
     expect(response.text).not.toContain('<strong>bold</strong>');
@@ -884,7 +886,8 @@ describe('top-level Notes HTTP slice', () => {
     expect(response.text).toContain('Title is required.');
     expect(response.text).toContain(`<form id="note-form" method="post" action="/notes/${note.id}"`);
     expect(response.text).toContain(attemptedContent);
-    expect(response.text).toContain(`>Page Chapter</a> in <a href="/notes/books/${book.id}">Page Book</a>`);
+    expect(response.text).toContain(`<a href="/notes/books/${book.id}">Page Book</a>`);
+    expect(response.text).toContain(`<a href="/notes/chapters/${chapter.id}">Page Chapter</a>`);
     expect(response.text).toContain(`/notes/chapters/${chapter.id}`);
     expect(response.text).not.toContain('name="chapterId"');
     expect(app.locals.noteService.getNote(note.id)).toMatchObject({

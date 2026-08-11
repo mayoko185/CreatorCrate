@@ -20,20 +20,45 @@
     </div>
   {% endif %}
 
-  <form id="note-form" method="post" action="{{ submitUrl }}" class="project-form notes-form" data-notes-editor-form novalidate>
+  <form id="note-form" method="post" action="{{ submitUrl }}" class="project-form notes-form notes-workspace" data-notes-editor-form novalidate>
     <input type="hidden" name="_csrf" value="{{ _csrf }}">
-    {% if chapter %}
-      {% if action == 'Create' %}
-        <input type="hidden" name="chapterId" value="{{ values.chapterId }}">
-      {% endif %}
-      <p class="help-text">This Page will belong to <a href="/notes/chapters/{{ chapter.id }}">{{ chapter.title }}</a> in <a href="/notes/books/{{ book.id }}">{{ book.title }}</a>.</p>
+    {% if chapter and action == 'Create' %}
+      <input type="hidden" name="chapterId" value="{{ values.chapterId }}">
     {% endif %}
 
-    <div class="settings-section">
-      <h3>Basic information</h3>
+    <aside class="notes-workspace-context" aria-labelledby="notes-context-heading">
+      <p class="notes-workspace-kicker">Book workspace</p>
+      <h2 id="notes-context-heading">Hierarchy</h2>
+      {% if book or chapter %}
+        <dl class="notes-workspace-context-list">
+          {% if book %}
+            <div>
+              <dt>Book</dt>
+              <dd><a href="/notes/books/{{ book.id }}">{{ book.title }}</a></dd>
+            </div>
+          {% endif %}
+          {% if chapter %}
+            <div>
+              <dt>Chapter</dt>
+              <dd><a href="/notes/chapters/{{ chapter.id }}">{{ chapter.title }}</a></dd>
+            </div>
+          {% endif %}
+        </dl>
+      {% endif %}
+      {% if chapter %}
+        <a class="notes-workspace-back" href="/notes/chapters/{{ chapter.id }}">Back to Chapter</a>
+        <p class="notes-workspace-context-note">This Page will belong to this Chapter.</p>
+      {% endif %}
+    </aside>
+
+    <section class="notes-workspace-editor" aria-labelledby="notes-editor-heading">
+      <div class="notes-workspace-section-heading">
+        <p class="notes-workspace-kicker">Writing surface</p>
+        <h2 id="notes-editor-heading">Page content</h2>
+      </div>
 
       <div class="field {% if errors.title %}field-error{% endif %}">
-        <label for="title">Title <span class="required" aria-label="required">*</span></label>
+        <label for="title">Page title <span class="required" aria-label="required">*</span></label>
         <input type="text" id="title" name="title" value="{{ values.title or '' }}" maxlength="200" required{% if errors.title %} aria-describedby="title-error" aria-invalid="true"{% endif %}>
         {% if errors.title %}<span class="field-error-message" id="title-error">{{ errors.title }}</span>{% endif %}
       </div>
@@ -47,24 +72,28 @@
         <span class="help-text" id="content-help">Markdown source is stored unchanged.</span>
         {% if errors.content %}<span class="field-error-message" id="content-error">{{ errors.content }}</span>{% endif %}
       </div>
-    </div>
+    </section>
 
-    {% set projectError = errors.projectIds or errors.associations %}
-    {% set projectSummary = 'No projects selected' %}
-    {% if selectedProjectIds.length == 1 %}
-      {% for project in projects %}
-        {% if selectedProjectIds[0] == (project.id | string) %}
-          {% set projectSummary = project.title %}
-        {% endif %}
-      {% endfor %}
-    {% elif selectedProjectIds.length > 1 %}
-      {% set projectSummary = selectedProjectIds.length ~ ' projects selected' %}
-    {% endif %}
+    <aside class="notes-connections" aria-labelledby="notes-connections-heading">
+      <div class="notes-workspace-section-heading">
+        <p class="notes-workspace-kicker">Secondary metadata</p>
+        <h2 id="notes-connections-heading">Connections</h2>
+        <p class="notes-connections-description">Link this Page to existing projects and assets.</p>
+      </div>
 
-    <div class="settings-section">
-      <h3>Associations</h3>
+      {% set projectError = errors.projectIds or errors.associations %}
+      {% set projectSummary = 'No projects selected' %}
+      {% if selectedProjectIds.length == 1 %}
+        {% for project in projects %}
+          {% if selectedProjectIds[0] == (project.id | string) %}
+            {% set projectSummary = project.title %}
+          {% endif %}
+        {% endfor %}
+      {% elif selectedProjectIds.length > 1 %}
+        {% set projectSummary = selectedProjectIds.length ~ ' projects selected' %}
+      {% endif %}
 
-      <fieldset class="field asset-viewer-filter-field asset-filter-multiselect-field{% if projectError %} field-error{% endif %}">
+      <fieldset class="field notes-connections-field asset-viewer-filter-field asset-filter-multiselect-field{% if projectError %} field-error{% endif %}">
         <legend>Projects</legend>
         <details class="asset-filter-multiselect asset-filter-multiselect--sized">
           <summary id="note-projects-form-trigger"
@@ -99,7 +128,7 @@
 
       {% set assetError = errors.assetIds or errors.associations %}
 
-      <fieldset class="field asset-viewer-filter-field asset-filter-multiselect-field{% if assetError %} field-error{% endif %}">
+      <fieldset class="field notes-connections-field asset-viewer-filter-field asset-filter-multiselect-field{% if assetError %} field-error{% endif %}">
         <legend>Assets</legend>
         <input type="hidden" name="assetIds[]" value="">
         {% if selectedAssets.length > 0 %}
@@ -119,6 +148,6 @@
         {% endif %}
         {% if assetError %}<span class="field-error-message" id="assetIds-error">{{ assetError }}</span>{% endif %}
       </fieldset>
-    </div>
+    </aside>
   </form>
 {% endblock %}

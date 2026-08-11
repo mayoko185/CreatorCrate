@@ -6348,3 +6348,171 @@
       .slideshow-fullscreen .slideshow-fullscreen-exit-icon { display: none; }
       [data-slideshow-fullscreen-active].slideshow-fullscreen .slideshow-fullscreen-enter-icon { display: none; }
       [data-slideshow-fullscreen-active].slideshow-fullscreen .slideshow-fullscreen-exit-icon { display: inline-flex; }
+
+      /* ── Notes: book workspace ── */
+      .notes-workspace {
+        display: grid;
+        grid-template-columns: minmax(10rem, 12rem) minmax(0, 1fr) minmax(15rem, 18rem);
+        grid-template-areas: "context editor connections";
+        align-items: start;
+        gap: var(--space-xl);
+      }
+      .notes-workspace > * { min-width: 0; }
+      .notes-workspace-context {
+        grid-area: context;
+        position: sticky;
+        top: calc(var(--shell-header-height) + var(--space-lg));
+      }
+      .notes-workspace-editor {
+        grid-area: editor;
+        min-width: 0;
+      }
+      .notes-connections {
+        grid-area: connections;
+        min-width: 0;
+      }
+      .notes-workspace-context,
+      .notes-connections {
+        padding: var(--space-lg);
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
+      }
+      .notes-workspace-kicker {
+        margin: 0 0 var(--space-xs);
+        color: var(--muted);
+        font-family: var(--mono);
+        font-size: 0.6875rem;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        line-height: 1.3;
+        text-transform: uppercase;
+      }
+      .notes-workspace-context h2,
+      .notes-workspace-section-heading h2 {
+        margin: 0;
+        font-size: 1.125rem;
+        line-height: 1.3;
+      }
+      .notes-workspace-context-list {
+        display: grid;
+        gap: var(--space-md);
+        margin: var(--space-xl) 0;
+      }
+      .notes-workspace-context-list div { min-width: 0; }
+      .notes-workspace-context-list dt {
+        margin-bottom: var(--space-xs);
+        color: var(--muted);
+        font-family: var(--mono);
+        font-size: 0.6875rem;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+      .notes-workspace-context-list dd {
+        margin: 0;
+        overflow-wrap: anywhere;
+      }
+      .notes-workspace-context-list a,
+      .notes-workspace-back {
+        color: var(--link);
+        text-decoration: none;
+      }
+      .notes-workspace-context-list a:hover,
+      .notes-workspace-back:hover { text-decoration: underline; }
+      .notes-workspace-context-list a:focus-visible,
+      .notes-workspace-back:focus-visible {
+        outline: 2px solid var(--focus-ring);
+        outline-offset: 2px;
+      }
+      .notes-workspace-back {
+        display: inline-flex;
+        font-size: 0.875rem;
+        font-weight: 600;
+      }
+      .notes-workspace-context-note,
+      .notes-connections-description {
+        margin: var(--space-md) 0 0;
+        color: var(--muted);
+        font-size: 0.8125rem;
+        line-height: 1.5;
+      }
+      .notes-workspace-section-heading { margin-bottom: var(--space-lg); }
+      .notes-workspace-editor > .field { min-width: 0; }
+      .notes-workspace-editor > .field + .field { margin-top: var(--space-xl); }
+      .notes-workspace-editor > .field > input { width: 100%; }
+      .notes-workspace .notes-editor,
+      .notes-workspace .notes-editor-host { min-width: 0; }
+      .notes-workspace [data-notes-editor-source] {
+        display: block;
+        width: 100%;
+        min-height: 30rem;
+        min-height: clamp(30rem, 60vh, 52rem);
+        resize: vertical;
+      }
+      /* Toast UI writes its option inline; keep the workspace floor scoped here. */
+      .notes-workspace .notes-editor .toastui-editor-defaultUI {
+        min-height: 30rem;
+        min-height: clamp(30rem, 60vh, 52rem) !important;
+        background: var(--surface);
+        border-color: var(--border-strong);
+      }
+      .notes-workspace .notes-editor .toastui-editor-defaultUI-toolbar,
+      .notes-workspace .notes-editor .toastui-editor-mode-switch {
+        background: var(--surface-card);
+        border-color: var(--border);
+      }
+      .notes-workspace .notes-editor .toastui-editor-ww-container,
+      .notes-workspace .notes-editor .toastui-editor-md-container {
+        background: var(--bg);
+      }
+      .notes-workspace .notes-editor .toastui-editor-contents,
+      .notes-workspace .notes-editor .toastui-editor-md-container .ProseMirror {
+        color: var(--text);
+      }
+      .notes-workspace .notes-editor .toastui-editor-defaultUI:focus-within {
+        outline: 2px solid var(--focus-ring);
+        outline-offset: 2px;
+      }
+      .notes-connections-field {
+        min-width: 0;
+        margin: 0;
+        padding: var(--space-md);
+        background: var(--surface-card);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+      }
+      .notes-connections-field + .notes-connections-field { margin-top: var(--space-lg); }
+      .notes-connections-field legend {
+        padding: 0 var(--space-xs);
+        color: var(--text);
+        font-weight: 600;
+      }
+      .notes-connections .field { min-width: 0; }
+      .notes-connections .asset-filter-multiselect,
+      .notes-connections .asset-filter-multiselect summary { min-width: 0; }
+      .notes-connections .asset-filter-multiselect summary { width: 100%; }
+      .notes-connections .notes-selected-assets {
+        display: grid;
+        gap: var(--space-sm);
+        min-width: 0;
+      }
+      .notes-connections .notes-asset-option-path,
+      .notes-connections .notes-asset-option-state { overflow-wrap: anywhere; }
+
+      @media (max-width: 1023px) {
+        .notes-workspace {
+          grid-template-columns: minmax(0, 1fr);
+          grid-template-areas: "context" "editor" "connections";
+        }
+        .notes-workspace-context { position: static; }
+      }
+      @media (max-width: 767px) {
+        .notes-workspace { gap: var(--space-lg); }
+        .notes-workspace-context,
+        .notes-connections { padding: var(--space-md); }
+        .notes-workspace [data-notes-editor-source],
+        .notes-workspace .notes-editor .toastui-editor-defaultUI {
+          min-height: 24rem;
+          min-height: clamp(24rem, 60vh, 42rem) !important;
+        }
+      }

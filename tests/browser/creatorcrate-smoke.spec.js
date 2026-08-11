@@ -83,7 +83,9 @@ test.describe('CreatorCrate development browser smoke', () => {
   test('mounts the real Notes editor, persists Markdown, and rehydrates it on edit', async ({ page, devServer }) => {
     const diagnostics = observeBrowser(page, devServer.baseURL);
 
-    await page.goto(`${devServer.baseURL}/notes/new`, { waitUntil: 'domcontentloaded' });
+    await page.setViewportSize({ width: 1280, height: 800 });
+    const chapterId = await createBrowserNotesHierarchy(page, devServer.baseURL);
+    await page.goto(`${devServer.baseURL}/notes/new?chapterId=${chapterId}`, { waitUntil: 'domcontentloaded' });
     await exerciseNotesEditor(page);
 
     expect(getToastUiRequests(diagnostics).length).toBeGreaterThan(0);
@@ -621,10 +623,86 @@ async function submitProjectSortFilter(page) {
   return page.locator('button[type="submit"][form="project-filters"]').click();
 }
 
+async function createBrowserNotesHierarchy(page, baseURL) {
+  const bookFormResponse = await page.goto(`${baseURL}/notes/books/new`, { waitUntil: 'domcontentloaded' });
+  expect(bookFormResponse?.status()).toBe(200);
+  await page.locator('#title').fill(`Browser Notes Book ${Date.now()}`);
+  await Promise.all([
+    page.waitForURL(/\/notes\/books\/\d+$/),
+    page.locator('main#main-content button[type="submit"]').first().click(),
+  ]);
+
+  const bookId = new URL(page.url()).pathname.split('/').at(-1);
+  const chapterFormResponse = await page.goto(
+    `${baseURL}/notes/books/${bookId}/chapters/new`,
+    { waitUntil: 'domcontentloaded' },
+  );
+  expect(chapterFormResponse?.status()).toBe(200);
+  await page.locator('#title').fill(`Browser Notes Chapter ${Date.now()}`);
+  await Promise.all([
+    page.waitForURL(/\/notes\/chapters\/\d+$/),
+    page.locator('main#main-content button[type="submit"]').first().click(),
+  ]);
+
+  return new URL(page.url()).pathname.split('/').at(-1);
+}
+
 async function exerciseNotesEditor(page) {
   const editor = page.locator('[data-notes-editor-host] .toastui-editor-defaultUI');
   await expect(editor).toBeVisible();
   await expect(page.locator('#content')).toBeHidden();
+
+  const workspace = page.locator('.notes-workspace');
+  await expect(workspace).toBeVisible();
+  await expect(page.locator('.notes-workspace-context')).toContainText('Hierarchy');
+  await expect(page.locator('.notes-workspace-context')).toContainText('Back to Chapter');
+  await expect(page.locator('.notes-connections')).toContainText('Projects');
+  await expect(page.locator('.notes-connections')).toContainText('Assets');
+  const desktopState = await workspace.evaluate((element) => {
+    const context = element.querySelector('.notes-workspace-context')?.getBoundingClientRect();
+    const editorArea = element.querySelector('.notes-workspace-editor')?.getBoundingClientRect();
+    const connections = element.querySelector('.notes-connections')?.getBoundingClientRect();
+    const editorBox = element.querySelector('.toastui-editor-defaultUI')?.getBoundingClientRect();
+    const style = getComputedStyle(element);
+    return {
+      display: style.display,
+      columns: style.gridTemplateColumns,
+      contextWidth: context?.width || 0,
+      editorWidth: editorArea?.width || 0,
+      connectionsWidth: connections?.width || 0,
+      editorHeight: editorBox?.height || 0,
+      viewportHeight: window.innerHeight,
+      documentWidth: document.documentElement.scrollWidth,
+      viewportWidth: window.innerWidth,
+    };
+  });
+  expect(desktopState.display).toBe('grid');
+  expect(desktopState.columns.split(' ').length).toBe(3);
+  expect(desktopState.editorWidth).toBeGreaterThan(desktopState.contextWidth);
+  expect(desktopState.editorWidth).toBeGreaterThan(desktopState.connectionsWidth);
+  expect(desktopState.editorHeight).toBeGreaterThan(20 * 16);
+  expect(desktopState.editorHeight).toBeGreaterThanOrEqual(desktopState.viewportHeight * 0.5);
+  expect(desktopState.documentWidth).toBeLessThanOrEqual(desktopState.viewportWidth);
+
+  await page.setViewportSize({ width: 640, height: 800 });
+  const narrowState = await workspace.evaluate((element) => {
+    const context = element.querySelector('.notes-workspace-context')?.getBoundingClientRect();
+    const editorArea = element.querySelector('.notes-workspace-editor')?.getBoundingClientRect();
+    const connections = element.querySelector('.notes-connections')?.getBoundingClientRect();
+    return {
+      columns: getComputedStyle(element).gridTemplateColumns,
+      contextTop: context?.top || 0,
+      editorTop: editorArea?.top || 0,
+      connectionsTop: connections?.top || 0,
+      documentWidth: document.documentElement.scrollWidth,
+      viewportWidth: window.innerWidth,
+    };
+  });
+  expect(narrowState.columns.split(' ').length).toBe(1);
+  expect(narrowState.contextTop).toBeLessThan(narrowState.editorTop);
+  expect(narrowState.editorTop).toBeLessThan(narrowState.connectionsTop);
+  expect(narrowState.documentWidth).toBeLessThanOrEqual(narrowState.viewportWidth);
+  await page.setViewportSize({ width: 1280, height: 800 });
 
   const modeSwitch = editor.locator('.toastui-editor-mode-switch');
   await expect(modeSwitch).toContainText('WYSIWYG');
@@ -695,6 +773,8 @@ async function exerciseNotesEditor(page) {
     const detailPath = new URL(page.url()).pathname;
     await page.goto(`${page.url()}/edit`, { waitUntil: 'domcontentloaded' });
     await expect(editor).toBeVisible();
+    await expect(page.locator('.notes-workspace-context')).toContainText('Back to Chapter');
+    await expect(page.locator('.notes-connections')).toContainText('Connections');
     await selectNotesEditorMode(modeSwitch, 'Markdown');
     await expect(markdownSurface).toContainText('**Bold text**');
 
