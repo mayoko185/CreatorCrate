@@ -7,7 +7,9 @@
   {% call pageHeading.render() %}
     <a class="button button-primary" href="/notes/new?chapterId={{ chapter.id }}">New Page</a>
     <a class="button" href="/notes/chapters/{{ chapter.id }}/edit">Edit Chapter</a>
-    <a class="button button-secondary" href="/notes/books/{{ book.id }}">Back to {{ book.title }}</a>
+    {% if notes.length > 1 %}
+      <a class="button button-secondary" href="/notes/chapters/{{ chapter.id }}/notes/order">Change order</a>
+    {% endif %}
   {% endcall %}
 
   {% if notice %}
@@ -16,58 +18,33 @@
     {% include "partials/notice.njk" %}
   {% endif %}
 
-  <section class="settings-section">
-    <h2>Book</h2>
-    <p><a href="/notes/books/{{ book.id }}">{{ book.title }}</a></p>
-  </section>
+  {% include "partials/notes-hierarchy.njk" %}
 
-  <section class="settings-section">
-    <h2>Pages</h2>
+  <section class="notes-chapter-pages" aria-labelledby="notes-pages-heading">
+    <div class="notes-chapter-section-heading">
+      <h2 id="notes-pages-heading">Pages</h2>
+    </div>
     {% if notes.length > 0 %}
-      <div class="table-scroll" tabindex="0" aria-label="Pages list">
-        <table class="data-table">
-          <thead><tr><th>Title</th>{% if notes.length > 1 %}<th>Order</th>{% endif %}</tr></thead>
-          <tbody>
-            {% for note in notes %}
-              <tr>
-                <td><a href="/notes/{{ note.id }}">{{ note.title }}</a></td>
-                {% if notes.length > 1 %}
-                  <td>
-                    {% if note.moveUpOrderedNoteIds %}
-                      <form method="post" action="/notes/chapters/{{ chapter.id }}/notes/reorder" class="inline-form">
-                        <input type="hidden" name="_csrf" value="{{ _csrf }}">
-                        <input type="hidden" name="orderedNoteIds" value="{{ note.moveUpOrderedNoteIds }}">
-                        <button class="button button-small button-secondary" type="submit">Move up</button>
-                      </form>
-                    {% endif %}
-                    {% if note.moveDownOrderedNoteIds %}
-                      <form method="post" action="/notes/chapters/{{ chapter.id }}/notes/reorder" class="inline-form">
-                        <input type="hidden" name="_csrf" value="{{ _csrf }}">
-                        <input type="hidden" name="orderedNoteIds" value="{{ note.moveDownOrderedNoteIds }}">
-                        <button class="button button-small button-secondary" type="submit">Move down</button>
-                      </form>
-                    {% endif %}
-                  </td>
-                {% endif %}
-              </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      </div>
+      <ol class="notes-chapter-page-list" aria-label="Pages in {{ chapter.title }}">
+        {% for note in notes %}
+          <li class="notes-chapter-page-row">
+            <div class="notes-chapter-page-copy">
+              <span class="notes-chapter-page-number">Page {{ loop.index }}</span>
+              <h3 class="notes-chapter-page-title"><a href="/notes/{{ note.id }}">{{ note.title }}</a></h3>
+            </div>
+            <div class="notes-chapter-page-actions">
+              <a class="button button-small button-secondary" href="/notes/{{ note.id }}/edit" aria-label="Edit Page: {{ note.title }}">Edit Page</a>
+            </div>
+          </li>
+        {% endfor %}
+      </ol>
     {% else %}
       {% set emptyHeading = "No Pages yet" %}
       {% set emptyDescription = "Create a Page to start this chapter." %}
       {% set emptyHeadingLevel = "h3" %}
+      {% set emptyActionUrl = "/notes/new?chapterId=" ~ chapter.id %}
+      {% set emptyActionLabel = "New Page" %}
       {% include "partials/empty-state.njk" %}
     {% endif %}
-  </section>
-
-  <section class="destructive-section">
-    <h2>Danger zone</h2>
-    <p>An empty chapter can be permanently deleted.</p>
-    <form method="post" action="/notes/chapters/{{ chapter.id }}/delete" class="inline-form">
-      <input type="hidden" name="_csrf" value="{{ _csrf }}">
-      <button class="button button-danger" type="submit" data-confirm="Delete this empty chapter permanently? This action cannot be undone.">Delete Chapter</button>
-    </form>
   </section>
 {% endblock %}

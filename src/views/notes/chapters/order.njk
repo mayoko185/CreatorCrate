@@ -1,0 +1,37 @@
+{% extends "layout.njk" %}
+{% import "partials/page-heading.njk" as pageHeading %}
+
+{% set page_title = "Notes — Change order — " ~ chapter.title %}
+
+{% block content %}
+  {% call pageHeading.render() %}
+    <a class="button button-secondary" href="/notes/chapters/{{ chapter.id }}">Back to Chapter</a>
+  {% endcall %}
+
+  {% include "partials/notes-hierarchy.njk" %}
+
+  <section class="notes-chapter-order" aria-labelledby="notes-order-heading">
+    <h2 id="notes-order-heading">Change order</h2>
+    <p class="help-text">Page ordering controls will be available here in a future update.</p>
+
+    {% if notes.length > 0 %}
+      <ol class="notes-chapter-page-list" aria-label="Pages in {{ chapter.title }}">
+        {% for note in notes %}
+          <li class="notes-chapter-page-row">
+            <div class="notes-chapter-page-copy">
+              <span class="notes-chapter-page-number">Page {{ loop.index }}</span>
+              <h3 class="notes-chapter-page-title"><a href="/notes/{{ note.id }}">{{ note.title }}</a></h3>
+            </div>
+          </li>
+        {% endfor %}
+      </ol>
+    {% else %}
+      {% set emptyHeading = "No Pages yet" %}
+      {% set emptyDescription = "Create a Page before changing this chapter's order." %}
+      {% set emptyHeadingLevel = "h3" %}
+      {% set emptyActionUrl = "/notes/new?chapterId=" ~ chapter.id %}
+      {% set emptyActionLabel = "New Page" %}
+      {% include "partials/empty-state.njk" %}
+    {% endif %}
+  </section>
+{% endblock %}

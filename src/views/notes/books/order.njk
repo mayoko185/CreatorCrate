@@ -1,0 +1,55 @@
+{% extends "layout.njk" %}
+{% import "partials/page-heading.njk" as pageHeading %}
+
+{% set page_title = "Notes — Change order — " ~ book.title %}
+
+{% block content %}
+  {% call pageHeading.render() %}
+    <a class="button button-secondary" href="/notes/books/{{ book.id }}">Back to Book</a>
+  {% endcall %}
+
+  {% include "partials/notes-hierarchy.njk" %}
+
+  <section class="notes-book-order" aria-labelledby="notes-book-order-heading">
+    <h2 id="notes-book-order-heading">Change order</h2>
+    <p class="help-text">Book ordering controls will be available here in a future update. Chapters and direct Pages remain separate while mixed Book ordering is being defined.</p>
+
+    {% if chapters.length > 0 or pages.length > 0 %}
+      <div class="notes-book-order-sections">
+        {% if chapters.length > 0 %}
+          <section class="notes-book-order-section" aria-labelledby="notes-book-order-chapters-heading">
+            <h3 id="notes-book-order-chapters-heading">Chapters</h3>
+            <ul class="notes-book-content-list" aria-label="Chapters in {{ book.title }}">
+              {% for chapter in chapters %}
+                <li class="notes-book-content-row">
+                  <div class="notes-book-content-copy">
+                    <span class="notes-book-content-kind">Chapter</span>
+                    <h4 class="notes-book-content-title"><a href="/notes/chapters/{{ chapter.id }}">{{ chapter.title }}</a></h4>
+                  </div>
+                </li>
+              {% endfor %}
+            </ul>
+          </section>
+        {% endif %}
+
+        {% if pages.length > 0 %}
+          <section class="notes-book-order-section" aria-labelledby="notes-book-order-pages-heading">
+            <h3 id="notes-book-order-pages-heading">Pages</h3>
+            <ul class="notes-book-content-list" aria-label="Direct Pages in {{ book.title }}">
+              {% for page in pages %}
+                <li class="notes-book-content-row">
+                  <div class="notes-book-content-copy">
+                    <span class="notes-book-content-kind">Page</span>
+                    <h4 class="notes-book-content-title"><a href="/notes/{{ page.id }}">{{ page.title }}</a></h4>
+                  </div>
+                </li>
+              {% endfor %}
+            </ul>
+          </section>
+        {% endif %}
+      </div>
+    {% else %}
+      <p class="help-text">This Book has no Chapters or direct Pages to order yet.</p>
+    {% endif %}
+  </section>
+{% endblock %}

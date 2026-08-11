@@ -5,92 +5,66 @@
 
 {% block content %}
   {% call pageHeading.render("Page") %}
-    <a class="button" href="/notes/{{ note.id }}/edit">Edit</a>
-    <a class="button button-secondary" href="{% if chapter %}/notes/chapters/{{ chapter.id }}{% else %}/notes/books/{{ book.id }}{% endif %}">{% if chapter %}Back to Chapter{% else %}Back to Book{% endif %}</a>
+    <a class="button button-primary" href="/notes/{{ note.id }}/edit">Edit Page</a>
   {% endcall %}
 
-  <nav class="notes-detail-hierarchy" aria-label="Page hierarchy">
-    <span>Book:</span>
-    <a href="/notes/books/{{ book.id }}">{{ book.title }}</a>
-    {% if chapter %}
-      <span>Chapter:</span>
-      <a href="/notes/chapters/{{ chapter.id }}">{{ chapter.title }}</a>
-    {% endif %}
-  </nav>
+  {% include "partials/notes-hierarchy.njk" %}
 
-  <section class="settings-section">
-    <h2>Move Page</h2>
-    <form method="post" action="/notes/{{ note.id }}/move" class="inline-form">
-      <input type="hidden" name="_csrf" value="{{ _csrf }}">
-      <label for="target-chapter">Target Chapter</label>
-      <select id="target-chapter" name="targetChapterId" required>
-        {% for option in chapterOptions %}
-          <optgroup label="{{ option.book.title }}">
-            {% for targetChapter in option.chapters %}
-              <option value="{{ targetChapter.id }}"{% if chapter %}{% if targetChapter.id == chapter.id %} selected{% endif %}{% endif %}>{{ targetChapter.title }}</option>
+  <div class="notes-detail-layout">
+    <article class="notes-detail-reading">
+      <section class="notes-detail-content" aria-labelledby="notes-detail-content-heading">
+        <div class="notes-detail-section-heading">
+          <p class="notes-detail-kicker">Reading view</p>
+          <h2 id="notes-detail-content-heading">Content</h2>
+        </div>
+        {% if note.content %}
+          <div class="notes-content">{{ contentHtml | safe }}</div>
+        {% else %}
+          <p class="help-text">No content yet.</p>
+        {% endif %}
+      </section>
+    </article>
+
+    <aside class="notes-detail-sidebar" aria-label="Page metadata">
+      {% if projects.length > 0 %}
+        <section class="notes-detail-panel notes-detail-projects" aria-labelledby="notes-detail-projects-heading">
+          <h2 id="notes-detail-projects-heading">Projects</h2>
+          <ul class="project-list">
+            {% for project in projects %}
+              <li><a href="/projects/{{ project.id }}">{{ project.title }}</a></li>
             {% endfor %}
-          </optgroup>
-        {% endfor %}
-      </select>
-      <button class="button button-secondary" type="submit">Move Page</button>
-    </form>
-  </section>
+          </ul>
+        </section>
+      {% endif %}
 
-  <section class="notes-detail-content">
-    <h2>Content</h2>
-    {% if note.content %}
-      <div class="notes-content">{{ contentHtml | safe }}</div>
-    {% else %}
-      <p class="help-text">No content yet.</p>
-    {% endif %}
-  </section>
+      {% if assets.length > 0 %}
+        <section class="notes-detail-panel notes-detail-assets" aria-labelledby="notes-detail-assets-heading">
+          <h2 id="notes-detail-assets-heading">Assets</h2>
+          <ul class="asset-list notes-detail-asset-list">
+            {% for asset in assets %}
+              <li class="asset-list-item{% if not asset.isPresent %} is-missing{% endif %}">
+                <div class="notes-detail-asset">
+                  <a class="notes-detail-asset-link" href="{{ asset.viewerUrl }}">{{ asset.filename }}</a>
+                  <span>Project: {{ asset.projectTitle }}</span>
+                  <span>{{ asset.relativePath }}</span>
+                  {% if not asset.isPresent %}<span>Missing</span>{% endif %}
+                </div>
+              </li>
+            {% endfor %}
+          </ul>
+        </section>
+      {% endif %}
 
-  {% if projects.length > 0 %}
-    <section class="notes-detail-projects">
-      <h2>Projects</h2>
-      <ul class="project-list">
-        {% for project in projects %}
-          <li><a href="/projects/{{ project.id }}">{{ project.title }}</a></li>
-        {% endfor %}
-      </ul>
-    </section>
-  {% endif %}
+      <section class="notes-detail-panel notes-detail-details" aria-labelledby="notes-detail-details-heading">
+        <h2 id="notes-detail-details-heading">Details</h2>
+        <dl class="detail-list">
+          <dt>Created</dt>
+          <dd>{{ note.created_at }}</dd>
 
-  {% if assets.length > 0 %}
-    <section class="notes-detail-assets">
-      <h2>Assets</h2>
-      <ul class="asset-list notes-detail-asset-list">
-        {% for asset in assets %}
-          <li class="asset-list-item{% if not asset.isPresent %} is-missing{% endif %}">
-            <div class="notes-detail-asset">
-              <a class="notes-detail-asset-link" href="{{ asset.viewerUrl }}">{{ asset.filename }}</a>
-              <span>Project: {{ asset.projectTitle }}</span>
-              <span>{{ asset.relativePath }}</span>
-              {% if not asset.isPresent %}<span>Missing</span>{% endif %}
-            </div>
-          </li>
-        {% endfor %}
-      </ul>
-    </section>
-  {% endif %}
-
-  <section>
-    <h2>Details</h2>
-    <dl class="detail-list">
-      <dt>Created</dt>
-      <dd>{{ note.created_at }}</dd>
-
-      <dt>Updated</dt>
-      <dd>{{ note.updated_at }}</dd>
-    </dl>
-  </section>
-
-  <section class="destructive-section">
-    <h2>Danger zone</h2>
-    <p>Deleting this note is permanent and cannot be undone.</p>
-    <form method="post" action="/notes/{{ note.id }}/delete" class="inline-form">
-      <input type="hidden" name="_csrf" value="{{ _csrf }}">
-      <button class="button button-danger" type="submit" data-confirm="Delete this note permanently? This action is irreversible and cannot be undone.">Delete Note</button>
-    </form>
-  </section>
+          <dt>Updated</dt>
+          <dd>{{ note.updated_at }}</dd>
+        </dl>
+      </section>
+    </aside>
+  </div>
 {% endblock %}

@@ -778,7 +778,7 @@ describe('top-level Notes HTTP slice', () => {
     expect(app.locals.noteService.listNotes()).toHaveLength(0);
   });
 
-  it('renders sanitized Markdown detail content with edit and delete affordances', async () => {
+  it('renders sanitized Markdown detail content with shared hierarchy and edit action', async () => {
     const content = '<script>alert("unsafe")</script>\n\n# Markdown **text**\nline two';
     const { book, chapter } = createChapterContext(app);
     const note = app.locals.noteService.createNote({ chapterId: chapter.id, title: 'Detail Note', content });
@@ -787,18 +787,27 @@ describe('top-level Notes HTTP slice', () => {
 
     expect(response.text).toContain('<title>CreatorCrate — Notes — Page — Detail Note</title>');
     expect(response.text).toContain('<h1 class="app-section-title">Notes — Page — Detail Note</h1>');
-    expect(response.text).toContain(`<a class="button" href="/notes/${note.id}/edit">Edit</a>`);
-    expect(response.text).toContain(`<a class="button button-secondary" href="/notes/chapters/${chapter.id}">Back to Chapter</a>`);
-    expect(response.text).toContain(`<a href="/notes/books/${book.id}">Page Book</a>`);
-    expect(response.text).toContain(`<a href="/notes/chapters/${chapter.id}">Page Chapter</a>`);
-    expect(response.text).toContain(`<form method="post" action="/notes/${note.id}/delete" class="inline-form">`);
-    expect(response.text).toContain('>Delete Note</button>');
+    expect(response.text).toContain(`<a class="button button-primary" href="/notes/${note.id}/edit">Edit Page</a>`);
+    expect(response.text).toContain('<nav class="notes-hierarchy" aria-label="Page hierarchy">');
+    expect(response.text).toContain(`<a class="notes-hierarchy-link" href="/notes/books/${book.id}">Page Book</a>`);
+    expect(response.text).toContain(`<a class="notes-hierarchy-link" href="/notes/chapters/${chapter.id}">Page Chapter</a>`);
+    expect(response.text).toContain('<li class="notes-hierarchy-item notes-hierarchy-item--current" aria-current="page">');
+    expect(response.text).toContain('<span class="notes-hierarchy-current">Detail Note</span>');
+    expect(response.text).not.toContain(`/notes/${note.id}/move`);
+    expect(response.text).not.toContain('Move Page');
+    expect(response.text).not.toContain('Danger zone');
+    expect(response.text).not.toContain(`/notes/${note.id}/delete`);
+    expect(response.text).not.toContain('>Delete Note</button>');
     expect(response.text).toContain('&lt;script&gt;alert(');
     expect(response.text).not.toContain('<script>alert');
     expect(response.text).toContain('<h1>Markdown <strong>text</strong></h1>');
     expect(response.text).toContain('<p>line two</p>');
     expect(response.text).toContain('<dt>Created</dt>');
     expect(response.text).toContain('<dt>Updated</dt>');
+    expect(response.text).toContain('class="notes-detail-layout"');
+    expect(response.text).toContain('class="notes-detail-reading"');
+    expect(response.text).toContain('class="notes-detail-sidebar"');
+    expect(response.text).toContain('notes-detail-details');
     expect(response.text).not.toContain('<h2>Projects</h2>');
     expect(response.text).not.toContain('<h2>Assets</h2>');
     expect(response.text).not.toContain('data-notes-editor-form');
@@ -825,9 +834,11 @@ describe('top-level Notes HTTP slice', () => {
     const noteId = Number(createResponse.headers.location.replace('/notes/', ''));
 
     const detailResponse = await agent.get(`/notes/${noteId}`).expect(200);
-    expect(detailResponse.text).toContain(`<a href="/notes/books/${book.id}">Direct Round-trip Book</a>`);
-    expect(detailResponse.text).toContain(`<a class="button button-secondary" href="/notes/books/${book.id}">Back to Book</a>`);
-    expect(detailResponse.text).not.toContain('<span>Chapter:</span>');
+    expect(detailResponse.text).toContain(`<a class="notes-hierarchy-link" href="/notes/books/${book.id}">Direct Round-trip Book</a>`);
+    expect(detailResponse.text).toContain('<span class="notes-hierarchy-kind">Page</span>');
+    expect(detailResponse.text).toContain('<span class="notes-hierarchy-current">Direct Page Before</span>');
+    expect(detailResponse.text).not.toContain('notes-hierarchy-kind">Chapter');
+    expect(detailResponse.text).not.toContain('/notes/chapters/');
     expect(detailResponse.text).not.toContain('Back to Chapter');
 
     const editResponse = await agent.get(`/notes/${noteId}/edit`).expect(200);
@@ -1189,10 +1200,10 @@ describe('top-level Notes HTTP slice', () => {
     });
 
     const response = await agent.get(`/notes/${note.id}`).expect(200);
-    const projectsSection = response.text.match(/<section class="notes-detail-projects">[\s\S]*?<\/section>/)?.[0];
+    const projectsSection = response.text.match(/<section[^>]*class="[^"]*\bnotes-detail-projects\b[^"]*"[^>]*>[\s\S]*?<\/section>/)?.[0];
 
     expect(projectsSection).toBeDefined();
-    expect(projectsSection).toContain('<h2>Projects</h2>');
+    expect(projectsSection).toContain('>Projects</h2>');
     expect(projectsSection).toContain(`<a href="/projects/${firstProjectId}">Detail First</a>`);
     expect(projectsSection).toContain(`<a href="/projects/${secondProjectId}">Detail Second</a>`);
   });
@@ -1217,10 +1228,10 @@ describe('top-level Notes HTTP slice', () => {
     });
 
     const response = await agent.get(`/notes/${note.id}`).expect(200);
-    const assetsSection = response.text.match(/<section class="notes-detail-assets">[\s\S]*?<\/section>/)?.[0];
+    const assetsSection = response.text.match(/<section[^>]*class="[^"]*\bnotes-detail-assets\b[^"]*"[^>]*>[\s\S]*?<\/section>/)?.[0];
 
     expect(assetsSection).toBeDefined();
-    expect(assetsSection).toContain('<h2>Assets</h2>');
+    expect(assetsSection).toContain('>Assets</h2>');
     expect(assetsSection).toContain(
       `<a class="notes-detail-asset-link" href="/projects/${firstProjectId}/assets/${firstAssetId}">detail-first.txt</a>`,
     );
@@ -1249,7 +1260,7 @@ describe('top-level Notes HTTP slice', () => {
     });
 
     const response = await agent.get(`/notes/${note.id}`).expect(200);
-    const assetsSection = response.text.match(/<section class="notes-detail-assets">[\s\S]*?<\/section>/)?.[0];
+    const assetsSection = response.text.match(/<section[^>]*class="[^"]*\bnotes-detail-assets\b[^"]*"[^>]*>[\s\S]*?<\/section>/)?.[0];
 
     expect(assetsSection).toContain(
       `<a class="notes-detail-asset-link" href="/projects/${projectId}/assets/${assetId}">historical.bin</a>`,
@@ -1384,13 +1395,9 @@ describe('top-level Notes HTTP slice', () => {
     const before = app.locals.noteService.getNote(moved.id);
 
     const detail = await agent.get(`/notes/${moved.id}`).expect(200);
-    expect(detail.text).toContain(`<form method="post" action="/notes/${moved.id}/move" class="inline-form">`);
-    expect(detail.text).toContain('<select id="target-chapter" name="targetChapterId" required>');
-    expect(detail.text).toContain('<optgroup label="Source Book">');
-    expect(detail.text).toContain(`<option value="${sourceChapter.id}" selected>Source Chapter</option>`);
-    expect(detail.text).toContain('<optgroup label="Target Book">');
-    expect(detail.text).toContain(`<option value="${targetChapter.id}">Target Chapter</option>`);
-    expect(detail.text).toContain('>Move Page</button>');
+    expect(detail.text).not.toContain(`<form method="post" action="/notes/${moved.id}/move"`);
+    expect(detail.text).not.toContain('<select id="target-chapter" name="targetChapterId" required>');
+    expect(detail.text).not.toContain('>Move Page</button>');
 
     const response = await agent
       .post(`/notes/${moved.id}/move`)
@@ -1565,10 +1572,17 @@ describe('top-level Notes HTTP slice', () => {
 
       const response = await agent.get(`/notes/chapters/${chapter.id}`).expect(200);
       expect(response.text).toContain('Detail Chapter');
-      expect(response.text).toContain(`<a href="/notes/books/${book.id}">Parent Book</a>`);
+      expect(response.text).toContain(`<nav class="notes-hierarchy" aria-label="Page hierarchy">`);
+      expect(response.text).toContain(`<a class="notes-hierarchy-link" href="/notes/books/${book.id}">Parent Book</a>`);
+      expect(response.text).toContain('<li class="notes-hierarchy-item notes-hierarchy-item--current" aria-current="page">');
+      expect(response.text).toContain('<span class="notes-hierarchy-current">Detail Chapter</span>');
       expect(response.text).toContain('Edit Chapter');
       expect(response.text).toContain('No Pages yet');
       expect(response.text).toContain(`<a class="button button-primary" href="/notes/new?chapterId=${chapter.id}">New Page</a>`);
+      expect(response.text).not.toContain('Change order');
+      expect(response.text).not.toContain('Move up');
+      expect(response.text).not.toContain('Move down');
+      expect(response.text).not.toContain('Danger zone');
     });
 
     it('renders a Chapter Page with a shallow Page link', async () => {
@@ -1582,9 +1596,10 @@ describe('top-level Notes HTTP slice', () => {
     });
 
     it('renders only Chapter Pages in canonical Chapter-local order', async () => {
-      const { chapter } = createChapterContext(app);
+      const { book, chapter } = createChapterContext(app);
       const first = app.locals.noteService.createNote({ chapterId: chapter.id, title: 'First Chapter Page' });
       const second = app.locals.noteService.createNote({ chapterId: chapter.id, title: 'Second Chapter Page' });
+      const directBookPage = app.locals.noteService.createNote({ bookId: book.id, title: 'Direct Book Page' });
       const { chapter: otherChapter } = createChapterContext(app);
       const unrelated = app.locals.noteService.createNote({ chapterId: otherChapter.id, title: 'Other Chapter Page' });
 
@@ -1594,12 +1609,30 @@ describe('top-level Notes HTTP slice', () => {
       expect(response.text).toContain(`<a href="/notes/${second.id}">Second Chapter Page</a>`);
       expect(response.text.indexOf('First Chapter Page')).toBeLessThan(response.text.indexOf('Second Chapter Page'));
       expect(response.text).not.toContain(`<a href="/notes/${unrelated.id}">Other Chapter Page</a>`);
+      expect(response.text).not.toContain(`<a href="/notes/${directBookPage.id}">Direct Book Page</a>`);
+      expect(response.text).toContain(`<a class="button button-secondary" href="/notes/chapters/${chapter.id}/notes/order">Change order</a>`);
+      expect(response.text).toContain(`<a class="button button-small button-secondary" href="/notes/${first.id}/edit" aria-label="Edit Page: First Chapter Page">Edit Page</a>`);
+      expect(response.text).toContain(`<a class="button button-small button-secondary" href="/notes/${second.id}/edit" aria-label="Edit Page: Second Chapter Page">Edit Page</a>`);
+      expect(response.text).not.toContain(`/notes/chapters/${chapter.id}/notes/reorder`);
+      expect(response.text).not.toContain('Move up');
+      expect(response.text).not.toContain('Move down');
+      expect(response.text).not.toContain('Danger zone');
+
+      const orderPage = await agent.get(`/notes/chapters/${chapter.id}/notes/order`).expect(200);
+      expect(orderPage.text).toContain('<title>CreatorCrate — Notes — Change order — Page Chapter</title>');
+      expect(orderPage.text).toContain('Page ordering controls will be available here in a future update.');
+      expect(orderPage.text).toContain(`<a href="/notes/${first.id}">First Chapter Page</a>`);
+      expect(orderPage.text).not.toContain('draggable="true"');
+      expect(orderPage.text).not.toContain('Move up');
+      expect(orderPage.text).not.toContain('Move down');
     });
 
     it('returns 404 for missing or malformed Chapters', async () => {
 
       await agent.get('/notes/chapters/not-an-id').expect(404);
       await agent.get('/notes/chapters/999999').expect(404);
+      await agent.get('/notes/chapters/not-an-id/notes/order').expect(404);
+      await agent.get('/notes/chapters/999999/notes/order').expect(404);
     });
 
     it('edits a Chapter and rerenders validation failures', async () => {
@@ -1714,10 +1747,11 @@ describe('top-level Notes HTTP slice', () => {
       const orderedIds = [second.id, first.id];
 
       const controlsPage = await agent.get(`/notes/chapters/${chapter.id}`).expect(200);
-      expect(controlsPage.text).toContain(`action="/notes/chapters/${chapter.id}/notes/reorder"`);
-      expect(controlsPage.text).toContain(`name="orderedNoteIds" value="${orderedIds.join(',')}"`);
-      expect(controlsPage.text).toContain('Move up');
-      expect(controlsPage.text).toContain('Move down');
+      expect(controlsPage.text).toContain(`<a class="button button-secondary" href="/notes/chapters/${chapter.id}/notes/order">Change order</a>`);
+      expect(controlsPage.text).not.toContain(`action="/notes/chapters/${chapter.id}/notes/reorder"`);
+      expect(controlsPage.text).not.toContain(`name="orderedNoteIds"`);
+      expect(controlsPage.text).not.toContain('Move up');
+      expect(controlsPage.text).not.toContain('Move down');
 
       const response = await agent
         .post(`/notes/chapters/${chapter.id}/notes/reorder`)
@@ -1739,6 +1773,7 @@ describe('top-level Notes HTTP slice', () => {
 
       const emptyPage = await agent.get(`/notes/chapters/${chapter.id}`).expect(200);
       expect(emptyPage.text).not.toContain(`/notes/chapters/${chapter.id}/notes/reorder`);
+      expect(emptyPage.text).not.toContain('Change order');
 
       await agent
         .post(`/notes/chapters/${chapter.id}/notes/reorder`)
@@ -1750,6 +1785,7 @@ describe('top-level Notes HTTP slice', () => {
       const note = app.locals.noteService.createNote({ chapterId: chapter.id, title: 'Only Page' });
       const singlePage = await agent.get(`/notes/chapters/${chapter.id}`).expect(200);
       expect(singlePage.text).not.toContain(`/notes/chapters/${chapter.id}/notes/reorder`);
+      expect(singlePage.text).not.toContain('Change order');
       expect(singlePage.text).not.toContain('Move up');
       expect(singlePage.text).not.toContain('Move down');
 

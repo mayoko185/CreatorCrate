@@ -6,6 +6,9 @@
 {% block content %}
   {% call pageHeading.render() %}
     <a class="button button-primary" href="/notes/books/new">New Book</a>
+    {% if books.length > 1 %}
+      <a class="button button-secondary" href="/notes/books/order">Change order</a>
+    {% endif %}
   {% endcall %}
 
   {% if notice %}
@@ -14,47 +17,21 @@
     {% include "partials/notice.njk" %}
   {% endif %}
 
-  <section class="settings-section">
-    <h2>Books</h2>
+  <section class="notes-books-index" aria-label="Books">
     {% if books.length > 0 %}
-      <div class="table-scroll" tabindex="0" aria-label="Books list">
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th>Title</th>
-              <th>Actions</th>
-              {% if books.length > 1 %}<th>Order</th>{% endif %}
-            </tr>
-          </thead>
-          <tbody>
-            {% for book in books %}
-              {% set bookIndex = loop.index0 %}
-              <tr>
-                <td><a href="/notes/books/{{ book.id }}">{{ book.title }}</a></td>
-                <td><a class="button button-small button-secondary" href="/notes/books/{{ book.id }}">Manage</a></td>
-                {% if books.length > 1 %}
-                  <td>
-                    {% if bookIndex > 0 %}
-                      <form method="post" action="/notes/books/reorder" class="inline-form">
-                        <input type="hidden" name="_csrf" value="{{ _csrf }}">
-                        <input type="hidden" name="orderedBookIds" value="{% for orderedBook in books %}{% if loop.index0 == bookIndex - 1 %}{{ book.id }}{% elif loop.index0 == bookIndex %}{{ books[bookIndex - 1].id }}{% else %}{{ orderedBook.id }}{% endif %}{% if not loop.last %},{% endif %}{% endfor %}">
-                        <button type="submit" class="button button-small button-secondary" aria-label="Move {{ book.title }} up">Move up</button>
-                      </form>
-                    {% endif %}
-                    {% if bookIndex < books.length - 1 %}
-                      <form method="post" action="/notes/books/reorder" class="inline-form">
-                        <input type="hidden" name="_csrf" value="{{ _csrf }}">
-                        <input type="hidden" name="orderedBookIds" value="{% for orderedBook in books %}{% if loop.index0 == bookIndex %}{{ books[bookIndex + 1].id }}{% elif loop.index0 == bookIndex + 1 %}{{ book.id }}{% else %}{{ orderedBook.id }}{% endif %}{% if not loop.last %},{% endif %}{% endfor %}">
-                        <button type="submit" class="button button-small button-secondary" aria-label="Move {{ book.title }} down">Move down</button>
-                      </form>
-                    {% endif %}
-                  </td>
-                {% endif %}
-              </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      </div>
+      <ul class="notes-book-content-list" aria-label="Books">
+        {% for book in books %}
+          <li class="notes-book-content-row">
+            <div class="notes-book-content-copy">
+              <span class="notes-book-content-kind">Book</span>
+              <h2 class="notes-book-content-title"><a href="/notes/books/{{ book.id }}">{{ book.title }}</a></h2>
+            </div>
+            <div class="notes-book-content-actions">
+              <a class="button button-small button-secondary" href="/notes/books/{{ book.id }}/edit" aria-label="Edit Book: {{ book.title }}">Edit Book</a>
+            </div>
+          </li>
+        {% endfor %}
+      </ul>
     {% else %}
       {% set emptyHeading = "No books yet" %}
       {% set emptyDescription = "Create a book to start organizing your notes." %}

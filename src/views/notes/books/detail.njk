@@ -4,10 +4,13 @@
 {% set page_title = "Notes — " ~ book.title %}
 
 {% block content %}
-  {% call pageHeading.render("Book") %}
-    <a class="button button-primary" href="/notes/books/{{ book.id }}/chapters/new">New Chapter</a>
-    <a class="button" href="/notes/new?bookId={{ book.id }}">New Page</a>
+  {% call pageHeading.render() %}
+    <a class="button button-primary" href="/notes/new?bookId={{ book.id }}">New Page</a>
+    <a class="button" href="/notes/books/{{ book.id }}/chapters/new">New Chapter</a>
     <a class="button" href="/notes/books/{{ book.id }}/edit">Edit Book</a>
+    {% if canChangeOrder %}
+      <a class="button button-secondary" href="/notes/books/{{ book.id }}/order">Change order</a>
+    {% endif %}
   {% endcall %}
 
   {% if notice %}
@@ -16,52 +19,63 @@
     {% include "partials/notice.njk" %}
   {% endif %}
 
-  <section class="settings-section">
-    <h2>Chapters</h2>
-    {% if chapters.length > 0 %}
-      <div class="table-scroll" tabindex="0" aria-label="Chapters list">
-        <table class="data-table">
-          <thead><tr><th>Title</th><th>Actions</th></tr></thead>
-          <tbody>
-            {% for chapter in chapters %}
-              <tr>
-                <td><a href="/notes/chapters/{{ chapter.id }}">{{ chapter.title }}</a></td>
-                <td><a class="button button-small button-secondary" href="/notes/chapters/{{ chapter.id }}">Manage</a></td>
-              </tr>
-            {% endfor %}
-          </tbody>
-        </table>
+  {% include "partials/notes-hierarchy.njk" %}
+
+  <div class="notes-book-sections">
+    <section class="notes-book-section" aria-labelledby="notes-book-chapters-heading">
+      <div class="notes-book-section-heading">
+        <h2 id="notes-book-chapters-heading">Chapters</h2>
       </div>
+    {% if chapters.length > 0 %}
+      <ul class="notes-book-content-list" aria-label="Chapters in {{ book.title }}">
+        {% for chapter in chapters %}
+          <li class="notes-book-content-row">
+            <div class="notes-book-content-copy">
+              <span class="notes-book-content-kind">Chapter</span>
+              <h3 class="notes-book-content-title"><a href="/notes/chapters/{{ chapter.id }}">{{ chapter.title }}</a></h3>
+            </div>
+            <div class="notes-book-content-actions">
+              <a class="button button-small button-secondary" href="/notes/chapters/{{ chapter.id }}/edit" aria-label="Edit Chapter: {{ chapter.title }}">Edit Chapter</a>
+            </div>
+          </li>
+        {% endfor %}
+      </ul>
     {% else %}
       {% set emptyHeading = "No chapters yet" %}
       {% set emptyDescription = "Create a chapter to start organizing this book." %}
+      {% set emptyHeadingLevel = "h3" %}
       {% set emptyActionUrl = "/notes/books/" ~ book.id ~ "/chapters/new" %}
       {% set emptyActionLabel = "New Chapter" %}
       {% include "partials/empty-state.njk" %}
     {% endif %}
-  </section>
+    </section>
 
-  <section class="settings-section">
-    <h2>Pages</h2>
-    {% if pages.length > 0 %}
-      <div class="table-scroll" tabindex="0" aria-label="Pages list">
-        <table class="data-table">
-          <thead><tr><th>Title</th></tr></thead>
-          <tbody>
-            {% for page in pages %}
-              <tr>
-                <td><a href="/notes/{{ page.id }}">{{ page.title }}</a></td>
-              </tr>
-            {% endfor %}
-          </tbody>
-        </table>
+    <section class="notes-book-section" aria-labelledby="notes-book-pages-heading">
+      <div class="notes-book-section-heading">
+        <h2 id="notes-book-pages-heading">Pages</h2>
       </div>
+    {% if pages.length > 0 %}
+      <ul class="notes-book-content-list" aria-label="Direct Pages in {{ book.title }}">
+        {% for page in pages %}
+          <li class="notes-book-content-row">
+            <div class="notes-book-content-copy">
+              <span class="notes-book-content-kind">Page</span>
+              <h3 class="notes-book-content-title"><a href="/notes/{{ page.id }}">{{ page.title }}</a></h3>
+            </div>
+            <div class="notes-book-content-actions">
+              <a class="button button-small button-secondary" href="/notes/{{ page.id }}/edit" aria-label="Edit Page: {{ page.title }}">Edit Page</a>
+            </div>
+          </li>
+        {% endfor %}
+      </ul>
     {% else %}
       {% set emptyHeading = "No pages yet" %}
       {% set emptyDescription = "Pages created directly in this Book will appear here." %}
-      {% set emptyActionUrl = "" %}
-      {% set emptyActionLabel = "" %}
+      {% set emptyHeadingLevel = "h3" %}
+      {% set emptyActionUrl = "/notes/new?bookId=" ~ book.id %}
+      {% set emptyActionLabel = "New Page" %}
       {% include "partials/empty-state.njk" %}
     {% endif %}
-  </section>
+    </section>
+  </div>
 {% endblock %}

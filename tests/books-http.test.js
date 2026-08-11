@@ -43,10 +43,27 @@ describe('Book HTTP routes', () => {
 
     expect(response.text).toContain('<h1 class="app-section-title">Notes</h1>');
     expect(response.text).toContain('<a class="button button-primary" href="/notes/books/new">New Book</a>');
-    expect(response.text).toContain('<h2>Books</h2>');
     expect(response.text).toContain('<h2 class="empty-state-heading">No books yet</h2>');
+    expect(response.text).toContain('<header class="page-heading">');
+    expect(response.text).not.toContain('Change order');
+    expect(response.text).not.toContain('<h2>Books</h2>');
     expect(response.text).not.toContain('class="notes-table"');
+    expect(response.text).not.toContain('class="data-table"');
+    expect(response.text).not.toContain('class="table-scroll"');
     expect(response.text).not.toContain('href="/notes/new"');
+  });
+
+  it('renders a single Book without Change order and with an explicit Edit Book action', async () => {
+    const book = app.locals.bookService.createBook({ title: 'Single Book' });
+
+    const response = await agent.get('/notes').expect(200);
+
+    expect(response.text).toContain(`<a href="/notes/books/${book.id}">Single Book</a>`);
+    expect(response.text).toContain(`<a class="button button-small button-secondary" href="/notes/books/${book.id}/edit" aria-label="Edit Book: Single Book">Edit Book</a>`);
+    expect(response.text).not.toContain('Change order');
+    expect(response.text).not.toContain('>Manage</a>');
+    expect(response.text).not.toContain('Move up');
+    expect(response.text).not.toContain('Move down');
   });
 
   it('renders Books in canonical order and does not load legacy Notes into the landing', async () => {
@@ -63,12 +80,44 @@ describe('Book HTTP routes', () => {
     app.locals.bookService.reorderBooks([second.id, first.id]);
 
     const response = await agent.get('/notes').expect(200);
-    const table = response.text.match(/<table class="data-table">[\s\S]*?<\/table>/)?.[0] || '';
+    const booksList = response.text.match(/<ul class="notes-book-content-list" aria-label="Books">[\s\S]*?<\/ul>/)?.[0] || '';
 
-    expect(table.indexOf('Second Book')).toBeLessThan(table.indexOf('First Book'));
-    expect(table).toContain(`href="/notes/books/${second.id}"`);
-    expect(table).toContain(`href="/notes/books/${first.id}"`);
+    expect(booksList.indexOf('Second Book')).toBeLessThan(booksList.indexOf('First Book'));
+    expect(booksList).toContain(`<a href="/notes/books/${second.id}">Second Book</a>`);
+    expect(booksList).toContain(`<a href="/notes/books/${first.id}">First Book</a>`);
+    expect(booksList).toContain(`<a class="button button-small button-secondary" href="/notes/books/${second.id}/edit" aria-label="Edit Book: Second Book">Edit Book</a>`);
+    expect(booksList).toContain(`<a class="button button-small button-secondary" href="/notes/books/${first.id}/edit" aria-label="Edit Book: First Book">Edit Book</a>`);
+    expect(response.text).toContain('<a class="button button-secondary" href="/notes/books/order">Change order</a>');
+    expect(response.text).not.toContain('<table');
+    expect(response.text).not.toContain('<th>Actions</th>');
+    expect(response.text).not.toContain('<th>Order</th>');
+    expect(response.text).not.toContain('>Manage</a>');
+    expect(response.text).not.toContain('Move up');
+    expect(response.text).not.toContain('Move down');
     expect(response.text).not.toContain('Legacy Flat Note');
+  });
+
+  it('renders the top-level Book order shell before dynamic Book detail routing', async () => {
+    const first = app.locals.bookService.createBook({ title: 'Order First Book' });
+    const second = app.locals.bookService.createBook({ title: 'Order Second Book' });
+
+    const response = await agent.get('/notes/books/order').expect(200);
+
+    expect(response.text).toContain('<title>CreatorCrate — Notes — Change order</title>');
+    expect(response.text).toContain('<h1 class="app-section-title">Notes — Change order</h1>');
+    expect(response.text).toContain('<a class="button button-secondary" href="/notes">Cancel</a>');
+    expect(response.text).toContain('<h2 id="notes-books-order-heading">Change order</h2>');
+    expect(response.text).toContain('Book ordering controls will be available here in a future update.');
+    expect(response.text).toContain(`<a href="/notes/books/${first.id}">Order First Book</a>`);
+    expect(response.text).toContain(`<a href="/notes/books/${second.id}">Order Second Book</a>`);
+    expect(response.text).not.toContain('<form');
+    expect(response.text).not.toContain('<button');
+    expect(response.text).not.toContain('draggable="true"');
+    expect(response.text).not.toContain('orderedBookIds');
+    expect(response.text).not.toContain('Move up');
+    expect(response.text).not.toContain('Move down');
+
+    await agent.get(`/notes/books/${first.id}`).expect(200);
   });
 
   it('renders the create form with CSRF protection and creates a trimmed Book', async () => {
@@ -113,16 +162,28 @@ describe('Book HTTP routes', () => {
     const book = app.locals.bookService.createBook({ title: 'Detail Book' });
 
     const response = await agent.get(`/notes/books/${book.id}`).expect(200);
-    expect(response.text).toContain('<h2>Chapters</h2>');
-    expect(response.text).toContain('<h2 class="empty-state-heading">No chapters yet</h2>');
-    expect(response.text).toContain('<h2>Pages</h2>');
-    expect(response.text).toContain('<h2 class="empty-state-heading">No pages yet</h2>');
-    expect(response.text).toContain(`<a class="button button-primary" href="/notes/books/${book.id}/chapters/new">New Chapter</a>`);
-    expect(response.text).toContain(`<a class="button" href="/notes/new?bookId=${book.id}">New Page</a>`);
+    expect(response.text).toContain('<nav class="notes-hierarchy" aria-label="Page hierarchy">');
+    expect(response.text).toContain('<span class="notes-hierarchy-kind">Book</span>');
+    expect(response.text).toContain(`<span class="notes-hierarchy-current">${book.title}</span>`);
+    expect(response.text).toContain('<h2 id="notes-book-chapters-heading">Chapters</h2>');
+    expect(response.text).toContain('<h3 class="empty-state-heading">No chapters yet</h3>');
+    expect(response.text).toContain('<h2 id="notes-book-pages-heading">Pages</h2>');
+    expect(response.text).toContain('<h3 class="empty-state-heading">No pages yet</h3>');
+    expect(response.text).toContain(`<a class="button button-primary" href="/notes/new?bookId=${book.id}">New Page</a>`);
+    expect(response.text).toContain(`<a class="button" href="/notes/books/${book.id}/chapters/new">New Chapter</a>`);
     expect(response.text).toContain(`href="/notes/books/${book.id}/edit"`);
+    expect(response.text).toContain('>Edit Book</a>');
+    expect(response.text).not.toContain('Change order');
+    expect(response.text).not.toContain('>Manage</a>');
+    expect(response.text).not.toContain('Move up');
+    expect(response.text).not.toContain('Move down');
+    expect(response.text).not.toContain('Danger zone');
+    expect(response.text).not.toContain(`/notes/books/${book.id}/delete`);
 
     await agent.get('/notes/books/999999').expect(404);
     await agent.get('/notes/books/01').expect(404);
+    await agent.get('/notes/books/999999/order').expect(404);
+    await agent.get('/notes/books/01/order').expect(404);
   });
 
   it('renders a Book with Chapters and no direct Pages', async () => {
@@ -131,10 +192,14 @@ describe('Book HTTP routes', () => {
 
     const response = await agent.get(`/notes/books/${book.id}`).expect(200);
 
-    expect(response.text).toContain('<h2>Chapters</h2>');
+    expect(response.text).toContain('<h2 id="notes-book-chapters-heading">Chapters</h2>');
+    expect(response.text).toContain(`<span class="notes-book-content-kind">Chapter</span>`);
     expect(response.text).toContain(`<a href="/notes/chapters/${chapter.id}">Chapter One</a>`);
-    expect(response.text).toContain('<h2>Pages</h2>');
-    expect(response.text).toContain('<h2 class="empty-state-heading">No pages yet</h2>');
+    expect(response.text).toContain(`<a class="button button-small button-secondary" href="/notes/chapters/${chapter.id}/edit" aria-label="Edit Chapter: Chapter One">Edit Chapter</a>`);
+    expect(response.text).toContain('<h2 id="notes-book-pages-heading">Pages</h2>');
+    expect(response.text).toContain('<h3 class="empty-state-heading">No pages yet</h3>');
+    expect(response.text).not.toContain('Change order');
+    expect(response.text).not.toContain('>Manage</a>');
   });
 
   it('renders direct Pages with canonical links and no Chapters', async () => {
@@ -147,10 +212,13 @@ describe('Book HTTP routes', () => {
 
     const response = await agent.get(`/notes/books/${book.id}`).expect(200);
 
-    expect(response.text).toContain('<h2 class="empty-state-heading">No chapters yet</h2>');
-    expect(response.text).toContain('<h2>Pages</h2>');
+    expect(response.text).toContain('<h3 class="empty-state-heading">No chapters yet</h3>');
+    expect(response.text).toContain('<h2 id="notes-book-pages-heading">Pages</h2>');
     expect(response.text).toContain(`<a href="/notes/${page.id}">Direct Page</a>`);
+    expect(response.text).toContain(`<a class="button button-small button-secondary" href="/notes/${page.id}/edit" aria-label="Edit Page: Direct Page">Edit Page</a>`);
     expect(response.text).not.toContain('No pages yet');
+    expect(response.text).not.toContain('Change order');
+    expect(response.text).not.toContain('>Manage</a>');
   });
 
   it('renders both child types while excluding Chapter Pages and Pages from other Books', async () => {
@@ -175,18 +243,40 @@ describe('Book HTTP routes', () => {
 
     const response = await agent.get(`/notes/books/${book.id}`).expect(200);
     const chaptersSection = response.text.match(
-      /<section class="settings-section">[\s\S]*?<h2>Chapters<\/h2>[\s\S]*?<\/section>/,
+      /<section class="notes-book-section" aria-labelledby="notes-book-chapters-heading">[\s\S]*?<\/section>/,
     )?.[0] || '';
     const pagesSection = response.text.match(
-      /<section class="settings-section">[\s\S]*?<h2>Pages<\/h2>[\s\S]*?<\/section>/,
+      /<section class="notes-book-section" aria-labelledby="notes-book-pages-heading">[\s\S]*?<\/section>/,
     )?.[0] || '';
 
     expect(chaptersSection).toContain(`<a href="/notes/chapters/${chapter.id}">Included Chapter</a>`);
+    expect(chaptersSection).toContain(`<a class="button button-small button-secondary" href="/notes/chapters/${chapter.id}/edit" aria-label="Edit Chapter: Included Chapter">Edit Chapter</a>`);
     expect(pagesSection).toContain(`<a href="/notes/${directPage.id}">Included Direct Page</a>`);
+    expect(pagesSection).toContain(`<a class="button button-small button-secondary" href="/notes/${directPage.id}/edit" aria-label="Edit Page: Included Direct Page">Edit Page</a>`);
     expect(pagesSection).not.toContain(`href="/notes/${chapterPage.id}"`);
     expect(pagesSection).not.toContain('Chapter Page');
     expect(pagesSection).not.toContain(`href="/notes/${otherBookPage.id}"`);
     expect(pagesSection).not.toContain('Other Book Page');
+    expect(response.text).toContain(`<a class="button button-secondary" href="/notes/books/${book.id}/order">Change order</a>`);
+    expect(response.text).not.toContain('>Manage</a>');
+    expect(response.text).not.toContain('Move up');
+    expect(response.text).not.toContain('Move down');
+    expect(response.text).not.toContain('Danger zone');
+
+    const orderPage = await agent.get(`/notes/books/${book.id}/order`).expect(200);
+    expect(orderPage.text).toContain('<title>CreatorCrate — Notes — Change order — Mixed Book</title>');
+    expect(orderPage.text).toContain(`<span class="notes-hierarchy-current">${book.title}</span>`);
+    expect(orderPage.text).toContain('Book ordering controls will be available here in a future update.');
+    expect(orderPage.text).toContain(`<a href="/notes/chapters/${chapter.id}">Included Chapter</a>`);
+    expect(orderPage.text).toContain(`<a href="/notes/${directPage.id}">Included Direct Page</a>`);
+    expect(orderPage.text).not.toContain('Chapter Page');
+    expect(orderPage.text).not.toContain('Other Book Page');
+    expect(orderPage.text).not.toContain('draggable="true"');
+    expect(orderPage.text).not.toContain('Move up');
+    expect(orderPage.text).not.toContain('Move down');
+    expect(orderPage.text).not.toContain('orderedChapterIds');
+    expect(orderPage.text).not.toContain('orderedNoteIds');
+    expect(orderPage.text).not.toContain('<form');
   });
 
   it('renders and updates the Book edit form', async () => {

@@ -1,0 +1,35 @@
+{% extends "layout.njk" %}
+{% import "partials/page-heading.njk" as pageHeading %}
+
+{% set page_title = "Notes — Change order" %}
+
+{% block content %}
+  {% call pageHeading.render() %}
+    <a class="button button-secondary" href="/notes">Cancel</a>
+  {% endcall %}
+
+  <section class="notes-books-order" aria-labelledby="notes-books-order-heading">
+    <h2 id="notes-books-order-heading">Change order</h2>
+    <p class="help-text">Book ordering controls will be available here in a future update.</p>
+
+    {% if books.length > 0 %}
+      <ol class="notes-book-content-list" aria-label="Books in current order">
+        {% for book in books %}
+          <li class="notes-book-content-row">
+            <div class="notes-book-content-copy">
+              <span class="notes-book-content-kind">Book {{ loop.index }}</span>
+              <h3 class="notes-book-content-title"><a href="/notes/books/{{ book.id }}">{{ book.title }}</a></h3>
+            </div>
+          </li>
+        {% endfor %}
+      </ol>
+    {% else %}
+      {% set emptyHeading = "No books yet" %}
+      {% set emptyDescription = "Create a Book before changing its order." %}
+      {% set emptyHeadingLevel = "h3" %}
+      {% set emptyActionUrl = "/notes/books/new" %}
+      {% set emptyActionLabel = "New Book" %}
+      {% include "partials/empty-state.njk" %}
+    {% endif %}
+  </section>
+{% endblock %}

@@ -126,6 +126,16 @@ export function createNotesRouter({ appName, bookService, chapterService, noteSe
     }
   });
 
+  // This literal route must precede the dynamic /books/:bookId routes.
+  router.get('/books/order', (_req, res, next) => {
+    try {
+      renderBooksOrder(res, { appName, bookService });
+      return;
+    } catch (err) {
+      return next(err);
+    }
+  });
+
   router.get('/books/:bookId/edit', (req, res, next) => {
     const id = parseId(req.params.bookId);
     if (id === null) return next(createNotFound());
@@ -274,6 +284,22 @@ export function createNotesRouter({ appName, bookService, chapterService, noteSe
     }
   });
 
+  // GET /notes/books/:bookId/order — transitional Book ordering screen shell
+  router.get('/books/:bookId/order', (req, res, next) => {
+    const bookId = parseId(req.params.bookId);
+    if (bookId === null) return next(createNotFound());
+
+    try {
+      renderBookOrder(res, {
+        appName, bookService, chapterService, noteService, bookId,
+      });
+      return;
+    } catch (err) {
+      if (err instanceof BookNotFoundError) return next(createNotFound());
+      return next(err);
+    }
+  });
+
   router.get('/books/:bookId', (req, res, next) => {
     const id = parseId(req.params.bookId);
     if (id === null) return next(createNotFound());
@@ -293,6 +319,22 @@ export function createNotesRouter({ appName, bookService, chapterService, noteSe
 
     try {
       renderChapterDetail(res, {
+        appName, bookService, chapterService, noteService, chapterId,
+      });
+      return;
+    } catch (err) {
+      if (err instanceof ChapterNotFoundError || err instanceof BookNotFoundError) return next(createNotFound());
+      return next(err);
+    }
+  });
+
+  // GET /notes/chapters/:chapterId/notes/order — ordering screen shell
+  router.get('/chapters/:chapterId/notes/order', (req, res, next) => {
+    const chapterId = parseId(req.params.chapterId);
+    if (chapterId === null) return next(createNotFound());
+
+    try {
+      renderChapterOrder(res, {
         appName, bookService, chapterService, noteService, chapterId,
       });
       return;
@@ -968,13 +1010,30 @@ function renderBooksIndex(res, { appName, bookService, notice = null, status = 2
   res.status(status).render('notes/books/index.njk', { appName, books, notice });
 }
 
+function renderBooksOrder(res, { appName, bookService, status = 200 }) {
+  const books = bookService.listBooks();
+  res.status(status).render('notes/books/order-index.njk', { appName, books });
+}
+
 function renderBookDetail(res, {
   appName, bookService, chapterService, noteService, bookId, notice = null, status = 200,
 }) {
   const book = bookService.getBook(bookId);
   const chapters = chapterService.listChapters(bookId);
   const pages = noteService.listNotesForBook(bookId);
-  res.status(status).render('notes/books/detail.njk', { appName, book, chapters, pages, notice });
+  const canChangeOrder = chapters.length + pages.length > 1;
+  res.status(status).render('notes/books/detail.njk', {
+    appName, book, chapters, pages, canChangeOrder, notice,
+  });
+}
+
+function renderBookOrder(res, {
+  appName, bookService, chapterService, noteService, bookId, status = 200,
+}) {
+  const book = bookService.getBook(bookId);
+  const chapters = chapterService.listChapters(bookId);
+  const pages = noteService.listNotesForBook(bookId);
+  res.status(status).render('notes/books/order.njk', { appName, book, chapters, pages });
 }
 
 function renderChapterDetail(res, {
@@ -982,26 +1041,20 @@ function renderChapterDetail(res, {
 }) {
   const chapter = chapterService.getChapter(chapterId);
   const book = bookService.getBook(chapter.book_id);
-  const chapterNotes = noteService.listNotesForChapter(chapterId);
-  const notes = chapterNotes.map((note, index) => ({
-    ...note,
-    moveUpOrderedNoteIds: index > 0
-      ? chapterNotes.map((candidate, candidateIndex) => {
-        if (candidateIndex === index - 1) return note.id;
-        if (candidateIndex === index) return chapterNotes[index - 1].id;
-        return candidate.id;
-      }).join(',')
-      : null,
-    moveDownOrderedNoteIds: index < chapterNotes.length - 1
-      ? chapterNotes.map((candidate, candidateIndex) => {
-        if (candidateIndex === index) return chapterNotes[index + 1].id;
-        if (candidateIndex === index + 1) return note.id;
-        return candidate.id;
-      }).join(',')
-      : null,
-  }));
+  const notes = noteService.listNotesForChapter(chapterId);
   res.status(status).render('notes/chapters/detail.njk', {
     appName, book, chapter, notes, notice,
+  });
+}
+
+function renderChapterOrder(res, {
+  appName, bookService, chapterService, noteService, chapterId, status = 200,
+}) {
+  const chapter = chapterService.getChapter(chapterId);
+  const book = bookService.getBook(chapter.book_id);
+  const notes = noteService.listNotesForChapter(chapterId);
+  res.status(status).render('notes/chapters/order.njk', {
+    appName, book, chapter, notes,
   });
 }
 

@@ -1,0 +1,38 @@
+<nav class="notes-hierarchy" aria-label="Page hierarchy">
+  <ol class="notes-hierarchy-list">
+    {% if book %}
+      {% if chapter or note %}
+        <li class="notes-hierarchy-item">
+          <span class="notes-hierarchy-kind">Book</span>
+          <a class="notes-hierarchy-link" href="/notes/books/{{ book.id }}">{{ book.title }}</a>
+        </li>
+      {% else %}
+        <li class="notes-hierarchy-item notes-hierarchy-item--current" aria-current="page">
+          <span class="notes-hierarchy-kind">Book</span>
+          <span class="notes-hierarchy-current">{{ book.title }}</span>
+        </li>
+      {% endif %}
+    {% endif %}
+
+    {% if chapter %}
+      {% if note %}
+        <li class="notes-hierarchy-item">
+          <span class="notes-hierarchy-kind">Chapter</span>
+          <a class="notes-hierarchy-link" href="/notes/chapters/{{ chapter.id }}">{{ chapter.title }}</a>
+        </li>
+      {% else %}
+        <li class="notes-hierarchy-item notes-hierarchy-item--current" aria-current="page">
+          <span class="notes-hierarchy-kind">Chapter</span>
+          <span class="notes-hierarchy-current">{{ chapter.title }}</span>
+        </li>
+      {% endif %}
+    {% endif %}
+
+    {% if note %}
+      <li class="notes-hierarchy-item notes-hierarchy-item--current" aria-current="page">
+        <span class="notes-hierarchy-kind">Page</span>
+        <span class="notes-hierarchy-current">{{ note.title }}</span>
+      </li>
+    {% endif %}
+  </ol>
+</nav>
