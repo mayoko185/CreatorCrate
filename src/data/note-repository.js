@@ -6,12 +6,13 @@
  * must not be reached through project or asset repositories.
  */
 
-const COLUMNS = ['id', 'chapter_id', 'title', 'content', 'sort_order', 'created_at', 'updated_at'];
+const COLUMNS = ['id', 'book_id', 'chapter_id', 'title', 'content', 'sort_order', 'created_at', 'updated_at'];
 const SELECT_ALL = `SELECT ${COLUMNS.join(', ')} FROM notes`;
 const HIERARCHY_ORDER = `
   ORDER BY
     books.sort_order ASC,
     books.id ASC,
+    CASE WHEN notes.chapter_id IS NULL THEN 1 ELSE 0 END ASC,
     chapters.sort_order ASC,
     chapters.id ASC,
     notes.sort_order ASC,
@@ -32,20 +33,24 @@ export class NoteError extends Error {
  */
 export function createNoteRepository(db) {
   const findByIdStmt = db.prepare(`${SELECT_ALL} WHERE id = ?`);
-  const findChapterStmt = db.prepare('SELECT id FROM chapters WHERE id = ?');
+  const findBookStmt = db.prepare('SELECT id FROM books WHERE id = ?');
+  const findChapterStmt = db.prepare('SELECT id, book_id FROM chapters WHERE id = ?');
   const listStmt = db.prepare(`
     SELECT ${NOTE_COLUMNS_QUALIFIED}
     FROM notes
-    JOIN chapters ON chapters.id = notes.chapter_id
-    JOIN books ON books.id = chapters.book_id
+    LEFT JOIN chapters ON chapters.id = notes.chapter_id
+    JOIN books ON books.id = notes.book_id
     ${HIERARCHY_ORDER}
   `);
   const listForChapterStmt = db.prepare(
     `${SELECT_ALL} WHERE chapter_id = ? ORDER BY sort_order ASC, id ASC`
   );
+  const listForBookStmt = db.prepare(
+    `${SELECT_ALL} WHERE book_id = ? AND chapter_id IS NULL ORDER BY sort_order ASC, id ASC`
+  );
   const insertStmt = db.prepare(`
-    INSERT INTO notes (chapter_id, title, content, sort_order)
-    VALUES (?, ?, ?, ?)
+    INSERT INTO notes (book_id, chapter_id, title, content, sort_order)
+    VALUES (?, ?, ?, ?, ?)
     RETURNING ${COLUMNS.join(', ')}
   `);
   const updateStmt = db.prepare(`
@@ -58,26 +63,34 @@ export function createNoteRepository(db) {
   const maxSortOrderStmt = db.prepare(
     'SELECT MAX(sort_order) AS max_order FROM notes WHERE chapter_id = ?'
   );
+  const maxBookSortOrderStmt = db.prepare(
+    'SELECT MAX(sort_order) AS max_order FROM notes WHERE book_id = ? AND chapter_id IS NULL'
+  );
   const shiftOrdersStmt = db.prepare(`
     UPDATE notes
     SET sort_order = sort_order + ?
     WHERE chapter_id = ?
   `);
-  const moveToChapterStmt = db.prepare(`
+  const shiftBookOrdersStmt = db.prepare(`
     UPDATE notes
-    SET chapter_id = ?, sort_order = ?
+    SET sort_order = sort_order + ?
+    WHERE book_id = ? AND chapter_id IS NULL
+  `);
+  const moveToContainerStmt = db.prepare(`
+    UPDATE notes
+    SET book_id = ?, chapter_id = ?, sort_order = ?
     WHERE id = ?
     RETURNING ${COLUMNS.join(', ')}
   `);
 
-  function validateExactOrder(chapterId, orderedIds, currentIds) {
+  function validateExactOrder(containerName, containerId, orderedIds, currentIds) {
     if (!Array.isArray(orderedIds)) {
       throw new NoteError('Note reorder input must be an array.', { code: 'INVALID_INPUT' });
     }
 
     if (orderedIds.length !== currentIds.length) {
       throw new NoteError(
-        `Reorder sequence length ${orderedIds.length} does not match current note count for Chapter ${chapterId}.`,
+        `Reorder sequence length ${orderedIds.length} does not match current note count for ${containerName} ${containerId}.`,
         { code: 'INVALID_SEQUENCE_LENGTH' }
       );
     }
@@ -96,19 +109,21 @@ export function createNoteRepository(db) {
     const currentSet = new Set(currentIds);
     for (const id of orderedIds) {
       if (!currentSet.has(id)) {
-        throw new NoteError(`Note ID ${id} does not exist for Chapter ${chapterId}.`, {
+        throw new NoteError(`Note ID ${id} does not exist for ${containerName} ${containerId}.`, {
           code: 'UNKNOWN_ID',
         });
       }
     }
   }
 
-  function rewriteChapterOrder(chapterId, orderedRows) {
+  function rewriteOrder({ bookId, chapterId, orderedRows }) {
     if (orderedRows.length === 0) return;
 
     const maxSortOrder = Math.max(...orderedRows.map((row) => row.sort_order));
     const temporaryOffset = maxSortOrder + orderedRows.length + 1;
-    const shifted = shiftOrdersStmt.run(temporaryOffset, chapterId);
+    const shifted = chapterId === null
+      ? shiftBookOrdersStmt.run(temporaryOffset, bookId)
+      : shiftOrdersStmt.run(temporaryOffset, chapterId);
     if (shifted.changes !== orderedRows.length) {
       throw new NoteError(
         `Reorder preparation affected ${shifted.changes} rows, expected ${orderedRows.length}.`,
@@ -117,16 +132,19 @@ export function createNoteRepository(db) {
     }
 
     const whenClauses = orderedRows.map(() => 'WHEN ? THEN ?').join(' ');
+    const scope = chapterId === null
+      ? 'book_id = ? AND chapter_id IS NULL'
+      : 'chapter_id = ?';
     const setFinalOrderStmt = db.prepare(`
       UPDATE notes
       SET sort_order = CASE id ${whenClauses} ELSE sort_order END
-      WHERE chapter_id = ?
+      WHERE ${scope}
     `);
     const finalOrderParams = [];
     for (let index = 0; index < orderedRows.length; index++) {
       finalOrderParams.push(orderedRows[index].id, index);
     }
-    finalOrderParams.push(chapterId);
+    finalOrderParams.push(chapterId === null ? bookId : chapterId);
 
     const finalized = setFinalOrderStmt.run(...finalOrderParams);
     if (finalized.changes !== orderedRows.length) {
@@ -137,18 +155,44 @@ export function createNoteRepository(db) {
     }
   }
 
+  function rewriteChapterOrder(chapterId, orderedRows) {
+    rewriteOrder({ chapterId, orderedRows });
+  }
+
+  function rewriteBookOrder(bookId, orderedRows) {
+    rewriteOrder({ bookId, chapterId: null, orderedRows });
+  }
+
   function compactChapterOrder(chapterId) {
     rewriteChapterOrder(chapterId, listForChapterStmt.all(chapterId));
+  }
+
+  function compactBookOrder(bookId) {
+    rewriteBookOrder(bookId, listForBookStmt.all(bookId));
   }
 
   const reorderTx = db.transaction((chapterId, orderedIds) => {
     const current = listForChapterStmt.all(chapterId);
     const currentIds = current.map((row) => row.id);
 
-    validateExactOrder(chapterId, orderedIds, currentIds);
+    validateExactOrder('Chapter', chapterId, orderedIds, currentIds);
     const currentById = new Map(current.map((row) => [row.id, row]));
     rewriteChapterOrder(chapterId, orderedIds.map((id) => currentById.get(id)));
     return listForChapterStmt.all(chapterId);
+  });
+
+  const reorderForBookTx = db.transaction((bookId, orderedIds) => {
+    if (!findBookStmt.get(bookId)) {
+      throw new NoteError(`Book ${bookId} does not exist.`, { code: 'BOOK_NOT_FOUND' });
+    }
+
+    const current = listForBookStmt.all(bookId);
+    const currentIds = current.map((row) => row.id);
+
+    validateExactOrder('Book', bookId, orderedIds, currentIds);
+    const currentById = new Map(current.map((row) => [row.id, row]));
+    rewriteBookOrder(bookId, orderedIds.map((id) => currentById.get(id)));
+    return listForBookStmt.all(bookId);
   });
 
   const deleteAndCompactTx = db.transaction((id) => {
@@ -160,27 +204,101 @@ export function createNoteRepository(db) {
       throw new NoteError(`Note ${id} could not be deleted.`, { code: 'DELETE_CHANGES_MISMATCH' });
     }
 
-    compactChapterOrder(note.chapter_id);
+    if (note.chapter_id === null) {
+      compactBookOrder(note.book_id);
+    } else {
+      compactChapterOrder(note.chapter_id);
+    }
     return true;
   });
+
+  function assertId(value, entityName) {
+    if (!Number.isSafeInteger(value) || value <= 0) {
+      throw new NoteError(`Invalid ${entityName.toLowerCase()} ID: ${value}.`, {
+        code: 'INVALID_ID',
+      });
+    }
+  }
+
+  function validateContainer(bookId, chapterId, { target = false } = {}) {
+    if (bookId === undefined || bookId === null) {
+      throw new NoteError('bookId is required.', { code: 'INVALID_INPUT' });
+    }
+    assertId(bookId, 'Book');
+
+    if (!findBookStmt.get(bookId)) {
+      throw new NoteError(`Book ${bookId} does not exist.`, {
+        code: target ? 'TARGET_BOOK_NOT_FOUND' : 'BOOK_NOT_FOUND',
+      });
+    }
+
+    const normalizedChapterId = chapterId == null ? null : chapterId;
+    if (normalizedChapterId === null) return normalizedChapterId;
+
+    assertId(normalizedChapterId, 'Chapter');
+    const chapter = findChapterStmt.get(normalizedChapterId);
+    if (!chapter) {
+      throw new NoteError(`Chapter ${normalizedChapterId} does not exist.`, {
+        code: target ? 'TARGET_CHAPTER_NOT_FOUND' : 'CHAPTER_NOT_FOUND',
+      });
+    }
+    if (chapter.book_id !== bookId) {
+      throw new NoteError(
+        `Chapter ${normalizedChapterId} belongs to Book ${chapter.book_id}, not Book ${bookId}.`,
+        { code: 'BOOK_CHAPTER_MISMATCH' }
+      );
+    }
+
+    return normalizedChapterId;
+  }
+
+  function moveNoteInTransaction(noteId, targetBookId, targetChapterId, existingNote) {
+    const note = existingNote ?? findByIdStmt.get(noteId);
+    if (!note) return undefined;
+
+    const chapterId = validateContainer(targetBookId, targetChapterId, { target: true });
+    if (note.book_id === targetBookId && note.chapter_id === chapterId) return note;
+
+    const result = chapterId === null
+      ? maxBookSortOrderStmt.get(targetBookId)
+      : maxSortOrderStmt.get(chapterId);
+    const sortOrder = result.max_order === null ? 0 : result.max_order + 1;
+    const moved = moveToContainerStmt.get(targetBookId, chapterId, sortOrder, noteId);
+    if (!moved) {
+      throw new NoteError(`Note ${noteId} could not be moved.`, {
+        code: 'UPDATE_CHANGES_MISMATCH',
+      });
+    }
+
+    if (note.chapter_id === null) {
+      compactBookOrder(note.book_id);
+    } else {
+      compactChapterOrder(note.chapter_id);
+    }
+    return moved;
+  }
+
+  const moveToContainerTx = db.transaction((noteId, { bookId, chapterId = null } = {}) => (
+    moveNoteInTransaction(noteId, bookId, chapterId)
+  ));
 
   const moveToChapterTx = db.transaction((noteId, targetChapterId) => {
     const note = findByIdStmt.get(noteId);
     if (!note) return undefined;
 
-    if (!findChapterStmt.get(targetChapterId)) {
+    const targetChapter = findChapterStmt.get(targetChapterId);
+    if (!targetChapter) {
       throw new NoteError(`Chapter ${targetChapterId} does not exist.`, {
         code: 'TARGET_CHAPTER_NOT_FOUND',
       });
     }
 
-    if (note.chapter_id === targetChapterId) return note;
-
-    const { max_order: maxOrder } = maxSortOrderStmt.get(targetChapterId);
-    const sortOrder = maxOrder === null ? 0 : maxOrder + 1;
-    const moved = moveToChapterStmt.get(targetChapterId, sortOrder, noteId);
-    compactChapterOrder(note.chapter_id);
-    return moved;
+    return moveNoteInTransaction(
+      noteId,
+      targetChapter.book_id,
+      targetChapterId,
+      note,
+    );
   });
 
   // ─── Association statements ──────────────────────────────────────────────
@@ -207,8 +325,8 @@ export function createNoteRepository(db) {
     SELECT ${NOTE_COLUMNS_QUALIFIED}
     FROM notes
     JOIN note_projects np ON np.note_id = notes.id
-    JOIN chapters ON chapters.id = notes.chapter_id
-    JOIN books ON books.id = chapters.book_id
+    LEFT JOIN chapters ON chapters.id = notes.chapter_id
+    JOIN books ON books.id = notes.book_id
     WHERE np.project_id = ?
     ${HIERARCHY_ORDER}
   `);
@@ -231,8 +349,8 @@ export function createNoteRepository(db) {
     SELECT ${NOTE_COLUMNS_QUALIFIED}
     FROM notes
     JOIN note_assets na ON na.note_id = notes.id
-    JOIN chapters ON chapters.id = notes.chapter_id
-    JOIN books ON books.id = chapters.book_id
+    LEFT JOIN chapters ON chapters.id = notes.chapter_id
+    JOIN books ON books.id = notes.book_id
     WHERE na.asset_id = ?
     ${HIERARCHY_ORDER}
   `);
@@ -295,13 +413,20 @@ export function createNoteRepository(db) {
 
   const replaceAssetsTx = db.transaction(replaceAssetsInTransaction);
 
-  function createNote(input = {}) {
-    const { chapterId } = input;
-    const result = maxSortOrderStmt.get(chapterId);
+  function createNote(input = {}, { allowLegacyChapterBookFallback = false } = {}) {
+    let { bookId, chapterId = null } = input;
+    if (allowLegacyChapterBookFallback && bookId === undefined && chapterId !== null) {
+      bookId = findChapterStmt.get(chapterId)?.book_id;
+    }
+
+    chapterId = validateContainer(bookId, chapterId);
+    const result = chapterId === null
+      ? maxBookSortOrderStmt.get(bookId)
+      : maxSortOrderStmt.get(chapterId);
     const sortOrder = result.max_order === null ? 0 : result.max_order + 1;
     const title = typeof input.title === 'string' ? input.title : '';
     const content = typeof input.content === 'string' ? input.content : '';
-    return insertStmt.get(chapterId, title, content, sortOrder);
+    return insertStmt.get(bookId, chapterId, title, content, sortOrder);
   }
 
   function updateNote(id, input = {}) {
@@ -313,7 +438,7 @@ export function createNoteRepository(db) {
   }
 
   const saveWithAssociationsTx = db.transaction(({
-    id, chapterId, title, content, projectIds, assetIds,
+    id, bookId, chapterId, title, content, projectIds, assetIds,
   } = {}) => {
     if (!Array.isArray(projectIds)) {
       throw new NoteError('Project IDs must be an array.', { code: 'INVALID_INPUT' });
@@ -323,7 +448,10 @@ export function createNoteRepository(db) {
     }
 
     const note = id === undefined
-      ? createNote({ chapterId, title, content })
+      ? createNote(
+        { bookId, chapterId, title, content },
+        { allowLegacyChapterBookFallback: true },
+      )
       : updateNote(id, { title, content });
 
     if (!note) return undefined;
@@ -337,10 +465,10 @@ export function createNoteRepository(db) {
 
   return {
     /**
-     * Create a note, appending it after the current highest Chapter-local sort_order.
+     * Create a note, appending it after the current highest container-local sort_order.
      *
-     * @param {{ chapterId: number, title?: string, content?: string }} input
-     * @returns {{ id: number, chapter_id: number, title: string, content: string, sort_order: number, created_at: string, updated_at: string }}
+     * @param {{ bookId: number, chapterId?: number|null, title?: string, content?: string }} input
+     * @returns {{ id: number, book_id: number, chapter_id: number|null, title: string, content: string, sort_order: number, created_at: string, updated_at: string }}
      */
     create(input = {}) {
       return createNote(input);
@@ -348,7 +476,7 @@ export function createNoteRepository(db) {
 
     /**
      * @param {number} id
-     * @returns {{ id: number, chapter_id: number, title: string, content: string, sort_order: number, created_at: string, updated_at: string }|undefined}
+     * @returns {{ id: number, book_id: number, chapter_id: number|null, title: string, content: string, sort_order: number, created_at: string, updated_at: string }|undefined}
      */
     findById(id) {
       return findByIdStmt.get(id);
@@ -359,7 +487,7 @@ export function createNoteRepository(db) {
      * compatibility method for the flat Notes service and has no global
      * sort_order meaning.
      *
-     * @returns {Array<{ id: number, chapter_id: number, title: string, content: string, sort_order: number, created_at: string, updated_at: string }>}
+     * @returns {Array<{ id: number, book_id: number, chapter_id: number|null, title: string, content: string, sort_order: number, created_at: string, updated_at: string }>}
      */
     list() {
       return listStmt.all();
@@ -369,10 +497,20 @@ export function createNoteRepository(db) {
      * List Notes in one Chapter by local manual order.
      *
      * @param {number} chapterId
-     * @returns {Array<{ id: number, chapter_id: number, title: string, content: string, sort_order: number, created_at: string, updated_at: string }>}
+     * @returns {Array<{ id: number, book_id: number, chapter_id: number, title: string, content: string, sort_order: number, created_at: string, updated_at: string }>}
      */
     listForChapter(chapterId) {
       return listForChapterStmt.all(chapterId);
+    },
+
+    /**
+     * List only direct Book Pages by their Book-local manual order.
+     *
+     * @param {number} bookId
+     * @returns {Array<{ id: number, book_id: number, chapter_id: null, title: string, content: string, sort_order: number, created_at: string, updated_at: string }>}
+     */
+    listForBook(bookId) {
+      return listForBookStmt.all(bookId);
     },
 
     /**
@@ -381,7 +519,7 @@ export function createNoteRepository(db) {
      *
      * @param {number} id
      * @param {{ title?: string, content?: string }} input
-     * @returns {{ id: number, chapter_id: number, title: string, content: string, sort_order: number, created_at: string, updated_at: string }|undefined}
+     * @returns {{ id: number, book_id: number, chapter_id: number|null, title: string, content: string, sort_order: number, created_at: string, updated_at: string }|undefined}
      */
     update(id, input = {}) {
       return updateNote(id, input);
@@ -389,7 +527,7 @@ export function createNoteRepository(db) {
 
     /**
      * @param {number} id
-     * @returns {boolean} true when a Note row was deleted and its source Chapter compacted
+     * @returns {boolean} true when a Note row was deleted and its source container compacted
      */
     deleteById(id) {
       return deleteAndCompactTx(id);
@@ -411,6 +549,19 @@ export function createNoteRepository(db) {
     },
 
     /**
+     * Persist a complete direct-Book-local reorder. Chapter Pages are never
+     * included. `orderedIds` must be an exact permutation of direct Pages in
+     * `bookId`.
+     *
+     * @param {number} bookId
+     * @param {number[]} orderedIds
+     * @returns {Array<{ id: number, book_id: number, chapter_id: null, title: string, content: string, sort_order: number, created_at: string, updated_at: string }>}
+     */
+    reorderForBook(bookId, orderedIds) {
+      return reorderForBookTx(bookId, orderedIds);
+    },
+
+    /**
      * Move a Note to the end of another Chapter without changing content
      * timestamps or associations. Returns undefined for a missing Note;
      * throws NoteError with TARGET_CHAPTER_NOT_FOUND for a missing destination.
@@ -425,10 +576,22 @@ export function createNoteRepository(db) {
     },
 
     /**
+     * Move a Note to the end of a Chapter or directly into a Book without
+     * changing content timestamps or associations.
+     *
+     * @param {number} noteId
+     * @param {{ bookId: number, chapterId?: number|null }} target
+     * @returns {{ id: number, book_id: number, chapter_id: number|null, title: string, content: string, sort_order: number, created_at: string, updated_at: string }|undefined}
+     */
+    moveToContainer(noteId, target) {
+      return moveToContainerTx(noteId, target);
+    },
+
+    /**
      * Persist a note mutation and its complete project/asset associations in
      * one transaction. An omitted id creates a note; a supplied id updates it.
      *
-     * @param {{ id?: number, chapterId?: number, title?: string, content?: string, projectIds: number[], assetIds: number[] }} input
+     * @param {{ id?: number, bookId?: number, chapterId?: number|null, title?: string, content?: string, projectIds: number[], assetIds: number[] }} input
      * @returns {{ note: object, projectIds: number[], assetIds: number[] }|undefined}
      */
     saveWithAssociations(input) {
@@ -464,7 +627,7 @@ export function createNoteRepository(db) {
      * List all Notes associated with a Project in hierarchy order.
      *
      * @param {number} projectId
-     * @returns {Array<{ id: number, chapter_id: number, title: string, content: string, sort_order: number, created_at: string, updated_at: string }>}
+     * @returns {Array<{ id: number, book_id: number, chapter_id: number|null, title: string, content: string, sort_order: number, created_at: string, updated_at: string }>}
      */
     listForProject(projectId) {
       return listForProjectStmt.all(projectId);
@@ -499,7 +662,7 @@ export function createNoteRepository(db) {
      * List all Notes associated with an Asset in hierarchy order.
      *
      * @param {number} assetId
-     * @returns {Array<{ id: number, chapter_id: number, title: string, content: string, sort_order: number, created_at: string, updated_at: string }>}
+     * @returns {Array<{ id: number, book_id: number, chapter_id: number|null, title: string, content: string, sort_order: number, created_at: string, updated_at: string }>}
      */
     listForAsset(assetId) {
       return listForAssetStmt.all(assetId);

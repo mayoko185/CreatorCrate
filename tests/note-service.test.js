@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { createNoteRepository, NoteError } from '../src/data/note-repository.js';
+import { createBookRepository } from '../src/data/book-repository.js';
 import { createChapterRepository } from '../src/data/chapter-repository.js';
 import { createProjectRepository } from '../src/data/project-repository.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
@@ -14,6 +15,7 @@ import {
   NoteNotFoundError,
   NoteValidationError,
 } from '../src/services/note-service.js';
+import { BookNotFoundError } from '../src/services/book-service.js';
 import { ChapterNotFoundError } from '../src/services/chapter-service.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
@@ -22,11 +24,13 @@ const MISSING_ID = 999999;
 describe('note service', () => {
   let tmpDir;
   let db;
+  let bookRepository;
   let noteRepository;
   let chapterRepository;
   let projectRepository;
   let assetRepository;
   let service;
+  let bookId;
   let chapterId;
   let nextProjectNumber;
   let nextAssetNumber;
@@ -35,11 +39,12 @@ describe('note service', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-note-service-'));
     db = openDatabase(path.join(tmpDir, 'test.db'));
     runMigrations(db, MIGRATIONS_DIR);
+    bookRepository = createBookRepository(db);
     noteRepository = createNoteRepository(db);
     chapterRepository = createChapterRepository(db);
     projectRepository = createProjectRepository(db);
     assetRepository = createAssetRepository(db);
-    const bookId = Number(db.prepare(`
+    bookId = Number(db.prepare(`
       INSERT INTO books (title, sort_order)
       VALUES ('Test book', 0)
     `).run().lastInsertRowid);
@@ -49,6 +54,7 @@ describe('note service', () => {
       projectRepository,
       assetRepository,
       chapterRepository,
+      bookRepository,
     });
     nextProjectNumber = 1;
     nextAssetNumber = 1;
@@ -82,6 +88,21 @@ describe('note service', () => {
     return service.createNote({ chapterId, ...input });
   }
 
+  function createDirectNote(input) {
+    return service.createNote({ bookId, ...input });
+  }
+
+  function createBook(title = 'Other book') {
+    return Number(db.prepare(`
+      INSERT INTO books (title, sort_order)
+      VALUES (?, (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM books))
+    `).run(title).lastInsertRowid);
+  }
+
+  function createChapterForBook(targetBookId, title = 'Other chapter') {
+    return chapterRepository.create({ bookId: targetBookId, title }).id;
+  }
+
   it('requires note, project, asset, and chapter repository dependencies', () => {
     expect(() => createNoteService()).toThrow(
       'createNoteService requires a noteRepository dependency.'
@@ -97,8 +118,105 @@ describe('note service', () => {
     );
   });
 
-  it('requires chapterId on create', () => {
-    expect(() => service.createNote({ title: 'Missing chapter' })).toThrow(NoteValidationError);
+  it('requires bookId for a direct Book Page', () => {
+    const error = (() => {
+      try {
+        service.createNote({ title: 'Missing Book container' });
+      } catch (caught) {
+        return caught;
+      }
+      return undefined;
+    })();
+
+    expect(error).toBeInstanceOf(NoteValidationError);
+    expect(error.errors).toEqual({ bookId: 'bookId must be a positive integer.' });
+    expect(noteRepository.list()).toEqual([]);
+  });
+
+  it('creates a Page directly in a Book', () => {
+    const note = createDirectNote({
+      title: 'Direct Page',
+      content: 'Book-level content',
+    });
+
+    expect(note).toMatchObject({
+      book_id: bookId,
+      chapter_id: null,
+      title: 'Direct Page',
+      content: 'Book-level content',
+    });
+    expect(service.listNotesForBook(bookId)).toEqual([
+      expect.objectContaining({ id: note.id, book_id: bookId, chapter_id: null }),
+    ]);
+  });
+
+  it('creates a Chapter Page with an explicit matching Book', () => {
+    const note = service.createNote({
+      bookId,
+      chapterId,
+      title: 'Explicit container',
+    });
+
+    expect(note).toMatchObject({ book_id: bookId, chapter_id: chapterId });
+  });
+
+  it('keeps chapter-only create callers compatible by deriving the Book', () => {
+    const saveWithAssociations = vi.spyOn(noteRepository, 'saveWithAssociations');
+
+    const note = createNote({ title: 'Legacy Chapter Page' });
+
+    expect(saveWithAssociations).toHaveBeenCalledWith(expect.objectContaining({
+      bookId,
+      chapterId,
+    }));
+    expect(note).toMatchObject({ book_id: bookId, chapter_id: chapterId });
+  });
+
+  it('keeps legacy chapter-only service construction usable without Book wiring', () => {
+    const legacyService = createNoteService({
+      noteRepository,
+      projectRepository,
+      assetRepository,
+      chapterRepository,
+    });
+
+    const note = legacyService.createNote({ chapterId, title: 'Legacy wiring' });
+
+    expect(note).toMatchObject({ book_id: bookId, chapter_id: chapterId });
+  });
+
+  it.each([0, -1, 1.5, '1', NaN, Infinity, Number.MAX_SAFE_INTEGER + 1])
+    ('rejects invalid bookId %p', (invalidBookId) => {
+      expect(() => service.createNote({ bookId: invalidBookId, title: 'Invalid Book' }))
+        .toThrow(NoteValidationError);
+      expect(noteRepository.list()).toEqual([]);
+    });
+
+  it('rejects a nonexistent Book before persistence', () => {
+    expect(() => service.createNote({ bookId: MISSING_ID, title: 'Missing Book' }))
+      .toThrow(BookNotFoundError);
+    expect(noteRepository.list()).toEqual([]);
+  });
+
+  it('rejects a mismatched Book and Chapter before repository write', () => {
+    const otherBookId = createBook();
+    const saveWithAssociations = vi.spyOn(noteRepository, 'saveWithAssociations');
+
+    let error;
+    try {
+      service.createNote({
+        bookId: otherBookId,
+        chapterId,
+        title: 'Mismatched hierarchy',
+      });
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(error).toBeInstanceOf(NoteValidationError);
+    expect(error.code).toBe('BOOK_CHAPTER_MISMATCH');
+    expect(error.errors.chapterId).toContain(`Book ${otherBookId}`);
+    expect(saveWithAssociations).not.toHaveBeenCalled();
     expect(noteRepository.list()).toEqual([]);
   });
 
@@ -327,6 +445,17 @@ describe('note service', () => {
     expect(service.getNote(created.id).chapter_id).toBe(chapterId);
   });
 
+  it('preserves direct Book membership and rejects hierarchy fields on update', () => {
+    const created = createDirectNote({ title: 'Fixed Book Page' });
+    const otherBookId = createBook();
+
+    expect(() => service.updateNote(created.id, { bookId: otherBookId }))
+      .toThrow(NoteValidationError);
+    expect(() => service.updateNote(created.id, { chapterId }))
+      .toThrow(NoteValidationError);
+    expect(service.getNote(created.id)).toMatchObject({ book_id: bookId, chapter_id: null });
+  });
+
   it('replaces associations on update and allows independent sets', () => {
     const firstProjectId = createProject();
     const secondProjectId = createProject();
@@ -452,6 +581,16 @@ describe('note service', () => {
     expect(noteRepository.listAssetsForNote(created.id)).toEqual([]);
   });
 
+  it('deletes a direct Book Page and compacts its Book-local order', () => {
+    const first = createDirectNote({ title: 'First direct' });
+    const second = createDirectNote({ title: 'Second direct' });
+
+    expect(service.deleteNote(first.id)).toBe(true);
+    expect(service.listNotesForBook(bookId)).toEqual([
+      expect.objectContaining({ id: second.id, sort_order: 0, chapter_id: null }),
+    ]);
+  });
+
   it('preserves canonical global list ordering', () => {
     const first = createNote({ title: 'First' });
     const second = createNote({ title: 'Second' });
@@ -476,6 +615,28 @@ describe('note service', () => {
     expect(listForChapter).toHaveBeenCalledWith(chapterId);
     expect(notes).toBe(listForChapter.mock.results[0].value);
     expect(notes.map((note) => note.id)).toEqual([first.id, second.id]);
+  });
+
+  it('lists only direct Book Pages for a Book', () => {
+    const direct = createDirectNote({ title: 'Direct Page' });
+    createNote({ title: 'Chapter Page' });
+    const otherBookId = createBook();
+    const otherDirect = service.createNote({ bookId: otherBookId, title: 'Other direct Page' });
+    const listForBook = vi.spyOn(noteRepository, 'listForBook');
+
+    const notes = service.listNotesForBook(bookId);
+
+    expect(listForBook).toHaveBeenCalledWith(bookId);
+    expect(notes).toBe(listForBook.mock.results[0].value);
+    expect(notes.map((note) => note.id)).toEqual([direct.id]);
+    expect(notes.map((note) => note.id)).not.toContain(otherDirect.id);
+  });
+
+  it('rejects a nonexistent Book list before delegating', () => {
+    const listForBook = vi.spyOn(noteRepository, 'listForBook');
+
+    expect(() => service.listNotesForBook(MISSING_ID)).toThrow(BookNotFoundError);
+    expect(listForBook).not.toHaveBeenCalled();
   });
 
   it.each([0, -1, 1.5, '1', NaN, Infinity, Number.MAX_SAFE_INTEGER + 1])
@@ -581,6 +742,21 @@ describe('note service', () => {
     expect(reorder).toHaveBeenCalledWith(emptyChapterId, []);
   });
 
+  it('reorders only direct Book Pages', () => {
+    const first = createDirectNote({ title: 'Direct first' });
+    const second = createDirectNote({ title: 'Direct second' });
+    const chapterPage = createNote({ title: 'Chapter Page' });
+    const reorderForBook = vi.spyOn(noteRepository, 'reorderForBook');
+
+    const reordered = service.reorderBookPages(bookId, [second.id, first.id]);
+
+    expect(reorderForBook).toHaveBeenCalledWith(bookId, [second.id, first.id]);
+    expect(reordered.map((note) => note.id)).toEqual([second.id, first.id]);
+    expect(reordered.every((note) => note.chapter_id === null)).toBe(true);
+    expect(service.listNotesForChapter(chapterId).map((note) => note.id))
+      .toEqual([chapterPage.id]);
+  });
+
   it('moves a Note to another Chapter without changing its state or associations', () => {
     const projectId = createProject();
     const assetId = createAsset(projectId);
@@ -594,11 +770,14 @@ describe('note service', () => {
       bookId: chapterRepository.findById(chapterId).book_id,
       title: 'Destination chapter',
     }).id;
-    const moveToChapter = vi.spyOn(noteRepository, 'moveToChapter');
+    const moveToContainer = vi.spyOn(noteRepository, 'moveToContainer');
 
     const moved = service.moveNoteToChapter(created.id, targetChapterId);
 
-    expect(moveToChapter).toHaveBeenCalledWith(created.id, targetChapterId);
+    expect(moveToContainer).toHaveBeenCalledWith(created.id, {
+      bookId: bookId,
+      chapterId: targetChapterId,
+    });
     expect(moved).toMatchObject({
       id: created.id,
       chapter_id: targetChapterId,
@@ -618,6 +797,75 @@ describe('note service', () => {
     });
   });
 
+  it('moves a Chapter Page to a direct Page in the same Book', () => {
+    const created = createNote({ title: 'Chapter to Book' });
+    const moveToContainer = vi.spyOn(noteRepository, 'moveToContainer');
+
+    const moved = service.moveNote(created.id, { bookId });
+
+    expect(moveToContainer).toHaveBeenCalledWith(created.id, {
+      bookId,
+      chapterId: null,
+    });
+    expect(moved).toMatchObject({ id: created.id, book_id: bookId, chapter_id: null });
+  });
+
+  it('moves a direct Book Page into a Chapter', () => {
+    const created = createDirectNote({ title: 'Book to Chapter' });
+    const moveToContainer = vi.spyOn(noteRepository, 'moveToContainer');
+
+    const moved = service.moveNote(created.id, { bookId, chapterId });
+
+    expect(moveToContainer).toHaveBeenCalledWith(created.id, { bookId, chapterId });
+    expect(moved).toMatchObject({ id: created.id, book_id: bookId, chapter_id: chapterId });
+  });
+
+  it('moves a Page across Books', () => {
+    const otherBookId = createBook();
+    const targetChapterId = createChapterForBook(otherBookId, 'Cross-book target');
+    const created = createNote({ title: 'Cross-book source' });
+
+    const moved = service.moveNote(created.id, {
+      bookId: otherBookId,
+      chapterId: targetChapterId,
+    });
+
+    expect(moved).toMatchObject({
+      id: created.id,
+      book_id: otherBookId,
+      chapter_id: targetChapterId,
+    });
+  });
+
+  it('moves a direct Page between direct Book containers', () => {
+    const otherBookId = createBook();
+    const created = createDirectNote({ title: 'Direct cross-book source' });
+
+    const moved = service.moveNote(created.id, { bookId: otherBookId });
+
+    expect(moved).toMatchObject({ id: created.id, book_id: otherBookId, chapter_id: null });
+    expect(service.listNotesForBook(bookId)).toEqual([]);
+    expect(service.listNotesForBook(otherBookId).map((note) => note.id)).toEqual([created.id]);
+  });
+
+  it('rejects a mismatched target Book and Chapter before moving', () => {
+    const otherBookId = createBook();
+    const created = createDirectNote({ title: 'Mismatched target' });
+    const moveToContainer = vi.spyOn(noteRepository, 'moveToContainer');
+
+    let error;
+    try {
+      service.moveNote(created.id, { bookId: otherBookId, chapterId });
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(error).toBeInstanceOf(NoteValidationError);
+    expect(error.code).toBe('BOOK_CHAPTER_MISMATCH');
+    expect(moveToContainer).not.toHaveBeenCalled();
+    expect(service.getNote(created.id)).toMatchObject({ book_id: bookId, chapter_id: null });
+  });
+
   it.each([undefined, 0, -1, 1.5, '1', NaN, Infinity, Number.MAX_SAFE_INTEGER + 1])
     ('rejects invalid move noteId %p', (invalidNoteId) => {
       let error;
@@ -632,10 +880,10 @@ describe('note service', () => {
     });
 
   it('throws NoteNotFoundError when moving a missing Note', () => {
-    const moveToChapter = vi.spyOn(noteRepository, 'moveToChapter');
+    const moveToContainer = vi.spyOn(noteRepository, 'moveToContainer');
 
     expect(() => service.moveNoteToChapter(MISSING_ID, chapterId)).toThrow(NoteNotFoundError);
-    expect(moveToChapter).not.toHaveBeenCalled();
+    expect(moveToContainer).not.toHaveBeenCalled();
   });
 
   it.each([undefined, 0, -1, 1.5, '1', NaN, Infinity, Number.MAX_SAFE_INTEGER + 1])
@@ -655,10 +903,10 @@ describe('note service', () => {
 
   it('throws ChapterNotFoundError for a missing move target before delegating', () => {
     const created = createNote({ title: 'Source' });
-    const moveToChapter = vi.spyOn(noteRepository, 'moveToChapter');
+    const moveToContainer = vi.spyOn(noteRepository, 'moveToContainer');
 
     expect(() => service.moveNoteToChapter(created.id, MISSING_ID)).toThrow(ChapterNotFoundError);
-    expect(moveToChapter).not.toHaveBeenCalled();
+    expect(moveToContainer).not.toHaveBeenCalled();
   });
 
   it('returns the unchanged Note for a same-Chapter move', () => {
@@ -675,7 +923,7 @@ describe('note service', () => {
       bookId: chapterRepository.findById(chapterId).book_id,
       title: 'Race target',
     }).id;
-    vi.spyOn(noteRepository, 'moveToChapter').mockImplementationOnce(() => {
+    vi.spyOn(noteRepository, 'moveToContainer').mockImplementationOnce(() => {
       throw new NoteError(`Chapter ${targetChapterId} does not exist.`, {
         code: 'TARGET_CHAPTER_NOT_FOUND',
       });

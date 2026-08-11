@@ -57,9 +57,9 @@ describe('Book HTTP routes', () => {
       VALUES (?, 'Legacy Chapter', 0)
     `).run(first.id).lastInsertRowid);
     db.prepare(`
-      INSERT INTO notes (chapter_id, title, content, sort_order)
-      VALUES (?, 'Legacy Flat Note', '', 0)
-    `).run(chapterId);
+      INSERT INTO notes (book_id, chapter_id, title, content, sort_order)
+      VALUES (?, ?, 'Legacy Flat Note', '', 0)
+    `).run(first.id, chapterId);
     app.locals.bookService.reorderBooks([second.id, first.id]);
 
     const response = await agent.get('/notes').expect(200);
@@ -115,11 +115,78 @@ describe('Book HTTP routes', () => {
     const response = await agent.get(`/notes/books/${book.id}`).expect(200);
     expect(response.text).toContain('<h2>Chapters</h2>');
     expect(response.text).toContain('<h2 class="empty-state-heading">No chapters yet</h2>');
+    expect(response.text).toContain('<h2>Pages</h2>');
+    expect(response.text).toContain('<h2 class="empty-state-heading">No pages yet</h2>');
+    expect(response.text).toContain(`<a class="button button-primary" href="/notes/books/${book.id}/chapters/new">New Chapter</a>`);
+    expect(response.text).toContain(`<a class="button" href="/notes/new?bookId=${book.id}">New Page</a>`);
     expect(response.text).toContain(`href="/notes/books/${book.id}/edit"`);
-    expect(response.text).toContain(`action="/notes/books/${book.id}/delete"`);
 
     await agent.get('/notes/books/999999').expect(404);
     await agent.get('/notes/books/01').expect(404);
+  });
+
+  it('renders a Book with Chapters and no direct Pages', async () => {
+    const book = app.locals.bookService.createBook({ title: 'Chapter Book' });
+    const chapter = app.locals.chapterService.createChapter({ bookId: book.id, title: 'Chapter One' });
+
+    const response = await agent.get(`/notes/books/${book.id}`).expect(200);
+
+    expect(response.text).toContain('<h2>Chapters</h2>');
+    expect(response.text).toContain(`<a href="/notes/chapters/${chapter.id}">Chapter One</a>`);
+    expect(response.text).toContain('<h2>Pages</h2>');
+    expect(response.text).toContain('<h2 class="empty-state-heading">No pages yet</h2>');
+  });
+
+  it('renders direct Pages with canonical links and no Chapters', async () => {
+    const book = app.locals.bookService.createBook({ title: 'Direct Pages Book' });
+    const page = app.locals.noteService.createNote({
+      bookId: book.id,
+      title: 'Direct Page',
+      content: 'Direct content',
+    });
+
+    const response = await agent.get(`/notes/books/${book.id}`).expect(200);
+
+    expect(response.text).toContain('<h2 class="empty-state-heading">No chapters yet</h2>');
+    expect(response.text).toContain('<h2>Pages</h2>');
+    expect(response.text).toContain(`<a href="/notes/${page.id}">Direct Page</a>`);
+    expect(response.text).not.toContain('No pages yet');
+  });
+
+  it('renders both child types while excluding Chapter Pages and Pages from other Books', async () => {
+    const book = app.locals.bookService.createBook({ title: 'Mixed Book' });
+    const otherBook = app.locals.bookService.createBook({ title: 'Other Book' });
+    const chapter = app.locals.chapterService.createChapter({ bookId: book.id, title: 'Included Chapter' });
+    const chapterPage = app.locals.noteService.createNote({
+      chapterId: chapter.id,
+      title: 'Chapter Page',
+      content: 'Nested content',
+    });
+    const directPage = app.locals.noteService.createNote({
+      bookId: book.id,
+      title: 'Included Direct Page',
+      content: 'Direct content',
+    });
+    const otherBookPage = app.locals.noteService.createNote({
+      bookId: otherBook.id,
+      title: 'Other Book Page',
+      content: 'Other content',
+    });
+
+    const response = await agent.get(`/notes/books/${book.id}`).expect(200);
+    const chaptersSection = response.text.match(
+      /<section class="settings-section">[\s\S]*?<h2>Chapters<\/h2>[\s\S]*?<\/section>/,
+    )?.[0] || '';
+    const pagesSection = response.text.match(
+      /<section class="settings-section">[\s\S]*?<h2>Pages<\/h2>[\s\S]*?<\/section>/,
+    )?.[0] || '';
+
+    expect(chaptersSection).toContain(`<a href="/notes/chapters/${chapter.id}">Included Chapter</a>`);
+    expect(pagesSection).toContain(`<a href="/notes/${directPage.id}">Included Direct Page</a>`);
+    expect(pagesSection).not.toContain(`href="/notes/${chapterPage.id}"`);
+    expect(pagesSection).not.toContain('Chapter Page');
+    expect(pagesSection).not.toContain(`href="/notes/${otherBookPage.id}"`);
+    expect(pagesSection).not.toContain('Other Book Page');
   });
 
   it('renders and updates the Book edit form', async () => {

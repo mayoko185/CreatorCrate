@@ -260,6 +260,7 @@ export function createNotesRouter({ appName, bookService, chapterService, noteSe
             appName,
             bookService,
             chapterService,
+            noteService,
             bookId,
             notice: resolveNotice('chapter_reorder_invalid'),
           });
@@ -278,7 +279,7 @@ export function createNotesRouter({ appName, bookService, chapterService, noteSe
     if (id === null) return next(createNotFound());
 
     try {
-      renderBookDetail(res, { appName, bookService, chapterService, bookId: id });
+      renderBookDetail(res, { appName, bookService, chapterService, noteService, bookId: id });
       return;
     } catch (err) {
       if (err instanceof BookNotFoundError) return next(createNotFound());
@@ -441,20 +442,31 @@ export function createNotesRouter({ appName, bookService, chapterService, noteSe
     }
   });
 
-  // GET /notes/new?chapterId=:chapterId — Create form
+  // GET /notes/new?chapterId=:chapterId or ?bookId=:bookId — Create form
   router.get('/new', (req, res, next) => {
-    const chapterId = parseId(req.query.chapterId);
-    if (chapterId === null) return next(createNotFound());
+    const query = req.query || {};
+    const hasChapterId = Object.hasOwn(query, 'chapterId');
+    const hasBookId = Object.hasOwn(query, 'bookId');
+    if (hasChapterId === hasBookId) return next(createNotFound());
+
+    const chapterId = hasChapterId ? parseId(query.chapterId) : null;
+    const bookId = hasBookId ? parseId(query.bookId) : null;
+    if ((hasChapterId && chapterId === null) || (hasBookId && bookId === null)) {
+      return next(createNotFound());
+    }
 
     try {
-      const chapter = chapterService.getChapter(chapterId);
-      const book = bookService.getBook(chapter.book_id);
+      const chapter = hasChapterId ? chapterService.getChapter(chapterId) : null;
+      const book = bookService.getBook(hasChapterId ? chapter.book_id : bookId);
       return res.render('notes/form.njk', buildNoteFormModel({
         appName,
         book,
         chapter,
         note: null,
-        values: emptyFormValues(chapterId),
+        values: emptyFormValues({
+          chapterId: hasChapterId ? chapterId : undefined,
+          bookId: hasBookId ? bookId : undefined,
+        }),
         projects: listProjectOptions(projectService),
         selectedAssets: [],
         errors: {},
@@ -472,19 +484,36 @@ export function createNotesRouter({ appName, bookService, chapterService, noteSe
   // POST /notes — Create a note with independent project and asset associations.
   router.post('/', (req, res, next) => {
     const body = req.body || {};
-    const chapterId = parseId(body.chapterId);
-    if (chapterId === null) return next(createNotFound());
+    const hasChapterId = Object.hasOwn(body, 'chapterId');
+    const hasBookId = Object.hasOwn(body, 'bookId');
+    if (hasChapterId === hasBookId) return next(createNotFound());
+
+    const chapterId = hasChapterId ? parseId(body.chapterId) : null;
+    const bookId = hasBookId ? parseId(body.bookId) : null;
+    if ((hasChapterId && chapterId === null) || (hasBookId && bookId === null)) {
+      return next(createNotFound());
+    }
 
     try {
-      const note = noteService.createNote({ chapterId, ...parseNoteInput(body) });
+      const note = noteService.createNote({
+        ...(hasChapterId ? { chapterId } : { bookId }),
+        ...parseNoteInput(body),
+      });
       return res.redirect(`/notes/${note.id}`);
     } catch (err) {
-      if (err instanceof ChapterNotFoundError) return next(createNotFound());
+      if (err instanceof ChapterNotFoundError || err instanceof BookNotFoundError) {
+        return next(createNotFound());
+      }
       if (err instanceof NoteValidationError) {
         try {
-          const chapter = chapterService.getChapter(chapterId);
-          const book = bookService.getBook(chapter.book_id);
-          const values = buildFormValues(body, { chapterId });
+          const chapter = hasChapterId ? chapterService.getChapter(chapterId) : null;
+          const book = hasChapterId
+            ? bookService.getBook(chapter.book_id)
+            : bookService.getBook(bookId);
+          const values = buildFormValues(body, {
+            chapterId: hasChapterId ? chapterId : undefined,
+            bookId: hasBookId ? bookId : undefined,
+          });
           return res.status(422).render('notes/form.njk', buildNoteFormModel({
             appName,
             book,
@@ -544,9 +573,9 @@ export function createNotesRouter({ appName, bookService, chapterService, noteSe
     }
 
     try {
-      const note = noteService.getNote(id);
-      const chapter = chapterService.getChapter(note.chapter_id);
-      const book = bookService.getBook(chapter.book_id);
+      const { note, chapter, book } = loadNoteHierarchy({
+        noteService, chapterService, bookService, id,
+      });
       const contentHtml = markdownRenderer.renderMarkdown(note.content);
       const projects = resolveAssociatedProjects(note, projectService);
       const assets = resolveAssociatedAssets(note, assetRepository);
@@ -652,12 +681,13 @@ export function createNotesRouter({ appName, bookService, chapterService, noteSe
     }
 
     try {
-      const note = noteService.getNote(id);
-      const chapter = chapterService.getChapter(note.chapter_id);
+      const { note, chapter, book } = loadNoteHierarchy({
+        noteService, chapterService, bookService, id,
+      });
       noteService.deleteNote(id);
-      return res.redirect(`/notes/chapters/${chapter.id}`);
+      return res.redirect(chapter ? `/notes/chapters/${chapter.id}` : `/notes/books/${book.id}`);
     } catch (err) {
-      if (err instanceof NoteNotFoundError || err instanceof ChapterNotFoundError) {
+      if (err instanceof NoteNotFoundError || err instanceof ChapterNotFoundError || err instanceof BookNotFoundError) {
         return next(createNotFound());
       }
       return next(err);
@@ -708,17 +738,18 @@ function parseNoteInput(body) {
   return input;
 }
 
-function emptyFormValues(chapterId = undefined) {
-  return { title: '', content: '', projectIds: [], assetIds: [], chapterId };
+function emptyFormValues({ chapterId = undefined, bookId = undefined } = {}) {
+  return { title: '', content: '', projectIds: [], assetIds: [], chapterId, bookId };
 }
 
-function buildFormValues(body, { chapterId = undefined } = {}) {
+function buildFormValues(body, { chapterId = undefined, bookId = undefined } = {}) {
   return {
     title: body.title ?? '',
     content: body.content ?? '',
     projectIds: normalizeProjectIds(body.projectIds),
     assetIds: normalizeAssetIds(body.assetIds),
     chapterId,
+    bookId,
   };
 }
 
@@ -733,8 +764,8 @@ function noteToFormValues(note) {
 
 function loadNoteHierarchy({ noteService, chapterService, bookService, id }) {
   const note = noteService.getNote(id);
-  const chapter = chapterService.getChapter(note.chapter_id);
-  const book = bookService.getBook(chapter.book_id);
+  const chapter = note.chapter_id === null ? null : chapterService.getChapter(note.chapter_id);
+  const book = bookService.getBook(chapter ? chapter.book_id : note.book_id);
   return { note, chapter, book };
 }
 
@@ -937,10 +968,13 @@ function renderBooksIndex(res, { appName, bookService, notice = null, status = 2
   res.status(status).render('notes/books/index.njk', { appName, books, notice });
 }
 
-function renderBookDetail(res, { appName, bookService, chapterService, bookId, notice = null, status = 200 }) {
+function renderBookDetail(res, {
+  appName, bookService, chapterService, noteService, bookId, notice = null, status = 200,
+}) {
   const book = bookService.getBook(bookId);
   const chapters = chapterService.listChapters(bookId);
-  res.status(status).render('notes/books/detail.njk', { appName, book, chapters, notice });
+  const pages = noteService.listNotesForBook(bookId);
+  res.status(status).render('notes/books/detail.njk', { appName, book, chapters, pages, notice });
 }
 
 function renderChapterDetail(res, {

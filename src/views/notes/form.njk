@@ -11,7 +11,7 @@
 {% block content %}
   {% call pageHeading.render(formDescription) %}
     <button class="button button-primary" type="submit" form="note-form">{{ action }}</button>
-    <a class="button button-secondary" href="{% if note %}/notes/{{ note.id }}{% elif chapter %}/notes/chapters/{{ chapter.id }}{% else %}/notes{% endif %}">Cancel</a>
+    <a class="button button-secondary" href="{% if note %}/notes/{{ note.id }}{% elif chapter %}/notes/chapters/{{ chapter.id }}{% elif book %}/notes/books/{{ book.id }}{% else %}/notes{% endif %}">Cancel</a>
   {% endcall %}
 
   {% if errors.general %}
@@ -24,6 +24,8 @@
     <input type="hidden" name="_csrf" value="{{ _csrf }}">
     {% if chapter and action == 'Create' %}
       <input type="hidden" name="chapterId" value="{{ values.chapterId }}">
+    {% elif book and action == 'Create' %}
+      <input type="hidden" name="bookId" value="{{ values.bookId }}">
     {% endif %}
 
     <aside class="notes-workspace-context" aria-labelledby="notes-context-heading">
@@ -48,6 +50,9 @@
       {% if chapter %}
         <a class="notes-workspace-back" href="/notes/chapters/{{ chapter.id }}">Back to Chapter</a>
         <p class="notes-workspace-context-note">This Page will belong to this Chapter.</p>
+      {% elif book %}
+        <a class="notes-workspace-back" href="/notes/books/{{ book.id }}">Back to Book</a>
+        <p class="notes-workspace-context-note">This Page will belong directly to this Book.</p>
       {% endif %}
     </aside>
 

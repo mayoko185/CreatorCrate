@@ -6,6 +6,7 @@
 {% block content %}
   {% call pageHeading.render("Book") %}
     <a class="button button-primary" href="/notes/books/{{ book.id }}/chapters/new">New Chapter</a>
+    <a class="button" href="/notes/new?bookId={{ book.id }}">New Page</a>
     <a class="button" href="/notes/books/{{ book.id }}/edit">Edit Book</a>
   {% endcall %}
 
@@ -36,6 +37,30 @@
       {% set emptyDescription = "Create a chapter to start organizing this book." %}
       {% set emptyActionUrl = "/notes/books/" ~ book.id ~ "/chapters/new" %}
       {% set emptyActionLabel = "New Chapter" %}
+      {% include "partials/empty-state.njk" %}
+    {% endif %}
+  </section>
+
+  <section class="settings-section">
+    <h2>Pages</h2>
+    {% if pages.length > 0 %}
+      <div class="table-scroll" tabindex="0" aria-label="Pages list">
+        <table class="data-table">
+          <thead><tr><th>Title</th></tr></thead>
+          <tbody>
+            {% for page in pages %}
+              <tr>
+                <td><a href="/notes/{{ page.id }}">{{ page.title }}</a></td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      {% set emptyHeading = "No pages yet" %}
+      {% set emptyDescription = "Pages created directly in this Book will appear here." %}
+      {% set emptyActionUrl = "" %}
+      {% set emptyActionLabel = "" %}
       {% include "partials/empty-state.njk" %}
     {% endif %}
   </section>

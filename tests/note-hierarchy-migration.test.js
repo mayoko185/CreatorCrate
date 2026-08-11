@@ -81,12 +81,13 @@ describe('note hierarchy migration (008_add_note_hierarchy)', () => {
     ]);
     expect(db.pragma("table_info('notes')")).toEqual([
       { cid: 0, name: 'id', type: 'INTEGER', notnull: 0, dflt_value: null, pk: 1 },
-      { cid: 1, name: 'chapter_id', type: 'INTEGER', notnull: 1, dflt_value: null, pk: 0 },
-      { cid: 2, name: 'title', type: 'TEXT', notnull: 1, dflt_value: "''", pk: 0 },
-      { cid: 3, name: 'content', type: 'TEXT', notnull: 1, dflt_value: "''", pk: 0 },
-      { cid: 4, name: 'sort_order', type: 'INTEGER', notnull: 1, dflt_value: '0', pk: 0 },
-      { cid: 5, name: 'created_at', type: 'TEXT', notnull: 1, dflt_value: "datetime('now')", pk: 0 },
-      { cid: 6, name: 'updated_at', type: 'TEXT', notnull: 1, dflt_value: "datetime('now')", pk: 0 },
+      { cid: 1, name: 'book_id', type: 'INTEGER', notnull: 1, dflt_value: null, pk: 0 },
+      { cid: 2, name: 'chapter_id', type: 'INTEGER', notnull: 0, dflt_value: null, pk: 0 },
+      { cid: 3, name: 'title', type: 'TEXT', notnull: 1, dflt_value: "''", pk: 0 },
+      { cid: 4, name: 'content', type: 'TEXT', notnull: 1, dflt_value: "''", pk: 0 },
+      { cid: 5, name: 'sort_order', type: 'INTEGER', notnull: 1, dflt_value: '0', pk: 0 },
+      { cid: 6, name: 'created_at', type: 'TEXT', notnull: 1, dflt_value: "datetime('now')", pk: 0 },
+      { cid: 7, name: 'updated_at', type: 'TEXT', notnull: 1, dflt_value: "datetime('now')", pk: 0 },
     ]);
 
     expect(indexColumns(db, 'idx_books_sort_order')).toEqual(['sort_order', 'id']);
@@ -224,13 +225,13 @@ describe('note hierarchy migration (008_add_note_hierarchy)', () => {
     `).pluck().get();
     expect(highWaterAfter).toBeGreaterThanOrEqual(highWaterBefore);
     const chapterId = db.prepare('SELECT id FROM chapters WHERE title = ?').pluck().get('Unfiled');
+    const bookId = db.prepare('SELECT id FROM books WHERE title = ?').pluck().get('Notes');
     const nextNoteId = Number(db.prepare(`
-      INSERT INTO notes (chapter_id, title, content, sort_order)
-      VALUES (?, 'Post-migration Note', '', 3)
-    `).run(chapterId).lastInsertRowid);
+      INSERT INTO notes (book_id, chapter_id, title, content, sort_order)
+      VALUES (?, ?, 'Post-migration Note', '', 3)
+    `).run(bookId, chapterId).lastInsertRowid);
     expect(nextNoteId).toBe(deletedHighNoteId + 1);
 
-    const bookId = db.prepare('SELECT id FROM books WHERE title = ?').pluck().get('Notes');
     const bookRepository = createBookRepository(db);
     const chapterRepository = createChapterRepository(db);
     const noteRepository = createNoteRepository(db);

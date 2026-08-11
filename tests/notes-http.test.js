@@ -154,6 +154,23 @@ describe('top-level Notes HTTP slice', () => {
     expect(noteForm).toContain('<input type="hidden" name="assetIds[]" value="">');
   });
 
+  it('GET /notes/new renders the direct Book-scoped form contract', async () => {
+    const book = app.locals.bookService.createBook({ title: 'Direct Book Page Book' });
+    const response = await agent.get('/notes/new').query({ bookId: book.id }).expect(200);
+
+    expect(response.text).toContain('<title>CreatorCrate — Notes — Create Note</title>');
+    expect(response.text).toContain(`<a class="button button-secondary" href="/notes/books/${book.id}">Cancel</a>`);
+    expect(response.text).toContain(`<input type="hidden" name="bookId" value="${book.id}">`);
+    expect(response.text).not.toContain('name="chapterId"');
+    expect(response.text).toContain(`<a href="/notes/books/${book.id}">Direct Book Page Book</a>`);
+    expect(response.text).toContain(`<a class="notes-workspace-back" href="/notes/books/${book.id}">Back to Book</a>`);
+    expect(response.text).toContain('This Page will belong directly to this Book.');
+    expect(response.text).not.toContain('Back to Chapter');
+    expect(response.text).toContain('data-notes-asset-picker');
+    expect(response.text).toContain('data-projects-url="/notes/asset-picker/projects"');
+    expect(response.text).toContain('data-assets-url="/notes/asset-picker/assets"');
+  });
+
   it('GET /notes/new renders accessible project options', async () => {
     const { chapter } = createChapterContext(app);
     const firstProjectId = insertProject(db, 'Alpha Project');
@@ -194,6 +211,15 @@ describe('top-level Notes HTTP slice', () => {
     for (const chapterId of [undefined, '0', '01', 'not-an-id', '999999']) {
       await agent.get('/notes/new').query(chapterId === undefined ? {} : { chapterId }).expect(404);
     }
+  });
+
+  it('GET /notes/new rejects missing, malformed, nonexistent, and conflicting Book contexts', async () => {
+    const { book, chapter } = createChapterContext(app);
+
+    for (const bookId of ['0', '01', 'not-an-id', '999999']) {
+      await agent.get('/notes/new').query({ bookId }).expect(404);
+    }
+    await agent.get('/notes/new').query({ bookId: book.id, chapterId: chapter.id }).expect(404);
   });
 
   describe('asset picker project endpoint', () => {
@@ -352,6 +378,49 @@ describe('top-level Notes HTTP slice', () => {
       content,
       projectIds: [],
       assetIds: [],
+    });
+  });
+
+  it('POST /notes creates a direct Book Page with associations and redirects to shallow detail', async () => {
+    const book = app.locals.bookService.createBook({ title: 'Direct Create Book' });
+    const firstProjectId = insertProject(db, 'Direct Create Project');
+    const secondProjectId = insertProject(db, 'Direct Create Other Project');
+    const firstAssetId = insertAsset(db, firstProjectId, 'direct-first.txt', {
+      extension: 'txt',
+      mimeType: 'text/plain',
+    });
+    const secondAssetId = insertAsset(db, secondProjectId, 'direct-second.kra', {
+      extension: 'kra',
+      mimeType: 'application/x-krita',
+    });
+    const content = '# Direct Book Markdown\n\nBody';
+
+    const response = await agent
+      .post('/notes')
+      .type('form')
+      .send({
+        _csrf: csrfToken,
+        bookId: String(book.id),
+        title: 'Direct Book Page',
+        content,
+        projectIds: [String(firstProjectId), String(secondProjectId)],
+        assetIds: [String(firstAssetId), String(secondAssetId)],
+      })
+      .expect(302);
+
+    const noteId = Number(response.headers.location.replace('/notes/', ''));
+    expect(response.headers.location).toBe(`/notes/${noteId}`);
+    expect(app.locals.noteService.getNote(noteId)).toMatchObject({
+      book_id: book.id,
+      chapter_id: null,
+      title: 'Direct Book Page',
+      content,
+      projectIds: [firstProjectId, secondProjectId],
+      assetIds: [firstAssetId, secondAssetId],
+    });
+    expect(db.prepare('SELECT book_id, chapter_id FROM notes WHERE id = ?').get(noteId)).toEqual({
+      book_id: book.id,
+      chapter_id: null,
     });
   });
 
@@ -608,6 +677,49 @@ describe('top-level Notes HTTP slice', () => {
     expect(app.locals.noteService.listNotes()).toHaveLength(0);
   });
 
+  it('POST /notes rerenders direct Book validation with hierarchy and selected state intact', async () => {
+    const book = app.locals.bookService.createBook({ title: 'Direct Validation Book' });
+    const firstProjectId = insertProject(db, 'Direct Validation Project');
+    const secondProjectId = insertProject(db, 'Direct Validation Other Project');
+    const firstAssetId = insertAsset(db, firstProjectId, 'direct-validation-first.txt', {
+      extension: 'txt',
+      mimeType: 'text/plain',
+    });
+    const secondAssetId = insertAsset(db, secondProjectId, 'direct-validation-second.txt', {
+      extension: 'txt',
+      mimeType: 'text/plain',
+    });
+    const attemptedContent = 'Direct attempted content';
+
+    const response = await agent
+      .post('/notes')
+      .type('form')
+      .send({
+        _csrf: csrfToken,
+        bookId: String(book.id),
+        title: '',
+        content: attemptedContent,
+        projectIds: [String(firstProjectId), String(secondProjectId)],
+        assetIds: [String(firstAssetId), String(secondAssetId)],
+      })
+      .expect(422);
+
+    expect(response.text).toContain('Title is required.');
+    expect(response.text).toContain(`<input type="hidden" name="bookId" value="${book.id}">`);
+    expect(response.text).not.toContain('name="chapterId"');
+    expect(response.text).toContain(`<a href="/notes/books/${book.id}">Direct Validation Book</a>`);
+    expect(response.text).toContain(`<a class="button button-secondary" href="/notes/books/${book.id}">Cancel</a>`);
+    expect(response.text).toContain('Back to Book');
+    expect(response.text).toContain(attemptedContent);
+    expect(response.text).toMatch(new RegExp(`id="note-project-option-${firstProjectId}"[^>]*checked`));
+    expect(response.text).toMatch(new RegExp(`id="note-project-option-${secondProjectId}"[^>]*checked`));
+    expect(response.text).toMatch(new RegExp(`id="note-asset-option-${firstAssetId}"[^>]*checked`));
+    expect(response.text).toMatch(new RegExp(`id="note-asset-option-${secondAssetId}"[^>]*checked`));
+    expect(response.text).toContain('direct-validation-first.txt');
+    expect(response.text).toContain('direct-validation-second.txt');
+    expect(app.locals.noteService.listNotes()).toHaveLength(0);
+  });
+
   it('POST /notes rejects missing or malformed Chapter IDs and a Chapter removed after rendering', async () => {
     await agent
       .post('/notes')
@@ -620,8 +732,21 @@ describe('top-level Notes HTTP slice', () => {
       .send({ _csrf: csrfToken, chapterId: '01', title: 'Malformed', content: '' })
       .expect(404);
 
-    const { chapter } = createChapterContext(app);
+    const { book, chapter } = createChapterContext(app);
     await agent.get('/notes/new').query({ chapterId: chapter.id }).expect(200);
+
+    await agent
+      .post('/notes')
+      .type('form')
+      .send({
+        _csrf: csrfToken,
+        bookId: String(book.id),
+        chapterId: String(chapter.id),
+        title: 'Conflicting hierarchy',
+        content: '',
+      })
+      .expect(404);
+
     app.locals.chapterService.deleteChapter(chapter.id);
 
     await agent
@@ -639,6 +764,18 @@ describe('top-level Notes HTTP slice', () => {
       .type('form')
       .send({ chapterId: String(chapter.id), title: 'No CSRF', content: '' })
       .expect(403);
+  });
+
+  it('POST /notes remains CSRF-protected with direct Book context', async () => {
+    const book = app.locals.bookService.createBook({ title: 'Protected Direct Book' });
+
+    await agent
+      .post('/notes')
+      .type('form')
+      .send({ bookId: String(book.id), title: 'No CSRF', content: '' })
+      .expect(403);
+
+    expect(app.locals.noteService.listNotes()).toHaveLength(0);
   });
 
   it('renders sanitized Markdown detail content with edit and delete affordances', async () => {
@@ -671,6 +808,57 @@ describe('top-level Notes HTTP slice', () => {
     expect(css.text).toContain('.notes-content');
     expect(css.text).toContain('.notes-content pre');
     expect(css.text).toContain('.notes-content table');
+  });
+
+  it('round-trips a direct Book Page through detail, edit, update, and delete', async () => {
+    const book = app.locals.bookService.createBook({ title: 'Direct Round-trip Book' });
+    const createResponse = await agent
+      .post('/notes')
+      .type('form')
+      .send({
+        _csrf: csrfToken,
+        bookId: String(book.id),
+        title: 'Direct Page Before',
+        content: 'Direct content before',
+      })
+      .expect(302);
+    const noteId = Number(createResponse.headers.location.replace('/notes/', ''));
+
+    const detailResponse = await agent.get(`/notes/${noteId}`).expect(200);
+    expect(detailResponse.text).toContain(`<a href="/notes/books/${book.id}">Direct Round-trip Book</a>`);
+    expect(detailResponse.text).toContain(`<a class="button button-secondary" href="/notes/books/${book.id}">Back to Book</a>`);
+    expect(detailResponse.text).not.toContain('<span>Chapter:</span>');
+    expect(detailResponse.text).not.toContain('Back to Chapter');
+
+    const editResponse = await agent.get(`/notes/${noteId}/edit`).expect(200);
+    expect(editResponse.text).toContain(`<a href="/notes/books/${book.id}">Direct Round-trip Book</a>`);
+    expect(editResponse.text).toContain(`<a class="notes-workspace-back" href="/notes/books/${book.id}">Back to Book</a>`);
+    expect(editResponse.text).not.toContain('name="chapterId"');
+
+    const updateResponse = await agent
+      .post(`/notes/${noteId}`)
+      .type('form')
+      .send({
+        _csrf: csrfToken,
+        title: 'Direct Page After',
+        content: 'Direct content after',
+      })
+      .expect(302);
+    expect(updateResponse.headers.location).toBe(`/notes/${noteId}`);
+    expect(app.locals.noteService.getNote(noteId)).toMatchObject({
+      book_id: book.id,
+      chapter_id: null,
+      title: 'Direct Page After',
+      content: 'Direct content after',
+    });
+
+    const deleteResponse = await agent
+      .post(`/notes/${noteId}/delete`)
+      .type('form')
+      .send({ _csrf: csrfToken })
+      .expect(302);
+    expect(deleteResponse.headers.location).toBe(`/notes/books/${book.id}`);
+    expect(app.locals.noteRepository.findById(noteId)).toBeUndefined();
   });
 
   it('GET /notes/:id returns 404 for a nonexistent note', async () => {
@@ -1461,9 +1649,9 @@ describe('top-level Notes HTTP slice', () => {
 
       const nonEmpty = app.locals.chapterService.createChapter({ bookId: book.id, title: 'Non-empty Chapter' });
       db.prepare(`
-        INSERT INTO notes (chapter_id, title, content, sort_order)
-        VALUES (?, 'Chapter Note', '', 0)
-      `).run(nonEmpty.id);
+        INSERT INTO notes (book_id, chapter_id, title, content, sort_order)
+        VALUES (?, ?, 'Chapter Note', '', 0)
+      `).run(book.id, nonEmpty.id);
       await agent
         .post(`/notes/chapters/${nonEmpty.id}/delete`)
         .type('form')

@@ -1,4 +1,5 @@
 import { NoteError } from '../data/note-repository.js';
+import { BookNotFoundError } from './book-service.js';
 import { ChapterNotFoundError } from './chapter-service.js';
 
 export const NOTE_TITLE_MAX = 200;
@@ -12,10 +13,11 @@ const REORDER_VALIDATION_CODES = new Set([
 ]);
 
 export class NoteValidationError extends Error {
-  constructor(errors) {
+  constructor(errors, { code } = {}) {
     super('Note validation failed');
     this.name = 'NoteValidationError';
     this.errors = errors;
+    if (code) this.code = code;
   }
 }
 
@@ -117,12 +119,14 @@ function isNoteRepositoryError(error) {
  * @param {object} deps.projectRepository
  * @param {object} deps.assetRepository
  * @param {object} deps.chapterRepository
+ * @param {object} [deps.bookRepository]
  */
 export function createNoteService({
   noteRepository,
   projectRepository,
   assetRepository,
   chapterRepository,
+  bookRepository,
 } = {}) {
   if (!noteRepository) {
     throw new Error('createNoteService requires a noteRepository dependency.');
@@ -155,6 +159,24 @@ export function createNoteService({
     return chapter;
   }
 
+  function requireBook(id) {
+    assertPositiveIntegerId(id, 'bookId');
+    if (!bookRepository) {
+      throw new Error('createNoteService requires a bookRepository dependency for Book-container operations.');
+    }
+    const book = bookRepository.findById(id);
+    if (!book) {
+      throw new BookNotFoundError(id);
+    }
+    return book;
+  }
+
+  function throwHierarchyMismatch(chapter, bookId) {
+    throw new NoteValidationError({
+      chapterId: `Chapter ${chapter.id} belongs to Book ${chapter.book_id}, not Book ${bookId}.`,
+    }, { code: 'BOOK_CHAPTER_MISMATCH' });
+  }
+
   function validateAssociationReferences(projectIds, assetIds) {
     const errors = {};
 
@@ -178,10 +200,20 @@ export function createNoteService({
   function normalizeCreateInput(input) {
     assertPlainObject(input, 'input');
     const errors = {};
-    if (typeof input.chapterId !== 'number'
+    const hasChapterId = input.chapterId !== undefined && input.chapterId !== null;
+    const hasBookId = input.bookId !== undefined;
+    if (hasBookId && (typeof input.bookId !== 'number'
+      || !Number.isSafeInteger(input.bookId)
+      || input.bookId <= 0)) {
+      errors.bookId = 'bookId must be a positive integer.';
+    }
+    if (hasChapterId && (typeof input.chapterId !== 'number'
       || !Number.isSafeInteger(input.chapterId)
-      || input.chapterId <= 0) {
+      || input.chapterId <= 0)) {
       errors.chapterId = 'chapterId must be a positive integer.';
+    }
+    if (!hasBookId && !hasChapterId) {
+      errors.bookId = 'bookId must be a positive integer.';
     }
     const title = normalizeTitle(input.title, errors);
     const content = normalizeContent(input.content, errors);
@@ -193,10 +225,26 @@ export function createNoteService({
     });
 
     throwValidationIfNeeded(errors);
-    requireChapter(input.chapterId);
+
+    let bookId = input.bookId;
+    let chapter = null;
+    if (hasBookId) {
+      requireBook(bookId);
+    }
+    if (hasChapterId) {
+      chapter = requireChapter(input.chapterId);
+      if (!hasBookId) {
+        // Temporary compatibility for the existing chapter-only callers.
+        bookId = chapter.book_id;
+        if (bookRepository) requireBook(bookId);
+      } else if (chapter.book_id !== bookId) {
+        throwHierarchyMismatch(chapter, bookId);
+      }
+    }
     validateAssociationReferences(projectIds, assetIds);
     return {
-      chapterId: input.chapterId,
+      bookId,
+      chapterId: hasChapterId ? input.chapterId : null,
       title,
       content,
       projectIds,
@@ -207,6 +255,9 @@ export function createNoteService({
   function normalizeUpdateInput(input, existing) {
     assertPlainObject(input, 'input');
     const errors = {};
+    if (Object.hasOwn(input, 'bookId')) {
+      errors.bookId = 'bookId cannot be changed by updating a Note.';
+    }
     if (Object.hasOwn(input, 'chapterId')) {
       errors.chapterId = 'chapterId cannot be changed by updating a Note.';
     }
@@ -270,6 +321,69 @@ export function createNoteService({
     }
   }
 
+  function normalizeMoveTarget(target) {
+    assertPlainObject(target, 'target');
+    const errors = {};
+    const hasChapterId = target.chapterId !== undefined && target.chapterId !== null;
+    if (typeof target.bookId !== 'number'
+      || !Number.isSafeInteger(target.bookId)
+      || target.bookId <= 0) {
+      errors.bookId = 'bookId must be a positive integer.';
+    }
+    if (hasChapterId && (typeof target.chapterId !== 'number'
+      || !Number.isSafeInteger(target.chapterId)
+      || target.chapterId <= 0)) {
+      errors.chapterId = 'chapterId must be a positive integer.';
+    }
+    throwValidationIfNeeded(errors);
+    return {
+      bookId: target.bookId,
+      chapterId: hasChapterId ? target.chapterId : null,
+    };
+  }
+
+  function moveNoteToContainer(noteId, target, { knownTargetChapter = null } = {}) {
+    requireNote(noteId);
+    const normalizedTarget = normalizeMoveTarget(target);
+    if (!knownTargetChapter || bookRepository) {
+      requireBook(normalizedTarget.bookId);
+    }
+
+    const targetChapter = normalizedTarget.chapterId === null
+      ? null
+      : knownTargetChapter || requireChapter(normalizedTarget.chapterId, 'chapterId');
+    if (targetChapter && targetChapter.book_id !== normalizedTarget.bookId) {
+      throwHierarchyMismatch(targetChapter, normalizedTarget.bookId);
+    }
+
+    try {
+      const moved = noteRepository.moveToContainer(noteId, normalizedTarget);
+      if (!moved) {
+        throw new NoteNotFoundError(noteId);
+      }
+      return moved;
+    } catch (error) {
+      if (error instanceof NoteNotFoundError) {
+        throw error;
+      }
+      if (isNoteRepositoryError(error)) {
+        if (error.code === 'TARGET_BOOK_NOT_FOUND' || error.code === 'BOOK_NOT_FOUND') {
+          throw new BookNotFoundError(normalizedTarget.bookId);
+        }
+        if (error.code === 'TARGET_CHAPTER_NOT_FOUND' || error.code === 'CHAPTER_NOT_FOUND') {
+          throw new ChapterNotFoundError(normalizedTarget.chapterId);
+        }
+        if (error.code === 'BOOK_CHAPTER_MISMATCH') {
+          throw new NoteValidationError({
+            chapterId: 'chapterId must belong to bookId.',
+          }, { code: 'BOOK_CHAPTER_MISMATCH' });
+        }
+        throw new NoteValidationError({ noteId: 'Note move could not be completed.' });
+      }
+      throw error;
+    }
+  }
+
   return {
     createNote(input) {
       const values = normalizeCreateInput(input);
@@ -287,6 +401,11 @@ export function createNoteService({
     listNotesForChapter(chapterId) {
       requireChapter(chapterId);
       return noteRepository.listForChapter(chapterId);
+    },
+
+    listNotesForBook(bookId) {
+      requireBook(bookId);
+      return noteRepository.listForBook(bookId);
     },
 
     updateNote(id, input) {
@@ -319,27 +438,36 @@ export function createNoteService({
       }
     },
 
-    moveNoteToChapter(noteId, targetChapterId) {
-      requireNote(noteId);
-      requireChapter(targetChapterId, 'targetChapterId');
+    reorderBookPages(bookId, orderedIds) {
+      requireBook(bookId);
+      validateReorderInput(orderedIds);
       try {
-        const moved = noteRepository.moveToChapter(noteId, targetChapterId);
-        if (!moved) {
-          throw new NoteNotFoundError(noteId);
-        }
-        return moved;
+        return noteRepository.reorderForBook(bookId, orderedIds);
       } catch (error) {
-        if (error instanceof NoteNotFoundError) {
-          throw error;
+        if (isNoteRepositoryError(error) && REORDER_VALIDATION_CODES.has(error.code)) {
+          throw new NoteValidationError({
+            orderedIds: 'Note order must contain every current direct Book Page exactly once.',
+          });
         }
-        if (isNoteRepositoryError(error) && error.code === 'TARGET_CHAPTER_NOT_FOUND') {
-          throw new ChapterNotFoundError(targetChapterId);
-        }
-        if (isNoteRepositoryError(error)) {
-          throw new NoteValidationError({ noteId: 'Note move could not be completed.' });
+        if (isNoteRepositoryError(error) && error.code === 'BOOK_NOT_FOUND') {
+          throw new BookNotFoundError(bookId);
         }
         throw error;
       }
+    },
+
+    moveNote(noteId, target) {
+      return moveNoteToContainer(noteId, target);
+    },
+
+    moveNoteToChapter(noteId, targetChapterId) {
+      requireNote(noteId);
+      const targetChapter = requireChapter(targetChapterId, 'targetChapterId');
+      return moveNoteToContainer(
+        noteId,
+        { bookId: targetChapter.book_id, chapterId: targetChapterId },
+        { knownTargetChapter: targetChapter },
+      );
     },
   };
 }

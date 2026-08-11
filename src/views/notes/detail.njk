@@ -6,14 +6,16 @@
 {% block content %}
   {% call pageHeading.render("Page") %}
     <a class="button" href="/notes/{{ note.id }}/edit">Edit</a>
-    <a class="button button-secondary" href="/notes/chapters/{{ chapter.id }}">Back to Chapter</a>
+    <a class="button button-secondary" href="{% if chapter %}/notes/chapters/{{ chapter.id }}{% else %}/notes/books/{{ book.id }}{% endif %}">{% if chapter %}Back to Chapter{% else %}Back to Book{% endif %}</a>
   {% endcall %}
 
   <nav class="notes-detail-hierarchy" aria-label="Page hierarchy">
     <span>Book:</span>
     <a href="/notes/books/{{ book.id }}">{{ book.title }}</a>
-    <span>Chapter:</span>
-    <a href="/notes/chapters/{{ chapter.id }}">{{ chapter.title }}</a>
+    {% if chapter %}
+      <span>Chapter:</span>
+      <a href="/notes/chapters/{{ chapter.id }}">{{ chapter.title }}</a>
+    {% endif %}
   </nav>
 
   <section class="settings-section">
@@ -25,7 +27,7 @@
         {% for option in chapterOptions %}
           <optgroup label="{{ option.book.title }}">
             {% for targetChapter in option.chapters %}
-              <option value="{{ targetChapter.id }}"{% if targetChapter.id == chapter.id %} selected{% endif %}>{{ targetChapter.title }}</option>
+              <option value="{{ targetChapter.id }}"{% if chapter %}{% if targetChapter.id == chapter.id %} selected{% endif %}{% endif %}>{{ targetChapter.title }}</option>
             {% endfor %}
           </optgroup>
         {% endfor %}

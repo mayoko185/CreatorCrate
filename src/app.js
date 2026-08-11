@@ -252,6 +252,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     projectRepository: projectService.repository,
     assetRepository: assetScanner.repository,
     chapterRepository,
+    bookRepository,
   });
   const chapterService = opts.chapterService || createChapterService({ chapterRepository, bookRepository });
   const markdownRenderer = opts.markdownRenderer || createMarkdownRenderer();
