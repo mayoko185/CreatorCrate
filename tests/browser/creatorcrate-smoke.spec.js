@@ -93,6 +93,128 @@ test.describe('CreatorCrate development browser smoke', () => {
     assertNoBrowserDiagnostics(diagnostics);
   });
 
+  test('browses, selects, persists, and clears Notes picker assets', async ({ page, devServer }) => {
+    const diagnostics = observeBrowser(page, devServer.baseURL);
+    const assetRequests = [];
+    page.on('request', (request) => {
+      if (new URL(request.url()).pathname === '/notes/asset-picker/assets') assetRequests.push(request.url());
+    });
+
+    const projectTitle = `Browser Asset Picker Project ${Date.now()}`;
+    const projectFormResponse = await page.goto(`${devServer.baseURL}/projects/new`, { waitUntil: 'domcontentloaded' });
+    expect(projectFormResponse?.status()).toBe(200);
+    await page.locator('#title').fill(projectTitle);
+    await Promise.all([
+      page.waitForURL(/\/projects\/\d+$/),
+      page.locator('button[type="submit"][form="project-form"]').click(),
+    ]);
+    const projectId = new URL(page.url()).pathname.split('/').at(-1);
+    await createAndScanBrowserPickerAssets(page, devServer.baseURL, devServer.projectsRoot, projectId);
+
+    const chapterId = await createBrowserNotesHierarchy(page, devServer.baseURL);
+    await page.goto(`${devServer.baseURL}/notes/new?chapterId=${chapterId}`, { waitUntil: 'domcontentloaded' });
+
+    const disclosure = page.locator('.notes-asset-picker-disclosure');
+    await disclosure.locator('summary').click();
+    const projectSearch = page.locator('#note-asset-picker-project-search');
+    await projectSearch.fill('Browser Asset Picker');
+    const projectResults = page.locator('#note-asset-picker-project-results');
+    await expect(projectResults.locator('button')).toContainText(projectTitle);
+
+    expect(
+      [...diagnostics.requestedUrls].some((url) => new URL(url).pathname === '/notes/asset-picker/projects'),
+    ).toBe(true);
+    const assetSearch = page.locator('#note-asset-picker-asset-search');
+    await expect(assetSearch).toBeDisabled();
+    await projectResults.locator('button').first().click();
+    await expect(assetSearch).toBeEnabled();
+    await expect.poll(() => assetRequests.length).toBe(1);
+    const firstAssetRequest = new URL(assetRequests[0]);
+    expect(firstAssetRequest.searchParams.get('projectId')).toBe(projectId);
+    expect(firstAssetRequest.searchParams.get('q')).toBe('');
+    expect(firstAssetRequest.searchParams.has('cursor')).toBe(false);
+
+    const assetResults = page.locator('#note-asset-picker-asset-results');
+    await expect(assetResults.locator('[data-asset-id]')).toHaveCount(25);
+    const loadMore = page.getByRole('button', { name: 'Load more' });
+    await expect(loadMore).toBeEnabled();
+
+    await assetSearch.fill('path-needle');
+    await expect(assetResults.locator('[data-asset-id]')).toHaveCount(1);
+    await expect(assetResults).toContainText('path-target.txt');
+    await expect(assetResults).toContainText('nested/path-needle');
+
+    await assetSearch.fill('');
+    await expect(assetResults.locator('[data-asset-id]')).toHaveCount(25);
+    await expect(loadMore).toBeEnabled();
+    await loadMore.click();
+    await expect(assetResults.locator('[data-asset-id]')).toHaveCount(26);
+    await expect(assetResults).toContainText('path-target.txt');
+    await expect(loadMore).toBeDisabled();
+
+    const firstCandidate = assetResults.locator('[data-asset-id]').first();
+    const firstAssetId = await firstCandidate.getAttribute('data-asset-id');
+    const firstFilename = await firstCandidate.locator('.notes-asset-picker-asset-filename').textContent();
+    await firstCandidate.getByRole('button', { name: 'Add', exact: true }).click();
+    await expect(firstCandidate.getByRole('button', { name: 'Selected', exact: true })).toBeDisabled();
+    await expect(page.locator('.notes-selected-asset')).toHaveCount(1);
+    await expect(page.locator('.notes-selected-assets')).toContainText(firstFilename);
+
+    const secondCandidate = assetResults.locator('[data-asset-id]').nth(1);
+    const secondAssetId = await secondCandidate.getAttribute('data-asset-id');
+    const secondFilename = await secondCandidate.locator('.notes-asset-picker-asset-filename').textContent();
+    await secondCandidate.getByRole('button', { name: 'Add', exact: true }).click();
+    await expect(secondCandidate.getByRole('button', { name: 'Selected', exact: true })).toBeDisabled();
+    await expect(page.locator('.notes-selected-asset')).toHaveCount(2);
+    await expect(page.locator('.notes-selected-assets')).toContainText(secondFilename);
+
+    await page.locator('.notes-selected-asset').filter({ hasText: firstFilename }).getByRole('button', { name: 'Remove', exact: true }).click();
+    await expect(page.locator('.notes-selected-asset')).toHaveCount(1);
+    await expect(page.locator('.notes-selected-assets')).not.toContainText(firstFilename);
+    await expect(secondCandidate.getByRole('button', { name: 'Selected', exact: true })).toBeDisabled();
+    await expect(firstCandidate.getByRole('button', { name: 'Add', exact: true })).toBeEnabled();
+    await expect(page.locator(`#note-form input[name="assetIds[]"][value="${secondAssetId}"]`)).toBeChecked();
+    await expect(page.locator(`#note-form input[name="assetIds[]"][value="${firstAssetId}"]`)).toHaveCount(0);
+
+    await page.locator('#title').fill('Browser Picker Note');
+    await Promise.all([
+      page.waitForURL(/\/notes\/\d+$/),
+      page.locator('button[type="submit"][form="note-form"]').click(),
+    ]);
+    const noteId = new URL(page.url()).pathname.split('/').at(-1);
+    await expect(page.locator('.notes-detail-assets')).toContainText(secondFilename);
+    await expect(page.locator('.notes-detail-assets')).not.toContainText(firstFilename);
+
+    await page.getByRole('link', { name: 'Edit', exact: true }).click();
+    await page.waitForURL(new RegExp(`/notes/${noteId}/edit$`));
+    await expect(page.locator('.notes-selected-asset')).toHaveCount(1);
+    await expect(page.locator('.notes-selected-assets')).toContainText(secondFilename);
+    await expect(page.locator(`#note-form input[name="assetIds[]"][value="${secondAssetId}"]`)).toBeChecked();
+
+    const editDisclosure = page.locator('.notes-asset-picker-disclosure');
+    await editDisclosure.locator('summary').click();
+    await page.locator('#note-asset-picker-project-search').fill('Browser Asset Picker');
+    await expect(page.locator('#note-asset-picker-project-results button')).toContainText(projectTitle);
+    await page.locator('#note-asset-picker-project-results button').first().click();
+    const editCandidate = page.locator(`#note-asset-picker-asset-results [data-asset-id="${secondAssetId}"]`);
+    await expect(editCandidate.getByRole('button', { name: 'Selected', exact: true })).toBeDisabled();
+
+    await page.locator('.notes-selected-asset').filter({ hasText: secondFilename }).getByRole('button', { name: 'Remove', exact: true }).click();
+    await expect(page.locator('.notes-selected-asset')).toHaveCount(0);
+    await expect(page.locator('.notes-selected-assets-empty')).toBeVisible();
+    await expect(editCandidate.getByRole('button', { name: 'Add', exact: true })).toBeEnabled();
+    await expect(page.locator('#note-form input[name="assetIds[]"][type="hidden"]')).toHaveCount(1);
+
+    await Promise.all([
+      page.waitForURL(new RegExp(`/notes/${noteId}$`)),
+      page.locator('button[type="submit"][form="note-form"]').click(),
+    ]);
+    await expect(page.locator('.notes-detail-assets')).toHaveCount(0);
+    expect(diagnostics.failedRequests.filter(({ url }) => new URL(url).pathname.startsWith('/notes/asset-picker/'))).toEqual([]);
+    expect(diagnostics.failedResponses.filter(({ url }) => new URL(url).pathname.startsWith('/notes/asset-picker/'))).toEqual([]);
+    assertNoBrowserDiagnostics(diagnostics);
+  });
+
   test('applies a real CSS HMR update without a full navigation', async ({ page, devServer }) => {
     const diagnostics = observeBrowser(page, devServer.baseURL);
     const navigationCount = trackMainFrameNavigations(page);
@@ -350,6 +472,7 @@ async function startCreatorCrateServer({ nodeEnv }) {
   let stopped = false;
   return {
     baseURL,
+    projectsRoot,
     tempRoot,
     async stop() {
       if (stopped) return;
@@ -621,6 +744,30 @@ async function submitProjectSortFilter(page) {
   await page.locator('#project-sort-filter-trigger').click();
   await page.locator('#project-sort-filter-options input[name="sort"][value="title"]').check();
   return page.locator('button[type="submit"][form="project-filters"]').click();
+}
+
+async function createAndScanBrowserPickerAssets(page, baseURL, projectsRoot, projectId) {
+  const projectDirectories = await fs.readdir(projectsRoot, { withFileTypes: true });
+  const projectDirectory = projectDirectories.find((entry) => entry.isDirectory());
+  expect(projectDirectory).toBeDefined();
+  const projectPath = path.join(projectsRoot, projectDirectory.name);
+  const assetFiles = Array.from({ length: 25 }, (_value, index) => (
+    `browse/asset-${String(index).padStart(2, '0')}.txt`
+  ));
+  assetFiles.push('nested/path-needle/path-target.txt');
+
+  await Promise.all(assetFiles.map(async (relativePath) => {
+    const filePath = path.join(projectPath, relativePath);
+    await fs.mkdir(path.dirname(filePath), { recursive: true });
+    await fs.writeFile(filePath, `browser picker fixture: ${relativePath}`, 'utf8');
+  }));
+
+  const assetsResponse = await page.goto(`${baseURL}/projects/${projectId}/assets`, { waitUntil: 'domcontentloaded' });
+  expect(assetsResponse?.status()).toBe(200);
+  await Promise.all([
+    page.waitForURL((url) => new URL(url).pathname === `/projects/${projectId}/assets`),
+    page.getByRole('button', { name: 'Scan Now' }).click(),
+  ]);
 }
 
 async function createBrowserNotesHierarchy(page, baseURL) {

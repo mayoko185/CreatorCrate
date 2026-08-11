@@ -129,7 +129,29 @@ describe('top-level Notes HTTP slice', () => {
     expect(response.text).toContain('No projects available.');
     expect(response.text).toContain('<legend>Assets</legend>');
     expect(response.text).toContain('name="assetIds[]"');
+    expect(response.text).toMatch(/<ul class="notes-selected-assets" aria-label="Selected assets">\s*<\/ul>/);
+    expect(response.text).toContain('No assets selected.');
+    expect(response.text).toContain('<details class="notes-asset-picker-disclosure">');
+    expect(response.text).toContain('<summary>Add assets</summary>');
+    expect(response.text).toContain('<div id="note-asset-picker" class="notes-asset-picker" data-notes-asset-picker');
+    expect(response.text).toContain('data-projects-url="/notes/asset-picker/projects"');
+    expect(response.text).toContain('data-assets-url="/notes/asset-picker/assets"');
+    expect(response.text).toContain('data-note-form-id="note-form"');
+    expect(response.text).toContain('<label for="note-asset-picker-project-search">Project search</label>');
+    expect(response.text).toContain('<ul id="note-asset-picker-project-results" class="notes-asset-picker-results" aria-label="Project search results"></ul>');
+    expect(response.text).toContain('<label for="note-asset-picker-asset-search">Asset search</label>');
+    expect(response.text).toContain('<input type="search" id="note-asset-picker-asset-search" autocomplete="off" disabled>');
+    expect(response.text).toContain('<ul id="note-asset-picker-asset-results" class="notes-asset-picker-results" aria-label="Asset search results"></ul>');
+    expect(response.text).toContain('<button type="button" class="button button-secondary" disabled>Load more</button>');
+    expect(response.text).toContain('role="status" aria-live="polite"');
+    expect(response.text).toContain('role="alert" aria-live="assertive"');
     expect(response.text).not.toContain('No assets available.');
+
+    const noteForm = response.text.match(/<form id="note-form"[\s\S]*?<\/form>/)?.[0];
+    expect(noteForm).toBeDefined();
+    expect(noteForm).toContain('name="title"');
+    expect(noteForm).toContain('name="content"');
+    expect(noteForm).toContain('<input type="hidden" name="assetIds[]" value="">');
   });
 
   it('GET /notes/new renders accessible project options', async () => {
@@ -161,7 +183,10 @@ describe('top-level Notes HTTP slice', () => {
 
     expect(response.text).toContain('<input type="hidden" name="assetIds[]" value="">');
     expect(response.text.match(/<input[^>]+name="assetIds\[\]"[^>]+type="checkbox"/g) || []).toHaveLength(0);
-    expect(response.text).not.toContain('notes-selected-assets');
+    expect(response.text).toMatch(/<ul class="notes-selected-assets" aria-label="Selected assets">\s*<\/ul>/);
+    expect(response.text).not.toMatch(/<li class="notes-selected-asset"/);
+    expect(response.text).toMatch(/<ul id="note-asset-picker-project-results"[^>]*><\/ul>/);
+    expect(response.text).toMatch(/<ul id="note-asset-picker-asset-results"[^>]*><\/ul>/);
     for (const filename of filenames) expect(response.text).not.toContain(filename);
   });
 
@@ -502,7 +527,7 @@ describe('top-level Notes HTTP slice', () => {
     expect(response.text).toContain('>Validation Asset Second</span>');
     expect(response.text).toContain('first-validation.txt');
     expect(response.text).toContain('second-validation.txt');
-    expect(response.text.match(/id="note-asset-option-/g) || []).toHaveLength(2);
+    expect(response.text.match(/id="note-asset-option-\d+"/g) || []).toHaveLength(2);
     for (const filename of unrelatedFilenames) expect(response.text).not.toContain(filename);
   });
 
@@ -697,6 +722,7 @@ describe('top-level Notes HTTP slice', () => {
     const firstProjectId = insertProject(db, 'Edit Asset First Project');
     const secondProjectId = insertProject(db, 'Edit Asset Second Project');
     const firstAssetId = insertAsset(db, firstProjectId, 'edit-first.txt', {
+      relativePath: 'source/edit-first.txt',
       extension: 'txt',
       mimeType: 'text/plain',
     });
@@ -718,8 +744,14 @@ describe('top-level Notes HTTP slice', () => {
 
     expect(response.text).toMatch(new RegExp(`id="note-asset-option-${firstAssetId}"[^>]*checked`));
     expect(response.text).toMatch(new RegExp(`id="note-asset-option-${secondAssetId}"[^>]*checked`));
+    expect(response.text).toContain('edit-first.txt');
+    expect(response.text).toContain('Edit Asset First Project');
+    expect(response.text).toContain('source/edit-first.txt');
+    expect(response.text).toContain('aria-label="Deselect edit-first.txt"');
+    expect(response.text).toContain('aria-label="Deselect edit-second.bin"');
     expect(response.text).not.toMatch(/name="projectIds\[\]"[^>]*checked/);
-    expect(response.text.match(/id="note-asset-option-/g) || []).toHaveLength(2);
+    expect(response.text.match(/id="note-asset-option-\d+"/g) || []).toHaveLength(2);
+    expect(response.text.match(/name="assetIds\[\]"[^>]*type="checkbox"/g) || []).toHaveLength(2);
     for (const filename of unrelatedFilenames) expect(response.text).not.toContain(filename);
   });
 

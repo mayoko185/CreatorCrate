@@ -131,22 +131,45 @@
       <fieldset class="field notes-connections-field asset-viewer-filter-field asset-filter-multiselect-field{% if assetError %} field-error{% endif %}">
         <legend>Assets</legend>
         <input type="hidden" name="assetIds[]" value="">
-        {% if selectedAssets.length > 0 %}
-          <div class="notes-selected-assets">
-            {% for asset in selectedAssets %}
-              <div class="asset-filter-multiselect-option">
-                <label for="note-asset-option-{{ asset.id }}">
-                  <input id="note-asset-option-{{ asset.id }}" name="assetIds[]" type="checkbox" value="{{ asset.id }}"{% if (asset.id | string) in selectedAssetIds %} checked{% endif %}{% if assetError %} aria-describedby="assetIds-error" aria-invalid="true"{% endif %}>
-                  <span>{{ asset.filename }}</span>
-                  <span class="notes-asset-option-path">{{ asset.projectTitle }}: {{ asset.relativePath }}</span>
-                  {% if asset.isProjectArchived %}<span class="notes-asset-option-state">Archived project</span>{% endif %}
-                  {% if not asset.isPresent %}<span class="notes-asset-option-state">Missing</span>{% endif %}
-                </label>
-              </div>
-            {% endfor %}
-          </div>
-        {% endif %}
+        <ul class="notes-selected-assets" aria-label="Selected assets">
+          {% for asset in selectedAssets %}
+            <li class="notes-selected-asset">
+              <label class="notes-selected-asset-control" for="note-asset-option-{{ asset.id }}">
+                <input id="note-asset-option-{{ asset.id }}" name="assetIds[]" type="checkbox" value="{{ asset.id }}" aria-label="Deselect {{ asset.filename }}" aria-describedby="{% if assetError %}assetIds-error {% endif %}note-asset-option-description-{{ asset.id }}"{% if (asset.id | string) in selectedAssetIds %} checked{% endif %}{% if assetError %} aria-invalid="true"{% endif %}>
+                <span id="note-asset-option-description-{{ asset.id }}" class="notes-selected-asset-details">
+                  <span class="notes-selected-asset-filename">{{ asset.filename }}</span>
+                  <span class="notes-selected-asset-project">Project: <span>{{ asset.projectTitle }}</span></span>
+                  {% if asset.relativePath and asset.relativePath != asset.filename %}<span class="notes-selected-asset-path">Path: <span>{{ asset.relativePath }}</span></span>{% endif %}
+                  {% if asset.isProjectArchived %}<span class="notes-selected-asset-state notes-selected-asset-state--archived">Archived project</span>{% endif %}
+                  {% if not asset.isPresent %}<span class="notes-selected-asset-state notes-selected-asset-state--missing">Missing</span>{% endif %}
+                </span>
+              </label>
+            </li>
+          {% endfor %}
+        </ul>
+        <p class="notes-selected-assets-empty"{% if selectedAssets.length > 0 %} hidden{% endif %}>No assets selected.</p>
         {% if assetError %}<span class="field-error-message" id="assetIds-error">{{ assetError }}</span>{% endif %}
+        <details class="notes-asset-picker-disclosure">
+          <summary>Add assets</summary>
+          <div id="note-asset-picker" class="notes-asset-picker" data-notes-asset-picker data-projects-url="/notes/asset-picker/projects" data-assets-url="/notes/asset-picker/assets" data-note-form-id="note-form">
+            <p class="notes-asset-picker-no-js">Searching for and adding assets requires JavaScript. Existing selected assets can be removed above.</p>
+            <div class="notes-asset-picker-field">
+              <label for="note-asset-picker-project-search">Project search</label>
+              <input type="search" id="note-asset-picker-project-search" autocomplete="off">
+            </div>
+            <ul id="note-asset-picker-project-results" class="notes-asset-picker-results" aria-label="Project search results"></ul>
+            <div class="notes-asset-picker-field">
+              <label for="note-asset-picker-asset-search">Asset search</label>
+              <input type="search" id="note-asset-picker-asset-search" autocomplete="off" disabled>
+            </div>
+            <ul id="note-asset-picker-asset-results" class="notes-asset-picker-results" aria-label="Asset search results"></ul>
+            <div class="notes-asset-picker-load-more">
+              <button type="button" class="button button-secondary" disabled>Load more</button>
+            </div>
+            <p id="note-asset-picker-status" class="notes-asset-picker-status" role="status" aria-live="polite" aria-atomic="true"></p>
+            <p id="note-asset-picker-error" class="notes-asset-picker-error" role="alert" aria-live="assertive" aria-atomic="true"></p>
+          </div>
+        </details>
       </fieldset>
     </aside>
   </form>
