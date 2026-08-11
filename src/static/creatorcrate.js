@@ -918,7 +918,6 @@ function initializeNotesEditor({ form, host, textarea }, Editor) {
       usageStatistics: false,
       autofocus: false,
       height: 'auto',
-      minHeight: '60vh',
       theme: 'dark',
       toolbarItems: NOTE_EDITOR_TOOLBAR_ITEMS,
     });

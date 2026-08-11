@@ -384,9 +384,10 @@ export function createNotesRouter({ appName, bookService, chapterService, noteSe
 
     try {
       const chapter = chapterService.getChapter(chapterId);
+      const book = bookService.getBook(chapter.book_id);
       return res.render('notes/chapters/form.njk', buildChapterFormModel({
         appName,
-        book: null,
+        book,
         chapter,
         values: { title: chapter.title },
         errors: {},
@@ -394,7 +395,7 @@ export function createNotesRouter({ appName, bookService, chapterService, noteSe
         submitUrl: `/notes/chapters/${chapterId}`,
       }));
     } catch (err) {
-      if (err instanceof ChapterNotFoundError) return next(createNotFound());
+      if (err instanceof ChapterNotFoundError || err instanceof BookNotFoundError) return next(createNotFound());
       return next(err);
     }
   });
@@ -412,9 +413,10 @@ export function createNotesRouter({ appName, bookService, chapterService, noteSe
       if (err instanceof ChapterValidationError) {
         try {
           const chapter = chapterService.getChapter(chapterId);
+          const book = bookService.getBook(chapter.book_id);
           return res.status(422).render('notes/chapters/form.njk', buildChapterFormModel({
             appName,
-            book: null,
+            book,
             chapter,
             values: { title: body.title ?? '' },
             errors: err.errors || { general: err.message },
@@ -422,7 +424,9 @@ export function createNotesRouter({ appName, bookService, chapterService, noteSe
             submitUrl: `/notes/chapters/${chapterId}`,
           }));
         } catch (lookupError) {
-          if (lookupError instanceof ChapterNotFoundError) return next(createNotFound());
+          if (lookupError instanceof ChapterNotFoundError || lookupError instanceof BookNotFoundError) {
+            return next(createNotFound());
+          }
           return next(lookupError);
         }
       }
@@ -579,7 +583,7 @@ export function createNotesRouter({ appName, bookService, chapterService, noteSe
     }
   });
 
-  // POST /notes/:id/move - move a Page to another Chapter.
+  // POST /notes/:id/move - move a Page to another Book or Chapter.
   // Registered before the dynamic Note routes.
   router.post('/:id/move', (req, res, next) => {
     const id = parseId(req.params.id);
@@ -587,20 +591,22 @@ export function createNotesRouter({ appName, bookService, chapterService, noteSe
       return next(createNotFound());
     }
 
-    const targetChapterId = parseId(req.body?.targetChapterId);
-    if (targetChapterId === null) {
-      const error = new NoteValidationError({
-        targetChapterId: 'targetChapterId must be a canonical positive integer.',
-      });
-      error.status = 422;
-      return next(error);
-    }
-
     try {
-      noteService.moveNoteToChapter(id, targetChapterId);
-      return res.redirect(`/notes/chapters/${targetChapterId}`);
+      const target = parseMoveTarget(req.body || {});
+      const moved = target.kind === 'chapter'
+        ? noteService.moveNoteToChapter(id, target.id)
+        : noteService.moveNote(id, { bookId: target.id });
+      return res.redirect(moved.chapter_id === null
+        ? `/notes/books/${moved.book_id}`
+        : `/notes/chapters/${moved.chapter_id}`);
     } catch (err) {
-      if (err instanceof NoteNotFoundError || err instanceof ChapterNotFoundError) {
+      if (err instanceof NoteValidationError) {
+        err.status = 422;
+        return next(err);
+      }
+      if (err instanceof NoteNotFoundError
+        || err instanceof ChapterNotFoundError
+        || err instanceof BookNotFoundError) {
         return next(createNotFound());
       }
       return next(err);
@@ -656,6 +662,7 @@ export function createNotesRouter({ appName, bookService, chapterService, noteSe
         errors: {},
         action: 'Edit',
         submitUrl: `/notes/${id}`,
+        moveTargets: listChapterOptions(bookService, chapterService),
       }));
     } catch (err) {
       if (err instanceof NoteNotFoundError || err instanceof ChapterNotFoundError || err instanceof BookNotFoundError) {
@@ -703,6 +710,7 @@ export function createNotesRouter({ appName, bookService, chapterService, noteSe
             errors: err.errors || { general: err.message },
             action: 'Edit',
             submitUrl: `/notes/${id}`,
+            moveTargets: listChapterOptions(bookService, chapterService),
           }));
         } catch (lookupError) {
           if (lookupError instanceof NoteNotFoundError || lookupError instanceof ChapterNotFoundError || lookupError instanceof BookNotFoundError) {
@@ -741,6 +749,7 @@ export function createNotesRouter({ appName, bookService, chapterService, noteSe
 
 function buildNoteFormModel({
   appName, book = null, chapter = null, note, values, projects, selectedAssets, errors, action, submitUrl,
+  moveTargets = [],
 }) {
   return {
     appName,
@@ -755,6 +764,7 @@ function buildNoteFormModel({
     errors,
     action,
     submitUrl,
+    moveTargets,
   };
 }
 
@@ -816,6 +826,43 @@ function listChapterOptions(bookService, chapterService) {
     book,
     chapters: chapterService.listChapters(book.id),
   }));
+}
+
+function parseMoveTarget(body) {
+  if (typeof body.targetContainer === 'string') {
+    const match = /^(book|chapter):(.+)$/.exec(body.targetContainer);
+    const id = match ? parseId(match[2]) : null;
+    if (!match || id === null) {
+      throw new NoteValidationError({
+        targetContainer: 'targetContainer must identify a valid Book or Chapter.',
+      });
+    }
+    return { kind: match[1], id };
+  }
+
+  if (Object.hasOwn(body, 'targetChapterId')) {
+    const id = parseId(body.targetChapterId);
+    if (id === null) {
+      throw new NoteValidationError({
+        targetChapterId: 'targetChapterId must be a canonical positive integer.',
+      });
+    }
+    return { kind: 'chapter', id };
+  }
+
+  if (Object.hasOwn(body, 'targetBookId')) {
+    const id = parseId(body.targetBookId);
+    if (id === null) {
+      throw new NoteValidationError({
+        targetBookId: 'targetBookId must be a canonical positive integer.',
+      });
+    }
+    return { kind: 'book', id };
+  }
+
+  throw new NoteValidationError({
+    targetContainer: 'Choose a Book or Chapter destination.',
+  });
 }
 
 function listProjectOptions(projectService) {

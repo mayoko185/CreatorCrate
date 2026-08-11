@@ -4,13 +4,14 @@
 {% set title = action ~ ' Note' %}
 {% set page_title = "Notes — Edit " ~ note.title if action == 'Edit' else "Notes — " ~ title %}
 {% set formDescription = "Capture a standalone note." if action == 'Create' else "Update this note." %}
+{% set submitLabel = 'Save' if action == 'Edit' else 'Create' %}
 
 {% block page_assets %}
 {% endblock %}
 
 {% block content %}
   {% call pageHeading.render(formDescription) %}
-    <button class="button button-primary" type="submit" form="note-form">{{ action }}</button>
+    <button class="button button-primary" type="submit" form="note-form">{{ submitLabel }}</button>
     <a class="button button-secondary" href="{% if note %}/notes/{{ note.id }}{% elif chapter %}/notes/chapters/{{ chapter.id }}{% elif book %}/notes/books/{{ book.id }}{% else %}/notes{% endif %}">Cancel</a>
   {% endcall %}
 
@@ -31,22 +32,7 @@
     <aside class="notes-workspace-context" aria-labelledby="notes-context-heading">
       <p class="notes-workspace-kicker">Book workspace</p>
       <h2 id="notes-context-heading">Hierarchy</h2>
-      {% if book or chapter %}
-        <dl class="notes-workspace-context-list">
-          {% if book %}
-            <div>
-              <dt>Book</dt>
-              <dd><a href="/notes/books/{{ book.id }}">{{ book.title }}</a></dd>
-            </div>
-          {% endif %}
-          {% if chapter %}
-            <div>
-              <dt>Chapter</dt>
-              <dd><a href="/notes/chapters/{{ chapter.id }}">{{ chapter.title }}</a></dd>
-            </div>
-          {% endif %}
-        </dl>
-      {% endif %}
+      {% include "partials/notes-hierarchy.njk" %}
       {% if chapter %}
         <a class="notes-workspace-back" href="/notes/chapters/{{ chapter.id }}">Back to Chapter</a>
         <p class="notes-workspace-context-note">This Page will belong to this Chapter.</p>
@@ -72,7 +58,7 @@
         <label id="content-label" for="content">Content</label>
         <div class="notes-editor" data-notes-editor-host-wrapper>
           <div id="content-editor" class="notes-editor-host" data-notes-editor-host aria-labelledby="content-label" aria-describedby="content-help{% if errors.content %} content-error{% endif %}"></div>
-          <textarea id="content" name="content" data-notes-editor-source rows="16" aria-describedby="content-help{% if errors.content %} content-error{% endif %}"{% if errors.content %} aria-invalid="true"{% endif %}>{{ values.content or '' }}</textarea>
+          <textarea id="content" name="content" data-notes-editor-source aria-describedby="content-help{% if errors.content %} content-error{% endif %}"{% if errors.content %} aria-invalid="true"{% endif %}>{{ values.content or '' }}</textarea>
         </div>
         <span class="help-text" id="content-help">Markdown source is stored unchanged.</span>
         {% if errors.content %}<span class="field-error-message" id="content-error">{{ errors.content }}</span>{% endif %}
@@ -178,4 +164,49 @@
       </fieldset>
     </aside>
   </form>
+
+  {% if note and action == 'Edit' %}
+    <section class="notes-workspace-secondary" aria-labelledby="notes-page-actions-heading">
+      <aside class="notes-workspace-actions">
+        <p class="notes-workspace-kicker">Secondary actions</p>
+        <h2 id="notes-page-actions-heading">Page actions</h2>
+
+        <details class="notes-workspace-disclosure notes-workspace-disclosure--move">
+          <summary>Move Page</summary>
+          <div class="notes-workspace-disclosure-content">
+            <p class="notes-workspace-current-container">
+              Current container:
+              <strong>{% if chapter %}{{ book.title }} / {{ chapter.title }}{% else %}{{ book.title }} (direct Page){% endif %}</strong>
+            </p>
+            <form id="note-move-form" method="post" action="/notes/{{ note.id }}/move">
+              <input type="hidden" name="_csrf" value="{{ _csrf }}">
+              <div class="field">
+                <label for="note-move-target">Target container</label>
+                <select id="note-move-target" name="targetContainer" required>
+                  {% for target in moveTargets %}
+                    <option value="book:{{ target.book.id }}"{% if not chapter and target.book.id == book.id %} selected{% endif %}>Book: {{ target.book.title }} (direct Pages)</option>
+                    {% for targetChapter in target.chapters %}
+                      <option value="chapter:{{ targetChapter.id }}"{% if chapter and targetChapter.id == chapter.id %} selected{% endif %}>Chapter: {{ target.book.title }} / {{ targetChapter.title }}</option>
+                    {% endfor %}
+                  {% endfor %}
+                </select>
+              </div>
+              <button class="button button-small button-secondary" type="submit">Move Page</button>
+            </form>
+          </div>
+        </details>
+
+        <details class="notes-workspace-disclosure notes-workspace-disclosure--delete">
+          <summary>Delete Page</summary>
+          <div class="notes-workspace-disclosure-content">
+            <p class="notes-workspace-warning">Permanently delete this Page and its associations. This cannot be undone.</p>
+            <form id="note-delete-form" method="post" action="/notes/{{ note.id }}/delete">
+              <input type="hidden" name="_csrf" value="{{ _csrf }}">
+              <button class="button button-small button-danger" type="submit" data-confirm="Delete this Page permanently? This cannot be undone.">Delete Page</button>
+            </form>
+          </div>
+        </details>
+      </aside>
+    </section>
+  {% endif %}
 {% endblock %}

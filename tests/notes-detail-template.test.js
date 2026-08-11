@@ -6,12 +6,16 @@ import { describe, expect, it } from 'vitest';
 const VIEWS_DIR = fileURLToPath(new URL('../src/views', import.meta.url));
 const DETAIL_TEMPLATE_PATH = fileURLToPath(new URL('../src/views/notes/detail.njk', import.meta.url));
 const CHAPTER_DETAIL_TEMPLATE_PATH = fileURLToPath(new URL('../src/views/notes/chapters/detail.njk', import.meta.url));
+const CHAPTER_FORM_TEMPLATE_PATH = fileURLToPath(new URL('../src/views/notes/chapters/form.njk', import.meta.url));
+const BOOK_FORM_TEMPLATE_PATH = fileURLToPath(new URL('../src/views/notes/books/form.njk', import.meta.url));
 const BOOK_DETAIL_TEMPLATE_PATH = fileURLToPath(new URL('../src/views/notes/books/detail.njk', import.meta.url));
 const BOOK_ORDER_TEMPLATE_PATH = fileURLToPath(new URL('../src/views/notes/books/order.njk', import.meta.url));
 const HIERARCHY_TEMPLATE_PATH = fileURLToPath(new URL('../src/views/partials/notes-hierarchy.njk', import.meta.url));
 const CSS_PATH = fileURLToPath(new URL('../src/static/creatorcrate.css', import.meta.url));
 const detailTemplate = fs.readFileSync(DETAIL_TEMPLATE_PATH, 'utf8');
 const chapterDetailTemplate = fs.readFileSync(CHAPTER_DETAIL_TEMPLATE_PATH, 'utf8');
+const chapterFormTemplate = fs.readFileSync(CHAPTER_FORM_TEMPLATE_PATH, 'utf8');
+const bookFormTemplate = fs.readFileSync(BOOK_FORM_TEMPLATE_PATH, 'utf8');
 const bookDetailTemplate = fs.readFileSync(BOOK_DETAIL_TEMPLATE_PATH, 'utf8');
 const bookOrderTemplate = fs.readFileSync(BOOK_ORDER_TEMPLATE_PATH, 'utf8');
 const hierarchyTemplate = fs.readFileSync(HIERARCHY_TEMPLATE_PATH, 'utf8');
@@ -116,6 +120,53 @@ describe('Notes Page detail hierarchy and layout contract', () => {
     expect(chapterDetailTemplate).toContain('emptyActionUrl = "/notes/new?chapterId=" ~ chapter.id');
     expect(notesCss).toContain('.notes-chapter-page-row');
     expect(notesCss).toContain('.notes-chapter-page-actions');
+  });
+
+  it('keeps Chapter edit focused with Save/Cancel and a separate collapsed delete form', () => {
+    expect(chapterFormTemplate).toContain('{% set submitLabel = "Save" if action == "Edit" else "Create" %}');
+    expect(chapterFormTemplate).toContain('{% include "partials/notes-hierarchy.njk" %}');
+    expect(chapterFormTemplate).toContain('form="chapter-form">{{ submitLabel }}</button>');
+    expect(chapterFormTemplate).toContain('class="settings-section"');
+    expect(chapterFormTemplate).toContain('class="notes-detail-panel"');
+    expect(chapterFormTemplate).toContain('class="notes-workspace-disclosure notes-workspace-disclosure--delete"');
+    expect(chapterFormTemplate).toContain('action="/notes/chapters/{{ chapter.id }}/delete"');
+    expect(chapterFormTemplate).toContain('name="_csrf"');
+    expect(chapterFormTemplate).toContain('data-confirm="Delete this Chapter permanently? This cannot be undone."');
+    expect(chapterFormTemplate).not.toContain('Danger zone');
+    expect(chapterFormTemplate).not.toContain('>Manage<');
+    expect(chapterFormTemplate).not.toContain('<details open');
+
+    const chapterFormStart = chapterFormTemplate.indexOf('<form id="chapter-form"');
+    const chapterFormEnd = chapterFormTemplate.indexOf('</form>', chapterFormStart);
+    const deleteFormStart = chapterFormTemplate.indexOf('<form id="chapter-delete-form"');
+    expect(chapterFormTemplate.slice(chapterFormTemplate.indexOf('>', chapterFormStart) + 1, chapterFormEnd)).not.toContain('<form');
+    expect(deleteFormStart).toBeGreaterThan(chapterFormEnd);
+    expect(notesCss).toContain('.notes-workspace-disclosure summary:focus-visible');
+  });
+
+  it('keeps Book edit focused with Save/Cancel and a separate collapsed delete form', () => {
+    expect(bookFormTemplate).toContain('{% set submitLabel = "Save" if action == "Edit" else "Create" %}');
+    expect(bookFormTemplate).toContain('{% include "partials/notes-hierarchy.njk" %}');
+    expect(bookFormTemplate).toContain('form="book-form">{{ submitLabel }}</button>');
+    expect(bookFormTemplate).toContain('class="settings-section"');
+    expect(bookFormTemplate).toContain('<label for="title">Title');
+    expect(bookFormTemplate).toContain('class="notes-detail-panel"');
+    expect(bookFormTemplate).toContain('class="notes-workspace-disclosure notes-workspace-disclosure--delete"');
+    expect(bookFormTemplate).toContain('action="/notes/books/{{ book.id }}/delete"');
+    expect(bookFormTemplate).toContain('name="_csrf"');
+    expect(bookFormTemplate).toContain('data-confirm="Delete this Book permanently? This cannot be undone."');
+    expect(bookFormTemplate).not.toContain('form="book-form">Edit</button>');
+    expect(bookFormTemplate).not.toContain('Danger zone');
+    expect(bookFormTemplate).not.toContain('>Manage<');
+    expect(bookFormTemplate).not.toContain('<details open');
+
+    const bookFormStart = bookFormTemplate.indexOf('<form id="book-form"');
+    const bookFormEnd = bookFormTemplate.indexOf('</form>', bookFormStart);
+    const deleteFormStart = bookFormTemplate.indexOf('<form id="book-delete-form"');
+    expect(bookFormStart).toBeGreaterThanOrEqual(0);
+    expect(bookFormEnd).toBeGreaterThan(bookFormStart);
+    expect(bookFormTemplate.slice(bookFormTemplate.indexOf('>', bookFormStart) + 1, bookFormEnd)).not.toContain('<form');
+    expect(deleteFormStart).toBeGreaterThan(bookFormEnd);
   });
 
   it('keeps the detail layout content-dominant and stacks at narrow widths', () => {

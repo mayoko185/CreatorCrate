@@ -114,8 +114,8 @@ describe('top-level Notes HTTP slice', () => {
     expect(response.text).toContain(`<a class="button button-secondary" href="/notes/chapters/${chapter.id}">Cancel</a>`);
     expect(response.text).toContain('<form id="note-form" method="post" action="/notes"');
     expect(response.text).toContain(`<input type="hidden" name="chapterId" value="${chapter.id}">`);
-    expect(response.text).toContain(`<a href="/notes/books/${book.id}">Page Book</a>`);
-    expect(response.text).toContain(`<a href="/notes/chapters/${chapter.id}">Page Chapter</a>`);
+    expect(response.text).toContain(`<a class="notes-hierarchy-link" href="/notes/books/${book.id}">Page Book</a>`);
+    expect(response.text).toContain('<span class="notes-hierarchy-current">Page Chapter</span>');
     expect(response.text).toContain('data-notes-editor-form');
     expect(response.text).toContain('data-notes-editor-host');
     expect(response.text).toContain('<textarea id="content" name="content" data-notes-editor-source');
@@ -146,6 +146,8 @@ describe('top-level Notes HTTP slice', () => {
     expect(response.text).toContain('role="status" aria-live="polite"');
     expect(response.text).toContain('role="alert" aria-live="assertive"');
     expect(response.text).not.toContain('No assets available.');
+    expect(response.text).not.toContain('Move Page');
+    expect(response.text).not.toContain('Delete Page');
 
     const noteForm = response.text.match(/<form id="note-form"[\s\S]*?<\/form>/)?.[0];
     expect(noteForm).toBeDefined();
@@ -162,10 +164,12 @@ describe('top-level Notes HTTP slice', () => {
     expect(response.text).toContain(`<a class="button button-secondary" href="/notes/books/${book.id}">Cancel</a>`);
     expect(response.text).toContain(`<input type="hidden" name="bookId" value="${book.id}">`);
     expect(response.text).not.toContain('name="chapterId"');
-    expect(response.text).toContain(`<a href="/notes/books/${book.id}">Direct Book Page Book</a>`);
+    expect(response.text).toContain('<span class="notes-hierarchy-current">Direct Book Page Book</span>');
     expect(response.text).toContain(`<a class="notes-workspace-back" href="/notes/books/${book.id}">Back to Book</a>`);
     expect(response.text).toContain('This Page will belong directly to this Book.');
     expect(response.text).not.toContain('Back to Chapter');
+    expect(response.text).not.toContain('Move Page');
+    expect(response.text).not.toContain('Delete Page');
     expect(response.text).toContain('data-notes-asset-picker');
     expect(response.text).toContain('data-projects-url="/notes/asset-picker/projects"');
     expect(response.text).toContain('data-assets-url="/notes/asset-picker/assets"');
@@ -707,7 +711,7 @@ describe('top-level Notes HTTP slice', () => {
     expect(response.text).toContain('Title is required.');
     expect(response.text).toContain(`<input type="hidden" name="bookId" value="${book.id}">`);
     expect(response.text).not.toContain('name="chapterId"');
-    expect(response.text).toContain(`<a href="/notes/books/${book.id}">Direct Validation Book</a>`);
+    expect(response.text).toContain('<span class="notes-hierarchy-current">Direct Validation Book</span>');
     expect(response.text).toContain(`<a class="button button-secondary" href="/notes/books/${book.id}">Cancel</a>`);
     expect(response.text).toContain('Back to Book');
     expect(response.text).toContain(attemptedContent);
@@ -842,7 +846,7 @@ describe('top-level Notes HTTP slice', () => {
     expect(detailResponse.text).not.toContain('Back to Chapter');
 
     const editResponse = await agent.get(`/notes/${noteId}/edit`).expect(200);
-    expect(editResponse.text).toContain(`<a href="/notes/books/${book.id}">Direct Round-trip Book</a>`);
+    expect(editResponse.text).toContain(`<a class="notes-hierarchy-link" href="/notes/books/${book.id}">Direct Round-trip Book</a>`);
     expect(editResponse.text).toContain(`<a class="notes-workspace-back" href="/notes/books/${book.id}">Back to Book</a>`);
     expect(editResponse.text).not.toContain('name="chapterId"');
 
@@ -886,20 +890,36 @@ describe('top-level Notes HTTP slice', () => {
     const response = await agent.get(`/notes/${note.id}/edit`).expect(200);
 
     expect(response.text).toContain(`<title>CreatorCrate — Notes — Edit Existing Note</title>`);
+    expect(response.text).toContain('<button class="button button-primary" type="submit" form="note-form">Save</button>');
+    expect(response.text).not.toContain('<button class="button button-primary" type="submit" form="note-form">Edit</button>');
+    expect(response.text).toContain(`<a class="button button-secondary" href="/notes/${note.id}">Cancel</a>`);
     expect(response.text).toContain(`<form id="note-form" method="post" action="/notes/${note.id}"`);
     expect(response.text).toContain('data-notes-editor-form');
     expect(response.text).toContain('data-notes-editor-host');
     expect(response.text).toContain('<textarea id="content" name="content" data-notes-editor-source');
     expect(response.text).toContain('value="Existing Note"');
     expect(response.text).toContain('# Existing\n**bold** &amp; &lt;script&gt;alert(&quot;unsafe&quot;)&lt;/script&gt;');
-    expect(response.text).toContain(`<a href="/notes/books/${book.id}">Page Book</a>`);
-    expect(response.text).toContain(`<a href="/notes/chapters/${chapter.id}">Page Chapter</a>`);
+    expect(response.text).toContain(`<a class="notes-hierarchy-link" href="/notes/books/${book.id}">Page Book</a>`);
+    expect(response.text).toContain(`<a class="notes-hierarchy-link" href="/notes/chapters/${chapter.id}">Page Chapter</a>`);
     expect(response.text).toContain(`/notes/chapters/${chapter.id}`);
     expect(response.text).not.toContain('name="chapterId"');
     expect(response.text).not.toContain('<strong>bold</strong>');
     expect(app.locals.noteService.getNote(note.id).content).toBe(content);
     expect(response.text).toContain('<legend>Projects</legend>');
     expect(response.text).toContain('<legend>Assets</legend>');
+    expect(response.text).toContain('<details class="notes-workspace-disclosure notes-workspace-disclosure--move">');
+    expect(response.text).toContain('<details class="notes-workspace-disclosure notes-workspace-disclosure--delete">');
+    expect(response.text).toContain(`<form id="note-move-form" method="post" action="/notes/${note.id}/move">`);
+    expect(response.text).toContain(`<form id="note-delete-form" method="post" action="/notes/${note.id}/delete">`);
+    expect(response.text).toMatch(/<form id="note-move-form"[\s\S]*?name="_csrf"[^>]+value="[^"]+"/);
+    expect(response.text).toMatch(/<form id="note-delete-form"[\s\S]*?name="_csrf"[^>]+value="[^"]+"/);
+    expect(response.text).toContain(`value="book:${book.id}"`);
+    expect(response.text).toContain(`value="chapter:${chapter.id}"`);
+    const noteFormStart = response.text.indexOf('<form id="note-form"');
+    const noteFormEnd = response.text.indexOf('</form>', noteFormStart);
+    const noteForm = response.text.slice(response.text.indexOf('>', noteFormStart) + 1, noteFormEnd);
+    expect(noteFormStart).toBeGreaterThanOrEqual(0);
+    expect(noteForm).not.toContain('<form');
   });
 
   it('GET /notes/:id/edit preselects existing project associations', async () => {
@@ -1117,8 +1137,8 @@ describe('top-level Notes HTTP slice', () => {
     expect(response.text).toContain('Title is required.');
     expect(response.text).toContain(`<form id="note-form" method="post" action="/notes/${note.id}"`);
     expect(response.text).toContain(attemptedContent);
-    expect(response.text).toContain(`<a href="/notes/books/${book.id}">Page Book</a>`);
-    expect(response.text).toContain(`<a href="/notes/chapters/${chapter.id}">Page Chapter</a>`);
+    expect(response.text).toContain(`<a class="notes-hierarchy-link" href="/notes/books/${book.id}">Page Book</a>`);
+    expect(response.text).toContain(`<a class="notes-hierarchy-link" href="/notes/chapters/${chapter.id}">Page Chapter</a>`);
     expect(response.text).toContain(`/notes/chapters/${chapter.id}`);
     expect(response.text).not.toContain('name="chapterId"');
     expect(app.locals.noteService.getNote(note.id)).toMatchObject({
@@ -1460,6 +1480,34 @@ describe('top-level Notes HTTP slice', () => {
     expect(app.locals.noteService.getNote(note.id)).toEqual(before);
   });
 
+  it('POST /notes/:id/move supports direct Book destinations', async () => {
+    const sourceBook = app.locals.bookService.createBook({ title: 'Direct Move Source' });
+    const targetBook = app.locals.bookService.createBook({ title: 'Direct Move Target' });
+    const note = app.locals.noteService.createNote({
+      bookId: sourceBook.id,
+      title: 'Direct Move Page',
+      content: 'Direct content',
+    });
+
+    const edit = await agent.get(`/notes/${note.id}/edit`).expect(200);
+    expect(edit.text).toContain(`value="book:${sourceBook.id}"`);
+    expect(edit.text).toContain(`value="book:${targetBook.id}"`);
+
+    const response = await agent
+      .post(`/notes/${note.id}/move`)
+      .type('form')
+      .send({ _csrf: csrfToken, targetContainer: `book:${targetBook.id}` })
+      .expect(302);
+
+    expect(response.headers.location).toBe(`/notes/books/${targetBook.id}`);
+    expect(app.locals.noteService.getNote(note.id)).toMatchObject({
+      book_id: targetBook.id,
+      chapter_id: null,
+      title: 'Direct Move Page',
+      content: 'Direct content',
+    });
+  });
+
   it('POST /notes/:id/move rejects malformed and missing Page or Chapter IDs', async () => {
     const { chapter, note } = createPage(app, { title: 'Validation Page', content: 'Content' });
 
@@ -1640,8 +1688,38 @@ describe('top-level Notes HTTP slice', () => {
       const chapter = app.locals.chapterService.createChapter({ bookId: book.id, title: 'Before Rename' });
 
       const form = await agent.get(`/notes/chapters/${chapter.id}/edit`).expect(200);
+      const pageHeading = form.text.match(/<header class="page-heading">[\s\S]*?<\/header>/)?.[0];
+      expect((form.text.match(/<h1\b/g) || [])).toHaveLength(1);
+      expect(pageHeading).toBeDefined();
+      expect(pageHeading).toContain('<button class="button button-primary" type="submit" form="chapter-form">Save</button>');
+      expect(pageHeading).toContain(`<a class="button button-secondary" href="/notes/chapters/${chapter.id}">Cancel</a>`);
+      expect(pageHeading).not.toContain('>Edit<');
+      expect(pageHeading).not.toContain('Manage');
+      expect(pageHeading).not.toContain('Delete');
       expect(form.text).toContain(`action="/notes/chapters/${chapter.id}"`);
       expect(form.text).toContain('value="Before Rename"');
+      expect(form.text).toContain(`<nav class="notes-hierarchy" aria-label="Page hierarchy">`);
+      expect(form.text).toContain(`<a class="notes-hierarchy-link" href="/notes/books/${book.id}">Edit Chapter Book</a>`);
+      expect(form.text).toContain('<span class="notes-hierarchy-current">Before Rename</span>');
+      expect(form.text).toContain('<label for="title">Title <span class="required" aria-label="required">*</span></label>');
+      expect(form.text).toContain('<details class="notes-workspace-disclosure notes-workspace-disclosure--delete">');
+      expect(form.text).toContain('<summary>Delete Chapter</summary>');
+      expect(form.text).toContain(`<form id="chapter-delete-form" method="post" action="/notes/chapters/${chapter.id}/delete">`);
+      expect(form.text).toMatch(new RegExp(`<form id="chapter-delete-form"[\\s\\S]*?name="_csrf"[^>]+value="[^"]+"`));
+      expect(form.text).toContain('data-confirm="Delete this Chapter permanently? This cannot be undone."');
+      expect(form.text).toContain('The Chapter must be empty before it can be deleted.');
+      expect(form.text).not.toContain('type="submit" form="chapter-form">Edit</button>');
+      expect(form.text).not.toContain('Danger zone');
+      expect(form.text).not.toMatch(/<details[^>]*\sopen(?:\s|=|>)/);
+
+      const chapterFormStart = form.text.indexOf('<form id="chapter-form"');
+      const chapterFormEnd = form.text.indexOf('</form>', chapterFormStart);
+      const chapterFormBody = form.text.slice(form.text.indexOf('>', chapterFormStart) + 1, chapterFormEnd);
+      const deleteFormStart = form.text.indexOf('<form id="chapter-delete-form"');
+      expect(chapterFormStart).toBeGreaterThanOrEqual(0);
+      expect(chapterFormEnd).toBeGreaterThan(chapterFormStart);
+      expect(chapterFormBody).not.toContain('<form');
+      expect(deleteFormStart).toBeGreaterThan(chapterFormEnd);
 
       const response = await agent
         .post(`/notes/chapters/${chapter.id}`)
@@ -1658,6 +1736,9 @@ describe('top-level Notes HTTP slice', () => {
         .expect(422);
       expect(invalid.text).toContain('Title is required.');
       expect(invalid.text).toContain('value=""');
+      expect(invalid.text).toContain(`<a class="notes-hierarchy-link" href="/notes/books/${book.id}">Edit Chapter Book</a>`);
+      expect(invalid.text).toContain('<button class="button button-primary" type="submit" form="chapter-form">Save</button>');
+      expect(invalid.text).toContain(`<a class="button button-secondary" href="/notes/chapters/${chapter.id}">Cancel</a>`);
 
       await agent.get('/notes/chapters/999999/edit').expect(404);
       await agent
@@ -1685,6 +1766,8 @@ describe('top-level Notes HTTP slice', () => {
         INSERT INTO notes (book_id, chapter_id, title, content, sort_order)
         VALUES (?, ?, 'Chapter Note', '', 0)
       `).run(book.id, nonEmpty.id);
+      const nonEmptyEdit = await agent.get(`/notes/chapters/${nonEmpty.id}/edit`).expect(200);
+      expect(nonEmptyEdit.text).toContain('The Chapter must be empty before it can be deleted.');
       await agent
         .post(`/notes/chapters/${nonEmpty.id}/delete`)
         .type('form')

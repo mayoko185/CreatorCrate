@@ -3,15 +3,20 @@
 
 {% set title = action ~ " Chapter" %}
 {% set page_title = "Notes — Edit " ~ chapter.title if action == "Edit" else "Notes — " ~ title %}
+{% set submitLabel = "Save" if action == "Edit" else "Create" %}
 
 {% block content %}
   {% call pageHeading.render() %}
-    <button class="button button-primary" type="submit" form="chapter-form">{{ action }}</button>
+    <button class="button button-primary" type="submit" form="chapter-form">{{ submitLabel }}</button>
     <a class="button button-secondary" href="{% if chapter %}/notes/chapters/{{ chapter.id }}{% else %}/notes/books/{{ book.id }}{% endif %}">Cancel</a>
   {% endcall %}
 
   {% if errors.general %}
     <div class="error-summary" role="alert"><p>{{ errors.general }}</p></div>
+  {% endif %}
+
+  {% if chapter and action == "Edit" %}
+    {% include "partials/notes-hierarchy.njk" %}
   {% endif %}
 
   <form id="chapter-form" method="post" action="{{ submitUrl }}" class="project-form" novalidate>
@@ -25,4 +30,24 @@
       </div>
     </div>
   </form>
+
+  {% if chapter and action == "Edit" %}
+    <section class="notes-detail-panel" aria-labelledby="chapter-actions-heading">
+      <div class="notes-detail-section-heading">
+        <p class="notes-detail-kicker">Secondary actions</p>
+        <h2 id="chapter-actions-heading">Chapter actions</h2>
+      </div>
+
+      <details class="notes-workspace-disclosure notes-workspace-disclosure--delete">
+        <summary>Delete Chapter</summary>
+        <div class="notes-workspace-disclosure-content">
+          <p class="notes-workspace-warning">The Chapter must be empty before it can be deleted. This cannot be undone.</p>
+          <form id="chapter-delete-form" method="post" action="/notes/chapters/{{ chapter.id }}/delete">
+            <input type="hidden" name="_csrf" value="{{ _csrf }}">
+            <button class="button button-small button-danger" type="submit" data-confirm="Delete this Chapter permanently? This cannot be undone.">Delete Chapter</button>
+          </form>
+        </div>
+      </details>
+    </section>
+  {% endif %}
 {% endblock %}
