@@ -1647,6 +1647,7 @@ describe('top-level Notes HTTP slice', () => {
       const { book, chapter } = createChapterContext(app);
       const first = app.locals.noteService.createNote({ chapterId: chapter.id, title: 'First Chapter Page' });
       const second = app.locals.noteService.createNote({ chapterId: chapter.id, title: 'Second Chapter Page' });
+      const third = app.locals.noteService.createNote({ chapterId: chapter.id, title: 'Third Chapter Page' });
       const directBookPage = app.locals.noteService.createNote({ bookId: book.id, title: 'Direct Book Page' });
       const { chapter: otherChapter } = createChapterContext(app);
       const unrelated = app.locals.noteService.createNote({ chapterId: otherChapter.id, title: 'Other Chapter Page' });
@@ -1655,7 +1656,9 @@ describe('top-level Notes HTTP slice', () => {
 
       expect(response.text).toContain(`<a href="/notes/${first.id}">First Chapter Page</a>`);
       expect(response.text).toContain(`<a href="/notes/${second.id}">Second Chapter Page</a>`);
+      expect(response.text).toContain(`<a href="/notes/${third.id}">Third Chapter Page</a>`);
       expect(response.text.indexOf('First Chapter Page')).toBeLessThan(response.text.indexOf('Second Chapter Page'));
+      expect(response.text.indexOf('Second Chapter Page')).toBeLessThan(response.text.indexOf('Third Chapter Page'));
       expect(response.text).not.toContain(`<a href="/notes/${unrelated.id}">Other Chapter Page</a>`);
       expect(response.text).not.toContain(`<a href="/notes/${directBookPage.id}">Direct Book Page</a>`);
       expect(response.text).toContain(`<a class="button button-secondary" href="/notes/chapters/${chapter.id}/notes/order">Change order</a>`);
@@ -1668,9 +1671,26 @@ describe('top-level Notes HTTP slice', () => {
 
       const orderPage = await agent.get(`/notes/chapters/${chapter.id}/notes/order`).expect(200);
       expect(orderPage.text).toContain('<title>CreatorCrate — Notes — Change order — Page Chapter</title>');
-      expect(orderPage.text).toContain('Page ordering controls will be available here in a future update.');
+      expect((orderPage.text.match(/<h1\b/g) || [])).toHaveLength(1);
+      expect(orderPage.text).toContain('<nav class="notes-hierarchy" aria-label="Page hierarchy">');
+      expect(orderPage.text).toContain(`<a class="notes-hierarchy-link" href="/notes/books/${book.id}">Page Book</a>`);
+      expect(orderPage.text).toContain('<span class="notes-hierarchy-current">Page Chapter</span>');
+      expect(orderPage.text).toContain('Drag a handle to move a Page');
+      expect(orderPage.text).toContain(`<button class="button button-primary" type="submit" form="notes-chapter-order-form">Save</button>`);
+      expect(orderPage.text).toContain(`<a class="button button-secondary" href="/notes/chapters/${chapter.id}">Cancel</a>`);
+      expect(orderPage.text).toContain(`<form id="notes-chapter-order-form" method="post" action="/notes/chapters/${chapter.id}/notes/reorder"`);
+      expect(orderPage.text).toContain(`<input type="hidden" name="orderedNoteIds" data-chapter-page-order-input value="${[first, second, third].map((note) => note.id).join(',')}">`);
+      expect((orderPage.text.match(/data-chapter-page-reorder-item/g) || [])).toHaveLength(3);
+      expect((orderPage.text.match(/data-chapter-page-reorder-handle/g) || [])).toHaveLength(3);
+      expect(orderPage.text).toContain('aria-label="Reorder Page: First Chapter Page"');
+      expect(orderPage.text).toContain('Position 1 of 3');
+      const orderList = orderPage.text.match(/<ol[\s\S]*?data-chapter-page-reorder-list[\s\S]*?<\/ol>/)?.[0] || '';
+      expect(orderList.indexOf('First Chapter Page')).toBeLessThan(orderList.indexOf('Second Chapter Page'));
+      expect(orderList.indexOf('Second Chapter Page')).toBeLessThan(orderList.indexOf('Third Chapter Page'));
+      expect(orderPage.text).not.toContain('Direct Book Page');
+      expect(orderPage.text).not.toContain('Other Chapter Page');
       expect(orderPage.text).toContain(`<a href="/notes/${first.id}">First Chapter Page</a>`);
-      expect(orderPage.text).not.toContain('draggable="true"');
+      expect((orderPage.text.match(/draggable="true"/g) || [])).toHaveLength(6);
       expect(orderPage.text).not.toContain('Move up');
       expect(orderPage.text).not.toContain('Move down');
     });

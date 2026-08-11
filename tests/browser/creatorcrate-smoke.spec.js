@@ -414,18 +414,121 @@ test.describe('CreatorCrate development browser smoke', () => {
     await expect(page.getByRole('heading', { name: 'Change order', exact: true, level: 2 })).toBeVisible();
     await expect(page.getByRole('link', { name: 'Cancel', exact: true })).toHaveAttribute('href', '/notes');
     await expect(page.locator('.notes-books-order .notes-book-content-row')).toHaveCount(2);
-    await expect(page.locator('.notes-books-order form, .notes-books-order button')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeVisible();
+    await expect(page.locator('#notes-books-order-form')).toHaveAttribute('action', '/notes/books/reorder');
+    await expect(page.locator('#notes-books-order-form input[name="orderedBookIds"]')).toHaveValue(/\d+,\d+/);
+    await expect(page.locator('[data-book-reorder-handle]')).toHaveCount(2);
   });
 
-  test('keeps Chapter detail compact with a separate Change order entry point', async ({ page, devServer }) => {
-    const chapterId = await createBrowserNotesHierarchy(page, devServer.baseURL);
+  test('reorders top-level Books by drag and keyboard, saves once, and cancels unsaved changes', async ({ page, devServer }) => {
+    const diagnostics = observeBrowser(page, devServer.baseURL);
+    const titles = [
+      `Browser Order Book One ${Date.now()}`,
+      `Browser Order Book Two ${Date.now()}`,
+      `Browser Order Book Three ${Date.now()}`,
+    ];
+    const bookIds = [];
+    for (const title of titles) bookIds.push(await createBrowserBook(page, devServer.baseURL, title));
+
+    const expectedInitialOrder = [...titles];
+    const expectedDragOrder = [titles[1], titles[2], titles[0]];
+    const expectedKeyboardOrder = [titles[1], titles[0], titles[2]];
+    const orderTitles = () => page.locator('[data-book-reorder-item]').evaluateAll(
+      (items) => items.map((item) => item.querySelector('.notes-book-content-title')?.textContent?.trim()),
+    );
+    const orderIds = () => page.locator('[data-book-reorder-item]').evaluateAll(
+      (items) => items.map((item) => item.getAttribute('data-book-id')),
+    );
+    const assertOrderPageLayout = async () => {
+      await expect(page.locator('h1.app-section-title')).toHaveCount(1);
+      await expect(page.locator('.notes-books-order')).toContainText('Drag a handle to move a Book');
+      await expect(page.locator('[data-book-reorder-item]')).toHaveCount(3);
+      await expect(page.locator('[data-book-reorder-handle]')).toHaveCount(3);
+      const layout = await page.locator('main#main-content').evaluate((element) => ({
+        documentWidth: document.documentElement.scrollWidth,
+        viewportWidth: window.innerWidth,
+        handleWidth: element.querySelector('[data-book-reorder-handle]')?.getBoundingClientRect().width || 0,
+      }));
+      expect(layout.documentWidth).toBeLessThanOrEqual(layout.viewportWidth);
+      expect(layout.handleWidth).toBeLessThanOrEqual(48);
+    };
+
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto(`${devServer.baseURL}/notes/books/order`, { waitUntil: 'domcontentloaded' });
+    await assertOrderPageLayout();
+    expect(await orderTitles()).toEqual(expectedInitialOrder);
+    expect(await orderIds()).toEqual(bookIds);
+
+    const reorderRequests = [];
+    page.on('request', (request) => {
+      if (new URL(request.url()).pathname === '/notes/books/reorder') reorderRequests.push(request);
+    });
+    const firstRow = page.locator('[data-book-reorder-item]').first();
+    const lastRow = page.locator('[data-book-reorder-item]').last();
+    const lastRowBox = await lastRow.boundingBox();
+    expect(lastRowBox).not.toBeNull();
+    await firstRow.locator('[data-book-reorder-handle]').dragTo(lastRow, {
+      targetPosition: { x: Math.min(20, lastRowBox.width - 1), y: Math.max(1, lastRowBox.height - 2) },
+    });
+    expect(await orderTitles()).toEqual(expectedDragOrder);
+    expect(await page.locator('#notes-books-order-form input[name="orderedBookIds"]').inputValue())
+      .toBe(`${bookIds[1]},${bookIds[2]},${bookIds[0]}`);
+    expect(reorderRequests).toHaveLength(0);
+
+    await Promise.all([
+      page.waitForURL((url) => url.pathname === '/notes'),
+      page.getByRole('button', { name: 'Save', exact: true }).click(),
+    ]);
+    expect(reorderRequests).toHaveLength(1);
+    await expect(page.locator('.notes-books-index .notes-book-content-row')).toHaveCount(3);
+    await expect(page.locator('.notes-books-index .notes-book-content-row').nth(0)).toContainText(titles[1]);
+    await expect(page.locator('.notes-books-index .notes-book-content-row').nth(1)).toContainText(titles[2]);
+    await expect(page.locator('.notes-books-index .notes-book-content-row').nth(2)).toContainText(titles[0]);
+    expect(await page.locator('main#main-content').textContent()).not.toContain('Move up');
+    expect(await page.locator('main#main-content').textContent()).not.toContain('Move down');
+
+    await page.goto(`${devServer.baseURL}/notes/books/order`, { waitUntil: 'domcontentloaded' });
+    expect(await orderTitles()).toEqual(expectedDragOrder);
+    await assertOrderPageLayout();
+
+    await page.locator('[data-book-reorder-item]').last().locator('[data-book-reorder-handle]').focus();
+    await page.keyboard.press('ArrowUp');
+    expect(await orderTitles()).toEqual(expectedKeyboardOrder);
+    expect(await page.locator('[data-book-reorder-live]').textContent()).toContain('moved to position 2 of 3');
+    expect(reorderRequests).toHaveLength(1);
+
+    await page.setViewportSize({ width: 375, height: 800 });
+    await assertOrderPageLayout();
+    await expect(page.locator('main#main-content')).toContainText('Save');
+
+    await Promise.all([
+      page.waitForURL((url) => url.pathname === '/notes'),
+      page.getByRole('link', { name: 'Cancel', exact: true }).click(),
+    ]);
+    expect(reorderRequests).toHaveLength(1);
+    const landingRows = page.locator('.notes-books-index .notes-book-content-row');
+    await expect(landingRows.nth(0)).toContainText(titles[1]);
+    await expect(landingRows.nth(1)).toContainText(titles[2]);
+    await expect(landingRows.nth(2)).toContainText(titles[0]);
+
+    await page.goto(`${devServer.baseURL}/notes/books/order`, { waitUntil: 'domcontentloaded' });
+    expect(await orderTitles()).toEqual(expectedDragOrder);
+    await assertOrderPageLayout();
+    assertNoBrowserDiagnostics(diagnostics);
+  });
+
+  test('reorders Chapter Pages by drag and keyboard, saves once, and cancels unsaved changes', async ({ page, devServer }) => {
+    const diagnostics = observeBrowser(page, devServer.baseURL);
+    await page.setViewportSize({ width: 1280, height: 800 });
+    const bookId = await createBrowserBook(page, devServer.baseURL, `Browser Chapter Order Book ${Date.now()}`);
+    const chapterId = await createBrowserChapter(page, devServer.baseURL, bookId, `Browser Chapter Order ${Date.now()}`);
     const chapterUrl = `${devServer.baseURL}/notes/chapters/${chapterId}`;
 
     const emptyResponse = await page.goto(chapterUrl, { waitUntil: 'domcontentloaded' });
     expect(emptyResponse?.status()).toBe(200);
     await expect(page.locator('.notes-hierarchy')).toContainText('Book');
     await expect(page.locator('.notes-hierarchy')).toContainText('Chapter');
-    await expect(page.locator('.notes-hierarchy .notes-hierarchy-item--current')).toContainText('Browser Notes Chapter');
+    await expect(page.locator('.notes-hierarchy .notes-hierarchy-item--current')).toContainText('Browser Chapter Order');
     await expect(page.locator('.empty-state')).toContainText('No Pages yet');
     await expect(page.locator('.empty-state').getByRole('link', { name: 'New Page', exact: true })).toBeVisible();
     await expect(page.getByRole('link', { name: 'Change order', exact: true })).toHaveCount(0);
@@ -433,48 +536,125 @@ test.describe('CreatorCrate development browser smoke', () => {
     await expect(page.locator('main#main-content')).not.toContainText('Move down');
     await expect(page.locator('main#main-content')).not.toContainText('Danger zone');
 
-    await createBrowserPage(page, devServer.baseURL, chapterId, 'Browser Chapter Page One');
-    await createBrowserPage(page, devServer.baseURL, chapterId, 'Browser Chapter Page Two');
+    const directPageTitle = `Browser Direct Order Page ${Date.now()}`;
+    await createBrowserDirectPage(page, devServer.baseURL, bookId, directPageTitle);
+    const pageTitles = [
+      'Browser Chapter Order Page One',
+      'Browser Chapter Order Page Two',
+      'Browser Chapter Order Page Three with a deliberately long title for wrapping',
+    ];
+    const pageIds = [];
+    for (const title of pageTitles) pageIds.push(await createBrowserPage(page, devServer.baseURL, chapterId, title));
     await page.goto(chapterUrl, { waitUntil: 'domcontentloaded' });
 
     await expect(page.locator('.page-heading-actions').getByRole('link', { name: 'New Page', exact: true })).toBeVisible();
     await expect(page.getByRole('link', { name: 'Edit Chapter', exact: true })).toBeVisible();
     await expect(page.getByRole('link', { name: 'Change order', exact: true })).toBeVisible();
-    await expect(page.locator('.notes-chapter-page-row')).toHaveCount(2);
-    await expect(page.getByRole('link', { name: 'Browser Chapter Page One', exact: true })).toBeVisible();
-    await expect(page.getByRole('link', { name: 'Edit Page: Browser Chapter Page One', exact: true })).toBeVisible();
-    await expect(page.getByRole('link', { name: 'Edit Page: Browser Chapter Page Two', exact: true })).toBeVisible();
+    await expect(page.locator('.notes-chapter-page-row')).toHaveCount(3);
+    for (const title of pageTitles) {
+      await expect(page.getByRole('link', { name: title, exact: true })).toBeVisible();
+      await expect(page.getByRole('link', { name: `Edit Page: ${title}`, exact: true })).toBeVisible();
+    }
+    await expect(page.locator('main#main-content')).not.toContainText(directPageTitle);
     await expect(page.locator('main#main-content')).not.toContainText('Move up');
     await expect(page.locator('main#main-content')).not.toContainText('Move down');
     await expect(page.locator('main#main-content')).not.toContainText('Danger zone');
 
-    const desktopState = await page.locator('main#main-content').evaluate((element) => ({
-      documentWidth: document.documentElement.scrollWidth,
-      viewportWidth: window.innerWidth,
-      rowRight: Math.max(...[...element.querySelectorAll('.notes-chapter-page-row')]
-        .map((row) => row.getBoundingClientRect().right)),
-    }));
-    expect(desktopState.documentWidth).toBeLessThanOrEqual(desktopState.viewportWidth);
-    expect(desktopState.rowRight).toBeLessThanOrEqual(desktopState.viewportWidth);
-
-    await page.setViewportSize({ width: 375, height: 800 });
-    const narrowState = await page.locator('main#main-content').evaluate((element) => ({
-      documentWidth: document.documentElement.scrollWidth,
-      viewportWidth: window.innerWidth,
-      rowRight: Math.max(...[...element.querySelectorAll('.notes-chapter-page-row')]
-        .map((row) => row.getBoundingClientRect().right)),
-    }));
-    expect(narrowState.documentWidth).toBeLessThanOrEqual(narrowState.viewportWidth);
-    expect(narrowState.rowRight).toBeLessThanOrEqual(narrowState.viewportWidth);
-    await expect(page.getByRole('link', { name: 'Change order', exact: true })).toBeVisible();
+    const orderTitles = () => page.locator('[data-chapter-page-reorder-item]').evaluateAll(
+      (items) => items.map((item) => item.querySelector('.notes-chapter-page-title')?.textContent?.trim()),
+    );
+    const orderIds = () => page.locator('[data-chapter-page-reorder-item]').evaluateAll(
+      (items) => items.map((item) => item.getAttribute('data-note-id')),
+    );
+    const assertOrderPageLayout = async () => {
+      await expect(page.locator('h1.app-section-title')).toHaveCount(1);
+      await expect(page.locator('.notes-hierarchy')).toContainText('Book');
+      await expect(page.locator('.notes-hierarchy')).toContainText('Chapter');
+      await expect(page.locator('.notes-chapter-order')).toContainText('Drag a handle to move a Page');
+      await expect(page.locator('[data-chapter-page-reorder-item]')).toHaveCount(3);
+      await expect(page.locator('[data-chapter-page-reorder-handle]')).toHaveCount(3);
+      const layout = await page.locator('main#main-content').evaluate((element) => ({
+        documentWidth: document.documentElement.scrollWidth,
+        viewportWidth: window.innerWidth,
+        handleWidth: element.querySelector('[data-chapter-page-reorder-handle]')?.getBoundingClientRect().width || 0,
+        rowRight: Math.max(...[...element.querySelectorAll('[data-chapter-page-reorder-item]')]
+          .map((row) => row.getBoundingClientRect().right)),
+      }));
+      expect(layout.documentWidth).toBeLessThanOrEqual(layout.viewportWidth);
+      expect(layout.rowRight).toBeLessThanOrEqual(layout.viewportWidth);
+      expect(layout.handleWidth).toBeLessThanOrEqual(48);
+    };
 
     await Promise.all([
       page.waitForURL(/\/notes\/chapters\/\d+\/notes\/order$/),
       page.getByRole('link', { name: 'Change order', exact: true }).click(),
     ]);
     await expect(page.getByRole('heading', { name: 'Change order', exact: true, level: 2 })).toBeVisible();
-    await expect(page.locator('main#main-content')).toContainText('Page ordering controls will be available here in a future update.');
-    await expect(page.locator('[draggable="true"]')).toHaveCount(0);
+    await assertOrderPageLayout();
+    expect(await orderTitles()).toEqual(pageTitles);
+    expect(await orderIds()).toEqual(pageIds);
+    await expect(page.locator('main#main-content')).not.toContainText(directPageTitle);
+
+    const reorderRequests = [];
+    page.on('request', (request) => {
+      if (new URL(request.url()).pathname === `/notes/chapters/${chapterId}/notes/reorder`) {
+        reorderRequests.push(request);
+      }
+    });
+
+    const firstRow = page.locator('[data-chapter-page-reorder-item]').first();
+    const thirdRow = page.locator('[data-chapter-page-reorder-item]').nth(2);
+    const firstRowBox = await firstRow.boundingBox();
+    expect(firstRowBox).not.toBeNull();
+    await thirdRow.locator('[data-chapter-page-reorder-handle]').dragTo(firstRow, {
+      targetPosition: { x: Math.min(20, firstRowBox.width - 1), y: 1 },
+    });
+    expect(await orderTitles()).toEqual([pageTitles[2], pageTitles[0], pageTitles[1]]);
+    expect(await page.locator('#notes-chapter-order-form input[name="orderedNoteIds"]').inputValue())
+      .toBe(`${pageIds[2]},${pageIds[0]},${pageIds[1]}`);
+    expect(reorderRequests).toHaveLength(0);
+
+    await Promise.all([
+      page.waitForURL((url) => url.pathname === `/notes/chapters/${chapterId}`),
+      page.getByRole('button', { name: 'Save', exact: true }).click(),
+    ]);
+    expect(reorderRequests).toHaveLength(1);
+    const persistedRows = page.locator('.notes-chapter-page-row');
+    await expect(persistedRows.nth(0)).toContainText(pageTitles[2]);
+    await expect(persistedRows.nth(1)).toContainText(pageTitles[0]);
+    await expect(persistedRows.nth(2)).toContainText(pageTitles[1]);
+    await expect(page.locator('main#main-content')).not.toContainText(directPageTitle);
+    await expect(page.locator('main#main-content')).not.toContainText('Move up');
+    await expect(page.locator('main#main-content')).not.toContainText('Move down');
+
+    await page.goto(`${devServer.baseURL}/notes/chapters/${chapterId}/notes/order`, { waitUntil: 'domcontentloaded' });
+    await assertOrderPageLayout();
+    expect(await orderTitles()).toEqual([pageTitles[2], pageTitles[0], pageTitles[1]]);
+
+    const movedHandle = page.locator(`[data-chapter-page-reorder-item][data-note-id="${pageIds[0]}"]`)
+      .locator('[data-chapter-page-reorder-handle]');
+    await movedHandle.focus();
+    await page.keyboard.press('ArrowDown');
+    expect(await orderTitles()).toEqual([pageTitles[2], pageTitles[1], pageTitles[0]]);
+    await expect(movedHandle).toBeFocused();
+    await expect(page.locator('[data-chapter-page-reorder-live]')).toContainText('moved to position 3 of 3');
+    expect(reorderRequests).toHaveLength(1);
+
+    await page.setViewportSize({ width: 375, height: 800 });
+    await assertOrderPageLayout();
+    await expect(page.locator('main#main-content')).toContainText('Save');
+
+    await Promise.all([
+      page.waitForURL((url) => url.pathname === `/notes/chapters/${chapterId}`),
+      page.getByRole('link', { name: 'Cancel', exact: true }).click(),
+    ]);
+    expect(reorderRequests).toHaveLength(1);
+    const unchangedRows = page.locator('.notes-chapter-page-row');
+    await expect(unchangedRows.nth(0)).toContainText(pageTitles[2]);
+    await expect(unchangedRows.nth(1)).toContainText(pageTitles[0]);
+    await expect(unchangedRows.nth(2)).toContainText(pageTitles[1]);
+    await expect(page.locator('main#main-content')).not.toContainText(directPageTitle);
+    assertNoBrowserDiagnostics(diagnostics);
   });
 
   test('keeps Book detail cohesive, compact, and separate from mixed ordering', async ({ page, devServer }) => {
@@ -1258,6 +1438,7 @@ async function createBrowserPage(page, baseURL, chapterId, title) {
     page.waitForURL(/\/notes\/\d+$/),
     page.locator('button[type="submit"][form="note-form"]').click(),
   ]);
+  return new URL(page.url()).pathname.split('/').at(-1);
 }
 
 async function createBrowserDirectPage(page, baseURL, bookId, title) {

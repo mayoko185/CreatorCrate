@@ -876,6 +876,298 @@ export function enhanceNoteReorder(scope = globalThis.document) {
   return lists.length;
 }
 
+const BOOK_REORDER_LIST_SELECTOR = '[data-book-reorder-list]';
+const BOOK_REORDER_ITEM_SELECTOR = '[data-book-reorder-item]';
+const BOOK_REORDER_HANDLE_SELECTOR = '[data-book-reorder-handle]';
+
+const CHAPTER_PAGE_REORDER_LIST_SELECTOR = '[data-chapter-page-reorder-list]';
+const CHAPTER_PAGE_REORDER_ITEM_SELECTOR = '[data-chapter-page-reorder-item]';
+const CHAPTER_PAGE_REORDER_HANDLE_SELECTOR = '[data-chapter-page-reorder-handle]';
+
+function dedicatedReorderItems(list, config) {
+  return Array.from(list?.querySelectorAll?.(config.itemSelector) || []);
+}
+
+function dedicatedReorderId(item, config) {
+  return item?.dataset?.[config.idDataset]
+    || item?.getAttribute?.(config.idAttribute)
+    || '';
+}
+
+function dedicatedReorderLabel(item, config) {
+  return item?.dataset?.[config.labelDataset]
+    || item?.getAttribute?.(config.labelAttribute)
+    || `${config.label} ${dedicatedReorderId(item, config)}`;
+}
+
+function dedicatedReorderOrder(list, config) {
+  return dedicatedReorderItems(list, config).map((item) => dedicatedReorderId(item, config));
+}
+
+function sameDedicatedReorder(left, right) {
+  return left.length === right.length && left.every((id, index) => id === right[index]);
+}
+
+function updateDedicatedReorderMetadata(list, config) {
+  const items = dedicatedReorderItems(list, config);
+  items.forEach((item, index) => {
+    item.setAttribute?.('aria-posinset', String(index + 1));
+    item.setAttribute?.('aria-setsize', String(items.length));
+    const position = item.querySelector?.(config.positionSelector);
+    if (position) position.textContent = `Position ${index + 1} of ${items.length}`;
+  });
+  return items;
+}
+
+function findDedicatedReorderForm(list, scope, config) {
+  const formId = list?.getAttribute?.('data-reorder-form-target') || list?.dataset?.reorderFormTarget;
+  const document = list?.ownerDocument;
+  if (formId && document?.getElementById) {
+    const form = document.getElementById(formId);
+    if (form) return form;
+  }
+  const parent = list?.parentElement || list?.parentNode;
+  return parent?.querySelector?.(config.formSelector)
+    || scope?.querySelector?.(config.formSelector)
+    || null;
+}
+
+function dedicatedReorderLiveRegion(list, scope, config) {
+  const parent = list?.parentElement || list?.parentNode;
+  return parent?.querySelector?.(config.liveSelector)
+    || scope?.querySelector?.(config.liveSelector)
+    || null;
+}
+
+function syncDedicatedReorderInput(state, config) {
+  const input = state.form.querySelector?.(config.inputSelector);
+  if (!input) return false;
+  input.value = dedicatedReorderOrder(state.list, config).join(',');
+  return true;
+}
+
+function dedicatedReorderElementIsInside(item, element) {
+  if (!item || !element) return false;
+  if (item === element) return true;
+  return typeof item.contains !== 'function' || item.contains(element);
+}
+
+function clearDedicatedDropIndicator(state) {
+  if (!state.dropItem) return;
+  state.dropItem.classList?.remove('is-drop-before', 'is-drop-after');
+  state.dropItem.removeAttribute?.('data-drop-position');
+  state.dropItem = null;
+  state.dropBefore = null;
+}
+
+function setDedicatedDropIndicator(state, item, before) {
+  if (state.dropItem !== item) clearDedicatedDropIndicator(state);
+  state.dropItem = item;
+  state.dropBefore = before;
+  item.classList?.toggle('is-drop-before', before);
+  item.classList?.toggle('is-drop-after', !before);
+  item.setAttribute?.('data-drop-position', before ? 'before' : 'after');
+}
+
+function resolveDedicatedDropTarget(list, event, draggedItem, config) {
+  const target = event.target?.closest?.(config.itemSelector);
+  if (target && dedicatedReorderElementIsInside(list, target) && target !== draggedItem) {
+    const rect = target.getBoundingClientRect?.();
+    const before = rect && Number.isFinite(event.clientY)
+      ? event.clientY < rect.top + (rect.height / 2)
+      : true;
+    return { item: target, before };
+  }
+
+  const remaining = dedicatedReorderItems(list, config).filter((item) => item !== draggedItem);
+  return remaining.length > 0 ? { item: remaining[remaining.length - 1], before: false } : null;
+}
+
+function moveDedicatedItemToIndex(list, item, targetIndex, config) {
+  const items = dedicatedReorderItems(list, config);
+  const currentIndex = items.indexOf(item);
+  if (currentIndex === -1 || currentIndex === targetIndex) return false;
+
+  const remaining = items.filter((candidate) => candidate !== item);
+  const reference = remaining[targetIndex];
+  if (reference) list.insertBefore(item, reference);
+  else list.appendChild(item);
+  return true;
+}
+
+function moveDedicatedItemToDropTarget(list, item, target, before) {
+  if (!target || target === item) return false;
+  if (before) {
+    list.insertBefore(item, target);
+  } else if (target.nextSibling && target.nextSibling !== item) {
+    list.insertBefore(item, target.nextSibling);
+  } else if (target.nextSibling !== item) {
+    list.appendChild(item);
+  }
+  return true;
+}
+
+function announceDedicatedMove(state, item, config) {
+  const items = updateDedicatedReorderMetadata(state.list, config);
+  const index = items.indexOf(item);
+  if (index === -1) return;
+  if (state.live) {
+    state.live.textContent = `${dedicatedReorderLabel(item, config)} moved to position ${index + 1} of ${items.length}.`;
+  }
+}
+
+function finishDedicatedDrag(state) {
+  const draggedItem = state.draggedItem;
+  if (draggedItem) draggedItem.classList?.remove('is-dragging');
+  state.list.classList?.remove('is-dragging');
+  clearDedicatedDropIndicator(state);
+  state.draggedItem = null;
+}
+
+function enhanceDedicatedReorder(scope, config) {
+  if (!scope || typeof scope.querySelectorAll !== 'function') return 0;
+
+  const lists = scope.querySelectorAll(config.listSelector);
+  lists.forEach((list) => {
+    if (isEnhancementBound(list, config.bindingKey)) return;
+
+    const items = dedicatedReorderItems(list, config);
+    const form = findDedicatedReorderForm(list, scope, config);
+    const handles = items.map((item) => item.querySelector?.(config.handleSelector));
+    if (!form || items.length === 0 || handles.some((handle) => !handle)) return;
+
+    const state = {
+      list,
+      form,
+      live: dedicatedReorderLiveRegion(list, scope, config),
+      draggedItem: null,
+      dropItem: null,
+      dropBefore: null,
+    };
+
+    markEnhancementBound(list, config.bindingKey);
+    updateDedicatedReorderMetadata(list, config);
+    syncDedicatedReorderInput(state, config);
+
+    form.addEventListener?.('submit', () => {
+      syncDedicatedReorderInput(state, config);
+    });
+
+    items.forEach((item) => {
+      const handle = item.querySelector?.(config.handleSelector);
+
+      item.addEventListener?.('dragstart', (event) => {
+        const handleTarget = event.target?.closest?.(config.handleSelector);
+        if (!dedicatedReorderElementIsInside(item, handleTarget)) {
+          event.preventDefault?.();
+          return;
+        }
+
+        state.draggedItem = item;
+        item.classList?.add('is-dragging');
+        list.classList?.add('is-dragging');
+        if (event.dataTransfer) {
+          event.dataTransfer.effectAllowed = 'move';
+          event.dataTransfer.setData?.('text/plain', dedicatedReorderId(item, config));
+        }
+      });
+
+      item.addEventListener?.('dragend', () => finishDedicatedDrag(state));
+
+      handle.addEventListener?.('keydown', (event) => {
+        const keyTargets = { ArrowUp: -1, ArrowDown: 1, Home: 0, End: items.length - 1 };
+        if (!Object.prototype.hasOwnProperty.call(keyTargets, event.key)) return;
+
+        event.preventDefault?.();
+        const currentItems = dedicatedReorderItems(list, config);
+        const currentIndex = currentItems.indexOf(item);
+        if (currentIndex === -1) return;
+        const targetIndex = event.key === 'Home'
+          ? 0
+          : event.key === 'End'
+            ? currentItems.length - 1
+            : currentIndex + keyTargets[event.key];
+        if (targetIndex < 0 || targetIndex >= currentItems.length || targetIndex === currentIndex) return;
+
+        if (moveDedicatedItemToIndex(list, item, targetIndex, config)) {
+          announceDedicatedMove(state, item, config);
+          syncDedicatedReorderInput(state, config);
+          handle.focus?.();
+        }
+      });
+    });
+
+    list.addEventListener?.('dragover', (event) => {
+      if (!state.draggedItem) return;
+      event.preventDefault?.();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+      const target = resolveDedicatedDropTarget(list, event, state.draggedItem, config);
+      if (target) setDedicatedDropIndicator(state, target.item, target.before);
+      else clearDedicatedDropIndicator(state);
+    });
+
+    list.addEventListener?.('dragleave', (event) => {
+      const relatedTarget = event.relatedTarget;
+      if (!relatedTarget || !list.contains?.(relatedTarget)) clearDedicatedDropIndicator(state);
+    });
+
+    list.addEventListener?.('drop', (event) => {
+      if (!state.draggedItem) return;
+      event.preventDefault?.();
+      const draggedItem = state.draggedItem;
+      const target = state.dropItem
+        ? { item: state.dropItem, before: state.dropBefore }
+        : resolveDedicatedDropTarget(list, event, draggedItem, config);
+      const beforeIds = dedicatedReorderOrder(list, config);
+      if (target) moveDedicatedItemToDropTarget(list, draggedItem, target.item, target.before);
+      finishDedicatedDrag(state);
+      const afterIds = dedicatedReorderOrder(list, config);
+      if (!sameDedicatedReorder(beforeIds, afterIds)) {
+        updateDedicatedReorderMetadata(list, config);
+        syncDedicatedReorderInput(state, config);
+      }
+    });
+  });
+
+  return lists.length;
+}
+
+export function enhanceBookReorder(scope = globalThis.document) {
+  return enhanceDedicatedReorder(scope, {
+    listSelector: BOOK_REORDER_LIST_SELECTOR,
+    itemSelector: BOOK_REORDER_ITEM_SELECTOR,
+    handleSelector: BOOK_REORDER_HANDLE_SELECTOR,
+    formSelector: '[data-book-reorder-form]',
+    inputSelector: '[data-book-order-input]',
+    liveSelector: '[data-book-reorder-live]',
+    positionSelector: '[data-book-order-position]',
+    idDataset: 'bookId',
+    idAttribute: 'data-book-id',
+    labelDataset: 'bookLabel',
+    labelAttribute: 'data-book-label',
+    label: 'Book',
+    bindingKey: 'bookReorderBound',
+  });
+}
+
+export function enhanceChapterPageReorder(scope = globalThis.document) {
+  return enhanceDedicatedReorder(scope, {
+    listSelector: CHAPTER_PAGE_REORDER_LIST_SELECTOR,
+    itemSelector: CHAPTER_PAGE_REORDER_ITEM_SELECTOR,
+    handleSelector: CHAPTER_PAGE_REORDER_HANDLE_SELECTOR,
+    formSelector: '[data-chapter-page-reorder-form]',
+    inputSelector: '[data-chapter-page-order-input]',
+    liveSelector: '[data-chapter-page-reorder-live]',
+    positionSelector: '[data-chapter-page-order-position]',
+    idDataset: 'noteId',
+    idAttribute: 'data-note-id',
+    labelDataset: 'noteLabel',
+    labelAttribute: 'data-note-label',
+    label: 'Page',
+    bindingKey: 'chapterPageReorderBound',
+  });
+}
+
 const NOTE_EDITOR_FORM_SELECTOR = '[data-notes-editor-form]';
 const NOTE_EDITOR_HOST_SELECTOR = '[data-notes-editor-host]';
 const NOTE_EDITOR_SOURCE_SELECTOR = '[data-notes-editor-source]';
@@ -4697,6 +4989,8 @@ if (typeof document !== 'undefined') {
     enhanceAutoSubmit(document);
     enhanceCategoryReorder(document);
     enhanceNoteReorder(document);
+    enhanceBookReorder(document);
+    enhanceChapterPageReorder(document);
     enhanceNotesEditor(document);
     enhanceNotesAssetPicker(document);
     enhanceAssetAutoRenameOrdering(document);

@@ -7036,9 +7036,61 @@
         font-size: 1rem;
         line-height: 1.3;
       }
+      .notes-books-order-form,
+      .notes-reorder-list {
+        min-width: 0;
+      }
+      .notes-reorder-list { gap: var(--space-sm); }
+      .notes-reorder-row {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr);
+        align-items: center;
+        justify-content: initial;
+        gap: var(--space-sm);
+        padding: var(--space-sm) var(--space-md);
+        transition: opacity var(--transition-fast), box-shadow var(--transition-fast), background var(--transition-fast);
+      }
+      .notes-reorder-row.is-dragging { opacity: 0.55; }
+      .notes-reorder-row.is-drop-before { box-shadow: 0 -3px 0 var(--accent); }
+      .notes-reorder-row.is-drop-after { box-shadow: 0 3px 0 var(--accent); }
+      .notes-reorder-handle {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 2rem;
+        min-height: 2rem;
+        padding: 0;
+        color: var(--muted);
+        background: transparent;
+        border: 1px solid transparent;
+        border-radius: var(--radius-sm);
+        cursor: grab;
+        font-size: 1.25rem;
+        line-height: 1;
+        touch-action: none;
+        user-select: none;
+      }
+      .notes-reorder-handle:hover {
+        color: var(--text);
+        background: var(--surface-card);
+        border-color: var(--border);
+      }
+      .notes-reorder-handle:active { cursor: grabbing; }
+      .notes-reorder-handle:focus-visible {
+        outline: 2px solid var(--focus-ring);
+        outline-offset: 2px;
+      }
+      .notes-reorder-position {
+        display: block;
+        margin-top: var(--space-xs);
+        color: var(--muted);
+        font-size: 0.75rem;
+      }
       @media (max-width: 540px) {
         .notes-chapter-page-row,
-        .notes-book-content-row {
+        .notes-book-content-row,
+        .notes-books-order-row,
+        .notes-reorder-row {
           align-items: stretch;
           flex-direction: column;
           gap: var(--space-md);

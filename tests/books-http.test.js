@@ -97,23 +97,35 @@ describe('Book HTTP routes', () => {
     expect(response.text).not.toContain('Legacy Flat Note');
   });
 
-  it('renders the top-level Book order shell before dynamic Book detail routing', async () => {
+  it('renders the dedicated top-level Book reorder page before dynamic Book detail routing', async () => {
     const first = app.locals.bookService.createBook({ title: 'Order First Book' });
     const second = app.locals.bookService.createBook({ title: 'Order Second Book' });
+    const third = app.locals.bookService.createBook({ title: 'Order Third Book' });
+    const orderedBooks = [third, first, second];
+    app.locals.bookService.reorderBooks(orderedBooks.map((book) => book.id));
 
     const response = await agent.get('/notes/books/order').expect(200);
 
     expect(response.text).toContain('<title>CreatorCrate — Notes — Change order</title>');
     expect(response.text).toContain('<h1 class="app-section-title">Notes — Change order</h1>');
+    expect((response.text.match(/<h1\b/g) || [])).toHaveLength(1);
+    expect(response.text).toContain('<button class="button button-primary" type="submit" form="notes-books-order-form">Save</button>');
     expect(response.text).toContain('<a class="button button-secondary" href="/notes">Cancel</a>');
     expect(response.text).toContain('<h2 id="notes-books-order-heading">Change order</h2>');
-    expect(response.text).toContain('Book ordering controls will be available here in a future update.');
-    expect(response.text).toContain(`<a href="/notes/books/${first.id}">Order First Book</a>`);
-    expect(response.text).toContain(`<a href="/notes/books/${second.id}">Order Second Book</a>`);
-    expect(response.text).not.toContain('<form');
-    expect(response.text).not.toContain('<button');
-    expect(response.text).not.toContain('draggable="true"');
-    expect(response.text).not.toContain('orderedBookIds');
+    expect(response.text).toContain('Drag a handle to move a Book');
+    expect(response.text).toContain('<form id="notes-books-order-form" method="post" action="/notes/books/reorder" data-book-reorder-form>');
+    expect(response.text).toContain(`<input type="hidden" name="orderedBookIds" data-book-order-input value="${orderedBooks.map((book) => book.id).join(',')}">`);
+    expect(response.text).toContain('data-book-reorder-list');
+    expect(response.text).toContain('data-book-reorder-live');
+    expect((response.text.match(/data-book-reorder-item/g) || [])).toHaveLength(3);
+    expect((response.text.match(/data-book-reorder-handle/g) || [])).toHaveLength(3);
+    expect((response.text.match(/draggable="true"/g) || [])).toHaveLength(6);
+    const orderList = response.text.match(/<ol[\s\S]*?data-book-reorder-list[\s\S]*?<\/ol>/)?.[0] || '';
+    expect(orderList.indexOf('Order Third Book')).toBeLessThan(orderList.indexOf('Order First Book'));
+    expect(orderList.indexOf('Order First Book')).toBeLessThan(orderList.indexOf('Order Second Book'));
+    expect(response.text).toContain('aria-label="Reorder Order Third Book"');
+    expect(response.text).toContain('Position 1 of 3');
+    expect(response.text).not.toContain('Book ordering controls will be available here in a future update.');
     expect(response.text).not.toContain('Move up');
     expect(response.text).not.toContain('Move down');
 

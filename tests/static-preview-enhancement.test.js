@@ -8,6 +8,8 @@ import {
   enhanceAutoSubmit,
   enhanceCategoryReorder,
   enhanceNoteReorder,
+  enhanceBookReorder,
+  enhanceChapterPageReorder,
   enhanceNotesEditor,
   enhanceCategoryDetails,
   enhanceConfirmations,
@@ -867,6 +869,122 @@ function makeNoteReorderFixture({
   };
 }
 
+function makeDedicatedReorderFixture({
+  action,
+  csrfToken,
+  ids,
+  formId,
+  formAttribute,
+  inputAttribute,
+  listAttribute,
+  itemAttribute,
+  idAttribute,
+  idDataset,
+  labelAttribute,
+  liveAttribute,
+  positionAttribute,
+  handleAttribute,
+} = {}) {
+  const document = makeCategoryNode({ tagName: 'document' });
+  document.ownerDocument = document;
+  document.getElementById = (id) => document
+    .querySelectorAll(`[${formAttribute}]`)
+    .find((form) => form.getAttribute('id') === id) || null;
+  const form = makeCategoryNode({
+    tagName: 'form',
+    attrs: { id: formId, [formAttribute]: '' },
+  });
+  form.action = action;
+  form.method = 'post';
+  form.csrfToken = csrfToken;
+  const orderInput = makeCategoryNode({ tagName: 'input', attrs: { [inputAttribute]: '' } });
+  orderInput.value = ids.join(',');
+  const list = makeCategoryNode({ tagName: 'ol', attrs: {
+    [listAttribute]: '',
+    'data-reorder-form-target': formId,
+  } });
+  const live = makeCategoryNode({ attrs: { [liveAttribute]: '' } });
+  const items = ids.map((id, index) => {
+    const item = makeCategoryNode({
+      tagName: 'li',
+      attrs: {
+        [itemAttribute]: '',
+        [idAttribute]: id,
+        [labelAttribute]: `${idDataset === 'bookId' ? 'Book' : 'Page'} ${id}`,
+      },
+      rect: { top: index * 50, height: 40 },
+    });
+    const handle = makeCategoryNode({ tagName: 'button', attrs: { [handleAttribute]: '' } });
+    const position = makeCategoryNode({ attrs: { [positionAttribute]: '' } });
+    item.appendChild(handle);
+    item.appendChild(position);
+    item.handle = handle;
+    item.position = position;
+    return item;
+  });
+
+  document.appendChild(form);
+  form.appendChild(orderInput);
+  form.appendChild(list);
+  items.forEach((item) => list.appendChild(item));
+  form.appendChild(live);
+  return {
+    document,
+    form,
+    orderInput,
+    list,
+    live,
+    items,
+    order() { return list.querySelectorAll(`[${itemAttribute}]`).map((item) => item.dataset[idDataset]); },
+  };
+}
+
+function makeBookReorderFixture({
+  action = '/notes/books/reorder',
+  csrfToken = 'csrf-book-reorder',
+  bookIds = ['101', '202', '303'],
+} = {}) {
+  return makeDedicatedReorderFixture({
+    action,
+    csrfToken,
+    ids: bookIds,
+    formId: 'notes-books-order-form',
+    formAttribute: 'data-book-reorder-form',
+    inputAttribute: 'data-book-order-input',
+    listAttribute: 'data-book-reorder-list',
+    itemAttribute: 'data-book-reorder-item',
+    idAttribute: 'data-book-id',
+    idDataset: 'bookId',
+    labelAttribute: 'data-book-label',
+    liveAttribute: 'data-book-reorder-live',
+    positionAttribute: 'data-book-order-position',
+    handleAttribute: 'data-book-reorder-handle',
+  });
+}
+
+function makeChapterPageReorderFixture({
+  action = '/notes/chapters/7/notes/reorder',
+  csrfToken = 'csrf-chapter-page-reorder',
+  noteIds = ['11', '22', '33'],
+} = {}) {
+  return makeDedicatedReorderFixture({
+    action,
+    csrfToken,
+    ids: noteIds,
+    formId: 'notes-chapter-order-form',
+    formAttribute: 'data-chapter-page-reorder-form',
+    inputAttribute: 'data-chapter-page-order-input',
+    listAttribute: 'data-chapter-page-reorder-list',
+    itemAttribute: 'data-chapter-page-reorder-item',
+    idAttribute: 'data-note-id',
+    idDataset: 'noteId',
+    labelAttribute: 'data-note-label',
+    liveAttribute: 'data-chapter-page-reorder-live',
+    positionAttribute: 'data-chapter-page-order-position',
+    handleAttribute: 'data-chapter-page-reorder-handle',
+  });
+}
+
 describe('project category reorder enhancement', () => {
   it('is scoped and no-ops when the project reorder list is absent', () => {
     const scope = { querySelectorAll: (selector) => {
@@ -1277,6 +1395,163 @@ describe('Notes reorder enhancement', () => {
     fixture.items[0].handle.dispatch('keydown', { key: 'ArrowUp' });
     fixture.items[2].handle.dispatch('keydown', { key: 'ArrowDown' });
     expect(fixture.order()).toEqual(['11', '22', '33']);
+  });
+});
+
+describe('top-level Book reorder enhancement', () => {
+  it('is scoped and no-ops when the Book reorder list is absent', () => {
+    const scope = {
+      querySelectorAll(selector) {
+        expect(selector).toBe('[data-book-reorder-list]');
+        return [];
+      },
+    };
+
+    expect(enhanceBookReorder(scope)).toBe(0);
+  });
+
+  it('moves rows from the handle, updates the hidden order, and does not persist until Save', () => {
+    const fixture = makeBookReorderFixture();
+    const calls = [];
+
+    return withBrowserGlobals((...args) => {
+      calls.push(args);
+      return Promise.resolve({ ok: true });
+    }, async () => {
+      expect(enhanceBookReorder(fixture.document)).toBe(1);
+
+      const rowDrag = fixture.items[0].dispatch('dragstart', { dataTransfer: { setData() {} } });
+      expect(rowDrag.defaultPrevented).toBe(true);
+      fixture.items[0].handle.dispatch('dragstart', { dataTransfer: { setData() {} } });
+      expect(fixture.items[0].classList.contains('is-dragging')).toBe(true);
+      fixture.list.dispatch('dragover', {
+        target: fixture.items[2],
+        clientY: 130,
+        dataTransfer: {},
+      });
+      expect(fixture.items[2].classList.contains('is-drop-after')).toBe(true);
+      fixture.list.dispatch('drop', { target: fixture.items[2] });
+
+      expect(fixture.order()).toEqual(['202', '303', '101']);
+      expect(fixture.orderInput.value).toBe('202,303,101');
+      expect(fixture.items[0].classList.contains('is-dragging')).toBe(false);
+      expect(fixture.items[2].classList.contains('is-drop-after')).toBe(false);
+      expect(calls).toHaveLength(0);
+
+      fixture.items[0].handle.dispatch('dragstart', { dataTransfer: { setData() {} } });
+      fixture.list.dispatch('dragover', {
+        target: fixture.items[1],
+        clientY: 0,
+        dataTransfer: {},
+      });
+      fixture.list.dispatch('drop', { target: fixture.items[1] });
+      expect(fixture.order()).toEqual(['101', '202', '303']);
+      expect(fixture.orderInput.value).toBe('101,202,303');
+      expect(new Set(fixture.order())).toEqual(new Set(['101', '202', '303']));
+      expect(calls).toHaveLength(0);
+
+      const submit = fixture.form.dispatch('submit');
+      expect(submit.defaultPrevented).toBe(false);
+      expect(fixture.orderInput.value).toBe('101,202,303');
+      expect(calls).toHaveLength(0);
+      expect(new Set(fixture.order())).toEqual(new Set(['101', '202', '303']));
+    });
+  });
+
+  it('supports keyboard moves, position announcements, focus retention, and boundaries without a request', () => {
+    const fixture = makeBookReorderFixture();
+    const originalFetch = globalThis.fetch;
+    let requestCount = 0;
+    globalThis.fetch = () => {
+      requestCount += 1;
+      return Promise.resolve({ ok: true });
+    };
+
+    try {
+      enhanceBookReorder(fixture.document);
+      fixture.items[1].handle.dispatch('keydown', { key: 'ArrowUp' });
+
+      expect(fixture.order()).toEqual(['202', '101', '303']);
+      expect(fixture.orderInput.value).toBe('202,101,303');
+      expect(fixture.items[1].position.textContent).toBe('Position 1 of 3');
+      expect(fixture.items[1].getAttribute('aria-posinset')).toBe('1');
+      expect(fixture.items[1].getAttribute('aria-setsize')).toBe('3');
+      expect(fixture.items[1].handle.focused).toBe(true);
+      expect(fixture.live.textContent).toContain('moved to position 1 of 3');
+      expect(requestCount).toBe(0);
+
+      fixture.items[1].handle.dispatch('keydown', { key: 'Home' });
+      expect(fixture.order()).toEqual(['202', '101', '303']);
+      fixture.items[2].handle.dispatch('keydown', { key: 'End' });
+      expect(fixture.order()).toEqual(['202', '101', '303']);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('is idempotent and keeps Cancel outside the form submission path', () => {
+    const fixture = makeBookReorderFixture();
+    const cancel = makeCategoryNode({ tagName: 'a' });
+    cancel.setAttribute('href', '/notes');
+    fixture.document.appendChild(cancel);
+
+    expect(enhanceBookReorder(fixture.document)).toBe(1);
+    expect(enhanceBookReorder(fixture.document)).toBe(1);
+    expect(fixture.list.listeners.filter((listener) => listener.type === 'dragover')).toHaveLength(1);
+    expect(fixture.items[0].handle.listeners.filter((listener) => listener.type === 'keydown')).toHaveLength(1);
+    expect(cancel.getAttribute('href')).toBe('/notes');
+    expect(fixture.form.listeners.filter((listener) => listener.type === 'submit')).toHaveLength(1);
+  });
+});
+
+describe('Chapter Page reorder enhancement', () => {
+  it('is scoped to Chapter Page order lists', () => {
+    const scope = {
+      querySelectorAll(selector) {
+        expect(selector).toBe('[data-chapter-page-reorder-list]');
+        return [];
+      },
+    };
+
+    expect(enhanceChapterPageReorder(scope)).toBe(0);
+  });
+
+  it('reuses dedicated reorder behavior for drag, keyboard moves, IDs, focus, and Save-only persistence', () => {
+    const fixture = makeChapterPageReorderFixture();
+
+    expect(enhanceChapterPageReorder(fixture.document)).toBe(1);
+    expect(enhanceChapterPageReorder(fixture.document)).toBe(1);
+    expect(fixture.list.listeners.filter((listener) => listener.type === 'dragover')).toHaveLength(1);
+
+    const rowDrag = fixture.items[0].dispatch('dragstart', { dataTransfer: { setData() {} } });
+    expect(rowDrag.defaultPrevented).toBe(true);
+    fixture.items[0].handle.dispatch('dragstart', { dataTransfer: { setData() {} } });
+    fixture.list.dispatch('dragover', {
+      target: fixture.items[2],
+      clientY: 130,
+      dataTransfer: {},
+    });
+    fixture.list.dispatch('drop', { target: fixture.items[2] });
+
+    expect(fixture.order()).toEqual(['22', '33', '11']);
+    expect(fixture.orderInput.value).toBe('22,33,11');
+    expect(fixture.items[0].classList.contains('is-dragging')).toBe(false);
+
+    fixture.items[0].handle.dispatch('keydown', { key: 'ArrowUp' });
+    expect(fixture.order()).toEqual(['22', '11', '33']);
+    expect(fixture.items[0].handle.focused).toBe(true);
+    expect(fixture.live.textContent).toContain('Page 11 moved to position 2 of 3');
+
+    fixture.items[0].handle.dispatch('keydown', { key: 'Home' });
+    expect(fixture.order()).toEqual(['11', '22', '33']);
+    fixture.items[0].handle.dispatch('keydown', { key: 'End' });
+    expect(fixture.order()).toEqual(['22', '33', '11']);
+    expect(fixture.orderInput.value).toBe('22,33,11');
+    expect(new Set(fixture.order())).toEqual(new Set(['11', '22', '33']));
+
+    const submit = fixture.form.dispatch('submit');
+    expect(submit.defaultPrevented).toBe(false);
+    expect(fixture.form.listeners.filter((listener) => listener.type === 'submit')).toHaveLength(1);
   });
 });
 

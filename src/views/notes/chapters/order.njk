@@ -5,26 +5,65 @@
 
 {% block content %}
   {% call pageHeading.render() %}
-    <a class="button button-secondary" href="/notes/chapters/{{ chapter.id }}">Back to Chapter</a>
+    {% if notes.length > 0 %}
+      <button class="button button-primary" type="submit" form="notes-chapter-order-form">Save</button>
+    {% endif %}
+    <a class="button button-secondary" href="/notes/chapters/{{ chapter.id }}">Cancel</a>
   {% endcall %}
 
   {% include "partials/notes-hierarchy.njk" %}
 
-  <section class="notes-chapter-order" aria-labelledby="notes-order-heading">
+  <section class="notes-chapter-order" data-notes-chapter-order-page aria-labelledby="notes-order-heading">
     <h2 id="notes-order-heading">Change order</h2>
-    <p class="help-text">Page ordering controls will be available here in a future update.</p>
 
     {% if notes.length > 0 %}
-      <ol class="notes-chapter-page-list" aria-label="Pages in {{ chapter.title }}">
-        {% for note in notes %}
-          <li class="notes-chapter-page-row">
-            <div class="notes-chapter-page-copy">
-              <span class="notes-chapter-page-number">Page {{ loop.index }}</span>
-              <h3 class="notes-chapter-page-title"><a href="/notes/{{ note.id }}">{{ note.title }}</a></h3>
-            </div>
-          </li>
-        {% endfor %}
-      </ol>
+      <p class="help-text" id="notes-chapter-order-instructions">
+        Drag a handle to move a Page, or focus a handle and use Arrow Up, Arrow Down, Home, or End. Select Save to keep the new order.
+      </p>
+
+      <form id="notes-chapter-order-form" method="post" action="/notes/chapters/{{ chapter.id }}/notes/reorder" data-chapter-page-reorder-form>
+        <input type="hidden" name="_csrf" value="{{ _csrf }}">
+        <input type="hidden" name="orderedNoteIds" data-chapter-page-order-input value="{% for note in notes %}{{ note.id }}{% if not loop.last %},{% endif %}{% endfor %}">
+
+        <ol
+          class="notes-chapter-page-list notes-chapter-order-list notes-reorder-list"
+          data-chapter-page-reorder-list
+          data-reorder-form-target="notes-chapter-order-form"
+          aria-label="Pages in {{ chapter.title }}"
+          aria-describedby="notes-chapter-order-instructions">
+          {% for note in notes %}
+            <li
+              class="notes-chapter-page-row notes-chapter-order-row notes-reorder-row"
+              data-chapter-page-reorder-item
+              data-note-id="{{ note.id }}"
+              data-note-label="{{ note.title }}"
+              draggable="true"
+              aria-posinset="{{ loop.index }}"
+              aria-setsize="{{ notes.length }}">
+              <button
+                type="button"
+                class="notes-chapter-order-handle notes-reorder-handle"
+                data-chapter-page-reorder-handle
+                draggable="true"
+                aria-label="Reorder Page: {{ note.title }}"
+                aria-describedby="notes-chapter-order-instructions notes-chapter-order-position-{{ note.id }}"
+                title="Drag to reorder; use the arrow keys to move">
+                <span aria-hidden="true">⠿</span>
+              </button>
+              <div class="notes-chapter-page-copy">
+                <span class="notes-chapter-page-number">Page {{ loop.index }}</span>
+                <h3 class="notes-chapter-page-title"><a href="/notes/{{ note.id }}">{{ note.title }}</a></h3>
+                <span id="notes-chapter-order-position-{{ note.id }}" class="notes-chapter-order-position notes-reorder-position" data-chapter-page-order-position>Position {{ loop.index }} of {{ notes.length }}</span>
+              </div>
+            </li>
+          {% endfor %}
+        </ol>
+        <div class="notes-chapter-order-live-region notes-reorder-live-region sr-only" data-chapter-page-reorder-live aria-live="polite" aria-atomic="true"></div>
+      </form>
+
+      <noscript>
+        <p class="help-text">JavaScript is required to move Pages. Save still submits the current ordered Page ID list.</p>
+      </noscript>
     {% else %}
       {% set emptyHeading = "No Pages yet" %}
       {% set emptyDescription = "Create a Page before changing this chapter's order." %}

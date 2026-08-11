@@ -5,24 +5,63 @@
 
 {% block content %}
   {% call pageHeading.render() %}
+    {% if books.length > 0 %}
+      <button class="button button-primary" type="submit" form="notes-books-order-form">Save</button>
+    {% endif %}
     <a class="button button-secondary" href="/notes">Cancel</a>
   {% endcall %}
 
-  <section class="notes-books-order" aria-labelledby="notes-books-order-heading">
+  <section class="notes-books-order" data-notes-book-order-page aria-labelledby="notes-books-order-heading">
     <h2 id="notes-books-order-heading">Change order</h2>
-    <p class="help-text">Book ordering controls will be available here in a future update.</p>
 
     {% if books.length > 0 %}
-      <ol class="notes-book-content-list" aria-label="Books in current order">
-        {% for book in books %}
-          <li class="notes-book-content-row">
-            <div class="notes-book-content-copy">
-              <span class="notes-book-content-kind">Book {{ loop.index }}</span>
-              <h3 class="notes-book-content-title"><a href="/notes/books/{{ book.id }}">{{ book.title }}</a></h3>
-            </div>
-          </li>
-        {% endfor %}
-      </ol>
+      <p class="help-text" id="notes-books-order-instructions">
+        Drag a handle to move a Book, or focus a handle and use Arrow Up, Arrow Down, Home, or End. Select Save to keep the new order.
+      </p>
+
+      <form id="notes-books-order-form" method="post" action="/notes/books/reorder" data-book-reorder-form>
+        <input type="hidden" name="_csrf" value="{{ _csrf }}">
+        <input type="hidden" name="orderedBookIds" data-book-order-input value="{% for book in books %}{{ book.id }}{% if not loop.last %},{% endif %}{% endfor %}">
+
+        <ol
+          class="notes-book-content-list notes-books-order-list notes-reorder-list"
+          data-book-reorder-list
+          data-reorder-form-target="notes-books-order-form"
+          aria-label="Books in current order"
+          aria-describedby="notes-books-order-instructions">
+          {% for book in books %}
+            <li
+              class="notes-book-content-row notes-books-order-row notes-reorder-row"
+              data-book-reorder-item
+              data-book-id="{{ book.id }}"
+              data-book-label="{{ book.title }}"
+              draggable="true"
+              aria-posinset="{{ loop.index }}"
+              aria-setsize="{{ books.length }}">
+              <button
+                type="button"
+                class="notes-books-order-handle notes-reorder-handle"
+                data-book-reorder-handle
+                draggable="true"
+                aria-label="Reorder {{ book.title }}"
+                aria-describedby="notes-books-order-instructions notes-books-order-position-{{ book.id }}"
+                title="Drag to reorder; use the arrow keys to move">
+                <span aria-hidden="true">⠿</span>
+              </button>
+              <div class="notes-book-content-copy">
+                <span class="notes-book-content-kind">Book</span>
+                <h3 class="notes-book-content-title"><a href="/notes/books/{{ book.id }}">{{ book.title }}</a></h3>
+                <span id="notes-books-order-position-{{ book.id }}" class="notes-books-order-position notes-reorder-position" data-book-order-position>Position {{ loop.index }} of {{ books.length }}</span>
+              </div>
+            </li>
+          {% endfor %}
+        </ol>
+        <div class="notes-books-order-live-region notes-reorder-live-region sr-only" data-book-reorder-live aria-live="polite" aria-atomic="true"></div>
+      </form>
+
+      <noscript>
+        <p class="help-text">JavaScript is required to move Books. Save still submits the current ordered Book ID list.</p>
+      </noscript>
     {% else %}
       {% set emptyHeading = "No books yet" %}
       {% set emptyDescription = "Create a Book before changing its order." %}
