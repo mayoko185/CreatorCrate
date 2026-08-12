@@ -540,6 +540,7 @@ export function createNotesRouter({ appName, bookService, chapterService, noteSe
     try {
       const chapter = hasChapterId ? chapterService.getChapter(chapterId) : null;
       const book = bookService.getBook(hasChapterId ? chapter.book_id : bookId);
+      const bookContents = bookService.listBookContents(book.id);
       return res.render('notes/form.njk', buildNoteFormModel({
         appName,
         book,
@@ -554,6 +555,8 @@ export function createNotesRouter({ appName, bookService, chapterService, noteSe
         errors: {},
         action: 'Create',
         submitUrl: '/notes',
+        bookContents,
+        navCurrentChapterId: chapter ? chapter.id : null,
       }));
     } catch (err) {
       if (err instanceof ChapterNotFoundError || err instanceof BookNotFoundError) {
@@ -592,6 +595,7 @@ export function createNotesRouter({ appName, bookService, chapterService, noteSe
           const book = hasChapterId
             ? bookService.getBook(chapter.book_id)
             : bookService.getBook(bookId);
+          const bookContents = bookService.listBookContents(book.id);
           const values = buildFormValues(body, {
             chapterId: hasChapterId ? chapterId : undefined,
             bookId: hasBookId ? bookId : undefined,
@@ -607,6 +611,8 @@ export function createNotesRouter({ appName, bookService, chapterService, noteSe
             errors: err.errors || { general: err.message },
             action: 'Create',
             submitUrl: '/notes',
+            bookContents,
+            navCurrentChapterId: chapter ? chapter.id : null,
           }));
         } catch (lookupError) {
           if (lookupError instanceof ChapterNotFoundError || lookupError instanceof BookNotFoundError) {
@@ -664,8 +670,18 @@ export function createNotesRouter({ appName, bookService, chapterService, noteSe
       const projects = resolveAssociatedProjects(note, projectService);
       const assets = resolveAssociatedAssets(note, assetRepository);
       const chapterOptions = listChapterOptions(bookService, chapterService);
+      const bookContents = bookService.listBookContents(book.id);
       return res.render('notes/detail.njk', {
-        appName, book, chapter, note, contentHtml, projects, assets, chapterOptions,
+        appName,
+        book,
+        chapter,
+        note,
+        contentHtml,
+        projects,
+        assets,
+        chapterOptions,
+        bookContents,
+        navCurrentPageId: note.id,
       });
     } catch (err) {
       if (err instanceof NoteNotFoundError || err instanceof ChapterNotFoundError || err instanceof BookNotFoundError) {
@@ -687,6 +703,7 @@ export function createNotesRouter({ appName, bookService, chapterService, noteSe
         noteService, chapterService, bookService, id,
       });
       const values = noteToFormValues(note);
+      const bookContents = bookService.listBookContents(book.id);
       return res.render('notes/form.njk', buildNoteFormModel({
         appName,
         book,
@@ -699,6 +716,8 @@ export function createNotesRouter({ appName, bookService, chapterService, noteSe
         action: 'Edit',
         submitUrl: `/notes/${id}`,
         moveTargets: listChapterOptions(bookService, chapterService),
+        bookContents,
+        navCurrentPageId: note.id,
       }));
     } catch (err) {
       if (err instanceof NoteNotFoundError || err instanceof ChapterNotFoundError || err instanceof BookNotFoundError) {
@@ -735,6 +754,7 @@ export function createNotesRouter({ appName, bookService, chapterService, noteSe
         try {
           const { note, chapter, book } = hierarchy;
           const values = buildFormValues(body);
+          const bookContents = bookService.listBookContents(book.id);
           return res.status(422).render('notes/form.njk', buildNoteFormModel({
             appName,
             book,
@@ -747,6 +767,8 @@ export function createNotesRouter({ appName, bookService, chapterService, noteSe
             action: 'Edit',
             submitUrl: `/notes/${id}`,
             moveTargets: listChapterOptions(bookService, chapterService),
+            bookContents,
+            navCurrentPageId: note.id,
           }));
         } catch (lookupError) {
           if (lookupError instanceof NoteNotFoundError || lookupError instanceof ChapterNotFoundError || lookupError instanceof BookNotFoundError) {
@@ -785,7 +807,7 @@ export function createNotesRouter({ appName, bookService, chapterService, noteSe
 
 function buildNoteFormModel({
   appName, book = null, chapter = null, note, values, projects, selectedAssets, errors, action, submitUrl,
-  moveTargets = [],
+  moveTargets = [], bookContents = [], navCurrentChapterId = null, navCurrentPageId = null,
 }) {
   return {
     appName,
@@ -801,6 +823,9 @@ function buildNoteFormModel({
     action,
     submitUrl,
     moveTargets,
+    bookContents,
+    navCurrentChapterId,
+    navCurrentPageId,
   };
 }
 
@@ -1128,9 +1153,10 @@ function renderChapterDetail(res, {
 }) {
   const chapter = chapterService.getChapter(chapterId);
   const book = bookService.getBook(chapter.book_id);
+  const bookContents = bookService.listBookContents(book.id);
   const notes = noteService.listNotesForChapter(chapterId);
   res.status(status).render('notes/chapters/detail.njk', {
-    appName, book, chapter, notes, notice,
+    appName, book, bookContents, navCurrentChapterId: chapter.id, chapter, notes, notice,
   });
 }
 

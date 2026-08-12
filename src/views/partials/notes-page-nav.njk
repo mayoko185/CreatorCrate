@@ -1,0 +1,19 @@
+{% set pageNavCurrentIdString = '' %}
+{% if pageNavCurrentId is defined and pageNavCurrentId is not none %}
+  {% set pageNavCurrentIdString = pageNavCurrentId | string %}
+{% endif %}
+<nav class="notes-page-nav" aria-label="{{ pageNavLabel }}">
+  <ol class="notes-page-nav-list">
+    {% for page in pageNavPages %}
+      {% if page.id | string == pageNavCurrentIdString %}
+        <li class="notes-page-nav-item notes-page-nav-item--current" aria-current="page">
+          <span class="notes-page-nav-current">{{ page.title }}</span>
+        </li>
+      {% else %}
+        <li class="notes-page-nav-item">
+          <a class="notes-page-nav-link" href="/notes/{{ page.id }}">{{ page.title }}</a>
+        </li>
+      {% endif %}
+    {% endfor %}
+  </ol>
+</nav>

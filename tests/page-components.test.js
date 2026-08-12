@@ -30,6 +30,8 @@ import { getDisabledModeCsrf } from './helpers/auth.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 const VIEWS_DIR = fileURLToPath(new URL('../src/views', import.meta.url));
+const CREATORCRATE_CSS_PATH = fileURLToPath(new URL('../src/static/creatorcrate.css', import.meta.url));
+const creatorCrateCss = fs.readFileSync(CREATORCRATE_CSS_PATH, 'utf8');
 function renderPartial(templateName, context = {}) {
   const env = nunjucks.configure(VIEWS_DIR, { autoescape: true, noCache: true });
   return env.render(templateName, context);
@@ -99,6 +101,243 @@ function hasNestedForms(html) {
   }
   return depth !== 0;
 }
+
+describe('Notes Page navigation partial', () => {
+  it('renders labelled semantic navigation with shallow links and typed current matching', () => {
+    const html = renderPartial('partials/notes-page-nav.njk', {
+      pageNavLabel: 'Pages in Chapter One',
+      pageNavPages: [
+        { id: 101, title: 'Opening Page' },
+        { id: 102, title: 'Current Page' },
+        { id: 103, title: 'Closing Page' },
+      ],
+      pageNavCurrentId: '102',
+    });
+
+    expect(html).toContain('<nav class="notes-page-nav" aria-label="Pages in Chapter One">');
+    expect(html).toContain('<ol class="notes-page-nav-list">');
+    expect(html).toContain('<a class="notes-page-nav-link" href="/notes/101">Opening Page</a>');
+    expect(html).toContain('<a class="notes-page-nav-link" href="/notes/103">Closing Page</a>');
+    expect(html).toContain('class="notes-page-nav-item notes-page-nav-item--current"');
+    expect(html).toContain('aria-current="page"');
+    expect(html).toContain('<span class="notes-page-nav-current">Current Page</span>');
+    expect(html).not.toContain('href="/notes/102"');
+    expect((html.match(/<li class="notes-page-nav-item/g) || []).length).toBe(3);
+  });
+
+  it('keeps every Page linked when no current Page is supplied', () => {
+    const html = renderPartial('partials/notes-page-nav.njk', {
+      pageNavLabel: 'Page siblings',
+      pageNavPages: [
+        { id: 201, title: 'First Page' },
+        { id: 202, title: 'Second Page' },
+      ],
+    });
+
+    expect((html.match(/<a class="notes-page-nav-link" href="\/notes\//g) || []).length).toBe(2);
+    expect(html).not.toContain('aria-current="page"');
+  });
+
+  it('provides compact borderless outline styles with non-color current and focus states', () => {
+    expect(creatorCrateCss).toContain('.notes-page-nav-list');
+    expect(creatorCrateCss).toContain('list-style: none;');
+    expect(creatorCrateCss).toContain('.notes-page-nav-link:focus-visible');
+    expect(creatorCrateCss).toContain('.notes-page-nav-current');
+    expect(creatorCrateCss).toContain('text-decoration-thickness: 0.12em;');
+  });
+});
+
+describe('Compact Book navigator partial', () => {
+  const book = { id: 42, title: 'The Navigator Book' };
+
+  function renderBookNavigator(overrides = {}) {
+    return renderPartial('partials/book-navigator.njk', {
+      book,
+      bookContents: [],
+      ...overrides,
+    });
+  }
+
+  function topLevelItems(html) {
+    const items = [];
+    const tags = /<\/?li\b[^>]*>/g;
+    let depth = 0;
+    let start = null;
+    let match;
+
+    while ((match = tags.exec(html)) !== null) {
+      if (match[0].startsWith('</')) {
+        depth -= 1;
+        if (depth === 0 && start !== null) {
+          items.push(html.slice(start, match.index + match[0].length));
+          start = null;
+        }
+      } else {
+        if (depth === 0 && /class="notes-book-nav-item notes-book-nav-(chapter|page)(?: [^"]*)?"/.test(match[0])) {
+          start = match.index;
+        }
+        depth += 1;
+      }
+    }
+
+    return items;
+  }
+
+  it('renders a labelled nav, Book link, and the supplied mixed top-level order', () => {
+    const html = renderBookNavigator({
+      bookContents: [
+        {
+          type: 'chapter',
+          id: 10,
+          sortOrder: 1,
+          chapter: { title: 'Chapter One' },
+          pages: [{ id: 101, title: 'Chapter Page' }],
+        },
+        { type: 'page', id: 201, sortOrder: 2, page: { title: 'Direct Page One' } },
+        {
+          type: 'chapter',
+          id: 20,
+          sortOrder: 3,
+          chapter: { title: 'Chapter Two' },
+          pages: [],
+        },
+        { type: 'page', id: 202, sortOrder: 4, page: { title: 'Direct Page Two' } },
+      ],
+    });
+
+    expect(html).toMatch(/<nav[^>]*class="notes-book-nav"[^>]*aria-label="Contents of The Navigator Book"/);
+    expect((html.match(/class="notes-book-nav-heading"/g) || [])).toHaveLength(1);
+    expect(html).toContain('<p class="notes-book-nav-heading">Book contents</p>');
+    expect(html).toMatch(/<a[^>]*class="notes-book-nav-book-link"[^>]*href="\/notes\/books\/42"[^>]*>The Navigator Book<\/a>/);
+
+    const items = topLevelItems(html);
+    expect(items).toHaveLength(4);
+    expect(items[0]).toContain('Chapter One');
+    expect(items[1]).toContain('Direct Page One');
+    expect(items[2]).toContain('Chapter Two');
+    expect(items[3]).toContain('Direct Page Two');
+    expect(items[0]).toContain('<details class="notes-book-nav-disclosure"');
+    expect(items[1]).toContain('href="/notes/201"');
+    expect(items[2]).toContain('<details class="notes-book-nav-disclosure"');
+    expect(items[3]).toContain('href="/notes/202"');
+  });
+
+  it('keeps Chapter Pages nested, ordered, and linked to shallow Page URLs', () => {
+    const html = renderBookNavigator({
+      bookContents: [{
+        type: 'chapter',
+        id: 10,
+        chapter: { title: 'Chapter One' },
+        pages: [
+          { id: 101, title: 'Nested First' },
+          { id: 102, title: 'Nested Second' },
+        ],
+      }, {
+        type: 'chapter',
+        id: 20,
+        chapter: { title: 'Chapter Two' },
+        pages: [{ id: 201, title: 'Other Chapter Page' }],
+      }],
+    });
+    const items = topLevelItems(html);
+
+    expect(items[0]).toContain('<ol class="notes-book-nav-pages">');
+    expect(items[0].indexOf('Nested First')).toBeLessThan(items[0].indexOf('Nested Second'));
+    expect(items[0]).toContain('href="/notes/101"');
+    expect(items[0]).toContain('href="/notes/102"');
+    expect(items[0]).not.toContain('Other Chapter Page');
+    expect(items[1]).toContain('Other Chapter Page');
+    expect(items[1]).toContain('href="/notes/201"');
+    expect(items[0]).toContain('href="/notes/chapters/10"');
+    expect(items[1]).toContain('href="/notes/chapters/20"');
+  });
+
+  it('marks and expands a current Chapter, including string-to-number ID matching', () => {
+    const html = renderBookNavigator({
+      bookContents: [
+        { type: 'chapter', id: 10, chapter: { title: 'Current Chapter' }, pages: [] },
+        { type: 'chapter', id: 20, chapter: { title: 'Other Chapter' }, pages: [] },
+      ],
+      navCurrentChapterId: '10',
+    });
+    const items = topLevelItems(html);
+
+    expect(items[0]).toMatch(/<details class="notes-book-nav-disclosure" open>/);
+    expect(items[0]).toMatch(/<a[^>]*href="\/notes\/chapters\/10"[^>]*aria-current="page"/);
+    expect(items[1]).not.toContain(' open>');
+  });
+
+  it('expands the Chapter containing a current Page and marks that Page while keeping it linked', () => {
+    const html = renderBookNavigator({
+      bookContents: [
+        { type: 'chapter', id: '10', chapter: { title: 'First Chapter' }, pages: [{ id: 101, title: 'First Page' }] },
+        { type: 'chapter', id: 20, chapter: { title: 'Containing Chapter' }, pages: [{ id: '202', title: 'Current Page' }] },
+        { type: 'page', id: 303, page: { title: 'Unrelated Direct Page' } },
+      ],
+      navCurrentPageId: 202,
+    });
+    const items = topLevelItems(html);
+
+    expect(items[0]).not.toContain(' open>');
+    expect(items[1]).toMatch(/<details class="notes-book-nav-disclosure" open>/);
+    expect(items[1]).toMatch(/<a[^>]*href="\/notes\/202"[^>]*aria-current="page"[^>]*>Current Page<\/a>/);
+    expect(items[1]).toMatch(/<li[^>]*class="[^\"]*notes-book-nav-page[^\"]*notes-book-nav-item--current[^\"]*"[^>]*>/);
+    expect(items[2]).not.toContain('aria-current="page"');
+    expect(items[2]).toContain('href="/notes/303"');
+  });
+
+  it('does not mark or expand items for null or undefined current IDs', () => {
+    const contents = [{
+      type: 'chapter',
+      id: 10,
+      chapter: { title: 'Chapter' },
+      pages: [{ id: 101, title: 'Page' }],
+    }];
+
+    for (const overrides of [{ navCurrentChapterId: null, navCurrentPageId: null }, {}]) {
+      const html = renderBookNavigator({ bookContents: contents, ...overrides });
+      expect(html).not.toContain('aria-current="page"');
+      expect(html).not.toContain(' open>');
+    }
+  });
+
+  it('renders empty Book contents without navigator item errors', () => {
+    const html = renderBookNavigator({ bookContents: [] });
+
+    expect(html).toContain('notes-book-nav-list');
+    expect(html).toContain('No Pages or Chapters yet');
+    expect(html).not.toContain('notes-book-nav-chapter');
+    expect(html).not.toContain('notes-book-nav-page');
+  });
+
+  it('provides compact hierarchy, focus, wrapping, and non-color current styles', () => {
+    expect(creatorCrateCss).toContain('.notes-book-nav');
+    expect(creatorCrateCss).toContain('.notes-book-nav-heading');
+    expect(creatorCrateCss).toContain('.notes-book-nav-summary::-webkit-details-marker');
+    expect(creatorCrateCss).toContain('.notes-book-nav-chapter-link {');
+    expect(creatorCrateCss).toContain('display: inline;');
+    expect(creatorCrateCss).toContain('.notes-book-nav-page--child');
+    expect(creatorCrateCss).toContain('.notes-book-nav-page:not(.notes-book-nav-page--child)');
+    expect(creatorCrateCss).toContain('min-width: 0;');
+    expect(creatorCrateCss).toContain('overflow-wrap: anywhere;');
+    expect(creatorCrateCss).toContain('.notes-book-nav-book-link:focus-visible');
+    expect(creatorCrateCss).toMatch(/\.notes-book-nav-book-link\s*\{[\s\S]*?color: var\(--text\);/);
+    expect(creatorCrateCss).toMatch(/\.notes-book-nav-chapter-link\s*\{[\s\S]*?color: var\(--text\);/);
+    expect(creatorCrateCss).toMatch(/\.notes-book-nav-page-link\s*\{[\s\S]*?color: var\(--muted\);/);
+    expect(creatorCrateCss).toContain('.notes-book-nav-book-link:hover');
+    expect(creatorCrateCss).toContain('.notes-book-nav-chapter-link:hover');
+    expect(creatorCrateCss).toContain('.notes-book-nav-page-link:hover');
+    expect(creatorCrateCss).toContain('background: var(--surface-hover);');
+    expect(creatorCrateCss).toContain('outline: 2px solid var(--focus-ring);');
+    expect(creatorCrateCss).toMatch(/a:not\(\[class\]\)\s*\{[\s\S]*?color: var\(--link\);/);
+    expect(creatorCrateCss).toMatch(/a:not\(\[class\]\):hover\s*\{[\s\S]*?color: var\(--accent-2\);/);
+    expect(creatorCrateCss).toContain('.notes-book-nav-chapter-link[aria-current="page"]');
+    expect(creatorCrateCss).toContain('.notes-book-nav-page.notes-book-nav-item--current > .notes-book-nav-page-link');
+    expect(creatorCrateCss).toContain('.notes-book-nav-page.notes-book-nav-item--current:not(.notes-book-nav-page--child) > .notes-book-nav-page-link');
+    expect(creatorCrateCss).not.toContain('.notes-book-nav-page--current > .notes-book-nav-page-link');
+    expect(creatorCrateCss).toContain('text-decoration-thickness: 0.12em;');
+  });
+});
 
 describe('Phase 10.5A: Shared page-level components', () => {
   let db;

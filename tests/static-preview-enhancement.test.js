@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import {
@@ -12,6 +12,7 @@ import {
   enhanceChapterPageReorder,
   enhanceBookContentReorder,
   enhanceNotesEditor,
+  enhanceNotesCodeBlocks,
   enhanceCategoryDetails,
   enhanceConfirmations,
   enhanceAssetSelection,
@@ -4246,6 +4247,103 @@ function makeToastUiEditorStub() {
   return FakeEditor;
 }
 
+function makeNotesCodeFixture(codeTexts = []) {
+  const buttons = [];
+  let createElementCalls = 0;
+  const document = {
+    createElement(tagName) {
+      expect(tagName).toBe('button');
+      createElementCalls++;
+      const button = {
+        dataset: {},
+        attributes: {},
+        disabled: false,
+        listeners: [],
+        textContent: '',
+        type: '',
+        className: '',
+        setAttribute(name, value) {
+          this.attributes[name] = String(value);
+        },
+        getAttribute(name) {
+          return this.attributes[name] ?? null;
+        },
+        addEventListener(type, handler) {
+          this.listeners.push({ type, handler });
+        },
+        async dispatch(type) {
+          const results = this.listeners
+            .filter((listener) => listener.type === type)
+            .map((listener) => listener.handler({ type, target: this }));
+          await Promise.all(results);
+        },
+      };
+      buttons.push(button);
+      return button;
+    },
+  };
+
+  const blocks = codeTexts.map((text, index) => {
+    const pre = {
+      children: [],
+      classList: {
+        values: new Set(),
+        add(name) { this.values.add(name); },
+        contains(name) { return this.values.has(name); },
+      },
+      querySelector(selector) {
+        if (selector !== '.notes-code-copy') return null;
+        return this.children.find((child) => child.className.includes('notes-code-copy')) || null;
+      },
+      insertBefore(child, reference) {
+        child.parentElement = this;
+        child.parentNode = this;
+        const childIndex = reference ? this.children.indexOf(reference) : -1;
+        if (childIndex === -1) this.children.push(child);
+        else this.children.splice(childIndex, 0, child);
+        return child;
+      },
+    };
+    Object.defineProperty(pre, 'firstChild', {
+      get() { return this.children[0] || null; },
+    });
+
+    const code = {
+      className: index === 0 ? 'language-javascript' : '',
+      ownerDocument: document,
+      parentElement: pre,
+      parentNode: pre,
+      textContent: text,
+    };
+    pre.children.push(code);
+    return { pre, code };
+  });
+
+  return {
+    blocks,
+    buttons,
+    document,
+    get createElementCalls() {
+      return createElementCalls;
+    },
+    scope: {
+      querySelectorAll(selector) {
+        expect(selector).toBe('.notes-content pre > code');
+        return blocks.map(({ code }) => code);
+      },
+    },
+  };
+}
+
+async function withNavigator(navigator, callback) {
+  vi.stubGlobal('navigator', navigator);
+  try {
+    return await callback();
+  } finally {
+    vi.unstubAllGlobals();
+  }
+}
+
 function makeEditorLoader(Editor) {
   let calls = 0;
   return {
@@ -4262,6 +4360,114 @@ function makeEditorLoader(Editor) {
 async function settleNotesEditorImport() {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
+
+describe('Notes rendered code-block enhancement', () => {
+  it('adds one accessible Copy button to each fenced block and ignores inline code', async () => {
+    const fixture = makeNotesCodeFixture(['const value = 1;\n', 'plain text\n']);
+    const writes = [];
+
+    await withNavigator({ clipboard: { writeText: vi.fn((text) => writes.push(text)) } }, async () => {
+      expect(enhanceNotesCodeBlocks(fixture.scope)).toBe(2);
+      expect(fixture.createElementCalls).toBe(2);
+      expect(fixture.buttons).toHaveLength(2);
+      fixture.buttons.forEach((button) => {
+        expect(button.type).toBe('button');
+        expect(button.className).toContain('notes-code-copy');
+        expect(button.getAttribute('aria-label')).toBe('Copy code');
+        expect(button.textContent).toBe('Copy');
+      });
+
+      await fixture.buttons[0].dispatch('click');
+      await fixture.buttons[1].dispatch('click');
+      expect(writes).toEqual(['const value = 1;\n', 'plain text\n']);
+    });
+  });
+
+  it('does nothing when no fenced block exists', () => {
+    const fixture = makeNotesCodeFixture();
+
+    expect(enhanceNotesCodeBlocks(fixture.scope)).toBe(0);
+    expect(fixture.createElementCalls).toBe(0);
+    expect(fixture.buttons).toHaveLength(0);
+  });
+
+  it('is idempotent and keeps existing block buttons unique', async () => {
+    const fixture = makeNotesCodeFixture(['first\n', 'second\n']);
+    const writeText = vi.fn();
+
+    await withNavigator({ clipboard: { writeText } }, async () => {
+      expect(enhanceNotesCodeBlocks(fixture.scope)).toBe(2);
+      expect(enhanceNotesCodeBlocks(fixture.scope)).toBe(2);
+      expect(fixture.createElementCalls).toBe(2);
+      expect(fixture.blocks.map(({ pre }) => pre.children.filter((child) => (
+        child.className?.includes('notes-code-copy')
+      )).length)).toEqual([1, 1]);
+      expect(fixture.blocks.every(({ pre }) => pre.classList?.contains?.('notes-code-block-enhanced'))).toBe(true);
+      expect(fixture.buttons.map((button) => button.listeners.filter(({ type }) => type === 'click')))
+        .toHaveLength(2);
+    });
+  });
+
+  it('copies exact whitespace and temporarily reports success before restoring Copy', async () => {
+    vi.useFakeTimers();
+    const exactText = '  <br>\n\nconst value = 1;\n';
+    const writeText = vi.fn(() => Promise.resolve());
+    const fixture = makeNotesCodeFixture([exactText]);
+
+    try {
+      await withNavigator({ clipboard: { writeText } }, async () => {
+        enhanceNotesCodeBlocks(fixture.scope);
+        const [button] = fixture.buttons;
+        await button.dispatch('click');
+
+        expect(writeText).toHaveBeenCalledOnce();
+        expect(writeText).toHaveBeenCalledWith(exactText);
+        expect(button.textContent).toBe('Copied');
+        expect(button.getAttribute('aria-label')).toBe('Code copied');
+
+        vi.advanceTimersByTime(1200);
+        expect(button.textContent).toBe('Copy');
+        expect(button.getAttribute('aria-label')).toBe('Copy code');
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('disables the trusted button when Clipboard API is unavailable', async () => {
+    const fixture = makeNotesCodeFixture(['fallback\n']);
+
+    await withNavigator({}, async () => {
+      enhanceNotesCodeBlocks(fixture.scope);
+      const [button] = fixture.buttons;
+      expect(button.disabled).toBe(true);
+      expect(button.getAttribute('aria-disabled')).toBe('true');
+      expect(button.getAttribute('title')).toContain('unavailable');
+    });
+  });
+
+  it('reports a failed Clipboard API write and restores the Copy state', async () => {
+    vi.useFakeTimers();
+    const fixture = makeNotesCodeFixture(['failure\n']);
+    const writeText = vi.fn(() => Promise.reject(new Error('clipboard denied')));
+
+    try {
+      await withNavigator({ clipboard: { writeText } }, async () => {
+        enhanceNotesCodeBlocks(fixture.scope);
+        const [button] = fixture.buttons;
+        await button.dispatch('click');
+
+        expect(writeText).toHaveBeenCalledWith('failure\n');
+        expect(button.textContent).toBe('Copy failed');
+        expect(button.getAttribute('aria-label')).toBe('Copy code failed');
+        vi.advanceTimersByTime(1200);
+        expect(button.textContent).toBe('Copy');
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
 
 describe('Notes editor progressive enhancement', () => {
   it('no-ops when the Notes editor target is absent', () => {

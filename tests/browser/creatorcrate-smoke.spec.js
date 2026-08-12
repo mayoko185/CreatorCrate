@@ -93,7 +93,215 @@ test.describe('CreatorCrate development browser smoke', () => {
     assertNoBrowserDiagnostics(diagnostics);
   });
 
-  test('keeps Page edit actions, hierarchy, and responsive workspace valid', async ({ page, devServer }) => {
+  test('round-trips TOAST UI visual breaks through saved Page detail rendering', async ({ page, devServer }) => {
+    const chapterId = await createBrowserNotesHierarchy(page, devServer.baseURL);
+    await page.goto(`${devServer.baseURL}/notes/new?chapterId=${chapterId}`, { waitUntil: 'domcontentloaded' });
+
+    const editor = page.locator('[data-notes-editor-host] .toastui-editor-defaultUI');
+    const surface = editor.locator('.toastui-editor-ww-container .toastui-editor-contents[contenteditable="true"]');
+    await expect(editor).toBeVisible();
+    await expect(surface).toBeVisible();
+
+    await page.locator('#title').fill('TOAST UI Break Round Trip');
+    await surface.click();
+    await page.keyboard.press('Control+A');
+    await page.keyboard.press('Backspace');
+    await page.keyboard.type('before');
+    await page.keyboard.press('Shift+Enter');
+    await page.keyboard.press('Shift+Enter');
+    await page.keyboard.press('Shift+Enter');
+    await page.keyboard.type('after');
+
+    const submissions = [];
+    const recordSubmission = (request) => {
+      if (request.method() !== 'POST') return;
+      const pathname = new URL(request.url()).pathname;
+      if (pathname === '/notes' || /^\/notes\/\d+$/.test(pathname)) submissions.push(request.postData() || '');
+    };
+    page.on('request', recordSubmission);
+
+    try {
+      await Promise.all([
+        page.waitForURL(/\/notes\/\d+$/),
+        page.locator('button[type="submit"][form="note-form"]').click(),
+      ]);
+
+      expect(new URLSearchParams(submissions.at(-1)).get('content').replaceAll('\r\n', '\n'))
+        .toBe('before\n\n<br>\nafter');
+      await expect(page.locator('.notes-content br')).toHaveCount(2);
+      await expect(page.locator('.notes-content')).not.toContainText('<br>');
+      await expect(page.locator('.notes-content')).toContainText('before');
+      await expect(page.locator('.notes-content')).toContainText('after');
+    } finally {
+      page.off('request', recordSubmission);
+    }
+  });
+
+  test('renders fenced code blocks with independent Copy controls at responsive widths', async ({ page, devServer }) => {
+    const diagnostics = observeBrowser(page, devServer.baseURL);
+    const chapterId = await createBrowserNotesHierarchy(page, devServer.baseURL);
+    await page.goto(`${devServer.baseURL}/notes/new?chapterId=${chapterId}`, { waitUntil: 'domcontentloaded' });
+
+    const editor = page.locator('[data-notes-editor-host] .toastui-editor-defaultUI');
+    await expect(editor).toBeVisible();
+    await selectNotesEditorMode(editor.locator('.toastui-editor-mode-switch'), 'Markdown');
+    await page.locator('#title').fill('Rendered Code Copy');
+    await editor.locator('.toastui-editor-md-container .ProseMirror[contenteditable="true"]').fill([
+      'Inline `value` remains inline.',
+      '',
+      '```javascript',
+      'const value = 1;',
+      'console.log(value);',
+      '```',
+      '',
+      '```text',
+      'const deliberatelyLongVariableName = "This line is long enough to require horizontal scrolling inside the code block without moving the page";',
+      '```',
+      '',
+      '```css',
+      '.example { color: cyan; }',
+      '```',
+      '',
+      '```html',
+      '<br>',
+      '```',
+    ].join('\n'));
+    await Promise.all([
+      page.waitForURL(/\/notes\/\d+$/),
+      page.locator('button[type="submit"][form="note-form"]').click(),
+    ]);
+
+    await expect(page.locator('.notes-content pre > code')).toHaveCount(4);
+    await expect(page.locator('.notes-content pre > code.language-javascript')).toHaveCount(1);
+    await expect(page.locator('.notes-content pre > code.language-css')).toHaveCount(1);
+    await expect(page.locator('.notes-content p > code')).toHaveCount(1);
+    await expect(page.locator('.notes-content p > .notes-code-copy')).toHaveCount(0);
+
+    const codeText = await page.locator('.notes-content pre > code').evaluateAll((elements) => (
+      elements.map((element) => element.textContent)
+    ));
+    expect(codeText[0]).toBe('const value = 1;\nconsole.log(value);\n');
+    expect(codeText[3]).toBe('<br>\n');
+
+    const copyButtons = page.locator('.notes-content pre > .notes-code-copy');
+    await expect(copyButtons).toHaveCount(4);
+    await expect(copyButtons).toHaveText(['Copy', 'Copy', 'Copy', 'Copy']);
+
+    await page.context().grantPermissions(['clipboard-read', 'clipboard-write'], { origin: devServer.baseURL });
+    const clipboardAvailable = await page.evaluate(() => typeof navigator.clipboard?.writeText === 'function');
+    if (clipboardAvailable) {
+      await copyButtons.nth(0).click();
+      await expect(copyButtons.nth(0)).toHaveText('Copied');
+      await expect.poll(() => page.evaluate(() => navigator.clipboard.readText()
+        .then((text) => text.replaceAll('\r\n', '\n')))).toBe(codeText[0]);
+      await expect(copyButtons.nth(0)).toHaveText('Copy', { timeout: 3_000 });
+
+      await copyButtons.nth(3).click();
+      await expect(copyButtons.nth(3)).toHaveText('Copied');
+      await expect.poll(() => page.evaluate(() => navigator.clipboard.readText()
+        .then((text) => text.replaceAll('\r\n', '\n')))).toBe(codeText[3]);
+      await expect(copyButtons.nth(0)).toHaveText('Copy');
+    } else {
+      await expect(copyButtons).toBeDisabled();
+    }
+
+    for (const viewport of [1280, 720, 375]) {
+      await page.setViewportSize({ width: viewport, height: 800 });
+      const geometry = await page.locator('.notes-content').evaluate((content) => {
+        const rect = (element) => {
+          const box = element?.getBoundingClientRect();
+          return box
+            ? {
+              left: box.left,
+              right: box.right,
+              top: box.top,
+              bottom: box.bottom,
+              width: box.width,
+              height: box.height,
+            }
+            : null;
+        };
+        return {
+          content: rect(content),
+          blocks: [...content.querySelectorAll('pre')].map((pre) => {
+            const code = pre.querySelector(':scope > code');
+            const button = pre.querySelector(':scope > .notes-code-copy');
+            const preStyle = getComputedStyle(pre);
+            const codeStyle = code ? getComputedStyle(code) : null;
+            return {
+              pre: rect(pre),
+              code: rect(code),
+              button: rect(button),
+              preClientWidth: pre.clientWidth,
+              preScrollWidth: pre.scrollWidth,
+              preOverflowX: preStyle.overflowX,
+              prePadding: preStyle.padding,
+              preLineHeight: preStyle.lineHeight,
+              preBorder: preStyle.border,
+              preBackground: preStyle.backgroundColor,
+              preMinWidth: preStyle.minWidth,
+              preMaxWidth: preStyle.maxWidth,
+              codeClientWidth: code?.clientWidth,
+              codeScrollWidth: code?.scrollWidth,
+              codeOverflowX: codeStyle?.overflowX,
+              codeLineHeight: codeStyle?.lineHeight,
+              codePadding: codeStyle?.padding,
+              codeFontFamily: codeStyle?.fontFamily,
+            };
+          }),
+          documentWidth: document.documentElement.scrollWidth,
+          viewportWidth: window.innerWidth,
+        };
+      });
+      expect(geometry.documentWidth).toBeLessThanOrEqual(geometry.viewportWidth);
+      expect(geometry.blocks).toHaveLength(4);
+      geometry.blocks.forEach(({ pre, code, button }) => {
+        expect(pre.left).toBeGreaterThanOrEqual(0);
+        expect(pre.right).toBeLessThanOrEqual(viewport + 1);
+        expect(button.left).toBeGreaterThanOrEqual(pre.left);
+        expect(button.right).toBeLessThanOrEqual(pre.right + 1);
+        expect(button.bottom).toBeLessThanOrEqual(code.top + 1);
+      });
+      expect(geometry.blocks[1].codeScrollWidth).toBeGreaterThan(geometry.blocks[1].codeClientWidth);
+      expect(geometry.blocks[1].preOverflowX).toBe('auto');
+      expect(geometry.blocks[1].codeOverflowX).toBe('auto');
+      expect(geometry.blocks[1].preMinWidth).toBe('0px');
+      expect(geometry.blocks[1].preMaxWidth).toBe('100%');
+      expect(geometry.blocks[1].codeLineHeight).toBe('20.3px');
+    }
+
+    const longBlockScroll = await page.locator('.notes-content pre').nth(1).evaluate((pre) => {
+      const code = pre.querySelector(':scope > code');
+      const button = pre.querySelector(':scope > .notes-code-copy');
+      const before = button.getBoundingClientRect();
+      const preBox = pre.getBoundingClientRect();
+      code.scrollLeft = code.scrollWidth;
+      const after = button.getBoundingClientRect();
+      return {
+        before: { left: before.left, right: before.right },
+        after: { left: after.left, right: after.right },
+        pre: { left: preBox.left, right: preBox.right },
+        scrollLeft: code.scrollLeft,
+        pageScrollX: window.scrollX,
+      };
+    });
+    expect(longBlockScroll.scrollLeft).toBeGreaterThan(0);
+    expect(longBlockScroll.after.left).toBe(longBlockScroll.before.left);
+    expect(longBlockScroll.after.right).toBe(longBlockScroll.before.right);
+    expect(longBlockScroll.after.right).toBeLessThanOrEqual(longBlockScroll.pre.right + 1);
+    expect(longBlockScroll.pageScrollX).toBe(0);
+
+    await page.locator('.notes-content pre > code').first().selectText();
+    await expect.poll(() => page.evaluate(() => window.getSelection()?.toString())).toContain('const value = 1;');
+
+    await copyButtons.first().evaluate((button) => button.focus({ focusVisible: true }));
+    await expect.poll(() => page.locator('.notes-content pre > .notes-code-copy').first().evaluate((button) => (
+      getComputedStyle(button).outlineStyle
+    ))).toBe('solid');
+    assertNoBrowserDiagnostics(diagnostics);
+  });
+
+  test('keeps Page edit actions, Book navigator, and responsive workspace valid', async ({ page, browser, devServer }) => {
     const diagnostics = observeBrowser(page, devServer.baseURL);
     const bookId = await createBrowserBook(page, devServer.baseURL, `Browser Edit Book ${Date.now()}`);
     const chapterId = await createBrowserChapter(page, devServer.baseURL, bookId, `Browser Edit Chapter ${Date.now()}`);
@@ -105,6 +313,7 @@ test.describe('CreatorCrate development browser smoke', () => {
 
     for (const viewport of [
       { width: 1280, height: 800 },
+      { width: 720, height: 800 },
       { width: 375, height: 800 },
     ]) {
       await page.setViewportSize(viewport);
@@ -113,13 +322,30 @@ test.describe('CreatorCrate development browser smoke', () => {
       await assertPageEditWorkspace(page, {
         bookTitle: `Browser Edit Book`,
         pageTitle: directPageTitle,
-        hierarchy: ['Book', 'Page'],
         cancelHref: `/notes/${directPageId}`,
         expectedCurrentContainer: 'direct Page',
       });
-      await expect(page.locator('.notes-workspace-context')).not.toContainText('Chapter');
+      await expect(page.locator('.notes-workspace-context .notes-book-nav')).toHaveCount(1);
+      await expect(page.locator(`.notes-book-nav-list > .notes-book-nav-page:has(a[href="/notes/${directPageId}"]) a[aria-current="page"]`))
+        .toHaveCount(1);
+      await expect(page.locator('.notes-book-nav details[open]')).toHaveCount(0);
+      await expect(page.locator('.notes-page-nav')).toHaveCount(0);
 
       if (viewport.width > 1024) {
+        await page.locator('#title').fill('');
+        const validationResponse = await Promise.all([
+          page.waitForResponse((response) => (
+            response.request().method() === 'POST'
+            && new URL(response.url()).pathname === `/notes/${directPageId}`
+            && response.status() === 422
+          )),
+          page.getByRole('button', { name: 'Save', exact: true }).click(),
+        ]);
+        expect(validationResponse[0].status()).toBe(422);
+        await expect(page.locator('.field-error-message')).toHaveCount(1);
+        await assertWorkspaceDimensions(page, { editorRequired: true, actionsRequired: true });
+        expect(diagnostics.consoleErrors.filter((message) => message.includes('status of 422'))).toHaveLength(1);
+        diagnostics.consoleErrors = diagnostics.consoleErrors.filter((message) => !message.includes('status of 422'));
         await page.locator('#title').fill('Browser Direct Edit Saved');
         await Promise.all([
           page.waitForURL(new RegExp(`/notes/${directPageId}$`)),
@@ -133,23 +359,42 @@ test.describe('CreatorCrate development browser smoke', () => {
       await assertPageEditWorkspace(page, {
         bookTitle: 'Browser Edit Book',
         pageTitle: 'Browser Chapter Edit Page',
-        hierarchy: ['Book', 'Chapter', 'Page'],
         cancelHref: `/notes/${chapterPageId}`,
         expectedCurrentContainer: 'Browser Edit Chapter',
       });
-      await expect(page.locator('.notes-workspace-context')).toContainText('Back to Chapter');
+      const containingChapterNav = page.locator('.notes-book-nav-list > .notes-book-nav-chapter')
+        .filter({ hasText: 'Browser Edit Chapter' });
+      await expect(containingChapterNav.locator('details[open]')).toHaveCount(1);
+      await expect(containingChapterNav.locator(`a[href="/notes/${chapterPageId}"][aria-current="page"]`)).toHaveCount(1);
+      await expect(page.locator('.notes-book-nav [aria-current="page"]')).toHaveCount(1);
+      await expect(page.locator('.notes-page-nav')).toHaveCount(0);
 
       await page.goto(`${devServer.baseURL}/notes/new?chapterId=${chapterId}`, { waitUntil: 'domcontentloaded' });
       await expect(page.getByRole('button', { name: 'Create', exact: true })).toBeVisible();
       await expect(page.getByRole('link', { name: 'Cancel', exact: true })).toHaveAttribute('href', `/notes/chapters/${chapterId}`);
-      await expect(page.locator('.notes-workspace-context')).toContainText('Browser Edit Chapter');
+      await expect(page.locator(`.notes-book-nav-chapter-link[href="/notes/chapters/${chapterId}"][aria-current="page"]`)).toHaveCount(1);
       await expect(page.locator('.notes-workspace')).toContainText('Connections');
       await expect(page.locator('.notes-workspace-disclosure')).toHaveCount(0);
+      await expect(page.locator('.notes-workspace-secondary')).toHaveCount(0);
       await expect(page.locator('#note-form form')).toHaveCount(0);
       await expect(page.locator('[data-notes-asset-picker]')).toBeAttached();
       await assertWorkspaceDimensions(page, { editorRequired: true });
 
       if (viewport.width > 1024) {
+        await page.locator('#title').fill('');
+        const createValidationResponse = await Promise.all([
+          page.waitForResponse((response) => (
+            response.request().method() === 'POST'
+            && new URL(response.url()).pathname === '/notes'
+            && response.status() === 422
+          )),
+          page.getByRole('button', { name: 'Create', exact: true }).click(),
+        ]);
+        expect(createValidationResponse[0].status()).toBe(422);
+        await expect(page.locator('.field-error-message')).toHaveCount(1);
+        await assertWorkspaceDimensions(page, { editorRequired: true });
+        expect(diagnostics.consoleErrors.filter((message) => message.includes('status of 422'))).toHaveLength(1);
+        diagnostics.consoleErrors = diagnostics.consoleErrors.filter((message) => !message.includes('status of 422'));
         await page.locator('#title').fill('Browser Created Edit Smoke Page');
         await Promise.all([
           page.waitForURL(/\/notes\/\d+$/),
@@ -157,6 +402,61 @@ test.describe('CreatorCrate development browser smoke', () => {
         ]);
         await expect(page.locator('h1.app-section-title')).toContainText('Browser Created Edit Smoke Page');
       }
+
+      await page.goto(`${devServer.baseURL}/notes/new?chapterId=${chapterId}`, { waitUntil: 'domcontentloaded' });
+      const createChapterNav = page.locator('.notes-book-nav-list > .notes-book-nav-chapter')
+        .filter({ hasText: 'Browser Edit Chapter' });
+      await expect(page.locator('.notes-workspace-context .notes-book-nav')).toHaveCount(1);
+      await expect(createChapterNav.locator('details[open]')).toHaveCount(1);
+      await expect(createChapterNav.locator(`a[href="/notes/chapters/${chapterId}"][aria-current="page"]`)).toHaveCount(1);
+      await expect(page.locator('.notes-book-nav [aria-current="page"]')).toHaveCount(1);
+      await expect(page.locator('.notes-book-nav .notes-book-nav-page-link[aria-current="page"]')).toHaveCount(0);
+      await expect(page.locator('.notes-page-nav')).toHaveCount(0);
+      await assertWorkspaceDimensions(page, { editorRequired: true });
+
+      await page.goto(`${devServer.baseURL}/notes/new?bookId=${bookId}`, { waitUntil: 'domcontentloaded' });
+      await expect(page.locator('.notes-workspace-context .notes-book-nav')).toHaveCount(1);
+      await expect(page.locator('.notes-book-nav [aria-current="page"]')).toHaveCount(0);
+      await expect(page.locator('.notes-book-nav details[open]')).toHaveCount(0);
+      await expect(page.locator('.notes-page-nav')).toHaveCount(0);
+      await assertWorkspaceDimensions(page, { editorRequired: true });
+    }
+
+    const fallbackContext = await browser.newContext();
+    try {
+      const fallbackPage = await fallbackContext.newPage();
+      await fallbackPage.route('**/*', (route) => {
+        if (/@toast-ui|toastui/i.test(route.request().url())) return route.abort();
+        return route.continue();
+      });
+      const response = await fallbackPage.goto(`${devServer.baseURL}/notes/new?chapterId=${chapterId}`, {
+        waitUntil: 'domcontentloaded',
+      });
+      expect(response?.status()).toBe(200);
+      const fallback = fallbackPage.locator('[data-notes-editor-source]');
+      await expect(fallback).toBeVisible();
+      await expect(fallbackPage.locator('[data-notes-editor-host] .toastui-editor-defaultUI')).toHaveCount(0);
+      const fallbackState = await fallback.evaluate((element) => {
+        const box = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return {
+          width: box.width,
+          parentWidth: element.parentElement?.getBoundingClientRect().width || 0,
+          height: box.height,
+          minHeight: style.minHeight,
+          display: style.display,
+          overflowX: style.overflowX,
+          scrollWidth: element.scrollWidth,
+          clientWidth: element.clientWidth,
+        };
+      });
+      expect(fallbackState.width).toBeGreaterThan(0);
+      expect(fallbackState.width).toBeCloseTo(fallbackState.parentWidth, 0);
+      expect(fallbackState.height).toBeGreaterThanOrEqual(16 * 16);
+      expect(fallbackState.display).toBe('block');
+      expect(fallbackState.scrollWidth).toBeLessThanOrEqual(fallbackState.clientWidth);
+    } finally {
+      await fallbackContext.close();
     }
 
     expect(diagnostics.failedRequests.filter(({ url }) => new URL(url).pathname.startsWith('/notes/asset-picker/'))).toEqual([]);
@@ -188,9 +488,8 @@ test.describe('CreatorCrate development browser smoke', () => {
       await expect(page.locator('.page-heading-actions').getByRole('link', { name: 'Cancel', exact: true }))
         .toHaveAttribute('href', `/notes/chapters/${chapterId}`);
       await expect(page.locator('.page-heading-actions').getByRole('link', { name: 'Delete', exact: true })).toHaveCount(0);
-      await expect(page.locator('.notes-hierarchy')).toContainText(bookTitle);
-      await expect(page.locator('.notes-hierarchy')).toContainText(chapterTitle);
-      await expect(page.locator('.notes-hierarchy a')).toHaveAttribute('href', `/notes/books/${bookId}`);
+      await expect(page.locator('h1.app-section-title')).toContainText(`Notes — Edit ${chapterTitle}`);
+      await expect(page.locator('.notes-hierarchy')).toHaveCount(0);
       await expect(page.locator('.notes-workspace')).toHaveCount(0);
       await expect(page.locator('#chapter-form form')).toHaveCount(0);
       await expect(page.locator('details.notes-workspace-disclosure')).toHaveCount(1);
@@ -256,6 +555,297 @@ test.describe('CreatorCrate development browser smoke', () => {
     assertNoBrowserDiagnostics(diagnostics);
   });
 
+  test('keeps Chapter detail in Book context with a safe responsive navigator stack', async ({ page, devServer }) => {
+    const diagnostics = observeBrowser(page, devServer.baseURL);
+    const bookTitle = `Browser Chapter Navigator Book ${Date.now()}`;
+    const directFirstTitle = 'Browser Navigator Direct First';
+    const currentChapterTitle = 'Browser Navigator Current Chapter';
+    const nestedPageTitles = ['Browser Navigator Nested First', 'Browser Navigator Nested Second'];
+    const directSecondTitle = 'Browser Navigator Direct Second';
+    const otherChapterTitle = 'Browser Navigator Other Chapter';
+    const bookId = await createBrowserBook(page, devServer.baseURL, bookTitle);
+
+    await createBrowserDirectPage(page, devServer.baseURL, bookId, directFirstTitle);
+    const directFirstId = new URL(page.url()).pathname.split('/').at(-1);
+    const chapterId = await createBrowserChapter(page, devServer.baseURL, bookId, currentChapterTitle);
+    const nestedPageIds = [];
+    for (const title of nestedPageTitles) {
+      nestedPageIds.push(await createBrowserPage(page, devServer.baseURL, chapterId, title));
+    }
+    await createBrowserDirectPage(page, devServer.baseURL, bookId, directSecondTitle);
+    const directSecondId = new URL(page.url()).pathname.split('/').at(-1);
+    const otherChapterId = await createBrowserChapter(page, devServer.baseURL, bookId, otherChapterTitle);
+    expect(otherChapterId).not.toBe(chapterId);
+
+    const chapterUrl = `${devServer.baseURL}/notes/chapters/${chapterId}`;
+    for (const viewport of [
+      { width: 1280, height: 800 },
+      { width: 720, height: 800 },
+      { width: 375, height: 800 },
+    ]) {
+      await page.setViewportSize(viewport);
+      const response = await page.goto(chapterUrl, { waitUntil: 'domcontentloaded' });
+      expect(response?.status()).toBe(200);
+
+      await expect(page.locator('.notes-chapter-detail-layout')).toHaveCount(1);
+      await expect(page.locator('header.page-heading')).toHaveCount(1);
+      await expect(page.locator('h1.app-section-title')).toHaveCount(1);
+      await expect(page.locator('.notes-book-nav')).toHaveCount(1);
+      await expect(page.locator('.notes-chapter-detail-sidebar.notes-surface.notes-surface--compact')).toHaveCount(1);
+       await expect(page.locator('.notes-book-nav-book-link'))
+         .toHaveAttribute('href', `/notes/books/${bookId}`);
+       await expect(page.locator('.notes-chapter-detail-content.notes-surface')).toHaveCount(1);
+       await expect(page.locator('.notes-hierarchy')).toHaveCount(0);
+
+      const headingComposition = await page.locator('main#main-content').evaluate((main) => {
+        const heading = main.querySelector('header.page-heading');
+        const layout = main.querySelector('.notes-chapter-detail-layout');
+        const navigator = layout?.querySelector('.notes-chapter-detail-sidebar');
+        const headingRect = heading?.getBoundingClientRect();
+        const layoutRect = layout?.getBoundingClientRect();
+        const navigatorRect = navigator?.getBoundingClientRect();
+        return {
+          headingBeforeLayout: Boolean(heading && layout
+            && (heading.compareDocumentPosition(layout) & Node.DOCUMENT_POSITION_FOLLOWING)),
+          headingWidth: headingRect?.width || 0,
+          layoutWidth: layoutRect?.width || 0,
+          headingBottom: headingRect?.bottom || 0,
+          navigatorTop: navigatorRect?.top || 0,
+        };
+      });
+      expect(headingComposition.headingBeforeLayout).toBe(true);
+      expect(Math.abs(headingComposition.headingWidth - headingComposition.layoutWidth)).toBeLessThan(1);
+      expect(headingComposition.navigatorTop).toBeGreaterThanOrEqual(headingComposition.headingBottom);
+
+      const topLevelTitles = await page.locator('.notes-book-nav-list > .notes-book-nav-item').evaluateAll(
+        (items) => items.map((item) => item.querySelector(
+          '.notes-book-nav-chapter-link, .notes-book-nav-page-link',
+        )?.textContent?.trim()),
+      );
+      expect(topLevelTitles).toEqual([
+        directFirstTitle,
+        currentChapterTitle,
+        directSecondTitle,
+        otherChapterTitle,
+      ]);
+      await expect(page.locator('.notes-book-nav-list > .notes-book-nav-page')).toHaveCount(2);
+      await expect(page.locator(`.notes-book-nav-page-link[href="/notes/${directFirstId}"]`)).toBeVisible();
+      await expect(page.locator(`.notes-book-nav-page-link[href="/notes/${directSecondId}"]`)).toBeVisible();
+
+      const currentNavItem = page.locator('.notes-book-nav-item--current');
+      await expect(currentNavItem).toHaveCount(1);
+      await expect(currentNavItem.locator('.notes-book-nav-chapter-link'))
+        .toHaveAttribute('aria-current', 'page');
+      await expect(currentNavItem.locator('details[open]')).toHaveCount(1);
+      await expect(currentNavItem.locator('ol.notes-book-nav-pages > .notes-book-nav-item')).toHaveCount(2);
+      expect(await currentNavItem.locator('ol.notes-book-nav-pages > .notes-book-nav-item').evaluateAll(
+        (items) => items.map((item) => item.textContent.trim()),
+      )).toEqual(nestedPageTitles);
+      for (const pageId of nestedPageIds) {
+        await expect(currentNavItem.locator(`a[href="/notes/${pageId}"]`)).toBeVisible();
+      }
+
+      const unrelatedNavItem = page.locator('.notes-book-nav-list > .notes-book-nav-item')
+        .filter({ hasText: otherChapterTitle });
+      await expect(unrelatedNavItem.locator('details[open]')).toHaveCount(0);
+      await expect(page.locator('.notes-book-nav [aria-current="page"]')).toHaveCount(1);
+
+      await expect(page.locator('.notes-page-nav')).toHaveAttribute(
+        'aria-label',
+        `Pages in ${currentChapterTitle}`,
+      );
+      await expect(page.locator('.notes-page-nav-item')).toHaveCount(2);
+      await expect(page.locator('.notes-page-nav [aria-current="page"]')).toHaveCount(0);
+      for (const title of nestedPageTitles) {
+        await expect(page.locator('.notes-page-nav')).toContainText(title);
+      }
+      await expect(page.locator('.notes-page-nav')).not.toContainText(directFirstTitle);
+      await expect(page.locator('.notes-page-nav')).not.toContainText(directSecondTitle);
+       await expect(page.getByRole('link', { name: 'New Page', exact: true })).toBeVisible();
+      await expect(page.getByRole('link', { name: 'Edit Chapter', exact: true })).toBeVisible();
+
+      const layout = await page.locator('.notes-chapter-detail-layout').evaluate((element) => {
+        const navigator = element.querySelector('.notes-chapter-detail-sidebar')?.getBoundingClientRect();
+        const content = element.querySelector('.notes-chapter-detail-content')?.getBoundingClientRect();
+        return {
+          columns: getComputedStyle(element).gridTemplateColumns,
+          navigatorTop: navigator?.top || 0,
+          contentTop: content?.top || 0,
+          documentWidth: document.documentElement.scrollWidth,
+          viewportWidth: window.innerWidth,
+        };
+      });
+      expect(layout.documentWidth).toBeLessThanOrEqual(layout.viewportWidth);
+      if (viewport.width <= 767) {
+        expect(layout.columns.split(' ').length).toBe(1);
+        expect(layout.navigatorTop).toBeLessThan(layout.contentTop);
+      } else {
+        expect(layout.columns.split(' ').length).toBe(2);
+      }
+    }
+
+    assertNoBrowserDiagnostics(diagnostics);
+  });
+
+  test('keeps Page detail in Book context with a safe responsive navigator stack', async ({ page, devServer }) => {
+    const diagnostics = observeBrowser(page, devServer.baseURL);
+    const bookTitle = `Browser Page Navigator Book ${Date.now()}`;
+    const directFirstTitle = 'Browser Page Navigator Direct First';
+    const currentChapterTitle = 'Browser Page Navigator Current Chapter';
+    const nestedPageTitles = ['Browser Page Navigator Nested First', 'Browser Page Navigator Current Page'];
+    const directSecondTitle = 'Browser Page Navigator Direct Second';
+    const otherChapterTitle = 'Browser Page Navigator Other Chapter';
+    const bookId = await createBrowserBook(page, devServer.baseURL, bookTitle);
+
+    await createBrowserDirectPage(page, devServer.baseURL, bookId, directFirstTitle);
+    const directFirstId = new URL(page.url()).pathname.split('/').at(-1);
+    const chapterId = await createBrowserChapter(page, devServer.baseURL, bookId, currentChapterTitle);
+    const nestedPageIds = [];
+    for (const title of nestedPageTitles) {
+      nestedPageIds.push(await createBrowserPage(page, devServer.baseURL, chapterId, title));
+    }
+    await createBrowserDirectPage(page, devServer.baseURL, bookId, directSecondTitle);
+    const directSecondId = new URL(page.url()).pathname.split('/').at(-1);
+    const otherChapterId = await createBrowserChapter(page, devServer.baseURL, bookId, otherChapterTitle);
+    expect(otherChapterId).not.toBe(chapterId);
+
+    const pageUrl = `${devServer.baseURL}/notes/${nestedPageIds[1]}`;
+    for (const viewport of [
+      { width: 1280, height: 800 },
+      { width: 720, height: 800 },
+      { width: 375, height: 800 },
+    ]) {
+      await page.setViewportSize(viewport);
+      const response = await page.goto(pageUrl, { waitUntil: 'domcontentloaded' });
+      expect(response?.status()).toBe(200);
+
+      await expect(page.locator('.notes-page-detail-layout')).toHaveCount(1);
+      await expect(page.locator('header.page-heading')).toHaveCount(1);
+      await expect(page.locator('h1.app-section-title')).toHaveCount(1);
+      await expect(page.locator('.notes-book-nav')).toHaveCount(1);
+      await expect(page.locator('.notes-page-detail-sidebar.notes-surface.notes-surface--compact')).toHaveCount(1);
+      await expect(page.locator('.notes-book-nav-book-link'))
+        .toHaveAttribute('href', `/notes/books/${bookId}`);
+
+      const headingComposition = await page.locator('main#main-content').evaluate((main) => {
+        const heading = main.querySelector('header.page-heading');
+        const layout = main.querySelector('.notes-page-detail-layout');
+        const navigator = layout?.querySelector('.notes-page-detail-sidebar');
+        const headingRect = heading?.getBoundingClientRect();
+        const layoutRect = layout?.getBoundingClientRect();
+        const navigatorRect = navigator?.getBoundingClientRect();
+        return {
+          headingBeforeLayout: Boolean(heading && layout
+            && (heading.compareDocumentPosition(layout) & Node.DOCUMENT_POSITION_FOLLOWING)),
+          headingWidth: headingRect?.width || 0,
+          layoutWidth: layoutRect?.width || 0,
+          headingBottom: headingRect?.bottom || 0,
+          navigatorTop: navigatorRect?.top || 0,
+        };
+      });
+      expect(headingComposition.headingBeforeLayout).toBe(true);
+      expect(Math.abs(headingComposition.headingWidth - headingComposition.layoutWidth)).toBeLessThan(1);
+      expect(headingComposition.navigatorTop).toBeGreaterThanOrEqual(headingComposition.headingBottom);
+
+      const topLevelTitles = await page.locator('.notes-book-nav-list > .notes-book-nav-item').evaluateAll(
+        (items) => items.map((item) => item.querySelector(
+          '.notes-book-nav-chapter-link, .notes-book-nav-page-link',
+        )?.textContent?.trim()),
+      );
+      expect(topLevelTitles).toEqual([
+        directFirstTitle,
+        currentChapterTitle,
+        directSecondTitle,
+        otherChapterTitle,
+      ]);
+      await expect(page.locator(`.notes-book-nav-page-link[href="/notes/${directFirstId}"]`)).toBeVisible();
+      await expect(page.locator(`.notes-book-nav-page-link[href="/notes/${directSecondId}"]`)).toBeVisible();
+
+      const currentNavItem = page.locator('.notes-book-nav-item--current');
+      await expect(currentNavItem).toHaveCount(1);
+      await expect(currentNavItem.locator('details[open]')).toHaveCount(0);
+      const containingChapter = page.locator('.notes-book-nav-list > .notes-book-nav-item')
+        .filter({ hasText: currentChapterTitle });
+      await expect(containingChapter.locator('details[open]')).toHaveCount(1);
+      await expect(containingChapter.locator('.notes-book-nav-chapter-link')).not.toHaveAttribute('aria-current', 'page');
+      await expect(containingChapter.locator(`a[href="/notes/${nestedPageIds[1]}"]`))
+        .toHaveAttribute('aria-current', 'page');
+      expect(await containingChapter.locator('ol.notes-book-nav-pages > .notes-book-nav-item').evaluateAll(
+        (items) => items.map((item) => item.textContent.trim()),
+      )).toEqual(nestedPageTitles);
+
+      const unrelatedNavItem = page.locator('.notes-book-nav-list > .notes-book-nav-item')
+        .filter({ hasText: otherChapterTitle });
+      await expect(unrelatedNavItem.locator('details[open]')).toHaveCount(0);
+      await expect(page.locator('.notes-book-nav [aria-current="page"]')).toHaveCount(1);
+      await expect(page.locator('.notes-page-nav')).toHaveCount(0);
+      await expect(page.locator('.notes-hierarchy')).toHaveCount(0);
+      await expect(page.getByRole('link', { name: 'Edit Page', exact: true })).toBeVisible();
+      await expect(page.locator('.notes-page-sidebar')).toContainText('Details');
+      await expect(page.locator('.notes-detail-details')).toContainText('Created');
+      await expect(page.locator('.notes-detail-details')).toContainText('Updated');
+       await expect(page.locator('.notes-detail-kicker')).toHaveText(nestedPageTitles[1]);
+       await expect(page.locator('.notes-detail-content')).not.toContainText('Reading view');
+       await expect(page.locator('.notes-detail-content > .notes-detail-section-heading > h2')).toHaveCount(0);
+      await expect(page.locator('.notes-detail-layout')).toHaveCount(0);
+      await expect(page.locator('.notes-detail-reading')).toHaveCount(0);
+      await expect(page.locator('.notes-detail-sidebar')).toHaveCount(0);
+
+      const layout = await page.locator('.notes-page-detail-layout').evaluate((element) => {
+        const navigator = element.querySelector('.notes-page-detail-sidebar')?.getBoundingClientRect();
+        const details = element.querySelector('.notes-detail-details')?.getBoundingClientRect();
+        const content = element.querySelector('.notes-page-detail-content')?.getBoundingClientRect();
+        const layoutRect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        const sidebarStack = element.querySelector('.notes-page-sidebar');
+        const sidebarStackStyle = sidebarStack ? getComputedStyle(sidebarStack) : null;
+        const gap = parseFloat(style.columnGap) || 0;
+        const sidebarGap = parseFloat(sidebarStackStyle?.rowGap || '0') || 0;
+        return {
+          columns: style.gridTemplateColumns,
+          primaryColumns: getComputedStyle(element.querySelector('.notes-page-detail-content')).gridTemplateColumns,
+          layoutTop: layoutRect.top,
+          layoutWidth: layoutRect.width,
+          gap,
+          sidebarGap,
+          navigatorTop: navigator?.top || 0,
+          navigatorBottom: navigator?.bottom || 0,
+          navigatorLeft: navigator?.left || 0,
+          navigatorWidth: navigator?.width || 0,
+          detailsTop: details?.top || 0,
+          detailsLeft: details?.left || 0,
+          detailsWidth: details?.width || 0,
+          contentTop: content?.top || 0,
+          contentWidth: content?.width || 0,
+          contentBottom: content?.bottom || 0,
+          documentWidth: document.documentElement.scrollWidth,
+          viewportWidth: window.innerWidth,
+        };
+      });
+      expect(layout.documentWidth).toBeLessThanOrEqual(layout.viewportWidth);
+      if (viewport.width <= 767) {
+        expect(layout.columns.split(' ').length).toBe(1);
+        expect(layout.navigatorTop).toBeLessThan(layout.contentTop);
+        expect(layout.contentTop).toBeLessThan(layout.detailsTop);
+        expect(layout.detailsTop).toBeGreaterThanOrEqual(layout.contentBottom);
+        expect(layout.contentWidth).toBeCloseTo(layout.layoutWidth, 0);
+      } else {
+        expect(layout.columns.split(' ').length).toBe(2);
+        expect(layout.primaryColumns.split(' ').length).toBe(1);
+        expect(Math.abs(layout.contentTop - layout.layoutTop)).toBeLessThan(1);
+        expect(layout.navigatorWidth).toBeGreaterThanOrEqual(12 * 16);
+        expect(layout.navigatorWidth).toBeLessThanOrEqual(16 * 16);
+        expect(layout.contentWidth).toBeCloseTo(layout.layoutWidth - layout.navigatorWidth - layout.gap, 0);
+        expect(layout.contentWidth).toBeGreaterThan(layout.navigatorWidth * 2);
+        expect(layout.detailsTop).toBeGreaterThanOrEqual(layout.navigatorBottom + layout.sidebarGap - 1);
+        expect(Math.abs(layout.detailsLeft - layout.navigatorLeft)).toBeLessThan(1);
+        expect(layout.detailsWidth).toBeCloseTo(layout.navigatorWidth, 0);
+      }
+    }
+
+    assertNoBrowserDiagnostics(diagnostics);
+  });
+
   test('keeps Book edit compact with Save/Cancel and a separate delete disclosure', async ({ page, devServer }) => {
     const diagnostics = observeBrowser(page, devServer.baseURL);
     const originalBookTitle = `Browser Book Edit ${Date.now()}`;
@@ -281,11 +871,10 @@ test.describe('CreatorCrate development browser smoke', () => {
       await expect(page.locator('.page-heading-actions').getByRole('link', { name: 'Cancel', exact: true }))
         .toHaveAttribute('href', `/notes/books/${bookId}`);
       await expect(page.locator('.page-heading-actions').getByRole('link', { name: 'Delete', exact: true })).toHaveCount(0);
-      await expect(page.locator('.notes-hierarchy')).toContainText('Book');
-      await expect(page.locator('.notes-hierarchy .notes-hierarchy-item--current')).toContainText(
-        viewport.width > 1024 ? originalBookTitle : editedBookTitle,
+      await expect(page.locator('h1.app-section-title')).toHaveText(
+        `Notes — Edit ${viewport.width > 1024 ? originalBookTitle : editedBookTitle}`,
       );
-      await expect(page.locator('.notes-hierarchy .notes-hierarchy-item--current .notes-hierarchy-link')).toHaveCount(0);
+      await expect(page.locator('.notes-hierarchy')).toHaveCount(0);
       await expect(page.locator('.notes-workspace')).toHaveCount(0);
       await expect(page.locator('#book-form .settings-section')).toBeVisible();
       await expect(page.locator('#book-form form')).toHaveCount(0);
@@ -521,14 +1110,14 @@ test.describe('CreatorCrate development browser smoke', () => {
     const diagnostics = observeBrowser(page, devServer.baseURL);
     await page.setViewportSize({ width: 1280, height: 800 });
     const bookId = await createBrowserBook(page, devServer.baseURL, `Browser Chapter Order Book ${Date.now()}`);
-    const chapterId = await createBrowserChapter(page, devServer.baseURL, bookId, `Browser Chapter Order ${Date.now()}`);
+    const chapterTitle = `Browser Chapter Order ${Date.now()}`;
+    const chapterId = await createBrowserChapter(page, devServer.baseURL, bookId, chapterTitle);
     const chapterUrl = `${devServer.baseURL}/notes/chapters/${chapterId}`;
 
     const emptyResponse = await page.goto(chapterUrl, { waitUntil: 'domcontentloaded' });
     expect(emptyResponse?.status()).toBe(200);
-    await expect(page.locator('.notes-hierarchy')).toContainText('Book');
-    await expect(page.locator('.notes-hierarchy')).toContainText('Chapter');
-    await expect(page.locator('.notes-hierarchy .notes-hierarchy-item--current')).toContainText('Browser Chapter Order');
+     await expect(page.locator('.notes-hierarchy')).toHaveCount(0);
+     await expect(page.locator('.notes-chapter-detail-content.notes-surface')).toHaveCount(1);
     await expect(page.locator('.empty-state')).toContainText('No Pages yet');
     await expect(page.locator('.empty-state').getByRole('link', { name: 'New Page', exact: true })).toBeVisible();
     await expect(page.getByRole('link', { name: 'Change order', exact: true })).toHaveCount(0);
@@ -550,12 +1139,14 @@ test.describe('CreatorCrate development browser smoke', () => {
     await expect(page.locator('.page-heading-actions').getByRole('link', { name: 'New Page', exact: true })).toBeVisible();
     await expect(page.getByRole('link', { name: 'Edit Chapter', exact: true })).toBeVisible();
     await expect(page.getByRole('link', { name: 'Change order', exact: true })).toBeVisible();
-    await expect(page.locator('.notes-chapter-page-row')).toHaveCount(3);
+    await expect(page.locator('.notes-page-nav')).toHaveAttribute('aria-label', `Pages in ${chapterTitle}`);
+    await expect(page.locator('.notes-page-nav-item')).toHaveCount(3);
+    await expect(page.locator('.notes-page-nav [aria-current="page"]')).toHaveCount(0);
     for (const title of pageTitles) {
-      await expect(page.getByRole('link', { name: title, exact: true })).toBeVisible();
-      await expect(page.getByRole('link', { name: `Edit Page: ${title}`, exact: true })).toBeVisible();
+      await expect(page.locator('.notes-page-nav').getByRole('link', { name: title, exact: true })).toBeVisible();
+      await expect(page.getByRole('link', { name: `Edit Page: ${title}`, exact: true })).toHaveCount(0);
     }
-    await expect(page.locator('main#main-content')).not.toContainText(directPageTitle);
+    await expect(page.locator('.notes-page-nav')).not.toContainText(directPageTitle);
     await expect(page.locator('main#main-content')).not.toContainText('Move up');
     await expect(page.locator('main#main-content')).not.toContainText('Move down');
     await expect(page.locator('main#main-content')).not.toContainText('Danger zone');
@@ -568,8 +1159,8 @@ test.describe('CreatorCrate development browser smoke', () => {
     );
     const assertOrderPageLayout = async () => {
       await expect(page.locator('h1.app-section-title')).toHaveCount(1);
-      await expect(page.locator('.notes-hierarchy')).toContainText('Book');
-      await expect(page.locator('.notes-hierarchy')).toContainText('Chapter');
+      await expect(page.locator('h1.app-section-title')).toHaveText(`Notes — Change order — ${chapterTitle}`);
+      await expect(page.locator('.notes-hierarchy')).toHaveCount(0);
       await expect(page.locator('.notes-chapter-order')).toContainText('Drag a handle to move a Page');
       await expect(page.locator('[data-chapter-page-reorder-item]')).toHaveCount(3);
       await expect(page.locator('[data-chapter-page-reorder-handle]')).toHaveCount(3);
@@ -593,7 +1184,7 @@ test.describe('CreatorCrate development browser smoke', () => {
     await assertOrderPageLayout();
     expect(await orderTitles()).toEqual(pageTitles);
     expect(await orderIds()).toEqual(pageIds);
-    await expect(page.locator('main#main-content')).not.toContainText(directPageTitle);
+    await expect(page.locator('.notes-chapter-order')).not.toContainText(directPageTitle);
 
     const reorderRequests = [];
     page.on('request', (request) => {
@@ -619,11 +1210,11 @@ test.describe('CreatorCrate development browser smoke', () => {
       page.getByRole('button', { name: 'Save', exact: true }).click(),
     ]);
     expect(reorderRequests).toHaveLength(1);
-    const persistedRows = page.locator('.notes-chapter-page-row');
+    const persistedRows = page.locator('.notes-page-nav-item');
     await expect(persistedRows.nth(0)).toContainText(pageTitles[2]);
     await expect(persistedRows.nth(1)).toContainText(pageTitles[0]);
     await expect(persistedRows.nth(2)).toContainText(pageTitles[1]);
-    await expect(page.locator('main#main-content')).not.toContainText(directPageTitle);
+    await expect(page.locator('.notes-page-nav')).not.toContainText(directPageTitle);
     await expect(page.locator('main#main-content')).not.toContainText('Move up');
     await expect(page.locator('main#main-content')).not.toContainText('Move down');
 
@@ -649,15 +1240,15 @@ test.describe('CreatorCrate development browser smoke', () => {
       page.getByRole('link', { name: 'Cancel', exact: true }).click(),
     ]);
     expect(reorderRequests).toHaveLength(1);
-    const unchangedRows = page.locator('.notes-chapter-page-row');
+    const unchangedRows = page.locator('.notes-page-nav-item');
     await expect(unchangedRows.nth(0)).toContainText(pageTitles[2]);
     await expect(unchangedRows.nth(1)).toContainText(pageTitles[0]);
     await expect(unchangedRows.nth(2)).toContainText(pageTitles[1]);
-    await expect(page.locator('main#main-content')).not.toContainText(directPageTitle);
+    await expect(page.locator('.notes-page-nav')).not.toContainText(directPageTitle);
     assertNoBrowserDiagnostics(diagnostics);
   });
 
-  test('keeps Book detail as one semantic mixed outline with native Chapter disclosure', async ({ page, devServer }) => {
+  test('keeps Book detail as one surfaced semantic mixed outline with native Chapter disclosure', async ({ page, devServer }) => {
     const diagnostics = observeBrowser(page, devServer.baseURL);
     const bookTitle = `Browser Book Detail ${Date.now()}`;
     const emptyBookId = await createBrowserBook(page, devServer.baseURL, bookTitle);
@@ -666,9 +1257,10 @@ test.describe('CreatorCrate development browser smoke', () => {
     const emptyResponse = await page.goto(bookUrl, { waitUntil: 'domcontentloaded' });
     expect(emptyResponse?.status()).toBe(200);
     await expect(page.locator('h1.app-section-title')).toHaveCount(1);
-    await expect(page.locator('.notes-hierarchy')).toHaveCount(1);
-    await expect(page.locator('.notes-hierarchy .notes-hierarchy-item--current')).toContainText(bookTitle);
-    await expect(page.locator('.notes-hierarchy .notes-hierarchy-item--current a')).toHaveCount(0);
+    await expect(page.locator('h1.app-section-title')).toContainText(bookTitle);
+    await expect(page.locator('.notes-hierarchy')).toHaveCount(0);
+    await expect(page.locator('.notes-surface')).toHaveCount(1);
+    await expect(page.locator('.notes-surface > .book-outline')).toHaveCount(1);
     await expect(page.locator('.book-outline')).toHaveCount(1);
     await expect(page.locator('.book-outline-list')).toHaveCount(0);
     await expect(page.locator('.book-outline-empty')).toHaveCount(1);
@@ -701,8 +1293,9 @@ test.describe('CreatorCrate development browser smoke', () => {
     expect(pageAId).toBe(chapterXId);
 
     await page.goto(bookUrl, { waitUntil: 'domcontentloaded' });
-    await expect(page.locator('.notes-hierarchy')).toHaveCount(1);
-    await expect(page.locator('.notes-hierarchy .notes-hierarchy-item--current')).toContainText(bookTitle);
+    await expect(page.locator('.notes-hierarchy')).toHaveCount(0);
+    await expect(page.locator('.notes-surface')).toHaveCount(1);
+    await expect(page.locator('.notes-surface > .book-outline')).toHaveCount(1);
     await expect(page.locator('.book-outline')).toHaveCount(1);
     await expect(page.locator('.book-outline-list')).toHaveCount(1);
     await expect(page.locator('.book-outline-list > .book-outline-item')).toHaveCount(4);
@@ -752,10 +1345,20 @@ test.describe('CreatorCrate development browser smoke', () => {
       const layout = await page.locator('main#main-content').evaluate((element) => ({
         documentWidth: document.documentElement.scrollWidth,
         viewportWidth: window.innerWidth,
+        mainRect: element.getBoundingClientRect(),
+        headingRect: element.querySelector('header.page-heading')?.getBoundingClientRect(),
+        surfaceRect: element.querySelector('.notes-surface')?.getBoundingClientRect(),
         outlineRight: element.querySelector('.book-outline')?.getBoundingClientRect().right || 0,
       }));
       expect(layout.documentWidth).toBeLessThanOrEqual(layout.viewportWidth);
+      expect(Math.abs(layout.headingRect.width - layout.surfaceRect.width)).toBeLessThan(1);
+      expect(Math.abs(layout.headingRect.left - layout.surfaceRect.left)).toBeLessThan(1);
+      expect(Math.abs(layout.headingRect.right - layout.surfaceRect.right)).toBeLessThan(1);
+      expect(layout.surfaceRect.top).toBeGreaterThanOrEqual(layout.headingRect.bottom);
+      expect(layout.surfaceRect.left).toBeGreaterThanOrEqual(layout.mainRect.left);
+      expect(layout.surfaceRect.right).toBeLessThanOrEqual(layout.mainRect.right);
       expect(layout.outlineRight).toBeLessThanOrEqual(layout.viewportWidth);
+      await expect(page.locator('.book-outline-item.notes-surface')).toHaveCount(0);
 
       const viewportChapterDetails = page.locator('.book-outline-chapter').nth(0).locator('details');
       const viewportChapterSummary = viewportChapterDetails.locator('.book-outline-summary');
@@ -1019,7 +1622,7 @@ test.describe('CreatorCrate development browser smoke', () => {
       if (new URL(request.url()).pathname === '/notes/asset-picker/assets') assetRequests.push(request.url());
     });
 
-    const projectTitle = `Browser Asset Picker Project ${Date.now()}`;
+    const projectTitle = `Browser Asset Picker Project With A Deliberately Long Project Name For Sidebar Wrapping ${Date.now()}`;
     const projectFormResponse = await page.goto(`${devServer.baseURL}/projects/new`, { waitUntil: 'domcontentloaded' });
     expect(projectFormResponse?.status()).toBe(200);
     await page.locator('#title').fill(projectTitle);
@@ -1047,6 +1650,10 @@ test.describe('CreatorCrate development browser smoke', () => {
     await expect(assetSearch).toBeDisabled();
     await projectResults.locator('button').first().click();
     await expect(assetSearch).toBeEnabled();
+    await page.locator('#note-projects-form-trigger').click();
+    await page.locator(`#note-project-option-${projectId}`).check();
+    await expect(page.locator(`#note-project-option-${projectId}`)).toBeChecked();
+    await page.locator('#note-projects-form-trigger').click();
     await expect.poll(() => assetRequests.length).toBe(1);
     const firstAssetRequest = new URL(assetRequests[0]);
     expect(firstAssetRequest.searchParams.get('projectId')).toBe(projectId);
@@ -1079,7 +1686,8 @@ test.describe('CreatorCrate development browser smoke', () => {
     await expect(page.locator('.notes-selected-asset')).toHaveCount(1);
     await expect(page.locator('.notes-selected-assets')).toContainText(firstFilename);
 
-    const secondCandidate = assetResults.locator('[data-asset-id]').nth(1);
+    const longAssetFilename = 'asset-01-this-is-a-deliberately-long-asset-filename-for-sidebar-wrapping-verification.txt';
+    const secondCandidate = assetResults.locator('[data-asset-id]').filter({ hasText: longAssetFilename });
     const secondAssetId = await secondCandidate.getAttribute('data-asset-id');
     const secondFilename = await secondCandidate.locator('.notes-asset-picker-asset-filename').textContent();
     await secondCandidate.getByRole('button', { name: 'Add', exact: true }).click();
@@ -1095,6 +1703,26 @@ test.describe('CreatorCrate development browser smoke', () => {
     await expect(page.locator(`#note-form input[name="assetIds[]"][value="${secondAssetId}"]`)).toBeChecked();
     await expect(page.locator(`#note-form input[name="assetIds[]"][value="${firstAssetId}"]`)).toHaveCount(0);
 
+    await page.setViewportSize({ width: 375, height: 800 });
+    const narrowConnections = await page.locator('.notes-connections').evaluate((element) => {
+      const rect = element.getBoundingClientRect();
+      const controls = [...element.querySelectorAll('input, button, select, [data-asset-id]')]
+        .map((control) => control.getBoundingClientRect());
+      return {
+        cardRight: rect.right,
+        viewportWidth: window.innerWidth,
+        documentWidth: document.documentElement.scrollWidth,
+        controlsFit: controls.every((control) => control.right <= window.innerWidth + 1),
+      };
+    });
+    expect(narrowConnections.cardRight).toBeLessThanOrEqual(narrowConnections.viewportWidth);
+    expect(narrowConnections.documentWidth).toBeLessThanOrEqual(narrowConnections.viewportWidth);
+    expect(narrowConnections.controlsFit).toBe(true);
+    await expect(page.locator('.notes-selected-assets')).toContainText(longAssetFilename);
+    await expect(page.locator('#note-asset-picker-project-search')).toBeVisible();
+    await expect(page.locator('#note-asset-picker-asset-search')).toBeVisible();
+    await expect(secondCandidate.getByRole('button', { name: 'Selected', exact: true })).toBeDisabled();
+
     await page.locator('#title').fill('Browser Picker Note');
     await Promise.all([
       page.waitForURL(/\/notes\/\d+$/),
@@ -1106,6 +1734,9 @@ test.describe('CreatorCrate development browser smoke', () => {
 
     await page.getByRole('link', { name: 'Edit Page', exact: true }).click();
     await page.waitForURL(new RegExp(`/notes/${noteId}/edit$`));
+    await expect(page.locator('#note-projects-form-trigger'))
+      .toHaveAttribute('aria-label', `Projects: ${projectTitle}`);
+    await expect(page.locator('#note-projects-form-trigger')).toContainText(projectTitle);
     await expect(page.locator('.notes-selected-asset')).toHaveCount(1);
     await expect(page.locator('.notes-selected-assets')).toContainText(secondFilename);
     await expect(page.locator(`#note-form input[name="assetIds[]"][value="${secondAssetId}"]`)).toBeChecked();
@@ -1673,6 +2304,7 @@ async function createAndScanBrowserPickerAssets(page, baseURL, projectsRoot, pro
   const assetFiles = Array.from({ length: 25 }, (_value, index) => (
     `browse/asset-${String(index).padStart(2, '0')}.txt`
   ));
+  assetFiles[1] = 'browse/asset-01-this-is-a-deliberately-long-asset-filename-for-sidebar-wrapping-verification.txt';
   assetFiles.push('nested/path-needle/path-target.txt');
 
   await Promise.all(assetFiles.map(async (relativePath) => {
@@ -1744,20 +2376,26 @@ async function exerciseNotesEditor(page) {
 
   const workspace = page.locator('.notes-workspace');
   await expect(workspace).toBeVisible();
-  await expect(page.locator('.notes-workspace-context')).toContainText('Hierarchy');
-  await expect(page.locator('.notes-workspace-context')).toContainText('Back to Chapter');
+  await expect(page.locator('.notes-workspace-context')).toHaveAttribute('aria-label', 'Book contents');
+  await expect(page.locator('.notes-workspace-context .notes-book-nav')).toHaveCount(1);
+  await expect(page.locator('.notes-workspace-context')).not.toContainText('Hierarchy');
+  await expect(page.locator('.notes-workspace-context')).not.toContainText('Back to Chapter');
+  await expect(page.locator('.notes-workspace-context')).not.toContainText('Back to Book');
+  await expect(page.locator('.notes-workspace-context')).not.toContainText('This Page will belong');
   await expect(page.locator('.notes-connections')).toContainText('Projects');
   await expect(page.locator('.notes-connections')).toContainText('Assets');
   const desktopState = await workspace.evaluate((element) => {
     const context = element.querySelector('.notes-workspace-context')?.getBoundingClientRect();
     const editorArea = element.querySelector('.notes-workspace-editor')?.getBoundingClientRect();
     const connections = element.querySelector('.notes-connections')?.getBoundingClientRect();
+    const sidebar = element.querySelector('.notes-page-sidebar')?.getBoundingClientRect();
     const editorBox = element.querySelector('.toastui-editor-defaultUI')?.getBoundingClientRect();
     const style = getComputedStyle(element);
     return {
       display: style.display,
       columns: style.gridTemplateColumns,
       contextWidth: context?.width || 0,
+      sidebarWidth: sidebar?.width || 0,
       editorWidth: editorArea?.width || 0,
       connectionsWidth: connections?.width || 0,
       editorHeight: editorBox?.height || 0,
@@ -1767,11 +2405,12 @@ async function exerciseNotesEditor(page) {
     };
   });
   expect(desktopState.display).toBe('grid');
-  expect(desktopState.columns.split(' ').length).toBe(3);
-  expect(desktopState.editorWidth).toBeGreaterThan(desktopState.contextWidth);
-  expect(desktopState.editorWidth).toBeGreaterThan(desktopState.connectionsWidth);
-  expect(desktopState.editorHeight).toBeGreaterThan(20 * 16);
-  expect(desktopState.editorHeight).toBeGreaterThanOrEqual(desktopState.viewportHeight * 0.5);
+  expect(desktopState.columns.split(' ').length).toBe(2);
+  expect(desktopState.contextWidth).toBeCloseTo(desktopState.sidebarWidth, 0);
+  expect(desktopState.connectionsWidth).toBeCloseTo(desktopState.sidebarWidth, 0);
+  expect(desktopState.editorWidth).toBeGreaterThan(desktopState.sidebarWidth * 2);
+  expect(desktopState.editorHeight).toBeGreaterThanOrEqual(16 * 16);
+  expect(desktopState.editorHeight).toBeLessThan(desktopState.viewportHeight * 0.5);
   expect(desktopState.documentWidth).toBeLessThanOrEqual(desktopState.viewportWidth);
 
   await page.setViewportSize({ width: 640, height: 800 });
@@ -1824,7 +2463,17 @@ async function exerciseNotesEditor(page) {
   await page.locator('#title').fill('Browser Notes Round Trip');
   const wysiwygSurface = editor.locator('.toastui-editor-ww-container .toastui-editor-contents[contenteditable="true"]');
   await expect(wysiwygSurface).toBeVisible();
-  await replaceNotesEditorText(page, wysiwygSurface, ['WYSIWYG-authored paragraph']);
+  await replaceNotesEditorText(page, wysiwygSurface, [
+    'WYSIWYG-authored paragraph',
+    ...Array.from({ length: 30 }, (_value, index) => `Long content paragraph ${index + 1}`),
+  ]);
+  const longContentState = await wysiwygSurface.evaluate((element) => ({
+    clientHeight: element.clientHeight,
+    scrollHeight: element.scrollHeight,
+    overflowY: getComputedStyle(element).overflowY,
+  }));
+  expect(longContentState.scrollHeight).toBeGreaterThan(longContentState.clientHeight);
+  expect(longContentState.overflowY).toMatch(/auto|scroll/);
 
   await selectNotesEditorMode(modeSwitch, 'Markdown');
   const markdownSurface = editor.locator('.toastui-editor-md-container .ProseMirror[contenteditable="true"]');
@@ -1861,50 +2510,66 @@ async function exerciseNotesEditor(page) {
     await expect(page.locator('.notes-content strong')).toHaveText('Bold text');
 
     await expect(page.getByRole('link', { name: 'Edit Page', exact: true })).toBeVisible();
-    await expect(page.locator('.notes-hierarchy')).toContainText('Book');
-    await expect(page.locator('.notes-hierarchy')).toContainText('Chapter');
-    await expect(page.locator('.notes-hierarchy')).toContainText('Browser Notes Round Trip');
-    await expect(page.locator('.notes-detail-reading')).toBeVisible();
-    await expect(page.locator('.notes-detail-sidebar')).toContainText('Details');
+    await expect(page.locator('.notes-hierarchy')).toHaveCount(0);
+    await expect(page.locator('.notes-book-nav')).toHaveCount(1);
+    await expect(page.locator('.notes-page-sidebar')).toContainText('Details');
+    await expect(page.locator('.notes-detail-details')).toContainText('Created');
+    await expect(page.locator('.notes-detail-details')).toContainText('Updated');
+     await expect(page.locator('.notes-detail-kicker')).toHaveText('Browser Notes Round Trip');
+     await expect(page.locator('.notes-detail-content')).not.toContainText('Reading view');
+     await expect(page.locator('.notes-detail-content > .notes-detail-section-heading > h2')).toHaveCount(0);
+    await expect(page.locator('.notes-detail-layout')).toHaveCount(0);
+    await expect(page.locator('.notes-detail-reading')).toHaveCount(0);
+    await expect(page.locator('.notes-detail-sidebar')).toHaveCount(0);
     await expect(page.locator('main#main-content')).not.toContainText('Move Page');
     await expect(page.locator('main#main-content')).not.toContainText('Danger zone');
 
-    const desktopDetailState = await page.locator('.notes-detail-layout').evaluate((element) => {
-      const reading = element.querySelector('.notes-detail-reading')?.getBoundingClientRect();
-      const sidebar = element.querySelector('.notes-detail-sidebar')?.getBoundingClientRect();
+    const desktopDetailState = await page.locator('.notes-page-detail-layout').evaluate((element) => {
+      const content = element.querySelector('.notes-page-detail-content')?.getBoundingClientRect();
+      const sidebar = element.querySelector('.notes-page-sidebar')?.getBoundingClientRect();
       return {
         display: getComputedStyle(element).display,
-        readingWidth: reading?.width || 0,
+        columns: getComputedStyle(element).gridTemplateColumns,
+        contentWidth: content?.width || 0,
         sidebarWidth: sidebar?.width || 0,
         documentWidth: document.documentElement.scrollWidth,
         viewportWidth: window.innerWidth,
       };
     });
     expect(desktopDetailState.display).toBe('grid');
-    expect(desktopDetailState.readingWidth).toBeGreaterThan(desktopDetailState.sidebarWidth);
+    expect(desktopDetailState.columns.split(' ').length).toBe(2);
+    expect(desktopDetailState.contentWidth).toBeGreaterThan(desktopDetailState.sidebarWidth * 2);
     expect(desktopDetailState.documentWidth).toBeLessThanOrEqual(desktopDetailState.viewportWidth);
 
     await page.setViewportSize({ width: 640, height: 800 });
-    const narrowDetailState = await page.locator('.notes-detail-layout').evaluate((element) => {
-      const reading = element.querySelector('.notes-detail-reading')?.getBoundingClientRect();
-      const sidebar = element.querySelector('.notes-detail-sidebar')?.getBoundingClientRect();
+    const narrowDetailState = await page.locator('.notes-page-detail-layout').evaluate((element) => {
+      const navigator = element.querySelector('.notes-page-detail-sidebar')?.getBoundingClientRect();
+      const content = element.querySelector('.notes-page-detail-content')?.getBoundingClientRect();
+      const details = element.querySelector('.notes-detail-details')?.getBoundingClientRect();
       return {
         columns: getComputedStyle(element).gridTemplateColumns,
-        readingTop: reading?.top || 0,
-        sidebarTop: sidebar?.top || 0,
+        navigatorTop: navigator?.top || 0,
+        contentTop: content?.top || 0,
+        contentBottom: content?.bottom || 0,
+        detailsTop: details?.top || 0,
         documentWidth: document.documentElement.scrollWidth,
         viewportWidth: window.innerWidth,
       };
     });
     expect(narrowDetailState.columns.split(' ').length).toBe(1);
-    expect(narrowDetailState.readingTop).toBeLessThan(narrowDetailState.sidebarTop);
+    expect(narrowDetailState.navigatorTop).toBeLessThan(narrowDetailState.contentTop);
+    expect(narrowDetailState.contentTop).toBeLessThan(narrowDetailState.detailsTop);
+    expect(narrowDetailState.detailsTop).toBeGreaterThanOrEqual(narrowDetailState.contentBottom);
     expect(narrowDetailState.documentWidth).toBeLessThanOrEqual(narrowDetailState.viewportWidth);
     await page.setViewportSize({ width: 1280, height: 800 });
 
     const detailPath = new URL(page.url()).pathname;
     await page.goto(`${page.url()}/edit`, { waitUntil: 'domcontentloaded' });
     await expect(editor).toBeVisible();
-    await expect(page.locator('.notes-workspace-context')).toContainText('Back to Chapter');
+    await expect(page.locator('.notes-workspace-context')).toHaveAttribute('aria-label', 'Book contents');
+    await expect(page.locator('.notes-workspace-context .notes-book-nav')).toHaveCount(1);
+    await expect(page.locator('.notes-workspace-context')).not.toContainText('Back to Chapter');
+    await expect(page.locator('.notes-workspace-context')).not.toContainText('Back to Book');
     await expect(page.locator('.notes-connections')).toContainText('Connections');
     await selectNotesEditorMode(modeSwitch, 'Markdown');
     await expect(markdownSurface).toContainText('**Bold text**');
@@ -1932,7 +2597,6 @@ async function exerciseNotesEditor(page) {
 async function assertPageEditWorkspace(page, {
   bookTitle,
   pageTitle,
-  hierarchy,
   cancelHref,
   expectedCurrentContainer,
 }) {
@@ -1940,12 +2604,26 @@ async function assertPageEditWorkspace(page, {
   await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Edit', exact: true })).toHaveCount(0);
   await expect(page.getByRole('link', { name: 'Cancel', exact: true })).toHaveAttribute('href', cancelHref);
-  await expect(page.locator('.notes-workspace-context .notes-hierarchy')).toContainText(bookTitle);
-  for (const label of hierarchy) await expect(page.locator('.notes-workspace-context .notes-hierarchy')).toContainText(label);
+  const context = page.locator('.notes-workspace-context');
+  const navigator = context.locator('.notes-book-nav');
+  await expect(context).toHaveAttribute('aria-label', 'Book contents');
+  await expect(navigator).toHaveCount(1);
+  await expect(navigator).toHaveAttribute('aria-label', new RegExp(`^Contents of ${bookTitle}`));
+  await expect(navigator.locator('.notes-book-nav-book-link')).toContainText(bookTitle);
+  await expect(context).not.toContainText('Book workspace');
+  await expect(context).not.toContainText('Hierarchy');
+  await expect(context).not.toContainText('Back to Chapter');
+  await expect(context).not.toContainText('Back to Book');
+  await expect(context).not.toContainText('This Page will belong');
+  await expect(context.locator('.notes-hierarchy')).toHaveCount(0);
   await expect(page.locator('.notes-workspace-current-container')).toContainText(expectedCurrentContainer);
   await expect(page.locator('.notes-workspace-editor')).toBeVisible();
   await expect(page.locator('.notes-connections')).toContainText('Projects');
   await expect(page.locator('.notes-connections')).toContainText('Assets');
+  await expect(page.locator('.notes-page-sidebar > .notes-workspace-secondary')).toHaveCount(1);
+  await expect(page.locator('.notes-workspace-secondary .notes-workspace-kicker')).toHaveText('Page actions');
+  await expect(page.locator('.notes-workspace-secondary')).not.toContainText('Secondary actions');
+  await expect(page.locator('.notes-workspace-secondary h2')).toHaveCount(0);
   await expect(page.locator('[data-notes-asset-picker]')).toBeAttached();
   await expect(page.locator('.notes-workspace-disclosure')).toHaveCount(2);
   await expect(page.locator('.notes-workspace-disclosure[open]')).toHaveCount(0);
@@ -1954,45 +2632,133 @@ async function assertPageEditWorkspace(page, {
   await expect(page.locator('#note-move-form input[name="_csrf"]')).toHaveCount(1);
   await expect(page.locator('#note-delete-form input[name="_csrf"]')).toHaveCount(1);
   await expect(page.locator('#note-move-target')).toHaveValue(/^(book|chapter):\d+$/);
-  await expect(page.locator('#note-delete-form button[data-confirm]')).toBeAttached();
+  await expect(page.locator('.notes-workspace-secondary button[data-confirm]')).toBeAttached();
+  await expect(page.locator('.notes-workspace-secondary select[name="targetContainer"]')).toHaveAttribute('form', 'note-move-form');
+  await expect(page.locator('.notes-workspace-secondary button[type="submit"]').nth(0)).toHaveAttribute('form', 'note-move-form');
+  await expect(page.locator('.notes-workspace-secondary button[data-confirm]')).toHaveAttribute('form', 'note-delete-form');
   await expect(page.locator('#note-form #note-move-form, #note-form #note-delete-form')).toHaveCount(0);
   await expect(page.locator('#note-form form')).toHaveCount(0);
-  await assertWorkspaceDimensions(page, { editorRequired: true });
+  const formOwnership = await page.evaluate(() => {
+    const noteForm = document.getElementById('note-form');
+    const moveForm = document.getElementById('note-move-form');
+    const deleteForm = document.getElementById('note-delete-form');
+    const moveTarget = document.getElementById('note-move-target');
+    const moveButton = document.querySelector('button[form="note-move-form"]');
+    const deleteButton = document.querySelector('button[form="note-delete-form"]');
+    return {
+      nestedForms: noteForm?.querySelectorAll('form').length || 0,
+      moveTargetOwned: moveForm?.elements.namedItem('targetContainer') === moveTarget,
+      moveButtonOwned: Array.from(moveForm?.elements || []).includes(moveButton),
+      deleteButtonOwned: Array.from(deleteForm?.elements || []).includes(deleteButton),
+      moveValid: moveForm?.checkValidity() || false,
+      noteFormHasMoveTarget: Array.from(noteForm?.elements || []).includes(moveTarget),
+    };
+  });
+  expect(formOwnership).toEqual({
+    nestedForms: 0,
+    moveTargetOwned: true,
+    moveButtonOwned: true,
+    deleteButtonOwned: true,
+    moveValid: true,
+    noteFormHasMoveTarget: false,
+  });
+  await assertWorkspaceDimensions(page, { editorRequired: true, actionsRequired: true });
   await expect(page.locator('#title')).toHaveValue(pageTitle);
 }
 
-async function assertWorkspaceDimensions(page, { editorRequired = false } = {}) {
+async function assertWorkspaceDimensions(page, { editorRequired = false, actionsRequired = false } = {}) {
   if (editorRequired) {
     await expect(page.locator('[data-notes-editor-host] .toastui-editor-defaultUI')).toBeVisible();
   }
 
-  const state = await page.locator('.notes-workspace').evaluate((element) => {
+  const state = await page.locator('.notes-page-workspace-layout').evaluate((element) => {
+    const workspace = element.querySelector('.notes-workspace');
+    const editorHostWrapper = workspace?.querySelector('.notes-editor');
+    const editorHost = workspace?.querySelector('.notes-editor-host');
     const editor = element.querySelector('.notes-workspace-editor')?.getBoundingClientRect();
-    const editorSurface = element.querySelector('.toastui-editor-defaultUI')?.getBoundingClientRect();
-    const context = element.querySelector('.notes-workspace-context')?.getBoundingClientRect();
-    const connections = element.querySelector('.notes-connections')?.getBoundingClientRect();
+    const editorSurface = workspace?.querySelector('.toastui-editor-defaultUI')?.getBoundingClientRect();
+    const computed = (target) => target ? getComputedStyle(target) : null;
+    const dimensions = (target) => {
+      const box = target?.getBoundingClientRect();
+      const style = computed(target);
+      return {
+        height: box?.height || 0,
+        minHeight: style?.minHeight || '',
+        computedHeight: style?.height || '',
+        display: style?.display || '',
+        flexGrow: style?.flexGrow || '',
+        alignSelf: style?.alignSelf || '',
+      };
+    };
+    const context = workspace?.querySelector('.notes-workspace-context')?.getBoundingClientRect();
+    const connections = workspace?.querySelector('.notes-connections')?.getBoundingClientRect();
+    const sidebar = workspace?.querySelector('.notes-page-sidebar')?.getBoundingClientRect();
+    const actions = element.querySelector('.notes-workspace-secondary')?.getBoundingClientRect();
+    const outerStyle = getComputedStyle(element);
+    const workspaceStyle = workspace ? getComputedStyle(workspace) : null;
     return {
-      columns: getComputedStyle(element).gridTemplateColumns,
+      outerColumns: outerStyle.gridTemplateColumns,
+      columns: workspaceStyle?.gridTemplateColumns || '',
       editorWidth: editor?.width || 0,
       editorHeight: editorSurface?.height || 0,
       contextTop: context?.top || 0,
+      contextWidth: context?.width || 0,
       editorTop: editor?.top || 0,
       connectionsTop: connections?.top || 0,
+      connectionsWidth: connections?.width || 0,
+      sidebarWidth: sidebar?.width || 0,
+      actionsTop: actions?.top || 0,
+      actionsLeft: actions?.left || 0,
+      actionsWidth: actions?.width || 0,
+      actionsBottom: actions?.bottom || 0,
+      editorLeft: editor?.left || 0,
+      editorBottom: editor?.bottom || 0,
+      editorHostWrapper: dimensions(editorHostWrapper),
+      editorHost: dimensions(editorHost),
+      editorRoot: dimensions(workspace?.querySelector('.toastui-editor-defaultUI')),
+      toolbar: dimensions(workspace?.querySelector('.toastui-editor-defaultUI-toolbar')),
+      main: dimensions(workspace?.querySelector('.toastui-editor-main')),
+      mainContainer: dimensions(workspace?.querySelector('.toastui-editor-main-container')),
+      wwContainer: dimensions(workspace?.querySelector('.toastui-editor-ww-container')),
+      contents: dimensions(workspace?.querySelector('.toastui-editor-ww-container .toastui-editor-contents')),
+      modeSwitch: dimensions(workspace?.querySelector('.toastui-editor-mode-switch')),
+      status: dimensions(workspace?.querySelector('.toastui-editor-md-tab-container, .toastui-editor-md-preview')),
+      writingSurface: dimensions(workspace?.querySelector('.toastui-editor-ww-container, .toastui-editor-md-container')),
+      editorVariable: computed(workspace)?.getPropertyValue('--notes-editor-min-height').trim() || '',
+      path: window.location.pathname,
       documentWidth: document.documentElement.scrollWidth,
       viewportWidth: window.innerWidth,
       viewportHeight: window.innerHeight,
     };
   });
-
   expect(state.documentWidth).toBeLessThanOrEqual(state.viewportWidth);
   expect(state.editorWidth).toBeGreaterThan(0);
-  expect(state.editorHeight).toBeGreaterThanOrEqual(state.viewportHeight * 0.5);
+  expect(state.editorHeight).toBeGreaterThanOrEqual(16 * 16);
+  expect(state.editorHostWrapper.height).toBeCloseTo(state.editorHeight, 0);
+  expect(state.editorHost.height).toBeCloseTo(state.editorHeight, 0);
+  expect(state.editorRoot.height).toBeCloseTo(state.editorHeight, 0);
+  expect(state.main.height).toBeGreaterThan(200);
+  expect(state.toolbar.height).toBeGreaterThan(0);
+  expect(state.modeSwitch.height).toBeGreaterThan(0);
+  if (actionsRequired) {
+    const sidebarWidth = state.sidebarWidth || state.connectionsWidth || state.contextWidth;
+    expect(state.actionsWidth).toBeCloseTo(sidebarWidth, 0);
+  }
   if (state.viewportWidth <= 1023) {
+    expect(state.outerColumns.split(' ').length).toBe(1);
     expect(state.columns.split(' ').length).toBe(1);
     expect(state.contextTop).toBeLessThan(state.editorTop);
     expect(state.editorTop).toBeLessThan(state.connectionsTop);
+    if (actionsRequired) expect(state.connectionsTop).toBeLessThan(state.actionsTop);
   } else {
-    expect(state.columns.split(' ').length).toBe(3);
+    expect(state.outerColumns.split(' ').length).toBe(2);
+    expect(state.columns.split(' ').length).toBe(2);
+    expect(state.contextWidth).toBeCloseTo(state.sidebarWidth, 0);
+    expect(state.connectionsWidth).toBeCloseTo(state.sidebarWidth, 0);
+    if (actionsRequired) expect(state.connectionsTop).toBeLessThan(state.actionsTop);
+    expect(state.sidebarWidth).toBeGreaterThanOrEqual(12 * 16);
+    expect(state.sidebarWidth).toBeLessThanOrEqual(16 * 16);
+    expect(state.editorWidth).toBeGreaterThan(state.sidebarWidth * 2);
   }
 }
 

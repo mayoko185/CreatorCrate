@@ -1194,6 +1194,9 @@ export function enhanceBookContentReorder(scope = globalThis.document) {
 const NOTE_EDITOR_FORM_SELECTOR = '[data-notes-editor-form]';
 const NOTE_EDITOR_HOST_SELECTOR = '[data-notes-editor-host]';
 const NOTE_EDITOR_SOURCE_SELECTOR = '[data-notes-editor-source]';
+const NOTES_CODE_BLOCK_SELECTOR = '.notes-content pre > code';
+const NOTES_CODE_COPY_BUTTON_SELECTOR = '.notes-code-copy';
+const NOTES_CODE_COPY_FEEDBACK_MS = 1200;
 const NOTE_EDITOR_TOOLBAR_ITEMS = [
   ['heading', 'bold', 'italic', 'strike'],
   ['quote'],
@@ -1298,6 +1301,77 @@ export function enhanceNotesEditor(scope = globalThis.document, { loadEditor = l
   });
 
   return forms.length;
+}
+
+function notesCodeCopyFeedback(button, label, ariaLabel) {
+  button.textContent = label;
+  button.setAttribute?.('aria-label', ariaLabel);
+}
+
+function bindNotesCodeCopyButton(button, code) {
+  if (!button || isEnhancementBound(button, 'notesCodeCopyBound')) return;
+
+  button.type = 'button';
+  button.className = 'button button-small notes-code-copy';
+  notesCodeCopyFeedback(button, 'Copy', 'Copy code');
+  button.setAttribute?.('title', 'Copy code');
+
+  const clipboard = globalThis.navigator?.clipboard;
+  if (typeof clipboard?.writeText !== 'function') {
+    button.disabled = true;
+    button.setAttribute?.('aria-disabled', 'true');
+    button.setAttribute?.('title', 'Copying is unavailable in this browser.');
+    markEnhancementBound(button, 'notesCodeCopyBound');
+    return;
+  }
+
+  let copying = false;
+  let feedbackTimer = null;
+  const restoreCopyLabel = () => {
+    feedbackTimer = null;
+    notesCodeCopyFeedback(button, 'Copy', 'Copy code');
+  };
+
+  button.addEventListener('click', async () => {
+    if (copying) return;
+    copying = true;
+    button.disabled = true;
+    if (feedbackTimer !== null) globalThis.clearTimeout?.(feedbackTimer);
+
+    try {
+      await clipboard.writeText(code.textContent);
+      notesCodeCopyFeedback(button, 'Copied', 'Code copied');
+    } catch {
+      notesCodeCopyFeedback(button, 'Copy failed', 'Copy code failed');
+    } finally {
+      copying = false;
+      button.disabled = false;
+      feedbackTimer = globalThis.setTimeout?.(restoreCopyLabel, NOTES_CODE_COPY_FEEDBACK_MS) ?? null;
+    }
+  });
+
+  markEnhancementBound(button, 'notesCodeCopyBound');
+}
+
+export function enhanceNotesCodeBlocks(scope = globalThis.document) {
+  if (!scope || typeof scope.querySelectorAll !== 'function') return 0;
+
+  const blocks = scope.querySelectorAll(NOTES_CODE_BLOCK_SELECTOR);
+  blocks.forEach((code) => {
+    const pre = code?.parentElement || code?.parentNode;
+    const document = code?.ownerDocument || globalThis.document;
+    if (!pre || !document || typeof document.createElement !== 'function') return;
+
+    let button = pre.querySelector?.(NOTES_CODE_COPY_BUTTON_SELECTOR);
+    if (!button) {
+      button = document.createElement('button');
+      pre.insertBefore?.(button, pre.firstChild || null);
+    }
+    pre.classList?.add('notes-code-block-enhanced');
+    bindNotesCodeCopyButton(button, code);
+  });
+
+  return blocks.length;
 }
 
 const NOTES_ASSET_PICKER_SELECTOR = '[data-notes-asset-picker]';
@@ -5008,6 +5082,7 @@ export function enhanceSlideshow(scope = globalThis.document) {
 if (typeof document !== 'undefined') {
   const run = () => {
     enhancePreviewMedia(document);
+    enhanceNotesCodeBlocks(document);
     enhanceProjectCards(document);
     enhanceAutoSubmit(document);
     enhanceCategoryReorder(document);

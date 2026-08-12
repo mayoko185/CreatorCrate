@@ -1,0 +1,62 @@
+{% set hasCurrentChapter = navCurrentChapterId is defined and navCurrentChapterId is not none %}
+{% set hasCurrentPage = navCurrentPageId is defined and navCurrentPageId is not none %}
+{% set currentChapterIdString = '' %}
+{% set currentPageIdString = '' %}
+{% if hasCurrentChapter %}
+  {% set currentChapterIdString = navCurrentChapterId | string %}
+{% endif %}
+{% if hasCurrentPage %}
+  {% set currentPageIdString = navCurrentPageId | string %}
+{% endif %}
+
+<nav class="notes-book-nav" aria-label="Contents of {{ book.title }}">
+  <p class="notes-book-nav-heading">Book contents</p>
+  <a class="notes-book-nav-book-link" href="/notes/books/{{ book.id }}">{{ book.title }}</a>
+
+  <ol class="notes-book-nav-list">
+    {% for item in bookContents %}
+      {% if item.type == 'chapter' %}
+        {% set chapterIsCurrent = hasCurrentChapter and item.id is defined and item.id is not none and (item.id | string) == currentChapterIdString %}
+        {% set chapterContainsCurrentPage = false %}
+        {% if hasCurrentPage %}
+          {% for page in item.pages %}
+            {% if page.id is defined and page.id is not none and (page.id | string) == currentPageIdString %}
+              {% set chapterContainsCurrentPage = true %}
+            {% endif %}
+          {% endfor %}
+        {% endif %}
+
+        <li class="notes-book-nav-item notes-book-nav-chapter{% if chapterIsCurrent %} notes-book-nav-item--current{% endif %}">
+          <details class="notes-book-nav-disclosure"{% if chapterIsCurrent or chapterContainsCurrentPage %} open{% endif %}>
+            <summary class="notes-book-nav-summary">
+              <span class="notes-book-nav-disclosure-indicator" aria-hidden="true"></span>
+              <span class="notes-book-nav-title-wrap">
+                <a class="notes-book-nav-chapter-link" href="/notes/chapters/{{ item.id }}"{% if chapterIsCurrent %} aria-current="page"{% endif %}>{{ item.chapter.title }}</a>
+              </span>
+            </summary>
+            <ol class="notes-book-nav-pages">
+              {% for page in item.pages %}
+                {% set pageIsCurrent = hasCurrentPage and page.id is defined and page.id is not none and (page.id | string) == currentPageIdString %}
+                <li class="notes-book-nav-item notes-book-nav-page notes-book-nav-page--child{% if pageIsCurrent %} notes-book-nav-item--current{% endif %}">
+                  <a class="notes-book-nav-page-link" href="/notes/{{ page.id }}"{% if pageIsCurrent %} aria-current="page"{% endif %}>{{ page.title }}</a>
+                </li>
+              {% endfor %}
+            </ol>
+            {% if item.pages.length == 0 %}
+              <p class="notes-book-nav-empty">No Pages yet</p>
+            {% endif %}
+          </details>
+        </li>
+      {% elif item.type == 'page' %}
+        {% set pageIsCurrent = hasCurrentPage and item.id is defined and item.id is not none and (item.id | string) == currentPageIdString %}
+        <li class="notes-book-nav-item notes-book-nav-page{% if pageIsCurrent %} notes-book-nav-item--current{% endif %}">
+          <a class="notes-book-nav-page-link" href="/notes/{{ item.id }}"{% if pageIsCurrent %} aria-current="page"{% endif %}>{{ item.page.title }}</a>
+        </li>
+      {% endif %}
+    {% endfor %}
+  </ol>
+
+  {% if bookContents.length == 0 %}
+    <p class="notes-book-nav-empty">No Pages or Chapters yet</p>
+  {% endif %}
+</nav>

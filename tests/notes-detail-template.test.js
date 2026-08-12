@@ -1,15 +1,14 @@
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import nunjucks from 'nunjucks';
 import { describe, expect, it } from 'vitest';
 
-const VIEWS_DIR = fileURLToPath(new URL('../src/views', import.meta.url));
 const DETAIL_TEMPLATE_PATH = fileURLToPath(new URL('../src/views/notes/detail.njk', import.meta.url));
 const CHAPTER_DETAIL_TEMPLATE_PATH = fileURLToPath(new URL('../src/views/notes/chapters/detail.njk', import.meta.url));
 const CHAPTER_FORM_TEMPLATE_PATH = fileURLToPath(new URL('../src/views/notes/chapters/form.njk', import.meta.url));
 const BOOK_FORM_TEMPLATE_PATH = fileURLToPath(new URL('../src/views/notes/books/form.njk', import.meta.url));
 const BOOK_DETAIL_TEMPLATE_PATH = fileURLToPath(new URL('../src/views/notes/books/detail.njk', import.meta.url));
 const BOOK_ORDER_TEMPLATE_PATH = fileURLToPath(new URL('../src/views/notes/books/order.njk', import.meta.url));
+const NOTE_FORM_TEMPLATE_PATH = fileURLToPath(new URL('../src/views/notes/form.njk', import.meta.url));
 const HIERARCHY_TEMPLATE_PATH = fileURLToPath(new URL('../src/views/partials/notes-hierarchy.njk', import.meta.url));
 const CSS_PATH = fileURLToPath(new URL('../src/static/creatorcrate.css', import.meta.url));
 const detailTemplate = fs.readFileSync(DETAIL_TEMPLATE_PATH, 'utf8');
@@ -18,18 +17,14 @@ const chapterFormTemplate = fs.readFileSync(CHAPTER_FORM_TEMPLATE_PATH, 'utf8');
 const bookFormTemplate = fs.readFileSync(BOOK_FORM_TEMPLATE_PATH, 'utf8');
 const bookDetailTemplate = fs.readFileSync(BOOK_DETAIL_TEMPLATE_PATH, 'utf8');
 const bookOrderTemplate = fs.readFileSync(BOOK_ORDER_TEMPLATE_PATH, 'utf8');
-const hierarchyTemplate = fs.readFileSync(HIERARCHY_TEMPLATE_PATH, 'utf8');
+const noteFormTemplate = fs.readFileSync(NOTE_FORM_TEMPLATE_PATH, 'utf8');
 const notesCss = fs.readFileSync(CSS_PATH, 'utf8');
 
-function renderHierarchy(context) {
-  const environment = nunjucks.configure(VIEWS_DIR, { autoescape: true, noCache: true });
-  return environment.render('partials/notes-hierarchy.njk', context);
-}
-
 describe('Notes Page detail hierarchy and layout contract', () => {
-  it('has and uses the shared hierarchy partial', () => {
-    expect(fs.existsSync(HIERARCHY_TEMPLATE_PATH)).toBe(true);
-    expect(detailTemplate).toContain('{% include "partials/notes-hierarchy.njk" %}');
+  it('keeps Page detail free of the obsolete hierarchy breadcrumb', () => {
+    expect(fs.existsSync(HIERARCHY_TEMPLATE_PATH)).toBe(false);
+    expect(detailTemplate).not.toContain('{% include "partials/notes-hierarchy.njk" %}');
+    expect(detailTemplate).not.toContain('notes-hierarchy');
     expect(detailTemplate).not.toContain('Move Page');
     expect(detailTemplate).not.toContain('Danger zone');
     expect(detailTemplate).not.toContain('/move');
@@ -37,64 +32,33 @@ describe('Notes Page detail hierarchy and layout contract', () => {
     expect(detailTemplate).toContain('Edit Page');
   });
 
-  it('renders a direct Book Page without inventing a Chapter', () => {
-    const html = renderHierarchy({
-      book: { id: 7, title: 'Direct Book' },
-      note: { id: 11, title: 'Direct Page' },
-    });
-
-    expect(html).toContain('<nav class="notes-hierarchy" aria-label="Page hierarchy">');
-    expect(html).toContain('<a class="notes-hierarchy-link" href="/notes/books/7">Direct Book</a>');
-    expect(html).toContain('<span class="notes-hierarchy-kind">Page</span>');
-    expect(html).toContain('<span class="notes-hierarchy-current">Direct Page</span>');
-    expect(html).not.toContain('Chapter');
-    expect(html).not.toContain('/notes/chapters/');
+  it('removes the obsolete hierarchy partial and stylesheet rules', () => {
+    expect(fs.existsSync(HIERARCHY_TEMPLATE_PATH)).toBe(false);
+    expect(notesCss).not.toContain('.notes-hierarchy');
   });
 
-  it('renders a Chapter Page with linked Book and Chapter ancestors', () => {
-    const html = renderHierarchy({
-      book: { id: 7, title: 'Chapter Book' },
-      chapter: { id: 9, title: 'Chapter One' },
-      note: { id: 11, title: 'Chapter Page' },
-    });
-
-    expect(html).toContain('<a class="notes-hierarchy-link" href="/notes/books/7">Chapter Book</a>');
-    expect(html).toContain('<a class="notes-hierarchy-link" href="/notes/chapters/9">Chapter One</a>');
-    expect(html).toContain('<li class="notes-hierarchy-item notes-hierarchy-item--current" aria-current="page">');
-    expect(html).toContain('<span class="notes-hierarchy-current">Chapter Page</span>');
+  it('keeps Chapter detail free of the obsolete hierarchy breadcrumb', () => {
+    expect(chapterDetailTemplate).not.toContain('{% include "partials/notes-hierarchy.njk" %}');
+    expect(chapterDetailTemplate).not.toContain('notes-hierarchy');
   });
 
-  it('renders a Chapter detail with linked Book and current Chapter context', () => {
-    const html = renderHierarchy({
-      book: { id: 7, title: 'Chapter Book' },
-      chapter: { id: 9, title: 'Current Chapter' },
-    });
-
-    expect(chapterDetailTemplate).toContain('{% include "partials/notes-hierarchy.njk" %}');
-    expect(html).toContain('<a class="notes-hierarchy-link" href="/notes/books/7">Chapter Book</a>');
-    expect(html).toContain('<li class="notes-hierarchy-item notes-hierarchy-item--current" aria-current="page">');
-    expect(html).toContain('<span class="notes-hierarchy-kind">Chapter</span>');
-    expect(html).toContain('<span class="notes-hierarchy-current">Current Chapter</span>');
-    expect(html).not.toContain('<a class="notes-hierarchy-link" href="/notes/chapters/9">Current Chapter</a>');
-  });
-
-  it('renders Book detail with shared hierarchy and Book as the current item', () => {
-    const html = renderHierarchy({
-      book: { id: 7, title: 'Current Book' },
-    });
-
-    expect(bookDetailTemplate).toContain('{% include "partials/notes-hierarchy.njk" %}');
+  it('renders Book detail with its layout identity and one surfaced outline', () => {
+    expect(bookDetailTemplate).not.toContain('{% include "partials/notes-hierarchy.njk" %}');
+    expect(bookDetailTemplate).toContain('page_title = "Notes');
+    expect(bookDetailTemplate).toContain('~ book.title %}');
     expect(bookDetailTemplate).toContain('New Page');
     expect(bookDetailTemplate).toContain('New Chapter');
     expect(bookDetailTemplate).toContain('Edit Book');
     expect(bookDetailTemplate).toContain('Change order');
+    expect(bookDetailTemplate).toContain('class="notes-surface"');
     expect(bookDetailTemplate).toContain('<nav class="book-outline"');
+    const headingStart = bookDetailTemplate.indexOf('{% call pageHeading.render() %}');
+    const surfaceStart = bookDetailTemplate.indexOf('<div class="notes-surface">');
+    expect(headingStart).toBeGreaterThanOrEqual(0);
+    expect(headingStart).toBeLessThan(surfaceStart);
     expect(bookDetailTemplate).toContain('book-outline-summary');
     expect(bookDetailTemplate).not.toContain('notes-book-content-row');
-    expect(html).toContain('<li class="notes-hierarchy-item notes-hierarchy-item--current" aria-current="page">');
-    expect(html).toContain('<span class="notes-hierarchy-kind">Book</span>');
-    expect(html).toContain('<span class="notes-hierarchy-current">Current Book</span>');
-    expect(html).not.toContain('<a class="notes-hierarchy-link" href="/notes/books/7">Current Book</a>');
+    expect(bookDetailTemplate).not.toContain('notes-hierarchy');
   });
 
   it('renders Book detail as one authoritative mixed contents list', () => {
@@ -122,6 +86,7 @@ describe('Notes Page detail hierarchy and layout contract', () => {
     expect(notesCss).toContain('.book-outline-children');
     expect(notesCss).toContain('.book-outline-title:focus-visible');
     expect(bookDetailTemplate).toContain('class="book-outline-title-wrap"');
+    expect(bookDetailTemplate).toContain('notes-surface');
     expect(notesCss).toContain('.book-outline-title-wrap');
     expect(notesCss).toContain('.book-outline-chapter .book-outline-title');
     expect(notesCss).toContain('display: inline;');
@@ -130,7 +95,7 @@ describe('Notes Page detail hierarchy and layout contract', () => {
   });
 
   it('renders the Book order page as one dedicated mixed reorder form', () => {
-    expect(bookOrderTemplate).toContain('{% include "partials/notes-hierarchy.njk" %}');
+    expect(bookOrderTemplate).not.toContain('notes-hierarchy');
     expect(bookOrderTemplate).toContain('action="/notes/books/{{ book.id }}/contents/reorder"');
     expect(bookOrderTemplate).toContain('name="orderedItems"');
     expect(bookOrderTemplate).toContain('data-book-content-reorder-list');
@@ -146,11 +111,23 @@ describe('Notes Page detail hierarchy and layout contract', () => {
   });
 
   it('keeps Chapter detail actions content-first and removes normal-view reorder and deletion controls', () => {
+    expect(chapterDetailTemplate).toContain('<div class="notes-chapter-detail-layout">');
+    expect(chapterDetailTemplate).toContain('<aside class="notes-chapter-detail-sidebar notes-surface notes-surface--compact">');
+    expect(chapterDetailTemplate).toContain('<div class="notes-chapter-detail-content notes-surface">');
+    expect(chapterDetailTemplate).toContain('{% include "partials/book-navigator.njk" %}');
+    const chapterHeadingStart = chapterDetailTemplate.indexOf('{% call pageHeading.render() %}');
+    const chapterLayoutStart = chapterDetailTemplate.indexOf('<div class="notes-chapter-detail-layout">');
+    expect(chapterHeadingStart).toBeGreaterThanOrEqual(0);
+    expect(chapterHeadingStart).toBeLessThan(chapterLayoutStart);
     expect(chapterDetailTemplate).toContain('New Page');
     expect(chapterDetailTemplate).toContain('Edit Chapter');
     expect(chapterDetailTemplate).toContain('Change order');
-    expect(chapterDetailTemplate).toContain('notes-chapter-page-list');
-    expect(chapterDetailTemplate).toContain('Edit Page');
+    expect(chapterDetailTemplate).toContain('{% include "partials/notes-page-nav.njk" %}');
+    expect(chapterDetailTemplate).toContain('{% set pageNavPages = notes %}');
+    expect(chapterDetailTemplate).toContain('{% set pageNavLabel = "Pages in " ~ chapter.title %}');
+    expect(chapterDetailTemplate).not.toContain('pageNavCurrentId');
+    expect(chapterDetailTemplate).not.toContain('Edit Page');
+    expect(chapterDetailTemplate).not.toContain('Page {{ loop.index }}');
     expect(chapterDetailTemplate).not.toContain('moveUpOrderedNoteIds');
     expect(chapterDetailTemplate).not.toContain('moveDownOrderedNoteIds');
     expect(chapterDetailTemplate).not.toContain('Move up');
@@ -158,13 +135,23 @@ describe('Notes Page detail hierarchy and layout contract', () => {
     expect(chapterDetailTemplate).not.toContain('Danger zone');
     expect(chapterDetailTemplate).not.toContain('/notes/chapters/{{ chapter.id }}/delete');
     expect(chapterDetailTemplate).toContain('emptyActionUrl = "/notes/new?chapterId=" ~ chapter.id');
-    expect(notesCss).toContain('.notes-chapter-page-row');
-    expect(notesCss).toContain('.notes-chapter-page-actions');
+    expect(chapterDetailTemplate).not.toContain('book-outline');
+    expect(notesCss).toContain('.notes-chapter-detail-layout');
+    expect(notesCss).toContain('grid-template-columns: minmax(12rem, 16rem) minmax(0, 1fr);');
+    expect(notesCss).toContain('.notes-chapter-detail-sidebar');
+    expect(notesCss).toContain('.notes-surface--compact');
+    expect(notesCss).toContain('background: var(--surface);');
+    expect(notesCss).toContain('border: 1px solid var(--border);');
+    expect(notesCss).toContain('border-radius: var(--radius-lg);');
+    expect(notesCss).toMatch(/\.notes-book-nav-summary:hover,[\s\S]*?background: var\(--surface-hover\);/);
+    expect(notesCss).toMatch(/\.notes-book-nav-page-link:hover,[\s\S]*?background: var\(--surface-hover\);/);
+    expect(notesCss).toContain('.notes-page-nav');
+    expect(notesCss).not.toContain('.notes-chapter-page-actions');
   });
 
   it('keeps Chapter edit focused with Save/Cancel and a separate collapsed delete form', () => {
     expect(chapterFormTemplate).toContain('{% set submitLabel = "Save" if action == "Edit" else "Create" %}');
-    expect(chapterFormTemplate).toContain('{% include "partials/notes-hierarchy.njk" %}');
+    expect(chapterFormTemplate).not.toContain('notes-hierarchy');
     expect(chapterFormTemplate).toContain('form="chapter-form">{{ submitLabel }}</button>');
     expect(chapterFormTemplate).toContain('class="settings-section"');
     expect(chapterFormTemplate).toContain('class="notes-detail-panel"');
@@ -186,7 +173,7 @@ describe('Notes Page detail hierarchy and layout contract', () => {
 
   it('keeps Book edit focused with Save/Cancel and a separate collapsed delete form', () => {
     expect(bookFormTemplate).toContain('{% set submitLabel = "Save" if action == "Edit" else "Create" %}');
-    expect(bookFormTemplate).toContain('{% include "partials/notes-hierarchy.njk" %}');
+    expect(bookFormTemplate).not.toContain('notes-hierarchy');
     expect(bookFormTemplate).toContain('form="book-form">{{ submitLabel }}</button>');
     expect(bookFormTemplate).toContain('class="settings-section"');
     expect(bookFormTemplate).toContain('<label for="title">Title');
@@ -210,16 +197,66 @@ describe('Notes Page detail hierarchy and layout contract', () => {
   });
 
   it('keeps the detail layout content-dominant and stacks at narrow widths', () => {
-    expect(detailTemplate).toContain('class="notes-detail-layout"');
-    expect(detailTemplate).toContain('class="notes-detail-reading"');
-    expect(detailTemplate).toContain('class="notes-detail-sidebar"');
+    expect(detailTemplate).toContain('<div class="notes-page-detail-layout">');
+    expect(detailTemplate).toContain('<div class="notes-page-sidebar">');
+    expect(detailTemplate).toContain('<aside class="notes-page-detail-sidebar notes-surface notes-surface--compact">');
+    expect(detailTemplate).toContain('{% include "partials/book-navigator.njk" %}');
+    expect(detailTemplate).not.toContain('<h1');
+    const pageHeadingStart = detailTemplate.indexOf('{% call pageHeading.render("Page") %}');
+    const pageLayoutStart = detailTemplate.indexOf('<div class="notes-page-detail-layout">');
+    const sidebarStart = detailTemplate.indexOf('<div class="notes-page-sidebar">');
+    const navigatorStart = detailTemplate.indexOf('<aside class="notes-page-detail-sidebar');
+    const detailsStart = detailTemplate.indexOf('<section class="notes-detail-panel notes-detail-details"');
+    const contentStart = detailTemplate.indexOf('<div class="notes-page-detail-content">');
+    const contentSurfaceStart = detailTemplate.indexOf('<section class="notes-detail-content"');
+    const projectsStart = detailTemplate.indexOf('notes-detail-projects');
+    const assetsStart = detailTemplate.indexOf('notes-detail-assets');
+    expect(pageHeadingStart).toBeGreaterThanOrEqual(0);
+    expect(pageHeadingStart).toBeLessThan(pageLayoutStart);
+    expect(sidebarStart).toBeLessThan(navigatorStart);
+    expect(navigatorStart).toBeLessThan(detailsStart);
+    expect(detailsStart).toBeLessThan(contentStart);
+    expect(contentStart).toBeLessThan(contentSurfaceStart);
+    expect(contentSurfaceStart).toBeLessThan(projectsStart);
+    expect(projectsStart).toBeLessThan(assetsStart);
+    expect(detailTemplate).not.toContain('notes-detail-page-nav');
+    expect(detailTemplate).not.toContain('{% include "partials/notes-page-nav.njk" %}');
+    expect(detailTemplate).not.toContain('notes-hierarchy');
+    expect(detailTemplate).toContain('<div class="notes-page-detail-content">');
+    expect(detailTemplate).not.toContain('class="notes-detail-layout"');
+    expect(detailTemplate).not.toContain('class="notes-detail-reading"');
+    expect(detailTemplate).not.toContain('class="notes-detail-sidebar"');
     expect(detailTemplate).toContain('notes-detail-projects');
     expect(detailTemplate).toContain('notes-detail-assets');
     expect(detailTemplate).toContain('notes-detail-details');
-    expect(notesCss).toContain('.notes-detail-layout');
-    expect(notesCss).toContain('grid-template-columns: minmax(0, 1fr) minmax(14rem, 18rem);');
+    expect(notesCss).not.toContain('.notes-detail-layout');
+    expect(notesCss).not.toContain('.notes-detail-reading');
+    expect(notesCss).not.toContain('.notes-detail-sidebar');
+    expect(notesCss).toContain('.notes-page-detail-layout');
+    expect(notesCss).toContain('grid-template-columns: minmax(12rem, 16rem) minmax(0, 1fr);');
+    expect(notesCss).toContain('.notes-page-sidebar');
+    expect(notesCss).toMatch(/\.notes-page-sidebar\s*\{[\s\S]*?display: grid;[\s\S]*?gap: var\(--space-lg\);[\s\S]*?min-width: 0;/);
+    expect(notesCss).toContain('.notes-page-detail-content');
     expect(notesCss).toContain('@media (max-width: 767px)');
     expect(notesCss).toContain('grid-template-columns: minmax(0, 1fr);');
-    expect(notesCss).toContain('.notes-hierarchy-link:focus-visible');
+    expect(notesCss).toContain('.notes-page-sidebar { display: contents; }');
+    expect(notesCss).not.toContain('.notes-hierarchy');
+  });
+
+  it('keeps the Page workspace section-heading hierarchy intentional', () => {
+    expect(detailTemplate).toContain('<p class="notes-detail-kicker" id="notes-detail-content-heading">{{ note.title }}</p>');
+    expect(detailTemplate).not.toContain('Reading view');
+    expect(detailTemplate).not.toContain('<h2 id="notes-detail-content-heading">Content</h2>');
+    expect(detailTemplate).toContain('<h2 id="notes-detail-details-heading">Details</h2>');
+    expect(detailTemplate).toContain('<h2 id="notes-detail-projects-heading">Projects</h2>');
+    expect(detailTemplate).toContain('<h2 id="notes-detail-assets-heading">Assets</h2>');
+    expect(noteFormTemplate).toContain('<h2 id="notes-connections-heading">Connections</h2>');
+    expect(noteFormTemplate).toContain('Link this Page to existing projects and assets.');
+    expect(noteFormTemplate).toContain('<p class="notes-workspace-kicker">Writing surface</p>');
+    expect(noteFormTemplate).toContain('<h2 id="notes-editor-heading">Page content</h2>');
+    expect(noteFormTemplate).not.toContain('Secondary metadata');
+    expect(notesCss).toContain('.notes-workspace-kicker');
+    expect(notesCss).toContain('.notes-detail-kicker');
+    expect(notesCss).toContain('.notes-detail-panel h2');
   });
 });

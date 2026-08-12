@@ -15,10 +15,6 @@
     <div class="error-summary" role="alert"><p>{{ errors.general }}</p></div>
   {% endif %}
 
-  {% if chapter and action == "Edit" %}
-    {% include "partials/notes-hierarchy.njk" %}
-  {% endif %}
-
   <form id="chapter-form" method="post" action="{{ submitUrl }}" class="project-form" novalidate>
     <input type="hidden" name="_csrf" value="{{ _csrf }}">
     <div class="settings-section">

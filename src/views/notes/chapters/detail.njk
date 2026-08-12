@@ -12,39 +12,35 @@
     {% endif %}
   {% endcall %}
 
-  {% if notice %}
-    {% set noticeVariant = notice.variant %}
-    {% set noticeText = notice.text %}
-    {% include "partials/notice.njk" %}
-  {% endif %}
+  <div class="notes-chapter-detail-layout">
+    <aside class="notes-chapter-detail-sidebar notes-surface notes-surface--compact">
+      {% include "partials/book-navigator.njk" %}
+    </aside>
 
-  {% include "partials/notes-hierarchy.njk" %}
+    <div class="notes-chapter-detail-content notes-surface">
+      {% if notice %}
+        {% set noticeVariant = notice.variant %}
+        {% set noticeText = notice.text %}
+        {% include "partials/notice.njk" %}
+      {% endif %}
 
-  <section class="notes-chapter-pages" aria-labelledby="notes-pages-heading">
-    <div class="notes-chapter-section-heading">
-      <h2 id="notes-pages-heading">Pages</h2>
+      <section class="notes-chapter-pages" aria-labelledby="notes-pages-heading">
+        <div class="notes-chapter-section-heading">
+          <h2 id="notes-pages-heading">Pages</h2>
+        </div>
+        {% if notes.length > 0 %}
+          {% set pageNavPages = notes %}
+          {% set pageNavLabel = "Pages in " ~ chapter.title %}
+          {% include "partials/notes-page-nav.njk" %}
+        {% else %}
+          {% set emptyHeading = "No Pages yet" %}
+          {% set emptyDescription = "Create a Page to start this chapter." %}
+          {% set emptyHeadingLevel = "h3" %}
+          {% set emptyActionUrl = "/notes/new?chapterId=" ~ chapter.id %}
+          {% set emptyActionLabel = "New Page" %}
+          {% include "partials/empty-state.njk" %}
+        {% endif %}
+      </section>
     </div>
-    {% if notes.length > 0 %}
-      <ol class="notes-chapter-page-list" aria-label="Pages in {{ chapter.title }}">
-        {% for note in notes %}
-          <li class="notes-chapter-page-row">
-            <div class="notes-chapter-page-copy">
-              <span class="notes-chapter-page-number">Page {{ loop.index }}</span>
-              <h3 class="notes-chapter-page-title"><a href="/notes/{{ note.id }}">{{ note.title }}</a></h3>
-            </div>
-            <div class="notes-chapter-page-actions">
-              <a class="button button-small button-secondary" href="/notes/{{ note.id }}/edit" aria-label="Edit Page: {{ note.title }}">Edit Page</a>
-            </div>
-          </li>
-        {% endfor %}
-      </ol>
-    {% else %}
-      {% set emptyHeading = "No Pages yet" %}
-      {% set emptyDescription = "Create a Page to start this chapter." %}
-      {% set emptyHeadingLevel = "h3" %}
-      {% set emptyActionUrl = "/notes/new?chapterId=" ~ chapter.id %}
-      {% set emptyActionLabel = "New Page" %}
-      {% include "partials/empty-state.njk" %}
-    {% endif %}
-  </section>
+  </div>
 {% endblock %}

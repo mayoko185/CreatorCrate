@@ -19,9 +19,8 @@
     {% include "partials/notice.njk" %}
   {% endif %}
 
-  {% include "partials/notes-hierarchy.njk" %}
-
-  <nav class="book-outline" aria-label="Contents of {{ book.title }}">
+  <div class="notes-surface">
+    <nav class="book-outline" aria-label="Contents of {{ book.title }}">
     {% if contents.length > 0 %}
       <ol class="book-outline-list">
         {% for item in contents %}
@@ -58,5 +57,6 @@
     {% else %}
       <p class="book-outline-empty">No Pages or Chapters yet</p>
     {% endif %}
-  </nav>
+    </nav>
+  </div>
 {% endblock %}

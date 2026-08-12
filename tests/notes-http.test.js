@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -114,8 +114,16 @@ describe('top-level Notes HTTP slice', () => {
     expect(response.text).toContain(`<a class="button button-secondary" href="/notes/chapters/${chapter.id}">Cancel</a>`);
     expect(response.text).toContain('<form id="note-form" method="post" action="/notes"');
     expect(response.text).toContain(`<input type="hidden" name="chapterId" value="${chapter.id}">`);
-    expect(response.text).toContain(`<a class="notes-hierarchy-link" href="/notes/books/${book.id}">Page Book</a>`);
-    expect(response.text).toContain('<span class="notes-hierarchy-current">Page Chapter</span>');
+    expect(response.text).toContain('<aside class="notes-workspace-context" aria-label="Book contents">');
+    expect(response.text).toContain(`<nav class="notes-book-nav" aria-label="Contents of ${book.title}">`);
+    expect(response.text).toContain(`<a class="notes-book-nav-book-link" href="/notes/books/${book.id}">Page Book</a>`);
+    expect(response.text).toContain(`<a class="notes-book-nav-chapter-link" href="/notes/chapters/${chapter.id}" aria-current="page">Page Chapter</a>`);
+    expect(response.text).not.toContain('<nav class="notes-hierarchy" aria-label="Page hierarchy">');
+    expect(response.text).not.toContain('Book workspace');
+    expect(response.text).not.toContain('>Hierarchy</h2>');
+    expect(response.text).not.toContain('Back to Chapter');
+    expect(response.text).not.toContain('Back to Book');
+    expect(response.text).not.toContain('This Page will belong');
     expect(response.text).toContain('data-notes-editor-form');
     expect(response.text).toContain('data-notes-editor-host');
     expect(response.text).toContain('<textarea id="content" name="content" data-notes-editor-source');
@@ -164,9 +172,13 @@ describe('top-level Notes HTTP slice', () => {
     expect(response.text).toContain(`<a class="button button-secondary" href="/notes/books/${book.id}">Cancel</a>`);
     expect(response.text).toContain(`<input type="hidden" name="bookId" value="${book.id}">`);
     expect(response.text).not.toContain('name="chapterId"');
-    expect(response.text).toContain('<span class="notes-hierarchy-current">Direct Book Page Book</span>');
-    expect(response.text).toContain(`<a class="notes-workspace-back" href="/notes/books/${book.id}">Back to Book</a>`);
-    expect(response.text).toContain('This Page will belong directly to this Book.');
+    expect(response.text).toContain(`<nav class="notes-book-nav" aria-label="Contents of ${book.title}">`);
+    expect(response.text).toContain(`<a class="notes-book-nav-book-link" href="/notes/books/${book.id}">Direct Book Page Book</a>`);
+    expect(response.text).not.toContain('<nav class="notes-hierarchy" aria-label="Page hierarchy">');
+    expect(response.text).not.toContain('Book workspace');
+    expect(response.text).not.toContain('>Hierarchy</h2>');
+    expect(response.text).not.toContain('Back to Book');
+    expect(response.text).not.toContain('This Page will belong');
     expect(response.text).not.toContain('Back to Chapter');
     expect(response.text).not.toContain('Move Page');
     expect(response.text).not.toContain('Delete Page');
@@ -224,6 +236,132 @@ describe('top-level Notes HTTP slice', () => {
       await agent.get('/notes/new').query({ bookId }).expect(404);
     }
     await agent.get('/notes/new').query({ bookId: book.id, chapterId: chapter.id }).expect(404);
+  });
+
+  it('GET /notes/new renders a Chapter-targeted create in the authoritative mixed Book navigator', async () => {
+    const { book, chapter } = createChapterContext(app);
+    const first = app.locals.noteService.createNote({ chapterId: chapter.id, title: 'First New Chapter Page' });
+    const second = app.locals.noteService.createNote({ chapterId: chapter.id, title: 'Second New Chapter Page' });
+    const directBookPage = app.locals.noteService.createNote({ bookId: book.id, title: 'Direct Book Page' });
+    const unrelatedChapter = app.locals.chapterService.createChapter({ bookId: book.id, title: 'Unrelated Create Chapter' });
+    const unrelatedPage = app.locals.noteService.createNote({ chapterId: unrelatedChapter.id, title: 'Unrelated Create Page' });
+    app.locals.noteService.reorderNotes(chapter.id, [second.id, first.id]);
+    app.locals.bookService.reorderBookContents(book.id, [
+      { type: 'page', id: directBookPage.id },
+      { type: 'chapter', id: chapter.id },
+      { type: 'chapter', id: unrelatedChapter.id },
+    ]);
+
+    const authoritativeContents = app.locals.bookService.listBookContents(book.id);
+    const listBookContents = vi.spyOn(app.locals.bookService, 'listBookContents')
+      .mockReturnValue(authoritativeContents);
+    const originalRender = app.response.render;
+    let createLocals;
+    app.response.render = function captureCreateRender(view, renderLocals, callback) {
+      if (view === 'notes/form.njk' && renderLocals.action === 'Create') createLocals = renderLocals;
+      return originalRender.call(this, view, renderLocals, callback);
+    };
+
+    let response;
+    let listBookContentsCalls = [];
+    try {
+      response = await agent.get('/notes/new').query({ chapterId: chapter.id }).expect(200);
+      listBookContentsCalls = listBookContents.mock.calls;
+    } finally {
+      app.response.render = originalRender;
+      listBookContents.mockRestore();
+    }
+
+    const contextRail = response.text.match(/<aside class="notes-workspace-context"[\s\S]*?<\/aside>/)?.[0] || '';
+    const navigator = contextRail.match(/<nav class="notes-book-nav"[\s\S]*?<\/nav>/)?.[0] || '';
+
+    expect(createLocals.bookContents).toBe(authoritativeContents);
+    expect(createLocals.navCurrentChapterId).toBe(chapter.id);
+    expect(createLocals.navCurrentPageId).toBeNull();
+    expect(listBookContentsCalls).toContainEqual([book.id]);
+    expect(contextRail).toContain('<nav class="notes-book-nav"');
+    expect(navigator).toContain(`<a class="notes-book-nav-book-link" href="/notes/books/${book.id}">${book.title}</a>`);
+    expect(navigator.indexOf('Direct Book Page')).toBeLessThan(navigator.indexOf('Page Chapter'));
+    expect(navigator.indexOf('Page Chapter')).toBeLessThan(navigator.indexOf('Unrelated Create Chapter'));
+    expect(navigator.indexOf('Second New Chapter Page')).toBeLessThan(navigator.indexOf('First New Chapter Page'));
+    expect(navigator).toContain(`<a class="notes-book-nav-page-link" href="/notes/${directBookPage.id}">Direct Book Page</a>`);
+    expect(navigator).toContain(`<a class="notes-book-nav-page-link" href="/notes/${unrelatedPage.id}">Unrelated Create Page</a>`);
+    expect(navigator).toContain(`<a class="notes-book-nav-chapter-link" href="/notes/chapters/${chapter.id}" aria-current="page">Page Chapter</a>`);
+    expect(navigator).not.toMatch(/<a class="notes-book-nav-page-link"[^>]*aria-current="page"/);
+    expect((navigator.match(/<details class="notes-book-nav-disclosure" open>/g) || [])).toHaveLength(1);
+    expect(response.text).not.toContain('<nav class="notes-page-nav"');
+    expect(response.text).toContain(`<input type="hidden" name="chapterId" value="${chapter.id}">`);
+    expect(response.text).toContain('data-notes-editor-form');
+    expect(response.text).toContain('<button class="button button-primary" type="submit" form="note-form">Create</button>');
+    expect(response.text).toContain('>Connections</h2>');
+    expect(response.text).not.toContain('Move Page');
+    expect(response.text).not.toContain('Delete Page');
+  });
+
+  it('GET /notes/new renders direct Book create in mixed order with no current item', async () => {
+    const book = app.locals.bookService.createBook({ title: 'Direct New Page Book' });
+    const chapter = app.locals.chapterService.createChapter({ bookId: book.id, title: 'Direct Create Chapter' });
+    const nestedPage = app.locals.noteService.createNote({ chapterId: chapter.id, title: 'Nested Direct Create Page' });
+    const first = app.locals.noteService.createNote({ bookId: book.id, title: 'First New Direct Page' });
+    const second = app.locals.noteService.createNote({ bookId: book.id, title: 'Second New Direct Page' });
+    app.locals.bookService.reorderBookContents(book.id, [
+      { type: 'page', id: second.id },
+      { type: 'chapter', id: chapter.id },
+      { type: 'page', id: first.id },
+    ]);
+
+    const authoritativeContents = app.locals.bookService.listBookContents(book.id);
+    const listBookContents = vi.spyOn(app.locals.bookService, 'listBookContents')
+      .mockReturnValue(authoritativeContents);
+    const originalRender = app.response.render;
+    let createLocals;
+    app.response.render = function captureCreateRender(view, renderLocals, callback) {
+      if (view === 'notes/form.njk' && renderLocals.action === 'Create') createLocals = renderLocals;
+      return originalRender.call(this, view, renderLocals, callback);
+    };
+
+    let response;
+    let listBookContentsCalls = [];
+    try {
+      response = await agent.get('/notes/new').query({ bookId: book.id }).expect(200);
+      listBookContentsCalls = listBookContents.mock.calls;
+    } finally {
+      app.response.render = originalRender;
+      listBookContents.mockRestore();
+    }
+
+    const contextRail = response.text.match(/<aside class="notes-workspace-context"[\s\S]*?<\/aside>/)?.[0] || '';
+    const navigator = contextRail.match(/<nav class="notes-book-nav"[\s\S]*?<\/nav>/)?.[0] || '';
+
+    expect(createLocals.bookContents).toBe(authoritativeContents);
+    expect(createLocals.navCurrentChapterId).toBeNull();
+    expect(createLocals.navCurrentPageId).toBeNull();
+    expect(listBookContentsCalls).toContainEqual([book.id]);
+    expect(contextRail).toContain('<nav class="notes-book-nav"');
+    expect(navigator.indexOf('Second New Direct Page')).toBeLessThan(navigator.indexOf('Direct Create Chapter'));
+    expect(navigator.indexOf('Direct Create Chapter')).toBeLessThan(navigator.indexOf('First New Direct Page'));
+    expect(navigator).toContain(`<a class="notes-book-nav-page-link" href="/notes/${nestedPage.id}">Nested Direct Create Page</a>`);
+    expect(navigator).not.toContain('aria-current="page"');
+    expect(navigator).not.toContain(' open>');
+    expect(response.text).not.toContain('<nav class="notes-page-nav"');
+    expect(response.text).toContain(`<input type="hidden" name="bookId" value="${book.id}">`);
+    expect(response.text).not.toContain('name="chapterId"');
+  });
+
+  it('GET /notes/new renders an empty Book navigator without the sibling Page nav', async () => {
+    const { chapter } = createChapterContext(app);
+    const directBook = app.locals.bookService.createBook({ title: 'Empty Direct Book' });
+
+    const chapterResponse = await agent.get('/notes/new').query({ chapterId: chapter.id }).expect(200);
+    const chapterRail = chapterResponse.text.match(/<aside class="notes-workspace-context"[\s\S]*?<\/aside>/)?.[0] || '';
+    expect(chapterRail).toContain('<nav class="notes-book-nav"');
+    expect(chapterRail).not.toContain('<nav class="notes-page-nav"');
+
+    const bookResponse = await agent.get('/notes/new').query({ bookId: directBook.id }).expect(200);
+    const bookRail = bookResponse.text.match(/<aside class="notes-workspace-context"[\s\S]*?<\/aside>/)?.[0] || '';
+    expect(bookRail).toContain('<nav class="notes-book-nav"');
+    expect(bookRail).toContain('No Pages or Chapters yet');
+    expect(bookRail).not.toContain('<nav class="notes-page-nav"');
   });
 
   describe('asset picker project endpoint', () => {
@@ -604,6 +742,57 @@ describe('top-level Notes HTTP slice', () => {
     for (const filename of unrelatedFilenames) expect(response.text).not.toContain(filename);
   });
 
+  it('POST /notes keeps the Chapter-targeted Book navigator after a validation failure', async () => {
+    const { book, chapter } = createChapterContext(app);
+    const first = app.locals.noteService.createNote({ chapterId: chapter.id, title: 'First Existing Chapter Page' });
+    const second = app.locals.noteService.createNote({ chapterId: chapter.id, title: 'Second Existing Chapter Page' });
+    const directBookPage = app.locals.noteService.createNote({ bookId: book.id, title: 'Direct Failed Create Page' });
+    const unrelatedChapter = app.locals.chapterService.createChapter({ bookId: book.id, title: 'Unrelated Failed Create Chapter' });
+    const unrelatedPage = app.locals.noteService.createNote({ chapterId: unrelatedChapter.id, title: 'Unrelated Failed Create Page' });
+    app.locals.noteService.reorderNotes(chapter.id, [second.id, first.id]);
+    app.locals.bookService.reorderBookContents(book.id, [
+      { type: 'page', id: directBookPage.id },
+      { type: 'chapter', id: chapter.id },
+      { type: 'chapter', id: unrelatedChapter.id },
+    ]);
+
+    const response = await agent
+      .post('/notes')
+      .type('form')
+      .send({
+        _csrf: csrfToken,
+        chapterId: String(chapter.id),
+        title: '',
+        content: 'Attempted create content',
+      })
+      .expect(422);
+
+    const contextRail = response.text.match(/<aside class="notes-workspace-context"[\s\S]*?<\/aside>/)?.[0] || '';
+    const navigator = contextRail.match(/<nav class="notes-book-nav"[\s\S]*?<\/nav>/)?.[0] || '';
+    expect(navigator).toContain(`<nav class="notes-book-nav" aria-label="Contents of ${book.title}">`);
+    expect(navigator).toContain(`<a class="notes-book-nav-page-link" href="/notes/${directBookPage.id}">Direct Failed Create Page</a>`);
+    expect(navigator).toContain(`<a class="notes-book-nav-page-link" href="/notes/${unrelatedPage.id}">Unrelated Failed Create Page</a>`);
+    expect(navigator.indexOf('Direct Failed Create Page')).toBeLessThan(navigator.indexOf('Page Chapter'));
+    expect(navigator.indexOf('Page Chapter')).toBeLessThan(navigator.indexOf('Unrelated Failed Create Chapter'));
+    expect(navigator.indexOf('Second Existing Chapter Page')).toBeLessThan(navigator.indexOf('First Existing Chapter Page'));
+    expect(navigator).toContain(`<a class="notes-book-nav-chapter-link" href="/notes/chapters/${chapter.id}" aria-current="page">Page Chapter</a>`);
+    expect(navigator).not.toMatch(/<a class="notes-book-nav-page-link"[^>]*aria-current="page"/);
+    expect((navigator.match(/<details class="notes-book-nav-disclosure" open>/g) || [])).toHaveLength(1);
+    expect(response.text).not.toContain('<nav class="notes-page-nav"');
+    expect(response.text).toContain('Title is required.');
+    expect(response.text).toContain('value=""');
+    expect(response.text).toContain('Attempted create content');
+    expect(response.text).toContain(`<input type="hidden" name="chapterId" value="${chapter.id}">`);
+    expect(response.text).toContain(`<a class="notes-book-nav-book-link" href="/notes/books/${book.id}">Page Book</a>`);
+    expect(response.text).not.toContain('<nav class="notes-hierarchy" aria-label="Page hierarchy">');
+    expect(response.text).not.toContain('Book workspace');
+    expect(response.text).not.toContain('>Hierarchy</h2>');
+    expect(response.text).not.toContain('Back to Chapter');
+    expect(response.text).not.toContain('Back to Book');
+    expect(response.text).not.toContain('This Page will belong');
+    expect(app.locals.noteService.listNotesForChapter(chapter.id)).toHaveLength(2);
+  });
+
   it('POST /notes deduplicates duplicate submitted project IDs', async () => {
     const { chapter } = createChapterContext(app);
     const projectId = insertProject(db, 'Duplicate Project');
@@ -681,8 +870,11 @@ describe('top-level Notes HTTP slice', () => {
     expect(app.locals.noteService.listNotes()).toHaveLength(0);
   });
 
-  it('POST /notes rerenders direct Book validation with hierarchy and selected state intact', async () => {
+  it('POST /notes rerenders direct Book validation with navigator and selected state intact', async () => {
     const book = app.locals.bookService.createBook({ title: 'Direct Validation Book' });
+    const chapter = app.locals.chapterService.createChapter({ bookId: book.id, title: 'Direct Validation Chapter' });
+    const nestedPage = app.locals.noteService.createNote({ chapterId: chapter.id, title: 'Direct Validation Nested Page' });
+    const directPage = app.locals.noteService.createNote({ bookId: book.id, title: 'Direct Validation Existing Page' });
     const firstProjectId = insertProject(db, 'Direct Validation Project');
     const secondProjectId = insertProject(db, 'Direct Validation Other Project');
     const firstAssetId = insertAsset(db, firstProjectId, 'direct-validation-first.txt', {
@@ -694,6 +886,10 @@ describe('top-level Notes HTTP slice', () => {
       mimeType: 'text/plain',
     });
     const attemptedContent = 'Direct attempted content';
+    app.locals.bookService.reorderBookContents(book.id, [
+      { type: 'page', id: directPage.id },
+      { type: 'chapter', id: chapter.id },
+    ]);
 
     const response = await agent
       .post('/notes')
@@ -711,9 +907,15 @@ describe('top-level Notes HTTP slice', () => {
     expect(response.text).toContain('Title is required.');
     expect(response.text).toContain(`<input type="hidden" name="bookId" value="${book.id}">`);
     expect(response.text).not.toContain('name="chapterId"');
-    expect(response.text).toContain('<span class="notes-hierarchy-current">Direct Validation Book</span>');
+    expect(response.text).toContain(`<nav class="notes-book-nav" aria-label="Contents of ${book.title}">`);
+    expect(response.text).toContain(`<a class="notes-book-nav-book-link" href="/notes/books/${book.id}">Direct Validation Book</a>`);
     expect(response.text).toContain(`<a class="button button-secondary" href="/notes/books/${book.id}">Cancel</a>`);
-    expect(response.text).toContain('Back to Book');
+    expect(response.text).not.toContain('<nav class="notes-hierarchy" aria-label="Page hierarchy">');
+    expect(response.text).not.toContain('Book workspace');
+    expect(response.text).not.toContain('>Hierarchy</h2>');
+    expect(response.text).not.toContain('Back to Book');
+    expect(response.text).not.toContain('Back to Chapter');
+    expect(response.text).not.toContain('This Page will belong');
     expect(response.text).toContain(attemptedContent);
     expect(response.text).toMatch(new RegExp(`id="note-project-option-${firstProjectId}"[^>]*checked`));
     expect(response.text).toMatch(new RegExp(`id="note-project-option-${secondProjectId}"[^>]*checked`));
@@ -721,7 +923,17 @@ describe('top-level Notes HTTP slice', () => {
     expect(response.text).toMatch(new RegExp(`id="note-asset-option-${secondAssetId}"[^>]*checked`));
     expect(response.text).toContain('direct-validation-first.txt');
     expect(response.text).toContain('direct-validation-second.txt');
-    expect(app.locals.noteService.listNotes()).toHaveLength(0);
+    const contextRail = response.text.match(/<aside class="notes-workspace-context"[\s\S]*?<\/aside>/)?.[0] || '';
+    const navigator = contextRail.match(/<nav class="notes-book-nav"[\s\S]*?<\/nav>/)?.[0] || '';
+    expect(navigator).toContain(`<nav class="notes-book-nav" aria-label="Contents of ${book.title}">`);
+    expect(navigator).toContain(`<a class="notes-book-nav-page-link" href="/notes/${directPage.id}">Direct Validation Existing Page</a>`);
+    expect(navigator).toContain(`<a class="notes-book-nav-chapter-link" href="/notes/chapters/${chapter.id}">Direct Validation Chapter</a>`);
+    expect(navigator).toContain(`<a class="notes-book-nav-page-link" href="/notes/${nestedPage.id}">Direct Validation Nested Page</a>`);
+    expect(navigator.indexOf('Direct Validation Existing Page')).toBeLessThan(navigator.indexOf('Direct Validation Chapter'));
+    expect(navigator).not.toContain('aria-current="page"');
+    expect(navigator).not.toContain(' open>');
+    expect(response.text).not.toContain('<nav class="notes-page-nav"');
+    expect(app.locals.noteService.listNotes()).toHaveLength(2);
   });
 
   it('POST /notes rejects missing or malformed Chapter IDs and a Chapter removed after rendering', async () => {
@@ -782,7 +994,7 @@ describe('top-level Notes HTTP slice', () => {
     expect(app.locals.noteService.listNotes()).toHaveLength(0);
   });
 
-  it('renders sanitized Markdown detail content with shared hierarchy and edit action', async () => {
+  it('renders sanitized Markdown detail content with the persistent Book navigator', async () => {
     const content = '<script>alert("unsafe")</script>\n\n# Markdown **text**\nline two';
     const { book, chapter } = createChapterContext(app);
     const note = app.locals.noteService.createNote({ chapterId: chapter.id, title: 'Detail Note', content });
@@ -792,11 +1004,13 @@ describe('top-level Notes HTTP slice', () => {
     expect(response.text).toContain('<title>CreatorCrate — Notes — Page — Detail Note</title>');
     expect(response.text).toContain('<h1 class="app-section-title">Notes — Page — Detail Note</h1>');
     expect(response.text).toContain(`<a class="button button-primary" href="/notes/${note.id}/edit">Edit Page</a>`);
-    expect(response.text).toContain('<nav class="notes-hierarchy" aria-label="Page hierarchy">');
-    expect(response.text).toContain(`<a class="notes-hierarchy-link" href="/notes/books/${book.id}">Page Book</a>`);
-    expect(response.text).toContain(`<a class="notes-hierarchy-link" href="/notes/chapters/${chapter.id}">Page Chapter</a>`);
-    expect(response.text).toContain('<li class="notes-hierarchy-item notes-hierarchy-item--current" aria-current="page">');
-    expect(response.text).toContain('<span class="notes-hierarchy-current">Detail Note</span>');
+    expect(response.text).not.toContain('<nav class="notes-hierarchy" aria-label="Page hierarchy">');
+    expect(response.text).not.toContain('notes-hierarchy');
+    expect(response.text).toContain('<div class="notes-page-detail-layout">');
+    expect(response.text).toContain(`<a class="notes-book-nav-book-link" href="/notes/books/${book.id}">Page Book</a>`);
+    expect(response.text).toContain(`<a class="notes-book-nav-chapter-link" href="/notes/chapters/${chapter.id}">Page Chapter</a>`);
+    expect(response.text).toContain(`<a class="notes-book-nav-page-link" href="/notes/${note.id}" aria-current="page">Detail Note</a>`);
+    expect(response.text).not.toContain('<nav class="notes-page-nav"');
     expect(response.text).not.toContain(`/notes/${note.id}/move`);
     expect(response.text).not.toContain('Move Page');
     expect(response.text).not.toContain('Danger zone');
@@ -808,9 +1022,20 @@ describe('top-level Notes HTTP slice', () => {
     expect(response.text).toContain('<p>line two</p>');
     expect(response.text).toContain('<dt>Created</dt>');
     expect(response.text).toContain('<dt>Updated</dt>');
-    expect(response.text).toContain('class="notes-detail-layout"');
-    expect(response.text).toContain('class="notes-detail-reading"');
-    expect(response.text).toContain('class="notes-detail-sidebar"');
+    const pageSidebarStart = response.text.indexOf('<div class="notes-page-sidebar">');
+    const pageContentStart = response.text.indexOf('<div class="notes-page-detail-content">');
+    const pageSidebar = response.text.slice(pageSidebarStart, pageContentStart);
+    expect(pageSidebarStart).toBeGreaterThanOrEqual(0);
+    expect(pageContentStart).toBeGreaterThan(pageSidebarStart);
+    expect(pageSidebar).toContain('notes-book-nav');
+    expect(pageSidebar).toContain('notes-detail-details');
+    expect(response.text).toContain('<section class="notes-detail-content"');
+    expect(response.text).toContain(`<p class="notes-detail-kicker" id="notes-detail-content-heading">${note.title}</p>`);
+    expect(response.text).not.toContain('>Reading view<');
+    expect(response.text).not.toContain('<h2 id="notes-detail-content-heading">Content</h2>');
+    expect(response.text).not.toContain('class="notes-detail-layout"');
+    expect(response.text).not.toContain('class="notes-detail-reading"');
+    expect(response.text).not.toContain('class="notes-detail-sidebar"');
     expect(response.text).toContain('notes-detail-details');
     expect(response.text).not.toContain('<h2>Projects</h2>');
     expect(response.text).not.toContain('<h2>Assets</h2>');
@@ -821,6 +1046,102 @@ describe('top-level Notes HTTP slice', () => {
     expect(css.text).toContain('.notes-content');
     expect(css.text).toContain('.notes-content pre');
     expect(css.text).toContain('.notes-content table');
+  });
+
+  it('renders a Chapter Page in the authoritative mixed Book navigator', async () => {
+    const book = app.locals.bookService.createBook({ title: 'Mixed Navigator Book' });
+    const directFirst = app.locals.noteService.createNote({ bookId: book.id, title: 'Direct First Page' });
+    const chapter = app.locals.chapterService.createChapter({ bookId: book.id, title: 'Containing Chapter' });
+    const first = app.locals.noteService.createNote({ chapterId: chapter.id, title: 'First Chapter Page' });
+    const second = app.locals.noteService.createNote({ chapterId: chapter.id, title: 'Current Chapter Page' });
+    const third = app.locals.noteService.createNote({ chapterId: chapter.id, title: 'Last Chapter Page' });
+    const otherChapter = app.locals.chapterService.createChapter({ bookId: book.id, title: 'Unrelated Chapter' });
+    app.locals.noteService.createNote({ chapterId: otherChapter.id, title: 'Unrelated Chapter Page' });
+    const directLast = app.locals.noteService.createNote({ bookId: book.id, title: 'Direct Last Page' });
+    app.locals.bookService.reorderBookContents(book.id, [
+      { type: 'page', id: directFirst.id },
+      { type: 'chapter', id: chapter.id },
+      { type: 'page', id: directLast.id },
+      { type: 'chapter', id: otherChapter.id },
+    ]);
+    app.locals.noteService.reorderNotes(chapter.id, [third.id, first.id, second.id]);
+
+    const authoritativeContents = app.locals.bookService.listBookContents(book.id);
+    const listBookContents = vi.spyOn(app.locals.bookService, 'listBookContents')
+      .mockReturnValue(authoritativeContents);
+    const originalRender = app.response.render;
+    let pageLocals;
+    app.response.render = function capturePageRender(view, renderLocals, callback) {
+      if (view === 'notes/detail.njk') pageLocals = renderLocals;
+      return originalRender.call(this, view, renderLocals, callback);
+    };
+
+    let response;
+    let listBookContentsCalls = [];
+    try {
+      response = await agent.get(`/notes/${second.id}`).expect(200);
+      listBookContentsCalls = listBookContents.mock.calls;
+    } finally {
+      app.response.render = originalRender;
+      listBookContents.mockRestore();
+    }
+    const navigator = response.text.match(/<nav class="notes-book-nav"[\s\S]*?<\/nav>/)?.[0] || '';
+
+    expect(pageLocals.bookContents).toBe(authoritativeContents);
+    expect(pageLocals.navCurrentPageId).toBe(second.id);
+    expect(listBookContentsCalls).toContainEqual([book.id]);
+    expect(navigator).toContain(`<a class="notes-book-nav-book-link" href="/notes/books/${book.id}">${book.title}</a>`);
+    expect(navigator.indexOf('Direct First Page')).toBeLessThan(navigator.indexOf('Containing Chapter'));
+    expect(navigator.indexOf('Containing Chapter')).toBeLessThan(navigator.indexOf('Direct Last Page'));
+    expect(navigator.indexOf('Direct Last Page')).toBeLessThan(navigator.indexOf('Unrelated Chapter'));
+    expect(navigator).toContain(`<a class="notes-book-nav-page-link" href="/notes/${directFirst.id}">Direct First Page</a>`);
+    expect(navigator).toContain(`<a class="notes-book-nav-page-link" href="/notes/${directLast.id}">Direct Last Page</a>`);
+    expect(navigator).toContain(`<a class="notes-book-nav-chapter-link" href="/notes/chapters/${chapter.id}">Containing Chapter</a>`);
+    expect(navigator.indexOf('Last Chapter Page')).toBeLessThan(navigator.indexOf('First Chapter Page'));
+    expect(navigator.indexOf('First Chapter Page')).toBeLessThan(navigator.indexOf('Current Chapter Page'));
+    expect(navigator).toContain(`<a class="notes-book-nav-page-link" href="/notes/${second.id}" aria-current="page">Current Chapter Page</a>`);
+    expect((navigator.match(/<details class="notes-book-nav-disclosure" open>/g) || [])).toHaveLength(1);
+    expect((navigator.match(/aria-current="page"/g) || [])).toHaveLength(1);
+    expect(response.text).not.toContain('<nav class="notes-page-nav"');
+  });
+
+  it('renders stored TOAST UI br syntax without changing the canonical Note source', async () => {
+    const source = 'before<br>after';
+    const { note } = createPage(app, { title: 'Stored Break Note', content: source });
+
+    const response = await agent.get(`/notes/${note.id}`).expect(200);
+
+    expect(response.text).toContain('<p>before<br />\nafter</p>');
+    expect(response.text).not.toContain('&lt;br&gt;');
+    expect(app.locals.noteService.getNote(note.id).content).toBe(source);
+    expect(db.prepare('SELECT content FROM notes WHERE id = ?').get(note.id).content).toBe(source);
+  });
+
+  it('renders a direct Book Page at its mixed top-level position without opening a Chapter', async () => {
+    const book = app.locals.bookService.createBook({ title: 'Direct Page Book' });
+    const firstChapter = app.locals.chapterService.createChapter({ bookId: book.id, title: 'First Chapter' });
+    app.locals.noteService.createNote({ chapterId: firstChapter.id, title: 'First Chapter Page' });
+    const current = app.locals.noteService.createNote({ bookId: book.id, title: 'Current Direct Page' });
+    const secondChapter = app.locals.chapterService.createChapter({ bookId: book.id, title: 'Second Chapter' });
+    app.locals.noteService.createNote({ chapterId: secondChapter.id, title: 'Second Chapter Page' });
+    const directLast = app.locals.noteService.createNote({ bookId: book.id, title: 'Last Direct Page' });
+    app.locals.bookService.reorderBookContents(book.id, [
+      { type: 'chapter', id: firstChapter.id },
+      { type: 'page', id: current.id },
+      { type: 'chapter', id: secondChapter.id },
+      { type: 'page', id: directLast.id },
+    ]);
+
+    const response = await agent.get(`/notes/${current.id}`).expect(200);
+    const navigator = response.text.match(/<nav class="notes-book-nav"[\s\S]*?<\/nav>/)?.[0] || '';
+
+    expect(navigator.indexOf('First Chapter')).toBeLessThan(navigator.indexOf('Current Direct Page'));
+    expect(navigator.indexOf('Current Direct Page')).toBeLessThan(navigator.indexOf('Second Chapter'));
+    expect(navigator).toContain(`<a class="notes-book-nav-page-link" href="/notes/${current.id}" aria-current="page">Current Direct Page</a>`);
+    expect(navigator).toContain(`<a class="notes-book-nav-page-link" href="/notes/${directLast.id}">Last Direct Page</a>`);
+    expect((navigator.match(/aria-current="page"/g) || [])).toHaveLength(1);
+    expect((navigator.match(/<details class="notes-book-nav-disclosure" open>/g) || [])).toHaveLength(0);
+    expect(response.text).not.toContain('<nav class="notes-page-nav"');
   });
 
   it('round-trips a direct Book Page through detail, edit, update, and delete', async () => {
@@ -838,16 +1159,25 @@ describe('top-level Notes HTTP slice', () => {
     const noteId = Number(createResponse.headers.location.replace('/notes/', ''));
 
     const detailResponse = await agent.get(`/notes/${noteId}`).expect(200);
-    expect(detailResponse.text).toContain(`<a class="notes-hierarchy-link" href="/notes/books/${book.id}">Direct Round-trip Book</a>`);
-    expect(detailResponse.text).toContain('<span class="notes-hierarchy-kind">Page</span>');
-    expect(detailResponse.text).toContain('<span class="notes-hierarchy-current">Direct Page Before</span>');
+    expect(detailResponse.text).not.toContain('<nav class="notes-hierarchy" aria-label="Page hierarchy">');
+    expect(detailResponse.text).not.toContain('notes-hierarchy');
+    expect(detailResponse.text).toContain(`<a class="notes-book-nav-book-link" href="/notes/books/${book.id}">Direct Round-trip Book</a>`);
+    expect(detailResponse.text).toContain(`<a class="notes-book-nav-page-link" href="/notes/${noteId}" aria-current="page">Direct Page Before</a>`);
+    expect(detailResponse.text).not.toContain('<nav class="notes-page-nav"');
     expect(detailResponse.text).not.toContain('notes-hierarchy-kind">Chapter');
     expect(detailResponse.text).not.toContain('/notes/chapters/');
     expect(detailResponse.text).not.toContain('Back to Chapter');
 
     const editResponse = await agent.get(`/notes/${noteId}/edit`).expect(200);
-    expect(editResponse.text).toContain(`<a class="notes-hierarchy-link" href="/notes/books/${book.id}">Direct Round-trip Book</a>`);
-    expect(editResponse.text).toContain(`<a class="notes-workspace-back" href="/notes/books/${book.id}">Back to Book</a>`);
+    expect(editResponse.text).toContain('<aside class="notes-workspace-context" aria-label="Book contents">');
+    expect(editResponse.text).toContain(`<nav class="notes-book-nav" aria-label="Contents of ${book.title}">`);
+    expect(editResponse.text).toContain(`<a class="notes-book-nav-book-link" href="/notes/books/${book.id}">Direct Round-trip Book</a>`);
+    expect(editResponse.text).not.toContain('<nav class="notes-hierarchy" aria-label="Page hierarchy">');
+    expect(editResponse.text).not.toContain('Book workspace');
+    expect(editResponse.text).not.toContain('>Hierarchy</h2>');
+    expect(editResponse.text).not.toContain('Back to Book');
+    expect(editResponse.text).not.toContain('Back to Chapter');
+    expect(editResponse.text).not.toContain('This Page will belong');
     expect(editResponse.text).not.toContain('name="chapterId"');
 
     const updateResponse = await agent
@@ -899,8 +1229,14 @@ describe('top-level Notes HTTP slice', () => {
     expect(response.text).toContain('<textarea id="content" name="content" data-notes-editor-source');
     expect(response.text).toContain('value="Existing Note"');
     expect(response.text).toContain('# Existing\n**bold** &amp; &lt;script&gt;alert(&quot;unsafe&quot;)&lt;/script&gt;');
-    expect(response.text).toContain(`<a class="notes-hierarchy-link" href="/notes/books/${book.id}">Page Book</a>`);
-    expect(response.text).toContain(`<a class="notes-hierarchy-link" href="/notes/chapters/${chapter.id}">Page Chapter</a>`);
+    expect(response.text).toContain(`<a class="notes-book-nav-book-link" href="/notes/books/${book.id}">Page Book</a>`);
+    expect(response.text).toContain(`<a class="notes-book-nav-chapter-link" href="/notes/chapters/${chapter.id}">Page Chapter</a>`);
+    expect(response.text).not.toContain('<nav class="notes-hierarchy" aria-label="Page hierarchy">');
+    expect(response.text).not.toContain('Book workspace');
+    expect(response.text).not.toContain('>Hierarchy</h2>');
+    expect(response.text).not.toContain('Back to Chapter');
+    expect(response.text).not.toContain('Back to Book');
+    expect(response.text).not.toContain('This Page will belong');
     expect(response.text).toContain(`/notes/chapters/${chapter.id}`);
     expect(response.text).not.toContain('name="chapterId"');
     expect(response.text).not.toContain('<strong>bold</strong>');
@@ -909,10 +1245,13 @@ describe('top-level Notes HTTP slice', () => {
     expect(response.text).toContain('<legend>Assets</legend>');
     expect(response.text).toContain('<details class="notes-workspace-disclosure notes-workspace-disclosure--move">');
     expect(response.text).toContain('<details class="notes-workspace-disclosure notes-workspace-disclosure--delete">');
-    expect(response.text).toContain(`<form id="note-move-form" method="post" action="/notes/${note.id}/move">`);
-    expect(response.text).toContain(`<form id="note-delete-form" method="post" action="/notes/${note.id}/delete">`);
+    expect(response.text).toContain(`<form id="note-move-form" method="post" action="/notes/${note.id}/move" hidden>`);
+    expect(response.text).toContain(`<form id="note-delete-form" method="post" action="/notes/${note.id}/delete" hidden>`);
     expect(response.text).toMatch(/<form id="note-move-form"[\s\S]*?name="_csrf"[^>]+value="[^"]+"/);
     expect(response.text).toMatch(/<form id="note-delete-form"[\s\S]*?name="_csrf"[^>]+value="[^"]+"/);
+    expect(response.text).toContain('name="targetContainer" required form="note-move-form"');
+    expect(response.text).toContain('type="submit" form="note-move-form">Move Page</button>');
+    expect(response.text).toContain('type="submit" form="note-delete-form" data-confirm="Delete this Page permanently? This cannot be undone.">Delete Page</button>');
     expect(response.text).toContain(`value="book:${book.id}"`);
     expect(response.text).toContain(`value="chapter:${chapter.id}"`);
     const noteFormStart = response.text.indexOf('<form id="note-form"');
@@ -920,6 +1259,144 @@ describe('top-level Notes HTTP slice', () => {
     const noteForm = response.text.slice(response.text.indexOf('>', noteFormStart) + 1, noteFormEnd);
     expect(noteFormStart).toBeGreaterThanOrEqual(0);
     expect(noteForm).not.toContain('<form');
+  });
+
+  it('GET /notes/:id/edit renders the authoritative Book navigator inside the workspace context rail', async () => {
+    const { book, chapter } = createChapterContext(app);
+    const first = app.locals.noteService.createNote({ chapterId: chapter.id, title: 'First Edit Page' });
+    const current = app.locals.noteService.createNote({ chapterId: chapter.id, title: 'Current Edit Page' });
+    const last = app.locals.noteService.createNote({ chapterId: chapter.id, title: 'Last Edit Page' });
+    const directBookPage = app.locals.noteService.createNote({ bookId: book.id, title: 'Direct Edit Page' });
+    const unrelatedChapter = app.locals.chapterService.createChapter({ bookId: book.id, title: 'Unrelated Edit Chapter' });
+    app.locals.noteService.createNote({ chapterId: unrelatedChapter.id, title: 'Unrelated Edit Page' });
+    app.locals.noteService.reorderNotes(chapter.id, [last.id, first.id, current.id]);
+    app.locals.bookService.reorderBookContents(book.id, [
+      { type: 'page', id: directBookPage.id },
+      { type: 'chapter', id: chapter.id },
+      { type: 'chapter', id: unrelatedChapter.id },
+    ]);
+
+    const authoritativeContents = app.locals.bookService.listBookContents(book.id);
+    const listBookContents = vi.spyOn(app.locals.bookService, 'listBookContents')
+      .mockReturnValue(authoritativeContents);
+    const originalRender = app.response.render;
+    let editLocals;
+    app.response.render = function captureEditRender(view, renderLocals, callback) {
+      if (view === 'notes/form.njk' && renderLocals.action === 'Edit') editLocals = renderLocals;
+      return originalRender.call(this, view, renderLocals, callback);
+    };
+
+    let response;
+    let listBookContentsCalls = [];
+    try {
+      response = await agent.get(`/notes/${current.id}/edit`).expect(200);
+      listBookContentsCalls = listBookContents.mock.calls;
+    } finally {
+      app.response.render = originalRender;
+      listBookContents.mockRestore();
+    }
+
+    const contextRail = response.text.match(/<aside class="notes-workspace-context"[\s\S]*?<\/aside>/)?.[0] || '';
+    const navigator = contextRail.match(/<nav class="notes-book-nav"[\s\S]*?<\/nav>/)?.[0] || '';
+
+    expect(editLocals.bookContents).toBe(authoritativeContents);
+    expect(editLocals.navCurrentPageId).toBe(current.id);
+    expect(listBookContentsCalls).toContainEqual([book.id]);
+    expect(contextRail).toContain('<nav class="notes-book-nav"');
+    expect(navigator).toContain(`<a class="notes-book-nav-book-link" href="/notes/books/${book.id}">${book.title}</a>`);
+    expect(navigator.indexOf('Direct Edit Page')).toBeLessThan(navigator.indexOf('Page Chapter'));
+    expect(navigator.indexOf('Page Chapter')).toBeLessThan(navigator.indexOf('Unrelated Edit Chapter'));
+    expect(navigator).toContain(`<a class="notes-book-nav-page-link" href="/notes/${directBookPage.id}">Direct Edit Page</a>`);
+    expect(navigator).toContain(`<a class="notes-book-nav-chapter-link" href="/notes/chapters/${chapter.id}">Page Chapter</a>`);
+    expect(navigator).toContain(`<a class="notes-book-nav-page-link" href="/notes/${current.id}" aria-current="page">Current Edit Page</a>`);
+    expect(navigator.indexOf('Last Edit Page')).toBeLessThan(navigator.indexOf('First Edit Page'));
+    expect(navigator.indexOf('First Edit Page')).toBeLessThan(navigator.indexOf('Current Edit Page'));
+    expect((navigator.match(/<details class="notes-book-nav-disclosure" open>/g) || [])).toHaveLength(1);
+    expect(response.text).not.toContain('<nav class="notes-page-nav"');
+    expect(contextRail).toContain('<aside class="notes-workspace-context" aria-label="Book contents">');
+    expect(contextRail).not.toContain('notes-hierarchy');
+    expect(contextRail).not.toContain('Book workspace');
+    expect(contextRail).not.toContain('Hierarchy');
+    expect(contextRail).not.toContain('notes-workspace-back');
+    expect(contextRail).not.toContain('notes-workspace-context-note');
+    expect(contextRail).not.toContain('Back to Chapter');
+    expect(contextRail).not.toContain('Back to Book');
+    expect(contextRail).not.toContain('This Page will belong');
+    expect(response.text).toContain('data-notes-editor-form');
+    expect(response.text).toContain('<button class="button button-primary" type="submit" form="note-form">Save</button>');
+    expect(response.text).toContain(`<a class="button button-secondary" href="/notes/${current.id}">Cancel</a>`);
+    expect(response.text).toContain('>Connections</h2>');
+    expect(response.text).toContain('>Move Page</summary>');
+    expect(response.text).toContain('>Delete Page</summary>');
+  });
+
+  it('GET /notes/:id/edit renders a direct Book Page at its mixed top-level position', async () => {
+    const book = app.locals.bookService.createBook({ title: 'Direct Edit Book' });
+    const firstChapter = app.locals.chapterService.createChapter({ bookId: book.id, title: 'First Direct Edit Chapter' });
+    app.locals.noteService.createNote({ chapterId: firstChapter.id, title: 'First Chapter Edit Page' });
+    const current = app.locals.noteService.createNote({ bookId: book.id, title: 'Current Direct Edit Page' });
+    const secondChapter = app.locals.chapterService.createChapter({ bookId: book.id, title: 'Second Direct Edit Chapter' });
+    app.locals.noteService.createNote({ chapterId: secondChapter.id, title: 'Second Chapter Edit Page' });
+    const last = app.locals.noteService.createNote({ bookId: book.id, title: 'Last Direct Edit Page' });
+    app.locals.bookService.reorderBookContents(book.id, [
+      { type: 'chapter', id: firstChapter.id },
+      { type: 'page', id: current.id },
+      { type: 'chapter', id: secondChapter.id },
+      { type: 'page', id: last.id },
+    ]);
+
+    const response = await agent.get(`/notes/${current.id}/edit`).expect(200);
+    const contextRail = response.text.match(/<aside class="notes-workspace-context"[\s\S]*?<\/aside>/)?.[0] || '';
+    const navigator = contextRail.match(/<nav class="notes-book-nav"[\s\S]*?<\/nav>/)?.[0] || '';
+
+    expect(navigator.indexOf('First Direct Edit Chapter')).toBeLessThan(navigator.indexOf('Current Direct Edit Page'));
+    expect(navigator.indexOf('Current Direct Edit Page')).toBeLessThan(navigator.indexOf('Second Direct Edit Chapter'));
+    expect(navigator.indexOf('Second Direct Edit Chapter')).toBeLessThan(navigator.indexOf('Last Direct Edit Page'));
+    expect(navigator).toContain(`<a class="notes-book-nav-page-link" href="/notes/${current.id}" aria-current="page">Current Direct Edit Page</a>`);
+    expect(navigator).toContain(`<a class="notes-book-nav-page-link" href="/notes/${last.id}">Last Direct Edit Page</a>`);
+    expect((navigator.match(/<details class="notes-book-nav-disclosure" open>/g) || [])).toHaveLength(0);
+    expect((navigator.match(/aria-current="page"/g) || [])).toHaveLength(1);
+    expect(response.text).not.toContain('<nav class="notes-page-nav"');
+    expect(contextRail).toContain('<aside class="notes-workspace-context" aria-label="Book contents">');
+    expect(contextRail).not.toContain('notes-hierarchy');
+    expect(contextRail).not.toContain('Book workspace');
+    expect(contextRail).not.toContain('Hierarchy');
+    expect(contextRail).not.toContain('notes-workspace-back');
+    expect(contextRail).not.toContain('notes-workspace-context-note');
+    expect(contextRail).not.toContain('Back to Book');
+    expect(contextRail).not.toContain('Back to Chapter');
+    expect(contextRail).not.toContain('This Page will belong');
+    expect(response.text).toContain('data-notes-editor-form');
+    expect(response.text).toContain('>Connections</h2>');
+    expect(response.text).toContain('>Move Page</summary>');
+    expect(response.text).toContain('>Delete Page</summary>');
+  });
+
+  it('GET /notes/:id/edit keeps the Book navigator for a sole Page', async () => {
+    const { book, chapter, note } = createPage(app, { title: 'Sole Edit Page' });
+
+    const response = await agent.get(`/notes/${note.id}/edit`).expect(200);
+    const contextRail = response.text.match(/<aside class="notes-workspace-context"[\s\S]*?<\/aside>/)?.[0] || '';
+    const navigator = contextRail.match(/<nav class="notes-book-nav"[\s\S]*?<\/nav>/)?.[0] || '';
+
+    expect(navigator).toContain(`<a class="notes-book-nav-book-link" href="/notes/books/${book.id}">Page Book</a>`);
+    expect(navigator).toContain(`<a class="notes-book-nav-chapter-link" href="/notes/chapters/${chapter.id}">Page Chapter</a>`);
+    expect(navigator).toContain(`<a class="notes-book-nav-page-link" href="/notes/${note.id}" aria-current="page">Sole Edit Page</a>`);
+    expect(navigator).toContain('<details class="notes-book-nav-disclosure" open>');
+    expect(response.text).not.toContain('<nav class="notes-page-nav"');
+    expect(contextRail).toContain('<aside class="notes-workspace-context" aria-label="Book contents">');
+    expect(contextRail).not.toContain('notes-hierarchy');
+    expect(contextRail).not.toContain('Book workspace');
+    expect(contextRail).not.toContain('Hierarchy');
+    expect(contextRail).not.toContain('notes-workspace-back');
+    expect(contextRail).not.toContain('notes-workspace-context-note');
+    expect(contextRail).not.toContain('Back to Chapter');
+    expect(contextRail).not.toContain('Back to Book');
+    expect(contextRail).not.toContain('This Page will belong');
+    expect(response.text).toContain('data-notes-editor-form');
+    expect(response.text).toContain('>Connections</h2>');
+    expect(response.text).toContain('>Move Page</summary>');
+    expect(response.text).toContain('>Delete Page</summary>');
   });
 
   it('GET /notes/:id/edit preselects existing project associations', async () => {
@@ -1137,8 +1614,14 @@ describe('top-level Notes HTTP slice', () => {
     expect(response.text).toContain('Title is required.');
     expect(response.text).toContain(`<form id="note-form" method="post" action="/notes/${note.id}"`);
     expect(response.text).toContain(attemptedContent);
-    expect(response.text).toContain(`<a class="notes-hierarchy-link" href="/notes/books/${book.id}">Page Book</a>`);
-    expect(response.text).toContain(`<a class="notes-hierarchy-link" href="/notes/chapters/${chapter.id}">Page Chapter</a>`);
+    expect(response.text).toContain(`<a class="notes-book-nav-book-link" href="/notes/books/${book.id}">Page Book</a>`);
+    expect(response.text).toContain(`<a class="notes-book-nav-chapter-link" href="/notes/chapters/${chapter.id}">Page Chapter</a>`);
+    expect(response.text).not.toContain('<nav class="notes-hierarchy" aria-label="Page hierarchy">');
+    expect(response.text).not.toContain('Book workspace');
+    expect(response.text).not.toContain('>Hierarchy</h2>');
+    expect(response.text).not.toContain('Back to Chapter');
+    expect(response.text).not.toContain('Back to Book');
+    expect(response.text).not.toContain('This Page will belong');
     expect(response.text).toContain(`/notes/chapters/${chapter.id}`);
     expect(response.text).not.toContain('name="chapterId"');
     expect(app.locals.noteService.getNote(note.id)).toMatchObject({
@@ -1207,6 +1690,66 @@ describe('top-level Notes HTTP slice', () => {
     expect(response.text).not.toMatch(new RegExp(`id="note-project-option-${storedProjectId}"[^>]*checked`));
     expect(response.text).toMatch(new RegExp(`id="note-asset-option-${attemptedAssetId}"[^>]*checked`));
     expect(response.text).not.toMatch(new RegExp(`id="note-asset-option-${storedAssetId}"[^>]*checked`));
+  });
+
+  it('POST /notes/:id keeps the Book navigator and edit state after a validation failure', async () => {
+    const { book, chapter } = createChapterContext(app);
+    const first = app.locals.noteService.createNote({ chapterId: chapter.id, title: 'First Edit Sibling' });
+    const current = app.locals.noteService.createNote({ chapterId: chapter.id, title: 'Current Edit Sibling' });
+    const last = app.locals.noteService.createNote({ chapterId: chapter.id, title: 'Last Edit Sibling' });
+    const directPage = app.locals.noteService.createNote({ bookId: book.id, title: 'Direct Edit Peer' });
+    app.locals.noteService.reorderNotes(chapter.id, [last.id, first.id, current.id]);
+    app.locals.bookService.reorderBookContents(book.id, [
+      { type: 'page', id: directPage.id },
+      { type: 'chapter', id: chapter.id },
+    ]);
+    const projectId = insertProject(db, 'Failed Edit Project');
+    const assetId = insertAsset(db, projectId, 'failed-edit.txt', {
+      extension: 'txt',
+      mimeType: 'text/plain',
+    });
+
+    const response = await agent
+      .post(`/notes/${current.id}`)
+      .type('form')
+      .send({
+        _csrf: csrfToken,
+        title: '',
+        content: 'Attempted edit content',
+        projectIds: String(projectId),
+        assetIds: String(assetId),
+      })
+      .expect(422);
+
+    const contextRail = response.text.match(/<aside class="notes-workspace-context"[\s\S]*?<\/aside>/)?.[0] || '';
+    const navigator = contextRail.match(/<nav class="notes-book-nav"[\s\S]*?<\/nav>/)?.[0] || '';
+    expect(navigator).toContain(`<a class="notes-book-nav-book-link" href="/notes/books/${book.id}">Page Book</a>`);
+    expect(navigator).toContain(`<a class="notes-book-nav-page-link" href="/notes/${directPage.id}">Direct Edit Peer</a>`);
+    expect(navigator).toContain(`<a class="notes-book-nav-chapter-link" href="/notes/chapters/${chapter.id}">Page Chapter</a>`);
+    expect(navigator).toContain(`<a class="notes-book-nav-page-link" href="/notes/${current.id}" aria-current="page">Current Edit Sibling</a>`);
+    expect(navigator.indexOf('Direct Edit Peer')).toBeLessThan(navigator.indexOf('Page Chapter'));
+    expect(navigator.indexOf('Last Edit Sibling')).toBeLessThan(navigator.indexOf('First Edit Sibling'));
+    expect(navigator.indexOf('First Edit Sibling')).toBeLessThan(navigator.indexOf('Current Edit Sibling'));
+    expect((navigator.match(/<details class="notes-book-nav-disclosure" open>/g) || [])).toHaveLength(1);
+    expect(response.text).not.toContain('<nav class="notes-page-nav"');
+    expect(response.text).toContain('Title is required.');
+    expect(response.text).toContain('Attempted edit content');
+    expect(response.text).toContain(`<form id="note-form" method="post" action="/notes/${current.id}"`);
+    expect(response.text).toContain(`<a class="notes-book-nav-book-link" href="/notes/books/${book.id}">Page Book</a>`);
+    expect(response.text).not.toContain('<nav class="notes-hierarchy" aria-label="Page hierarchy">');
+    expect(response.text).not.toContain('Book workspace');
+    expect(response.text).not.toContain('>Hierarchy</h2>');
+    expect(response.text).not.toContain('Back to Chapter');
+    expect(response.text).not.toContain('Back to Book');
+    expect(response.text).not.toContain('This Page will belong');
+    expect(response.text).toContain(`<a class="notes-book-nav-chapter-link" href="/notes/chapters/${chapter.id}">Page Chapter</a>`);
+    expect(response.text).toMatch(new RegExp(`id="note-project-option-${projectId}"[^>]*checked`));
+    expect(response.text).toMatch(new RegExp(`id="note-asset-option-${assetId}"[^>]*checked`));
+    expect(response.text).toContain('failed-edit.txt');
+    expect(app.locals.noteService.getNote(current.id)).toMatchObject({
+      title: 'Current Edit Sibling',
+      content: '',
+    });
   });
 
   it('renders associated projects on note detail with project links', async () => {
@@ -1357,8 +1900,8 @@ describe('top-level Notes HTTP slice', () => {
     expect(db.prepare('SELECT * FROM note_assets WHERE note_id = ?').all(note.id)).toEqual([]);
 
     const chapterPage = await agent.get(response.headers.location).expect(200);
-    expect(chapterPage.text).toContain(`<a href="/notes/${first.id}">First Page</a>`);
-    expect(chapterPage.text).toContain(`<a href="/notes/${last.id}">Last Page</a>`);
+    expect(chapterPage.text).toContain(`<a class="notes-page-nav-link" href="/notes/${first.id}">First Page</a>`);
+    expect(chapterPage.text).toContain(`<a class="notes-page-nav-link" href="/notes/${last.id}">Last Page</a>`);
     expect(chapterPage.text).not.toContain(`<a href="/notes/${note.id}">Delete me</a>`);
     expect(chapterPage.text.indexOf('First Page')).toBeLessThan(chapterPage.text.indexOf('Last Page'));
   });
@@ -1620,10 +2163,9 @@ describe('top-level Notes HTTP slice', () => {
 
       const response = await agent.get(`/notes/chapters/${chapter.id}`).expect(200);
       expect(response.text).toContain('Detail Chapter');
-      expect(response.text).toContain(`<nav class="notes-hierarchy" aria-label="Page hierarchy">`);
-      expect(response.text).toContain(`<a class="notes-hierarchy-link" href="/notes/books/${book.id}">Parent Book</a>`);
-      expect(response.text).toContain('<li class="notes-hierarchy-item notes-hierarchy-item--current" aria-current="page">');
-      expect(response.text).toContain('<span class="notes-hierarchy-current">Detail Chapter</span>');
+      expect(response.text).not.toContain('<nav class="notes-hierarchy" aria-label="Page hierarchy">');
+      expect(response.text).toContain('<div class="notes-chapter-detail-content notes-surface">');
+      expect(response.text).toContain(`<a class="notes-book-nav-book-link" href="/notes/books/${book.id}">Parent Book</a>`);
       expect(response.text).toContain('Edit Chapter');
       expect(response.text).toContain('No Pages yet');
       expect(response.text).toContain(`<a class="button button-primary" href="/notes/new?chapterId=${chapter.id}">New Page</a>`);
@@ -1633,6 +2175,90 @@ describe('top-level Notes HTTP slice', () => {
       expect(response.text).not.toContain('Danger zone');
     });
 
+    it('renders Chapter detail with the authoritative mixed Book navigator and local Page outline', async () => {
+      const book = app.locals.bookService.createBook({ title: 'Navigator Book' });
+      const directFirst = app.locals.noteService.createNote({ bookId: book.id, title: 'Direct First' });
+      const chapter = app.locals.chapterService.createChapter({ bookId: book.id, title: 'Current Chapter' });
+      const nestedFirst = app.locals.noteService.createNote({ chapterId: chapter.id, title: 'Nested First' });
+      const nestedSecond = app.locals.noteService.createNote({ chapterId: chapter.id, title: 'Nested Second' });
+      const otherChapter = app.locals.chapterService.createChapter({ bookId: book.id, title: 'Other Chapter' });
+      const otherNested = app.locals.noteService.createNote({ chapterId: otherChapter.id, title: 'Other Nested' });
+      const directSecond = app.locals.noteService.createNote({ bookId: book.id, title: 'Direct Second' });
+      const authoritativeContents = [
+        {
+          type: 'chapter',
+          id: chapter.id,
+          sortOrder: 20,
+          chapter,
+          pages: [nestedSecond, nestedFirst],
+        },
+        { type: 'page', id: directSecond.id, sortOrder: 21, page: directSecond },
+        {
+          type: 'chapter',
+          id: otherChapter.id,
+          sortOrder: 22,
+          chapter: otherChapter,
+          pages: [otherNested],
+        },
+        { type: 'page', id: directFirst.id, sortOrder: 23, page: directFirst },
+      ];
+      const listBookContents = vi.spyOn(app.locals.bookService, 'listBookContents')
+        .mockReturnValue(authoritativeContents);
+      const originalRender = app.response.render;
+      let chapterLocals;
+      app.response.render = function captureChapterRender(view, renderLocals, callback) {
+        if (view === 'notes/chapters/detail.njk') chapterLocals = renderLocals;
+        return originalRender.call(this, view, renderLocals, callback);
+      };
+
+      let response;
+      let listBookContentsCalls = [];
+      try {
+        response = await agent.get(`/notes/chapters/${chapter.id}`).expect(200);
+        listBookContentsCalls = listBookContents.mock.calls;
+      } finally {
+        app.response.render = originalRender;
+        listBookContents.mockRestore();
+      }
+
+      const navigator = response.text.match(/<nav class="notes-book-nav"[\s\S]*?<\/nav>/)?.[0] || '';
+      expect(chapterLocals.bookContents).toBe(authoritativeContents);
+      expect(chapterLocals.navCurrentChapterId).toBe(chapter.id);
+      expect(Object.hasOwn(chapterLocals, 'navCurrentPageId')).toBe(false);
+      expect(listBookContentsCalls).toContainEqual([book.id]);
+      expect(response.text).toContain('<div class="notes-chapter-detail-layout">');
+      expect(navigator).toContain(`<nav class="notes-book-nav" aria-label="Contents of ${book.title}">`);
+      expect(navigator).toContain(`<a class="notes-book-nav-book-link" href="/notes/books/${book.id}">${book.title}</a>`);
+      expect(navigator.indexOf('Current Chapter')).toBeLessThan(navigator.indexOf('Direct Second'));
+      expect(navigator.indexOf('Direct Second')).toBeLessThan(navigator.indexOf('Other Chapter'));
+      expect(navigator.indexOf('Other Chapter')).toBeLessThan(navigator.indexOf('Direct First'));
+      expect(navigator.indexOf('Nested Second')).toBeLessThan(navigator.indexOf('Nested First'));
+      expect(navigator).toContain(`<a class="notes-book-nav-page-link" href="/notes/${directSecond.id}">Direct Second</a>`);
+      expect(navigator).toContain(`<a class="notes-book-nav-page-link" href="/notes/${directFirst.id}">Direct First</a>`);
+      expect(navigator).toMatch(
+        new RegExp(`<li class="notes-book-nav-item notes-book-nav-page">\\s*<a class="notes-book-nav-page-link" href="/notes/${directSecond.id}">`),
+      );
+      expect(navigator).toMatch(
+        new RegExp(`<li class="notes-book-nav-item notes-book-nav-page">\\s*<a class="notes-book-nav-page-link" href="/notes/${directFirst.id}">`),
+      );
+      expect(navigator).toContain(`<a class="notes-book-nav-chapter-link" href="/notes/chapters/${chapter.id}" aria-current="page">Current Chapter</a>`);
+      expect((navigator.match(/<details class="notes-book-nav-disclosure" open>/g) || [])).toHaveLength(1);
+      expect((navigator.match(/<details class="notes-book-nav-disclosure"/g) || [])).toHaveLength(2);
+      expect((navigator.match(/aria-current="page"/g) || [])).toHaveLength(1);
+
+      const pageNav = response.text.match(/<nav class="notes-page-nav"[\s\S]*?<\/nav>/)?.[0] || '';
+      expect(pageNav).toContain(`<nav class="notes-page-nav" aria-label="Pages in ${chapter.title}">`);
+      expect(pageNav).toContain(`<a class="notes-page-nav-link" href="/notes/${nestedFirst.id}">Nested First</a>`);
+      expect(pageNav).toContain(`<a class="notes-page-nav-link" href="/notes/${nestedSecond.id}">Nested Second</a>`);
+      expect(pageNav).not.toContain('Direct First');
+      expect(pageNav).not.toContain('Direct Second');
+      expect(response.text).toContain(`<a class="button button-primary" href="/notes/new?chapterId=${chapter.id}">New Page</a>`);
+      expect(response.text).toContain(`<a class="button" href="/notes/chapters/${chapter.id}/edit">Edit Chapter</a>`);
+      expect(response.text).toContain(`<a class="button button-secondary" href="/notes/chapters/${chapter.id}/notes/order">Change order</a>`);
+      expect(response.text).not.toContain('<nav class="notes-hierarchy" aria-label="Page hierarchy">');
+      expect(response.text).toContain('<div class="notes-chapter-detail-content notes-surface">');
+    });
+
     it('renders a Chapter Page with a shallow Page link', async () => {
       const { chapter } = createChapterContext(app);
       const note = app.locals.noteService.createNote({ chapterId: chapter.id, title: 'Only Page' });
@@ -1640,7 +2266,10 @@ describe('top-level Notes HTTP slice', () => {
       const response = await agent.get(`/notes/chapters/${chapter.id}`).expect(200);
 
       expect(response.text).toContain('Only Page');
-      expect(response.text).toContain(`<a href="/notes/${note.id}">Only Page</a>`);
+      expect(response.text).toContain(`<nav class="notes-page-nav" aria-label="Pages in Page Chapter">`);
+      expect(response.text).toContain(`<a class="notes-page-nav-link" href="/notes/${note.id}">Only Page</a>`);
+      expect(response.text).not.toContain('Edit Page');
+      expect(response.text).not.toContain('>Page 1<');
     });
 
     it('renders only Chapter Pages in canonical Chapter-local order', async () => {
@@ -1654,16 +2283,21 @@ describe('top-level Notes HTTP slice', () => {
 
       const response = await agent.get(`/notes/chapters/${chapter.id}`).expect(200);
 
-      expect(response.text).toContain(`<a href="/notes/${first.id}">First Chapter Page</a>`);
-      expect(response.text).toContain(`<a href="/notes/${second.id}">Second Chapter Page</a>`);
-      expect(response.text).toContain(`<a href="/notes/${third.id}">Third Chapter Page</a>`);
-      expect(response.text.indexOf('First Chapter Page')).toBeLessThan(response.text.indexOf('Second Chapter Page'));
-      expect(response.text.indexOf('Second Chapter Page')).toBeLessThan(response.text.indexOf('Third Chapter Page'));
-      expect(response.text).not.toContain(`<a href="/notes/${unrelated.id}">Other Chapter Page</a>`);
-      expect(response.text).not.toContain(`<a href="/notes/${directBookPage.id}">Direct Book Page</a>`);
+      const pageNav = response.text.match(/<nav class="notes-page-nav"[\s\S]*?<\/nav>/)?.[0] || '';
+      expect(pageNav).toContain('aria-label="Pages in Page Chapter"');
+      expect(pageNav).toContain(`<a class="notes-page-nav-link" href="/notes/${first.id}">First Chapter Page</a>`);
+      expect(pageNav).toContain(`<a class="notes-page-nav-link" href="/notes/${second.id}">Second Chapter Page</a>`);
+       expect(pageNav).toContain(`<a class="notes-page-nav-link" href="/notes/${third.id}">Third Chapter Page</a>`);
+       expect(response.text.indexOf('First Chapter Page')).toBeLessThan(response.text.indexOf('Second Chapter Page'));
+       expect(response.text.indexOf('Second Chapter Page')).toBeLessThan(response.text.indexOf('Third Chapter Page'));
+       expect(pageNav).not.toContain('Other Chapter Page');
+       expect(pageNav).not.toContain('Direct Book Page');
       expect(response.text).toContain(`<a class="button button-secondary" href="/notes/chapters/${chapter.id}/notes/order">Change order</a>`);
-      expect(response.text).toContain(`<a class="button button-small button-secondary" href="/notes/${first.id}/edit" aria-label="Edit Page: First Chapter Page">Edit Page</a>`);
-      expect(response.text).toContain(`<a class="button button-small button-secondary" href="/notes/${second.id}/edit" aria-label="Edit Page: Second Chapter Page">Edit Page</a>`);
+      expect(pageNav).not.toContain('aria-current="page"');
+      expect(response.text).not.toContain('Edit Page');
+      expect(response.text).not.toContain('>Page 1<');
+      expect(response.text).not.toContain('>Page 2<');
+      expect(response.text).not.toContain('>Page 3<');
       expect(response.text).not.toContain(`/notes/chapters/${chapter.id}/notes/reorder`);
       expect(response.text).not.toContain('Move up');
       expect(response.text).not.toContain('Move down');
@@ -1672,9 +2306,8 @@ describe('top-level Notes HTTP slice', () => {
       const orderPage = await agent.get(`/notes/chapters/${chapter.id}/notes/order`).expect(200);
       expect(orderPage.text).toContain('<title>CreatorCrate — Notes — Change order — Page Chapter</title>');
       expect((orderPage.text.match(/<h1\b/g) || [])).toHaveLength(1);
-      expect(orderPage.text).toContain('<nav class="notes-hierarchy" aria-label="Page hierarchy">');
-      expect(orderPage.text).toContain(`<a class="notes-hierarchy-link" href="/notes/books/${book.id}">Page Book</a>`);
-      expect(orderPage.text).toContain('<span class="notes-hierarchy-current">Page Chapter</span>');
+      expect(orderPage.text).toContain('<h1 class="app-section-title">Notes — Change order — Page Chapter</h1>');
+      expect(orderPage.text).not.toContain('notes-hierarchy');
       expect(orderPage.text).toContain('Drag a handle to move a Page');
       expect(orderPage.text).toContain(`<button class="button button-primary" type="submit" form="notes-chapter-order-form">Save</button>`);
       expect(orderPage.text).toContain(`<a class="button button-secondary" href="/notes/chapters/${chapter.id}">Cancel</a>`);
@@ -1718,9 +2351,8 @@ describe('top-level Notes HTTP slice', () => {
       expect(pageHeading).not.toContain('Delete');
       expect(form.text).toContain(`action="/notes/chapters/${chapter.id}"`);
       expect(form.text).toContain('value="Before Rename"');
-      expect(form.text).toContain(`<nav class="notes-hierarchy" aria-label="Page hierarchy">`);
-      expect(form.text).toContain(`<a class="notes-hierarchy-link" href="/notes/books/${book.id}">Edit Chapter Book</a>`);
-      expect(form.text).toContain('<span class="notes-hierarchy-current">Before Rename</span>');
+      expect(form.text).toContain('<h1 class="app-section-title">Notes — Edit Before Rename</h1>');
+      expect(form.text).not.toContain('notes-hierarchy');
       expect(form.text).toContain('<label for="title">Title <span class="required" aria-label="required">*</span></label>');
       expect(form.text).toContain('<details class="notes-workspace-disclosure notes-workspace-disclosure--delete">');
       expect(form.text).toContain('<summary>Delete Chapter</summary>');
@@ -1756,7 +2388,8 @@ describe('top-level Notes HTTP slice', () => {
         .expect(422);
       expect(invalid.text).toContain('Title is required.');
       expect(invalid.text).toContain('value=""');
-      expect(invalid.text).toContain(`<a class="notes-hierarchy-link" href="/notes/books/${book.id}">Edit Chapter Book</a>`);
+      expect(invalid.text).toContain('<h1 class="app-section-title">Notes — Edit After Rename</h1>');
+      expect(invalid.text).not.toContain('notes-hierarchy');
       expect(invalid.text).toContain('<button class="button button-primary" type="submit" form="chapter-form">Save</button>');
       expect(invalid.text).toContain(`<a class="button button-secondary" href="/notes/chapters/${chapter.id}">Cancel</a>`);
 
@@ -1916,7 +2549,15 @@ describe('top-level Notes HTTP slice', () => {
       expect(bookPage.text.indexOf('Chapter Y')).toBeLessThan(bookPage.text.indexOf('Page A'));
       expect(bookPage.text.indexOf('Page A')).toBeLessThan(bookPage.text.indexOf('Chapter X'));
       expect(bookPage.text.indexOf('Chapter X')).toBeLessThan(bookPage.text.indexOf('Page B'));
-      expect(bookPage.text).not.toContain('Nested Chapter Page');
+      const chapterXOutline = bookPage.text.match(new RegExp(
+        `<li class="book-outline-item book-outline-chapter">[\\s\\S]*?<a class="book-outline-title" href="/notes/chapters/${chapterX.id}">Chapter X</a>[\\s\\S]*?</details>\\s*</li>`,
+      ))?.[0] || '';
+      expect(chapterXOutline).toMatch(new RegExp(
+        `<li class="book-outline-item book-outline-page book-outline-page--child">\\s*<a class="book-outline-title" href="/notes/${chapterPage.id}">Nested Chapter Page</a>`,
+      ));
+      expect(bookPage.text).not.toMatch(new RegExp(
+        `<li class="book-outline-item book-outline-page">\\s*<a class="book-outline-title" href="/notes/${chapterPage.id}">Nested Chapter Page</a>`,
+      ));
       expect(bookPage.text).not.toContain('Foreign Chapter');
       expect(bookPage.text).not.toContain('Foreign Page');
       expect(chapterPage.chapter_id).toBe(chapterX.id);

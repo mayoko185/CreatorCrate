@@ -196,10 +196,12 @@ describe('Book HTTP routes', () => {
     const response = await agent.get(`/notes/books/${book.id}`).expect(200);
     const locals = renderCapture.get();
     renderCapture.restore();
-    expect(response.text).toContain('<nav class="notes-hierarchy" aria-label="Page hierarchy">');
-    expect(response.text).toContain('<span class="notes-hierarchy-kind">Book</span>');
-    expect(response.text).toContain(`<span class="notes-hierarchy-current">${book.title}</span>`);
+    expect(response.text).not.toContain('<nav class="notes-hierarchy" aria-label="Page hierarchy">');
+    expect(response.text).toContain(`<title>CreatorCrate — Notes — ${book.title}</title>`);
+    expect(response.text).toContain(`<h1 class="app-section-title">Notes — ${book.title}</h1>`);
     expect((response.text.match(/<h1\b/g) || [])).toHaveLength(1);
+    expect((response.text.match(/class="notes-surface"/g) || [])).toHaveLength(1);
+    expect(response.text).toMatch(/<div class="notes-surface">\s*<nav class="book-outline"[\s\S]*?<\/nav>\s*<\/div>/);
     expect(response.text).toContain(`<nav class="book-outline" aria-label="Contents of ${book.title}">`);
     expect(response.text).toContain('<p class="book-outline-empty">No Pages or Chapters yet</p>');
     expect((response.text.match(/class="book-outline-empty"/g) || [])).toHaveLength(1);
@@ -420,7 +422,8 @@ describe('Book HTTP routes', () => {
 
     const orderPage = await agent.get(`/notes/books/${book.id}/order`).expect(200);
     expect(orderPage.text).toContain('<title>CreatorCrate — Notes — Change order — Mixed Book</title>');
-    expect(orderPage.text).toContain(`<span class="notes-hierarchy-current">${book.title}</span>`);
+    expect(orderPage.text).toContain('<h1 class="app-section-title">Notes — Change order — Mixed Book</h1>');
+    expect(orderPage.text).not.toContain('notes-hierarchy');
     expect(orderPage.text).toContain('<button class="button button-primary" type="submit" form="notes-book-order-form">Save</button>');
     expect(orderPage.text).toContain(`<a class="button button-secondary" href="/notes/books/${book.id}">Cancel</a>`);
     expect(orderPage.text).toContain(`<form id="notes-book-order-form" method="post" action="/notes/books/${book.id}/contents/reorder" data-book-content-reorder-form>`);
@@ -515,7 +518,15 @@ describe('Book HTTP routes', () => {
     ]);
     expect(locals.pages).toEqual([]);
     expect(locals.canChangeOrder).toBe(false);
-    expect(response.text).not.toContain(`<a href="/notes/${chapterPage.id}">Chapter Page</a>`);
+    const chapterOutline = response.text.match(new RegExp(
+      `<li class="book-outline-item book-outline-chapter">[\\s\\S]*?<a class="book-outline-title" href="/notes/chapters/${chapter.id}">Chapter</a>[\\s\\S]*?</details>\\s*</li>`,
+    ))?.[0] || '';
+    expect(chapterOutline).toMatch(new RegExp(
+      `<li class="book-outline-item book-outline-page book-outline-page--child">\\s*<a class="book-outline-title" href="/notes/${chapterPage.id}">Chapter Page</a>`,
+    ));
+    expect(response.text).not.toMatch(new RegExp(
+      `<li class="book-outline-item book-outline-page">\\s*<a class="book-outline-title" href="/notes/${chapterPage.id}">Chapter Page</a>`,
+    ));
     expect(response.text).not.toContain('Change order');
   });
 
@@ -551,9 +562,8 @@ describe('Book HTTP routes', () => {
     expect(pageHeading).not.toContain('Delete');
     expect(form.text).toContain(`<form id="book-form" method="post" action="/notes/books/${book.id}"`);
     expect(form.text).toContain('value="Before"');
-    expect(form.text).toContain('<nav class="notes-hierarchy" aria-label="Page hierarchy">');
-    expect(form.text).toContain('<span class="notes-hierarchy-kind">Book</span>');
-    expect(form.text).toContain('<span class="notes-hierarchy-current">Before</span>');
+    expect(form.text).toContain('<h1 class="app-section-title">Notes — Edit Before</h1>');
+    expect(form.text).not.toContain('notes-hierarchy');
     expect(form.text).toContain('<label for="title">Title <span class="required" aria-label="required">*</span></label>');
     expect(form.text).toContain('<details class="notes-workspace-disclosure notes-workspace-disclosure--delete">');
     expect(form.text).toContain('<summary>Delete Book</summary>');
@@ -629,7 +639,8 @@ describe('Book HTTP routes', () => {
     expect(invalid.text).toContain('value=""');
     expect(invalid.text).toContain('<button class="button button-primary" type="submit" form="book-form">Save</button>');
     expect(invalid.text).toContain(`<a class="button button-secondary" href="/notes/books/${book.id}">Cancel</a>`);
-    expect(invalid.text).toContain(`<span class="notes-hierarchy-current">Stored title</span>`);
+    expect(invalid.text).toContain('<h1 class="app-section-title">Notes — Edit Stored title</h1>');
+    expect(invalid.text).not.toContain('notes-hierarchy');
     expect(invalid.text).toContain(`<form id="book-delete-form" method="post" action="/notes/books/${book.id}/delete">`);
     expect(invalid.text).not.toContain('form="book-form">Edit</button>');
     expect(app.locals.bookService.getBook(book.id).title).toBe('Stored title');
