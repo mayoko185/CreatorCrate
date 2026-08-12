@@ -22,6 +22,7 @@ import { createAssetCategoryRepository } from './data/asset-category-repository.
 import { createNoteRepository } from './data/note-repository.js';
 import { createChapterRepository } from './data/chapter-repository.js';
 import { createBookRepository } from './data/book-repository.js';
+import { createBookContentRepository } from './data/book-content-repository.js';
 import { createAssetCategoryService } from './services/asset-category-service.js';
 import { createAssetBrowserPreferenceRepository } from './data/asset-browser-preference-repository.js';
 import { createAppMetaRepository } from './data/app-meta-repository.js';
@@ -241,20 +242,33 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   app.locals.assetScanner = assetScanner;
 
   const bookRepository = opts.bookRepository || createBookRepository(db);
-  const bookService = opts.bookService || createBookService({ bookRepository });
+  const noteRepository = opts.noteRepository || createNoteRepository(db);
+  const chapterRepository = opts.chapterRepository || createChapterRepository(db);
+  const bookContentRepository = opts.bookContentRepository || createBookContentRepository(db);
+  const bookService = opts.bookService || createBookService({
+    bookRepository,
+    bookContentRepository,
+    chapterRepository,
+    noteRepository,
+  });
   app.locals.bookRepository = bookRepository;
   app.locals.bookService = bookService;
 
-  const noteRepository = opts.noteRepository || createNoteRepository(db);
-  const chapterRepository = opts.chapterRepository || createChapterRepository(db);
   const noteService = opts.noteService || createNoteService({
+    db,
     noteRepository,
     projectRepository: projectService.repository,
     assetRepository: assetScanner.repository,
     chapterRepository,
     bookRepository,
+    bookContentRepository,
   });
-  const chapterService = opts.chapterService || createChapterService({ chapterRepository, bookRepository });
+  const chapterService = opts.chapterService || createChapterService({
+    db,
+    chapterRepository,
+    bookRepository,
+    bookContentRepository,
+  });
   const markdownRenderer = opts.markdownRenderer || createMarkdownRenderer();
   app.locals.noteRepository = noteRepository;
   app.locals.noteService = noteService;

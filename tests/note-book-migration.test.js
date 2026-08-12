@@ -105,7 +105,7 @@ describe('note Book parent migration (009_add_note_book_id)', () => {
     expect(indexColumns(db, 'idx_notes_chapter_sort_order'))
       .toEqual(['chapter_id', 'sort_order', 'id']);
     expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'book_contents'").get())
-      .toBeUndefined();
+      .toBeTruthy();
     expect(db.pragma('foreign_key_check')).toEqual([]);
   });
 

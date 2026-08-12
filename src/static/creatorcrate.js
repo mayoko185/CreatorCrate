@@ -884,6 +884,10 @@ const CHAPTER_PAGE_REORDER_LIST_SELECTOR = '[data-chapter-page-reorder-list]';
 const CHAPTER_PAGE_REORDER_ITEM_SELECTOR = '[data-chapter-page-reorder-item]';
 const CHAPTER_PAGE_REORDER_HANDLE_SELECTOR = '[data-chapter-page-reorder-handle]';
 
+const BOOK_CONTENT_REORDER_LIST_SELECTOR = '[data-book-content-reorder-list]';
+const BOOK_CONTENT_REORDER_ITEM_SELECTOR = '[data-book-content-reorder-item]';
+const BOOK_CONTENT_REORDER_HANDLE_SELECTOR = '[data-book-content-reorder-handle]';
+
 function dedicatedReorderItems(list, config) {
   return Array.from(list?.querySelectorAll?.(config.itemSelector) || []);
 }
@@ -971,7 +975,8 @@ function setDedicatedDropIndicator(state, item, before) {
 
 function resolveDedicatedDropTarget(list, event, draggedItem, config) {
   const target = event.target?.closest?.(config.itemSelector);
-  if (target && dedicatedReorderElementIsInside(list, target) && target !== draggedItem) {
+  if (target === draggedItem) return null;
+  if (target && dedicatedReorderElementIsInside(list, target)) {
     const rect = target.getBoundingClientRect?.();
     const before = rect && Number.isFinite(event.clientY)
       ? event.clientY < rect.top + (rect.height / 2)
@@ -1165,6 +1170,24 @@ export function enhanceChapterPageReorder(scope = globalThis.document) {
     labelAttribute: 'data-note-label',
     label: 'Page',
     bindingKey: 'chapterPageReorderBound',
+  });
+}
+
+export function enhanceBookContentReorder(scope = globalThis.document) {
+  return enhanceDedicatedReorder(scope, {
+    listSelector: BOOK_CONTENT_REORDER_LIST_SELECTOR,
+    itemSelector: BOOK_CONTENT_REORDER_ITEM_SELECTOR,
+    handleSelector: BOOK_CONTENT_REORDER_HANDLE_SELECTOR,
+    formSelector: '[data-book-content-reorder-form]',
+    inputSelector: '[data-book-content-order-input]',
+    liveSelector: '[data-book-content-reorder-live]',
+    positionSelector: '[data-book-content-order-position]',
+    idDataset: 'contentKey',
+    idAttribute: 'data-content-key',
+    labelDataset: 'contentLabel',
+    labelAttribute: 'data-content-label',
+    label: 'Book content',
+    bindingKey: 'bookContentReorderBound',
   });
 }
 
@@ -4991,6 +5014,7 @@ if (typeof document !== 'undefined') {
     enhanceNoteReorder(document);
     enhanceBookReorder(document);
     enhanceChapterPageReorder(document);
+    enhanceBookContentReorder(document);
     enhanceNotesEditor(document);
     enhanceNotesAssetPicker(document);
     enhanceAssetAutoRenameOrdering(document);

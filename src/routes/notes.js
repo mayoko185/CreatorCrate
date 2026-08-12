@@ -24,6 +24,10 @@ const NOTICES = {
     variant: 'error',
     text: 'The submitted chapter order is invalid. Submit every chapter exactly once.',
   },
+  book_content_reorder_invalid: {
+    variant: 'error',
+    text: 'The submitted Book content order is invalid. Submit every Book content exactly once.',
+  },
 };
 
 function resolveNotice(code) {
@@ -33,6 +37,9 @@ function resolveNotice(code) {
 export function createNotesRouter({ appName, bookService, chapterService, noteService, markdownRenderer, projectService, assetRepository } = {}) {
   if (!bookService || typeof bookService.listBooks !== 'function') {
     throw new Error('createNotesRouter requires a bookService dependency.');
+  }
+  if (typeof bookService.listBookContents !== 'function') {
+    throw new Error('createNotesRouter requires bookService.listBookContents support.');
   }
   if (!chapterService || typeof chapterService.listChapters !== 'function') {
     throw new Error('createNotesRouter requires a chapterService dependency.');
@@ -284,14 +291,43 @@ export function createNotesRouter({ appName, bookService, chapterService, noteSe
     }
   });
 
-  // GET /notes/books/:bookId/order — transitional Book ordering screen shell
+  router.post('/books/:bookId/contents/reorder', (req, res, next) => {
+    const bookId = parseId(req.params.bookId);
+    if (bookId === null) return next(createNotFound());
+
+    try {
+      const orderedItems = parseOrderedBookItems(req.body?.orderedItems);
+      bookService.reorderBookContents(bookId, orderedItems);
+      return res.redirect(`/notes/books/${bookId}`);
+    } catch (err) {
+      if (err instanceof BookNotFoundError) return next(createNotFound());
+      if (err instanceof BookValidationError) {
+        try {
+          renderBookDetail(res, {
+            status: 422,
+            appName,
+            bookService,
+            bookId,
+            notice: resolveNotice('book_content_reorder_invalid'),
+          });
+          return;
+        } catch (renderError) {
+          if (renderError instanceof BookNotFoundError) return next(createNotFound());
+          return next(renderError);
+        }
+      }
+      return next(err);
+    }
+  });
+
+  // GET /notes/books/:bookId/order — dedicated mixed Book-content ordering screen
   router.get('/books/:bookId/order', (req, res, next) => {
     const bookId = parseId(req.params.bookId);
     if (bookId === null) return next(createNotFound());
 
     try {
       renderBookOrder(res, {
-        appName, bookService, chapterService, noteService, bookId,
+        appName, bookService, bookId,
       });
       return;
     } catch (err) {
@@ -1063,24 +1099,28 @@ function renderBooksOrder(res, { appName, bookService, status = 200 }) {
 }
 
 function renderBookDetail(res, {
-  appName, bookService, chapterService, noteService, bookId, notice = null, status = 200,
+  appName, bookService, bookId, notice = null, status = 200,
 }) {
   const book = bookService.getBook(bookId);
-  const chapters = chapterService.listChapters(bookId);
-  const pages = noteService.listNotesForBook(bookId);
-  const canChangeOrder = chapters.length + pages.length > 1;
+  const contents = bookService.listBookContents(bookId);
+  const chapters = contents
+    .filter(({ type }) => type === 'chapter')
+    .map(({ chapter }) => chapter);
+  const pages = contents
+    .filter(({ type }) => type === 'page')
+    .map(({ page }) => page);
+  const canChangeOrder = contents.length >= 2;
   res.status(status).render('notes/books/detail.njk', {
-    appName, book, chapters, pages, canChangeOrder, notice,
+    appName, book, contents, chapters, pages, canChangeOrder, notice,
   });
 }
 
 function renderBookOrder(res, {
-  appName, bookService, chapterService, noteService, bookId, status = 200,
+  appName, bookService, bookId, status = 200,
 }) {
   const book = bookService.getBook(bookId);
-  const chapters = chapterService.listChapters(bookId);
-  const pages = noteService.listNotesForBook(bookId);
-  res.status(status).render('notes/books/order.njk', { appName, book, chapters, pages });
+  const contents = bookService.listBookContents(bookId);
+  res.status(status).render('notes/books/order.njk', { appName, book, contents });
 }
 
 function renderChapterDetail(res, {
@@ -1174,6 +1214,39 @@ function parseOrderedChapterIds(raw) {
     throw new ChapterValidationError({ orderedChapterIds: 'Chapter IDs must be safe positive integers.' });
   }
   return ids;
+}
+
+function parseOrderedBookItems(raw) {
+  if (raw === undefined || raw === null) {
+    throw new BookValidationError({
+      orderedItems: 'Submit the complete ordered Book content list.',
+    });
+  }
+  if (Array.isArray(raw) || typeof raw !== 'string') {
+    throw new BookValidationError({
+      orderedItems: 'Book contents must be submitted as one comma-separated value.',
+    });
+  }
+  if (raw === '') return [];
+  const match = raw.match(/^(?:chapter|page):[1-9]\d*(?:,(?:chapter|page):[1-9]\d*)*$/);
+  if (!match || match[0] !== raw) {
+    throw new BookValidationError({
+      orderedItems: 'Book contents must use canonical chapter:id or page:id values separated by commas.',
+    });
+  }
+
+  return raw.split(',').map((value) => {
+    const separator = value.indexOf(':');
+    const type = value.slice(0, separator);
+    const idText = value.slice(separator + 1);
+    const id = Number(idText);
+    if (!Number.isSafeInteger(id) || String(id) !== idText) {
+      throw new BookValidationError({
+        orderedItems: 'Book content IDs must be safe canonical positive integers.',
+      });
+    }
+    return { type, id };
+  });
 }
 
 function buildExcerpt(content) {

@@ -16,7 +16,10 @@ import { fileURLToPath } from 'node:url';
 const dependencyInstrumentation = vi.hoisted(() => ({
   appMetaRepositories: [],
   bookRepositories: [],
+  bookServices: [],
+  bookContentRepositories: [],
   chapterRepositories: [],
+  chapterServices: [],
   noteRepositories: [],
   noteServices: [],
   tagRepositories: [],
@@ -87,6 +90,18 @@ vi.mock('../src/data/book-repository.js', async (importOriginal) => {
   };
 });
 
+vi.mock('../src/services/book-service.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    createBookService(...args) {
+      const service = actual.createBookService(...args);
+      dependencyInstrumentation.bookServices.push({ args, service });
+      return service;
+    },
+  };
+});
+
 vi.mock('../src/data/chapter-repository.js', async (importOriginal) => {
   const actual = await importOriginal();
   return {
@@ -95,6 +110,30 @@ vi.mock('../src/data/chapter-repository.js', async (importOriginal) => {
       const repository = actual.createChapterRepository(...args);
       dependencyInstrumentation.chapterRepositories.push({ args, repository });
       return repository;
+    },
+  };
+});
+
+vi.mock('../src/data/book-content-repository.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    createBookContentRepository(...args) {
+      const repository = actual.createBookContentRepository(...args);
+      dependencyInstrumentation.bookContentRepositories.push({ args, repository });
+      return repository;
+    },
+  };
+});
+
+vi.mock('../src/services/chapter-service.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    createChapterService(...args) {
+      const service = actual.createChapterService(...args);
+      dependencyInstrumentation.chapterServices.push({ args, service });
+      return service;
     },
   };
 });
@@ -381,25 +420,52 @@ describe('app construction — asset actions chunk 3 wiring', () => {
     expect(dependencyInstrumentation.noteRepositories).toHaveLength(1);
     expect(dependencyInstrumentation.noteServices).toHaveLength(1);
     expect(dependencyInstrumentation.bookRepositories).toHaveLength(1);
+    expect(dependencyInstrumentation.bookServices).toHaveLength(1);
+    expect(dependencyInstrumentation.bookContentRepositories).toHaveLength(1);
     expect(dependencyInstrumentation.chapterRepositories).toHaveLength(1);
+    expect(dependencyInstrumentation.chapterServices).toHaveLength(1);
     expect(dependencyInstrumentation.noteRouters).toHaveLength(1);
 
     const { args: repositoryArgs, repository: noteRepository } = dependencyInstrumentation.noteRepositories[0];
     const { args: serviceArgs, service: noteService } = dependencyInstrumentation.noteServices[0];
     const { args: routerArgs } = dependencyInstrumentation.noteRouters[0];
     const { repository: bookRepository } = dependencyInstrumentation.bookRepositories[0];
+    const { args: bookServiceArgs, service: bookService } = dependencyInstrumentation.bookServices[0];
+    const { args: bookContentRepositoryArgs, repository: bookContentRepository } =
+      dependencyInstrumentation.bookContentRepositories[0];
     const { repository: chapterRepository } = dependencyInstrumentation.chapterRepositories[0];
+    const { args: chapterServiceArgs, service: chapterService } = dependencyInstrumentation.chapterServices[0];
     const projectRepository = dependencyInstrumentation.projectServices[0].service.repository;
     const assetRepository = app.locals.assetScanner.repository;
 
     expect(repositoryArgs[0]).toBe(db);
+    expect(bookContentRepositoryArgs[0]).toBe(db);
+    expect(bookServiceArgs[0]).toEqual({
+      bookRepository,
+      bookContentRepository,
+      chapterRepository,
+      noteRepository,
+    });
+    expect(app.locals.bookService).toBe(bookService);
+    expect(chapterServiceArgs[0]).toEqual({
+      db,
+      chapterRepository,
+      bookRepository,
+      bookContentRepository,
+    });
+    expect(app.locals.chapterService).toBe(chapterService);
     expect(serviceArgs[0]).toEqual({
+      db,
       noteRepository,
       projectRepository,
       assetRepository,
       chapterRepository,
       bookRepository,
+      bookContentRepository,
     });
+    expect(serviceArgs[0].bookContentRepository).toBe(bookContentRepository);
+    expect(serviceArgs[0].bookContentRepository)
+      .toBe(chapterServiceArgs[0].bookContentRepository);
     expect(app.locals.noteRepository).toBe(noteRepository);
     expect(app.locals.noteService).toBe(noteService);
     expect(app.locals.markdownRenderer).toBeTruthy();

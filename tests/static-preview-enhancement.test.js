@@ -10,6 +10,7 @@ import {
   enhanceNoteReorder,
   enhanceBookReorder,
   enhanceChapterPageReorder,
+  enhanceBookContentReorder,
   enhanceNotesEditor,
   enhanceCategoryDetails,
   enhanceConfirmations,
@@ -298,6 +299,7 @@ describe('static preview enhancement helpers', () => {
     );
 
     expect(source).toContain('enhanceNoteReorder(document)');
+    expect(source).toContain('enhanceBookContentReorder(document)');
   });
 });
 
@@ -884,6 +886,7 @@ function makeDedicatedReorderFixture({
   liveAttribute,
   positionAttribute,
   handleAttribute,
+  itemLabels = null,
 } = {}) {
   const document = makeCategoryNode({ tagName: 'document' });
   document.ownerDocument = document;
@@ -910,7 +913,8 @@ function makeDedicatedReorderFixture({
       attrs: {
         [itemAttribute]: '',
         [idAttribute]: id,
-        [labelAttribute]: `${idDataset === 'bookId' ? 'Book' : 'Page'} ${id}`,
+        [labelAttribute]: itemLabels?.[index]
+          || `${idDataset === 'bookId' ? 'Book' : 'Page'} ${id}`,
       },
       rect: { top: index * 50, height: 40 },
     });
@@ -982,6 +986,31 @@ function makeChapterPageReorderFixture({
     liveAttribute: 'data-chapter-page-reorder-live',
     positionAttribute: 'data-chapter-page-order-position',
     handleAttribute: 'data-chapter-page-reorder-handle',
+  });
+}
+
+function makeBookContentReorderFixture({
+  action = '/notes/books/7/contents/reorder',
+  csrfToken = 'csrf-book-content-reorder',
+  contentKeys = ['chapter:7', 'page:7', 'chapter:8', 'page:8'],
+  labels = ['Chapter: Chapter 7', 'Page: Page 7', 'Chapter: Chapter 8', 'Page: Page 8'],
+} = {}) {
+  return makeDedicatedReorderFixture({
+    action,
+    csrfToken,
+    ids: contentKeys,
+    formId: 'notes-book-order-form',
+    formAttribute: 'data-book-content-reorder-form',
+    inputAttribute: 'data-book-content-order-input',
+    listAttribute: 'data-book-content-reorder-list',
+    itemAttribute: 'data-book-content-reorder-item',
+    idAttribute: 'data-content-key',
+    idDataset: 'contentKey',
+    labelAttribute: 'data-content-label',
+    liveAttribute: 'data-book-content-reorder-live',
+    positionAttribute: 'data-book-content-order-position',
+    handleAttribute: 'data-book-content-reorder-handle',
+    itemLabels: labels,
   });
 }
 
@@ -1552,6 +1581,103 @@ describe('Chapter Page reorder enhancement', () => {
     const submit = fixture.form.dispatch('submit');
     expect(submit.defaultPrevented).toBe(false);
     expect(fixture.form.listeners.filter((listener) => listener.type === 'submit')).toHaveLength(1);
+  });
+});
+
+describe('mixed Book-content reorder enhancement', () => {
+  it('is scoped to mixed Book-content order lists', () => {
+    const scope = {
+      querySelectorAll(selector) {
+        expect(selector).toBe('[data-book-content-reorder-list]');
+        return [];
+      },
+    };
+
+    expect(enhanceBookContentReorder(scope)).toBe(0);
+  });
+
+  it('keeps typed identities opaque through drag, keyboard, and Save synchronization', async () => {
+    const fixture = makeBookContentReorderFixture();
+    let requestCount = 0;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = () => {
+      requestCount += 1;
+      return Promise.resolve({ ok: true });
+    };
+
+    try {
+      expect(enhanceBookContentReorder(fixture.document)).toBe(1);
+      expect(enhanceBookContentReorder(fixture.document)).toBe(1);
+      expect(fixture.orderInput.value).toBe('chapter:7,page:7,chapter:8,page:8');
+      expect(fixture.list.listeners.filter((listener) => listener.type === 'dragover')).toHaveLength(1);
+      expect(fixture.items[0].handle.listeners.filter((listener) => listener.type === 'keydown')).toHaveLength(1);
+
+      const rowDrag = fixture.items[0].dispatch('dragstart', { dataTransfer: { setData() {} } });
+      expect(rowDrag.defaultPrevented).toBe(true);
+      fixture.items[0].handle.dispatch('dragstart', { dataTransfer: { setData() {} } });
+      fixture.list.dispatch('dragover', {
+        target: fixture.items[3],
+        clientY: 1000,
+        dataTransfer: {},
+      });
+      fixture.list.dispatch('drop', { target: fixture.items[3] });
+
+      expect(fixture.order()).toEqual(['page:7', 'chapter:8', 'page:8', 'chapter:7']);
+      expect(fixture.orderInput.value).toBe('page:7,chapter:8,page:8,chapter:7');
+      expect(fixture.items[0].classList.contains('is-dragging')).toBe(false);
+      expect(fixture.items[3].classList.contains('is-drop-after')).toBe(false);
+      expect(requestCount).toBe(0);
+
+      fixture.items[0].handle.dispatch('dragstart', { dataTransfer: { setData() {} } });
+      fixture.list.dispatch('dragover', { target: fixture.items[0], dataTransfer: {} });
+      fixture.list.dispatch('drop', { target: fixture.items[0] });
+      expect(fixture.order()).toEqual(['page:7', 'chapter:8', 'page:8', 'chapter:7']);
+      expect(fixture.items[0].classList.contains('is-dragging')).toBe(false);
+
+      fixture.items[1].handle.dispatch('keydown', { key: 'ArrowDown' });
+      expect(fixture.order()).toEqual(['chapter:8', 'page:7', 'page:8', 'chapter:7']);
+      expect(fixture.orderInput.value).toBe('chapter:8,page:7,page:8,chapter:7');
+      expect(fixture.items[1].handle.focused).toBe(true);
+      expect(fixture.live.textContent).toContain('Page: Page 7 moved to position 2 of 4');
+
+      fixture.items[1].handle.dispatch('keydown', { key: 'Home' });
+      expect(fixture.order()).toEqual(['page:7', 'chapter:8', 'page:8', 'chapter:7']);
+      fixture.items[1].handle.dispatch('keydown', { key: 'End' });
+      expect(fixture.order()).toEqual(['chapter:8', 'page:8', 'chapter:7', 'page:7']);
+      expect(fixture.orderInput.value).toBe('chapter:8,page:8,chapter:7,page:7');
+      expect(new Set(fixture.order())).toEqual(new Set(['chapter:7', 'page:7', 'chapter:8', 'page:8']));
+      expect(fixture.order()).toHaveLength(4);
+      expect(requestCount).toBe(0);
+
+      fixture.list.insertBefore(fixture.items[3], fixture.items[0]);
+      const submit = fixture.form.dispatch('submit');
+      expect(submit.defaultPrevented).toBe(false);
+      expect(fixture.orderInput.value).toBe(fixture.order().join(','));
+      expect(fixture.form.listeners.filter((listener) => listener.type === 'submit')).toHaveLength(1);
+
+      const cancel = makeCategoryNode({ tagName: 'a' });
+      cancel.setAttribute('href', '/notes/books/7');
+      fixture.document.appendChild(cancel);
+      expect(cancel.listeners).toHaveLength(0);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('safely initializes empty and one-item mixed lists', () => {
+    const empty = makeBookContentReorderFixture({ contentKeys: [], labels: [] });
+    expect(() => enhanceBookContentReorder(empty.document)).not.toThrow();
+    expect(empty.orderInput.value).toBe('');
+    expect(empty.list.listeners).toHaveLength(0);
+
+    const one = makeBookContentReorderFixture({ contentKeys: ['page:7'], labels: ['Page: Page 7'] });
+    expect(enhanceBookContentReorder(one.document)).toBe(1);
+    expect(one.order()).toEqual(['page:7']);
+    expect(one.orderInput.value).toBe('page:7');
+    one.items[0].handle.dispatch('keydown', { key: 'Home' });
+    one.items[0].handle.dispatch('keydown', { key: 'End' });
+    expect(one.order()).toEqual(['page:7']);
+    expect(one.orderInput.value).toBe('page:7');
   });
 });
 

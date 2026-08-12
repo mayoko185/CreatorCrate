@@ -89,15 +89,23 @@ function isChapterRepositoryError(error) {
 
 /**
  * @param {object} deps
+ * @param {import('better-sqlite3').Database} deps.db
  * @param {object} deps.chapterRepository
  * @param {object} deps.bookRepository
+ * @param {object} deps.bookContentRepository
  */
-export function createChapterService({ chapterRepository, bookRepository } = {}) {
+export function createChapterService({ db, chapterRepository, bookRepository, bookContentRepository } = {}) {
   if (!chapterRepository) {
     throw new Error('createChapterService requires a chapterRepository dependency.');
   }
   if (!bookRepository) {
     throw new Error('createChapterService requires a bookRepository dependency.');
+  }
+  if (!bookContentRepository) {
+    throw new Error('createChapterService requires a bookContentRepository dependency.');
+  }
+  if (!db || typeof db.transaction !== 'function') {
+    throw new Error('createChapterService requires a db dependency.');
   }
 
   function requireBook(id) {
@@ -151,6 +159,29 @@ export function createChapterService({ chapterRepository, bookRepository } = {})
     return new ChapterOperationError('Chapter operation could not be completed.', { cause: error });
   }
 
+  const createChapterTx = db.transaction((values) => {
+    const chapter = chapterRepository.create(values);
+    bookContentRepository.append(values.bookId, 'chapter', chapter.id);
+    return chapter;
+  });
+
+  const deleteChapterTx = db.transaction((chapter) => {
+    const deleted = chapterRepository.deleteAndCompact(chapter.id);
+    if (!deleted) {
+      throw new ChapterNotFoundError(chapter.id);
+    }
+
+    const removed = bookContentRepository.remove(chapter.book_id, 'chapter', chapter.id);
+    if (!removed) {
+      throw new ChapterError(
+        `Chapter ${chapter.id} is missing from Book ${chapter.book_id}.`,
+        { code: 'MEMBERSHIP_NOT_FOUND' }
+      );
+    }
+
+    return deleted;
+  });
+
   return {
     listChapters(bookId) {
       requireBook(bookId);
@@ -164,7 +195,7 @@ export function createChapterService({ chapterRepository, bookRepository } = {})
     createChapter(input) {
       const values = normalizeCreateInput(input);
       requireBook(values.bookId);
-      return chapterRepository.create(values);
+      return createChapterTx(values);
     },
 
     updateChapter(id, input) {
@@ -195,13 +226,9 @@ export function createChapterService({ chapterRepository, bookRepository } = {})
     },
 
     deleteChapter(id) {
-      requireChapter(id);
+      const chapter = requireChapter(id);
       try {
-        const deleted = chapterRepository.deleteAndCompact(id);
-        if (!deleted) {
-          throw new ChapterNotFoundError(id);
-        }
-        return deleted;
+        return deleteChapterTx(chapter);
       } catch (error) {
         if (error instanceof ChapterNotFoundError) {
           throw error;

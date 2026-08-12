@@ -29,6 +29,15 @@ export class NoteNotFoundError extends Error {
   }
 }
 
+export class NoteOperationError extends Error {
+  constructor(message, { code = 'NOTE_OPERATION_FAILED', cause } = {}) {
+    super(message, cause === undefined ? undefined : { cause });
+    this.name = 'NoteOperationError';
+    this.status = 500;
+    this.code = code;
+  }
+}
+
 function assertPlainObject(value, fieldLabel) {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
     throw new NoteValidationError({ [fieldLabel]: 'Input must be an object.' });
@@ -120,13 +129,17 @@ function isNoteRepositoryError(error) {
  * @param {object} deps.assetRepository
  * @param {object} deps.chapterRepository
  * @param {object} [deps.bookRepository]
+ * @param {import('better-sqlite3').Database} [deps.db]
+ * @param {object} [deps.bookContentRepository]
  */
 export function createNoteService({
+  db,
   noteRepository,
   projectRepository,
   assetRepository,
   chapterRepository,
   bookRepository,
+  bookContentRepository,
 } = {}) {
   if (!noteRepository) {
     throw new Error('createNoteService requires a noteRepository dependency.');
@@ -303,6 +316,137 @@ export function createNoteService({
     }
   }
 
+  const createDirectBookPageTx = db && typeof db.transaction === 'function'
+    ? db.transaction((values) => {
+      const created = persistWithAssociations(undefined, values);
+      bookContentRepository.append(values.bookId, 'page', created.id);
+      return created;
+    })
+    : null;
+
+  function persistDirectBookPage(values) {
+    if (!bookContentRepository) {
+      throw new Error('createNoteService requires a bookContentRepository dependency for direct Book Page creation.');
+    }
+    if (!createDirectBookPageTx) {
+      throw new Error('createNoteService requires a db dependency for direct Book Page creation.');
+    }
+    return createDirectBookPageTx(values);
+  }
+
+  const deleteDirectBookPageTx = db && typeof db.transaction === 'function'
+    ? db.transaction((note) => {
+      const deleted = noteRepository.deleteById(note.id);
+      if (!deleted) {
+        throw new NoteNotFoundError(note.id);
+      }
+
+      const removed = bookContentRepository.remove(note.book_id, 'page', note.id);
+      if (!removed) {
+        throw new NoteOperationError(
+          `Direct Book Page ${note.id} is missing from Book ${note.book_id}.`,
+          { code: 'MEMBERSHIP_NOT_FOUND' },
+        );
+      }
+
+      return deleted;
+    })
+    : null;
+
+  function deleteDirectBookPage(note) {
+    if (!bookContentRepository) {
+      throw new Error('createNoteService requires a bookContentRepository dependency for direct Book Page deletion.');
+    }
+    if (!deleteDirectBookPageTx) {
+      throw new Error('createNoteService requires a db dependency for direct Book Page deletion.');
+    }
+    return deleteDirectBookPageTx(note);
+  }
+
+  const moveChapterPageToDirectBookTx = db && typeof db.transaction === 'function'
+    ? db.transaction((note, target) => {
+      const moved = noteRepository.moveToContainer(note.id, target);
+      if (!moved) {
+        throw new NoteNotFoundError(note.id);
+      }
+
+      bookContentRepository.append(target.bookId, 'page', note.id);
+      return moved;
+    })
+    : null;
+
+  function moveChapterPageToDirectBook(note, target) {
+    if (!bookContentRepository) {
+      throw new Error('createNoteService requires a bookContentRepository dependency for Chapter Page movement to a direct Book Page.');
+    }
+    if (!moveChapterPageToDirectBookTx) {
+      throw new Error('createNoteService requires a db dependency for Chapter Page movement to a direct Book Page.');
+    }
+    return moveChapterPageToDirectBookTx(note, target);
+  }
+
+  const moveDirectBookPageToChapterTx = db && typeof db.transaction === 'function'
+    ? db.transaction((note, target) => {
+      const sourceBookId = note.book_id;
+      const moved = noteRepository.moveToContainer(note.id, target);
+      if (!moved) {
+        throw new NoteNotFoundError(note.id);
+      }
+
+      const removed = bookContentRepository.remove(sourceBookId, 'page', note.id);
+      if (!removed) {
+        throw new NoteOperationError(
+          `Direct Book Page ${note.id} is missing from Book ${sourceBookId}.`,
+          { code: 'MEMBERSHIP_NOT_FOUND' },
+        );
+      }
+
+      return moved;
+    })
+    : null;
+
+  function moveDirectBookPageToChapter(note, target) {
+    if (!bookContentRepository) {
+      throw new Error('createNoteService requires a bookContentRepository dependency for direct Book Page movement to a Chapter Page.');
+    }
+    if (!moveDirectBookPageToChapterTx) {
+      throw new Error('createNoteService requires a db dependency for direct Book Page movement to a Chapter Page.');
+    }
+    return moveDirectBookPageToChapterTx(note, target);
+  }
+
+  const moveDirectBookPageToDirectBookTx = db && typeof db.transaction === 'function'
+    ? db.transaction((note, target) => {
+      const sourceBookId = note.book_id;
+      const targetBookId = target.bookId;
+      const moved = noteRepository.moveToContainer(note.id, target);
+      if (!moved) {
+        throw new NoteNotFoundError(note.id);
+      }
+
+      const removed = bookContentRepository.remove(sourceBookId, 'page', note.id);
+      if (!removed) {
+        throw new NoteOperationError(
+          `Direct Book Page ${note.id} is missing from Book ${sourceBookId}.`,
+          { code: 'MEMBERSHIP_NOT_FOUND' },
+        );
+      }
+
+      bookContentRepository.append(targetBookId, 'page', note.id);
+      return moved;
+    })
+    : null;
+
+  function moveDirectBookPageToDirectBook(note, target) {
+    if (!bookContentRepository) {
+      throw new Error('createNoteService requires a bookContentRepository dependency for direct Book Page movement between direct Book Pages.');
+    }
+    if (!moveDirectBookPageToDirectBookTx) {
+      throw new Error('createNoteService requires a db dependency for direct Book Page movement between direct Book Pages.');
+    }
+    return moveDirectBookPageToDirectBookTx(note, target);
+  }
+
   function validateReorderInput(orderedIds) {
     if (!Array.isArray(orderedIds)) {
       throw new NoteValidationError({ orderedIds: 'orderedIds must be an array.' });
@@ -343,7 +487,7 @@ export function createNoteService({
   }
 
   function moveNoteToContainer(noteId, target, { knownTargetChapter = null } = {}) {
-    requireNote(noteId);
+    const sourceNote = requireNote(noteId);
     const normalizedTarget = normalizeMoveTarget(target);
     if (!knownTargetChapter || bookRepository) {
       requireBook(normalizedTarget.bookId);
@@ -357,6 +501,18 @@ export function createNoteService({
     }
 
     try {
+      if (sourceNote.chapter_id !== null && normalizedTarget.chapterId === null) {
+        return moveChapterPageToDirectBook(sourceNote, normalizedTarget);
+      }
+      if (sourceNote.chapter_id === null && normalizedTarget.chapterId !== null) {
+        return moveDirectBookPageToChapter(sourceNote, normalizedTarget);
+      }
+      if (sourceNote.chapter_id === null && normalizedTarget.chapterId === null) {
+        if (sourceNote.book_id !== normalizedTarget.bookId) {
+          return moveDirectBookPageToDirectBook(sourceNote, normalizedTarget);
+        }
+      }
+
       const moved = noteRepository.moveToContainer(noteId, normalizedTarget);
       if (!moved) {
         throw new NoteNotFoundError(noteId);
@@ -387,7 +543,9 @@ export function createNoteService({
   return {
     createNote(input) {
       const values = normalizeCreateInput(input);
-      return persistWithAssociations(undefined, values);
+      return values.chapterId === null
+        ? persistDirectBookPage(values)
+        : persistWithAssociations(undefined, values);
     },
 
     getNote(id) {
@@ -415,7 +573,11 @@ export function createNoteService({
     },
 
     deleteNote(id) {
-      requireNote(id);
+      const note = requireNote(id);
+      if (note.chapter_id === null) {
+        return deleteDirectBookPage(note);
+      }
+
       const deleted = noteRepository.deleteById(id);
       if (!deleted) {
         throw new NoteNotFoundError(id);

@@ -5,49 +5,78 @@
 
 {% block content %}
   {% call pageHeading.render() %}
-    <a class="button button-secondary" href="/notes/books/{{ book.id }}">Back to Book</a>
+    {% if contents.length > 0 %}
+      <button class="button button-primary" type="submit" form="notes-book-order-form">Save</button>
+    {% endif %}
+    <a class="button button-secondary" href="/notes/books/{{ book.id }}">Cancel</a>
   {% endcall %}
 
   {% include "partials/notes-hierarchy.njk" %}
 
-  <section class="notes-book-order" aria-labelledby="notes-book-order-heading">
+  <section class="notes-book-order" data-notes-book-order-page aria-labelledby="notes-book-order-heading">
     <h2 id="notes-book-order-heading">Change order</h2>
-    <p class="help-text">Book ordering controls will be available here in a future update. Chapters and direct Pages remain separate while mixed Book ordering is being defined.</p>
 
-    {% if chapters.length > 0 or pages.length > 0 %}
-      <div class="notes-book-order-sections">
-        {% if chapters.length > 0 %}
-          <section class="notes-book-order-section" aria-labelledby="notes-book-order-chapters-heading">
-            <h3 id="notes-book-order-chapters-heading">Chapters</h3>
-            <ul class="notes-book-content-list" aria-label="Chapters in {{ book.title }}">
-              {% for chapter in chapters %}
-                <li class="notes-book-content-row">
-                  <div class="notes-book-content-copy">
-                    <span class="notes-book-content-kind">Chapter</span>
-                    <h4 class="notes-book-content-title"><a href="/notes/chapters/{{ chapter.id }}">{{ chapter.title }}</a></h4>
-                  </div>
-                </li>
-              {% endfor %}
-            </ul>
-          </section>
-        {% endif %}
+    {% if contents.length > 0 %}
+      <p class="help-text" id="notes-book-order-instructions">
+        Drag a handle to move a Chapter or Page, or focus a handle and use Arrow Up, Arrow Down, Home, or End. Select Save to keep the new order.
+      </p>
 
-        {% if pages.length > 0 %}
-          <section class="notes-book-order-section" aria-labelledby="notes-book-order-pages-heading">
-            <h3 id="notes-book-order-pages-heading">Pages</h3>
-            <ul class="notes-book-content-list" aria-label="Direct Pages in {{ book.title }}">
-              {% for page in pages %}
-                <li class="notes-book-content-row">
-                  <div class="notes-book-content-copy">
-                    <span class="notes-book-content-kind">Page</span>
-                    <h4 class="notes-book-content-title"><a href="/notes/{{ page.id }}">{{ page.title }}</a></h4>
-                  </div>
-                </li>
-              {% endfor %}
-            </ul>
-          </section>
-        {% endif %}
-      </div>
+      <form id="notes-book-order-form" method="post" action="/notes/books/{{ book.id }}/contents/reorder" data-book-content-reorder-form>
+        <input type="hidden" name="_csrf" value="{{ _csrf }}">
+        <input type="hidden" name="orderedItems" data-book-content-order-input value="{% for item in contents %}{{ item.type }}:{{ item.id }}{% if not loop.last %},{% endif %}{% endfor %}">
+
+        <ol
+          class="notes-book-content-list notes-book-order-list notes-reorder-list"
+          data-book-content-reorder-list
+          data-reorder-form-target="notes-book-order-form"
+          aria-label="Book contents in current order"
+          aria-describedby="notes-book-order-instructions">
+          {% for item in contents %}
+            <li
+              class="notes-book-content-row notes-book-order-row notes-reorder-row"
+              data-book-content-reorder-item
+              data-content-key="{{ item.type }}:{{ item.id }}"
+              {% if item.type == 'chapter' %}
+                data-content-label="Chapter: {{ item.chapter.title }}"
+              {% else %}
+                data-content-label="Page: {{ item.page.title }}"
+              {% endif %}
+              draggable="true"
+              aria-posinset="{{ loop.index }}"
+              aria-setsize="{{ contents.length }}">
+              <button
+                type="button"
+                class="notes-book-order-handle notes-reorder-handle"
+                data-book-content-reorder-handle
+                draggable="true"
+                {% if item.type == 'chapter' %}
+                  aria-label="Reorder Chapter: {{ item.chapter.title }}"
+                {% else %}
+                  aria-label="Reorder Page: {{ item.page.title }}"
+                {% endif %}
+                aria-describedby="notes-book-order-instructions notes-book-order-position-{{ item.type }}-{{ item.id }}"
+                title="Drag to reorder; use the arrow keys to move">
+                <span aria-hidden="true">⠿</span>
+              </button>
+              <div class="notes-book-content-copy">
+                {% if item.type == 'chapter' %}
+                  <span class="notes-book-content-kind">Chapter</span>
+                  <h3 class="notes-book-content-title"><a href="/notes/chapters/{{ item.id }}">{{ item.chapter.title }}</a></h3>
+                {% else %}
+                  <span class="notes-book-content-kind">Page</span>
+                  <h3 class="notes-book-content-title"><a href="/notes/{{ item.id }}">{{ item.page.title }}</a></h3>
+                {% endif %}
+                <span id="notes-book-order-position-{{ item.type }}-{{ item.id }}" class="notes-book-order-position notes-reorder-position" data-book-content-order-position>Position {{ loop.index }} of {{ contents.length }}</span>
+              </div>
+            </li>
+          {% endfor %}
+        </ol>
+        <div class="notes-book-order-live-region notes-reorder-live-region sr-only" data-book-content-reorder-live aria-live="polite" aria-atomic="true"></div>
+      </form>
+
+      <noscript>
+        <p class="help-text">JavaScript is required to move Book contents. Save still submits the current canonical order.</p>
+      </noscript>
     {% else %}
       <p class="help-text">This Book has no Chapters or direct Pages to order yet.</p>
     {% endif %}

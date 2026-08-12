@@ -95,12 +95,38 @@ describe('Notes Page detail hierarchy and layout contract', () => {
     expect(html).not.toContain('<a class="notes-hierarchy-link" href="/notes/books/7">Current Book</a>');
   });
 
-  it('keeps the Book order shell read-only and separate by content type', () => {
+  it('renders Book detail as one authoritative mixed contents list', () => {
+    expect(bookDetailTemplate).toContain('{% for item in contents %}');
+    expect(bookDetailTemplate).toContain("{% if item.type == 'chapter' %}");
+    expect(bookDetailTemplate).toContain("{% elif item.type == 'page' %}");
+    expect(bookDetailTemplate).toContain('{{ item.chapter.title }}');
+    expect(bookDetailTemplate).toContain('{{ item.page.title }}');
+    expect(bookDetailTemplate).toContain('/notes/chapters/{{ item.id }}');
+    expect(bookDetailTemplate).toContain('/notes/{{ item.id }}');
+    expect(bookDetailTemplate).toContain('/notes/chapters/{{ item.id }}/edit');
+    expect(bookDetailTemplate).toContain('/notes/{{ item.id }}/edit');
+    expect(bookDetailTemplate).toContain('No Pages or Chapters yet');
+    expect(bookDetailTemplate).not.toContain('{% for chapter in chapters %}');
+    expect(bookDetailTemplate).not.toContain('{% for page in pages %}');
+    expect(bookDetailTemplate).not.toContain('notes-book-chapters-heading');
+    expect(bookDetailTemplate).not.toContain('notes-book-pages-heading');
+    expect(bookDetailTemplate).not.toContain('sort_order');
+    expect(notesCss).toContain('.notes-book-content-row');
+    expect(notesCss).toContain('.notes-book-content-actions');
+  });
+
+  it('renders the Book order page as one dedicated mixed reorder form', () => {
     expect(bookOrderTemplate).toContain('{% include "partials/notes-hierarchy.njk" %}');
-    expect(bookOrderTemplate).toContain('Book ordering controls will be available here in a future update.');
+    expect(bookOrderTemplate).toContain('action="/notes/books/{{ book.id }}/contents/reorder"');
+    expect(bookOrderTemplate).toContain('name="orderedItems"');
+    expect(bookOrderTemplate).toContain('data-book-content-reorder-list');
+    expect(bookOrderTemplate).toContain('data-book-content-reorder-item');
+    expect(bookOrderTemplate).toContain('data-content-key="{{ item.type }}:{{ item.id }}"');
+    expect(bookOrderTemplate).toContain('data-book-content-reorder-handle');
+    expect(bookOrderTemplate).toContain('Arrow Up, Arrow Down, Home, or End');
     expect(bookOrderTemplate).toContain('notes-book-content-list');
-    expect(bookOrderTemplate).not.toContain('<form');
-    expect(bookOrderTemplate).not.toContain('draggable');
+    expect(bookOrderTemplate).toContain('This Book has no Chapters or direct Pages to order yet.');
+    expect(bookOrderTemplate).not.toContain('Book ordering controls will be available here in a future update.');
     expect(bookOrderTemplate).not.toContain('orderedNoteIds');
     expect(bookOrderTemplate).not.toContain('orderedChapterIds');
   });

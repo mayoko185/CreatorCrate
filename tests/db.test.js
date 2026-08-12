@@ -99,6 +99,8 @@ describe('database and migrations', () => {
       '006_add_note_associations.sql',
       '007_add_asset_picker_order_index.sql',
       '008_add_note_hierarchy.sql',
+      '009_add_note_book_id.sql',
+      '010_add_book_contents.sql',
     ]);
   });
 
@@ -118,6 +120,7 @@ describe('database and migrations', () => {
       'asset_category_defaults',
       'asset_tags',
       'assets',
+      'book_contents',
       'books',
       'chapters',
       'note_assets',

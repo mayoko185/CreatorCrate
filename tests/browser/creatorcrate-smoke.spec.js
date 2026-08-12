@@ -657,73 +657,229 @@ test.describe('CreatorCrate development browser smoke', () => {
     assertNoBrowserDiagnostics(diagnostics);
   });
 
-  test('keeps Book detail cohesive, compact, and separate from mixed ordering', async ({ page, devServer }) => {
+  test('keeps Book detail as one ordered mixed list at desktop and narrow widths', async ({ page, devServer }) => {
+    const diagnostics = observeBrowser(page, devServer.baseURL);
     const bookTitle = `Browser Book Detail ${Date.now()}`;
-    const chapterTitle = 'Browser Book Chapter';
     const emptyBookId = await createBrowserBook(page, devServer.baseURL, bookTitle);
-    const emptyBookUrl = `${devServer.baseURL}/notes/books/${emptyBookId}`;
+    const bookUrl = `${devServer.baseURL}/notes/books/${emptyBookId}`;
 
-    const emptyResponse = await page.goto(emptyBookUrl, { waitUntil: 'domcontentloaded' });
+    const emptyResponse = await page.goto(bookUrl, { waitUntil: 'domcontentloaded' });
     expect(emptyResponse?.status()).toBe(200);
+    await expect(page.locator('h1.app-section-title')).toHaveCount(1);
+    await expect(page.locator('.notes-hierarchy')).toHaveCount(1);
     await expect(page.locator('.notes-hierarchy .notes-hierarchy-item--current')).toContainText(bookTitle);
     await expect(page.locator('.notes-hierarchy .notes-hierarchy-item--current a')).toHaveCount(0);
-    await expect(page.locator('.notes-book-section').nth(0).getByRole('link', { name: 'New Chapter', exact: true })).toBeVisible();
-    await expect(page.locator('.notes-book-section').nth(1).getByRole('link', { name: 'New Page', exact: true })).toBeVisible();
+    await expect(page.locator('.notes-book-section')).toHaveCount(1);
+    await expect(page.locator('.notes-book-content-list')).toHaveCount(0);
+    await expect(page.locator('.empty-state')).toHaveCount(1);
+    await expect(page.locator('.empty-state')).toContainText('No Pages or Chapters yet');
+    await expect(page.locator('.page-heading-actions').getByRole('link', { name: 'New Page', exact: true })).toBeVisible();
+    await expect(page.locator('.page-heading-actions').getByRole('link', { name: 'New Chapter', exact: true })).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Edit Book', exact: true })).toBeVisible();
     await expect(page.getByRole('link', { name: 'Change order', exact: true })).toHaveCount(0);
 
-    const chapterId = await createBrowserChapter(page, devServer.baseURL, emptyBookId, chapterTitle);
-    await createBrowserDirectPage(page, devServer.baseURL, emptyBookId, 'Browser Direct Page');
-    await page.goto(emptyBookUrl, { waitUntil: 'domcontentloaded' });
+    const pageATitle = 'Browser Page A';
+    const chapterXTitle = 'Browser Chapter X';
+    const nestedPageTitle = 'Browser Nested Chapter Page';
+    const pageBTitle = 'Browser Page B';
+    const chapterYTitle = 'Browser Chapter Y';
+    await createBrowserDirectPage(page, devServer.baseURL, emptyBookId, pageATitle);
+    const pageAId = new URL(page.url()).pathname.split('/').at(-1);
+    const chapterXId = await createBrowserChapter(page, devServer.baseURL, emptyBookId, chapterXTitle);
+    await createBrowserPage(page, devServer.baseURL, chapterXId, nestedPageTitle);
+    await createBrowserDirectPage(page, devServer.baseURL, emptyBookId, pageBTitle);
+    const pageBId = new URL(page.url()).pathname.split('/').at(-1);
+    const chapterYId = await createBrowserChapter(page, devServer.baseURL, emptyBookId, chapterYTitle);
+    expect(pageAId).toBe(chapterXId);
 
+    await page.goto(bookUrl, { waitUntil: 'domcontentloaded' });
+    await expect(page.locator('.notes-hierarchy')).toHaveCount(1);
     await expect(page.locator('.notes-hierarchy .notes-hierarchy-item--current')).toContainText(bookTitle);
-    await expect(page.locator('.notes-book-section').nth(0)).toContainText('Chapter');
-    await expect(page.locator('.notes-book-section').nth(1)).toContainText('Page');
-    await expect(page.getByRole('link', { name: chapterTitle, exact: true })).toHaveAttribute('href', `/notes/chapters/${chapterId}`);
-    await expect(page.getByRole('link', { name: 'Browser Direct Page', exact: true })).toHaveAttribute('href', /\/notes\/\d+$/);
-    await expect(page.getByRole('link', { name: /^Edit Chapter:/ })).toBeVisible();
-    await expect(page.getByRole('link', { name: 'Edit Page: Browser Direct Page', exact: true })).toBeVisible();
-    await expect(page.getByRole('link', { name: 'Edit Book', exact: true })).toBeVisible();
+    await expect(page.locator('.notes-book-section')).toHaveCount(1);
+    await expect(page.locator('.notes-book-content-list')).toHaveCount(1);
+    await expect(page.locator('.notes-book-content-row')).toHaveCount(4);
+    expect(await page.locator('.notes-book-content-row .notes-book-content-title a').allTextContents())
+      .toEqual([pageATitle, chapterXTitle, pageBTitle, chapterYTitle]);
+    expect(await page.locator('.notes-book-content-row .notes-book-content-kind').allTextContents())
+      .toEqual(['Page', 'Chapter', 'Page', 'Chapter']);
+    await expect(page.locator('.notes-book-content-row').nth(0).getByRole('link', { name: pageATitle, exact: true }))
+      .toHaveAttribute('href', `/notes/${pageAId}`);
+    await expect(page.locator('.notes-book-content-row').nth(1).getByRole('link', { name: chapterXTitle, exact: true }))
+      .toHaveAttribute('href', `/notes/chapters/${chapterXId}`);
+    await expect(page.locator('.notes-book-content-row').nth(2).getByRole('link', { name: pageBTitle, exact: true }))
+      .toHaveAttribute('href', `/notes/${pageBId}`);
+    await expect(page.locator('.notes-book-content-row').nth(3).getByRole('link', { name: chapterYTitle, exact: true }))
+      .toHaveAttribute('href', `/notes/chapters/${chapterYId}`);
+    await expect(page.getByRole('link', { name: `Edit Page: ${pageATitle}`, exact: true }))
+      .toHaveAttribute('href', `/notes/${pageAId}/edit`);
+    await expect(page.getByRole('link', { name: `Edit Chapter: ${chapterXTitle}`, exact: true }))
+      .toHaveAttribute('href', `/notes/chapters/${chapterXId}/edit`);
+    await expect(page.getByRole('link', { name: `Edit Page: ${pageBTitle}`, exact: true }))
+      .toHaveAttribute('href', `/notes/${pageBId}/edit`);
+    await expect(page.getByRole('link', { name: `Edit Chapter: ${chapterYTitle}`, exact: true }))
+      .toHaveAttribute('href', `/notes/chapters/${chapterYId}/edit`);
+    await expect(page.locator('.notes-book-content-list')).not.toContainText(nestedPageTitle);
     await expect(page.getByRole('link', { name: 'New Page', exact: true })).toBeVisible();
     await expect(page.getByRole('link', { name: 'New Chapter', exact: true })).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Edit Book', exact: true })).toBeVisible();
     await expect(page.getByRole('link', { name: 'Change order', exact: true })).toBeVisible();
-    await expect(page.locator('.notes-book-content-row')).toHaveCount(2);
     await expect(page.locator('main#main-content')).not.toContainText('Manage');
     await expect(page.locator('main#main-content')).not.toContainText('Move up');
     await expect(page.locator('main#main-content')).not.toContainText('Move down');
     await expect(page.locator('main#main-content')).not.toContainText('Danger zone');
+    await expect(page.locator('main#main-content')).not.toContainText('Delete');
+
+    for (const viewport of [
+      { width: 1280, height: 800 },
+      { width: 375, height: 800 },
+    ]) {
+      await page.setViewportSize(viewport);
+      await page.goto(bookUrl, { waitUntil: 'domcontentloaded' });
+      const layout = await page.locator('main#main-content').evaluate((element) => ({
+        documentWidth: document.documentElement.scrollWidth,
+        viewportWidth: window.innerWidth,
+        rowRight: Math.max(...[...element.querySelectorAll('.notes-book-content-row')]
+          .map((row) => row.getBoundingClientRect().right)),
+        actionRight: Math.max(...[...element.querySelectorAll('.notes-book-content-actions')]
+          .map((actions) => actions.getBoundingClientRect().right)),
+      }));
+      expect(layout.documentWidth).toBeLessThanOrEqual(layout.viewportWidth);
+      expect(layout.rowRight).toBeLessThanOrEqual(layout.viewportWidth);
+      expect(layout.actionRight).toBeLessThanOrEqual(layout.viewportWidth);
+      expect(await page.locator('.notes-book-content-row .notes-book-content-title a').allTextContents())
+        .toEqual([pageATitle, chapterXTitle, pageBTitle, chapterYTitle]);
+    }
+
+    await page.goto(bookUrl, { waitUntil: 'domcontentloaded' });
+    await Promise.all([
+      page.waitForURL(new RegExp(`/notes/${pageAId}$`)),
+      page.getByRole('link', { name: pageATitle, exact: true }).click(),
+    ]);
+    await expect(page.locator('h1.app-section-title')).toContainText(pageATitle);
+    await page.goto(bookUrl, { waitUntil: 'domcontentloaded' });
+    await Promise.all([
+      page.waitForURL(new RegExp(`/notes/chapters/${chapterXId}$`)),
+      page.getByRole('link', { name: chapterXTitle, exact: true }).click(),
+    ]);
+    await expect(page.locator('h1.app-section-title')).toContainText(chapterXTitle);
+    await page.goto(bookUrl, { waitUntil: 'domcontentloaded' });
+    await page.goto(`${devServer.baseURL}/notes/${pageAId}/edit`, { waitUntil: 'domcontentloaded' });
+    await expect(page.locator('h1.app-section-title')).toContainText(`Notes — Edit ${pageATitle}`);
+    await page.goto(`${devServer.baseURL}/notes/chapters/${chapterXId}/edit`, { waitUntil: 'domcontentloaded' });
+    await expect(page.locator('h1.app-section-title')).toContainText(`Notes — Edit ${chapterXTitle}`);
 
     await page.setViewportSize({ width: 1280, height: 800 });
-    const desktopState = await page.locator('main#main-content').evaluate((element) => ({
-      documentWidth: document.documentElement.scrollWidth,
-      viewportWidth: window.innerWidth,
-      rowRight: Math.max(...[...element.querySelectorAll('.notes-book-content-row')]
-        .map((row) => row.getBoundingClientRect().right)),
-    }));
-    expect(desktopState.documentWidth).toBeLessThanOrEqual(desktopState.viewportWidth);
-    expect(desktopState.rowRight).toBeLessThanOrEqual(desktopState.viewportWidth);
-
-    await page.setViewportSize({ width: 375, height: 800 });
-    const narrowState = await page.locator('main#main-content').evaluate((element) => ({
-      documentWidth: document.documentElement.scrollWidth,
-      viewportWidth: window.innerWidth,
-      rowRight: Math.max(...[...element.querySelectorAll('.notes-book-content-row')]
-        .map((row) => row.getBoundingClientRect().right)),
-    }));
-    expect(narrowState.documentWidth).toBeLessThanOrEqual(narrowState.viewportWidth);
-    expect(narrowState.rowRight).toBeLessThanOrEqual(narrowState.viewportWidth);
-
+    await page.goto(bookUrl, { waitUntil: 'domcontentloaded' });
     await Promise.all([
       page.waitForURL(/\/notes\/books\/\d+\/order$/),
       page.getByRole('link', { name: 'Change order', exact: true }).click(),
     ]);
     await expect(page.getByRole('heading', { name: 'Change order', exact: true, level: 2 })).toBeVisible();
-    await expect(page.locator('.notes-book-order')).toContainText('Chapters');
-    await expect(page.locator('.notes-book-order')).toContainText('Pages');
-    await expect(page.locator('.notes-book-order')).toContainText('mixed Book ordering is being defined');
-    await expect(page.locator('.notes-book-order .notes-book-content-row')).toHaveCount(2);
-    await expect(page.locator('.notes-book-order form')).toHaveCount(0);
-    await expect(page.locator('.notes-book-order button')).toHaveCount(0);
-    await expect(page.locator('[draggable="true"]')).toHaveCount(0);
+    await expect(page.locator('.notes-book-order')).toContainText('Drag a handle to move a Chapter or Page');
+    await expect(page.locator('#notes-book-order-form')).toHaveAttribute('action', `/notes/books/${emptyBookId}/contents/reorder`);
+    await expect(page.locator('#notes-book-order-form')).toHaveCount(1);
+    await expect(page.locator('#notes-book-order-form input[name="_csrf"]')).toHaveCount(1);
+    await expect(page.locator('#notes-book-order-form input[name="orderedItems"]')).toHaveValue(
+      `page:${pageAId},chapter:${chapterXId},page:${pageBId},chapter:${chapterYId}`,
+    );
+    await expect(page.locator('[data-book-content-reorder-item]')).toHaveCount(4);
+    await expect(page.locator('[data-book-content-reorder-handle]')).toHaveCount(4);
+    expect(await page.locator('[data-book-content-reorder-item]').evaluateAll(
+      (items) => items.map((item) => item.getAttribute('data-content-key')),
+    )).toEqual([
+      `page:${pageAId}`,
+      `chapter:${chapterXId}`,
+      `page:${pageBId}`,
+      `chapter:${chapterYId}`,
+    ]);
+    expect(await page.locator('.notes-book-content-kind').allTextContents())
+      .toEqual(['Page', 'Chapter', 'Page', 'Chapter']);
+    await expect(page.locator('.notes-book-order')).not.toContainText(nestedPageTitle);
+    await expect(page.locator('.notes-book-order')).not.toContainText('Other Book');
+
+    const orderTitles = () => page.locator('[data-book-content-reorder-item]').evaluateAll(
+      (items) => items.map((item) => item.querySelector('.notes-book-content-title')?.textContent?.trim()),
+    );
+    const orderKeys = () => page.locator('[data-book-content-reorder-item]').evaluateAll(
+      (items) => items.map((item) => item.getAttribute('data-content-key')),
+    );
+    const assertBookOrderLayout = async () => {
+      const layout = await page.locator('main#main-content').evaluate((element) => ({
+        documentWidth: document.documentElement.scrollWidth,
+        viewportWidth: window.innerWidth,
+        handleWidth: element.querySelector('[data-book-content-reorder-handle]')?.getBoundingClientRect().width || 0,
+        rowRight: Math.max(...[...element.querySelectorAll('[data-book-content-reorder-item]')]
+          .map((row) => row.getBoundingClientRect().right)),
+      }));
+      expect(layout.documentWidth).toBeLessThanOrEqual(layout.viewportWidth);
+      expect(layout.rowRight).toBeLessThanOrEqual(layout.viewportWidth);
+      expect(layout.handleWidth).toBeLessThanOrEqual(48);
+    };
+    await assertBookOrderLayout();
+
+    const reorderRequests = [];
+    page.on('request', (request) => {
+      if (new URL(request.url()).pathname === `/notes/books/${emptyBookId}/contents/reorder`) {
+        reorderRequests.push(request);
+      }
+    });
+
+    const firstRow = page.locator('[data-book-content-reorder-item]').first();
+    const chapterYRow = page.locator(`[data-content-key="chapter:${chapterYId}"]`);
+    const firstRowBox = await firstRow.boundingBox();
+    expect(firstRowBox).not.toBeNull();
+    await chapterYRow.locator('[data-book-content-reorder-handle]').dragTo(firstRow, {
+      targetPosition: { x: Math.min(20, firstRowBox.width - 1), y: 1 },
+    });
+    expect(await orderTitles()).toEqual([chapterYTitle, pageATitle, chapterXTitle, pageBTitle]);
+    expect(await orderKeys()).toEqual([
+      `chapter:${chapterYId}`,
+      `page:${pageAId}`,
+      `chapter:${chapterXId}`,
+      `page:${pageBId}`,
+    ]);
+    await expect(page.locator('#notes-book-order-form input[name="orderedItems"]')).toHaveValue(
+      `chapter:${chapterYId},page:${pageAId},chapter:${chapterXId},page:${pageBId}`,
+    );
+    expect(reorderRequests).toHaveLength(0);
+
+    await Promise.all([
+      page.waitForURL((url) => url.pathname === `/notes/books/${emptyBookId}`),
+      page.getByRole('button', { name: 'Save', exact: true }).click(),
+    ]);
+    expect(reorderRequests).toHaveLength(1);
+    expect(await page.locator('.notes-book-content-row .notes-book-content-title a').allTextContents())
+      .toEqual([chapterYTitle, pageATitle, chapterXTitle, pageBTitle]);
+    await expect(page.locator('.notes-book-content-list')).not.toContainText(nestedPageTitle);
+
+    await page.goto(`${devServer.baseURL}/notes/books/${emptyBookId}/order`, { waitUntil: 'domcontentloaded' });
+    expect(await orderKeys()).toEqual([
+      `chapter:${chapterYId}`,
+      `page:${pageAId}`,
+      `chapter:${chapterXId}`,
+      `page:${pageBId}`,
+    ]);
+    const movedHandle = page.locator(`[data-content-key="page:${pageAId}"]`)
+      .locator('[data-book-content-reorder-handle]');
+    await movedHandle.focus();
+    await page.keyboard.press('ArrowDown');
+    expect(await orderTitles()).toEqual([chapterYTitle, chapterXTitle, pageATitle, pageBTitle]);
+    await expect(movedHandle).toBeFocused();
+    await expect(page.locator('[data-book-content-reorder-live]')).toContainText('moved to position 3 of 4');
+    expect(reorderRequests).toHaveLength(1);
+
+    await page.setViewportSize({ width: 375, height: 800 });
+    await assertBookOrderLayout();
+    await expect(page.locator('main#main-content')).toContainText('Save');
+    await Promise.all([
+      page.waitForURL((url) => url.pathname === `/notes/books/${emptyBookId}`),
+      page.getByRole('link', { name: 'Cancel', exact: true }).click(),
+    ]);
+    expect(reorderRequests).toHaveLength(1);
+    expect(await page.locator('.notes-book-content-row .notes-book-content-title a').allTextContents())
+      .toEqual([chapterYTitle, pageATitle, chapterXTitle, pageBTitle]);
+    await expect(page.locator('.notes-book-content-list')).not.toContainText(nestedPageTitle);
+    assertNoBrowserDiagnostics(diagnostics);
   });
 
   test('browses, selects, persists, and clears Notes picker assets', async ({ page, devServer }) => {

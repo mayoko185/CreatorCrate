@@ -1568,7 +1568,7 @@ describe('top-level Notes HTTP slice', () => {
 
       const emptyBook = app.locals.bookService.createBook({ title: 'Empty Chapter Book' });
       const emptyResponse = await agent.get(`/notes/books/${emptyBook.id}`).expect(200);
-      expect(emptyResponse.text).toContain('No chapters yet');
+      expect(emptyResponse.text).toContain('No Pages or Chapters yet');
     });
 
     it('renders and creates a Chapter with a trimmed title', async () => {
@@ -1802,7 +1802,7 @@ describe('top-level Notes HTTP slice', () => {
         .expect(404);
     });
 
-    it('reorders Chapters only within their Book and renders the resulting order', async () => {
+    it('reorders Chapters only within their Book and renders authoritative Book-content order', async () => {
       const book = app.locals.bookService.createBook({ title: 'Reorder Chapter Book' });
       const otherBook = app.locals.bookService.createBook({ title: 'Other Reorder Book' });
       const first = app.locals.chapterService.createChapter({ bookId: book.id, title: 'First Ordered Chapter' });
@@ -1837,7 +1837,279 @@ describe('top-level Notes HTTP slice', () => {
       }
 
       const bookPage = await agent.get(`/notes/books/${book.id}`).expect(200);
-      expect(bookPage.text.indexOf('Second Ordered Chapter')).toBeLessThan(bookPage.text.indexOf('First Ordered Chapter'));
+      const bookContents = app.locals.bookService.listBookContents(book.id);
+      expect(bookContents.map(({ type, id }) => ({ type, id }))).toEqual([
+        { type: 'chapter', id: first.id },
+        { type: 'chapter', id: second.id },
+      ]);
+      expect(bookPage.text.indexOf('First Ordered Chapter')).toBeLessThan(bookPage.text.indexOf('Second Ordered Chapter'));
+    });
+
+    it('reorders mixed Book contents by typed identity and persists only the target Book order', async () => {
+      const book = app.locals.bookService.createBook({ title: 'Mixed Reorder Book' });
+      const pageA = app.locals.noteService.createNote({
+        bookId: book.id,
+        title: 'Page A',
+        content: 'Page A content',
+      });
+      const chapterX = app.locals.chapterService.createChapter({ bookId: book.id, title: 'Chapter X' });
+      const pageB = app.locals.noteService.createNote({
+        bookId: book.id,
+        title: 'Page B',
+        content: 'Page B content',
+      });
+      const chapterY = app.locals.chapterService.createChapter({ bookId: book.id, title: 'Chapter Y' });
+      const chapterPage = app.locals.noteService.createNote({
+        chapterId: chapterX.id,
+        title: 'Nested Chapter Page',
+        content: 'Nested content',
+      });
+      const otherBook = app.locals.bookService.createBook({ title: 'Other Mixed Reorder Book' });
+      const otherChapter = app.locals.chapterService.createChapter({ bookId: otherBook.id, title: 'Foreign Chapter' });
+      const otherPage = app.locals.noteService.createNote({
+        bookId: otherBook.id,
+        title: 'Foreign Page',
+        content: 'Foreign content',
+      });
+      const otherContentsBefore = db.prepare(`
+        SELECT item_type, item_id, sort_order
+        FROM book_contents
+        WHERE book_id = ?
+        ORDER BY sort_order
+      `).all(otherBook.id);
+
+      expect(chapterX.id).toBe(pageA.id);
+      expect(chapterY.id).toBe(pageB.id);
+      const orderedItems = [
+        `chapter:${chapterY.id}`,
+        `page:${pageA.id}`,
+        `chapter:${chapterX.id}`,
+        `page:${pageB.id}`,
+      ].join(',');
+
+      const response = await agent
+        .post(`/notes/books/${book.id}/contents/reorder`)
+        .type('form')
+        .send({ _csrf: csrfToken, orderedItems })
+        .expect(302);
+
+      expect(response.headers.location).toBe(`/notes/books/${book.id}`);
+      expect(db.prepare(`
+        SELECT item_type, item_id, sort_order
+        FROM book_contents
+        WHERE book_id = ?
+        ORDER BY sort_order
+      `).all(book.id)).toEqual([
+        { item_type: 'chapter', item_id: chapterY.id, sort_order: 0 },
+        { item_type: 'page', item_id: pageA.id, sort_order: 1 },
+        { item_type: 'chapter', item_id: chapterX.id, sort_order: 2 },
+        { item_type: 'page', item_id: pageB.id, sort_order: 3 },
+      ]);
+      expect(db.prepare(`
+        SELECT item_type, item_id, sort_order
+        FROM book_contents
+        WHERE book_id = ?
+        ORDER BY sort_order
+      `).all(otherBook.id)).toEqual(otherContentsBefore);
+
+      const bookPage = await agent.get(response.headers.location).expect(200);
+      expect(bookPage.text.indexOf('Chapter Y')).toBeLessThan(bookPage.text.indexOf('Page A'));
+      expect(bookPage.text.indexOf('Page A')).toBeLessThan(bookPage.text.indexOf('Chapter X'));
+      expect(bookPage.text.indexOf('Chapter X')).toBeLessThan(bookPage.text.indexOf('Page B'));
+      expect(bookPage.text).not.toContain('Nested Chapter Page');
+      expect(bookPage.text).not.toContain('Foreign Chapter');
+      expect(bookPage.text).not.toContain('Foreign Page');
+      expect(chapterPage.chapter_id).toBe(chapterX.id);
+      expect(otherChapter.book_id).toBe(otherBook.id);
+      expect(otherPage.book_id).toBe(otherBook.id);
+    });
+
+    it('requires CSRF and rejects malformed or non-permutation mixed Book orders atomically', async () => {
+      const book = app.locals.bookService.createBook({ title: 'Mixed Validation Book' });
+      const pageA = app.locals.noteService.createNote({
+        bookId: book.id,
+        title: 'Validation Page A',
+        content: 'Page A content',
+      });
+      const chapterX = app.locals.chapterService.createChapter({ bookId: book.id, title: 'Validation Chapter X' });
+      const pageB = app.locals.noteService.createNote({
+        bookId: book.id,
+        title: 'Validation Page B',
+        content: 'Page B content',
+      });
+      const chapterY = app.locals.chapterService.createChapter({ bookId: book.id, title: 'Validation Chapter Y' });
+      const chapterPage = app.locals.noteService.createNote({
+        chapterId: chapterX.id,
+        title: 'Validation Chapter Page',
+        content: 'Nested content',
+      });
+      const otherBook = app.locals.bookService.createBook({ title: 'Validation Other Book' });
+      const otherChapter = app.locals.chapterService.createChapter({ bookId: otherBook.id, title: 'Other Chapter' });
+      const otherPage = app.locals.noteService.createNote({
+        bookId: otherBook.id,
+        title: 'Other Page',
+        content: 'Other content',
+      });
+      const reorderUrl = `/notes/books/${book.id}/contents/reorder`;
+      const validItems = [
+        `chapter:${chapterY.id}`,
+        `page:${pageA.id}`,
+        `chapter:${chapterX.id}`,
+        `page:${pageB.id}`,
+      ];
+      const before = db.prepare(`
+        SELECT item_type, item_id, sort_order
+        FROM book_contents
+        WHERE book_id = ?
+        ORDER BY sort_order
+      `).all(book.id);
+
+      await agent
+        .post(reorderUrl)
+        .type('form')
+        .send({ orderedItems: validItems.join(',') })
+        .expect(403);
+      expect(db.prepare(`
+        SELECT item_type, item_id, sort_order
+        FROM book_contents
+        WHERE book_id = ?
+        ORDER BY sort_order
+      `).all(book.id)).toEqual(before);
+
+      const invalidValues = [
+        'section:1,page:1,chapter:2,page:2',
+        'chapter:1.5,page:1,chapter:2,page:2',
+        'chapter:1e2,page:1,chapter:2,page:2',
+        'chapter:0,page:1,chapter:2,page:2',
+        'chapter:-1,page:1,chapter:2,page:2',
+        'chapter:01,page:1,chapter:2,page:2',
+        'chapter:1,,page:1,chapter:2',
+        'chapter:1,page:1,chapter:2,page:2,',
+        `${validItems.join(',')}\n`,
+        [
+          `chapter:${chapterY.id}`,
+          `page:${pageA.id}`,
+          `chapter:${chapterX.id}`,
+          `chapter:${chapterX.id}`,
+        ].join(','),
+        [
+          `chapter:${chapterY.id}`,
+          `page:${pageA.id}`,
+          `chapter:${chapterX.id}`,
+        ].join(','),
+        [
+          `chapter:${chapterY.id}`,
+          `page:${pageA.id}`,
+          `chapter:${chapterX.id}`,
+          'page:999999',
+        ].join(','),
+        [
+          `chapter:${chapterY.id}`,
+          `page:${pageA.id}`,
+          `chapter:${chapterX.id}`,
+          `chapter:${otherChapter.id}`,
+        ].join(','),
+        [
+          `chapter:${chapterY.id}`,
+          `page:${pageA.id}`,
+          `chapter:${chapterX.id}`,
+          `page:${otherPage.id}`,
+        ].join(','),
+        [
+          `chapter:${chapterY.id}`,
+          `page:${pageA.id}`,
+          `chapter:${chapterX.id}`,
+          `page:${chapterPage.id}`,
+        ].join(','),
+      ];
+
+      for (const orderedItems of invalidValues) {
+        const response = await agent
+          .post(reorderUrl)
+          .type('form')
+          .send({ _csrf: csrfToken, orderedItems })
+          .expect(422);
+        expect(response.text).toContain('submitted Book content order is invalid');
+        expect(db.prepare(`
+          SELECT item_type, item_id, sort_order
+          FROM book_contents
+          WHERE book_id = ?
+          ORDER BY sort_order
+        `).all(book.id)).toEqual(before);
+      }
+
+      await agent
+        .post(reorderUrl)
+        .type('form')
+        .send({ _csrf: csrfToken, orderedItems: [validItems.join(','), validItems.join(',')] })
+        .expect(422);
+      expect(db.prepare(`
+        SELECT item_type, item_id, sort_order
+        FROM book_contents
+        WHERE book_id = ?
+        ORDER BY sort_order
+      `).all(book.id)).toEqual(before);
+
+      const typeSwapBook = app.locals.bookService.createBook({ title: 'Type Swap Book' });
+      const typeSwapPage = app.locals.noteService.createNote({
+        bookId: typeSwapBook.id,
+        title: 'Type Swap Page',
+        content: 'Type swap content',
+      });
+      const typeSwapBefore = db.prepare(`
+        SELECT item_type, item_id, sort_order
+        FROM book_contents
+        WHERE book_id = ?
+        ORDER BY sort_order
+      `).all(typeSwapBook.id);
+      await agent
+        .post(`/notes/books/${typeSwapBook.id}/contents/reorder`)
+        .type('form')
+        .send({ _csrf: csrfToken, orderedItems: `chapter:${typeSwapPage.id}` })
+        .expect(422);
+      expect(db.prepare(`
+        SELECT item_type, item_id, sort_order
+        FROM book_contents
+        WHERE book_id = ?
+        ORDER BY sort_order
+      `).all(typeSwapBook.id)).toEqual(typeSwapBefore);
+
+      for (const bookId of ['01', 'not-an-id', '999999']) {
+        await agent
+          .post(`/notes/books/${bookId}/contents/reorder`)
+          .type('form')
+          .send({ _csrf: csrfToken, orderedItems: validItems.join(',') })
+          .expect(404);
+      }
+    });
+
+    it('handles empty and one-item Book content reorder posts', async () => {
+      const emptyBook = app.locals.bookService.createBook({ title: 'Empty Reorder Book' });
+
+      await agent
+        .post(`/notes/books/${emptyBook.id}/contents/reorder`)
+        .type('form')
+        .send({ _csrf: csrfToken, orderedItems: '' })
+        .expect(302)
+        .expect('Location', `/notes/books/${emptyBook.id}`);
+      expect(db.prepare('SELECT COUNT(*) AS count FROM book_contents WHERE book_id = ?').get(emptyBook.id).count)
+        .toBe(0);
+
+      const oneItemBook = app.locals.bookService.createBook({ title: 'One Item Reorder Book' });
+      const page = app.locals.noteService.createNote({
+        bookId: oneItemBook.id,
+        title: 'Only Book Page',
+        content: 'Only content',
+      });
+
+      await agent
+        .post(`/notes/books/${oneItemBook.id}/contents/reorder`)
+        .type('form')
+        .send({ _csrf: csrfToken, orderedItems: `page:${page.id}` })
+        .expect(302)
+        .expect('Location', `/notes/books/${oneItemBook.id}`);
+      expect(db.prepare('SELECT item_type, item_id, sort_order FROM book_contents WHERE book_id = ?').all(oneItemBook.id))
+        .toEqual([{ item_type: 'page', item_id: page.id, sort_order: 0 }]);
     });
 
     it('reorders Pages only within their Chapter and returns to that Chapter', async () => {

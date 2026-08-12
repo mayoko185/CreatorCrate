@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -6,9 +6,28 @@ import { fileURLToPath } from 'node:url';
 import { createApp } from '../src/app.js';
 import { closeDatabase, openDatabase, runMigrations } from '../src/db.js';
 import { ensureAuthEnablement } from '../src/auth/auth-state.js';
+import { BookContentIntegrityError } from '../src/services/book-service.js';
 import { getDisabledModeCsrf } from './helpers/auth.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
+
+function captureBookDetailLocals(app) {
+  let locals = null;
+  const originalRender = app.response.render;
+  app.response.render = function captureRender(view, renderLocals, callback) {
+    if (view === 'notes/books/detail.njk') locals = renderLocals;
+    return originalRender.call(this, view, renderLocals, callback);
+  };
+
+  return {
+    get() {
+      return locals;
+    },
+    restore() {
+      app.response.render = originalRender;
+    },
+  };
+}
 
 describe('Book HTTP routes', () => {
   let db;
@@ -173,14 +192,22 @@ describe('Book HTTP routes', () => {
   it('renders Book details and returns 404 for missing or malformed Book IDs', async () => {
     const book = app.locals.bookService.createBook({ title: 'Detail Book' });
 
+    const renderCapture = captureBookDetailLocals(app);
     const response = await agent.get(`/notes/books/${book.id}`).expect(200);
+    const locals = renderCapture.get();
+    renderCapture.restore();
     expect(response.text).toContain('<nav class="notes-hierarchy" aria-label="Page hierarchy">');
     expect(response.text).toContain('<span class="notes-hierarchy-kind">Book</span>');
     expect(response.text).toContain(`<span class="notes-hierarchy-current">${book.title}</span>`);
-    expect(response.text).toContain('<h2 id="notes-book-chapters-heading">Chapters</h2>');
-    expect(response.text).toContain('<h3 class="empty-state-heading">No chapters yet</h3>');
-    expect(response.text).toContain('<h2 id="notes-book-pages-heading">Pages</h2>');
-    expect(response.text).toContain('<h3 class="empty-state-heading">No pages yet</h3>');
+    expect((response.text.match(/<h1\b/g) || [])).toHaveLength(1);
+    expect(response.text).toContain('<h2 id="notes-book-content-heading">Content</h2>');
+    expect(response.text).toContain('<h3 class="empty-state-heading">No Pages or Chapters yet</h3>');
+    expect((response.text.match(/class="empty-state"/g) || [])).toHaveLength(1);
+    expect((response.text.match(/<section class="notes-book-section"/g) || [])).toHaveLength(1);
+    expect(response.text).not.toContain('notes-book-chapters-heading');
+    expect(response.text).not.toContain('notes-book-pages-heading');
+    expect(response.text).not.toContain('No chapters yet');
+    expect(response.text).not.toContain('No pages yet');
     expect(response.text).toContain(`<a class="button button-primary" href="/notes/new?bookId=${book.id}">New Page</a>`);
     expect(response.text).toContain(`<a class="button" href="/notes/books/${book.id}/chapters/new">New Chapter</a>`);
     expect(response.text).toContain(`href="/notes/books/${book.id}/edit"`);
@@ -191,6 +218,10 @@ describe('Book HTTP routes', () => {
     expect(response.text).not.toContain('Move down');
     expect(response.text).not.toContain('Danger zone');
     expect(response.text).not.toContain(`/notes/books/${book.id}/delete`);
+    expect(locals.contents).toEqual([]);
+    expect(locals.chapters).toEqual([]);
+    expect(locals.pages).toEqual([]);
+    expect(locals.canChangeOrder).toBe(false);
 
     await agent.get('/notes/books/999999').expect(404);
     await agent.get('/notes/books/01').expect(404);
@@ -202,16 +233,30 @@ describe('Book HTTP routes', () => {
     const book = app.locals.bookService.createBook({ title: 'Chapter Book' });
     const chapter = app.locals.chapterService.createChapter({ bookId: book.id, title: 'Chapter One' });
 
+    const renderCapture = captureBookDetailLocals(app);
     const response = await agent.get(`/notes/books/${book.id}`).expect(200);
+    const locals = renderCapture.get();
+    renderCapture.restore();
 
-    expect(response.text).toContain('<h2 id="notes-book-chapters-heading">Chapters</h2>');
+    expect(response.text).toContain('<h2 id="notes-book-content-heading">Content</h2>');
+    expect((response.text.match(/<section class="notes-book-section"/g) || [])).toHaveLength(1);
     expect(response.text).toContain(`<span class="notes-book-content-kind">Chapter</span>`);
     expect(response.text).toContain(`<a href="/notes/chapters/${chapter.id}">Chapter One</a>`);
     expect(response.text).toContain(`<a class="button button-small button-secondary" href="/notes/chapters/${chapter.id}/edit" aria-label="Edit Chapter: Chapter One">Edit Chapter</a>`);
-    expect(response.text).toContain('<h2 id="notes-book-pages-heading">Pages</h2>');
-    expect(response.text).toContain('<h3 class="empty-state-heading">No pages yet</h3>');
+    expect(response.text).not.toContain('notes-book-chapters-heading');
+    expect(response.text).not.toContain('notes-book-pages-heading');
+    expect(response.text).not.toContain('No Pages or Chapters yet');
+    expect(response.text).not.toContain('No pages yet');
+    expect(response.text).not.toContain('No chapters yet');
+    expect((response.text.match(/class="notes-book-content-row"/g) || [])).toHaveLength(1);
     expect(response.text).not.toContain('Change order');
     expect(response.text).not.toContain('>Manage</a>');
+    expect(locals.contents.map(({ type, id }) => ({ type, id }))).toEqual([
+      { type: 'chapter', id: chapter.id },
+    ]);
+    expect(locals.chapters).toEqual([chapter]);
+    expect(locals.pages).toEqual([]);
+    expect(locals.canChangeOrder).toBe(false);
   });
 
   it('renders direct Pages with canonical links and no Chapters', async () => {
@@ -222,53 +267,118 @@ describe('Book HTTP routes', () => {
       content: 'Direct content',
     });
 
+    const renderCapture = captureBookDetailLocals(app);
     const response = await agent.get(`/notes/books/${book.id}`).expect(200);
+    const locals = renderCapture.get();
+    renderCapture.restore();
 
-    expect(response.text).toContain('<h3 class="empty-state-heading">No chapters yet</h3>');
-    expect(response.text).toContain('<h2 id="notes-book-pages-heading">Pages</h2>');
+    expect(response.text).toContain('<h2 id="notes-book-content-heading">Content</h2>');
     expect(response.text).toContain(`<a href="/notes/${page.id}">Direct Page</a>`);
     expect(response.text).toContain(`<a class="button button-small button-secondary" href="/notes/${page.id}/edit" aria-label="Edit Page: Direct Page">Edit Page</a>`);
+    expect(response.text).toContain('<span class="notes-book-content-kind">Page</span>');
+    expect((response.text.match(/<section class="notes-book-section"/g) || [])).toHaveLength(1);
+    expect((response.text.match(/class="notes-book-content-row"/g) || [])).toHaveLength(1);
+    expect(response.text).not.toContain('notes-book-chapters-heading');
+    expect(response.text).not.toContain('notes-book-pages-heading');
+    expect(response.text).not.toContain('No Pages or Chapters yet');
     expect(response.text).not.toContain('No pages yet');
+    expect(response.text).not.toContain('No chapters yet');
     expect(response.text).not.toContain('Change order');
     expect(response.text).not.toContain('>Manage</a>');
+    expect(locals.contents.map(({ type, id }) => ({ type, id }))).toEqual([
+      { type: 'page', id: page.id },
+    ]);
+    expect(locals.chapters).toEqual([]);
+    expect(locals.pages.map(({ id }) => id)).toEqual([page.id]);
+    expect(locals.canChangeOrder).toBe(false);
   });
 
   it('renders both child types while excluding Chapter Pages and Pages from other Books', async () => {
     const book = app.locals.bookService.createBook({ title: 'Mixed Book' });
     const otherBook = app.locals.bookService.createBook({ title: 'Other Book' });
-    const chapter = app.locals.chapterService.createChapter({ bookId: book.id, title: 'Included Chapter' });
+    const pageA = app.locals.noteService.createNote({
+      bookId: book.id,
+      title: 'Page A',
+      content: 'Page A content',
+    });
+    const chapterX = app.locals.chapterService.createChapter({ bookId: book.id, title: 'Chapter X' });
     const chapterPage = app.locals.noteService.createNote({
-      chapterId: chapter.id,
+      chapterId: chapterX.id,
       title: 'Chapter Page',
       content: 'Nested content',
     });
-    const directPage = app.locals.noteService.createNote({
+    const pageB = app.locals.noteService.createNote({
       bookId: book.id,
-      title: 'Included Direct Page',
-      content: 'Direct content',
+      title: 'Page B',
+      content: 'Page B content',
     });
+    const chapterY = app.locals.chapterService.createChapter({ bookId: book.id, title: 'Chapter Y' });
     const otherBookPage = app.locals.noteService.createNote({
       bookId: otherBook.id,
       title: 'Other Book Page',
       content: 'Other content',
     });
+    const contents = [
+      { type: 'page', id: pageA.id, sortOrder: 0, page: pageA },
+      { type: 'chapter', id: chapterX.id, sortOrder: 1, chapter: chapterX },
+      { type: 'page', id: pageB.id, sortOrder: 2, page: pageB },
+      { type: 'chapter', id: chapterY.id, sortOrder: 3, chapter: chapterY },
+    ];
+    const listBookContents = vi.spyOn(app.locals.bookService, 'listBookContents').mockReturnValue(contents);
+    const listChapters = vi.spyOn(app.locals.chapterService, 'listChapters');
+    const listPages = vi.spyOn(app.locals.noteService, 'listNotesForBook');
+    const renderCapture = captureBookDetailLocals(app);
 
     const response = await agent.get(`/notes/books/${book.id}`).expect(200);
-    const chaptersSection = response.text.match(
-      /<section class="notes-book-section" aria-labelledby="notes-book-chapters-heading">[\s\S]*?<\/section>/,
+    const locals = renderCapture.get();
+    renderCapture.restore();
+    const contentSection = response.text.match(
+      /<section class="notes-book-section" aria-labelledby="notes-book-content-heading">[\s\S]*?<\/section>/,
     )?.[0] || '';
-    const pagesSection = response.text.match(
-      /<section class="notes-book-section" aria-labelledby="notes-book-pages-heading">[\s\S]*?<\/section>/,
+    const contentList = contentSection.match(
+      /<ul class="notes-book-content-list"[\s\S]*?<\/ul>/,
     )?.[0] || '';
+    const contentTitles = ['Page A', 'Chapter X', 'Page B', 'Chapter Y'];
+    const contentPositions = contentTitles.map((title) => contentList.indexOf(title));
+    const contentKinds = [...contentList.matchAll(
+      /<span class="notes-book-content-kind">([^<]+)<\/span>/g,
+    )].map(([, kind]) => kind);
 
-    expect(chaptersSection).toContain(`<a href="/notes/chapters/${chapter.id}">Included Chapter</a>`);
-    expect(chaptersSection).toContain(`<a class="button button-small button-secondary" href="/notes/chapters/${chapter.id}/edit" aria-label="Edit Chapter: Included Chapter">Edit Chapter</a>`);
-    expect(pagesSection).toContain(`<a href="/notes/${directPage.id}">Included Direct Page</a>`);
-    expect(pagesSection).toContain(`<a class="button button-small button-secondary" href="/notes/${directPage.id}/edit" aria-label="Edit Page: Included Direct Page">Edit Page</a>`);
-    expect(pagesSection).not.toContain(`href="/notes/${chapterPage.id}"`);
-    expect(pagesSection).not.toContain('Chapter Page');
-    expect(pagesSection).not.toContain(`href="/notes/${otherBookPage.id}"`);
-    expect(pagesSection).not.toContain('Other Book Page');
+    expect(listBookContents).toHaveBeenCalledWith(book.id);
+    expect(listChapters).not.toHaveBeenCalled();
+    expect(listPages).not.toHaveBeenCalled();
+    expect(chapterX.id).toBe(pageA.id);
+    expect(locals.contents).toBe(contents);
+    expect(locals.contents.map(({ type, id }) => ({ type, id }))).toEqual([
+      { type: 'page', id: pageA.id },
+      { type: 'chapter', id: chapterX.id },
+      { type: 'page', id: pageB.id },
+      { type: 'chapter', id: chapterY.id },
+    ]);
+    expect(locals.chapters).toEqual([chapterX, chapterY]);
+    expect(locals.pages).toEqual([pageA, pageB]);
+    expect(locals.canChangeOrder).toBe(true);
+    expect((response.text.match(/<section class="notes-book-section"/g) || [])).toHaveLength(1);
+    expect(response.text).not.toContain('notes-book-chapters-heading');
+    expect(response.text).not.toContain('notes-book-pages-heading');
+    expect(contentList).toContain(`<a href="/notes/chapters/${chapterX.id}">Chapter X</a>`);
+    expect(contentList).toContain(`<a href="/notes/chapters/${chapterY.id}">Chapter Y</a>`);
+    expect(contentList).toContain(`<a href="/notes/${pageA.id}">Page A</a>`);
+    expect(contentList).toContain(`<a href="/notes/${pageB.id}">Page B</a>`);
+    expect(contentList).toContain(`<a class="button button-small button-secondary" href="/notes/chapters/${chapterX.id}/edit" aria-label="Edit Chapter: Chapter X">Edit Chapter</a>`);
+    expect(contentList).toContain(`<a class="button button-small button-secondary" href="/notes/chapters/${chapterY.id}/edit" aria-label="Edit Chapter: Chapter Y">Edit Chapter</a>`);
+    expect(contentList).toContain(`<a class="button button-small button-secondary" href="/notes/${pageA.id}/edit" aria-label="Edit Page: Page A">Edit Page</a>`);
+    expect(contentList).toContain(`<a class="button button-small button-secondary" href="/notes/${pageB.id}/edit" aria-label="Edit Page: Page B">Edit Page</a>`);
+    expect(contentList).not.toContain(`href="/notes/${chapterPage.id}">Chapter Page</a>`);
+    expect(contentList).not.toContain('Chapter Page');
+    expect(contentList).not.toContain(`href="/notes/${otherBookPage.id}">Other Book Page</a>`);
+    expect(contentList).not.toContain('Other Book Page');
+    expect((contentList.match(/<li class="notes-book-content-row">/g) || [])).toHaveLength(4);
+    expect(contentKinds).toEqual(['Page', 'Chapter', 'Page', 'Chapter']);
+    expect(contentPositions[0]).toBeGreaterThanOrEqual(0);
+    expect(contentPositions[0]).toBeLessThan(contentPositions[1]);
+    expect(contentPositions[1]).toBeLessThan(contentPositions[2]);
+    expect(contentPositions[2]).toBeLessThan(contentPositions[3]);
     expect(response.text).toContain(`<a class="button button-secondary" href="/notes/books/${book.id}/order">Change order</a>`);
     expect(response.text).not.toContain('>Manage</a>');
     expect(response.text).not.toContain('Move up');
@@ -278,17 +388,120 @@ describe('Book HTTP routes', () => {
     const orderPage = await agent.get(`/notes/books/${book.id}/order`).expect(200);
     expect(orderPage.text).toContain('<title>CreatorCrate — Notes — Change order — Mixed Book</title>');
     expect(orderPage.text).toContain(`<span class="notes-hierarchy-current">${book.title}</span>`);
-    expect(orderPage.text).toContain('Book ordering controls will be available here in a future update.');
-    expect(orderPage.text).toContain(`<a href="/notes/chapters/${chapter.id}">Included Chapter</a>`);
-    expect(orderPage.text).toContain(`<a href="/notes/${directPage.id}">Included Direct Page</a>`);
+    expect(orderPage.text).toContain('<button class="button button-primary" type="submit" form="notes-book-order-form">Save</button>');
+    expect(orderPage.text).toContain(`<a class="button button-secondary" href="/notes/books/${book.id}">Cancel</a>`);
+    expect(orderPage.text).toContain(`<form id="notes-book-order-form" method="post" action="/notes/books/${book.id}/contents/reorder" data-book-content-reorder-form>`);
+    expect(orderPage.text).toMatch(/<form[^>]+data-book-content-reorder-form[\s\S]*?name="_csrf"[^>]+value="[^"]+"/);
+    expect(orderPage.text.match(/name="orderedItems"/g) || []).toHaveLength(1);
+    expect(orderPage.text).toContain(`<input type="hidden" name="orderedItems" data-book-content-order-input value="${contents.map(({ type, id }) => `${type}:${id}`).join(',')}">`);
+    expect((orderPage.text.match(/data-book-content-reorder-item/g) || [])).toHaveLength(4);
+    expect((orderPage.text.match(/data-book-content-reorder-handle/g) || [])).toHaveLength(4);
+    expect((orderPage.text.match(/draggable="true"/g) || [])).toHaveLength(8);
+    expect(orderPage.text).toContain(`data-content-key="page:${pageA.id}"`);
+    expect(orderPage.text).toContain(`data-content-key="chapter:${chapterX.id}"`);
+    expect(orderPage.text).toContain(`data-content-key="page:${pageB.id}"`);
+    expect(orderPage.text).toContain(`data-content-key="chapter:${chapterY.id}"`);
+    expect(orderPage.text).toContain('aria-label="Reorder Chapter: Chapter X"');
+    expect(orderPage.text).toContain('aria-label="Reorder Page: Page A"');
+    expect(orderPage.text).toContain('Position 1 of 4');
+    const orderList = orderPage.text.match(/<ol[\s\S]*?data-book-content-reorder-list[\s\S]*?<\/ol>/)?.[0] || '';
+    expect(orderList.indexOf('Page A')).toBeLessThan(orderList.indexOf('Chapter X'));
+    expect(orderList.indexOf('Chapter X')).toBeLessThan(orderList.indexOf('Page B'));
+    expect(orderList.indexOf('Page B')).toBeLessThan(orderList.indexOf('Chapter Y'));
+    expect(orderPage.text).not.toContain('Book ordering controls will be available here in a future update.');
+    expect(orderPage.text).toContain(`<a href="/notes/chapters/${chapterX.id}">Chapter X</a>`);
+    expect(orderPage.text).toContain(`<a href="/notes/${pageA.id}">Page A</a>`);
     expect(orderPage.text).not.toContain('Chapter Page');
     expect(orderPage.text).not.toContain('Other Book Page');
-    expect(orderPage.text).not.toContain('draggable="true"');
-    expect(orderPage.text).not.toContain('Move up');
-    expect(orderPage.text).not.toContain('Move down');
     expect(orderPage.text).not.toContain('orderedChapterIds');
     expect(orderPage.text).not.toContain('orderedNoteIds');
-    expect(orderPage.text).not.toContain('<form');
+    expect(listBookContents).toHaveBeenCalledTimes(2);
+    expect(listChapters).not.toHaveBeenCalled();
+    expect(listPages).not.toHaveBeenCalled();
+  });
+
+  it('renders controlled empty and one-item Book order pages', async () => {
+    const emptyBook = app.locals.bookService.createBook({ title: 'Empty Order Book' });
+    const empty = await agent.get(`/notes/books/${emptyBook.id}/order`).expect(200);
+    expect(empty.text).toContain('This Book has no Chapters or direct Pages to order yet.');
+    expect(empty.text).toContain(`<a class="button button-secondary" href="/notes/books/${emptyBook.id}">Cancel</a>`);
+    expect(empty.text).not.toContain('data-book-content-reorder-list');
+    expect(empty.text).not.toContain('<form id="notes-book-order-form"');
+
+    const oneBook = app.locals.bookService.createBook({ title: 'One Item Order Book' });
+    const page = app.locals.noteService.createNote({
+      bookId: oneBook.id,
+      title: 'Only Order Page',
+      content: 'Only content',
+    });
+    const one = await agent.get(`/notes/books/${oneBook.id}/order`).expect(200);
+    expect(one.text).toContain('<button class="button button-primary" type="submit" form="notes-book-order-form">Save</button>');
+    expect(one.text).toContain(`<input type="hidden" name="orderedItems" data-book-content-order-input value="page:${page.id}">`);
+    expect((one.text.match(/data-book-content-reorder-item/g) || [])).toHaveLength(1);
+    expect((one.text.match(/data-book-content-reorder-handle/g) || [])).toHaveLength(1);
+    expect(one.text).not.toContain('Chapter Page');
+  });
+
+  it('enables Change order for one Chapter and one direct Page', async () => {
+    const book = app.locals.bookService.createBook({ title: 'Two Contents Book' });
+    const chapter = app.locals.chapterService.createChapter({ bookId: book.id, title: 'Chapter' });
+    const page = app.locals.noteService.createNote({
+      bookId: book.id,
+      title: 'Direct Page',
+      content: 'Direct content',
+    });
+
+    const renderCapture = captureBookDetailLocals(app);
+    const response = await agent.get(`/notes/books/${book.id}`).expect(200);
+    const locals = renderCapture.get();
+    renderCapture.restore();
+
+    expect(locals.contents).toHaveLength(2);
+    expect(locals.canChangeOrder).toBe(true);
+    expect(response.text).toContain(`<a class="button button-secondary" href="/notes/books/${book.id}/order">Change order</a>`);
+    expect(locals.chapters).toEqual([chapter]);
+    expect(locals.pages.map(({ id }) => id)).toEqual([page.id]);
+  });
+
+  it('does not count Chapter Pages as Book-level contents', async () => {
+    const book = app.locals.bookService.createBook({ title: 'Nested Page Book' });
+    const chapter = app.locals.chapterService.createChapter({ bookId: book.id, title: 'Chapter' });
+    const chapterPage = app.locals.noteService.createNote({
+      chapterId: chapter.id,
+      title: 'Chapter Page',
+      content: 'Nested content',
+    });
+
+    const renderCapture = captureBookDetailLocals(app);
+    const response = await agent.get(`/notes/books/${book.id}`).expect(200);
+    const locals = renderCapture.get();
+    renderCapture.restore();
+
+    expect(locals.contents.map(({ type, id }) => ({ type, id }))).toEqual([
+      { type: 'chapter', id: chapter.id },
+    ]);
+    expect(locals.pages).toEqual([]);
+    expect(locals.canChangeOrder).toBe(false);
+    expect(response.text).not.toContain(`<a href="/notes/${chapterPage.id}">Chapter Page</a>`);
+    expect(response.text).not.toContain('Change order');
+  });
+
+  it('propagates BookContentIntegrityError without falling back to legacy child queries', async () => {
+    const book = app.locals.bookService.createBook({ title: 'Corrupt Book' });
+    const integrityError = new BookContentIntegrityError('Book contents are inconsistent.', {
+      code: 'CONTENT_ITEM_NOT_FOUND',
+    });
+    const listBookContents = vi.spyOn(app.locals.bookService, 'listBookContents')
+      .mockImplementation(() => { throw integrityError; });
+    const listChapters = vi.spyOn(app.locals.chapterService, 'listChapters');
+    const listPages = vi.spyOn(app.locals.noteService, 'listNotesForBook');
+
+    const response = await agent.get(`/notes/books/${book.id}`).expect(500);
+
+    expect(response.text).toContain('<p class="error-status">500</p>');
+    expect(listBookContents).toHaveBeenCalledWith(book.id);
+    expect(listChapters).not.toHaveBeenCalled();
+    expect(listPages).not.toHaveBeenCalled();
   });
 
   it('renders and updates the Book edit form', async () => {
