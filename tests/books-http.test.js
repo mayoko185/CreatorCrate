@@ -200,10 +200,12 @@ describe('Book HTTP routes', () => {
     expect(response.text).toContain('<span class="notes-hierarchy-kind">Book</span>');
     expect(response.text).toContain(`<span class="notes-hierarchy-current">${book.title}</span>`);
     expect((response.text.match(/<h1\b/g) || [])).toHaveLength(1);
-    expect(response.text).toContain('<h2 id="notes-book-content-heading">Content</h2>');
-    expect(response.text).toContain('<h3 class="empty-state-heading">No Pages or Chapters yet</h3>');
-    expect((response.text.match(/class="empty-state"/g) || [])).toHaveLength(1);
-    expect((response.text.match(/<section class="notes-book-section"/g) || [])).toHaveLength(1);
+    expect(response.text).toContain(`<nav class="book-outline" aria-label="Contents of ${book.title}">`);
+    expect(response.text).toContain('<p class="book-outline-empty">No Pages or Chapters yet</p>');
+    expect((response.text.match(/class="book-outline-empty"/g) || [])).toHaveLength(1);
+    expect(response.text).not.toContain('<h2 id="notes-book-content-heading">Content</h2>');
+    expect(response.text).not.toContain('notes-book-section');
+    expect(response.text).not.toContain('notes-book-content-list');
     expect(response.text).not.toContain('notes-book-chapters-heading');
     expect(response.text).not.toContain('notes-book-pages-heading');
     expect(response.text).not.toContain('No chapters yet');
@@ -238,17 +240,19 @@ describe('Book HTTP routes', () => {
     const locals = renderCapture.get();
     renderCapture.restore();
 
-    expect(response.text).toContain('<h2 id="notes-book-content-heading">Content</h2>');
-    expect((response.text.match(/<section class="notes-book-section"/g) || [])).toHaveLength(1);
-    expect(response.text).toContain(`<span class="notes-book-content-kind">Chapter</span>`);
-    expect(response.text).toContain(`<a href="/notes/chapters/${chapter.id}">Chapter One</a>`);
-    expect(response.text).toContain(`<a class="button button-small button-secondary" href="/notes/chapters/${chapter.id}/edit" aria-label="Edit Chapter: Chapter One">Edit Chapter</a>`);
-    expect(response.text).not.toContain('notes-book-chapters-heading');
-    expect(response.text).not.toContain('notes-book-pages-heading');
-    expect(response.text).not.toContain('No Pages or Chapters yet');
-    expect(response.text).not.toContain('No pages yet');
-    expect(response.text).not.toContain('No chapters yet');
-    expect((response.text.match(/class="notes-book-content-row"/g) || [])).toHaveLength(1);
+    const outline = response.text.match(/<nav class="book-outline"[\s\S]*?<\/nav>/)?.[0] || '';
+    expect(outline).toContain('<ol class="book-outline-list">');
+    expect(outline).toContain('<li class="book-outline-item book-outline-chapter">');
+    expect(outline).toContain('<details class="book-outline-disclosure">');
+    expect(outline).toContain('<summary class="book-outline-summary">');
+    expect(outline).toContain(`<a class="book-outline-title" href="/notes/chapters/${chapter.id}">Chapter One</a>`);
+    expect(outline).toContain('<span class="book-outline-count">0 Pages</span>');
+    expect(outline).toContain('<p class="book-outline-empty">No Pages yet</p>');
+    expect(outline).not.toMatch(/<details[^>]*\sopen(?:\s|=|>)/);
+    expect(outline).not.toContain('<h2 id="notes-book-content-heading">Content</h2>');
+    expect(outline).not.toContain('Edit Chapter');
+    expect(outline).not.toContain('/edit');
+    expect((outline.match(/<li class="book-outline-item book-outline-chapter">/g) || [])).toHaveLength(1);
     expect(response.text).not.toContain('Change order');
     expect(response.text).not.toContain('>Manage</a>');
     expect(locals.contents.map(({ type, id }) => ({ type, id }))).toEqual([
@@ -272,17 +276,20 @@ describe('Book HTTP routes', () => {
     const locals = renderCapture.get();
     renderCapture.restore();
 
-    expect(response.text).toContain('<h2 id="notes-book-content-heading">Content</h2>');
-    expect(response.text).toContain(`<a href="/notes/${page.id}">Direct Page</a>`);
-    expect(response.text).toContain(`<a class="button button-small button-secondary" href="/notes/${page.id}/edit" aria-label="Edit Page: Direct Page">Edit Page</a>`);
-    expect(response.text).toContain('<span class="notes-book-content-kind">Page</span>');
-    expect((response.text.match(/<section class="notes-book-section"/g) || [])).toHaveLength(1);
-    expect((response.text.match(/class="notes-book-content-row"/g) || [])).toHaveLength(1);
-    expect(response.text).not.toContain('notes-book-chapters-heading');
-    expect(response.text).not.toContain('notes-book-pages-heading');
-    expect(response.text).not.toContain('No Pages or Chapters yet');
-    expect(response.text).not.toContain('No pages yet');
-    expect(response.text).not.toContain('No chapters yet');
+    const outline = response.text.match(/<nav class="book-outline"[\s\S]*?<\/nav>/)?.[0] || '';
+    expect(outline).toMatch(new RegExp(
+      `<li class="book-outline-item book-outline-page">[\\s\\S]*?<a class="book-outline-title" href="/notes/${page.id}">Direct Page<\/a>[\\s\\S]*?<\/li>`,
+    ));
+    expect((outline.match(/<li class="book-outline-item book-outline-page">/g) || [])).toHaveLength(1);
+    expect(outline).not.toContain('<details');
+    expect(outline).not.toContain('Edit Page');
+    expect(outline).not.toContain('/edit');
+    expect(outline).not.toContain('<h2 id="notes-book-content-heading">Content</h2>');
+    expect(outline).not.toContain('notes-book-chapters-heading');
+    expect(outline).not.toContain('notes-book-pages-heading');
+    expect(outline).not.toContain('No Pages or Chapters yet');
+    expect(outline).not.toContain('No pages yet');
+    expect(outline).not.toContain('No chapters yet');
     expect(response.text).not.toContain('Change order');
     expect(response.text).not.toContain('>Manage</a>');
     expect(locals.contents.map(({ type, id }) => ({ type, id }))).toEqual([
@@ -304,8 +311,13 @@ describe('Book HTTP routes', () => {
     const chapterX = app.locals.chapterService.createChapter({ bookId: book.id, title: 'Chapter X' });
     const chapterPage = app.locals.noteService.createNote({
       chapterId: chapterX.id,
-      title: 'Chapter Page',
-      content: 'Nested content',
+      title: 'Chapter X Page A',
+      content: 'Nested content A',
+    });
+    const chapterPageSecond = app.locals.noteService.createNote({
+      chapterId: chapterX.id,
+      title: 'Chapter X Page B',
+      content: 'Nested content B',
     });
     const pageB = app.locals.noteService.createNote({
       bookId: book.id,
@@ -313,6 +325,11 @@ describe('Book HTTP routes', () => {
       content: 'Page B content',
     });
     const chapterY = app.locals.chapterService.createChapter({ bookId: book.id, title: 'Chapter Y' });
+    const chapterYPage = app.locals.noteService.createNote({
+      chapterId: chapterY.id,
+      title: 'Chapter Y Page',
+      content: 'Nested content Y',
+    });
     const otherBookPage = app.locals.noteService.createNote({
       bookId: otherBook.id,
       title: 'Other Book Page',
@@ -320,9 +337,21 @@ describe('Book HTTP routes', () => {
     });
     const contents = [
       { type: 'page', id: pageA.id, sortOrder: 0, page: pageA },
-      { type: 'chapter', id: chapterX.id, sortOrder: 1, chapter: chapterX },
+      {
+        type: 'chapter',
+        id: chapterX.id,
+        sortOrder: 1,
+        chapter: chapterX,
+        pages: [chapterPage, chapterPageSecond],
+      },
       { type: 'page', id: pageB.id, sortOrder: 2, page: pageB },
-      { type: 'chapter', id: chapterY.id, sortOrder: 3, chapter: chapterY },
+      {
+        type: 'chapter',
+        id: chapterY.id,
+        sortOrder: 3,
+        chapter: chapterY,
+        pages: [chapterYPage],
+      },
     ];
     const listBookContents = vi.spyOn(app.locals.bookService, 'listBookContents').mockReturnValue(contents);
     const listChapters = vi.spyOn(app.locals.chapterService, 'listChapters');
@@ -332,17 +361,19 @@ describe('Book HTTP routes', () => {
     const response = await agent.get(`/notes/books/${book.id}`).expect(200);
     const locals = renderCapture.get();
     renderCapture.restore();
-    const contentSection = response.text.match(
-      /<section class="notes-book-section" aria-labelledby="notes-book-content-heading">[\s\S]*?<\/section>/,
-    )?.[0] || '';
-    const contentList = contentSection.match(
-      /<ul class="notes-book-content-list"[\s\S]*?<\/ul>/,
-    )?.[0] || '';
-    const contentTitles = ['Page A', 'Chapter X', 'Page B', 'Chapter Y'];
-    const contentPositions = contentTitles.map((title) => contentList.indexOf(title));
-    const contentKinds = [...contentList.matchAll(
-      /<span class="notes-book-content-kind">([^<]+)<\/span>/g,
-    )].map(([, kind]) => kind);
+    const outline = response.text.match(/<nav class="book-outline"[\s\S]*?<\/nav>/)?.[0] || '';
+    const topLevelStarts = [...outline.matchAll(
+      /<li class="book-outline-item (?:book-outline-page|book-outline-chapter)">/g,
+    )].map(({ index }) => index);
+    const topLevelItems = topLevelStarts.map((start, index) => (
+      outline.slice(start, topLevelStarts[index + 1] ?? outline.length)
+    ));
+    const topLevelTitles = topLevelItems.map((item) => item.match(
+      /<a class="book-outline-title"[^>]*>([^<]+)<\/a>/,
+    )?.[1]);
+    const chapterXChildTitles = [...topLevelItems[1].matchAll(
+      /<li class="book-outline-item book-outline-page book-outline-page--child">[\s\S]*?<a class="book-outline-title"[^>]*>([^<]+)<\/a>/g,
+    )].map(([, title]) => title);
 
     expect(listBookContents).toHaveBeenCalledWith(book.id);
     expect(listChapters).not.toHaveBeenCalled();
@@ -358,27 +389,29 @@ describe('Book HTTP routes', () => {
     expect(locals.chapters).toEqual([chapterX, chapterY]);
     expect(locals.pages).toEqual([pageA, pageB]);
     expect(locals.canChangeOrder).toBe(true);
-    expect((response.text.match(/<section class="notes-book-section"/g) || [])).toHaveLength(1);
-    expect(response.text).not.toContain('notes-book-chapters-heading');
-    expect(response.text).not.toContain('notes-book-pages-heading');
-    expect(contentList).toContain(`<a href="/notes/chapters/${chapterX.id}">Chapter X</a>`);
-    expect(contentList).toContain(`<a href="/notes/chapters/${chapterY.id}">Chapter Y</a>`);
-    expect(contentList).toContain(`<a href="/notes/${pageA.id}">Page A</a>`);
-    expect(contentList).toContain(`<a href="/notes/${pageB.id}">Page B</a>`);
-    expect(contentList).toContain(`<a class="button button-small button-secondary" href="/notes/chapters/${chapterX.id}/edit" aria-label="Edit Chapter: Chapter X">Edit Chapter</a>`);
-    expect(contentList).toContain(`<a class="button button-small button-secondary" href="/notes/chapters/${chapterY.id}/edit" aria-label="Edit Chapter: Chapter Y">Edit Chapter</a>`);
-    expect(contentList).toContain(`<a class="button button-small button-secondary" href="/notes/${pageA.id}/edit" aria-label="Edit Page: Page A">Edit Page</a>`);
-    expect(contentList).toContain(`<a class="button button-small button-secondary" href="/notes/${pageB.id}/edit" aria-label="Edit Page: Page B">Edit Page</a>`);
-    expect(contentList).not.toContain(`href="/notes/${chapterPage.id}">Chapter Page</a>`);
-    expect(contentList).not.toContain('Chapter Page');
-    expect(contentList).not.toContain(`href="/notes/${otherBookPage.id}">Other Book Page</a>`);
-    expect(contentList).not.toContain('Other Book Page');
-    expect((contentList.match(/<li class="notes-book-content-row">/g) || [])).toHaveLength(4);
-    expect(contentKinds).toEqual(['Page', 'Chapter', 'Page', 'Chapter']);
-    expect(contentPositions[0]).toBeGreaterThanOrEqual(0);
-    expect(contentPositions[0]).toBeLessThan(contentPositions[1]);
-    expect(contentPositions[1]).toBeLessThan(contentPositions[2]);
-    expect(contentPositions[2]).toBeLessThan(contentPositions[3]);
+    expect(outline).toContain('<ol class="book-outline-list">');
+    expect(topLevelTitles).toEqual(['Page A', 'Chapter X', 'Page B', 'Chapter Y']);
+    expect(topLevelStarts).toHaveLength(4);
+    expect(topLevelItems[1]).toContain(`<a class="book-outline-title" href="/notes/chapters/${chapterX.id}">Chapter X</a>`);
+    expect(topLevelItems[3]).toContain(`<a class="book-outline-title" href="/notes/chapters/${chapterY.id}">Chapter Y</a>`);
+    expect(topLevelItems[0]).toContain(`<a class="book-outline-title" href="/notes/${pageA.id}">Page A</a>`);
+    expect(topLevelItems[2]).toContain(`<a class="book-outline-title" href="/notes/${pageB.id}">Page B</a>`);
+    expect(topLevelItems[1]).toContain('<span class="book-outline-count">2 Pages</span>');
+    expect(topLevelItems[3]).toContain('<span class="book-outline-count">1 Page</span>');
+    expect(chapterXChildTitles).toEqual(['Chapter X Page A', 'Chapter X Page B']);
+    expect(topLevelItems[1]).not.toContain('Chapter Y Page');
+    expect(topLevelItems[3]).not.toContain('Chapter X Page A');
+    expect(outline).not.toContain(`href="/notes/${otherBookPage.id}">Other Book Page</a>`);
+    expect(outline).not.toContain('Other Book Page');
+    expect((outline.match(/<li class="book-outline-item book-outline-page book-outline-page--child">/g) || [])).toHaveLength(3);
+    expect((outline.match(/<details class="book-outline-disclosure">/g) || [])).toHaveLength(2);
+    expect(outline).not.toMatch(/<details[^>]*\sopen(?:\s|=|>)/);
+    expect(outline).not.toContain('<h2 id="notes-book-content-heading">Content</h2>');
+    expect(outline).not.toContain('Edit Chapter');
+    expect(outline).not.toContain('Edit Page');
+    expect(outline).not.toContain('/edit');
+    expect((outline.match(new RegExp(`<a class="book-outline-title" href="/notes/${pageA.id}">Page A<\/a>`, 'g')) || [])).toHaveLength(1);
+    expect((outline.match(new RegExp(`<a class="book-outline-title" href="/notes/${pageB.id}">Page B<\/a>`, 'g')) || [])).toHaveLength(1);
     expect(response.text).toContain(`<a class="button button-secondary" href="/notes/books/${book.id}/order">Change order</a>`);
     expect(response.text).not.toContain('>Manage</a>');
     expect(response.text).not.toContain('Move up');

@@ -121,7 +121,49 @@ describe('book service', () => {
       id: chapter.id,
       sortOrder: 0,
       chapter,
+      pages: [],
     }]);
+  });
+
+  it('hydrates one Chapter Page beneath its Chapter item', () => {
+    const book = service.createBook({ title: 'One Chapter Page' });
+    const chapter = createChapter(book.id, 'Chapter One');
+    const page = createPage(book.id, 'Page One', chapter.id);
+    appendContent(book.id, 'chapter', chapter.id);
+
+    const result = service.listBookContents(book.id);
+
+    expect(result).toEqual([{
+      type: 'chapter',
+      id: chapter.id,
+      sortOrder: 0,
+      chapter,
+      pages: [page],
+    }]);
+    expect(result[0].pages.every((nestedPage) => (
+      nestedPage.book_id === book.id && nestedPage.chapter_id === chapter.id
+    ))).toBe(true);
+  });
+
+  it('returns several Chapter Pages in canonical Chapter-local order', () => {
+    const book = service.createBook({ title: 'Several Chapter Pages' });
+    const chapter = createChapter(book.id, 'Chapter One');
+    const first = createPage(book.id, 'First', chapter.id);
+    const second = createPage(book.id, 'Second', chapter.id);
+    const third = createPage(book.id, 'Third', chapter.id);
+    appendContent(book.id, 'chapter', chapter.id);
+
+    db.prepare('UPDATE notes SET sort_order = ? WHERE id = ?').run(20, first.id);
+    db.prepare('UPDATE notes SET sort_order = ? WHERE id = ?').run(0, second.id);
+    db.prepare('UPDATE notes SET sort_order = ? WHERE id = ?').run(10, third.id);
+
+    const result = service.listBookContents(book.id);
+
+    expect(result[0].pages.map(({ id, title, sort_order }) => ({ id, title, sort_order }))).toEqual([
+      { id: second.id, title: 'Second', sort_order: 0 },
+      { id: third.id, title: 'Third', sort_order: 10 },
+      { id: first.id, title: 'First', sort_order: 20 },
+    ]);
   });
 
   it('hydrates a direct-Page-only Book', () => {
@@ -143,8 +185,10 @@ describe('book service', () => {
     const pageA = createPage(book.id, 'Page A');
     const chapterY = createChapter(book.id, 'Chapter Y');
     const pageB = createPage(book.id, 'Page B');
-    createPage(book.id, 'Nested X', chapterX.id);
-    createPage(book.id, 'Nested Y', chapterY.id);
+    const nestedXFirst = createPage(book.id, 'Nested X First', chapterX.id);
+    const nestedXSecond = createPage(book.id, 'Nested X Second', chapterX.id);
+    const nestedYFirst = createPage(book.id, 'Nested Y First', chapterY.id);
+    const nestedYSecond = createPage(book.id, 'Nested Y Second', chapterY.id);
 
     appendContent(book.id, 'page', pageA.id);
     appendContent(book.id, 'chapter', chapterX.id);
@@ -155,6 +199,10 @@ describe('book service', () => {
     db.prepare('UPDATE chapters SET sort_order = ? WHERE id = ?').run(1, chapterY.id);
     db.prepare('UPDATE notes SET sort_order = ? WHERE id = ?').run(40, pageA.id);
     db.prepare('UPDATE notes SET sort_order = ? WHERE id = ?').run(2, pageB.id);
+    db.prepare('UPDATE notes SET sort_order = ? WHERE id = ?').run(30, nestedXFirst.id);
+    db.prepare('UPDATE notes SET sort_order = ? WHERE id = ?').run(10, nestedXSecond.id);
+    db.prepare('UPDATE notes SET sort_order = ? WHERE id = ?').run(5, nestedYFirst.id);
+    db.prepare('UPDATE notes SET sort_order = ? WHERE id = ?').run(15, nestedYSecond.id);
     const bookBefore = bookRepository.findById(book.id);
     const contentsBefore = bookContentRepository.listForBook(book.id);
     const chaptersBefore = db.prepare('SELECT * FROM chapters WHERE book_id = ? ORDER BY id').all(book.id);
@@ -173,7 +221,24 @@ describe('book service', () => {
     expect(result[1].chapter).toMatchObject({ title: 'Chapter X', sort_order: 50 });
     expect(result[2].page).toMatchObject({ title: 'Page B', sort_order: 2, chapter_id: null });
     expect(result[3].chapter).toMatchObject({ title: 'Chapter Y', sort_order: 1 });
-    expect(result.every((item) => item.type !== 'page' || item.page.title.startsWith('Page '))).toBe(true);
+    expect(result[1].pages.map(({ id, title }) => ({ id, title }))).toEqual([
+      { id: nestedXSecond.id, title: 'Nested X Second' },
+      { id: nestedXFirst.id, title: 'Nested X First' },
+    ]);
+    expect(result[3].pages.map(({ id, title }) => ({ id, title }))).toEqual([
+      { id: nestedYFirst.id, title: 'Nested Y First' },
+      { id: nestedYSecond.id, title: 'Nested Y Second' },
+    ]);
+    expect(result.filter((item) => item.type === 'page').map(({ id }) => id)).toEqual([
+      pageA.id,
+      pageB.id,
+    ]);
+    expect(result.flatMap((item) => item.pages ?? []).map(({ id }) => id)).toEqual([
+      nestedXSecond.id,
+      nestedXFirst.id,
+      nestedYFirst.id,
+      nestedYSecond.id,
+    ]);
     expect(bookRepository.findById(book.id)).toEqual(bookBefore);
     expect(bookContentRepository.listForBook(book.id)).toEqual(contentsBefore);
     expect(db.prepare('SELECT * FROM chapters WHERE book_id = ? ORDER BY id').all(book.id)).toEqual(chaptersBefore);
@@ -193,7 +258,12 @@ describe('book service', () => {
     const result = service.listBookContents(book.id);
 
     expect(result).toEqual([
-      expect.objectContaining({ type: 'chapter', id: chapter.id, chapter: expect.objectContaining({ title: 'Chapter Five' }) }),
+      expect.objectContaining({
+        type: 'chapter',
+        id: chapter.id,
+        chapter: expect.objectContaining({ title: 'Chapter Five' }),
+        pages: [],
+      }),
       expect.objectContaining({ type: 'page', id: page.id, page: expect.objectContaining({ title: 'Page Five' }) }),
     ]);
   });
@@ -228,6 +298,15 @@ describe('book service', () => {
     expect(result).toBe('not called');
     expect(error).toBeInstanceOf(BookContentIntegrityError);
     expect(error.code).toBe('CONTENT_ITEM_NOT_FOUND');
+  });
+
+  it('validates a Chapter membership before loading its Pages', () => {
+    const book = service.createBook({ title: 'Validate before hydrate' });
+    const listForChapter = vi.spyOn(noteRepository, 'listForChapter');
+    appendContent(book.id, 'chapter', MISSING_ID);
+
+    expect(() => service.listBookContents(book.id)).toThrow(BookContentIntegrityError);
+    expect(listForChapter).not.toHaveBeenCalled();
   });
 
   it('fails when a Chapter membership targets another Book', () => {
@@ -279,21 +358,25 @@ describe('book service', () => {
   it('does not mutate Book content or legacy ordering while reading', () => {
     const book = service.createBook({ title: 'Read-only content' });
     const chapter = createChapter(book.id, 'Read-only Chapter');
-    const page = createPage(book.id, 'Read-only Page');
-    appendContent(book.id, 'page', page.id);
+    const directPage = createPage(book.id, 'Read-only Page');
+    const chapterPage = createPage(book.id, 'Read-only Chapter Page', chapter.id);
+    appendContent(book.id, 'page', directPage.id);
     appendContent(book.id, 'chapter', chapter.id);
     db.prepare('UPDATE chapters SET sort_order = ? WHERE id = ?').run(27, chapter.id);
-    db.prepare('UPDATE notes SET sort_order = ? WHERE id = ?').run(19, page.id);
+    db.prepare('UPDATE notes SET sort_order = ? WHERE id = ?').run(19, directPage.id);
+    db.prepare('UPDATE notes SET sort_order = ? WHERE id = ?').run(23, chapterPage.id);
 
     const contentsBefore = bookContentRepository.listForBook(book.id);
     const chapterBefore = chapterRepository.findById(chapter.id);
-    const pageBefore = noteRepository.findById(page.id);
+    const directPageBefore = noteRepository.findById(directPage.id);
+    const chapterPageBefore = noteRepository.findById(chapterPage.id);
 
     service.listBookContents(book.id);
 
     expect(bookContentRepository.listForBook(book.id)).toEqual(contentsBefore);
     expect(chapterRepository.findById(chapter.id)).toEqual(chapterBefore);
-    expect(noteRepository.findById(page.id)).toEqual(pageBefore);
+    expect(noteRepository.findById(directPage.id)).toEqual(directPageBefore);
+    expect(noteRepository.findById(chapterPage.id)).toEqual(chapterPageBefore);
     expect(db.pragma('foreign_key_check')).toEqual([]);
   });
 

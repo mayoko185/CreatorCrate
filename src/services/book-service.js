@@ -193,6 +193,7 @@ export function createBookService({
           id: itemId,
           sortOrder: membership.sort_order,
           chapter,
+          pages: noteRepository.listForChapter(chapter.id),
         });
         continue;
       }

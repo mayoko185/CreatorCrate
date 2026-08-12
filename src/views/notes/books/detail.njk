@@ -21,39 +21,42 @@
 
   {% include "partials/notes-hierarchy.njk" %}
 
-  <section class="notes-book-section" aria-labelledby="notes-book-content-heading">
-    <div class="notes-book-section-heading">
-      <h2 id="notes-book-content-heading">Content</h2>
-    </div>
+  <nav class="book-outline" aria-label="Contents of {{ book.title }}">
     {% if contents.length > 0 %}
-      <ul class="notes-book-content-list" aria-label="Pages and Chapters in {{ book.title }}">
+      <ol class="book-outline-list">
         {% for item in contents %}
-          <li class="notes-book-content-row">
-            {% if item.type == 'chapter' %}
-              <div class="notes-book-content-copy">
-                <span class="notes-book-content-kind">Chapter</span>
-                <h3 class="notes-book-content-title"><a href="/notes/chapters/{{ item.id }}">{{ item.chapter.title }}</a></h3>
-              </div>
-              <div class="notes-book-content-actions">
-                <a class="button button-small button-secondary" href="/notes/chapters/{{ item.id }}/edit" aria-label="Edit Chapter: {{ item.chapter.title }}">Edit Chapter</a>
-              </div>
-            {% elif item.type == 'page' %}
-              <div class="notes-book-content-copy">
-                <span class="notes-book-content-kind">Page</span>
-                <h3 class="notes-book-content-title"><a href="/notes/{{ item.id }}">{{ item.page.title }}</a></h3>
-              </div>
-              <div class="notes-book-content-actions">
-                <a class="button button-small button-secondary" href="/notes/{{ item.id }}/edit" aria-label="Edit Page: {{ item.page.title }}">Edit Page</a>
-              </div>
-            {% endif %}
-          </li>
+          {% if item.type == 'chapter' %}
+            <li class="book-outline-item book-outline-chapter">
+              <details class="book-outline-disclosure">
+                <summary class="book-outline-summary">
+                  <span class="book-outline-disclosure-indicator" aria-hidden="true"></span>
+                  <span class="book-outline-title-wrap">
+                    <a class="book-outline-title" href="/notes/chapters/{{ item.id }}">{{ item.chapter.title }}</a>
+                  </span>
+                  <span class="book-outline-count">{{ item.pages.length }} {% if item.pages.length == 1 %}Page{% else %}Pages{% endif %}</span>
+                </summary>
+                {% if item.pages.length > 0 %}
+                  <ol class="book-outline-children">
+                    {% for page in item.pages %}
+                      <li class="book-outline-item book-outline-page book-outline-page--child">
+                        <a class="book-outline-title" href="/notes/{{ page.id }}">{{ page.title }}</a>
+                      </li>
+                    {% endfor %}
+                  </ol>
+                {% else %}
+                  <p class="book-outline-empty">No Pages yet</p>
+                {% endif %}
+              </details>
+            </li>
+          {% elif item.type == 'page' %}
+            <li class="book-outline-item book-outline-page">
+              <a class="book-outline-title" href="/notes/{{ item.id }}">{{ item.page.title }}</a>
+            </li>
+          {% endif %}
         {% endfor %}
-      </ul>
+      </ol>
     {% else %}
-      {% set emptyHeading = "No Pages or Chapters yet" %}
-      {% set emptyDescription = "Add a Page or Chapter to start this Book." %}
-      {% set emptyHeadingLevel = "h3" %}
-      {% include "partials/empty-state.njk" %}
+      <p class="book-outline-empty">No Pages or Chapters yet</p>
     {% endif %}
-  </section>
+  </nav>
 {% endblock %}
