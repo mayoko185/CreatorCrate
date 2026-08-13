@@ -1,5 +1,4 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import request from 'supertest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -12,14 +11,19 @@ import { authenticate, AUTH_CONFIG } from './helpers/auth.js';
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 const APP_NAME = 'CreatorCrate';
 const LEGACY_NEW_PROJECT_PRIORITY_KEY = 'page_defaults.new_project.priority';
+const GLOBAL_ASSET_BROWSER_DEFAULT_KEY = 'asset_browser.default_category';
 
 const VALID_DEFAULTS = {
-  releasesView: 'board',
-  releasesSort: 'title',
-  releasesOrder: 'desc',
   releaseManagementView: 'board',
   releaseManagementSort: 'planned',
   releaseManagementOrder: 'asc',
+  new_projectStatus: 'ready',
+};
+
+const MOVED_DEFAULTS = {
+  releasesView: 'board',
+  releasesSort: 'title',
+  releasesOrder: 'desc',
   projectAssetsView: 'list',
   projectAssetsSort: 'category',
   projectAssetsOrder: 'asc',
@@ -28,8 +32,6 @@ const VALID_DEFAULTS = {
   assetViewerSort: 'project',
   assetViewerOrder: 'desc',
   assetViewerPageSize: '100',
-  new_projectStatus: 'ready',
-  defaultCategory: 'all',
 };
 
 function writeMeta(db, key, value) {
@@ -50,38 +52,21 @@ function selectedValue(html, id) {
   return select.match(/<option value="([^"]+)" selected>/)?.[1];
 }
 
-function activeNavKeys(html) {
-  const keys = [];
-  const re = /class="app-nav-link" data-nav-key="([^"]+)" aria-current="page"/g;
-  let match;
-  while ((match = re.exec(html)) !== null) keys.push(match[1]);
-  return keys;
-}
-
-function activeSettingsNavLabels(html) {
-  const settingsNav = html.match(/<nav class="settings-nav"[\s\S]*?<\/nav>/)?.[0] || '';
-  const labels = [];
-  const re = /<a href="[^"]+" aria-current="page">([^<]+)<\/a>/g;
-  let match;
-  while ((match = re.exec(settingsNav)) !== null) labels.push(match[1]);
-  return labels;
-}
-
 function defaultKey(page, option) {
   return PAGE_DEFAULT_DEFINITIONS[page][option].key;
 }
 
-const DEFAULT_SECTION_ANCHORS = [
-  { title: 'New Projects', anchor: 'defaults-new-projects' },
-  { title: 'Releases', anchor: 'defaults-releases' },
-  { title: 'Release Management', anchor: 'defaults-release-management' },
-  { title: 'Project Assets', anchor: 'defaults-project-assets' },
-  { title: 'Asset Viewer', anchor: 'defaults-asset-viewer' },
-];
-
-const SETTINGS_PAGE_DEFAULT_DEFINITIONS = Object.fromEntries(
-  Object.entries(PAGE_DEFAULT_DEFINITIONS).filter(([page]) => page !== 'projects')
-);
+function movedStorageSnapshot(db) {
+  return Object.fromEntries(
+    Object.entries(MOVED_DEFAULTS).map(([field, value]) => {
+      const page = field.startsWith('releases') ? 'releases'
+        : field.startsWith('projectAssets') ? 'projectAssets'
+          : 'assetViewer';
+      const option = field.replace(page, '').replace(/^./, (char) => char.toLowerCase());
+      return [field, readMeta(db, defaultKey(page, option))];
+    }),
+  );
+}
 
 describe('settings — page defaults HTTP', () => {
   let tmpDir;
@@ -103,166 +88,79 @@ describe('settings — page defaults HTTP', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('renders the supported defaults with the Defaults sub-navigation active and Settings active in the shell', async () => {
+  it('renders only New Projects and Release Management, with moved sections and anchors absent', async () => {
     const res = await agent.get('/settings/defaults').expect(200);
 
     expect(res.text).toContain('Settings — Defaults');
-    for (const { title, anchor } of DEFAULT_SECTION_ANCHORS) {
-      expect(res.text).toContain(
-        `<section id="${anchor}" class="settings-section" aria-labelledby="${anchor}-heading">`
-      );
-      expect(res.text).toContain(`<h3 id="${anchor}-heading">${title}</h3>`);
-    }
-    expect((res.text.match(/<section id="defaults-[^"]+" class="settings-section" aria-labelledby="defaults-[^"]+-heading">/g) || [])).toHaveLength(5);
-    expect(res.text).not.toContain('<div class="form-section">');
-    expect(res.text).toContain('<section class="settings-section asset-browser-default-section" aria-labelledby="project-assets-default-category-heading">');
-    expect(res.text).toContain('<h3 id="project-assets-default-category-heading">Asset browser default</h3>');
-    expect(res.text).toContain('These defaults apply only to new projects. Changing them does not modify existing projects.');
-    expect(res.text).not.toContain('New Releases');
-    expect((res.text.match(/<select /g) || [])).toHaveLength(16);
-    for (const id of [
-      'new_projectStatus',
-      'releasesView',
-      'releasesSort',
-      'releasesOrder',
-      'releaseManagementView',
-      'releaseManagementSort',
-      'releaseManagementOrder',
+    expect(res.text).toContain('<section id="defaults-new-projects" class="settings-section" aria-labelledby="defaults-new-projects-heading">');
+    expect(res.text).toContain('<h3 id="defaults-new-projects-heading">New Projects</h3>');
+    expect(res.text).toContain('<section id="defaults-release-management" class="settings-section" aria-labelledby="defaults-release-management-heading">');
+    expect(res.text).toContain('<h3 id="defaults-release-management-heading">Release Management</h3>');
+    expect((res.text.match(/<section id="defaults-[^"]+" class="settings-section" aria-labelledby="defaults-[^"]+-heading">/g) || [])).toHaveLength(2);
+
+    for (const removed of [
+      'defaults-project-assets',
+      'defaults-asset-viewer',
+      'defaults-releases',
+      'defaultCategory',
       'projectAssetsView',
-      'projectAssetsSort',
-      'projectAssetsOrder',
-      'projectAssetsPageSize',
       'assetViewerView',
-      'assetViewerSort',
-      'assetViewerOrder',
-      'assetViewerPageSize',
+      'releasesView',
     ]) {
-      expect((res.text.match(new RegExp(`id="${id}"`, 'g')) || [])).toHaveLength(1);
-      expect(res.text).toContain(`id="${id}" name="${id}"`);
+      expect(res.text).not.toContain(removed);
     }
-    expect(res.text).toContain('<label for="assetViewerView">Default view</label>');
-    expect(res.text).toContain('<label for="assetViewerSort">Default sort</label>');
-    expect(res.text).toContain('<label for="assetViewerOrder">Default order</label>');
-    expect(res.text).toContain('<label for="assetViewerPageSize">Default page size</label>');
-    expect(res.text).toContain('<option value="project">Project</option>');
-    expect(res.text).toContain('<option value="modified">Modified</option>');
-    expect(res.text).toContain('<option value="size">Size</option>');
-    expect(res.text).toContain('<option value="category">Category</option>');
-    expect(res.text).toContain('id="project-assets-default-category" name="defaultCategory"');
 
-    expect(activeNavKeys(res.text)).toEqual(['settings']);
-    expect(activeSettingsNavLabels(res.text)).toEqual(['Defaults']);
+    expect((res.text.match(/<select /g) || [])).toHaveLength(4);
+    expect(res.text).toContain('id="new_projectStatus" name="new_projectStatus"');
+    expect(res.text).toContain('id="releaseManagementView" name="releaseManagementView"');
+    expect(res.text).toContain('id="releaseManagementSort" name="releaseManagementSort"');
+    expect(res.text).toContain('id="releaseManagementOrder" name="releaseManagementOrder"');
   });
 
-  it('uses application fallbacks when no valid values are saved', async () => {
+  it('uses application fallbacks for the remaining Settings-owned defaults', async () => {
     const res = await agent.get('/settings/defaults').expect(200);
 
-    expect(selectedValue(res.text, 'releasesView')).toBe('list');
-    expect(selectedValue(res.text, 'releasesSort')).toBe('planned');
-    expect(selectedValue(res.text, 'releasesOrder')).toBe('asc');
+    expect(selectedValue(res.text, 'new_projectStatus')).toBe('tbd');
     expect(selectedValue(res.text, 'releaseManagementView')).toBe('list');
     expect(selectedValue(res.text, 'releaseManagementSort')).toBe('updated');
     expect(selectedValue(res.text, 'releaseManagementOrder')).toBe('desc');
-    expect(selectedValue(res.text, 'projectAssetsView')).toBe('grid');
-    expect(selectedValue(res.text, 'projectAssetsSort')).toBe('filename');
-    expect(selectedValue(res.text, 'projectAssetsOrder')).toBe('asc');
-    expect(selectedValue(res.text, 'projectAssetsPageSize')).toBe('25');
-    expect(selectedValue(res.text, 'assetViewerView')).toBe('grid');
-    expect(selectedValue(res.text, 'assetViewerSort')).toBe('filename');
-    expect(selectedValue(res.text, 'assetViewerOrder')).toBe('asc');
-    expect(selectedValue(res.text, 'assetViewerPageSize')).toBe('25');
-    expect(selectedValue(res.text, 'new_projectStatus')).toBe('tbd');
-    expect(selectedValue(res.text, 'project-assets-default-category')).toBe('all');
-    expect((res.text.match(/Application fallback:/g) || [])).toHaveLength(15);
-    expect(res.text).toContain('<label for="releaseManagementView">Default view</label>');
-    expect(res.text).toContain('<option value="board">Board</option>');
-    expect(res.text).toContain('<option value="tbd" selected>TBD</option>');
-    expect(res.text).toContain('<option value="planned">Planned</option>');
-    expect(res.text).toContain('<option value="in-progress">In progress</option>');
-    expect(res.text).toContain('<option value="ready">Ready</option>');
+    expect((res.text.match(/Application fallback:/g) || [])).toHaveLength(4);
+    expect(res.text).toContain('These defaults apply only to new projects. Changing them does not modify existing projects.');
   });
 
-  it('uses saved valid values and fallbacks for invalid stored values without displaying invalid storage', async () => {
-    writeMeta(db, defaultKey('projects', 'view'), 'list');
-    writeMeta(db, defaultKey('projects', 'sort'), 'not-a-project-sort');
-    writeMeta(db, defaultKey('projects', 'order'), 'asc');
-    writeMeta(db, defaultKey('releases', 'view'), 'not-a-view');
-    writeMeta(db, defaultKey('releases', 'sort'), 'title');
-    writeMeta(db, defaultKey('releases', 'order'), 'not-an-order');
-    writeMeta(db, defaultKey('releaseManagement', 'view'), 'grid');
-    writeMeta(db, defaultKey('releaseManagement', 'sort'), 'published');
-    writeMeta(db, defaultKey('releaseManagement', 'order'), 'forwards');
-    writeMeta(db, defaultKey('projectAssets', 'view'), 'board');
-    writeMeta(db, defaultKey('projectAssets', 'sort'), 'published');
-    writeMeta(db, defaultKey('projectAssets', 'order'), 'forwards');
-    writeMeta(db, defaultKey('projectAssets', 'pageSize'), '20');
-    writeMeta(db, defaultKey('assetViewer', 'view'), 'board');
-    writeMeta(db, defaultKey('assetViewer', 'sort'), 'title');
-    writeMeta(db, defaultKey('assetViewer', 'order'), 'forwards');
-    writeMeta(db, defaultKey('assetViewer', 'pageSize'), '20');
-    writeMeta(db, defaultKey('new_project', 'status'), 'cancelled');
+  it('leaves moved stored values untouched and does not render them on GET', async () => {
+    for (const [field, value] of Object.entries(MOVED_DEFAULTS)) {
+      const page = field.startsWith('releases') ? 'releases'
+        : field.startsWith('projectAssets') ? 'projectAssets'
+          : 'assetViewer';
+      const option = field.replace(page, '').replace(/^./, (char) => char.toLowerCase());
+      writeMeta(db, defaultKey(page, option), value);
+    }
+    writeMeta(db, GLOBAL_ASSET_BROWSER_DEFAULT_KEY, 'wip');
     writeMeta(db, LEGACY_NEW_PROJECT_PRIORITY_KEY, 'urgent');
-    writeMeta(db, 'asset_browser.default_category', 'does-not-exist');
 
     const res = await agent.get('/settings/defaults').expect(200);
 
-    expect(res.text).not.toContain('defaults-projects');
-    expect(res.text).not.toContain('projectsView');
-    expect(readMeta(db, defaultKey('projects', 'view'))).toBe('list');
-    expect(readMeta(db, defaultKey('projects', 'sort'))).toBe('not-a-project-sort');
-    expect(readMeta(db, defaultKey('projects', 'order'))).toBe('asc');
-    expect(selectedValue(res.text, 'releasesView')).toBe('list');
-    expect(selectedValue(res.text, 'releasesSort')).toBe('title');
-    expect(selectedValue(res.text, 'releasesOrder')).toBe('asc');
-    expect(selectedValue(res.text, 'releaseManagementView')).toBe('list');
-    expect(selectedValue(res.text, 'releaseManagementSort')).toBe('updated');
-    expect(selectedValue(res.text, 'releaseManagementOrder')).toBe('desc');
-    expect(selectedValue(res.text, 'projectAssetsView')).toBe('grid');
-    expect(selectedValue(res.text, 'projectAssetsSort')).toBe('filename');
-    expect(selectedValue(res.text, 'projectAssetsOrder')).toBe('asc');
-    expect(selectedValue(res.text, 'projectAssetsPageSize')).toBe('25');
-    expect(selectedValue(res.text, 'assetViewerView')).toBe('grid');
-    expect(selectedValue(res.text, 'assetViewerSort')).toBe('filename');
-    expect(selectedValue(res.text, 'assetViewerOrder')).toBe('asc');
-    expect(selectedValue(res.text, 'assetViewerPageSize')).toBe('25');
-    expect(selectedValue(res.text, 'new_projectStatus')).toBe('tbd');
-    expect(res.text).not.toContain('new_projectPriority');
+    expect(res.text).not.toContain('defaults-project-assets');
+    expect(res.text).not.toContain('defaults-asset-viewer');
+    expect(res.text).not.toContain('defaults-releases');
+    expect(res.text).not.toContain('defaultCategory');
+    expect(res.text).not.toContain('urgent');
+    expect(res.text).not.toContain('wip');
+    expect(movedStorageSnapshot(db)).toEqual(MOVED_DEFAULTS);
+    expect(readMeta(db, GLOBAL_ASSET_BROWSER_DEFAULT_KEY)).toBe('wip');
     expect(readMeta(db, LEGACY_NEW_PROJECT_PRIORITY_KEY)).toBe('urgent');
-    expect(res.text).toContain('Category &quot;does-not-exist&quot; (unavailable)');
-    expect(res.text).toContain('Effective:</span> <strong>All Categories</strong>');
-    expect((res.text.match(/Application fallback:/g) || [])).toHaveLength(14);
-    expect(res.text).not.toContain('not-a-project-sort');
-    expect(res.text).not.toContain('not-a-view');
-    expect(res.text).not.toContain('not-an-order');
-    expect(res.text).not.toContain('<option value="board" selected>');
-    expect(res.text).not.toContain('value="published" selected');
-    expect(res.text).not.toContain('value="forwards"');
-    expect(res.text).not.toContain('value="20"');
-    expect(res.text).not.toMatch(/<select id="assetViewerSort"[\s\S]*?value="title" selected/);
-    expect(res.text).not.toContain('value="cancelled"');
-    expect(res.text).not.toContain('value="urgent"');
   });
 
-  it('renders the existing saved global category preference through its original slug semantics', async () => {
-    writeMeta(db, 'asset_browser.default_category', 'wip');
-
-    const res = await agent.get('/settings/defaults').expect(200);
-
-    expect(res.text).toContain('<option value="wip" selected>WIP</option>');
-    expect(res.text).toContain('Saved:</span> <strong>WIP</strong>');
-  });
-
-  it('saves all Defaults values through the service, redirects, shows a success notice, and preserves unrelated app_meta values', async () => {
-    writeMeta(db, 'unrelated.preference', 'preserve-me');
-    writeMeta(db, defaultKey('projects', 'view'), 'grid');
-    writeMeta(db, defaultKey('projects', 'sort'), 'created');
-    writeMeta(db, defaultKey('projects', 'order'), 'desc');
-    const assetBrowserDefaultBefore = readMeta(db, 'asset_browser.default_category');
-    const projectId = Number(db.prepare(`
-      INSERT INTO projects (title, slug, description, notes, status)
-      VALUES (?, ?, ?, ?, ?)
-    `).run('Existing Project', 'existing-project', 'Description', 'Notes', 'planned').lastInsertRowid);
-    const projectBefore = db.prepare('SELECT * FROM projects WHERE id = ?').get(projectId);
+  it('saves New Projects and Release Management without moved fields and preserves moved namespaces', async () => {
+    for (const [field, value] of Object.entries(MOVED_DEFAULTS)) {
+      const page = field.startsWith('releases') ? 'releases'
+        : field.startsWith('projectAssets') ? 'projectAssets'
+          : 'assetViewer';
+      const option = field.replace(page, '').replace(/^./, (char) => char.toLowerCase());
+      writeMeta(db, defaultKey(page, option), value);
+    }
+    writeMeta(db, GLOBAL_ASSET_BROWSER_DEFAULT_KEY, 'wip');
 
     const save = await agent
       .post('/settings/defaults')
@@ -271,153 +169,47 @@ describe('settings — page defaults HTTP', () => {
       .expect(302);
 
     expect(save.headers.location).toBe('/settings/defaults?notice=defaults_saved');
-    expect(readMeta(db, defaultKey('projects', 'view'))).toBe('grid');
-    expect(readMeta(db, defaultKey('projects', 'sort'))).toBe('created');
-    expect(readMeta(db, defaultKey('projects', 'order'))).toBe('desc');
-    expect(readMeta(db, defaultKey('releases', 'view'))).toBe('board');
-    expect(readMeta(db, defaultKey('releases', 'sort'))).toBe('title');
-    expect(readMeta(db, defaultKey('releases', 'order'))).toBe('desc');
+    expect(readMeta(db, defaultKey('new_project', 'status'))).toBe('ready');
     expect(readMeta(db, defaultKey('releaseManagement', 'view'))).toBe('board');
     expect(readMeta(db, defaultKey('releaseManagement', 'sort'))).toBe('planned');
     expect(readMeta(db, defaultKey('releaseManagement', 'order'))).toBe('asc');
-    expect(readMeta(db, defaultKey('projectAssets', 'view'))).toBe('list');
-    expect(readMeta(db, defaultKey('projectAssets', 'sort'))).toBe('category');
-    expect(readMeta(db, defaultKey('projectAssets', 'order'))).toBe('asc');
-    expect(readMeta(db, defaultKey('projectAssets', 'pageSize'))).toBe('50');
-    expect(readMeta(db, defaultKey('assetViewer', 'view'))).toBe('list');
-    expect(readMeta(db, defaultKey('assetViewer', 'sort'))).toBe('project');
-    expect(readMeta(db, defaultKey('assetViewer', 'order'))).toBe('desc');
-    expect(readMeta(db, defaultKey('assetViewer', 'pageSize'))).toBe('100');
-    expect(readMeta(db, defaultKey('new_project', 'status'))).toBe('ready');
-    expect(readMeta(db, 'asset_browser.default_category')).toBe('all');
-    expect(readMeta(db, 'unrelated.preference')).toBe('preserve-me');
-    expect(assetBrowserDefaultBefore).toBe('all');
-    expect(db.prepare('SELECT * FROM projects WHERE id = ?').get(projectId)).toEqual(projectBefore);
+    expect(movedStorageSnapshot(db)).toEqual(MOVED_DEFAULTS);
+    expect(readMeta(db, GLOBAL_ASSET_BROWSER_DEFAULT_KEY)).toBe('wip');
 
-    const redirected = await agent.get(save.headers.location).expect(200);
-    expect(redirected.text).toContain('Page defaults saved successfully.');
-    expect(redirected.text).toContain('notice--success');
-    expect(selectedValue(redirected.text, 'releasesSort')).toBe('title');
-    expect(selectedValue(redirected.text, 'releaseManagementView')).toBe('board');
-    expect(selectedValue(redirected.text, 'releaseManagementSort')).toBe('planned');
-    expect(selectedValue(redirected.text, 'releaseManagementOrder')).toBe('asc');
-    expect(selectedValue(redirected.text, 'projectAssetsPageSize')).toBe('50');
-    expect(selectedValue(redirected.text, 'assetViewerView')).toBe('list');
-    expect(selectedValue(redirected.text, 'assetViewerSort')).toBe('project');
-    expect(selectedValue(redirected.text, 'assetViewerOrder')).toBe('desc');
-    expect(selectedValue(redirected.text, 'assetViewerPageSize')).toBe('100');
-    expect(selectedValue(redirected.text, 'new_projectStatus')).toBe('ready');
-    expect(selectedValue(redirected.text, 'project-assets-default-category')).toBe('all');
+    const rendered = await agent.get(save.headers.location).expect(200);
+    expect(selectedValue(rendered.text, 'new_projectStatus')).toBe('ready');
+    expect(selectedValue(rendered.text, 'releaseManagementView')).toBe('board');
+    expect(selectedValue(rendered.text, 'releaseManagementSort')).toBe('planned');
+    expect(selectedValue(rendered.text, 'releaseManagementOrder')).toBe('asc');
   });
 
-  it('rejects invalid submitted values with field feedback and preserves every stored default', async () => {
-    const existing = {
-      releasesView: 'list',
-      releasesSort: 'planned',
-      releasesOrder: 'asc',
-      projectAssetsView: 'grid',
-      projectAssetsSort: 'filename',
-      projectAssetsOrder: 'asc',
-      projectAssetsPageSize: '25',
-      new_projectStatus: 'tbd',
-      defaultCategory: 'all',
-    };
-    writeMeta(db, defaultKey('releases', 'view'), existing.releasesView);
-    writeMeta(db, defaultKey('releases', 'sort'), existing.releasesSort);
-    writeMeta(db, defaultKey('releases', 'order'), existing.releasesOrder);
-    writeMeta(db, defaultKey('projectAssets', 'view'), existing.projectAssetsView);
-    writeMeta(db, defaultKey('projectAssets', 'sort'), existing.projectAssetsSort);
-    writeMeta(db, defaultKey('projectAssets', 'order'), existing.projectAssetsOrder);
-    writeMeta(db, defaultKey('projectAssets', 'pageSize'), existing.projectAssetsPageSize);
-    writeMeta(db, defaultKey('new_project', 'status'), existing.new_projectStatus);
-    writeMeta(db, 'asset_browser.default_category', existing.defaultCategory);
-    writeMeta(db, defaultKey('projects', 'view'), 'list');
-    writeMeta(db, defaultKey('projects', 'sort'), 'title');
-    writeMeta(db, defaultKey('projects', 'order'), 'asc');
+  it('ignores invalid moved fields rather than validating or saving them', async () => {
+    const before = movedStorageSnapshot(db);
 
-    const res = await agent
+    const save = await agent
       .post('/settings/defaults')
       .type('form')
       .send({
         ...VALID_DEFAULTS,
-        projectAssetsSort: 'unsupported',
+        releasesView: 'invalid',
+        projectAssetsSort: 'invalid',
+        assetViewerPageSize: 'invalid',
+        defaultCategory: 'invalid',
         _csrf: csrfToken,
       })
-      .expect(422);
+      .expect(302);
 
-    expect(res.text).toContain('Defaults could not be saved.');
-    expect(res.text).toContain('projectAssets.sort');
-    expect(res.text).toContain('Submitted value: unsupported');
-    expect(readMeta(db, defaultKey('releases', 'view'))).toBe(existing.releasesView);
-    expect(readMeta(db, defaultKey('releases', 'sort'))).toBe(existing.releasesSort);
-    expect(readMeta(db, defaultKey('releases', 'order'))).toBe(existing.releasesOrder);
-    expect(readMeta(db, defaultKey('projectAssets', 'view'))).toBe(existing.projectAssetsView);
-    expect(readMeta(db, defaultKey('projectAssets', 'sort'))).toBe(existing.projectAssetsSort);
-    expect(readMeta(db, defaultKey('projectAssets', 'order'))).toBe(existing.projectAssetsOrder);
-    expect(readMeta(db, defaultKey('projectAssets', 'pageSize'))).toBe(existing.projectAssetsPageSize);
-    expect(readMeta(db, defaultKey('new_project', 'status'))).toBe(existing.new_projectStatus);
-    expect(readMeta(db, 'asset_browser.default_category')).toBe(existing.defaultCategory);
-    expect(readMeta(db, defaultKey('projects', 'view'))).toBe('list');
-    expect(readMeta(db, defaultKey('projects', 'sort'))).toBe('title');
-    expect(readMeta(db, defaultKey('projects', 'order'))).toBe('asc');
+    expect(save.headers.location).toBe('/settings/defaults?notice=defaults_saved');
+    expect(movedStorageSnapshot(db)).toEqual(before);
   });
 
-  it('rejects an invalid New Project status before partially saving any Defaults values', async () => {
+  it('rejects invalid remaining values without changing any stored defaults', async () => {
     await agent
       .post('/settings/defaults')
       .type('form')
       .send({ ...VALID_DEFAULTS, _csrf: csrfToken })
       .expect(302);
-
-    const res = await agent
-      .post('/settings/defaults')
-      .type('form')
-      .send({
-        ...VALID_DEFAULTS,
-        projectAssetsPageSize: '100',
-        new_projectStatus: 'cancelled',
-        _csrf: csrfToken,
-      })
-      .expect(422);
-
-    expect(res.text).toContain('new_project.status');
-    expect(res.text).toContain('Submitted value: cancelled');
-    expect(readMeta(db, defaultKey('releases', 'view'))).toBe(VALID_DEFAULTS.releasesView);
-    expect(readMeta(db, defaultKey('releases', 'sort'))).toBe(VALID_DEFAULTS.releasesSort);
-    expect(readMeta(db, defaultKey('releases', 'order'))).toBe(VALID_DEFAULTS.releasesOrder);
-    expect(readMeta(db, defaultKey('projectAssets', 'view'))).toBe(VALID_DEFAULTS.projectAssetsView);
-    expect(readMeta(db, defaultKey('projectAssets', 'sort'))).toBe(VALID_DEFAULTS.projectAssetsSort);
-    expect(readMeta(db, defaultKey('projectAssets', 'order'))).toBe(VALID_DEFAULTS.projectAssetsOrder);
-    expect(readMeta(db, defaultKey('projectAssets', 'pageSize'))).toBe(VALID_DEFAULTS.projectAssetsPageSize);
-    expect(readMeta(db, defaultKey('new_project', 'status'))).toBe(VALID_DEFAULTS.new_projectStatus);
-    expect(readMeta(db, 'asset_browser.default_category')).toBe(VALID_DEFAULTS.defaultCategory);
-  });
-
-  it('ignores obsolete stored and submitted New Release status defaults', async () => {
-    const obsoleteKey = 'page_defaults.new_release.status';
-    writeMeta(db, obsoleteKey, 'cancelled');
-
-    const rendered = await agent.get('/settings/defaults').expect(200);
-    expect(rendered.text).not.toContain('new_releaseStatus');
-    expect(rendered.text).not.toContain('New Releases');
-
-    const saved = await agent
-      .post('/settings/defaults')
-      .type('form')
-      .send({ ...VALID_DEFAULTS, new_releaseStatus: 'published', _csrf: csrfToken })
-      .expect(302);
-
-    expect(saved.headers.location).toBe('/settings/defaults?notice=defaults_saved');
-    expect(readMeta(db, obsoleteKey)).toBe('cancelled');
-    expect(readMeta(db, defaultKey('new_project', 'status'))).toBe(VALID_DEFAULTS.new_projectStatus);
-  });
-
-  it('rejects an invalid Release Management value before partially saving any Defaults values', async () => {
-    await agent
-      .post('/settings/defaults')
-      .type('form')
-      .send({ ...VALID_DEFAULTS, _csrf: csrfToken })
-      .expect(302);
+    const movedBefore = movedStorageSnapshot(db);
 
     const res = await agent
       .post('/settings/defaults')
@@ -425,87 +217,42 @@ describe('settings — page defaults HTTP', () => {
       .send({
         ...VALID_DEFAULTS,
         releaseManagementView: 'kanban',
-        projectAssetsPageSize: '100',
+        new_projectStatus: 'cancelled',
         _csrf: csrfToken,
       })
       .expect(422);
 
     expect(res.text).toContain('releaseManagement.view');
+    expect(res.text).toContain('new_project.status');
     expect(res.text).toContain('Submitted value: kanban');
-    for (const [page, options] of Object.entries(SETTINGS_PAGE_DEFAULT_DEFINITIONS)) {
-      for (const option of Object.keys(options)) {
-        expect(readMeta(db, defaultKey(page, option))).toBe(
-          VALID_DEFAULTS[`${page}${option.charAt(0).toUpperCase()}${option.slice(1)}`]
-        );
-      }
-    }
-    expect(readMeta(db, 'asset_browser.default_category')).toBe(VALID_DEFAULTS.defaultCategory);
+    expect(res.text).toContain('Submitted value: cancelled');
+    expect(movedStorageSnapshot(db)).toEqual(movedBefore);
+    expect(readMeta(db, defaultKey('releaseManagement', 'view'))).toBe('board');
+    expect(readMeta(db, defaultKey('new_project', 'status'))).toBe('ready');
   });
 
-  it('rejects an invalid Asset Viewer value before partially saving any Defaults values', async () => {
-    writeMeta(db, 'unrelated.preference', 'preserve-me');
-
-    await agent
-      .post('/settings/defaults')
-      .type('form')
-      .send({ ...VALID_DEFAULTS, _csrf: csrfToken })
-      .expect(302);
-
-    const res = await agent
-      .post('/settings/defaults')
-      .type('form')
-      .send({
-        ...VALID_DEFAULTS,
-        releasesView: 'list',
-        releasesSort: 'planned',
-        releasesOrder: 'asc',
-        releaseManagementView: 'list',
-        releaseManagementSort: 'updated',
-        releaseManagementOrder: 'desc',
-        projectAssetsView: 'grid',
-        projectAssetsSort: 'filename',
-        projectAssetsOrder: 'desc',
-        projectAssetsPageSize: '10',
-        assetViewerView: 'grid',
-        assetViewerSort: 'title',
-        assetViewerOrder: 'asc',
-        assetViewerPageSize: '10',
-        new_projectStatus: 'tbd',
-        defaultCategory: 'all',
-        _csrf: csrfToken,
-      })
-      .expect(422);
-
-    expect(res.text).toContain('assetViewer.sort');
-    expect(res.text).toContain('Submitted value: title');
-    for (const [page, options] of Object.entries(SETTINGS_PAGE_DEFAULT_DEFINITIONS)) {
-      for (const option of Object.keys(options)) {
-        expect(readMeta(db, defaultKey(page, option))).toBe(
-          VALID_DEFAULTS[`${page}${option.charAt(0).toUpperCase()}${option.slice(1)}`]
-        );
-      }
-    }
-    expect(readMeta(db, 'asset_browser.default_category')).toBe(VALID_DEFAULTS.defaultCategory);
-    expect(readMeta(db, 'unrelated.preference')).toBe('preserve-me');
-  });
-
-  it('requires CSRF for the defaults mutation', async () => {
+  it('requires CSRF for the remaining Defaults mutation', async () => {
     await agent
       .post('/settings/defaults')
       .type('form')
       .send(VALID_DEFAULTS)
       .expect(403);
 
-    expect(readMeta(db, defaultKey('projects', 'view'))).toBeUndefined();
+    expect(readMeta(db, defaultKey('new_project', 'status'))).toBeUndefined();
+    expect(readMeta(db, defaultKey('releaseManagement', 'view'))).toBeUndefined();
   });
 
-  it('does not render the removed Projects defaults section or anchor', async () => {
+  it('does not render obsolete Projects or New Releases defaults', async () => {
+    writeMeta(db, defaultKey('projects', 'view'), 'list');
+    writeMeta(db, 'page_defaults.new_release.status', 'cancelled');
+
     const res = await agent.get('/settings/defaults').expect(200);
 
-    expect(res.text).not.toContain('id="defaults-projects"');
-    expect(res.text).not.toContain('defaults-projects-heading');
+    expect(res.text).not.toContain('defaults-projects');
     expect(res.text).not.toContain('projectsView');
-    expect(res.text).not.toContain('projectsSort');
-    expect(res.text).not.toContain('projectsOrder');
+    expect(res.text).not.toContain('new_releaseStatus');
+    expect(res.text).not.toContain('New Releases');
+    expect(readMeta(db, defaultKey('projects', 'view'))).toBe('list');
+    expect(readMeta(db, 'page_defaults.new_release.status')).toBe('cancelled');
   });
 });

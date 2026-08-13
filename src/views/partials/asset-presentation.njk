@@ -38,7 +38,7 @@
       {% if previewAvailable %}
         {% if asset.viewerUrl %}
           <a class="asset-card-media-link" href="{{ asset.viewerUrl }}" aria-label="View details for {{ filenameLabel }}">
-            <img class="asset-card-thumb"
+            <img class="asset-card-thumb{% if options.nsfwBlur %} asset-image--nsfw-blurred{% endif %}"
                  src="{{ previewUrl }}"
                  alt="{{ asset.previewAltText or ('Preview of ' ~ filenameLabel) }}"
                  loading="lazy"
@@ -46,7 +46,7 @@
                  data-preview-image>
           </a>
         {% else %}
-          <img class="asset-card-thumb"
+           <img class="asset-card-thumb{% if options.nsfwBlur %} asset-image--nsfw-blurred{% endif %}"
                src="{{ previewUrl }}"
                alt="{{ asset.previewAltText or ('Preview of ' ~ filenameLabel) }}"
                loading="lazy"
@@ -104,7 +104,7 @@
       {% if previewAvailable %}
         {% if asset.viewerUrl %}
           <a class="asset-list-card-media-link" href="{{ asset.viewerUrl }}" aria-label="View preview of {{ filenameLabel }}{% if options.mediaContextLabel %} from {{ options.mediaContextLabel }}{% endif %}">
-            <img class="asset-list-card-media-image"
+            <img class="asset-list-card-media-image{% if options.nsfwBlur %} asset-image--nsfw-blurred{% endif %}"
                  src="{{ previewUrl }}"
                  alt=""
                  loading="lazy"
@@ -112,7 +112,7 @@
                  data-preview-image>
           </a>
         {% else %}
-          <img class="asset-list-card-media-image"
+           <img class="asset-list-card-media-image{% if options.nsfwBlur %} asset-image--nsfw-blurred{% endif %}"
                src="{{ previewUrl }}"
                alt=""
                loading="lazy"

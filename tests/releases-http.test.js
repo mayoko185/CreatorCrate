@@ -13,6 +13,7 @@ import { createAssetRepository } from '../src/data/asset-repository.js';
 import { createReleaseRepository } from '../src/data/release-repository.js';
 import { createReleaseService } from '../src/services/release-service.js';
 import { getLocalTodayIso } from '../src/util/date.js';
+import { PAGE_DEFAULT_DEFINITIONS } from '../src/services/page-defaults-service.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 
@@ -567,6 +568,125 @@ describe('release HTTP workflow', () => {
 
     const css = (await agent.get('/creatorcrate.css').expect(200)).text;
     expect(css).toMatch(/\.project-form\s*>\s*\.release-project-section\s*\{[^}]*overflow:\s*visible/);
+  });
+
+  describe('/releases defaults and live-region markup', () => {
+    it('uses the releases defaults key and renders the enhanced toolbar with no visible Filter or Clear controls', async () => {
+      const res = await agent.get('/releases').expect(200);
+
+      expect(res.text).toContain('data-releases-live-region');
+      expect(res.text).toContain('data-releases-filter');
+      expect(res.text).toContain('data-releases-view-link');
+      expect(res.text).toContain('href="/calendar"');
+      expect(res.text).toContain('data-releases-reset');
+      expect(res.text).toContain('aria-label="Reset filters"');
+      expect(res.text).toContain('data-tooltip="Reset filters"');
+      expect(res.text).toContain('id="releases-defaults-dialog"');
+      expect(res.text).toContain('action="/releases/defaults"');
+      expect(res.text).toContain('id="releases-default-view"');
+      expect(res.text).toContain('id="releases-default-sort"');
+      expect(res.text).toContain('id="releases-default-order"');
+      expect(res.text).not.toContain('pageSize');
+
+      const enhancedMarkup = res.text.replace(/<noscript>[\s\S]*?<\/noscript>/g, '');
+      expect(enhancedMarkup).not.toContain('>Filter</button>');
+      expect(enhancedMarkup).not.toContain('>Clear</a>');
+    });
+
+    it('opens defaults=1 without saved-default canonicalization and keeps defaults out of filter forms', async () => {
+      app.locals.pageDefaultsService.saveDefault('releases', 'view', 'board');
+      app.locals.pageDefaultsService.saveDefault('releases', 'sort', 'title');
+      app.locals.pageDefaultsService.saveDefault('releases', 'order', 'desc');
+
+      const res = await agent.get('/releases?defaults=1').expect(200);
+
+      expect(res.headers.location).toBeUndefined();
+      expect(res.text).toMatch(/<dialog id="releases-defaults-dialog"[^>]*data-app-dialog[^>]*open/);
+      expect(res.text).toContain('<option value="board" selected>Board</option>');
+      const formRegion = res.text.match(/<div data-releases-live-region>[\s\S]*?<form id="board-releases-filter"[\s\S]*?<\/form>/)?.[0] || '';
+      expect(formRegion).not.toContain('name="defaults"');
+    });
+
+    it('saves releases defaults through the narrow endpoint and redirects with a trusted notice', async () => {
+      const response = await agent
+        .post('/releases/defaults')
+        .set('Accept', 'text/html')
+        .type('form')
+        .send({ _csrf: csrfToken, view: 'board', sort: 'title', order: 'desc' })
+        .expect(302);
+
+      expect(response.headers.location)
+        .toBe('/releases?view=board&sort=title&order=desc&notice=releases_defaults_saved');
+      expect(db.prepare('SELECT value FROM app_meta WHERE key = ?')
+        .get(PAGE_DEFAULT_DEFINITIONS.releases.view.key).value).toBe('board');
+      expect(db.prepare('SELECT value FROM app_meta WHERE key = ?')
+        .get(PAGE_DEFAULT_DEFINITIONS.releases.sort.key).value).toBe('title');
+
+      const rendered = await agent.get(response.headers.location).expect(200);
+      expect(rendered.headers.location).toBeUndefined();
+      expect(rendered.text).toContain('Releases defaults saved successfully.');
+
+      const bare = await agent.get('/releases').expect(302);
+      expect(bare.headers.location).toBe('/releases?view=board&sort=title&order=desc');
+      const bareRendered = await agent.get(bare.headers.location).expect(200);
+      expect(bareRendered.headers.location).toBeUndefined();
+      expect(bareRendered.text).toContain('<input type="hidden" name="view" value="board">');
+      expect(bareRendered.text).toContain('<input type="hidden" name="sort" value="title">');
+      expect(bareRendered.text).toContain('<input type="hidden" name="order" value="desc">');
+    });
+
+    it('returns the generic JSON success and 422 contracts without partial saves', async () => {
+      const valid = await agent
+        .post('/releases/defaults')
+        .set('Accept', 'application/json')
+        .type('form')
+        .send({ _csrf: csrfToken, view: 'list', sort: 'planned', order: 'asc' })
+        .expect(200);
+      expect(valid.body).toMatchObject({ status: 'success', values: { view: 'list', sort: 'planned', order: 'asc' } });
+
+      const invalid = await agent
+        .post('/releases/defaults')
+        .set('Accept', 'application/json')
+        .type('form')
+        .send({ _csrf: csrfToken, view: 'invalid', sort: 'title', order: 'asc' })
+        .expect(422);
+      expect(invalid.body).toMatchObject({ status: 'error', values: { view: 'invalid', sort: 'title', order: 'asc' } });
+      expect(db.prepare('SELECT value FROM app_meta WHERE key = ?')
+        .get(PAGE_DEFAULT_DEFINITIONS.releases.view.key).value).toBe('list');
+      expect(db.prepare('SELECT value FROM app_meta WHERE key = ?')
+        .get(PAGE_DEFAULT_DEFINITIONS.releases.sort.key).value).toBe('planned');
+    });
+
+    it('keeps a normal invalid defaults POST on the page with the dialog open and submitted value marker', async () => {
+      const invalid = await agent
+        .post('/releases/defaults')
+        .type('form')
+        .send({ _csrf: csrfToken, view: 'invalid', sort: 'title', order: 'desc' })
+        .expect(422);
+
+      expect(invalid.text).toMatch(/<dialog id="releases-defaults-dialog"[^>]*open/);
+      expect(invalid.text).toContain('data-dialog-submitted-value');
+      expect(invalid.text).toContain('Submitted value: invalid');
+      expect(invalid.text).toContain('releases.view');
+    });
+
+    it('rejects a Releases defaults POST without CSRF', async () => {
+      await agent
+        .post('/releases/defaults')
+        .type('form')
+        .send({ view: 'list', sort: 'planned', order: 'asc' })
+        .expect(403);
+    });
+
+    it('keeps Calendar normal and does not add a defaults endpoint to Release Management', async () => {
+      const calendar = await agent.get('/releases').expect(200);
+      expect(calendar.text).toContain('href="/calendar"');
+      await agent
+        .post('/release-management/defaults')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(404);
+    });
   });
 
   it('new-release form ignores status defaults and query parameters', async () => {

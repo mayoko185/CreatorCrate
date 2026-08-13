@@ -2,6 +2,8 @@
 {% import "partials/page-heading.njk" as pageHeading %}
 {% import "partials/icons.njk" as icons %}
 {% import "partials/asset-presentation.njk" as assetPresentation %}
+{% import "partials/view-switcher.njk" as viewSwitcher %}
+{% import "partials/dialog.njk" as dialog %}
 
 {% macro renderFilterSummary(selectedValues, options, emptyLabel, countLabel, prefix) -%}
   {%- if selectedValues.length == 0 -%}
@@ -94,7 +96,7 @@
       {% if asset.hasThumbnail %}
         <a class="asset-thumb-link" href="{{ asset.viewerUrl }}" aria-label="View details for {{ asset.filename }}">
           <span class="asset-thumb{% if asset.preview.kind == 'krita' %} asset-media--krita{% endif %}" data-preview-enhancement data-preview-state="loading">
-            <img class="asset-thumb-image"
+            <img class="asset-thumb-image{% if asset.nsfwBlur %} asset-image--nsfw-blurred{% endif %}"
                  src="{{ asset.thumbnail_url }}"
                  alt=""
                  loading="lazy"
@@ -184,7 +186,8 @@
       selected: selected,
       selectable: not isArchived and asset.is_present,
       selectableTabIndex: not autoRenameSurface,
-      titleRowHidden: renameAttempt
+      titleRowHidden: renameAttempt,
+      nsfwBlur: asset.nsfwBlur
     }) %}
       {% if slot == 'top-start' %}
         {% if not isArchived %}
@@ -255,7 +258,8 @@
       cardClass: 'asset-list-card--project',
       selected: selected,
       selectable: not isArchived and asset.is_present,
-      mediaContextLabel: project.title
+      mediaContextLabel: project.title,
+      nsfwBlur: asset.nsfwBlur
     }) %}
       {% if slot == 'top' %}
         {% if not isArchived %}
@@ -451,11 +455,30 @@
     {% include "partials/notice.njk" %}
   {% endif %}
 
+  {% if projectAssetsDefaultsNotice %}
+    {% set noticeVariant = "success" %}
+    {% set noticeText = projectAssetsDefaultsNotice.message %}
+    {% include "partials/notice.njk" %}
+  {% endif %}
+
+  {% if projectAssetsNsfwError %}
+    {% set noticeVariant = "danger" %}
+    {% set noticeText = projectAssetsNsfwError %}
+    {% include "partials/notice.njk" %}
+  {% endif %}
+
+  <div class="notice notice--success app-dialog-feedback" data-dialog-feedback role="status" hidden>
+    <p data-dialog-feedback-text></p>
+  </div>
+
   {% if completeCategorySurface %}
     <p class="results-meta">
       {{ total }} asset{% if total != 1 %}s{% endif %} in the complete {{ autoRenameCategory.displayName if autoRenameCategory else filters.category }} category
     </p>
   {% endif %}
+
+  <div data-project-assets-live-region>
+    <span class="sr-only" data-project-assets-live-status aria-live="polite" aria-atomic="true"></span>
 
   <div class="asset-browser-layout">
     <div class="asset-browser-content">
@@ -474,34 +497,45 @@
       {% endif %}
 
       <div class="asset-viewer-display-controls">
-        <nav class="view-switcher" aria-label="Asset display">
-          <a class="view-switcher-option" href="{{ pageUrl({ view: 'grid' }) }}"
-             {% if filters.view == 'grid' %}aria-current="page"{% endif %}>Grid</a>
-          <a class="view-switcher-option" href="{{ pageUrl({ view: 'list' }) }}"
-             {% if filters.view == 'list' %}aria-current="page"{% endif %}>List</a>
-        </nav>
+        {% if filters.view == 'grid' %}
+          {% set gridSizeLabelsInteractive = true %}
+        {% endif %}
+        {{ viewSwitcher.render(filters.view, pageUrl, "Asset display", true) }}
 
         {% if filters.view == 'grid' %}
           {% include "partials/asset-grid-size-control.njk" %}
         {% endif %}
 
-        <div class="project-filter-actions">
-          <button class="slideshow-trigger button button-secondary"
-                  type="button"
-                  aria-label="Start slideshow"
-                  title="Start slideshow"
+        <div class="project-filter-actions project-filter-actions--projects">
+           <a class="asset-viewer-defaults-link button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--left"
+              href="{{ projectAssetsDefaultsUrl }}" aria-label="Project Assets defaults"
+              data-dialog-open="project-assets-defaults-dialog" data-tooltip="Project Assets defaults" data-asset-viewer-defaults-link>
+            {{ icons.icon('settings') }}
+          </a>
+          {% set nsfwToggleLabel = "Disable NSFW filter" if nsfwFilterEnabled else "Enable NSFW filter" %}
+          <form method="post" action="/projects/{{ project.id }}/assets/nsfw-filter" class="inline-form" data-project-assets-nsfw-filter>
+            <input type="hidden" name="_csrf" value="{{ _csrf }}">
+            <input type="hidden" name="enabled" value="{{ '0' if nsfwFilterEnabled else '1' }}" data-project-assets-nsfw-value>
+            <input type="hidden" name="returnTo" value="{{ projectAssetsNsfwReturnUrl }}">
+            <button class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--left"
+                    id="project-assets-nsfw-toggle" type="submit" data-project-assets-nsfw-toggle
+                    aria-pressed="{{ 'true' if nsfwFilterEnabled else 'false' }}"
+                    aria-label="{{ nsfwToggleLabel }}" data-tooltip="{{ nsfwToggleLabel }}">
+              {{ icons.icon('nsfw-filter') }}
+            </button>
+          </form>
+           <button class="slideshow-trigger button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--left"
+                   type="button"
+                   aria-label="Start slideshow"
+                  data-tooltip="Start slideshow"
                   data-slideshow-trigger>{{ icons.icon('slideshow') }}</button>
-          <button class="button" type="submit" form="asset-filters">Filter</button>
-          <a class="button button-secondary" href="{{ pageUrl({ search: '', tag: '', extension: '', presence: 'all', usage: 'all', category: 'all', sort: 'filename', order: 'asc', page: 1, pageSize: 25 }) }}">Reset</a>
+            <a class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--left"
+               href="{{ pageUrl({ search: '', tag: '', extension: '', presence: 'all', usage: 'all', category: 'all', sort: 'filename', order: 'asc', page: 1, pageSize: 25 }) }}"
+               aria-label="Reset filters" data-tooltip="Reset filters" data-project-assets-reset>{{ icons.icon('reset') }}<span class="sr-only">Reset</span></a>
         </div>
       </div>
 
       <form class="filters asset-viewer-filters asset-viewer-filters--project-assets" method="get" action="/projects/{{ project.id }}/assets" id="asset-filters">
-        <a class="asset-viewer-defaults-link button button-small button-secondary asset-tooltip asset-tooltip--right"
-           href="/settings/defaults#defaults-project-assets" aria-label="Project Assets defaults"
-           data-tooltip="Project Assets defaults">
-          {{ icons.icon('settings') }}
-        </a>
         {% if filters.view == 'list' or preserveViewQuery %}
           <input type="hidden" name="view" value="{{ filters.view }}">
         {% endif %}
@@ -845,6 +879,9 @@
         </fieldset>
 
       </form>
+      <noscript>
+             <button class="button button-primary" type="submit" form="asset-filters">Filter</button>
+      </noscript>
 
       {% if assets.length > 0 %}
         {% if completeCategorySurface %}
@@ -1053,7 +1090,7 @@
 
           <form class="page-size-form" method="get" action="/projects/{{ project.id }}/assets">
             <label for="pageSize">Assets per page:</label>
-            <select id="pageSize" name="pageSize" data-autosubmit>
+             <select id="pageSize" name="pageSize" data-autosubmit>
               <option value="10" {% if pageSize == 10 %}selected{% endif %}>10</option>
               <option value="25" {% if pageSize == 25 %}selected{% endif %}>25</option>
               <option value="50" {% if pageSize == 50 %}selected{% endif %}>50</option>
@@ -1110,8 +1147,50 @@
     </div>
   </div>
 
+  </div>
+
 {% endblock %}
 {% block overlay %}
+  {% call dialog.render('project-assets-defaults-dialog', 'Project Assets defaults', projectAssetsDefaultsDialogOpen, 'project-assets-defaults-description', 'project-assets-defaults-form') %}
+    <form id="project-assets-defaults-form" method="post" action="/projects/{{ project.id }}/assets/defaults" class="app-dialog-form project-form"
+          data-dialog-form data-dialog-async novalidate>
+      <p id="project-assets-defaults-description" class="app-dialog-description">
+        Choose the presentation used when Project Assets opens without explicit options.
+      </p>
+
+      <div class="app-dialog-error" data-dialog-error role="alert" hidden>
+        <p data-dialog-error-text></p>
+        <ul data-dialog-error-list></ul>
+      </div>
+
+       <input type="hidden" name="_csrf" value="{{ _csrf }}">
+       <input type="hidden" name="returnTo" value="{{ projectAssetsDefaultsReturnUrl }}">
+
+      <div class="app-dialog-body">
+        {% for field in projectAssetsDefaults.fields %}
+          <div class="field app-dialog-field{% if field.error %} field-error{% endif %}" data-dialog-field="{{ field.name }}">
+            <label for="{{ field.id }}">{{ field.label }}</label>
+            <select id="{{ field.id }}" name="{{ field.name }}" required{% if field.error %} aria-describedby="{{ field.id }}-error" aria-invalid="true"{% endif %}>
+              {% if field.showSubmittedValue %}
+                <option value="{{ field.submittedOptionValue }}" data-dialog-submitted-value selected>Submitted value: {{ field.submittedDisplayValue }}</option>
+              {% endif %}
+              {% for option in field.options %}
+                <option value="{{ option.value }}"{% if option.value == field.selectedValue %} selected{% endif %}>{{ option.label }}</option>
+              {% endfor %}
+            </select>
+            {% if field.error %}<span class="field-error-message" id="{{ field.id }}-error">{{ field.error }}</span>{% endif %}
+          </div>
+        {% endfor %}
+      </div>
+
+      <div class="app-dialog-status" data-dialog-status role="status" aria-live="polite"></div>
+
+      <footer class="app-dialog-footer">
+        <button class="button button-secondary" type="submit" formmethod="dialog" data-dialog-close>Cancel</button>
+        <button class="button button-primary" type="submit" data-dialog-submit>Save defaults</button>
+      </footer>
+    </form>
+  {% endcall %}
   <div data-slideshow-scaffold class="slideshow-scaffold" hidden inert role="dialog" aria-modal="true" aria-label="Slideshow">
       <script type="application/json" data-slideshow-sequence>{{ slideshowSequenceJson | default('[]') | safe }}</script>
       <div class="slideshow-scaffold-inner">

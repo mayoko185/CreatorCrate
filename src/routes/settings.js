@@ -97,13 +97,8 @@ function resolveNotice(code) {
 
 const PAGE_DEFAULT_SECTIONS = Object.freeze([
   Object.freeze({ page: 'new_project', title: 'New Projects', anchor: 'defaults-new-projects' }),
-  Object.freeze({ page: 'releases', title: 'Releases', anchor: 'defaults-releases' }),
   Object.freeze({ page: 'releaseManagement', title: 'Release Management', anchor: 'defaults-release-management' }),
-  Object.freeze({ page: 'projectAssets', title: 'Project Assets', anchor: 'defaults-project-assets' }),
-  Object.freeze({ page: 'assetViewer', title: 'Asset Viewer', anchor: 'defaults-asset-viewer' }),
 ]);
-
-const PROJECT_ASSET_CATEGORY_FIELD = 'defaultCategory';
 
 const DEFAULT_OPTION_LABELS = Object.freeze({
   view: 'Default view',
@@ -190,10 +185,7 @@ function readSubmittedPageDefaults(body) {
       ),
     ])
   );
-  return {
-    ...values,
-    [PROJECT_ASSET_CATEGORY_FIELD]: rawBody[PROJECT_ASSET_CATEGORY_FIELD],
-  };
+  return values;
 }
 
 function getPageDefaultsService(req) {
@@ -318,19 +310,10 @@ function renderNsfwFilterPage(req, res, {
 }
 
 function buildDefaultsPageModel(service, {
-  assetBrowserPreferenceService,
-  assetCategoryService,
   submittedValues = null,
   errors = {},
-  preferenceError = null,
 } = {}) {
   const hasSubmittedValues = submittedValues !== null;
-  const assetBrowserPreference = buildGlobalAssetBrowserPreferenceModel({
-    preferenceService: assetBrowserPreferenceService,
-    categories: assetCategoryService.listDefaults(),
-    submittedValue: hasSubmittedValues ? submittedValues[PROJECT_ASSET_CATEGORY_FIELD] : undefined,
-    error: preferenceError,
-  });
   const sections = PAGE_DEFAULT_SECTIONS.map(({ page, title, anchor }) => ({
     page,
     title,
@@ -373,13 +356,9 @@ function buildDefaultsPageModel(service, {
   }));
 
   const errorMessages = [...Object.values(errors)];
-  if (assetBrowserPreference.errorMessage) {
-    errorMessages.push(assetBrowserPreference.errorMessage);
-  }
 
   return {
     sections,
-    assetBrowserPreference,
     hasErrors: errorMessages.length > 0,
     errorMessages,
   };
@@ -497,24 +476,18 @@ function validateSubmittedPageDefaults(service, submittedValues) {
 
 function renderDefaultsPage(req, res, {
   appName,
-  assetBrowserPreferenceService,
-  assetCategoryService,
   status = 200,
   notice = null,
   submittedValues = null,
   errors = {},
-  preferenceError = null,
 } = {}) {
   const service = getPageDefaultsService(req);
   res.status(status).render('settings/defaults.njk', {
     appName,
     notice,
     ...buildDefaultsPageModel(service, {
-      assetBrowserPreferenceService,
-      assetCategoryService,
       submittedValues,
       errors,
-      preferenceError,
     }),
   });
 }
@@ -687,8 +660,6 @@ export function createSettingsRouter({
   router.get('/defaults', (req, res) => {
     renderDefaultsPage(req, res, {
       appName,
-      assetBrowserPreferenceService,
-      assetCategoryService,
       notice: resolveNotice(req.query.notice),
     });
   });
@@ -706,8 +677,6 @@ export function createSettingsRouter({
     if (Object.keys(validation.errors).length > 0) {
       renderDefaultsPage(req, res, {
         appName,
-        assetBrowserPreferenceService,
-        assetCategoryService,
         status: 422,
         submittedValues,
         errors: validation.errors,
@@ -717,7 +686,6 @@ export function createSettingsRouter({
 
     try {
       db.transaction(() => {
-        assetBrowserPreferenceService.setGlobalPreference(submittedValues[PROJECT_ASSET_CATEGORY_FIELD]);
         for (const { page } of PAGE_DEFAULT_SECTIONS) {
           for (const option of Object.keys(PAGE_DEFAULT_DEFINITIONS[page])) {
             service.saveDefault(page, option, validation.validatedValues[page][option]);
@@ -725,17 +693,6 @@ export function createSettingsRouter({
         }
       })();
     } catch (err) {
-      if (err instanceof PreferenceValidationError) {
-        renderDefaultsPage(req, res, {
-          appName,
-          assetBrowserPreferenceService,
-          assetCategoryService,
-          status: 422,
-          submittedValues,
-          preferenceError: err,
-        });
-        return;
-      }
       return next(err);
     }
 

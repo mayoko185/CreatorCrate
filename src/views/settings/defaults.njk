@@ -1,11 +1,10 @@
 {% extends "layout.njk" %}
 {% import "partials/page-heading.njk" as pageHeading %}
-{% import "partials/asset-browser-preference.njk" as assetBrowserPreferenceForm %}
 
 {% set page_title = "Settings — Defaults" %}
 
 {% block content %}
-  {{ pageHeading.render("Choose persistent defaults for new projects, Releases, Release Management, project Assets, and the Asset Viewer.") }}
+  {{ pageHeading.render("Choose persistent defaults for new projects and Release Management.") }}
 
   {% if notice %}
     {% set noticeVariant = notice.variant %}
@@ -61,42 +60,6 @@
               </div>
             {% endfor %}
 
-            {% if section.page == 'projectAssets' %}
-              <section class="settings-section asset-browser-default-section" aria-labelledby="project-assets-default-category-heading">
-                <h3 id="project-assets-default-category-heading">Asset browser default</h3>
-                <p class="asset-browser-default-description" id="project-assets-default-category-help">
-                  For projects set to <strong>Inherit global default</strong>. This does not recopy project categories;
-                  unavailable matches fall back to <strong>All Categories</strong>.
-                </p>
-
-                {% if assetBrowserPreference.warning %}
-                  <div class="notice notice--warning" role="status" id="project-assets-default-category-warning">
-                    <p>{{ assetBrowserPreference.warning }}</p>
-                  </div>
-                {% endif %}
-
-                {% if assetBrowserPreference.errorMessage %}
-                  <div class="error-summary" role="alert" id="project-assets-default-category-error">
-                    <p>Could not save the global asset browser default. {{ assetBrowserPreference.errorMessage }}</p>
-                  </div>
-                {% endif %}
-
-                <p class="asset-browser-default-summary">
-                  <span><span class="asset-browser-default-summary-label">Saved:</span> <strong>{{ assetBrowserPreference.storedLabel }}</strong></span>
-                  {% if assetBrowserPreference.fallback %}
-                    <span><span class="asset-browser-default-summary-label">Effective:</span> <strong>All Categories</strong> for inheriting projects</span>
-                  {% endif %}
-                </p>
-
-                <div class="asset-browser-default-control-row">
-                  <div class="field asset-browser-default-field-row{% if assetBrowserPreference.errorMessage %} field-error{% endif %}">
-                    {{ assetBrowserPreferenceForm.globalControl(assetBrowserPreference, "project-assets-default-category", "defaultCategory") }}
-                    <span class="help-text" id="project-assets-default-category-help-text">Category labels are shown here; the stable directory slug is stored.</span>
-                    {% if assetBrowserPreference.errorMessage %}<span class="field-error-message" id="project-assets-default-category-error-message">{{ assetBrowserPreference.errorMessage }}</span>{% endif %}
-                  </div>
-                </div>
-              </section>
-            {% endif %}
           </section>
         {% endfor %}
 

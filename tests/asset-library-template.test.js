@@ -132,6 +132,12 @@ function makeModel(overrides = {}) {
       option(50, '50', pageSize === 50),
       option(100, '100', pageSize === 100),
     ],
+    nsfwFilterEnabled: false,
+    _csrf: '',
+    assetViewerDefaults: { fields: [] },
+    assetViewerDefaultsDialogOpen: false,
+    assetViewerDefaultsReturnUrl: '/assets',
+    assetViewerNsfwReturnUrl: '/assets',
     ...overrides,
     filters,
   };
@@ -203,7 +209,7 @@ describe('cross-project Asset Viewer template', () => {
     });
 
     expect(html).toMatch(/<form id="asset-filters" class="filters asset-viewer-filters asset-viewer-filters--asset-viewer" method="get" action="\/assets">/);
-    expect(html).toMatch(/<div class="asset-viewer-display-controls">[\s\S]*?<div class="project-filter-actions">[\s\S]*?<button class="button" type="submit" form="asset-filters">Filter<\/button>\s*<a class="button button-secondary" href="[^"]+">Reset<\/a>\s*<\/div>\s*<\/div>\s*<form id="asset-filters"/);
+    expect(html).toMatch(/<div class="asset-viewer-display-controls">[\s\S]*?<div class="project-filter-actions project-filter-actions--projects">[\s\S]*?<\/div>\s*<\/div>\s*<form id="asset-filters"/);
     expect(html).toContain('<input type="hidden" name="view" value="list">');
     expect(html).toContain('aria-label="Project filter: Beta Project"');
     expect(html).toMatch(/<span class="asset-filter-multiselect-summary" data-asset-project-filter-summary>\s*<span class="asset-filter-multiselect-summary-current" data-asset-project-filter-current-summary>Beta Project<\/span>[\s\S]*?<span class="asset-filter-multiselect-summary-width" aria-hidden="true">[\s\S]*?<\/span>\s*<\/span>/);
@@ -250,15 +256,18 @@ describe('cross-project Asset Viewer template', () => {
       expect(disclosure).toContain('aria-expanded="false"');
       expect(disclosure).toContain('class="asset-filter-multiselect-summary-width" aria-hidden="true"');
     }
-    expect(html).toContain('>Reset</a>');
+    expect(html).toContain('data-asset-library-reset');
+    expect(html).toContain('aria-label="Reset filters"');
   });
 
-  it('renders the Asset Viewer defaults link with correct href and accessibility text', () => {
+  it('renders the Asset Viewer defaults link with dialog-open and accessibility text', () => {
     const html = renderPage();
 
-    expect(html).toContain('href="/settings/defaults#defaults-asset-viewer"');
+    expect(html).toContain('href="/assets?defaults=1"');
     expect(html).toContain('aria-label="Asset Viewer defaults"');
     expect(html).toContain('data-tooltip="Asset Viewer defaults"');
+    expect(html).toContain('data-dialog-open="asset-viewer-defaults-dialog"');
+    expect(html).toContain('data-asset-viewer-defaults-link');
   });
 
   it('renders Project as a searchable single-select disclosure with safe radio values', () => {
@@ -389,10 +398,11 @@ describe('cross-project Asset Viewer template', () => {
     expect(html).not.toContain('asset-grid-size-heading');
     expect(html).not.toMatch(/>Grid size<\/(?:label|span|output)/);
     expect(html).not.toMatch(/<button[^>]+data-grid-size="(?:compact|default|large)"/);
+    expect(html).toContain('data-grid-size-labels-interactive');
     const optionLabels = [...html.matchAll(/data-grid-size-option-label="(compact|default|large)"[^>]*>([^<]+)</g)];
     expect(optionLabels.map(([, value]) => value)).toEqual(['compact', 'default', 'large']);
     expect(optionLabels.map(([, , label]) => label)).toEqual(['Compact', 'Default', 'Large']);
-    expect(html).toMatch(/data-grid-size-option-label="default" class="is-active">Default</);
+    expect(html).toMatch(/is-active[^>]*data-grid-size-option-label="default"[^>]*>Default</);
     expect(cards).toHaveLength(2);
     expect(alphaCard).toBeDefined();
     expect(betaCard).toBeDefined();
@@ -740,13 +750,14 @@ describe('cross-project Asset Viewer template', () => {
     expect(css).toMatch(/\.asset-viewer-grid-card-preview:hover \.asset-viewer-grid-card-info,[\s\S]*?\.asset-viewer-grid-card-preview:focus-within \.asset-viewer-grid-card-info\s*\{[\s\S]*?display:\s*block/);
   });
 
-  it('contains only the read-only filter form and no mutation controls', () => {
-    const html = renderPage();
+  it('contains the filter form, NSFW form, and defaults dialog form but no asset-mutation controls', () => {
+    const html = renderPage({ _csrf: 'test-csrf', nsfwFilterEnabled: false });
     const forms = html.match(/<form\b[^>]*>/g) || [];
 
-    expect(forms).toHaveLength(1);
-    expect(forms[0]).toContain('method="get"');
-    expect(html).not.toMatch(/method="post"/i);
+    expect(forms).toHaveLength(3);
+    expect(forms.find((f) => f.includes('method="get"'))).toBeDefined();
+    expect(forms.find((f) => f.includes('action="/assets/nsfw-filter"'))).toBeDefined();
+    expect(forms.find((f) => f.includes('action="/assets/defaults"'))).toBeDefined();
     expect(html).not.toMatch(/Scan Now|Rename|Move file|Add selected|Set as primary|select all/i);
     expect(html).not.toContain('name="selectedAssetIds"');
     expect(html).not.toContain('asset-select-checkbox');
@@ -841,6 +852,118 @@ describe('cross-project Asset Viewer template', () => {
     expect(source).toContain('{% set page_title = "Assets — " ~ project.title ~ " — " ~ asset.filename %}');
     expect(source).toContain('action="/projects/{{ project.id }}/assets/{{ asset.id }}/primary-image"');
   });
+
+  it('wraps the content area in a live region with a status element', () => {
+    const html = renderPage();
+    expect(html).toContain('data-asset-library-live-region');
+    expect(html).toMatch(/<span class="sr-only" data-asset-library-live-status aria-live="polite" aria-atomic="true"><\/span>/);
+    const regionStart = html.indexOf('data-asset-library-live-region');
+    const formStart = html.indexOf('id="asset-filters"');
+    const gridStart = html.indexOf('class="asset-grid"');
+    expect(regionStart).toBeLessThan(formStart);
+    expect(regionStart).toBeLessThan(gridStart);
+  });
+
+  it('renders the view switcher in icon mode', () => {
+    const html = renderPage();
+    expect(html).toMatch(/class="[^"]*view-switcher-option--icon[^"]*"/);
+    expect(html).toContain('asset-tooltip');
+  });
+
+  it('renders interactive grid-size labels as buttons when in grid view', () => {
+    const html = renderPage();
+    expect(html).toMatch(/<button[^>]+data-grid-size-option-label/);
+    expect(html).toMatch(/aria-pressed="(true|false)"/);
+
+    const listHtml = renderPage({ filters: { view: 'list' }, presentation: { view: 'list' } });
+    expect(listHtml).not.toMatch(/<button[^>]+data-grid-size-option-label/);
+  });
+
+  it('renders the NSFW toggle form in the toolbar', () => {
+    const html = renderPage({ _csrf: 'test-csrf', nsfwFilterEnabled: false });
+
+    expect(html).toContain('data-asset-library-nsfw-filter');
+    expect(html).toContain('action="/assets/nsfw-filter"');
+    expect(html).toContain('data-asset-library-nsfw-toggle');
+    expect(html).toContain('data-asset-library-nsfw-value');
+    expect(html).toMatch(/name="_csrf" value="test-csrf"/);
+
+    const toggle = html.match(/<button[^>]*data-asset-library-nsfw-toggle[^>]*>/)?.[0] ?? '';
+    expect(toggle).toContain('aria-pressed="false"');
+    expect(toggle).toContain('aria-label="Enable NSFW filter"');
+    expect(toggle).toContain('data-tooltip="Enable NSFW filter"');
+  });
+
+  it('renders the NSFW toggle as pressed when filter is enabled', () => {
+    const html = renderPage({ _csrf: 'test-csrf', nsfwFilterEnabled: true });
+
+    const toggle = html.match(/<button[^>]*data-asset-library-nsfw-toggle[^>]*>/)?.[0] ?? '';
+    expect(toggle).toContain('aria-pressed="true"');
+    expect(toggle).toContain('aria-label="Disable NSFW filter"');
+
+    const valueInput = html.match(/<input[^>]*data-asset-library-nsfw-value[^>]*>/)?.[0] ?? '';
+    expect(valueInput).toContain('value="0"');
+  });
+
+  it('applies NSFW blur class to grid preview images when asset has nsfwBlur', () => {
+    const html = renderPage({
+      assets: [{
+        ...alphaAsset,
+        nsfwBlur: true,
+      }],
+    });
+    expect(html).toContain('asset-image--nsfw-blurred');
+
+    const clean = renderPage({
+      assets: [{
+        ...alphaAsset,
+        nsfwBlur: false,
+      }],
+    });
+    expect(clean).not.toContain('asset-image--nsfw-blurred');
+  });
+
+  it('applies NSFW blur class to list preview images when asset has nsfwBlur', () => {
+    const html = renderPage({
+      filters: { view: 'list' },
+      presentation: { view: 'list' },
+      assets: [{
+        ...alphaAsset,
+        nsfwBlur: true,
+      }],
+    });
+    expect(html).toContain('asset-image--nsfw-blurred');
+  });
+
+  it('renders the Asset Viewer defaults dialog in the overlay block', () => {
+    const html = renderPage({
+      _csrf: 'test-csrf',
+      assetViewerDefaults: {
+        fields: [
+          { id: 'av-view', name: 'view', label: 'View', selectedValue: 'grid', options: [{ value: 'grid', label: 'Grid' }, { value: 'list', label: 'List' }] },
+          { id: 'av-sort', name: 'sort', label: 'Sort', selectedValue: 'filename', options: [{ value: 'filename', label: 'Filename' }] },
+        ],
+      },
+      assetViewerDefaultsDialogOpen: false,
+      assetViewerDefaultsReturnUrl: '/assets',
+    });
+
+    expect(html).toContain('id="asset-viewer-defaults-dialog"');
+    expect(html).toContain('Asset Viewer defaults');
+    expect(html).toContain('id="asset-viewer-defaults-form"');
+    expect(html).toContain('action="/assets/defaults"');
+    expect(html).toContain('data-dialog-form');
+    expect(html).toContain('data-dialog-async');
+    expect(html).toContain('name="returnTo"');
+    expect(html).toContain('data-dialog-submit');
+    expect(html).toContain('>Save defaults</button>');
+    expect(html).toContain('>Cancel</button>');
+  });
+
+  it('renders a noscript Filter button inside the filter form', () => {
+    const html = renderPage();
+    expect(html).toMatch(/<noscript><button class="button" type="submit">Filter<\/button><\/noscript>/);
+  });
 });
 
 const PROJECT_ASSETS_PATH = path.join(VIEWS_DIR, 'projects', 'assets.njk');
@@ -876,6 +999,12 @@ function renderProjectAssetsPage(overrides = {}) {
     preserveViewQuery: false,
     preservePageSizeQuery: false,
     pageUrl: () => '/test',
+    projectAssetsDefaults: { fields: [] },
+    projectAssetsDefaultsDialogOpen: false,
+    projectAssetsDefaultsReturnUrl: '/projects/1/assets',
+    projectAssetsDefaultsUrl: '/projects/1/assets?defaults=1',
+    nsfwFilterEnabled: false,
+    projectAssetsNsfwReturnUrl: '/projects/1/assets',
     _csrf: 'test-csrf',
     appName: 'CreatorCrate',
     auth: { enabled: false, authenticated: false },
@@ -887,30 +1016,31 @@ function renderProjectAssetsPage(overrides = {}) {
 }
 
 describe('slideshow scaffold — static UI', () => {
-  it('asset-viewer page: slideshow trigger exists before Filter in DOM order', () => {
+  it('asset-viewer page: slideshow trigger exists before Reset in DOM order', () => {
     const html = renderPage();
-    const filterActionsDiv = html.match(/<div class="project-filter-actions">[\s\S]*?<\/div>/)?.[0] ?? '';
-    const triggerPos = filterActionsDiv.indexOf('data-slideshow-trigger');
-    const filterPos = filterActionsDiv.indexOf('type="submit" form="asset-filters"');
+    const toolbarDiv = html.match(/<div class="project-filter-actions project-filter-actions--projects">[\s\S]*?<\/div>/)?.[0] ?? '';
+    const triggerPos = toolbarDiv.indexOf('data-slideshow-trigger');
+    const resetPos = toolbarDiv.indexOf('data-asset-library-reset');
     expect(triggerPos).toBeGreaterThan(-1);
-    expect(filterPos).toBeGreaterThan(-1);
-    expect(triggerPos).toBeLessThan(filterPos);
+    expect(resetPos).toBeGreaterThan(-1);
+    expect(triggerPos).toBeLessThan(resetPos);
   });
 
-  it('asset-viewer page: slideshow trigger has accessible label and tooltip', () => {
+  it('asset-viewer page: slideshow trigger has accessible label and styled tooltip', () => {
     const html = renderPage();
-    expect(html).toContain('data-slideshow-trigger');
-    expect(html).toContain('aria-label="Start slideshow"');
-    expect(html).toContain('title="Start slideshow"');
+    const trigger = html.match(/<button\b[^>]*data-slideshow-trigger[^>]*>/)?.[0] ?? '';
+    expect(trigger).toContain('aria-label="Start slideshow"');
+    expect(trigger).toContain('data-tooltip="Start slideshow"');
+    expect(trigger).not.toContain('title=');
   });
 
-  it('both asset pages use the shared Filter button sizing for Slideshow', () => {
-    for (const html of [renderPage(), renderProjectAssetsPage()]) {
-      const triggerClass = html.match(/<button class="([^"]*\bslideshow-trigger\b[^"]*)"[^>]*data-slideshow-trigger/)?.[1] ?? '';
-      expect(triggerClass).toContain('button');
-      expect(triggerClass).toContain('button-secondary');
-      expect(triggerClass).not.toContain('button-small');
-    }
+  it('both asset pages use button-small sizing for Slideshow', () => {
+    const viewerTriggerClass = renderPage().match(/<button class="([^"]*\bslideshow-trigger\b[^"]*)"[^>]*data-slideshow-trigger/)?.[1] ?? '';
+    const projectTriggerClass = renderProjectAssetsPage().match(/<button class="([^"]*\bslideshow-trigger\b[^"]*)"[^>]*data-slideshow-trigger/)?.[1] ?? '';
+    expect(viewerTriggerClass).toContain('button-secondary');
+    expect(viewerTriggerClass).toContain('button-small');
+    expect(projectTriggerClass).toContain('button-secondary');
+    expect(projectTriggerClass).toContain('button-small');
 
     expect(css).toMatch(/\.slideshow-trigger\s*\{[^}]*margin-inline-end:\s*var\(--space-xs\)/);
     expect(css).not.toMatch(/\.slideshow-trigger\s*\{[^}]*line-height:/);
@@ -949,19 +1079,20 @@ describe('slideshow scaffold — static UI', () => {
     expect(speedSelect).toContain('value="6000"');
   });
 
-  it('asset-viewer page: existing Filter, Reset, and Defaults controls remain present', () => {
-    const html = renderPage();
-    expect(html).toContain('type="submit" form="asset-filters"');
-    expect(html).toContain('>Filter</button>');
-    expect(html).toContain('>Reset</a>');
-    expect(html).toContain('href="/settings/defaults#defaults-asset-viewer"');
+  it('asset-viewer page: toolbar has Defaults, NSFW, Slideshow, and Reset controls', () => {
+    const html = renderPage({ _csrf: 'test-csrf', nsfwFilterEnabled: false });
+    expect(html).toContain('data-dialog-open="asset-viewer-defaults-dialog"');
+    expect(html).toContain('data-asset-library-nsfw-toggle');
+    expect(html).toContain('data-slideshow-trigger');
+    expect(html).toContain('data-asset-library-reset');
+    expect(html).toContain('href="/assets?defaults=1"');
+    expect(html).toMatch(/<noscript><button class="button" type="submit">Filter<\/button><\/noscript>/);
   });
 
   it('project assets page: slideshow trigger exists before Filter in DOM order', () => {
     const html = renderProjectAssetsPage();
-    const filterActionsDiv = html.match(/<div class="project-filter-actions">[\s\S]*?<\/div>/)?.[0] ?? '';
-    const triggerPos = filterActionsDiv.indexOf('data-slideshow-trigger');
-    const filterPos = filterActionsDiv.indexOf('type="submit" form="asset-filters"');
+    const triggerPos = html.indexOf('data-slideshow-trigger');
+    const filterPos = html.indexOf('id="asset-filters"');
     expect(triggerPos).toBeGreaterThan(-1);
     expect(filterPos).toBeGreaterThan(-1);
     expect(triggerPos).toBeLessThan(filterPos);
@@ -969,9 +1100,10 @@ describe('slideshow scaffold — static UI', () => {
 
   it('project assets page: slideshow trigger has accessible label and tooltip', () => {
     const html = renderProjectAssetsPage();
-    expect(html).toContain('data-slideshow-trigger');
-    expect(html).toContain('aria-label="Start slideshow"');
-    expect(html).toContain('title="Start slideshow"');
+    const trigger = html.match(/<button\b[^>]*data-slideshow-trigger[^>]*>/)?.[0] ?? '';
+    expect(trigger).toContain('aria-label="Start slideshow"');
+    expect(trigger).toContain('data-tooltip="Start slideshow"');
+    expect(trigger).not.toContain('title=');
   });
 
   it('project assets page: slideshow scaffold is present, hidden, and inert', () => {
@@ -998,8 +1130,10 @@ describe('slideshow scaffold — static UI', () => {
     const html = renderProjectAssetsPage();
     expect(html).toContain('type="submit" form="asset-filters"');
     expect(html).toContain('>Filter</button>');
-    expect(html).toContain('>Reset</a>');
-    expect(html).toContain('href="/settings/defaults#defaults-project-assets"');
+    expect(html).toContain('data-project-assets-reset');
+    expect(html).toContain('>Reset</span>');
+    expect(html).toContain('href="/projects/1/assets?defaults=1"');
+    expect(html).toContain('data-dialog-open="project-assets-defaults-dialog"');
   });
 });
 

@@ -2054,6 +2054,10 @@
         top: var(--space-xs);
         z-index: 70;
       }
+      [data-releases-live-region] {
+        position: relative;
+        z-index: 20;
+      }
       .asset-viewer-grid-size-controls {
         display: flex;
         flex: 0 1 11rem;
@@ -3814,6 +3818,10 @@
         height: auto;
       }
       .project-image--nsfw-blurred {
+        filter: blur(2rem);
+        clip-path: inset(0);
+      }
+      .asset-image--nsfw-blurred {
         filter: blur(2rem);
         clip-path: inset(0);
       }

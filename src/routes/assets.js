@@ -5,6 +5,15 @@ import { buildCreateReleaseFormModel } from './releases.js';
 import { UNCATEGORIZED } from '../services/asset-action-service.js';
 import { PRIMARY_IMAGE_ERROR_CODES } from '../services/project-primary-image-service.js';
 import { AUTO_RENAME_ERROR_CODES } from '../services/auto-rename-service.js';
+import { NSFW_TAG_NAME } from '../services/nsfw-filter-settings-service.js';
+import {
+  AssetCategoryValidationError,
+  parseEnabledField,
+} from '../services/asset-category-validation.js';
+import {
+  buildPageDefaultsDialogModel,
+  handlePageDefaultsPost,
+} from './page-defaults.js';
 import {
   buildCanonicalAssetBrowserQuery,
   buildAssetBrowserQueryString,
@@ -15,6 +24,7 @@ import { buildOpenLocallyUri } from '../util/open-locally.js';
 
 const ASSET_BROWSER_QUERY_KEYS = ['category', 'tag', 'search', 'extension', 'presence', 'usage', 'sort', 'order', 'page', 'pageSize', 'view'];
 const ASSET_PAGE_DEFAULTS_PAGE = 'projectAssets';
+const NSFW_TAG_NORMALIZED_NAME = NSFW_TAG_NAME.toLowerCase();
 const ASSET_PRESENTATION_OPTIONS = Object.freeze([
   Object.freeze({ key: 'view', option: 'view' }),
   Object.freeze({ key: 'sort', option: 'sort' }),
@@ -29,6 +39,35 @@ const ASSET_PRESENTATION_OPTIONS = Object.freeze([
 // each call site even though the values are identical today.
 const ASSET_BROWSER_CONTEXT_FIELDS = ASSET_BROWSER_QUERY_KEYS;
 const ASSET_RENAME_ORIGINS = new Set(['assets', 'viewer']);
+
+const PROJECT_ASSETS_DEFAULT_LABELS = Object.freeze({
+  fields: Object.freeze({
+    view: 'View',
+    sort: 'Sort',
+    order: 'Order',
+    pageSize: 'Page Size',
+  }),
+  options: Object.freeze({
+    view: Object.freeze({ grid: 'Grid', list: 'List' }),
+    sort: Object.freeze({
+      filename: 'Filename',
+      modified: 'Modified date',
+      size: 'File size',
+      category: 'Category & location',
+    }),
+    order: Object.freeze({ asc: 'Ascending', desc: 'Descending' }),
+    pageSize: Object.freeze({
+      '10': '10 assets',
+      '25': '25 assets',
+      '50': '50 assets',
+      '100': '100 assets',
+    }),
+  }),
+});
+
+const PROJECT_ASSETS_NOTICES = Object.freeze({
+  defaultsSaved: 'Project Assets defaults saved successfully.',
+});
 
 const AUTO_RENAME_ERROR_STATUS = Object.freeze({
   [AUTO_RENAME_ERROR_CODES.INVALID_PROJECT_ID]: 404,
@@ -140,6 +179,7 @@ const AUTO_RENAME_BLOCK_REASON_MESSAGES = Object.freeze({
  */
 export function createAssetsRouter({
   appName,
+  db,
   projectService,
   assetScanner,
   workflowQueryService,
@@ -168,122 +208,101 @@ export function createAssetsRouter({
   // GET /projects/:id/assets — Asset listing page
   router.get('/:id/assets', (req, res, next) => {
     try {
-      const id = parseId(req.params.id);
-      if (id === null) {
-        return next(createNotFound());
-      }
-
-      const project = projectService.findById(id);
-      if (!project) {
-        return next(createNotFound());
-      }
-
-      const pageDefaultsService = getPageDefaultsService(req);
-      const rawQuery = req.query && typeof req.query === 'object' ? req.query : {};
-      const presentation = resolveAssetBrowserPresentation(rawQuery, pageDefaultsService);
-
-      // Only a completely bare parsed query may activate the configured
-      // category preference. Any query key — including unknown, invalid,
-      // notice, or pagination input — deliberately blocks category
-      // preference resolution, while omitted presentation options still use
-      // their saved defaults below.
-      if (isBareAssetBrowserRequest(rawQuery)) {
-        const resolution = assetBrowserPreferenceService.resolveEffectiveCategory(id);
-        const effective = resolution && resolution.effective;
-        if (!effective || (effective.kind !== 'all' && effective.kind !== 'category')) {
-          throw new Error('assetBrowserPreferenceService returned an invalid effective category resolution.');
-        }
-        if (effective.kind === 'category') {
-          const categoryId = effective.category && effective.category.id;
-          if (!Number.isSafeInteger(categoryId) || categoryId <= 0) {
-            throw new Error('assetBrowserPreferenceService returned an invalid effective category ID.');
-          }
-          return res.redirect(buildAssetDefaultsRedirectUrl(
-            id,
-            categoryId,
-            presentation,
-            pageDefaultsService,
-          ));
-        }
-
-        if (hasNonFallbackAssetPresentation(presentation, pageDefaultsService)) {
-          return res.redirect(buildAssetDefaultsRedirectUrl(
-            id,
-            null,
-            presentation,
-            pageDefaultsService,
-          ));
-        }
-      }
-
-      const data = buildAssetBrowserPageData(
-        workflowQueryService,
-        id,
-        project,
-        presentation,
-      );
-
-      // Pass scan result params to template only if they are valid scan outputs.
-      const query = {};
-      if (req.query.scan_result === 'ok' && isSmallNonNegativeInt(req.query.total)) {
-        query.scan_result = 'ok';
-        query.added = isSmallNonNegativeInt(req.query.added) ? req.query.added : '0';
-        query.updated = isSmallNonNegativeInt(req.query.updated) ? req.query.updated : '0';
-        query.missing = isSmallNonNegativeInt(req.query.missing) ? req.query.missing : '0';
-        query.total = req.query.total;
-      }
-      // Pass scan_error flag only when actually set by the scan catch block.
-      // Use scan_error=filesystem or scan_error=archived so it can be
-      // distinguished from spoofed values.
-      const error = req.query.scan_error === 'filesystem' ? true : null;
-      const archivedError = req.query.scan_error === 'archived' ? true : null;
-      const assetActionNotice = req.query.notice === 'asset-renamed'
-        ? { message: ASSET_ACTION_NOTICE_MESSAGES['asset-renamed'] }
-        : null;
-      const autoRenameNotice = req.query.notice === 'auto-rename-success'
-        && isSmallNonNegativeInt(req.query.auto_rename_renamed)
-        && isSmallNonNegativeInt(req.query.auto_rename_unchanged)
-        ? {
-          message: describeAutoRenameSuccess(
-            Number(req.query.auto_rename_renamed),
-            Number(req.query.auto_rename_unchanged),
-          ),
-        }
-        : null;
-
-      // Bulk release-association result notice, set only after a valid
-      // redirect from the add-to-release route (see isSmallNonNegativeInt
-      // guard — never trusts unvalidated query input).
-      const bulkNotice = (isSmallNonNegativeInt(req.query.bulk_added) && isSmallNonNegativeInt(req.query.bulk_already))
-        ? { added: Number(req.query.bulk_added), alreadyAssociated: Number(req.query.bulk_already) }
-        : null;
-
-      const moveNotice = isSmallNonNegativeInt(req.query.assets_moved)
-        ? { movedCount: Number(req.query.assets_moved) }
-        : null;
-      const copyNotice = isSmallNonNegativeInt(req.query.assets_copied)
-        ? { copiedCount: Number(req.query.assets_copied) }
-        : null;
-      const deleteNotice = isSmallNonNegativeInt(req.query.assets_deleted)
-        ? { deletedCount: Number(req.query.assets_deleted) }
-        : null;
-
-      res.render('projects/assets.njk', {
+      renderProjectAssetsPage(req, res, {
         appName,
-        ...buildBrowserRenderModel(project, data, pageDefaultsService, req),
-        query,
-        error,
-        archivedError,
-        bulkNotice,
-        moveNotice,
-        copyNotice,
-        deleteNotice,
-        assetActionNotice,
-        autoRenameNotice,
+        projectService,
+        workflowQueryService,
+        assetBrowserPreferenceService,
+        next,
       });
     } catch (err) {
       next(err);
     }
+  });
+
+  router.post('/:id/assets/defaults', (req, res, next) => {
+    const id = parseId(req.params.id);
+    if (id === null || !projectService.findById(id)) return next(createNotFound());
+
+    handlePageDefaultsPost(req, res, next, {
+      db,
+      pageDefaultsService: getPageDefaultsService(req),
+      page: ASSET_PAGE_DEFAULTS_PAGE,
+      successMessage: PROJECT_ASSETS_NOTICES.defaultsSaved,
+      saveErrorMessage: 'Project Assets defaults could not be saved. No changes were made.',
+      onValidationError: ({ submittedValues, errors }) => {
+        renderProjectAssetsPage(req, res, {
+          appName,
+          projectService,
+          workflowQueryService,
+          assetBrowserPreferenceService,
+          status: 422,
+          projectAssetsDefaultsDialogOpen: true,
+          projectAssetsDefaultsSubmittedValues: submittedValues,
+          projectAssetsDefaultsErrors: errors,
+          rawQuery: readProjectAssetsReturnQuery(req, id),
+          allowSavedDefaultsRedirect: false,
+        });
+      },
+      onSuccess: ({ validatedValues }) => {
+        res.redirect(buildProjectAssetsDefaultsSuccessUrl(req, id, validatedValues));
+      },
+    });
+  });
+
+  router.post('/:id/assets/nsfw-filter', (req, res, next) => {
+    const id = parseId(req.params.id);
+    if (id === null || !projectService.findById(id)) return next(createNotFound());
+
+    const enhanced = isEnhancedAssetRequest(req);
+    let enabled;
+    try {
+      enabled = parseEnabledField(req.body?.enabled, { fieldLabel: 'enabled' });
+    } catch (err) {
+      if (!(err instanceof AssetCategoryValidationError)) return next(err);
+      if (enhanced) {
+        res.status(422).json({
+          status: 'error',
+          errors: err.errors || {},
+          message: 'NSFW filter setting is invalid.',
+        });
+        return;
+      }
+      return renderProjectAssetsPage(req, res, {
+        appName,
+        projectService,
+        workflowQueryService,
+        assetBrowserPreferenceService,
+        status: 422,
+        projectAssetsNsfwError: 'NSFW filter setting is invalid.',
+        rawQuery: readProjectAssetsReturnQuery(req, id),
+        allowSavedDefaultsRedirect: false,
+      });
+    }
+
+    try {
+      getNsfwFilterSettingsService(req).setEnabled(enabled);
+    } catch (err) {
+      if (enhanced) {
+        res.status(500).json({
+          status: 'error',
+          message: 'NSFW filter could not be updated. The previous setting was kept.',
+        });
+        return;
+      }
+      return next(err);
+    }
+
+    if (enhanced) {
+      res.json({
+        status: 'success',
+        enabled,
+        message: `NSFW filter ${enabled ? 'enabled' : 'disabled'}.`,
+      });
+      return;
+    }
+
+    res.redirect(readProjectAssetsNsfwReturnUrl(req, id));
   });
 
   // POST /projects/:projectId/assets/auto-rename/preview — Build a signed,
@@ -1164,6 +1183,202 @@ function parseId(value) {
   return id;
 }
 
+function renderProjectAssetsPage(req, res, {
+  appName,
+  projectService,
+  workflowQueryService,
+  assetBrowserPreferenceService,
+  status = 200,
+  rawQuery = null,
+  projectAssetsDefaultsDialogOpen = req.query?.defaults === '1',
+  projectAssetsDefaultsSubmittedValues = null,
+  projectAssetsDefaultsErrors = {},
+  projectAssetsNsfwError = null,
+  allowSavedDefaultsRedirect = true,
+  next,
+} = {}) {
+  const id = parseId(req.params.id);
+  if (id === null) return next ? next(createNotFound()) : null;
+
+  const project = projectService.findById(id);
+  if (!project) return next ? next(createNotFound()) : null;
+
+  const pageDefaultsService = getPageDefaultsService(req);
+  const query = rawQuery && typeof rawQuery === 'object'
+    ? rawQuery
+    : (req.query && typeof req.query === 'object' ? req.query : {});
+  const presentation = resolveAssetBrowserPresentation(query, pageDefaultsService);
+
+  // Only a completely bare request may activate the existing category
+  // preference redirect. All non-bare requests remain authoritative GETs.
+  if (allowSavedDefaultsRedirect && isBareAssetBrowserRequest(query)) {
+    const resolution = assetBrowserPreferenceService.resolveEffectiveCategory(id);
+    const effective = resolution && resolution.effective;
+    if (!effective || (effective.kind !== 'all' && effective.kind !== 'category')) {
+      throw new Error('assetBrowserPreferenceService returned an invalid effective category resolution.');
+    }
+    if (effective.kind === 'category') {
+      const categoryId = effective.category && effective.category.id;
+      if (!Number.isSafeInteger(categoryId) || categoryId <= 0) {
+        throw new Error('assetBrowserPreferenceService returned an invalid effective category ID.');
+      }
+      return res.redirect(buildAssetDefaultsRedirectUrl(
+        id,
+        categoryId,
+        presentation,
+        pageDefaultsService,
+      ));
+    }
+
+    if (hasNonFallbackAssetPresentation(presentation, pageDefaultsService)) {
+      return res.redirect(buildAssetDefaultsRedirectUrl(
+        id,
+        null,
+        presentation,
+        pageDefaultsService,
+      ));
+    }
+  }
+
+  const data = buildAssetBrowserPageData(workflowQueryService, id, project, presentation);
+  if (!data) return next ? next(createNotFound()) : null;
+
+  const nsfwFilterEnabled = getNsfwFilterSettingsService(req).isEnabled();
+  const renderModel = buildBrowserRenderModel(project, data, pageDefaultsService, req, nsfwFilterEnabled);
+  const pageUrl = renderModel.pageUrl({});
+  const defaultsUrl = appendQueryValue(pageUrl, 'defaults', '1');
+  const queryNotice = buildProjectAssetsQueryNotice(query);
+
+  const assetActionNotice = query.notice === 'asset-renamed'
+    ? { message: ASSET_ACTION_NOTICE_MESSAGES['asset-renamed'] }
+    : null;
+  const autoRenameNotice = query.notice === 'auto-rename-success'
+    && isSmallNonNegativeInt(query.auto_rename_renamed)
+    && isSmallNonNegativeInt(query.auto_rename_unchanged)
+    ? {
+      message: describeAutoRenameSuccess(
+        Number(query.auto_rename_renamed),
+        Number(query.auto_rename_unchanged),
+      ),
+    }
+    : null;
+  const bulkNotice = (isSmallNonNegativeInt(query.bulk_added) && isSmallNonNegativeInt(query.bulk_already))
+    ? { added: Number(query.bulk_added), alreadyAssociated: Number(query.bulk_already) }
+    : null;
+
+  return res.status(status).render('projects/assets.njk', {
+    appName,
+    ...renderModel,
+    query: queryNotice,
+    projectAssetsDefaults: buildPageDefaultsDialogModel({
+      pageDefaultsService,
+      page: ASSET_PAGE_DEFAULTS_PAGE,
+      labels: PROJECT_ASSETS_DEFAULT_LABELS,
+      submittedValues: projectAssetsDefaultsSubmittedValues,
+      errors: projectAssetsDefaultsErrors,
+    }),
+    projectAssetsDefaultsDialogOpen: Boolean(projectAssetsDefaultsDialogOpen),
+    projectAssetsDefaultsReturnUrl: pageUrl,
+    projectAssetsDefaultsUrl: defaultsUrl,
+    projectAssetsDefaultsNotice: query.notice === 'project_assets_defaults_saved'
+      ? { message: PROJECT_ASSETS_NOTICES.defaultsSaved }
+      : null,
+    nsfwFilterEnabled,
+    projectAssetsNsfwReturnUrl: pageUrl,
+    assetActionNotice,
+    autoRenameNotice,
+    bulkNotice,
+    moveNotice: isSmallNonNegativeInt(query.assets_moved)
+      ? { movedCount: Number(query.assets_moved) }
+      : null,
+    copyNotice: isSmallNonNegativeInt(query.assets_copied)
+      ? { copiedCount: Number(query.assets_copied) }
+      : null,
+    deleteNotice: isSmallNonNegativeInt(query.assets_deleted)
+      ? { deletedCount: Number(query.assets_deleted) }
+      : null,
+    error: query.scan_error === 'filesystem',
+    archivedError: query.scan_error === 'archived',
+    projectAssetsNsfwError,
+  });
+}
+
+function buildProjectAssetsQueryNotice(query) {
+  const safeQuery = query && typeof query === 'object' ? query : {};
+  const result = {};
+  if (safeQuery.scan_result === 'ok' && isSmallNonNegativeInt(safeQuery.total)) {
+    result.scan_result = 'ok';
+    result.added = isSmallNonNegativeInt(safeQuery.added) ? safeQuery.added : '0';
+    result.updated = isSmallNonNegativeInt(safeQuery.updated) ? safeQuery.updated : '0';
+    result.missing = isSmallNonNegativeInt(safeQuery.missing) ? safeQuery.missing : '0';
+    result.total = safeQuery.total;
+  }
+  return result;
+}
+
+function appendQueryValue(pathname, key, value) {
+  const url = new URL(pathname, 'http://creatorcrate.local');
+  url.searchParams.set(key, value);
+  return `${url.pathname}?${url.searchParams.toString()}`;
+}
+
+function getNsfwFilterSettingsService(req) {
+  const service = req.app?.locals?.nsfwFilterSettingsService;
+  if (!service) {
+    throw new Error('Project Assets requires app.locals.nsfwFilterSettingsService.');
+  }
+  return service;
+}
+
+function isNsfwTag(tag) {
+  return [tag?.displayName, tag?.display_name, tag?.normalizedName, tag?.normalized_name].some((value) => (
+    typeof value === 'string' && value.trim().toLowerCase() === NSFW_TAG_NORMALIZED_NAME
+  ));
+}
+
+function isEnhancedAssetRequest(req) {
+  return String(req.get?.('Accept') || '').toLowerCase().includes('application/json');
+}
+
+function readProjectAssetsReturnUrl(req, projectId) {
+  const candidate = typeof req.body?.returnTo === 'string' ? req.body.returnTo : '';
+  const fallback = `/projects/${projectId}/assets`;
+  if (!candidate.startsWith(`/projects/${projectId}/assets`) || candidate.startsWith('//')) return fallback;
+
+  try {
+    const url = new URL(candidate, 'http://creatorcrate.local');
+    if (url.pathname !== `/projects/${projectId}/assets`) return fallback;
+    url.hash = '';
+    return `${url.pathname}${url.search}`;
+  } catch {
+    return fallback;
+  }
+}
+
+function readProjectAssetsReturnQuery(req, projectId) {
+  const url = new URL(readProjectAssetsReturnUrl(req, projectId), 'http://creatorcrate.local');
+  const query = {};
+  for (const [key, value] of url.searchParams.entries()) {
+    if (Object.hasOwn(query, key)) {
+      query[key] = Array.isArray(query[key]) ? [...query[key], value] : [query[key], value];
+    } else {
+      query[key] = value;
+    }
+  }
+  return query;
+}
+
+function buildProjectAssetsDefaultsSuccessUrl(req, projectId, values) {
+  const url = new URL(readProjectAssetsReturnUrl(req, projectId), 'http://creatorcrate.local');
+  Object.entries(values || {}).forEach(([key, value]) => url.searchParams.set(key, String(value)));
+  url.searchParams.set('notice', 'project_assets_defaults_saved');
+  return `${url.pathname}?${url.searchParams.toString()}`;
+}
+
+function readProjectAssetsNsfwReturnUrl(req, projectId) {
+  return readProjectAssetsReturnUrl(req, projectId);
+}
+
 function getPageDefaultsService(req) {
   const service = req.app?.locals?.pageDefaultsService;
   if (!service) {
@@ -1335,13 +1550,18 @@ function buildAssetsPageUrl(projectId, allowedParams, pageDefaultsService) {
  * that re-renders the same template (e.g. bulk-add or asset-action failure).
  * Centralizing this keeps both call sites in sync as the browser model grows.
  */
-function buildBrowserRenderModel(project, data, pageDefaultsService, req) {
+function buildBrowserRenderModel(project, data, pageDefaultsService, req, nsfwFilterEnabled = null) {
+  const effectiveNsfwFilterEnabled = nsfwFilterEnabled === null
+    ? Boolean(req?.app?.locals?.nsfwFilterSettingsService?.isEnabled?.())
+    : nsfwFilterEnabled;
   const context = {
     ...(data.context || data.filters),
     page: data.page,
     pageSize: data.pageSize,
   };
   const presentation = context.assetPresentation || null;
+  const pageUrl = buildAssetsPageUrl(project.id, context, pageDefaultsService);
+  const defaultsUrl = appendQueryValue(pageUrl({}), 'defaults', '1');
 
   return {
     project,
@@ -1351,7 +1571,10 @@ function buildBrowserRenderModel(project, data, pageDefaultsService, req) {
       // When filtered to one concrete category, open that category's folder.
       categoryDir: data.activeCategoryDirectorySlug || null,
     }),
-    assets: data.assets,
+    assets: data.assets.map((asset) => ({
+      ...asset,
+      nsfwBlur: Boolean(effectiveNsfwFilterEnabled && Array.isArray(asset.tags) && asset.tags.some(isNsfwTag)),
+    })),
     total: data.total,
     page: data.page,
     pageSize: data.pageSize,
@@ -1390,7 +1613,19 @@ function buildBrowserRenderModel(project, data, pageDefaultsService, req) {
     // of hardcoding each key.
     context,
     contextFields: data.contextFields || ASSET_BROWSER_CONTEXT_FIELDS,
-    pageUrl: buildAssetsPageUrl(project.id, context, pageDefaultsService),
+    pageUrl,
+    projectAssetsDefaults: buildPageDefaultsDialogModel({
+      pageDefaultsService,
+      page: ASSET_PAGE_DEFAULTS_PAGE,
+      labels: PROJECT_ASSETS_DEFAULT_LABELS,
+    }),
+    projectAssetsDefaultsDialogOpen: false,
+    projectAssetsDefaultsReturnUrl: pageUrl({}),
+    projectAssetsDefaultsUrl: defaultsUrl,
+    projectAssetsDefaultsNotice: null,
+    nsfwFilterEnabled: effectiveNsfwFilterEnabled,
+    projectAssetsNsfwReturnUrl: pageUrl({}),
+    projectAssetsNsfwError: null,
     slideshowSequenceJson: JSON.stringify(data.slideshowSequence || []).replace(/<\//g, '<\\/'),
   };
 }

@@ -10,16 +10,40 @@ import {
   ReleaseNotFoundError,
 } from '../services/release-service.js';
 import { buildReleaseAssetPagePresentation } from '../services/release-asset-presenter.js';
+import {
+  buildPageDefaultsDialogModel,
+  handlePageDefaultsPost,
+} from './page-defaults.js';
 
 const SORT_OPTIONS = ['updated', 'created', 'planned', 'title'];
 const PAGE_SIZE = 25;
 const RELEASES_PAGE_DEFAULTS = 'releases';
 const RELEASE_MANAGEMENT_PAGE_DEFAULTS = 'releaseManagement';
 const RELEASE_ASSET_DEFAULT_VIEW = 'grid';
+const RELEASES_DEFAULT_LABELS = Object.freeze({
+  fields: Object.freeze({
+    view: 'View',
+    sort: 'Sort',
+    order: 'Order',
+  }),
+  options: Object.freeze({
+    view: Object.freeze({ list: 'List', board: 'Board' }),
+    sort: Object.freeze({
+      planned: 'Planned',
+      updated: 'Updated',
+      created: 'Created',
+      title: 'Title',
+    }),
+    order: Object.freeze({ asc: 'Ascending', desc: 'Descending' }),
+  }),
+});
+const RELEASES_NOTICES = Object.freeze({
+  defaultsSaved: 'Releases defaults saved successfully.',
+});
 
 export { handleReleaseListOrBoard, buildPageUrl, buildCreateReleaseFormModel };
 
-export function createReleasesRouter({ appName, releaseService, projectService, workflowQueryService }) {
+export function createReleasesRouter({ appName, db, releaseService, projectService, workflowQueryService }) {
   const router = express.Router();
 
   // GET /releases — release-record list or board.
@@ -28,6 +52,39 @@ export function createReleasesRouter({ appName, releaseService, projectService, 
       appName,
       workflowQueryService,
       pageDefaultsKey: RELEASES_PAGE_DEFAULTS,
+    });
+  });
+
+  router.post('/defaults', (req, res, next) => {
+    handlePageDefaultsPost(req, res, next, {
+      db,
+      pageDefaultsService: getReleasePageDefaultsService(req, RELEASES_PAGE_DEFAULTS),
+      page: RELEASES_PAGE_DEFAULTS,
+      successMessage: RELEASES_NOTICES.defaultsSaved,
+      saveErrorMessage: 'Releases defaults could not be saved. No changes were made.',
+      onValidationError: ({ submittedValues, errors }) => {
+        handleReleaseListOrBoard(req, res, next, {
+          appName,
+          workflowQueryService,
+          pageDefaultsKey: RELEASES_PAGE_DEFAULTS,
+          status: 422,
+          defaultsDialogOpen: true,
+          defaultsSubmittedValues: submittedValues,
+          defaultsErrors: errors,
+          allowSavedDefaultsRedirect: false,
+          notice: null,
+          pagePath: '/',
+        });
+      },
+      onSuccess: ({ validatedValues }) => {
+        const params = new URLSearchParams({
+          view: validatedValues.view,
+          sort: validatedValues.sort,
+          order: validatedValues.order,
+          notice: 'releases_defaults_saved',
+        });
+        res.redirect(`/releases?${params.toString()}`);
+      },
     });
   });
 
@@ -784,7 +841,18 @@ function handleReleaseListOrBoard(
   req,
   res,
   next,
-  { appName, workflowQueryService, pageDefaultsKey = RELEASE_MANAGEMENT_PAGE_DEFAULTS },
+  {
+    appName,
+    workflowQueryService,
+    pageDefaultsKey = RELEASE_MANAGEMENT_PAGE_DEFAULTS,
+    status = 200,
+    defaultsDialogOpen = pageDefaultsKey === RELEASES_PAGE_DEFAULTS && req.query?.defaults === '1',
+    defaultsSubmittedValues = null,
+    defaultsErrors = {},
+    allowSavedDefaultsRedirect = pageDefaultsKey !== RELEASES_PAGE_DEFAULTS || req.query?.defaults !== '1',
+    notice = pageDefaultsKey === RELEASES_PAGE_DEFAULTS ? resolveReleasesNotice(req.query?.notice) : null,
+    pagePath = req.path,
+  },
 ) {
   try {
     const pageDefaultsService = getReleasePageDefaultsService(req, pageDefaultsKey);
@@ -798,17 +866,22 @@ function handleReleaseListOrBoard(
     };
     const normalizedFilters = workflowQueryService.normalizeListFilters(effectiveQuery);
     const basePath = req.baseUrl;
+    const pageUrlRequest = pagePath === req.path ? req : { baseUrl: req.baseUrl, path: pagePath };
 
     if (presentation.view === 'board') {
       const { columns, today } = workflowQueryService.getReleaseBoard(effectiveQuery);
       const urlQuery = buildReleaseManagementUrlQuery(normalizedRawQuery, normalizedFilters, presentation);
-      if (shouldRedirectToSavedReleaseManagementDefaults(normalizedRawQuery, presentation)) {
-        return res.redirect(buildPageUrl(req, urlQuery)({}));
+      if (allowSavedDefaultsRedirect && shouldRedirectToSavedReleaseManagementDefaults(
+        normalizedRawQuery,
+        presentation,
+        { preserveDefaultsDialog: pageDefaultsKey === RELEASES_PAGE_DEFAULTS },
+      )) {
+        return res.redirect(buildPageUrl(pageUrlRequest, urlQuery)({}));
       }
-      const pageUrl = buildPageUrl(req, urlQuery);
+      const pageUrl = buildPageUrl(pageUrlRequest, urlQuery);
       const query = buildReleaseManagementRenderQuery(normalizedFilters, presentation);
       const clearUrl = buildPageUrl(
-        req,
+        pageUrlRequest,
         buildReleaseManagementUrlQuery(
           normalizedRawQuery,
           normalizedFilters,
@@ -818,7 +891,7 @@ function handleReleaseListOrBoard(
         ),
       )(buildReleaseManagementClearOverrides());
 
-      return res.render('releases/index.njk', {
+      return res.status(status).render('releases/index.njk', {
         appName,
         view: 'board',
         columns,
@@ -827,19 +900,33 @@ function handleReleaseListOrBoard(
         pageUrl,
         clearUrl,
         basePath,
+        releasesSurface: pageDefaultsKey === RELEASES_PAGE_DEFAULTS,
+        ...buildReleasesRenderExtras({
+          req,
+          pageDefaultsService,
+          pageDefaultsKey,
+          defaultsDialogOpen,
+          defaultsSubmittedValues,
+          defaultsErrors,
+          notice,
+        }),
       });
     }
 
     // List view
     const { releases, total, page, pageSize, pageCount, today, hasAnyReleases } = workflowQueryService.getReleaseList(effectiveQuery);
     const urlQuery = buildReleaseManagementUrlQuery(normalizedRawQuery, normalizedFilters, presentation, page);
-    if (shouldRedirectToSavedReleaseManagementDefaults(normalizedRawQuery, presentation)) {
-      return res.redirect(buildPageUrl(req, urlQuery)({}));
+    if (allowSavedDefaultsRedirect && shouldRedirectToSavedReleaseManagementDefaults(
+      normalizedRawQuery,
+      presentation,
+      { preserveDefaultsDialog: pageDefaultsKey === RELEASES_PAGE_DEFAULTS },
+    )) {
+      return res.redirect(buildPageUrl(pageUrlRequest, urlQuery)({}));
     }
-    const pageUrl = buildPageUrl(req, urlQuery);
+    const pageUrl = buildPageUrl(pageUrlRequest, urlQuery);
     const query = buildReleaseManagementRenderQuery(normalizedFilters, presentation, page);
     const clearUrl = buildPageUrl(
-      req,
+      pageUrlRequest,
       buildReleaseManagementUrlQuery(
         normalizedRawQuery,
         normalizedFilters,
@@ -849,7 +936,7 @@ function handleReleaseListOrBoard(
       ),
     )(buildReleaseManagementClearOverrides());
 
-    res.render('releases/index.njk', {
+    res.status(status).render('releases/index.njk', {
       appName,
       view: 'list',
       releases,
@@ -864,10 +951,49 @@ function handleReleaseListOrBoard(
       query,
       sortOptions: SORT_OPTIONS,
       basePath,
+      releasesSurface: pageDefaultsKey === RELEASES_PAGE_DEFAULTS,
+      ...buildReleasesRenderExtras({
+        req,
+        pageDefaultsService,
+        pageDefaultsKey,
+        defaultsDialogOpen,
+        defaultsSubmittedValues,
+        defaultsErrors,
+        notice,
+      }),
     });
   } catch (err) {
     next(err);
   }
+}
+
+function resolveReleasesNotice(code) {
+  return code === 'releases_defaults_saved' ? RELEASES_NOTICES.defaultsSaved : null;
+}
+
+function buildReleasesRenderExtras({
+  req,
+  pageDefaultsService,
+  pageDefaultsKey,
+  defaultsDialogOpen,
+  defaultsSubmittedValues,
+  defaultsErrors,
+  notice,
+}) {
+  if (pageDefaultsKey !== RELEASES_PAGE_DEFAULTS) return {};
+
+  return {
+    releasesDefaults: buildPageDefaultsDialogModel({
+      pageDefaultsService,
+      page: RELEASES_PAGE_DEFAULTS,
+      labels: RELEASES_DEFAULT_LABELS,
+      submittedValues: defaultsSubmittedValues,
+      errors: defaultsErrors,
+    }),
+    releasesDefaultsDialogOpen: Boolean(defaultsDialogOpen),
+    releasesDefaultsNotice: notice,
+    _csrf: req.csrfToken?.() || '',
+  };
 }
 
 function getReleasePageDefaultsService(req, pageDefaultsKey) {
@@ -970,7 +1096,12 @@ function hasReleaseManagementPresentationQuery(rawQuery) {
   return ['view', 'sort', 'order'].some((option) => Object.hasOwn(rawQuery, option));
 }
 
-function shouldRedirectToSavedReleaseManagementDefaults(rawQuery, presentation) {
+function shouldRedirectToSavedReleaseManagementDefaults(
+  rawQuery,
+  presentation,
+  { preserveDefaultsDialog = false } = {},
+) {
+  if (preserveDefaultsDialog && rawQuery.defaults === '1') return false;
   if (hasReleaseManagementPresentationQuery(rawQuery)) return false;
 
   return ['view', 'sort', 'order'].some((option) => {

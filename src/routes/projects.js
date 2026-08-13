@@ -12,14 +12,14 @@ import {
 } from '../services/project-tag-service.js';
 import { NSFW_TAG_NAME } from '../services/nsfw-filter-settings-service.js';
 import {
-  PageDefaultValidationError,
-  PAGE_DEFAULT_DEFINITIONS,
-} from '../services/page-defaults-service.js';
-import {
   AssetCategoryValidationError,
   parseEnabledField,
 } from '../services/asset-category-validation.js';
 import { buildOpenLocallyUri } from '../util/open-locally.js';
+import {
+  buildPageDefaultsDialogModel,
+  handlePageDefaultsPost,
+} from './page-defaults.js';
 
 const SORT_OPTIONS = ['updated', 'created', 'title', 'published'];
 const VIEW_OPTIONS = ['grid', 'list'];
@@ -31,14 +31,21 @@ const NOTICES = {
 };
 
 const PROJECTS_DEFAULT_LABELS = Object.freeze({
-  view: Object.freeze({ grid: 'Grid', list: 'List' }),
-  sort: Object.freeze({
-    updated: 'Recently updated',
-    created: 'Recently created',
-    title: 'Title',
-    published: 'Published',
+  fields: Object.freeze({
+    view: 'View',
+    sort: 'Sort',
+    order: 'Order',
   }),
-  order: Object.freeze({ asc: 'Ascending', desc: 'Descending' }),
+  options: Object.freeze({
+    view: Object.freeze({ grid: 'Grid', list: 'List' }),
+    sort: Object.freeze({
+      updated: 'Recently updated',
+      created: 'Recently created',
+      title: 'Title',
+      published: 'Published',
+    }),
+    order: Object.freeze({ asc: 'Ascending', desc: 'Descending' }),
+  }),
 });
 
 function resolveNotice(code) {
@@ -61,75 +68,35 @@ export function createProjectsRouter({ appName, db, projectService, workflowQuer
   });
 
   router.post('/defaults', (req, res, next) => {
-    const service = getPageDefaultsService(req);
-    const submittedValues = readProjectsDefaults(req.body);
-    const enhanced = isEnhancedProjectsDefaultsRequest(req);
-    let validatedValues;
-
-    try {
-      validatedValues = service.validatePageDefaults('projects', submittedValues);
-    } catch (err) {
-      if (!(err instanceof PageDefaultValidationError)) return next(err);
-
-      if (enhanced) {
-        res.status(422).json({
-          status: 'error',
-          errors: err.errors || {},
-          values: submittedValues,
+    handlePageDefaultsPost(req, res, next, {
+      db,
+      pageDefaultsService: getPageDefaultsService(req),
+      page: 'projects',
+      successMessage: NOTICES.projects_defaults_saved.text,
+      saveErrorMessage: 'Projects defaults could not be saved. No changes were made.',
+      onValidationError: ({ submittedValues, errors }) => {
+        renderProjectsPage(req, res, {
+          appName,
+          projectService,
+          workflowQueryService,
+          status: 422,
+          projectsDefaultsDialogOpen: true,
+          projectsDefaultsSubmittedValues: submittedValues,
+          projectsDefaultsErrors: errors,
+          allowSavedDefaultsRedirect: false,
+          notice: null,
         });
-        return;
-      }
-
-      renderProjectsPage(req, res, {
-        appName,
-        projectService,
-        workflowQueryService,
-        status: 422,
-        projectsDefaultsDialogOpen: true,
-        projectsDefaultsSubmittedValues: submittedValues,
-        projectsDefaultsErrors: err.errors || {},
-        allowSavedDefaultsRedirect: false,
-        notice: null,
-      });
-      return;
-    }
-
-    try {
-      const save = () => {
-        for (const option of Object.keys(PAGE_DEFAULT_DEFINITIONS.projects)) {
-          service.saveDefault('projects', option, validatedValues[option]);
-        }
-      };
-      if (typeof db?.transaction === 'function') db.transaction(save)();
-      else save();
-    } catch (err) {
-      if (enhanced) {
-        res.status(500).json({
-          status: 'error',
-          message: 'Projects defaults could not be saved. No changes were made.',
+      },
+      onSuccess: ({ validatedValues }) => {
+        const params = new URLSearchParams({
+          view: validatedValues.view,
+          sort: validatedValues.sort,
+          order: validatedValues.order,
+          notice: 'projects_defaults_saved',
         });
-        return;
-      }
-      next(err);
-      return;
-    }
-
-    if (enhanced) {
-      res.json({
-        status: 'success',
-        message: 'Projects defaults saved successfully.',
-        values: validatedValues,
-      });
-      return;
-    }
-
-    const params = new URLSearchParams({
-      view: validatedValues.view,
-      sort: validatedValues.sort,
-      order: validatedValues.order,
-      notice: 'projects_defaults_saved',
+        res.redirect(`/projects?${params.toString()}`);
+      },
     });
-    res.redirect(`/projects?${params.toString()}`);
   });
 
   router.post('/nsfw-filter', (req, res, next) => {
@@ -460,23 +427,15 @@ function renderProjectsPage(req, res, {
     notice,
     nsfwFilterEnabled,
     projectsNsfwReturnUrl: pageUrl({}),
-    projectsDefaults: buildProjectsDefaultsModel(pageDefaultsService, {
+    projectsDefaults: buildPageDefaultsDialogModel({
+      pageDefaultsService,
+      page: 'projects',
+      labels: PROJECTS_DEFAULT_LABELS,
       submittedValues: projectsDefaultsSubmittedValues,
       errors: projectsDefaultsErrors,
     }),
     projectsDefaultsDialogOpen: Boolean(projectsDefaultsDialogOpen),
   });
-}
-
-function readProjectsDefaults(body) {
-  const rawBody = body && typeof body === 'object' ? body : {};
-  return Object.fromEntries(
-    Object.keys(PAGE_DEFAULT_DEFINITIONS.projects).map((option) => [option, rawBody[option]])
-  );
-}
-
-function isEnhancedProjectsDefaultsRequest(req) {
-  return String(req.get?.('Accept') || '').toLowerCase().includes('application/json');
 }
 
 function isEnhancedProjectsNsfwRequest(req) {
@@ -495,35 +454,6 @@ function readProjectsNsfwReturnUrl(req) {
   } catch {
     return '/projects';
   }
-}
-
-function buildProjectsDefaultsModel(service, { submittedValues = null, errors = {} } = {}) {
-  const values = submittedValues || service.resolvePageDefaults('projects');
-  const fields = Object.keys(PAGE_DEFAULT_DEFINITIONS.projects).map((option) => {
-    const definition = PAGE_DEFAULT_DEFINITIONS.projects[option];
-    const value = values?.[option];
-    const error = errors[option] || null;
-    const showSubmittedValue = Boolean(
-      error && typeof value === 'string' && !definition.values.includes(value)
-    );
-
-    return {
-      id: `projects-default-${option}`,
-      name: option,
-      label: option === 'view' ? 'View' : option === 'sort' ? 'Sort' : 'Order',
-      selectedValue: value,
-      options: definition.values.map((candidate) => ({
-        value: candidate,
-        label: PROJECTS_DEFAULT_LABELS[option][candidate],
-      })),
-      error,
-      showSubmittedValue,
-      submittedOptionValue: showSubmittedValue ? value : null,
-      submittedDisplayValue: showSubmittedValue ? value : null,
-    };
-  });
-
-  return { fields };
 }
 
 function getOpenLocallySettingsService(req) {

@@ -342,9 +342,10 @@ describe('cross-project Asset Viewer HTTP route', () => {
     expect(response.text).toContain('data-asset-grid-size-controls');
     expect((response.text.match(/<input[^>]+data-grid-size-slider[^>]+type="range"/g) || [])).toHaveLength(1);
     expect(response.text).toMatch(/<input[^>]+data-grid-size-slider[^>]+type="range"[^>]+min="1"[^>]+max="3"[^>]+step="1"/);
-    expect(response.text).toContain('data-grid-size-option-label="compact">Compact');
-    expect(response.text).toContain('data-grid-size-option-label="default" class="is-active">Default');
-    expect(response.text).toContain('data-grid-size-option-label="large">Large');
+    const optionLabels = [...response.text.matchAll(/data-grid-size-option-label="(compact|default|large)"[^>]*>([^<]+)</g)];
+    expect(optionLabels.map(([, value]) => value)).toEqual(['compact', 'default', 'large']);
+    expect(optionLabels.map(([, , label]) => label)).toEqual(['Compact', 'Default', 'Large']);
+    expect(response.text).toMatch(/is-active[^>]*data-grid-size-option-label="default"[^>]*>Default</);
     expect(response.text).not.toMatch(/<button[^>]+data-grid-size="(?:compact|default|large)"/);
     expect(cards).toHaveLength(2);
     expect(releasedCard).toBeDefined();
@@ -577,6 +578,51 @@ describe('cross-project Asset Viewer HTTP route', () => {
     expect(fallbackEquivalent.headers.location).toBeUndefined();
   });
 
+  it('redirects normal defaults saves to a known notice and renders it without canonicalizing it away', async () => {
+    const save = await request(app)
+      .post('/assets/defaults')
+      .type('form')
+      .send({ view: 'list', sort: 'project', order: 'desc', pageSize: '50' })
+      .expect(302);
+
+    expect(save.headers.location).toBe(
+      '/assets?view=list&sort=project&order=desc&pageSize=50&notice=asset_viewer_defaults_saved',
+    );
+
+    const redirected = await request(app).get(save.headers.location).expect(200);
+    expect(redirected.headers.location).toBeUndefined();
+    expect(redirected.text).toContain('Asset Viewer defaults saved successfully.');
+  });
+
+  it('applies page-local Asset Viewer defaults on a later bare render', async () => {
+    await request(app)
+      .post('/assets/defaults')
+      .type('form')
+      .send({ view: 'list', sort: 'project', order: 'desc', pageSize: '50' })
+      .expect(302);
+
+    const bare = await request(app).get('/assets').expect(302);
+    expect(bare.headers.location).toBe('/assets?sort=project&order=desc&pageSize=50&view=list');
+
+    const rendered = await request(app).get(bare.headers.location).expect(200);
+    expect(rendered.headers.location).toBeUndefined();
+    expect(rendered.text).toMatch(/name="sort"[^>]+value="project" checked/);
+    expect(rendered.text).toMatch(/name="order"[^>]+value="desc" checked/);
+    expect(rendered.text).toMatch(/name="pageSize"[^>]+value="50" checked/);
+    expect(rendered.text).toContain('<input type="hidden" name="view" value="list">');
+  });
+
+  it('ignores arbitrary Asset Viewer notice values during canonicalization and rendering', async () => {
+    const redirect = await request(app).get('/assets?notice=not-a-real-notice').expect(302);
+
+    expect(redirect.headers.location).toBe('/assets');
+
+    const canonical = await request(app).get(redirect.headers.location).expect(200);
+    expect(canonical.headers.location).toBeUndefined();
+    expect(canonical.text).not.toContain('not-a-real-notice');
+    expect(canonical.text).not.toContain('Asset Viewer defaults saved successfully.');
+  });
+
   it('ignores invalid stored Asset Viewer values and keeps Project Assets defaults separate', async () => {
     const project = createProject('Default Scope Project');
     createAsset(project.id, 'scope.png');
@@ -738,8 +784,8 @@ describe('cross-project Asset Viewer HTTP route', () => {
     expect(response.text).toContain('Page 2 of 2');
     expect(response.text).toContain('href="/assets?pageSize=10&amp;view=list"');
     expect(response.text).toContain('href="/assets?page=2&amp;pageSize=10&amp;view=grid"');
-    expect(response.text).toContain('<button class="button" type="submit" form="asset-filters">Filter</button>');
-    expect(response.text).toContain('href="/assets?pageSize=10&amp;view=list">Reset</a>');
+    expect(response.text).toMatch(/<noscript><button class="button" type="submit">Filter<\/button><\/noscript>/);
+    expect(response.text).toMatch(/<a\b(?=[^>]*href="\/assets\?pageSize=10&amp;view=list")(?=[^>]*data-asset-library-reset)(?=[^>]*aria-label="Reset filters")[^>]*>[\s\S]*?<span class="sr-only">Reset<\/span><\/a>/);
   });
 
   it('canonicalizes clamped pagination together with effective saved defaults in one redirect', async () => {
@@ -792,9 +838,7 @@ describe('cross-project Asset Viewer HTTP route', () => {
       `<input id="asset-project-option-${project.id}" name="project" type="radio" value="${project.id}" checked>`,
     ));
     expect(response.text).toContain('aria-label="Project filter: URL Context Project"');
-    expect(response.text).toContain(
-      'href="/assets?sort=project&amp;order=desc&amp;pageSize=50&amp;view=list">Reset</a>',
-    );
+    expect(response.text).toMatch(/<a\b(?=[^>]*href="\/assets\?sort=project&amp;order=desc&amp;pageSize=50&amp;view=list")(?=[^>]*data-asset-library-reset)(?=[^>]*aria-label="Reset filters")[^>]*>[\s\S]*?<span class="sr-only">Reset<\/span><\/a>/);
     expect(response.text).toMatch(/<input[^>]+name="sort"[^>]+type="radio"[^>]+value="project" checked>/);
     expect(response.text).toMatch(/<input[^>]+name="order"[^>]+type="radio"[^>]+value="desc" checked>/);
     expect(response.text).toMatch(/<input[^>]+name="pageSize"[^>]+type="radio"[^>]+value="50" checked>/);
@@ -822,7 +866,7 @@ describe('cross-project Asset Viewer HTTP route', () => {
     const filtered = await request(app).get('/assets?search=does-not-exist').expect(200);
     expect(filtered.text).toContain('No assets match the current filters');
     expect(filtered.text).not.toContain('No assets across active projects');
-    expect(filtered.text).toContain('>Reset</a>');
+    expect(filtered.text).toMatch(/<a\b(?=[^>]*data-asset-library-reset)(?=[^>]*aria-label="Reset filters")[^>]*>[\s\S]*?<span class="sr-only">Reset<\/span><\/a>/);
   });
 
   it('leaves the existing project-scoped asset detail route available', async () => {

@@ -501,7 +501,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   app.use('/', createIndexRouter({ appName, workflowQueryService }));
   app.use('/health', createHealthRouter({ db, maintenanceState }));
   app.use('/projects', createProjectsRouter({ appName, db, projectService, workflowQueryService }));
-  app.use('/assets', createAssetLibraryRouter({ appName, workflowQueryService }));
+  app.use('/assets', createAssetLibraryRouter({ appName, db, workflowQueryService }));
 
   // Media routes stay before the asset browser/viewer router. The media
   // routes have four path segments under /projects; the viewer route has
@@ -519,6 +519,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   if (projectsRoot) {
     app.use('/projects', createAssetsRouter({
       appName,
+      db,
       projectService,
       assetScanner,
       workflowQueryService,
@@ -555,7 +556,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   // catch-all 404 so the download route is always reachable.
   app.use('/downloads', createDownloadsRouter({ downloadsRoot: opts.downloadsRoot }));
 
-  app.use('/releases', createReleasesRouter({ appName, releaseService, projectService, workflowQueryService }));
+  app.use('/releases', createReleasesRouter({ appName, db, releaseService, projectService, workflowQueryService }));
 
   // Phase 2A: dedicated release-management route, reusing the release-record
   // list/board handler unchanged. Mounted after /releases so route order
