@@ -3049,7 +3049,7 @@ describe('asset grid size enhancement', () => {
     };
   }
 
-  function makeGridSliderControls({ project = false } = {}) {
+  function makeGridSliderControls({ project = false, interactive = false } = {}) {
     const sliderListeners = [];
     const slider = {
       value: '2',
@@ -3061,7 +3061,10 @@ describe('asset grid size enhancement', () => {
       },
     };
     const labels = ['compact', 'default', 'large'].map((size) => ({
+      tagName: interactive ? 'BUTTON' : 'SPAN',
       dataset: { gridSizeOptionLabel: size },
+      attrs: {},
+      setAttribute(name, value) { this.attrs[name] = String(value); },
       classList: {
         values: new Set(),
         toggle(name, force) {
@@ -3070,12 +3073,21 @@ describe('asset grid size enhancement', () => {
         },
       },
     }));
+    labels.forEach((label) => {
+      label.listeners = [];
+      label.addEventListener = (type, handler) => label.listeners.push({ type, handler });
+      label.dispatch = (type) => label.listeners
+        .filter((entry) => entry.type === type)
+        .forEach((entry) => entry.handler());
+    });
     const group = {
+      attrs: interactive ? { 'data-grid-size-labels-interactive': '' } : {},
       querySelectorAll(selector) {
         if (selector === '[data-grid-size-slider]') return [slider];
         if (selector === '[data-grid-size-option-label]') return labels;
         return [];
       },
+      hasAttribute(name) { return Object.prototype.hasOwnProperty.call(this.attrs, name); },
       closest(selector) {
         return project && selector === '[data-project-grid-size-controls]' ? {} : null;
       },
@@ -3361,6 +3373,49 @@ describe('asset grid size enhancement', () => {
         if (previousStorage === undefined) delete globalThis.localStorage;
         else globalThis.localStorage = previousStorage;
       }
+    }
+  });
+
+  it('uses clickable Projects size labels through the same persisted update path without duplicate handlers', () => {
+    const grid = makeGrid();
+    const controls = makeGridSliderControls({ project: true, interactive: true });
+    const storage = new Map();
+    const previousStorage = globalThis.localStorage;
+    globalThis.localStorage = {
+      getItem: (key) => storage.get(key) ?? null,
+      setItem: (key, value) => storage.set(key, value),
+    };
+    try {
+      const scope = {
+        querySelectorAll(selector) {
+          if (selector === '[data-project-grid-size-controls] [data-asset-grid-size-controls]') return [controls.group];
+          if (selector === '.project-grid') return [grid];
+          return [];
+        },
+      };
+
+      expect(enhanceProjectGridSize(scope)).toBe(1);
+      expect(enhanceProjectGridSize(scope)).toBe(1);
+      controls.labels[2].dispatch('click');
+
+      expect(storage.get('creatorcrate-project-grid-size')).toBe('large');
+      expect(grid.attrs['data-grid-size']).toBe('large');
+      expect(grid.style.values['--project-card-min']).toBe('20rem');
+      expect(controls.slider.value).toBe('3');
+      expect(controls.labels.map((label) => label.classList.values.has('is-active')))
+        .toEqual([false, false, true]);
+      expect(controls.labels.map((label) => label.attrs['aria-pressed']))
+        .toEqual(['false', 'false', 'true']);
+
+      controls.slider.value = '1';
+      controls.slider.dispatch('input');
+      expect(controls.labels.map((label) => label.classList.values.has('is-active')))
+        .toEqual([true, false, false]);
+      expect(controls.labels.map((label) => label.attrs['aria-pressed']))
+        .toEqual(['true', 'false', 'false']);
+    } finally {
+      if (previousStorage === undefined) delete globalThis.localStorage;
+      else globalThis.localStorage = previousStorage;
     }
   });
 

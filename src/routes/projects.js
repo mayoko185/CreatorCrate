@@ -11,6 +11,14 @@ import {
   TagNotFoundError as ProjectTagTagNotFoundError,
 } from '../services/project-tag-service.js';
 import { NSFW_TAG_NAME } from '../services/nsfw-filter-settings-service.js';
+import {
+  PageDefaultValidationError,
+  PAGE_DEFAULT_DEFINITIONS,
+} from '../services/page-defaults-service.js';
+import {
+  AssetCategoryValidationError,
+  parseEnabledField,
+} from '../services/asset-category-validation.js';
 import { buildOpenLocallyUri } from '../util/open-locally.js';
 
 const SORT_OPTIONS = ['updated', 'created', 'title', 'published'];
@@ -19,74 +27,163 @@ const PAGE_SIZE = 25;
 const NSFW_TAG_NORMALIZED_NAME = NSFW_TAG_NAME.toLowerCase();
 const NOTICES = {
   project_tags_updated: { variant: 'success', text: 'Project tags updated successfully.' },
+  projects_defaults_saved: { variant: 'success', text: 'Projects defaults saved successfully.' },
 };
+
+const PROJECTS_DEFAULT_LABELS = Object.freeze({
+  view: Object.freeze({ grid: 'Grid', list: 'List' }),
+  sort: Object.freeze({
+    updated: 'Recently updated',
+    created: 'Recently created',
+    title: 'Title',
+    published: 'Published',
+  }),
+  order: Object.freeze({ asc: 'Ascending', desc: 'Descending' }),
+});
 
 function resolveNotice(code) {
   return Object.prototype.hasOwnProperty.call(NOTICES, code) ? NOTICES[code] : null;
 }
 
-export function createProjectsRouter({ appName, projectService, workflowQueryService }) {
+export function createProjectsRouter({ appName, db, projectService, workflowQueryService }) {
   const router = express.Router();
 
   router.get('/', (req, res, next) => {
     try {
-      const pageDefaultsService = getPageDefaultsService(req);
-      const availableTagOptions = getProjectTagFilterOptions(workflowQueryService);
-      const parsedQuery = parseListQuery(req.query, pageDefaultsService, availableTagOptions);
-      const tagOptions = availableTagOptions.map((option) => ({
-        ...option,
-        selected: parsedQuery.tagIds.includes(Number(option.value)),
-      }));
-      const { total } = projectService.list({ ...parsedQuery, limit: 0 });
-      const { total: totalProjects } = projectService.list({ includeArchived: true, limit: 0 });
-      const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
-      const currentPage = Math.min(parsedQuery.page, pageCount);
-      if (shouldRedirectToSavedDefaults(req.query, parsedQuery, pageDefaultsService)) {
-        return res.redirect(buildSavedDefaultsUrl(req, parsedQuery, currentPage, pageDefaultsService));
-      }
-
-      const offset = (currentPage - 1) * PAGE_SIZE;
-      const nsfwFilterEnabled = getNsfwFilterSettingsService(req).isEnabled();
-      const { rows } = workflowQueryService.getProjectList({ ...parsedQuery, offset, limit: PAGE_SIZE });
-      const pageUrl = buildPageUrl(req, parsedQuery, currentPage, pageDefaultsService);
-      const filtersActive = Boolean(
-        parsedQuery.search || parsedQuery.statuses.length > 0 || parsedQuery.tagIds.length > 0 || parsedQuery.projectId != null,
-      );
-      const projectOptions = workflowQueryService.getProjectsPageFilterOptions();
-      const selectedProject = projectOptions.find((project) => project.id === parsedQuery.projectId) || null;
-
-      res.render('projects/index.njk', {
+      renderProjectsPage(req, res, {
         appName,
-        projects: rows.map((project) => withNsfwBlur(project, project.tags, nsfwFilterEnabled)),
-        total,
-        hasAnyProjects: totalProjects > 0,
-        filtersActive,
-        resetFiltersUrl: '/projects',
-        page: currentPage,
-        pageSize: PAGE_SIZE,
-        pageCount,
-        pageUrl,
-        preserveViewQuery: shouldPreserveViewQuery(req.query, parsedQuery, pageDefaultsService),
-        query: {
-          search: parsedQuery.search,
-          statuses: parsedQuery.statuses,
-          tagIds: parsedQuery.tagIds.map(String),
-          projectId: parsedQuery.projectId,
-          sort: parsedQuery.sortBy,
-          order: parsedQuery.order,
-          view: parsedQuery.view,
-        },
-        view: parsedQuery.view,
-        statuses: STATUSES,
-        statusOptions: buildStatusFilterOptions(parsedQuery.statuses),
-        sortOptions: SORT_OPTIONS,
-        tagOptions,
-        projectOptions,
-        selectedProject,
+        projectService,
+        workflowQueryService,
       });
     } catch (err) {
       next(err);
     }
+  });
+
+  router.post('/defaults', (req, res, next) => {
+    const service = getPageDefaultsService(req);
+    const submittedValues = readProjectsDefaults(req.body);
+    const enhanced = isEnhancedProjectsDefaultsRequest(req);
+    let validatedValues;
+
+    try {
+      validatedValues = service.validatePageDefaults('projects', submittedValues);
+    } catch (err) {
+      if (!(err instanceof PageDefaultValidationError)) return next(err);
+
+      if (enhanced) {
+        res.status(422).json({
+          status: 'error',
+          errors: err.errors || {},
+          values: submittedValues,
+        });
+        return;
+      }
+
+      renderProjectsPage(req, res, {
+        appName,
+        projectService,
+        workflowQueryService,
+        status: 422,
+        projectsDefaultsDialogOpen: true,
+        projectsDefaultsSubmittedValues: submittedValues,
+        projectsDefaultsErrors: err.errors || {},
+        allowSavedDefaultsRedirect: false,
+        notice: null,
+      });
+      return;
+    }
+
+    try {
+      const save = () => {
+        for (const option of Object.keys(PAGE_DEFAULT_DEFINITIONS.projects)) {
+          service.saveDefault('projects', option, validatedValues[option]);
+        }
+      };
+      if (typeof db?.transaction === 'function') db.transaction(save)();
+      else save();
+    } catch (err) {
+      if (enhanced) {
+        res.status(500).json({
+          status: 'error',
+          message: 'Projects defaults could not be saved. No changes were made.',
+        });
+        return;
+      }
+      next(err);
+      return;
+    }
+
+    if (enhanced) {
+      res.json({
+        status: 'success',
+        message: 'Projects defaults saved successfully.',
+        values: validatedValues,
+      });
+      return;
+    }
+
+    const params = new URLSearchParams({
+      view: validatedValues.view,
+      sort: validatedValues.sort,
+      order: validatedValues.order,
+      notice: 'projects_defaults_saved',
+    });
+    res.redirect(`/projects?${params.toString()}`);
+  });
+
+  router.post('/nsfw-filter', (req, res, next) => {
+    const enhanced = isEnhancedProjectsNsfwRequest(req);
+    let enabled;
+
+    try {
+      enabled = parseEnabledField(req.body?.enabled, { fieldLabel: 'enabled' });
+    } catch (err) {
+      if (!(err instanceof AssetCategoryValidationError)) return next(err);
+
+      if (enhanced) {
+        res.status(422).json({
+          status: 'error',
+          errors: err.errors || {},
+          message: 'NSFW filter setting is invalid.',
+        });
+        return;
+      }
+
+      renderProjectsPage(req, res, {
+        appName,
+        projectService,
+        workflowQueryService,
+        status: 422,
+        notice: { variant: 'error', text: 'NSFW filter setting is invalid.' },
+        allowSavedDefaultsRedirect: false,
+      });
+      return;
+    }
+
+    try {
+      getNsfwFilterSettingsService(req).setEnabled(enabled);
+    } catch (err) {
+      if (enhanced) {
+        res.status(500).json({
+          status: 'error',
+          message: 'NSFW filter could not be updated. The previous setting was kept.',
+        });
+        return;
+      }
+      return next(err);
+    }
+
+    if (enhanced) {
+      res.json({
+        status: 'success',
+        enabled,
+        message: `NSFW filter ${enabled ? 'enabled' : 'disabled'}.`,
+      });
+      return;
+    }
+
+    res.redirect(readProjectsNsfwReturnUrl(req));
   });
 
   router.get('/new', (req, res, next) => {
@@ -294,6 +391,139 @@ function getPageDefaultsService(req) {
     throw new Error('Projects list requires app.locals.pageDefaultsService.');
   }
   return service;
+}
+
+function renderProjectsPage(req, res, {
+  appName,
+  projectService,
+  workflowQueryService,
+  status = 200,
+  notice = resolveNotice(req.query.notice),
+  projectsDefaultsDialogOpen = req.query.defaults === '1',
+  projectsDefaultsSubmittedValues = null,
+  projectsDefaultsErrors = {},
+  allowSavedDefaultsRedirect = req.query.defaults !== '1',
+} = {}) {
+  const pageDefaultsService = getPageDefaultsService(req);
+  const availableTagOptions = getProjectTagFilterOptions(workflowQueryService);
+  const parsedQuery = parseListQuery(req.query, pageDefaultsService, availableTagOptions);
+  const tagOptions = availableTagOptions.map((option) => ({
+    ...option,
+    selected: parsedQuery.tagIds.includes(Number(option.value)),
+  }));
+  const { total } = projectService.list({ ...parsedQuery, limit: 0 });
+  const { total: totalProjects } = projectService.list({ includeArchived: true, limit: 0 });
+  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const currentPage = Math.min(parsedQuery.page, pageCount);
+  if (allowSavedDefaultsRedirect && shouldRedirectToSavedDefaults(req.query, parsedQuery, pageDefaultsService)) {
+    return res.redirect(buildSavedDefaultsUrl(req, parsedQuery, currentPage, pageDefaultsService));
+  }
+
+  const offset = (currentPage - 1) * PAGE_SIZE;
+  const nsfwFilterEnabled = getNsfwFilterSettingsService(req).isEnabled();
+  const { rows } = workflowQueryService.getProjectList({ ...parsedQuery, offset, limit: PAGE_SIZE });
+  const pageUrl = buildPageUrl(req, parsedQuery, currentPage, pageDefaultsService);
+  const filtersActive = Boolean(
+    parsedQuery.search || parsedQuery.statuses.length > 0 || parsedQuery.tagIds.length > 0 || parsedQuery.projectId != null,
+  );
+  const projectOptions = workflowQueryService.getProjectsPageFilterOptions();
+  const selectedProject = projectOptions.find((project) => project.id === parsedQuery.projectId) || null;
+
+  return res.status(status).render('projects/index.njk', {
+    appName,
+    projects: rows.map((project) => withNsfwBlur(project, project.tags, nsfwFilterEnabled)),
+    total,
+    hasAnyProjects: totalProjects > 0,
+    filtersActive,
+    resetFiltersUrl: '/projects',
+    page: currentPage,
+    pageSize: PAGE_SIZE,
+    pageCount,
+    pageUrl,
+    preserveViewQuery: shouldPreserveViewQuery(req.query, parsedQuery, pageDefaultsService),
+    query: {
+      search: parsedQuery.search,
+      statuses: parsedQuery.statuses,
+      tagIds: parsedQuery.tagIds.map(String),
+      projectId: parsedQuery.projectId,
+      sort: parsedQuery.sortBy,
+      order: parsedQuery.order,
+      view: parsedQuery.view,
+    },
+    view: parsedQuery.view,
+    statuses: STATUSES,
+    statusOptions: buildStatusFilterOptions(parsedQuery.statuses),
+    sortOptions: SORT_OPTIONS,
+    tagOptions,
+    projectOptions,
+    selectedProject,
+    notice,
+    nsfwFilterEnabled,
+    projectsNsfwReturnUrl: pageUrl({}),
+    projectsDefaults: buildProjectsDefaultsModel(pageDefaultsService, {
+      submittedValues: projectsDefaultsSubmittedValues,
+      errors: projectsDefaultsErrors,
+    }),
+    projectsDefaultsDialogOpen: Boolean(projectsDefaultsDialogOpen),
+  });
+}
+
+function readProjectsDefaults(body) {
+  const rawBody = body && typeof body === 'object' ? body : {};
+  return Object.fromEntries(
+    Object.keys(PAGE_DEFAULT_DEFINITIONS.projects).map((option) => [option, rawBody[option]])
+  );
+}
+
+function isEnhancedProjectsDefaultsRequest(req) {
+  return String(req.get?.('Accept') || '').toLowerCase().includes('application/json');
+}
+
+function isEnhancedProjectsNsfwRequest(req) {
+  return String(req.get?.('Accept') || '').toLowerCase().includes('application/json');
+}
+
+function readProjectsNsfwReturnUrl(req) {
+  const candidate = typeof req.body?.returnTo === 'string' ? req.body.returnTo : '';
+  if (!candidate.startsWith('/projects') || candidate.startsWith('//')) return '/projects';
+
+  try {
+    const url = new URL(candidate, 'http://creatorcrate.local');
+    if (url.pathname !== '/projects') return '/projects';
+    url.hash = '';
+    return `${url.pathname}${url.search}`;
+  } catch {
+    return '/projects';
+  }
+}
+
+function buildProjectsDefaultsModel(service, { submittedValues = null, errors = {} } = {}) {
+  const values = submittedValues || service.resolvePageDefaults('projects');
+  const fields = Object.keys(PAGE_DEFAULT_DEFINITIONS.projects).map((option) => {
+    const definition = PAGE_DEFAULT_DEFINITIONS.projects[option];
+    const value = values?.[option];
+    const error = errors[option] || null;
+    const showSubmittedValue = Boolean(
+      error && typeof value === 'string' && !definition.values.includes(value)
+    );
+
+    return {
+      id: `projects-default-${option}`,
+      name: option,
+      label: option === 'view' ? 'View' : option === 'sort' ? 'Sort' : 'Order',
+      selectedValue: value,
+      options: definition.values.map((candidate) => ({
+        value: candidate,
+        label: PROJECTS_DEFAULT_LABELS[option][candidate],
+      })),
+      error,
+      showSubmittedValue,
+      submittedOptionValue: showSubmittedValue ? value : null,
+      submittedDisplayValue: showSubmittedValue ? value : null,
+    };
+  });
+
+  return { fields };
 }
 
 function getOpenLocallySettingsService(req) {

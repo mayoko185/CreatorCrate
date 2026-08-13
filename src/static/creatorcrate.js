@@ -3023,6 +3023,17 @@ const PROJECT_GRID_SELECTOR = '.project-grid';
 const PROJECT_GRID_SIZE_STORAGE_KEY = 'creatorcrate-project-grid-size';
 const PROJECT_GRID_SIZE_CONTROL_SCOPE_SELECTOR = '[data-project-grid-size-controls]';
 const PROJECT_GRID_SIZE_CONTROL_SELECTOR = `${PROJECT_GRID_SIZE_CONTROL_SCOPE_SELECTOR} ${ASSET_GRID_SIZE_CONTROL_SELECTOR}`;
+const PROJECTS_LIVE_REGION_SELECTOR = '[data-projects-live-region]';
+const PROJECTS_FILTER_SELECTOR = '#project-filters';
+const PROJECTS_SEARCH_SELECTOR = '[data-projects-search]';
+const PROJECTS_NSFW_FORM_SELECTOR = '[data-projects-nsfw-filter]';
+const PROJECTS_NSFW_TOGGLE_SELECTOR = '[data-projects-nsfw-toggle]';
+const PROJECTS_LIVE_DEBOUNCE_MS = 350;
+const APP_DIALOG_SELECTOR = '[data-app-dialog]';
+const APP_DIALOG_TRIGGER_SELECTOR = '[data-dialog-open]';
+const APP_DIALOG_CLOSE_SELECTOR = '[data-dialog-close]';
+const APP_DIALOG_FORM_SELECTOR = '[data-dialog-form]';
+const APP_DIALOG_FOCUSABLE_SELECTOR = 'a[href], button, input, select, textarea, [tabindex]';
 const ASSET_PROJECT_FILTER_SELECTOR = '[data-asset-project-filter]';
 const ASSET_PROJECT_FILTER_OPTION_SELECTOR = '[data-asset-project-filter-option]';
 const ASSET_PROJECT_FILTER_SEARCH_SELECTOR = '[data-asset-project-filter-search]';
@@ -3066,6 +3077,7 @@ const PROJECT_GRID_SIZE_CONFIG = Object.freeze({
   storageKey: PROJECT_GRID_SIZE_STORAGE_KEY,
   cssVariable: '--project-card-min',
   boundKey: 'projectGridSizeBound',
+  interactiveLabelsSelector: '[data-grid-size-labels-interactive]',
 });
 const ASSET_VIEWER_INFO_CONFIG = Object.freeze({
   infoSelector: ASSET_VIEWER_INFO_SELECTOR,
@@ -3341,9 +3353,24 @@ function updateGridSizeControls(controls, size) {
     });
 
     group.querySelectorAll(ASSET_GRID_SIZE_OPTION_LABEL_SELECTOR).forEach((optionLabel) => {
-      optionLabel.classList?.toggle?.('is-active', optionLabel.dataset.gridSizeOptionLabel === size);
+      const isActive = optionLabel.dataset.gridSizeOptionLabel === size;
+      optionLabel.classList?.toggle?.('is-active', isActive);
+      if (optionLabel.matches?.('button') || optionLabel.tagName === 'BUTTON') {
+        optionLabel.setAttribute?.('aria-pressed', String(isActive));
+      }
     });
   });
+}
+
+function gridSizeLabelsAreInteractive(group, config) {
+  const selector = config.interactiveLabelsSelector;
+  const attribute = selector?.slice(1, -1);
+  return Boolean(
+    selector
+      && (group.matches?.(selector)
+        || group.hasAttribute?.(attribute)
+        || (typeof group.getAttribute === 'function' && group.getAttribute(attribute) !== null)),
+  );
 }
 
 function applyGridSize(scope, size, config, controls) {
@@ -3374,18 +3401,31 @@ function enhanceGridSize(scope, config) {
 
   applyGridSize(scope, readGridSize(config.storageKey), config, controls);
   controls.forEach((group) => {
+    const applySelectedSize = (size) => {
+      if (!Object.prototype.hasOwnProperty.call(ASSET_GRID_SIZES, size)) return;
+      writeGridSize(size, config.storageKey);
+      applyGridSize(scope, size, config, controls);
+    };
+
     group.querySelectorAll(ASSET_GRID_SIZE_SLIDER_SELECTOR).forEach((slider) => {
       if (isEnhancementBound(slider, config.boundKey)) return;
       markEnhancementBound(slider, config.boundKey);
       const applySliderSize = () => {
-        const size = assetGridSizeFromPosition(slider.value);
-        if (!size) return;
-        writeGridSize(size, config.storageKey);
-        applyGridSize(scope, size, config, controls);
+        applySelectedSize(assetGridSizeFromPosition(slider.value));
       };
       slider.addEventListener('input', applySliderSize);
       slider.addEventListener('change', applySliderSize);
     });
+
+    if (gridSizeLabelsAreInteractive(group, config)) {
+      group.querySelectorAll(ASSET_GRID_SIZE_OPTION_LABEL_SELECTOR).forEach((optionLabel) => {
+        if (isEnhancementBound(optionLabel, config.boundKey)) return;
+        markEnhancementBound(optionLabel, config.boundKey);
+        optionLabel.addEventListener('click', () => {
+          applySelectedSize(optionLabel.dataset.gridSizeOptionLabel);
+        });
+      });
+    }
   });
   return controls.length;
 }
@@ -3396,6 +3436,869 @@ export function enhanceAssetGridSize(scope = globalThis.document) {
 
 export function enhanceProjectGridSize(scope = globalThis.document) {
   return enhanceGridSize(scope, PROJECT_GRID_SIZE_CONFIG);
+}
+
+function appDialogDocument(scope) {
+  if (!scope) return null;
+  if (scope.nodeType === 9) return scope;
+  return scope.ownerDocument || globalThis.document || null;
+}
+
+function appDialogFocusable(dialog) {
+  return Array.from(dialog?.querySelectorAll?.(APP_DIALOG_FOCUSABLE_SELECTOR) || [])
+    .filter((element) => !element.disabled && element.getAttribute?.('aria-hidden') !== 'true');
+}
+
+function appDialogBodyLock(state, locked) {
+  const body = state.document?.body;
+  if (!body?.classList) return;
+  if (locked) body.classList.add('app-dialog-open');
+  else if (!state.document.querySelector?.(`${APP_DIALOG_SELECTOR}[open]`)) body.classList.remove('app-dialog-open');
+}
+
+function appDialogRestoreFocus(state) {
+  const opener = state.opener && state.document.contains?.(state.opener)
+    ? state.opener
+    : state.document.querySelector?.(`${APP_DIALOG_TRIGGER_SELECTOR}[data-dialog-open="${state.dialog.id}"]`);
+  state.opener = null;
+  opener?.focus?.({ preventScroll: true });
+}
+
+function appDialogFinishClose(state) {
+  state.open = false;
+  appDialogBodyLock(state, false);
+  appDialogRestoreFocus(state);
+}
+
+function appDialogClose(state) {
+  if (typeof state.dialog.close === 'function' && state.dialog.open) {
+    state.dialog.close();
+    return;
+  }
+  state.dialog.removeAttribute?.('open');
+  state.dialog.open = false;
+  appDialogFinishClose(state);
+}
+
+function appDialogValues(form) {
+  const values = {};
+  Array.from(form?.querySelectorAll?.('select, input, textarea') || []).forEach((control) => {
+    if (control.name && !Object.hasOwn(values, control.name)) values[control.name] = control.value;
+  });
+  return values;
+}
+
+function appDialogApplyValues(form, values = {}) {
+  form?.querySelectorAll?.('option[data-dialog-submitted-value]')
+    .forEach((option) => option.remove?.());
+  Object.entries(values).forEach(([name, value]) => {
+    if (name === '_csrf') return;
+    const control = form?.querySelector?.(`[name="${name}"]`);
+    if (!control) return;
+    const stringValue = String(value ?? '');
+    if (control.tagName === 'SELECT') {
+      const options = Array.from(control.options || control.querySelectorAll?.('option') || []);
+      if (!options.some((option) => String(option.value) === stringValue)) {
+        const option = control.ownerDocument?.createElement?.('option');
+        if (option) {
+          option.value = stringValue;
+          option.textContent = `Submitted value: ${stringValue}`;
+          option.setAttribute?.('data-dialog-submitted-value', '');
+          control.appendChild?.(option);
+        }
+      }
+    }
+    control.value = stringValue;
+  });
+}
+
+function appDialogClearErrors(state) {
+  state.form?.querySelectorAll?.('[data-dialog-field]').forEach((field) => {
+    field.classList?.remove('field-error');
+    const control = field.querySelector?.('select, input, textarea');
+    control?.removeAttribute?.('aria-invalid');
+    control?.removeAttribute?.('aria-describedby');
+    field.querySelector?.('.field-error-message')?.remove?.();
+  });
+  const error = state.dialog.querySelector?.('[data-dialog-error]');
+  if (error) {
+    error.hidden = true;
+    error.setAttribute?.('hidden', '');
+  }
+  const errorText = state.dialog.querySelector?.('[data-dialog-error-text]');
+  if (errorText) errorText.textContent = '';
+  const errorList = state.dialog.querySelector?.('[data-dialog-error-list]');
+  if (errorList) errorList.textContent = '';
+}
+
+function appDialogShowErrors(state, errors = {}, message = 'Fix the highlighted fields and try again.') {
+  const error = state.dialog.querySelector?.('[data-dialog-error]');
+  if (error) {
+    error.hidden = false;
+    error.removeAttribute?.('hidden');
+  }
+  const errorText = state.dialog.querySelector?.('[data-dialog-error-text]');
+  if (errorText) errorText.textContent = message;
+  const errorList = state.dialog.querySelector?.('[data-dialog-error-list]');
+  if (errorList) errorList.textContent = Object.values(errors).join(' ');
+
+  Object.entries(errors).forEach(([name, fieldError]) => {
+    const field = Array.from(state.form?.querySelectorAll?.('[data-dialog-field]') || [])
+      .find((candidate) => candidate.getAttribute?.('data-dialog-field') === name);
+    if (!field) return;
+    field.classList?.add('field-error');
+    const control = field.querySelector?.('select, input, textarea');
+    if (!control) return;
+    control.setAttribute?.('aria-invalid', 'true');
+    const errorId = `${control.id || `dialog-${name}`}-error`;
+    control.setAttribute?.('aria-describedby', errorId);
+    const messageElement = control.ownerDocument?.createElement?.('span');
+    if (!messageElement) return;
+    messageElement.className = 'field-error-message';
+    messageElement.id = errorId;
+    messageElement.textContent = fieldError;
+    field.appendChild?.(messageElement);
+  });
+  state.form?.querySelector?.('[aria-invalid="true"]')?.focus?.({ preventScroll: true });
+}
+
+function appDialogStatus(state, message, error = false) {
+  const status = state.dialog.querySelector?.('[data-dialog-status]');
+  if (status) status.textContent = message || '';
+  if (message) state.dialog.setAttribute?.('data-dialog-state', error ? 'error' : 'pending');
+  else state.dialog.removeAttribute?.('data-dialog-state');
+}
+
+function appDialogFeedback(document, message, error = false) {
+  const feedback = document?.querySelector?.('[data-dialog-feedback]');
+  const text = feedback?.querySelector?.('[data-dialog-feedback-text]');
+  if (!feedback || !text) return;
+  feedback.classList?.toggle?.('notice--error', error);
+  feedback.classList?.toggle?.('notice--success', !error);
+  text.textContent = message;
+  feedback.hidden = false;
+  feedback.removeAttribute?.('hidden');
+}
+
+async function appDialogPayload(response) {
+  if (typeof response?.json === 'function') {
+    try { return await response.json(); } catch {}
+  }
+  return {};
+}
+
+function appDialogBindForm(state) {
+  const form = state.form;
+  if (!form || isEnhancementBound(form, 'appDialogFormBound')) return;
+  markEnhancementBound(form, 'appDialogFormBound');
+  state.savedValues = appDialogValues(form);
+
+  form.addEventListener?.('submit', (event) => {
+    const submitter = event.submitter;
+    if (submitter?.matches?.(APP_DIALOG_CLOSE_SELECTOR) || submitter?.getAttribute?.('formmethod') === 'dialog') {
+      event.preventDefault?.();
+      appDialogClose(state);
+      return;
+    }
+
+    const windowObject = state.document?.defaultView || globalThis;
+    if (typeof windowObject.fetch !== 'function'
+      || typeof windowObject.FormData !== 'function'
+      || typeof windowObject.URLSearchParams !== 'function') return;
+
+    event.preventDefault?.();
+    if (state.submitting) return;
+    state.submitting = true;
+    appDialogClearErrors(state);
+    appDialogStatus(state, 'Saving defaults.');
+    form.setAttribute?.('aria-busy', 'true');
+    const submitButton = form.querySelector?.('[data-dialog-submit]');
+    if (submitButton) submitButton.disabled = true;
+    const action = form.action || form.getAttribute?.('action');
+    const method = String(form.method || form.getAttribute?.('method') || 'POST').toUpperCase();
+
+    Promise.resolve().then(() => windowObject.fetch(action, {
+      method,
+      body: new windowObject.URLSearchParams(new windowObject.FormData(form)),
+      credentials: 'same-origin',
+      redirect: 'follow',
+      headers: { Accept: 'application/json' },
+    })).then(async (response) => ({ response, payload: await appDialogPayload(response) }))
+      .then(({ response, payload }) => {
+        state.submitting = false;
+        form.removeAttribute?.('aria-busy');
+        if (submitButton) submitButton.disabled = false;
+        if (response?.ok === false || payload?.status !== 'success') {
+          appDialogApplyValues(form, payload?.values || appDialogValues(form));
+          appDialogShowErrors(state, payload?.errors || {}, payload?.message || 'Projects defaults could not be saved.');
+          appDialogStatus(state, payload?.message || 'Could not save defaults.', true);
+          return;
+        }
+        state.savedValues = payload?.values || appDialogValues(form);
+        appDialogStatus(state, '');
+        appDialogFeedback(state.document, payload?.message || 'Projects defaults saved successfully.');
+        appDialogClose(state);
+      })
+      .catch(() => {
+        state.submitting = false;
+        form.removeAttribute?.('aria-busy');
+        if (submitButton) submitButton.disabled = false;
+        appDialogShowErrors(state, {}, 'Projects defaults could not be saved. Your selections were kept.');
+        appDialogStatus(state, 'Could not save defaults. Check your connection and try again.', true);
+      });
+  });
+}
+
+function appDialogOpen(state, opener = null) {
+  state.opener = opener || state.document.querySelector?.(
+    `${APP_DIALOG_TRIGGER_SELECTOR}[data-dialog-open="${state.dialog.id}"]`
+  );
+  appDialogApplyValues(state.form, state.savedValues || {});
+  try {
+    if (typeof state.dialog.showModal === 'function') {
+      if (state.dialog.open) state.dialog.close?.();
+      state.dialog.showModal();
+    } else {
+      state.dialog.setAttribute?.('open', '');
+      state.dialog.open = true;
+    }
+  } catch {
+    state.dialog.setAttribute?.('open', '');
+    state.dialog.open = true;
+  }
+  state.open = true;
+  appDialogBodyLock(state, true);
+  (state.dialog.querySelector?.('[autofocus]')
+    || state.dialog.querySelector?.(APP_DIALOG_CLOSE_SELECTOR)
+    || appDialogFocusable(state.dialog)[0])?.focus?.({ preventScroll: true });
+}
+
+function appDialogBind(state) {
+  if (isEnhancementBound(state.dialog, 'appDialogBound')) return;
+  markEnhancementBound(state.dialog, 'appDialogBound');
+  state.form = state.dialog.querySelector?.(APP_DIALOG_FORM_SELECTOR) || null;
+  appDialogBindForm(state);
+  state.dialog.addEventListener?.('close', () => appDialogFinishClose(state));
+  state.dialog.addEventListener?.('cancel', (event) => {
+    event.preventDefault?.();
+    appDialogClose(state);
+  });
+  state.dialog.addEventListener?.('keydown', (event) => {
+    if (event.key !== 'Escape') return;
+    event.preventDefault?.();
+    appDialogClose(state);
+  });
+  state.dialog.addEventListener?.('click', (event) => {
+    if (event.target === state.dialog) {
+      event.preventDefault?.();
+      appDialogClose(state);
+    }
+  });
+  state.dialog.querySelectorAll?.(APP_DIALOG_CLOSE_SELECTOR).forEach((control) => {
+    if (isEnhancementBound(control, 'appDialogCloseBound')) return;
+    markEnhancementBound(control, 'appDialogCloseBound');
+    control.addEventListener?.('click', (event) => {
+      event.preventDefault?.();
+      appDialogClose(state);
+    });
+  });
+  state.dialog.addEventListener?.('keydown', (event) => {
+    if (event.key !== 'Tab') return;
+    const focusable = appDialogFocusable(state.dialog);
+    if (focusable.length === 0) return;
+    const index = focusable.indexOf(state.document.activeElement);
+    if (!event.shiftKey && (index === focusable.length - 1 || index === -1)) {
+      event.preventDefault?.();
+      focusable[0].focus?.();
+    } else if (event.shiftKey && index <= 0) {
+      event.preventDefault?.();
+      focusable[focusable.length - 1].focus?.();
+    }
+  });
+  if (state.dialog.hasAttribute?.('open')) appDialogOpen(state);
+}
+
+export function enhanceAppDialogs(scope = globalThis.document) {
+  const document = appDialogDocument(scope);
+  if (!document || typeof document.querySelectorAll !== 'function') return 0;
+  const dialogs = Array.from(document.querySelectorAll(APP_DIALOG_SELECTOR));
+  dialogs.forEach((dialog) => {
+    if (dialog.__creatorCrateAppDialogState) return;
+    const state = {
+      document,
+      dialog,
+      form: null,
+      opener: null,
+      savedValues: null,
+      open: false,
+      submitting: false,
+    };
+    dialog.__creatorCrateAppDialogState = state;
+    appDialogBind(state);
+  });
+  if (!isEnhancementBound(document, 'appDialogsBound')) {
+    markEnhancementBound(document, 'appDialogsBound');
+    document.addEventListener?.('click', (event) => {
+      const trigger = event.target?.closest?.(APP_DIALOG_TRIGGER_SELECTOR);
+      if (!trigger) return;
+      const dialog = document.getElementById?.(trigger.getAttribute?.('data-dialog-open'));
+      const state = dialog?.__creatorCrateAppDialogState;
+      if (!state) return;
+      event.preventDefault?.();
+      appDialogOpen(state, trigger);
+    });
+  }
+  return dialogs.length;
+}
+
+function projectLiveDocument(scope) {
+  if (!scope) return null;
+  if (scope.nodeType === 9) return scope;
+  return scope.ownerDocument || globalThis.document || null;
+}
+
+function projectLiveRegion(scope) {
+  if (scope?.matches?.(PROJECTS_LIVE_REGION_SELECTOR)) return scope;
+  return scope?.querySelector?.(PROJECTS_LIVE_REGION_SELECTOR) || null;
+}
+
+function projectLiveWindow(document) {
+  return document?.defaultView || globalThis;
+}
+
+function projectLiveForm(region) {
+  return region?.querySelector?.(PROJECTS_FILTER_SELECTOR) || null;
+}
+
+function projectLiveNsfwForm(region) {
+  return region?.querySelector?.(PROJECTS_NSFW_FORM_SELECTOR) || null;
+}
+
+function projectLiveNsfwEnabled(form) {
+  const value = form?.querySelector?.('[data-projects-nsfw-value]')?.value
+    || form?.querySelector?.('[data-projects-nsfw-value]')?.getAttribute?.('value');
+  return value === '1';
+}
+
+function projectLiveRenderedNsfwEnabled(region) {
+  return region?.querySelector?.(PROJECTS_NSFW_TOGGLE_SELECTOR)?.getAttribute?.('aria-pressed') === 'true';
+}
+
+function updateProjectsNsfwControls(scope, enabled, pending = false) {
+  const controls = Array.from(scope?.querySelectorAll?.(PROJECTS_NSFW_TOGGLE_SELECTOR) || []);
+  const label = enabled ? 'Disable NSFW filter' : 'Enable NSFW filter';
+  controls.forEach((control) => {
+    control.disabled = pending;
+    if (pending) control.setAttribute?.('disabled', '');
+    else control.removeAttribute?.('disabled');
+    control.setAttribute?.('aria-pressed', String(enabled));
+    control.setAttribute?.('aria-label', label);
+    control.setAttribute?.('data-tooltip', label);
+  });
+  scope?.querySelectorAll?.(PROJECTS_NSFW_FORM_SELECTOR).forEach((form) => {
+    const value = form.querySelector?.('[data-projects-nsfw-value]');
+    if (value) value.value = enabled ? '0' : '1';
+    if (pending) form.setAttribute?.('aria-busy', 'true');
+    else form.removeAttribute?.('aria-busy');
+  });
+}
+
+function projectLiveCapabilities(windowObject) {
+  return Boolean(
+    typeof windowObject?.fetch === 'function'
+      && typeof windowObject?.FormData === 'function'
+      && typeof windowObject?.URLSearchParams === 'function'
+      && typeof windowObject?.DOMParser === 'function'
+      && typeof windowObject?.history?.pushState === 'function'
+      && typeof windowObject?.history?.replaceState === 'function',
+  );
+}
+
+function projectLiveUrl(form, windowObject, { preservePage = false } = {}) {
+  const action = form?.action || form?.getAttribute?.('action') || '/projects';
+  const url = new URL(action, windowObject.location?.href || '/projects');
+  const params = new windowObject.URLSearchParams(new windowObject.FormData(form));
+  if (preservePage) {
+    const currentUrl = new URL(windowObject.location?.href || url.href, url.href);
+    if (!params.has('page') && currentUrl.searchParams.has('page')) {
+      params.set('page', currentUrl.searchParams.get('page'));
+    }
+  } else {
+    params.delete('page');
+  }
+
+  const emptyKeys = [];
+  for (const [key, value] of params.entries()) {
+    if (value === '') emptyKeys.push(key);
+  }
+  emptyKeys.forEach((key) => params.delete(key));
+
+  url.search = params.toString();
+  url.hash = '';
+  return url;
+}
+
+function projectLiveNativeSubmit(form) {
+  if (!form) return false;
+  const formPrototype = globalThis.HTMLFormElement?.prototype;
+  if (typeof formPrototype?.submit === 'function') {
+    formPrototype.submit.call(form);
+    return true;
+  }
+  if (typeof form.submit === 'function') {
+    form.submit();
+    return true;
+  }
+  return false;
+}
+
+function projectLiveNavigate(windowObject, url) {
+  const location = windowObject?.location;
+  if (!location) return false;
+  if (typeof location.assign === 'function') {
+    location.assign(url.href || String(url));
+    return true;
+  }
+  location.href = url.href || String(url);
+  return true;
+}
+
+function projectLiveStatus(region, message, state) {
+  if (!region) return;
+  if (state) region.setAttribute?.('data-projects-live-state', state);
+  else region.removeAttribute?.('data-projects-live-state');
+  const status = region.querySelector?.('[data-projects-live-status]');
+  if (status) status.textContent = message || '';
+}
+
+function projectLiveCaptureState(region, document) {
+  const active = document?.activeElement;
+  const focus = active && region?.contains?.(active)
+    ? {
+      id: active.id || active.getAttribute?.('id') || '',
+      name: active.name || active.getAttribute?.('name') || '',
+      type: active.type || active.getAttribute?.('type') || '',
+      value: active.value ?? active.getAttribute?.('value') ?? '',
+      selectionStart: Number.isInteger(active.selectionStart) ? active.selectionStart : null,
+      selectionEnd: Number.isInteger(active.selectionEnd) ? active.selectionEnd : null,
+    }
+    : null;
+  const openDisclosures = Array.from(region?.querySelectorAll?.('details') || [])
+    .filter((details) => details.open === true)
+    .map((details) => ({
+      id: details.id || details.getAttribute?.('id') || '',
+      controls: details.querySelector?.('summary')?.getAttribute?.('aria-controls') || '',
+    }));
+  return { focus, openDisclosures };
+}
+
+function projectLiveFindFocus(region, focus) {
+  if (!region || !focus) return null;
+  const controls = Array.from(region.querySelectorAll?.('input, select, textarea, button, summary') || []);
+  return controls.find((control) => {
+    if (focus.id && (control.id || control.getAttribute?.('id')) === focus.id) return true;
+    return Boolean(focus.name)
+      && (control.name || control.getAttribute?.('name')) === focus.name
+      && String(control.type || control.getAttribute?.('type') || '') === focus.type
+      && String(control.value ?? control.getAttribute?.('value') ?? '') === String(focus.value);
+  }) || null;
+}
+
+function projectLiveRestoreState(region, document, captured) {
+  captured?.openDisclosures?.forEach(({ id, controls }) => {
+    const details = Array.from(region?.querySelectorAll?.('details') || []).find((candidate) => (
+      (id && (candidate.id || candidate.getAttribute?.('id')) === id)
+        || (controls && candidate.querySelector?.('summary')?.getAttribute?.('aria-controls') === controls)
+    ));
+    if (details) details.open = true;
+  });
+
+  const focus = projectLiveFindFocus(region, captured?.focus);
+  if (!focus) return;
+  focus.focus?.({ preventScroll: true });
+  if (captured.focus.selectionStart !== null && typeof focus.setSelectionRange === 'function') {
+    focus.setSelectionRange(captured.focus.selectionStart, captured.focus.selectionEnd);
+  }
+}
+
+function enhanceProjectsLiveRegion(region) {
+  enhancePreviewMedia(region);
+  enhanceProjectCards(region);
+  enhanceProjectGridSize(region);
+  enhanceAssetProjectFilter(region);
+  enhanceAssetViewerFilterDisclosures(projectLiveDocument(region));
+  enhanceProjectInfoCards(region);
+}
+
+function projectLiveInvalidate(state) {
+  if (state.nsfwRefreshGeneration !== null) {
+    state.nsfwNeedsRefresh = true;
+    state.nsfwRefreshGeneration = null;
+  }
+  state.generation += 1;
+  state.controller?.abort?.();
+  state.controller = null;
+}
+
+function projectLiveController(windowObject) {
+  return typeof windowObject?.AbortController === 'function'
+    ? new windowObject.AbortController()
+    : null;
+}
+
+function projectLiveResponseUrl(response, requestedUrl, windowObject) {
+  const candidate = response?.url || requestedUrl.href;
+  return new URL(candidate, windowObject.location?.href || requestedUrl.href);
+}
+
+function projectLiveReplaceRegion(state, responseText, requestedUrl, historyMode) {
+  const document = state.document;
+  const windowObject = state.window;
+  const parser = new windowObject.DOMParser();
+  const parsed = parser.parseFromString(responseText, 'text/html');
+  const nextRegion = parsed.querySelector?.(PROJECTS_LIVE_REGION_SELECTOR);
+  const currentRegion = projectLiveRegion(document);
+  if (!nextRegion || !currentRegion || !currentRegion.parentNode) {
+    throw new Error('Projects response did not contain the live region.');
+  }
+
+  const captured = projectLiveCaptureState(currentRegion, document);
+  if (typeof currentRegion.replaceWith === 'function') currentRegion.replaceWith(nextRegion);
+  else currentRegion.parentNode.replaceChild(nextRegion, currentRegion);
+
+  const finalUrl = projectLiveResponseUrl(state.response, requestedUrl, windowObject);
+  if (historyMode === 'push') {
+    windowObject.history.pushState({ projects: true }, '', finalUrl.href);
+  } else if (historyMode === 'replace' && finalUrl.href !== windowObject.location?.href) {
+    windowObject.history.replaceState({ projects: true }, '', finalUrl.href);
+  }
+
+  enhanceProjectsLiveRegion(nextRegion);
+  state.region = nextRegion;
+  if (state.nsfwSubmitting) {
+    state.nsfwRegionReplaced = true;
+    const renderedEnabled = projectLiveRenderedNsfwEnabled(nextRegion);
+    state.nsfwEnabled = renderedEnabled;
+    updateProjectsNsfwControls(nextRegion, renderedEnabled, true);
+  }
+  projectLiveRestoreState(nextRegion, document, captured);
+  projectLiveStatus(nextRegion, '', null);
+}
+
+function projectLiveFallback(state, form, requestedUrl, useRequestedUrl = false) {
+  if (useRequestedUrl) {
+    projectLiveNavigate(state.window, requestedUrl);
+    return;
+  }
+  const currentForm = projectLiveForm(projectLiveRegion(state.document)) || form;
+  if (currentForm && currentForm === form) {
+    if (projectLiveNativeSubmit(currentForm)) return;
+  }
+  projectLiveNavigate(state.window, requestedUrl);
+}
+
+function projectLiveLoadError(state, generation, error, form, url, historyMode) {
+  if (generation !== state.generation) return;
+  state.controller = null;
+  if (state.nsfwRefreshGeneration === generation) {
+    state.nsfwRefreshGeneration = null;
+    state.nsfwNeedsRefresh = false;
+    state.nsfwSubmitting = false;
+    state.nsfwRegionReplaced = false;
+    const region = projectLiveRegion(state.document);
+    updateProjectsNsfwControls(region, state.nsfwEnabled);
+    region?.removeAttribute?.('aria-busy');
+    projectLiveStatus(region, 'NSFW filter changed, but Projects could not refresh. Refresh the page to see updated previews.', 'error');
+    return;
+  }
+  if (error?.name === 'AbortError') return;
+  const region = projectLiveRegion(state.document);
+  region?.removeAttribute?.('aria-busy');
+  projectLiveStatus(region, 'Projects are loading as a full page.', 'error');
+  projectLiveFallback(state, form, url, historyMode === 'replace');
+}
+
+function projectLiveLoad(state, url, historyMode, form) {
+  const generation = state.generation;
+  const currentRegion = projectLiveRegion(state.document);
+  if (!currentRegion) return;
+  state.region = currentRegion;
+  state.response = null;
+  state.requestedUrl = url;
+  const refreshesNsfw = state.nsfwNeedsRefresh && !state.nsfwPostPending;
+  if (refreshesNsfw) state.nsfwNeedsRefresh = false;
+  if (refreshesNsfw) state.nsfwRefreshGeneration = generation;
+  state.controller = projectLiveController(state.window);
+  projectLiveStatus(currentRegion, 'Loading projects.', 'loading');
+  currentRegion.setAttribute?.('aria-busy', 'true');
+
+  const options = {
+    method: 'GET',
+    credentials: 'same-origin',
+    redirect: 'follow',
+    headers: { Accept: 'text/html' },
+  };
+  if (state.controller) options.signal = state.controller.signal;
+
+  let request;
+  try {
+    request = state.window.fetch(url.href, options);
+  } catch (error) {
+    projectLiveLoadError(state, generation, error, form, url, historyMode);
+    return;
+  }
+
+  Promise.resolve(request)
+    .then((response) => {
+      if (generation !== state.generation) return null;
+      if (!response?.ok || typeof response.text !== 'function') {
+        throw new Error('Projects response failed.');
+      }
+      state.response = response;
+      return response.text();
+    })
+    .then((responseText) => {
+      if (responseText === null || generation !== state.generation) return;
+      projectLiveReplaceRegion(state, responseText, url, historyMode);
+    })
+    .then(() => {
+      if (generation !== state.generation) return;
+      state.controller = null;
+      const region = projectLiveRegion(state.document);
+      region?.removeAttribute?.('aria-busy');
+      if (region) projectLiveStatus(region, '', null);
+      bindProjectsLiveForm(state);
+      if (state.nsfwRefreshGeneration === generation) {
+        state.nsfwRefreshGeneration = null;
+        state.nsfwSubmitting = false;
+        state.nsfwRegionReplaced = false;
+        state.nsfwEnabled = projectLiveRenderedNsfwEnabled(region);
+        updateProjectsNsfwControls(region, state.nsfwEnabled);
+      }
+    })
+    .catch((error) => projectLiveLoadError(state, generation, error, form, url, historyMode));
+}
+
+function submitProjectsNsfwToggle(state, form, event) {
+  if (!projectLiveCapabilities(state.window)) return false;
+  if (state.nsfwSubmitting) {
+    event.preventDefault?.();
+    return true;
+  }
+
+  let refreshUrl;
+  try {
+    if (state.timer) state.window.clearTimeout?.(state.timer);
+    state.timer = null;
+    refreshUrl = state.controller && state.requestedUrl
+      ? new URL(state.requestedUrl.href, state.window.location?.href || state.requestedUrl.href)
+      : projectLiveUrl(
+        projectLiveForm(projectLiveRegion(state.document)),
+        state.window,
+        { preservePage: true },
+      );
+  } catch {
+    return false;
+  }
+
+  event.preventDefault?.();
+  projectLiveInvalidate(state);
+  state.nsfwGeneration += 1;
+  const generation = state.nsfwGeneration;
+  const enabled = projectLiveNsfwEnabled(form);
+  const previousEnabled = projectLiveRenderedNsfwEnabled(projectLiveRegion(state.document));
+  state.nsfwSubmitting = true;
+  state.nsfwPostPending = true;
+  state.nsfwNeedsRefresh = false;
+  state.nsfwRegionReplaced = false;
+  state.nsfwPreviousEnabled = previousEnabled;
+  state.nsfwEnabled = enabled;
+
+  const controller = projectLiveController(state.window);
+  state.nsfwController?.abort?.();
+  state.nsfwController = controller;
+  let requestBody;
+  try {
+    requestBody = new state.window.URLSearchParams(new state.window.FormData(form));
+    requestBody.set('enabled', enabled ? '1' : '0');
+  } catch {
+    state.nsfwSubmitting = false;
+    state.nsfwPostPending = false;
+    updateProjectsNsfwControls(projectLiveRegion(state.document), previousEnabled);
+    projectLiveNativeSubmit(form);
+    return true;
+  }
+  updateProjectsNsfwControls(projectLiveRegion(state.document), enabled, true);
+  const options = {
+    method: String(form.method || form.getAttribute?.('method') || 'POST').toUpperCase(),
+    body: requestBody,
+    credentials: 'same-origin',
+    redirect: 'follow',
+    headers: { Accept: 'application/json' },
+  };
+  if (controller) options.signal = controller.signal;
+
+  let request;
+  try {
+    request = state.window.fetch(form.action || form.getAttribute?.('action'), options);
+  } catch (error) {
+    request = Promise.reject(error);
+  }
+
+  let persistedNsfwEnabled = null;
+  Promise.resolve(request)
+    .then(async (response) => {
+      if (!response?.ok) throw new Error('NSFW filter update failed.');
+      const payload = typeof response.json === 'function' ? await response.json() : null;
+      if (payload?.status !== 'success' || typeof payload.enabled !== 'boolean') {
+        throw new Error('NSFW filter update failed.');
+      }
+      return payload;
+    })
+    .then((payload) => {
+      if (generation !== state.nsfwGeneration) return;
+      state.nsfwController = null;
+      state.nsfwPostPending = false;
+      state.nsfwEnabled = payload.enabled;
+      persistedNsfwEnabled = payload.enabled;
+      state.nsfwNeedsRefresh = true;
+      projectLiveInvalidate(state);
+      updateProjectsNsfwControls(projectLiveRegion(state.document), payload.enabled, true);
+      projectLiveLoad(
+        state,
+        refreshUrl,
+        'none',
+        projectLiveForm(projectLiveRegion(state.document)),
+      );
+    })
+    .catch((error) => {
+      if (generation !== state.nsfwGeneration) return;
+      state.nsfwController = null;
+      state.nsfwPostPending = false;
+      state.nsfwSubmitting = false;
+      state.nsfwNeedsRefresh = false;
+      const region = projectLiveRegion(state.document);
+      const enabledState = persistedNsfwEnabled === null
+        ? (state.nsfwRegionReplaced
+          ? projectLiveRenderedNsfwEnabled(region)
+          : state.nsfwPreviousEnabled)
+        : persistedNsfwEnabled;
+      state.nsfwEnabled = enabledState;
+      state.nsfwRegionReplaced = false;
+      updateProjectsNsfwControls(region, enabledState);
+      region?.removeAttribute?.('aria-busy');
+      projectLiveStatus(region, 'Could not update the NSFW filter. The previous setting was kept.', 'error');
+    });
+
+  return true;
+}
+
+function bindProjectsNsfwForm(state, region) {
+  const form = projectLiveNsfwForm(region);
+  if (!form || isEnhancementBound(form, 'projectsNsfwBound')) return;
+  markEnhancementBound(form, 'projectsNsfwBound');
+  form.addEventListener?.('submit', (event) => submitProjectsNsfwToggle(state, form, event));
+}
+
+function scheduleProjectsLiveLoad(state, form, delay = 0) {
+  const windowObject = state.window;
+  if (!projectLiveCapabilities(windowObject)) {
+    projectLiveNativeSubmit(form);
+    return;
+  }
+
+  if (state.timer) windowObject.clearTimeout?.(state.timer);
+  state.timer = null;
+  projectLiveInvalidate(state);
+
+  const start = () => {
+    state.timer = null;
+    let url;
+    try {
+      url = projectLiveUrl(form, windowObject);
+    } catch {
+      projectLiveNativeSubmit(form);
+      return;
+    }
+    projectLiveLoad(state, url, 'push', form);
+  };
+  if (delay > 0) state.timer = windowObject.setTimeout(start, delay);
+  else start();
+}
+
+function handleProjectsLivePopstate(state) {
+  const url = new URL(state.window.location.href);
+  if (url.pathname !== '/projects') return;
+  const region = projectLiveRegion(state.document);
+  if (!region) return;
+  const form = projectLiveForm(region);
+  if (!projectLiveCapabilities(state.window)) {
+    projectLiveNavigate(state.window, url);
+    return;
+  }
+  if (state.timer) state.window.clearTimeout?.(state.timer);
+  state.timer = null;
+  projectLiveInvalidate(state);
+  projectLiveLoad(state, url, 'replace', form);
+}
+
+function bindProjectsLiveForm(state) {
+  const region = projectLiveRegion(state.document);
+  const form = projectLiveForm(region);
+  if (!form) return 0;
+  state.region = region;
+  bindProjectsNsfwForm(state, region);
+  if (state.form === form) return 1;
+  state.form = form;
+
+  form.addEventListener?.('change', (event) => {
+    if (event.target?.matches?.(PROJECTS_SEARCH_SELECTOR)) return;
+    if (!event.target?.name && !event.target?.getAttribute?.('name')) return;
+    scheduleProjectsLiveLoad(state, form);
+  });
+  form.querySelector?.(PROJECTS_SEARCH_SELECTOR)?.addEventListener?.('input', () => {
+    scheduleProjectsLiveLoad(state, form, PROJECTS_LIVE_DEBOUNCE_MS);
+  });
+  form.addEventListener?.('submit', (event) => {
+    event.preventDefault?.();
+    scheduleProjectsLiveLoad(state, form);
+  });
+  return 1;
+}
+
+export function enhanceProjectsLiveFiltering(scope = globalThis.document) {
+  const document = projectLiveDocument(scope);
+  const region = projectLiveRegion(scope);
+  if (!document || !region) return 0;
+
+  let state = document.__creatorCrateProjectsLiveFiltering;
+  if (!state) {
+    const windowObject = projectLiveWindow(document);
+    state = {
+      document,
+      window: windowObject,
+      region,
+      form: null,
+      controller: null,
+      timer: null,
+      generation: 0,
+      response: null,
+      requestedUrl: null,
+      nsfwController: null,
+      nsfwGeneration: 0,
+      nsfwSubmitting: false,
+      nsfwPostPending: false,
+      nsfwNeedsRefresh: false,
+      nsfwRefreshGeneration: null,
+      nsfwRegionReplaced: false,
+      nsfwEnabled: projectLiveRenderedNsfwEnabled(region),
+    };
+    document.__creatorCrateProjectsLiveFiltering = state;
+    enhanceAssetViewerFilterDisclosures(document);
+    windowObject.addEventListener?.('popstate', () => handleProjectsLivePopstate(state));
+  }
+
+  return bindProjectsLiveForm(state);
 }
 
 function assetProjectFilterFieldName(filter) {
@@ -5102,6 +6005,8 @@ if (typeof document !== 'undefined') {
     enhanceAssetProjectFilter(document);
     enhanceProjectAssetCategoryFilter(document);
     enhanceAssetViewerFilterDisclosures(document);
+    enhanceAppDialogs(document);
+    enhanceProjectsLiveFiltering(document);
     enhanceAssetViewerInfoCards(document);
     enhanceProjectInfoCards(document);
     enhanceDatePickers(document);

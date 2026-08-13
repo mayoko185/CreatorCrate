@@ -14,9 +14,6 @@ const APP_NAME = 'CreatorCrate';
 const LEGACY_NEW_PROJECT_PRIORITY_KEY = 'page_defaults.new_project.priority';
 
 const VALID_DEFAULTS = {
-  projectsView: 'list',
-  projectsSort: 'title',
-  projectsOrder: 'asc',
   releasesView: 'board',
   releasesSort: 'title',
   releasesOrder: 'desc',
@@ -76,12 +73,15 @@ function defaultKey(page, option) {
 
 const DEFAULT_SECTION_ANCHORS = [
   { title: 'New Projects', anchor: 'defaults-new-projects' },
-  { title: 'Projects', anchor: 'defaults-projects' },
   { title: 'Releases', anchor: 'defaults-releases' },
   { title: 'Release Management', anchor: 'defaults-release-management' },
   { title: 'Project Assets', anchor: 'defaults-project-assets' },
   { title: 'Asset Viewer', anchor: 'defaults-asset-viewer' },
 ];
+
+const SETTINGS_PAGE_DEFAULT_DEFINITIONS = Object.fromEntries(
+  Object.entries(PAGE_DEFAULT_DEFINITIONS).filter(([page]) => page !== 'projects')
+);
 
 describe('settings — page defaults HTTP', () => {
   let tmpDir;
@@ -113,18 +113,15 @@ describe('settings — page defaults HTTP', () => {
       );
       expect(res.text).toContain(`<h3 id="${anchor}-heading">${title}</h3>`);
     }
-    expect((res.text.match(/<section id="defaults-[^"]+" class="settings-section" aria-labelledby="defaults-[^"]+-heading">/g) || [])).toHaveLength(6);
+    expect((res.text.match(/<section id="defaults-[^"]+" class="settings-section" aria-labelledby="defaults-[^"]+-heading">/g) || [])).toHaveLength(5);
     expect(res.text).not.toContain('<div class="form-section">');
     expect(res.text).toContain('<section class="settings-section asset-browser-default-section" aria-labelledby="project-assets-default-category-heading">');
     expect(res.text).toContain('<h3 id="project-assets-default-category-heading">Asset browser default</h3>');
     expect(res.text).toContain('These defaults apply only to new projects. Changing them does not modify existing projects.');
     expect(res.text).not.toContain('New Releases');
-    expect((res.text.match(/<select /g) || [])).toHaveLength(19);
+    expect((res.text.match(/<select /g) || [])).toHaveLength(16);
     for (const id of [
       'new_projectStatus',
-      'projectsView',
-      'projectsSort',
-      'projectsOrder',
       'releasesView',
       'releasesSort',
       'releasesOrder',
@@ -160,9 +157,6 @@ describe('settings — page defaults HTTP', () => {
   it('uses application fallbacks when no valid values are saved', async () => {
     const res = await agent.get('/settings/defaults').expect(200);
 
-    expect(selectedValue(res.text, 'projectsView')).toBe('grid');
-    expect(selectedValue(res.text, 'projectsSort')).toBe('created');
-    expect(selectedValue(res.text, 'projectsOrder')).toBe('desc');
     expect(selectedValue(res.text, 'releasesView')).toBe('list');
     expect(selectedValue(res.text, 'releasesSort')).toBe('planned');
     expect(selectedValue(res.text, 'releasesOrder')).toBe('asc');
@@ -179,7 +173,7 @@ describe('settings — page defaults HTTP', () => {
     expect(selectedValue(res.text, 'assetViewerPageSize')).toBe('25');
     expect(selectedValue(res.text, 'new_projectStatus')).toBe('tbd');
     expect(selectedValue(res.text, 'project-assets-default-category')).toBe('all');
-    expect((res.text.match(/Application fallback:/g) || [])).toHaveLength(18);
+    expect((res.text.match(/Application fallback:/g) || [])).toHaveLength(15);
     expect(res.text).toContain('<label for="releaseManagementView">Default view</label>');
     expect(res.text).toContain('<option value="board">Board</option>');
     expect(res.text).toContain('<option value="tbd" selected>TBD</option>');
@@ -212,9 +206,11 @@ describe('settings — page defaults HTTP', () => {
 
     const res = await agent.get('/settings/defaults').expect(200);
 
-    expect(selectedValue(res.text, 'projectsView')).toBe('list');
-    expect(selectedValue(res.text, 'projectsSort')).toBe('created');
-    expect(selectedValue(res.text, 'projectsOrder')).toBe('asc');
+    expect(res.text).not.toContain('defaults-projects');
+    expect(res.text).not.toContain('projectsView');
+    expect(readMeta(db, defaultKey('projects', 'view'))).toBe('list');
+    expect(readMeta(db, defaultKey('projects', 'sort'))).toBe('not-a-project-sort');
+    expect(readMeta(db, defaultKey('projects', 'order'))).toBe('asc');
     expect(selectedValue(res.text, 'releasesView')).toBe('list');
     expect(selectedValue(res.text, 'releasesSort')).toBe('title');
     expect(selectedValue(res.text, 'releasesOrder')).toBe('asc');
@@ -234,7 +230,7 @@ describe('settings — page defaults HTTP', () => {
     expect(readMeta(db, LEGACY_NEW_PROJECT_PRIORITY_KEY)).toBe('urgent');
     expect(res.text).toContain('Category &quot;does-not-exist&quot; (unavailable)');
     expect(res.text).toContain('Effective:</span> <strong>All Categories</strong>');
-    expect((res.text.match(/Application fallback:/g) || [])).toHaveLength(15);
+    expect((res.text.match(/Application fallback:/g) || [])).toHaveLength(14);
     expect(res.text).not.toContain('not-a-project-sort');
     expect(res.text).not.toContain('not-a-view');
     expect(res.text).not.toContain('not-an-order');
@@ -258,6 +254,9 @@ describe('settings — page defaults HTTP', () => {
 
   it('saves all Defaults values through the service, redirects, shows a success notice, and preserves unrelated app_meta values', async () => {
     writeMeta(db, 'unrelated.preference', 'preserve-me');
+    writeMeta(db, defaultKey('projects', 'view'), 'grid');
+    writeMeta(db, defaultKey('projects', 'sort'), 'created');
+    writeMeta(db, defaultKey('projects', 'order'), 'desc');
     const assetBrowserDefaultBefore = readMeta(db, 'asset_browser.default_category');
     const projectId = Number(db.prepare(`
       INSERT INTO projects (title, slug, description, notes, status)
@@ -272,9 +271,9 @@ describe('settings — page defaults HTTP', () => {
       .expect(302);
 
     expect(save.headers.location).toBe('/settings/defaults?notice=defaults_saved');
-    expect(readMeta(db, defaultKey('projects', 'view'))).toBe('list');
-    expect(readMeta(db, defaultKey('projects', 'sort'))).toBe('title');
-    expect(readMeta(db, defaultKey('projects', 'order'))).toBe('asc');
+    expect(readMeta(db, defaultKey('projects', 'view'))).toBe('grid');
+    expect(readMeta(db, defaultKey('projects', 'sort'))).toBe('created');
+    expect(readMeta(db, defaultKey('projects', 'order'))).toBe('desc');
     expect(readMeta(db, defaultKey('releases', 'view'))).toBe('board');
     expect(readMeta(db, defaultKey('releases', 'sort'))).toBe('title');
     expect(readMeta(db, defaultKey('releases', 'order'))).toBe('desc');
@@ -298,7 +297,6 @@ describe('settings — page defaults HTTP', () => {
     const redirected = await agent.get(save.headers.location).expect(200);
     expect(redirected.text).toContain('Page defaults saved successfully.');
     expect(redirected.text).toContain('notice--success');
-    expect(selectedValue(redirected.text, 'projectsView')).toBe('list');
     expect(selectedValue(redirected.text, 'releasesSort')).toBe('title');
     expect(selectedValue(redirected.text, 'releaseManagementView')).toBe('board');
     expect(selectedValue(redirected.text, 'releaseManagementSort')).toBe('planned');
@@ -314,9 +312,6 @@ describe('settings — page defaults HTTP', () => {
 
   it('rejects invalid submitted values with field feedback and preserves every stored default', async () => {
     const existing = {
-      projectsView: 'grid',
-      projectsSort: 'created',
-      projectsOrder: 'desc',
       releasesView: 'list',
       releasesSort: 'planned',
       releasesOrder: 'asc',
@@ -327,9 +322,6 @@ describe('settings — page defaults HTTP', () => {
       new_projectStatus: 'tbd',
       defaultCategory: 'all',
     };
-    writeMeta(db, defaultKey('projects', 'view'), existing.projectsView);
-    writeMeta(db, defaultKey('projects', 'sort'), existing.projectsSort);
-    writeMeta(db, defaultKey('projects', 'order'), existing.projectsOrder);
     writeMeta(db, defaultKey('releases', 'view'), existing.releasesView);
     writeMeta(db, defaultKey('releases', 'sort'), existing.releasesSort);
     writeMeta(db, defaultKey('releases', 'order'), existing.releasesOrder);
@@ -339,6 +331,9 @@ describe('settings — page defaults HTTP', () => {
     writeMeta(db, defaultKey('projectAssets', 'pageSize'), existing.projectAssetsPageSize);
     writeMeta(db, defaultKey('new_project', 'status'), existing.new_projectStatus);
     writeMeta(db, 'asset_browser.default_category', existing.defaultCategory);
+    writeMeta(db, defaultKey('projects', 'view'), 'list');
+    writeMeta(db, defaultKey('projects', 'sort'), 'title');
+    writeMeta(db, defaultKey('projects', 'order'), 'asc');
 
     const res = await agent
       .post('/settings/defaults')
@@ -353,9 +348,6 @@ describe('settings — page defaults HTTP', () => {
     expect(res.text).toContain('Defaults could not be saved.');
     expect(res.text).toContain('projectAssets.sort');
     expect(res.text).toContain('Submitted value: unsupported');
-    expect(readMeta(db, defaultKey('projects', 'view'))).toBe(existing.projectsView);
-    expect(readMeta(db, defaultKey('projects', 'sort'))).toBe(existing.projectsSort);
-    expect(readMeta(db, defaultKey('projects', 'order'))).toBe(existing.projectsOrder);
     expect(readMeta(db, defaultKey('releases', 'view'))).toBe(existing.releasesView);
     expect(readMeta(db, defaultKey('releases', 'sort'))).toBe(existing.releasesSort);
     expect(readMeta(db, defaultKey('releases', 'order'))).toBe(existing.releasesOrder);
@@ -365,6 +357,9 @@ describe('settings — page defaults HTTP', () => {
     expect(readMeta(db, defaultKey('projectAssets', 'pageSize'))).toBe(existing.projectAssetsPageSize);
     expect(readMeta(db, defaultKey('new_project', 'status'))).toBe(existing.new_projectStatus);
     expect(readMeta(db, 'asset_browser.default_category')).toBe(existing.defaultCategory);
+    expect(readMeta(db, defaultKey('projects', 'view'))).toBe('list');
+    expect(readMeta(db, defaultKey('projects', 'sort'))).toBe('title');
+    expect(readMeta(db, defaultKey('projects', 'order'))).toBe('asc');
   });
 
   it('rejects an invalid New Project status before partially saving any Defaults values', async () => {
@@ -379,7 +374,6 @@ describe('settings — page defaults HTTP', () => {
       .type('form')
       .send({
         ...VALID_DEFAULTS,
-        projectsView: 'grid',
         projectAssetsPageSize: '100',
         new_projectStatus: 'cancelled',
         _csrf: csrfToken,
@@ -388,9 +382,6 @@ describe('settings — page defaults HTTP', () => {
 
     expect(res.text).toContain('new_project.status');
     expect(res.text).toContain('Submitted value: cancelled');
-    expect(readMeta(db, defaultKey('projects', 'view'))).toBe(VALID_DEFAULTS.projectsView);
-    expect(readMeta(db, defaultKey('projects', 'sort'))).toBe(VALID_DEFAULTS.projectsSort);
-    expect(readMeta(db, defaultKey('projects', 'order'))).toBe(VALID_DEFAULTS.projectsOrder);
     expect(readMeta(db, defaultKey('releases', 'view'))).toBe(VALID_DEFAULTS.releasesView);
     expect(readMeta(db, defaultKey('releases', 'sort'))).toBe(VALID_DEFAULTS.releasesSort);
     expect(readMeta(db, defaultKey('releases', 'order'))).toBe(VALID_DEFAULTS.releasesOrder);
@@ -433,7 +424,6 @@ describe('settings — page defaults HTTP', () => {
       .type('form')
       .send({
         ...VALID_DEFAULTS,
-        projectsView: 'grid',
         releaseManagementView: 'kanban',
         projectAssetsPageSize: '100',
         _csrf: csrfToken,
@@ -442,7 +432,7 @@ describe('settings — page defaults HTTP', () => {
 
     expect(res.text).toContain('releaseManagement.view');
     expect(res.text).toContain('Submitted value: kanban');
-    for (const [page, options] of Object.entries(PAGE_DEFAULT_DEFINITIONS)) {
+    for (const [page, options] of Object.entries(SETTINGS_PAGE_DEFAULT_DEFINITIONS)) {
       for (const option of Object.keys(options)) {
         expect(readMeta(db, defaultKey(page, option))).toBe(
           VALID_DEFAULTS[`${page}${option.charAt(0).toUpperCase()}${option.slice(1)}`]
@@ -466,9 +456,6 @@ describe('settings — page defaults HTTP', () => {
       .type('form')
       .send({
         ...VALID_DEFAULTS,
-        projectsView: 'grid',
-        projectsSort: 'created',
-        projectsOrder: 'desc',
         releasesView: 'list',
         releasesSort: 'planned',
         releasesOrder: 'asc',
@@ -491,7 +478,7 @@ describe('settings — page defaults HTTP', () => {
 
     expect(res.text).toContain('assetViewer.sort');
     expect(res.text).toContain('Submitted value: title');
-    for (const [page, options] of Object.entries(PAGE_DEFAULT_DEFINITIONS)) {
+    for (const [page, options] of Object.entries(SETTINGS_PAGE_DEFAULT_DEFINITIONS)) {
       for (const option of Object.keys(options)) {
         expect(readMeta(db, defaultKey(page, option))).toBe(
           VALID_DEFAULTS[`${page}${option.charAt(0).toUpperCase()}${option.slice(1)}`]
@@ -510,5 +497,15 @@ describe('settings — page defaults HTTP', () => {
       .expect(403);
 
     expect(readMeta(db, defaultKey('projects', 'view'))).toBeUndefined();
+  });
+
+  it('does not render the removed Projects defaults section or anchor', async () => {
+    const res = await agent.get('/settings/defaults').expect(200);
+
+    expect(res.text).not.toContain('id="defaults-projects"');
+    expect(res.text).not.toContain('defaults-projects-heading');
+    expect(res.text).not.toContain('projectsView');
+    expect(res.text).not.toContain('projectsSort');
+    expect(res.text).not.toContain('projectsOrder');
   });
 });

@@ -1,0 +1,17 @@
+{# Shared native-dialog structure. Callers provide the body and optional actions. #}
+{% import "partials/icons.njk" as icons %}
+{% macro render(id, title, open=false, descriptionId='', formId='') %}
+<dialog id="{{ id }}" class="app-dialog" data-app-dialog{% if open %} open{% endif %}
+        aria-labelledby="{{ id }}-title"{% if descriptionId %} aria-describedby="{{ descriptionId }}"{% endif %}>
+  <div class="app-dialog-card" role="document">
+    <header class="app-dialog-header">
+      <h2 id="{{ id }}-title">{{ title }}</h2>
+      <button class="app-dialog-close button button-small button-secondary" type="submit"{% if formId %} form="{{ formId }}" formmethod="dialog"{% endif %}
+              data-dialog-close aria-label="Close {{ title }}" title="Close {{ title }}">
+        {{ icons.icon('close') }}
+      </button>
+    </header>
+    {% if caller is defined %}{{ caller() }}{% endif %}
+  </div>
+</dialog>
+{% endmacro %}

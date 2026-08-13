@@ -7,8 +7,8 @@
   branch and render nothing (safe fallback).
 
   Every icon is decorative: each SVG carries aria-hidden="true" and
-  focusable="false". The visible label always travels with the icon, so the
-  icon needs no accessible name of its own.
+  focusable="false". A visible label or accessible control name travels with
+  the icon, so the icon needs no accessible name of its own.
 
   No external CDN, no remote font. These are local static inline SVGs.
   Styling is intentionally minimal here; full icon/sidebar styling arrives
@@ -49,5 +49,13 @@
 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" focusable="false"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/></svg>
 {%- elif name == 'fullscreen-exit' -%}
 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" focusable="false"><path d="M9 4v5H4M20 9h-5V4M15 20v-5h5M4 15h5v5"/></svg>
+{%- elif name == 'reset' -%}
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" focusable="false"><path d="M4 10a8 8 0 1 1 2.3 5.7"/><path d="M4 4v6h6"/></svg>
+{%- elif name == 'nsfw-filter' -%}
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3 12s3.5-6 9-6 9 6 9 6-3.5 6-9 6-9-6-9-6z"/><circle cx="12" cy="12" r="2.5"/><path d="M4 4l16 16"/></svg>
+{%- elif name == 'grid' -%}
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" focusable="false"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+{%- elif name == 'list' -%}
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true" focusable="false"><path d="M4 6h.01M4 12h.01M4 18h.01M8 6h12M8 12h12M8 18h12"/></svg>
 {%- endif -%}
 {%- endmacro %}

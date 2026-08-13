@@ -97,7 +97,6 @@ function resolveNotice(code) {
 
 const PAGE_DEFAULT_SECTIONS = Object.freeze([
   Object.freeze({ page: 'new_project', title: 'New Projects', anchor: 'defaults-new-projects' }),
-  Object.freeze({ page: 'projects', title: 'Projects', anchor: 'defaults-projects' }),
   Object.freeze({ page: 'releases', title: 'Releases', anchor: 'defaults-releases' }),
   Object.freeze({ page: 'releaseManagement', title: 'Release Management', anchor: 'defaults-release-management' }),
   Object.freeze({ page: 'projectAssets', title: 'Project Assets', anchor: 'defaults-project-assets' }),

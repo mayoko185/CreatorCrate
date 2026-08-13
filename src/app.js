@@ -500,7 +500,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
 
   app.use('/', createIndexRouter({ appName, workflowQueryService }));
   app.use('/health', createHealthRouter({ db, maintenanceState }));
-  app.use('/projects', createProjectsRouter({ appName, projectService, workflowQueryService }));
+  app.use('/projects', createProjectsRouter({ appName, db, projectService, workflowQueryService }));
   app.use('/assets', createAssetLibraryRouter({ appName, workflowQueryService }));
 
   // Media routes stay before the asset browser/viewer router. The media

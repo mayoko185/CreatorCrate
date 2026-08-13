@@ -17,6 +17,7 @@ import {
   resolveProjectDir,
 } from '../src/storage/project-storage.js';
 import { PAGE_DEFAULT_DEFINITIONS } from '../src/services/page-defaults-service.js';
+import { NSFW_FILTER_ENABLED_KEY } from '../src/services/nsfw-filter-settings-service.js';
 import { makeZip } from './helpers/zip-fixture.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
@@ -277,16 +278,212 @@ describe('project HTTP workflow', () => {
     expect(extractProjectFilter(res.text)).toMatch(/No matching projects|No projects available/);
   });
 
-  it('renders Projects defaults as a corner utility with the registered destination', async () => {
+  it('renders Projects defaults, the NSFW toggle, and icon-only Reset in order', async () => {
     const response = await agent.get('/projects').expect(200);
-    const defaultsLink = response.text.match(/<a class="[^"]*\basset-viewer-defaults-link\b[^"]*"[\s\S]*?<\/a>/)?.[0];
+    const filterActions = response.text.match(/<div class="project-filter-actions(?: [^"]*)?">[\s\S]*?<\/div>/)?.[0] || '';
+    const defaultsLink = filterActions.match(/<a class="[^"]*\basset-viewer-defaults-link\b[^"]*"[\s\S]*?<\/a>/)?.[0];
+    const nsfwForm = filterActions.match(/<form method="post" action="\/projects\/nsfw-filter"[\s\S]*?<\/form>/)?.[0];
+    const resetLink = filterActions.match(/<a class="[^"]*\basset-tooltip\b[^"]*"[\s\S]*?aria-label="Reset filters"[\s\S]*?<\/a>/)?.[0];
 
     expect(defaultsLink).toBeDefined();
-    expect(defaultsLink).toContain('class="asset-viewer-defaults-link button button-small button-secondary asset-tooltip asset-tooltip--right"');
-    expect(defaultsLink).toContain('href="/settings/defaults#defaults-projects"');
+    expect(nsfwForm).toBeDefined();
+    expect(resetLink).toBeDefined();
+    expect(filterActions.indexOf('asset-viewer-defaults-link')).toBeLessThan(filterActions.indexOf('data-projects-nsfw-filter'));
+    expect(filterActions.indexOf('data-projects-nsfw-filter')).toBeLessThan(filterActions.indexOf('aria-label="Reset filters"'));
+    expect(defaultsLink).toContain('class="asset-viewer-defaults-link button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--left"');
+    expect(defaultsLink).toContain('href="/projects?defaults=1"');
+    expect(defaultsLink).toContain('data-dialog-open="projects-defaults-dialog"');
+    expect(defaultsLink).not.toContain('/settings/defaults#defaults-projects');
     expect(defaultsLink).toContain('aria-label="Projects defaults"');
     expect(defaultsLink).toContain('data-tooltip="Projects defaults"');
+    expect(defaultsLink).not.toContain('title=');
     expect(defaultsLink).toContain('<svg');
+    expect(nsfwForm).toContain('name="_csrf"');
+    expect(nsfwForm).toContain('name="enabled" value="1"');
+    expect(nsfwForm).toContain('aria-pressed="false"');
+    expect(nsfwForm).toContain('aria-label="Enable NSFW filter"');
+    expect(nsfwForm).toContain('data-tooltip="Enable NSFW filter"');
+    expect(nsfwForm).not.toContain('title=');
+    expect(nsfwForm).toContain('project-filter-control asset-tooltip asset-tooltip--left');
+    expect(nsfwForm).toMatch(/<button[^>]*>\s*<svg[\s\S]*<\/svg>\s*<\/button>/);
+    expect(resetLink).toContain('class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--left"');
+    expect(resetLink).toContain('href="/projects"');
+    expect(resetLink).toContain('aria-label="Reset filters"');
+    expect(resetLink).toContain('data-tooltip="Reset filters"');
+    expect(resetLink).not.toContain('title=');
+    expect(resetLink).toContain('<svg');
+    expect(resetLink).not.toContain('>Reset</a>');
+    expect(filterActions.match(/project-filter-control/g)).toHaveLength(3);
+    expect(filterActions.match(/asset-tooltip--left/g)).toHaveLength(3);
+    expect(filterActions).not.toContain('title=');
+
+    expect((response.text.match(/<dialog id="projects-defaults-dialog"/g) || [])).toHaveLength(1);
+    expect(response.text).toContain('<form id="projects-defaults-form" method="post" action="/projects/defaults"');
+    expect(response.text).toContain('name="_csrf"');
+    expect(response.text).toMatch(/data-dialog-field="view"[\s\S]*?<select id="projects-default-view" name="view"/);
+    expect(response.text).toMatch(/data-dialog-field="sort"[\s\S]*?<select id="projects-default-sort" name="sort"/);
+    expect(response.text).toMatch(/data-dialog-field="order"[\s\S]*?<select id="projects-default-order" name="order"/);
+    expect(response.text.indexOf('data-dialog-field="view"')).toBeLessThan(response.text.indexOf('data-dialog-field="sort"'));
+    expect(response.text.indexOf('data-dialog-field="sort"')).toBeLessThan(response.text.indexOf('data-dialog-field="order"'));
+  });
+
+  it('renders the persisted enabled NSFW state accessibly', async () => {
+    app.locals.nsfwFilterSettingsService.setEnabled(true);
+
+    const response = await agent.get('/projects').expect(200);
+    const nsfwForm = response.text.match(/<form method="post" action="\/projects\/nsfw-filter"[\s\S]*?<\/form>/)?.[0] || '';
+
+    expect(nsfwForm).toContain('name="enabled" value="0"');
+    expect(nsfwForm).toContain('aria-pressed="true"');
+    expect(nsfwForm).toContain('aria-label="Disable NSFW filter"');
+    expect(nsfwForm).toContain('data-tooltip="Disable NSFW filter"');
+    expect(nsfwForm).not.toContain('title=');
+  });
+
+  it('protects the Projects NSFW mutation with CSRF and persists the shared setting', async () => {
+    await agent
+      .post('/projects/nsfw-filter')
+      .set('Accept', 'application/json')
+      .type('form')
+      .send({ enabled: '1' })
+      .expect(403);
+    expect(db.prepare('SELECT value FROM app_meta WHERE key = ?').pluck().get(NSFW_FILTER_ENABLED_KEY)).toBeUndefined();
+
+    const enabled = await agent
+      .post('/projects/nsfw-filter')
+      .set('Accept', 'application/json')
+      .type('form')
+      .send({ enabled: '1', _csrf: csrfToken })
+      .expect(200);
+
+    expect(enabled.body).toEqual({
+      status: 'success',
+      enabled: true,
+      message: 'NSFW filter enabled.',
+    });
+    expect(db.prepare('SELECT value FROM app_meta WHERE key = ?').pluck().get(NSFW_FILTER_ENABLED_KEY)).toBe('1');
+    expect((await agent.get('/projects')).text).toContain('aria-pressed="true"');
+    expect((await agent.get('/settings/nsfw-filter')).text).toContain('id="nsfw-filter-enabled"');
+    expect((await agent.get('/settings/nsfw-filter')).text.match(/id="nsfw-filter-enabled"[^>]*checked/)).not.toBeNull();
+
+    await agent
+      .post('/projects/nsfw-filter')
+      .set('Accept', 'application/json')
+      .type('form')
+      .send({ enabled: '0', _csrf: csrfToken })
+      .expect(200);
+    expect(db.prepare('SELECT value FROM app_meta WHERE key = ?').pluck().get(NSFW_FILTER_ENABLED_KEY)).toBe('0');
+
+    await agent
+      .post('/settings/nsfw-filter')
+      .type('form')
+      .send({ enabled: '1', _csrf: csrfToken })
+      .expect(302);
+    expect((await agent.get('/projects')).text).toContain('aria-pressed="true"');
+
+    await agent
+      .post('/settings/nsfw-filter')
+      .type('form')
+      .send({ enabled: '0', _csrf: csrfToken })
+      .expect(302);
+    expect((await agent.get('/projects')).text).toContain('aria-pressed="false"');
+  });
+
+  it('preserves the current Projects query in the normal NSFW fallback redirect', async () => {
+    const returnTo = '/projects?search=needle&status=ready&tag=2&tag=3&view=list&page=2';
+    const response = await agent
+      .post('/projects/nsfw-filter')
+      .type('form')
+      .send({ enabled: '1', returnTo, _csrf: csrfToken })
+      .expect(302);
+
+    expect(response.headers.location).toBe(returnTo);
+    expect(app.locals.nsfwFilterSettingsService.isEnabled()).toBe(true);
+  });
+
+  it('loads persisted Projects defaults in the dialog rather than active query values', async () => {
+    saveProjectDefault('view', 'list');
+    saveProjectDefault('sort', 'title');
+    saveProjectDefault('order', 'asc');
+
+    const response = await agent.get('/projects?view=grid&sort=updated&order=desc&defaults=1').expect(200);
+    const dialog = response.text.match(/<dialog id="projects-defaults-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+
+    expect(dialog).toMatch(/name="view"[^>]*>[\s\S]*?value="list" selected/);
+    expect(dialog).toMatch(/name="sort"[^>]*>[\s\S]*?value="title" selected/);
+    expect(dialog).toMatch(/name="order"[^>]*>[\s\S]*?value="asc" selected/);
+  });
+
+  it('saves all Projects defaults atomically through the enhanced JSON contract', async () => {
+    const response = await agent
+      .post('/projects/defaults')
+      .set('Accept', 'application/json')
+      .type('form')
+      .send({ view: 'list', sort: 'published', order: 'asc', _csrf: csrfToken })
+      .expect(200);
+
+    expect(response.body).toEqual({
+      status: 'success',
+      message: 'Projects defaults saved successfully.',
+      values: { view: 'list', sort: 'published', order: 'asc' },
+    });
+    expect(app.locals.pageDefaultsService.resolvePageDefaults('projects')).toEqual({
+      view: 'list',
+      sort: 'published',
+      order: 'asc',
+    });
+  });
+
+  it('rejects invalid Projects defaults without partially saving', async () => {
+    saveProjectDefault('view', 'grid');
+    saveProjectDefault('sort', 'created');
+    saveProjectDefault('order', 'desc');
+
+    const response = await agent
+      .post('/projects/defaults')
+      .set('Accept', 'application/json')
+      .type('form')
+      .send({ view: 'list', sort: 'not-valid', order: 'asc', _csrf: csrfToken })
+      .expect(422);
+
+    expect(response.body.status).toBe('error');
+    expect(response.body.errors.sort).toContain('not-valid');
+    expect(response.body.values).toEqual({ view: 'list', sort: 'not-valid', order: 'asc' });
+    expect(app.locals.pageDefaultsService.resolvePageDefaults('projects')).toEqual({
+      view: 'grid',
+      sort: 'created',
+      order: 'desc',
+    });
+  });
+
+  it('marks server-rendered submitted Projects default options for dialog cleanup', async () => {
+    const response = await agent
+      .post('/projects/defaults')
+      .type('form')
+      .send({ view: 'list', sort: 'not-valid', order: 'asc', _csrf: csrfToken })
+      .expect(422);
+    const dialog = response.text.match(/<dialog id="projects-defaults-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+    const temporaryOptions = dialog.match(/<option[^>]*data-dialog-submitted-value[^>]*>[\s\S]*?<\/option>/g) || [];
+
+    expect(temporaryOptions).toHaveLength(1);
+    expect(temporaryOptions[0]).toContain('value="not-valid"');
+    expect(temporaryOptions[0]).toContain('selected');
+  });
+
+  it('keeps the normal Projects defaults POST fallback and rejects missing CSRF', async () => {
+    const fallback = await agent
+      .post('/projects/defaults')
+      .type('form')
+      .send({ view: 'list', sort: 'title', order: 'asc', _csrf: csrfToken })
+      .expect(302);
+    expect(fallback.headers.location).toBe('/projects?view=list&sort=title&order=asc&notice=projects_defaults_saved');
+
+    await agent
+      .post('/projects/defaults')
+      .set('Accept', 'application/json')
+      .type('form')
+      .send({ view: 'grid', sort: 'created', order: 'desc' })
+      .expect(403);
   });
 
   it('renders status and tag multiselects with Asset Viewer disclosure hooks and checked values', async () => {
@@ -298,14 +495,21 @@ describe('project HTTP workflow', () => {
       .expect(200);
 
     expect(res.text).toContain('<form id="project-filters" class="filters asset-viewer-filters asset-viewer-filters--projects" method="get" action="/projects">');
-    expect(res.text).toContain('<button class="button" type="submit" form="project-filters">Filter</button>');
+    const filterActions = res.text.match(/<div class="project-filter-actions(?: [^"]*)?">[\s\S]*?<\/div>/)?.[0] || '';
+    expect(filterActions).not.toContain('<button class="button" type="submit" form="project-filters">Filter</button>');
+    expect(res.text).toContain('<noscript><button class="button" type="submit" form="project-filters">Filter</button></noscript>');
+    expect(res.text).toContain('<input id="project-search" name="search" type="search" value="" data-projects-search>');
     expect(res.text.indexOf('<div class="asset-viewer-display-controls"')).toBeLessThan(res.text.indexOf('<form id="project-filters"'));
-    expect(res.text).toMatch(/project-filter-actions[^>]*>\s*<button class="button" type="submit" form="project-filters">Filter<\/button>/);
+    expect(res.text).toMatch(/project-filter-actions[^>]*>[\s\S]*?<a class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--left"[\s\S]*?href="\/projects"[\s\S]*?aria-label="Reset filters"/);
     expect((res.text.match(/data-asset-viewer-filter-disclosure/g) || [])).toHaveLength(5);
 
     const css = await fetchProjectCss(app);
     expect(css).not.toMatch(/#project-filters\s+\.field\s+select\s*\{/);
     expect(css).toMatch(/\.asset-viewer-project-filter\s+\.asset-project-filter-panel\s*\{[^}]*max-height:\s*20rem/);
+    expect(css).toMatch(/\.project-filter-actions--projects\s*\{[^}]*top:\s*var\(--space-xs\)[^}]*z-index:\s*70/);
+    expect(css).toMatch(/\.asset-viewer-filters\s*\{[^}]*z-index:\s*20/);
+    expect(css).toMatch(/--shell-z-overlay:\s*1200/);
+    expect(css).toMatch(/\.project-filter-actions--projects \.project-filter-control\s*\{[^}]*min-block-size:\s*2\.25rem[^}]*min-inline-size:\s*2\.25rem/);
     expect(css).toMatch(/\.asset-viewer-project-filter\s+\.asset-project-filter-option-list\s*\{[^}]*overflow-y:\s*auto/);
     expect(css).toMatch(/\.asset-viewer-project-filter\s+\.asset-filter-multiselect-summary-current\s*\{[^}]*text-overflow:\s*ellipsis/);
     expect(extractStatusFilter(res.text)).toContain('aria-label="Status filter: 2 statuses selected"');
@@ -373,7 +577,8 @@ describe('project HTTP workflow', () => {
     expect(orderFilter).toMatch(/name="order"[^>]*value="desc"/);
     expect(orderFilter).toMatch(/name="order"[^>]*value="asc"/);
     expect(orderFilter).not.toContain('<select');
-    expect(res.text).not.toMatch(/<select[^>]+(?:id="sort"|id="order"|name="sort"|name="order")/);
+    const liveRegion = res.text.match(/<div data-projects-live-region>[\s\S]*?<\/div>\s*<noscript>/)?.[0] || '';
+    expect(liveRegion).not.toMatch(/<select[^>]+(?:id="sort"|id="order"|name="sort"|name="order")/);
   });
 
   it('reset removes all selected status, tag, and project values', async () => {
@@ -384,7 +589,9 @@ describe('project HTTP workflow', () => {
       .expect(200);
 
     expect(selected.text).toContain('href="/projects"');
-    expect(selected.text).toContain('>Reset</a>');
+    expect(selected.text).toContain('aria-label="Reset filters"');
+    const selectedFilterActions = selected.text.match(/<div class="project-filter-actions(?: [^"]*)?">[\s\S]*?<\/div>/)?.[0] || '';
+    expect(selectedFilterActions).not.toContain('>Reset</a>');
     expect(selected.text).not.toContain('Reset Filters');
     expect(extractProjectFilter(selected.text)).toContain(`value="${projectId}" checked`);
 
@@ -401,23 +608,36 @@ describe('project HTTP workflow', () => {
     await createProject({ title: 'Grid Controls Project' });
     const grid = await agent.get('/projects?view=grid').expect(200);
     expect(grid.text).toMatch(
-      /<div class="asset-viewer-display-controls" data-project-grid-size-controls>\s*<nav class="view-switcher" aria-label="Project display">[\s\S]*?<\/nav>\s*<div class="asset-grid-size-controls asset-viewer-grid-size-controls" data-asset-grid-size-controls[\s\S]*?<button class="button" type="submit" form="project-filters">Filter<\/button>/
+      /<div class="asset-viewer-display-controls" data-project-grid-size-controls>\s*<nav class="view-switcher" aria-label="Project display">[\s\S]*?<\/nav>\s*<div class="asset-grid-size-controls asset-viewer-grid-size-controls" data-asset-grid-size-controls[\s\S]*?<div class="project-filter-actions(?: [^"]*)?">[\s\S]*?aria-label="Reset filters"/
     );
     expect(grid.text).toContain('<ul class="project-grid">');
     expect(grid.text).toContain('data-grid-size-slider');
     expect(grid.text).toContain('data-grid-size-option-label="compact"');
 
-    const gridLink = grid.text.match(/<a class="view-switcher-option" href="([^"]+)"[^>]*>Grid<\/a>/);
-    const listLink = grid.text.match(/<a class="view-switcher-option" href="([^"]+)"[^>]*>List<\/a>/);
+    const gridLink = grid.text.match(/<a class="[^"]*view-switcher-option[^"]*" href="([^"]+)"[^>]*aria-label="Grid view"[^>]*>\s*<svg/);
+    const listLink = grid.text.match(/<a class="[^"]*view-switcher-option[^"]*" href="([^"]+)"[^>]*aria-label="List view"[^>]*>\s*<svg/);
     expect(gridLink?.[1]).toBe('/projects');
     expect(listLink?.[1]).toBe('/projects?view=list');
+    expect(grid.text).not.toContain('>Grid</a>');
+    expect(grid.text).not.toContain('>List</a>');
+    expect(grid.text).toContain('aria-label="Grid view"');
+    expect(grid.text).toContain('aria-label="List view"');
+    expect(grid.text).toContain('aria-current="page"');
+    expect(grid.text).toContain('data-grid-size-labels-interactive');
+    expect(grid.text).toMatch(/<button class="asset-grid-size-option-label" type="button" data-grid-size-option-label="compact"/);
+    expect(grid.text).toMatch(/<button class="asset-grid-size-option-label is-active" type="button" data-grid-size-option-label="default"/);
+    expect(grid.text).toMatch(/<button class="asset-grid-size-option-label" type="button" data-grid-size-option-label="large"/);
 
     const list = await agent.get('/projects?view=list').expect(200);
     expect(list.text).toMatch(
-      /<div class="asset-viewer-display-controls">\s*<nav class="view-switcher" aria-label="Project display">[\s\S]*?<button class="button" type="submit" form="project-filters">Filter<\/button>/
+      /<div class="asset-viewer-display-controls">\s*<nav class="view-switcher" aria-label="Project display">[\s\S]*?<div class="project-filter-actions(?: [^"]*)?">[\s\S]*?aria-label="Reset filters"/
     );
     expect(list.text).not.toContain('data-asset-grid-size-controls');
     expect(list.text).not.toContain('data-grid-size-slider');
+    expect(list.text).not.toContain('>Grid</a>');
+    expect(list.text).not.toContain('>List</a>');
+    expect(list.text).toMatch(/<a class="[^"]*view-switcher-option[^"]*" href="[^"]+"[^>]*aria-current="page"[^>]*aria-label="List view"/);
+    expect(list.text).not.toMatch(/<a class="[^"]*view-switcher-option[^"]*" href="[^"]+"[^>]*aria-current="page"[^>]*aria-label="Grid view"/);
   });
 
   it('redirects a bare request to valid saved non-fallback Projects defaults', async () => {
