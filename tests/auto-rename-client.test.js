@@ -197,7 +197,7 @@ function dataTransfer() {
   };
 }
 
-function makeAssetPage({ view = 'list', ids = [1, 2, 3], initialOrder = ids } = {}) {
+function makeAssetPage({ view = 'list', ids = [1, 2, 3], initialOrder = ids, selectionToolsOutsideForm = false } = {}) {
   const document = makeNode({ tagName: 'document' });
   document.ownerDocument = document;
   document.activeElement = null;
@@ -237,9 +237,16 @@ function makeAssetPage({ view = 'list', ids = [1, 2, 3], initialOrder = ids } = 
   form.appendChild(selectionInput);
   form.appendChild(submit);
   form.appendChild(live);
-  selectionForm.appendChild(selectAll);
-  selectionForm.appendChild(clearSelection);
   surface.appendChild(form);
+  if (selectionToolsOutsideForm) {
+    selectAll.setAttribute('form', 'bulk-select-form');
+    clearSelection.setAttribute('form', 'bulk-select-form');
+    surface.appendChild(selectAll);
+    surface.appendChild(clearSelection);
+  } else {
+    selectionForm.appendChild(selectAll);
+    selectionForm.appendChild(clearSelection);
+  }
   surface.appendChild(selectionForm);
   surface.appendChild(list);
   document.appendChild(surface);
@@ -431,6 +438,17 @@ function withViewport(callback) {
 }
 
 describe('Assets-page Auto Rename ordering enhancement', () => {
+  it('keeps externally associated selection tools functional', () => {
+    const page = makeAssetPage({ selectionToolsOutsideForm: true });
+
+    enhanceAssetSelection(page.document);
+    page.selectAll.dispatch('click');
+    expect(page.assets.every(({ checkbox }) => checkbox.checked)).toBe(true);
+
+    page.clearSelection.dispatch('click');
+    expect(page.assets.every(({ checkbox }) => !checkbox.checked)).toBe(true);
+  });
+
   it('serializes checked asset IDs separately from the complete category order', () => {
     const page = makeAssetPage({ ids: [1, 2, 3, 4] });
 

@@ -340,6 +340,26 @@ describe('asset-browser structural parity: releases vs projects', () => {
       expect(rel.text).toMatch(/<article class="asset-card[^"]*"/);
     });
 
+    it('keeps project-only grid category markup out of release asset cards', async () => {
+      const [proj, rel] = await Promise.all([
+        agent.get(`/projects/${projectId}/assets`).expect(200),
+        agent.get(`${releaseLocation}/assets`).expect(200),
+      ]);
+
+      expect(proj.text).toContain('asset-card-category');
+      expect(rel.text).not.toContain('asset-card-category');
+    });
+
+    it('opts project preview links into the slideshow without changing release links', async () => {
+      const [proj, rel] = await Promise.all([
+        agent.get(`/projects/${projectId}/assets`).expect(200),
+        agent.get(`${releaseLocation}/assets`).expect(200),
+      ]);
+
+      expect(proj.text).toContain('data-project-assets-preview-id');
+      expect(rel.text).not.toContain('data-project-assets-preview-id');
+    });
+
     it('release list card has same top-level article class prefix as project list card', async () => {
       const [proj, rel] = await Promise.all([
         agent.get(`/projects/${projectId}/assets?view=list`).expect(200),

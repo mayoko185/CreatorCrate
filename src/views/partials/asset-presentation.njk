@@ -37,7 +37,7 @@
     <div class="asset-card-media{% if asset.preview and asset.preview.kind == 'krita' %} asset-media--krita{% endif %}"{% if previewAvailable %} data-preview-enhancement data-preview-state="loading"{% endif %}>
       {% if previewAvailable %}
         {% if asset.viewerUrl %}
-          <a class="asset-card-media-link" href="{{ asset.viewerUrl }}" aria-label="View details for {{ filenameLabel }}">
+          <a class="asset-card-media-link" href="{{ asset.viewerUrl }}" aria-label="View details for {{ filenameLabel }}"{% if options.previewSlideshowAssetId is defined and options.previewSlideshowAssetId is not none %} data-project-assets-preview-id="{{ options.previewSlideshowAssetId }}"{% endif %}>
             <img class="asset-card-thumb{% if options.nsfwBlur %} asset-image--nsfw-blurred{% endif %}"
                  src="{{ previewUrl }}"
                  alt="{{ asset.previewAltText or ('Preview of ' ~ filenameLabel) }}"
@@ -75,6 +75,7 @@
         </div>
         {% if caller %}{{ caller('title-controls') }}{% endif %}
       </div>
+      {% if options.categoryLabel %}<span class="asset-card-meta asset-card-category">{{ options.categoryLabel }}</span>{% endif %}
       {% if asset.locationLabel %}<span class="asset-card-location">{{ asset.locationLabel }}</span>{% endif %}
       {% if asset.typeLabel or asset.formattedSize %}
         <span class="asset-card-meta">{{ asset.typeLabel }}{% if asset.typeLabel and asset.formattedSize %} · {% endif %}{{ asset.formattedSize }}</span>
@@ -103,7 +104,7 @@
     <div class="asset-list-card-media"{% if previewAvailable %} data-preview-enhancement data-preview-state="loading"{% endif %}>
       {% if previewAvailable %}
         {% if asset.viewerUrl %}
-          <a class="asset-list-card-media-link" href="{{ asset.viewerUrl }}" aria-label="View preview of {{ filenameLabel }}{% if options.mediaContextLabel %} from {{ options.mediaContextLabel }}{% endif %}">
+          <a class="asset-list-card-media-link" href="{{ asset.viewerUrl }}" aria-label="View preview of {{ filenameLabel }}{% if options.mediaContextLabel %} from {{ options.mediaContextLabel }}{% endif %}"{% if options.previewSlideshowAssetId is defined and options.previewSlideshowAssetId is not none %} data-project-assets-preview-id="{{ options.previewSlideshowAssetId }}"{% endif %}>
             <img class="asset-list-card-media-image{% if options.nsfwBlur %} asset-image--nsfw-blurred{% endif %}"
                  src="{{ previewUrl }}"
                  alt=""

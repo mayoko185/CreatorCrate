@@ -935,6 +935,36 @@ describe('cross-project Asset Viewer template', () => {
     expect(html).toContain('asset-image--nsfw-blurred');
   });
 
+  it('project complete-category table opts preview thumbnails into the slideshow', () => {
+    const html = renderProjectAssetsPage({
+      assets: [{
+        id: 73,
+        filename: 'table-preview.png',
+        displayFilename: 'table-preview',
+        extension: 'png',
+        typeLabel: 'PNG',
+        is_present: true,
+        hasThumbnail: true,
+        thumbnail_url: '/projects/1/assets/73/thumbnail?v=table',
+        preview: { kind: 'image' },
+        viewerUrl: '/projects/1/assets/73',
+        releaseSummary: { mode: 'none' },
+        tags: [],
+        categoryLabel: 'Renders',
+        categoryDisabled: false,
+        presenceLabel: 'Present',
+      }],
+      total: 1,
+      filters: { view: 'list' },
+      completeCategorySurface: true,
+      autoRenameSurface: false,
+      submittedSelectedAssetIds: [],
+    });
+
+    expect(html).toContain('class="asset-thumb-link" href="/projects/1/assets/73" aria-label="View details for table-preview.png" data-project-assets-preview-id="73"');
+    expect(html).toContain('class="asset-file-link" href="/projects/1/assets/73">table-preview</a>');
+  });
+
   it('renders the Asset Viewer defaults dialog in the overlay block', () => {
     const html = renderPage({
       _csrf: 'test-csrf',

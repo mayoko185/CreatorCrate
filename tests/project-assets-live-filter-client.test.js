@@ -1,5 +1,9 @@
 import { describe, expect, it, vi, afterEach } from 'vitest';
-import { enhanceProjectAssetsLiveFiltering } from '../src/static/creatorcrate.js';
+import {
+  enhanceAssetActionSelects,
+  enhanceAssetSelection,
+  enhanceProjectAssetsLiveFiltering,
+} from '../src/static/creatorcrate.js';
 
 function makeNode({ tagName = 'div', attrs = {}, value = '', checked = false } = {}) {
   const attributes = new Map();
@@ -315,6 +319,117 @@ function makeWindow(document, pages = new Map()) {
   return { windowObject, setLocation };
 }
 
+function makeActionSelectFixture() {
+  const document = makeNode({ tagName: 'document' });
+  document.nodeType = 9;
+  document.ownerDocument = document;
+
+  const form = makeNode({
+    tagName: 'form',
+    attrs: { id: 'bulk-select-form', 'data-asset-selection-form': '' },
+  });
+  const checkbox = makeNode({
+    tagName: 'input',
+    attrs: { type: 'checkbox', name: 'selectedAssetIds', value: '1' },
+  });
+  const count = makeNode({
+    tagName: 'span',
+    attrs: { 'data-selected-count': '', 'data-selected-total': '1' },
+  });
+  const submit = makeNode({ tagName: 'button', attrs: { 'data-bulk-submit': '' } });
+  submit.disabled = true;
+  form.appendChild(checkbox);
+  form.appendChild(count);
+  form.appendChild(submit);
+
+  const originalQuerySelectorAll = form.querySelectorAll.bind(form);
+  form.querySelectorAll = (selector) => selector.includes('selectedAssetIds')
+    ? [checkbox]
+    : originalQuerySelectorAll(selector);
+
+  function addActionSelect({ name, selectedValue, options }) {
+    const field = makeNode({ attrs: { class: 'field' } });
+    const control = makeNode({ attrs: { 'data-asset-action-select-control': '' } });
+    const native = makeNode({
+      tagName: 'select',
+      attrs: {
+        id: `${name}-action-native`,
+        class: 'asset-action-select',
+        name,
+        'data-asset-action-select-native': '',
+        ...(name === 'releaseId' ? { 'data-release-select': '' } : {}),
+      },
+      value: selectedValue,
+    });
+    options.forEach(({ value, label }) => {
+      const option = makeNode({ tagName: 'option', attrs: { value } });
+      option.selected = value === selectedValue;
+      option.textContent = label;
+      native.appendChild(option);
+    });
+    const details = makeNode({
+      tagName: 'details',
+      attrs: {
+        class: 'asset-filter-multiselect asset-filter-multiselect--sized asset-action-select-disclosure',
+        'data-asset-action-select-disclosure': '',
+        hidden: '',
+      },
+    });
+    const summary = makeNode({ tagName: 'summary', attrs: { 'aria-label': `${name}: placeholder` } });
+    summary.focus = () => { summary.focused = true; };
+    const currentSummary = makeNode({ attrs: { 'data-asset-action-select-summary': '' } });
+    summary.appendChild(currentSummary);
+    details.appendChild(summary);
+    const panel = makeNode({ tagName: 'div', attrs: { role: 'radiogroup' } });
+    const customOptions = options.map(({ value, label }, index) => {
+      const row = makeNode({ attrs: { class: 'asset-filter-multiselect-option' } });
+      const labelNode = makeNode({ tagName: 'label' });
+      const input = makeNode({
+        tagName: 'input',
+        attrs: { type: 'radio', value, 'data-asset-action-select-option': '' },
+        checked: value === selectedValue,
+      });
+      input.id = `${name}-action-option-${index}`;
+      const text = makeNode({ tagName: 'span' });
+      text.textContent = label;
+      labelNode.appendChild(input);
+      labelNode.appendChild(text);
+      row.appendChild(labelNode);
+      panel.appendChild(row);
+      return { input, label };
+    });
+    details.appendChild(panel);
+    control.appendChild(native);
+    control.appendChild(details);
+    field.appendChild(control);
+    form.appendChild(field);
+    return { native, details, currentSummary, customOptions };
+  }
+
+  const release = addActionSelect({
+    name: 'releaseId',
+    selectedValue: '',
+    options: [
+      { value: '', label: 'Select a release…' },
+      { value: '5', label: 'Launch release' },
+    ],
+  });
+  const category = addActionSelect({
+    name: 'destinationCategory',
+    selectedValue: 'uncategorized',
+    options: [
+      { value: 'uncategorized', label: 'Uncategorized' },
+      { value: '7', label: 'Renders' },
+    ],
+  });
+  document.appendChild(form);
+  const originalDocumentQuerySelectorAll = document.querySelectorAll.bind(document);
+  document.querySelectorAll = (selector) => selector.includes('selectedAssetIds')
+    ? [checkbox]
+    : originalDocumentQuerySelectorAll(selector);
+  return { document, form, checkbox, count, submit, release, category };
+}
+
 function htmlResponse(text, url) {
   return { ok: true, url, text: vi.fn(async () => text) };
 }
@@ -428,5 +543,67 @@ describe('Project Assets live filtering enhancement', () => {
     expect(next.nsfwToggle.getAttribute('aria-pressed')).toBe('true');
     expect(next.nsfwValue.value).toBe('0');
     expect(next.nsfwForm.listeners.filter(({ type }) => type === 'submit')).toHaveLength(1);
+  });
+});
+
+describe('Project Assets action select enhancement', () => {
+  it('enhances both action selects with the Extension disclosure contract and preserves canonical form values', () => {
+    const fixture = makeActionSelectFixture();
+
+    expect(fixture.release.native.hidden).toBe(false);
+    expect(fixture.release.details.hidden).toBe(true);
+    enhanceAssetActionSelects(fixture.document);
+    enhanceAssetSelection(fixture.document);
+
+    expect(fixture.release.native.hidden).toBe(true);
+    expect(fixture.release.details.hidden).toBe(false);
+    expect(fixture.category.native.hidden).toBe(true);
+    expect(fixture.category.details.hidden).toBe(false);
+    expect(fixture.release.details.getAttribute('data-asset-action-select-disclosure')).toBe('');
+    expect(fixture.release.currentSummary.textContent).toBe('Select a release…');
+    expect(fixture.category.currentSummary.textContent).toBe('Uncategorized');
+    expect(fixture.form.querySelectorAll('input[name="releaseId"]').length).toBe(0);
+
+    fixture.checkbox.checked = true;
+    fixture.checkbox.dispatch('change');
+    expect(fixture.submit.disabled).toBe(true);
+
+    fixture.release.customOptions[1].input.dispatch('change');
+    expect(fixture.release.native.value).toBe('5');
+    expect(fixture.release.currentSummary.textContent).toBe('Launch release');
+    expect(fixture.release.customOptions.filter(({ input }) => input.checked)).toHaveLength(1);
+    expect(fixture.release.details.open).toBe(false);
+    expect(fixture.submit.disabled).toBe(false);
+
+    fixture.category.customOptions[1].input.dispatch('change');
+    expect(fixture.category.native.value).toBe('7');
+    expect(fixture.category.currentSummary.textContent).toBe('Renders');
+    expect(fixture.category.customOptions.filter(({ input }) => input.checked)).toHaveLength(1);
+    expect(fixture.category.details.open).toBe(false);
+  });
+
+  it('dismisses action menus on outside click or Escape and binds each disclosure once', () => {
+    const fixture = makeActionSelectFixture();
+
+    enhanceAssetActionSelects(fixture.document);
+    enhanceAssetActionSelects(fixture.document);
+
+    expect(fixture.release.customOptions[0].input.listeners.filter(({ type }) => type === 'change')).toHaveLength(1);
+    expect(fixture.document.listeners.filter(({ type }) => type === 'click')).toHaveLength(1);
+    expect(fixture.document.listeners.filter(({ type }) => type === 'keydown')).toHaveLength(1);
+    expect(fixture.document.listeners.filter(({ type }) => type === 'toggle')).toHaveLength(1);
+
+    fixture.release.details.open = true;
+    fixture.document.dispatch('click', makeNode());
+    expect(fixture.release.details.open).toBe(false);
+
+    fixture.release.details.open = true;
+    const escape = fixture.document.dispatch('keydown', {
+      target: fixture.release.customOptions[0].input,
+      key: 'Escape',
+    });
+    expect(escape.defaultPrevented).toBe(true);
+    expect(fixture.release.details.open).toBe(false);
+    expect(fixture.release.details.querySelector('summary').focused).toBe(true);
   });
 });

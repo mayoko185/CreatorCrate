@@ -2,7 +2,10 @@ import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { enhanceSlideshow } from '../src/static/creatorcrate.js';
+import {
+  enhanceProjectAssetsPreviewSlideshow,
+  enhanceSlideshow,
+} from '../src/static/creatorcrate.js';
 
 const _cssDir = dirname(fileURLToPath(import.meta.url));
 const css = readFileSync(resolve(_cssDir, '../src/static/creatorcrate.css'), 'utf-8');
@@ -274,6 +277,21 @@ function makeSlideshowPage(sequence = [], { fullscreen = false } = {}) {
   };
 }
 
+function makeProjectPreviewPage(sequence) {
+  const page = makeSlideshowPage(sequence);
+  page.previewLinks = sequence.map((item) => {
+    const link = makeNode({ tagName: 'a', attrs: {
+      href: item.viewerUrl,
+      'data-project-assets-preview-id': String(item.id),
+    } });
+    page.document.appendChild(link);
+    return link;
+  });
+  enhanceSlideshow(page.document);
+  enhanceProjectAssetsPreviewSlideshow(page.document);
+  return page;
+}
+
 // ─── Sequence parsing ────────────────────────────────────────────────────────
 
 describe('enhanceSlideshow — sequence parsing', () => {
@@ -408,6 +426,73 @@ describe('enhanceSlideshow — opening', () => {
     enhanceSlideshow(document);
     trigger.dispatch('click');
     expect(preview.children[1].textContent).toBe('my-art.png');
+  });
+});
+
+describe('project-assets preview slideshow opt-in', () => {
+  const sequence = [
+    { id: 1, filename: 'first.png', previewUrl: '/p/1', viewerUrl: '/v/1' },
+    { id: 2, filename: 'second.png', previewUrl: '/p/2', viewerUrl: '/v/2' },
+  ];
+
+  it('opens only the clicked project asset and prevents the detail-link navigation', () => {
+    const page = makeProjectPreviewPage(sequence);
+    const event = page.previewLinks[1].dispatch('click');
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(page.status.textContent).toBe('1 of 1');
+    expect(page.preview.children[0].src).toBe('/p/2');
+    expect(page.prevBtn.disabled).toBe(true);
+    expect(page.nextBtn.disabled).toBe(true);
+    page.document.dispatch('keydown', { key: 'ArrowRight' });
+    page.document.dispatch('keydown', { key: 'ArrowLeft' });
+    expect(page.status.textContent).toBe('1 of 1');
+  });
+
+  it('restores the full sequence after closing the single-asset slideshow', () => {
+    const page = makeProjectPreviewPage(sequence);
+    page.previewLinks[0].dispatch('click');
+    page.closeBtn.dispatch('click');
+
+    expect(page.previewLinks[0].focused).toBe(true);
+    page.trigger.dispatch('click');
+    expect(page.status.textContent).toBe('1 of 2');
+    page.nextBtn.dispatch('click');
+    expect(page.status.textContent).toBe('2 of 2');
+  });
+
+  it('uses the newly clicked asset after a previous single-asset close', () => {
+    const page = makeProjectPreviewPage(sequence);
+    page.previewLinks[0].dispatch('click');
+    page.closeBtn.dispatch('click');
+    page.previewLinks[1].dispatch('click');
+
+    expect(page.status.textContent).toBe('1 of 1');
+    expect(page.preview.children[0].src).toBe('/p/2');
+  });
+
+  it('keeps a refreshed normal sequence isolated until the single asset closes', () => {
+    const page = makeProjectPreviewPage(sequence);
+    page.previewLinks[0].dispatch('click');
+    page.scaffold.__creatorCrateSlideshowState.refreshSequence([
+      ...sequence,
+      { id: 3, filename: 'third.png', previewUrl: '/p/3', viewerUrl: '/v/3' },
+    ]);
+
+    expect(page.status.textContent).toBe('1 of 1');
+    page.closeBtn.dispatch('click');
+    page.trigger.dispatch('click');
+    expect(page.status.textContent).toBe('1 of 3');
+    page.nextBtn.dispatch('click');
+    expect(page.status.textContent).toBe('2 of 3');
+  });
+
+  it('does not bind the same preview twice when enhancement repeats', () => {
+    const page = makeProjectPreviewPage(sequence);
+    expect(enhanceProjectAssetsPreviewSlideshow(page.document)).toBe(2);
+    page.previewLinks[0].dispatch('click');
+
+    expect(page.status.textContent).toBe('1 of 1');
   });
 });
 
@@ -1498,14 +1583,26 @@ describe('enhanceSlideshow — autoplay edge cases', () => {
 // ─── Focus trap ──────────────────────────────────────────────────────────────
 
 describe('enhanceSlideshow — focus trap', () => {
-  const seq1 = [{ id: 1, filename: 'a.png', previewUrl: '/p/1', viewerUrl: '/v/1' }];
-  const originalSeq = [{
-    id: 1,
-    filename: 'a.png',
-    previewUrl: '/p/1',
-    viewerUrl: '/v/1',
-    originalUrl: '/o/1',
-  }];
+  const seq1 = [
+    { id: 1, filename: 'a.png', previewUrl: '/p/1', viewerUrl: '/v/1' },
+    { id: 2, filename: 'b.png', previewUrl: '/p/2', viewerUrl: '/v/2' },
+  ];
+  const originalSeq = [
+    {
+      id: 1,
+      filename: 'a.png',
+      previewUrl: '/p/1',
+      viewerUrl: '/v/1',
+      originalUrl: '/o/1',
+    },
+    {
+      id: 2,
+      filename: 'b.png',
+      previewUrl: '/p/2',
+      viewerUrl: '/v/2',
+      originalUrl: '/o/2',
+    },
+  ];
 
   it('Tab from last focusable wraps to first', () => {
     const { document, closeBtn, prevBtn } = openPage(seq1);

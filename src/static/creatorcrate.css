@@ -1382,13 +1382,6 @@
         align-items: stretch;
         gap: var(--space-lg);
       }
-      .asset-selection-header {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: var(--space-md);
-        flex-wrap: wrap;
-      }
       .asset-selection-tools {
         display: flex;
         align-items: center;
@@ -1407,12 +1400,15 @@
         gap: var(--space-sm);
         min-width: 0;
         margin: 0;
-        padding: var(--space-sm);
-        border: 1px solid var(--border);
-        border-radius: var(--radius-sm);
+        padding: var(--space-md);
+        border: 1px solid var(--border-strong);
+        border-radius: var(--radius-md);
+        background: var(--surface-card);
+        box-shadow: var(--shadow-sm);
       }
-      .asset-action-group legend {
-        padding: 0 var(--space-xs);
+      .asset-action-group-heading {
+        margin: 0;
+        padding: 0;
         color: var(--text);
         font-size: 0.8125rem;
         font-weight: 600;
@@ -1423,6 +1419,23 @@
         flex-wrap: wrap;
         gap: var(--space-sm);
         min-width: 0;
+      }
+      .asset-action-select-wrap {
+        display: block;
+        width: max-content;
+        max-width: 100%;
+        min-width: 0;
+      }
+      .asset-action-select-wrap .asset-action-select-disclosure {
+        width: max-content;
+        max-width: 100%;
+      }
+      @media (max-width: 540px) {
+        .asset-action-select-wrap,
+        .asset-action-select-wrap .asset-action-select-disclosure {
+          width: 100%;
+          max-width: 100%;
+        }
       }
       .asset-selection-controls .button:focus-visible {
         outline: 2px solid var(--focus-ring);
@@ -1442,19 +1455,8 @@
         min-width: 0;
         font-size: 0.875rem;
       }
-      .bulk-release-field span { color: var(--muted); }
-      .bulk-release-field select {
-        padding: 0.5rem;
-        background: var(--bg);
-        color: var(--text);
-        border: 1px solid var(--border);
-        border-radius: var(--radius-sm);
-        font-size: 0.9375rem;
-      }
-      .bulk-release-field select:focus-visible {
-        outline: 2px solid var(--focus-ring);
-        outline-offset: 2px;
-      }
+      .bulk-release-field > label,
+      .bulk-move-field > label { color: var(--muted); }
       .asset-selection-controls [data-bulk-submit] { margin-left: 0; }
 
       @media (max-width: 767px) {
@@ -1482,16 +1484,6 @@
         gap: 0.25rem;
         font-size: 0.875rem;
         min-width: 0;
-      }
-      .bulk-move-field span { color: var(--muted); }
-      .bulk-move-field select {
-        width: 100%;
-        font-size: 0.9375rem;
-        padding: 0.5rem;
-        border: 1px solid var(--border);
-        border-radius: var(--radius-sm);
-        background: var(--bg);
-        color: var(--text);
       }
 
       .row-rename-form {
@@ -1629,14 +1621,43 @@
         min-width: 0;
         flex-wrap: wrap;
       }
+      .asset-actions-controls {
+        display: flex;
+        align-items: center;
+        gap: var(--space-sm);
+        min-width: 0;
+        flex-wrap: wrap;
+      }
+      .asset-actions-panel--selection-only .asset-actions-controls {
+        margin-inline-start: auto;
+      }
+      .asset-selection-controls-area {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: var(--space-xs);
+        min-width: 0;
+        max-width: 100%;
+      }
+      .asset-selection-buttons-row {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: var(--space-sm);
+        min-width: 0;
+        flex-wrap: wrap;
+      }
+      .selected-count-row {
+        align-self: flex-end;
+        text-align: right;
+      }
       .asset-actions-category-copy {
         display: flex;
         flex-direction: column;
         gap: var(--space-xs);
         min-width: 0;
       }
-      .asset-actions-label,
-      .asset-actions-selection-label {
+      .asset-actions-label {
         font-weight: 600;
         color: var(--text);
       }
@@ -1651,9 +1672,6 @@
         gap: var(--space-sm);
         min-width: 0;
         margin: 0;
-      }
-      .asset-actions-selection-label {
-        display: block;
       }
       .auto-rename-order-indicator {
         color: var(--muted);
@@ -1712,6 +1730,13 @@
         .asset-actions-category-row {
           align-items: stretch;
           flex-direction: column;
+        }
+        .asset-actions-controls {
+          align-items: stretch;
+          flex-direction: column;
+        }
+        .asset-selection-buttons-row {
+          align-items: stretch;
         }
         .auto-rename-assets-form { align-items: stretch; }
         .auto-rename-assets-form .button { width: 100%; }
@@ -2023,6 +2048,10 @@
       .asset-viewer-filters--asset-viewer {
         padding-inline-end: calc(var(--space-lg) + 1.6rem);
       }
+      .asset-viewer-filters--project-assets {
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
+      }
       .asset-viewer-filters--project-assets > .asset-viewer-defaults-link,
       .asset-viewer-filters--asset-viewer > .asset-viewer-defaults-link {
         position: absolute;
@@ -2125,13 +2154,19 @@
         display: flex;
         align-items: center;
         gap: var(--space-sm);
-        width: 100%;
         min-height: 2.5rem;
-        padding: 0.5rem;
+        padding: var(--space-sm);
         border: 1px solid var(--border);
         border-radius: 0.375rem;
         background: var(--bg);
         color: var(--text);
+        font: inherit;
+        font-size: 1rem;
+        font-weight: 400;
+        line-height: 1.6;
+      }
+      .asset-filter-multiselect summary {
+        width: 100%;
         cursor: pointer;
         list-style: none;
       }
@@ -2139,10 +2174,12 @@
         display: none;
       }
       .asset-filter-multiselect summary::after {
-        flex: 0 0 auto;
-        margin-left: auto;
         color: var(--muted);
         content: '▾';
+      }
+      .asset-filter-multiselect summary::after {
+        flex: 0 0 auto;
+        margin-left: auto;
       }
       .asset-filter-multiselect[open] summary::after {
         content: '▴';

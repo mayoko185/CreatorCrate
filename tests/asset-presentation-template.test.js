@@ -72,4 +72,22 @@ describe('reusable asset presentation macros', () => {
     expect(html).toContain('class="asset-card-media-link" href="/projects/7/assets/73"');
     expect(html).toContain('class="asset-list-card-media-link" href="/projects/7/assets/73"');
   });
+
+  it('adds project preview opt-in only when the caller supplies the asset ID', () => {
+    const asset = {
+      ...minimalReleaseAsset,
+      preview_state: 'previewable',
+      preview_url: '/projects/7/assets/73/preview?v=revision',
+    };
+    const html = env.renderString(`
+      {% import "partials/asset-presentation.njk" as presentation %}
+      {{ presentation.gridCard(asset, { previewSlideshowAssetId: asset.id }) }}
+      {{ presentation.listCard(asset, { previewSlideshowAssetId: asset.id }) }}
+    `, { asset });
+
+    expect((html.match(/data-project-assets-preview-id="73"/g) || [])).toHaveLength(2);
+    expect(html).toContain('class="asset-card-media-link" href="/projects/7/assets/73"');
+    expect(html).toContain('class="asset-list-card-media-link" href="/projects/7/assets/73"');
+    expect(renderComponents(asset)).not.toContain('data-project-assets-preview-id');
+  });
 });

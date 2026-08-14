@@ -36,6 +36,115 @@
   {% endfor %}
 {% endmacro %}
 
+{% macro renderAssetActionSelect(name, label, panelLabel, selectedValue, options, isRelease) %}
+  {% set placeholder = "Select a release…" if isRelease else "Uncategorized" %}
+  <div class="field {{ 'bulk-release-field' if isRelease else 'bulk-move-field' }}">
+    <label for="{{ name }}-action-native">{{ label }}</label>
+    <span class="asset-action-select-wrap" data-asset-action-select-control>
+      <select id="{{ name }}-action-native" class="asset-action-select" name="{{ name }}"
+              data-asset-action-select-native{% if isRelease %} data-release-select{% endif %}>
+        {% if isRelease %}
+          <option value="">Select a release…</option>
+          {% for target in options %}
+            <option value="{{ target.id }}"{% if selectedValue == (target.id ~ '') %} selected{% endif %}>{{ target.title }}</option>
+          {% endfor %}
+        {% else %}
+          <option value="uncategorized"{% if not selectedValue or selectedValue == 'uncategorized' %} selected{% endif %}>Uncategorized</option>
+          {% for cat in options %}
+            <option value="{{ cat.id }}"{% if selectedValue == (cat.id ~ '') %} selected{% endif %}>{{ cat.displayName }}</option>
+          {% endfor %}
+        {% endif %}
+      </select>
+      <details class="asset-filter-multiselect asset-filter-multiselect--sized asset-action-select-disclosure"
+               data-asset-action-select-disclosure hidden>
+        <summary aria-controls="{{ name }}-action-options"
+                 aria-expanded="false"
+                 aria-label="{{ label }}: {{ placeholder }}"
+                 title="{{ placeholder }}">
+          <span class="asset-filter-multiselect-summary">
+            <span class="asset-filter-multiselect-summary-current" data-asset-action-select-summary>{{ placeholder }}</span>
+            <span class="asset-filter-multiselect-summary-width" aria-hidden="true">
+              <span>{{ placeholder }}</span>
+              {% if isRelease %}
+                {% for target in options %}<span>{{ target.title }}</span>{% endfor %}
+              {% else %}
+                {% for cat in options %}<span>{{ cat.displayName }}</span>{% endfor %}
+              {% endif %}
+            </span>
+          </span>
+        </summary>
+        <div id="{{ name }}-action-options" class="asset-filter-multiselect-panel" role="radiogroup" aria-label="{{ panelLabel }}">
+          {% if isRelease %}
+            <div class="asset-filter-multiselect-option">
+              <label for="{{ name }}-action-option-empty">
+                <input id="{{ name }}-action-option-empty" type="radio" value=""
+                       data-asset-action-select-option{% if not selectedValue %} checked{% endif %}>
+                <span>Select a release…</span>
+              </label>
+            </div>
+            {% for target in options %}
+              <div class="asset-filter-multiselect-option">
+                <label for="{{ name }}-action-option-{{ loop.index }}">
+                  <input id="{{ name }}-action-option-{{ loop.index }}" type="radio" value="{{ target.id }}"
+                         data-asset-action-select-option{% if selectedValue == (target.id ~ '') %} checked{% endif %}>
+                  <span>{{ target.title }}</span>
+                </label>
+              </div>
+            {% endfor %}
+          {% else %}
+            <div class="asset-filter-multiselect-option">
+              <label for="{{ name }}-action-option-uncategorized">
+                <input id="{{ name }}-action-option-uncategorized" type="radio" value="uncategorized"
+                       data-asset-action-select-option{% if not selectedValue or selectedValue == 'uncategorized' %} checked{% endif %}>
+                <span>Uncategorized</span>
+              </label>
+            </div>
+            {% for cat in options %}
+              <div class="asset-filter-multiselect-option">
+                <label for="{{ name }}-action-option-{{ loop.index }}">
+                  <input id="{{ name }}-action-option-{{ loop.index }}" type="radio" value="{{ cat.id }}"
+                         data-asset-action-select-option{% if selectedValue == (cat.id ~ '') %} checked{% endif %}>
+                  <span>{{ cat.displayName }}</span>
+                </label>
+              </div>
+            {% endfor %}
+          {% endif %}
+        </div>
+      </details>
+    </span>
+  </div>
+{% endmacro %}
+
+{% macro renderAssetSelectionControls(projectId, csrfToken, assetTotal, currentView, autoRenameCategory, showSelectionTools) %}
+  <div class="asset-selection-controls-area">
+    <div class="asset-selection-buttons-row">
+      {% if autoRenameCategory %}
+        <form method="post" action="/projects/{{ projectId }}/assets/auto-rename/preview"
+              class="auto-rename-assets-form" data-auto-rename-form>
+          <input type="hidden" name="_csrf" value="{{ csrfToken }}">
+          <input type="hidden" name="categoryId" value="{{ autoRenameCategory.categoryId }}">
+          <input type="hidden" name="orderedAssetIds" value="{{ autoRenameCategory.orderedAssetIdsJson }}"
+                 data-auto-rename-order-input>
+          <input type="hidden" name="selectedAssetIds" value="[]"
+                 data-auto-rename-selection-input>
+          <input type="hidden" name="view" value="{{ currentView }}">
+          <button type="submit" class="button button-primary button-small" data-auto-rename-submit disabled aria-disabled="true">Auto Rename</button>
+          <div class="auto-rename-live-region sr-only" data-auto-rename-live aria-live="polite" aria-atomic="true"></div>
+        </form>
+      {% endif %}
+      {% if showSelectionTools %}
+        <div class="asset-selection-tools" role="group" aria-label="Selection controls">
+          <button type="button" class="button button-small" form="bulk-select-form" data-select-all>Select all visible</button>
+          <button type="button" class="button button-small button-secondary" form="bulk-select-form" data-clear-selection>Clear selection</button>
+        </div>
+      {% endif %}
+    </div>
+    <div class="selected-count-row">
+      <span class="selected-count" data-selected-count data-selected-total="{{ assetTotal }}">0 of {{ assetTotal }} selected</span>
+    </div>
+  </div>
+{% endmacro %}
+
 {% macro releaseUsageInline(asset) %}
   {% if asset.releaseSummary.mode == 'none' %}
     <span class="asset-indicator asset-icon-control asset-tooltip asset-indicator--unused" role="img" tabindex="0"
@@ -94,7 +203,7 @@
     {% endif %}
     <td class="asset-thumb-cell">
       {% if asset.hasThumbnail %}
-        <a class="asset-thumb-link" href="{{ asset.viewerUrl }}" aria-label="View details for {{ asset.filename }}">
+        <a class="asset-thumb-link" href="{{ asset.viewerUrl }}" aria-label="View details for {{ asset.filename }}" data-project-assets-preview-id="{{ asset.id }}">
           <span class="asset-thumb{% if asset.preview.kind == 'krita' %} asset-media--krita{% endif %}" data-preview-enhancement data-preview-state="loading">
             <img class="asset-thumb-image{% if asset.nsfwBlur %} asset-image--nsfw-blurred{% endif %}"
                  src="{{ asset.thumbnail_url }}"
@@ -187,7 +296,9 @@
       selectable: not isArchived and asset.is_present,
       selectableTabIndex: not autoRenameSurface,
       titleRowHidden: renameAttempt,
-      nsfwBlur: asset.nsfwBlur
+      nsfwBlur: asset.nsfwBlur,
+      categoryLabel: asset.categoryLabel,
+      previewSlideshowAssetId: asset.id
     }) %}
       {% if slot == 'top-start' %}
         {% if not isArchived %}
@@ -259,7 +370,8 @@
       selected: selected,
       selectable: not isArchived and asset.is_present,
       mediaContextLabel: project.title,
-      nsfwBlur: asset.nsfwBlur
+      nsfwBlur: asset.nsfwBlur,
+      previewSlideshowAssetId: asset.id
     }) %}
       {% if slot == 'top' %}
         {% if not isArchived %}
@@ -486,12 +598,6 @@
   <div class="notice notice--success app-dialog-feedback" data-dialog-feedback role="status" hidden>
     <p data-dialog-feedback-text></p>
   </div>
-
-  {% if completeCategorySurface %}
-    <p class="results-meta">
-      {{ total }} asset{% if total != 1 %}s{% endif %} in the complete {{ autoRenameCategory.displayName if autoRenameCategory else filters.category }} category
-    </p>
-  {% endif %}
 
   <div data-project-assets-live-region>
     <span class="sr-only" data-project-assets-live-status aria-live="polite" aria-atomic="true"></span>
@@ -902,8 +1008,7 @@
       {% if assets.length > 0 %}
         {% if completeCategorySurface %}
           <section class="asset-auto-rename-surface" data-auto-rename-surface data-auto-rename-view="{{ filters.view }}"
-                   aria-labelledby="auto-rename-surface-heading">
-            <h2 id="auto-rename-surface-heading">{{ autoRenameCategory.displayName }} assets</h2>
+                   aria-label="{{ autoRenameCategory.displayName }} assets">
             <p id="auto-rename-instructions" class="sr-only">
               Focus an asset card or row and press Space or Enter to grab it. Use the arrow keys to reorder it, Space or Enter to commit, or Escape to cancel.
             </p>
@@ -911,21 +1016,12 @@
               <div class="asset-actions-panel" data-asset-actions-panel>
                 <div class="asset-actions-category-row">
                   <div class="asset-actions-category-copy">
-                    <span class="asset-actions-label">Category order</span>
+                    <span class="asset-actions-label">Category actions</span>
                     <span class="asset-actions-helper">Drag assets to change their filename order</span>
                   </div>
-                  <form method="post" action="/projects/{{ project.id }}/assets/auto-rename/preview"
-                        class="auto-rename-assets-form" data-auto-rename-form>
-                    <input type="hidden" name="_csrf" value="{{ _csrf }}">
-                    <input type="hidden" name="categoryId" value="{{ autoRenameCategory.categoryId }}">
-                    <input type="hidden" name="orderedAssetIds" value="{{ autoRenameCategory.orderedAssetIdsJson }}"
-                           data-auto-rename-order-input>
-                    <input type="hidden" name="selectedAssetIds" value="[]"
-                           data-auto-rename-selection-input>
-                    <input type="hidden" name="view" value="{{ filters.view }}">
-                    <button type="submit" class="button button-primary" data-auto-rename-submit disabled aria-disabled="true">Auto Rename</button>
-                    <div class="auto-rename-live-region sr-only" data-auto-rename-live aria-live="polite" aria-atomic="true"></div>
-                  </form>
+                  <div class="asset-actions-controls">
+                    {{ renderAssetSelectionControls(project.id, _csrf, assets.length, filters.view, autoRenameCategory, not isArchived) }}
+                  </div>
                 </div>
                 {% if not isArchived %}
                   {# Checkboxes below are associated via form="bulk-select-form"
@@ -934,54 +1030,30 @@
                     <input type="hidden" name="_csrf" value="{{ _csrf }}">
                     {{ renderContextFields(context, contextFields, false) }}
 
-                    <div class="asset-selection-header">
-                      <span class="asset-actions-selection-label">Selected assets</span>
-                      <span class="selected-count" data-selected-count data-selected-total="{{ assets.length }}">0 of {{ assets.length }} selected</span>
-                    </div>
                     <div class="asset-selection-controls">
-                      <div class="asset-selection-tools" role="group" aria-label="Selection controls">
-                        <button type="button" class="button button-small" data-select-all>Select all visible</button>
-                        <button type="button" class="button button-small button-secondary" data-clear-selection>Clear selection</button>
-                      </div>
                       <div class="asset-action-groups">
-                        <fieldset class="asset-action-group">
-                          <legend>Release actions</legend>
+                        <section class="asset-action-group">
+                          <h3 class="asset-action-group-heading">Release actions</h3>
                           <div class="asset-action-group-controls">
-                            <label class="field bulk-release-field">
-                              <span>Add to release</span>
-                              <select name="releaseId" data-release-select>
-                                <option value="">Select a release…</option>
-                                {% for target in releaseTargets %}
-                                  <option value="{{ target.id }}"{% if submittedReleaseId == (target.id ~ '') %} selected{% endif %}>{{ target.title }}</option>
-                                {% endfor %}
-                              </select>
-                            </label>
-                            <button type="submit" class="button button-primary" data-bulk-submit>Add selected to release</button>
+                            {{ renderAssetActionSelect('releaseId', 'Add to release', 'Release options', submittedReleaseId, releaseTargets, true) }}
+                            <button type="submit" class="button button-primary" data-bulk-submit>Add</button>
                             <button type="submit" class="button button-secondary"
-                                    formaction="/projects/{{ project.id }}/assets/create-release">Create release with selected</button>
+                                    formaction="/projects/{{ project.id }}/assets/create-release">New</button>
                           </div>
-                        </fieldset>
-                        <fieldset class="asset-action-group">
-                          <legend>Category &amp; file actions</legend>
+                        </section>
+                        <section class="asset-action-group">
+                          <h3 class="asset-action-group-heading">Category &amp; file actions</h3>
                           <div class="asset-action-group-controls">
-                            <label class="field bulk-move-field">
-                              <span>Move selected to</span>
-                              <select name="destinationCategory">
-                                <option value="uncategorized"{% if submittedDestinationCategory == 'uncategorized' %} selected{% endif %}>Uncategorized</option>
-                                {% for cat in categoryNavigation.enabled %}
-                                  <option value="{{ cat.id }}"{% if submittedDestinationCategory == (cat.id ~ '') %} selected{% endif %}>{{ cat.displayName }}</option>
-                                {% endfor %}
-                              </select>
-                            </label>
+                            {{ renderAssetActionSelect('destinationCategory', 'Move selected to', 'Destination category options', submittedDestinationCategory, categoryNavigation.enabled, false) }}
                             <button type="submit" class="button"
-                                    formaction="/projects/{{ project.id }}/assets/move-selected">Move selected</button>
+                                    formaction="/projects/{{ project.id }}/assets/move-selected">Move</button>
                             <button type="submit" class="button button-secondary"
-                                    formaction="/projects/{{ project.id }}/assets/copy-selected">Copy selected</button>
+                                    formaction="/projects/{{ project.id }}/assets/copy-selected">Copy</button>
                             <button type="submit" class="button button-danger"
                                     formaction="/projects/{{ project.id }}/assets/delete-selected"
-                                    data-confirm="The selected files will be permanently deleted from disk and cannot be restored through CreatorCrate. Continue?">Delete selected</button>
+                                    data-confirm="The selected files will be permanently deleted from disk and cannot be restored through CreatorCrate. Continue?">Delete</button>
                           </div>
-                        </fieldset>
+                        </section>
                       </div>
                     </div>
                   </form>
@@ -992,58 +1064,39 @@
 
         {% if not completeCategorySurface and not isArchived %}
           <div class="asset-actions-panel asset-actions-panel--selection-only" data-asset-actions-panel>
+            <div class="asset-actions-category-row">
+              <div class="asset-actions-controls">
+                {{ renderAssetSelectionControls(project.id, _csrf, assets.length, filters.view, none, true) }}
+              </div>
+            </div>
             <form id="bulk-select-form" method="post" action="/projects/{{ project.id }}/assets/add-to-release" class="bulk-select-form" data-asset-selection-form>
               <input type="hidden" name="_csrf" value="{{ _csrf }}">
               {{ renderContextFields(context, contextFields, false) }}
 
-              <div class="asset-selection-header">
-                <span class="asset-actions-selection-label">Selected assets</span>
-                <span class="selected-count" data-selected-count data-selected-total="{{ assets.length }}">0 of {{ assets.length }} selected</span>
-              </div>
               <div class="asset-selection-controls">
-                <div class="asset-selection-tools" role="group" aria-label="Selection controls">
-                  <button type="button" class="button button-small" data-select-all>Select all visible</button>
-                  <button type="button" class="button button-small button-secondary" data-clear-selection>Clear selection</button>
-                </div>
                 <div class="asset-action-groups">
-                  <fieldset class="asset-action-group">
-                    <legend>Release actions</legend>
+                  <section class="asset-action-group">
+                    <h3 class="asset-action-group-heading">Release actions</h3>
                     <div class="asset-action-group-controls">
-                      <label class="field bulk-release-field">
-                        <span>Add to release</span>
-                        <select name="releaseId" data-release-select>
-                          <option value="">Select a release…</option>
-                          {% for target in releaseTargets %}
-                            <option value="{{ target.id }}"{% if submittedReleaseId == (target.id ~ '') %} selected{% endif %}>{{ target.title }}</option>
-                          {% endfor %}
-                        </select>
-                      </label>
-                      <button type="submit" class="button button-primary" data-bulk-submit>Add selected to release</button>
+                      {{ renderAssetActionSelect('releaseId', 'Add to release', 'Release options', submittedReleaseId, releaseTargets, true) }}
+                      <button type="submit" class="button button-primary" data-bulk-submit>Add</button>
                       <button type="submit" class="button button-secondary"
-                              formaction="/projects/{{ project.id }}/assets/create-release">Create release with selected</button>
+                              formaction="/projects/{{ project.id }}/assets/create-release">New</button>
                     </div>
-                  </fieldset>
-                  <fieldset class="asset-action-group">
-                    <legend>Category &amp; file actions</legend>
+                  </section>
+                  <section class="asset-action-group">
+                    <h3 class="asset-action-group-heading">Category &amp; file actions</h3>
                     <div class="asset-action-group-controls">
-                      <label class="field bulk-move-field">
-                        <span>Move selected to</span>
-                        <select name="destinationCategory">
-                          <option value="uncategorized"{% if submittedDestinationCategory == 'uncategorized' %} selected{% endif %}>Uncategorized</option>
-                          {% for cat in categoryNavigation.enabled %}
-                            <option value="{{ cat.id }}"{% if submittedDestinationCategory == (cat.id ~ '') %} selected{% endif %}>{{ cat.displayName }}</option>
-                          {% endfor %}
-                        </select>
-                      </label>
+                      {{ renderAssetActionSelect('destinationCategory', 'Move selected to', 'Destination category options', submittedDestinationCategory, categoryNavigation.enabled, false) }}
                       <button type="submit" class="button"
-                              formaction="/projects/{{ project.id }}/assets/move-selected">Move selected</button>
+                              formaction="/projects/{{ project.id }}/assets/move-selected">Move</button>
                       <button type="submit" class="button button-secondary"
-                              formaction="/projects/{{ project.id }}/assets/copy-selected">Copy selected</button>
+                              formaction="/projects/{{ project.id }}/assets/copy-selected">Copy</button>
                       <button type="submit" class="button button-danger"
                               formaction="/projects/{{ project.id }}/assets/delete-selected"
-                              data-confirm="The selected files will be permanently deleted from disk and cannot be restored through CreatorCrate. Continue?">Delete selected</button>
+                              data-confirm="The selected files will be permanently deleted from disk and cannot be restored through CreatorCrate. Continue?">Delete</button>
                     </div>
-                  </fieldset>
+                  </section>
                 </div>
               </div>
             </form>

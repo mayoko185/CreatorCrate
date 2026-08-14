@@ -278,6 +278,7 @@ describe('cross-project Asset Viewer HTTP route', () => {
     expect(response.text).not.toContain('<table class="data-table asset-table">');
     expect((response.text.match(/<article class="asset-list-card"/g) || [])).toHaveLength(2);
     expect(response.text).toContain(`class="asset-list-card-media-link" href="/projects/${project.id}/assets/${released.id}"`);
+    expect(response.text).not.toContain('data-project-assets-preview-id');
     expect(response.text).toMatch(new RegExp(`class="asset-list-card-media-image"[^>]*src="/projects/${project.id}/assets/${released.id}/preview\\?v=`));
     expect(response.text).not.toContain(`/projects/${project.id}/assets/${released.id}/thumbnail`);
     expect(response.text).toContain('alt=""');
@@ -359,6 +360,7 @@ describe('cross-project Asset Viewer HTTP route', () => {
     expect(topRow).not.toContain('asset-details-link');
     expect(topRow).not.toContain('asset-select-checkbox');
     expect(releasedCard).toContain(`class="asset-card-media-link asset-viewer-grid-card-preview-link" href="/projects/${project.id}/assets/${released.id}"`);
+    expect(releasedCard).not.toContain('data-project-assets-preview-id');
     expect(releasedCard).toContain('aria-label="View preview of hero.png"');
     expect(releasedCard).toContain('alt=""');
     expect(releasedCard).toContain(`class="asset-file-link" href="/projects/${project.id}/assets/${released.id}"`);
