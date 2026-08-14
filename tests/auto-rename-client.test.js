@@ -1,7 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { enhanceAssetAutoRenameOrdering } from '../src/static/creatorcrate.js';
+import {
+  enhanceAssetAutoRenameOrdering,
+  enhanceAssetSelection,
+} from '../src/static/creatorcrate.js';
 
 function toDatasetKey(name) {
   return name.slice(5).replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
@@ -207,6 +210,12 @@ function makeAssetPage({ view = 'list', ids = [1, 2, 3], initialOrder = ids } = 
     ? { top: 0, left: 0, width: 400, height: 500 }
     : { top: 0, left: 0, width: 500, height: 500 } });
   const form = makeNode({ tagName: 'form', attrs: { 'data-auto-rename-form': '' } });
+  const selectionForm = makeNode({ tagName: 'form', attrs: {
+    id: 'bulk-select-form',
+    'data-asset-selection-form': '',
+  } });
+  const selectAll = makeNode({ tagName: 'button', attrs: { type: 'button', 'data-select-all': '' } });
+  const clearSelection = makeNode({ tagName: 'button', attrs: { type: 'button', 'data-clear-selection': '' } });
   const orderInput = makeNode({ tagName: 'input', attrs: { 'data-auto-rename-order-input': '' } });
   orderInput.value = JSON.stringify(initialOrder);
   const submit = makeNode({ tagName: 'button', attrs: {
@@ -221,7 +230,10 @@ function makeAssetPage({ view = 'list', ids = [1, 2, 3], initialOrder = ids } = 
   form.appendChild(orderInput);
   form.appendChild(submit);
   form.appendChild(live);
+  selectionForm.appendChild(selectAll);
+  selectionForm.appendChild(clearSelection);
   surface.appendChild(form);
+  surface.appendChild(selectionForm);
   surface.appendChild(list);
   document.appendChild(surface);
 
@@ -256,11 +268,13 @@ function makeAssetPage({ view = 'list', ids = [1, 2, 3], initialOrder = ids } = 
          : { top: index * 50, left: 0, width: 500, height: 40 };
      };
     const indicator = makeNode({ attrs: { 'data-auto-rename-order-indicator': '' } });
-    const checkbox = makeNode({ tagName: 'input', attrs: {
-      type: 'checkbox',
-      name: 'selectedAssetIds',
-      'aria-label': `Select Asset ${id}`,
-    } });
+     const checkbox = makeNode({ tagName: 'input', attrs: {
+       type: 'checkbox',
+       form: 'bulk-select-form',
+       name: 'selectedAssetIds',
+       'aria-label': `Select Asset ${id}`,
+     } });
+     checkbox.form = selectionForm;
     const filenameLink = makeNode({ tagName: 'a', attrs: { href: `/assets/${id}` } });
     const image = makeNode({ tagName: 'img', attrs: { 'data-preview-image': '' } });
     const fallback = makeNode({ tagName: 'span', attrs: { 'data-preview-fallback': '' } });
@@ -339,6 +353,9 @@ function makeAssetPage({ view = 'list', ids = [1, 2, 3], initialOrder = ids } = 
     document,
     surface,
     form,
+    selectionForm,
+    selectAll,
+    clearSelection,
     orderInput,
     submit,
     live,
@@ -404,20 +421,34 @@ function withViewport(callback) {
 }
 
 describe('Assets-page Auto Rename ordering enhancement', () => {
-  it('starts disabled, makes the whole item draggable, and ignores checkbox changes', () => {
+  it('enables from selection, clears when deselected, and also enables for reorder', () => {
     const page = makeAssetPage();
-    const checkbox = makeNode({ tagName: 'input', attrs: { type: 'checkbox', name: 'selectedAssetIds' } });
-    page.form.appendChild(checkbox);
 
     expect(page.submit.disabled).toBe(true);
     expect(enhanceAssetAutoRenameOrdering(page.document)).toBe(1);
+    expect(enhanceAssetSelection(page.document)).toBe(1);
     expect(page.submit.disabled).toBe(true);
     expect(page.assets[0].item.draggable).toBe(true);
     expect(page.assets[0].item.getAttribute('tabindex')).toBe('0');
     expect(page.assets[0].item.querySelector('[data-auto-rename-drag-handle]')).toBe(null);
 
+    const checkbox = page.assets[0].checkbox;
+    checkbox.checked = true;
+    checkbox.dispatch('change');
+    expect(page.submit.disabled).toBe(false);
+
+    checkbox.checked = false;
     checkbox.dispatch('change');
     expect(page.submit.disabled).toBe(true);
+
+    page.selectAll.dispatch('click');
+    expect(page.submit.disabled).toBe(false);
+    page.clearSelection.dispatch('click');
+    expect(page.submit.disabled).toBe(true);
+
+    dragTo(page, 0, { clientY: 140 });
+    expect(page.submit.disabled).toBe(false);
+
     expect(enhanceAssetAutoRenameOrdering(page.document)).toBe(1);
     expect(page.assets[0].item.listeners.filter((entry) => entry.type === 'dragstart')).toHaveLength(1);
   });

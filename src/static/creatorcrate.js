@@ -2304,7 +2304,10 @@ function autoRenameSync(state) {
   state.surface.setAttribute?.('data-auto-rename-membership', valid ? 'valid' : 'invalid');
 
   const unchanged = valid && autoRenameSameOrder(ids, state.initialOrder);
-  autoRenameSetDisabled(button, !valid || unchanged);
+  const hasSelectedAssets = Array.from(
+    state.surface.querySelectorAll?.(ASSET_SELECTION_CHECKBOX_SELECTOR) || [],
+  ).some((checkbox) => checkbox.checked);
+  autoRenameSetDisabled(button, !valid || (unchanged && !hasSelectedAssets));
 
   const items = autoRenameSurfaceItems(state.surface);
   items.forEach((item, index) => {
@@ -3167,6 +3170,10 @@ function updateAssetSelectionState(form, scope = form) {
     const hasReleaseTarget = Boolean(releaseSelect && releaseSelect.value);
     submitButton.disabled = !(selectedCount > 0 && hasReleaseTarget);
   }
+
+  const autoRenameSurface = form.closest?.(AUTO_RENAME_SURFACE_SELECTOR);
+  const autoRenameState = autoRenameSurface?.autoRenameOrderingState;
+  if (autoRenameState) autoRenameSync(autoRenameState);
 }
 
 export function enhanceAssetSelection(scope = globalThis.document) {
