@@ -416,18 +416,27 @@ export function createAssetsRouter({
           ...body,
           categoryId: String(categoryId),
         });
-        return res.render('projects/auto-rename-confirm.njk', {
-          appName,
-          project,
-          plan: buildAutoRenamePlanRenderModel(plan),
+        const planModel = buildAutoRenamePlanRenderModel(plan);
+        const cancelUrl = buildAssetsRedirectUrl(
+          workflowQueryService,
+          projectId,
           context,
-          cancelUrl: buildAssetsRedirectUrl(
-            workflowQueryService,
-            projectId,
-            context,
-            {},
-            pageDefaultsService,
-          ),
+          {},
+          pageDefaultsService,
+        );
+        return renderProjectAssetsPage(req, res, {
+          appName,
+          projectService,
+          workflowQueryService,
+          assetBrowserPreferenceService,
+          projectId,
+          rawQuery: context,
+          allowSavedDefaultsRedirect: false,
+          autoRenameConfirmationDialogOpen: true,
+          autoRenameConfirmationPlan: planModel,
+          autoRenameConfirmationContext: context,
+          autoRenameConfirmationReturnUrl: cancelUrl,
+          next,
         });
       } catch (err) {
         return handleAutoRenameFailure(err, {
@@ -1238,6 +1247,7 @@ function renderProjectAssetsPage(req, res, {
   projectService,
   workflowQueryService,
   assetBrowserPreferenceService,
+  projectId = null,
   status = 200,
   rawQuery = null,
   projectAssetsDefaultsDialogOpen = req.query?.defaults === '1',
@@ -1245,10 +1255,14 @@ function renderProjectAssetsPage(req, res, {
   projectAssetsDefaultsSubmittedValues = null,
   projectAssetsDefaultsErrors = {},
   projectAssetsNsfwError = null,
+  autoRenameConfirmationDialogOpen = false,
+  autoRenameConfirmationPlan = null,
+  autoRenameConfirmationContext = null,
+  autoRenameConfirmationReturnUrl = null,
   allowSavedDefaultsRedirect = true,
   next,
 } = {}) {
-  const id = parseId(req.params.id);
+  const id = projectId === null ? parseId(req.params.id) : projectId;
   if (id === null) return next ? next(createNotFound()) : null;
 
   const project = projectService.findById(id);
@@ -1354,6 +1368,10 @@ function renderProjectAssetsPage(req, res, {
     error: query.scan_error === 'filesystem',
     archivedError: query.scan_error === 'archived',
     projectAssetsNsfwError,
+    autoRenameConfirmationDialogOpen: Boolean(autoRenameConfirmationDialogOpen),
+    autoRenameConfirmationPlan,
+    autoRenameConfirmationContext,
+    autoRenameConfirmationReturnUrl: autoRenameConfirmationReturnUrl || pageUrl,
   });
 }
 
@@ -1679,6 +1697,10 @@ function buildBrowserRenderModel(project, data, pageDefaultsService, req, nsfwFi
     completeCategorySurface: Boolean(data.completeCategorySurface),
     autoRenameSurface: Boolean(data.autoRenameSurface),
     autoRenameCategory: data.autoRenameCategory || null,
+    autoRenameConfirmationDialogOpen: false,
+    autoRenameConfirmationPlan: null,
+    autoRenameConfirmationContext: null,
+    autoRenameConfirmationReturnUrl: pageUrl({}),
     renameFailure: null,
     submittedSelectedAssetIds: [],
     submittedReleaseId: null,
@@ -1975,9 +1997,6 @@ export function buildAutoRenamePlanRenderModel(plan) {
           ? 'Unchanged'
           : 'Blocked',
       blockedReason,
-      // Keep the existing confirmation template compatible until chunk 4
-      // switches it to the grouped model's explicit blockedReason field.
-      reason: blockedReason,
       thumbnailUrl: preview.thumbnailUrl,
       previewKind: preview.previewKind,
       previewState: preview.previewState,

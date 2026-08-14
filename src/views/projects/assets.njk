@@ -1229,6 +1229,106 @@
       </form>
     {% endcall %}
   {% endif %}
+  {% if autoRenameConfirmationPlan %}
+    {% set autoRenameDialogPlan = autoRenameConfirmationPlan %}
+    {% set autoRenameDialogContext = autoRenameConfirmationContext or {} %}
+    {% call dialog.render('auto-rename-confirmation-dialog', 'Auto Rename confirmation', autoRenameConfirmationDialogOpen, 'auto-rename-confirmation-description', 'auto-rename-confirmation-form') %}
+      <form id="auto-rename-confirmation-form" method="post" action="/projects/{{ project.id }}/assets/auto-rename/apply"
+            class="app-dialog-form auto-rename-confirmation-form" data-dialog-form data-dialog-async="false">
+        <p id="auto-rename-confirmation-description" class="app-dialog-description">
+          Review the server-generated names before changing files on disk.
+        </p>
+
+        {% if autoRenameDialogPlan.counts.blocked > 0 %}
+          <div class="notice notice--danger auto-rename-confirmation-notice" role="alert">
+            <p>Auto Rename cannot be applied because one or more category assets are blocked.</p>
+          </div>
+        {% elseif autoRenameDialogPlan.counts.rename == 0 %}
+          <div class="notice notice--warning auto-rename-confirmation-notice" role="status">
+            <p>All category assets are already named according to the rule. There are no changes to apply.</p>
+          </div>
+        {% endif %}
+
+        <input type="hidden" name="_csrf" value="{{ _csrf }}">
+        <input type="hidden" name="planToken" value="{{ autoRenameDialogPlan.token }}">
+        {% if autoRenameDialogContext.category is defined and autoRenameDialogContext.category is not none and autoRenameDialogContext.category != '' %}
+          <input type="hidden" name="categoryId" value="{{ autoRenameDialogContext.category }}">
+        {% endif %}
+        {% if autoRenameDialogContext.tag is defined and autoRenameDialogContext.tag is not none and autoRenameDialogContext.tag != '' %}
+          <input type="hidden" name="tag" value="{{ autoRenameDialogContext.tag }}">
+        {% endif %}
+        {% if autoRenameDialogContext.view is defined and autoRenameDialogContext.view is not none and autoRenameDialogContext.view != '' %}
+          <input type="hidden" name="view" value="{{ autoRenameDialogContext.view }}">
+        {% endif %}
+
+        <div class="app-dialog-body auto-rename-confirmation-body">
+          <p class="auto-rename-confirmation-summary">
+            {{ autoRenameDialogPlan.counts.selected }} asset{% if autoRenameDialogPlan.counts.selected != 1 %}s{% endif %}:
+            {{ autoRenameDialogPlan.counts.rename }} to rename,
+            {{ autoRenameDialogPlan.counts.unchanged }} unchanged{% if autoRenameDialogPlan.counts.blocked > 0 %},
+              {{ autoRenameDialogPlan.counts.blocked }} blocked{% endif %}.
+          </p>
+
+          <ol class="auto-rename-confirmation-list">
+            {% for item in autoRenameDialogPlan.items %}
+              {% set itemLabel = item.currentFilename %}
+              {% if not itemLabel or itemLabel == '—' %}{% set itemLabel = item.currentRelativePath %}{% endif %}
+              {% if not itemLabel or itemLabel == '—' %}{% set itemLabel = 'Asset ' ~ item.assetId %}{% endif %}
+              {% if item.status == 'rename' %}
+                {% set statusVariant = 'success' %}
+              {% elseif item.status == 'unchanged' %}
+                {% set statusVariant = 'neutral' %}
+              {% else %}
+                {% set statusVariant = 'danger' %}
+              {% endif %}
+              <li class="auto-rename-confirmation-item{% if item.status == 'blocked' %} auto-rename-confirmation-item--blocked{% endif %}">
+                <div class="auto-rename-confirmation-preview{% if item.previewKind == 'krita' %} asset-media--krita{% endif %}">
+                  {% if item.thumbnailUrl %}
+                    <img src="{{ item.thumbnailUrl }}" alt="Preview thumbnail for {{ itemLabel }}"
+                         width="56" height="56" loading="lazy" decoding="async">
+                  {% elif item.previewState == 'unsupported' %}
+                    <span class="auto-rename-confirmation-preview-placeholder">{{ item.typeLabel }}<span class="sr-only"> preview not supported</span></span>
+                  {% elif item.previewState == 'missing' %}
+                    <span class="auto-rename-confirmation-preview-placeholder">Missing<span class="sr-only"> at last scan</span></span>
+                  {% else %}
+                    <span class="auto-rename-confirmation-preview-placeholder">{{ item.typeLabel }}</span>
+                  {% endif %}
+                </div>
+                <div class="auto-rename-confirmation-copy">
+                  <div class="auto-rename-confirmation-names">
+                    <span class="auto-rename-confirmation-name auto-rename-confirmation-name--current">
+                      <span class="sr-only">Current name: </span><code>{{ item.currentFilename }}</code>
+                    </span>
+                    <span aria-hidden="true">&rarr;</span>
+                    <span class="auto-rename-confirmation-name auto-rename-confirmation-name--proposed">
+                      <span class="sr-only">Proposed name: </span><code>{% if item.proposedFilename %}{{ item.proposedFilename }}{% else %}&mdash;{% endif %}</code>
+                    </span>
+                  </div>
+                  <span class="status-badge status-badge--{{ statusVariant }}">Status: {{ item.statusLabel }}</span>
+                  {% if item.blockedReason %}
+                    <p class="auto-rename-block-reason"><strong>Blocked:</strong> {{ item.blockedReason }}</p>
+                  {% endif %}
+                </div>
+              </li>
+            {% endfor %}
+          </ol>
+
+          {% if autoRenameDialogPlan.canApply %}
+            <p class="auto-rename-confirmation-apply-note">Applying this signed review will rename the category files on disk and update their asset records.</p>
+          {% elseif autoRenameDialogPlan.counts.blocked > 0 %}
+            <p class="auto-rename-confirmation-apply-note">Apply is unavailable until all blocked category assets are resolved.</p>
+          {% else %}
+            <p class="auto-rename-confirmation-apply-note">There are no changes to apply because all category assets are unchanged.</p>
+          {% endif %}
+        </div>
+
+        <footer class="app-dialog-footer">
+          <a class="button button-secondary" href="{{ autoRenameConfirmationReturnUrl }}">Cancel</a>
+          <button class="button button-primary" type="submit"{% if not autoRenameDialogPlan.canApply %} disabled aria-disabled="true"{% endif %}>Apply Auto Rename</button>
+        </footer>
+      </form>
+    {% endcall %}
+  {% endif %}
   <div data-slideshow-scaffold class="slideshow-scaffold" hidden inert role="dialog" aria-modal="true" aria-label="Slideshow">
       <script type="application/json" data-slideshow-sequence>{{ slideshowSequenceJson | default('[]') | safe }}</script>
       <div class="slideshow-scaffold-inner">

@@ -821,22 +821,6 @@ describe('Assets-page Auto Rename ordering enhancement', () => {
     expect(added.orderInput.value).toBe('');
   });
 
-  it('keeps confirmation markup read-only and leaves preview fallback hooks intact', () => {
-    const template = fs.readFileSync(
-      fileURLToPath(new URL('../src/views/projects/auto-rename-confirm.njk', import.meta.url)),
-      'utf8',
-    );
-    expect(template).toContain('data-preview-enhancement');
-    expect(template).toContain('data-preview-fallback');
-    expect(template).not.toContain('data-auto-rename-drag-handle');
-    expect(template).not.toContain('Move Up');
-    expect(template).not.toContain('Move Down');
-    expect(template).not.toContain('draggable');
-    expect(template).not.toContain('orderedAssetIds');
-    expect(template).not.toContain('data-auto-rename-proposed-name');
-    expect(template).not.toContain('data-auto-rename-live');
-  });
-
   it('keeps ordering CSS scoped to Assets, uses view-specific indicators, and omits obsolete controls', () => {
     const stylesheet = fs.readFileSync(
       fileURLToPath(new URL('../src/static/creatorcrate.css', import.meta.url)),

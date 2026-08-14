@@ -247,7 +247,7 @@ describe('category-scoped Auto Rename HTTP integration', () => {
     expect(archived.text).not.toContain('data-auto-rename-drag-handle');
   });
 
-  it('renders a read-only category confirmation with thumbnails, safe paths, and token-only Apply fields', async () => {
+  it('renders the confirmation dialog on the project assets page with thumbnails and token-only Apply fields', async () => {
     const { id, projectDir } = await createProject('Confirmation Category');
     const category = categories(id)[0];
     const first = writeAsset(id, projectDir, 'nested/first.png', 'first', { categoryId: category.id });
@@ -257,22 +257,23 @@ describe('category-scoped Auto Rename HTTP integration', () => {
     });
 
     const response = await previewRequest(id, category.id, [second.id, first.id], { view: 'list' }).expect(200);
-    expect(response.text).toContain('Auto Rename — Confirmation Category');
+    expect(response.text).toContain('Assets — Confirmation Category');
+    expect(response.text).toContain('id="auto-rename-confirmation-dialog" class="app-dialog" data-app-dialog open');
+    expect(response.text).toContain('aria-labelledby="auto-rename-confirmation-dialog-title"');
+    expect(response.text).toContain('aria-describedby="auto-rename-confirmation-description"');
+    expect(response.text).toContain('id="auto-rename-confirmation-description"');
+    expect(response.text).toContain('data-dialog-async="false"');
     expect(response.text).toContain('Confirmation Category');
-    expect(response.text).toContain('Source');
-    expect(response.text).toContain('nested/first.png');
-    expect(response.text).toContain('nested/second.kra');
-    expect(response.text).toContain('confirmation-category-source-01.kra');
-    expect(response.text).toContain('confirmation-category-source-02.png');
-    expect(response.text).toContain('data-preview-enhancement');
-    expect(response.text).toContain('data-preview-fallback');
+    expect(response.text).toContain('first.png');
+    expect(response.text).toContain('second.kra');
+    expect(response.text).toContain(`confirmation-category-${category.directory_slug}-01.kra`);
+    expect(response.text).toContain(`confirmation-category-${category.directory_slug}-02.png`);
+    expect(response.text).toContain('auto-rename-confirmation-names');
+    expect(response.text).toContain('status-badge status-badge--success');
     expect(response.text).not.toContain('data-auto-rename-drag-handle');
     expect(response.text).not.toContain('Move Up');
     expect(response.text).not.toContain('Move Down');
-    expect(response.text).not.toContain('draggable');
-    expect(response.text).not.toContain('name="orderedAssetIds"');
     expect(response.text).not.toContain('data-auto-rename-proposed-name');
-    expect(response.text).not.toContain('data-auto-rename-live');
 
     const applyForm = formMarkup(response.text, `/projects/${id}/assets/auto-rename/apply`);
     expect(applyForm).toBeDefined();
@@ -280,10 +281,60 @@ describe('category-scoped Auto Rename HTTP integration', () => {
     expect(hiddenInputValues(applyForm, 'planToken')).toHaveLength(1);
     expect(hiddenInputValues(applyForm, 'categoryId')).toEqual([String(category.id)]);
     expect(hiddenInputValues(applyForm, 'view')).toEqual(['list']);
+    expect(response.text).toContain(`href="/projects/${id}/assets?category=${category.id}&amp;view=list"`);
     expect(applyForm).not.toContain('orderedAssetIds');
     expect(applyForm).not.toContain('selectedAssetIds');
     expect(applyForm).not.toContain('proposedFilename');
     expect(applyForm).not.toContain('destinationPath');
+  });
+
+  it('keeps blocked and no-change confirmation plans unappliable', async () => {
+    const blockedProject = await createProject('Blocked Confirmation');
+    const blockedCategory = categories(blockedProject.id)[0];
+    writeAsset(blockedProject.id, blockedProject.projectDir, 'missing.png', 'missing', {
+      categoryId: blockedCategory.id,
+    });
+    fs.rmSync(path.join(blockedProject.projectDir, 'missing.png'));
+
+    const blockedResponse = await previewRequest(
+      blockedProject.id,
+      blockedCategory.id,
+      [assetRepository.findProjectAssetsByCategoryInBrowserOrder(blockedProject.id, blockedCategory.id)[0].id],
+    ).expect(200);
+    const blockedForm = formMarkup(blockedResponse.text, `/projects/${blockedProject.id}/assets/auto-rename/apply`);
+    expect(blockedResponse.text).toContain('one or more category assets are blocked');
+    expect(blockedResponse.text).toContain('Apply is unavailable until all blocked category assets are resolved.');
+    expect(blockedForm).toMatch(/<button[^>]*disabled[^>]*>Apply Auto Rename<\/button>/);
+    await applyRequest(blockedProject.id, {
+      _csrf: csrfToken,
+      planToken: tokenFromConfirmation(blockedResponse.text),
+      categoryId: String(blockedCategory.id),
+    }).expect(409);
+
+    const unchangedProject = await createProject('No Change Confirmation');
+    const unchangedCategory = categories(unchangedProject.id)[0];
+    const unchangedFilename = `${unchangedProject.project.slug}-${unchangedCategory.directory_slug}-01.png`;
+    const unchanged = writeAsset(
+      unchangedProject.id,
+      unchangedProject.projectDir,
+      `${unchangedCategory.directory_slug}/${unchangedFilename}`,
+      'unchanged',
+      { categoryId: unchangedCategory.id },
+    );
+
+    const unchangedResponse = await previewRequest(
+      unchangedProject.id,
+      unchangedCategory.id,
+      [unchanged.id],
+    ).expect(200);
+    const unchangedForm = formMarkup(unchangedResponse.text, `/projects/${unchangedProject.id}/assets/auto-rename/apply`);
+    expect(unchangedResponse.text).toContain('There are no changes to apply because all category assets are unchanged.');
+    expect(unchangedForm).toMatch(/<button[^>]*disabled[^>]*>Apply Auto Rename<\/button>/);
+    await applyRequest(unchangedProject.id, {
+      _csrf: csrfToken,
+      planToken: tokenFromConfirmation(unchangedResponse.text),
+      categoryId: String(unchangedCategory.id),
+    }).expect(409);
   });
 
   it('rejects malformed JSON before planning and rejects incomplete, duplicate, added, and cross-category orders', async () => {
@@ -303,6 +354,7 @@ describe('category-scoped Auto Rename HTTP integration', () => {
       .send({ categoryId: String(category.id), orderedAssetIds: '[1,]', _csrf: csrfToken })
       .expect(422);
     expect(malformed.text).toContain('must contain every category asset exactly once');
+    expect(malformed.text).not.toContain('id="auto-rename-confirmation-dialog" class="app-dialog" data-app-dialog open');
 
     const stringIds = await previewRequest(owner.id, category.id, [String(first.id), String(second.id)]).expect(422);
     expect(stringIds.text).toContain('must contain every category asset exactly once');
@@ -352,9 +404,9 @@ describe('category-scoped Auto Rename HTTP integration', () => {
     expect(fs.existsSync(path.join(projectDir, 'first.png'))).toBe(false);
     expect(fs.existsSync(path.join(projectDir, 'second.png'))).toBe(false);
     expect(fs.existsSync(path.join(projectDir, 'third.png'))).toBe(false);
-    expect(fs.existsSync(path.join(projectDir, `${project.slug}-source-01.png`))).toBe(true);
-    expect(fs.existsSync(path.join(projectDir, `${project.slug}-source-02.png`))).toBe(true);
-    expect(fs.existsSync(path.join(projectDir, `${project.slug}-source-03.png`))).toBe(true);
+    expect(fs.existsSync(path.join(projectDir, `${project.slug}-${category.directory_slug}-01.png`))).toBe(true);
+    expect(fs.existsSync(path.join(projectDir, `${project.slug}-${category.directory_slug}-02.png`))).toBe(true);
+    expect(fs.existsSync(path.join(projectDir, `${project.slug}-${category.directory_slug}-03.png`))).toBe(true);
 
     const duplicate = await applyRequest(id, { _csrf: csrfToken, planToken: token, categoryId: String(category.id) }).expect(409);
     expect(duplicate.text).toContain('rename preview is no longer current');

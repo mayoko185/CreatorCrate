@@ -1581,123 +1581,14 @@
         .row-rename-input { width: 100%; }
       }
 
-      /* ── Auto Rename confirmation review (read-only) ── */
-      .auto-rename-confirmation,
-      .auto-rename-overview,
-      .auto-rename-counts,
-      .auto-rename-review,
-      .auto-rename-apply-panel {
-        min-width: 0;
-        max-width: 100%;
-      }
-      .auto-rename-rule-note {
-        margin: 0;
-        color: var(--muted);
-        overflow-wrap: anywhere;
-      }
-      .auto-rename-status {
-        display: block;
-        font-weight: 700;
-      }
-      .auto-rename-status--rename { color: var(--success); }
-      .auto-rename-status--unchanged { color: var(--muted); }
-      .auto-rename-status--blocked { color: var(--danger); }
       .auto-rename-block-reason {
         display: block;
-        margin-top: var(--space-xs);
-        color: var(--muted);
-        font-size: 0.8125rem;
-        overflow-wrap: anywhere;
-        word-break: break-word;
-      }
-      .auto-rename-apply-panel p { overflow-wrap: anywhere; }
-      .auto-rename-form-actions {
-        display: flex;
-        gap: var(--space-md);
-        flex-wrap: wrap;
-        align-items: center;
-      }
-      .auto-rename-review-list,
-      .auto-rename-review-item,
-      .auto-rename-card,
-      .auto-rename-card .asset-card-body,
-      .auto-rename-card-details {
-        min-width: 0;
-        max-width: 100%;
-      }
-      .auto-rename-review-list {
-        display: flex;
-        flex-direction: column;
-        gap: var(--space-md);
-        margin: var(--space-md) 0 0;
-        padding: 0;
-        list-style: none;
-      }
-      .auto-rename-review-item { list-style: none; }
-      .auto-rename-card {
-        display: grid;
-        grid-template-columns: minmax(5rem, 9rem) minmax(0, 1fr);
-        gap: var(--space-md);
-        overflow: hidden;
-        border: 1px solid var(--border);
-        border-radius: var(--radius-md);
-        background: var(--surface-card);
-      }
-      .auto-rename-card .asset-card-media {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        align-self: stretch;
-        width: 100%;
-        min-height: 5rem;
-        overflow: hidden;
-        border: 0;
-        border-right: 1px solid var(--border);
-        border-radius: 0 0 var(--radius-lg) var(--radius-lg);
-      }
-      .auto-rename-card .asset-card-thumb {
-        display: block;
-        width: auto;
-        max-width: 100%;
-        height: auto;
-      }
-      .auto-rename-card .asset-card-placeholder { min-height: 5rem; padding: var(--space-sm); }
-      .auto-rename-card .asset-card-body {
-        display: flex;
-        flex-direction: column;
-        align-items: stretch;
-        gap: var(--space-sm);
-        padding: var(--space-md) var(--space-md) var(--space-md) 0;
-      }
-      .auto-rename-card-header {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: var(--space-sm);
-        flex-wrap: wrap;
-        color: var(--muted);
-        font-size: 0.8125rem;
-        font-variant-numeric: tabular-nums;
-      }
-      .auto-rename-card-details {
-        width: 100%;
         margin: 0;
+        color: var(--muted);
+        font-size: 0.8125rem;
+        line-height: 1.4;
         overflow-wrap: anywhere;
         word-break: break-word;
-      }
-      .auto-rename-card-details dt,
-      .auto-rename-card-details dd,
-      .auto-rename-card-details code,
-      .auto-rename-path {
-        min-width: 0;
-        max-width: 100%;
-        overflow-wrap: anywhere;
-        word-break: break-word;
-        white-space: normal;
-      }
-      .auto-rename-review-item--blocked .auto-rename-card {
-        border-color: var(--danger);
-        opacity: 0.72;
       }
 
       /* ── Assets-page complete-category Auto Rename ordering ── */
@@ -3302,13 +3193,6 @@
         .project-list > li:not(.project-list-item) {
           padding: var(--space-sm) 0;
         }
-        .auto-rename-form-actions {
-          align-items: stretch;
-          flex-direction: column;
-        }
-        .auto-rename-form-actions .button {
-          width: 100%;
-        }
       }
 
       /* ═══ Phase 10.5A: Shared page-level components ═══ */
@@ -3510,6 +3394,130 @@
       .notice p { margin: 0; }
       .notice p + p { margin-top: var(--space-sm); }
 
+      /* ── Assets-page Auto Rename confirmation dialog ── */
+      #auto-rename-confirmation-dialog {
+        width: min(52rem, calc(100vw - 2rem));
+        max-width: calc(100vw - 2rem);
+      }
+      #auto-rename-confirmation-dialog .app-dialog-form {
+        flex: 1 1 auto;
+        min-width: 0;
+        max-width: 100%;
+        overflow: hidden;
+      }
+      #auto-rename-confirmation-dialog .app-dialog-body {
+        flex: 1 1 auto;
+        gap: var(--space-md);
+        overflow-x: hidden;
+        overflow-y: auto;
+      }
+      #auto-rename-confirmation-dialog .auto-rename-confirmation-notice {
+        margin-top: var(--space-md);
+        margin-right: var(--space-lg);
+        margin-bottom: 0;
+        margin-left: var(--space-lg);
+      }
+      #auto-rename-confirmation-dialog .auto-rename-confirmation-summary,
+      #auto-rename-confirmation-dialog .auto-rename-confirmation-apply-note {
+        margin: 0;
+        font-size: 0.875rem;
+        line-height: 1.45;
+        overflow-wrap: anywhere;
+      }
+      #auto-rename-confirmation-dialog .auto-rename-confirmation-list {
+        display: flex;
+        flex-direction: column;
+        gap: var(--space-sm);
+        min-width: 0;
+        max-width: 100%;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+      #auto-rename-confirmation-dialog .auto-rename-confirmation-item {
+        display: grid;
+        grid-template-columns: 3.5rem minmax(0, 1fr);
+        gap: var(--space-md);
+        min-width: 0;
+        max-width: 100%;
+        padding: var(--space-sm);
+        overflow: hidden;
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        background: var(--surface-card);
+      }
+      #auto-rename-confirmation-dialog .auto-rename-confirmation-item--blocked {
+        border-left: 3px solid var(--danger);
+      }
+      #auto-rename-confirmation-dialog .auto-rename-confirmation-preview {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex: 0 0 auto;
+        width: 3.5rem;
+        height: 3.5rem;
+        min-width: 0;
+        overflow: hidden;
+        border-radius: var(--radius-sm);
+        background: var(--bg);
+      }
+      #auto-rename-confirmation-dialog .auto-rename-confirmation-preview img {
+        display: block;
+        width: 100%;
+        height: 100%;
+        max-width: 100%;
+        max-height: 100%;
+        object-fit: contain;
+      }
+      #auto-rename-confirmation-dialog .auto-rename-confirmation-preview-placeholder {
+        max-width: 100%;
+        padding: var(--space-xs);
+        color: var(--muted);
+        font-size: 0.6875rem;
+        text-align: center;
+        overflow-wrap: anywhere;
+      }
+      #auto-rename-confirmation-dialog .auto-rename-confirmation-copy {
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        gap: var(--space-xs);
+        min-width: 0;
+        max-width: 100%;
+      }
+      #auto-rename-confirmation-dialog .auto-rename-confirmation-names {
+        display: flex;
+        align-items: baseline;
+        flex-wrap: wrap;
+        gap: var(--space-xs);
+        min-width: 0;
+        max-width: 100%;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+      }
+      #auto-rename-confirmation-dialog .auto-rename-confirmation-name {
+        min-width: 0;
+        max-width: 100%;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+      }
+      #auto-rename-confirmation-dialog .auto-rename-confirmation-name--proposed code {
+        color: var(--accent);
+      }
+      #auto-rename-confirmation-dialog .auto-rename-confirmation-names code {
+        min-width: 0;
+        max-width: 100%;
+        white-space: normal;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+      }
+      #auto-rename-confirmation-dialog .auto-rename-confirmation-copy > .status-badge {
+        align-self: flex-start;
+      }
+      #auto-rename-confirmation-dialog .app-dialog-footer {
+        flex-wrap: wrap;
+      }
+
       /* ── Shared native dialog primitive ── */
       body.app-dialog-open { overflow: hidden; }
       .app-dialog {
@@ -3622,6 +3630,26 @@
         .app-dialog-form > .app-dialog-status {
           margin-left: var(--space-md);
           margin-right: var(--space-md);
+        }
+        #auto-rename-confirmation-dialog {
+          width: calc(100vw - 1rem);
+          max-width: calc(100vw - 1rem);
+        }
+        #auto-rename-confirmation-dialog .auto-rename-confirmation-notice {
+          margin-right: var(--space-md);
+          margin-left: var(--space-md);
+        }
+        #auto-rename-confirmation-dialog .auto-rename-confirmation-item {
+          grid-template-columns: 3rem minmax(0, 1fr);
+          gap: var(--space-sm);
+        }
+        #auto-rename-confirmation-dialog .auto-rename-confirmation-preview {
+          width: 3rem;
+          height: 3rem;
+        }
+        #auto-rename-confirmation-dialog .app-dialog-footer > .button {
+          flex: 1 1 100%;
+          justify-content: center;
         }
       }
 
