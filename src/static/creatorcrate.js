@@ -3616,7 +3616,8 @@ async function appDialogPayload(response) {
 
 function appDialogBindForm(state) {
   const form = state.form;
-  if (!form || isEnhancementBound(form, 'appDialogFormBound')) return;
+  if (!form || form.getAttribute?.('data-dialog-async') === 'false'
+    || isEnhancementBound(form, 'appDialogFormBound')) return;
   markEnhancementBound(form, 'appDialogFormBound');
   state.savedValues = appDialogValues(form);
 

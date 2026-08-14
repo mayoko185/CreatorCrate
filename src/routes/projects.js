@@ -349,6 +349,23 @@ export function createProjectsRouter({ appName, db, projectService, workflowQuer
     }
   });
 
+  router.post('/:id/delete', (req, res, next) => {
+    const id = parseId(req.params.id);
+    if (id === null) {
+      return next(createNotFound());
+    }
+
+    try {
+      projectService.deleteProject(id);
+      res.redirect('/projects');
+    } catch (err) {
+      if (err instanceof ProjectNotFoundError) {
+        return next(createNotFound());
+      }
+      next(err);
+    }
+  });
+
   return router;
 }
 

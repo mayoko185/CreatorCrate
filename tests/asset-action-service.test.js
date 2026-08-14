@@ -1926,4 +1926,141 @@ describe('asset action service', () => {
       expect(assetRepository.findById(asset.id)).toBeUndefined();
     });
   });
+
+  describe('removeMissingAssets', () => {
+    it('removes missing assets only for the requested project and leaves present rows and files untouched', () => {
+      const presentPath = writeFile('present.png', 'present');
+      const present = createAsset('present.png');
+      const missing = createAsset('missing.png');
+      const otherProject = projectService.create(validProjectInput({ title: 'Other Project' }));
+      const otherMissing = assetRepository.upsert(otherProject.id, 'other-missing.png', {
+        filename: 'other-missing.png',
+        extension: 'png',
+        mimeType: 'image/png',
+        sizeBytes: 5,
+        modifiedAt: null,
+      });
+      assetRepository.markMissingByProjectIdAndPathNotIn(project.id, ['present.png']);
+      assetRepository.markAllMissing(otherProject.id);
+
+      const result = actionService.removeMissingAssets(project.id);
+
+      expect(result).toMatchObject({
+        removedCount: 1,
+        protectedCount: 0,
+        totalMissingCandidates: 1,
+        removedAssetIds: [missing.id],
+        protectedAssetIds: [],
+      });
+      expect(assetRepository.findById(missing.id)).toBeUndefined();
+      expect(assetRepository.findById(present.id)).toBeDefined();
+      expect(assetRepository.findById(otherMissing.id)).toBeDefined();
+      expect(fs.existsSync(presentPath)).toBe(true);
+    });
+
+    it('is a no-op when the project has no missing assets', () => {
+      const present = createAsset('present.png');
+
+      const result = actionService.removeMissingAssets(project.id);
+
+      expect(result).toEqual({
+        removedCount: 0,
+        protectedCount: 0,
+        totalMissingCandidates: 0,
+        removedAssetIds: [],
+        protectedAssetIds: [],
+      });
+      expect(assetRepository.findById(present.id)).toBeDefined();
+    });
+
+    it('skips missing assets associated with published releases while removing eligible assets', () => {
+      const removable = createAsset('removable.png');
+      const protectedAsset = createAsset('protected.png');
+      const release = insertRelease('Published missing asset release');
+      db.prepare("UPDATE releases SET published_date = '2026-08-05' WHERE id = ?").run(release.id);
+      linkReleaseAsset(release.id, protectedAsset.id);
+      assetRepository.markAllMissing(project.id);
+
+      const result = actionService.removeMissingAssets(project.id);
+
+      expect(result).toEqual({
+        removedCount: 1,
+        protectedCount: 1,
+        totalMissingCandidates: 2,
+        removedAssetIds: [removable.id],
+        protectedAssetIds: [protectedAsset.id],
+      });
+      expect(assetRepository.findById(removable.id)).toBeUndefined();
+      expect(assetRepository.findById(protectedAsset.id)).toBeDefined();
+      expect(db.prepare('SELECT * FROM release_assets WHERE asset_id = ?').all(protectedAsset.id)).toHaveLength(1);
+      expect(db.prepare('SELECT * FROM releases WHERE id = ?').get(release.id)).toBeDefined();
+    });
+
+    it('cascades dependent asset joins while preserving notes, releases, and tags', () => {
+      const asset = createAsset('missing.png', { mimeType: 'image/png' });
+      const release = insertRelease('Release for missing asset');
+      linkReleaseAsset(release.id, asset.id);
+      const book = db.prepare(`
+        INSERT INTO books (title, sort_order)
+        VALUES ('Unrelated book', 0)
+        RETURNING id
+      `).get();
+      const note = db.prepare(`
+        INSERT INTO notes (book_id, chapter_id, title, content, sort_order)
+        VALUES (?, NULL, 'Unrelated note', 'content', 0)
+        RETURNING id
+      `).get(book.id);
+      db.prepare('INSERT INTO note_assets (note_id, asset_id) VALUES (?, ?)').run(note.id, asset.id);
+      const tag = db.prepare(`
+        INSERT INTO tags (display_name, normalized_name)
+        VALUES ('Missing cleanup tag', 'missing-cleanup-tag')
+        RETURNING id
+      `).get();
+      db.prepare('INSERT INTO asset_tags (asset_id, tag_id) VALUES (?, ?)').run(asset.id, tag.id);
+      primaryImageService.setPrimaryImage(project.id, asset.id);
+      assetRepository.markAllMissing(project.id);
+
+      actionService.removeMissingAssets(project.id);
+
+      expect(db.prepare('SELECT * FROM release_assets WHERE asset_id = ?').all(asset.id)).toEqual([]);
+      expect(db.prepare('SELECT * FROM note_assets WHERE asset_id = ?').all(asset.id)).toEqual([]);
+      expect(db.prepare('SELECT * FROM asset_tags WHERE asset_id = ?').all(asset.id)).toEqual([]);
+      expect(primaryImageRepository.findByProjectId(project.id)).toBeUndefined();
+      expect(db.prepare('SELECT * FROM notes WHERE id = ?').get(note.id)).toBeDefined();
+      expect(db.prepare('SELECT * FROM releases WHERE id = ?').get(release.id)).toBeDefined();
+      expect(db.prepare('SELECT * FROM tags WHERE id = ?').get(tag.id)).toBeDefined();
+    });
+
+    it('does not attempt filesystem deletion', () => {
+      const asset = createAsset('missing.png');
+      assetRepository.markAllMissing(project.id);
+      const removeSpy = vi.spyOn(fs, 'rmSync');
+      const unlinkSpy = vi.spyOn(fs, 'unlinkSync');
+      const renameSpy = vi.spyOn(fs, 'renameSync');
+
+      try {
+        actionService.removeMissingAssets(project.id);
+      } finally {
+        removeSpy.mockRestore();
+        unlinkSpy.mockRestore();
+        renameSpy.mockRestore();
+      }
+
+      expect(removeSpy).not.toHaveBeenCalled();
+      expect(unlinkSpy).not.toHaveBeenCalled();
+      expect(renameSpy).not.toHaveBeenCalled();
+      expect(assetRepository.findById(asset.id)).toBeUndefined();
+    });
+
+    it('uses the normal project-not-found and archived-project mutation conventions', () => {
+      expect(() => actionService.removeMissingAssets(999999)).toThrowError(
+        expect.objectContaining({ code: 'PROJECT_NOT_FOUND' })
+      );
+
+      projectRepository.archive(project.id);
+      expect(() => actionService.removeMissingAssets(project.id)).toThrowError(
+        expect.objectContaining({ code: 'PROJECT_ARCHIVED' })
+      );
+    });
+  });
 });

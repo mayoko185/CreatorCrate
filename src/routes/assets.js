@@ -69,6 +69,19 @@ const PROJECT_ASSETS_NOTICES = Object.freeze({
   defaultsSaved: 'Project Assets defaults saved successfully.',
 });
 
+const REMOVE_MISSING_ASSETS_ERROR_STATUS = Object.freeze({
+  PROJECT_NOT_FOUND: 404,
+  PROJECT_ARCHIVED: 409,
+  PROJECT_BUSY: 409,
+  REMOVE_MISSING_DATABASE_OPERATION_FAILED: 500,
+});
+
+const REMOVE_MISSING_ASSETS_ERROR_MESSAGES = Object.freeze({
+  PROJECT_ARCHIVED: 'This project is archived and read-only.',
+  PROJECT_BUSY: 'Another project operation is already in progress. Try again.',
+  REMOVE_MISSING_DATABASE_OPERATION_FAILED: 'Missing asset records could not be removed. Please try again.',
+});
+
 const AUTO_RENAME_ERROR_STATUS = Object.freeze({
   [AUTO_RENAME_ERROR_CODES.INVALID_PROJECT_ID]: 404,
   [AUTO_RENAME_ERROR_CODES.PROJECT_NOT_FOUND]: 404,
@@ -154,6 +167,7 @@ const AUTO_RENAME_BLOCK_REASON_MESSAGES = Object.freeze({
  *   POST /projects/:id/assets/move-selected — Batch-move selected present assets to a category
  *   POST /projects/:id/assets/copy-selected — Batch-copy selected present assets to a category
  *   POST /projects/:id/assets/delete-selected — Permanently delete selected present assets
+ *   POST /projects/:id/assets/remove-missing — Remove eligible missing asset records
  *   POST /projects/:projectId/assets/auto-rename/preview — Preview Auto Rename
  *   POST /projects/:projectId/assets/auto-rename/apply — Apply a signed Auto Rename plan
  *
@@ -215,6 +229,42 @@ export function createAssetsRouter({
         assetBrowserPreferenceService,
         next,
       });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // POST /projects/:id/assets/remove-missing — Remove only eligible missing
+  // asset records. The service owns project mutability, release protection,
+  // transactional rechecks, and all database cleanup semantics.
+  router.post('/:id/assets/remove-missing', (req, res, next) => {
+    try {
+      const pageDefaultsService = getPageDefaultsService(req);
+      const id = parseId(req.params.id);
+      if (id === null) return next(createNotFound());
+
+      const project = projectService.findById(id);
+      if (!project) return next(createNotFound());
+
+      let result;
+      try {
+        result = assetActionService.removeMissingAssets(id);
+      } catch (err) {
+        return handleRemoveMissingAssetsFailure(err, next);
+      }
+
+      return res.redirect(buildAssetsRedirectUrl(
+        workflowQueryService,
+        id,
+        readProjectAssetsReturnQuery(req, id),
+        {
+          missing_cleanup: 'ok',
+          missing_removed: result.removedCount,
+          missing_protected: result.protectedCount,
+          missing_candidates: result.totalMissingCandidates,
+        },
+        pageDefaultsService,
+      ));
     } catch (err) {
       next(err);
     }
@@ -1191,6 +1241,7 @@ function renderProjectAssetsPage(req, res, {
   status = 200,
   rawQuery = null,
   projectAssetsDefaultsDialogOpen = req.query?.defaults === '1',
+  removeMissingAssetsDialogOpen = req.query?.remove_missing === '1',
   projectAssetsDefaultsSubmittedValues = null,
   projectAssetsDefaultsErrors = {},
   projectAssetsNsfwError = null,
@@ -1278,8 +1329,11 @@ function renderProjectAssetsPage(req, res, {
       errors: projectAssetsDefaultsErrors,
     }),
     projectAssetsDefaultsDialogOpen: Boolean(projectAssetsDefaultsDialogOpen),
+    removeMissingAssetsDialogOpen: Boolean(removeMissingAssetsDialogOpen),
     projectAssetsDefaultsReturnUrl: pageUrl,
     projectAssetsDefaultsUrl: defaultsUrl,
+    removeMissingAssetsReturnUrl: pageUrl,
+    removeMissingAssetsDialogUrl: appendQueryValue(pageUrl, 'remove_missing', '1'),
     projectAssetsDefaultsNotice: query.notice === 'project_assets_defaults_saved'
       ? { message: PROJECT_ASSETS_NOTICES.defaultsSaved }
       : null,
@@ -1313,7 +1367,32 @@ function buildProjectAssetsQueryNotice(query) {
     result.missing = isSmallNonNegativeInt(safeQuery.missing) ? safeQuery.missing : '0';
     result.total = safeQuery.total;
   }
+  if (
+    safeQuery.missing_cleanup === 'ok'
+    && isSmallNonNegativeInt(safeQuery.missing_removed)
+    && isSmallNonNegativeInt(safeQuery.missing_protected)
+    && isSmallNonNegativeInt(safeQuery.missing_candidates)
+  ) {
+    result.missing_cleanup = 'ok';
+    result.missing_removed = safeQuery.missing_removed;
+    result.missing_protected = safeQuery.missing_protected;
+    result.missing_candidates = safeQuery.missing_candidates;
+  }
   return result;
+}
+
+function handleRemoveMissingAssetsFailure(err, next) {
+  const code = err && err.code;
+  const status = code ? REMOVE_MISSING_ASSETS_ERROR_STATUS[code] : undefined;
+  if (status === undefined) return next(err);
+  if (status === 404) return next(createNotFound());
+
+  const controlled = new Error(
+    REMOVE_MISSING_ASSETS_ERROR_MESSAGES[code]
+      || 'Missing asset records could not be removed. Please try again.'
+  );
+  controlled.status = status;
+  return next(controlled);
 }
 
 function appendQueryValue(pathname, key, value) {
@@ -1622,6 +1701,9 @@ function buildBrowserRenderModel(project, data, pageDefaultsService, req, nsfwFi
     projectAssetsDefaultsDialogOpen: false,
     projectAssetsDefaultsReturnUrl: pageUrl({}),
     projectAssetsDefaultsUrl: defaultsUrl,
+    removeMissingAssetsDialogOpen: false,
+    removeMissingAssetsReturnUrl: pageUrl({}),
+    removeMissingAssetsDialogUrl: appendQueryValue(pageUrl({}), 'remove_missing', '1'),
     projectAssetsDefaultsNotice: null,
     nsfwFilterEnabled: effectiveNsfwFilterEnabled,
     projectAssetsNsfwReturnUrl: pageUrl({}),

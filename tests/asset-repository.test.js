@@ -195,6 +195,33 @@ describe('asset repository', () => {
     expect(assetRepo.findById(second.id)).toBeUndefined();
   });
 
+  it('deletes only missing rows and rolls back when an expected row is present', () => {
+    const present = assetRepo.upsert(projectId, 'present.png', {
+      filename: 'present.png', extension: 'png', mimeType: 'image/png',
+      sizeBytes: 100, modifiedAt: null,
+    });
+    const missing = assetRepo.upsert(projectId, 'missing.png', {
+      filename: 'missing.png', extension: 'png', mimeType: 'image/png',
+      sizeBytes: 100, modifiedAt: null,
+    });
+    assetRepo.markMissingByProjectIdAndPathNotIn(projectId, ['present.png']);
+
+    expect(() => assetRepo.deleteMissingMany(projectId, [
+      { assetId: missing.id, relativePath: missing.relative_path },
+      { assetId: present.id, relativePath: present.relative_path },
+    ])).toThrowError(expect.objectContaining({ code: 'NOT_FOUND' }));
+
+    expect(assetRepo.findById(missing.id)).toBeDefined();
+    expect(assetRepo.findById(present.id)).toBeDefined();
+
+    const deleted = assetRepo.deleteMissingMany(projectId, [
+      { assetId: missing.id, relativePath: missing.relative_path },
+    ]);
+    expect(deleted.map((asset) => asset.id)).toEqual([missing.id]);
+    expect(assetRepo.findById(missing.id)).toBeUndefined();
+    expect(assetRepo.findById(present.id)).toBeDefined();
+  });
+
   it('rolls back the complete deletion when an expected path is stale', () => {
     const first = assetRepo.upsert(projectId, 'first.png', {
       filename: 'first.png', extension: 'png', mimeType: 'image/png',

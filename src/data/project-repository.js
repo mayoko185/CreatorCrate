@@ -185,8 +185,9 @@ export function createProjectRepository(db) {
 
     /**
      * Permanently delete a project record by ID.
-     * Used as rollback when filesystem creation fails after the DB record exists.
-     * This is NOT the public archive workflow — it's a hard delete.
+     * Used by project creation rollback and the project-service permanent
+     * deletion workflow. This is NOT the public archive workflow — it is a
+     * hard delete whose child-row behavior remains controlled by the schema.
      * @param {number} id
      * @returns {boolean} true if a row was deleted
      */

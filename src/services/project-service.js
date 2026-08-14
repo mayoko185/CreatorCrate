@@ -7,6 +7,7 @@ import {
   STATUSES,
   WORKFLOW_STATUSES,
 } from '../data/project-repository.js';
+import { createReleaseRepository } from '../data/release-repository.js';
 import {
   formatProjectDirName,
   resolveProjectDir,
@@ -89,6 +90,7 @@ export function createProjectService(
   }
 
   const repository = createProjectRepository(db);
+  const releaseRepository = createReleaseRepository(db);
 
   function validate(input, options = {}) {
     const { existingId } = options;
@@ -505,6 +507,78 @@ export function createProjectService(
       }
     },
 
+    /**
+     * Permanently delete a project, its releases, and all project-owned data.
+     * Filesystem cleanup is staged through an identity-checked quarantine. The
+     * database changes commit atomically before the staged tree is removed;
+     * cleanup failure is reported as recovery-required.
+     *
+     * @param {number} id
+     * @returns {boolean} true when the project was deleted
+     */
+    deleteProject(id) {
+      const project = repository.findById(id);
+      if (!project) {
+        throw new ProjectNotFoundError(id);
+      }
+
+      let staged = null;
+      let databaseDeleted = false;
+      try {
+        staged = quarantineProjectDirForDeletion(project, projectsRoot);
+
+        const deleteInTransaction = db.transaction(() => {
+          // releases.project_id intentionally remains ON DELETE RESTRICT.
+          // Reuse the release repository's hard-delete primitive so its
+          // release_assets cascade semantics stay centralized.
+          const releases = releaseRepository.findByProjectId(id, { includeArchived: true });
+          for (const release of releases) {
+            if (!releaseRepository.delete(release.id)) {
+              throw new Error(`Release ${release.id} could not be deleted.`);
+            }
+          }
+
+          const deleted = repository.deleteById(id);
+          if (!deleted) {
+            throw new ProjectNotFoundError(id);
+          }
+
+          return deleted;
+        });
+
+        const deleted = deleteInTransaction();
+        databaseDeleted = true;
+        if (staged) {
+          try {
+            removeQuarantinedProjectDir(staged);
+          } catch (cleanupErr) {
+            logDeletionCleanupProblem(id, cleanupErr.message);
+            throw new Error('Project was deleted, but filesystem cleanup requires recovery.');
+          }
+          staged = null;
+        }
+        return deleted;
+      } catch (err) {
+        if (databaseDeleted) {
+          throw err;
+        }
+
+        if (staged && !restoreQuarantinedProjectDir(staged)) {
+          logDeletionCleanupProblem(id, 'project directory could not be restored after deletion failure');
+          throw new Error('Project deletion failed and filesystem recovery is required.');
+        }
+
+        if (err instanceof ProjectNotFoundError) {
+          throw err;
+        }
+
+        console.error(
+          `[CreatorCrate] Project deletion failed for project ${id}: ${err.message}`
+        );
+        throw new Error('Project deletion failed. Please try again.');
+      }
+    },
+
     findById(id) {
       return repository.findById(id);
     },
@@ -803,4 +877,152 @@ function safeRemoveCreatedDir(ownership, projectsRoot) {
   }
 
   quarantineAndVerify(path.dirname(resolved), path.basename(resolved), rootIdentity, true, projectId);
+}
+
+/**
+ * Move an existing project root into a private sibling quarantine before the
+ * database transaction. The root is never recursively removed by pathname:
+ * its ownership and identity are checked after the atomic move instead.
+ *
+ * @param {object} project
+ * @param {string} projectsRoot
+ * @returns {{ originalPath: string, quarantinePath: string, identity: {dev: number, ino: number} }|null}
+ */
+function quarantineProjectDirForDeletion(project, projectsRoot) {
+  if (project.project_dir == null) return null;
+
+  const resolved = resolveProjectDir(projectsRoot, project.project_dir);
+  if (!verifyProjectDirOwnership(resolved, project.id)) {
+    throw new Error('Project directory ownership verification failed.');
+  }
+
+  let stats;
+  try {
+    stats = fs.lstatSync(resolved);
+  } catch (err) {
+    if (err.code === 'ENOENT') return null;
+    throw new Error('Cannot safely verify project directory.');
+  }
+
+  if (!stats.isDirectory() || stats.isSymbolicLink()) {
+    throw new Error('Project directory is not a safe directory.');
+  }
+
+  const staged = {
+    originalPath: resolved,
+    quarantinePath: null,
+    identity: { dev: stats.dev, ino: stats.ino },
+    restored: false,
+  };
+
+  for (let attempt = 0; attempt < 8 && !staged.quarantinePath; attempt++) {
+    const candidate = path.join(path.dirname(resolved), generateQuarantineName());
+    try {
+      fs.renameSync(resolved, candidate);
+      staged.quarantinePath = candidate;
+    } catch (err) {
+      if (err.code === 'ENOENT') return null; // Already absent — nothing to remove.
+      if (err.code === 'EEXIST' || err.code === 'ENOTEMPTY') continue;
+      throw new Error('Project directory could not be safely staged.');
+    }
+  }
+
+  if (!staged.quarantinePath) {
+    throw new Error('Project directory could not be safely staged.');
+  }
+
+  try {
+    const quarantined = fs.lstatSync(staged.quarantinePath);
+    if (
+      !quarantined.isDirectory()
+      || quarantined.isSymbolicLink()
+      || quarantined.dev !== staged.identity.dev
+      || quarantined.ino !== staged.identity.ino
+    ) {
+      throw new Error('Project directory identity changed during deletion.');
+    }
+  } catch (err) {
+    if (!restoreQuarantinedProjectDir(staged)) {
+      logDeletionCleanupProblem(project.id, 'project directory could not be restored after verification failure');
+      throw new Error('Project directory cleanup requires recovery.');
+    }
+    throw err;
+  }
+
+  return staged;
+}
+
+/**
+ * Recursively remove a quarantined project root only after rechecking the
+ * captured identity. An absent quarantine is already clean; all other access
+ * or removal failures are surfaced to the caller.
+ *
+ * @param {object} staged
+ */
+function removeQuarantinedProjectDir(staged) {
+  let stats;
+  try {
+    stats = fs.lstatSync(staged.quarantinePath);
+  } catch (err) {
+    if (err.code === 'ENOENT') return;
+    throw new Error('Project directory could not be safely verified for removal.');
+  }
+
+  if (
+    !stats.isDirectory()
+    || stats.isSymbolicLink()
+    || stats.dev !== staged.identity.dev
+    || stats.ino !== staged.identity.ino
+  ) {
+    throw new Error('Project directory identity changed before removal.');
+  }
+
+  try {
+    fs.rmSync(staged.quarantinePath, { recursive: true, force: false });
+  } catch (err) {
+    if (err.code === 'ENOENT') return;
+    throw new Error('Project directory could not be removed.');
+  }
+}
+
+/**
+ * Restore a staged project root without overwriting an occupant that appeared
+ * at its original path. This mirrors the existing quarantine cleanup policy.
+ *
+ * @param {object} staged
+ * @returns {boolean}
+ */
+function restoreQuarantinedProjectDir(staged) {
+  if (staged.restored) return true;
+
+  try {
+    const quarantined = fs.lstatSync(staged.quarantinePath);
+    if (
+      !quarantined.isDirectory()
+      || quarantined.isSymbolicLink()
+      || quarantined.dev !== staged.identity.dev
+      || quarantined.ino !== staged.identity.ino
+    ) return false;
+  } catch {
+    return false;
+  }
+
+  try {
+    fs.lstatSync(staged.originalPath);
+    return false;
+  } catch (err) {
+    if (err.code !== 'ENOENT') return false;
+  }
+
+  try {
+    fs.renameSync(staged.quarantinePath, staged.originalPath);
+    staged.restored = true;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function logDeletionCleanupProblem(projectId, reason) {
+  console.error(`[CreatorCrate] Project deletion cleanup for project ${projectId} — ${reason}.`);
 }

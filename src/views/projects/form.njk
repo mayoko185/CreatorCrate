@@ -8,6 +8,9 @@
 {% block content %}
   {% call pageHeading.render(formDescription) %}
     <button class="button button-primary" type="submit" form="project-form">{{ action }}</button>
+    {% if action == 'Edit' and project and not project.archived_at %}
+      <a class="button button-secondary" href="/projects/{{ project.id }}/assets">View assets</a>
+    {% endif %}
     <a class="button button-secondary" href="{% if project %}/projects/{{ project.id }}{% else %}/projects{% endif %}">Cancel</a>
   {% endcall %}
 
@@ -172,13 +175,32 @@
   </form>
 
   {% if action == 'Edit' and project and not project.archived_at %}
-    <section class="destructive-section">
-      <h3>Danger zone</h3>
-      <p>Archiving a project makes it read-only. This cannot be undone.</p>
-      <form method="post" action="/projects/{{ project.id }}/archive" class="inline-form">
-        <input type="hidden" name="_csrf" value="{{ _csrf }}">
-        <button class="button button-danger" type="submit" data-confirm="Archive this project? This cannot be undone.">Archive project</button>
-      </form>
+    <section class="notes-workspace-secondary" aria-labelledby="project-page-actions-heading">
+      <aside class="notes-workspace-actions">
+        <p class="notes-workspace-kicker" id="project-page-actions-heading">Page actions</p>
+
+        <details class="notes-workspace-disclosure notes-workspace-disclosure--archive">
+          <summary>Archive project</summary>
+          <div class="notes-workspace-disclosure-content">
+            <p class="notes-workspace-warning">Archive keeps this project and its data, but makes it archived and read-only.</p>
+            <form method="post" action="/projects/{{ project.id }}/archive">
+              <input type="hidden" name="_csrf" value="{{ _csrf }}">
+              <button class="button button-small button-secondary" type="submit" data-confirm="Archive this project? This cannot be undone.">Archive project</button>
+            </form>
+          </div>
+        </details>
+
+        <details class="notes-workspace-disclosure notes-workspace-disclosure--delete">
+          <summary>Delete project</summary>
+          <div class="notes-workspace-disclosure-content">
+            <p class="notes-workspace-warning">Permanently delete this project and its owned data. This cannot be undone.</p>
+            <form method="post" action="/projects/{{ project.id }}/delete">
+              <input type="hidden" name="_csrf" value="{{ _csrf }}">
+              <button class="button button-small button-danger" type="submit" data-confirm="Delete this project permanently? This cannot be undone.">Delete project</button>
+            </form>
+          </div>
+        </details>
+      </aside>
     </section>
   {% endif %}
 {% endblock %}

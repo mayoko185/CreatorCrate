@@ -434,6 +434,30 @@ export function createAssetRepository(db) {
     return deleted;
   });
 
+  const deleteMissingAssetStmt = db.prepare(`
+    DELETE FROM assets
+    WHERE project_id = ? AND id = ? AND relative_path = ? AND is_present = 0
+    RETURNING ${ASSET_COLUMNS.join(', ')}
+  `);
+
+  const deleteMissingManyTx = db.transaction((projectId, expectedAssets) => {
+    if (!Array.isArray(expectedAssets)) {
+      throw new TypeError('Missing asset delete input must be an array.');
+    }
+
+    const deleted = [];
+    for (const expected of expectedAssets) {
+      const asset = deleteMissingAssetStmt.get(projectId, expected.assetId, expected.relativePath);
+      if (!asset) {
+        const error = new Error('Missing asset delete did not match the expected database state.');
+        error.code = 'NOT_FOUND';
+        throw error;
+      }
+      deleted.push(asset);
+    }
+    return deleted;
+  });
+
   const selectExistingForReconcileStmt = db.prepare(`
     SELECT id, category_id, nested_path, relative_path, filename, extension, mime_type, size_bytes, modified_at, is_present
     FROM assets
@@ -1081,6 +1105,20 @@ export function createAssetRepository(db) {
      */
     deleteMany(projectId, expectedAssets) {
       return deleteManyTx(projectId, expectedAssets);
+    },
+
+    /**
+     * Permanently delete several project-owned asset rows that are currently
+     * marked missing. Each expected relative path is matched with its ID, and
+     * the presence predicate is part of the DELETE so a present row can never
+     * be removed through this operation. Foreign-key cascades remove asset
+     * references according to the schema.
+     * @param {number} projectId
+     * @param {Array<{assetId: number, relativePath: string}>} expectedAssets
+     * @returns {import('./asset-repository.js').AssetRecord[]}
+     */
+    deleteMissingMany(projectId, expectedAssets) {
+      return deleteMissingManyTx(projectId, expectedAssets);
     },
 
     /**

@@ -1124,6 +1124,170 @@ describe('project service', () => {
       expect(() => service.archive(99999)).toThrow(ProjectNotFoundError);
     });
   });
+
+  // ─── Permanent deletion flow ─────────────────────────────────────────
+
+  describe('permanent deletion', () => {
+    function getProjectDir(project) {
+      return resolveProjectDir(
+        projectsRoot,
+        formatProjectDirName(project.id, project.slug),
+      );
+    }
+
+    it('deletes a project and its owned directory', () => {
+      const project = service.create(validInput({ title: 'Delete Me' }));
+      const projectDir = getProjectDir(project);
+      fs.writeFileSync(path.join(projectDir, 'owned-file.txt'), 'content');
+
+      expect(service.deleteProject(project.id)).toBe(true);
+      expect(service.findById(project.id)).toBeUndefined();
+      expect(fs.existsSync(projectDir)).toBe(false);
+    });
+
+    it('deletes releases first and cascades all project-owned database data', () => {
+      const project = service.create(validInput({ title: 'Delete With Data' }));
+      const categoryId = db.prepare(`
+        SELECT id FROM project_asset_categories
+        WHERE project_id = ? AND directory_slug = 'final'
+      `).get(project.id).id;
+      const assetId = Number(db.prepare(`
+        INSERT INTO assets (
+          project_id, category_id, relative_path, filename, extension,
+          mime_type, size_bytes, modified_at
+        ) VALUES (?, ?, 'final/asset.png', 'asset.png', 'png', 'image/png', 10, ?)
+      `).run(project.id, categoryId, '2026-08-13T00:00:00.000Z').lastInsertRowid);
+      const releaseId = Number(db.prepare(`
+        INSERT INTO releases (
+          project_id, title, description, notes,
+          planned_date, planned_time, patreon_url, published_date
+        ) VALUES (?, 'Release', '', '', NULL, NULL, NULL, NULL)
+      `).run(project.id).lastInsertRowid);
+      db.prepare(`
+        INSERT INTO release_assets (release_id, asset_id, role, sort_order)
+        VALUES (?, ?, 'attachment', 0)
+      `).run(releaseId, assetId);
+
+      const tagId = Number(db.prepare(`
+        INSERT INTO tags (display_name, normalized_name) VALUES ('Owned Tag', 'owned-tag')
+      `).run().lastInsertRowid);
+      db.prepare('INSERT INTO project_tags (project_id, tag_id) VALUES (?, ?)').run(project.id, tagId);
+      db.prepare('INSERT INTO asset_tags (asset_id, tag_id) VALUES (?, ?)').run(assetId, tagId);
+      db.prepare('INSERT INTO project_primary_images (project_id, asset_id) VALUES (?, ?)')
+        .run(project.id, assetId);
+
+      const bookId = Number(db.prepare(`
+        INSERT INTO books (title, sort_order) VALUES ('Notes', 0)
+      `).run().lastInsertRowid);
+      const noteId = Number(db.prepare(`
+        INSERT INTO notes (book_id, chapter_id, title, content, sort_order)
+        VALUES (?, NULL, 'Note', 'Content', 0)
+      `).run(bookId).lastInsertRowid);
+      db.prepare('INSERT INTO note_projects (note_id, project_id) VALUES (?, ?)').run(noteId, project.id);
+      db.prepare('INSERT INTO note_assets (note_id, asset_id) VALUES (?, ?)').run(noteId, assetId);
+
+      expect(service.deleteProject(project.id)).toBe(true);
+      expect(db.prepare('SELECT COUNT(*) AS c FROM projects WHERE id = ?').get(project.id).c).toBe(0);
+      expect(db.prepare('SELECT COUNT(*) AS c FROM releases WHERE project_id = ?').get(project.id).c).toBe(0);
+      expect(db.prepare('SELECT COUNT(*) AS c FROM release_assets WHERE release_id = ?').get(releaseId).c).toBe(0);
+      expect(db.prepare('SELECT COUNT(*) AS c FROM assets WHERE project_id = ?').get(project.id).c).toBe(0);
+      expect(db.prepare('SELECT COUNT(*) AS c FROM project_asset_categories WHERE project_id = ?').get(project.id).c).toBe(0);
+      expect(db.prepare('SELECT COUNT(*) AS c FROM project_tags WHERE project_id = ?').get(project.id).c).toBe(0);
+      expect(db.prepare('SELECT COUNT(*) AS c FROM asset_tags WHERE asset_id = ?').get(assetId).c).toBe(0);
+      expect(db.prepare('SELECT COUNT(*) AS c FROM project_primary_images WHERE project_id = ?').get(project.id).c).toBe(0);
+      expect(db.prepare('SELECT COUNT(*) AS c FROM project_asset_browser_preferences WHERE project_id = ?').get(project.id).c).toBe(0);
+      expect(db.prepare('SELECT COUNT(*) AS c FROM note_projects WHERE project_id = ?').get(project.id).c).toBe(0);
+      expect(db.prepare('SELECT COUNT(*) AS c FROM note_assets WHERE asset_id = ?').get(assetId).c).toBe(0);
+      expect(db.prepare('SELECT COUNT(*) AS c FROM tags WHERE id = ?').get(tagId).c).toBe(1);
+      expect(db.prepare('SELECT COUNT(*) AS c FROM notes WHERE id = ?').get(noteId).c).toBe(1);
+      expect(db.pragma('foreign_key_check')).toEqual([]);
+    });
+
+    it('deletes an archived project and its releases', () => {
+      const project = service.create(validInput({ title: 'Archived Delete' }));
+      db.prepare(`
+        INSERT INTO releases (
+          project_id, title, description, notes,
+          planned_date, planned_time, patreon_url, published_date
+        ) VALUES (?, 'Archived Release', '', '', NULL, NULL, NULL, NULL)
+      `).run(project.id);
+      service.archive(project.id);
+
+      expect(service.deleteProject(project.id)).toBe(true);
+      expect(service.findById(project.id)).toBeUndefined();
+      expect(db.prepare('SELECT COUNT(*) AS c FROM releases WHERE project_id = ?').get(project.id).c).toBe(0);
+      expect(fs.existsSync(getProjectDir(project))).toBe(false);
+    });
+
+    it('deletes successfully when the project directory is already missing', () => {
+      const project = service.create(validInput({ title: 'Missing Delete Directory' }));
+      const projectDir = getProjectDir(project);
+      fs.rmSync(projectDir, { recursive: true, force: true });
+
+      expect(service.deleteProject(project.id)).toBe(true);
+      expect(service.findById(project.id)).toBeUndefined();
+    });
+
+    it('rolls back database deletion and restores the directory when the transaction fails', () => {
+      const project = service.create(validInput({ title: 'Rollback Delete' }));
+      const projectDir = getProjectDir(project);
+      const releaseId = Number(db.prepare(`
+        INSERT INTO releases (
+          project_id, title, description, notes,
+          planned_date, planned_time, patreon_url, published_date
+        ) VALUES (?, 'Rollback Release', '', '', NULL, NULL, NULL, NULL)
+      `).run(project.id).lastInsertRowid);
+      const deleteSpy = vi.spyOn(service.repository, 'deleteById').mockImplementation(() => {
+        throw new Error('database failure');
+      });
+
+      try {
+        expect(() => service.deleteProject(project.id)).toThrow(/deletion failed/i);
+      } finally {
+        deleteSpy.mockRestore();
+      }
+
+      expect(service.findById(project.id)).toBeTruthy();
+      expect(db.prepare('SELECT COUNT(*) AS c FROM releases WHERE id = ?').get(releaseId).c).toBe(1);
+      expect(fs.existsSync(projectDir)).toBe(true);
+      expect(fs.readdirSync(projectsRoot).some((entry) => entry.startsWith('.cc-quarantine-'))).toBe(false);
+    });
+
+    it('throws ProjectNotFoundError without changing anything for a missing project', () => {
+      expect(() => service.deleteProject(99999)).toThrow(ProjectNotFoundError);
+    });
+
+    it('refuses a directory whose ownership cannot be verified', () => {
+      const project = service.create(validInput({ title: 'Unsafe Delete Directory' }));
+      const foreignDir = path.join(projectsRoot, '000999-foreign');
+      fs.mkdirSync(foreignDir);
+      service.repository.setProjectDir(project.id, '000999-foreign');
+
+      expect(() => service.deleteProject(project.id)).toThrow(/deletion failed/i);
+      expect(service.findById(project.id)).toBeTruthy();
+      expect(fs.existsSync(foreignDir)).toBe(true);
+    });
+
+    it('reports an unremovable directory instead of silently succeeding', () => {
+      const project = service.create(validInput({ title: 'Unremovable Delete Directory' }));
+      const projectDir = getProjectDir(project);
+      const rmSpy = vi.spyOn(fs, 'rmSync').mockImplementationOnce(() => {
+        const error = new Error('permission denied');
+        error.code = 'EACCES';
+        throw error;
+      });
+
+      try {
+        expect(() => service.deleteProject(project.id)).toThrow(/recovery|cleanup/i);
+      } finally {
+        rmSpy.mockRestore();
+      }
+
+      expect(service.findById(project.id)).toBeUndefined();
+      expect(fs.existsSync(projectDir)).toBe(false);
+      expect(fs.readdirSync(projectsRoot).some((entry) => entry.startsWith('.cc-quarantine-'))).toBe(true);
+    });
+  });
 });
 
 function validInput(overrides = {}) {

@@ -299,6 +299,111 @@ describe('asset browser HTTP workflow', () => {
     expect(res2.text).toMatch(/<input id="asset-extension-option-all" name="extension" type="radio" value="" checked>/);
   });
 
+  it('shows missing cleanup controls only for active projects with missing assets', async () => {
+    const res = await createProject('Missing Cleanup Controls');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    assetRepo.upsert(id, 'missing.png', {
+      filename: 'missing.png', extension: 'png', mimeType: 'image/png', sizeBytes: 10, modifiedAt: null,
+    });
+    assetRepo.markAllMissing(id);
+
+    const active = await agent.get(`/projects/${id}/assets`).expect(200);
+    expect(active.text).toContain(`href="/projects/${id}/assets?remove_missing=1"`);
+    expect(active.text).toContain('data-dialog-open="remove-missing-assets-dialog"');
+    expect(active.text).toContain(`action="/projects/${id}/assets/remove-missing"`);
+    expect(active.text).toContain('data-dialog-async="false"');
+    expect(active.text).toContain(`name="returnTo" value="/projects/${id}/assets"`);
+    expect(active.text).toContain(`href="/projects/${id}/edit">Edit project</a>`);
+    expect(active.text).toContain('Only asset records currently marked missing will be removed.');
+
+    const emptyRes = await createProject('No Missing Cleanup Control');
+    const emptyId = Number(emptyRes.headers.location.replace('/projects/', ''));
+    const empty = await agent.get(`/projects/${emptyId}/assets`).expect(200);
+    expect(empty.text).not.toContain('data-dialog-open="remove-missing-assets-dialog"');
+    expect(empty.text).not.toContain(`action="/projects/${emptyId}/assets/remove-missing"`);
+
+    await agent.post(`/projects/${id}/archive`).type('form').send({ _csrf: csrfToken }).expect(302);
+    const archived = await agent.get(`/projects/${id}/assets`).expect(200);
+    expect(archived.text).not.toContain('remove-missing-assets-dialog');
+    expect(archived.text).not.toContain('Scan Now');
+    expect(archived.text).not.toContain(`href="/projects/${id}/edit">Edit project</a>`);
+  });
+
+  it('removes eligible missing records within one project and reports protected records', async () => {
+    const res = await createProject('Missing Cleanup HTTP');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('Missing Cleanup HTTP');
+    const present = writeIndexedAsset(id, projectDir, 'present.png', 'present');
+    const removable = assetRepo.upsert(id, 'removable.png', {
+      filename: 'removable.png', extension: 'png', mimeType: 'image/png', sizeBytes: 10, modifiedAt: null,
+    });
+    const protectedAsset = assetRepo.upsert(id, 'protected.png', {
+      filename: 'protected.png', extension: 'png', mimeType: 'image/png', sizeBytes: 10, modifiedAt: null,
+    });
+    assetRepo.markMissingByProjectIdAndPathNotIn(id, ['present.png']);
+
+    const otherRes = await createProject('Other Missing Cleanup HTTP');
+    const otherId = Number(otherRes.headers.location.replace('/projects/', ''));
+    const otherMissing = assetRepo.upsert(otherId, 'other.png', {
+      filename: 'other.png', extension: 'png', mimeType: 'image/png', sizeBytes: 10, modifiedAt: null,
+    });
+    assetRepo.markAllMissing(otherId);
+
+    const releaseId = db.prepare(`
+      INSERT INTO releases (project_id, title, description, notes, planned_date, published_date, patreon_url)
+      VALUES (?, 'Published Missing Cleanup Release', '', '', NULL, '2026-08-05', NULL)
+      RETURNING id
+    `).get(id).id;
+    db.prepare('INSERT INTO release_assets (release_id, asset_id, role, sort_order) VALUES (?, ?, ?, ?)')
+      .run(releaseId, protectedAsset.id, 'attachment', 0);
+
+    const response = await agent.post(`/projects/${id}/assets/remove-missing`).type('form').send({
+      _csrf: csrfToken,
+      returnTo: `/projects/${id}/assets?search=missing&view=list&unknown=strip-me`,
+    }).expect(302);
+    const location = new URL(response.headers.location, 'http://localhost');
+
+    expect(location.pathname).toBe(`/projects/${id}/assets`);
+    expect(location.searchParams.get('search')).toBe('missing');
+    expect(location.searchParams.get('view')).toBe('list');
+    expect(location.searchParams.get('missing_cleanup')).toBe('ok');
+    expect(location.searchParams.get('missing_removed')).toBe('1');
+    expect(location.searchParams.get('missing_protected')).toBe('1');
+    expect(location.searchParams.get('missing_candidates')).toBe('2');
+    expect(location.searchParams.has('unknown')).toBe(false);
+
+    expect(assetRepo.findById(removable.id)).toBeUndefined();
+    expect(assetRepo.findById(protectedAsset.id)).toBeDefined();
+    expect(assetRepo.findById(present.id)).toBeDefined();
+    expect(assetRepo.findById(otherMissing.id)).toBeDefined();
+    expect(fs.existsSync(path.join(projectDir, 'present.png'))).toBe(true);
+
+    const rendered = await agent.get(response.headers.location).expect(200);
+    expect(rendered.text).toContain('Missing asset cleanup complete: removed 1 of 2 missing asset records.');
+    expect(rendered.text).toContain('Kept 1 missing asset record protected by published-release rules.');
+  });
+
+  it('rejects missing cleanup without CSRF, for unknown or archived projects, and on GET', async () => {
+    const res = await createProject('Missing Cleanup Validation');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const asset = assetRepo.upsert(id, 'missing.png', {
+      filename: 'missing.png', extension: 'png', mimeType: 'image/png', sizeBytes: 10, modifiedAt: null,
+    });
+    assetRepo.markAllMissing(id);
+
+    await agent.post(`/projects/${id}/assets/remove-missing`).type('form').send({}).expect(403);
+    expect(assetRepo.findById(asset.id)).toBeDefined();
+    await agent.get(`/projects/${id}/assets/remove-missing`).expect(404);
+    await agent.post('/projects/999999/assets/remove-missing').type('form')
+      .send({ _csrf: csrfToken }).expect(404);
+
+    await agent.post(`/projects/${id}/archive`).type('form').send({ _csrf: csrfToken }).expect(302);
+    const archived = await agent.post(`/projects/${id}/assets/remove-missing`).type('form')
+      .send({ _csrf: csrfToken }).expect(409);
+    expect(archived.text).toContain('This project is archived and read-only.');
+    expect(assetRepo.findById(asset.id)).toBeDefined();
+  });
+
   it('renders Project Assets defaults as a corner utility with a custom tooltip', async () => {
     const res = await createProject('Defaults Presentation Test');
     const id = res.headers.location.replace('/projects/', '');

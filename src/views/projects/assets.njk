@@ -342,6 +342,11 @@
         {{ renderContextFields(context, contextFields, false) }}
         <button class="button button-primary" type="submit">Scan Now</button>
         </form>
+      {% if categoryNavigation.missingCount > 0 %}
+        <a class="button button-danger" href="{{ removeMissingAssetsDialogUrl }}"
+           data-dialog-open="remove-missing-assets-dialog">Remove missing assets</a>
+      {% endif %}
+      <a class="button" href="/projects/{{ project.id }}/edit">Edit project</a>
       {% endif %}
     <a class="button button-secondary" href="/projects/{{ project.id }}/asset-categories">Manage Categories</a>
     <a class="button" href="/projects/{{ project.id }}">Back to Project</a>
@@ -403,6 +408,17 @@
     <div class="scan-success">
       <p>
         Deleted {{ deleteNotice.deletedCount }} asset{% if deleteNotice.deletedCount != 1 %}s{% endif %}.
+      </p>
+    </div>
+  {% endif %}
+
+  {% if query.missing_cleanup == 'ok' %}
+    <div class="scan-success">
+      <p>
+        Missing asset cleanup complete: removed {{ query.missing_removed }} of {{ query.missing_candidates }} missing asset record{% if query.missing_candidates != '1' %}s{% endif %}.
+        {% if query.missing_protected != '0' %}
+          Kept {{ query.missing_protected }} missing asset record{% if query.missing_protected != '1' %}s{% endif %} protected by published-release rules.
+        {% endif %}
       </p>
     </div>
   {% endif %}
@@ -1191,6 +1207,28 @@
       </footer>
     </form>
   {% endcall %}
+  {% if not project.archived_at and categoryNavigation.missingCount > 0 %}
+    {% call dialog.render('remove-missing-assets-dialog', 'Remove missing assets', removeMissingAssetsDialogOpen, 'remove-missing-assets-description', 'remove-missing-assets-form') %}
+      <form id="remove-missing-assets-form" method="post" action="/projects/{{ project.id }}/assets/remove-missing"
+            class="app-dialog-form" data-dialog-form data-dialog-async="false">
+        <p id="remove-missing-assets-description" class="app-dialog-description">
+          Only asset records currently marked missing will be removed. Files that are present will not be deleted.
+        </p>
+        <ul>
+          <li>Missing assets protected by published-release rules will remain.</li>
+          <li>This permanently removes eligible missing records and their associations. No files are deleted.</li>
+        </ul>
+
+        <input type="hidden" name="_csrf" value="{{ _csrf }}">
+        <input type="hidden" name="returnTo" value="{{ removeMissingAssetsReturnUrl }}">
+
+        <footer class="app-dialog-footer">
+          <button class="button button-secondary" type="submit" formmethod="dialog" data-dialog-close>Cancel</button>
+          <button class="button button-danger" type="submit" data-dialog-submit>Remove missing assets</button>
+        </footer>
+      </form>
+    {% endcall %}
+  {% endif %}
   <div data-slideshow-scaffold class="slideshow-scaffold" hidden inert role="dialog" aria-modal="true" aria-label="Slideshow">
       <script type="application/json" data-slideshow-sequence>{{ slideshowSequenceJson | default('[]') | safe }}</script>
       <div class="slideshow-scaffold-inner">

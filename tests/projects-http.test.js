@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import request from 'supertest';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -1459,9 +1459,11 @@ describe('project HTTP workflow', () => {
     const edit = await agent.get(`${location}/edit`).expect(200);
     const editActions = extractPageHeadingActions(edit.text);
     expect(editActions).toContain('<button class="button button-primary" type="submit" form="project-form">Edit</button>');
+    expect(editActions).toContain(`<a class="button button-secondary" href="${location}/assets">View assets</a>`);
     expect(editActions).toContain(`<a class="button button-secondary" href="${location}">Cancel</a>`);
     expect(edit.text).toContain(`<form id="project-form" method="post" action="${location}" class="project-form" novalidate>`);
     expect(edit.text).not.toContain('<div class="form-actions">');
+    expect(createActions).not.toContain('View assets');
   });
 
   it('new-project form seeds the valid saved New Project status default', async () => {
@@ -1711,6 +1713,32 @@ describe('project HTTP workflow', () => {
     expect(res.text).toContain('Projects — Edit Editable Project');
     expect(res.text).not.toContain('value="archived"');
     expect(res.text).not.toContain('id="priority"');
+  });
+
+  it('edit form renders project Page actions with archive and delete controls', async () => {
+    const createRes = await agent
+      .post('/projects')
+      .send('title=Project+Actions')
+      .send('status=tbd')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .expect(302);
+    const id = createRes.headers.location.replace('/projects/', '');
+
+    const res = await agent.get(`/projects/${id}/edit`).expect(200);
+    const actionArea = res.text.match(/<section class="notes-workspace-secondary"[\s\S]*?<\/section>/)?.[0] || '';
+
+    expect(actionArea).not.toBe('');
+    expect(actionArea).toContain('Page actions');
+    expect(actionArea).toContain('<summary>Archive project</summary>');
+    expect(actionArea).toContain('Archive keeps this project and its data, but makes it archived and read-only.');
+    expect(actionArea).toContain(`action="/projects/${id}/archive"`);
+    expect(actionArea).toContain('<summary>Delete project</summary>');
+    expect(actionArea).toContain('Permanently delete this project and its owned data. This cannot be undone.');
+    expect(actionArea).toContain(`action="/projects/${id}/delete"`);
+    expect(actionArea).toContain('data-confirm="Delete this project permanently? This cannot be undone."');
+    expect(res.text).not.toContain('destructive-section');
+    expect(res.text).not.toContain('Danger zone');
   });
 
   it('valid update redirects to detail', async () => {
@@ -2006,6 +2034,74 @@ describe('project HTTP workflow', () => {
 
     const detail = await agent.get(`/projects/${id}`).expect(200);
     expect(detail.text).toContain('Archived');
+  });
+
+  it('delete action removes the project and redirects to the project list', async () => {
+    const createRes = await agent
+      .post('/projects')
+      .send('title=To+Delete')
+      .send('status=tbd')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .expect(302);
+    const id = createRes.headers.location.replace('/projects/', '');
+
+    const res = await agent
+      .post(`/projects/${id}/delete`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .expect(302);
+
+    expect(res.headers.location).toBe('/projects');
+    expect(db.prepare('SELECT id FROM projects WHERE id = ?').get(Number(id))).toBeUndefined();
+    await agent.get(`/projects/${id}`).expect(404);
+  });
+
+  it('delete action returns 404 for a missing project', async () => {
+    await agent
+      .post('/projects/9999/delete')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .expect(404);
+  });
+
+  it('protects project deletion with CSRF', async () => {
+    const createRes = await agent
+      .post('/projects')
+      .send('title=Protected+Delete')
+      .send('status=tbd')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .expect(302);
+    const id = createRes.headers.location.replace('/projects/', '');
+
+    await agent.post(`/projects/${id}/delete`).expect(403);
+    expect(db.prepare('SELECT id FROM projects WHERE id = ?').get(Number(id))).toBeDefined();
+  });
+
+  it('surfaces project deletion recovery failures instead of redirecting', async () => {
+    const createRes = await agent
+      .post('/projects')
+      .send('title=Failed+Delete')
+      .send('status=tbd')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .expect(302);
+    const id = createRes.headers.location.replace('/projects/', '');
+    const deleteProject = vi.spyOn(app.locals.projectService, 'deleteProject')
+      .mockImplementationOnce(() => {
+        throw new Error('Project was deleted, but filesystem cleanup requires recovery.');
+      });
+
+    try {
+      const res = await agent
+        .post(`/projects/${id}/delete`)
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .expect(500);
+
+      expect(res.headers.location).toBeUndefined();
+      expect(res.text).toContain('Something went wrong.');
+    } finally {
+      deleteProject.mockRestore();
+    }
   });
 
   it('archived project is excluded from the default list', async () => {

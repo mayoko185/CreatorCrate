@@ -11,8 +11,8 @@
  *
  * Every public mutation holds the injected `projectOperationCoordinator`'s
  * per-project lock for its entire duration — validation through database
- * update — so it can never interleave with a scan (or another rename/move/copy)
- * for the same project within this process.
+ * update — so it can never interleave with a scan (or another rename/move/copy/
+ * missing-record cleanup) for the same project within this process.
  *
  * ─── Post-move failure policy ───────────────────────────────────────────
  * If the physical `fs.renameSync` succeeds but any subsequent step fails
@@ -71,7 +71,7 @@ function isCategoryEnabled(category) {
  * @param {ReturnType<import('./project-operation-coordinator.js').createProjectOperationCoordinator>} deps.projectOperationCoordinator
  *   Shared per-project lock (Phase: asset actions chunk 3) — the same
  *   instance the caller also injects into the asset scanner, so a scan and
- *   a rename/move/copy/delete for one project can never interleave.
+ *   a rename/move/copy/delete/cleanup for one project can never interleave.
  */
 export function createAssetActionService({
   projectRepository,
@@ -987,6 +987,48 @@ export function createAssetActionService({
     };
   }
 
+  // Holds the project lock through candidate selection and indexed cleanup.
+  // This operation only removes rows already marked missing; it never needs
+  // to inspect, stage, or delete anything on the filesystem.
+  function removeMissingAssetsLocked(projectId) {
+    requireMutableProject(projectId);
+
+    const candidates = assetRepository.findMissingByProjectId(projectId);
+    const candidateIds = candidates.map((asset) => asset.id);
+    const protectedAssetIds = new Set(
+      assetRepository.findPublishedReleaseAssetIds(projectId, candidateIds)
+    );
+    const eligible = candidates.filter((asset) => !protectedAssetIds.has(asset.id));
+
+    let removedAssets = [];
+    if (eligible.length > 0) {
+      try {
+        removedAssets = assetRepository.deleteMissingMany(
+          projectId,
+          eligible.map((asset) => ({ assetId: asset.id, relativePath: asset.relative_path })),
+        );
+        if (!Array.isArray(removedAssets) || removedAssets.length !== eligible.length) {
+          throw new Error('Asset repository removed an unexpected number of rows.');
+        }
+      } catch {
+        throw new AssetActionError(
+          'CreatorCrate could not remove the missing asset records.',
+          { code: 'REMOVE_MISSING_DATABASE_OPERATION_FAILED' }
+        );
+      }
+    }
+
+    return {
+      removedCount: removedAssets.length,
+      protectedCount: protectedAssetIds.size,
+      totalMissingCandidates: candidates.length,
+      removedAssetIds: removedAssets.map((asset) => asset.id),
+      protectedAssetIds: candidates
+        .filter((asset) => protectedAssetIds.has(asset.id))
+        .map((asset) => asset.id),
+    };
+  }
+
   function moveAssetLocked(projectId, assetId, destinationCategoryIdOrUncategorized) {
       const project = requireMutableProject(projectId);
       const asset = requirePresentAsset(projectId, assetId);
@@ -1218,6 +1260,22 @@ export function createAssetActionService({
         }
       }
       return runLocked(projectId, () => deleteAssetsLocked(projectId, assetIds));
+    },
+
+    /**
+     * Permanently remove database records for missing assets in one project.
+     * Published-release assets remain protected and are reported as skipped;
+     * no filesystem operation is performed. Holds this project's lock so the
+     * cleanup cannot interleave with a scan or another asset mutation.
+     *
+     * @param {number} projectId
+     * @returns {{ removedCount: number, protectedCount: number, totalMissingCandidates: number, removedAssetIds: number[], protectedAssetIds: number[] }}
+     * @throws {AssetActionError} codes: INVALID_PROJECT_ID, PROJECT_NOT_FOUND,
+     *   PROJECT_ARCHIVED, PROJECT_BUSY, REMOVE_MISSING_DATABASE_OPERATION_FAILED
+     */
+    removeMissingAssets(projectId) {
+      assertPositiveInteger(projectId, 'INVALID_PROJECT_ID', 'projectId');
+      return runLocked(projectId, () => removeMissingAssetsLocked(projectId));
     },
   };
 }
