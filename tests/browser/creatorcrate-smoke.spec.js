@@ -80,6 +80,117 @@ test.describe('CreatorCrate development browser smoke', () => {
     assertNoBrowserDiagnostics(diagnostics);
   });
 
+  test('previews and applies Auto Rename for only explicitly selected assets', async ({ page, devServer }) => {
+    const diagnostics = observeBrowser(page, devServer.baseURL);
+    const projectTitle = `Browser Auto Rename ${Date.now()}`;
+
+    await page.goto(`${devServer.baseURL}/projects/new`, { waitUntil: 'domcontentloaded' });
+    await page.locator('#title').fill(projectTitle);
+    await Promise.all([
+      page.waitForURL(/\/projects\/\d+$/),
+      page.locator('button[type="submit"][form="project-form"]').click(),
+    ]);
+
+    const projectId = new URL(page.url()).pathname.split('/').at(-1);
+    await page.goto(`${devServer.baseURL}/projects/${projectId}/asset-categories`, { waitUntil: 'domcontentloaded' });
+    const categoryCard = page.locator('[data-category-id]').first();
+    const categoryId = await categoryCard.getAttribute('data-category-id');
+    const categorySlug = (await categoryCard.locator('.category-management-slug code').textContent()).trim();
+    expect(categoryId).toMatch(/^[1-9]\d*$/);
+    expect(categorySlug).toMatch(/^[a-z0-9]+(?:-[a-z0-9]+)*$/);
+
+    const projectDirectory = (await fs.readdir(devServer.projectsRoot, { withFileTypes: true }))
+      .find((entry) => entry.isDirectory());
+    expect(projectDirectory).toBeDefined();
+    const projectPath = path.join(devServer.projectsRoot, projectDirectory.name);
+    const filenames = [
+      'asset-01.txt',
+      'asset-02.txt',
+      'asset-03.txt',
+      'asset-04.txt',
+      'asset-05.txt',
+    ];
+    await Promise.all(filenames.map((filename) => (
+      fs.writeFile(path.join(projectPath, categorySlug, filename), `browser auto rename fixture: ${filename}`, 'utf8')
+    )));
+
+    await page.goto(`${devServer.baseURL}/projects/${projectId}/assets?category=${categoryId}&view=list`, {
+      waitUntil: 'domcontentloaded',
+    });
+    await Promise.all([
+      page.waitForURL((url) => new URL(url).pathname === `/projects/${projectId}/assets`),
+      page.getByRole('button', { name: 'Scan Now', exact: true }).click(),
+    ]);
+
+    const surface = page.locator('[data-auto-rename-surface]');
+    const assets = surface.locator('[data-auto-rename-asset]');
+    await expect(assets).toHaveCount(filenames.length);
+    const orderedAssetIds = await assets.evaluateAll((items) => (
+      items.map((item) => Number(item.getAttribute('data-auto-rename-asset-id')))
+    ));
+    expect(orderedAssetIds).toHaveLength(filenames.length);
+    const selectedIndexes = [2, 4];
+    const selectedAssetIds = selectedIndexes.map((index) => orderedAssetIds[index]);
+    const thirdCheckbox = assets.nth(2).locator('input[name="selectedAssetIds"]');
+    const fifthCheckbox = assets.nth(4).locator('input[name="selectedAssetIds"]');
+    await thirdCheckbox.focus();
+    await page.keyboard.press('Space');
+    await fifthCheckbox.focus();
+    await page.keyboard.press('Space');
+    await expect(thirdCheckbox).toBeChecked();
+    await expect(fifthCheckbox).toBeChecked();
+    await expect(surface.locator('[data-auto-rename-submit]')).toBeEnabled();
+
+    const [previewRequest] = await Promise.all([
+      page.waitForRequest((request) => (
+        request.method() === 'POST'
+        && new URL(request.url()).pathname === `/projects/${projectId}/assets/auto-rename/preview`
+      )),
+      page.waitForURL((url) => new URL(url).pathname === `/projects/${projectId}/assets`),
+      surface.locator('[data-auto-rename-submit]').click(),
+    ]);
+    const previewBody = new URLSearchParams(previewRequest.postData() || '');
+    expect(JSON.parse(previewBody.get('orderedAssetIds'))).toEqual(orderedAssetIds);
+    expect(JSON.parse(previewBody.get('selectedAssetIds'))).toEqual(selectedAssetIds);
+
+    const dialog = page.locator('#auto-rename-confirmation-dialog');
+    await expect(dialog).toBeVisible();
+    await expect(dialog.locator('.auto-rename-confirmation-summary')).toContainText('2 assets:');
+    await expect(dialog.locator('.auto-rename-confirmation-summary')).toContainText('2 to rename');
+    await expect(dialog.locator('.auto-rename-confirmation-summary')).toContainText('0 unchanged');
+    const items = dialog.locator('.auto-rename-confirmation-item');
+    await expect(items).toHaveCount(2);
+    expect((await items.locator('.auto-rename-confirmation-name--current code').allTextContents()).map((name) => name.trim()))
+      .toEqual([filenames[2], filenames[4]]);
+    expect(await items.locator('.status-badge').allTextContents()).toEqual(['Status: Rename', 'Status: Rename']);
+    await expect(dialog).not.toContainText(filenames[0]);
+    await expect(dialog).not.toContainText(filenames[1]);
+    await expect(dialog).not.toContainText(filenames[3]);
+    const proposedFilenames = (await items.locator('.auto-rename-confirmation-name--proposed code').allTextContents())
+      .map((name) => name.trim());
+    expect(proposedFilenames).toHaveLength(2);
+    expect(proposedFilenames[0]).toMatch(/-01\.txt$/);
+    expect(proposedFilenames[1]).toMatch(/-02\.txt$/);
+
+    await Promise.all([
+      page.waitForURL((url) => new URL(url).pathname === `/projects/${projectId}/assets`),
+      dialog.getByRole('button', { name: 'Apply Auto Rename', exact: true }).click(),
+    ]);
+
+    for (const filename of filenames.filter((_filename, index) => selectedIndexes.includes(index))) {
+      await expect.poll(() => fs.access(path.join(projectPath, categorySlug, filename))
+        .then(() => true)
+        .catch(() => false)).toBe(false);
+    }
+    for (const filename of filenames.filter((_filename, index) => !selectedIndexes.includes(index))) {
+      await fs.access(path.join(projectPath, categorySlug, filename));
+    }
+    for (const filename of proposedFilenames) {
+      await fs.access(path.join(projectPath, categorySlug, filename));
+    }
+    assertNoBrowserDiagnostics(diagnostics);
+  });
+
   test('mounts the real Notes editor, persists Markdown, and rehydrates it on edit', async ({ page, devServer }) => {
     const diagnostics = observeBrowser(page, devServer.baseURL);
 

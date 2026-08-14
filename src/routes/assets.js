@@ -406,12 +406,34 @@ export function createAssetsRouter({
         });
       }
 
+      const parsedSelection = parseStrictAutoRenameSelection(body.selectedAssetIds);
+      if (!parsedSelection.valid || parsedSelection.ids.some((assetId) => !parsedOrder.ids.includes(assetId))) {
+        return renderAutoRenameBrowserError({
+          appName,
+          project,
+          projectId,
+          req,
+          res,
+          next,
+          workflowQueryService,
+          pageDefaultsService,
+          status: AUTO_RENAME_ERROR_STATUS[AUTO_RENAME_ERROR_CODES.ORDER_INVALID],
+          message: AUTO_RENAME_PREVIEW_MESSAGES[AUTO_RENAME_ERROR_CODES.ORDER_INVALID],
+          returnContext: buildAutoRenameReturnContext({
+            ...body,
+            categoryId: String(categoryId),
+          }),
+        });
+      }
+
       try {
-        const plan = autoRenameService.buildPlan({
+        const planInput = {
           projectId,
           categoryId,
           orderedAssetIds: parsedOrder.ids,
-        });
+        };
+        if (parsedSelection.ids.length > 0) planInput.selectedAssetIds = parsedSelection.ids;
+        const plan = autoRenameService.buildPlan(planInput);
         const context = buildAutoRenameReturnContext({
           ...body,
           categoryId: String(categoryId),
@@ -1854,6 +1876,30 @@ function parseStrictAutoRenameOrder(raw) {
   return { valid: true, ids };
 }
 
+function parseStrictAutoRenameSelection(raw) {
+  if (raw === undefined || raw === '') return { valid: true, ids: [] };
+  if (typeof raw !== 'string') return { valid: false, ids: [] };
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { valid: false, ids: [] };
+  }
+  if (!Array.isArray(parsed)) return { valid: false, ids: [] };
+
+  const ids = [];
+  const seen = new Set();
+  for (const value of parsed) {
+    if (!Number.isSafeInteger(value) || value <= 0 || seen.has(value)) {
+      return { valid: false, ids: [] };
+    }
+    seen.add(value);
+    ids.push(value);
+  }
+  return { valid: true, ids };
+}
+
 function buildAutoRenameReturnContext(rawContext = {}) {
   const context = {};
   const categoryId = parseCanonicalPositiveId(rawContext.categoryId);
@@ -1975,8 +2021,18 @@ function categoryGroupLabel(item) {
 
 export function buildAutoRenamePlanRenderModel(plan) {
   const sourceItems = Array.isArray(plan?.items) ? plan.items : [];
+  const selectionMode = Array.isArray(plan?.selectedAssetIds)
+    && plan.selectedAssetIds.length > 0
+    ? 'selected'
+    : 'category';
+  const selectedAssetIdSet = selectionMode === 'selected'
+    ? new Set(plan.selectedAssetIds)
+    : null;
+  const displaySourceItems = selectedAssetIdSet
+    ? sourceItems.filter((item) => selectedAssetIdSet.has(item.assetId))
+    : sourceItems;
   const sourceItemsById = new Map(sourceItems.map((item) => [item.assetId, item]));
-  const items = sourceItems.map((item) => {
+  const items = displaySourceItems.map((item) => {
     const blockedReason = item.status === 'blocked'
       ? (AUTO_RENAME_BLOCK_REASON_MESSAGES[item.reason] || 'This asset cannot be renamed safely.')
       : null;
@@ -2032,6 +2088,7 @@ export function buildAutoRenamePlanRenderModel(plan) {
 
   return {
     ...(plan || {}),
+    selectionMode,
     orderedAssetIds: Array.isArray(plan?.orderedAssetIds)
       ? [...plan.orderedAssetIds]
       : items.map((item) => item.assetId),

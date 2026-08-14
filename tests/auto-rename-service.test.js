@@ -94,12 +94,18 @@ describe('category-scoped Auto Rename service', () => {
       .map((asset) => asset.id);
   }
 
-  function makePlan(categoryId = ctx.categories[0].id, orderedAssetIds = orderFor(categoryId)) {
-    return ctx.service.buildPlan({
+  function makePlan(
+    categoryId = ctx.categories[0].id,
+    orderedAssetIds = orderFor(categoryId),
+    selectedAssetIds,
+  ) {
+    const input = {
       projectId: ctx.project.id,
       categoryId,
       orderedAssetIds,
-    });
+    };
+    if (selectedAssetIds !== undefined) input.selectedAssetIds = selectedAssetIds;
+    return ctx.service.buildPlan(input);
   }
 
   function markMissing(asset) {
@@ -218,6 +224,94 @@ describe('category-scoped Auto Rename service', () => {
     expect(plan.items.map((item) => item.assetId)).not.toContain(other.id);
   });
 
+  it('numbers selected assets from their relative complete-category order', () => {
+    const assets = [
+      writeAsset('a.png'),
+      writeAsset('b.png'),
+      writeAsset('c.png'),
+      writeAsset('d.png'),
+      writeAsset('e.png'),
+    ];
+    const order = assets.map((asset) => asset.id);
+    const plan = makePlan(ctx.categories[0].id, order, [assets[4].id, assets[2].id]);
+    const byId = new Map(plan.items.map((item) => [item.assetId, item]));
+    const generatedPrefix = `${ctx.project.slug}-${ctx.categories[0].directory_slug}`;
+
+    expect(plan.orderedAssetIds).toEqual(order);
+    expect(plan.selectedAssetIds).toEqual([assets[2].id, assets[4].id].sort((left, right) => left - right));
+    expect(plan.snapshot.selectedAssetIds).toEqual(plan.selectedAssetIds);
+    expect(byId.get(assets[2].id)).toMatchObject({
+      status: 'rename',
+      proposedFilename: `${generatedPrefix}-01.png`,
+    });
+    expect(byId.get(assets[4].id)).toMatchObject({
+      status: 'rename',
+      proposedFilename: `${generatedPrefix}-02.png`,
+    });
+    expect(byId.get(assets[0].id)).toMatchObject({
+      status: 'unchanged',
+      proposedFilename: 'a.png',
+      proposedRelativePath: 'a.png',
+    });
+    expect(byId.get(assets[1].id)).toMatchObject({
+      status: 'unchanged',
+      proposedFilename: 'b.png',
+      proposedRelativePath: 'b.png',
+    });
+    expect(byId.get(assets[3].id)).toMatchObject({
+      status: 'unchanged',
+      proposedFilename: 'd.png',
+      proposedRelativePath: 'd.png',
+    });
+    expect(plan.counts).toEqual({ selected: 2, rename: 2, unchanged: 0, blocked: 0 });
+    expect(plan.canApply).toBe(true);
+    expect(ctx.service.verifyPlanToken(plan, plan.token)).toBe(true);
+  });
+
+  it('keeps a blocked selected asset in the selected numbering sequence', () => {
+    const assets = [
+      writeAsset('a.png'),
+      writeAsset('b.png'),
+      writeAsset('c.png'),
+      writeAsset('d.png'),
+      writeAsset('e.png'),
+    ];
+    markMissing(assets[2]);
+    const order = assets.map((asset) => asset.id);
+    const plan = makePlan(ctx.categories[0].id, order, [assets[2].id, assets[4].id]);
+    const byId = new Map(plan.items.map((item) => [item.assetId, item]));
+    const generatedPrefix = `${ctx.project.slug}-${ctx.categories[0].directory_slug}`;
+
+    expect(byId.get(assets[2].id)).toMatchObject({
+      status: 'blocked',
+      reason: 'missing',
+      proposedFilename: null,
+      proposedRelativePath: null,
+    });
+    expect(byId.get(assets[4].id)).toMatchObject({
+      status: 'rename',
+      proposedFilename: `${generatedPrefix}-02.png`,
+    });
+    expect(plan.counts).toEqual({ selected: 2, rename: 1, unchanged: 0, blocked: 1 });
+    expect(plan.canApply).toBe(false);
+  });
+
+  it('preserves complete-category reordered behavior when no selected set is supplied', () => {
+    const first = writeAsset('first.png');
+    const second = writeAsset('second.png');
+    const order = [second.id, first.id];
+    const plan = makePlan(ctx.categories[0].id, order);
+    const prefix = `${ctx.project.slug}-${ctx.categories[0].directory_slug}`;
+
+    expect(plan.selectedAssetIds).toBeNull();
+    expect(plan.items.map((item) => item.assetId)).toEqual(order);
+    expect(plan.items.map((item) => item.status)).toEqual(['rename', 'rename']);
+    expect(plan.items.map((item) => item.proposedFilename)).toEqual([
+      `${prefix}-01.png`,
+      `${prefix}-02.png`,
+    ]);
+  });
+
   it('widens numbering at one hundred complete-category assets', () => {
     for (let index = 0; index < 100; index += 1) {
       writeAsset(`category-${String(index).padStart(3, '0')}.png`);
@@ -272,6 +366,40 @@ describe('category-scoped Auto Rename service', () => {
       [first.id, foreign.id],
     ]) {
       expect(() => makePlan(ctx.categories[0].id, order)).toThrow(
+        expect.objectContaining({ code: AUTO_RENAME_ERROR_CODES.ORDER_INVALID }),
+      );
+    }
+  });
+
+  it('rejects selected IDs outside the submitted complete category order', () => {
+    const first = writeAsset('first.png');
+    const second = writeAsset('second.png');
+    const otherCategory = ctx.assetCategoryRepository.addProjectCategory({
+      projectId: ctx.project.id,
+      displayName: 'Other',
+      directorySlug: 'other-selected',
+      displayOrder: 99,
+      enabled: true,
+    });
+    const other = writeAsset('other.png', 'other', { categoryId: otherCategory.id });
+    const foreignProject = ctx.projectService.create(validProjectInput({ title: 'Foreign Selected Project' }));
+    const foreignCategory = ctx.assetCategoryRepository.listProjectCategories(foreignProject.id)[0];
+    const foreign = ctx.assetRepository.upsert(foreignProject.id, 'foreign.png', {
+      filename: 'foreign.png',
+      extension: 'png',
+      mimeType: 'image/png',
+      sizeBytes: 1,
+      modifiedAt: new Date(0).toISOString(),
+      categoryId: foreignCategory.id,
+      nestedPath: '',
+    });
+
+    for (const selectedAssetIds of [
+      [other.id],
+      [foreign.id],
+      [first.id, first.id],
+    ]) {
+      expect(() => makePlan(ctx.categories[0].id, [first.id, second.id], selectedAssetIds)).toThrow(
         expect.objectContaining({ code: AUTO_RENAME_ERROR_CODES.ORDER_INVALID }),
       );
     }
@@ -381,6 +509,44 @@ describe('category-scoped Auto Rename service', () => {
     expect(swapPlan.cycles).toContainEqual([swapA.id, swapB.id].sort((left, right) => left - right));
   });
 
+  it('blocks selected numbering when an unselected asset owns the selected target', () => {
+    const generatedTarget = `${ctx.project.slug}-${ctx.categories[0].directory_slug}-01.png`;
+    const assets = [
+      writeAsset(generatedTarget, 'unselected target'),
+      writeAsset('b.png'),
+      writeAsset('c.png'),
+      writeAsset('d.png'),
+      writeAsset('e.png'),
+    ];
+    const plan = makePlan(
+      ctx.categories[0].id,
+      assets.map((asset) => asset.id),
+      [assets[2].id, assets[4].id],
+    );
+    const byId = new Map(plan.items.map((item) => [item.assetId, item]));
+    const generatedPrefix = `${ctx.project.slug}-${ctx.categories[0].directory_slug}`;
+
+    expect(byId.get(assets[0].id)).toMatchObject({
+      status: 'unchanged',
+      proposedRelativePath: generatedTarget,
+    });
+    expect(byId.get(assets[2].id)).toMatchObject({
+      status: 'blocked',
+      reason: 'database-conflict',
+      proposedRelativePath: null,
+      proposedFilename: null,
+    });
+    expect(byId.get(assets[4].id)).toMatchObject({
+      status: 'rename',
+      proposedFilename: `${generatedPrefix}-02.png`,
+    });
+    expect(plan.canApply).toBe(false);
+    expect(() => ctx.service.applyPlan(ctx.project.id, plan.token)).toThrow(
+      expect.objectContaining({ code: AUTO_RENAME_ERROR_CODES.PLAN_BLOCKED }),
+    );
+    expect(fs.readFileSync(path.join(ctx.projectDir, generatedTarget), 'utf8')).toBe('unselected target');
+  });
+
   it('preserves parent directories, Unicode normalization, and generated-state token binding', () => {
     const nested = writeAsset('Original Folder/source.PNG');
     const plan = makePlan();
@@ -410,11 +576,4 @@ describe('category-scoped Auto Rename service', () => {
     expect(() => makePlan()).toThrow(expect.objectContaining({ code: AUTO_RENAME_ERROR_CODES.PROJECT_ARCHIVED }));
   });
 
-  it('exposes no selected-set service adapter', () => {
-    expect(ctx.service.buildPlan.length).toBe(1);
-    expect(ctx.service.applyPlan.length).toBe(2);
-    expect(() => ctx.service.buildPlan(ctx.project.id, [1])).toThrow(
-      expect.objectContaining({ code: AUTO_RENAME_ERROR_CODES.INVALID_PROJECT_ID }),
-    );
-  });
 });

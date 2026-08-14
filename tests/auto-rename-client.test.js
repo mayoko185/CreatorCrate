@@ -218,6 +218,12 @@ function makeAssetPage({ view = 'list', ids = [1, 2, 3], initialOrder = ids } = 
   const clearSelection = makeNode({ tagName: 'button', attrs: { type: 'button', 'data-clear-selection': '' } });
   const orderInput = makeNode({ tagName: 'input', attrs: { 'data-auto-rename-order-input': '' } });
   orderInput.value = JSON.stringify(initialOrder);
+  const selectionInput = makeNode({ tagName: 'input', attrs: {
+    type: 'hidden',
+    name: 'selectedAssetIds',
+    'data-auto-rename-selection-input': '',
+  } });
+  selectionInput.value = '[]';
   const submit = makeNode({ tagName: 'button', attrs: {
     type: 'submit',
     'data-auto-rename-submit': '',
@@ -228,6 +234,7 @@ function makeAssetPage({ view = 'list', ids = [1, 2, 3], initialOrder = ids } = 
   const assets = [];
 
   form.appendChild(orderInput);
+  form.appendChild(selectionInput);
   form.appendChild(submit);
   form.appendChild(live);
   selectionForm.appendChild(selectAll);
@@ -267,14 +274,16 @@ function makeAssetPage({ view = 'list', ids = [1, 2, 3], initialOrder = ids } = 
          }
          : { top: index * 50, left: 0, width: 500, height: 40 };
      };
-    const indicator = makeNode({ attrs: { 'data-auto-rename-order-indicator': '' } });
+     const indicator = makeNode({ attrs: { 'data-auto-rename-order-indicator': '' } });
      const checkbox = makeNode({ tagName: 'input', attrs: {
        type: 'checkbox',
        form: 'bulk-select-form',
        name: 'selectedAssetIds',
+       value: String(id),
        'aria-label': `Select Asset ${id}`,
      } });
      checkbox.form = selectionForm;
+     checkbox.value = String(id);
     const filenameLink = makeNode({ tagName: 'a', attrs: { href: `/assets/${id}` } });
     const image = makeNode({ tagName: 'img', attrs: { 'data-preview-image': '' } });
     const fallback = makeNode({ tagName: 'span', attrs: { 'data-preview-fallback': '' } });
@@ -357,6 +366,7 @@ function makeAssetPage({ view = 'list', ids = [1, 2, 3], initialOrder = ids } = 
     selectAll,
     clearSelection,
     orderInput,
+    selectionInput,
     submit,
     live,
     list,
@@ -421,6 +431,21 @@ function withViewport(callback) {
 }
 
 describe('Assets-page Auto Rename ordering enhancement', () => {
+  it('serializes checked asset IDs separately from the complete category order', () => {
+    const page = makeAssetPage({ ids: [1, 2, 3, 4] });
+
+    enhanceAssetAutoRenameOrdering(page.document);
+    enhanceAssetSelection(page.document);
+    page.assets[1].checkbox.checked = true;
+    page.assets[1].checkbox.dispatch('change');
+    page.assets[3].checkbox.checked = true;
+    page.assets[3].checkbox.dispatch('change');
+    page.form.dispatch('submit');
+
+    expect(page.selectionInput.value).toBe('[2,4]');
+    expect(page.orderInput.value).toBe('[1,2,3,4]');
+  });
+
   it('enables from selection, clears when deselected, and also enables for reorder', () => {
     const page = makeAssetPage();
 

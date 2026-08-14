@@ -2193,6 +2193,7 @@ const AUTO_RENAME_SURFACE_SELECTOR = '[data-auto-rename-surface]';
 const AUTO_RENAME_ASSET_SELECTOR = '[data-auto-rename-asset]';
 const AUTO_RENAME_FORM_SELECTOR = '[data-auto-rename-form]';
 const AUTO_RENAME_ORDER_INPUT_SELECTOR = '[data-auto-rename-order-input]';
+const AUTO_RENAME_SELECTION_INPUT_SELECTOR = '[data-auto-rename-selection-input]';
 const AUTO_RENAME_SUBMIT_SELECTOR = '[data-auto-rename-submit]';
 const AUTO_RENAME_INDICATOR_SELECTOR = '[data-auto-rename-order-indicator]';
 const AUTO_RENAME_LIVE_SELECTOR = '[data-auto-rename-live]';
@@ -2232,6 +2233,22 @@ function autoRenameInitialIndex(item) {
 
 function autoRenameOrder(surface) {
   return autoRenameSurfaceItems(surface).map(autoRenameAssetId);
+}
+
+function autoRenameSelectedAssetIds(surface) {
+  const ids = [];
+  const seen = new Set();
+  const checkboxes = surface?.querySelectorAll?.(ASSET_SELECTION_CHECKBOX_SELECTOR) || [];
+  for (const checkbox of checkboxes) {
+    if (!checkbox.checked) continue;
+    const raw = checkbox.value || checkbox.getAttribute?.('value');
+    if (typeof raw !== 'string' || !/^[1-9]\d*$/.test(raw)) continue;
+    const id = Number(raw);
+    if (!Number.isSafeInteger(id) || seen.has(id)) continue;
+    seen.add(id);
+    ids.push(id);
+  }
+  return ids;
 }
 
 function autoRenameSameOrder(left, right) {
@@ -2304,6 +2321,9 @@ function autoRenameSync(state) {
   state.surface.setAttribute?.('data-auto-rename-membership', valid ? 'valid' : 'invalid');
 
   const unchanged = valid && autoRenameSameOrder(ids, state.initialOrder);
+  if (state.selectionInput) {
+    state.selectionInput.value = JSON.stringify(autoRenameSelectedAssetIds(state.surface));
+  }
   const hasSelectedAssets = Array.from(
     state.surface.querySelectorAll?.(ASSET_SELECTION_CHECKBOX_SELECTOR) || [],
   ).some((checkbox) => checkbox.checked);
@@ -2913,6 +2933,7 @@ export function enhanceAssetAutoRenameOrdering(scope = globalThis.document) {
       surface,
       form,
       orderInput,
+      selectionInput: form?.querySelector?.(AUTO_RENAME_SELECTION_INPUT_SELECTOR),
       submit,
       items,
       initialOrder,

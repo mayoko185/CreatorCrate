@@ -288,6 +288,61 @@ describe('category-scoped Auto Rename HTTP integration', () => {
     expect(applyForm).not.toContain('destinationPath');
   });
 
+  it('previews and applies only selected assets with selected-only numbering', async () => {
+    const { id, projectDir, project } = await createProject('Selected Subset');
+    const category = categories(id)[0];
+    const assets = [
+      writeAsset(id, projectDir, 'first.png', 'first', { categoryId: category.id }),
+      writeAsset(id, projectDir, 'second.png', 'second', { categoryId: category.id }),
+      writeAsset(id, projectDir, 'third.png', 'third', { categoryId: category.id }),
+      writeAsset(id, projectDir, 'fourth.png', 'fourth', { categoryId: category.id }),
+      writeAsset(id, projectDir, 'fifth.png', 'fifth', { categoryId: category.id }),
+    ];
+    const order = assets.map((asset) => asset.id);
+    const selectedAssetIds = [assets[2].id, assets[4].id];
+    const generatedPrefix = `${project.slug}-${category.directory_slug}`;
+
+    const preview = await previewRequest(id, category.id, order, {
+      selectedAssetIds: JSON.stringify(selectedAssetIds),
+      view: 'list',
+    }).expect(200);
+    const confirmationForm = formMarkup(preview.text, `/projects/${id}/assets/auto-rename/apply`);
+    expect(confirmationForm).toContain('2 assets:');
+    expect(confirmationForm).toContain('2 to rename');
+    expect(confirmationForm).toContain('0 unchanged');
+    expect(confirmationForm).toContain(assets[2].filename);
+    expect(confirmationForm).toContain(assets[4].filename);
+    expect(confirmationForm).not.toContain(assets[0].filename);
+    expect(confirmationForm).not.toContain(assets[1].filename);
+    expect(confirmationForm).not.toContain(assets[3].filename);
+    expect(confirmationForm).toContain(`${generatedPrefix}-01.png`);
+    expect(confirmationForm).toContain(`${generatedPrefix}-02.png`);
+    const token = tokenFromConfirmation(preview.text);
+
+    await applyRequest(id, {
+      _csrf: csrfToken,
+      planToken: token,
+      categoryId: String(category.id),
+    }).expect(302);
+
+    expect(fs.existsSync(path.join(projectDir, 'first.png'))).toBe(true);
+    expect(fs.existsSync(path.join(projectDir, 'second.png'))).toBe(true);
+    expect(fs.existsSync(path.join(projectDir, 'third.png'))).toBe(false);
+    expect(fs.existsSync(path.join(projectDir, 'fourth.png'))).toBe(true);
+    expect(fs.existsSync(path.join(projectDir, 'fifth.png'))).toBe(false);
+    expect(fs.existsSync(path.join(projectDir, `${generatedPrefix}-01.png`))).toBe(true);
+    expect(fs.existsSync(path.join(projectDir, `${generatedPrefix}-02.png`))).toBe(true);
+    expect(assetRepository.findById(assets[2].id)).toMatchObject({
+      relative_path: `${generatedPrefix}-01.png`,
+    });
+    expect(assetRepository.findById(assets[4].id)).toMatchObject({
+      relative_path: `${generatedPrefix}-02.png`,
+    });
+    expect(assetRepository.findById(assets[0].id)).toMatchObject({ relative_path: 'first.png' });
+    expect(assetRepository.findById(assets[1].id)).toMatchObject({ relative_path: 'second.png' });
+    expect(assetRepository.findById(assets[3].id)).toMatchObject({ relative_path: 'fourth.png' });
+  });
+
   it('keeps blocked and no-change confirmation plans unappliable', async () => {
     const blockedProject = await createProject('Blocked Confirmation');
     const blockedCategory = categories(blockedProject.id)[0];
@@ -356,6 +411,11 @@ describe('category-scoped Auto Rename HTTP integration', () => {
     expect(malformed.text).toContain('must contain every category asset exactly once');
     expect(malformed.text).not.toContain('id="auto-rename-confirmation-dialog" class="app-dialog" data-app-dialog open');
 
+    const malformedSelection = await previewRequest(owner.id, category.id, [first.id, second.id], {
+      selectedAssetIds: '[1,]',
+    }).expect(422);
+    expect(malformedSelection.text).toContain('must contain every category asset exactly once');
+
     const stringIds = await previewRequest(owner.id, category.id, [String(first.id), String(second.id)]).expect(422);
     expect(stringIds.text).toContain('must contain every category asset exactly once');
     await previewRequest(owner.id, category.id, [first.id, first.id]).expect(422);
@@ -363,6 +423,12 @@ describe('category-scoped Auto Rename HTTP integration', () => {
     await previewRequest(owner.id, category.id, [first.id, otherAsset.id]).expect(422);
     await previewRequest(owner.id, category.id, [first.id, foreignAsset.id]).expect(422);
     await previewRequest(owner.id, category.id, [first.id, second.id, 999999]).expect(422);
+    await previewRequest(owner.id, category.id, [first.id, second.id], {
+      selectedAssetIds: JSON.stringify([otherAsset.id]),
+    }).expect(422);
+    await previewRequest(owner.id, category.id, [first.id, second.id], {
+      selectedAssetIds: JSON.stringify([foreignAsset.id]),
+    }).expect(422);
 
     const invalidCategory = await previewRequest(owner.id, foreignCategory.id, [first.id, second.id]).expect(422);
     expect(invalidCategory.text).toContain('invalid or unavailable');
@@ -527,5 +593,14 @@ describe('category-scoped Auto Rename HTTP integration', () => {
     expect(model.items[1].blockedReason).toContain('regular file');
     expect(openSpy).not.toHaveBeenCalled();
     openSpy.mockRestore();
+
+    const selectedModel = buildAutoRenamePlanRenderModel({
+      ...plan,
+      selectedAssetIds: [11],
+    });
+    expect(selectedModel.selectionMode).toBe('selected');
+    expect(selectedModel.orderedAssetIds).toEqual([10, 11]);
+    expect(selectedModel.items.map((item) => item.assetId)).toEqual([11]);
+    expect(selectedModel.items[0].status).toBe('blocked');
   });
 });

@@ -920,6 +920,8 @@
                     <input type="hidden" name="categoryId" value="{{ autoRenameCategory.categoryId }}">
                     <input type="hidden" name="orderedAssetIds" value="{{ autoRenameCategory.orderedAssetIdsJson }}"
                            data-auto-rename-order-input>
+                    <input type="hidden" name="selectedAssetIds" value="[]"
+                           data-auto-rename-selection-input>
                     <input type="hidden" name="view" value="{{ filters.view }}">
                     <button type="submit" class="button button-primary" data-auto-rename-submit disabled aria-disabled="true">Auto Rename</button>
                     <div class="auto-rename-live-region sr-only" data-auto-rename-live aria-live="polite" aria-atomic="true"></div>
@@ -1232,6 +1234,7 @@
   {% if autoRenameConfirmationPlan %}
     {% set autoRenameDialogPlan = autoRenameConfirmationPlan %}
     {% set autoRenameDialogContext = autoRenameConfirmationContext or {} %}
+    {% set autoRenameSelectionMode = autoRenameDialogPlan.selectionMode == 'selected' %}
     {% call dialog.render('auto-rename-confirmation-dialog', 'Auto Rename confirmation', autoRenameConfirmationDialogOpen, 'auto-rename-confirmation-description', 'auto-rename-confirmation-form') %}
       <form id="auto-rename-confirmation-form" method="post" action="/projects/{{ project.id }}/assets/auto-rename/apply"
             class="app-dialog-form auto-rename-confirmation-form" data-dialog-form data-dialog-async="false">
@@ -1241,11 +1244,11 @@
 
         {% if autoRenameDialogPlan.counts.blocked > 0 %}
           <div class="notice notice--danger auto-rename-confirmation-notice" role="alert">
-            <p>Auto Rename cannot be applied because one or more category assets are blocked.</p>
+            <p>Auto Rename cannot be applied because one or more {% if autoRenameSelectionMode %}selected{% else %}category{% endif %} assets are blocked.</p>
           </div>
         {% elseif autoRenameDialogPlan.counts.rename == 0 %}
           <div class="notice notice--warning auto-rename-confirmation-notice" role="status">
-            <p>All category assets are already named according to the rule. There are no changes to apply.</p>
+            <p>All {% if autoRenameSelectionMode %}selected{% else %}category{% endif %} assets are already named according to the rule. There are no changes to apply.</p>
           </div>
         {% endif %}
 
@@ -1314,11 +1317,11 @@
           </ol>
 
           {% if autoRenameDialogPlan.canApply %}
-            <p class="auto-rename-confirmation-apply-note">Applying this signed review will rename the category files on disk and update their asset records.</p>
+            <p class="auto-rename-confirmation-apply-note">Applying this signed review will rename the {% if autoRenameSelectionMode %}selected{% else %}category{% endif %} files on disk and update their asset records.</p>
           {% elseif autoRenameDialogPlan.counts.blocked > 0 %}
-            <p class="auto-rename-confirmation-apply-note">Apply is unavailable until all blocked category assets are resolved.</p>
+            <p class="auto-rename-confirmation-apply-note">Apply is unavailable until all blocked {% if autoRenameSelectionMode %}selected{% else %}category{% endif %} assets are resolved.</p>
           {% else %}
-            <p class="auto-rename-confirmation-apply-note">There are no changes to apply because all category assets are unchanged.</p>
+            <p class="auto-rename-confirmation-apply-note">There are no changes to apply because all {% if autoRenameSelectionMode %}selected{% else %}category{% endif %} assets are unchanged.</p>
           {% endif %}
         </div>
 

@@ -129,6 +129,22 @@ function assertExactCategoryPermutation(orderedAssetIds, membershipAssetIds) {
   return [...orderedAssetIds];
 }
 
+function normalizeSelectedAssetIds(selectedAssetIds) {
+  if (selectedAssetIds === undefined || selectedAssetIds === null) return null;
+  const values = selectedAssetIds instanceof Set ? [...selectedAssetIds] : selectedAssetIds;
+  if (!Array.isArray(values)) throw categoryOrderInvalidError();
+  if (values.length === 0) return null;
+
+  const seen = new Set();
+  for (const assetId of values) {
+    if (!Number.isSafeInteger(assetId) || assetId <= 0 || seen.has(assetId)) {
+      throw categoryOrderInvalidError();
+    }
+    seen.add(assetId);
+  }
+  return sortedAssetIds(values);
+}
+
 function isPresent(asset) {
   return asset && (asset.is_present === 1 || asset.is_present === true);
 }
@@ -473,9 +489,17 @@ function assignGeneratedNames(candidates, projectSlug, projectDir) {
   return active;
 }
 
-function assignCategoryGeneratedNames(candidates, orderedRows, projectSlug, projectDir) {
+function assignCategoryGeneratedNames(
+  candidates,
+  orderedRows,
+  projectSlug,
+  projectDir,
+  { preserveFullCategoryPositions = false } = {},
+) {
   const candidatesById = new Map(candidates.map((candidate) => [candidate.item.assetId, candidate]));
-  const width = Math.max(2, String(candidates.length).length);
+  const width = Math.max(2, String(
+    preserveFullCategoryPositions ? orderedRows.length : candidates.length,
+  ).length);
   const active = [];
   let sequence = 0;
 
@@ -486,7 +510,7 @@ function assignCategoryGeneratedNames(candidates, orderedRows, projectSlug, proj
     const generated = generateName(
       projectSlug,
       candidate,
-      sequence + 1,
+      preserveFullCategoryPositions ? index + 1 : sequence + 1,
       width,
       projectDir,
     );
@@ -500,7 +524,7 @@ function assignCategoryGeneratedNames(candidates, orderedRows, projectSlug, proj
     candidate.proposedKey = generated.key;
     candidate.willMove = candidate.proposedKey !== candidate.sourceKey;
     active.push(candidate);
-    sequence += 1;
+    if (!preserveFullCategoryPositions) sequence += 1;
   }
 
   return active;
@@ -771,6 +795,14 @@ function normalizeSnapshot(snapshot) {
   const membershipAssetIds = normalizeSnapshotAssetIds(snapshot.membershipAssetIds);
   if (!membershipAssetIds || !assetIds || !assetIdArraysEqual(assetIds, membershipAssetIds)) return null;
 
+  let selectedAssetIds = null;
+  if (snapshot.selectedAssetIds !== undefined && snapshot.selectedAssetIds !== null) {
+    selectedAssetIds = normalizeSnapshotAssetIds(snapshot.selectedAssetIds);
+    if (!selectedAssetIds || selectedAssetIds.some((assetId) => !membershipAssetIds.includes(assetId))) {
+      return null;
+    }
+  }
+
   const orderedAssetIds = Array.isArray(snapshot.orderedAssetIds)
     && snapshot.orderedAssetIds.length > 0
     && snapshot.orderedAssetIds.every((assetId) => Number.isSafeInteger(assetId) && assetId > 0)
@@ -791,6 +823,7 @@ function normalizeSnapshot(snapshot) {
     categoryId: category.id,
     category,
     membershipAssetIds,
+    selectedAssetIds,
     orderedAssetIds,
     assets,
   };
@@ -805,6 +838,7 @@ function snapshotFromItems({
   scope = 'category',
   category,
   orderedAssetIds,
+  selectedAssetIds,
   items,
 }) {
   const signedItems = [...items].sort((left, right) => left.assetId - right.assetId);
@@ -822,6 +856,9 @@ function snapshotFromItems({
   base.category = category;
   base.membershipAssetIds = signedItems.map((item) => item.assetId);
   base.orderedAssetIds = orderedAssetIds;
+  if (selectedAssetIds !== undefined && selectedAssetIds !== null) {
+    base.selectedAssetIds = selectedAssetIds;
+  }
 
   return normalizeSnapshot(base);
 }
@@ -911,6 +948,7 @@ function snapshotFromPlanOrSnapshot(planOrSnapshot) {
       scope: 'category',
       category: planOrSnapshot.category,
       orderedAssetIds: planOrSnapshot.orderedAssetIds,
+      selectedAssetIds: planOrSnapshot.selectedAssetIds,
       items: planOrSnapshot.items,
     });
     if (!snapshot) return null;
@@ -945,6 +983,7 @@ function snapshotFromPlanOrSnapshot(planOrSnapshot) {
       categoryId: planOrSnapshot.categoryId,
       category: planOrSnapshot.category,
       membershipAssetIds: planOrSnapshot.membershipAssetIds,
+      selectedAssetIds: planOrSnapshot.selectedAssetIds,
       orderedAssetIds: planOrSnapshot.orderedAssetIds,
       assets: planOrSnapshot.assets,
     });
@@ -1092,7 +1131,7 @@ export function createAutoRenameService({
     }
   }
 
-  function buildPlanUnlocked(projectId, categoryId, orderedAssetIds) {
+  function buildPlanUnlocked(projectId, categoryId, orderedAssetIds, selectedAssetIds) {
     const project = requireMutableProject(projectId);
     const category = requireCategoryRecord(projectId, categoryId);
     const { allProjectRows, browserRows } = loadRows(projectId, categoryId);
@@ -1102,7 +1141,15 @@ export function createAutoRenameService({
     const browserRowsById = new Map(browserRows.map((row) => [row.id, row]));
     const membershipAssetIds = browserRows.map((row) => row.id);
     const normalizedOrder = assertExactCategoryPermutation(orderedAssetIds, membershipAssetIds);
+    const normalizedSelectedAssetIds = normalizeSelectedAssetIds(selectedAssetIds);
+    if (normalizedSelectedAssetIds && normalizedSelectedAssetIds.some((assetId) => !browserRowsById.has(assetId))) {
+      throw categoryOrderInvalidError();
+    }
+    const selectedAssetIdSet = normalizedSelectedAssetIds ? new Set(normalizedSelectedAssetIds) : null;
     const orderedRows = normalizedOrder.map((assetId) => browserRowsById.get(assetId));
+    const namingRows = selectedAssetIdSet
+      ? orderedRows.filter((row) => selectedAssetIdSet.has(row.id))
+      : orderedRows;
     const itemsById = new Map();
     const candidates = [];
 
@@ -1118,6 +1165,12 @@ export function createAutoRenameService({
       item.categoryProjectId = categoryState.projectId;
       item.databaseCategoryId = categoryState.id;
       itemsById.set(row.id, item);
+      if (selectedAssetIdSet && !selectedAssetIdSet.has(row.id)) {
+        item.status = 'unchanged';
+        item.proposedFilename = item.currentFilename;
+        item.proposedRelativePath = item.currentRelativePath;
+        continue;
+      }
       const categoryReason = categoryBlockReason(projectId, row);
       if (categoryReason) {
         block(item, categoryReason);
@@ -1146,18 +1199,25 @@ export function createAutoRenameService({
     }
 
     const sourceValidCandidates = candidates.filter((candidate) => candidate.item.status !== 'blocked');
-    const namedCandidates = assignCategoryGeneratedNames(sourceValidCandidates, orderedRows, project.slug, projectDir);
+    const namedCandidates = assignCategoryGeneratedNames(
+      sourceValidCandidates,
+      namingRows,
+      project.slug,
+      projectDir,
+      { preserveFullCategoryPositions: Boolean(selectedAssetIdSet) },
+    );
     const directoryEntries = inspectDirectories(projectDir, namedCandidates);
     classifyCollisions(
       namedCandidates,
       allProjectRows,
-      membershipAssetIds,
+      normalizedSelectedAssetIds || membershipAssetIds,
       directoryEntries,
     );
 
     const orderedItems = normalizedOrder.map((assetId) => itemsById.get(assetId));
 
     for (const item of orderedItems) {
+      if (selectedAssetIdSet && !selectedAssetIdSet.has(item.assetId)) continue;
       if (item.status === 'blocked') continue;
       item.status = collisionKey(item.currentRelativePath) === collisionKey(item.proposedRelativePath)
         ? 'unchanged'
@@ -1177,6 +1237,7 @@ export function createAutoRenameService({
       scope: 'category',
       category: categoryState,
       orderedAssetIds: normalizedOrder,
+      selectedAssetIds: normalizedSelectedAssetIds,
       items: orderedItems,
     });
 
@@ -1190,11 +1251,16 @@ export function createAutoRenameService({
       );
     }
 
+    const countedItems = selectedAssetIdSet
+      ? orderedItems.filter((item) => selectedAssetIdSet.has(item.assetId))
+      : orderedItems;
     const counts = {
-      selected: membershipAssetIds.length,
-      rename: orderedItems.filter((item) => item.status === 'rename').length,
-      unchanged: orderedItems.filter((item) => item.status === 'unchanged').length,
-      blocked: orderedItems.filter((item) => item.status === 'blocked').length,
+      selected: normalizedSelectedAssetIds
+        ? normalizedSelectedAssetIds.length
+        : membershipAssetIds.length,
+      rename: countedItems.filter((item) => item.status === 'rename').length,
+      unchanged: countedItems.filter((item) => item.status === 'unchanged').length,
+      blocked: countedItems.filter((item) => item.status === 'blocked').length,
     };
 
     const plan = {
@@ -1204,6 +1270,7 @@ export function createAutoRenameService({
       planVersion: AUTO_RENAME_PLAN_VERSION,
       namingPolicyVersion: AUTO_RENAME_NAMING_POLICY_VERSION,
       orderedAssetIds: normalizedOrder,
+      selectedAssetIds: normalizedSelectedAssetIds,
       token,
       canApply: counts.rename > 0 && counts.blocked === 0,
       counts,
@@ -1254,13 +1321,13 @@ export function createAutoRenameService({
     }
   }
 
-  function buildCategoryPlan({ projectId, categoryId, orderedAssetIds } = {}) {
+  function buildCategoryPlan({ projectId, categoryId, orderedAssetIds, selectedAssetIds } = {}) {
     assertCanonicalPositiveInteger(projectId, 'projectId');
     if (categoryId === undefined || categoryId === null) throw categoryRequiredError();
     if (!Number.isSafeInteger(categoryId) || categoryId <= 0) throw categoryInvalidError();
     return runBuild(
       projectId,
-      () => buildPlanUnlocked(projectId, categoryId, orderedAssetIds),
+      () => buildPlanUnlocked(projectId, categoryId, orderedAssetIds, selectedAssetIds),
     );
   }
 
@@ -1520,12 +1587,16 @@ export function createAutoRenameService({
       throw stalePlanError();
     }
     const rowsById = new Map(browserRows.map((row) => [row.id, row]));
+    const selectedAssetIdSet = Array.isArray(plan.selectedAssetIds)
+      ? new Set(plan.selectedAssetIds)
+      : null;
 
     const execution = [];
     for (const item of plan.items) {
       const row = rowsById.get(item.assetId);
       if (!databaseRowMatchesPlan(item, row)) throw stalePlanError();
-      if (item.status !== 'blocked') {
+      if (item.status !== 'blocked'
+        && (!selectedAssetIdSet || selectedAssetIdSet.has(item.assetId))) {
         inspectExecutionSource(projectDir, item);
       }
       if (item.status !== 'rename') continue;
@@ -1872,6 +1943,7 @@ export function createAutoRenameService({
         projectId,
         categoryId,
         orderedAssetIds,
+        authorizedSnapshot.selectedAssetIds,
       );
     } catch (err) {
       if (
