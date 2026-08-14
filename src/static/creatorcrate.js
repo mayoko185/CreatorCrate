@@ -3091,6 +3091,7 @@ const ASSET_GRID_SIZE_CONFIG = Object.freeze({
   storageKey: ASSET_GRID_SIZE_STORAGE_KEY,
   cssVariable: '--asset-card-min',
   boundKey: 'assetGridSizeBound',
+  interactiveLabelsSelector: '[data-grid-size-labels-interactive]',
 });
 const PROJECT_GRID_SIZE_CONFIG = Object.freeze({
   controlSelector: PROJECT_GRID_SIZE_CONTROL_SELECTOR,

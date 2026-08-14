@@ -902,7 +902,6 @@ function handleReleaseListOrBoard(
         basePath,
         releasesSurface: pageDefaultsKey === RELEASES_PAGE_DEFAULTS,
         ...buildReleasesRenderExtras({
-          req,
           pageDefaultsService,
           pageDefaultsKey,
           defaultsDialogOpen,
@@ -953,7 +952,6 @@ function handleReleaseListOrBoard(
       basePath,
       releasesSurface: pageDefaultsKey === RELEASES_PAGE_DEFAULTS,
       ...buildReleasesRenderExtras({
-        req,
         pageDefaultsService,
         pageDefaultsKey,
         defaultsDialogOpen,
@@ -972,7 +970,6 @@ function resolveReleasesNotice(code) {
 }
 
 function buildReleasesRenderExtras({
-  req,
   pageDefaultsService,
   pageDefaultsKey,
   defaultsDialogOpen,
@@ -992,7 +989,6 @@ function buildReleasesRenderExtras({
     }),
     releasesDefaultsDialogOpen: Boolean(defaultsDialogOpen),
     releasesDefaultsNotice: notice,
-    _csrf: req.csrfToken?.() || '',
   };
 }
 

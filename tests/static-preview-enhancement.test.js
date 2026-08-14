@@ -3245,6 +3245,51 @@ describe('asset grid size enhancement', () => {
     }
   });
 
+  it('binds interactive asset-page labels to the shared slider and localStorage state', () => {
+    const grid = makeGrid();
+    const controls = makeGridSliderControls({ interactive: true });
+    const storage = new Map();
+    const previousStorage = globalThis.localStorage;
+    globalThis.localStorage = {
+      getItem: (key) => storage.get(key) ?? null,
+      setItem: (key, value) => storage.set(key, value),
+    };
+    const scope = {
+      querySelectorAll(selector) {
+        if (selector === '[data-asset-grid-size-controls]') return [controls.group];
+        if (selector === '.asset-grid') return [grid];
+        return [];
+      },
+    };
+
+    try {
+      expect(enhanceAssetGridSize(scope)).toBe(1);
+      const expected = [
+        { index: 0, size: 'compact', position: '1', label: 'Compact', min: '12rem' },
+        { index: 1, size: 'default', position: '2', label: 'Default', min: undefined },
+        { index: 2, size: 'large', position: '3', label: 'Large', min: '20rem' },
+      ];
+
+      for (const { index, size, position, label, min } of expected) {
+        controls.labels[index].dispatch('click');
+
+        expect(storage.get('creatorcrate-asset-grid-size')).toBe(size);
+        expect(controls.slider.value).toBe(position);
+        expect(controls.slider.attrs['aria-valuenow']).toBe(position);
+        expect(controls.slider.attrs['aria-valuetext']).toBe(label);
+        expect(controls.labels.map((option) => option.classList.values.has('is-active')))
+          .toEqual(expected.map((entry) => entry.size === size));
+        expect(controls.labels.map((option) => option.attrs['aria-pressed']))
+          .toEqual(expected.map((entry) => String(entry.size === size)));
+        if (min) expect(grid.style.values['--asset-card-min']).toBe(min);
+        else expect(grid.style.values).toEqual({});
+      }
+    } finally {
+      if (previousStorage === undefined) delete globalThis.localStorage;
+      else globalThis.localStorage = previousStorage;
+    }
+  });
+
   it('finds the Projects grid and control, maps every size, and keeps state isolated', () => {
     const assetGrid = makeGrid();
     const projectGrid = makeGrid();

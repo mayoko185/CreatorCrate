@@ -161,7 +161,6 @@ function buildAssetLibraryRenderModel(page, state, {
   assetViewerDefaultsDialogOpen = false,
   assetViewerNsfwError = null,
   assetViewerDefaultsNotice = null,
-  _csrf = '',
 } = {}) {
   const canonicalState = {
     ...state,
@@ -199,7 +198,6 @@ function buildAssetLibraryRenderModel(page, state, {
     assetViewerDefaultsReturnUrl: currentUrl,
     assetViewerNsfwError,
     assetViewerDefaultsNotice,
-    _csrf,
   };
 }
 
@@ -262,7 +260,6 @@ function renderAssetLibraryPage(req, res, {
       assetViewerDefaultsDialogOpen,
       assetViewerNsfwError,
       assetViewerDefaultsNotice,
-      _csrf: req.csrfToken?.() || '',
     }),
   });
 }

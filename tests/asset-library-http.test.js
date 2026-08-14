@@ -11,6 +11,8 @@ import { createAssetCategoryRepository } from '../src/data/asset-category-reposi
 import { createProjectRepository } from '../src/data/project-repository.js';
 import { createTagRepository } from '../src/data/tag-repository.js';
 import { PAGE_DEFAULT_DEFINITIONS } from '../src/services/page-defaults-service.js';
+import { ensureAuthEnablement } from '../src/auth/auth-state.js';
+import { extractCsrfToken } from './helpers/auth.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 
@@ -576,6 +578,38 @@ describe('cross-project Asset Viewer HTTP route', () => {
     writeAssetViewerDefaults({ view: 'grid', sort: 'filename', order: 'asc', pageSize: '25' });
     const fallbackEquivalent = await request(app).get('/assets').expect(200);
     expect(fallbackEquivalent.headers.location).toBeUndefined();
+  });
+
+  it('accepts the CSRF tokens rendered in the NSFW and defaults forms', async () => {
+    const csrfAppDataRoot = path.join(tmpDir, 'csrf-app');
+    fs.mkdirSync(csrfAppDataRoot, { recursive: true });
+    const { csrfPepper } = ensureAuthEnablement(csrfAppDataRoot);
+    const csrfApp = createApp(
+      { appName: 'CreatorCrate', db, projectsRoot },
+      { appDataRoot: csrfAppDataRoot, authState: { csrfPepper } },
+    );
+    const agent = request.agent(csrfApp);
+    const rendered = await agent.get('/assets').expect(200);
+    const nsfwForm = rendered.text.match(/<form[^>]+action="\/assets\/nsfw-filter"[\s\S]*?<\/form>/)?.[0] || '';
+    const defaultsForm = rendered.text.match(/<form[^>]+action="\/assets\/defaults"[\s\S]*?<\/form>/)?.[0] || '';
+    expect(nsfwForm).not.toBe('');
+    expect(defaultsForm).not.toBe('');
+
+    const nsfwToken = extractCsrfToken(nsfwForm);
+    const defaultsToken = extractCsrfToken(defaultsForm);
+    expect(nsfwToken).not.toBe('');
+    expect(defaultsToken).not.toBe('');
+
+    await agent
+      .post('/assets/nsfw-filter')
+      .type('form')
+      .send({ _csrf: nsfwToken, enabled: '1' })
+      .expect(302);
+    await agent
+      .post('/assets/defaults')
+      .type('form')
+      .send({ _csrf: defaultsToken, view: 'list', sort: 'project', order: 'desc', pageSize: '50' })
+      .expect(302);
   });
 
   it('redirects normal defaults saves to a known notice and renders it without canonicalizing it away', async () => {

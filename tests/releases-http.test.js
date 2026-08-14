@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createApp } from '../src/app.js';
 import { ensureAuthEnablement } from '../src/auth/auth-state.js';
-import { getDisabledModeCsrf } from './helpers/auth.js';
+import { extractCsrfToken, getDisabledModeCsrf } from './helpers/auth.js';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { formatProjectDirName } from '../src/storage/project-storage.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
@@ -608,11 +608,17 @@ describe('release HTTP workflow', () => {
     });
 
     it('saves releases defaults through the narrow endpoint and redirects with a trusted notice', async () => {
+      const renderedPage = await agent.get('/releases').expect(200);
+      const defaultsForm = renderedPage.text.match(/<form[^>]+action="\/releases\/defaults"[\s\S]*?<\/form>/)?.[0] || '';
+      expect(defaultsForm).not.toBe('');
+      const renderedCsrfToken = extractCsrfToken(defaultsForm);
+      expect(renderedCsrfToken).not.toBe('');
+
       const response = await agent
         .post('/releases/defaults')
         .set('Accept', 'text/html')
         .type('form')
-        .send({ _csrf: csrfToken, view: 'board', sort: 'title', order: 'desc' })
+        .send({ _csrf: renderedCsrfToken, view: 'board', sort: 'title', order: 'desc' })
         .expect(302);
 
       expect(response.headers.location)
