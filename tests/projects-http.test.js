@@ -1715,7 +1715,7 @@ describe('project HTTP workflow', () => {
     expect(res.text).not.toContain('id="priority"');
   });
 
-  it('edit form renders project Page actions with archive and delete controls', async () => {
+  it('edit form renders project actions with archive and delete controls', async () => {
     const createRes = await agent
       .post('/projects')
       .send('title=Project+Actions')
@@ -1726,10 +1726,12 @@ describe('project HTTP workflow', () => {
     const id = createRes.headers.location.replace('/projects/', '');
 
     const res = await agent.get(`/projects/${id}/edit`).expect(200);
-    const actionArea = res.text.match(/<section class="notes-workspace-secondary"[\s\S]*?<\/section>/)?.[0] || '';
+    const actionArea = res.text.match(/<section class="notes-workspace-secondary project-actions"[\s\S]*?<\/section>/)?.[0] || '';
 
     expect(actionArea).not.toBe('');
-    expect(actionArea).toContain('Page actions');
+    expect(actionArea).toContain('aria-labelledby="project-actions-heading"');
+    expect(actionArea).toContain('<p class="notes-workspace-kicker" id="project-actions-heading">Project actions</p>');
+    expect(actionArea).not.toContain('Page actions');
     expect(actionArea).toContain('<summary>Archive project</summary>');
     expect(actionArea).toContain('Archive keeps this project and its data, but makes it archived and read-only.');
     expect(actionArea).toContain(`action="/projects/${id}/archive"`);

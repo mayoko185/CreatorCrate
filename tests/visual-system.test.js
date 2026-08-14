@@ -390,6 +390,14 @@ describe('Phase 10.6B: Visual-polish hardening', () => {
       );
     });
 
+    it('scopes Project actions sizing and restores full width on mobile', async () => {
+      const res = await request(app).get('/projects/new').expect(200);
+      const css = await extractStyle(app, res.text);
+
+      expect(css).toMatch(/\.notes-workspace-secondary\.project-actions\s*\{[\s\S]*?width: min\(25%, 24rem\);[\s\S]*?min-width: min\(100%, 16rem\);[\s\S]*?margin: var\(--space-lg\) auto 0;/);
+      expect(css).toContain('.notes-workspace-secondary.project-actions { width: 100%; }');
+    });
+
     it('scopes Settings Tags name-field padding away from form actions', async () => {
       const res = await request(app).get('/settings/tags').expect(200);
       const css = await extractStyle(app, res.text);
