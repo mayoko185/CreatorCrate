@@ -3062,12 +3062,10 @@ const PROJECT_GRID_SIZE_CONTROL_SCOPE_SELECTOR = '[data-project-grid-size-contro
 const PROJECT_GRID_SIZE_CONTROL_SELECTOR = `${PROJECT_GRID_SIZE_CONTROL_SCOPE_SELECTOR} ${ASSET_GRID_SIZE_CONTROL_SELECTOR}`;
 const PROJECTS_LIVE_REGION_SELECTOR = '[data-projects-live-region]';
 const PROJECTS_FILTER_SELECTOR = '#project-filters';
-const PROJECTS_SEARCH_SELECTOR = '[data-projects-search]';
 const PROJECTS_LIVE_STATUS_SELECTOR = '[data-projects-live-status]';
 const PROJECTS_LIVE_STATE_ATTRIBUTE = 'data-projects-live-state';
 const PROJECTS_NSFW_FORM_SELECTOR = '[data-projects-nsfw-filter]';
 const PROJECTS_NSFW_TOGGLE_SELECTOR = '[data-projects-nsfw-toggle]';
-const PROJECTS_LIVE_DEBOUNCE_MS = 350;
 const RELEASES_LIVE_REGION_SELECTOR = '[data-releases-live-region]';
 const RELEASES_FILTER_SELECTOR = '[data-releases-filter]';
 const RELEASES_SEARCH_SELECTOR = '[data-releases-search]';
@@ -3078,20 +3076,18 @@ const APP_DIALOG_SELECTOR = '[data-app-dialog]';
 const APP_DIALOG_TRIGGER_SELECTOR = '[data-dialog-open]';
 const APP_DIALOG_CLOSE_SELECTOR = '[data-dialog-close]';
 const APP_DIALOG_FORM_SELECTOR = '[data-dialog-form]';
-const APP_DIALOG_FOCUSABLE_SELECTOR = 'a[href], button, input, select, textarea, [tabindex]';
-const ASSET_PROJECT_FILTER_SELECTOR = '[data-asset-project-filter]';
-const ASSET_PROJECT_FILTER_OPTION_SELECTOR = '[data-asset-project-filter-option]';
-const ASSET_PROJECT_FILTER_SEARCH_SELECTOR = '[data-asset-project-filter-search]';
-const ASSET_PROJECT_FILTER_SUMMARY_SELECTOR = '[data-asset-project-filter-summary]';
-const ASSET_PROJECT_FILTER_CURRENT_SUMMARY_SELECTOR = '[data-asset-project-filter-current-summary]';
-const ASSET_PROJECT_FILTER_EMPTY_SELECTOR = '[data-asset-project-filter-no-results]';
+const APP_DIALOG_FOCUSABLE_SELECTOR = 'a[href], button, input, select, textarea, summary, [tabindex]';
 const PROJECT_ASSET_CATEGORY_FILTER_SELECTOR = '[data-asset-category-filter]';
 const ASSET_VIEWER_FILTER_DISCLOSURE_SELECTOR = '[data-asset-viewer-filter-disclosure]';
-const ASSET_ACTION_SELECT_DISCLOSURE_SELECTOR = '[data-asset-action-select-disclosure]';
-const ASSET_ACTION_SELECT_OPTION_SELECTOR = 'input[data-asset-action-select-option]';
+const CC_DROPDOWN_SELECTOR = '[data-cc-dropdown]';
+const CC_DROPDOWN_SEARCH_SELECTOR = '[data-cc-dropdown-search]';
+const CC_DROPDOWN_OPTION_LIST_SELECTOR = '[data-cc-dropdown-option-list]';
+const CC_DROPDOWN_NO_RESULTS_SELECTOR = '[data-cc-dropdown-no-results]';
 const ASSET_VIEWER_FILTER_SINGLE_SELECT_SELECTOR = '[data-asset-viewer-filter-single-select]';
 const ASSET_VIEWER_FILTER_MULTI_SELECT_SELECTOR = '[data-asset-viewer-filter-multi-select]';
 const ASSET_VIEWER_FILTER_SINGLE_SELECT_SUMMARY_SELECTOR = '.asset-filter-multiselect-summary-current';
+const CC_DROPDOWN_CURRENT_SUMMARY_SELECTOR = '[data-cc-dropdown-summary-current]';
+const CC_DROPDOWN_NATIVE_SELECT_SELECTOR = '[data-cc-dropdown-native-select]';
 const ASSET_VIEWER_INFO_SELECTOR = '[data-asset-info-card]';
 const ASSET_VIEWER_PREVIEW_SELECTOR = '[data-asset-viewer-preview]';
 const ASSET_VIEWER_INFO_GUTTER = 8;
@@ -3259,6 +3255,11 @@ export function enhanceAssetSelection(scope = globalThis.document) {
     const releaseSelect = form.querySelector('[data-release-select]');
     if (releaseSelect) {
       releaseSelect.addEventListener('change', () => updateAssetSelectionState(form, scope));
+    }
+
+    if (!isEnhancementBound(form, 'assetSelectionFormChangeBound')) {
+      markEnhancementBound(form, 'assetSelectionFormChangeBound');
+      form.addEventListener?.('change', () => updateAssetSelectionState(form, scope));
     }
 
     // Establish correct initial state on load — e.g. after a validation
@@ -3509,9 +3510,24 @@ function appDialogDocument(scope) {
   return scope.ownerDocument || globalThis.document || null;
 }
 
+function appDialogFocusableAncestorHidden(element, dialog) {
+  let ancestor = element?.parentElement || element?.parentNode || null;
+  while (ancestor && ancestor !== dialog) {
+    if (ancestor.hidden || ancestor.hasAttribute?.('hidden')) return true;
+    if (ancestor.tagName === 'DETAILS' && ancestor.open !== true && element.tagName !== 'SUMMARY') return true;
+    ancestor = ancestor.parentElement || ancestor.parentNode || null;
+  }
+  return false;
+}
+
 function appDialogFocusable(dialog) {
   return Array.from(dialog?.querySelectorAll?.(APP_DIALOG_FOCUSABLE_SELECTOR) || [])
-    .filter((element) => !element.disabled && element.getAttribute?.('aria-hidden') !== 'true');
+    .filter((element) => !element.disabled
+      && element.getAttribute?.('aria-hidden') !== 'true'
+      && element.getAttribute?.('aria-disabled') !== 'true'
+      && !element.hidden
+      && !element.hasAttribute?.('hidden')
+      && !appDialogFocusableAncestorHidden(element, dialog));
 }
 
 function appDialogBodyLock(state, locked) {
@@ -3533,6 +3549,16 @@ function appDialogFinishClose(state) {
   state.open = false;
   appDialogBodyLock(state, false);
   appDialogRestoreFocus(state);
+}
+
+function appDialogCloseOpenDropdown(state) {
+  const dropdown = state.dialog.querySelector?.(`${CC_DROPDOWN_SELECTOR}[open]`);
+  if (!dropdown) return false;
+  dropdown.open = false;
+  dropdown.removeAttribute?.('open');
+  updateAssetViewerFilterDisclosureState(dropdown);
+  dropdown.querySelector?.('summary')?.focus?.();
+  return true;
 }
 
 function appDialogClose(state) {
@@ -3574,6 +3600,7 @@ function appDialogApplyValues(form, values = {}) {
       }
     }
     control.value = stringValue;
+    syncCreatorCrateDropdownFromNative(control);
   });
 }
 
@@ -3583,6 +3610,9 @@ function appDialogClearErrors(state) {
     const control = field.querySelector?.('select, input, textarea');
     control?.removeAttribute?.('aria-invalid');
     control?.removeAttribute?.('aria-describedby');
+    const summary = creatorCrateDropdownForNativeSelect(control)?.querySelector?.('summary');
+    summary?.removeAttribute?.('aria-invalid');
+    summary?.removeAttribute?.('aria-describedby');
     field.querySelector?.('.field-error-message')?.remove?.();
   });
   const error = state.dialog.querySelector?.('[data-dialog-error]');
@@ -3617,6 +3647,9 @@ function appDialogShowErrors(state, errors = {}, message = 'Fix the highlighted 
     control.setAttribute?.('aria-invalid', 'true');
     const errorId = `${control.id || `dialog-${name}`}-error`;
     control.setAttribute?.('aria-describedby', errorId);
+    const summary = creatorCrateDropdownForNativeSelect(control)?.querySelector?.('summary');
+    summary?.setAttribute?.('aria-invalid', 'true');
+    summary?.setAttribute?.('aria-describedby', errorId);
     const messageElement = control.ownerDocument?.createElement?.('span');
     if (!messageElement) return;
     messageElement.className = 'field-error-message';
@@ -3753,11 +3786,13 @@ function appDialogBind(state) {
   state.dialog.addEventListener?.('close', () => appDialogFinishClose(state));
   state.dialog.addEventListener?.('cancel', (event) => {
     event.preventDefault?.();
+    if (appDialogCloseOpenDropdown(state)) return;
     appDialogClose(state);
   });
   state.dialog.addEventListener?.('keydown', (event) => {
-    if (event.key !== 'Escape') return;
+    if (event.key !== 'Escape' || event.defaultPrevented) return;
     event.preventDefault?.();
+    if (appDialogCloseOpenDropdown(state)) return;
     appDialogClose(state);
   });
   state.dialog.addEventListener?.('click', (event) => {
@@ -3920,8 +3955,7 @@ function enhanceProjectsLiveRegion(region) {
   enhancePreviewMedia(region);
   enhanceProjectCards(region);
   enhanceProjectGridSize(region);
-  enhanceAssetProjectFilter(region);
-  enhanceAssetViewerFilterDisclosures(liveRegionDocument(region));
+  enhanceDropdowns(liveRegionDocument(region));
   enhanceProjectInfoCards(region);
 }
 
@@ -4436,8 +4470,6 @@ function bindProjectsNsfwForm(state, region) {
 const projectsLiveEngine = createLiveRegionEngine({
   regionSelector: PROJECTS_LIVE_REGION_SELECTOR,
   formSelector: PROJECTS_FILTER_SELECTOR,
-  searchSelector: PROJECTS_SEARCH_SELECTOR,
-  debounceMs: PROJECTS_LIVE_DEBOUNCE_MS,
   defaultAction: '/projects',
   stateKey: '__creatorCrateProjectsLiveFiltering',
   historyState: { projects: true },
@@ -4457,6 +4489,7 @@ const projectsLiveEngine = createLiveRegionEngine({
     state.nsfwRefreshGeneration = null;
     state.nsfwRegionReplaced = false;
     state.nsfwEnabled = projectLiveRenderedNsfwEnabled(region);
+    enhanceDropdowns(state.document);
     enhanceAssetViewerFilterDisclosures(state.document);
   },
   onBindRegion(state, region) {
@@ -4687,14 +4720,13 @@ function bindProjectAssetsNsfwForm(state, region) {
 
 function enhanceProjectAssetsLiveRegion(region) {
   enhancePreviewMedia(region);
-  enhanceAssetActionSelects(region);
   enhanceAssetSelection(region);
   enhanceAssetRenames(region);
   enhanceAssetGridSize(region);
   enhanceAssetAutoRenameOrdering(region);
   enhanceConfirmations(region);
   enhanceProjectAssetCategoryFilter(region);
-  enhanceAssetViewerFilterDisclosures(liveRegionDocument(region));
+  enhanceDropdowns(liveRegionDocument(region));
   enhanceSlideshow(liveRegionDocument(region));
   enhanceProjectAssetsPreviewSlideshow(region);
 }
@@ -4740,7 +4772,7 @@ const projectAssetsLiveEngine = createLiveRegionEngine({
     state.assetNsfwRefreshGeneration = null;
     state.assetNsfwRegionReplaced = false;
     state.assetNsfwEnabled = projectAssetsRenderedNsfwEnabled(region);
-    enhanceAssetViewerFilterDisclosures(state.document);
+    enhanceDropdowns(state.document);
   },
   onBindRegion(state, region) {
     bindProjectAssetsNsfwForm(state, region);
@@ -4973,7 +5005,7 @@ function bindAssetLibraryNsfwForm(state, region) {
 function enhanceAssetLibraryLiveRegion(region) {
   enhancePreviewMedia(region);
   enhanceAssetGridSize(region);
-  enhanceAssetProjectFilter(region);
+  enhanceDropdowns(liveRegionDocument(region));
   enhanceAssetViewerFilterDisclosures(liveRegionDocument(region));
   enhanceAssetViewerInfoCards(region);
   enhanceSlideshow(liveRegionDocument(region));
@@ -5019,6 +5051,7 @@ const assetLibraryLiveEngine = createLiveRegionEngine({
     state.libNsfwRefreshGeneration = null;
     state.libNsfwRegionReplaced = false;
     state.libNsfwEnabled = assetLibraryRenderedNsfwEnabled(region);
+    enhanceDropdowns(state.document);
     enhanceAssetViewerFilterDisclosures(state.document);
   },
   onBindRegion(state, region) {
@@ -5083,82 +5116,14 @@ export function enhanceAssetLibraryLiveFiltering(scope = globalThis.document) {
   return assetLibraryLiveEngine.enhance(scope);
 }
 
-function assetProjectFilterFieldName(filter) {
-  return filter?.dataset?.assetProjectFilterName
-    || filter?.getAttribute?.('data-asset-project-filter-name')
-    || 'project';
-}
-
-function assetProjectFilterEmptyLabel(filter, hasEmptyOption) {
-  const configuredLabel = filter?.dataset?.assetProjectFilterEmptyLabel
-    || filter?.getAttribute?.('data-asset-project-filter-empty-label');
-  if (configuredLabel) return configuredLabel;
-  return hasEmptyOption ? 'All projects' : 'Select a project';
-}
-
-function assetProjectFilterInput(option, fieldName = 'project') {
-  return option?.querySelector?.(`input[name="${fieldName}"]`) || null;
-}
-
-function assetProjectFilterValue(input) {
-  return String(input?.value ?? input?.getAttribute?.('value') ?? '');
-}
-
-function assetProjectFilterTitle(option) {
-  const title = option?.getAttribute?.('data-project-title');
-  if (typeof title === 'string' && title !== '') return title;
-  return String(option?.querySelector?.('label')?.textContent || '').trim();
-}
-
-function updateAssetProjectFilterSummary(filter, options) {
-  const fieldName = assetProjectFilterFieldName(filter);
-  const emptyOption = options.find((option) => assetProjectFilterValue(assetProjectFilterInput(option, fieldName)) === '');
-  let selectedOption = options.find((option) => assetProjectFilterInput(option, fieldName)?.checked);
-  if (!selectedOption && emptyOption) {
-    selectedOption = emptyOption;
-    assetProjectFilterInput(selectedOption, fieldName).checked = true;
-  }
-
-  const selectedInput = assetProjectFilterInput(selectedOption, fieldName);
-  const emptyLabel = assetProjectFilterEmptyLabel(filter, Boolean(emptyOption));
-  const selectedTitle = selectedInput && assetProjectFilterValue(selectedInput) !== ''
-    ? assetProjectFilterTitle(selectedOption)
-    : emptyLabel;
-  const summary = filter.querySelector?.(ASSET_PROJECT_FILTER_SUMMARY_SELECTOR);
-  const currentSummary = filter.querySelector?.(ASSET_PROJECT_FILTER_CURRENT_SUMMARY_SELECTOR) || summary;
-  const trigger = filter.querySelector?.('summary');
-  if (currentSummary) currentSummary.textContent = selectedTitle || emptyLabel;
-  trigger?.setAttribute?.('aria-label', `Project filter: ${selectedTitle || emptyLabel}`);
-  trigger?.setAttribute?.('title', selectedTitle || emptyLabel);
-}
-
-function updateAssetProjectFilterOptions(filter, options) {
-  const fieldName = assetProjectFilterFieldName(filter);
-  const search = filter.querySelector?.(ASSET_PROJECT_FILTER_SEARCH_SELECTOR);
-  const empty = filter.querySelector?.(ASSET_PROJECT_FILTER_EMPTY_SELECTOR);
-  const query = String(search?.value || '').trim().toLowerCase();
-  const projectOptions = options.filter((option) => (
-    assetProjectFilterValue(assetProjectFilterInput(option, fieldName)) !== ''
-  ));
-  let matchingProjectCount = 0;
-
-  projectOptions.forEach((option) => {
-    const matches = query === '' || assetProjectFilterTitle(option).toLowerCase().includes(query);
-    setHidden(option, !matches);
-    if (matches) matchingProjectCount += 1;
-  });
-
-  const allProjects = options.find((option) => assetProjectFilterValue(assetProjectFilterInput(option, fieldName)) === '');
-  setHidden(allProjects, false);
-  setHidden(empty, query === '' || matchingProjectCount > 0);
-}
-
-function updateAssetProjectFilterDisclosure(filter) {
-  filter.querySelector?.('summary')?.setAttribute?.('aria-expanded', String(filter.open === true));
-}
-
 function updateAssetViewerFilterDisclosureState(disclosure) {
   disclosure?.querySelector?.('summary')?.setAttribute?.('aria-expanded', String(disclosure.open === true));
+  const dialogBody = disclosure?.closest?.('.app-dialog-body');
+  if (!dialogBody) return;
+  const dialog = dialogBody.closest?.('[data-app-dialog]');
+  const hasOpenDropdown = Boolean(dialog?.querySelector?.(`${CC_DROPDOWN_SELECTOR}[open]`));
+  dialogBody.classList?.toggle?.('cc-dropdown-dialog-open', hasOpenDropdown);
+  dialogBody.closest?.('.app-dialog-card')?.classList?.toggle?.('cc-dropdown-dialog-open', hasOpenDropdown);
 }
 
 function isAssetViewerFilterSingleSelect(disclosure) {
@@ -5229,6 +5194,314 @@ function updateAssetViewerFilterMultiSelectSummary(disclosure) {
   }
 }
 
+function creatorCrateDropdownMode(dropdown) {
+  return dropdown?.dataset?.ccDropdownMode
+    || dropdown?.getAttribute?.('data-cc-dropdown-mode')
+    || null;
+}
+
+function creatorCrateDropdownIsSearchable(dropdown) {
+  return dropdown?.dataset?.ccDropdownSearchable !== undefined
+    || dropdown?.hasAttribute?.('data-cc-dropdown-searchable')
+    || dropdown?.getAttribute?.('data-cc-dropdown-type') === 'searchable-single';
+}
+
+function creatorCrateDropdownSearchInput(dropdown) {
+  return dropdown?.querySelector?.(CC_DROPDOWN_SEARCH_SELECTOR) || null;
+}
+
+function creatorCrateDropdownSearchOptionRows(dropdown) {
+  const optionList = dropdown?.querySelector?.(CC_DROPDOWN_OPTION_LIST_SELECTOR);
+  return Array.from(optionList?.querySelectorAll?.('.asset-filter-multiselect-option') || []);
+}
+
+function creatorCrateDropdownSearchOptionInput(option) {
+  return option?.querySelector?.('input[type="radio"]') || null;
+}
+
+function updateCreatorCrateDropdownSearch(dropdown) {
+  if (!creatorCrateDropdownIsSearchable(dropdown)) return;
+
+  const search = creatorCrateDropdownSearchInput(dropdown);
+  const noResults = dropdown?.querySelector?.(CC_DROPDOWN_NO_RESULTS_SELECTOR);
+  const query = String(search?.value ?? '').trim().toLowerCase();
+  let matchingOptionCount = 0;
+
+  creatorCrateDropdownSearchOptionRows(dropdown).forEach((option) => {
+    const input = creatorCrateDropdownSearchOptionInput(option);
+    const value = String(input?.value ?? '');
+    const label = assetViewerFilterSingleSelectLabel(input).toLowerCase();
+    const matches = value === '' || query === '' || label.includes(query);
+    setHidden(option, !matches);
+    if (value !== '' && matches) matchingOptionCount += 1;
+  });
+
+  setHidden(noResults, query === '' || matchingOptionCount > 0);
+}
+
+function creatorCrateDropdownNativeSelect(dropdown) {
+  return dropdown?.querySelector?.(CC_DROPDOWN_NATIVE_SELECT_SELECTOR)
+    || dropdown?.parentElement?.querySelector?.(CC_DROPDOWN_NATIVE_SELECT_SELECTOR)
+    || dropdown?.parentNode?.querySelector?.(CC_DROPDOWN_NATIVE_SELECT_SELECTOR)
+    || null;
+}
+
+function creatorCrateDropdownForNativeSelect(nativeSelect) {
+  return nativeSelect?.parentElement?.querySelector?.(CC_DROPDOWN_SELECTOR)
+    || nativeSelect?.parentNode?.querySelector?.(CC_DROPDOWN_SELECTOR)
+    || nativeSelect?.closest?.('fieldset')?.querySelector?.(CC_DROPDOWN_SELECTOR)
+    || null;
+}
+
+function creatorCrateDropdownSummaryForNativeSelect(nativeSelect) {
+  return creatorCrateDropdownForNativeSelect(nativeSelect)?.querySelector?.('summary') || null;
+}
+
+function creatorCrateDropdownInputs(dropdown, mode) {
+  const type = mode === 'single' ? 'radio' : 'checkbox';
+  return Array.from(dropdown?.querySelectorAll?.(`input[type="${type}"]`) || []);
+}
+
+function creatorCrateDropdownNativeOptions(nativeSelect) {
+  return Array.from(nativeSelect?.options || nativeSelect?.querySelectorAll?.('option') || []);
+}
+
+function creatorCrateDropdownNativeValue(option) {
+  return String(option?.value ?? option?.getAttribute?.('value') ?? '');
+}
+
+function creatorCrateDropdownIsDisabled(dropdown) {
+  const nativeSelect = creatorCrateDropdownNativeSelect(dropdown);
+  return Boolean(nativeSelect?.disabled || nativeSelect?.hasAttribute?.('disabled')
+    || dropdown?.hasAttribute?.('data-cc-dropdown-config-disabled'));
+}
+
+function syncCreatorCrateDropdownOptionsFromNative(dropdown) {
+  const nativeSelect = creatorCrateDropdownNativeSelect(dropdown);
+  const mode = creatorCrateDropdownMode(dropdown);
+  if (!nativeSelect || !mode) return;
+
+  const nativeOptions = creatorCrateDropdownNativeOptions(nativeSelect);
+  const nativeValues = new Set(nativeOptions.map(creatorCrateDropdownNativeValue));
+  creatorCrateDropdownInputs(dropdown, mode)
+    .filter((input) => input.getAttribute?.('data-dialog-submitted-value') !== null
+      && !nativeValues.has(String(input.value ?? '')))
+    .forEach((input) => input.closest?.('.asset-filter-multiselect-option')?.remove?.());
+
+  const existingValues = new Set(
+    creatorCrateDropdownInputs(dropdown, mode).map((input) => String(input.value ?? '')),
+  );
+  const panel = dropdown.querySelector?.(CC_DROPDOWN_OPTION_LIST_SELECTOR)
+    || dropdown.querySelector?.('.asset-filter-multiselect-panel');
+  const document = dropdown.ownerDocument || globalThis.document;
+  if (!panel || !document?.createElement) return;
+
+  nativeOptions.forEach((option, index) => {
+    const value = creatorCrateDropdownNativeValue(option);
+    if (existingValues.has(value)) return;
+
+    const wrapper = document.createElement('div');
+    wrapper.setAttribute?.('class', 'asset-filter-multiselect-option');
+    const label = document.createElement('label');
+    const input = document.createElement('input');
+    const span = document.createElement('span');
+    const optionId = `${dropdown.id || 'cc-dropdown'}-native-option-${index}`;
+    label.setAttribute?.('for', optionId);
+    input.setAttribute?.('id', optionId);
+    input.setAttribute?.('type', mode === 'single' ? 'radio' : 'checkbox');
+    input.setAttribute?.('value', value);
+    if (option.disabled) input.setAttribute?.('data-cc-dropdown-option-disabled', 'true');
+    if (option.getAttribute?.('data-dialog-submitted-value') !== null) {
+      input.setAttribute?.('data-dialog-submitted-value', '');
+    }
+    span.textContent = option.textContent || value;
+    label.appendChild?.(input);
+    label.appendChild?.(span);
+    wrapper.appendChild?.(label);
+    panel.appendChild?.(wrapper);
+    existingValues.add(value);
+  });
+}
+
+function syncCreatorCrateDropdownInputsFromNative(dropdown) {
+  const nativeSelect = creatorCrateDropdownNativeSelect(dropdown);
+  const mode = creatorCrateDropdownMode(dropdown);
+  if (!nativeSelect || !mode) return;
+
+  const selectedValues = mode === 'multiple'
+    ? new Set(creatorCrateDropdownNativeOptions(nativeSelect)
+      .filter((option) => option.selected)
+      .map((option) => String(option.value)))
+    : new Set([String(nativeSelect.value ?? '')]);
+  creatorCrateDropdownInputs(dropdown, mode).forEach((input) => {
+    input.checked = selectedValues.has(String(input.value ?? ''));
+  });
+}
+
+function syncCreatorCrateDropdownDisabledState(dropdown) {
+  const mode = creatorCrateDropdownMode(dropdown);
+  if (!mode) return;
+  const disabled = creatorCrateDropdownIsDisabled(dropdown);
+  creatorCrateDropdownInputs(dropdown, mode).forEach((input) => {
+    const optionDisabled = input.getAttribute?.('data-cc-dropdown-option-disabled') === 'true';
+    input.disabled = disabled || optionDisabled;
+  });
+  const searchInput = creatorCrateDropdownSearchInput(dropdown);
+  if (searchInput) {
+    searchInput.disabled = disabled;
+    if (disabled) searchInput.setAttribute?.('disabled', '');
+    else searchInput.removeAttribute?.('disabled');
+  }
+  const summary = dropdown.querySelector?.('summary');
+  if (summary) {
+    summary.disabled = disabled;
+    summary.tabIndex = disabled ? -1 : 0;
+    if (disabled) summary.setAttribute?.('aria-disabled', 'true');
+    else summary.removeAttribute?.('aria-disabled');
+  }
+  if (disabled) dropdown.setAttribute?.('data-cc-dropdown-disabled', '');
+  else dropdown.removeAttribute?.('data-cc-dropdown-disabled');
+}
+
+function syncCreatorCrateDropdownNativeFromInputs(dropdown) {
+  const nativeSelect = creatorCrateDropdownNativeSelect(dropdown);
+  const mode = creatorCrateDropdownMode(dropdown);
+  if (!nativeSelect || !mode) return;
+
+  const inputs = creatorCrateDropdownInputs(dropdown, mode);
+  if (mode === 'single') {
+    nativeSelect.value = inputs.find((input) => input.checked)?.value ?? '';
+    return;
+  }
+
+  const selectedValues = new Set(
+    inputs.filter((input) => input.checked).map((input) => String(input.value ?? '')),
+  );
+  creatorCrateDropdownNativeOptions(nativeSelect).forEach((option) => {
+    option.selected = selectedValues.has(String(option.value ?? ''));
+  });
+}
+
+function creatorCrateDropdownDispatchesNativeChange(dropdown) {
+  return dropdown?.dataset?.ccDropdownDispatchNativeChange !== undefined
+    || dropdown?.hasAttribute?.('data-cc-dropdown-dispatch-native-change');
+}
+
+function dispatchCreatorCrateDropdownNativeChange(nativeSelect) {
+  if (!nativeSelect?.dispatchEvent) return;
+  const document = nativeSelect.ownerDocument;
+  const EventConstructor = document?.defaultView?.Event || globalThis.Event;
+  if (typeof EventConstructor !== 'function') return;
+  nativeSelect.dispatchEvent(new EventConstructor('change', { bubbles: true }));
+}
+
+function syncCreatorCrateDropdownFromNative(nativeSelect) {
+  const dropdown = creatorCrateDropdownForNativeSelect(nativeSelect);
+  if (!dropdown) return;
+  syncCreatorCrateDropdownOptionsFromNative(dropdown);
+  syncCreatorCrateDropdownInputsFromNative(dropdown);
+  syncCreatorCrateDropdownDisabledState(dropdown);
+  updateCreatorCrateDropdownSummary(dropdown);
+  updateCreatorCrateDropdownSearch(dropdown);
+}
+
+function updateCreatorCrateDropdownSummary(dropdown) {
+  const mode = creatorCrateDropdownMode(dropdown);
+  const currentSummary = dropdown?.querySelector?.(CC_DROPDOWN_CURRENT_SUMMARY_SELECTOR)
+    || dropdown?.querySelector?.(ASSET_VIEWER_FILTER_SINGLE_SELECT_SUMMARY_SELECTOR);
+  const summary = dropdown?.querySelector?.('summary');
+  if (!mode || !currentSummary || !summary) return;
+
+  let summaryText;
+  if (mode === 'single') {
+    const selectedInput = dropdown.querySelector?.('input[type="radio"]:checked');
+    summaryText = assetViewerFilterSingleSelectLabel(selectedInput);
+    if (!selectedInput || summaryText === '') return;
+  } else if (mode === 'multiple') {
+    const selectedInputs = creatorCrateDropdownInputs(dropdown, mode).filter((input) => input.checked);
+    const emptySummary = dropdown.dataset?.ccDropdownEmptySummary
+      ?? dropdown.getAttribute?.('data-cc-dropdown-empty-summary')
+      ?? 'None selected';
+    const countLabel = dropdown.dataset?.ccDropdownCountLabel
+      ?? dropdown.getAttribute?.('data-cc-dropdown-count-label')
+      ?? 'items';
+    if (selectedInputs.length === 0) {
+      summaryText = emptySummary;
+    } else if (selectedInputs.length === 1) {
+      summaryText = assetViewerFilterMultiSelectLabel(selectedInputs[0])
+        || `1 ${countLabel.replace(/s$/, '')} selected`;
+    } else {
+      summaryText = `${selectedInputs.length} ${countLabel} selected`;
+    }
+  } else {
+    return;
+  }
+
+  currentSummary.textContent = summaryText;
+  summary.setAttribute?.('title', summaryText);
+  const ariaLabel = summary.getAttribute?.('aria-label');
+  if (typeof ariaLabel !== 'string' || ariaLabel === '') return;
+
+  const separator = ariaLabel.indexOf(':');
+  summary.setAttribute(
+    'aria-label',
+    separator >= 0 ? `${ariaLabel.slice(0, separator + 1)} ${summaryText}` : summaryText,
+  );
+}
+
+function initializeCreatorCrateDropdown(dropdown) {
+  const nativeSelect = creatorCrateDropdownNativeSelect(dropdown);
+  if (nativeSelect) {
+    dropdown.removeAttribute?.('hidden');
+    nativeSelect.hidden = true;
+    nativeSelect.setAttribute?.('hidden', '');
+    syncCreatorCrateDropdownOptionsFromNative(dropdown);
+    syncCreatorCrateDropdownInputsFromNative(dropdown);
+  }
+  syncCreatorCrateDropdownDisabledState(dropdown);
+  updateAssetViewerFilterDisclosureState(dropdown);
+  updateCreatorCrateDropdownSummary(dropdown);
+  updateCreatorCrateDropdownSearch(dropdown);
+}
+
+function handleCreatorCrateDropdownChange(dropdown, event) {
+  const mode = creatorCrateDropdownMode(dropdown);
+  const nativeSelect = creatorCrateDropdownNativeSelect(dropdown);
+  if (!mode) return;
+
+  if (event.target === nativeSelect) {
+    syncCreatorCrateDropdownFromNative(nativeSelect);
+    return;
+  }
+
+  if (mode === 'single' && event.target?.type === 'radio') {
+    creatorCrateDropdownInputs(dropdown, mode).forEach((input) => {
+      input.checked = input === event.target;
+    });
+    syncCreatorCrateDropdownNativeFromInputs(dropdown);
+    if (creatorCrateDropdownDispatchesNativeChange(dropdown)) {
+      dispatchCreatorCrateDropdownNativeChange(nativeSelect);
+    }
+    const form = nativeSelect?.form || dropdown.closest?.('form');
+    if (form?.matches?.(ASSET_SELECTION_FORM_SELECTOR)) {
+      updateAssetSelectionState(form, liveRegionDocument(dropdown) || form);
+    }
+    updateCreatorCrateDropdownSummary(dropdown);
+    dropdown.open = false;
+    dropdown.removeAttribute?.('open');
+    syncCreatorCrateDropdownDisabledState(dropdown);
+    updateAssetViewerFilterDisclosureState(dropdown);
+    dropdown.querySelector?.('summary')?.focus?.();
+  } else if (mode === 'multiple' && event.target?.type === 'checkbox') {
+    syncCreatorCrateDropdownNativeFromInputs(dropdown);
+    if (creatorCrateDropdownDispatchesNativeChange(dropdown)) {
+      dispatchCreatorCrateDropdownNativeChange(nativeSelect);
+    }
+    syncCreatorCrateDropdownDisabledState(dropdown);
+    updateCreatorCrateDropdownSummary(dropdown);
+  }
+}
+
 function getAssetDisclosures(scope, selector) {
   return Array.from(scope?.querySelectorAll?.(selector) || []);
 }
@@ -5242,6 +5515,7 @@ function closeAssetDisclosures(disclosures, except = null) {
   disclosures.forEach((disclosure) => {
     if (disclosure === except || disclosure.open !== true) return;
     disclosure.open = false;
+    disclosure.removeAttribute?.('open');
     updateAssetViewerFilterDisclosureState(disclosure);
   });
 }
@@ -5264,6 +5538,13 @@ function enhanceAssetDisclosures(scope, {
     scope.addEventListener?.('click', (event) => {
       const currentDisclosures = getAssetDisclosures(scope, selector);
       const current = findAssetDisclosure(currentDisclosures, selector, event.target);
+      if (current && creatorCrateDropdownIsDisabled(current)) {
+        event.preventDefault?.();
+        current.open = false;
+        current.removeAttribute?.('open');
+        updateAssetViewerFilterDisclosureState(current);
+        return;
+      }
       closeAssetDisclosures(currentDisclosures, current);
     });
 
@@ -5272,23 +5553,41 @@ function enhanceAssetDisclosures(scope, {
       const disclosure = findAssetDisclosure(currentDisclosures, selector, event.target);
       if (!disclosure) return;
       onChange?.(disclosure, event);
+    }, true);
+
+    scope.addEventListener?.('input', (event) => {
+      const currentDisclosures = getAssetDisclosures(scope, selector);
+      const disclosure = findAssetDisclosure(currentDisclosures, selector, event.target);
+      if (!disclosure || !creatorCrateDropdownIsSearchable(disclosure)) return;
+      if (event.target !== creatorCrateDropdownSearchInput(disclosure)) return;
+      updateCreatorCrateDropdownSearch(disclosure);
     });
 
     scope.addEventListener?.('keydown', (event) => {
-      if (event.key !== 'Escape') return;
-
       const currentDisclosures = getAssetDisclosures(scope, selector);
       const targetDisclosure = findAssetDisclosure(currentDisclosures, selector, event.target);
+      if (event.key === 'Enter'
+        && !event.isComposing
+        && targetDisclosure
+        && creatorCrateDropdownIsSearchable(targetDisclosure)
+        && event.target === creatorCrateDropdownSearchInput(targetDisclosure)) {
+        event.preventDefault?.();
+        return;
+      }
+      if (event.key !== 'Escape') return;
+
       const active = targetDisclosure?.open === true
         ? targetDisclosure
         : currentDisclosures.find((disclosure) => disclosure.open === true);
       if (!active) return;
 
       event.preventDefault?.();
+      event.stopPropagation?.();
       active.open = false;
+      active.removeAttribute?.('open');
       updateAssetViewerFilterDisclosureState(active);
       active.querySelector?.('summary')?.focus?.();
-    });
+    }, true);
 
     scope.addEventListener?.('toggle', (event) => {
       const currentDisclosures = getAssetDisclosures(scope, selector);
@@ -5297,6 +5596,12 @@ function enhanceAssetDisclosures(scope, {
 
       updateAssetViewerFilterDisclosureState(disclosure);
       if (disclosure.open === true) {
+        if (creatorCrateDropdownIsDisabled(disclosure)) {
+          disclosure.open = false;
+          disclosure.removeAttribute?.('open');
+          updateAssetViewerFilterDisclosureState(disclosure);
+          return;
+        }
         closeAssetDisclosures(currentDisclosures, disclosure);
       }
     }, true);
@@ -5324,143 +5629,13 @@ export function enhanceAssetViewerFilterDisclosures(scope = globalThis.document)
   });
 }
 
-function getAssetActionSelectControl(disclosure) {
-  return disclosure?.closest?.('[data-asset-action-select-control]')
-    || disclosure?.parentElement
-    || null;
-}
-
-function getAssetActionSelectNative(disclosure) {
-  return getAssetActionSelectControl(disclosure)
-    ?.querySelector?.('[data-asset-action-select-native]') || null;
-}
-
-function getAssetActionSelectOptions(select) {
-  return Array.from(select?.options || select?.querySelectorAll?.('option') || []);
-}
-
-function getAssetActionOptionValue(option) {
-  return String(option?.value ?? option?.getAttribute?.('value') ?? '');
-}
-
-function getAssetActionOptionLabel(option) {
-  return String(option?.textContent || '').trim().replace(/\s+/g, ' ');
-}
-
-function updateAssetActionSelectDisclosure(disclosure, nativeSelect) {
-  const nativeOptions = getAssetActionSelectOptions(nativeSelect);
-  const selectedOption = nativeOptions.find((option) => option.selected === true)
-    || nativeOptions.find((option) => getAssetActionOptionValue(option) === String(nativeSelect?.value ?? ''))
-    || nativeOptions[0];
-  const selectedValue = getAssetActionOptionValue(selectedOption);
-  const selectedLabel = getAssetActionOptionLabel(selectedOption) || selectedValue;
-  const customOptions = Array.from(disclosure.querySelectorAll?.(ASSET_ACTION_SELECT_OPTION_SELECTOR) || []);
-
-  customOptions.forEach((option) => {
-    option.checked = getAssetActionOptionValue(option) === selectedValue;
+export function enhanceDropdowns(scope = globalThis.document) {
+  return enhanceAssetDisclosures(scope, {
+    selector: CC_DROPDOWN_SELECTOR,
+    boundKey: 'creatorCrateDropdownsBound',
+    initialize: initializeCreatorCrateDropdown,
+    onChange: handleCreatorCrateDropdownChange,
   });
-
-  const summary = disclosure.querySelector?.('summary');
-  const currentSummary = disclosure.querySelector?.('[data-asset-action-select-summary]');
-  if (currentSummary) currentSummary.textContent = selectedLabel;
-  if (summary) {
-    const ariaLabel = summary.getAttribute?.('aria-label');
-    if (typeof ariaLabel === 'string' && ariaLabel !== '') {
-      const separator = ariaLabel.indexOf(':');
-      summary.setAttribute(
-        'aria-label',
-        separator >= 0 ? `${ariaLabel.slice(0, separator + 1)} ${selectedLabel}` : selectedLabel,
-      );
-    }
-    summary.setAttribute?.('title', selectedLabel);
-  }
-}
-
-function selectAssetActionOption(disclosure, nativeSelect, option, scope) {
-  const value = getAssetActionOptionValue(option);
-  const nativeOptions = getAssetActionSelectOptions(nativeSelect);
-  if (!nativeOptions.some((candidate) => getAssetActionOptionValue(candidate) === value)) return;
-
-  nativeSelect.value = value;
-  nativeOptions.forEach((candidate) => {
-    candidate.selected = getAssetActionOptionValue(candidate) === value;
-  });
-  updateAssetActionSelectDisclosure(disclosure, nativeSelect);
-  disclosure.open = false;
-  updateAssetViewerFilterDisclosureState(disclosure);
-  disclosure.querySelector?.('summary')?.focus?.();
-
-  const control = getAssetActionSelectControl(disclosure);
-  const form = nativeSelect.form || control?.closest?.('form');
-  if (form) updateAssetSelectionState(form, scope);
-}
-
-export function enhanceAssetActionSelects(scope = globalThis.document) {
-  if (!scope || typeof scope.querySelectorAll !== 'function') return 0;
-
-  const eventScope = liveRegionDocument(scope) || scope;
-  const disclosures = getAssetDisclosures(eventScope, ASSET_ACTION_SELECT_DISCLOSURE_SELECTOR);
-  disclosures.forEach((disclosure) => {
-    const nativeSelect = getAssetActionSelectNative(disclosure);
-    const customOptions = Array.from(disclosure.querySelectorAll?.(ASSET_ACTION_SELECT_OPTION_SELECTOR) || []);
-    if (!nativeSelect || customOptions.length === 0) return;
-
-    if (!isEnhancementBound(disclosure, 'assetActionSelectBound')) {
-      markEnhancementBound(disclosure, 'assetActionSelectBound');
-      customOptions.forEach((option) => {
-        option.addEventListener?.('change', () => selectAssetActionOption(
-          disclosure,
-          nativeSelect,
-          option,
-          eventScope,
-        ));
-      });
-      nativeSelect.addEventListener?.('change', () => {
-        updateAssetActionSelectDisclosure(disclosure, nativeSelect);
-      });
-    }
-
-    updateAssetActionSelectDisclosure(disclosure, nativeSelect);
-    setHidden(nativeSelect, true);
-    setHidden(disclosure, false);
-  });
-
-  return enhanceAssetDisclosures(eventScope, {
-    selector: ASSET_ACTION_SELECT_DISCLOSURE_SELECTOR,
-    boundKey: 'assetActionSelectDisclosuresBound',
-    initialize: (disclosure) => {
-      const nativeSelect = getAssetActionSelectNative(disclosure);
-      if (nativeSelect) updateAssetActionSelectDisclosure(disclosure, nativeSelect);
-    },
-  });
-}
-
-export function enhanceAssetProjectFilter(scope = globalThis.document) {
-  if (!scope || typeof scope.querySelectorAll !== 'function') return 0;
-
-  const filters = scope.querySelectorAll(ASSET_PROJECT_FILTER_SELECTOR);
-  filters.forEach((filter) => {
-    const options = Array.from(filter.querySelectorAll?.(ASSET_PROJECT_FILTER_OPTION_SELECTOR) || []);
-    const search = filter.querySelector?.(ASSET_PROJECT_FILTER_SEARCH_SELECTOR);
-    const fieldName = assetProjectFilterFieldName(filter);
-
-    if (!isEnhancementBound(filter, 'assetProjectFilterBound')) {
-      markEnhancementBound(filter, 'assetProjectFilterBound');
-      search?.addEventListener?.('input', () => updateAssetProjectFilterOptions(filter, options));
-      options.forEach((option) => {
-        assetProjectFilterInput(option, fieldName)?.addEventListener?.('change', () => {
-          updateAssetProjectFilterSummary(filter, options);
-        });
-      });
-      filter.addEventListener?.('toggle', () => updateAssetProjectFilterDisclosure(filter));
-    }
-
-    updateAssetProjectFilterSummary(filter, options);
-    updateAssetProjectFilterOptions(filter, options);
-    updateAssetProjectFilterDisclosure(filter);
-  });
-
-  return filters.length;
 }
 
 function getProjectAssetCategoryFilterInput(option) {
@@ -5470,12 +5645,6 @@ function getProjectAssetCategoryFilterInput(option) {
 function updateProjectAssetCategoryFilter(filter, options, presenceControl, syncPresence = false) {
   let selectedOption = options.find((option) => getProjectAssetCategoryFilterInput(option)?.checked);
   let selectedInput = getProjectAssetCategoryFilterInput(selectedOption);
-  const missingOption = options.find((option) => {
-    const input = getProjectAssetCategoryFilterInput(option);
-    return input?.value === 'all'
-      && input?.getAttribute?.('data-asset-category-presence') === 'missing';
-  });
-  const missingLabel = missingOption?.querySelector?.('label')?.textContent?.trim() || 'Missing';
   const selectedPresence = selectedInput?.getAttribute?.('data-asset-category-presence') || 'all';
 
   const presenceControls = Array.isArray(presenceControl) ? presenceControl : [presenceControl];
@@ -5509,20 +5678,10 @@ function updateProjectAssetCategoryFilter(filter, options, presenceControl, sync
     if (allInput) allInput.checked = true;
   }
 
-  selectedOption = options.find((option) => getProjectAssetCategoryFilterInput(option)?.checked);
-  selectedInput = getProjectAssetCategoryFilterInput(selectedOption);
-  const selectedLabel = selectedOption?.querySelector?.('label')?.textContent?.trim()
-    || 'All categories';
-  effectivePresence = effectivePresence || selectedPresence;
-  const summaryText = selectedInput?.value === 'all' && effectivePresence === 'missing'
-    ? missingLabel
-    : selectedLabel;
-  const summary = filter.querySelector?.('[data-asset-category-filter-summary]');
-  const trigger = filter.querySelector?.('summary');
-  const currentSummary = filter.querySelector?.('[data-asset-category-filter-current-summary]') || summary;
-  if (currentSummary) currentSummary.textContent = summaryText;
-  trigger?.setAttribute?.('aria-label', `Category filter: ${summaryText}`);
-  trigger?.setAttribute?.('title', summaryText);
+  const dropdown = filter?.matches?.(CC_DROPDOWN_SELECTOR)
+    ? filter
+    : filter?.querySelector?.(CC_DROPDOWN_SELECTOR);
+  updateCreatorCrateDropdownSummary(dropdown);
 }
 
 export function enhanceProjectAssetCategoryFilter(scope = globalThis.document) {
@@ -6532,6 +6691,7 @@ export function enhanceSlideshow(scope = globalThis.document) {
     if (boundTrigger) boundTrigger.disabled = !normalAvailable;
     if (playPauseBtn) playPauseBtn.disabled = !activeAvailable;
     if (speedSelect) speedSelect.disabled = !activeAvailable;
+    syncCreatorCrateDropdownDisabledState(creatorCrateDropdownForNativeSelect(speedSelect));
     if (fullscreenBtn && fullscreenApiAvailable) fullscreenBtn.disabled = !activeAvailable;
     if (prevBtn) prevBtn.disabled = sequence.length < 2;
     if (nextBtn) nextBtn.disabled = sequence.length < 2;
@@ -6874,7 +7034,8 @@ export function enhanceSlideshow(scope = globalThis.document) {
   }
 
   function getFocusableControls() {
-    return [fullscreenBtn, closeBtn, prevBtn, playPauseBtn, speedSelect, nextBtn, originalSizeBtn].filter(
+    const speedControl = creatorCrateDropdownSummaryForNativeSelect(speedSelect) || speedSelect;
+    return [fullscreenBtn, closeBtn, prevBtn, playPauseBtn, speedControl, nextBtn, originalSizeBtn].filter(
       (el) => el && !el.disabled
     );
   }
@@ -7035,13 +7196,12 @@ if (typeof document !== 'undefined') {
     enhanceAssetAutoRenameOrdering(document);
     enhanceCategoryDetails(document);
     enhanceConfirmations(document);
-    enhanceAssetActionSelects(document);
     enhanceAssetSelection(document);
     enhanceAssetRenames(document);
     enhanceAssetGridSize(document);
     enhanceProjectGridSize(document);
-    enhanceAssetProjectFilter(document);
     enhanceProjectAssetCategoryFilter(document);
+    enhanceDropdowns(document);
     enhanceAssetViewerFilterDisclosures(document);
     enhanceAppDialogs(document);
     enhanceProjectsLiveFiltering(document);

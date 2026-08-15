@@ -20,6 +20,14 @@ const VALID_DEFAULTS = {
   new_projectStatus: 'ready',
 };
 
+const NEW_PROJECT_STATUS_OPTIONS = [
+  ['tbd', 'TBD'],
+  ['planned', 'Planned'],
+  ['in-progress', 'In progress'],
+  ['ready', 'Ready'],
+  ['completed', 'Completed'],
+];
+
 const MOVED_DEFAULTS = {
   releasesView: 'board',
   releasesSort: 'title',
@@ -50,6 +58,10 @@ function selectedValue(html, id) {
   const select = html.match(new RegExp(`<select id="${id}"[\\s\\S]*?</select>`))?.[0];
   if (!select) throw new Error(`Select ${id} was not rendered.`);
   return select.match(/<option value="([^"]+)" selected>/)?.[1];
+}
+
+function settingsSection(html, id) {
+  return html.match(new RegExp(`<section id="${id}"[\\s\\S]*?<\\/section>`))?.[0] || '';
 }
 
 function defaultKey(page, option) {
@@ -115,6 +127,35 @@ describe('settings — page defaults HTTP', () => {
     expect(res.text).toContain('id="releaseManagementView" name="releaseManagementView"');
     expect(res.text).toContain('id="releaseManagementSort" name="releaseManagementSort"');
     expect(res.text).toContain('id="releaseManagementOrder" name="releaseManagementOrder"');
+  });
+
+  it('uses a native-backed single select only for New Projects Status', async () => {
+    const res = await agent.get('/settings/defaults').expect(200);
+    const newProjects = settingsSection(res.text, 'defaults-new-projects');
+    const statusSelect = newProjects.match(/<select id="new_projectStatus"[\s\S]*?<\/select>/)?.[0] || '';
+    const releaseManagement = settingsSection(res.text, 'defaults-release-management');
+
+    expect(newProjects).toContain('data-cc-dropdown data-cc-dropdown-mode="single"');
+    expect(statusSelect).toMatch(
+      /<select id="new_projectStatus" name="new_projectStatus" class="cc-dropdown-native-select" data-cc-dropdown-native-select[^>]*required>/,
+    );
+    expect(statusSelect).not.toBe('');
+    for (const [value, label] of NEW_PROJECT_STATUS_OPTIONS) {
+      expect(statusSelect).toMatch(new RegExp(`<option value="${value}"(?: selected)?\>${label}<\\/option>`));
+    }
+    expect(statusSelect).toContain('<option value="tbd" selected>TBD</option>');
+    expect(newProjects).toMatch(/<input[^>]*type="radio" value="tbd"[^>]*checked/);
+    expect(newProjects).not.toMatch(/<input[^>]*name="new_projectStatus"/);
+    expect((newProjects.match(/name="new_projectStatus"/g) || [])).toHaveLength(1);
+    expect(newProjects).not.toContain('aria-invalid');
+    expect(newProjects).not.toContain('new_projectStatus-error');
+
+    expect(releaseManagement).not.toContain('data-cc-dropdown');
+    expect(releaseManagement).not.toContain('<details');
+    expect((releaseManagement.match(/<select /g) || [])).toHaveLength(3);
+    for (const id of ['releaseManagementView', 'releaseManagementSort', 'releaseManagementOrder']) {
+      expect(releaseManagement).toContain(`id="${id}"`);
+    }
   });
 
   it('uses application fallbacks for the remaining Settings-owned defaults', async () => {
@@ -226,6 +267,18 @@ describe('settings — page defaults HTTP', () => {
     expect(res.text).toContain('new_project.status');
     expect(res.text).toContain('Submitted value: kanban');
     expect(res.text).toContain('Submitted value: cancelled');
+    const newProjects = settingsSection(res.text, 'defaults-new-projects');
+    const statusSelect = newProjects.match(/<select id="new_projectStatus"[\s\S]*?<\/select>/)?.[0] || '';
+    expect(statusSelect).toContain('<option value="cancelled" selected>Submitted value: cancelled</option>');
+    expect(statusSelect).toMatch(/aria-describedby="new_projectStatus-error"[^>]*aria-invalid="true"/);
+    expect(newProjects).toMatch(
+      /<summary[^>]*aria-describedby="new_projectStatus-error"[^>]*aria-invalid="true"/,
+    );
+    expect(newProjects).toMatch(/id="new_projectStatus-submitted"[^>]*value="cancelled"[^>]*checked/);
+    expect(newProjects).not.toMatch(/<input[^>]*name="new_projectStatus"/);
+    expect(res.text).toContain(
+      'class="field-error-message" id="new_projectStatus-error">Value &quot;cancelled&quot; is not supported for new_project.status.</span>',
+    );
     expect(movedStorageSnapshot(db)).toEqual(movedBefore);
     expect(readMeta(db, defaultKey('releaseManagement', 'view'))).toBe('board');
     expect(readMeta(db, defaultKey('new_project', 'status'))).toBe('ready');

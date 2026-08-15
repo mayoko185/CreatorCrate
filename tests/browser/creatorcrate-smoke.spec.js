@@ -73,11 +73,72 @@ test.describe('CreatorCrate development browser smoke', () => {
 
     await expect.poll(() => readBodyBackground(page)).toBe('rgb(13, 15, 19)');
     await waitForViteWebSocket(diagnostics);
-    await exerciseProjectFilterEnhancement(page);
+    await exerciseSearchableProjectDropdown(page);
 
     expect(navigationCount()).toBe(1);
     assertNoToastUiRequests(diagnostics);
     assertNoBrowserDiagnostics(diagnostics);
+  });
+
+  test('keeps Project scheduling dropdown content in field items at the review width', async ({ page, devServer }) => {
+    const diagnostics = observeBrowser(page, devServer.baseURL);
+    await page.setViewportSize({ width: 1280, height: 800 });
+    const response = await page.goto(`${devServer.baseURL}/projects/new`, { waitUntil: 'domcontentloaded' });
+    expect(response?.status()).toBe(200);
+
+    const row = page.locator('.project-form .scheduling-row');
+    const items = row.locator(':scope > .field.scheduling-field');
+    await expect(items).toHaveCount(4);
+    await expect(items.nth(0).locator('[data-cc-dropdown-mode="single"]')).toHaveCount(1);
+    await expect(items.nth(1).locator('[data-cc-dropdown-mode="multiple"]')).toHaveCount(1);
+    await expect(items.nth(1).locator('.help-text')).toHaveText('Add new tags in Settings › Tags.');
+
+    const layout = await page.evaluate(() => {
+      const rowElement = document.querySelector('.project-form .scheduling-row');
+      const directItems = [...(rowElement?.children || [])];
+      const statusItem = directItems.find((item) => item.querySelector('#project-status-form'));
+      const tagsItem = directItems.find((item) => item.querySelector('#project-tags-form'));
+      const plannedDateItem = document.querySelector('#plannedDate')?.closest('.field');
+      const publishedDateItem = document.querySelector('#publishedDate')?.closest('.field');
+      const tagsHelp = tagsItem?.querySelector('.help-text');
+      const tagsFieldset = tagsItem?.querySelector('fieldset');
+      const tops = [statusItem, tagsItem, plannedDateItem, publishedDateItem]
+        .map((item) => item?.getBoundingClientRect().top || 0);
+
+      return {
+        directTags: directItems.map((item) => item.tagName),
+        sameRow: Math.max(...tops) - Math.min(...tops) <= 1,
+        tagsHelpIsRowChild: tagsHelp?.parentElement === rowElement,
+        tagsHelpBelowControl: (tagsHelp?.getBoundingClientRect().top || 0)
+          >= (tagsFieldset?.getBoundingClientRect().bottom || 0),
+      };
+    });
+    expect(layout.directTags).toEqual(['DIV', 'DIV', 'DIV', 'DIV']);
+    expect(layout.sameRow).toBe(true);
+    expect(layout.tagsHelpIsRowChild).toBe(false);
+    expect(layout.tagsHelpBelowControl).toBe(true);
+    assertNoBrowserDiagnostics(diagnostics);
+
+    await page.locator('#project-form').evaluate((form) => {
+      form.querySelectorAll('input[name="status"]').forEach((input) => {
+        input.checked = false;
+      });
+      form.submit();
+    });
+    await expect(page.locator('#status-error')).toBeVisible();
+
+    const errorPlacement = await page.evaluate(() => {
+      const rowElement = document.querySelector('.project-form .scheduling-row');
+      const statusItem = [...(rowElement?.children || [])]
+        .find((item) => item.querySelector('#project-status-form'));
+      const error = document.querySelector('#status-error');
+      return {
+        direct: error?.parentElement === rowElement,
+        belongsToStatus: Boolean(statusItem?.contains(error)),
+      };
+    });
+    expect(errorPlacement.direct).toBe(false);
+    expect(errorPlacement.belongsToStatus).toBe(true);
   });
 
   test('previews and applies Auto Rename for only explicitly selected assets', async ({ page, devServer }) => {
@@ -188,6 +249,145 @@ test.describe('CreatorCrate development browser smoke', () => {
     for (const filename of proposedFilenames) {
       await fs.access(path.join(projectPath, categorySlug, filename));
     }
+    assertNoBrowserDiagnostics(diagnostics);
+  });
+
+  test('keeps adjacent project filters clickable after selecting a maximum-length Project', async ({ page, devServer }) => {
+    const diagnostics = observeBrowser(page, devServer.baseURL);
+    await page.setViewportSize({ width: 1600, height: 800 });
+    const tagName = `T${Date.now()}`;
+    await createBrowserTag(page, devServer.baseURL, tagName);
+
+    const projectTitles = [
+      `Browser Dropdown Short ${Date.now()}`,
+      `Browser Dropdown Medium ${Date.now()}`,
+      `Long Project ${'W'.repeat(187)}`,
+    ];
+    const projectIds = [];
+    for (const title of projectTitles) {
+      projectIds.push(await createBrowserProject(page, devServer.baseURL, title));
+    }
+
+    const longProjectTitle = projectTitles.at(-1);
+    const longProjectId = projectIds.at(-1);
+    const response = await page.goto(`${devServer.baseURL}/projects?project=${longProjectId}`, {
+      waitUntil: 'domcontentloaded',
+    });
+    expect(response?.status()).toBe(200);
+
+    const projectFilter = page.locator('#project-project-filter');
+    const projectSummary = projectFilter.locator('summary');
+    await expect(projectFilter.locator('.asset-filter-multiselect-summary-current')).toHaveText(longProjectTitle);
+
+    const summaryGeometry = await page.evaluate(() => {
+      const project = document.querySelector('#project-project-filter summary')?.getBoundingClientRect();
+      const following = ['status', 'tag', 'sort', 'order'].map((name) => (
+        document.querySelector(`#project-${name}-filter-trigger`)?.getBoundingClientRect()
+      ));
+      return {
+        projectY: project?.y,
+        followingY: following.map((rect) => rect?.y),
+      };
+    });
+    expect(summaryGeometry.followingY.every((y) => Math.abs(summaryGeometry.projectY - y) <= 1)).toBe(true);
+
+    const projectSummaryMetrics = await projectFilter.locator('.asset-filter-multiselect-summary-current').evaluate((element) => {
+      const style = getComputedStyle(element);
+      const surface = element.closest('[data-cc-dropdown-summary]');
+      const trigger = element.closest('summary');
+      return {
+        clientWidth: element.clientWidth,
+        scrollWidth: element.scrollWidth,
+        overflow: style.overflow,
+        textOverflow: style.textOverflow,
+        whiteSpace: style.whiteSpace,
+        surfaceWidth: surface?.getBoundingClientRect().width || 0,
+        surfaceOverflow: surface ? getComputedStyle(surface).overflow : '',
+        triggerRight: trigger?.getBoundingClientRect().right || 0,
+        viewportWidth: window.innerWidth,
+      };
+    });
+    expect(projectSummaryMetrics.clientWidth).toBeGreaterThan(0);
+    expect(projectSummaryMetrics.scrollWidth).toBeGreaterThan(projectSummaryMetrics.surfaceWidth);
+    expect(projectSummaryMetrics.surfaceOverflow).toBe('hidden');
+    expect(projectSummaryMetrics.triggerRight).toBeLessThanOrEqual(projectSummaryMetrics.viewportWidth);
+    expect(projectSummaryMetrics.overflow).toBe('hidden');
+    expect(projectSummaryMetrics.textOverflow).toBe('ellipsis');
+    expect(projectSummaryMetrics.whiteSpace).toBe('nowrap');
+
+    async function hitAtCenter(selector) {
+      const hit = await page.evaluate((targetSelector) => {
+        const element = document.querySelector(targetSelector);
+        const rect = element?.getBoundingClientRect();
+        if (!element || !rect) return null;
+        const x = rect.left + rect.width / 2;
+        const y = rect.top + rect.height / 2;
+        const target = document.elementFromPoint(x, y);
+        return {
+          x,
+          y,
+          targetId: target?.id || '',
+          targetClass: target?.className || '',
+          resolvesToElement: target === element || element.contains(target),
+        };
+      }, selector);
+      expect(hit).not.toBeNull();
+      expect(hit.resolvesToElement).toBe(true);
+      await page.mouse.click(hit.x, hit.y);
+    }
+
+    for (const name of ['status', 'tag', 'sort', 'order']) {
+      const trigger = page.locator(`#project-${name}-filter-trigger`);
+      await hitAtCenter(`#project-${name}-filter-trigger`);
+      await expect(trigger).toHaveAttribute('aria-expanded', 'true');
+      await expect(page.locator(`#project-${name}-filter-options`)).toBeVisible();
+      await expect(projectFilter).not.toHaveAttribute('open');
+      await page.keyboard.press('Escape');
+      await expect(trigger).toHaveAttribute('aria-expanded', 'false');
+    }
+
+    await expect(projectSummary).toBeVisible();
+
+    const filterChanges = [
+      { name: 'status', value: 'planned' },
+      { name: 'tag', value: null },
+      { name: 'sort', value: 'title' },
+      { name: 'order', value: 'asc' },
+    ];
+    for (const change of filterChanges) {
+      await page.goto(`${devServer.baseURL}/projects?project=${longProjectId}`, {
+        waitUntil: 'domcontentloaded',
+      });
+      const filter = page.locator(`#project-${change.name}-filter`);
+      const input = change.value === null
+        ? filter.locator('input[name="tag"]').first()
+        : filter.locator(`input[name="${change.name}"][value="${change.value}"]`);
+      await expect(input).toHaveCount(1);
+
+      const requests = [];
+      const onRequest = (request) => {
+        const url = new URL(request.url());
+        if (request.method() === 'GET' && url.pathname === '/projects') requests.push(request);
+      };
+      page.on('request', onRequest);
+      try {
+        const responsePromise = page.waitForResponse((response) => {
+          const url = new URL(response.url());
+          return response.request().method() === 'GET' && url.pathname === '/projects';
+        });
+        await hitAtCenter(`#project-${change.name}-filter-trigger`);
+        await expect(filter.locator('summary')).toHaveAttribute('aria-expanded', 'true');
+        await input.scrollIntoViewIfNeeded();
+        await hitAtCenter(`#project-${change.name}-filter-options input[name="${change.name}"]${change.value === null ? '' : `[value="${change.value}"]`}`);
+        await responsePromise;
+        await expect.poll(() => requests.length).toBe(1);
+        await page.waitForTimeout(100);
+        expect(requests).toHaveLength(1);
+      } finally {
+        page.off('request', onRequest);
+      }
+    }
+
     assertNoBrowserDiagnostics(diagnostics);
   });
 
@@ -1947,10 +2147,10 @@ test.describe('CreatorCrate development browser smoke', () => {
       await expect(page.locator('h1')).toHaveText('Projects');
       await expect.poll(() => readBodyBackground(page)).toBe('rgb(13, 15, 19)');
 
-      // Re-run the existing project-filter interaction after the reload. This
+      // Re-run the existing searchable Project interaction after the reload. This
       // catches a broken document re-entry or duplicate initialization without
       // adding a test-only application marker.
-      await exerciseProjectFilterEnhancement(page);
+      await exerciseSearchableProjectDropdown(page);
       expect(hasReceivedHmrMessage(diagnostics, 'full-reload')).toBe(true);
       assertNoBrowserDiagnostics(diagnostics);
     } finally {
@@ -2017,7 +2217,7 @@ test.describe('CreatorCrate production browser smoke', () => {
     }
 
     await expect.poll(() => readBodyBackground(page)).toBe('rgb(13, 15, 19)');
-    await exerciseProjectFilterEnhancement(page);
+    await exerciseSearchableProjectDropdown(page);
     expect(getRequestedPaths(diagnostics).filter((resourcePath) => editorAssetPaths.has(resourcePath))).toEqual([]);
     assertNoToastUiRequests(diagnostics);
 
@@ -2381,14 +2581,37 @@ async function readBodyBackground(page) {
   return page.locator('body').evaluate((body) => getComputedStyle(body).backgroundColor);
 }
 
-async function exerciseProjectFilterEnhancement(page) {
-  const filter = page.locator('[data-asset-project-filter]');
+async function createBrowserProject(page, baseURL, title) {
+  const response = await page.goto(`${baseURL}/projects/new`, { waitUntil: 'domcontentloaded' });
+  expect(response?.status()).toBe(200);
+  await page.locator('#title').fill(title);
+  await Promise.all([
+    page.waitForURL(/\/projects\/\d+$/),
+    page.locator('button[type="submit"][form="project-form"]').click(),
+  ]);
+  return new URL(page.url()).pathname.split('/').at(-1);
+}
+
+async function createBrowserTag(page, baseURL, name) {
+  const response = await page.goto(`${baseURL}/settings/tags`, { waitUntil: 'domcontentloaded' });
+  expect(response?.status()).toBe(200);
+  await page.locator('#tag-name').fill(name);
+  await Promise.all([
+    page.waitForURL((url) => new URL(url).pathname === '/settings/tags'),
+    page.getByRole('button', { name: 'Create Tag', exact: true }).click(),
+  ]);
+}
+
+async function exerciseSearchableProjectDropdown(page) {
+  const filter = page.locator('#project-project-filter');
   await expect(filter).toHaveCount(1);
+  await expect(filter.locator('label[for="project-project-filter-search"]')).not.toHaveClass(/(?:^|\s)sr-only(?:\s|$)/);
   const summary = filter.locator('summary');
   await summary.focus();
   await summary.press('Enter');
-  await filter.locator('input[data-asset-project-filter-search]').fill('creatorcrate-browser-smoke-no-match');
-  await expect(filter.locator('[data-asset-project-filter-no-results]')).toBeVisible();
+  await expect(filter.locator('input[data-cc-dropdown-search]')).toHaveAccessibleName('Search projects');
+  await filter.locator('input[data-cc-dropdown-search]').fill('creatorcrate-browser-smoke-no-match');
+  await expect(filter.locator('[data-cc-dropdown-no-results]')).toBeVisible();
   await expect(filter.locator('summary')).toHaveAttribute('aria-expanded', 'true');
 }
 

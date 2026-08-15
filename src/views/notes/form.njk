@@ -1,5 +1,6 @@
 {% extends "layout.njk" %}
 {% import "partials/page-heading.njk" as pageHeading %}
+{% import "partials/dropdown.njk" as dropdown %}
 
 {% set title = action ~ ' Note' %}
 {% set page_title = "Notes — Edit " ~ note.title if action == 'Edit' else "Notes — " ~ title %}
@@ -53,38 +54,38 @@
             {% set projectSummary = selectedProjectIds.length ~ ' projects selected' %}
           {% endif %}
 
-          <fieldset class="field notes-connections-field asset-viewer-filter-field asset-filter-multiselect-field{% if projectError %} field-error{% endif %}">
-            <legend>Projects</legend>
-            <details class="asset-filter-multiselect asset-filter-multiselect--sized">
-              <summary id="note-projects-form-trigger"
-                       aria-controls="note-projects-form-options"
-                       aria-label="Projects: {{ projectSummary }}">
-                <span class="asset-filter-multiselect-summary">
-                  <span class="asset-filter-multiselect-summary-current">{{ projectSummary }}</span>
-                  <span class="asset-filter-multiselect-summary-width" aria-hidden="true">
-                    <span>No projects selected</span>
-                    {% for project in projects %}<span>{{ project.title }}</span>{% endfor %}
-                    <span>{{ projects.length }} projects selected</span>
-                  </span>
-                </span>
-              </summary>
-              <div id="note-projects-form-options" class="asset-filter-multiselect-panel" role="group" aria-label="Project options">
-                {% if projects.length > 0 %}
-                  {% for project in projects %}
-                    <div class="asset-filter-multiselect-option">
-                      <label for="note-project-option-{{ project.id }}">
-                        <input id="note-project-option-{{ project.id }}" name="projectIds[]" type="checkbox" value="{{ project.id }}"{% if (project.id | string) in selectedProjectIds %} checked{% endif %}{% if projectError %} aria-describedby="projectIds-error" aria-invalid="true"{% endif %}>
-                        <span>{{ project.title }}</span>
-                      </label>
-                    </div>
-                  {% endfor %}
-                {% else %}
-                  <p class="asset-filter-multiselect-empty">No projects available. <a href="/projects/new">Create a project</a>.</p>
-                {% endif %}
-              </div>
-            </details>
-            {% if projectError %}<span class="field-error-message" id="projectIds-error">{{ projectError }}</span>{% endif %}
-          </fieldset>
+          {% set projectOptions = [] %}
+          {% for project in projects %}
+            {% set _ = projectOptions.push({ value: project.id | string, label: project.title }) %}
+          {% endfor %}
+
+          {{ dropdown.multiSelect({
+            id: "note-projects-form",
+            name: "projectIds[]",
+            label: "Projects",
+            options: projectOptions,
+            selectedValues: selectedProjectIds,
+            emptySummary: "No projects selected",
+            countLabel: "projects",
+            summary: projectSummary,
+            triggerAriaLabel: "Projects: " ~ projectSummary,
+            summaryAttributes: [
+              ["aria-describedby", "projectIds-error" if projectError else none],
+              ["aria-invalid", "true" if projectError else none]
+            ],
+            inputAttributes: [
+              ["aria-describedby", "projectIds-error" if projectError else none],
+              ["aria-invalid", "true" if projectError else none]
+            ],
+            emptyState: {
+              text: "No projects available.",
+              link: { text: "Create a project", href: "/projects/new" },
+              suffix: "."
+            },
+            fieldClasses: "notes-connections-field asset-viewer-filter-field" ~ (" field-error" if projectError else ""),
+            panelLabel: "Project options"
+          }) }}
+          {% if projectError %}<span class="field-error-message" id="projectIds-error">{{ projectError }}</span>{% endif %}
 
           {% set assetError = errors.assetIds or errors.associations %}
 

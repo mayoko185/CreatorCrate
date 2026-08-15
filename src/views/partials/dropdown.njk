@@ -1,0 +1,127 @@
+{# Public API: dropdown.singleSelect({ id, name, label, options, selected, placeholder, panelLabel }),
+   dropdown.searchableSingleSelect({ id, name, label, options, selected, placeholder, panelLabel,
+   searchLabel, searchInputId, noResultsText, optionListLabel, valueKey, labelKey }),
+   and dropdown.multiSelect({ id, name, label, options, selectedValues, emptySummary, countLabel, panelLabel,
+   emptyOptionText, emptyState: { text, link: { text, href }, suffix } }).
+   For empty multi-selects, emptyState takes precedence over emptyOptionText.
+   Both modes also support nativeSelect, compact, leadingOption, summaryAttributes,
+   and dispatchNativeChange for generic progressive-enhancement consumers. #}
+{% macro optionLabel(config, option, prefix) -%}{% set labelKey = config.labelKey or 'label' -%}{% set valueKey = config.valueKey or 'value' -%}{{ prefix or '' }}{{ option[labelKey] or option.label or option.displayName or option.text or option[valueKey] }}{%- endmacro %}
+
+{% macro singleSummary(config) -%}{% set valueKey = config.valueKey or 'value' -%}{% if config.summary is defined -%}{{ config.summary }}{%- elif config.selected is defined and config.selected != '' and config.selected is not none -%}{% if config.leadingOption and config.leadingOption[valueKey] == config.selected %}{{ optionLabel(config, config.leadingOption, config.optionPrefix) }}{% else %}{% for option in config.options -%}{% if option[valueKey] == config.selected %}{{ optionLabel(config, option, config.optionPrefix) }}{% endif -%}{%- endfor %}{% endif -%}{%- else -%}{{ config.placeholder or '' }}{%- endif -%}{%- endmacro %}
+
+{% macro multiSummary(config, selectedValues) -%}{% set valueKey = config.valueKey or 'value' -%}{% if config.summary is defined -%}{{ config.summary }}{%- elif selectedValues.length == 0 -%}{{ config.emptySummary or 'None selected' }}{%- elif selectedValues.length == 1 -%}{% for option in config.options -%}{% if option[valueKey] in selectedValues %}{{ optionLabel(config, option, config.optionPrefix) }}{% endif -%}{%- endfor -%}{%- else -%}{{ selectedValues.length }} {{ config.countLabel or 'items' }} selected{%- endif -%}{%- endmacro %}
+
+{% macro renderOption(config, option, mode, index, selected, placeholder=false, searchable=false) %}
+  {% set optionIdPrefix = config.optionIdPrefix or config.id %}
+  {% set optionId = option.id or (optionIdPrefix ~ '-option-' ~ index) %}
+  {% set valueKey = config.valueKey or 'value' %}
+  {% set optionValue = '' if placeholder else option[valueKey] %}
+  {% set inputAttributes = config.inputAttributes or config.optionInputAttributes %}
+  <div class="asset-filter-multiselect-option{% if searchable %} asset-project-filter-option{% endif %}{% if option.classes %} {{ option.classes }}{% endif %}">
+    <label for="{{ optionId }}">
+      <input id="{{ optionId }}"{% if not config.nativeSelect and (config.name or config.fieldName) %} name="{{ config.name or config.fieldName }}"{% endif %} type="{{ 'radio' if mode == 'single' else 'checkbox' }}" value="{{ optionValue }}"{% if selected %} checked{% endif %}{% if config.disabled or option.disabled %} disabled{% endif %}{% if option.disabled %} data-cc-dropdown-option-disabled="true"{% endif %}{% if inputAttributes and not placeholder %}{% for attribute, value in inputAttributes %}{% if value is not none and value != false %} {{ attribute }}{% if value != true %}="{{ value }}"{% endif %}{% endif %}{% endfor %}{% endif %}{% if option.attributes %}{% for attribute, value in option.attributes %}{% if value is not none and value != false %} {{ attribute }}{% if value != true %}="{{ value }}"{% endif %}{% endif %}{% endfor %}{% endif %}>
+      <span>{{ optionLabel(config, option, '' if placeholder else config.optionPrefix) }}{% if option.suffix %} <em{% if option.suffixClass %} class="{{ option.suffixClass }}"{% endif %}>{{ option.suffix }}</em>{% endif %}</span>
+    </label>
+  </div>
+{% endmacro %}
+
+{% macro nativeOption(config, option, selected) %}
+  {% set valueKey = config.valueKey or 'value' %}
+  <option value="{{ option[valueKey] }}"{% if selected %} selected{% endif %}{% if option.disabled %} disabled{% endif %}{% if option.attributes %}{% for attribute, value in option.attributes %}{% if value is not none and value != false %} {{ attribute }}{% if value != true %}="{{ value }}"{% endif %}{% endif %}{% endfor %}{% endif %}>{{ optionLabel(config, option, config.optionPrefix) }}</option>
+{% endmacro %}
+
+{% macro render(config, mode, forceSearchable=false) %}
+  {% set selectedValues = config.selectedValues if config.selectedValues is defined else config.selected %}
+  {% if selectedValues is not defined or selectedValues is none %}{% set selectedValues = [] %}{% endif %}
+  {% set searchable = forceSearchable or config.searchable or config.type == 'searchable-single' %}
+  {% set fieldName = config.name or config.fieldName %}
+  {% set triggerId = config.triggerId or (config.id ~ '-trigger') %}
+  {% set panelId = config.panelId or (config.id ~ '-options') %}
+  {% set optionListId = config.optionListId or (config.id ~ '-option-list') %}
+  {% set searchInputId = config.searchInputId or config.searchId or (config.id ~ '-search') %}
+  {% set noResultsId = config.noResultsId or (config.id ~ '-no-results') %}
+  {% set summaryText = singleSummary(config) if mode == 'single' else multiSummary(config, selectedValues) %}
+  {% set panelLabel = config.panelLabel or (config.label ~ ' options') %}
+  {% set optionListLabel = config.optionListLabel or config.optionListAriaLabel or panelLabel %}
+  {% set searchLabel = config.searchLabel or ('Search ' ~ config.label) %}
+  {% set noResultsText = config.noResultsText or 'No matching options' %}
+  {% set countLabel = config.countLabel or 'items' %}
+
+  <fieldset class="field asset-filter-multiselect-field{% if config.fieldClasses %} {{ config.fieldClasses }}{% endif %}{% if config.compact %} cc-dropdown-field--compact{% endif %}"{% if config.fieldAttributes %}{% for attribute, value in config.fieldAttributes %}{% if value is not none and value != false %} {{ attribute }}{% if value != true %}="{{ value }}"{% endif %}{% endif %}{% endfor %}{% endif %}>
+    <legend{% if config.visuallyHiddenLabel %} class="sr-only"{% endif %}>{{ config.label }}{% if config.required %} <span class="required" aria-label="required">*</span>{% endif %}</legend>
+    {% if config.nativeSelect %}
+      {% set nativeId = config.nativeSelect.id or (config.id ~ '-native') %}
+      <select id="{{ nativeId }}"{% if fieldName %} name="{{ fieldName }}"{% endif %} class="cc-dropdown-native-select{% if config.nativeSelect.classes %} {{ config.nativeSelect.classes }}{% endif %}" data-cc-dropdown-native-select aria-label="{{ config.label }}"{% if mode == 'multiple' %} multiple{% endif %}{% if config.disabled %} disabled{% endif %}{% if config.nativeSelect.attributes %}{% for attribute, value in config.nativeSelect.attributes %}{% if value is not none and value != false %} {{ attribute }}{% if value != true %}="{{ value }}"{% endif %}{% endif %}{% endfor %}{% endif %}>
+        {% if config.leadingOption %}
+          {{ nativeOption(config, config.leadingOption, true) }}
+        {% endif %}
+        {% if mode == 'single' and config.placeholder %}
+          <option value=""{% if config.selected is not defined or config.selected is none or config.selected == '' %} selected{% endif %}>{{ config.placeholder }}</option>
+        {% endif %}
+        {% for option in config.options %}
+          {% set optionSelected = option.selected %}
+          {% set valueKey = config.valueKey or 'value' %}
+          {% if mode == 'single' and config.selected is defined and option.selected is not defined %}{% set optionSelected = option[valueKey] == config.selected %}{% endif %}
+          {% if mode == 'multiple' and config.selectedValues is defined and option.selected is not defined %}{% set optionSelected = option[valueKey] in selectedValues %}{% endif %}
+          {{ nativeOption(config, option, optionSelected) }}
+        {% endfor %}
+      </select>
+    {% endif %}
+    <details class="asset-filter-multiselect asset-filter-multiselect--sized cc-dropdown{% if config.compact %} cc-dropdown--compact{% endif %}{% if config.classes %} {{ config.classes }}{% endif %}" id="{{ config.id }}" data-cc-dropdown data-cc-dropdown-mode="{{ mode }}"{% if searchable %} data-cc-dropdown-searchable data-cc-dropdown-type="searchable-single"{% endif %} data-cc-dropdown-empty-summary="{{ config.emptySummary or '' }}" data-cc-dropdown-count-label="{{ countLabel }}"{% if config.dispatchNativeChange %} data-cc-dropdown-dispatch-native-change{% endif %}{% if config.disabled %} data-cc-dropdown-config-disabled data-cc-dropdown-disabled aria-disabled="true"{% endif %}{% if config.nativeSelect %} hidden{% endif %}{% if config.attributes %}{% for attribute, value in config.attributes %}{% if value is not none and value != false %} {{ attribute }}{% if value != true %}="{{ value }}"{% endif %}{% endif %}{% endfor %}{% endif %}>
+      <summary id="{{ triggerId }}" aria-controls="{{ panelId }}" aria-expanded="false" aria-label="{{ config.triggerAriaLabel or (config.label ~ ' filter: ' ~ summaryText) }}" title="{{ summaryText }}"{% if config.disabled %} aria-disabled="true"{% endif %}{% if config.summaryAttributes %}{% for attribute, value in config.summaryAttributes %}{% if value is not none and value != false %} {{ attribute }}{% if value != true %}="{{ value }}"{% endif %}{% endif %}{% endfor %}{% endif %}>
+        <span data-cc-dropdown-summary class="asset-filter-multiselect-summary">
+          <span data-cc-dropdown-summary-current class="asset-filter-multiselect-summary-current">{{ summaryText }}</span>
+          <span class="asset-filter-multiselect-summary-width" aria-hidden="true">
+            {% if mode == 'single' and config.placeholder %}<span>{{ config.placeholder }}</span>{% endif %}
+            {% if config.leadingOption %}<span>{{ optionLabel(config, config.leadingOption, config.optionPrefix) }}</span>{% endif %}
+            {% for option in config.options %}<span>{{ optionLabel(config, option, config.optionPrefix) }}</span>{% endfor %}
+            {% if mode == 'multiple' %}<span>{{ config.options.length }} {{ countLabel }} selected</span>{% endif %}
+          </span>
+        </span>
+      </summary>
+      <div id="{{ panelId }}" class="asset-filter-multiselect-panel{% if searchable %} asset-project-filter-panel{% endif %}" role="{{ 'group' if searchable else ('radiogroup' if mode == 'single' else 'group') }}" aria-label="{{ panelLabel }}">
+        {% if searchable %}
+          <label class="asset-project-filter-search-label" for="{{ searchInputId }}">{{ searchLabel }}</label>
+          <input id="{{ searchInputId }}" class="asset-project-filter-search" type="search" autocomplete="off" data-cc-dropdown-search aria-controls="{{ optionListId }}"{% if config.disabled %} disabled{% endif %}>
+          <div id="{{ optionListId }}" class="asset-project-filter-option-list" data-cc-dropdown-option-list role="radiogroup" aria-label="{{ optionListLabel }}">
+        {% endif %}
+        {% if config.placeholder and mode == 'single' %}
+          {{ renderOption(config, { value: '', label: config.placeholder, id: (config.optionIdPrefix or config.id) ~ '-option-all' }, mode, 'all', config.selected is not defined or config.selected is none or config.selected == '', true, searchable) }}
+        {% endif %}
+        {% if config.leadingOption %}
+          {{ renderOption(config, config.leadingOption, mode, 'leading', true, false, searchable) }}
+        {% endif %}
+        {% if config.options.length > 0 %}
+          {% for option in config.options %}
+            {% set valueKey = config.valueKey or 'value' %}
+            {% set optionSelected = option.selected %}
+            {% if mode == 'single' and config.selected is defined and option.selected is not defined %}{% set optionSelected = option[valueKey] == config.selected %}{% endif %}
+            {% if mode == 'multiple' and config.selectedValues is defined and option.selected is not defined %}{% set optionSelected = option[valueKey] in selectedValues %}{% endif %}
+            {{ renderOption(config, option, mode, loop.index, optionSelected, false, searchable) }}
+          {% endfor %}
+        {% elif mode == 'multiple' and config.emptyState is defined %}
+          <p class="asset-filter-multiselect-empty">{{ config.emptyState.text }}{% if config.emptyState.link %} <a href="{{ config.emptyState.link.href }}">{{ config.emptyState.link.text }}</a>{% endif %}{{ config.emptyState.suffix or '' }}</p>
+        {% elif mode == 'multiple' and config.emptyOptionText %}
+          <p class="asset-filter-multiselect-empty">{{ config.emptyOptionText }}</p>
+        {% endif %}
+        {% if searchable %}
+          </div>
+          <p id="{{ noResultsId }}" class="asset-filter-multiselect-empty asset-project-filter-no-results" data-cc-dropdown-no-results role="status" aria-live="polite" hidden>{{ noResultsText }}</p>
+        {% endif %}
+      </div>
+    </details>
+  </fieldset>
+{% endmacro %}
+
+{% macro singleSelect(config) %}
+  {{ render(config, 'single', config.searchable) }}
+{% endmacro %}
+
+{% macro searchableSingleSelect(config) %}
+  {{ render(config, 'single', true) }}
+{% endmacro %}
+
+{% macro multiSelect(config) %}
+  {{ render(config, 'multiple') }}
+{% endmacro %}

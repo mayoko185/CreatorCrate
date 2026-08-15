@@ -162,6 +162,17 @@ function buildAssetLibraryRenderModel(page, state, {
   assetViewerNsfwError = null,
   assetViewerDefaultsNotice = null,
 } = {}) {
+  const categoryFilterOptions = (page.categoryOptions || [])
+    .filter((option) => option.value !== 'all');
+  const categoryFilterSelectedValues = categoryFilterOptions
+    .filter((option) => option.selected)
+    .map((option) => option.value);
+  const tagFilterSelectedValues = (page.tagOptions || [])
+    .filter((option) => option.selected)
+    .map((option) => option.value);
+  const extensionFilterSelectedValues = (page.extensionOptions || [])
+    .filter((option) => option.selected)
+    .map((option) => option.value);
   const canonicalState = {
     ...state,
     page: page.page,
@@ -173,6 +184,10 @@ function buildAssetLibraryRenderModel(page, state, {
   return {
     ...page,
     assets: page.assets.map((asset) => withNsfwBlur(asset, nsfwFilterEnabled)),
+    categoryFilterOptions,
+    categoryFilterSelectedValues,
+    tagFilterSelectedValues,
+    extensionFilterSelectedValues,
     canonicalUrl: currentUrl,
     currentUrl,
     pageUrl,

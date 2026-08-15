@@ -48,19 +48,19 @@ function extractProjectTags(card) {
 }
 
 function extractTagFilter(html) {
-  return html.match(/<fieldset class="field asset-viewer-filter-field[^"]*">\s*<legend>Tag<\/legend>[\s\S]*?<\/fieldset>/)?.[0] || '';
+  return html.match(/<fieldset class="field[^"]*asset-viewer-filter-field[^"]*">\s*<legend>Tag<\/legend>[\s\S]*?<\/fieldset>/)?.[0] || '';
 }
 
 function extractStatusFilter(html) {
-  return html.match(/<fieldset class="field asset-viewer-filter-field[^"]*">\s*<legend>Status<\/legend>[\s\S]*?<\/fieldset>/)?.[0] || '';
+  return html.match(/<fieldset class="field[^"]*asset-viewer-filter-field[^"]*">\s*<legend>Status<\/legend>[\s\S]*?<\/fieldset>/)?.[0] || '';
 }
 
 function extractSortFilter(html) {
-  return html.match(/<fieldset class="field asset-viewer-filter-field[^"]*">\s*<legend>Sort<\/legend>[\s\S]*?<\/fieldset>/)?.[0] || '';
+  return html.match(/<fieldset class="field[^"]*asset-viewer-filter-field[^"]*">\s*<legend>Sort<\/legend>[\s\S]*?<\/fieldset>/)?.[0] || '';
 }
 
 function extractOrderFilter(html) {
-  return html.match(/<fieldset class="field asset-viewer-filter-field[^"]*">\s*<legend>Sort order<\/legend>[\s\S]*?<\/fieldset>/)?.[0] || '';
+  return html.match(/<fieldset class="field[^"]*asset-viewer-filter-field[^"]*">\s*<legend>Sort order<\/legend>[\s\S]*?<\/fieldset>/)?.[0] || '';
 }
 
 function formatProjectSortLabel(value) {
@@ -75,29 +75,120 @@ function expectProjectSortOrderSelection(html, sort, order) {
   expect(sortFilter).not.toBe('');
   expect(orderFilter).not.toBe('');
   expect(sortFilter).toMatch(new RegExp(`name="sort"[^>]*value="${sort}"[^>]*checked`));
-  expect(sortFilter).toContain(`class="asset-filter-multiselect-summary-current">${formatProjectSortLabel(sort)}</span>`);
+  expect(sortFilter).toContain(`data-cc-dropdown-summary-current class="asset-filter-multiselect-summary-current">${formatProjectSortLabel(sort)}</span>`);
   expect(orderFilter).toMatch(new RegExp(`name="order"[^>]*value="${order}"[^>]*checked`));
-  expect(orderFilter).toContain(`class="asset-filter-multiselect-summary-current">${orderLabel}</span>`);
+  expect(orderFilter).toContain(`data-cc-dropdown-summary-current class="asset-filter-multiselect-summary-current">${orderLabel}</span>`);
 }
 
 function extractProjectFormStatusField(html) {
-  return html.match(/<fieldset class="field[^"]*asset-viewer-filter-field[^"]*asset-filter-multiselect-field[^"]*">\s*<legend>Status[\s\S]*?<\/fieldset>/)?.[0] || '';
+  return html.match(/<fieldset class="field asset-filter-multiselect-field[^"]*">\s*<legend>Status[\s\S]*?<\/fieldset>/)?.[0] || '';
 }
 
 function extractProjectFormTagsField(html) {
-  return html.match(/<fieldset class="field[^"]*asset-viewer-filter-field[^"]*asset-filter-multiselect-field[^"]*">\s*<legend>Tags[\s\S]*?<\/fieldset>/)?.[0] || '';
+  return html.match(/<fieldset class="field[^"]*">\s*<legend>Tags<\/legend>[\s\S]*?<\/fieldset>/)?.[0] || '';
+}
+
+const VOID_HTML_ELEMENTS = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr']);
+
+function extractHtmlElement(html, start) {
+  const openingTag = html.slice(start).match(/^<([a-z][\w:-]*)\b[^>]*>/i);
+  if (!openingTag) return '';
+
+  const tokens = /<\/?([a-z][\w:-]*)\b[^>]*>/gi;
+  tokens.lastIndex = start + openingTag[0].length;
+  let depth = 1;
+  let token;
+  while ((token = tokens.exec(html))) {
+    const tagName = token[1].toLowerCase();
+    if (token[0].startsWith('</')) {
+      depth -= 1;
+      if (depth === 0) return html.slice(start, tokens.lastIndex);
+    } else if (!VOID_HTML_ELEMENTS.has(tagName) && !/\/\s*>$/.test(token[0])) {
+      depth += 1;
+    }
+  }
+
+  return '';
+}
+
+function extractProjectSchedulingRow(html) {
+  const start = html.indexOf('<div class="field-row scheduling-row">');
+  return start >= 0 ? extractHtmlElement(html, start) : '';
+}
+
+function extractDirectHtmlChildren(html) {
+  const openingEnd = html.indexOf('>') + 1;
+  const tokens = /<\/?([a-z][\w:-]*)\b[^>]*>/gi;
+  tokens.lastIndex = openingEnd;
+  const children = [];
+  let depth = 0;
+  let childStart = -1;
+  let token;
+
+  while ((token = tokens.exec(html))) {
+    const tagName = token[1].toLowerCase();
+    if (token[0].startsWith('</')) {
+      if (depth === 0) break;
+      depth -= 1;
+      if (depth === 0) {
+        children.push(html.slice(childStart, tokens.lastIndex));
+        childStart = -1;
+      }
+    } else if (VOID_HTML_ELEMENTS.has(tagName) || /\/\s*>$/.test(token[0])) {
+      if (depth === 0) children.push(token[0]);
+    } else {
+      if (depth === 0) childStart = token.index;
+      depth += 1;
+    }
+  }
+
+  return children;
+}
+
+function expectProjectFormSchedulingStructure(html, { statusError = false, tagError = false } = {}) {
+  const row = extractProjectSchedulingRow(html);
+  expect(row).not.toBe('');
+
+  const children = extractDirectHtmlChildren(row);
+  expect(children).toHaveLength(4);
+  expect(children.every((child) => child.startsWith('<div '))).toBe(true);
+
+  const statusItem = children.find((child) => child.includes('project-status-form-trigger')) || '';
+  const tagsItem = children.find((child) => child.includes('project-tags-form-trigger')) || '';
+  const plannedDateItem = children.find((child) => child.includes('id="plannedDate"')) || '';
+  const publishedDateItem = children.find((child) => child.includes('id="publishedDate"')) || '';
+
+  expect(statusItem).not.toBe('');
+  expect(tagsItem).not.toBe('');
+  expect(plannedDateItem).not.toBe('');
+  expect(publishedDateItem).not.toBe('');
+  expect(statusItem).toMatch(/^<div class="field scheduling-field">/);
+  expect(tagsItem).toMatch(/^<div class="field scheduling-field">/);
+  expect(statusItem).toContain('data-cc-dropdown data-cc-dropdown-mode="single"');
+  expect(tagsItem).toContain('data-cc-dropdown data-cc-dropdown-mode="multiple"');
+  expect(tagsItem).toContain('<span class="help-text">Add new tags in <a href="/settings/tags">Settings › Tags</a>.</span>');
+  expect(children.indexOf(statusItem)).toBeLessThan(children.indexOf(tagsItem));
+  expect(children.indexOf(tagsItem)).toBeLessThan(children.indexOf(plannedDateItem));
+  expect(children.indexOf(plannedDateItem)).toBeLessThan(children.indexOf(publishedDateItem));
+  expect(children.some((child) => /^<span\b[^>]*class="help-text"/.test(child))).toBe(false);
+  expect(children.some((child) => /^<span\b[^>]*id="(?:status-error|tagIds-error)"/.test(child))).toBe(false);
+
+  expect(statusItem.includes('id="status-error"')).toBe(statusError);
+  expect(tagsItem.includes('id="tagIds-error"')).toBe(tagError);
 }
 
 function expectProjectFormStatusDisclosure(html, selectedStatus) {
   const field = extractProjectFormStatusField(html);
   expect(field).not.toBe('');
-  expect(field).toContain('asset-filter-multiselect asset-filter-multiselect--sized');
-  expect(field).toContain('data-asset-viewer-filter-disclosure');
-  expect(field).toContain('data-asset-viewer-filter-single-select');
-  expect(field).toContain('aria-controls="project-status-form-options"');
-  expect(field).toContain('class="asset-filter-multiselect-summary"');
+  expect(field).toContain('asset-filter-multiselect asset-filter-multiselect--sized cc-dropdown');
+  expect(field).toContain('data-cc-dropdown data-cc-dropdown-mode="single"');
+  expect(field).not.toContain('data-asset-viewer-filter-disclosure');
+  expect(field).not.toContain('data-asset-viewer-filter-single-select');
+  expect(field).not.toContain('data-asset-viewer-filter-multi-select');
+  expect(field).toContain('id="project-status-form-trigger" aria-controls="project-status-form-options"');
+  expect(field).toContain('data-cc-dropdown-summary class="asset-filter-multiselect-summary"');
   expect(field).toContain('class="asset-filter-multiselect-summary-width" aria-hidden="true"');
-  expect(field).toContain('class="asset-filter-multiselect-panel" role="group" aria-label="Status options"');
+  expect(field).toContain('class="asset-filter-multiselect-panel" role="radiogroup" aria-label="Status options"');
   expect(field).not.toContain('<select');
 
   const radios = field.match(/<input[^>]*name="status"[^>]*type="radio"[^>]*>/g) || [];
@@ -110,7 +201,8 @@ function expectProjectFormStatusDisclosure(html, selectedStatus) {
   if (selectedStatus) {
     const label = selectedStatus.replaceAll('-', ' ').replace(/\b\w/g, (character) => character.toUpperCase());
     expect(field).toMatch(new RegExp(`name="status"[^>]*value="${selectedStatus}"[^>]*checked`));
-    expect(field).toContain(`class="asset-filter-multiselect-summary-current">${label}</span>`);
+    expect(field).toContain(`data-cc-dropdown-summary-current class="asset-filter-multiselect-summary-current">${label}</span>`);
+    expect(field).toContain(`aria-label="Status: ${label}"`);
   }
 
   return field;
@@ -126,7 +218,7 @@ function expectProjectFormSectionCards(html) {
 }
 
 function extractProjectFilter(html) {
-  return html.match(/<fieldset class="field asset-viewer-filter-field[^"]*">\s*<legend>Project<\/legend>[\s\S]*?<\/fieldset>/)?.[0] || '';
+  return html.match(/<fieldset class="[^"]*asset-viewer-project-filter[^"]*">\s*<legend>Project<\/legend>[\s\S]*?<\/fieldset>/)?.[0] || '';
 }
 
 function extractReleaseList(html) {
@@ -320,11 +412,47 @@ describe('project HTTP workflow', () => {
     expect((response.text.match(/<dialog id="projects-defaults-dialog"/g) || [])).toHaveLength(1);
     expect(response.text).toContain('<form id="projects-defaults-form" method="post" action="/projects/defaults"');
     expect(response.text).toContain('name="_csrf"');
-    expect(response.text).toMatch(/data-dialog-field="view"[\s\S]*?<select id="projects-default-view" name="view"/);
-    expect(response.text).toMatch(/data-dialog-field="sort"[\s\S]*?<select id="projects-default-sort" name="sort"/);
-    expect(response.text).toMatch(/data-dialog-field="order"[\s\S]*?<select id="projects-default-order" name="order"/);
-    expect(response.text.indexOf('data-dialog-field="view"')).toBeLessThan(response.text.indexOf('data-dialog-field="sort"'));
-    expect(response.text.indexOf('data-dialog-field="sort"')).toBeLessThan(response.text.indexOf('data-dialog-field="order"'));
+
+    const defaultsDialog = response.text.match(/<dialog id="projects-defaults-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+    expect((defaultsDialog.match(/data-cc-dropdown data-cc-dropdown-mode="single"/g) || [])).toHaveLength(3);
+    for (const field of [
+      { name: 'view', id: 'projects-default-view', values: ['grid', 'list'], selected: 'grid', summary: 'Grid' },
+      {
+        name: 'sort',
+        id: 'projects-default-sort',
+        values: ['updated', 'created', 'title', 'published'],
+        selected: 'created',
+        summary: 'Recently created',
+      },
+      { name: 'order', id: 'projects-default-order', values: ['asc', 'desc'], selected: 'desc', summary: 'Descending' },
+    ]) {
+      expect(defaultsDialog).toContain(`data-dialog-field="${field.name}"`);
+      const nativeSelect = defaultsDialog.match(new RegExp(`<select id="${field.id}"[\\s\\S]*?<\\/select>`))?.[0] || '';
+      expect(nativeSelect).not.toBe('');
+      for (const value of field.values) expect(nativeSelect).toContain(`value="${value}"`);
+      expect(nativeSelect).toMatch(new RegExp(`value="${field.selected}" selected`));
+      expect(defaultsDialog).toMatch(new RegExp(
+        `<select id="${field.id}" name="${field.name}"[^>]*data-cc-dropdown-native-select`,
+      ));
+      expect(defaultsDialog).toMatch(new RegExp(
+        `<select[^>]*id="${field.id}"[^>]*required`,
+      ));
+      expect(defaultsDialog).toMatch(new RegExp(
+        `id="${field.id}-dropdown"[^>]*data-cc-dropdown data-cc-dropdown-mode="single"`,
+      ));
+      expect(defaultsDialog).toContain(`class="asset-filter-multiselect-summary-current">${field.summary}</span>`);
+      expect(defaultsDialog).toMatch(new RegExp(
+        `<input[^>]*type="radio" value="${field.selected}"[^>]*checked`,
+      ));
+      expect(defaultsDialog).not.toMatch(new RegExp(`<input[^>]*name="${field.name}"`));
+      expect((defaultsDialog.match(new RegExp(`name="${field.name}"`, 'g')) || [])).toHaveLength(1);
+    }
+    expect(defaultsDialog).not.toContain('field-error');
+    expect(defaultsDialog).not.toMatch(/<select[^>]*aria-describedby/);
+    expect(defaultsDialog).not.toContain('aria-invalid');
+    expect(defaultsDialog).not.toContain('data-dialog-submitted-value');
+    expect(defaultsDialog.indexOf('data-dialog-field="view"')).toBeLessThan(defaultsDialog.indexOf('data-dialog-field="sort"'));
+    expect(defaultsDialog.indexOf('data-dialog-field="sort"')).toBeLessThan(defaultsDialog.indexOf('data-dialog-field="order"'));
   });
 
   it('renders the persisted enabled NSFW state accessibly', async () => {
@@ -468,6 +596,20 @@ describe('project HTTP workflow', () => {
     expect(temporaryOptions).toHaveLength(1);
     expect(temporaryOptions[0]).toContain('value="not-valid"');
     expect(temporaryOptions[0]).toContain('selected');
+
+    expect(dialog).toMatch(
+      /<select id="projects-default-sort" name="sort"[^>]*data-cc-dropdown-native-select[^>]*aria-describedby="projects-default-sort-error"[^>]*aria-invalid(?:="true")?/,
+    );
+    expect(dialog).toMatch(
+      /id="projects-default-sort-dropdown"[^>]*data-cc-dropdown data-cc-dropdown-mode="single"[\s\S]*?<summary[^>]*aria-describedby="projects-default-sort-error"[^>]*aria-invalid(?:="true")?/,
+    );
+    expect(dialog).toContain('class="asset-filter-multiselect-summary-current">Submitted value: not-valid</span>');
+    expect(dialog).toMatch(
+      /id="projects-default-sort-submitted"[^>]*value="not-valid"[^>]*checked[^>]*data-dialog-submitted-value/,
+    );
+    expect(dialog).toContain('id="projects-default-sort-error"');
+    expect(dialog).toMatch(/class="field app-dialog-field field-error" data-dialog-field="sort"/);
+    expect(dialog).not.toMatch(/<input[^>]*name="sort"/);
   });
 
   it('keeps the normal Projects defaults POST fallback and rejects missing CSRF', async () => {
@@ -486,7 +628,7 @@ describe('project HTTP workflow', () => {
       .expect(403);
   });
 
-  it('renders status and tag multiselects with Asset Viewer disclosure hooks and checked values', async () => {
+  it('renders status and tag standard multiselects with checked values', async () => {
     const firstTag = app.locals.tagService.createTag({ name: 'First Project Filter Tag' });
     const secondTag = app.locals.tagService.createTag({ name: 'Second Project Filter Tag' });
 
@@ -498,10 +640,11 @@ describe('project HTTP workflow', () => {
     const filterActions = res.text.match(/<div class="project-filter-actions(?: [^"]*)?">[\s\S]*?<\/div>/)?.[0] || '';
     expect(filterActions).not.toContain('<button class="button" type="submit" form="project-filters">Filter</button>');
     expect(res.text).toContain('<noscript><button class="button" type="submit" form="project-filters">Filter</button></noscript>');
-    expect(res.text).toContain('<input id="project-search" name="search" type="search" value="" data-projects-search>');
+    expect(res.text).not.toContain('id="project-search"');
+    expect(res.text).not.toContain('data-projects-search');
     expect(res.text.indexOf('<div class="asset-viewer-display-controls"')).toBeLessThan(res.text.indexOf('<form id="project-filters"'));
     expect(res.text).toMatch(/project-filter-actions[^>]*>[\s\S]*?<a class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--left"[\s\S]*?href="\/projects"[\s\S]*?aria-label="Reset filters"/);
-    expect((res.text.match(/data-asset-viewer-filter-disclosure/g) || [])).toHaveLength(5);
+    expect((res.text.match(/data-asset-viewer-filter-disclosure/g) || [])).toHaveLength(0);
 
     const css = await fetchProjectCss(app);
     expect(css).not.toMatch(/#project-filters\s+\.field\s+select\s*\{/);
@@ -509,66 +652,93 @@ describe('project HTTP workflow', () => {
     expect(css).toMatch(/\.project-filter-actions--projects\s*\{[^}]*top:\s*var\(--space-xs\)[^}]*z-index:\s*70/);
     expect(css).toMatch(/\.asset-viewer-filters\s*\{[^}]*z-index:\s*20/);
     expect(css).toMatch(/--shell-z-overlay:\s*1200/);
+    expect(css).toMatch(/\.asset-viewer-project-filter\s*\{[^}]*z-index:\s*45/);
+    expect(css).not.toMatch(/#project-filters\s*>\s*\.asset-viewer-project-filter\s*\{[^}]*z-index:\s*auto/);
     expect(css).toMatch(/\.project-filter-actions--projects \.project-filter-control\s*\{[^}]*min-block-size:\s*2\.25rem[^}]*min-inline-size:\s*2\.25rem/);
     expect(css).toMatch(/\.asset-viewer-project-filter\s+\.asset-project-filter-option-list\s*\{[^}]*overflow-y:\s*auto/);
+    expect(css).toMatch(/\.asset-viewer-project-filter\s+\.asset-project-filter-option-list\s*\{[\s\S]*?scrollbar-color:\s*var\(--border-strong\)\s+transparent;[\s\S]*?scrollbar-width:\s*thin/);
+    expect(css).toMatch(/\.asset-viewer-project-filter\s+\.asset-project-filter-option-list::\-webkit-scrollbar\s*\{[^}]*width:\s*0\.5rem/);
+    expect(css).toMatch(/\.asset-viewer-project-filter\s+\.asset-project-filter-option-list::\-webkit-scrollbar-track\s*\{[^}]*background:\s*transparent/);
+    expect(css).toMatch(/\.asset-viewer-project-filter\s+\.asset-project-filter-option-list::\-webkit-scrollbar-thumb\s*\{[\s\S]*?background:\s*var\(--border-strong\)[\s\S]*?border:\s*2px solid var\(--surface-card\)[\s\S]*?border-radius:\s*999px/);
+    expect(css).toMatch(/\.asset-viewer-project-filter\s+\.asset-project-filter-option-list::\-webkit-scrollbar-thumb:hover\s*\{[^}]*background:\s*var\(--muted\)/);
+    expect(css).not.toMatch(/#(?:project|asset)-project-filter\s+\.asset-project-filter-option-list/);
     expect(css).toMatch(/\.asset-viewer-project-filter\s+\.asset-filter-multiselect-summary-current\s*\{[^}]*text-overflow:\s*ellipsis/);
-    expect(extractStatusFilter(res.text)).toContain('aria-label="Status filter: 2 statuses selected"');
-    expect(extractStatusFilter(res.text)).toMatch(/name="status"[^>]+value="planned" checked/);
-    expect(extractStatusFilter(res.text)).toMatch(/name="status"[^>]+value="ready" checked/);
-    expect(extractTagFilter(res.text)).toContain('aria-label="Tag filter: 2 tags selected"');
-    expect(extractTagFilter(res.text)).toMatch(new RegExp(`name="tag"[^>]+value="${firstTag.id}" checked`));
-    expect(extractTagFilter(res.text)).toMatch(new RegExp(`name="tag"[^>]+value="${secondTag.id}" checked`));
-    for (const [filter, inputName] of [[extractStatusFilter(res.text), 'status'], [extractTagFilter(res.text), 'tag']]) {
+    const statusFilter = extractStatusFilter(res.text);
+    const tagFilter = extractTagFilter(res.text);
+    for (const [filter, inputName, mode] of [[statusFilter, 'status', 'multiple'], [tagFilter, 'tag', 'multiple']]) {
+      expect(filter).toContain(`data-cc-dropdown data-cc-dropdown-mode="${mode}"`);
+      expect(filter).not.toContain('data-asset-viewer-filter-disclosure');
+      expect(filter).not.toContain('data-asset-viewer-filter-single-select');
+      expect(filter).not.toContain('data-asset-viewer-filter-multi-select');
       expect(filter).toContain('asset-filter-multiselect--sized');
-      expect(filter).toContain('class="asset-filter-multiselect-summary-current"');
+      expect(filter).toContain('data-cc-dropdown-summary-current class="asset-filter-multiselect-summary-current"');
       expect(filter).toContain('class="asset-filter-multiselect-summary-width" aria-hidden="true"');
       expect(filter).toMatch(new RegExp(`<label for="[^"]+">\\s*<input[^>]+name="${inputName}"`));
     }
+    expect(statusFilter).toContain('aria-label="Status filter: 2 statuses selected"');
+    expect(statusFilter).toMatch(/name="status"[^>]+value="planned" checked/);
+    expect(statusFilter).toMatch(/name="status"[^>]+value="ready" checked/);
+    expect((statusFilter.match(/name="status"/g) || [])).toHaveLength(6);
+    expect(tagFilter).toContain('aria-label="Tag filter: 2 tags selected"');
+    expect(tagFilter).toMatch(new RegExp(`name="tag"[^>]+value="${firstTag.id}" checked`));
+    expect(tagFilter).toMatch(new RegExp(`name="tag"[^>]+value="${secondTag.id}" checked`));
+    expect((tagFilter.match(/name="tag"/g) || [])).toHaveLength(2);
     expect(res.text).not.toMatch(/<select[^>]+(?:id="status"|id="tag"|name="status"|name="tag")/);
 
     const projectFilter = extractProjectFilter(res.text);
-    expect(projectFilter).toContain('data-asset-project-filter');
-    expect(projectFilter).toContain('data-asset-viewer-filter-disclosure');
+    expect(projectFilter).toContain('data-cc-dropdown data-cc-dropdown-mode="single"');
+    expect(projectFilter).toContain('data-cc-dropdown-searchable');
+    expect(projectFilter).toContain('data-cc-dropdown-type="searchable-single"');
+    expect(projectFilter).not.toContain('data-asset-project-filter');
+    expect(projectFilter).not.toContain('data-asset-viewer-filter-disclosure');
     expect(projectFilter).toContain('asset-viewer-project-filter');
     expect(projectFilter).toContain('asset-filter-multiselect--sized');
     expect(projectFilter).toContain('asset-project-filter-panel');
-    expect(projectFilter).toContain('data-asset-project-filter-search');
-    expect(projectFilter).toContain('data-asset-project-filter-option');
-    expect(projectFilter).toContain('data-asset-project-filter-no-results');
-    expect(projectFilter).toContain('data-asset-project-filter-summary');
-    expect(projectFilter).toContain('data-asset-project-filter-current-summary');
+    expect(projectFilter).toContain('id="project-project-filter-trigger" aria-controls="project-project-filter-options"');
+    expect(projectFilter).toContain('<label class="asset-project-filter-search-label" for="project-project-filter-search">Search projects</label>');
+    expect(projectFilter).toContain('id="project-project-filter-search"');
+    expect(projectFilter).toMatch(/<input id="project-project-filter-search" class="asset-project-filter-search" type="search"[^>]*data-cc-dropdown-search/);
+    expect(projectFilter).toContain('data-cc-dropdown-search');
+    expect(projectFilter).not.toMatch(/id="project-project-filter-search"[^>]*\bname=/);
+    expect(projectFilter).toContain('id="project-project-filter-option-list" class="asset-project-filter-option-list" data-cc-dropdown-option-list');
+    expect(projectFilter).toContain('data-cc-dropdown-no-results');
     expect(projectFilter).toContain('aria-label="Project filter: All projects"');
     expect(projectFilter).toContain('name="project"');
     expect(projectFilter).toMatch(/name="project"[^>]*value=""[^>]*checked/);
     expect(projectFilter).not.toMatch(/name="project"[^>]+value="[0-9]+"[^>]*checked/);
   });
 
-  it('renders Sort and Sort order as separate single-select radio disclosures', async () => {
+  it('renders Sort and Sort order as separate standard single-select radio dropdowns', async () => {
     const res = await agent.get('/projects?sort=title&order=asc').expect(200);
     const sortFilter = extractSortFilter(res.text);
     const orderFilter = extractOrderFilter(res.text);
 
     expectProjectSortOrderSelection(res.text, 'title', 'asc');
-    expect(sortFilter).toContain('data-asset-viewer-filter-disclosure');
-    expect(sortFilter).toContain('data-asset-viewer-filter-single-select');
+    expect(sortFilter).toContain('data-cc-dropdown data-cc-dropdown-mode="single"');
+    expect(sortFilter).not.toContain('data-asset-viewer-filter-disclosure');
+    expect(sortFilter).not.toContain('data-asset-viewer-filter-single-select');
     expect(sortFilter).toContain('aria-controls="project-sort-filter-options"');
     expect(sortFilter).toContain('aria-label="Sort filter: Title"');
+    expect(sortFilter).toContain('data-cc-dropdown-summary-current class="asset-filter-multiselect-summary-current"');
     expect(sortFilter).toContain('class="asset-filter-multiselect-summary-width" aria-hidden="true"');
-    expect(sortFilter).toContain('class="asset-filter-multiselect-panel" role="group" aria-label="Sort options"');
+    expect(sortFilter).toContain('class="asset-filter-multiselect-panel" role="radiogroup" aria-label="Sort options"');
 
     const sortRadios = sortFilter.match(/<input[^>]*name="sort"[^>]*type="radio"[^>]*>/g) || [];
     expect(sortRadios).toHaveLength(4);
     for (const value of ['updated', 'created', 'title', 'published']) {
       expect(sortFilter).toMatch(new RegExp(`name="sort"[^>]*value="${value}"`));
     }
+    expect((sortFilter.match(/name="sort"/g) || [])).toHaveLength(4);
     expect(sortFilter).not.toContain('<select');
 
-    expect(orderFilter).toContain('data-asset-viewer-filter-disclosure');
-    expect(orderFilter).toContain('data-asset-viewer-filter-single-select');
+    expect(orderFilter).toContain('data-cc-dropdown data-cc-dropdown-mode="single"');
+    expect(orderFilter).not.toContain('data-asset-viewer-filter-disclosure');
+    expect(orderFilter).not.toContain('data-asset-viewer-filter-single-select');
     expect(orderFilter).toContain('aria-controls="project-order-filter-options"');
     expect(orderFilter).toContain('aria-label="Sort order filter: Asc"');
+    expect(orderFilter).toContain('data-cc-dropdown-summary-current class="asset-filter-multiselect-summary-current"');
     expect(orderFilter).toContain('class="asset-filter-multiselect-summary-width" aria-hidden="true"');
-    expect(orderFilter).toContain('class="asset-filter-multiselect-panel" role="group" aria-label="Sort order options"');
+    expect(orderFilter).toContain('class="asset-filter-multiselect-panel" role="radiogroup" aria-label="Sort order options"');
     expect(orderFilter).toContain('<span>Desc</span>');
     expect(orderFilter).toContain('<span>Asc</span>');
 
@@ -576,6 +746,7 @@ describe('project HTTP workflow', () => {
     expect(orderRadios).toHaveLength(2);
     expect(orderFilter).toMatch(/name="order"[^>]*value="desc"/);
     expect(orderFilter).toMatch(/name="order"[^>]*value="asc"/);
+    expect((orderFilter.match(/name="order"/g) || [])).toHaveLength(2);
     expect(orderFilter).not.toContain('<select');
     const liveRegion = res.text.match(/<div data-projects-live-region>[\s\S]*?<\/div>\s*<noscript>/)?.[0] || '';
     expect(liveRegion).not.toMatch(/<select[^>]+(?:id="sort"|id="order"|name="sort"|name="order")/);
@@ -1215,9 +1386,16 @@ describe('project HTTP workflow', () => {
     expect(extractProjectCards(filtered.text).join('')).not.toContain('Project Filter Beta');
     expect(filtered.text).not.toContain('No projects yet');
     expect(filtered.text).toContain('href="/projects"');
-    expect(extractProjectFilter(filtered.text)).toContain(`value="${firstId}" checked`);
-    expect(extractProjectFilter(filtered.text)).toContain('aria-label="Project filter: Project Filter Alpha"');
-    expect(extractProjectFilter(filtered.text)).toContain('Project Filter Alpha');
+    const projectFilter = extractProjectFilter(filtered.text);
+    expect(projectFilter).toContain(`value="${firstId}" checked`);
+    expect(projectFilter).toContain(`value="${secondId}"`);
+    expect(projectFilter).toContain('Project Filter Alpha');
+    expect(projectFilter).toContain('Project Filter Beta');
+    expect(projectFilter).toContain('id="project-project-filter-trigger" aria-controls="project-project-filter-options"');
+    expect(projectFilter).toContain('id="project-project-filter-search"');
+    expect(projectFilter).toContain('id="project-project-option-all"');
+    expect(projectFilter).toContain(`id="${firstId}" name="project" type="radio" value="${firstId}" checked`);
+    expect(projectFilter).toContain('aria-label="Project filter: Project Filter Alpha"');
   });
 
   it('preserves the selected project id through generated pagination and view links', async () => {
@@ -1258,6 +1436,15 @@ describe('project HTTP workflow', () => {
     expect(extractProjectCards(missing.text).join('')).not.toContain('Project Normalize Alpha');
     expect(extractProjectCards(missing.text).join('')).not.toContain('Project Normalize Beta');
     expect(missing.text).toContain('href="/projects"');
+    const missingProjectFilter = extractProjectFilter(missing.text);
+    expect(missingProjectFilter).toMatch(/id="project-project-option-all"[^>]*checked/);
+    expect(missingProjectFilter).toContain(
+      'data-cc-dropdown-summary-current class="asset-filter-multiselect-summary-current">All projects</span>',
+    );
+    expect(missingProjectFilter).toContain('aria-label="Project filter: All projects"');
+    expect(missingProjectFilter).toContain('title="All projects"');
+    expect((missingProjectFilter.match(/<input[^>]*name="project"[^>]*checked[^>]*>/g) || [])).toHaveLength(1);
+    expect(missingProjectFilter).not.toMatch(/name="project"[^>]*value="999999"[^>]*checked/);
   });
 
   it('renders a selected merged KRA with intrinsic grid presentation and derivative URLs', async () => {
@@ -1404,14 +1591,24 @@ describe('project HTTP workflow', () => {
     expectProjectFormSectionCards(res.text);
     const statusField = expectProjectFormStatusDisclosure(res.text, 'tbd');
     expect(statusField).not.toContain('value="archived"');
+    expect(statusField).not.toContain('aria-invalid');
+    expect(statusField).not.toContain('aria-describedby');
+    expect(statusField).not.toContain('status-error');
     expect(res.text).not.toContain('id="priority"');
     expect(res.text).not.toContain('name="priority"');
 
     const tagsField = extractProjectFormTagsField(res.text);
     expect(tagsField).not.toBe('');
-    expect(tagsField).toContain('data-asset-viewer-filter-disclosure');
-    expect(tagsField).toContain('data-asset-viewer-filter-multi-select');
+    expect(tagsField).toContain('asset-filter-multiselect asset-filter-multiselect--sized cc-dropdown');
+    expect(tagsField).toContain('data-cc-dropdown data-cc-dropdown-mode="multiple"');
+    expect(tagsField).not.toContain('data-asset-viewer-filter-disclosure');
     expect(tagsField).not.toContain('data-asset-viewer-filter-single-select');
+    expect(tagsField).not.toContain('data-asset-viewer-filter-multi-select');
+    expect(tagsField).toMatch(/id="project-tags-form-trigger"\s+aria-controls="project-tags-form-options"/);
+    expect(tagsField).toContain('aria-label="Tags: No tags selected"');
+    expect(tagsField).toContain('data-cc-dropdown-summary class="asset-filter-multiselect-summary"');
+    expect(tagsField).toContain('data-cc-dropdown-summary-current class="asset-filter-multiselect-summary-current">No tags selected</span>');
+    expect(tagsField).toContain('class="asset-filter-multiselect-panel" role="group" aria-label="Tag options"');
     expect(tagsField).toContain('name="tagIds[]"');
     expect(tagsField).toContain(`value="${alpha.id}"`);
     expect(tagsField).toContain(`value="${beta.id}"`);
@@ -1419,8 +1616,12 @@ describe('project HTTP workflow', () => {
     expect(tagsField).toContain('Form Beta');
     expect(tagsField).toContain('type="checkbox"');
     expect(tagsField).not.toContain('required');
-    expect(tagsField).toContain('No tags selected');
-    expect((tagsField.match(/name="tagIds\[\]"[^\u003e]*checked/g) || [])).toHaveLength(0);
+    expect(tagsField).not.toContain('aria-invalid');
+    expect(tagsField).not.toContain('tagIds-error');
+    expect(tagsField).not.toMatch(/<select[^>]*name="tagIds\[\]"/);
+    expect(tagsField).not.toMatch(/<input[^>]*type="hidden"[^>]*name="tagIds\[\]"/);
+    expect((tagsField.match(/name="tagIds\[\]"[^>]*checked/g) || [])).toHaveLength(0);
+    expect((tagsField.match(/<input[^>]*name="tagIds\[\]"/g) || [])).toHaveLength(2);
 
     expect(res.text.indexOf('project-status-form-trigger'))
       .toBeLessThan(res.text.indexOf('project-tags-form-trigger'));
@@ -1428,15 +1629,22 @@ describe('project HTTP workflow', () => {
       .toBeLessThan(res.text.indexOf('plannedDate'));
     expect(res.text.indexOf('plannedDate'))
       .toBeLessThan(res.text.indexOf('publishedDate'));
+    expectProjectFormSchedulingStructure(res.text);
   });
 
   it('new-project form renders an empty tag catalog with a Settings link', async () => {
     const res = await agent.get('/projects/new').expect(200);
     const tagsField = extractProjectFormTagsField(res.text);
-    expect(tagsField).toContain('No tags available');
-    expect(tagsField).toContain('href="/settings/tags"');
-    expect(tagsField).toContain('Add tags in Settings');
-    expect(tagsField).toContain('Add new tags in <a href="/settings/tags">Settings › Tags</a>');
+    expectProjectFormSchedulingStructure(res.text);
+    expect(tagsField).toContain('data-cc-dropdown data-cc-dropdown-mode="multiple"');
+    expect(tagsField).not.toContain('data-asset-viewer-filter-disclosure');
+    expect(tagsField).not.toContain('data-asset-viewer-filter-multi-select');
+    expect(tagsField).toContain('<p class="asset-filter-multiselect-empty">No tags available. <a href="/settings/tags">Add tags in Settings</a>.</p>');
+    expect(tagsField).toContain('aria-label="Tags: No tags selected"');
+    expect(res.text).toContain('<span class="help-text">Add new tags in <a href="/settings/tags">Settings › Tags</a>.</span>');
+    expect((res.text.match(/href="\/settings\/tags"/g) || [])).toHaveLength(2);
+    expect(tagsField.indexOf('No tags available')).toBeLessThan(tagsField.indexOf('Add tags in Settings'));
+    expect(res.text.indexOf('project-tags-form-options')).toBeLessThan(res.text.indexOf('Add new tags in'));
   });
 
   it('project form places actions in the page heading and associates the submit button with the form', async () => {
@@ -1603,9 +1811,14 @@ describe('project HTTP workflow', () => {
     expect(res.text).toContain('One or more selected tags no longer exists. Refresh and try again.');
 
     const tagsField = extractProjectFormTagsField(res.text);
-    expect(tagsField).toMatch(new RegExp(`value="${beta.id}"[^\u003e]*checked`));
+    expect(tagsField).toMatch(new RegExp(`value="${beta.id}"[^>]*checked`));
     expect(tagsField).toContain('Stale Create Beta');
     expect(tagsField).toContain('2 tags selected');
+    expect(tagsField).toContain('field-error');
+    expect(tagsField).toMatch(/<input[^>]*name="tagIds\[\]"[^>]*aria-describedby="tagIds-error"[^>]*aria-invalid="true"/);
+    expect(tagsField).toMatch(/<summary[^>]*aria-describedby="tagIds-error"[^>]*aria-invalid="true"/);
+    expect(res.text).toContain('class="field-error-message" id="tagIds-error"');
+    expectProjectFormSchedulingStructure(res.text, { tagError: true });
   });
 
   it('invalid create request rerenders with values and errors', async () => {
@@ -1858,9 +2071,13 @@ describe('project HTTP workflow', () => {
     expect(rawAssigned).toEqual([beta.id]);
 
     const tagsField = extractProjectFormTagsField(res.text);
-    expect(tagsField).toMatch(new RegExp(`value="${gamma.id}"[^\u003e]*checked`));
+    expect(tagsField).toMatch(new RegExp(`value="${gamma.id}"[^>]*checked`));
     expect(tagsField).toContain('Stale Edit Gamma');
     expect(tagsField).toContain('2 tags selected');
+    expect(tagsField).toContain('field-error');
+    expect(tagsField).toMatch(/<input[^>]*name="tagIds\[\]"[^>]*aria-describedby="tagIds-error"[^>]*aria-invalid="true"/);
+    expect(tagsField).toMatch(/<summary[^>]*aria-describedby="tagIds-error"[^>]*aria-invalid="true"/);
+    expect(res.text).toContain('class="field-error-message" id="tagIds-error"');
   });
 
   it('rejects archived status on update', async () => {
@@ -1895,8 +2112,11 @@ describe('project HTTP workflow', () => {
     const statusField = expectProjectFormStatusDisclosure(res.text, null);
     expect(statusField).not.toMatch(/<input[^>]*name="status"[^>]*value="published"/);
     expect(statusField).toContain('field-error');
-    expect(statusField).toContain('class="field-error-message" id="status-error"');
     expect(statusField).toMatch(/<input[^>]*name="status"[^>]*aria-describedby="status-error"[^>]*aria-invalid="true"/);
+    expect(statusField).toMatch(/<summary[^>]*aria-describedby="status-error"[^>]*aria-invalid="true"/);
+    expect(statusField).toContain('aria-label="Status: "');
+    expect(res.text).toContain('class="field-error-message" id="status-error"');
+    expectProjectFormSchedulingStructure(res.text, { statusError: true });
   });
 
   it('invalid edit request rerenders with submitted values and errors', async () => {
@@ -1952,10 +2172,11 @@ describe('project HTTP workflow', () => {
 
     const res = await agent.get(`${createRes.headers.location}/edit`).expect(200);
     const tagsField = extractProjectFormTagsField(res.text);
-    expect(tagsField).toMatch(new RegExp(`value="${alpha.id}"[^\u003e]*checked`));
-    expect(tagsField).toMatch(new RegExp(`value="${beta.id}"[^\u003e]*checked`));
-    expect(tagsField).not.toMatch(new RegExp(`value="${gamma.id}"[^\u003e]*checked`));
-    expect(tagsField).toContain('2 tags selected');
+    expect(tagsField).toMatch(new RegExp(`value="${alpha.id}"[^>]*checked`));
+    expect(tagsField).toMatch(new RegExp(`value="${beta.id}"[^>]*checked`));
+    expect(tagsField).not.toMatch(new RegExp(`value="${gamma.id}"[^>]*checked`));
+    expect(tagsField).toContain('class="asset-filter-multiselect-summary-current">2 tags selected</span>');
+    expect(tagsField).toContain('aria-label="Tags: 2 tags selected"');
     expect(tagsField).toContain('Edit Render Alpha');
     expect(tagsField).toContain('Edit Render Beta');
     expect(tagsField).toContain('Edit Render Gamma');
@@ -2005,9 +2226,10 @@ describe('project HTTP workflow', () => {
     expect(res.text).toContain('Title is required.');
     expect(res.text).toContain('id="project-form"');
     const tagsField = extractProjectFormTagsField(res.text);
-    expect(tagsField).toMatch(new RegExp(`value="${alpha.id}"[^\u003e]*checked`));
+    expect(tagsField).toMatch(new RegExp(`value="${alpha.id}"[^>]*checked`));
     expect(tagsField).toContain('Create Preserve Alpha');
-    expect(tagsField).toMatch(/\b1 tag selected\b/);
+    expect(tagsField).toContain('class="asset-filter-multiselect-summary-current">Create Preserve Alpha</span>');
+    expect(tagsField).toContain('aria-label="Tags: Create Preserve Alpha"');
   });
 
   it('missing project returns 404', async () => {

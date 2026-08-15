@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { enhanceAppDialogs } from '../src/static/creatorcrate.js';
+import { enhanceAppDialogs, enhanceDropdowns } from '../src/static/creatorcrate.js';
 
 function makeElement(tagName = 'div', attrs = {}) {
   const attributes = new Map();
@@ -38,6 +38,7 @@ function makeElement(tagName = 'div', attrs = {}) {
       if (name === 'name') this.name = value;
       if (name === 'type') this.type = value;
       if (name === 'value') this.value = value;
+      if (name === 'class') value.split(/\s+/).filter(Boolean).forEach((className) => this.classList.add(className));
       if (name === 'action') this.action = value;
       if (name === 'method') this.method = value;
       if (name === 'hidden') this.hidden = true;
@@ -59,6 +60,7 @@ function makeElement(tagName = 'div', attrs = {}) {
       return selector.split(',').some((part) => {
         const candidate = part.trim();
         if (candidate.startsWith('#')) return this.id === candidate.slice(1);
+        if (candidate.includes(':checked') && !this.checked) return false;
         const tag = candidate.match(/^[a-z][\w-]*/i)?.[0];
         if (tag && this.tagName !== tag.toUpperCase()) return false;
         const classMatch = candidate.match(/\.([\w-]+)/);
@@ -88,6 +90,7 @@ function makeElement(tagName = 'div', attrs = {}) {
       };
       adopt(child);
       if (this.tagName === 'SELECT' && child.tagName === 'OPTION') this.options.push(child);
+      if (this.tagName === 'LABEL' && child.tagName === 'SPAN') this.textContent = child.textContent;
       return child;
     },
     replaceWith(next) {
@@ -166,7 +169,46 @@ function addOption(select, value, selected = false) {
   return option;
 }
 
-function makeDialogPage() {
+function addStandardDropdown(field, select, name, options, value) {
+  const fieldset = makeElement('fieldset');
+  const details = makeElement('details', {
+    id: `${name}-dropdown`,
+    'data-cc-dropdown': '',
+    'data-cc-dropdown-mode': 'single',
+    hidden: '',
+  });
+  const summary = makeElement('summary', {
+    'aria-label': `${name} filter: ${value}`,
+  });
+  const current = makeElement('span', { 'data-cc-dropdown-summary-current': '' });
+  current.textContent = value;
+  summary.appendChild(current);
+  const panel = makeElement('div', { 'data-cc-dropdown-option-list': '' });
+  options.forEach((option) => {
+    const wrapper = makeElement('div', { class: 'asset-filter-multiselect-option' });
+    const label = makeElement('label');
+    const input = makeElement('input', {
+      type: 'radio',
+      value: option,
+    });
+    input.checked = option === value;
+    label.appendChild(input);
+    const optionText = makeElement('span');
+    optionText.textContent = option;
+    label.appendChild(optionText);
+    wrapper.appendChild(label);
+    panel.appendChild(wrapper);
+  });
+  select.setAttribute('data-cc-dropdown-native-select', '');
+  fieldset.appendChild(select);
+  details.appendChild(summary);
+  details.appendChild(panel);
+  fieldset.appendChild(details);
+  field.appendChild(fieldset);
+  return { details, summary, panel };
+}
+
+function makeDialogPage({ standardDropdowns = false } = {}) {
   const document = makeElement('document');
   document.nodeType = 9;
   document.ownerDocument = document;
@@ -196,6 +238,7 @@ function makeDialogPage() {
   });
 
   const card = makeElement('div');
+  if (standardDropdowns) card.classList.add('app-dialog-card');
   const close = makeElement('button', { 'data-dialog-close': '' });
   card.appendChild(close);
   const form = makeElement('form', {
@@ -212,19 +255,24 @@ function makeDialogPage() {
   form.appendChild(error);
   form.appendChild(makeElement('input', { name: '_csrf', value: 'csrf-token', type: 'hidden' }));
   const fields = {};
+  const dropdowns = {};
+  const dialogBody = standardDropdowns ? makeElement('div') : null;
+  if (dialogBody) dialogBody.classList.add('app-dialog-body');
   for (const [name, value, options] of [
     ['view', 'grid', ['grid', 'list']],
     ['sort', 'created', ['updated', 'created', 'title', 'published']],
     ['order', 'desc', ['asc', 'desc']],
   ]) {
     const field = makeElement('div', { 'data-dialog-field': name });
-    const select = makeElement('select', { name });
+    const select = makeElement('select', { id: `projects-default-${name}`, name });
     options.forEach((option) => addOption(select, option, option === value));
     select.value = value;
-    field.appendChild(select);
-    form.appendChild(field);
+    if (standardDropdowns) dropdowns[name] = addStandardDropdown(field, select, name, options, value);
+    else field.appendChild(select);
+    (dialogBody || form).appendChild(field);
     fields[name] = select;
   }
+  if (dialogBody) form.appendChild(dialogBody);
   const status = makeElement('div', { 'data-dialog-status': '' });
   const save = makeElement('button', { 'data-dialog-submit': '', type: 'submit' });
   form.appendChild(status);
@@ -263,6 +311,7 @@ function makeDialogPage() {
     form,
     save,
     fields,
+    dropdowns,
     feedback,
   };
 }
@@ -332,8 +381,58 @@ describe('Reusable app dialog enhancement', () => {
     expect(page.feedback.hidden).toBe(false);
   });
 
+  it('submits native-backed standard dropdown values and handles Escape inside the dialog', async () => {
+    const page = makeDialogPage({ standardDropdowns: true });
+    page.region.appendChild(page.trigger);
+    page.windowObject.fetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        status: 'success',
+        values: { view: 'list', sort: 'title', order: 'asc' },
+      }),
+    });
+    enhanceDropdowns(page.document);
+    enhanceAppDialogs(page.document);
+    page.document.dispatch('click', { target: page.trigger });
+
+    const viewDropdown = page.dropdowns.view.details;
+    viewDropdown.open = true;
+    viewDropdown.setAttribute('open', '');
+    page.document.dispatch('toggle', { target: viewDropdown });
+    expect(page.form.querySelector('.app-dialog-body').classList.contains('cc-dropdown-dialog-open')).toBe(true);
+
+    page.dialog.dispatch('keydown', { key: 'Escape', target: page.dropdowns.view.summary });
+    expect(viewDropdown.open).toBe(false);
+    expect(page.dialog.open).toBe(true);
+    expect(page.dropdowns.view.summary.focused).toBe(true);
+    expect(page.form.querySelector('.app-dialog-body').classList.contains('cc-dropdown-dialog-open')).toBe(false);
+
+    const viewRadios = page.dropdowns.view.panel.querySelectorAll('input[type="radio"]');
+    const sortRadios = page.dropdowns.sort.panel.querySelectorAll('input[type="radio"]');
+    const orderRadios = page.dropdowns.order.panel.querySelectorAll('input[type="radio"]');
+    viewRadios[1].checked = true;
+    sortRadios[2].checked = true;
+    orderRadios[0].checked = true;
+    page.document.dispatch('change', { target: viewRadios[1] });
+    page.document.dispatch('change', { target: sortRadios[2] });
+    page.document.dispatch('change', { target: orderRadios[0] });
+    expect(orderRadios.map((radio) => radio.checked)).toEqual([true, false]);
+    expect(page.fields.order.value).toBe('asc');
+
+    page.form.dispatch('submit', { submitter: page.save });
+    await flush();
+
+    expect([...page.windowObject.fetch.mock.calls[0][1].body.entries()]).toEqual([
+      ['_csrf', 'csrf-token'],
+      ['view', 'list'],
+      ['sort', 'title'],
+      ['order', 'asc'],
+    ]);
+    expect(page.dialog.open).toBe(false);
+  });
+
   it('keeps the dialog open and preserves submitted values on validation failure', async () => {
-    const page = makeDialogPage();
+    const page = makeDialogPage({ standardDropdowns: true });
     page.region.appendChild(page.trigger);
     page.windowObject.fetch.mockResolvedValue({
       ok: false,
@@ -358,12 +457,19 @@ describe('Reusable app dialog enhancement', () => {
       .toBe('Submitted value: invalid');
     expect(page.fields.order.value).toBe('asc');
     expect(page.fields.sort.getAttribute('aria-invalid')).toBe('true');
+    const submittedRadio = page.dropdowns.sort.panel.querySelector('input[data-dialog-submitted-value]');
+    expect(submittedRadio?.value).toBe('invalid');
+    expect(submittedRadio?.checked).toBe(true);
+    expect(page.dropdowns.sort.details.querySelector('[data-cc-dropdown-summary-current]').textContent)
+      .toBe('Submitted value: invalid');
+    expect(page.dropdowns.sort.summary.getAttribute('aria-invalid')).toBe('true');
+    expect(page.dropdowns.sort.summary.getAttribute('aria-describedby')).toBe('projects-default-sort-error');
     expect(page.dialog.querySelector('[data-dialog-error]').hidden).toBe(false);
     expect(page.dialog.querySelector('[data-dialog-error-list]').textContent).toContain('Value is not supported.');
   });
 
   it('cleans temporary submitted options across validation, correction, and reopen', async () => {
-    const page = makeDialogPage();
+    const page = makeDialogPage({ standardDropdowns: true });
     page.region.appendChild(page.trigger);
     page.windowObject.fetch
       .mockResolvedValueOnce({
@@ -398,11 +504,15 @@ describe('Reusable app dialog enhancement', () => {
     await flush();
     expect(page.fields.sort.querySelectorAll('option[data-dialog-submitted-value]')
       .map((option) => option.value)).toEqual(['invalid1']);
+    expect(page.dropdowns.sort.panel.querySelectorAll('input[data-dialog-submitted-value]')
+      .map((input) => input.value)).toEqual(['invalid1']);
 
     page.form.dispatch('submit', { submitter: page.save });
     await flush();
     expect(page.fields.sort.querySelectorAll('option[data-dialog-submitted-value]')
       .map((option) => option.value)).toEqual(['invalid2']);
+    expect(page.dropdowns.sort.panel.querySelectorAll('input[data-dialog-submitted-value]')
+      .map((input) => input.value)).toEqual(['invalid2']);
 
     page.fields.sort.value = 'title';
     page.form.dispatch('submit', { submitter: page.save });
@@ -414,6 +524,11 @@ describe('Reusable app dialog enhancement', () => {
     expect(page.fields.sort.querySelectorAll('option[data-dialog-submitted-value]')).toHaveLength(0);
     expect(page.fields.sort.querySelectorAll('option').map((option) => option.value))
       .toEqual(['updated', 'created', 'title', 'published']);
+    expect(page.dropdowns.sort.panel.querySelectorAll('input[data-dialog-submitted-value]')).toHaveLength(0);
+    expect(page.dropdowns.sort.details.querySelector('[data-cc-dropdown-summary-current]').textContent)
+      .toBe('title');
+    expect(page.fields.sort.getAttribute('aria-invalid')).toBeNull();
+    expect(page.dropdowns.sort.summary.getAttribute('aria-invalid')).toBeNull();
   });
 
   it('keeps the dialog open and reports genuine network failures', async () => {

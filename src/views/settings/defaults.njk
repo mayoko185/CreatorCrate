@@ -1,5 +1,6 @@
 {% extends "layout.njk" %}
 {% import "partials/page-heading.njk" as pageHeading %}
+{% import "partials/dropdown.njk" as dropdown %}
 
 {% set page_title = "Settings — Defaults" %}
 
@@ -40,17 +41,50 @@
 
             {% for field in section.fields %}
               <div class="field{% if field.error %} field-error{% endif %}">
-                <label for="{{ field.id }}">{{ field.label }}</label>
-                <select id="{{ field.id }}" name="{{ field.name }}" required{% if field.error %} aria-describedby="{{ field.id }}-error" aria-invalid="true"{% endif %}>
+                {% if section.page == 'new_project' %}
+                  {% set submittedOption = none %}
+                  {% set nativeAttributes = [["required", true]] %}
+                  {% set summaryAttributes = [] %}
                   {% if field.showSubmittedValue %}
-                    <option value="{{ field.submittedOptionValue }}" selected>Submitted value: {{ field.submittedDisplayValue }}</option>
-                  {% elif field.error %}
-                    <option value="" selected>Select a value</option>
+                    {% set submittedOption = {
+                      id: field.id ~ '-submitted',
+                      value: field.submittedOptionValue,
+                      label: 'Submitted value: ' ~ field.submittedDisplayValue,
+                      selected: true
+                    } %}
                   {% endif %}
-                  {% for option in field.options %}
-                    <option value="{{ option.value }}"{% if option.value == field.selectedValue %} selected{% endif %}>{{ option.label }}</option>
-                  {% endfor %}
-                </select>
+                  {% if field.error %}
+                    {% set nativeAttributes = [["required", true], ["aria-describedby", field.id ~ '-error'], ["aria-invalid", "true"]] %}
+                    {% set summaryAttributes = [["aria-describedby", field.id ~ '-error'], ["aria-invalid", "true"]] %}
+                  {% endif %}
+                  {{ dropdown.singleSelect({
+                    id: field.id ~ '-dropdown',
+                    name: field.name,
+                    label: field.label,
+                    options: field.options,
+                    selected: field.selectedValue if not field.error or field.showSubmittedValue else none,
+                    placeholder: 'Select a value' if field.error and not field.showSubmittedValue else none,
+                    optionIdPrefix: field.id,
+                    leadingOption: submittedOption,
+                    summaryAttributes: summaryAttributes,
+                    nativeSelect: {
+                      id: field.id,
+                      attributes: nativeAttributes
+                    }
+                  }) }}
+                {% else %}
+                  <label for="{{ field.id }}">{{ field.label }}</label>
+                  <select id="{{ field.id }}" name="{{ field.name }}" required{% if field.error %} aria-describedby="{{ field.id }}-error" aria-invalid="true"{% endif %}>
+                    {% if field.showSubmittedValue %}
+                      <option value="{{ field.submittedOptionValue }}" selected>Submitted value: {{ field.submittedDisplayValue }}</option>
+                    {% elif field.error %}
+                      <option value="" selected>Select a value</option>
+                    {% endif %}
+                    {% for option in field.options %}
+                      <option value="{{ option.value }}"{% if option.value == field.selectedValue %} selected{% endif %}>{{ option.label }}</option>
+                    {% endfor %}
+                  </select>
+                {% endif %}
                 {% if field.usesFallback %}
                   <span class="help-text">Application fallback: <strong>{{ field.fallbackLabel }}</strong></span>
                 {% else %}

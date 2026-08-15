@@ -589,13 +589,21 @@ describe('project asset categories — HTTP', () => {
         .type('form').send({ _csrf: csrfToken }).expect(302);
 
       const res = await agent.get(`/projects/${projectId}/asset-categories`).expect(200);
+      expect(res.text).toContain('data-cc-dropdown data-cc-dropdown-mode="single"');
+      expect(res.text).toMatch(
+        /<select id="project-asset-categories-default-category" name="defaultCategory" class="cc-dropdown-native-select form-control" data-cc-dropdown-native-select/
+      );
+      expect((res.text.match(/name="defaultCategory"/g) || [])).toHaveLength(1);
+      expect(res.text).not.toMatch(/<input[^>]*name="defaultCategory"/);
+      expect(res.text).not.toContain('aria-invalid');
+      expect(res.text).toContain('type="radio" value="inherit" checked');
       expect(res.text).toMatch(/<option value="inherit" selected>Inherit global default/);
       expect(res.text).toContain(`<option value="category:${enabled.id}"`);
       expect(res.text).not.toContain(`<option value="category:${disabled.id}"`);
       expect(res.text).toContain('Add a category');
       expect(res.text).toContain('asset-browser-default-section--project');
       expect(res.text).toContain('asset-browser-default-control-row');
-      expect(res.text).toContain('name="defaultCategory" class="form-control"');
+      expect(res.text).toContain('name="defaultCategory" class="cc-dropdown-native-select form-control"');
       expect(res.text).toContain('>Save default</button>');
     });
 
@@ -658,6 +666,12 @@ describe('project asset categories — HTTP', () => {
         .send({ defaultCategory: `category:${otherCategory.id}`, _csrf: csrfToken }).expect(422);
       expect(wrongProject.text).toContain('belong to this project');
       expect(wrongProject.text).toContain(`<option value="category:${otherCategory.id}" selected>`);
+      expect(wrongProject.text).toMatch(
+        /<select id="project-asset-categories-default-category"[^>]*aria-describedby="project-asset-categories-default-category-help project-asset-categories-default-category-error"[^>]*aria-invalid/
+      );
+      expect(wrongProject.text).toMatch(
+        /<summary[^>]*aria-describedby="project-asset-categories-default-category-error"[^>]*aria-invalid/
+      );
 
       await agent.post(`/projects/${projectId}/asset-categories/${ownCategory.id}/disable`)
         .type('form').send({ _csrf: csrfToken }).expect(302);

@@ -64,10 +64,11 @@ function makeSubmittedOption(submittedValue, validValues) {
 
 function makeSelectionPlaceholder(selectedValue, unavailableOption) {
   if (selectedValue !== '') return null;
-  if (unavailableOption) return unavailableOption;
+  if (unavailableOption) return { ...unavailableOption, disabled: true };
   return {
     value: '',
     label: 'Choose a valid replacement…',
+    disabled: true,
   };
 }
 
@@ -160,6 +161,14 @@ export function buildProjectAssetBrowserPreferenceModel({
     fallbackReason: resolution?.fallbackReason || null,
     fallbackExplanation: projectFallbackExplanation(resolution?.fallbackReason),
     enabledCategories,
+    options: [
+      { value: 'inherit', label: 'Inherit global default' },
+      { value: 'all', label: 'All Categories' },
+      ...enabledCategories.map((category) => ({
+        value: category.value,
+        label: category.displayName,
+      })),
+    ],
     selectedValue,
     submittedOption,
     selectionPlaceholder: makeSelectionPlaceholder(selectedValue, unavailableOption),
@@ -251,6 +260,13 @@ export function buildGlobalAssetBrowserPreferenceModel({
     storedLabel: state.label,
     storedAvailable: state.available,
     enabledCategories,
+    options: [
+      { value: 'all', label: 'All Categories' },
+      ...enabledCategories.map((category) => ({
+        value: category.directorySlug,
+        label: category.displayName,
+      })),
+    ],
     selectedValue,
     warning: state.warning,
     fallback: !state.available,

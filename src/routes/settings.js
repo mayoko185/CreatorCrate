@@ -432,6 +432,7 @@ function buildPreviewCategoryModel({
       label: unavailableLabel
         ? `Saved setting unavailable — ${unavailableLabel}.`
         : 'Choose a valid replacement…',
+      disabled: true,
     };
   }
 
@@ -449,6 +450,13 @@ function buildPreviewCategoryModel({
     enabledCategories,
     storedValue,
     storedLabel,
+    options: [
+      { value: PREVIEW_CATEGORY_DISABLED_VALUE, label: 'Disabled' },
+      ...enabledCategories.map((category) => ({
+        value: category.directorySlug,
+        label: category.displayName,
+      })),
+    ],
     selectedValue,
     submittedOption,
     selectionPlaceholder,

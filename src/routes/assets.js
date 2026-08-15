@@ -1702,9 +1702,21 @@ function buildBrowserRenderModel(project, data, pageDefaultsService, req, nsfwFi
     extensionChoices: data.extensionChoices,
     tagOptions: data.tagOptions || [],
     categoryNavigation: data.categoryNavigation,
+    categoryFilterOptions: buildProjectAssetCategoryFilterOptions(data.categoryNavigation, data.filters),
     emptyState: data.emptyState,
     isArchived: data.isArchived,
     releaseTargets: data.releaseTargets,
+    releaseActionOptions: (data.releaseTargets || []).map((target) => ({
+      value: String(target.id),
+      label: target.title,
+    })),
+    destinationCategoryActionOptions: [
+      { value: 'uncategorized', label: 'Uncategorized' },
+      ...(data.categoryNavigation?.enabled || []).map((category) => ({
+        value: String(category.id),
+        label: category.displayName,
+      })),
+    ],
     searchMaxLength: data.searchMaxLength,
     bulkError: null,
     bulkMoveError: null,
@@ -2651,6 +2663,56 @@ function buildAssetsPageData(workflowQueryService, projectId, project, rawQuery 
       }
       : null,
   };
+}
+
+function buildProjectAssetCategoryFilterOptions(categoryNavigation, filters) {
+  const navigation = categoryNavigation || {};
+  const selectedCategory = String(filters?.category ?? 'all');
+  const selectedPresence = String(filters?.presence ?? 'all');
+  const option = ({ id, value, label, presence = 'all', selected, suffix = null }) => ({
+    id,
+    value: String(value),
+    label,
+    selected,
+    suffix,
+    suffixClass: suffix ? 'asset-category-disabled-marker' : null,
+    attributes: [['data-asset-category-presence', presence]],
+  });
+
+  return [
+    option({
+      id: 'asset-category-option-all',
+      value: 'all',
+      label: `All categories (${navigation.totalCount || 0})`,
+      selected: selectedCategory === 'all' && selectedPresence !== 'missing',
+    }),
+    option({
+      id: 'asset-category-option-uncategorized',
+      value: 'uncategorized',
+      label: `Uncategorized (${navigation.uncategorizedCount || 0})`,
+      selected: selectedCategory === 'uncategorized',
+    }),
+    ...(navigation.enabled || []).map((category) => option({
+      id: `asset-category-option-${category.id}`,
+      value: category.id,
+      label: `${category.displayName} (${category.assetCount || 0})`,
+      selected: selectedCategory === String(category.id),
+    })),
+    ...(navigation.disabled || []).map((category) => option({
+      id: `asset-category-option-${category.id}`,
+      value: category.id,
+      label: `${category.displayName} (${category.assetCount || 0})`,
+      selected: selectedCategory === String(category.id),
+      suffix: '(disabled)',
+    })),
+    option({
+      id: 'asset-category-option-missing',
+      value: 'all',
+      label: `Missing (${navigation.missingCount || 0})`,
+      presence: 'missing',
+      selected: selectedCategory === 'all' && selectedPresence === 'missing',
+    }),
+  ];
 }
 
 function hasNonDefaultCategoryBrowserControls(rawQuery = {}) {

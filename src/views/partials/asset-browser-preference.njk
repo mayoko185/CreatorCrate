@@ -1,3 +1,5 @@
+{% import "partials/dropdown.njk" as dropdown %}
+
 {% macro project(model, projectId, action, controlId, csrf, archived=false, context=null, contextFields=[]) %}
   <section class="settings-section asset-browser-default-section asset-browser-default-section--project" aria-labelledby="{{ controlId }}-heading">
     <h3 id="{{ controlId }}-heading">Asset browser default</h3>
@@ -34,22 +36,27 @@
         {% endif %}
         <div class="asset-browser-default-control-row">
           <div class="field asset-browser-default-field-row">
-            <label for="{{ controlId }}">Default category</label>
-            <select id="{{ controlId }}" name="defaultCategory" class="form-control"
-                    aria-describedby="{{ controlId }}-help{% if model.errorMessage %} {{ controlId }}-error{% endif %}"
-                    {% if model.errorMessage %}aria-invalid="true"{% endif %} required>
-              {% if model.selectionPlaceholder %}
-                <option value="{{ model.selectionPlaceholder.value }}" disabled{% if not model.submittedOption %} selected{% endif %}>{{ model.selectionPlaceholder.label }}</option>
-              {% endif %}
-              {% if model.submittedOption %}
-                <option value="{{ model.submittedOption.value }}" selected>{{ model.submittedOption.label }}</option>
-              {% endif %}
-              <option value="inherit"{% if model.selectedValue == 'inherit' %} selected{% endif %}>Inherit global default</option>
-              <option value="all"{% if model.selectedValue == 'all' %} selected{% endif %}>All Categories</option>
-              {% for category in model.enabledCategories %}
-                <option value="{{ category.value }}"{% if model.selectedValue == category.value %} selected{% endif %}>{{ category.displayName }}</option>
-              {% endfor %}
-            </select>
+            {% set nativeAttributes = [["required", true], ["aria-describedby", controlId ~ "-help"]] %}
+            {% set summaryAttributes = [] %}
+            {% if model.errorMessage %}
+              {% set nativeAttributes = [["required", true], ["aria-describedby", controlId ~ "-help " ~ controlId ~ "-error"], ["aria-invalid", true]] %}
+              {% set summaryAttributes = [["aria-describedby", controlId ~ "-error"], ["aria-invalid", true]] %}
+            {% endif %}
+            {{ dropdown.singleSelect({
+              id: controlId ~ "-dropdown",
+              name: "defaultCategory",
+              label: "Default category",
+              options: model.options,
+              selected: model.selectedValue,
+              leadingOption: model.submittedOption or model.selectionPlaceholder,
+              summaryAttributes: summaryAttributes,
+              panelLabel: "Default category options",
+              nativeSelect: {
+                id: controlId,
+                classes: "form-control",
+                attributes: nativeAttributes
+              }
+            }) }}
           </div>
         </div>
         <div class="form-actions asset-browser-default-action-row">
@@ -61,21 +68,27 @@
 {% endmacro %}
 
 {% macro globalControl(model, controlId, fieldName) %}
-  <label for="{{ controlId }}">Default category</label>
-  <select id="{{ controlId }}" name="{{ fieldName }}" class="form-control"
-          aria-describedby="{{ controlId }}-help{% if model.errorMessage %} {{ controlId }}-error{% endif %}"
-          {% if model.errorMessage %}aria-invalid="true"{% endif %} required>
-    {% if model.selectionPlaceholder %}
-      <option value="{{ model.selectionPlaceholder.value }}" disabled{% if not model.submittedOption %} selected{% endif %}>{{ model.selectionPlaceholder.label }}</option>
-    {% endif %}
-    {% if model.submittedOption %}
-      <option value="{{ model.submittedOption.value }}" selected>{{ model.submittedOption.label }}</option>
-    {% endif %}
-    <option value="all"{% if model.selectedValue == 'all' %} selected{% endif %}>All Categories</option>
-    {% for category in model.enabledCategories %}
-      <option value="{{ category.directorySlug }}"{% if model.selectedValue == category.directorySlug %} selected{% endif %}>{{ category.displayName }}</option>
-    {% endfor %}
-  </select>
+  {% set nativeAttributes = [["required", true], ["aria-describedby", controlId ~ "-help"]] %}
+  {% set summaryAttributes = [] %}
+  {% if model.errorMessage %}
+    {% set nativeAttributes = [["required", true], ["aria-describedby", controlId ~ "-help " ~ controlId ~ "-error"], ["aria-invalid", true]] %}
+    {% set summaryAttributes = [["aria-describedby", controlId ~ "-error"], ["aria-invalid", true]] %}
+  {% endif %}
+  {{ dropdown.singleSelect({
+    id: controlId ~ "-dropdown",
+    name: fieldName,
+    label: "Default category",
+    options: model.options,
+    selected: model.selectedValue,
+    leadingOption: model.submittedOption or model.selectionPlaceholder,
+    summaryAttributes: summaryAttributes,
+    panelLabel: "Default category options",
+    nativeSelect: {
+      id: controlId,
+      classes: "form-control",
+      attributes: nativeAttributes
+    }
+  }) }}
 {% endmacro %}
 
 {% macro global(model, action, controlId, csrf) %}
@@ -139,23 +152,29 @@
 
     <form method="post" action="{{ action }}" class="project-form asset-browser-default-form" novalidate>
       <input type="hidden" name="_csrf" value="{{ csrf }}">
-      <div class="asset-browser-default-control-row">
-        <div class="field asset-browser-default-field-row">
-          <label for="{{ controlId }}">Preview category</label>
-          <select id="{{ controlId }}" name="previewCategory" class="form-control"
-                  aria-describedby="{{ controlId }}-help{% if model.errorMessage %} {{ controlId }}-error{% endif %}"
-                  {% if model.errorMessage %}aria-invalid="true"{% endif %} required>
-            {% if model.selectionPlaceholder %}
-              <option value="{{ model.selectionPlaceholder.value }}" disabled{% if not model.submittedOption %} selected{% endif %}>{{ model.selectionPlaceholder.label }}</option>
-            {% endif %}
-            {% if model.submittedOption %}
-              <option value="{{ model.submittedOption.value }}" selected>{{ model.submittedOption.label }}</option>
-            {% endif %}
-            <option value="{{ model.disabledValue }}"{% if model.selectedValue == model.disabledValue %} selected{% endif %}>Disabled</option>
-            {% for category in model.enabledCategories %}
-              <option value="{{ category.directorySlug }}"{% if model.selectedValue == category.directorySlug %} selected{% endif %}>{{ category.displayName }}</option>
-            {% endfor %}
-          </select>
+        <div class="asset-browser-default-control-row">
+          <div class="field asset-browser-default-field-row">
+          {% set nativeAttributes = [["required", true], ["aria-describedby", controlId ~ "-help"]] %}
+          {% set summaryAttributes = [] %}
+          {% if model.errorMessage %}
+            {% set nativeAttributes = [["required", true], ["aria-describedby", controlId ~ "-help " ~ controlId ~ "-error"], ["aria-invalid", true]] %}
+            {% set summaryAttributes = [["aria-describedby", controlId ~ "-error"], ["aria-invalid", true]] %}
+          {% endif %}
+          {{ dropdown.singleSelect({
+            id: controlId ~ "-dropdown",
+            name: "previewCategory",
+            label: "Preview category",
+            options: model.options,
+            selected: model.selectedValue,
+            leadingOption: model.submittedOption or model.selectionPlaceholder,
+            summaryAttributes: summaryAttributes,
+            panelLabel: "Preview category options",
+            nativeSelect: {
+              id: controlId,
+              classes: "form-control",
+              attributes: nativeAttributes
+            }
+          }) }}
         </div>
       </div>
       <div class="form-actions asset-browser-default-action-row">

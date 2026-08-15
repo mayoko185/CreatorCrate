@@ -62,6 +62,10 @@ function createPage(app, input = {}) {
   return { book, chapter, note };
 }
 
+function extractNoteProjectsField(html) {
+  return html.match(/<fieldset class="field asset-filter-multiselect-field[^\"]*">\s*<legend>Projects<\/legend>[\s\S]*?<\/fieldset>/)?.[0] || '';
+}
+
 describe('top-level Notes HTTP slice', () => {
   let db;
   let app;
@@ -134,7 +138,15 @@ describe('top-level Notes HTTP slice', () => {
     expect(response.text).toContain('<label id="content-label" for="content">Content</label>');
     expect(response.text).toContain('<textarea id="content" name="content"');
     expect(response.text).toContain('<legend>Projects</legend>');
-    expect(response.text).toContain('No projects available.');
+    const projectsField = extractNoteProjectsField(response.text);
+    expect(projectsField).not.toBe('');
+    expect(projectsField).toContain('asset-filter-multiselect asset-filter-multiselect--sized cc-dropdown');
+    expect(projectsField).toContain('data-cc-dropdown data-cc-dropdown-mode="multiple"');
+    expect(projectsField).toContain('id="note-projects-form-trigger" aria-controls="note-projects-form-options"');
+    expect(projectsField).toContain('aria-label="Projects: No projects selected"');
+    expect(projectsField).toContain('<p class="asset-filter-multiselect-empty">No projects available. <a href="/projects/new">Create a project</a>.</p>');
+    expect(projectsField).not.toContain('aria-invalid');
+    expect(projectsField).not.toContain('projectIds-error');
     expect(response.text).toContain('<legend>Assets</legend>');
     expect(response.text).toContain('name="assetIds[]"');
     expect(response.text).toMatch(/<ul class="notes-selected-assets" aria-label="Selected assets">\s*<\/ul>/);
@@ -194,12 +206,12 @@ describe('top-level Notes HTTP slice', () => {
 
     const response = await agent.get('/notes/new').query({ chapterId: chapter.id }).expect(200);
 
-    expect(response.text).toContain(`<label for="note-project-option-${firstProjectId}">`);
-    expect(response.text).toContain(`<input id="note-project-option-${firstProjectId}" name="projectIds[]" type="checkbox" value="${firstProjectId}"`);
+    const projectsField = extractNoteProjectsField(response.text);
+    expect(projectsField).toContain(`<input id="note-projects-form-option-1" name="projectIds[]" type="checkbox" value="${firstProjectId}"`);
     expect(response.text).toContain('>Alpha Project</span>');
-    expect(response.text).toContain(`<label for="note-project-option-${secondProjectId}">`);
+    expect(projectsField).toContain(`<input id="note-projects-form-option-2" name="projectIds[]" type="checkbox" value="${secondProjectId}"`);
     expect(response.text).toContain('>Beta Project</span>');
-    expect(response.text).not.toMatch(/name="projectIds\[\]"[^>]*checked/);
+    expect(projectsField).not.toMatch(/name="projectIds\[\]"[^>]*checked/);
   });
 
   it('does not expose the obsolete TOAST UI vendor mount', async () => {
@@ -731,7 +743,7 @@ describe('top-level Notes HTTP slice', () => {
     expect(response.text).toContain('Title is required.');
     expect(response.text).toContain(`<input type="hidden" name="chapterId" value="${chapter.id}">`);
     expect(response.text).toContain('Attempted asset content');
-    expect(response.text).toMatch(new RegExp(`id="note-project-option-${secondProjectId}"[^>]*checked`));
+    expect(response.text).toMatch(new RegExp(`name="projectIds\\[\\]"[^>]*value="${secondProjectId}"[^>]*checked`));
     expect(response.text).toMatch(new RegExp(`id="note-asset-option-${firstAssetId}"[^>]*checked`));
     expect(response.text).toMatch(new RegExp(`id="note-asset-option-${secondAssetId}"[^>]*checked`));
     expect(response.text).toContain('>Validation Asset First</span>');
@@ -828,6 +840,30 @@ describe('top-level Notes HTTP slice', () => {
     expect(app.locals.noteService.listNotes()).toHaveLength(0);
   });
 
+  it('POST /notes preserves project error ARIA on the standard dropdown and checkboxes', async () => {
+    const { chapter } = createChapterContext(app);
+    const availableProjectId = insertProject(db, 'Available Project');
+
+    const response = await agent
+      .post('/notes')
+      .type('form')
+      .send({
+        _csrf: csrfToken,
+        chapterId: String(chapter.id),
+        title: 'Project error note',
+        content: 'body',
+        projectIds: [String(availableProjectId), '999999'],
+      })
+      .expect(422);
+
+    const projectsField = extractNoteProjectsField(response.text);
+    expect(response.text).toContain('Project 999999 not found.');
+    expect(projectsField).toContain('field-error');
+    expect(projectsField).toMatch(/<summary[^>]*aria-describedby="projectIds-error"[^>]*aria-invalid="true"/);
+    expect(projectsField).toMatch(new RegExp(`name="projectIds\\[\\]"[^>]*value="${availableProjectId}"[^>]*checked[^>]*aria-describedby="projectIds-error"[^>]*aria-invalid="true"`));
+    expect(response.text).toContain('id="projectIds-error"');
+  });
+
   it('POST /notes preserves attempted project selections and the full option list after validation failure', async () => {
     const { chapter } = createChapterContext(app);
     const firstProjectId = insertProject(db, 'Validation First');
@@ -847,8 +883,8 @@ describe('top-level Notes HTTP slice', () => {
 
     expect(response.text).toContain('Title is required.');
     expect(response.text).toContain('Attempted project content');
-    expect(response.text).toMatch(new RegExp(`id="note-project-option-${firstProjectId}"[^>]*checked`));
-    expect(response.text).toMatch(new RegExp(`id="note-project-option-${secondProjectId}"[^>]*checked`));
+    expect(response.text).toMatch(new RegExp(`name="projectIds\\[\\]"[^>]*value="${firstProjectId}"[^>]*checked`));
+    expect(response.text).toMatch(new RegExp(`name="projectIds\\[\\]"[^>]*value="${secondProjectId}"[^>]*checked`));
     expect(response.text).toContain('>Validation First</span>');
     expect(response.text).toContain('>Validation Second</span>');
   });
@@ -917,8 +953,8 @@ describe('top-level Notes HTTP slice', () => {
     expect(response.text).not.toContain('Back to Chapter');
     expect(response.text).not.toContain('This Page will belong');
     expect(response.text).toContain(attemptedContent);
-    expect(response.text).toMatch(new RegExp(`id="note-project-option-${firstProjectId}"[^>]*checked`));
-    expect(response.text).toMatch(new RegExp(`id="note-project-option-${secondProjectId}"[^>]*checked`));
+    expect(response.text).toMatch(new RegExp(`name="projectIds\\[\\]"[^>]*value="${firstProjectId}"[^>]*checked`));
+    expect(response.text).toMatch(new RegExp(`name="projectIds\\[\\]"[^>]*value="${secondProjectId}"[^>]*checked`));
     expect(response.text).toMatch(new RegExp(`id="note-asset-option-${firstAssetId}"[^>]*checked`));
     expect(response.text).toMatch(new RegExp(`id="note-asset-option-${secondAssetId}"[^>]*checked`));
     expect(response.text).toContain('direct-validation-first.txt');
@@ -1242,6 +1278,7 @@ describe('top-level Notes HTTP slice', () => {
     expect(response.text).not.toContain('<strong>bold</strong>');
     expect(app.locals.noteService.getNote(note.id).content).toBe(content);
     expect(response.text).toContain('<legend>Projects</legend>');
+    expect(extractNoteProjectsField(response.text)).toContain('data-cc-dropdown-summary-current class="asset-filter-multiselect-summary-current">No projects selected</span>');
     expect(response.text).toContain('<legend>Assets</legend>');
     expect(response.text).toContain('<details class="notes-workspace-disclosure notes-workspace-disclosure--move">');
     expect(response.text).toContain('<details class="notes-workspace-disclosure notes-workspace-disclosure--delete">');
@@ -1410,8 +1447,24 @@ describe('top-level Notes HTTP slice', () => {
 
     const response = await agent.get(`/notes/${note.id}/edit`).expect(200);
 
-    expect(response.text).toMatch(new RegExp(`id="note-project-option-${firstProjectId}"[^>]*checked`));
-    expect(response.text).toMatch(new RegExp(`id="note-project-option-${secondProjectId}"[^>]*checked`));
+    const projectsField = extractNoteProjectsField(response.text);
+    expect(projectsField).toMatch(new RegExp(`name="projectIds\\[\\]"[^>]*value="${firstProjectId}"[^>]*checked`));
+    expect(projectsField).toMatch(new RegExp(`name="projectIds\\[\\]"[^>]*value="${secondProjectId}"[^>]*checked`));
+    expect(projectsField).toContain('data-cc-dropdown-summary-current class="asset-filter-multiselect-summary-current">2 projects selected</span>');
+  });
+
+  it('GET /notes/:id/edit renders the selected project title in the summary', async () => {
+    const projectId = insertProject(db, 'Single Summary Project');
+    const { note } = createPage(app, {
+      title: 'Single Association Note',
+      projectIds: [projectId],
+    });
+
+    const response = await agent.get(`/notes/${note.id}/edit`).expect(200);
+    const projectsField = extractNoteProjectsField(response.text);
+
+    expect(projectsField).toContain('data-cc-dropdown-summary-current class="asset-filter-multiselect-summary-current">Single Summary Project</span>');
+    expect(projectsField).toMatch(new RegExp(`name="projectIds\\[\\]"[^>]*value="${projectId}"[^>]*checked`));
   });
 
   it('GET /notes/:id/edit preselects existing asset associations', async () => {
@@ -1649,8 +1702,8 @@ describe('top-level Notes HTTP slice', () => {
 
     expect(response.text).toContain('Title is required.');
     expect(response.text).toContain('Attempted edit content');
-    expect(response.text).toMatch(new RegExp(`id="note-project-option-${secondProjectId}"[^>]*checked`));
-    expect(response.text).not.toMatch(new RegExp(`id="note-project-option-${firstProjectId}"[^>]*checked`));
+    expect(response.text).toMatch(new RegExp(`name="projectIds\\[\\]"[^>]*value="${secondProjectId}"[^>]*checked`));
+    expect(response.text).not.toMatch(new RegExp(`name="projectIds\\[\\]"[^>]*value="${firstProjectId}"[^>]*checked`));
     expect(response.text).toContain('>Stored Project</span>');
     expect(response.text).toContain('>Attempted Project</span>');
   });
@@ -1686,8 +1739,8 @@ describe('top-level Notes HTTP slice', () => {
 
     expect(response.text).toContain('Title is required.');
     expect(response.text).toContain('Attempted both content');
-    expect(response.text).toMatch(new RegExp(`id="note-project-option-${attemptedProjectId}"[^>]*checked`));
-    expect(response.text).not.toMatch(new RegExp(`id="note-project-option-${storedProjectId}"[^>]*checked`));
+    expect(response.text).toMatch(new RegExp(`name="projectIds\\[\\]"[^>]*value="${attemptedProjectId}"[^>]*checked`));
+    expect(response.text).not.toMatch(new RegExp(`name="projectIds\\[\\]"[^>]*value="${storedProjectId}"[^>]*checked`));
     expect(response.text).toMatch(new RegExp(`id="note-asset-option-${attemptedAssetId}"[^>]*checked`));
     expect(response.text).not.toMatch(new RegExp(`id="note-asset-option-${storedAssetId}"[^>]*checked`));
   });
@@ -1743,7 +1796,7 @@ describe('top-level Notes HTTP slice', () => {
     expect(response.text).not.toContain('Back to Book');
     expect(response.text).not.toContain('This Page will belong');
     expect(response.text).toContain(`<a class="notes-book-nav-chapter-link" href="/notes/chapters/${chapter.id}">Page Chapter</a>`);
-    expect(response.text).toMatch(new RegExp(`id="note-project-option-${projectId}"[^>]*checked`));
+    expect(response.text).toMatch(new RegExp(`name="projectIds\\[\\]"[^>]*value="${projectId}"[^>]*checked`));
     expect(response.text).toMatch(new RegExp(`id="note-asset-option-${assetId}"[^>]*checked`));
     expect(response.text).toContain('failed-edit.txt');
     expect(app.locals.noteService.getNote(current.id)).toMatchObject({

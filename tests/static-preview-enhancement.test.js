@@ -19,7 +19,6 @@ import {
   enhanceAssetRenames,
   enhanceAssetGridSize,
   enhanceProjectGridSize,
-  enhanceAssetProjectFilter,
   enhanceProjectAssetCategoryFilter,
   enhanceAssetViewerFilterDisclosures,
   enhanceAssetViewerInfoCards,
@@ -2345,208 +2344,6 @@ describe('asset grid rename enhancement', () => {
   });
 });
 
-describe('Asset Viewer Project filter enhancement', () => {
-  function makeProjectFilterFixture(selectedValue = '', {
-    fieldName = 'project',
-    includeAll = true,
-    emptyLabel = 'Select a project',
-  } = {}) {
-    const makeInput = (value, checked = false) => {
-      const listeners = [];
-      return {
-        value,
-        checked,
-        listeners,
-        addEventListener(type, handler) { listeners.push({ type, handler }); },
-        dispatch(type) {
-          listeners.filter((listener) => listener.type === type)
-            .forEach((listener) => listener.handler());
-        },
-      };
-    };
-
-    const makeOption = (title, value) => {
-      const input = makeInput(value, value === selectedValue);
-      const label = { textContent: title };
-      const attrs = { 'data-project-title': title };
-      return {
-        input,
-        label,
-        hidden: false,
-        attrs,
-        querySelector(selector) {
-          if (selector === `input[name="${fieldName}"]`) return input;
-          if (selector === 'label') return label;
-          return null;
-        },
-        getAttribute(name) { return attrs[name] ?? null; },
-        setAttribute(name, valueToSet) {
-          attrs[name] = String(valueToSet);
-          if (name === 'hidden') this.hidden = true;
-        },
-        removeAttribute(name) {
-          delete attrs[name];
-          if (name === 'hidden') this.hidden = false;
-        },
-      };
-    };
-
-    const all = includeAll ? makeOption('All projects', '') : undefined;
-    const alpha = makeOption('Alpha Project', '1');
-    const beta = makeOption('Beta Project', '2');
-    const options = includeAll ? [all, alpha, beta] : [alpha, beta];
-    const searchListeners = [];
-    const search = {
-      value: '',
-      listeners: searchListeners,
-      addEventListener(type, handler) { searchListeners.push({ type, handler }); },
-      dispatch(type) {
-        searchListeners.filter((listener) => listener.type === type)
-          .forEach((listener) => listener.handler());
-      },
-    };
-    const summaryText = { textContent: 'reserved summary content' };
-    const currentSummaryText = { textContent: '' };
-    const summaryAttrs = {};
-    const summary = {
-      setAttribute(name, value) { summaryAttrs[name] = String(value); },
-    };
-    const empty = {
-      hidden: true,
-      setAttribute(name) { if (name === 'hidden') this.hidden = true; },
-      removeAttribute(name) { if (name === 'hidden') this.hidden = false; },
-    };
-    const toggleListeners = [];
-    const filter = {
-      dataset: fieldName === 'project' && includeAll
-        ? {}
-        : {
-          assetProjectFilterName: fieldName,
-          assetProjectFilterEmptyLabel: emptyLabel,
-        },
-      open: false,
-      querySelector(selector) {
-        if (selector === '[data-asset-project-filter-search]') return search;
-        if (selector === '[data-asset-project-filter-summary]') return summaryText;
-        if (selector === '[data-asset-project-filter-current-summary]') return currentSummaryText;
-        if (selector === '[data-asset-project-filter-no-results]') return empty;
-        if (selector === 'summary') return summary;
-        return null;
-      },
-      querySelectorAll(selector) {
-        return selector === '[data-asset-project-filter-option]' ? options : [];
-      },
-      addEventListener(type, handler) { toggleListeners.push({ type, handler }); },
-      dispatchToggle(open) {
-        this.open = open;
-        toggleListeners.filter((listener) => listener.type === 'toggle')
-          .forEach((listener) => listener.handler());
-      },
-    };
-    const scope = {
-      querySelectorAll(selector) {
-        return selector === '[data-asset-project-filter]' ? [filter] : [];
-      },
-    };
-
-    return {
-      scope,
-      filter,
-      search,
-      all,
-      alpha,
-      beta,
-      empty,
-      summaryText,
-      currentSummaryText,
-      summaryAttrs,
-      toggleListeners,
-    };
-  }
-
-  it('filters project titles case-insensitively by partial match and restores the complete list', () => {
-    const fixture = makeProjectFilterFixture();
-
-    expect(enhanceAssetProjectFilter(fixture.scope)).toBe(1);
-    expect(fixture.currentSummaryText.textContent).toBe('All projects');
-    expect(fixture.summaryText.textContent).toBe('reserved summary content');
-    expect(fixture.all.input.checked).toBe(true);
-    expect(fixture.search.listeners.filter(({ type }) => type === 'input')).toHaveLength(1);
-
-    fixture.search.value = 'aLp';
-    fixture.search.dispatch('input');
-    expect(fixture.all.hidden).toBe(false);
-    expect(fixture.alpha.hidden).toBe(false);
-    expect(fixture.beta.hidden).toBe(true);
-    expect(fixture.empty.hidden).toBe(true);
-
-    fixture.search.value = 'does-not-exist';
-    fixture.search.dispatch('input');
-    expect(fixture.all.hidden).toBe(false);
-    expect(fixture.alpha.hidden).toBe(true);
-    expect(fixture.beta.hidden).toBe(true);
-    expect(fixture.empty.hidden).toBe(false);
-
-    fixture.search.value = '';
-    fixture.search.dispatch('input');
-    expect(fixture.alpha.hidden).toBe(false);
-    expect(fixture.beta.hidden).toBe(false);
-    expect(fixture.empty.hidden).toBe(true);
-  });
-
-  it('keeps the selected radio through filtering, updates the closed summary, and tracks disclosure state', () => {
-    const fixture = makeProjectFilterFixture('2');
-
-    enhanceAssetProjectFilter(fixture.scope);
-    expect(fixture.currentSummaryText.textContent).toBe('Beta Project');
-    expect(fixture.summaryText.textContent).toBe('reserved summary content');
-    expect(fixture.beta.input.checked).toBe(true);
-    expect(fixture.all.input.checked).toBe(false);
-    expect(fixture.summaryAttrs['aria-label']).toBe('Project filter: Beta Project');
-    expect(fixture.summaryAttrs['aria-expanded']).toBe('false');
-
-    fixture.filter.dispatchToggle(true);
-    expect(fixture.summaryAttrs['aria-expanded']).toBe('true');
-    fixture.search.value = 'alpha';
-    fixture.search.dispatch('input');
-    expect(fixture.beta.input.checked).toBe(true);
-    expect(fixture.beta.hidden).toBe(true);
-
-    fixture.filter.dispatchToggle(false);
-    expect(fixture.summaryAttrs['aria-expanded']).toBe('false');
-
-    fixture.all.input.checked = true;
-    fixture.beta.input.checked = false;
-    fixture.all.input.dispatch('change');
-    expect(fixture.currentSummaryText.textContent).toBe('All projects');
-    expect(fixture.summaryText.textContent).toBe('reserved summary content');
-    expect(fixture.summaryAttrs['aria-label']).toBe('Project filter: All projects');
-    expect(fixture.alpha.input.value).toBe('1');
-    expect(fixture.beta.input.value).toBe('2');
-    expect(fixture.search.name).toBeUndefined();
-  });
-
-  it('supports a declarative projectId field without an All projects fallback', () => {
-    const fixture = makeProjectFilterFixture('', {
-      fieldName: 'projectId',
-      includeAll: false,
-      emptyLabel: 'Select a project',
-    });
-
-    expect(enhanceAssetProjectFilter(fixture.scope)).toBe(1);
-    expect(fixture.all).toBeUndefined();
-    expect(fixture.alpha.input.checked).toBe(false);
-    expect(fixture.beta.input.checked).toBe(false);
-    expect(fixture.currentSummaryText.textContent).toBe('Select a project');
-    expect(fixture.summaryAttrs['aria-label']).toBe('Project filter: Select a project');
-
-    fixture.beta.input.checked = true;
-    fixture.beta.input.dispatch('change');
-    expect(fixture.currentSummaryText.textContent).toBe('Beta Project');
-    expect(fixture.summaryAttrs['aria-label']).toBe('Project filter: Beta Project');
-  });
-});
-
 describe('Destructive confirmation enhancement', () => {
   it('prevents an unconfirmed data-confirm submit action', () => {
     const message = 'The selected files will be permanently deleted from disk and cannot be restored through CreatorCrate. Continue?';
@@ -2609,6 +2406,9 @@ describe('Project Assets category filter enhancement', () => {
         getAttribute(name) {
           return name === 'data-asset-category-presence' ? presenceValue : null;
         },
+        closest(selector) {
+          return selector === 'label' ? label : null;
+        },
       };
       const label = { textContent: labelText };
       const option = {
@@ -2624,8 +2424,10 @@ describe('Project Assets category filter enhancement', () => {
     const summaryAttrs = {};
     const summary = {
       setAttribute(name, value) { summaryAttrs[name] = String(value); },
+      getAttribute(name) { return summaryAttrs[name] ?? null; },
     };
     const summaryText = { textContent: '' };
+    summaryAttrs['aria-label'] = 'Category filter: All categories (12)';
     const presenceListeners = [];
     const presenceControl = {
       value: presence,
@@ -2641,14 +2443,20 @@ describe('Project Assets category filter enhancement', () => {
       },
     };
     const filter = {
-      dataset: {},
+      dataset: { ccDropdownMode: 'single' },
+      matches(selector) {
+        return selector === '[data-cc-dropdown]';
+      },
       querySelectorAll(selector) {
         return selector === '.asset-filter-multiselect-option'
           ? inputs.map(({ option }) => option)
           : [];
       },
       querySelector(selector) {
-        if (selector === '[data-asset-category-filter-summary]') return summaryText;
+        if (selector === '[data-cc-dropdown-summary-current]') return summaryText;
+        if (selector === 'input[type="radio"]:checked') {
+          return inputs.find(({ input }) => input.checked)?.input || null;
+        }
         if (selector === 'summary') return summary;
         return null;
       },

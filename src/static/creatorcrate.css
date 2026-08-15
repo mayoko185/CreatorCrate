@@ -1420,23 +1420,6 @@
         gap: var(--space-sm);
         min-width: 0;
       }
-      .asset-action-select-wrap {
-        display: block;
-        width: max-content;
-        max-width: 100%;
-        min-width: 0;
-      }
-      .asset-action-select-wrap .asset-action-select-disclosure {
-        width: max-content;
-        max-width: 100%;
-      }
-      @media (max-width: 540px) {
-        .asset-action-select-wrap,
-        .asset-action-select-wrap .asset-action-select-disclosure {
-          width: 100%;
-          max-width: 100%;
-        }
-      }
       .asset-selection-controls .button:focus-visible {
         outline: 2px solid var(--focus-ring);
         outline-offset: 2px;
@@ -2091,6 +2074,33 @@
         width: max-content;
         min-width: 0;
         max-width: min(100%, 26rem);
+        margin: 0;
+        padding: 0;
+        border: 0;
+      }
+      .asset-filter-multiselect-field > legend {
+        display: block;
+        width: 100%;
+        margin: 0 0 0.25rem;
+        padding: 0;
+        color: var(--muted);
+        font-size: 0.875rem;
+      }
+      .cc-dropdown-field--compact {
+        flex: 0 1 auto;
+        width: max-content;
+        max-width: 100%;
+      }
+      .cc-dropdown[data-cc-dropdown-disabled] summary {
+        color: var(--muted);
+        cursor: not-allowed;
+      }
+      .asset-filter-multiselect-option input:disabled + span {
+        color: var(--muted);
+      }
+      .asset-filter-multiselect-option input:disabled + span,
+      .asset-filter-multiselect-option input:disabled ~ span {
+        cursor: not-allowed;
       }
       .asset-filter-multiselect--sized {
         width: max-content;
@@ -2105,6 +2115,7 @@
         grid-template-columns: max-content;
         width: max-content;
         max-width: 100%;
+        overflow: hidden;
       }
       .asset-filter-multiselect--sized .asset-filter-multiselect-summary-current,
       .asset-filter-multiselect--sized .asset-filter-multiselect-summary-width {
@@ -2192,6 +2203,30 @@
         outline: 2px solid var(--focus-ring);
         outline-offset: 2px;
       }
+      .cc-dropdown--compact {
+        width: max-content;
+        max-width: min(8rem, 100%);
+      }
+      .cc-dropdown--compact summary {
+        min-height: 2rem;
+        gap: var(--space-xs);
+        padding: var(--space-xs);
+        font-size: 0.8125rem;
+        line-height: 1.25;
+      }
+      .cc-dropdown--compact summary::after {
+        margin-left: 0;
+      }
+      .cc-dropdown--compact .asset-filter-multiselect-summary {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .cc-dropdown--compact .asset-filter-multiselect-panel {
+        top: auto;
+        bottom: calc(100% + var(--space-xs));
+      }
       .asset-filter-multiselect-summary {
         min-width: 0;
         max-width: 100%;
@@ -2250,8 +2285,31 @@
         padding: var(--space-xs) var(--space-sm);
         color: var(--muted);
       }
+      .app-dialog .asset-filter-multiselect-field {
+        flex: 1 1 auto;
+        width: 100%;
+        max-width: none;
+      }
+      .app-dialog .asset-filter-multiselect-field .asset-filter-multiselect--sized,
+      .app-dialog .asset-filter-multiselect-field .asset-filter-multiselect--sized summary {
+        width: 100%;
+      }
+      .app-dialog .asset-filter-multiselect-field .asset-filter-multiselect-panel {
+        width: 100%;
+        max-width: 100%;
+      }
+      .app-dialog-card.cc-dropdown-dialog-open,
+      .app-dialog-body.cc-dropdown-dialog-open {
+        overflow: visible;
+      }
+      .app-dialog .cc-dropdown[open] {
+        z-index: 70;
+      }
+      .app-dialog .cc-dropdown .asset-filter-multiselect-panel {
+        z-index: 80;
+      }
 
-      /* ── Asset Viewer searchable Project filter ── */
+      /* ── Shared searchable Project selector ── */
       .asset-viewer-project-filter {
         z-index: 45;
       }
@@ -2290,6 +2348,22 @@
         gap: var(--space-xs);
         min-height: 0;
         overflow-y: auto;
+        scrollbar-color: var(--border-strong) transparent;
+        scrollbar-width: thin;
+      }
+      .asset-viewer-project-filter .asset-project-filter-option-list::-webkit-scrollbar {
+        width: 0.5rem;
+      }
+      .asset-viewer-project-filter .asset-project-filter-option-list::-webkit-scrollbar-track {
+        background: transparent;
+      }
+      .asset-viewer-project-filter .asset-project-filter-option-list::-webkit-scrollbar-thumb {
+        background: var(--border-strong);
+        border: 2px solid var(--surface-card);
+        border-radius: 999px;
+      }
+      .asset-viewer-project-filter .asset-project-filter-option-list::-webkit-scrollbar-thumb:hover {
+        background: var(--muted);
       }
       .asset-viewer-project-filter .asset-project-filter-option {
         flex: 0 0 auto;
@@ -3194,13 +3268,17 @@
          .asset-viewer-display-controls .project-filter-actions > .inline-form .button {
            width: 100%;
          }
-        .field {
-          min-width: 0;
-          width: 100%;
-        }
-        .asset-preview-frame {
-          padding: var(--space-sm);
-        }
+         .field {
+           min-width: 0;
+           width: 100%;
+         }
+         .cc-dropdown-field--compact {
+           width: max-content;
+           max-width: 100%;
+         }
+         .asset-preview-frame {
+           padding: var(--space-sm);
+         }
         .asset-preview-image {
           max-height: 50vh;
         }

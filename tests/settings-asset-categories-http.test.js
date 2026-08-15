@@ -258,6 +258,17 @@ describe('settings — asset category defaults HTTP', () => {
       await agent.post(`/settings/asset-categories/${final.id}/disable`).type('form').send({ _csrf: csrfToken }).expect(302);
 
       const res = await agent.get('/settings/asset-categories').expect(200);
+      const section = res.text.match(
+        /<section class="settings-section asset-browser-default-section" aria-labelledby="global-asset-browser-default-heading">[\s\S]*?<\/section>/
+      )?.[0] || '';
+      expect(section).toContain('data-cc-dropdown data-cc-dropdown-mode="single"');
+      expect(section).toMatch(
+        /<select id="global-asset-browser-default" name="defaultCategory" class="cc-dropdown-native-select form-control" data-cc-dropdown-native-select/
+      );
+      expect((section.match(/name="defaultCategory"/g) || [])).toHaveLength(1);
+      expect(section).not.toMatch(/<input[^>]*name="defaultCategory"/);
+      expect(section).not.toContain('aria-invalid');
+      expect(section).toContain('type="radio" value="all" checked');
       expect(res.text).toMatch(/<option value="all" selected>All Categories/);
       expect(res.text).toContain('<option value="wip">WIP');
       expect(res.text).not.toContain('<option value="final">Final');
@@ -334,6 +345,12 @@ describe('settings — asset category defaults HTTP', () => {
         .send({ defaultCategory: 'unknown-slug', _csrf: csrfToken }).expect(422);
       expect(unknown.text).toContain('unknown-slug');
       expect(unknown.text).toContain('Global preference must be all or an enabled global category slug');
+      expect(unknown.text).toMatch(
+        /<select id="global-asset-browser-default"[^>]*aria-describedby="global-asset-browser-default-help global-asset-browser-default-error"[^>]*aria-invalid/
+      );
+      expect(unknown.text).toMatch(
+        /<summary[^>]*aria-describedby="global-asset-browser-default-error"[^>]*aria-invalid/
+      );
       expect(getGlobalBrowserDefault(ctx.db)).toBe('wip');
 
       await agent.post(`/settings/asset-categories/${finalDefault.id}/disable`).type('form').send({ _csrf: csrfToken }).expect(302);
@@ -391,9 +408,18 @@ describe('settings — asset category defaults HTTP', () => {
       expect(res.text.indexOf('global-preview-category-heading')).toBeLessThan(
         res.text.indexOf('category-management-add')
       );
-      expect(previewSection(res.text)).toContain(
+      const section = previewSection(res.text);
+      expect(section).toContain('data-cc-dropdown data-cc-dropdown-mode="single"');
+      expect(section).toMatch(
+        /<select id="global-preview-category" name="previewCategory" class="cc-dropdown-native-select form-control" data-cc-dropdown-native-select/
+      );
+      expect((section.match(/name="previewCategory"/g) || [])).toHaveLength(1);
+      expect(section).not.toMatch(/<input[^>]*name="previewCategory"/);
+      expect(section).not.toContain('aria-invalid');
+      expect(section).toContain(
         `<option value="${PREVIEW_CATEGORY_DISABLED_VALUE}" selected>Disabled`
       );
+      expect(section).toContain(`type="radio" value="${PREVIEW_CATEGORY_DISABLED_VALUE}" checked`);
       expect(getPreviewCategory(ctx.db)).toBeUndefined();
     });
 
@@ -454,6 +480,12 @@ describe('settings — asset category defaults HTTP', () => {
         .send({ previewCategory: 'unknown-slug', _csrf: csrfToken }).expect(422);
       expect(unknown.text).toContain('unknown-slug');
       expect(unknown.text).toContain('Preview category must be Disabled or an enabled global category slug');
+      expect(unknown.text).toMatch(
+        /<select id="global-preview-category"[^>]*aria-describedby="global-preview-category-help global-preview-category-error"[^>]*aria-invalid/
+      );
+      expect(unknown.text).toMatch(
+        /<summary[^>]*aria-describedby="global-preview-category-error"[^>]*aria-invalid/
+      );
       expect(getPreviewCategory(ctx.db)).toBe('wip');
 
       const malformed = await agent.post('/settings/asset-categories/preview-category').type('form')

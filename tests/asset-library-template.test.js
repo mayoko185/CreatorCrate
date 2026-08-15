@@ -144,6 +144,16 @@ function makeModel(overrides = {}) {
 
   model.presentation = { view: filters.view, ...model.presentation };
   model.context = { ...filters, page, pageSize, ...overrides.context };
+  model.categoryFilterOptions = (model.categoryOptions || []).filter((candidate) => candidate.value !== 'all');
+  model.categoryFilterSelectedValues = model.categoryFilterOptions
+    .filter((candidate) => candidate.selected)
+    .map((candidate) => candidate.value);
+  model.tagFilterSelectedValues = (model.tagOptions || [])
+    .filter((candidate) => candidate.selected)
+    .map((candidate) => candidate.value);
+  model.extensionFilterSelectedValues = (model.extensionOptions || [])
+    .filter((candidate) => candidate.selected)
+    .map((candidate) => candidate.value);
   return model;
 }
 
@@ -212,8 +222,8 @@ describe('cross-project Asset Viewer template', () => {
     expect(html).toMatch(/<div class="asset-viewer-display-controls">[\s\S]*?<div class="project-filter-actions project-filter-actions--projects">[\s\S]*?<\/div>\s*<\/div>\s*<form id="asset-filters"/);
     expect(html).toContain('<input type="hidden" name="view" value="list">');
     expect(html).toContain('aria-label="Project filter: Beta Project"');
-    expect(html).toMatch(/<span class="asset-filter-multiselect-summary" data-asset-project-filter-summary>\s*<span class="asset-filter-multiselect-summary-current" data-asset-project-filter-current-summary>Beta Project<\/span>[\s\S]*?<span class="asset-filter-multiselect-summary-width" aria-hidden="true">[\s\S]*?<\/span>\s*<\/span>/);
-    expect(html).toMatch(/<input id="asset-project-option-2" name="project" type="radio" value="2" checked>/);
+    expect(html).toContain('<span data-cc-dropdown-summary-current class="asset-filter-multiselect-summary-current">Beta Project</span>');
+    expect(html).toMatch(/<input id="2" name="project" type="radio" value="2" checked>/);
     expect(html).toContain('aria-label="Category filter: Renders"');
     expect(html).toMatch(/<input[^>]+name="category"[^>]+value="renders" checked>/);
     expect(html).toContain('aria-label="Tag filter: Beta Tag"');
@@ -231,7 +241,7 @@ describe('cross-project Asset Viewer template', () => {
     expect(html).toContain('aria-label="Sort order filter: Descending"');
     expect(html).toContain('aria-label="Page size filter: 50"');
     for (const label of ['Missing', 'Used in releases', 'Project', 'Descending', '50']) {
-      expect(html).toContain(`<span class="asset-filter-multiselect-summary-current">${label}</span>`);
+      expect(html).toContain(`<span data-cc-dropdown-summary-current class="asset-filter-multiselect-summary-current">${label}</span>`);
     }
     expect(html).toMatch(/<input[^>]+name="presence"[^>]+type="radio"[^>]+value="missing" checked>/);
     expect(html).toMatch(/<input[^>]+name="usage"[^>]+type="radio"[^>]+value="used" checked>/);
@@ -241,6 +251,7 @@ describe('cross-project Asset Viewer template', () => {
     for (const [name, count] of [['presence', 3], ['usage', 3], ['sort', 2], ['order', 2], ['pageSize', 4]]) {
       expect((html.match(new RegExp(`name="${name}"[^>]+type="radio"`, 'g')) || [])).toHaveLength(count);
     }
+    expect((html.match(/data-cc-dropdown data-cc-dropdown-mode="(?:single|multiple)"/g) || [])).toHaveLength(10);
     expect(html).not.toMatch(/<select[^>]+id="asset-(presence|usage|sort|order|page-size)"/);
     for (const [triggerId, optionsId] of [
       ['asset-presence-filter-trigger', 'asset-presence-filter-options'],
@@ -249,12 +260,13 @@ describe('cross-project Asset Viewer template', () => {
       ['asset-order-filter-trigger', 'asset-order-filter-options'],
       ['asset-page-size-filter-trigger', 'asset-page-size-filter-options'],
     ]) {
-      const disclosure = (html.match(/<details[^>]*data-asset-viewer-filter-disclosure[\s\S]*?<\/details>/g) || [])
+      const disclosure = (html.match(/<details[^>]*data-cc-dropdown[\s\S]*?<\/details>/g) || [])
         .find((candidate) => candidate.includes(`aria-controls="${optionsId}"`)) || '';
       expect(disclosure).toContain(`id="${triggerId}"`);
       expect(disclosure).toContain(`aria-controls="${optionsId}"`);
       expect(disclosure).toContain('aria-expanded="false"');
       expect(disclosure).toContain('class="asset-filter-multiselect-summary-width" aria-hidden="true"');
+      expect(disclosure).not.toContain('data-asset-viewer-filter-disclosure');
     }
     expect(html).toContain('data-asset-library-reset');
     expect(html).toContain('aria-label="Reset filters"');
@@ -276,22 +288,37 @@ describe('cross-project Asset Viewer template', () => {
 
     expect(emptyHtml).not.toMatch(/<select[^>]+(?:id="asset-project"|name="project")/);
     expect(emptyHtml).toContain('<legend>Project</legend>');
-    expect(emptyHtml).toContain('data-asset-project-filter');
-    expect((emptyHtml.match(/data-asset-viewer-filter-disclosure/g) || [])).toHaveLength(9);
-    expect(emptyHtml).toContain('id="asset-project-filter-search" class="asset-project-filter-search" type="search"');
+    expect(emptyHtml).toContain('data-cc-dropdown-searchable');
+    expect(emptyHtml).toContain('data-cc-dropdown-type="searchable-single"');
+    expect(emptyHtml).not.toContain('data-asset-project-filter');
+    expect((emptyHtml.match(/data-asset-viewer-filter-disclosure/g) || [])).toHaveLength(0);
+    expect(emptyHtml).toContain('id="asset-project-filter-trigger" aria-controls="asset-project-filter-options"');
+    expect(emptyHtml).toContain('id="asset-project-filter-search" class="asset-project-filter-search" type="search" autocomplete="off" data-cc-dropdown-search');
+    expect(emptyHtml).toContain('id="asset-project-filter-option-list" class="asset-project-filter-option-list" data-cc-dropdown-option-list');
+    expect(emptyHtml).toContain('data-cc-dropdown-no-results');
     expect(emptyHtml).toMatch(/<input id="asset-project-option-all" name="project" type="radio" value="" checked>/);
-    expect(emptyHtml).toMatch(/<input id="asset-project-option-1" name="project" type="radio" value="1">/);
-    expect(emptyHtml).toMatch(/<input id="asset-project-option-2" name="project" type="radio" value="2">/);
+    expect(emptyHtml).toMatch(/<input id="1" name="project" type="radio" value="1">/);
+    expect(emptyHtml).toMatch(/<input id="2" name="project" type="radio" value="2">/);
     expect(emptyHtml).toContain('>All projects</span>');
     expect(emptyHtml).not.toMatch(/<input[^>]+type="hidden"[^>]+name="project"/);
     expect((emptyHtml.match(/<input[^>]+name="project"[^>]+type="radio"/g) || [])).toHaveLength(3);
 
     expect(selectedHtml).toContain('aria-expanded="false"');
     expect(selectedHtml).toContain('aria-label="Project filter: Beta Project"');
-    expect(selectedHtml).toMatch(/<span class="asset-filter-multiselect-summary" data-asset-project-filter-summary>\s*<span class="asset-filter-multiselect-summary-current" data-asset-project-filter-current-summary>Beta Project<\/span>[\s\S]*?<span class="asset-filter-multiselect-summary-width" aria-hidden="true">[\s\S]*?<\/span>\s*<\/span>/);
+    expect(selectedHtml).toContain('<span data-cc-dropdown-summary-current class="asset-filter-multiselect-summary-current">Beta Project</span>');
     expect(selectedHtml).toMatch(/<input id="asset-project-option-all" name="project" type="radio" value="">/);
-    expect(selectedHtml).toMatch(/<input id="asset-project-option-2" name="project" type="radio" value="2" checked>/);
+    expect(selectedHtml).toMatch(/<input id="2" name="project" type="radio" value="2" checked>/);
     expect(selectedHtml).not.toMatch(/<input id="asset-project-filter-search"[^>]+name="project"/);
+  });
+
+  it('falls back to All projects when the requested Project is not an available option', () => {
+    const html = renderPage({ filters: { projectId: 999999 } });
+    const projectFilter = html.match(/<details[^>]*id="asset-project-filter"[\s\S]*?<\/details>/)?.[0] || '';
+
+    expect(projectFilter).toMatch(/id="asset-project-option-all"[^>]*name="project"[^>]*value="" checked/);
+    expect(projectFilter).not.toMatch(/name="project"[^>]*value="999999"[^>]*checked/);
+    expect(projectFilter).toContain('<span data-cc-dropdown-summary-current class="asset-filter-multiselect-summary-current">All projects</span>');
+    expect(projectFilter).toContain('aria-label="Project filter: All projects"');
   });
 
   it('renders repeated checkbox parameters, simultaneous checked values, and empty summaries', () => {
@@ -324,7 +351,7 @@ describe('cross-project Asset Viewer template', () => {
     expect(html).toContain('2 categories selected');
     expect(html).toContain('2 tags selected');
     expect(html).toContain('2 extensions selected');
-    expect((html.match(/data-asset-viewer-filter-disclosure/g) || [])).toHaveLength(9);
+    expect((html.match(/data-asset-viewer-filter-disclosure/g) || [])).toHaveLength(0);
     for (const id of ['asset-category-filter-trigger', 'asset-tag-filter-trigger', 'asset-extension-filter-trigger']) {
       expect(html).toContain(`id="${id}"`);
     }
@@ -335,12 +362,11 @@ describe('cross-project Asset Viewer template', () => {
     expect((html.match(/name="tag"[^>]+checked/g) || [])).toHaveLength(2);
     expect((html.match(/name="extension"[^>]+checked/g) || [])).toHaveLength(2);
     for (const [optionsId, inputName] of [
-      ['asset-project-filter-options', 'project'],
       ['asset-category-filter-options', 'category'],
       ['asset-tag-filter-options', 'tag'],
       ['asset-extension-filter-options', 'extension'],
     ]) {
-      const disclosure = (html.match(/<details[^>]*data-asset-viewer-filter-disclosure[\s\S]*?<\/details>/g) || [])
+      const disclosure = (html.match(/<details[^>]*data-cc-dropdown[\s\S]*?<\/details>/g) || [])
         .find((candidate) => candidate.includes(`aria-controls="${optionsId}"`)) || '';
       expect(disclosure).toContain('asset-filter-multiselect--sized');
       expect(disclosure).toContain('asset-filter-multiselect-summary-current');
@@ -353,7 +379,7 @@ describe('cross-project Asset Viewer template', () => {
     expect(html).not.toMatch(/type="hidden"[^>]+name="(tag|category|extension)"/);
   });
 
-  it('retains legacy fallback fields when single-select option collections are empty', () => {
+  it('keeps native fallback selects canonical when single-select option collections are empty', () => {
     const html = renderPage({
       presenceOptions: [],
       usageOptions: [],
@@ -362,21 +388,22 @@ describe('cross-project Asset Viewer template', () => {
       pageSizeOptions: [],
     });
 
-    expect(html).toContain('<select id="asset-presence" name="presence">');
-    expect(html).toContain('<select id="asset-usage" name="usage">');
-    expect(html).toContain('<select id="asset-sort" name="sort">');
+    expect(html).toContain('<select id="asset-presence" name="presence" class="cc-dropdown-native-select" data-cc-dropdown-native-select');
+    expect(html).toContain('<select id="asset-usage" name="usage" class="cc-dropdown-native-select" data-cc-dropdown-native-select');
+    expect(html).toContain('<select id="asset-sort" name="sort" class="cc-dropdown-native-select" data-cc-dropdown-native-select');
     expect(html).toContain('<input id="asset-order" name="order" type="text" value="asc">');
     expect(html).toContain('<input id="asset-page-size" name="pageSize" type="number" value="25">');
-    expect((html.match(/data-asset-viewer-filter-disclosure/g) || [])).toHaveLength(4);
+    expect((html.match(/data-cc-dropdown data-cc-dropdown-mode="single"/g) || [])).toHaveLength(5);
+    expect((html.match(/data-asset-viewer-filter-disclosure/g) || [])).toHaveLength(0);
     for (const id of [
       'asset-presence-filter-trigger',
       'asset-usage-filter-trigger',
       'asset-sort-filter-trigger',
-      'asset-order-filter-trigger',
-      'asset-page-size-filter-trigger',
     ]) {
-      expect(html).not.toContain(`id="${id}"`);
+      expect(html).toContain(`id="${id}"`);
     }
+    expect(html).not.toContain('id="asset-order-filter-trigger"');
+    expect(html).not.toContain('id="asset-page-size-filter-trigger"');
   });
 
   it('renders exact three-region Grid cards with retained indicators, preview info, and title-only footers', () => {
@@ -726,6 +753,8 @@ describe('cross-project Asset Viewer template', () => {
     expect(css).toMatch(/@media \(max-width: 540px\)[\s\S]*?\.asset-filter-multiselect-panel\s*\{[\s\S]*?width:\s*100%/);
     expect(css).toMatch(/\.asset-viewer-project-filter \.asset-project-filter-panel\s*\{[\s\S]*?max-height:\s*20rem[\s\S]*?overflow:\s*hidden/);
     expect(css).toMatch(/\.asset-viewer-project-filter \.asset-project-filter-option-list\s*\{[\s\S]*?overflow-y:\s*auto/);
+    expect(css).toMatch(/\.asset-viewer-project-filter\s+\.asset-project-filter-option-list\s*\{[\s\S]*?scrollbar-color:\s*var\(--border-strong\)\s+transparent[\s\S]*?scrollbar-width:\s*thin/);
+    expect(css).not.toMatch(/#(?:project|asset)-project-filter\s+\.asset-project-filter-option-list/);
     expect(css).toMatch(/\.asset-filter-multiselect-field\s*\{[^}]*flex:\s*0 1 auto[^}]*width:\s*max-content/);
     expect(css).toMatch(/\.asset-filter-multiselect--sized\s*\{[^}]*width:\s*max-content[^}]*max-width:\s*100%/);
     expect(css).toMatch(/\.asset-filter-multiselect--sized \.asset-filter-multiselect-summary\s*\{[\s\S]*?display:\s*grid[\s\S]*?grid-template-columns:\s*max-content/);
@@ -988,6 +1017,9 @@ describe('cross-project Asset Viewer template', () => {
     expect(html).toContain('data-dialog-submit');
     expect(html).toContain('>Save defaults</button>');
     expect(html).toContain('>Cancel</button>');
+    expect(html).toMatch(/<select id="av-view" name="view" class="cc-dropdown-native-select" data-cc-dropdown-native-select[^>]*>/);
+    expect(html).toMatch(/<select id="av-sort" name="sort" class="cc-dropdown-native-select" data-cc-dropdown-native-select[^>]*>/);
+    expect((html.match(/name="(?:view|sort)" class="cc-dropdown-native-select"/g) || [])).toHaveLength(2);
   });
 
   it('renders a noscript Filter button inside the filter form', () => {
@@ -1104,6 +1136,8 @@ describe('slideshow scaffold — static UI', () => {
   it('asset-viewer page: speed select preserves 2 s, 4 s default, and 6 s options', () => {
     const html = renderPage();
     const speedSelect = html.match(/<select[^>]*data-slideshow-speed[^>]*>[\s\S]*?<\/select>/)?.[0] ?? '';
+    expect(speedSelect).toContain('class="cc-dropdown-native-select slideshow-speed"');
+    expect(speedSelect).toContain('data-cc-dropdown-native-select');
     expect(speedSelect).toContain('value="2000"');
     expect(speedSelect).toMatch(/value="4000" selected/);
     expect(speedSelect).toContain('value="6000"');
@@ -1154,6 +1188,31 @@ describe('slideshow scaffold — static UI', () => {
     expect(speedSelect).toContain('value="2000"');
     expect(speedSelect).toMatch(/value="4000" selected/);
     expect(speedSelect).toContain('value="6000"');
+  });
+
+  it('project assets page: speed uses the compact shared dropdown beside play/pause', () => {
+    const html = renderProjectAssetsPage();
+    const controlsStart = html.indexOf('<div class="slideshow-controls">');
+    const nextStart = html.indexOf(
+      '<button type="button" class="slideshow-nav-btn" data-slideshow-next',
+      controlsStart,
+    );
+    const controls = html.slice(controlsStart, nextStart);
+    const playPauseStart = controls.indexOf('data-slideshow-play-pause');
+    const playPauseEnd = controls.indexOf('</button>', playPauseStart);
+    const speedFieldStart = controls.indexOf('<fieldset', playPauseEnd);
+    const speedDetails = html.match(/<details[^>]*id="slideshow-speed-dropdown"[^>]*>/)?.[0] || '';
+    const extensionDetails = html.match(/<details[^>]*id="asset-extension-filter"[^>]*>/)?.[0] || '';
+
+    expect(controlsStart).toBeGreaterThan(-1);
+    expect(nextStart).toBeGreaterThan(controlsStart);
+    expect(playPauseStart).toBeGreaterThan(-1);
+    expect(playPauseEnd).toBeGreaterThan(playPauseStart);
+    expect(speedFieldStart).toBeGreaterThan(playPauseEnd);
+    expect(controls.slice(speedFieldStart)).toContain('cc-dropdown-field--compact');
+    expect(speedDetails).toContain('cc-dropdown--compact');
+    expect(extensionDetails).toContain('cc-dropdown');
+    expect(extensionDetails).not.toContain('cc-dropdown--compact');
   });
 
   it('project assets page: existing Filter, Reset, and Defaults controls remain present', () => {

@@ -60,9 +60,10 @@ describe('Notes workspace layout contract', () => {
     expect(formTemplate).toContain('data-notes-editor-form');
     expect(formBody).toContain('data-notes-editor-host');
     expect(formBody).toContain('data-notes-editor-source');
-    expect(formBody).toContain('name="projectIds[]"');
+    expect(formBody).toContain('{{ dropdown.multiSelect({');
+    expect(formBody).toContain('name: "projectIds[]"');
     expect(formBody).toContain('name="assetIds[]"');
-    expect(formBody).toContain('>Projects</legend>');
+    expect(formBody).toContain('label: "Projects"');
     expect(formBody).toContain('>Assets</legend>');
     expect(formBody).not.toContain('<form');
   });

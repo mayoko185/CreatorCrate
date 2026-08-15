@@ -140,6 +140,7 @@ describe('cross-project Asset Viewer HTTP route', () => {
   it('renders active-project assets, complete options, safe previews, and no mutation actions', async () => {
     createCategory({ displayName: 'Alternate References', directorySlug: 'alternate-references', displayOrder: 1 });
     createCategory({ displayName: 'Hidden', directorySlug: 'hidden', displayOrder: 2, enabled: false });
+    createCategory({ displayName: 'Source', directorySlug: 'source', displayOrder: 3 });
 
     const alpha = createProject('Alpha Project');
     const beta = createProject('Beta Project');
@@ -178,9 +179,37 @@ describe('cross-project Asset Viewer HTTP route', () => {
     expect(response.text).not.toContain(`/projects/${beta.id}/assets/${unsupported.id}/preview`);
     expect(response.text).not.toContain(`/projects/${beta.id}/assets/${missing.id}/preview`);
 
-    expect(response.text).toMatch(/<input id="asset-project-option-\d+" name="project" type="radio" value="\d+">/);
-    expect(response.text).toMatch(/<label for="(asset-project-option-\d+)">\s*<input id="\1" name="project" type="radio" value="\d+">\s*<span>Alpha Project<\/span>\s*<\/label>/);
-    expect(response.text).toMatch(/<label for="(asset-project-option-\d+)">\s*<input id="\1" name="project" type="radio" value="\d+">\s*<span>Beta Project<\/span>\s*<\/label>/);
+    const filterForm = response.text.match(/<form id="asset-filters"[\s\S]*?<\/form>/)?.[0] || '';
+    expect((filterForm.match(/data-cc-dropdown data-cc-dropdown-mode="(?:single|multiple)"/g) || [])).toHaveLength(9);
+    for (const id of [
+      'asset-project-filter',
+      'asset-category-filter',
+      'asset-tag-filter',
+      'asset-extension-filter',
+      'asset-presence-filter',
+      'asset-usage-filter',
+      'asset-sort-filter',
+      'asset-order-filter',
+      'asset-page-size-filter',
+    ]) {
+      const control = filterForm.match(new RegExp(`<details[^>]*id="${id}"[\\s\\S]*?<\\/details>`))?.[0] || '';
+      expect(control).toContain('data-cc-dropdown');
+      expect(control).not.toContain('data-asset-viewer-filter-disclosure');
+    }
+    expect(filterForm).not.toMatch(/<select[^>]+name="(?:category|tag|extension|presence|usage|sort|order|pageSize)"/);
+    expect(filterForm).toContain('data-cc-dropdown-searchable');
+    expect(filterForm).not.toContain('data-asset-project-filter');
+    expect(filterForm).not.toContain('data-asset-viewer-filter-disclosure');
+    const defaultsForm = response.text.match(/<form id="asset-viewer-defaults-form"[\s\S]*?<\/form>/)?.[0] || '';
+    for (const name of ['view', 'sort', 'order', 'pageSize']) {
+      expect(defaultsForm).toMatch(new RegExp(`<select[^>]*name="${name}"[^>]*data-cc-dropdown-native-select`));
+      expect((defaultsForm.match(new RegExp(`<input[^>]*name="${name}"`, 'g')) || [])).toHaveLength(0);
+    }
+    expect(response.text).toMatch(/<select[^>]*data-cc-dropdown-native-select[^>]*data-slideshow-speed/);
+
+    expect(response.text).toMatch(/<input id="\d+" name="project" type="radio" value="\d+">/);
+    expect(response.text).toMatch(/<label for="(\d+)">\s*<input id="\1" name="project" type="radio" value="\d+">\s*<span>Alpha Project<\/span>\s*<\/label>/);
+    expect(response.text).toMatch(/<label for="(\d+)">\s*<input id="\1" name="project" type="radio" value="\d+">\s*<span>Beta Project<\/span>\s*<\/label>/);
     expect(response.text).toMatch(/<input id="asset-project-option-all" name="project" type="radio" value="" checked>/);
     expect(response.text).toContain('aria-label="Project filter: All projects"');
     expect(response.text).toMatch(/name="category"[^>]+value="source"/);
@@ -436,25 +465,25 @@ describe('cross-project Asset Viewer HTTP route', () => {
   });
 
   it('canonicalizes repeated selections and preserves them through pagination and view links', async () => {
-    createCategory({ displayName: 'Final', directorySlug: 'final', displayOrder: 1 });
-    createCategory({ displayName: 'KRZ', directorySlug: 'krz', displayOrder: 2 });
+    createCategory({ displayName: 'Final', directorySlug: 'test-final', displayOrder: 5 });
+    createCategory({ displayName: 'KRZ', directorySlug: 'test-krz', displayOrder: 6 });
     const alpha = createProject('Repeated Filter Alpha');
     const beta = createProject('Repeated Filter Beta');
-    const alphaFinal = assignCategory(alpha.id, { displayName: 'Final', directorySlug: 'final' });
-    const betaKrz = assignCategory(beta.id, { displayName: 'KRZ', directorySlug: 'krz' });
+    const alphaFinal = assignCategory(alpha.id, { displayName: 'Final', directorySlug: 'test-final' });
+    const betaKrz = assignCategory(beta.id, { displayName: 'KRZ', directorySlug: 'test-krz' });
     const tagA = tagRepository.create({ displayName: 'Repeated Tag A', normalizedName: 'repeated-tag-a' });
     const tagB = tagRepository.create({ displayName: 'Repeated Tag B', normalizedName: 'repeated-tag-b' });
     tagRepository.assignToProject(alpha.id, tagA.id);
     tagRepository.assignToProject(beta.id, tagB.id);
 
     for (let index = 1; index <= 6; index++) {
-      createAsset(alpha.id, `final/alpha-${String(index).padStart(2, '0')}.png`, {
+      createAsset(alpha.id, `test-final/alpha-${String(index).padStart(2, '0')}.png`, {
         categoryId: alphaFinal.id,
         extension: 'png',
       });
     }
     for (let index = 1; index <= 5; index++) {
-      createAsset(beta.id, `krz/beta-${String(index).padStart(2, '0')}.krz`, {
+      createAsset(beta.id, `test-krz/beta-${String(index).padStart(2, '0')}.krz`, {
         categoryId: betaKrz.id,
         extension: 'krz',
       });
@@ -463,12 +492,12 @@ describe('cross-project Asset Viewer HTTP route', () => {
     const tagValues = [tagA.id, tagB.id].sort((left, right) => left - right);
     const redirect = await request(app).get(
       `/assets?tag=${tagB.id}&tag=${tagA.id}&tag=${tagB.id}&tag=999999`
-      + '&category=krz&category=final&category=all&category=not-a-valid-category'
+      + '&category=test-krz&category=test-final&category=all&category=not-a-valid-category'
       + '&extension=.KRZ&extension=png&extension=png&extension=unknown'
       + '&sort=project&page=2&pageSize=10&view=list',
     ).expect(302);
 
-    const canonicalUrl = `/assets?category=final&category=krz&tag=${tagValues[0]}&tag=${tagValues[1]}`
+    const canonicalUrl = `/assets?category=test-final&category=test-krz&tag=${tagValues[0]}&tag=${tagValues[1]}`
       + '&extension=krz&extension=png&sort=project&page=2&pageSize=10&view=list';
     expect(redirect.headers.location).toBe(canonicalUrl);
 
@@ -477,12 +506,12 @@ describe('cross-project Asset Viewer HTTP route', () => {
     expect(response.text).toContain('11 assets found');
     expect(response.text).toContain('Page 2 of 2');
 
-    const escapedContext = `category=final&amp;category=krz&amp;tag=${tagValues[0]}&amp;tag=${tagValues[1]}`
+    const escapedContext = `category=test-final&amp;category=test-krz&amp;tag=${tagValues[0]}&amp;tag=${tagValues[1]}`
       + '&amp;extension=krz&amp;extension=png&amp;sort=project';
     expect(response.text).toContain(`${escapedContext}&amp;pageSize=10&amp;view=list`);
     expect(response.text).toContain(`${escapedContext}&amp;page=2&amp;pageSize=10&amp;view=grid`);
-    expect(response.text).toMatch(/name="category"[^>]+value="final" checked/);
-    expect(response.text).toMatch(/name="category"[^>]+value="krz" checked/);
+    expect(response.text).toMatch(/name="category"[^>]+value="test-final" checked/);
+    expect(response.text).toMatch(/name="category"[^>]+value="test-krz" checked/);
     expect(response.text).toMatch(/name="extension"[^>]+value="krz" checked/);
     expect(response.text).toMatch(/name="extension"[^>]+value="png" checked/);
   });
@@ -514,6 +543,7 @@ describe('cross-project Asset Viewer HTTP route', () => {
   it('maps every supported filter to the read-only page query and renders list view', async () => {
     const alpha = createProject('Filtered Alpha');
     const beta = createProject('Filtered Beta');
+    createCategory({ displayName: 'Source', directorySlug: 'source' });
     const alphaSource = assignCategory(alpha.id, { displayName: 'Source', directorySlug: 'source' });
     const betaSource = assignCategory(beta.id, { displayName: 'Source', directorySlug: 'source' });
     const selected = createAsset(alpha.id, 'source/shared.png', {
@@ -543,7 +573,7 @@ describe('cross-project Asset Viewer HTTP route', () => {
     expect(response.text).toContain(`href="/projects/${alpha.id}/assets/${selected.id}"`);
     expect(response.text).not.toContain(`href="/projects/${beta.id}/assets/${used.id}"`);
     expect(response.text).toMatch(new RegExp(
-      `<input id="asset-project-option-${alpha.id}" name="project" type="radio" value="${alpha.id}" checked>`,
+      `<input id="${alpha.id}" name="project" type="radio" value="${alpha.id}" checked>`,
     ));
     expect(response.text).toContain('aria-label="Project filter: Filtered Alpha"');
     expect(response.text).toMatch(/<input[^>]+name="sort"[^>]+type="radio"[^>]+value="project" checked>/);
@@ -553,6 +583,8 @@ describe('cross-project Asset Viewer HTTP route', () => {
     expect(response.text).not.toContain('id="asset-search"');
     expect(response.text).not.toMatch(/<input[^>]+name="search"/);
     expect(response.text).toContain('id="asset-project-filter-search"');
+    expect(response.text).toContain('data-cc-dropdown-option-list');
+    expect(response.text).not.toContain('data-asset-project-filter');
   });
 
   it('redirects once to valid saved presentation defaults and renders the final URL directly', async () => {
@@ -750,6 +782,7 @@ describe('cross-project Asset Viewer HTTP route', () => {
   it('composes all existing filters with saved presentation defaults', async () => {
     writeAssetViewerDefaults({ view: 'list', sort: 'project', order: 'desc', pageSize: '50' });
     const project = createProject('Composed Filters Project');
+    createCategory({ displayName: 'Source', directorySlug: 'source' });
     const category = assignCategory(project.id, {
       displayName: 'Source',
       directorySlug: 'source',
@@ -871,7 +904,7 @@ describe('cross-project Asset Viewer HTTP route', () => {
       'href="/assets?project=' + project.id + '&amp;tag=' + tag.id + '&amp;sort=project&amp;order=desc&amp;pageSize=50&amp;view=list"',
     );
     expect(response.text).toMatch(new RegExp(
-      `<input id="asset-project-option-${project.id}" name="project" type="radio" value="${project.id}" checked>`,
+      `<input id="${project.id}" name="project" type="radio" value="${project.id}" checked>`,
     ));
     expect(response.text).toContain('aria-label="Project filter: URL Context Project"');
     expect(response.text).toMatch(/<a\b(?=[^>]*href="\/assets\?sort=project&amp;order=desc&amp;pageSize=50&amp;view=list")(?=[^>]*data-asset-library-reset)(?=[^>]*aria-label="Reset filters")[^>]*>[\s\S]*?<span class="sr-only">Reset<\/span><\/a>/);

@@ -1,5 +1,6 @@
 {% extends "layout.njk" %}
 {% import "partials/page-heading.njk" as pageHeading %}
+{% import "partials/dropdown.njk" as dropdown %}
 
 {% set title = action ~ ' Project' %}
 {% set page_title = "Projects — Edit " ~ project.title if action == 'Edit' else "Projects — " ~ title %}
@@ -65,69 +66,72 @@
         {% set tagSummary = selectedTagIds.length ~ ' tags selected' %}
       {% endif %}
 
-      <div class="field-row scheduling-row">
-        <fieldset class="field scheduling-field asset-viewer-filter-field asset-filter-multiselect-field{% if errors.status %} field-error{% endif %}">
-          <legend>Status <span class="required" aria-label="required">*</span></legend>
-          <details class="asset-filter-multiselect asset-filter-multiselect--sized" data-asset-viewer-filter-disclosure data-asset-viewer-filter-single-select>
-            <summary id="project-status-form-trigger"
-                     aria-controls="project-status-form-options"
-                     aria-expanded="false"
-                     aria-label="Status: {{ statusSummary }}">
-              <span class="asset-filter-multiselect-summary">
-                <span class="asset-filter-multiselect-summary-current">{{ statusSummary }}</span>
-                <span class="asset-filter-multiselect-summary-width" aria-hidden="true">
-                  {% for s in statuses %}<span>{{ s | replace('-', ' ') | title }}</span>{% endfor %}
-                </span>
-              </span>
-            </summary>
-            <div id="project-status-form-options" class="asset-filter-multiselect-panel" role="group" aria-label="Status options">
-              {% for s in statuses %}
-                <div class="asset-filter-multiselect-option">
-                  <label for="project-status-form-option-{{ loop.index }}">
-                    <input id="project-status-form-option-{{ loop.index }}" name="status" type="radio" value="{{ s }}"{% if values.status == s %} checked{% endif %} required{% if errors.status %} aria-describedby="status-error" aria-invalid="true"{% endif %}>
-                    <span>{{ s | replace('-', ' ') | title }}</span>
-                  </label>
-                </div>
-              {% endfor %}
-            </div>
-          </details>
-          {% if errors.status %}<span class="field-error-message" id="status-error">{{ errors.status }}</span>{% endif %}
-        </fieldset>
+      {% set tagOptions = [] %}
+      {% for tag in tags %}
+        {% set _ = tagOptions.push({ value: tag.id | string, label: tag.displayName }) %}
+      {% endfor %}
 
-        <fieldset class="field scheduling-field asset-viewer-filter-field asset-filter-multiselect-field{% if errors.tagIds %} field-error{% endif %}">
-          <legend>Tags</legend>
-          <details class="asset-filter-multiselect asset-filter-multiselect--sized" data-asset-viewer-filter-disclosure data-asset-viewer-filter-multi-select>
-            <summary id="project-tags-form-trigger"
-                     aria-controls="project-tags-form-options"
-                     aria-expanded="false"
-                     aria-label="Tags: {{ tagSummary }}">
-              <span class="asset-filter-multiselect-summary">
-                <span class="asset-filter-multiselect-summary-current">{{ tagSummary }}</span>
-                <span class="asset-filter-multiselect-summary-width" aria-hidden="true">
-                  <span>No tags selected</span>
-                  {% for tag in tags %}<span>{{ tag.displayName }}</span>{% endfor %}
-                  {% if selectedTagIds.length == 1 %}<span>1 tag selected</span>{% else %}<span>{{ selectedTagIds.length }} tags selected</span>{% endif %}
-                </span>
-              </span>
-            </summary>
-            <div id="project-tags-form-options" class="asset-filter-multiselect-panel" role="group" aria-label="Tag options">
-              {% if tags.length > 0 %}
-                {% for tag in tags %}
-                  <div class="asset-filter-multiselect-option">
-                    <label for="project-tags-form-option-{{ loop.index }}">
-                       <input id="project-tags-form-option-{{ loop.index }}" name="tagIds[]" type="checkbox" value="{{ tag.id }}"{% if (tag.id | string) in selectedTagIds %} checked{% endif %}{% if errors.tagIds %} aria-describedby="tagIds-error" aria-invalid="true"{% endif %}>
-                      <span>{{ tag.displayName }}</span>
-                    </label>
-                  </div>
-                {% endfor %}
-              {% else %}
-                <p class="asset-filter-multiselect-empty">No tags available. <a href="/settings/tags">Add tags in Settings</a>.</p>
-              {% endif %}
-            </div>
-          </details>
+      {% set statusOptions = [] %}
+      {% for s in statuses %}
+        {% set _ = statusOptions.push({ value: s, label: s | replace('-', ' ') | title }) %}
+      {% endfor %}
+
+      <div class="field-row scheduling-row">
+        <div class="field scheduling-field">
+          {{ dropdown.singleSelect({
+            id: "project-status-form",
+            name: "status",
+            label: "Status",
+            required: true,
+            options: statusOptions,
+            selected: values.status,
+            summary: statusSummary,
+            triggerAriaLabel: "Status: " ~ statusSummary,
+            summaryAttributes: [
+              ["aria-describedby", "status-error" if errors.status else none],
+              ["aria-invalid", "true" if errors.status else none]
+            ],
+            inputAttributes: [
+              ["required", true],
+              ["aria-describedby", "status-error" if errors.status else none],
+              ["aria-invalid", "true" if errors.status else none]
+            ],
+            fieldClasses: "scheduling-field asset-viewer-filter-field" ~ (" field-error" if errors.status else ""),
+            panelLabel: "Status options"
+          }) }}
+          {% if errors.status %}<span class="field-error-message" id="status-error">{{ errors.status }}</span>{% endif %}
+        </div>
+
+        <div class="field scheduling-field">
+          {{ dropdown.multiSelect({
+            id: "project-tags-form",
+            name: "tagIds[]",
+            label: "Tags",
+            options: tagOptions,
+            selectedValues: selectedTagIds,
+            emptySummary: "No tags selected",
+            countLabel: "tags",
+            summary: tagSummary,
+            triggerAriaLabel: "Tags: " ~ tagSummary,
+            summaryAttributes: [
+              ["aria-describedby", "tagIds-error" if errors.tagIds else none],
+              ["aria-invalid", "true" if errors.tagIds else none]
+            ],
+            inputAttributes: [
+              ["aria-describedby", "tagIds-error" if errors.tagIds else none],
+              ["aria-invalid", "true" if errors.tagIds else none]
+            ],
+            emptyState: {
+              text: "No tags available.",
+              link: { text: "Add tags in Settings", href: "/settings/tags" },
+              suffix: "."
+            },
+            fieldClasses: "scheduling-field asset-viewer-filter-field" ~ (" field-error" if errors.tagIds else ""),
+            panelLabel: "Tag options"
+          }) }}
           {% if errors.tagIds %}<span class="field-error-message" id="tagIds-error">{{ errors.tagIds }}</span>{% endif %}
           <span class="help-text">Add new tags in <a href="/settings/tags">Settings › Tags</a>.</span>
-        </fieldset>
+        </div>
 
         <div class="field scheduling-field {% if errors.plannedDate %}field-error{% endif %}" data-date-picker-field>
           <label for="plannedDate">Planned date</label>

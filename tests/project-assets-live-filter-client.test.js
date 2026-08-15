@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, afterEach } from 'vitest';
 import {
-  enhanceAssetActionSelects,
+  enhanceDropdowns,
   enhanceAssetSelection,
   enhanceProjectAssetsLiveFiltering,
 } from '../src/static/creatorcrate.js';
@@ -55,8 +55,15 @@ function makeNode({ tagName = 'div', attrs = {}, value = '', checked = false } =
       matches(selector) {
         return selector.split(',').some((part) => {
           const candidate = part.trim();
-          if (candidate.includes(':')) return false;
-          const parts = candidate.split(/\s+/);
+          const checkedOnly = candidate.includes(':checked');
+          const excludesDisabled = candidate.includes(':not(:disabled)');
+          const disabledOnly = candidate.includes(':disabled') && !excludesDisabled;
+          if (candidate.includes(':') && !checkedOnly && !excludesDisabled && !disabledOnly) return false;
+          if (checkedOnly && !this.checked) return false;
+          if (excludesDisabled && this.disabled) return false;
+          if (disabledOnly && !this.disabled) return false;
+          const selectorWithoutState = candidate.replace(':checked', '').replace(':not(:disabled)', '').replace(':disabled', '');
+          const parts = selectorWithoutState.split(/\s+/);
           const target = parts.pop();
           const idMatch = target.match(/#([\w-]+)/);
           if (idMatch && this.id !== idMatch[1]) return false;
@@ -187,10 +194,14 @@ function makePage({ presence = 'all', nsfwEnabled = false, page = '2' } = {}) {
   const categoryFilter = makeNode({ attrs: { 'data-asset-category-filter': '' } });
   const categoryDetails = makeNode({
     tagName: 'details',
-    attrs: { 'data-asset-viewer-filter-disclosure': '' },
+    attrs: {
+      id: 'asset-category-filter',
+      'data-cc-dropdown': '',
+      'data-cc-dropdown-mode': 'single',
+    },
   });
   const categorySummary = makeNode({ tagName: 'summary' });
-  const categoryCurrentSummary = makeNode({ attrs: { 'data-asset-category-filter-current-summary': '' } });
+  const categoryCurrentSummary = makeNode({ attrs: { 'data-cc-dropdown-summary-current': '' } });
   categorySummary.appendChild(categoryCurrentSummary);
   categoryDetails.appendChild(categorySummary);
   const categoryOptions = makeNode();
@@ -349,14 +360,14 @@ function makeActionSelectFixture() {
 
   function addActionSelect({ name, selectedValue, options }) {
     const field = makeNode({ attrs: { class: 'field' } });
-    const control = makeNode({ attrs: { 'data-asset-action-select-control': '' } });
+    const control = makeNode();
     const native = makeNode({
       tagName: 'select',
       attrs: {
         id: `${name}-action-native`,
-        class: 'asset-action-select',
+        class: 'cc-dropdown-native-select',
         name,
-        'data-asset-action-select-native': '',
+        'data-cc-dropdown-native-select': '',
         ...(name === 'releaseId' ? { 'data-release-select': '' } : {}),
       },
       value: selectedValue,
@@ -370,14 +381,16 @@ function makeActionSelectFixture() {
     const details = makeNode({
       tagName: 'details',
       attrs: {
-        class: 'asset-filter-multiselect asset-filter-multiselect--sized asset-action-select-disclosure',
-        'data-asset-action-select-disclosure': '',
+        id: `${name}-action`,
+        class: 'asset-filter-multiselect asset-filter-multiselect--sized cc-dropdown',
+        'data-cc-dropdown': '',
+        'data-cc-dropdown-mode': 'single',
         hidden: '',
       },
     });
     const summary = makeNode({ tagName: 'summary', attrs: { 'aria-label': `${name}: placeholder` } });
     summary.focus = () => { summary.focused = true; };
-    const currentSummary = makeNode({ attrs: { 'data-asset-action-select-summary': '' } });
+    const currentSummary = makeNode({ attrs: { 'data-cc-dropdown-summary-current': '' } });
     summary.appendChild(currentSummary);
     details.appendChild(summary);
     const panel = makeNode({ tagName: 'div', attrs: { role: 'radiogroup' } });
@@ -386,7 +399,7 @@ function makeActionSelectFixture() {
       const labelNode = makeNode({ tagName: 'label' });
       const input = makeNode({
         tagName: 'input',
-        attrs: { type: 'radio', value, 'data-asset-action-select-option': '' },
+        attrs: { type: 'radio', value },
         checked: value === selectedValue,
       });
       input.id = `${name}-action-option-${index}`;
@@ -394,6 +407,7 @@ function makeActionSelectFixture() {
       text.textContent = label;
       labelNode.appendChild(input);
       labelNode.appendChild(text);
+      labelNode.textContent = label;
       row.appendChild(labelNode);
       panel.appendChild(row);
       return { input, label };
@@ -547,19 +561,20 @@ describe('Project Assets live filtering enhancement', () => {
 });
 
 describe('Project Assets action select enhancement', () => {
-  it('enhances both action selects with the Extension disclosure contract and preserves canonical form values', () => {
+  it('enhances both action selects with the shared disclosure contract and preserves canonical form values', () => {
     const fixture = makeActionSelectFixture();
 
     expect(fixture.release.native.hidden).toBe(false);
     expect(fixture.release.details.hidden).toBe(true);
-    enhanceAssetActionSelects(fixture.document);
+    enhanceDropdowns(fixture.document);
     enhanceAssetSelection(fixture.document);
 
     expect(fixture.release.native.hidden).toBe(true);
     expect(fixture.release.details.hidden).toBe(false);
     expect(fixture.category.native.hidden).toBe(true);
     expect(fixture.category.details.hidden).toBe(false);
-    expect(fixture.release.details.getAttribute('data-asset-action-select-disclosure')).toBe('');
+    expect(fixture.release.details.getAttribute('data-cc-dropdown')).toBe('');
+    expect(fixture.release.details.getAttribute('data-cc-dropdown-mode')).toBe('single');
     expect(fixture.release.currentSummary.textContent).toBe('Select a release…');
     expect(fixture.category.currentSummary.textContent).toBe('Uncategorized');
     expect(fixture.form.querySelectorAll('input[name="releaseId"]').length).toBe(0);
@@ -568,6 +583,8 @@ describe('Project Assets action select enhancement', () => {
     fixture.checkbox.dispatch('change');
     expect(fixture.submit.disabled).toBe(true);
 
+    fixture.release.customOptions[0].input.checked = false;
+    fixture.release.customOptions[1].input.checked = true;
     fixture.release.customOptions[1].input.dispatch('change');
     expect(fixture.release.native.value).toBe('5');
     expect(fixture.release.currentSummary.textContent).toBe('Launch release');
@@ -575,6 +592,8 @@ describe('Project Assets action select enhancement', () => {
     expect(fixture.release.details.open).toBe(false);
     expect(fixture.submit.disabled).toBe(false);
 
+    fixture.category.customOptions[0].input.checked = false;
+    fixture.category.customOptions[1].input.checked = true;
     fixture.category.customOptions[1].input.dispatch('change');
     expect(fixture.category.native.value).toBe('7');
     expect(fixture.category.currentSummary.textContent).toBe('Renders');
@@ -585,10 +604,10 @@ describe('Project Assets action select enhancement', () => {
   it('dismisses action menus on outside click or Escape and binds each disclosure once', () => {
     const fixture = makeActionSelectFixture();
 
-    enhanceAssetActionSelects(fixture.document);
-    enhanceAssetActionSelects(fixture.document);
+    enhanceDropdowns(fixture.document);
+    enhanceDropdowns(fixture.document);
 
-    expect(fixture.release.customOptions[0].input.listeners.filter(({ type }) => type === 'change')).toHaveLength(1);
+    expect(fixture.document.listeners.filter(({ type }) => type === 'change')).toHaveLength(1);
     expect(fixture.document.listeners.filter(({ type }) => type === 'click')).toHaveLength(1);
     expect(fixture.document.listeners.filter(({ type }) => type === 'keydown')).toHaveLength(1);
     expect(fixture.document.listeners.filter(({ type }) => type === 'toggle')).toHaveLength(1);

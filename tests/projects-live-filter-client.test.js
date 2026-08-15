@@ -56,6 +56,7 @@ function makeNode({ tagName = 'div', attrs = {}, value = '', checked = false } =
     matches(selector) {
       return selector.split(',').some((part) => {
         const candidate = part.trim();
+        if (candidate.includes(':checked') && !this.checked) return false;
         if (candidate.includes(' ')) {
           const parts = candidate.split(/\s+/);
           const target = parts.pop();
@@ -73,14 +74,23 @@ function makeNode({ tagName = 'div', attrs = {}, value = '', checked = false } =
           return String(this.getAttribute('class') || '').split(/\s+/).includes(candidate.slice(1));
         }
 
-        const tag = candidate.match(/^[a-z][\w-]*/i)?.[0];
+        const selectorWithoutState = candidate.replace(':checked', '');
+        const tag = selectorWithoutState.match(/^[a-z][\w-]*/i)?.[0];
         if (tag && this.tagName !== tag.toUpperCase()) return false;
-        const attrsInSelector = [...candidate.matchAll(/\[([^\]=]+)(?:="([^"]*)")?\]/g)];
+        const attrsInSelector = [...selectorWithoutState.matchAll(/\[([^\]=]+)(?:="([^"]*)")?\]/g)];
         return attrsInSelector.every(([, name, expected]) => {
           const actual = this.getAttribute(name);
           return actual !== null && (expected === undefined || actual === expected);
         });
       });
+    },
+    closest(selector) {
+      let current = this;
+      while (current) {
+        if (current.matches?.(selector)) return current;
+        current = current.parentNode;
+      }
+      return null;
     },
     appendChild(child) {
       children.push(child);
@@ -150,8 +160,12 @@ function makeNode({ tagName = 'div', attrs = {}, value = '', checked = false } =
         preventDefault() { this.defaultPrevented = true; },
         ...props,
       };
-      this.listeners.filter((listener) => listener.type === type)
-        .forEach((listener) => listener.handler(event));
+      let current = this;
+      while (current) {
+        current.listeners?.filter((listener) => listener.type === type)
+          .forEach((listener) => listener.handler(event));
+        current = current.parentNode;
+      }
       return event;
     },
   };
@@ -159,13 +173,6 @@ function makeNode({ tagName = 'div', attrs = {}, value = '', checked = false } =
   Object.entries(attrs).forEach(([name, rawValue]) => node.setAttribute(name, rawValue));
   if (checked) node.checked = true;
   return node;
-}
-
-function makeForm(fields) {
-  const form = makeNode({ tagName: 'form', attrs: { id: 'project-filters' } });
-  form.submit = vi.fn();
-  fields.forEach((field) => form.appendChild(field));
-  return form;
 }
 
 function makeNsfwForm(enabled = false) {
@@ -217,17 +224,90 @@ function makePage(values = {}) {
     return field;
   };
 
-  const search = add({ id: 'project-search', name: 'search', type: 'search', 'data-projects-search': '' }, values.search || '');
   const page = add({ name: 'page', type: 'hidden' }, '4');
   const view = add({ name: 'view', type: 'hidden' }, values.view || 'list');
-  const project = add({ name: 'project', type: 'radio' }, String(values.project || ''), values.project !== undefined);
+  const allProjects = makeNode({
+    tagName: 'input',
+    attrs: { id: 'project-project-option-all', name: 'project', type: 'radio', value: '' },
+    checked: values.project === undefined,
+  });
+  const project = makeNode({
+    tagName: 'input',
+    attrs: {
+      id: values.project === undefined ? 'project-project-option-project' : String(values.project),
+      name: 'project',
+      type: 'radio',
+      value: String(values.project || '7'),
+    },
+    checked: values.project !== undefined,
+  });
+  fields.push(allProjects, project);
   const ready = add({ name: 'status', type: 'checkbox', value: 'ready' }, 'ready', values.statuses?.includes('ready') ?? true);
   const planned = add({ name: 'status', type: 'checkbox', value: 'planned' }, 'planned', values.statuses?.includes('planned') ?? false);
   const firstTag = add({ name: 'tag', type: 'checkbox', value: '2' }, '2', values.tags?.includes('2') ?? true);
   const secondTag = add({ name: 'tag', type: 'checkbox', value: '3' }, '3', values.tags?.includes('3') ?? true);
   const sort = add({ name: 'sort', type: 'radio', value: 'title' }, 'title', values.sort !== undefined ? values.sort === 'title' : true);
   const order = add({ name: 'order', type: 'radio', value: 'asc' }, 'asc', values.order !== undefined ? values.order === 'asc' : true);
-  const form = makeForm(fields);
+  const projectDropdown = makeNode({
+    tagName: 'details',
+    attrs: {
+      id: 'project-project-filter',
+      class: 'asset-filter-multiselect asset-filter-multiselect--sized cc-dropdown',
+      'data-cc-dropdown': '',
+      'data-cc-dropdown-mode': 'single',
+      'data-cc-dropdown-searchable': '',
+      'data-cc-dropdown-type': 'searchable-single',
+    },
+  });
+  const projectSummary = makeNode({
+    tagName: 'summary',
+    attrs: {
+      id: 'project-project-filter-trigger',
+      'aria-controls': 'project-project-filter-options',
+    },
+  });
+  const projectCurrentSummary = makeNode({ attrs: { 'data-cc-dropdown-summary-current': '' } });
+  projectSummary.appendChild(projectCurrentSummary);
+  const projectPanel = makeNode({
+    attrs: {
+      id: 'project-project-filter-options',
+      class: 'asset-filter-multiselect-panel asset-project-filter-panel',
+    },
+  });
+  const projectSearch = makeNode({
+    tagName: 'input',
+    attrs: {
+      id: 'project-project-filter-search',
+      class: 'asset-project-filter-search',
+      type: 'search',
+      'data-cc-dropdown-search': '',
+    },
+  });
+  const projectOptionList = makeNode({
+    attrs: { id: 'project-project-filter-option-list', class: 'asset-project-filter-option-list', 'data-cc-dropdown-option-list': '' },
+  });
+  const addProjectOption = (input, labelText) => {
+    const option = makeNode({ attrs: { class: 'asset-filter-multiselect-option asset-project-filter-option' } });
+    const label = makeNode({ tagName: 'label' });
+    label.textContent = labelText;
+    label.appendChild(input);
+    option.appendChild(label);
+    projectOptionList.appendChild(option);
+  };
+  addProjectOption(allProjects, 'All projects');
+  addProjectOption(project, values.project === undefined ? 'Project' : `Project ${values.project}`);
+  const projectNoResults = makeNode({ attrs: { 'data-cc-dropdown-no-results': '', hidden: '' } });
+  projectPanel.appendChild(projectSearch);
+  projectPanel.appendChild(projectOptionList);
+  projectPanel.appendChild(projectNoResults);
+  projectDropdown.appendChild(projectSummary);
+  projectDropdown.appendChild(projectPanel);
+  const form = makeNode({ tagName: 'form', attrs: { id: 'project-filters' } });
+  form.submit = vi.fn();
+  fields.forEach((field) => {
+    if (field === allProjects) form.appendChild(projectDropdown);
+    else if (field !== project) form.appendChild(field);
+  });
   const nsfw = makeNsfwForm(values.nsfwEnabled === true);
   const image = makeNode({
     tagName: 'img',
@@ -244,7 +324,10 @@ function makePage(values = {}) {
     region,
     status,
     form,
-    search,
+    projectDropdown,
+    projectSearch,
+    projectCurrentSummary,
+    allProjects,
     page,
     view,
     project,
@@ -398,6 +481,9 @@ describe('Projects live filtering enhancement', () => {
     const responseUrl = 'http://creatorcrate.test/projects?status=ready&status=planned&tag=2&tag=3&project=7&sort=title&order=asc&view=list';
     windowObject.fetch.mockResolvedValue(responseFor(next, 'next', responseUrl));
 
+    expect(initial.projectDropdown.getAttribute('data-cc-dropdown')).toBe('');
+    expect(initial.projectSearch.getAttribute('name')).toBeNull();
+    expect(initial.form.querySelectorAll('input[name="project"]').map((input) => input.value)).toEqual(['', '7']);
     expect(enhanceProjectsLiveFiltering(initial.document)).toBe(1);
     expect(enhanceProjectsLiveFiltering(initial.document)).toBe(1);
     initial.planned.checked = true;
@@ -419,37 +505,38 @@ describe('Projects live filtering enhancement', () => {
     expect(initial.form.submit).not.toHaveBeenCalled();
     expect(initial.document.activeElement?.name).toBe('status');
     expect(initial.document.activeElement?.value).toBe('planned');
+    expect(next.projectCurrentSummary.textContent).toBe('Project 7');
   });
 
-  it('debounces search and restores focus after replacing the server-rendered region', async () => {
-    vi.useFakeTimers();
+  it('submits once when the shared Project selector changes', async () => {
     const initial = makePage();
-    const next = makePage({ search: 'needle' });
-    const pages = new Map([['search-result', next.document]]);
+    const next = makePage({ project: 7 });
+    const pages = new Map([['project-result', next.document]]);
     const windowObject = makeWindow(initial.document, pages);
-    windowObject.fetch.mockResolvedValue(responseFor(next, 'search-result', 'http://creatorcrate.test/projects?search=needle'));
+    windowObject.fetch.mockResolvedValue(responseFor(
+      next,
+      'project-result',
+      'http://creatorcrate.test/projects?project=7',
+    ));
     enhanceProjectsLiveFiltering(initial.document);
 
-    initial.search.value = 'needle';
-    initial.document.activeElement = initial.search;
-    initial.search.dispatch('input');
-    expect(windowObject.fetch).not.toHaveBeenCalled();
-    vi.advanceTimersByTime(349);
-    expect(windowObject.fetch).not.toHaveBeenCalled();
-    vi.advanceTimersByTime(1);
+    initial.allProjects.checked = false;
+    initial.project.checked = true;
+    initial.document.activeElement = initial.project;
+    initial.form.dispatch('change', { target: initial.project });
     await flush();
 
     expect(windowObject.fetch).toHaveBeenCalledTimes(1);
-    expect(new URL(windowObject.fetch.mock.calls[0][0]).searchParams.get('search')).toBe('needle');
-    expect(initial.document.activeElement?.id).toBe('project-search');
-    expect(initial.document.activeElement?.focused).toBe(true);
+    expect(new URL(windowObject.fetch.mock.calls[0][0]).searchParams.get('project')).toBe('7');
+    expect(initial.form.submit).not.toHaveBeenCalled();
+    expect(next.projectCurrentSummary.textContent).toBe('Project 7');
   });
 
   it('ignores stale out-of-order responses and keeps the newest replacement interactive', async () => {
     const initial = makePage();
-    const first = makePage({ search: 'first' });
-    const second = makePage({ search: 'second' });
-    const third = makePage({ search: 'third' });
+    const first = makePage();
+    const second = makePage();
+    const third = makePage();
     const pages = new Map([
       ['first', first.document],
       ['second', second.document],
@@ -466,13 +553,13 @@ describe('Projects live filtering enhancement', () => {
     initial.form.dispatch('change', { target: initial.planned });
     expect(windowObject.fetch).toHaveBeenCalledTimes(2);
 
-    requests[1].resolve(responseFor(second, 'second', 'http://creatorcrate.test/projects?search=second'));
+    requests[1].resolve(responseFor(second, 'second', 'http://creatorcrate.test/projects?status=planned'));
     await flush();
     expect(windowObject.history.pushes).toHaveLength(1);
-    expect(windowObject.history.pushes[0].url).toContain('search=second');
+    expect(windowObject.history.pushes[0].url).toContain('status=planned');
     expect(initial.document.querySelector('[data-projects-live-region]')).toBe(second.region);
 
-    requests[0].resolve(responseFor(first, 'first', 'http://creatorcrate.test/projects?search=first'));
+    requests[0].resolve(responseFor(first, 'first', 'http://creatorcrate.test/projects?tag=2&tag=3'));
     await flush();
     expect(initial.document.querySelector('[data-projects-live-region]')).toBe(second.region);
 
@@ -480,7 +567,7 @@ describe('Projects live filtering enhancement', () => {
     second.form.dispatch('change', { target: second.ready });
     await flush();
     expect(windowObject.fetch).toHaveBeenCalledTimes(3);
-    requests[2].resolve(responseFor(third, 'third', 'http://creatorcrate.test/projects?search=third'));
+    requests[2].resolve(responseFor(third, 'third', 'http://creatorcrate.test/projects?tag=2&tag=3'));
     await flush();
     expect(initial.document.querySelector('[data-projects-live-region]')).toBe(third.region);
   });
@@ -498,8 +585,8 @@ describe('Projects live filtering enhancement', () => {
     ]);
     const windowObject = makeWindow(initial.document, pages);
     windowObject.fetch
-      .mockResolvedValueOnce(responseFor(second, 'second', 'http://creatorcrate.test/projects?search=second'))
-      .mockResolvedValueOnce(responseFor(third, 'third', 'http://creatorcrate.test/projects?search=third'));
+      .mockResolvedValueOnce(responseFor(second, 'second', 'http://creatorcrate.test/projects?status=ready'))
+      .mockResolvedValueOnce(responseFor(third, 'third', 'http://creatorcrate.test/projects?status=planned'));
     const storage = new Map();
     const previousStorage = globalThis.localStorage;
     globalThis.localStorage = {
@@ -524,7 +611,7 @@ describe('Projects live filtering enhancement', () => {
       expect(globalThis.localStorage.setItem).toHaveBeenCalledTimes(2);
       expect(storage.get('creatorcrate-project-grid-size')).toBe('compact');
 
-      windowObject.setLocation('http://creatorcrate.test/projects?search=third');
+      windowObject.setLocation('http://creatorcrate.test/projects?status=planned');
       windowObject.dispatch('popstate');
       await flush();
       expect(initial.document.querySelector('[data-projects-live-region]')).toBe(third.region);
@@ -540,26 +627,25 @@ describe('Projects live filtering enhancement', () => {
   });
 
   it('uses the current URL for Back/Forward and replaces only the Projects region', async () => {
-    const initial = makePage({ search: 'new' });
-    const restored = makePage({ search: 'old' });
+    const initial = makePage();
+    const restored = makePage();
     const pages = new Map([['restored', restored.document]]);
     const windowObject = makeWindow(initial.document, pages);
     windowObject.location.set = undefined;
-    windowObject.fetch.mockResolvedValue(responseFor(restored, 'restored', 'http://creatorcrate.test/projects?search=old'));
+    windowObject.fetch.mockResolvedValue(responseFor(restored, 'restored', 'http://creatorcrate.test/projects?status=planned'));
     enhanceProjectsLiveFiltering(initial.document);
 
-    windowObject.setLocation('http://creatorcrate.test/projects?search=old');
+    windowObject.setLocation('http://creatorcrate.test/projects?status=planned');
     windowObject.dispatch('popstate');
     await flush();
 
     expect(windowObject.fetch).toHaveBeenCalledWith(
-      'http://creatorcrate.test/projects?search=old',
+      'http://creatorcrate.test/projects?status=planned',
       expect.objectContaining({ method: 'GET', headers: { Accept: 'text/html' } }),
     );
     expect(windowObject.history.pushes).toHaveLength(0);
     expect(windowObject.history.replaces).toHaveLength(0);
     expect(initial.document.querySelector('[data-projects-live-region]')).toBe(restored.region);
-    expect(initial.document.querySelector('#project-search').value).toBe('old');
   });
 
   it('falls back to native GET navigation when enhancement capabilities or the fetch fail', async () => {

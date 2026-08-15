@@ -4,16 +4,9 @@
 {% import "partials/view-switcher.njk" as viewSwitcher %}
 {% import "partials/icons.njk" as icons %}
 {% import "partials/dialog.njk" as dialog %}
+{% import "partials/dropdown.njk" as dropdown %}
 
 {% set page_title = "Projects" %}
-{% set projectFilterHasSelection = false %}
-{% set projectFilterSummary = 'All projects' %}
-{% for project in projectOptions %}
-  {% if project.id == query.projectId %}
-    {% set projectFilterHasSelection = true %}
-    {% set projectFilterSummary = project.title %}
-  {% endif %}
-{% endfor %}
 
 {% macro renderFilterSummary(selectedValues, options, emptyLabel, countLabel, prefix) -%}
   {%- if selectedValues.length == 0 -%}
@@ -87,118 +80,53 @@
         <input type="hidden" name="view" value="{{ view }}">
       {% endif %}
 
-      <div class="field">
-        <label for="project-search">Search projects</label>
-        <input id="project-search" name="search" type="search" value="{{ query.search or '' }}" data-projects-search>
-      </div>
+      {{ dropdown.searchableSingleSelect({
+        id: "project-project-filter",
+        name: "project",
+        label: "Project",
+        options: projectOptions,
+        valueKey: "id",
+        labelKey: "title",
+        selected: selectedProject.id if selectedProject else null,
+        placeholder: "All projects",
+        panelLabel: "Project options",
+        searchLabel: "Search projects",
+        searchInputId: "project-project-filter-search",
+        noResultsText: "No matching projects",
+        optionListLabel: "Project choices",
+        optionIdPrefix: "project-project",
+        fieldClasses: "asset-viewer-filter-field asset-viewer-project-filter",
+        classes: "asset-project-filter-disclosure"
+      }) }}
 
-      <fieldset class="field asset-viewer-filter-field asset-filter-multiselect-field asset-viewer-project-filter">
-        <legend>Project</legend>
-        <details class="asset-filter-multiselect asset-filter-multiselect--sized asset-project-filter-disclosure" data-asset-project-filter data-asset-viewer-filter-disclosure>
-          <summary id="project-project-filter-trigger"
-                   aria-controls="project-project-filter-options"
-                   aria-expanded="false"
-                   aria-label="Project filter: {{ projectFilterSummary }}"
-                   title="{{ projectFilterSummary }}">
-            <span class="asset-filter-multiselect-summary" data-asset-project-filter-summary>
-              <span class="asset-filter-multiselect-summary-current" data-asset-project-filter-current-summary>{{ projectFilterSummary }}</span>
-              <span class="asset-filter-multiselect-summary-width" aria-hidden="true">
-                <span>All projects</span>
-                {% for project in projectOptions %}
-                  <span>{{ project.title }}</span>
-                {% endfor %}
-              </span>
-            </span>
-          </summary>
-          <div id="project-project-filter-options" class="asset-filter-multiselect-panel asset-project-filter-panel" role="group" aria-label="Project options">
-            <label class="asset-project-filter-search-label" for="project-project-filter-search">Search projects</label>
-            <input id="project-project-filter-search" class="asset-project-filter-search" type="search"
-                   autocomplete="off" data-asset-project-filter-search>
-            <div class="asset-project-filter-option-list" data-asset-project-filter-option-list role="radiogroup" aria-label="Project choices">
-              <div class="asset-filter-multiselect-option asset-project-filter-option"
-                   data-asset-project-filter-option data-project-title="All projects">
-                <label for="project-project-option-all">
-                  <input id="project-project-option-all" name="project" type="radio" value=""{% if not projectFilterHasSelection %} checked{% endif %}>
-                  <span>All projects</span>
-                </label>
-              </div>
-              {% for project in projectOptions %}
-                <div class="asset-filter-multiselect-option asset-project-filter-option"
-                     data-asset-project-filter-option data-project-title="{{ project.title }}">
-                  <label for="project-project-option-{{ project.id }}">
-                    <input id="project-project-option-{{ project.id }}" name="project" type="radio" value="{{ project.id }}"{% if project.id == query.projectId %} checked{% endif %}>
-                    <span>{{ project.title }}</span>
-                  </label>
-                </div>
-              {% endfor %}
-            </div>
-            <p class="asset-filter-multiselect-empty asset-project-filter-no-results"
-               data-asset-project-filter-no-results role="status" aria-live="polite" hidden>No matching projects</p>
-          </div>
-        </details>
-      </fieldset>
+      {{ dropdown.multiSelect({
+        id: "project-status-filter",
+        name: "status",
+        label: "Status",
+        fieldClasses: "asset-viewer-filter-field",
+        options: statusOptions,
+        optionIdPrefix: "project-status",
+        selectedValues: query.statuses,
+        summary: renderFilterSummary(query.statuses, statusOptions, "All active", "statuses", ""),
+        emptySummary: "All active",
+        countLabel: "statuses",
+        panelLabel: "Status options"
+      }) }}
 
-      <fieldset class="field asset-viewer-filter-field asset-filter-multiselect-field">
-        <legend>Status</legend>
-        <details class="asset-filter-multiselect asset-filter-multiselect--sized" data-asset-viewer-filter-disclosure>
-          <summary id="project-status-filter-trigger"
-                   aria-controls="project-status-filter-options"
-                   aria-expanded="false"
-                   aria-label="Status filter: {{ renderFilterSummary(query.statuses, statusOptions, 'All active', 'statuses', '') }}">
-            <span class="asset-filter-multiselect-summary">
-              <span class="asset-filter-multiselect-summary-current">{{ renderFilterSummary(query.statuses, statusOptions, 'All active', 'statuses', '') }}</span>
-              <span class="asset-filter-multiselect-summary-width" aria-hidden="true">
-                <span>All active</span>
-                {% for option in statusOptions %}<span>{{ option.label or option.displayName }}</span>{% endfor %}
-                <span>{{ statusOptions.length }} statuses selected</span>
-              </span>
-            </span>
-          </summary>
-          <div id="project-status-filter-options" class="asset-filter-multiselect-panel" role="group" aria-label="Status options">
-            {% for option in statusOptions %}
-              <div class="asset-filter-multiselect-option">
-                <label for="project-status-option-{{ loop.index }}">
-                  <input id="project-status-option-{{ loop.index }}" name="status" type="checkbox" value="{{ option.value }}"{% if option.selected %} checked{% endif %}>
-                  <span>{{ option.label }}</span>
-                </label>
-              </div>
-            {% endfor %}
-          </div>
-        </details>
-      </fieldset>
-
-      <fieldset class="field asset-viewer-filter-field asset-filter-multiselect-field">
-        <legend>Tag</legend>
-        <details class="asset-filter-multiselect asset-filter-multiselect--sized" data-asset-viewer-filter-disclosure>
-          <summary id="project-tag-filter-trigger"
-                   aria-controls="project-tag-filter-options"
-                   aria-expanded="false"
-                   aria-label="Tag filter: {{ renderFilterSummary(query.tagIds, tagOptions, 'All tags', 'tags', '') }}">
-            <span class="asset-filter-multiselect-summary">
-              <span class="asset-filter-multiselect-summary-current">{{ renderFilterSummary(query.tagIds, tagOptions, 'All tags', 'tags', '') }}</span>
-              <span class="asset-filter-multiselect-summary-width" aria-hidden="true">
-                <span>All tags</span>
-                {% for option in tagOptions %}<span>{{ option.label or option.displayName }}</span>{% endfor %}
-                <span>{{ tagOptions.length }} tags selected</span>
-              </span>
-            </span>
-          </summary>
-          <div id="project-tag-filter-options" class="asset-filter-multiselect-panel" role="group" aria-label="Tag options">
-            {% if tagOptions.length > 0 %}
-              {% for option in tagOptions %}
-                <div class="asset-filter-multiselect-option">
-                  <label for="project-tag-option-{{ loop.index }}">
-                    <input id="project-tag-option-{{ loop.index }}" name="tag" type="checkbox" value="{{ option.value }}"{% if option.selected %} checked{% endif %}>
-                    <span>{{ option.displayName }}</span>
-                  </label>
-                </div>
-              {% endfor %}
-            {% else %}
-              <p class="asset-filter-multiselect-empty">No tags available</p>
-            {% endif %}
-          </div>
-        </details>
-      </fieldset>
+      {{ dropdown.multiSelect({
+        id: "project-tag-filter",
+        name: "tag",
+        label: "Tag",
+        fieldClasses: "asset-viewer-filter-field",
+        options: tagOptions,
+        optionIdPrefix: "project-tag",
+        selectedValues: query.tagIds,
+        summary: renderFilterSummary(query.tagIds, tagOptions, "All tags", "tags", ""),
+        emptySummary: "All tags",
+        countLabel: "tags",
+        panelLabel: "Tag options",
+        emptyOptionText: "No tags available"
+      }) }}
 
       {% set sortSummary = '' %}
       {% for opt in sortOptions %}
@@ -211,64 +139,37 @@
         {% set orderSummary = 'Asc' %}
       {% endif %}
 
-      <fieldset class="field asset-viewer-filter-field asset-filter-multiselect-field">
-        <legend>Sort</legend>
-        <details class="asset-filter-multiselect asset-filter-multiselect--sized" data-asset-viewer-filter-disclosure data-asset-viewer-filter-single-select>
-          <summary id="project-sort-filter-trigger"
-                   aria-controls="project-sort-filter-options"
-                   aria-expanded="false"
-                   aria-label="Sort filter: {{ sortSummary }}">
-            <span class="asset-filter-multiselect-summary">
-              <span class="asset-filter-multiselect-summary-current">{{ sortSummary }}</span>
-              <span class="asset-filter-multiselect-summary-width" aria-hidden="true">
-                {% for opt in sortOptions %}<span>{{ opt | replace('-', ' ') | title }}</span>{% endfor %}
-              </span>
-            </span>
-          </summary>
-          <div id="project-sort-filter-options" class="asset-filter-multiselect-panel" role="group" aria-label="Sort options">
-            {% for opt in sortOptions %}
-              <div class="asset-filter-multiselect-option">
-                <label for="project-sort-option-{{ loop.index }}">
-                  <input id="project-sort-option-{{ loop.index }}" name="sort" type="radio" value="{{ opt }}"{% if query.sort == opt or (not query.sort and opt == 'created') %} checked{% endif %}>
-                  <span>{{ opt | replace('-', ' ') | title }}</span>
-                </label>
-              </div>
-            {% endfor %}
-          </div>
-        </details>
-      </fieldset>
+      {{ dropdown.singleSelect({
+        id: "project-sort-filter",
+        name: "sort",
+        label: "Sort",
+        fieldClasses: "asset-viewer-filter-field",
+        options: [
+          { value: "updated", label: "Updated" },
+          { value: "created", label: "Created" },
+          { value: "title", label: "Title" },
+          { value: "published", label: "Published" }
+        ],
+        selected: query.sort or "created",
+        summary: sortSummary,
+        optionIdPrefix: "project-sort",
+        panelLabel: "Sort options"
+      }) }}
 
-      <fieldset class="field asset-viewer-filter-field asset-filter-multiselect-field">
-        <legend>Sort order</legend>
-        <details class="asset-filter-multiselect asset-filter-multiselect--sized" data-asset-viewer-filter-disclosure data-asset-viewer-filter-single-select>
-          <summary id="project-order-filter-trigger"
-                   aria-controls="project-order-filter-options"
-                   aria-expanded="false"
-                   aria-label="Sort order filter: {{ orderSummary }}">
-            <span class="asset-filter-multiselect-summary">
-              <span class="asset-filter-multiselect-summary-current">{{ orderSummary }}</span>
-              <span class="asset-filter-multiselect-summary-width" aria-hidden="true">
-                <span>Desc</span>
-                <span>Asc</span>
-              </span>
-            </span>
-          </summary>
-          <div id="project-order-filter-options" class="asset-filter-multiselect-panel" role="group" aria-label="Sort order options">
-            <div class="asset-filter-multiselect-option">
-              <label for="project-order-option-desc">
-                <input id="project-order-option-desc" name="order" type="radio" value="desc"{% if query.order != 'asc' %} checked{% endif %}>
-                <span>Desc</span>
-              </label>
-            </div>
-            <div class="asset-filter-multiselect-option">
-              <label for="project-order-option-asc">
-                <input id="project-order-option-asc" name="order" type="radio" value="asc"{% if query.order == 'asc' %} checked{% endif %}>
-                <span>Asc</span>
-              </label>
-            </div>
-          </div>
-        </details>
-      </fieldset>
+      {{ dropdown.singleSelect({
+        id: "project-order-filter",
+        name: "order",
+        label: "Sort order",
+        fieldClasses: "asset-viewer-filter-field",
+        options: [
+          { id: "project-order-option-desc", value: "desc", label: "Desc" },
+          { id: "project-order-option-asc", value: "asc", label: "Asc" }
+        ],
+        selected: query.order or "desc",
+        summary: orderSummary,
+        optionIdPrefix: "project-order",
+        panelLabel: "Sort order options"
+      }) }}
 
     </form>
 
@@ -331,16 +232,37 @@
 
       <div class="app-dialog-body">
         {% for field in projectsDefaults.fields %}
+          {% set submittedOption = none %}
+          {% set nativeAttributes = [["required", true]] %}
+          {% set summaryAttributes = [] %}
+          {% if field.showSubmittedValue %}
+            {% set submittedOption = {
+              id: field.id ~ '-submitted',
+              value: field.submittedOptionValue,
+              label: 'Submitted value: ' ~ field.submittedDisplayValue,
+              attributes: [["data-dialog-submitted-value", true]],
+              selected: true
+            } %}
+          {% endif %}
+          {% if field.error %}
+            {% set nativeAttributes = [["required", true], ["aria-describedby", field.id ~ '-error'], ["aria-invalid", true]] %}
+            {% set summaryAttributes = [["aria-describedby", field.id ~ '-error'], ["aria-invalid", true]] %}
+          {% endif %}
           <div class="field app-dialog-field{% if field.error %} field-error{% endif %}" data-dialog-field="{{ field.name }}">
-            <label for="{{ field.id }}">{{ field.label }}</label>
-            <select id="{{ field.id }}" name="{{ field.name }}" required{% if field.error %} aria-describedby="{{ field.id }}-error" aria-invalid="true"{% endif %}>
-              {% if field.showSubmittedValue %}
-                <option value="{{ field.submittedOptionValue }}" data-dialog-submitted-value selected>Submitted value: {{ field.submittedDisplayValue }}</option>
-              {% endif %}
-              {% for option in field.options %}
-                <option value="{{ option.value }}"{% if option.value == field.selectedValue %} selected{% endif %}>{{ option.label }}</option>
-              {% endfor %}
-            </select>
+            {{ dropdown.singleSelect({
+              id: field.id ~ '-dropdown',
+              name: field.name,
+              label: field.label,
+              options: field.options,
+              selected: field.selectedValue,
+              optionIdPrefix: field.id,
+              leadingOption: submittedOption,
+              summaryAttributes: summaryAttributes,
+              nativeSelect: {
+                id: field.id,
+                attributes: nativeAttributes
+              }
+            }) }}
             {% if field.error %}<span class="field-error-message" id="{{ field.id }}-error">{{ field.error }}</span>{% endif %}
           </div>
         {% endfor %}

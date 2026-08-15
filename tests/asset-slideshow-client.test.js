@@ -3,6 +3,7 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
+  enhanceDropdowns,
   enhanceProjectAssetsPreviewSlideshow,
   enhanceSlideshow,
 } from '../src/static/creatorcrate.js';
@@ -179,7 +180,7 @@ function makeSequenceScript(sequence) {
   return el;
 }
 
-function makeSlideshowPage(sequence = [], { fullscreen = false } = {}) {
+function makeSlideshowPage(sequence = [], { fullscreen = false, standardSpeed = false } = {}) {
   const document = makeDocument();
 
   const trigger = makeNode({ tagName: 'button', attrs: {
@@ -210,6 +211,54 @@ function makeSlideshowPage(sequence = [], { fullscreen = false } = {}) {
   ];
   speedOptions.forEach((option) => speedSelect.appendChild(option));
   speedSelect.value = '4000';
+  let speedField = null;
+  let speedDropdown = null;
+  let speedSummary = null;
+  let speedInputs = [];
+  if (standardSpeed) {
+    speedField = makeNode({ tagName: 'fieldset', attrs: { class: 'field asset-filter-multiselect-field cc-dropdown-field--compact' } });
+    speedDropdown = makeNode({ tagName: 'details', attrs: {
+      'data-cc-dropdown': '',
+      'data-cc-dropdown-mode': 'single',
+      'data-cc-dropdown-dispatch-native-change': '',
+    } });
+    speedSummary = makeNode({ tagName: 'summary', attrs: {
+      'aria-label': 'Slideshow speed: 4 s',
+      'aria-expanded': 'false',
+    } });
+    const speedSummaryText = makeNode({ attrs: { class: 'asset-filter-multiselect-summary' } });
+    const speedCurrent = makeNode({
+      attrs: { 'data-cc-dropdown-summary-current': '' },
+      textContent: '4 s',
+    });
+    speedSummaryText.appendChild(speedCurrent);
+    speedSummary.appendChild(speedSummaryText);
+    const speedPanel = makeNode({ tagName: 'div', attrs: { class: 'asset-filter-multiselect-panel' } });
+    speedOptions.forEach((option) => {
+      const optionValue = option.getAttribute('value');
+      const wrapper = makeNode({ attrs: { class: 'asset-filter-multiselect-option' } });
+      const label = makeNode({ tagName: 'label' });
+      const input = makeNode({ tagName: 'input', attrs: {
+        type: 'radio',
+        value: optionValue,
+      } });
+      input.type = 'radio';
+      input.value = optionValue;
+      input.checked = optionValue === '4000';
+      const labelText = makeNode({ tagName: 'span', textContent: option.textContent });
+      label.appendChild(input);
+      label.appendChild(labelText);
+      wrapper.appendChild(label);
+      speedPanel.appendChild(wrapper);
+      speedInputs.push(input);
+    });
+    speedSelect.setAttribute('data-cc-dropdown-native-select', '');
+    speedSelect.dispatchEvent = vi.fn((event) => speedSelect.dispatch(event.type));
+    speedDropdown.appendChild(speedSummary);
+    speedDropdown.appendChild(speedPanel);
+    speedField.appendChild(speedSelect);
+    speedField.appendChild(speedDropdown);
+  }
   const fullscreenBtn = makeNode({ tagName: 'button', attrs: {
     'data-slideshow-fullscreen': '',
     'aria-label': 'Enter fullscreen',
@@ -235,7 +284,7 @@ function makeSlideshowPage(sequence = [], { fullscreen = false } = {}) {
   scaffold.appendChild(status);
   scaffold.appendChild(nextBtn);
   scaffold.appendChild(playPauseBtn);
-  scaffold.appendChild(speedSelect);
+  scaffold.appendChild(standardSpeed ? speedField : speedSelect);
   scaffold.appendChild(fullscreenBtn);
   scaffold.appendChild(closeBtn);
   scaffold.appendChild(originalSizeBtn);
@@ -270,6 +319,10 @@ function makeSlideshowPage(sequence = [], { fullscreen = false } = {}) {
     playPauseBtn,
     speedSelect,
     speedOptions,
+    speedField,
+    speedDropdown,
+    speedSummary,
+    speedInputs,
     fullscreenBtn,
     closeBtn,
     originalSizeBtn,
@@ -500,6 +553,14 @@ describe('project-assets preview slideshow opt-in', () => {
 
 function openPage(seq, options) {
   const page = makeSlideshowPage(seq, options);
+  enhanceSlideshow(page.document);
+  page.trigger.dispatch('click');
+  return page;
+}
+
+function openStandardSpeedPage(seq) {
+  const page = makeSlideshowPage(seq, { standardSpeed: true });
+  enhanceDropdowns(page.document);
   enhanceSlideshow(page.document);
   page.trigger.dispatch('click');
   return page;
@@ -1183,6 +1244,39 @@ describe('enhanceSlideshow — speed control', () => {
     expect(status.textContent).toBe('2 of 3');
     vi.advanceTimersByTime(2000);
     expect(status.textContent).toBe('3 of 3'); // exactly one advance per interval
+  });
+
+  it('standard speed selection dispatches once and updates the autoplay interval', () => {
+    const page = openStandardSpeedPage(seq3);
+    page.speedInputs[0].checked = true;
+    page.speedInputs[0].dispatch('change');
+
+    expect(page.speedSelect.dispatchEvent).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(1999);
+    expect(page.status.textContent).toBe('1 of 3');
+    vi.advanceTimersByTime(1);
+    expect(page.status.textContent).toBe('2 of 3');
+  });
+
+  it('standard speed trigger stays synchronized with slideshow availability', () => {
+    const page = makeSlideshowPage([], { standardSpeed: true });
+    enhanceDropdowns(page.document);
+    enhanceSlideshow(page.document);
+    expect(page.speedSelect.disabled).toBe(true);
+    expect(page.speedSummary.disabled).toBe(true);
+
+    page.scaffold.__creatorCrateSlideshowState.refreshSequence([{
+      id: 1,
+      filename: 'a.png',
+      previewUrl: '/p/1',
+      viewerUrl: '/v/1',
+    }]);
+    expect(page.speedSelect.disabled).toBe(false);
+    expect(page.speedSummary.disabled).toBe(false);
+
+    page.scaffold.__creatorCrateSlideshowState.refreshSequence([]);
+    expect(page.speedSelect.disabled).toBe(true);
+    expect(page.speedSummary.disabled).toBe(true);
   });
 });
 

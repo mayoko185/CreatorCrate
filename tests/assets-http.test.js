@@ -185,6 +185,14 @@ describe('asset browser HTTP workflow', () => {
     return start >= 0 && end > start ? html.slice(start, end) : '';
   }
 
+  function assetActionsPanelHtml(html) {
+    const start = html.search(/<div class="asset-actions-panel(?: asset-actions-panel--selection-only)?" data-asset-actions-panel>/);
+    if (start < 0) return '';
+    const panel = html.slice(start);
+    const assetListStart = panel.search(/<ul class="asset-(?:grid|list)\b/);
+    return assetListStart >= 0 ? panel.slice(0, assetListStart) : panel;
+  }
+
   function assetListCardHtml(html, assetId) {
     return html.match(new RegExp(`<article\\b(?=[^>]*class="[^"]*\\basset-list-card\\b[^"]*")(?=[^>]*data-asset-id="${assetId}"[^>]*)[^>]*>[\\s\\S]*?<\\/article>`))?.[0] || '';
   }
@@ -560,6 +568,7 @@ describe('asset browser HTTP workflow', () => {
 
     const defaultPage = await agent.get(`/projects/${id}/assets?view=list`).expect(200);
     const defaultFilter = assetTagFilterHtml(defaultPage.text);
+    expect(defaultFilter).toContain('data-cc-dropdown data-cc-dropdown-mode="multiple"');
     expect(defaultFilter).toContain('aria-label="Tag filter: All tags"');
     expect(defaultFilter).not.toMatch(/name="tag"[^>]*checked/);
     expect((defaultPage.text.match(/<li class="asset-list-item/g) || [])).toHaveLength(4);
@@ -2141,6 +2150,7 @@ describe('asset browser HTTP workflow', () => {
     expect(res2.text).not.toContain('other.png');
     expect(res2.text).toContain('value="hero"');
     const extensionFilter = assetExtensionFilterHtml(res2.text);
+    expect(extensionFilter).toContain('data-cc-dropdown data-cc-dropdown-mode="single"');
     expect(extensionFilter).toContain('asset-filter-multiselect--sized');
     expect(extensionFilter).toContain('class="asset-filter-multiselect-summary-current">.png</span>');
     expect(extensionFilter).toContain('class="asset-filter-multiselect-summary-width" aria-hidden="true"');
@@ -2274,8 +2284,9 @@ describe('asset browser HTTP workflow', () => {
     // creatorcrate.js script wires up autosubmit via data-autosubmit,
     // while the server-rendered "Apply" button keeps the form fully
     // functional as a plain GET submit with JavaScript disabled.
-    expect(form).toContain('<label for="pageSize">Assets per page:</label>');
-    expect(form).toContain('<select id="pageSize" name="pageSize" data-autosubmit>');
+    expect(form).toContain('<legend>Assets per page</legend>');
+    expect(form).toContain('<select id="pageSize" name="pageSize" class="cc-dropdown-native-select" data-cc-dropdown-native-select aria-label="Assets per page" data-autosubmit>');
+    expect(form).toContain('data-cc-dropdown data-cc-dropdown-mode="single"');
     expect(form).not.toContain('onchange=');
     expect(form).toContain('<button class="button button-small" type="submit">Apply</button>');
     expect(initial.text).toContain('<script type="module" src="/creatorcrate.js"></script>');
@@ -2302,6 +2313,49 @@ describe('asset browser HTTP workflow', () => {
     expect(submittedUrl.searchParams.get('pageSize')).toBe('25');
     expect(submittedUrl.searchParams.has('page')).toBe(false);
     expect(submittedUrl.searchParams.has('view')).toBe(false);
+  });
+
+  it('renders every Project Assets choice selector through the shared dropdown component', async () => {
+    const res = await createProject('Project Assets Dropdown Audit');
+    const id = res.headers.location.replace('/projects/', '');
+    for (let index = 0; index < 26; index += 1) {
+      assetRepo.upsert(Number(id), `asset-${index}.png`, {
+        filename: `asset-${index}.png`,
+        extension: 'png',
+        mimeType: 'image/png',
+        sizeBytes: 1,
+        modifiedAt: null,
+      });
+    }
+    const response = await agent.get(`/projects/${id}/assets?defaults=1`).expect(200);
+
+    const selectTags = [...response.text.matchAll(/<select\b[^>]*>/g)].map(([tag]) => tag);
+    expect(selectTags.length).toBeGreaterThan(0);
+    expect(selectTags.every((tag) => tag.includes('data-cc-dropdown-native-select'))).toBe(true);
+
+    const pageSizeForm = response.text.match(/<form class="page-size-form"[\s\S]*?<\/form>/)?.[0] || '';
+    expect(pageSizeForm).toContain('id="pageSize" name="pageSize"');
+    expect(pageSizeForm).toContain('data-cc-dropdown data-cc-dropdown-mode="single"');
+    expect(pageSizeForm).toContain('data-cc-dropdown-dispatch-native-change');
+    expect(pageSizeForm).toContain('value="10"');
+    expect(pageSizeForm).toContain('value="25" selected');
+    expect(pageSizeForm).toContain('value="50"');
+    expect(pageSizeForm).toContain('value="100"');
+
+    const defaultsDialog = response.text.match(/<dialog id="project-assets-defaults-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+    expect(defaultsDialog).toContain('data-app-dialog');
+    for (const name of ['view', 'sort', 'order', 'pageSize']) {
+      expect(defaultsDialog).toMatch(new RegExp(`<select[^>]*name="${name}"[^>]*data-cc-dropdown-native-select`));
+    }
+    expect((defaultsDialog.match(/data-cc-dropdown data-cc-dropdown-mode="single"/g) || [])).toHaveLength(4);
+
+    const speedSelect = response.text.match(/<select[^>]*data-slideshow-speed[^>]*>/)?.[0] || '';
+    expect(speedSelect).toContain('data-cc-dropdown-native-select');
+    expect(speedSelect).toContain('disabled');
+    expect(response.text).toContain('id="slideshow-speed-dropdown" data-cc-dropdown');
+    expect(response.text).toContain('<option value="2000">2 s</option>');
+    expect(response.text).toContain('value="4000" selected');
+    expect(response.text).toContain('<option value="6000">6 s</option>');
   });
 
   it('round-trips saved presentation values through filters, pagination, page size, view, and clear-filter links', async () => {
@@ -4025,6 +4079,9 @@ describe('asset browser HTTP workflow', () => {
     expect(filterForm).toContain('value="asc"');
     expect(filterForm).toContain('value="desc"');
     expect(filterForm).toContain('id="asset-filters"');
+    expect((filterForm.match(/data-cc-dropdown data-cc-dropdown-mode="(?:single|multiple)"/g) || [])).toHaveLength(7);
+    expect(filterForm).not.toContain('data-asset-viewer-filter-disclosure');
+    expect(filterForm).not.toContain('data-asset-action-select');
     expect(filterForm).not.toContain('>Filter</button>');
     expect(filterForm).not.toMatch(/<a class="button button-secondary" href="[^"]+">Reset<\/a>/);
     expect(filterForm).not.toMatch(/<select[^>]+name="(?:presence|usage|sort|order)"/);
@@ -4049,7 +4106,7 @@ describe('asset browser HTTP workflow', () => {
     ];
     for (const { label, optionsId, name, summary, options } of convertedFilterControls) {
       const control = assetFilterHtml(res2.text, optionsId);
-      expect(control).toContain('data-asset-viewer-filter-disclosure');
+      expect(control).toContain('data-cc-dropdown data-cc-dropdown-mode="single"');
       expect(control).toContain(`aria-controls="${optionsId}"`);
       expect(control).toContain('aria-expanded="false"');
       expect(control).toContain(`aria-label="${label} filter: ${summary}"`);
@@ -4063,7 +4120,7 @@ describe('asset browser HTTP workflow', () => {
       }
     }
 
-    const categoryFieldset = res2.text.match(/<fieldset class="field asset-viewer-filter-field[^"]*asset-project-category-filter[^"]*"[\s\S]*?<\/fieldset>/)?.[0];
+    const categoryFieldset = res2.text.match(/<fieldset class="field [^"]*asset-viewer-filter-field[^"]*asset-project-category-filter[^"]*"[\s\S]*?<\/fieldset>/)?.[0];
     expect(categoryFieldset).toBeDefined();
     expect(categoryFieldset).not.toContain('Manage Categories');
 
@@ -4200,6 +4257,14 @@ describe('asset browser HTTP workflow', () => {
       const completeActionPanelStart = res2.text.indexOf('<div class="asset-actions-panel" data-asset-actions-panel>');
       const completeAssetListStart = res2.text.indexOf('<ul class="asset-grid"', completeActionPanelStart);
       const completeActionPanel = res2.text.slice(completeActionPanelStart, completeAssetListStart);
+      expect(completeActionPanel).toMatch(/<div class="asset-actions-category-copy">\s*<span class="asset-actions-label">Category actions<\/span>\s*<span class="asset-actions-helper">Drag assets to change their filename order<\/span>\s*<\/div>/);
+      expect((completeActionPanel.match(/<span class="asset-actions-label">Category actions<\/span>/g) || [])).toHaveLength(1);
+      const categoryHeaderStart = completeActionPanel.indexOf('<div class="asset-actions-category-copy">');
+      const releaseActionsHeadingStart = completeActionPanel.indexOf('<h3 class="asset-action-group-heading">Release actions</h3>');
+      const categoryFileActionsHeadingStart = completeActionPanel.indexOf('<h3 class="asset-action-group-heading">Category &amp; file actions</h3>');
+      expect(categoryHeaderStart).toBeGreaterThan(-1);
+      expect(categoryHeaderStart).toBeLessThan(releaseActionsHeadingStart);
+      expect(categoryHeaderStart).toBeLessThan(categoryFileActionsHeadingStart);
       expect(completeActionPanel).not.toContain('asset-selection-header');
       expect(completeActionPanel).toContain('data-selected-count');
       expect(completeActionPanel).toContain('data-select-all');
@@ -4207,14 +4272,14 @@ describe('asset browser HTTP workflow', () => {
       expect((completeActionPanel.match(/<section class="asset-action-group">[\s\S]*?<\/section>/g) || [])).toHaveLength(2);
       expect(completeActionPanel).toContain('<h3 class="asset-action-group-heading">Release actions</h3>');
       expect(completeActionPanel).toContain('<h3 class="asset-action-group-heading">Category &amp; file actions</h3>');
-      expect(completeActionPanel).toMatch(/<select id="releaseId-action-native" class="asset-action-select" name="releaseId"[\s\S]*?data-asset-action-select-native data-release-select>/);
-      expect(completeActionPanel).toMatch(/<select id="destinationCategory-action-native" class="asset-action-select" name="destinationCategory"[\s\S]*?data-asset-action-select-native>/);
-      expect(completeActionPanel).toContain('data-asset-action-select-disclosure');
-      expect(completeActionPanel).toMatch(/<details class="asset-filter-multiselect asset-filter-multiselect--sized asset-action-select-disclosure"[\s\S]*?data-asset-action-select-disclosure hidden>/);
-      expect(completeActionPanel).toContain('class="asset-filter-multiselect-summary-current" data-asset-action-select-summary');
+      expect(completeActionPanel).toMatch(/<select id="releaseId-action-native" name="releaseId" class="cc-dropdown-native-select" data-cc-dropdown-native-select[\s\S]*?data-release-select>/);
+      expect(completeActionPanel).toMatch(/<select id="destinationCategory-action-native" name="destinationCategory" class="cc-dropdown-native-select" data-cc-dropdown-native-select/);
+      expect((completeActionPanel.match(/data-cc-dropdown data-cc-dropdown-mode="single"/g) || [])).toHaveLength(2);
+      expect(completeActionPanel).toMatch(/<details class="asset-filter-multiselect asset-filter-multiselect--sized cc-dropdown" id="releaseId-action"[\s\S]*?data-cc-dropdown-mode="single"[\s\S]*?hidden>/);
+      expect(completeActionPanel).toContain('data-cc-dropdown-summary-current');
       expect(completeActionPanel).toContain('class="asset-filter-multiselect-panel" role="radiogroup" aria-label="Release options"');
       expect(completeActionPanel).toContain('class="asset-filter-multiselect-panel" role="radiogroup" aria-label="Destination category options"');
-      expect(completeActionPanel).toContain('data-asset-action-select-option');
+      expect(completeActionPanel).not.toContain('data-asset-action-select');
       expect(completeActionPanel).not.toMatch(/<details[^>]*>\s*<summary[^>]*>\s*Release actions/);
       expect(completeActionPanel).not.toMatch(/<details[^>]*>\s*<summary[^>]*>\s*Category &amp; file actions/);
       expect(completeActionPanel).toContain('data-release-select');
@@ -4245,6 +4310,15 @@ describe('asset browser HTTP workflow', () => {
       expect(topControlOrder[1]).toBeLessThan(topControlOrder[2]);
       expect(topControlOrder[2]).toBeLessThan(topControlOrder[3]);
       expect(res2.text).not.toContain('Selection applies to this page');
+
+      const ordinaryResponse = await agent.get(`/projects/${id}/assets?view=list`).expect(200);
+      const ordinaryActionPanel = assetActionsPanelHtml(ordinaryResponse.text);
+      expect(ordinaryActionPanel).toContain('<div class="asset-actions-panel asset-actions-panel--selection-only" data-asset-actions-panel>');
+      expect(ordinaryActionPanel).toContain('<span class="asset-actions-label">Category actions</span>');
+      expect((ordinaryActionPanel.match(/<span class="asset-actions-label">Category actions<\/span>/g) || [])).toHaveLength(1);
+      expect(ordinaryActionPanel).toContain('Drag assets to change their filename order');
+      expect(ordinaryActionPanel).toContain('<h3 class="asset-action-group-heading">Release actions</h3>');
+      expect(ordinaryActionPanel).toContain('<h3 class="asset-action-group-heading">Category &amp; file actions</h3>');
     expect(res2.text).toContain('<form class="filters asset-viewer-filters asset-viewer-filters--project-assets" method="get" action="/projects/' + id + '/assets" id="asset-filters">');
     expect(res2.text).toContain('id="search" name="search"');
     expect(res2.text).toMatch(new RegExp(`<input id="asset-category-option-${cat.id}"[^>]*value="${cat.id}"[\\s\\S]*?checked>`));
@@ -4328,6 +4402,9 @@ describe('asset browser HTTP workflow', () => {
     const category = assetCategoryRepo.addProjectCategory({
       projectId: id, displayName: 'Renders', directorySlug: 'renders', displayOrder: 0, enabled: true,
     });
+    const disabledCategory = assetCategoryRepo.addProjectCategory({
+      projectId: id, displayName: 'Disabled', directorySlug: 'disabled', displayOrder: 1, enabled: false,
+    });
     assetRepo.upsert(id, 'renders/larger-match.png', {
       filename: 'larger-match.png', extension: 'png', mimeType: 'image/png',
       sizeBytes: 20, modifiedAt: null, categoryId: category.id, nestedPath: '',
@@ -4339,6 +4416,14 @@ describe('asset browser HTTP workflow', () => {
     assetRepo.upsert(id, 'renders/other.png', {
       filename: 'other.png', extension: 'png', mimeType: 'image/png',
       sizeBytes: 30, modifiedAt: null, categoryId: category.id, nestedPath: '',
+    });
+    assetRepo.upsert(id, 'root.png', {
+      filename: 'root.png', extension: 'png', mimeType: 'image/png',
+      sizeBytes: 5, modifiedAt: null, nestedPath: '',
+    });
+    assetRepo.upsert(id, 'disabled/disabled.png', {
+      filename: 'disabled.png', extension: 'png', mimeType: 'image/png',
+      sizeBytes: 5, modifiedAt: null, categoryId: disabledCategory.id, nestedPath: '',
     });
 
     const response = await agent
@@ -4355,6 +4440,14 @@ describe('asset browser HTTP workflow', () => {
     expect(response.text).not.toContain('other');
     expect(response.text).not.toContain('smaller-match');
 
+    const actionPanel = assetActionsPanelHtml(response.text);
+    expect(actionPanel).toContain('<div class="asset-actions-panel asset-actions-panel--selection-only" data-asset-actions-panel>');
+    expect(actionPanel).toContain('<span class="asset-actions-label">Category actions</span>');
+    expect((actionPanel.match(/<span class="asset-actions-label">Category actions<\/span>/g) || [])).toHaveLength(1);
+    expect(actionPanel).toContain('Drag assets to change their filename order');
+    expect(actionPanel).toContain('<h3 class="asset-action-group-heading">Release actions</h3>');
+    expect(actionPanel).toContain('<h3 class="asset-action-group-heading">Category &amp; file actions</h3>');
+
     const nextMatch = response.text.match(/<a href="([^"]+)" class="pagination-next">Next/);
     expect(nextMatch).not.toBeNull();
     const nextUrl = new URL(decodeHtmlHref(nextMatch[1]), 'http://localhost');
@@ -4369,6 +4462,35 @@ describe('asset browser HTTP workflow', () => {
     const pageSizeForm = response.text.match(/<form class="page-size-form"[\s\S]*?<\/form>/)?.[0];
     expect(pageSizeForm).toContain(`<input type="hidden" name="category" value="${category.id}">`);
     expect(pageSizeForm).toContain('<input type="hidden" name="search" value="match">');
+
+    const modifiedResponse = await agent
+      .get(`/projects/${id}/assets?category=${category.id}&sort=modified`)
+      .expect(200);
+    const modifiedActionPanel = assetActionsPanelHtml(modifiedResponse.text);
+    expect(modifiedActionPanel).toContain('<div class="asset-actions-panel asset-actions-panel--selection-only" data-asset-actions-panel>');
+    expect(modifiedActionPanel).toContain('<span class="asset-actions-label">Category actions</span>');
+    expect((modifiedActionPanel.match(/<span class="asset-actions-label">Category actions<\/span>/g) || [])).toHaveLength(1);
+    expect(modifiedActionPanel).toContain('Drag assets to change their filename order');
+    expect(modifiedActionPanel).toContain('<h3 class="asset-action-group-heading">Release actions</h3>');
+    expect(modifiedActionPanel).toContain('<h3 class="asset-action-group-heading">Category &amp; file actions</h3>');
+
+    const disabledResponse = await agent
+      .get(`/projects/${id}/assets?category=${disabledCategory.id}`)
+      .expect(200);
+    const disabledActionPanel = assetActionsPanelHtml(disabledResponse.text);
+    expect(disabledActionPanel).toContain('<div class="asset-actions-panel asset-actions-panel--selection-only" data-asset-actions-panel>');
+    expect(disabledActionPanel).toContain('<span class="asset-actions-label">Category actions</span>');
+    expect((disabledActionPanel.match(/<span class="asset-actions-label">Category actions<\/span>/g) || [])).toHaveLength(1);
+    expect(disabledActionPanel).toContain('Drag assets to change their filename order');
+
+    for (const categoryQuery of ['category=all', 'category=uncategorized']) {
+      const ordinaryResponse = await agent.get(`/projects/${id}/assets?${categoryQuery}`).expect(200);
+      const ordinaryActionPanel = assetActionsPanelHtml(ordinaryResponse.text);
+      expect(ordinaryActionPanel).toContain('<div class="asset-actions-panel asset-actions-panel--selection-only" data-asset-actions-panel>');
+      expect(ordinaryActionPanel).toContain('<span class="asset-actions-label">Category actions</span>');
+      expect((ordinaryActionPanel.match(/<span class="asset-actions-label">Category actions<\/span>/g) || [])).toHaveLength(1);
+      expect(ordinaryActionPanel).toContain('Drag assets to change their filename order');
+    }
   });
 
   // ─── Filename / location / category presentation ────────────────
@@ -4628,13 +4750,13 @@ describe('asset browser HTTP workflow', () => {
         expect((form.match(/class="asset-action-group"/g) || []).length).toBe(2);
         expect(form).toMatch(/<h3 class="asset-action-group-heading">Release actions<\/h3>/);
         expect(form).toMatch(/<h3 class="asset-action-group-heading">Category &amp; file actions<\/h3>/);
-        expect(form).toMatch(/<select id="releaseId-action-native" class="asset-action-select" name="releaseId"[\s\S]*?data-asset-action-select-native data-release-select>/);
-        expect(form).toMatch(/<select id="destinationCategory-action-native" class="asset-action-select" name="destinationCategory"[\s\S]*?data-asset-action-select-native>/);
-        expect(form).toContain('data-asset-action-select-disclosure');
-        expect(form).toMatch(/<details class="asset-filter-multiselect asset-filter-multiselect--sized asset-action-select-disclosure"[\s\S]*?data-asset-action-select-disclosure hidden>/);
+        expect(form).toMatch(/<select id="releaseId-action-native" name="releaseId" class="cc-dropdown-native-select" data-cc-dropdown-native-select[\s\S]*?data-release-select>/);
+        expect(form).toMatch(/<select id="destinationCategory-action-native" name="destinationCategory" class="cc-dropdown-native-select" data-cc-dropdown-native-select/);
+        expect((form.match(/data-cc-dropdown data-cc-dropdown-mode="single"/g) || [])).toHaveLength(2);
+        expect(form).toMatch(/<details class="asset-filter-multiselect asset-filter-multiselect--sized cc-dropdown" id="releaseId-action"[\s\S]*?data-cc-dropdown-mode="single"[\s\S]*?hidden>/);
         expect(form).toContain('class="asset-filter-multiselect-panel" role="radiogroup" aria-label="Release options"');
         expect(form).toContain('class="asset-filter-multiselect-panel" role="radiogroup" aria-label="Destination category options"');
-        expect(form).toContain('data-asset-action-select-option');
+        expect(form).not.toContain('data-asset-action-select');
         expect(form).toContain('data-release-select');
         expect(form).toContain('name="destinationCategory"');
         expect(form).toContain(`formaction="/projects/${id}/assets/move-selected"`);
@@ -4651,9 +4773,9 @@ describe('asset browser HTTP workflow', () => {
         expect(categoryFileActions).not.toMatch(/<details[^>]*>\s*<summary[^>]*>\s*Category &amp; file actions/);
         expect(releaseActions).not.toContain('data-asset-viewer-filter-disclosure');
         expect(categoryFileActions).not.toContain('data-asset-viewer-filter-disclosure');
-        expect(releaseActions).toMatch(/<select id="releaseId-action-native" class="asset-action-select" name="releaseId"[\s\S]*?data-asset-action-select-native data-release-select>/);
-        expect(categoryFileActions).toMatch(/<select id="destinationCategory-action-native" class="asset-action-select" name="destinationCategory"[\s\S]*?data-asset-action-select-native>/);
-        expect(releaseActions).toContain('<option value="">Select a release…</option>');
+        expect(releaseActions).toMatch(/<select id="releaseId-action-native" name="releaseId" class="cc-dropdown-native-select" data-cc-dropdown-native-select[\s\S]*?data-release-select>/);
+        expect(categoryFileActions).toMatch(/<select id="destinationCategory-action-native" name="destinationCategory" class="cc-dropdown-native-select" data-cc-dropdown-native-select/);
+        expect(releaseActions).toMatch(/<option value=""[^>]*>Select a release…<\/option>/);
         expect(categoryFileActions).toContain('value="uncategorized"');
         expect(releaseActions).toMatch(/<button[^>]*data-bulk-submit[^>]*>Add<\/button>/);
         expect(releaseActions).toMatch(new RegExp(`formaction="/projects/${id}/assets/create-release">New<\\/button>`));
@@ -4684,15 +4806,13 @@ describe('asset browser HTTP workflow', () => {
         expect(sharedTriggerRule).toMatch(/font-weight:\s*400/);
         expect(sharedTriggerRule).toMatch(/line-height:\s*1\.6/);
         expect(style).not.toMatch(/\.asset-action-select\s*\{/);
-        expect(style).toMatch(/\.asset-action-select-wrap\s*\{[\s\S]*?width:\s*max-content[\s\S]*?max-width:\s*100%/);
-        expect(style).not.toContain('.asset-action-select-wrap::after');
+        expect(style).not.toContain('asset-action-select');
         expect(style).toMatch(/\.asset-filter-multiselect summary::after\s*\{[\s\S]*?color:\s*var\(--muted\)[\s\S]*?content:\s*'▾'/);
         expect(style).toMatch(/\.asset-filter-multiselect summary:hover\s*\{[\s\S]*?border-color:\s*var\(--border-strong\)[\s\S]*?background:\s*var\(--surface-hover\)/);
         expect(style).toMatch(/\.asset-filter-multiselect summary:focus-visible\s*\{[\s\S]*?outline:\s*2px solid var\(--focus-ring\)/);
-        expect(style).not.toContain('.asset-action-group .asset-action-select:disabled');
 
         const extensionFilter = assetExtensionFilterHtml(res2.text);
-        expect(extensionFilter).toContain('data-asset-viewer-filter-disclosure');
+        expect(extensionFilter).toContain('data-cc-dropdown data-cc-dropdown-mode="single"');
         expect(extensionFilter).toContain('aria-controls="asset-extension-filter-options"');
         expect(extensionFilter).toContain('class="asset-filter-multiselect-panel"');
       }
