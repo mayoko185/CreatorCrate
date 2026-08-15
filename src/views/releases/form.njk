@@ -1,5 +1,6 @@
 {% extends "layout.njk" %}
 {% import "partials/page-heading.njk" as pageHeading %}
+{% import "partials/dropdown.njk" as dropdown %}
 
 {% set title = action ~ ' Release' %}
 {% set page_title = "Releases — Edit " ~ release.title if action == 'Edit' else "Releases — " ~ title %}
@@ -35,49 +36,36 @@
 
       <div class="settings-section release-project-section">
         <h3>Project</h3>
-        <fieldset class="field asset-viewer-filter-field asset-filter-multiselect-field asset-viewer-project-filter{% if errors.projectId %} field-error{% endif %}">
-          <legend>Project <span class="required" aria-label="required">*</span></legend>
-          <details class="asset-filter-multiselect asset-filter-multiselect--sized asset-project-filter-disclosure"
-                   data-asset-project-filter
-                   data-asset-project-filter-name="projectId"
-                   data-asset-project-filter-empty-label="Select a project"
-                   data-asset-viewer-filter-disclosure>
-            <summary id="release-project-filter-trigger"
-                     aria-controls="release-project-filter-options"
-                     aria-expanded="false"
-                     aria-label="Project filter: {{ projectSummary }}"
-                     title="{{ projectSummary }}">
-              <span class="asset-filter-multiselect-summary" data-asset-project-filter-summary>
-                <span class="asset-filter-multiselect-summary-current" data-asset-project-filter-current-summary>{{ projectSummary }}</span>
-                <span class="asset-filter-multiselect-summary-width" aria-hidden="true">
-                  <span>Select a project</span>
-                  {% for project in projects %}
-                    <span>{{ project.title }}</span>
-                  {% endfor %}
-                </span>
-              </span>
-            </summary>
-            <div id="release-project-filter-options" class="asset-filter-multiselect-panel asset-project-filter-panel" role="group" aria-label="Project options">
-              <label class="asset-project-filter-search-label" for="release-project-filter-search">Search projects</label>
-              <input id="release-project-filter-search" class="asset-project-filter-search" type="search"
-                     autocomplete="off" data-asset-project-filter-search>
-              <div class="asset-project-filter-option-list" data-asset-project-filter-option-list role="radiogroup" aria-label="Project choices">
-                {% for project in projects %}
-                  <div class="asset-filter-multiselect-option asset-project-filter-option"
-                       data-asset-project-filter-option data-project-title="{{ project.title }}">
-                    <label for="release-project-option-{{ project.id }}">
-                      <input id="release-project-option-{{ project.id }}" name="projectId" type="radio" value="{{ project.id }}"{% if selectedProjectId == project.id %} checked{% endif %} required{% if errors.projectId %} aria-describedby="projectId-error" aria-invalid="true"{% endif %}>
-                      <span>{{ project.title }}</span>
-                    </label>
-                  </div>
-                {% endfor %}
-              </div>
-              <p class="asset-filter-multiselect-empty asset-project-filter-no-results"
-                 data-asset-project-filter-no-results role="status" aria-live="polite" hidden>No matching projects</p>
-            </div>
-          </details>
-          {% if errors.projectId %}<span class="field-error-message" id="projectId-error">{{ errors.projectId }}</span>{% endif %}
-        </fieldset>
+        {{ dropdown.searchableSingleSelect({
+          id: "release-project-filter",
+          name: "projectId",
+          label: "Project",
+          required: true,
+          options: projects,
+          valueKey: "id",
+          labelKey: "title",
+          selected: selectedProjectId,
+          summary: projectSummary,
+          summaryAttributes: [
+            ["aria-describedby", "projectId-error" if errors.projectId else none],
+            ["aria-invalid", "true" if errors.projectId else none]
+          ],
+          panelLabel: "Project options",
+          searchLabel: "Search projects",
+          searchInputId: "release-project-filter-search",
+          optionListId: "release-project-filter-option-list",
+          noResultsText: "No matching projects",
+          optionListLabel: "Project choices",
+          optionIdPrefix: "release-project",
+          inputAttributes: [
+            ["required", true],
+            ["aria-describedby", "projectId-error" if errors.projectId else none],
+            ["aria-invalid", "true" if errors.projectId else none]
+          ],
+          fieldClasses: "asset-viewer-filter-field asset-viewer-project-filter{% if errors.projectId %} field-error{% endif %}",
+          classes: "asset-project-filter-disclosure"
+        }) }}
+        {% if errors.projectId %}<span class="field-error-message" id="projectId-error">{{ errors.projectId }}</span>{% endif %}
       </div>
     {% endif %}
 

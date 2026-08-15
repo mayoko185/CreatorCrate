@@ -29,14 +29,19 @@ CREATE TABLE projects_new (
     CONSTRAINT projects_published_date_format CHECK (published_date IS NULL OR published_date LIKE '____-__-__')
 );
 
--- Copy every column verbatim, preserving ids so child FKs stay valid.
+-- Copy every column, preserving ids so child FKs stay valid.
+-- Databases created before the migration consolidation may carry rows with
+-- status = 'published' (the value the old schema allowed). The new CHECK
+-- constraint uses 'completed' instead, so the INSERT maps the old value.
 INSERT INTO projects_new (
     id, title, slug, description, notes, status, priority,
     planned_date, published_date, patreon_url,
     created_at, updated_at, archived_at, project_dir
 )
 SELECT
-    id, title, slug, description, notes, status, priority,
+    id, title, slug, description, notes,
+    CASE WHEN status = 'published' THEN 'completed' ELSE status END,
+    priority,
     planned_date, published_date, patreon_url,
     created_at, updated_at, archived_at, project_dir
 FROM projects;

@@ -42,7 +42,7 @@ function expectReleaseFormSectionCards(html) {
 }
 
 function extractReleaseProjectField(html) {
-  return html.match(/<fieldset class="field[^"]*asset-viewer-filter-field[^"]*asset-filter-multiselect-field[^"]*asset-viewer-project-filter[^"]*">[\s\S]*?<\/fieldset>/)?.[0] || '';
+  return html.match(/<fieldset class="[^"]*asset-viewer-project-filter[^"]*">[\s\S]*?<\/fieldset>(?:\s*<span class="field-error-message" id="projectId-error">[\s\S]*?<\/span>)?/)?.[0] || '';
 }
 
 function releaseProjectRadioInputs(html) {
@@ -540,6 +540,7 @@ describe('release HTTP workflow', () => {
       .send('priority=normal')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
+    const projectId = projRes.headers.location.replace('/projects/', '');
 
     const res = await agent.get('/releases/new').expect(200);
     expect(res.text).toContain('Create Release');
@@ -551,14 +552,25 @@ describe('release HTTP workflow', () => {
     const projectField = extractReleaseProjectField(res.text);
     expect(projectField).not.toBe('');
     expect(projectField).toContain('asset-filter-multiselect');
+    expect(projectField).toContain('<legend>Project <span class="required" aria-label="required">*</span></legend>');
+    expect(projectField).toContain('data-cc-dropdown data-cc-dropdown-mode="single"');
+    expect(projectField).toContain('data-cc-dropdown-searchable');
+    expect(projectField).toContain('data-cc-dropdown-type="searchable-single"');
     expect(projectField).toContain('asset-project-filter-disclosure');
-    expect(projectField).toContain('data-asset-project-filter');
-    expect(projectField).toContain('data-asset-project-filter-name="projectId"');
-    expect(projectField).toContain('data-asset-project-filter-search');
-    expect(projectField).toContain('data-asset-project-filter-option');
-    expect(projectField).toContain('data-asset-project-filter-no-results');
+    expect(projectField).not.toContain('data-asset-project-filter');
+    expect(projectField).toContain('data-cc-dropdown-search');
+    expect(projectField).toContain('data-cc-dropdown-option-list');
+    expect(projectField).toContain('data-cc-dropdown-no-results');
+    expect(projectField).toContain('id="release-project-filter-trigger" aria-controls="release-project-filter-options"');
+    expect(projectField).toContain('id="release-project-filter-search"');
+    expect(projectField).not.toMatch(/id="release-project-filter-search"[^>]*\bname=/);
     expect(projectField).toContain('role="radiogroup"');
     expect(projectField).toContain('name="projectId"');
+    expect(projectField).toContain(`value="${projectId}"`);
+    expect(projectField).toContain('>New Release Test</span>');
+    expect(projectField).toContain('Select a project');
+    expect(projectField).not.toMatch(/<summary[^>]*aria-describedby="projectId-error"/);
+    expect(projectField).not.toMatch(/<summary[^>]*aria-invalid="true"/);
     expect(projectField).not.toContain('<select');
     expect(projectField).not.toMatch(/name="projectId"[^>]*value=""/);
     expect(projectField).not.toContain('All projects');
@@ -568,6 +580,8 @@ describe('release HTTP workflow', () => {
 
     const css = (await agent.get('/creatorcrate.css').expect(200)).text;
     expect(css).toMatch(/\.project-form\s*>\s*\.release-project-section\s*\{[^}]*overflow:\s*visible/);
+    expect(css).toMatch(/\.asset-viewer-project-filter\s+\.asset-project-filter-option-list\s*\{[\s\S]*?scrollbar-color:\s*var\(--border-strong\)\s+transparent/);
+    expect(css).not.toContain('#release-project-filter .asset-project-filter-option-list');
   });
 
   describe('/releases defaults and live-region markup', () => {
@@ -942,6 +956,7 @@ describe('release HTTP workflow', () => {
     expect(projectField).toContain('field-error');
     expect(projectField).toContain('id="projectId-error"');
     expect(projectField).toMatch(/name="projectId"[^>]*aria-describedby="projectId-error"[^>]*aria-invalid="true"/);
+    expect(projectField).toMatch(/<summary[^>]*aria-describedby="projectId-error"[^>]*aria-invalid="true"/);
     expect(selectedProjectRadioValue(res.text)).toBeUndefined();
   });
 
