@@ -2,6 +2,7 @@ import { describe, expect, it, vi, afterEach } from 'vitest';
 import {
   enhanceDropdowns,
   enhanceAssetSelection,
+  enhanceAssetListSize,
   enhanceProjectAssetsLiveFiltering,
 } from '../src/static/creatorcrate.js';
 
@@ -251,9 +252,40 @@ function makePage({ presence = 'all', nsfwEnabled = false, page = '2' } = {}) {
   });
   nsfwForm.appendChild(nsfwToggle);
 
+  const listSizeControls = makeNode({
+    attrs: {
+      'data-asset-list-size-controls': '',
+      'data-grid-size-labels-interactive': '',
+    },
+  });
+  const listSlider = makeNode({
+    tagName: 'input',
+    attrs: { 'data-grid-size-slider': '', type: 'range' },
+    value: '2',
+  });
+  const listCompactLabel = makeNode({
+    tagName: 'button',
+    attrs: { 'data-grid-size-option-label': 'compact' },
+  });
+  const listLargeLabel = makeNode({
+    tagName: 'button',
+    attrs: { 'data-grid-size-option-label': 'large' },
+  });
+  listSizeControls.appendChild(listSlider);
+  listSizeControls.appendChild(listCompactLabel);
+  listSizeControls.appendChild(listLargeLabel);
+  const list = makeNode({
+    attrs: {
+      class: 'asset-list asset-list--project',
+      'data-list-size': 'large',
+    },
+  });
+
   region.appendChild(status);
   region.appendChild(form);
   region.appendChild(nsfwForm);
+  region.appendChild(listSizeControls);
+  region.appendChild(list);
   document.appendChild(region);
 
   return {
@@ -271,6 +303,9 @@ function makePage({ presence = 'all', nsfwEnabled = false, page = '2' } = {}) {
     nsfwForm,
     nsfwValue,
     nsfwToggle,
+    list,
+    listSlider,
+    listLabels: [listCompactLabel, listLargeLabel],
   };
 }
 
@@ -489,6 +524,90 @@ describe('Project Assets live filtering enhancement', () => {
     enhanceProjectAssetsLiveFiltering(next.region);
     expect(next.form.listeners.filter(({ type }) => type === 'change')).toHaveLength(1);
     expect(next.form.listeners.filter(({ type }) => type === 'submit')).toHaveLength(1);
+  });
+
+  it('restores the saved list size when a live-filter replacement re-enhances the region', async () => {
+    const initial = makePage();
+    const next = makePage();
+    const pages = new Map([['filtered-list-size', next.document]]);
+    const { windowObject } = makeWindow(initial.document, pages);
+    const storage = new Map([['creatorcrate-asset-list-size', 'compact']]);
+    const previousStorage = globalThis.localStorage;
+    globalThis.localStorage = {
+      getItem: (key) => storage.get(key) ?? null,
+      setItem: (key, value) => storage.set(key, value),
+    };
+    windowObject.fetch.mockResolvedValue(
+      htmlResponse('filtered-list-size', 'http://creatorcrate.test/projects/1/assets?view=list&presence=missing'),
+    );
+
+    try {
+      expect(enhanceProjectAssetsLiveFiltering(initial.document)).toBe(1);
+      expect(initial.list.getAttribute('data-list-size')).toBe('compact');
+      initial.presenceMissing.checked = true;
+      initial.presenceMissing.dispatch('change');
+      await flush();
+
+      expect(next.list.getAttribute('data-list-size')).toBe('compact');
+      expect(next.listSlider.value).toBe('1');
+      expect(next.listLabels.map((label) => label.getAttribute('aria-pressed')))
+        .toEqual(['true', 'false']);
+    } finally {
+      if (previousStorage === undefined) delete globalThis.localStorage;
+      else globalThis.localStorage = previousStorage;
+    }
+  });
+
+  it('keeps category selection and Auto Rename hooks while switching both list sizes', () => {
+    const page = makePage();
+    const listItem = makeNode({
+      tagName: 'li',
+      attrs: {
+        'data-auto-rename-asset': '',
+        'data-auto-rename-asset-id': '7',
+      },
+    });
+    const card = makeNode({
+      attrs: {
+        'data-asset-selectable-card': '',
+        'data-asset-id': '7',
+      },
+    });
+    const checkbox = makeNode({
+      tagName: 'input',
+      attrs: { type: 'checkbox', name: 'selectedAssetIds' },
+    });
+    const orderIndicator = makeNode({
+      tagName: 'span',
+      attrs: { 'data-auto-rename-order-indicator': '' },
+    });
+    card.appendChild(checkbox);
+    listItem.appendChild(card);
+    listItem.appendChild(orderIndicator);
+    page.list.appendChild(listItem);
+
+    const previousStorage = globalThis.localStorage;
+    const storage = new Map();
+    globalThis.localStorage = {
+      getItem: (key) => storage.get(key) ?? null,
+      setItem: (key, value) => storage.set(key, value),
+    };
+
+    try {
+      expect(enhanceAssetListSize(page.document)).toBe(1);
+      for (const [sliderValue, expectedSize] of [['1', 'compact'], ['2', 'large']]) {
+        page.listSlider.value = sliderValue;
+        page.listSlider.dispatch('input');
+        expect(page.list.getAttribute('data-list-size')).toBe(expectedSize);
+        expect(listItem.getAttribute('data-auto-rename-asset')).toBe('');
+        expect(card.getAttribute('data-asset-selectable-card')).toBe('');
+        expect(checkbox.getAttribute('name')).toBe('selectedAssetIds');
+        expect(orderIndicator.getAttribute('data-auto-rename-order-indicator')).toBe('');
+      }
+    } finally {
+      if (previousStorage === undefined) delete globalThis.localStorage;
+      else globalThis.localStorage = previousStorage;
+    }
   });
 
   it('debounces search, restores the current URL through popstate, and falls back to native submit without fetch', async () => {

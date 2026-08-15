@@ -19,6 +19,8 @@ import { ensureAuthEnablement } from '../src/auth/auth-state.js';
 import { getDisabledModeCsrf } from './helpers/auth.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
+const PROJECT_ASSETS_TEMPLATE_PATH = fileURLToPath(new URL('../src/views/projects/assets.njk', import.meta.url));
+const ASSET_PRESENTATION_TEMPLATE_PATH = fileURLToPath(new URL('../src/views/partials/asset-presentation.njk', import.meta.url));
 
 describe('asset-browser structural parity: releases vs projects', () => {
   let db;
@@ -225,6 +227,43 @@ describe('asset-browser structural parity: releases vs projects', () => {
         expect(html).toContain('class="asset-list-card-media');
         expect(html).toContain('class="asset-list-card-body"');
       }
+    });
+
+    it('keeps Compact and Large on one canonical list-card renderer', () => {
+      const projectTemplate = fs.readFileSync(PROJECT_ASSETS_TEMPLATE_PATH, 'utf8');
+      const sharedTemplate = fs.readFileSync(ASSET_PRESENTATION_TEMPLATE_PATH, 'utf8');
+
+      expect((projectTemplate.match(/assetPresentation\.listCard\(/g) || [])).toHaveLength(1);
+      expect((projectTemplate.match(/data-list-size/g) || [])).toHaveLength(1);
+      expect(projectTemplate).toContain('data-list-size="large"');
+      expect((sharedTemplate.match(/\{% macro listCard\(/g) || [])).toHaveLength(1);
+      expect(sharedTemplate).not.toContain('data-list-size');
+    });
+  });
+
+  describe('project asset size control contract', () => {
+    it('keeps the grid control at Compact, Default, and Large', async () => {
+      const response = await agent.get(`/projects/${projectId}/assets?view=grid`).expect(200);
+      const controlStart = response.text.indexOf('data-asset-grid-size-controls');
+      const gridStart = response.text.indexOf('<ul class="asset-grid', controlStart);
+      const control = response.text.slice(controlStart, gridStart);
+
+      expect(control).toContain('max="3"');
+      expect(control.match(/data-grid-size-option-label=/g)).toHaveLength(3);
+      expect(control).toContain('data-grid-size-option-label="default"');
+    });
+
+    it('renders only Compact and Large for list view with Large as the default state', async () => {
+      const response = await agent.get(`/projects/${projectId}/assets?view=list`).expect(200);
+      const controlStart = response.text.indexOf('data-asset-list-size-controls');
+      const listStart = response.text.indexOf('<ul class="asset-list', controlStart);
+      const control = response.text.slice(controlStart, listStart);
+
+      expect(control).toContain('max="2"');
+      expect(control.match(/data-grid-size-option-label=/g)).toHaveLength(2);
+      expect(control).not.toContain('data-grid-size-option-label="default"');
+      expect(control).toContain('aria-valuetext="Large"');
+      expect(response.text).toContain('class="asset-list asset-list--project" role="list" aria-label="Project assets" data-list-size="large"');
     });
   });
 

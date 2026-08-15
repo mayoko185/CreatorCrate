@@ -3056,6 +3056,9 @@ const ASSET_RENAME_EDITOR_SELECTOR = '[data-asset-rename-editor]';
 const ASSET_GRID_SIZE_CONTROL_SELECTOR = '[data-asset-grid-size-controls]';
 const ASSET_GRID_SELECTOR = '.asset-grid';
 const ASSET_GRID_SIZE_STORAGE_KEY = 'creatorcrate-asset-grid-size';
+const ASSET_LIST_SIZE_CONTROL_SELECTOR = '[data-asset-list-size-controls]';
+const ASSET_LIST_SELECTOR = '.asset-list';
+const ASSET_LIST_SIZE_STORAGE_KEY = 'creatorcrate-asset-list-size';
 const PROJECT_GRID_SELECTOR = '.project-grid';
 const PROJECT_GRID_SIZE_STORAGE_KEY = 'creatorcrate-project-grid-size';
 const PROJECT_GRID_SIZE_CONTROL_SCOPE_SELECTOR = '[data-project-grid-size-controls]';
@@ -3106,19 +3109,51 @@ const ASSET_GRID_SIZE_LABELS = Object.freeze({
   default: 'Default',
   large: 'Large',
 });
+const ASSET_LIST_SIZES = Object.freeze({
+  compact: null,
+  large: null,
+});
+const ASSET_LIST_SIZE_ORDER = Object.freeze(['compact', 'large']);
+const ASSET_LIST_SIZE_LABELS = Object.freeze({
+  compact: 'Compact',
+  large: 'Large',
+});
 const ASSET_GRID_SIZE_CONFIG = Object.freeze({
   controlSelector: ASSET_GRID_SIZE_CONTROL_SELECTOR,
   excludeControlScopeSelector: PROJECT_GRID_SIZE_CONTROL_SCOPE_SELECTOR,
   gridSelector: ASSET_GRID_SELECTOR,
   storageKey: ASSET_GRID_SIZE_STORAGE_KEY,
+  sizes: ASSET_GRID_SIZES,
+  order: ASSET_GRID_SIZE_ORDER,
+  labels: ASSET_GRID_SIZE_LABELS,
+  defaultSize: 'default',
+  sizeAttribute: 'data-grid-size',
   cssVariable: '--asset-card-min',
   boundKey: 'assetGridSizeBound',
+  interactiveLabelsSelector: '[data-grid-size-labels-interactive]',
+});
+const ASSET_LIST_SIZE_CONFIG = Object.freeze({
+  controlSelector: ASSET_LIST_SIZE_CONTROL_SELECTOR,
+  gridSelector: ASSET_LIST_SELECTOR,
+  storageKey: ASSET_LIST_SIZE_STORAGE_KEY,
+  sizes: ASSET_LIST_SIZES,
+  order: ASSET_LIST_SIZE_ORDER,
+  labels: ASSET_LIST_SIZE_LABELS,
+  defaultSize: 'large',
+  sizeAttribute: 'data-list-size',
+  removeDefaultAttribute: false,
+  boundKey: 'assetListSizeBound',
   interactiveLabelsSelector: '[data-grid-size-labels-interactive]',
 });
 const PROJECT_GRID_SIZE_CONFIG = Object.freeze({
   controlSelector: PROJECT_GRID_SIZE_CONTROL_SELECTOR,
   gridSelector: PROJECT_GRID_SELECTOR,
   storageKey: PROJECT_GRID_SIZE_STORAGE_KEY,
+  sizes: ASSET_GRID_SIZES,
+  order: ASSET_GRID_SIZE_ORDER,
+  labels: ASSET_GRID_SIZE_LABELS,
+  defaultSize: 'default',
+  sizeAttribute: 'data-grid-size',
   cssVariable: '--project-card-min',
   boundKey: 'projectGridSizeBound',
   interactiveLabelsSelector: '[data-grid-size-labels-interactive]',
@@ -3379,12 +3414,12 @@ export function enhanceAssetRenames(scope = globalThis.document) {
   return triggers.length;
 }
 
-function readGridSize(storageKey) {
+function readGridSize(storageKey, config) {
   try {
     const stored = globalThis.localStorage?.getItem(storageKey);
-    return Object.prototype.hasOwnProperty.call(ASSET_GRID_SIZES, stored) ? stored : 'default';
+    return Object.prototype.hasOwnProperty.call(config.sizes, stored) ? stored : config.defaultSize;
   } catch {
-    return 'default';
+    return config.defaultSize;
   }
 }
 
@@ -3396,20 +3431,20 @@ function writeGridSize(size, storageKey) {
   }
 }
 
-function assetGridSizeFromPosition(value) {
+function assetGridSizeFromPosition(value, config) {
   const position = Number(value);
-  if (!Number.isInteger(position) || position < 1 || position > ASSET_GRID_SIZE_ORDER.length) return null;
-  return ASSET_GRID_SIZE_ORDER[position - 1];
+  if (!Number.isInteger(position) || position < 1 || position > config.order.length) return null;
+  return config.order[position - 1];
 }
 
-function assetGridSizePosition(size) {
-  const position = ASSET_GRID_SIZE_ORDER.indexOf(size);
+function assetGridSizePosition(size, config) {
+  const position = config.order.indexOf(size);
   return position < 0 ? null : position + 1;
 }
 
-function updateGridSizeControls(controls, size) {
-  const label = ASSET_GRID_SIZE_LABELS[size];
-  const position = assetGridSizePosition(size);
+function updateGridSizeControls(controls, size, config) {
+  const label = config.labels[size];
+  const position = assetGridSizePosition(size, config);
 
   controls.forEach((group) => {
     group.querySelectorAll(ASSET_GRID_SIZE_SLIDER_SELECTOR).forEach((slider) => {
@@ -3442,15 +3477,21 @@ function gridSizeLabelsAreInteractive(group, config) {
 function applyGridSize(scope, size, config, controls) {
   const grids = scope.querySelectorAll(config.gridSelector);
   grids.forEach((grid) => {
-    if (size === 'default') {
-      grid.removeAttribute('data-grid-size');
-      grid.style?.removeProperty(config.cssVariable);
+    const clearDefaultAttribute = size === config.defaultSize && config.removeDefaultAttribute !== false;
+    if (clearDefaultAttribute) {
+      grid.removeAttribute(config.sizeAttribute);
     } else {
-      grid.setAttribute('data-grid-size', size);
-      grid.style?.setProperty(config.cssVariable, ASSET_GRID_SIZES[size]);
+      grid.setAttribute(config.sizeAttribute, size);
+    }
+    if (config.cssVariable) {
+      if (clearDefaultAttribute) {
+        grid.style?.removeProperty(config.cssVariable);
+      } else {
+        grid.style?.setProperty(config.cssVariable, config.sizes[size]);
+      }
     }
   });
-  updateGridSizeControls(controls, size);
+  updateGridSizeControls(controls, size, config);
 }
 
 function getGridSizeControls(scope, config) {
@@ -3465,10 +3506,10 @@ function enhanceGridSize(scope, config) {
   const grids = scope.querySelectorAll(config.gridSelector);
   if (controls.length === 0 || grids.length === 0) return 0;
 
-  applyGridSize(scope, readGridSize(config.storageKey), config, controls);
+  applyGridSize(scope, readGridSize(config.storageKey, config), config, controls);
   controls.forEach((group) => {
     const applySelectedSize = (size) => {
-      if (!Object.prototype.hasOwnProperty.call(ASSET_GRID_SIZES, size)) return;
+      if (!Object.prototype.hasOwnProperty.call(config.sizes, size)) return;
       writeGridSize(size, config.storageKey);
       applyGridSize(scope, size, config, controls);
     };
@@ -3477,7 +3518,7 @@ function enhanceGridSize(scope, config) {
       if (isEnhancementBound(slider, config.boundKey)) return;
       markEnhancementBound(slider, config.boundKey);
       const applySliderSize = () => {
-        applySelectedSize(assetGridSizeFromPosition(slider.value));
+        applySelectedSize(assetGridSizeFromPosition(slider.value, config));
       };
       slider.addEventListener('input', applySliderSize);
       slider.addEventListener('change', applySliderSize);
@@ -3498,6 +3539,10 @@ function enhanceGridSize(scope, config) {
 
 export function enhanceAssetGridSize(scope = globalThis.document) {
   return enhanceGridSize(scope, ASSET_GRID_SIZE_CONFIG);
+}
+
+export function enhanceAssetListSize(scope = globalThis.document) {
+  return enhanceGridSize(scope, ASSET_LIST_SIZE_CONFIG);
 }
 
 export function enhanceProjectGridSize(scope = globalThis.document) {
@@ -4723,6 +4768,7 @@ function enhanceProjectAssetsLiveRegion(region) {
   enhanceAssetSelection(region);
   enhanceAssetRenames(region);
   enhanceAssetGridSize(region);
+  enhanceAssetListSize(region);
   enhanceAssetAutoRenameOrdering(region);
   enhanceConfirmations(region);
   enhanceProjectAssetCategoryFilter(region);
@@ -7199,6 +7245,7 @@ if (typeof document !== 'undefined') {
     enhanceAssetSelection(document);
     enhanceAssetRenames(document);
     enhanceAssetGridSize(document);
+    enhanceAssetListSize(document);
     enhanceProjectGridSize(document);
     enhanceProjectAssetCategoryFilter(document);
     enhanceDropdowns(document);

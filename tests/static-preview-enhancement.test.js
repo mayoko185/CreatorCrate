@@ -18,6 +18,7 @@ import {
   enhanceAssetSelection,
   enhanceAssetRenames,
   enhanceAssetGridSize,
+  enhanceAssetListSize,
   enhanceProjectGridSize,
   enhanceProjectAssetCategoryFilter,
   enhanceAssetViewerFilterDisclosures,
@@ -2857,7 +2858,23 @@ describe('asset grid size enhancement', () => {
     };
   }
 
-  function makeGridSliderControls({ project = false, interactive = false } = {}) {
+  function makeList() {
+    const attrs = {};
+    return {
+      dataset: {},
+      setAttribute(name, value) {
+        attrs[name] = String(value);
+        if (name === 'data-list-size') this.dataset.listSize = String(value);
+      },
+      removeAttribute(name) {
+        delete attrs[name];
+        if (name === 'data-list-size') delete this.dataset.listSize;
+      },
+      attrs,
+    };
+  }
+
+  function makeGridSliderControls({ project = false, interactive = false, sizes = ['compact', 'default', 'large'] } = {}) {
     const sliderListeners = [];
     const slider = {
       value: '2',
@@ -2868,7 +2885,7 @@ describe('asset grid size enhancement', () => {
         sliderListeners.filter((entry) => entry.type === type).forEach((entry) => entry.handler());
       },
     };
-    const labels = ['compact', 'default', 'large'].map((size) => ({
+    const labels = sizes.map((size) => ({
       tagName: interactive ? 'BUTTON' : 'SPAN',
       dataset: { gridSizeOptionLabel: size },
       attrs: {},
@@ -2921,6 +2938,93 @@ describe('asset grid size enhancement', () => {
     expect(controls.slider.attrs['aria-valuetext']).toBe('Default');
     expect(controls.labels.map((option) => option.classList.values.has('is-active')))
       .toEqual([false, true, false]);
+  });
+
+  it('uses an independent two-stop list preference with a Large default and list DOM state', () => {
+    const grid = makeGrid();
+    const list = makeList();
+    const gridControls = makeGridSliderControls();
+    const listControls = makeGridSliderControls({ sizes: ['compact', 'large'] });
+    const storage = new Map([['creatorcrate-asset-grid-size', 'compact']]);
+    const previousStorage = globalThis.localStorage;
+    globalThis.localStorage = {
+      getItem: (key) => storage.get(key) ?? null,
+      setItem: (key, value) => storage.set(key, value),
+    };
+    try {
+      const scope = {
+        querySelectorAll(selector) {
+          if (selector === '[data-asset-grid-size-controls]') return [gridControls.group];
+          if (selector === '[data-asset-list-size-controls]') return [listControls.group];
+          if (selector === '.asset-grid') return [grid];
+          if (selector === '.asset-list') return [list];
+          return [];
+        },
+      };
+
+      expect(enhanceAssetGridSize(scope)).toBe(1);
+      expect(enhanceAssetListSize(scope)).toBe(1);
+      expect(grid.attrs['data-grid-size']).toBe('compact');
+      expect(list.attrs['data-list-size']).toBe('large');
+      expect(listControls.labels).toHaveLength(2);
+      expect(listControls.slider.value).toBe('2');
+      expect(listControls.slider.attrs['aria-valuetext']).toBe('Large');
+      expect(listControls.labels.map((option) => option.classList.values.has('is-active')))
+        .toEqual([false, true]);
+
+      listControls.slider.value = '1';
+      listControls.slider.dispatch('input');
+      expect(storage.get('creatorcrate-asset-list-size')).toBe('compact');
+      expect(storage.get('creatorcrate-asset-grid-size')).toBe('compact');
+      expect(list.attrs['data-list-size']).toBe('compact');
+      expect(listControls.slider.attrs['aria-valuetext']).toBe('Compact');
+
+      listControls.slider.value = '2';
+      listControls.slider.dispatch('change');
+      expect(storage.get('creatorcrate-asset-list-size')).toBe('large');
+      expect(storage.get('creatorcrate-asset-grid-size')).toBe('compact');
+      expect(list.attrs['data-list-size']).toBe('large');
+    } finally {
+      if (previousStorage === undefined) delete globalThis.localStorage;
+      else globalThis.localStorage = previousStorage;
+    }
+  });
+
+  it('binds only Compact and Large interactive list labels', () => {
+    const list = makeList();
+    const controls = makeGridSliderControls({ interactive: true, sizes: ['compact', 'large'] });
+    const storage = new Map();
+    const previousStorage = globalThis.localStorage;
+    globalThis.localStorage = {
+      getItem: (key) => storage.get(key) ?? null,
+      setItem: (key, value) => storage.set(key, value),
+    };
+    try {
+      const scope = {
+        querySelectorAll(selector) {
+          if (selector === '[data-asset-list-size-controls]') return [controls.group];
+          if (selector === '.asset-list') return [list];
+          return [];
+        },
+      };
+
+      expect(enhanceAssetListSize(scope)).toBe(1);
+      expect(controls.labels).toHaveLength(2);
+      controls.labels[0].dispatch('click');
+      expect(storage.get('creatorcrate-asset-list-size')).toBe('compact');
+      expect(controls.slider.attrs['aria-valuenow']).toBe('1');
+      expect(controls.labels.map((option) => option.attrs['aria-pressed']))
+        .toEqual(['true', 'false']);
+
+      controls.labels[1].dispatch('click');
+      expect(storage.get('creatorcrate-asset-list-size')).toBe('large');
+      expect(controls.slider.attrs['aria-valuenow']).toBe('2');
+      expect(controls.labels.map((option) => option.attrs['aria-pressed']))
+        .toEqual(['false', 'true']);
+    } finally {
+      if (previousStorage === undefined) delete globalThis.localStorage;
+      else globalThis.localStorage = previousStorage;
+    }
   });
 
   it('applies finite compact/default/large values and persists the selection across page scopes', () => {

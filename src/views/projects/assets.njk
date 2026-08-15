@@ -53,7 +53,7 @@
   </div>
 {% endmacro %}
 
-{% macro releaseUsageInline(asset) %}
+{% macro releaseUsageInline(asset, showDetails=true) %}
   {% if asset.releaseSummary.mode == 'none' %}
     <span class="asset-indicator asset-icon-control asset-tooltip asset-indicator--unused" role="img" tabindex="0"
           aria-label="Not used by a release" data-tooltip="Not used by a release">U</span>
@@ -63,126 +63,53 @@
        aria-label="Used in release {{ usage.title }} ({{ usage.role | title }})"
        data-tooltip="Used in release">R</a>
   {% else %}
-    <details class="release-usage-details asset-usage-details">
-      <summary class="asset-indicator asset-icon-control asset-tooltip asset-indicator--used"
-                aria-label="Used in {{ asset.releaseSummary.count }} releases"
-                 data-tooltip="Used in multiple releases">R</summary>
-      <ul class="release-detail-list">
+    {% if showDetails %}
+      <details class="release-usage-details asset-usage-details">
+        <summary class="asset-indicator asset-icon-control asset-tooltip asset-indicator--used"
+                  aria-label="Used in {{ asset.releaseSummary.count }} releases"
+                   data-tooltip="Used in multiple releases">R</summary>
+        <ul class="release-detail-list">
+          {% for usage in asset.releaseSummary.releases %}
+            <li>
+              <a href="/releases/{{ usage.release_id }}">{{ usage.title }}</a>
+              <span class="release-role">{{ usage.role | title }}</span>
+            </li>
+          {% endfor %}
+        </ul>
+      </details>
+    {% else %}
+      <span class="asset-indicator asset-icon-control asset-tooltip asset-indicator--used" role="img" tabindex="0"
+            aria-label="Used in {{ asset.releaseSummary.count }} releases"
+            data-tooltip="Used in multiple releases">R</span>
+    {% endif %}
+  {% endif %}
+{% endmacro %}
+
+{% macro releaseMembership(asset) %}
+  {% if asset.releaseSummary.mode == 'multiple' %}
+    <details class="release-usage-details asset-usage-details asset-list-card-release-membership" data-asset-release-membership>
+      <summary class="asset-list-card-release-summary" aria-label="Used in {{ asset.releaseSummary.count }} releases">
+        Used in {{ asset.releaseSummary.count }} releases
+      </summary>
+      <ul class="release-detail-list asset-list-card-releases" aria-label="Associated releases">
         {% for usage in asset.releaseSummary.releases %}
           <li>
-            <a href="/releases/{{ usage.release_id }}">{{ usage.title }}</a>
+            <a class="asset-list-card-release-link" href="/releases/{{ usage.release_id }}">{{ usage.title }}</a>
             <span class="release-role">{{ usage.role | title }}</span>
           </li>
         {% endfor %}
       </ul>
     </details>
+  {% else %}
+    <ul class="asset-list-card-releases" aria-label="Associated releases" data-asset-release-membership>
+      {% for usage in asset.releaseSummary.releases %}
+        <li>
+          <a class="asset-list-card-release-link" href="/releases/{{ usage.release_id }}">{{ usage.title }}</a>
+          <span class="release-role">{{ usage.role | title }}</span>
+        </li>
+      {% endfor %}
+    </ul>
   {% endif %}
-{% endmacro %}
-
-{% macro assetRow(asset, isArchived, submittedSelectedAssetIds, project, context, contextFields, renameFailure, _csrf, autoRenameSurface, autoRenameInitialIndex, autoRenameTotal) %}
-  {% set renameAttempt = renameFailure and renameFailure.assetId == asset.id %}
-  <tr{% if not asset.is_present %} class="is-missing"{% endif %}{% if autoRenameSurface %}
-      data-auto-rename-asset
-      data-auto-rename-asset-id="{{ asset.id }}"
-      data-auto-rename-initial-index="{{ autoRenameInitialIndex }}"
-      draggable="true"
-      tabindex="0"
-      aria-grabbed="false"
-      aria-posinset="{{ autoRenameInitialIndex + 1 }}"
-      aria-setsize="{{ autoRenameTotal }}"
-      aria-label="Reorder {{ asset.filename }}"
-      aria-describedby="auto-rename-instructions"{% endif %}>
-    {% if not isArchived %}
-      <td class="asset-select-cell">
-        {% if asset.is_present %}
-          <input type="checkbox" form="bulk-select-form" name="selectedAssetIds" value="{{ asset.id }}"
-                 class="asset-select-checkbox"
-                 aria-label="Select {{ asset.filename }}"
-                 {% if (asset.id ~ '') in submittedSelectedAssetIds %}checked{% endif %}>
-        {% else %}
-          <input type="checkbox" disabled aria-label="{{ asset.filename }} is missing at last scan and cannot be selected">
-        {% endif %}
-      </td>
-    {% endif %}
-    {% if autoRenameSurface %}
-      <td class="asset-auto-rename-order-cell">
-        <span class="auto-rename-order-indicator" data-auto-rename-order-indicator>{{ autoRenameInitialIndex + 1 }} of {{ autoRenameTotal }}</span>
-      </td>
-    {% endif %}
-    <td class="asset-thumb-cell">
-      {% if asset.hasThumbnail %}
-        <a class="asset-thumb-link" href="{{ asset.viewerUrl }}" aria-label="View details for {{ asset.filename }}" data-project-assets-preview-id="{{ asset.id }}">
-          <span class="asset-thumb{% if asset.preview.kind == 'krita' %} asset-media--krita{% endif %}" data-preview-enhancement data-preview-state="loading">
-            <img class="asset-thumb-image{% if asset.nsfwBlur %} asset-image--nsfw-blurred{% endif %}"
-                 src="{{ asset.thumbnail_url }}"
-                 alt=""
-                 loading="lazy"
-                 decoding="async"
-                 {% if asset.preview.kind != 'krita' %}width="48" height="48"{% endif %}
-                 data-preview-image>
-            <span class="asset-thumb-fallback" data-preview-fallback hidden>{{ asset.typeLabel }}</span>
-          </span>
-        </a>
-      {% elif not asset.is_present %}
-        <span class="asset-thumb-missing" aria-hidden="true">—</span>
-      {% else %}
-        <span class="asset-thumb-type">{{ asset.typeLabel }}</span>
-      {% endif %}
-    </td>
-    <td class="asset-file-cell">
-      <a class="asset-file-link" href="{{ asset.viewerUrl }}">{{ asset.displayFilename }}</a>
-      {% if asset.locationLabel %}<br><small class="asset-location">{{ asset.locationLabel }}</small>{% endif %}
-    </td>
-    <td class="asset-category-cell">
-      {{ asset.categoryLabel }}
-      {% if asset.categoryDisabled %}<em class="asset-category-disabled-marker">(disabled)</em>{% endif %}
-    </td>
-    <td class="asset-tags-cell">
-      {% if asset.tags and asset.tags.length > 0 %}
-        <ul class="asset-tag-list" aria-label="Assigned tags">
-          {% for tag in asset.tags %}
-            <li>{{ tag.displayName }}</li>
-          {% endfor %}
-        </ul>
-      {% endif %}
-    </td>
-    <td><span class="asset-type-label">{{ asset.typeLabel }}</span></td>
-    <td>
-      {% if asset.is_present %}
-        <span class="asset-indicator asset-icon-control asset-tooltip asset-indicator--present" role="img" tabindex="0"
-              aria-label="{{ asset.presenceLabel }}" data-tooltip="{{ asset.presenceLabel }}">P</span>
-      {% else %}
-        <span class="asset-indicator asset-icon-control asset-tooltip asset-indicator--missing" role="img" tabindex="0"
-              aria-label="{{ asset.presenceLabel }}" data-tooltip="{{ asset.presenceLabel }}">!</span>
-      {% endif %}
-    </td>
-    <td class="asset-release-usage-cell">
-      {{ releaseUsageInline(asset) }}
-    </td>
-    <td class="asset-actions-cell">
-      <span class="row-actions">
-        <a class="asset-details-link asset-tooltip" href="{{ asset.viewerUrl }}"
-           aria-label="View details for {{ asset.filename }}" data-tooltip="View asset details">
-          {{ icons.icon('details') }}<span class="sr-only">View details</span>
-        </a>
-        {% if not isArchived and asset.is_present %}
-          <form method="post" action="/projects/{{ project.id }}/assets/{{ asset.id }}/rename" class="row-rename-form">
-            <input type="hidden" name="_csrf" value="{{ _csrf }}">
-            <input type="hidden" name="origin" value="assets">
-            {{ renderContextFields(context, contextFields, false) }}
-            <input type="text" name="filename" value="{% if renameAttempt %}{{ renameFailure.submittedFilename }}{% else %}{{ asset.displayFilename }}{% endif %}"
-                   class="row-rename-input" required maxlength="255"
-                   aria-label="New basename for {{ asset.filename }}" autocomplete="off">
-            {% if asset.extension %}<span class="asset-rename-extension" aria-hidden="true">.{{ asset.extension }}</span>{% endif %}
-            <button type="submit" class="button button-small">Rename</button>
-          </form>
-          {% if renameAttempt %}
-            <span class="asset-action-error" role="alert">{{ renameFailure.message }}</span>
-          {% endif %}
-        {% endif %}
-      </span>
-    </td>
-  </tr>
 {% endmacro %}
 
 {% macro assetCard(asset, isArchived, submittedSelectedAssetIds, project, context, contextFields, renameFailure, _csrf, autoRenameSurface, autoRenameInitialIndex, autoRenameTotal) %}
@@ -268,11 +195,21 @@
   </li>
 {% endmacro %}
 
-{% macro assetListCard(asset, isArchived, submittedSelectedAssetIds, project, context, contextFields, renameFailure, _csrf) %}
+{% macro assetListCard(asset, isArchived, submittedSelectedAssetIds, project, context, contextFields, renameFailure, _csrf, autoRenameSurface, autoRenameInitialIndex, autoRenameTotal) %}
   {% set renameAttempt = renameFailure and renameFailure.assetId == asset.id %}
   {% set selectionLabel = asset.relative_path or asset.filename %}
   {% set selected = not isArchived and asset.is_present and (asset.id ~ '') in submittedSelectedAssetIds %}
-  <li class="asset-list-item{% if not asset.is_present %} is-missing{% endif %}">
+  <li class="asset-list-item{% if not asset.is_present %} is-missing{% endif %}"{% if autoRenameSurface %}
+      data-auto-rename-asset
+      data-auto-rename-asset-id="{{ asset.id }}"
+      data-auto-rename-initial-index="{{ autoRenameInitialIndex }}"
+      draggable="true"
+      tabindex="0"
+      aria-grabbed="false"
+      aria-posinset="{{ autoRenameInitialIndex + 1 }}"
+      aria-setsize="{{ autoRenameTotal }}"
+      aria-label="Reorder {{ asset.filename }}"
+      aria-describedby="auto-rename-instructions"{% endif %}>
     {% call(slot) assetPresentation.listCard(asset, {
       cardClass: 'asset-list-card--project',
       selected: selected,
@@ -298,8 +235,21 @@
             </label>
           {% endif %}
         {% endif %}
+        {% if autoRenameSurface %}
+          <span class="auto-rename-order-indicator" data-auto-rename-order-indicator>{{ autoRenameInitialIndex + 1 }} of {{ autoRenameTotal }}</span>
+        {% endif %}
+      {% elif slot == 'status' %}
+        <span class="asset-list-card-release-usage">{{ releaseUsageInline(asset, false) }}</span>
       {% elif slot == 'associations' %}
         <div class="asset-list-card-associations">
+          {% if asset.releaseSummary and asset.releaseSummary.releases and asset.releaseSummary.releases.length > 0 %}
+            <section class="asset-list-card-association asset-list-card-association--releases">
+              <h3 class="asset-list-card-association-label">Release usage</h3>
+              <div class="asset-list-card-association-content">
+                {{ releaseMembership(asset) }}
+              </div>
+            </section>
+          {% endif %}
           <section class="asset-list-card-association asset-list-card-association--tags">
             <h3 class="asset-list-card-association-label">Tags</h3>
             <div class="asset-list-card-association-content">
@@ -312,12 +262,6 @@
               {% else %}
                 <span class="asset-list-card-empty">None assigned</span>
               {% endif %}
-            </div>
-          </section>
-          <section class="asset-list-card-association asset-list-card-association--releases">
-            <h3 class="asset-list-card-association-label">Release usage</h3>
-            <div class="asset-list-card-association-content">
-              {{ releaseUsageInline(asset) }}
             </div>
           </section>
         </div>
@@ -527,12 +471,16 @@
       {% endif %}
 
       <div class="asset-viewer-display-controls">
-        {% if filters.view == 'grid' %}
+        {% if filters.view == 'grid' or filters.view == 'list' %}
           {% set gridSizeLabelsInteractive = true %}
         {% endif %}
         {{ viewSwitcher.render(filters.view, pageUrl, "Asset display", true) }}
 
         {% if filters.view == 'grid' %}
+          {% set assetSizeControlMode = 'grid' %}
+          {% include "partials/asset-grid-size-control.njk" %}
+        {% elif filters.view == 'list' %}
+          {% set assetSizeControlMode = 'list' %}
           {% include "partials/asset-grid-size-control.njk" %}
         {% endif %}
 
@@ -866,36 +814,12 @@
              {{ assetCard(asset, isArchived, submittedSelectedAssetIds, project, context, contextFields, renameFailure, _csrf, autoRenameSurface, loop.index0, assets.length) }}
             {% endfor %}
           </ul>
-        {% elif not completeCategorySurface %}
-          <ul class="asset-list asset-list--project" role="list" aria-label="Project assets">
+        {% elif filters.view == 'list' %}
+          <ul class="asset-list asset-list--project" role="list" aria-label="Project assets" data-list-size="large">
             {% for asset in assets %}
-              {{ assetListCard(asset, isArchived, submittedSelectedAssetIds, project, context, contextFields, renameFailure, _csrf) }}
+              {{ assetListCard(asset, isArchived, submittedSelectedAssetIds, project, context, contextFields, renameFailure, _csrf, autoRenameSurface, loop.index0, assets.length) }}
             {% endfor %}
           </ul>
-        {% else %}
-          <div class="table-scroll" tabindex="0" aria-label="Project assets">
-            <table class="data-table asset-table">
-              <thead>
-                <tr>
-                   {% if not isArchived %}<th scope="col"><span class="sr-only">Select</span></th>{% endif %}
-                  {% if autoRenameSurface %}<th scope="col">Order</th>{% endif %}
-                  <th scope="col">Preview</th>
-                   <th scope="col">File</th>
-                   <th scope="col">Category</th>
-                   <th scope="col">Tags</th>
-                   <th scope="col">Type</th>
-                  <th scope="col">Presence</th>
-                  <th scope="col">Release usage</th>
-                  <th scope="col">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {% for asset in assets %}
-                   {{ assetRow(asset, isArchived, submittedSelectedAssetIds, project, context, contextFields, renameFailure, _csrf, autoRenameSurface, loop.index0, assets.length) }}
-                {% endfor %}
-              </tbody>
-            </table>
-          </div>
         {% endif %}
 
         {% if completeCategorySurface %}

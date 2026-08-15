@@ -142,9 +142,12 @@
           </h2>
           {% if asset.locationLabel %}<span class="asset-list-card-location asset-location" data-asset-containing-location>{{ asset.locationLabel }}</span>{% endif %}
         </div>
-        <span class="asset-list-card-presence">
-          {{ presenceIndicator(asset) }}
-        </span>
+        <div class="asset-list-card-status" role="group" aria-label="Asset status">
+          <span class="asset-list-card-presence">
+            {{ presenceIndicator(asset) }}
+          </span>
+          {% if caller %}{{ caller('status') }}{% endif %}
+        </div>
       </div>
 
       {% if hasCategory or hasType or hasSize or hasModified %}

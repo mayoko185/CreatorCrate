@@ -2691,6 +2691,15 @@
         flex: 1 1 20rem;
         min-width: 0;
       }
+      .asset-list-card-status {
+        display: flex;
+        flex: 0 0 auto;
+        align-items: center;
+        justify-content: flex-end;
+        flex-wrap: wrap;
+        gap: var(--space-xs);
+        min-width: 0;
+      }
       .asset-list-card-title {
         margin: 0;
         min-width: 0;
@@ -2721,9 +2730,10 @@
         flex: 0 1 auto;
         min-width: 0;
         max-width: 100%;
-        margin-left: auto;
-        text-align: right;
+        margin-left: 0;
+        text-align: left;
       }
+      .asset-list-card-release-usage { display: inline-flex; min-width: 0; }
       .asset-list-card-metadata {
         display: flex;
         flex-wrap: wrap;
@@ -3065,6 +3075,9 @@
           grid-column: 1;
           grid-row: 2;
         }
+        .asset-list-card--project .asset-list-card-status {
+          justify-content: flex-start;
+        }
         .asset-list-card--project .asset-list-card-presence {
           margin-left: 0;
           text-align: left;
@@ -3085,6 +3098,78 @@
         .asset-list-card--project .asset-list-card-rename-input {
           flex-basis: 100%;
           width: 100%;
+        }
+      }
+
+      /* Compact keeps the canonical card structure but gives the preview and
+         information hierarchy a deliberately tighter footprint. */
+      .asset-list--project[data-list-size="compact"] .asset-list-card {
+        grid-template-columns: clamp(4rem, 7%, 5rem) minmax(0, 1fr);
+        gap: var(--space-sm);
+        padding: var(--space-xs);
+      }
+      .asset-list--project[data-list-size="compact"] .asset-list-card-media {
+        align-self: start;
+        height: 5rem;
+        min-height: 5rem;
+      }
+      .asset-list--project[data-list-size="compact"] .asset-list-card-media-fallback,
+      .asset-list--project[data-list-size="compact"] .asset-list-card-media-placeholder {
+        min-height: 5rem;
+        padding: var(--space-xs);
+        font-size: 0.6875rem;
+      }
+      .asset-list--project[data-list-size="compact"] .asset-list-card-body {
+        gap: var(--space-xs);
+      }
+      .asset-list--project[data-list-size="compact"] .asset-list-card-header {
+        gap: var(--space-xs);
+      }
+      .asset-list--project[data-list-size="compact"] .asset-list-card-title {
+        font-size: 1rem;
+      }
+      .asset-list--project[data-list-size="compact"] .asset-list-card-location {
+        margin-top: 0;
+        font-size: 0.75rem;
+      }
+      .asset-list--project[data-list-size="compact"] .asset-list-card-metadata {
+        gap: var(--space-xs) var(--space-md);
+        padding-top: var(--space-xs);
+      }
+      .asset-list--project[data-list-size="compact"] .asset-list-card-meta {
+        flex-basis: 6rem;
+        gap: 2px;
+      }
+      .asset-list--project[data-list-size="compact"] .asset-list-card-meta dt,
+      .asset-list--project[data-list-size="compact"] .asset-list-card-association-label {
+        font-size: 0.6875rem;
+      }
+      .asset-list--project[data-list-size="compact"] .asset-list-card-meta dd {
+        font-size: 0.8125rem;
+      }
+      .asset-list--project[data-list-size="compact"] .asset-list-card-associations {
+        gap: var(--space-xs) var(--space-md);
+      }
+      .asset-list--project[data-list-size="compact"] .asset-list-card-association {
+        flex-basis: 12rem;
+        min-width: min(100%, 10rem);
+        padding-top: var(--space-xs);
+      }
+      .asset-list--project[data-list-size="compact"] .asset-list-card-tags li {
+        padding: 0.15rem 0.35rem;
+        font-size: 0.75rem;
+      }
+      .asset-list--project[data-list-size="compact"] .asset-list-card-actions {
+        gap: var(--space-xs) var(--space-sm);
+        padding-top: var(--space-xs);
+      }
+
+      @media (max-width: 767px) {
+        .asset-list--project[data-list-size="compact"] .asset-list-card {
+          grid-template-columns: minmax(0, 1fr);
+        }
+        .asset-list--project[data-list-size="compact"] .asset-list-card-media {
+          width: 5rem;
         }
       }
 

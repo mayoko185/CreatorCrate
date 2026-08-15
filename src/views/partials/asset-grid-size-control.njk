@@ -1,17 +1,35 @@
-<div class="asset-grid-size-controls asset-viewer-grid-size-controls" data-asset-grid-size-controls{% if gridSizeLabelsInteractive %} data-grid-size-labels-interactive{% endif %} role="group" aria-label="Grid size">
-  <input class="asset-grid-size-slider" data-grid-size-slider
-         type="range" min="1" max="3" step="1" value="2"
-         aria-label="Grid size"
-         aria-valuenow="2" aria-valuetext="Default">
-  <div class="asset-grid-size-option-labels"{% if not gridSizeLabelsInteractive %} aria-hidden="true"{% endif %}>
-    {% if gridSizeLabelsInteractive %}
-      <button class="asset-grid-size-option-label" type="button" data-grid-size-option-label="compact" aria-pressed="false" aria-label="Select Compact grid size">Compact</button>
-      <button class="asset-grid-size-option-label is-active" type="button" data-grid-size-option-label="default" aria-pressed="true" aria-label="Select Default grid size">Default</button>
-      <button class="asset-grid-size-option-label" type="button" data-grid-size-option-label="large" aria-pressed="false" aria-label="Select Large grid size">Large</button>
-    {% else %}
-      <span data-grid-size-option-label="compact">Compact</span>
-      <span data-grid-size-option-label="default" class="is-active">Default</span>
-      <span data-grid-size-option-label="large">Large</span>
-    {% endif %}
+{% if assetSizeControlMode == 'list' %}
+  <div class="asset-grid-size-controls asset-viewer-grid-size-controls" data-asset-list-size-controls{% if gridSizeLabelsInteractive %} data-grid-size-labels-interactive{% endif %} role="group" aria-label="List size">
+    <input class="asset-grid-size-slider" data-grid-size-slider
+           type="range" min="1" max="2" step="1" value="2"
+           aria-label="List size"
+           aria-valuenow="2" aria-valuetext="Large">
+    <div class="asset-grid-size-option-labels"{% if not gridSizeLabelsInteractive %} aria-hidden="true"{% endif %}>
+      {% if gridSizeLabelsInteractive %}
+        <button class="asset-grid-size-option-label" type="button" data-grid-size-option-label="compact" aria-pressed="false" aria-label="Select Compact list size">Compact</button>
+        <button class="asset-grid-size-option-label is-active" type="button" data-grid-size-option-label="large" aria-pressed="true" aria-label="Select Large list size">Large</button>
+      {% else %}
+        <span data-grid-size-option-label="compact">Compact</span>
+        <span data-grid-size-option-label="large" class="is-active">Large</span>
+      {% endif %}
+    </div>
   </div>
-</div>
+{% else %}
+  <div class="asset-grid-size-controls asset-viewer-grid-size-controls" data-asset-grid-size-controls{% if gridSizeLabelsInteractive %} data-grid-size-labels-interactive{% endif %} role="group" aria-label="Grid size">
+    <input class="asset-grid-size-slider" data-grid-size-slider
+           type="range" min="1" max="3" step="1" value="2"
+           aria-label="Grid size"
+           aria-valuenow="2" aria-valuetext="Default">
+    <div class="asset-grid-size-option-labels"{% if not gridSizeLabelsInteractive %} aria-hidden="true"{% endif %}>
+      {% if gridSizeLabelsInteractive %}
+        <button class="asset-grid-size-option-label" type="button" data-grid-size-option-label="compact" aria-pressed="false" aria-label="Select Compact grid size">Compact</button>
+        <button class="asset-grid-size-option-label is-active" type="button" data-grid-size-option-label="default" aria-pressed="true" aria-label="Select Default grid size">Default</button>
+        <button class="asset-grid-size-option-label" type="button" data-grid-size-option-label="large" aria-pressed="false" aria-label="Select Large grid size">Large</button>
+      {% else %}
+        <span data-grid-size-option-label="compact">Compact</span>
+        <span data-grid-size-option-label="default" class="is-active">Default</span>
+        <span data-grid-size-option-label="large">Large</span>
+      {% endif %}
+    </div>
+  </div>
+{% endif %}
