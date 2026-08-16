@@ -4088,22 +4088,6 @@
       }
       #project-asset-category-management-dialog .app-dialog-body {
         padding-bottom: var(--space-lg);
-        scrollbar-color: var(--border-strong) transparent;
-        scrollbar-width: thin;
-      }
-      #project-asset-category-management-dialog .app-dialog-body::-webkit-scrollbar {
-        width: 0.5rem;
-      }
-      #project-asset-category-management-dialog .app-dialog-body::-webkit-scrollbar-track {
-        background: transparent;
-      }
-      #project-asset-category-management-dialog .app-dialog-body::-webkit-scrollbar-thumb {
-        background: var(--border-strong);
-        border: 2px solid var(--surface-card);
-        border-radius: 999px;
-      }
-      #project-asset-category-management-dialog .app-dialog-body::-webkit-scrollbar-thumb:hover {
-        background: var(--muted);
       }
       #project-asset-category-management-dialog .asset-filter-multiselect-panel[data-cc-dropdown-overlay] {
         position: fixed;
@@ -4283,6 +4267,22 @@
         min-height: 0;
         margin-top: var(--space-lg);
         overflow-y: auto;
+        scrollbar-color: var(--border-strong) transparent;
+        scrollbar-width: thin;
+      }
+      .app-dialog-body::-webkit-scrollbar {
+        width: 0.5rem;
+      }
+      .app-dialog-body::-webkit-scrollbar-track {
+        background: transparent;
+      }
+      .app-dialog-body::-webkit-scrollbar-thumb {
+        background: var(--border-strong);
+        border: 2px solid var(--surface-card);
+        border-radius: 999px;
+      }
+      .app-dialog-body::-webkit-scrollbar-thumb:hover {
+        background: var(--muted);
       }
       .app-dialog-field { min-width: 0; }
       .app-dialog-field select { width: 100%; }

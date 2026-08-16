@@ -1028,22 +1028,22 @@ describe('Phase 10.5A: Shared page-level components', () => {
       expect(creatorCrateCss).toMatch(
         /#project-asset-category-management-dialog \.app-dialog-body > \*\s*\{\s*flex-shrink:\s*0;\s*\}/
       );
-      const managementBodyRule = creatorCrateCss.match(
-        /#project-asset-category-management-dialog \.app-dialog-body\s*\{([^}]*)\}/
+      const sharedDialogBodyRule = creatorCrateCss.match(
+        /(?:^|\n)\s*\.app-dialog-body\s*\{([^}]*)\}/
       )?.[1] || '';
-      expect(managementBodyRule).toMatch(/scrollbar-color:\s*var\(--border-strong\)\s+transparent/);
-      expect(managementBodyRule).toMatch(/scrollbar-width:\s*thin/);
+      expect(sharedDialogBodyRule).toMatch(/scrollbar-color:\s*var\(--border-strong\)\s+transparent/);
+      expect(sharedDialogBodyRule).toMatch(/scrollbar-width:\s*thin/);
       expect(creatorCrateCss).toMatch(
-        /#project-asset-category-management-dialog \.app-dialog-body::\-webkit-scrollbar\s*\{[^}]*width:\s*0\.5rem/
+        /\.app-dialog-body::\-webkit-scrollbar\s*\{[^}]*width:\s*0\.5rem/
       );
       expect(creatorCrateCss).toMatch(
-        /#project-asset-category-management-dialog \.app-dialog-body::\-webkit-scrollbar-thumb\s*\{[\s\S]*?background:\s*var\(--border-strong\)[\s\S]*?border:\s*2px solid var\(--surface-card\)[\s\S]*?border-radius:\s*999px/
+        /\.app-dialog-body::\-webkit-scrollbar-thumb\s*\{[\s\S]*?background:\s*var\(--border-strong\)[\s\S]*?border:\s*2px solid var\(--surface-card\)[\s\S]*?border-radius:\s*999px/
       );
       expect(creatorCrateCss).toMatch(
-        /#project-asset-category-management-dialog \.app-dialog-body::\-webkit-scrollbar-track\s*\{[^}]*background:\s*transparent/
+        /\.app-dialog-body::\-webkit-scrollbar-track\s*\{[^}]*background:\s*transparent/
       );
       expect(creatorCrateCss).toMatch(
-        /#project-asset-category-management-dialog \.app-dialog-body::\-webkit-scrollbar-thumb:hover\s*\{[^}]*background:\s*var\(--muted\)/
+        /\.app-dialog-body::\-webkit-scrollbar-thumb:hover\s*\{[^}]*background:\s*var\(--muted\)/
       );
       expect(creatorCrateCss).toMatch(
         /#project-asset-category-management-dialog \.asset-filter-multiselect-panel\[data-cc-dropdown-overlay\]\s*\{[^}]*position:\s*fixed/
