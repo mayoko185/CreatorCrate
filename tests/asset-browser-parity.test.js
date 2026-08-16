@@ -174,6 +174,22 @@ describe('asset-browser structural parity: releases vs projects', () => {
       }
     });
 
+    it('keeps one canonical project Grid structure across Compact, Default, and Large', () => {
+      const projectTemplate = fs.readFileSync(PROJECT_ASSETS_TEMPLATE_PATH, 'utf8');
+      const sharedTemplate = fs.readFileSync(ASSET_PRESENTATION_TEMPLATE_PATH, 'utf8');
+
+      expect((projectTemplate.match(/assetPresentation\.gridCard\(/g) || [])).toHaveLength(1);
+      expect((projectTemplate.match(/class="asset-grid"/g) || [])).toHaveLength(1);
+      expect(projectTemplate).toContain('projectLayout: true');
+      expect(projectTemplate).toContain('data-asset-rename-trigger');
+      expect(projectTemplate).not.toContain('cardNavigation');
+      expect((sharedTemplate.match(/\{% macro gridCard\(/g) || [])).toHaveLength(1);
+      expect(sharedTemplate).toContain('asset-card-primary-metadata');
+      expect(sharedTemplate).toContain('asset-card-associations-region');
+      expect(sharedTemplate).toContain('data-asset-title-row');
+      expect(sharedTemplate).not.toContain('data-asset-card-navigation');
+    });
+
     it('grid cards on both pages carry role="option" and aria-selected', async () => {
       const [proj, rel] = await Promise.all([
         agent.get(`/projects/${projectId}/assets`).expect(200),
@@ -236,8 +252,51 @@ describe('asset-browser structural parity: releases vs projects', () => {
       expect((projectTemplate.match(/assetPresentation\.listCard\(/g) || [])).toHaveLength(1);
       expect((projectTemplate.match(/data-list-size/g) || [])).toHaveLength(1);
       expect(projectTemplate).toContain('data-list-size="large"');
+      expect(projectTemplate).toContain('projectLayout: true');
+      expect(projectTemplate).toContain('headerStatusDetails: true');
+      expect(projectTemplate).toContain('titleControls: true');
+      expect(projectTemplate).toContain('filenameLink: false');
+      expect(projectTemplate).toContain('hideActions: true');
+      expect(projectTemplate).toContain('data-asset-rename-trigger');
+      expect(projectTemplate).toContain('data-auto-rename-asset');
+      expect(projectTemplate).not.toContain('cardNavigation');
       expect((sharedTemplate.match(/\{% macro listCard\(/g) || [])).toHaveLength(1);
+      expect(sharedTemplate).toContain('asset-list-card-primary-metadata');
+      expect(sharedTemplate).toContain('asset-list-card-associations-region');
+      expect(sharedTemplate).toContain('asset-card-title-controls');
+      expect(sharedTemplate).toContain('asset-list-card-title-actions');
+      expect(sharedTemplate).toContain('asset-list-card-title-control-row');
+      expect(sharedTemplate).toContain('data-asset-title-row');
+      expect(sharedTemplate).toContain('asset-list-card-status');
+      expect(sharedTemplate).not.toContain('data-asset-card-navigation');
+      expect(sharedTemplate).not.toContain('data-asset-card-link');
       expect(sharedTemplate).not.toContain('data-list-size');
+    });
+
+    it('keeps the project List header shared between Large and Compact without a second title row', () => {
+      const projectTemplate = fs.readFileSync(PROJECT_ASSETS_TEMPLATE_PATH, 'utf8');
+      const sharedTemplate = fs.readFileSync(ASSET_PRESENTATION_TEMPLATE_PATH, 'utf8');
+      const listTemplate = sharedTemplate.slice(sharedTemplate.indexOf('{% macro listCard'));
+
+      expect((projectTemplate.match(/assetPresentation\.listCard\(/g) || [])).toHaveLength(1);
+      expect((listTemplate.match(/data-asset-title-row/g) || [])).toHaveLength(1);
+      expect(listTemplate).toMatch(/asset-list-card-title-control-row[\s\S]*asset-list-card-title-actions[\s\S]*caller\('title-row'\)[\s\S]*asset-list-card-status[\s\S]*caller\('status'\)/);
+      expect(listTemplate).not.toContain('data-list-size="compact"');
+      expect(listTemplate).not.toContain('topStatus');
+    });
+
+    it('scopes the project hierarchy to project list cards', async () => {
+      const [proj, rel] = await Promise.all([
+        agent.get(`/projects/${projectId}/assets?view=list`).expect(200),
+        agent.get(`${releaseLocation}/assets?view=list`).expect(200),
+      ]);
+
+      expect(proj.text).toContain('asset-list-card-identity');
+      expect(proj.text).toContain('asset-list-card-primary-metadata');
+      expect(proj.text).toContain('asset-list-card-associations-region');
+      expect(rel.text).not.toContain('asset-list-card-identity');
+      expect(rel.text).not.toContain('asset-list-card-primary-metadata');
+      expect(rel.text).not.toContain('asset-list-card-associations-region');
     });
   });
 
@@ -385,8 +444,10 @@ describe('asset-browser structural parity: releases vs projects', () => {
         agent.get(`${releaseLocation}/assets`).expect(200),
       ]);
 
-      expect(proj.text).toContain('asset-card-category');
-      expect(rel.text).not.toContain('asset-card-category');
+      expect(proj.text).toContain('asset-card-primary-metadata');
+      expect(rel.text).not.toContain('asset-card-primary-metadata');
+      expect(proj.text).toContain('asset-card-associations-region');
+      expect(rel.text).not.toContain('asset-card-associations-region');
     });
 
     it('opts project preview links into the slideshow without changing release links', async () => {

@@ -103,28 +103,52 @@ export function enhancePreviewMedia(scope = globalThis.document) {
   return roots.length;
 }
 
-export function enhanceProjectCards(scope = globalThis.document) {
+function enhanceClickableCards(scope, {
+  cardSelector,
+  linkSelector,
+  interactiveSelector,
+  boundKey,
+  keyboardActivation = false,
+}) {
   if (!scope || typeof scope.querySelectorAll !== 'function') return 0;
 
-  const cards = scope.querySelectorAll(PROJECT_CARD_SELECTOR);
+  const cards = scope.querySelectorAll(cardSelector);
   cards.forEach((card) => {
-    if (isEnhancementBound(card, 'projectCardBound')) return;
+    if (isEnhancementBound(card, boundKey)) return;
 
-    const link = card.querySelector?.(PROJECT_CARD_LINK_SELECTOR);
+    const link = card.querySelector?.(linkSelector);
     if (!link || typeof link.click !== 'function') return;
 
-    markEnhancementBound(card, 'projectCardBound');
+    markEnhancementBound(card, boundKey);
     card.addEventListener('click', (event) => {
       if (event.defaultPrevented || event.button !== 0
         || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
 
-      const interactive = event.target?.closest?.(PROJECT_CARD_INTERACTIVE_SELECTOR);
-      if (interactive && (typeof card.contains !== 'function' || card.contains(interactive))) return;
+      const interactive = event.target?.closest?.(interactiveSelector);
+      if (interactive && interactive !== card
+        && (typeof card.contains !== 'function' || card.contains(interactive))) return;
 
       link.click();
     });
+    if (keyboardActivation) {
+      card.addEventListener('keydown', (event) => {
+        if (event.target !== card || !['Enter', ' '].includes(event.key)
+          || card.closest?.('[data-auto-rename-asset]')) return;
+        event.preventDefault();
+        link.click();
+      });
+    }
   });
   return cards.length;
+}
+
+export function enhanceProjectCards(scope = globalThis.document) {
+  return enhanceClickableCards(scope, {
+    cardSelector: PROJECT_CARD_SELECTOR,
+    linkSelector: PROJECT_CARD_LINK_SELECTOR,
+    interactiveSelector: PROJECT_CARD_INTERACTIVE_SELECTOR,
+    boundKey: 'projectCardBound',
+  });
 }
 
 export function enhanceAutoSubmit(scope = globalThis.document) {
@@ -3050,7 +3074,11 @@ export function enhanceConfirmations(scope = globalThis.document) {
 const ASSET_SELECTION_FORM_SELECTOR = '[data-asset-selection-form]';
 const ASSET_SELECTION_CHECKBOX_SELECTOR = 'input[type="checkbox"][name="selectedAssetIds"]:not(:disabled)';
 const ASSET_CARD_SELECTOR = '[data-asset-selectable-card]';
-const ASSET_CARD_INTERACTIVE_SELECTOR = 'a, button, input, select, textarea, form, label, summary, details, .asset-tooltip, .asset-icon-control';
+const ASSET_CARD_INTERACTIVE_SELECTOR = [
+  PROJECT_CARD_INTERACTIVE_SELECTOR,
+  '.asset-tooltip',
+  '.asset-icon-control',
+].join(', ');
 const ASSET_RENAME_TRIGGER_SELECTOR = '[data-asset-rename-trigger]';
 const ASSET_RENAME_EDITOR_SELECTOR = '[data-asset-rename-editor]';
 const ASSET_GRID_SIZE_CONTROL_SELECTOR = '[data-asset-grid-size-controls]';
@@ -3312,7 +3340,7 @@ export function enhanceAssetSelection(scope = globalThis.document) {
     card.dataset.assetSelectionBound = 'true';
     const toggle = (event) => {
       const interactive = event.target?.closest?.(ASSET_CARD_INTERACTIVE_SELECTOR);
-      if (interactive && card.contains?.(interactive)) return;
+      if (interactive && interactive !== card && card.contains?.(interactive)) return;
       checkbox.checked = !checkbox.checked;
       updateAssetCardState(card, checkbox.checked);
       const form = checkbox.form;

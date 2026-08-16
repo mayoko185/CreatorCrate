@@ -23,6 +23,26 @@
   {% endfor %}
 {% endmacro %}
 
+{% macro renderAssetRenameEditor(project, asset, context, contextFields, renameAttempt, renameFailure, csrfToken) %}
+  <form method="post" action="/projects/{{ project.id }}/assets/{{ asset.id }}/rename"
+        class="asset-card-rename-editor" data-asset-rename-editor{% if not renameAttempt %} hidden inert{% endif %}>
+    <input type="hidden" name="_csrf" value="{{ csrfToken }}"{% if not renameAttempt %} disabled{% endif %}>
+    <input type="hidden" name="origin" value="assets"{% if not renameAttempt %} disabled{% endif %}>
+    {{ renderContextFields(context, contextFields, not renameAttempt) }}
+    <span class="asset-card-rename-field{% if asset.extension %} has-extension{% endif %}">
+      <input type="text" name="filename" value="{% if renameAttempt %}{{ renameFailure.submittedFilename }}{% else %}{{ asset.displayFilename }}{% endif %}"
+             class="asset-card-rename-input" data-asset-rename-input required maxlength="255"
+             aria-label="New basename for {{ asset.filename }}" autocomplete="off"{% if not renameAttempt %} disabled{% endif %}>
+      {% if asset.extension %}<span class="asset-rename-extension" aria-hidden="true">.{{ asset.extension }}</span>{% endif %}
+    </span>
+    <button type="submit" class="button button-small" data-asset-rename-confirm{% if not renameAttempt %} disabled{% endif %}>Confirm</button>
+    <button type="button" class="button button-small button-secondary" data-asset-rename-cancel{% if not renameAttempt %} disabled{% endif %}>Cancel</button>
+  </form>
+  {% if renameAttempt %}
+    <span class="asset-action-error" role="alert">{{ renameFailure.message }}</span>
+  {% endif %}
+{% endmacro %}
+
 {% macro renderAssetSelectionControls(projectId, csrfToken, assetTotal, currentView, autoRenameCategory, showSelectionTools) %}
   <div class="asset-selection-controls-area">
     <div class="asset-selection-buttons-row">
@@ -127,10 +147,12 @@
       aria-label="Reorder {{ asset.filename }}"
       aria-describedby="auto-rename-instructions"{% endif %}>
     {% call(slot) assetPresentation.gridCard(asset, {
+      projectLayout: true,
       selected: selected,
       selectable: not isArchived and asset.is_present,
       selectableTabIndex: not autoRenameSurface,
       titleRowHidden: renameAttempt,
+      filenameLink: false,
       nsfwBlur: asset.nsfwBlur,
       categoryLabel: asset.categoryLabel,
       previewSlideshowAssetId: asset.id
@@ -164,32 +186,33 @@
         {% endif %}
       {% elif slot == 'title-controls' %}
         {% if not isArchived and asset.is_present %}
-          <form method="post" action="/projects/{{ project.id }}/assets/{{ asset.id }}/rename"
-                class="asset-card-rename-editor" data-asset-rename-editor{% if not renameAttempt %} hidden inert{% endif %}>
-            <input type="hidden" name="_csrf" value="{{ _csrf }}"{% if not renameAttempt %} disabled{% endif %}>
-            <input type="hidden" name="origin" value="assets"{% if not renameAttempt %} disabled{% endif %}>
-            {{ renderContextFields(context, contextFields, not renameAttempt) }}
-            <span class="asset-card-rename-field{% if asset.extension %} has-extension{% endif %}">
-              <input type="text" name="filename" value="{% if renameAttempt %}{{ renameFailure.submittedFilename }}{% else %}{{ asset.displayFilename }}{% endif %}"
-                     class="asset-card-rename-input" data-asset-rename-input required maxlength="255"
-                     aria-label="New basename for {{ asset.filename }}" autocomplete="off"{% if not renameAttempt %} disabled{% endif %}>
-              {% if asset.extension %}<span class="asset-rename-extension" aria-hidden="true">.{{ asset.extension }}</span>{% endif %}
-            </span>
-            <button type="submit" class="button button-small" data-asset-rename-confirm{% if not renameAttempt %} disabled{% endif %}>Confirm</button>
-            <button type="button" class="button button-small button-secondary" data-asset-rename-cancel{% if not renameAttempt %} disabled{% endif %}>Cancel</button>
-          </form>
-          {% if renameAttempt %}
-            <span class="asset-action-error" role="alert">{{ renameFailure.message }}</span>
+          {{ renderAssetRenameEditor(project, asset, context, contextFields, renameAttempt, renameFailure, _csrf) }}
+        {% endif %}
+      {% elif slot == 'associations' %}
+        <div class="asset-card-associations{% if not (asset.releaseSummary and asset.releaseSummary.releases and asset.releaseSummary.releases.length > 0) %} asset-card-associations--tags-only{% endif %}">
+          {% if asset.releaseSummary and asset.releaseSummary.releases and asset.releaseSummary.releases.length > 0 %}
+            <section class="asset-card-association asset-card-association--releases">
+              <h4 class="asset-card-association-label">Releases</h4>
+              <div class="asset-card-association-content">
+                {{ releaseMembership(asset) }}
+              </div>
+            </section>
           {% endif %}
-        {% endif %}
-      {% elif slot == 'body' %}
-        {% if asset.tags and asset.tags.length > 0 %}
-          <ul class="asset-card-tags" aria-label="Assigned tags">
-            {% for tag in asset.tags %}
-              <li>{{ tag.displayName }}</li>
-            {% endfor %}
-          </ul>
-        {% endif %}
+          <section class="asset-card-association asset-card-association--tags">
+            <h4 class="asset-card-association-label">Tags</h4>
+            <div class="asset-card-association-content">
+              {% if asset.tags and asset.tags.length > 0 %}
+                <ul class="asset-card-tags" aria-label="Assigned tags">
+                  {% for tag in asset.tags %}
+                    <li>{{ tag.displayName }}</li>
+                  {% endfor %}
+                </ul>
+              {% else %}
+                <span class="asset-card-empty">None assigned</span>
+              {% endif %}
+            </div>
+          </section>
+        </div>
       {% endif %}
     {% endcall %}
   </li>
@@ -212,6 +235,12 @@
       aria-describedby="auto-rename-instructions"{% endif %}>
     {% call(slot) assetPresentation.listCard(asset, {
       cardClass: 'asset-list-card--project',
+      projectLayout: true,
+      headerStatusDetails: true,
+      titleControls: true,
+      filenameLink: false,
+      titleRowHidden: renameAttempt,
+      hideActions: true,
       selected: selected,
       selectable: not isArchived and asset.is_present,
       mediaContextLabel: project.title,
@@ -240,11 +269,20 @@
         {% endif %}
       {% elif slot == 'status' %}
         <span class="asset-list-card-release-usage">{{ releaseUsageInline(asset, false) }}</span>
+      {% elif slot == 'title-row' %}
+        {% if not isArchived and asset.is_present %}
+          <a class="button button-small asset-rename-trigger" data-asset-rename-trigger
+             href="{{ asset.viewerUrl }}" aria-label="Rename {{ asset.filename }}">Rename</a>
+        {% endif %}
+      {% elif slot == 'title-controls' %}
+        {% if not isArchived and asset.is_present %}
+          {{ renderAssetRenameEditor(project, asset, context, contextFields, renameAttempt, renameFailure, _csrf) }}
+        {% endif %}
       {% elif slot == 'associations' %}
         <div class="asset-list-card-associations">
           {% if asset.releaseSummary and asset.releaseSummary.releases and asset.releaseSummary.releases.length > 0 %}
             <section class="asset-list-card-association asset-list-card-association--releases">
-              <h3 class="asset-list-card-association-label">Release usage</h3>
+               <h3 class="asset-list-card-association-label">Releases</h3>
               <div class="asset-list-card-association-content">
                 {{ releaseMembership(asset) }}
               </div>
@@ -265,22 +303,6 @@
             </div>
           </section>
         </div>
-      {% elif slot == 'actions' %}
-        {% if not isArchived and asset.is_present %}
-          <form method="post" action="/projects/{{ project.id }}/assets/{{ asset.id }}/rename" class="row-rename-form asset-list-card-rename-form">
-            <input type="hidden" name="_csrf" value="{{ _csrf }}">
-            <input type="hidden" name="origin" value="assets">
-            {{ renderContextFields(context, contextFields, false) }}
-            <input type="text" name="filename" value="{% if renameAttempt %}{{ renameFailure.submittedFilename }}{% else %}{{ asset.displayFilename }}{% endif %}"
-                   class="row-rename-input asset-list-card-rename-input" required maxlength="255"
-                   aria-label="New basename for {{ asset.filename }}" autocomplete="off">
-            {% if asset.extension %}<span class="asset-rename-extension" aria-hidden="true">.{{ asset.extension }}</span>{% endif %}
-            <button type="submit" class="button button-small">Rename</button>
-          </form>
-          {% if renameAttempt %}
-            <span class="asset-action-error" role="alert">{{ renameFailure.message }}</span>
-          {% endif %}
-        {% endif %}
       {% endif %}
     {% endcall %}
   </li>

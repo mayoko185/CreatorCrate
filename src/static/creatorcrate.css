@@ -1898,6 +1898,13 @@
         width: 100%;
         min-width: 0;
       }
+      .asset-list-card-title-actions {
+        display: flex;
+        flex: 0 0 auto;
+        align-items: center;
+        gap: var(--space-xs);
+        min-width: 0;
+      }
       .asset-card-title-text { flex: 1 1 auto; }
       .asset-rename-trigger { cursor: pointer; }
       @container (max-width: 20rem) {
@@ -1905,6 +1912,7 @@
         .asset-card-rename-field { flex-basis: 100%; }
       }
       .asset-card[data-asset-selectable-card] { cursor: pointer; }
+      .asset-card[data-asset-card-navigation] { cursor: pointer; }
       .asset-card-title-text {
         font-weight: 600;
         color: var(--text);
@@ -1922,6 +1930,202 @@
         word-break: break-word;
         font-size: 0.8125rem;
         color: var(--muted);
+      }
+
+      /* ── Project asset Grid cards: identity, facts, associations ── */
+      .asset-card--project .asset-card-body {
+        gap: var(--space-md);
+      }
+      .asset-card--project .asset-card-identity,
+      .asset-card--project .asset-card-primary-metadata,
+      .asset-card--project .asset-card-associations-region {
+        width: 100%;
+        min-width: 0;
+      }
+      .asset-card--project .asset-card-identity {
+        display: flex;
+        flex-direction: column;
+        gap: var(--space-xs);
+      }
+      .asset-card--project .asset-card-primary-metadata {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        grid-template-areas:
+          "category type"
+          "size modified";
+        gap: var(--space-sm) var(--space-lg);
+        margin: 0;
+        padding: var(--space-md);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        background: var(--surface-card);
+      }
+      .asset-card--project .asset-card-fact {
+        display: grid;
+        grid-template-rows: auto auto;
+        align-content: start;
+        gap: var(--space-xs);
+        min-width: 0;
+      }
+      .asset-card--project .asset-card-fact--category { grid-area: category; }
+      .asset-card--project .asset-card-fact--type { grid-area: type; }
+      .asset-card--project .asset-card-fact--size { grid-area: size; }
+      .asset-card--project .asset-card-fact--modified { grid-area: modified; }
+      .asset-card--project .asset-card-fact dt,
+      .asset-card--project .asset-card-association-label {
+        margin: 0;
+        color: var(--muted);
+        font-size: 0.6875rem;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+      .asset-card--project .asset-card-fact dd {
+        min-width: 0;
+        margin: 0;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+        font-variant-numeric: tabular-nums;
+      }
+      .asset-card--project .asset-card-associations-region {
+        display: grid;
+        align-content: start;
+        gap: var(--space-sm);
+        padding: var(--space-md);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        background: var(--surface-card);
+      }
+      .asset-card--project .asset-card-associations-heading {
+        margin: 0;
+        color: var(--muted);
+        font-size: 0.75rem;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+      .asset-card--project .asset-card-associations {
+        display: grid;
+        grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.15fr);
+        gap: var(--space-md) var(--space-lg);
+        min-width: 0;
+      }
+      .asset-card--project .asset-card-associations--tags-only {
+        grid-template-columns: minmax(0, 1fr);
+      }
+      .asset-card--project .asset-card-association {
+        display: block;
+        min-width: 0;
+      }
+      .asset-card--project .asset-card-association-content,
+      .asset-card--project .asset-card-association-content .release-usage-details,
+      .asset-card--project .asset-card-association-content .release-detail-list,
+      .asset-card--project .asset-card-association-content .release-detail-list li,
+      .asset-card--project .asset-card-association-content .release-detail-list a {
+        min-width: 0;
+        max-width: 100%;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+      }
+      .asset-card--project .asset-card-association-content .release-usage-details {
+        display: block;
+      }
+      .asset-card--project .asset-card-association-content .asset-list-card-releases {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        gap: var(--space-xs) var(--space-sm);
+        list-style: none;
+        margin: 0;
+        padding: 0;
+      }
+      .asset-card--project .asset-card-association-content .release-usage-details .asset-list-card-releases {
+        flex-direction: column;
+        align-items: stretch;
+      }
+      .asset-card--project .asset-card-association-content .asset-list-card-releases li {
+        min-width: 0;
+        max-width: 100%;
+      }
+      .asset-card--project .asset-card-association-content .asset-list-card-release-link {
+        color: var(--link);
+        text-decoration: none;
+      }
+      .asset-card--project .asset-card-association-content .asset-list-card-release-link:hover,
+      .asset-card--project .asset-card-association-content .asset-list-card-release-link:focus-visible {
+        color: var(--accent-2);
+      }
+      .asset-card--project .asset-card-tags {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--space-xs);
+        list-style: none;
+        min-width: 0;
+        margin: 0;
+        padding: 0;
+      }
+      .asset-card--project .asset-card-tags li {
+        display: inline-flex;
+        align-items: center;
+        max-width: 100%;
+        padding: 0.2rem 0.45rem;
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+        background: var(--surface);
+        font-size: 0.75rem;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+      }
+      .asset-card--project .asset-card-empty {
+        color: var(--muted);
+        font-size: 0.8125rem;
+      }
+      .asset-grid[data-grid-size="large"] .asset-card--project .asset-card-body {
+        gap: var(--space-lg);
+        padding: var(--space-lg);
+      }
+      .asset-grid[data-grid-size="large"] .asset-card--project .asset-card-primary-metadata,
+      .asset-grid[data-grid-size="large"] .asset-card--project .asset-card-associations-region {
+        padding: var(--space-lg);
+      }
+      .asset-grid[data-grid-size="large"] .asset-card--project .asset-card-associations {
+        gap: var(--space-lg) var(--space-xl);
+      }
+      .asset-grid[data-grid-size="compact"] .asset-card--project .asset-card-body {
+        gap: var(--space-sm);
+        padding: var(--space-sm);
+      }
+      .asset-grid[data-grid-size="compact"] .asset-card--project .asset-card-primary-metadata {
+        gap: var(--space-xs) var(--space-sm);
+        padding: var(--space-sm);
+      }
+      .asset-grid[data-grid-size="compact"] .asset-card--project .asset-card-associations-region {
+        gap: var(--space-xs);
+        padding: var(--space-sm);
+      }
+      .asset-grid[data-grid-size="compact"] .asset-card--project .asset-card-associations {
+        grid-template-columns: minmax(0, 1fr);
+        gap: var(--space-xs);
+      }
+      .asset-grid[data-grid-size="compact"] .asset-card--project .asset-card-fact {
+        gap: 2px;
+      }
+      .asset-grid[data-grid-size="compact"] .asset-card--project .asset-card-fact dt,
+      .asset-grid[data-grid-size="compact"] .asset-card--project .asset-card-association-label {
+        font-size: 0.625rem;
+      }
+      .asset-grid[data-grid-size="compact"] .asset-card--project .asset-card-fact dd {
+        font-size: 0.8125rem;
+      }
+      .asset-grid[data-grid-size="compact"] .asset-card--project .asset-card-tags li {
+        padding: 0.15rem 0.35rem;
+        font-size: 0.75rem;
+      }
+      @media (max-width: 540px) {
+        .asset-card--project .asset-card-primary-metadata,
+        .asset-card--project .asset-card-associations {
+          grid-template-columns: minmax(0, 1fr);
+        }
       }
       .asset-grid-size-controls {
         display: inline-flex;
@@ -1965,6 +2169,11 @@
         gap: var(--space-xs);
         min-width: min(100%, 11rem);
         max-width: 11rem;
+      }
+      .asset-viewer-grid-size-controls.asset-list-size-controls {
+        flex-basis: 8rem;
+        min-width: min(100%, 8rem);
+        max-width: 8rem;
       }
       .asset-grid-size-slider {
         width: 100%;
@@ -2881,6 +3090,11 @@
           min-width: 0;
           max-width: none;
         }
+        .asset-viewer-grid-size-controls.asset-list-size-controls {
+          flex-basis: 100%;
+          min-width: 0;
+          max-width: none;
+        }
         .asset-viewer-filter-field {
           flex-basis: 100%;
           max-width: none;
@@ -3002,13 +3216,25 @@
       .asset-list-card--project[data-asset-selectable-card] {
         cursor: pointer;
       }
+      .asset-list-card--project[data-asset-card-navigation] {
+        cursor: pointer;
+      }
       .asset-list-card--project .asset-list-card-top {
         position: absolute;
         inset-block-start: var(--space-sm);
-        inset-inline-start: var(--space-sm);
-        z-index: 1;
+        inset-inline: var(--space-sm);
+        z-index: 2;
         display: flex;
         align-items: flex-start;
+        justify-content: space-between;
+        gap: var(--space-sm);
+        min-width: 0;
+        pointer-events: none;
+      }
+      .asset-list-card--project .asset-list-card-top-selection {
+        display: flex;
+        align-items: center;
+        gap: var(--space-xs);
         min-width: 0;
         pointer-events: none;
       }
@@ -3016,40 +3242,141 @@
         pointer-events: auto;
       }
       .asset-list-card--project .asset-list-card-body {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-areas:
+          "identity"
+          "metadata"
+          "associations";
+        align-content: start;
+        gap: var(--space-md);
         min-width: 0;
       }
-      .asset-list-card--project .asset-list-card-actions {
+      .asset-list-card--project .asset-list-card-identity {
+        grid-area: identity;
+        min-width: 0;
+      }
+      .asset-list-card--project .asset-list-card-header {
+        column-gap: var(--space-md);
+      }
+      .asset-list-card--project .asset-list-card-heading {
+        flex: 1 1 auto;
+      }
+      .asset-list-card--project .asset-list-card-status {
+        flex: 0 0 auto;
+        align-items: center;
+        max-width: 100%;
+        margin-inline-start: auto;
+        flex-wrap: nowrap;
+      }
+      .asset-list-card--project .asset-card-title-controls {
+        min-width: 0;
+      }
+      .asset-list-card--project .asset-card-title-row {
+        align-items: center;
+      }
+      .asset-list-card--project .asset-list-card-title-control-row {
         display: flex;
-        align-items: flex-start;
-        flex-wrap: wrap;
-        gap: var(--space-sm) var(--space-md);
+        align-items: center;
+        gap: var(--space-md);
+        width: 100%;
         min-width: 0;
         max-width: 100%;
-        padding-top: var(--space-sm);
-        border-top: 1px solid var(--border);
       }
-      .asset-list-card--project .asset-list-card-actions .asset-details-link {
+      .asset-list-card--project .asset-card-title-row {
+        flex: 1 1 auto;
+        min-width: 0;
+      }
+      .asset-list-card--project .asset-card-title-row .asset-rename-trigger {
+        flex: 0 0 auto;
+        height: 1.75rem;
+        min-height: 1.75rem;
+        line-height: 1;
+      }
+      .asset-list-card--project .asset-list-card-status .asset-indicator,
+      .asset-list-card--project .asset-list-card-status .asset-details-link {
+        flex: 0 0 1.75rem;
+        width: 1.75rem;
+        height: 1.75rem;
+        min-height: 1.75rem;
+        line-height: 1;
+      }
+      .asset-list-card--project .asset-list-card-status > .asset-list-card-presence,
+      .asset-list-card--project .asset-list-card-status > .asset-list-card-release-usage {
+        display: flex;
+        flex: 0 0 1.75rem;
+        align-items: center;
+        justify-content: center;
+        width: 1.75rem;
+        height: 1.75rem;
+        min-height: 1.75rem;
+        line-height: 1;
+      }
+      .asset-list-card--project .asset-card-title-row .asset-list-card-title {
+        flex: 1 1 auto;
+        min-width: 0;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+      }
+      .asset-list-card--project .asset-rename-trigger {
         flex: 0 0 auto;
       }
-      .asset-list-card--project .asset-list-card-rename-form {
-        display: flex;
-        flex: 1 1 18rem;
-        align-items: center;
-        flex-wrap: wrap;
+      .asset-list-card--project .asset-list-card-primary-metadata {
+        display: grid;
+        grid-area: metadata;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        grid-template-areas:
+          "category type"
+          "size modified";
+        gap: var(--space-sm) var(--space-lg);
+        min-width: 0;
+        margin: 0;
+        padding: var(--space-md);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        background: var(--surface);
+      }
+      .asset-list-card--project .asset-list-card-primary-metadata .asset-list-card-meta {
+        display: grid;
+        grid-template-rows: auto auto;
+        align-content: start;
+        gap: var(--space-xs);
+        min-width: 0;
+      }
+      .asset-list-card--project .asset-list-card-primary-metadata .asset-list-card-meta--category { grid-area: category; }
+      .asset-list-card--project .asset-list-card-primary-metadata .asset-list-card-meta--type { grid-area: type; }
+      .asset-list-card--project .asset-list-card-primary-metadata .asset-list-card-meta--size { grid-area: size; }
+      .asset-list-card--project .asset-list-card-primary-metadata .asset-list-card-meta--modified { grid-area: modified; }
+      .asset-list-card--project .asset-list-card-associations-region {
+        display: grid;
+        grid-area: associations;
+        align-content: start;
         gap: var(--space-sm);
         min-width: 0;
-        max-width: 100%;
-        margin-top: 0;
+        padding: var(--space-md);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        background: var(--surface);
       }
-      .asset-list-card--project .asset-list-card-rename-input {
-        flex: 1 1 10rem;
-        width: auto;
+      .asset-list-card--project .asset-list-card-associations-heading {
+        margin: 0;
+        color: var(--muted);
+        font-size: 0.75rem;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+      .asset-list-card--project .asset-list-card-associations {
+        display: grid;
+        grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.15fr);
+        gap: var(--space-md) var(--space-lg);
         min-width: 0;
-        max-width: 100%;
       }
-      .asset-list-card--project .asset-list-card-rename-form .asset-rename-extension,
-      .asset-list-card--project .asset-list-card-rename-form .button {
-        flex: 0 0 auto;
+      .asset-list-card--project .asset-list-card-association {
+        display: block;
+        min-width: 0;
+        padding: 0;
+        border: 0;
       }
       .asset-list-card--project .asset-action-error {
         flex: 1 1 100%;
@@ -3075,55 +3402,56 @@
           grid-column: 1;
           grid-row: 2;
         }
-        .asset-list-card--project .asset-list-card-status {
-          justify-content: flex-start;
+        .asset-list-card--project .asset-list-card-primary-metadata {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
         }
-        .asset-list-card--project .asset-list-card-presence {
-          margin-left: 0;
-          text-align: left;
-        }
-        .asset-list-card--project .asset-list-card-actions {
-          align-items: stretch;
-        }
-        .asset-list-card--project .asset-list-card-actions .asset-details-link {
-          align-self: flex-start;
-        }
-        .asset-list-card--project .asset-list-card-rename-form {
-          flex-basis: 100%;
-          width: 100%;
+        .asset-list-card--project .asset-list-card-associations {
+          grid-template-columns: minmax(0, 1fr);
         }
       }
 
-      @media (max-width: 540px) {
-        .asset-list-card--project .asset-list-card-rename-input {
-          flex-basis: 100%;
-          width: 100%;
-        }
-      }
-
-      /* Compact keeps the canonical card structure but gives the preview and
-         information hierarchy a deliberately tighter footprint. */
+      /* Compact keeps the canonical card structure while tightening facts and
+         associations without constraining preview images to a fixed frame. */
       .asset-list--project[data-list-size="compact"] .asset-list-card {
         grid-template-columns: clamp(4rem, 7%, 5rem) minmax(0, 1fr);
         gap: var(--space-sm);
         padding: var(--space-xs);
       }
       .asset-list--project[data-list-size="compact"] .asset-list-card-media {
-        align-self: start;
-        height: 5rem;
-        min-height: 5rem;
+        width: 100%;
+        max-width: 5rem;
+        height: auto;
+        min-height: 0;
+        margin-block-start: calc(var(--space-2xl) + var(--space-sm));
+      }
+      .asset-list--project[data-list-size="compact"] .asset-list-card-media-link {
+        display: block;
+        width: 100%;
+        height: auto;
+      }
+      .asset-list--project[data-list-size="compact"] .asset-list-card-media-image {
+        width: 100%;
+        max-width: 100%;
+        height: auto;
+        object-fit: initial;
       }
       .asset-list--project[data-list-size="compact"] .asset-list-card-media-fallback,
       .asset-list--project[data-list-size="compact"] .asset-list-card-media-placeholder {
+        height: auto;
         min-height: 5rem;
         padding: var(--space-xs);
         font-size: 0.6875rem;
       }
       .asset-list--project[data-list-size="compact"] .asset-list-card-body {
-        gap: var(--space-xs);
+        grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.05fr);
+        grid-template-areas:
+          "identity identity"
+          "metadata associations";
+        gap: var(--space-xs) var(--space-sm);
       }
       .asset-list--project[data-list-size="compact"] .asset-list-card-header {
-        gap: var(--space-xs);
+        row-gap: var(--space-sm);
+        column-gap: var(--space-md);
       }
       .asset-list--project[data-list-size="compact"] .asset-list-card-title {
         font-size: 1rem;
@@ -3133,8 +3461,13 @@
         font-size: 0.75rem;
       }
       .asset-list--project[data-list-size="compact"] .asset-list-card-metadata {
-        gap: var(--space-xs) var(--space-md);
-        padding-top: var(--space-xs);
+        gap: var(--space-xs) var(--space-sm);
+      }
+      .asset-list--project[data-list-size="compact"] .asset-list-card-primary-metadata {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        grid-template-areas: "category type size modified";
+        gap: var(--space-xs) var(--space-sm);
+        padding: var(--space-sm);
       }
       .asset-list--project[data-list-size="compact"] .asset-list-card-meta {
         flex-basis: 6rem;
@@ -3148,25 +3481,51 @@
         font-size: 0.8125rem;
       }
       .asset-list--project[data-list-size="compact"] .asset-list-card-associations {
-        gap: var(--space-xs) var(--space-md);
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: var(--space-xs) var(--space-sm);
+      }
+      .asset-list--project[data-list-size="compact"] .asset-list-card-associations-region {
+        padding: var(--space-sm);
       }
       .asset-list--project[data-list-size="compact"] .asset-list-card-association {
-        flex-basis: 12rem;
-        min-width: min(100%, 10rem);
-        padding-top: var(--space-xs);
+        min-width: 0;
+        padding-top: 0;
       }
       .asset-list--project[data-list-size="compact"] .asset-list-card-tags li {
         padding: 0.15rem 0.35rem;
         font-size: 0.75rem;
       }
-      .asset-list--project[data-list-size="compact"] .asset-list-card-actions {
-        gap: var(--space-xs) var(--space-sm);
-        padding-top: var(--space-xs);
+      @media (max-width: 540px) {
+        .asset-list--project[data-list-size="compact"] .asset-list-card-primary-metadata {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          grid-template-areas:
+            "category type"
+            "size modified";
+        }
+        .asset-list--project[data-list-size="compact"] .asset-list-card-associations {
+          grid-template-columns: minmax(0, 1fr);
+        }
       }
 
       @media (max-width: 767px) {
         .asset-list--project[data-list-size="compact"] .asset-list-card {
           grid-template-columns: minmax(0, 1fr);
+        }
+        .asset-list--project[data-list-size="compact"] .asset-list-card-body {
+          grid-template-columns: minmax(0, 1fr);
+          grid-template-areas:
+            "identity"
+            "metadata"
+            "associations";
+        }
+        .asset-list--project[data-list-size="compact"] .asset-list-card-identity {
+          padding-top: 0;
+        }
+        .asset-list--project[data-list-size="compact"] .asset-list-card-primary-metadata {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          grid-template-areas:
+            "category type"
+            "size modified";
         }
         .asset-list--project[data-list-size="compact"] .asset-list-card-media {
           width: 5rem;

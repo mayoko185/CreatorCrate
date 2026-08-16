@@ -42,6 +42,9 @@ describe('reusable asset presentation macros', () => {
     expect(html).not.toContain('<img ');
     expect(html).not.toContain('asset-card-tags');
     expect(html).not.toContain('asset-list-card-associations');
+    expect(html).not.toContain('asset-list-card-identity');
+    expect(html).not.toContain('asset-list-card-primary-metadata');
+    expect(html).not.toContain('asset-list-card-associations-region');
     expect(html).not.toContain('Category</dt>');
     expect(html).not.toContain('Size</dt>');
     expect(html).not.toContain('Modified</dt>');

@@ -19,7 +19,7 @@
   {% set displayName = asset.displayFilename or asset.filename or 'Unnamed asset' %}
   {% set previewUrl = asset.preview_url or asset.thumbnail_url %}
   {% set previewAvailable = asset.is_present and previewUrl and asset.preview_state != 'unsupported' and asset.preview_state != 'missing' %}
-  <article class="asset-card{% if options.cardClass %} {{ options.cardClass }}{% endif %}{% if options.selected %} is-selected{% endif %}"
+  <article class="asset-card{% if options.projectLayout %} asset-card--project{% endif %}{% if options.cardClass %} {{ options.cardClass }}{% endif %}{% if options.selected %} is-selected{% endif %}"
            data-asset-id="{{ asset.id }}" role="option" aria-selected="{% if options.selected %}true{% else %}false{% endif %}"{% if options.selectable %} data-asset-selectable-card{% if options.selectableTabIndex %} tabindex="0"{% endif %}
            aria-label="Toggle selection for {{ filenameLabel }}"{% endif %}>
     <div class="asset-card-top">
@@ -64,6 +64,7 @@
     </div>
 
     <div class="asset-card-body">
+      {% if options.projectLayout %}<div class="asset-card-identity">{% endif %}
       <div class="asset-card-title-controls">
         <div class="asset-card-title-row" data-asset-title-row{% if options.titleRowHidden %} hidden{% endif %}>
           {% if options.filenameLink and asset.viewerUrl %}
@@ -75,12 +76,42 @@
         </div>
         {% if caller %}{{ caller('title-controls') }}{% endif %}
       </div>
-      {% if options.categoryLabel %}<span class="asset-card-meta asset-card-category">{{ options.categoryLabel }}</span>{% endif %}
-      {% if asset.locationLabel %}<span class="asset-card-location">{{ asset.locationLabel }}</span>{% endif %}
-      {% if asset.typeLabel or asset.formattedSize %}
-        <span class="asset-card-meta">{{ asset.typeLabel }}{% if asset.typeLabel and asset.formattedSize %} · {% endif %}{{ asset.formattedSize }}</span>
+      {% if options.projectLayout %}
+        {% if asset.locationLabel %}<span class="asset-card-location" data-asset-containing-location>{{ asset.locationLabel }}</span>{% endif %}
+        </div>
+        <dl class="asset-card-primary-metadata" aria-label="Primary metadata">
+          <div class="asset-card-fact asset-card-fact--category">
+            <dt>Category</dt>
+            <dd>
+              {{ asset.categoryLabel or 'Uncategorized' }}
+              {% if asset.categoryDisabled %}<em class="asset-category-disabled-marker">(disabled)</em>{% endif %}
+            </dd>
+          </div>
+          <div class="asset-card-fact asset-card-fact--type">
+            <dt>Type</dt>
+            <dd><span class="asset-type-label">{{ asset.typeLabel or 'File' }}</span></dd>
+          </div>
+          <div class="asset-card-fact asset-card-fact--size">
+            <dt>Size</dt>
+            <dd>{{ asset.formattedSize or '—' }}</dd>
+          </div>
+          <div class="asset-card-fact asset-card-fact--modified">
+            <dt>Modified</dt>
+            <dd>{{ asset.modified_at or '—' }}</dd>
+          </div>
+        </dl>
+        <section class="asset-card-associations-region" aria-label="Asset associations">
+          <h3 class="asset-card-associations-heading">Associations</h3>
+          {% if caller %}{{ caller('associations') }}{% endif %}
+        </section>
+      {% else %}
+        {% if options.categoryLabel %}<span class="asset-card-meta asset-card-category">{{ options.categoryLabel }}</span>{% endif %}
+        {% if asset.locationLabel %}<span class="asset-card-location">{{ asset.locationLabel }}</span>{% endif %}
+        {% if asset.typeLabel or asset.formattedSize %}
+          <span class="asset-card-meta">{{ asset.typeLabel }}{% if asset.typeLabel and asset.formattedSize %} · {% endif %}{{ asset.formattedSize }}</span>
+        {% endif %}
+        {% if caller %}{{ caller('body') }}{% endif %}
       {% endif %}
-      {% if caller %}{{ caller('body') }}{% endif %}
     </div>
   </article>
 {% endmacro %}
@@ -97,7 +128,13 @@
   <article class="asset-list-card{% if options.cardClass %} {{ options.cardClass }}{% endif %}{% if options.selected %} is-selected{% endif %}" data-asset-id="{{ asset.id }}"{% if options.selectable %} data-asset-selectable-card aria-selected="{% if options.selected %}true{% else %}false{% endif %}"{% endif %}>
     {% if caller %}
       <div class="asset-list-card-top">
-        {{ caller('top') }}
+        {% if options.projectLayout %}
+          <div class="asset-list-card-top-selection">
+            {{ caller('top') }}
+          </div>
+        {% else %}
+          {{ caller('top') }}
+        {% endif %}
       </div>
     {% endif %}
 
@@ -131,27 +168,67 @@
     </div>
 
     <div class="asset-list-card-body">
-      <div class="asset-list-card-header">
+      <div class="asset-list-card-header{% if options.projectLayout %} asset-list-card-identity{% endif %}">
         <div class="asset-list-card-heading">
-          <h2 class="asset-list-card-title">
-            {% if asset.viewerUrl %}
-              <a class="asset-file-link" href="{{ asset.viewerUrl }}">{{ displayName }}</a>
-            {% else %}
-              {{ displayName }}
-            {% endif %}
-          </h2>
+          {% if options.titleControls %}
+            <div class="asset-card-title-controls">
+              {% if options.projectLayout %}<div class="asset-list-card-title-control-row">{% endif %}
+              <div class="asset-card-title-row" data-asset-title-row{% if options.titleRowHidden %} hidden{% endif %}>
+                <h2 class="asset-list-card-title">
+                  {% if (options.filenameLink is not defined or options.filenameLink) and asset.viewerUrl %}
+                    <a class="asset-file-link" href="{{ asset.viewerUrl }}">{{ displayName }}</a>
+                  {% else %}
+                    {{ displayName }}
+                  {% endif %}
+                </h2>
+                {% if caller %}<div class="asset-list-card-title-actions">{{ caller('title-row') }}</div>{% endif %}
+              </div>
+              {% if options.projectLayout %}
+                <div class="asset-list-card-status" role="group" aria-label="Asset status">
+                  <span class="asset-list-card-presence">
+                    {{ presenceIndicator(asset) }}
+                  </span>
+                  {% if caller %}{{ caller('status') }}{% endif %}
+                  {% if options.headerStatusDetails and asset.viewerUrl %}
+                    <a class="asset-details-link asset-tooltip asset-tooltip--right" href="{{ asset.viewerUrl }}"
+                       aria-label="View details for {{ filenameLabel }}" data-tooltip="View asset details">
+                      {{ icons.icon('details') }}<span class="sr-only">View details</span>
+                    </a>
+                  {% endif %}
+                </div>
+              {% endif %}
+              {% if options.projectLayout %}</div>{% endif %}
+              {% if caller %}{{ caller('title-controls') }}{% endif %}
+            </div>
+          {% else %}
+            <h2 class="asset-list-card-title">
+              {% if (options.filenameLink is not defined or options.filenameLink) and asset.viewerUrl %}
+                <a class="asset-file-link" href="{{ asset.viewerUrl }}">{{ displayName }}</a>
+              {% else %}
+                {{ displayName }}
+              {% endif %}
+            </h2>
+          {% endif %}
           {% if asset.locationLabel %}<span class="asset-list-card-location asset-location" data-asset-containing-location>{{ asset.locationLabel }}</span>{% endif %}
         </div>
-        <div class="asset-list-card-status" role="group" aria-label="Asset status">
-          <span class="asset-list-card-presence">
-            {{ presenceIndicator(asset) }}
-          </span>
-          {% if caller %}{{ caller('status') }}{% endif %}
-        </div>
+        {% if not options.projectLayout %}
+          <div class="asset-list-card-status" role="group" aria-label="Asset status">
+            <span class="asset-list-card-presence">
+              {{ presenceIndicator(asset) }}
+            </span>
+            {% if caller %}{{ caller('status') }}{% endif %}
+            {% if options.headerStatusDetails and asset.viewerUrl %}
+              <a class="asset-details-link asset-tooltip asset-tooltip--right" href="{{ asset.viewerUrl }}"
+                 aria-label="View details for {{ filenameLabel }}" data-tooltip="View asset details">
+                {{ icons.icon('details') }}<span class="sr-only">View details</span>
+              </a>
+            {% endif %}
+          </div>
+        {% endif %}
       </div>
 
       {% if hasCategory or hasType or hasSize or hasModified %}
-        <dl class="asset-list-card-metadata">
+        <dl class="asset-list-card-metadata{% if options.projectLayout %} asset-list-card-primary-metadata{% endif %}">
           {% if hasCategory %}
             <div class="asset-list-card-meta asset-list-card-meta--category">
               <dt>Category</dt>
@@ -182,11 +259,16 @@
         </dl>
       {% endif %}
 
-      {% if caller %}{{ caller('associations') }}{% endif %}
+      {% if caller %}
+        {% if options.projectLayout %}<section class="asset-list-card-associations-region" aria-label="Asset associations">{% endif %}
+        {% if options.projectLayout %}<h3 class="asset-list-card-associations-heading">Associations</h3>{% endif %}
+        {{ caller('associations') }}
+        {% if options.projectLayout %}</section>{% endif %}
+      {% endif %}
 
-      {% if asset.viewerUrl or caller %}
+      {% if not options.hideActions and (caller or (asset.viewerUrl and not options.headerStatusDetails)) %}
         <div class="asset-list-card-actions">
-          {% if asset.viewerUrl %}
+          {% if asset.viewerUrl and not options.headerStatusDetails %}
             <a class="asset-details-link asset-tooltip" href="{{ asset.viewerUrl }}"
                aria-label="View details for {{ filenameLabel }}" data-tooltip="View asset details">
               {{ icons.icon('details') }}<span class="sr-only">View details</span>

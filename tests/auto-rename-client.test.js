@@ -464,6 +464,23 @@ describe('Assets-page Auto Rename ordering enhancement', () => {
     expect(page.orderInput.value).toBe('[1,2,3,4]');
   });
 
+  it('keeps Auto Rename selection synchronized when a Grid card toggles its checkbox', () => {
+    const page = makeAssetPage({ view: 'grid', ids: [1, 2] });
+
+    enhanceAssetAutoRenameOrdering(page.document);
+    enhanceAssetSelection(page.document);
+    const card = page.assets[0].item.querySelector('[data-asset-selectable-card]');
+    const cardSpace = { closest: () => null };
+
+    card.dispatch('click', { target: cardSpace });
+    expect(page.assets[0].checkbox.checked).toBe(true);
+    expect(page.selectionInput.value).toBe('[1]');
+
+    card.dispatch('click', { target: cardSpace });
+    expect(page.assets[0].checkbox.checked).toBe(false);
+    expect(page.selectionInput.value).toBe('[]');
+  });
+
   it('enables from selection, clears when deselected, and also enables for reorder', () => {
     const page = makeAssetPage();
 

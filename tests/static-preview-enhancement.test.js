@@ -2066,12 +2066,13 @@ describe('page-local asset selection enhancement', () => {
     expect(checkbox.checked).toBe(false);
   });
 
-  it('selects project list-card blank space while excluding real interactive descendants', () => {
+  it.each(['grid', 'list'])('selects project %s-card space while excluding real interactive descendants', (view) => {
     const selectedCount = makeControl();
     const form = makeAssetSelectionForm({ selectedCount });
     const checkbox = makeCheckbox();
     checkbox.form = form;
     const listeners = [];
+    const windowObject = { location: { href: '/projects/1/assets?view=' + view } };
     const mediaLink = {};
     const targets = {
       blankMedia: {},
@@ -2086,15 +2087,23 @@ describe('page-local asset selection enhancement', () => {
       renameInput: {},
       renameButton: {},
       releaseLink: {},
+      releaseDisclosure: {},
+      releaseSummary: {},
+      dropdown: {},
+      autoRenameControl: {},
+      contentEditable: {},
+      roleButton: {},
       checkbox,
     };
     const interactiveTargets = new Set([
       mediaLink, targets.details, targets.status,
       targets.renameTrigger, targets.renameInput, targets.renameButton,
-      targets.releaseLink, targets.checkbox,
+      targets.releaseLink, targets.releaseDisclosure, targets.releaseSummary,
+      targets.dropdown, targets.autoRenameControl, targets.contentEditable,
+      targets.roleButton, targets.checkbox,
     ]);
     const card = {
-      className: 'asset-list-card asset-list-card--project',
+      className: view === 'grid' ? 'asset-card' : 'asset-list-card asset-list-card--project',
       dataset: {},
       attributes: {},
       addEventListener(type, handler) { listeners.push({ type, handler }); },
@@ -2115,9 +2124,15 @@ describe('page-local asset selection enhancement', () => {
     for (const name of ['blankMedia', 'fallback', 'blankLower']) targets[name].closest = () => null;
     targets.titleRow.closest = () => null;
     targets.titleText.closest = () => null;
-    for (const name of ['details', 'status', 'renameTrigger', 'renameInput', 'renameButton', 'releaseLink']) {
+    for (const name of [
+      'details', 'status', 'renameTrigger', 'renameInput', 'renameButton', 'releaseLink',
+      'releaseDisclosure', 'releaseSummary', 'dropdown', 'autoRenameControl',
+      'contentEditable', 'roleButton',
+    ]) {
       targets[name].closest = () => targets[name];
     }
+    targets.details.href = '/projects/1/assets/101';
+    targets.details.click = () => { windowObject.location.href = targets.details.href; };
 
     const scope = {
       querySelectorAll(selector) {
@@ -2169,6 +2184,14 @@ describe('page-local asset selection enhancement', () => {
       }
       expect(checkbox.checked).toBe(true);
     }
+
+    expect(windowObject.location.href).toBe('/projects/1/assets?view=' + view);
+    const locationBeforeDetailsClick = windowObject.location.href;
+    click(targets.details);
+    expect(checkbox.checked).toBe(true);
+    expect(windowObject.location.href).toBe(locationBeforeDetailsClick);
+    targets.details.click();
+    expect(windowObject.location.href).toBe('/projects/1/assets/101');
 
     // The native checkbox click has already changed checked before the card's
     // bubbling handler runs; the handler must leave it alone.
