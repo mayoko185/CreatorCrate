@@ -228,7 +228,7 @@ function addStandardDropdown(
     input.checked = mode === 'multiple' ? selectedValues.includes(option) : option === value;
     label.appendChild(input);
     const optionText = makeElement('span');
-    optionText.textContent = option;
+    optionText.textContent = ({ compact: 'Compact', default: 'Default', large: 'Large' }[option] || option);
     label.appendChild(optionText);
     wrapper.appendChild(label);
     panel.appendChild(wrapper);
@@ -244,11 +244,35 @@ function addStandardDropdown(
   return { details, summary, panel };
 }
 
+function appendStyledOption(panel, value, label) {
+  const wrapper = makeElement('div', { class: 'asset-filter-multiselect-option' });
+  const labelNode = makeElement('label');
+  const input = makeElement('input', { type: 'radio', value });
+  const text = makeElement('span');
+  text.textContent = label;
+  labelNode.appendChild(input);
+  labelNode.appendChild(text);
+  wrapper.appendChild(labelNode);
+  panel.appendChild(wrapper);
+  return input;
+}
+
+function styledDropdownValues(dropdown) {
+  return dropdown.panel.querySelectorAll('input[type="radio"]')
+    .map((input) => String(input.value));
+}
+
+function styledDropdownLabels(dropdown) {
+  return dropdown.panel.querySelectorAll('input[type="radio"]')
+    .map((input) => String(input.closest('label')?.textContent || '').trim());
+}
+
 function makeDialogPage({
   standardDropdowns = false,
   scrollableDialog = false,
   projectEditDialog = false,
   liveDefault = false,
+  projectAssetsDefaults = false,
 } = {}) {
   const document = makeElement('document');
   document.nodeType = 9;
@@ -260,12 +284,15 @@ function makeDialogPage({
   document.createElement = (tagName) => makeElement(tagName);
 
   const region = makeElement('div', { 'data-projects-live-region': '' });
+  const dialogId = projectAssetsDefaults ? 'project-assets-defaults-dialog' : 'projects-defaults-dialog';
+  const formId = projectAssetsDefaults ? 'project-assets-defaults-form' : 'projects-defaults-form';
+  const formAction = projectAssetsDefaults ? '/projects/1/assets/defaults' : '/projects/defaults';
   const trigger = makeElement('a', {
     href: '/projects?defaults=1',
-    'data-dialog-open': 'projects-defaults-dialog',
+    'data-dialog-open': dialogId,
   });
   const dialog = makeElement('dialog', {
-    id: 'projects-defaults-dialog',
+    id: dialogId,
     'data-app-dialog': '',
   });
   dialog.showModal = vi.fn(() => {
@@ -284,8 +311,8 @@ function makeDialogPage({
   const close = makeElement('button', { type: 'button', 'data-dialog-close': '' });
   card.appendChild(close);
   const form = makeElement('form', {
-    id: 'projects-defaults-form',
-    action: '/projects/defaults',
+    id: formId,
+    action: formAction,
     method: 'post',
     'data-dialog-form': '',
   });
@@ -317,11 +344,20 @@ function makeDialogPage({
       };
     }
   }
-  for (const [name, value, options] of [
-    ['view', 'grid', ['grid', 'list']],
-    ['sort', 'created', ['updated', 'created', 'title', 'published']],
-    ['order', 'desc', ['asc', 'desc']],
-  ]) {
+  const defaultFields = projectAssetsDefaults
+    ? [
+      ['view', 'grid', ['grid', 'list']],
+      ['gridSize', 'default', ['compact', 'default', 'large']],
+      ['listSize', 'large', ['compact', 'large']],
+      ['sort', 'filename', ['filename', 'modified', 'size', 'category']],
+      ['order', 'asc', ['asc', 'desc']],
+    ]
+    : [
+      ['view', 'grid', ['grid', 'list']],
+      ['sort', 'created', ['updated', 'created', 'title', 'published']],
+      ['order', 'desc', ['asc', 'desc']],
+    ];
+  for (const [name, value, options] of defaultFields) {
     const field = makeElement('div', { 'data-dialog-field': name });
     const select = makeElement('select', { id: `projects-default-${name}`, name });
     options.forEach((option) => addOption(select, option, option === value));
@@ -565,6 +601,239 @@ describe('Reusable app dialog enhancement', () => {
     expect(page.dialog.open).toBe(false);
     expect(replacement.focused).toBe(true);
     expect(submit).not.toHaveBeenCalled();
+  });
+
+  it('cancels Project Assets defaults without submitting or changing size storage', () => {
+    const page = makeDialogPage({ standardDropdowns: true, projectAssetsDefaults: true });
+    const storage = new Map([
+      ['creatorcrate-asset-grid-size', 'compact'],
+      ['creatorcrate-asset-list-size', 'large'],
+    ]);
+    const previousStorage = globalThis.localStorage;
+    globalThis.localStorage = {
+      getItem: (key) => storage.get(key) ?? null,
+      setItem: (key, value) => storage.set(key, value),
+    };
+
+    try {
+      page.region.appendChild(page.trigger);
+      enhanceDropdowns(page.document);
+      enhanceAppDialogs(page.document);
+      page.document.dispatch('click', { target: page.trigger });
+
+      page.fields.gridSize.value = 'large';
+      page.fields.listSize.value = 'compact';
+      page.close.dispatch('click');
+      expect(page.windowObject.fetch).not.toHaveBeenCalled();
+      expect(storage.get('creatorcrate-asset-grid-size')).toBe('compact');
+      expect(storage.get('creatorcrate-asset-list-size')).toBe('large');
+
+      page.document.dispatch('click', { target: page.trigger });
+      expect(page.fields.gridSize.value).toBe('default');
+      expect(page.fields.listSize.value).toBe('large');
+
+      page.fields.gridSize.value = 'large';
+      page.fields.listSize.value = 'compact';
+      page.dropdowns.gridSize.details.open = true;
+      page.dropdowns.gridSize.details.setAttribute('open', '');
+      page.dialog.dispatch('keydown', { key: 'Escape', target: page.dropdowns.gridSize.summary });
+      expect(page.dropdowns.gridSize.details.open).toBe(false);
+      expect(page.dialog.open).toBe(true);
+
+      page.dialog.dispatch('keydown', { key: 'Escape', target: page.dialog });
+      expect(page.dialog.open).toBe(false);
+      expect(page.windowObject.fetch).not.toHaveBeenCalled();
+      expect(storage.get('creatorcrate-asset-grid-size')).toBe('compact');
+      expect(storage.get('creatorcrate-asset-list-size')).toBe('large');
+
+      page.document.dispatch('click', { target: page.trigger });
+      expect(page.fields.gridSize.value).toBe('default');
+      expect(page.fields.listSize.value).toBe('large');
+    } finally {
+      if (previousStorage === undefined) delete globalThis.localStorage;
+      else globalThis.localStorage = previousStorage;
+    }
+  });
+
+  it('keeps enhanced Project Assets Grid and List size options isolated across View switches and reopen', async () => {
+    const page = makeDialogPage({ standardDropdowns: true, projectAssetsDefaults: true });
+    appendStyledOption(page.dropdowns.listSize.panel, 'default', 'Default');
+    page.region.appendChild(page.trigger);
+    page.windowObject.fetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        status: 'success',
+        values: {
+          view: 'list',
+          gridSize: 'large',
+          listSize: 'compact',
+          sort: 'category',
+          order: 'desc',
+        },
+      }),
+    });
+
+    enhanceDropdowns(page.document);
+    expect(styledDropdownValues(page.dropdowns.gridSize)).toEqual(['compact', 'default', 'large']);
+    expect(styledDropdownValues(page.dropdowns.listSize)).toEqual(['compact', 'large']);
+    expect(styledDropdownLabels(page.dropdowns.gridSize)).toEqual(['Compact', 'Default', 'Large']);
+    expect(styledDropdownLabels(page.dropdowns.listSize)).toEqual(['Compact', 'Large']);
+
+    enhanceAppDialogs(page.document);
+    page.document.dispatch('click', { target: page.trigger });
+    const viewRadios = page.dropdowns.view.panel.querySelectorAll('input[type="radio"]');
+    viewRadios[1].checked = true;
+    page.document.dispatch('change', { target: viewRadios[1] });
+    expect(styledDropdownValues(page.dropdowns.listSize)).toEqual(['compact', 'large']);
+    expect(styledDropdownLabels(page.dropdowns.listSize)).toEqual(['Compact', 'Large']);
+    expect(styledDropdownValues(page.dropdowns.listSize)).not.toContain('default');
+
+    viewRadios[0].checked = true;
+    page.document.dispatch('change', { target: viewRadios[0] });
+    expect(styledDropdownValues(page.dropdowns.gridSize)).toEqual(['compact', 'default', 'large']);
+    expect(styledDropdownLabels(page.dropdowns.gridSize)).toEqual(['Compact', 'Default', 'Large']);
+    viewRadios[1].checked = true;
+    page.document.dispatch('change', { target: viewRadios[1] });
+    expect(styledDropdownValues(page.dropdowns.listSize)).toEqual(['compact', 'large']);
+    expect(styledDropdownLabels(page.dropdowns.listSize)).toEqual(['Compact', 'Large']);
+
+    page.close.dispatch('click');
+    appendStyledOption(page.dropdowns.listSize.panel, 'default', 'Default');
+    page.document.dispatch('click', { target: page.trigger });
+    expect(styledDropdownValues(page.dropdowns.gridSize)).toEqual(['compact', 'default', 'large']);
+    expect(styledDropdownValues(page.dropdowns.listSize)).toEqual(['compact', 'large']);
+    expect(styledDropdownLabels(page.dropdowns.gridSize)).toEqual(['Compact', 'Default', 'Large']);
+    expect(styledDropdownLabels(page.dropdowns.listSize)).toEqual(['Compact', 'Large']);
+    viewRadios[1].checked = true;
+    page.document.dispatch('change', { target: viewRadios[1] });
+
+    page.fields.gridSize.value = 'large';
+    page.fields.listSize.value = 'compact';
+    page.form.dispatch('submit', { submitter: page.save });
+    await flush();
+
+    expect([...page.windowObject.fetch.mock.calls[0][1].body.entries()]).toEqual([
+      ['_csrf', 'csrf-token'],
+      ['view', 'list'],
+      ['gridSize', 'large'],
+      ['listSize', 'compact'],
+      ['sort', 'filename'],
+      ['order', 'asc'],
+    ]);
+    expect(page.windowObject.fetch.mock.calls[0][1].body.toString()).not.toContain('listSize=default');
+  });
+
+  it('does not expose an invalid List Default option during enhanced validation recovery', async () => {
+    const page = makeDialogPage({ standardDropdowns: true, projectAssetsDefaults: true });
+    page.region.appendChild(page.trigger);
+    page.windowObject.fetch.mockResolvedValue({
+      ok: false,
+      status: 422,
+      json: async () => ({
+        status: 'error',
+        errors: { listSize: 'Value is not supported.' },
+        values: {
+          view: 'list',
+          gridSize: 'large',
+          listSize: 'default',
+          sort: 'filename',
+          order: 'asc',
+        },
+      }),
+    });
+
+    enhanceDropdowns(page.document);
+    enhanceAppDialogs(page.document);
+    page.document.dispatch('click', { target: page.trigger });
+    page.form.dispatch('submit', { submitter: page.save });
+    await flush();
+
+    expect(page.dialog.open).toBe(true);
+    expect(styledDropdownValues(page.dropdowns.gridSize)).toEqual(['compact', 'default', 'large']);
+    expect(styledDropdownValues(page.dropdowns.listSize)).toEqual(['compact', 'large']);
+    expect(styledDropdownLabels(page.dropdowns.gridSize)).toEqual(['Compact', 'Default', 'Large']);
+    expect(styledDropdownLabels(page.dropdowns.listSize)).toEqual(['Compact', 'Large']);
+    expect(styledDropdownValues(page.dropdowns.listSize)).not.toContain('default');
+    expect(page.fields.listSize.querySelectorAll('option').map((option) => option.value))
+      .toEqual(['compact', 'large']);
+  });
+
+  it('synchronizes Project Assets size storage only after a successful defaults save', async () => {
+    const page = makeDialogPage({ standardDropdowns: true, projectAssetsDefaults: true });
+    const storage = new Map([
+      ['creatorcrate-asset-grid-size', 'compact'],
+      ['creatorcrate-asset-list-size', 'large'],
+    ]);
+    const previousStorage = globalThis.localStorage;
+    globalThis.localStorage = {
+      getItem: (key) => storage.get(key) ?? null,
+      setItem: (key, value) => storage.set(key, value),
+    };
+    page.region.appendChild(page.trigger);
+    page.windowObject.fetch
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 422,
+        json: async () => ({
+          status: 'error',
+          errors: { sort: 'Value is not supported.' },
+          values: {
+            view: 'grid',
+            gridSize: 'large',
+            listSize: 'compact',
+            sort: 'invalid',
+            order: 'asc',
+          },
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          status: 'success',
+          values: {
+            view: 'list',
+            gridSize: 'large',
+            listSize: 'compact',
+            sort: 'category',
+            order: 'desc',
+            pageSize: '50',
+          },
+        }),
+      });
+
+    try {
+      enhanceDropdowns(page.document);
+      enhanceAppDialogs(page.document);
+      page.document.dispatch('click', { target: page.trigger });
+      page.fields.gridSize.value = 'large';
+      page.fields.listSize.value = 'compact';
+      page.form.dispatch('submit', { submitter: page.save });
+      await flush();
+
+      expect(storage.get('creatorcrate-asset-grid-size')).toBe('compact');
+      expect(storage.get('creatorcrate-asset-list-size')).toBe('large');
+      expect(page.dialog.open).toBe(true);
+
+      page.form.dispatch('submit', { submitter: page.save });
+      await flush();
+
+      expect(storage.get('creatorcrate-asset-grid-size')).toBe('large');
+      expect(storage.get('creatorcrate-asset-list-size')).toBe('compact');
+      expect(page.dialog.open).toBe(false);
+
+      page.document.dispatch('click', { target: page.trigger });
+      expect(page.fields.gridSize.value).toBe('large');
+      expect(page.fields.listSize.value).toBe('compact');
+      page.fields.gridSize.value = 'compact';
+      page.fields.listSize.value = 'large';
+      page.close.dispatch('click');
+      page.document.dispatch('click', { target: page.trigger });
+      expect(page.fields.gridSize.value).toBe('large');
+      expect(page.fields.listSize.value).toBe('compact');
+    } finally {
+      if (previousStorage === undefined) delete globalThis.localStorage;
+      else globalThis.localStorage = previousStorage;
+    }
   });
 
   it('saves asynchronously without navigation and closes on success', async () => {

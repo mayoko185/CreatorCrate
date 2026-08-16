@@ -473,7 +473,7 @@
     <p data-dialog-feedback-text></p>
   </div>
 
-  <div data-project-assets-live-region>
+  <div data-project-assets-live-region{% if projectAssetsGridSizeDefault %} data-project-assets-grid-size-default="{{ projectAssetsGridSizeDefault }}"{% endif %}{% if projectAssetsListSizeDefault %} data-project-assets-list-size-default="{{ projectAssetsListSizeDefault }}"{% endif %}>
     <span class="sr-only" data-project-assets-live-status aria-live="polite" aria-atomic="true"></span>
 
   <div class="asset-browser-layout">
@@ -963,7 +963,7 @@
           {% set submittedOption = none %}
           {% set nativeAttributes = [["required", true]] %}
           {% set summaryAttributes = [] %}
-          {% if field.showSubmittedValue %}
+          {% if field.showSubmittedValue and not (field.name == 'listSize' and field.submittedOptionValue == 'default') %}
             {% set submittedOption = {
               id: field.id ~ '-submitted',
               value: field.submittedOptionValue,
@@ -999,7 +999,6 @@
       <div class="app-dialog-status" data-dialog-status role="status" aria-live="polite"></div>
 
       <footer class="app-dialog-footer">
-        <button class="button button-secondary" type="submit" formmethod="dialog" data-dialog-close>Cancel</button>
         <button class="button button-primary" type="submit" data-dialog-submit>Save defaults</button>
       </footer>
     </form>

@@ -37,6 +37,8 @@ export const PAGE_DEFAULT_DEFINITIONS = Object.freeze({
   }),
   [PROJECT_ASSETS]: Object.freeze({
     view: definition('page_defaults.project_assets.view', ['grid', 'list'], 'grid'),
+    gridSize: definition('page_defaults.project_assets.grid_size', ['compact', 'default', 'large'], 'default'),
+    listSize: definition('page_defaults.project_assets.list_size', ['compact', 'large'], 'large'),
     sort: definition('page_defaults.project_assets.sort', ['filename', 'modified', 'size', 'category'], 'filename'),
     order: definition('page_defaults.project_assets.order', ['asc', 'desc'], 'asc'),
     pageSize: definition('page_defaults.project_assets.page_size', ['10', '25', '50', '100'], '25'),

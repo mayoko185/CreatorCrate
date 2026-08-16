@@ -50,12 +50,16 @@ const ASSET_RENAME_ORIGINS = new Set(['assets', 'viewer']);
 const PROJECT_ASSETS_DEFAULT_LABELS = Object.freeze({
   fields: Object.freeze({
     view: 'View',
+    gridSize: 'Grid size',
+    listSize: 'List size',
     sort: 'Sort',
     order: 'Order',
     pageSize: 'Page Size',
   }),
   options: Object.freeze({
     view: Object.freeze({ grid: 'Grid', list: 'List' }),
+    gridSize: Object.freeze({ compact: 'Compact', default: 'Default', large: 'Large' }),
+    listSize: Object.freeze({ compact: 'Compact', large: 'Large' }),
     sort: Object.freeze({
       filename: 'Filename',
       modified: 'Modified date',
@@ -2225,7 +2229,10 @@ function readProjectAssetsReturnQuery(req, projectId) {
 
 function buildProjectAssetsDefaultsSuccessUrl(req, projectId, values) {
   const url = new URL(readProjectAssetsReturnUrl(req, projectId), 'http://creatorcrate.local');
-  Object.entries(values || {}).forEach(([key, value]) => url.searchParams.set(key, String(value)));
+  for (const { key } of ASSET_PRESENTATION_OPTIONS) {
+    const value = values?.[key];
+    if (value !== undefined) url.searchParams.set(key, String(value));
+  }
   url.searchParams.set('notice', 'project_assets_defaults_saved');
   return `${url.pathname}?${url.searchParams.toString()}`;
 }
@@ -2409,6 +2416,8 @@ function buildBrowserRenderModel(project, data, pageDefaultsService, req, nsfwFi
   const effectiveNsfwFilterEnabled = nsfwFilterEnabled === null
     ? Boolean(req?.app?.locals?.nsfwFilterSettingsService?.isEnabled?.())
     : nsfwFilterEnabled;
+  const projectAssetsGridSizeDefault = pageDefaultsService.resolve(ASSET_PAGE_DEFAULTS_PAGE, 'gridSize');
+  const projectAssetsListSizeDefault = pageDefaultsService.resolve(ASSET_PAGE_DEFAULTS_PAGE, 'listSize');
   const context = {
     ...(data.context || data.filters),
     page: data.page,
@@ -2490,6 +2499,8 @@ function buildBrowserRenderModel(project, data, pageDefaultsService, req, nsfwFi
       page: ASSET_PAGE_DEFAULTS_PAGE,
       labels: PROJECT_ASSETS_DEFAULT_LABELS,
     }),
+    projectAssetsGridSizeDefault,
+    projectAssetsListSizeDefault,
     projectAssetsDefaultsDialogOpen: false,
     projectAssetsDefaultsReturnUrl: pageUrl({}),
     projectAssetsDefaultsUrl: defaultsUrl,

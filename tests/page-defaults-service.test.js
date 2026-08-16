@@ -43,6 +43,8 @@ describe('page defaults service', () => {
     expect(service.resolve('releaseManagement', 'sort')).toBe('updated');
     expect(service.resolve('releaseManagement', 'order')).toBe('desc');
     expect(service.resolve('projectAssets', 'view')).toBe('grid');
+    expect(service.resolve('projectAssets', 'gridSize')).toBe('default');
+    expect(service.resolve('projectAssets', 'listSize')).toBe('large');
     expect(service.resolve('projectAssets', 'sort')).toBe('filename');
     expect(service.resolve('projectAssets', 'order')).toBe('asc');
     expect(service.resolve('projectAssets', 'pageSize')).toBe('25');
@@ -59,6 +61,16 @@ describe('page defaults service', () => {
         key: 'page_defaults.project_assets.view',
         values: ['grid', 'list'],
         fallback: 'grid',
+      },
+      gridSize: {
+        key: 'page_defaults.project_assets.grid_size',
+        values: ['compact', 'default', 'large'],
+        fallback: 'default',
+      },
+      listSize: {
+        key: 'page_defaults.project_assets.list_size',
+        values: ['compact', 'large'],
+        fallback: 'large',
       },
       sort: {
         key: 'page_defaults.project_assets.sort',
@@ -204,12 +216,16 @@ describe('page defaults service', () => {
 
   it('accepts valid Project Assets saved values', () => {
     repository.setValue(PAGE_DEFAULT_DEFINITIONS.projectAssets.view.key, 'list');
+    repository.setValue(PAGE_DEFAULT_DEFINITIONS.projectAssets.gridSize.key, 'large');
+    repository.setValue(PAGE_DEFAULT_DEFINITIONS.projectAssets.listSize.key, 'compact');
     repository.setValue(PAGE_DEFAULT_DEFINITIONS.projectAssets.sort.key, 'category');
     repository.setValue(PAGE_DEFAULT_DEFINITIONS.projectAssets.order.key, 'desc');
     repository.setValue(PAGE_DEFAULT_DEFINITIONS.projectAssets.pageSize.key, '100');
 
     expect(service.resolvePageDefaults('projectAssets')).toEqual({
       view: 'list',
+      gridSize: 'large',
+      listSize: 'compact',
       sort: 'category',
       order: 'desc',
       pageSize: '100',
@@ -292,6 +308,8 @@ describe('page defaults service', () => {
   it('uses Project Assets fallbacks for invalid stored values without rewriting them', () => {
     const invalidValues = {
       view: 'board',
+      gridSize: 'extra-large',
+      listSize: 'default',
       sort: 'published',
       order: 'forwards',
       pageSize: '20',
@@ -302,6 +320,8 @@ describe('page defaults service', () => {
 
     expect(service.resolvePageDefaults('projectAssets')).toEqual({
       view: 'grid',
+      gridSize: 'default',
+      listSize: 'large',
       sort: 'filename',
       order: 'asc',
       pageSize: '25',
@@ -347,6 +367,10 @@ describe('page defaults service', () => {
       .toThrow(PageDefaultValidationError);
     expect(() => service.saveDefault('projectAssets', 'pageSize', '20'))
       .toThrow(PageDefaultValidationError);
+    expect(() => service.saveDefault('projectAssets', 'gridSize', 'extra-large'))
+      .toThrow(PageDefaultValidationError);
+    expect(() => service.saveDefault('projectAssets', 'listSize', 'default'))
+      .toThrow(PageDefaultValidationError);
     expect(() => service.saveDefault('releaseManagement', 'view', 'grid'))
       .toThrow(PageDefaultValidationError);
     expect(() => service.saveDefault('releaseManagement', 'sort', 'published'))
@@ -361,6 +385,13 @@ describe('page defaults service', () => {
     expect(repository.getValue(key)).toBe('desc');
   });
 
+  it('saves valid Project Assets size values', () => {
+    expect(service.saveDefault('projectAssets', 'gridSize', 'compact')).toBe('compact');
+    expect(service.saveDefault('projectAssets', 'listSize', 'large')).toBe('large');
+    expect(repository.getValue(PAGE_DEFAULT_DEFINITIONS.projectAssets.gridSize.key)).toBe('compact');
+    expect(repository.getValue(PAGE_DEFAULT_DEFINITIONS.projectAssets.listSize.key)).toBe('large');
+  });
+
   it('resolves all page options with explicit values taking precedence', () => {
     repository.setValue(PAGE_DEFAULT_DEFINITIONS.projects.view.key, 'list');
     repository.setValue(PAGE_DEFAULT_DEFINITIONS.projects.sort.key, 'title');
@@ -372,12 +403,21 @@ describe('page defaults service', () => {
     });
 
     repository.setValue(PAGE_DEFAULT_DEFINITIONS.projectAssets.view.key, 'list');
+    repository.setValue(PAGE_DEFAULT_DEFINITIONS.projectAssets.gridSize.key, 'large');
+    repository.setValue(PAGE_DEFAULT_DEFINITIONS.projectAssets.listSize.key, 'compact');
     repository.setValue(PAGE_DEFAULT_DEFINITIONS.projectAssets.sort.key, 'size');
     repository.setValue(PAGE_DEFAULT_DEFINITIONS.projectAssets.order.key, 'desc');
     repository.setValue(PAGE_DEFAULT_DEFINITIONS.projectAssets.pageSize.key, '100');
 
-    expect(service.resolvePageDefaults('projectAssets', { view: 'grid', pageSize: '10' })).toEqual({
+    expect(service.resolvePageDefaults('projectAssets', {
       view: 'grid',
+      gridSize: 'compact',
+      listSize: 'large',
+      pageSize: '10',
+    })).toEqual({
+      view: 'grid',
+      gridSize: 'compact',
+      listSize: 'large',
       sort: 'size',
       order: 'desc',
       pageSize: '10',
@@ -413,11 +453,15 @@ describe('page defaults service', () => {
 
     expect(service.validatePageDefaults('projectAssets', {
       view: 'grid',
+      gridSize: 'large',
+      listSize: 'compact',
       sort: 'modified',
       order: 'desc',
       pageSize: '50',
     })).toEqual({
       view: 'grid',
+      gridSize: 'large',
+      listSize: 'compact',
       sort: 'modified',
       order: 'desc',
       pageSize: '50',

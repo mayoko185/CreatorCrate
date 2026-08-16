@@ -3107,6 +3107,7 @@ const APP_DIALOG_SELECTOR = '[data-app-dialog]';
 const APP_DIALOG_TRIGGER_SELECTOR = '[data-dialog-open]';
 const APP_DIALOG_CLOSE_SELECTOR = '[data-dialog-close]';
 const APP_DIALOG_FORM_SELECTOR = '[data-dialog-form]';
+const PROJECT_ASSETS_DEFAULTS_DIALOG_ID = 'project-assets-defaults-dialog';
 const ASSET_BROWSER_DEFAULT_LIVE_FORM_SELECTOR = '[data-asset-browser-default-live]';
 const APP_DIALOG_FOCUSABLE_SELECTOR = 'a[href], button, input, select, textarea, summary, [tabindex]';
 const PROJECT_ASSET_CATEGORY_FILTER_SELECTOR = '[data-asset-category-filter]';
@@ -3455,12 +3456,18 @@ export function enhanceAssetRenames(scope = globalThis.document) {
   return triggers.length;
 }
 
-function readGridSize(storageKey, config) {
+function gridSizeIsValid(size, config) {
+  return typeof size === 'string'
+    && Object.prototype.hasOwnProperty.call(config.sizes, size);
+}
+
+function readGridSize(storageKey, config, fallbackSize = config.defaultSize) {
+  const fallback = gridSizeIsValid(fallbackSize, config) ? fallbackSize : config.defaultSize;
   try {
     const stored = globalThis.localStorage?.getItem(storageKey);
-    return Object.prototype.hasOwnProperty.call(config.sizes, stored) ? stored : config.defaultSize;
+    return gridSizeIsValid(stored, config) ? stored : fallback;
   } catch {
-    return config.defaultSize;
+    return fallback;
   }
 }
 
@@ -3541,13 +3548,22 @@ function getGridSizeControls(scope, config) {
       || !control.closest?.(config.excludeControlScopeSelector));
 }
 
-function enhanceGridSize(scope, config) {
+function projectAssetsSizeFallback(scope, attribute, config) {
+  const document = liveRegionDocument(scope);
+  const region = scope?.matches?.(PROJECT_ASSETS_LIVE_REGION_SELECTOR)
+    ? scope
+    : document?.querySelector?.(PROJECT_ASSETS_LIVE_REGION_SELECTOR);
+  const fallbackSize = region?.getAttribute?.(attribute);
+  return gridSizeIsValid(fallbackSize, config) ? fallbackSize : config.defaultSize;
+}
+
+function enhanceGridSize(scope, config, fallbackSize = config.defaultSize) {
   if (!scope || typeof scope.querySelectorAll !== 'function') return 0;
   const controls = getGridSizeControls(scope, config);
   const grids = scope.querySelectorAll(config.gridSelector);
   if (controls.length === 0 || grids.length === 0) return 0;
 
-  applyGridSize(scope, readGridSize(config.storageKey, config), config, controls);
+  applyGridSize(scope, readGridSize(config.storageKey, config, fallbackSize), config, controls);
   controls.forEach((group) => {
     const applySelectedSize = (size) => {
       if (!Object.prototype.hasOwnProperty.call(config.sizes, size)) return;
@@ -3578,12 +3594,18 @@ function enhanceGridSize(scope, config) {
   return controls.length;
 }
 
-export function enhanceAssetGridSize(scope = globalThis.document) {
-  return enhanceGridSize(scope, ASSET_GRID_SIZE_CONFIG);
+export function enhanceAssetGridSize(scope = globalThis.document, fallbackSize) {
+  const fallback = fallbackSize === undefined
+    ? projectAssetsSizeFallback(scope, 'data-project-assets-grid-size-default', ASSET_GRID_SIZE_CONFIG)
+    : fallbackSize;
+  return enhanceGridSize(scope, ASSET_GRID_SIZE_CONFIG, fallback);
 }
 
-export function enhanceAssetListSize(scope = globalThis.document) {
-  return enhanceGridSize(scope, ASSET_LIST_SIZE_CONFIG);
+export function enhanceAssetListSize(scope = globalThis.document, fallbackSize) {
+  const fallback = fallbackSize === undefined
+    ? projectAssetsSizeFallback(scope, 'data-project-assets-list-size-default', ASSET_LIST_SIZE_CONFIG)
+    : fallbackSize;
+  return enhanceGridSize(scope, ASSET_LIST_SIZE_CONFIG, fallback);
 }
 
 export function enhanceProjectGridSize(scope = globalThis.document) {
@@ -3666,6 +3688,25 @@ function appDialogValues(form) {
   return values;
 }
 
+function syncProjectAssetsSizePreferences(dialog, values) {
+  const dialogId = dialog?.id || dialog?.getAttribute?.('id');
+  if (dialogId !== PROJECT_ASSETS_DEFAULTS_DIALOG_ID) return;
+
+  if (gridSizeIsValid(values?.gridSize, ASSET_GRID_SIZE_CONFIG)) {
+    writeGridSize(values.gridSize, ASSET_GRID_SIZE_STORAGE_KEY);
+  }
+  if (gridSizeIsValid(values?.listSize, ASSET_LIST_SIZE_CONFIG)) {
+    writeGridSize(values.listSize, ASSET_LIST_SIZE_STORAGE_KEY);
+  }
+}
+
+function appDialogAllowsSubmittedValue(form, name, value) {
+  if (name !== 'listSize' || value !== 'default') return true;
+  const dialog = form?.closest?.(APP_DIALOG_SELECTOR);
+  const dialogId = dialog?.id || dialog?.getAttribute?.('id');
+  return dialogId !== PROJECT_ASSETS_DEFAULTS_DIALOG_ID;
+}
+
 function appDialogApplyValues(form, values = {}) {
   form?.querySelectorAll?.('option[data-dialog-submitted-value]')
     .forEach((option) => option.remove?.());
@@ -3674,6 +3715,10 @@ function appDialogApplyValues(form, values = {}) {
     const control = form?.querySelector?.(`[name="${name}"]`);
     if (!control) return;
     const stringValue = String(value ?? '');
+    if (!appDialogAllowsSubmittedValue(form, name, stringValue)) {
+      syncCreatorCrateDropdownFromNative(control);
+      return;
+    }
     if (control.tagName === 'SELECT') {
       const options = Array.from(control.options || control.querySelectorAll?.('option') || []);
       if (!options.some((option) => String(option.value) === stringValue)) {
@@ -4207,6 +4252,7 @@ function appDialogBindForm(state) {
           return;
         }
         state.savedValues = payload?.values || appDialogValues(form);
+        syncProjectAssetsSizePreferences(state.dialog, state.savedValues);
         appDialogStatus(state, '');
         appDialogFeedback(state.document, payload?.message || 'Projects defaults saved successfully.');
         appDialogClose(state);
@@ -5924,8 +5970,7 @@ function syncCreatorCrateDropdownOptionsFromNative(dropdown) {
   const nativeOptions = creatorCrateDropdownNativeOptions(nativeSelect);
   const nativeValues = new Set(nativeOptions.map(creatorCrateDropdownNativeValue));
   creatorCrateDropdownInputs(dropdown, mode)
-    .filter((input) => input.getAttribute?.('data-dialog-submitted-value') !== null
-      && !nativeValues.has(String(input.value ?? '')))
+    .filter((input) => !nativeValues.has(String(input.value ?? '')))
     .forEach((input) => input.closest?.('.asset-filter-multiselect-option')?.remove?.());
 
   const existingValues = new Set(

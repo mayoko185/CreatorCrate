@@ -924,6 +924,8 @@ describe('asset browser HTTP workflow', () => {
         .type('form')
         .send({
           view: 'list',
+          gridSize: 'large',
+          listSize: 'compact',
           sort: 'category',
           order: 'desc',
           pageSize: '50',
@@ -935,8 +937,14 @@ describe('asset browser HTTP workflow', () => {
       expect(save.headers.location).toBe(
         `/projects/${id}/assets?view=list&sort=category&order=desc&pageSize=50&notice=project_assets_defaults_saved`,
       );
+      expect(save.headers.location).not.toContain('gridSize');
+      expect(save.headers.location).not.toContain('listSize');
       expect(db.prepare('SELECT value FROM app_meta WHERE key = ?')
         .get(PAGE_DEFAULT_DEFINITIONS.projectAssets.view.key).value).toBe('list');
+      expect(db.prepare('SELECT value FROM app_meta WHERE key = ?')
+        .get(PAGE_DEFAULT_DEFINITIONS.projectAssets.gridSize.key).value).toBe('large');
+      expect(db.prepare('SELECT value FROM app_meta WHERE key = ?')
+        .get(PAGE_DEFAULT_DEFINITIONS.projectAssets.listSize.key).value).toBe('compact');
       expect(db.prepare('SELECT value FROM app_meta WHERE key = ?')
         .get(PAGE_DEFAULT_DEFINITIONS.projectAssets.sort.key).value).toBe('category');
       expect(db.prepare('SELECT value FROM app_meta WHERE key = ?')
@@ -955,6 +963,41 @@ describe('asset browser HTTP workflow', () => {
       expect(rendered.text).toContain('name="pageSize" value="50"');
       expect(rendered.text).toMatch(/name="sort"[^>]+value="category"[^>]+checked/);
       expect(rendered.text).toMatch(/name="order"[^>]+value="desc"[^>]+checked/);
+    });
+
+    it.each([
+      ['gridSize', 'invalid-grid-size'],
+      ['listSize', 'default'],
+    ])('rejects invalid Project Assets %s values without saving', async (option, invalidValue) => {
+      const res = await createProject(`Project Assets Invalid ${option}`);
+      const id = Number(res.headers.location.replace('/projects/', ''));
+      const values = {
+        view: 'list',
+        gridSize: 'large',
+        listSize: 'compact',
+        sort: 'category',
+        order: 'desc',
+        pageSize: '50',
+        [option]: invalidValue,
+        returnTo: `/projects/${id}/assets`,
+        _csrf: csrfToken,
+      };
+
+      const response = await agent
+        .post(`/projects/${id}/assets/defaults`)
+        .set('Accept', 'application/json')
+        .type('form')
+        .send(values)
+        .expect(422);
+
+      expect(response.body.status).toBe('error');
+      expect(response.body.errors[option]).toContain(invalidValue);
+      expect(response.body.values[option]).toBe(invalidValue);
+      expect(app.locals.pageDefaultsService.resolve('projectAssets', option)).toBe(
+        option === 'gridSize' ? 'default' : 'large',
+      );
+      expect(db.prepare('SELECT value FROM app_meta WHERE key = ?')
+        .get(PAGE_DEFAULT_DEFINITIONS.projectAssets[option].key)).toBeUndefined();
     });
 
     it('combines saved category and all four saved presentation defaults in one canonical redirect', async () => {
@@ -2334,6 +2377,12 @@ describe('asset browser HTTP workflow', () => {
   it('renders every Project Assets choice selector through the shared dropdown component', async () => {
     const res = await createProject('Project Assets Dropdown Audit');
     const id = res.headers.location.replace('/projects/', '');
+    saveAssetDefault('view', 'list');
+    saveAssetDefault('gridSize', 'large');
+    saveAssetDefault('listSize', 'compact');
+    saveAssetDefault('sort', 'category');
+    saveAssetDefault('order', 'desc');
+    saveAssetDefault('pageSize', '25');
     for (let index = 0; index < 26; index += 1) {
       assetRepo.upsert(Number(id), `asset-${index}.png`, {
         filename: `asset-${index}.png`,
@@ -2345,6 +2394,8 @@ describe('asset browser HTTP workflow', () => {
     }
     const response = await agent.get(`/projects/${id}/assets?defaults=1`).expect(200);
 
+    expect(response.text).toContain('data-project-assets-grid-size-default="large"');
+    expect(response.text).toContain('data-project-assets-list-size-default="compact"');
     const selectTags = [...response.text.matchAll(/<select\b[^>]*>/g)].map(([tag]) => tag);
     expect(selectTags.length).toBeGreaterThan(0);
     expect(selectTags.every((tag) => tag.includes('data-cc-dropdown-native-select'))).toBe(true);
@@ -2360,10 +2411,83 @@ describe('asset browser HTTP workflow', () => {
 
     const defaultsDialog = response.text.match(/<dialog id="project-assets-defaults-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
     expect(defaultsDialog).toContain('data-app-dialog');
-    for (const name of ['view', 'sort', 'order', 'pageSize']) {
-      expect(defaultsDialog).toMatch(new RegExp(`<select[^>]*name="${name}"[^>]*data-cc-dropdown-native-select`));
+    const defaultFields = [
+      {
+        name: 'view',
+        label: 'View',
+        id: 'projectAssets-default-view',
+        selected: 'list',
+        options: [['grid', 'Grid'], ['list', 'List']],
+      },
+      {
+        name: 'gridSize',
+        label: 'Grid size',
+        id: 'projectAssets-default-gridSize',
+        selected: 'large',
+        options: [['compact', 'Compact'], ['default', 'Default'], ['large', 'Large']],
+      },
+      {
+        name: 'listSize',
+        label: 'List size',
+        id: 'projectAssets-default-listSize',
+        selected: 'compact',
+        options: [['compact', 'Compact'], ['large', 'Large']],
+      },
+      {
+        name: 'sort',
+        label: 'Sort',
+        id: 'projectAssets-default-sort',
+        selected: 'category',
+        options: [
+          ['filename', 'Filename'],
+          ['modified', 'Modified date'],
+          ['size', 'File size'],
+          ['category', 'Category &amp; location'],
+        ],
+      },
+      {
+        name: 'order',
+        label: 'Order',
+        id: 'projectAssets-default-order',
+        selected: 'desc',
+        options: [['asc', 'Ascending'], ['desc', 'Descending']],
+      },
+      {
+        name: 'pageSize',
+        label: 'Page Size',
+        id: 'projectAssets-default-pageSize',
+        selected: '25',
+        options: [['10', '10 assets'], ['25', '25 assets'], ['50', '50 assets'], ['100', '100 assets']],
+      },
+    ];
+    for (const field of defaultFields) {
+      expect(defaultsDialog).toMatch(new RegExp(`<select[^>]*name="${field.name}"[^>]*data-cc-dropdown-native-select`));
+      expect(defaultsDialog).toContain(`data-dialog-field="${field.name}"`);
+      expect(defaultsDialog).toContain(`<legend>${field.label}</legend>`);
+      const nativeSelect = defaultsDialog.match(new RegExp(`<select id="${field.id}"[\\s\\S]*?<\\/select>`))?.[0] || '';
+      expect(nativeSelect).not.toBe('');
+      for (const [value, label] of field.options) {
+        expect(nativeSelect).toContain(`<option value="${value}"${value === field.selected ? ' selected' : ''}>${label}</option>`);
+      }
+      expect(defaultsDialog).toMatch(new RegExp(
+        `id="${field.id}-dropdown"[^>]*data-cc-dropdown data-cc-dropdown-mode="single"`,
+      ));
+      expect(defaultsDialog).toMatch(new RegExp(
+        `<input[^>]*type="radio" value="${field.selected}"[^>]*checked`,
+      ));
+      expect(defaultsDialog).not.toMatch(new RegExp(`<input[^>]*name="${field.name}"`));
+      expect((defaultsDialog.match(new RegExp(`name="${field.name}"`, 'g')) || [])).toHaveLength(1);
     }
-    expect((defaultsDialog.match(/data-cc-dropdown data-cc-dropdown-mode="single"/g) || [])).toHaveLength(4);
+    for (let index = 1; index < defaultFields.length; index += 1) {
+      expect(defaultsDialog.indexOf(`data-dialog-field="${defaultFields[index - 1].name}"`))
+        .toBeLessThan(defaultsDialog.indexOf(`data-dialog-field="${defaultFields[index].name}"`));
+    }
+    expect((defaultsDialog.match(/data-cc-dropdown data-cc-dropdown-mode="single"/g) || [])).toHaveLength(6);
+    const defaultsFooter = defaultsDialog.match(/<footer class="app-dialog-footer">[\s\S]*?<\/footer>/)?.[0] || '';
+    expect((defaultsFooter.match(/<button\b[^>]*type="submit"/g) || [])).toHaveLength(1);
+    expect(defaultsFooter).toContain('data-dialog-submit');
+    expect(defaultsFooter).toContain('>Save defaults</button>');
+    expect(defaultsFooter).not.toContain('>Cancel</button>');
 
     const speedSelect = response.text.match(/<select[^>]*data-slideshow-speed[^>]*>/)?.[0] || '';
     expect(speedSelect).toContain('data-cc-dropdown-native-select');
