@@ -355,20 +355,21 @@ describe('Phase 6B HTTP workflow', () => {
       expect(res.text).not.toMatch(/<button[^>]*>\s*Archive project\s*<\/button>/);
     });
 
-    it('active project shows the Edit control on the detail page and the Archive control on the edit page', async () => {
+    it('active project shows the Edit dialog trigger with destructive controls inside the dialog', async () => {
       const projectId = await createProject(app, { title: 'Active Has Both Controls' });
       const res = await app.testAgent.get(`/projects/${projectId}`).expect(200);
 
       expect(res.text).toContain(`href="/projects/${projectId}/edit"`);
-      // Phase 2C: the workspace edit action is labeled "Edit project" so its
-      // publication-editing purpose is unambiguous.
-      expect(res.text).toMatch(/<a[^>]*>\s*Edit project\s*<\/a>/);
-      // The archive (destructive) control now lives on the project edit page.
-      expect(res.text).not.toContain(`action="/projects/${projectId}/archive"`);
+      expect(res.text).toContain('data-dialog-open="project-edit-dialog"');
+      // The icon-only workspace edit action retains its accessible label.
+      expect(res.text).toMatch(/<a[^>]*aria-label="Edit project"[^>]*>/);
 
-      const edit = await app.testAgent.get(`/projects/${projectId}/edit`).expect(200);
-      expect(edit.text).toContain(`action="/projects/${projectId}/archive"`);
-      expect(edit.text).toMatch(/<button[^>]*>\s*Archive project\s*<\/button>/);
+      const edit = await app.testAgent.get(`/projects/${projectId}?edit=1`).expect(200);
+      const dialog = edit.text.match(/<dialog id="project-edit-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+      expect(dialog).not.toBe('');
+      expect(dialog).toContain(`action="/projects/${projectId}/archive"`);
+      expect(dialog).toContain(`action="/projects/${projectId}/delete"`);
+      expect(dialog).toContain('data-confirm="Delete this project permanently? This cannot be undone."');
     });
 
     it('archived project still preserves historical release information and assets', async () => {
@@ -429,10 +430,10 @@ describe('Phase 6B HTTP workflow', () => {
       expect(res.text).toContain('Projects');
     });
 
-    it('project edit form still renders', async () => {
+    it('project edit route redirects to the initially open detail dialog', async () => {
       const projectId = await createProject(app, { title: 'Still Works Project' });
-      const res = await app.testAgent.get(`/projects/${projectId}/edit`).expect(200);
-      expect(res.text).toContain('Projects — Edit Still Works Project');
+      const res = await app.testAgent.get(`/projects/${projectId}/edit`).expect(302);
+      expect(res.headers.location).toBe(`/projects/${projectId}?edit=1`);
     });
 
     it('asset listing still works from project detail', async () => {

@@ -3121,6 +3121,7 @@ const ASSET_VIEWER_FILTER_SINGLE_SELECT_SUMMARY_SELECTOR = '.asset-filter-multis
 const CC_DROPDOWN_CURRENT_SUMMARY_SELECTOR = '[data-cc-dropdown-summary-current]';
 const CC_DROPDOWN_NATIVE_SELECT_SELECTOR = '[data-cc-dropdown-native-select]';
 const SCROLLABLE_CATEGORY_DIALOG_BODY_CLASS = 'project-asset-category-management-dialog-body';
+const PROJECT_EDIT_DIALOG_BODY_CLASS = 'project-edit-dialog-body';
 const CC_DROPDOWN_PANEL_SELECTOR = '.asset-filter-multiselect-panel';
 const CC_DROPDOWN_OVERLAY_ATTRIBUTE = 'data-cc-dropdown-overlay';
 const CC_DROPDOWN_OVERLAY_STATE = '__creatorCrateDropdownOverlayState';
@@ -3643,7 +3644,7 @@ function appDialogCloseOpenDropdown(state) {
   dropdown.open = false;
   dropdown.removeAttribute?.('open');
   updateAssetViewerFilterDisclosureState(dropdown);
-  dropdown.querySelector?.('summary')?.focus?.();
+  dropdown.querySelector?.('summary')?.focus?.({ preventScroll: true });
   return true;
 }
 
@@ -5584,8 +5585,11 @@ export function enhanceAssetLibraryLiveFiltering(scope = globalThis.document) {
   return assetLibraryLiveEngine.enhance(scope);
 }
 
-function isScrollableCategoryDialogBody(dialogBody) {
-  return Boolean(dialogBody?.classList?.contains?.(SCROLLABLE_CATEGORY_DIALOG_BODY_CLASS));
+function isScrollableDialogBody(dialogBody) {
+  return Boolean(
+    dialogBody?.classList?.contains?.(SCROLLABLE_CATEGORY_DIALOG_BODY_CLASS)
+      || dialogBody?.classList?.contains?.(PROJECT_EDIT_DIALOG_BODY_CLASS),
+  );
 }
 
 function dropdownPanelStyleSet(panel, property, value) {
@@ -5629,7 +5633,7 @@ function dropdownViewport(dropdown) {
 }
 
 function positionScrollableCategoryDropdown(dropdown, dialogBody) {
-  if (!dropdown || dropdown.open !== true || !isScrollableCategoryDialogBody(dialogBody)) return false;
+  if (!dropdown || dropdown.open !== true || !isScrollableDialogBody(dialogBody)) return false;
 
   const summary = dropdown.querySelector?.('summary');
   const panel = dropdown.querySelector?.(CC_DROPDOWN_PANEL_SELECTOR);
@@ -5720,7 +5724,8 @@ function closeScrollableCategoryDropdown(dropdown, restoreFocus = false) {
 }
 
 function cleanupScrollableCategoryDialogDropdowns(dialog) {
-  const dialogBody = dialog?.querySelector?.(`.${SCROLLABLE_CATEGORY_DIALOG_BODY_CLASS}`);
+  const dialogBody = Array.from(dialog?.querySelectorAll?.('.app-dialog-body') || [])
+    .find((candidate) => isScrollableDialogBody(candidate));
   if (!dialogBody) return;
   Array.from(dialogBody.querySelectorAll?.(CC_DROPDOWN_SELECTOR) || []).forEach((dropdown) => {
     if (dropdown.open === true) {
@@ -5740,7 +5745,7 @@ function updateAssetViewerFilterDisclosureState(disclosure) {
 
   const dialog = dialogBody.closest?.('[data-app-dialog]');
   const panel = disclosure?.querySelector?.(CC_DROPDOWN_PANEL_SELECTOR);
-  if (isScrollableCategoryDialogBody(dialogBody)) {
+  if (isScrollableDialogBody(dialogBody)) {
     dialogBody.classList?.remove?.('cc-dropdown-dialog-open');
     dialogBody.closest?.('.app-dialog-card')?.classList?.remove?.('cc-dropdown-dialog-open');
     if (!panel) return;
@@ -6126,7 +6131,7 @@ function handleCreatorCrateDropdownChange(dropdown, event) {
     dropdown.removeAttribute?.('open');
     syncCreatorCrateDropdownDisabledState(dropdown);
     updateAssetViewerFilterDisclosureState(dropdown);
-    dropdown.querySelector?.('summary')?.focus?.();
+    dropdown.querySelector?.('summary')?.focus?.({ preventScroll: true });
   } else if (mode === 'multiple' && event.target?.type === 'checkbox') {
     syncCreatorCrateDropdownNativeFromInputs(dropdown);
     if (creatorCrateDropdownDispatchesNativeChange(dropdown)) {
@@ -6221,7 +6226,7 @@ function enhanceAssetDisclosures(scope, {
       active.open = false;
       active.removeAttribute?.('open');
       updateAssetViewerFilterDisclosureState(active);
-      active.querySelector?.('summary')?.focus?.();
+      active.querySelector?.('summary')?.focus?.({ preventScroll: true });
     }, true);
 
     scope.addEventListener?.('toggle', (event) => {

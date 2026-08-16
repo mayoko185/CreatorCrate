@@ -1,15 +1,12 @@
 {% extends "layout.njk" %}
 {% import "partials/page-heading.njk" as pageHeading %}
 {% import "partials/icons.njk" as icons %}
+{% import "partials/dialog.njk" as dialog %}
 
 {% set page_title = "Projects — " ~ project.title %}
 
 {% block content %}
-  {% if not project.archived_at %}
-    {% call pageHeading.render() %}
-      <a class="button button-secondary" href="/projects/{{ project.id }}/tags">Manage tags</a>
-    {% endcall %}
-  {% else %}
+  {% if project.archived_at %}
     {{ pageHeading.render("", "archived") }}
   {% endif %}
 
@@ -49,7 +46,7 @@
         <nav class="project-detail-action-toolbar" aria-label="Project actions">
           {% if not project.archived_at %}
             <a class="button button-small button-secondary project-detail-action asset-tooltip asset-tooltip--right"
-               href="/projects/{{ project.id }}/edit" aria-label="Edit project" data-tooltip="Edit project">
+               href="/projects/{{ project.id }}/edit" aria-label="Edit project" data-dialog-open="project-edit-dialog" data-tooltip="Edit project">
               {{ icons.icon('edit') }}
             </a>
           {% endif %}
@@ -183,4 +180,69 @@
       {% endif %}
     </div>
   </section>
+{% endblock %}
+
+{% block overlay %}
+  {% if not project.archived_at %}
+    {% set values = projectEditForm.values %}
+    {% set errors = projectEditForm.errors %}
+    {% set statuses = projectEditForm.statuses %}
+    {% set tags = projectEditForm.tags %}
+    {% set selectedTagIds = projectEditForm.selectedTagIds %}
+    {% call dialog.render('project-edit-dialog', 'Edit Project', projectEditDialogOpen, 'project-edit-description', 'project-edit-form') %}
+      <p id="project-edit-description" class="app-dialog-description">
+        Edit project details, status, scheduling, and links.
+      </p>
+
+      <div class="app-dialog-body project-edit-dialog-body">
+        <form id="project-edit-form" method="post" action="/projects/{{ project.id }}" class="app-dialog-form project-form project-edit-dialog-form"
+              data-dialog-form data-dialog-async="false" novalidate>
+          <input type="hidden" name="_csrf" value="{{ _csrf }}">
+
+          {% if errors.general %}
+            <div class="error-summary" role="alert">
+              <p>{{ errors.general }}</p>
+            </div>
+          {% endif %}
+
+          {% set projectFormDialog = true %}
+          {% include "partials/project-form-fields.njk" %}
+        </form>
+
+        <section class="settings-section project-edit-dialog-section project-actions project-edit-dialog-actions" aria-labelledby="project-actions-heading">
+          <h3 id="project-actions-heading">Project actions</h3>
+          <div class="project-edit-dialog-section-body project-edit-dialog-actions-body">
+
+            <details class="notes-workspace-disclosure notes-workspace-disclosure--archive">
+              <summary>Archive project</summary>
+              <div class="notes-workspace-disclosure-content">
+                <p class="notes-workspace-warning">Archive keeps this project and its data, but makes it archived and read-only.</p>
+                <form method="post" action="/projects/{{ project.id }}/archive">
+                  <input type="hidden" name="_csrf" value="{{ _csrf }}">
+                  <button class="button button-small button-secondary" type="submit" data-confirm="Archive this project? This cannot be undone.">Archive project</button>
+                </form>
+              </div>
+            </details>
+
+            <details class="notes-workspace-disclosure notes-workspace-disclosure--delete">
+              <summary>Delete project</summary>
+              <div class="notes-workspace-disclosure-content">
+                <p class="notes-workspace-warning">Permanently delete this project and its owned data. This cannot be undone.</p>
+                <form method="post" action="/projects/{{ project.id }}/delete">
+                  <input type="hidden" name="_csrf" value="{{ _csrf }}">
+                  <button class="button button-small button-danger" type="submit" data-confirm="Delete this project permanently? This cannot be undone.">Delete project</button>
+                </form>
+              </div>
+            </details>
+          </div>
+        </section>
+      </div>
+
+      <div class="app-dialog-status" data-dialog-status role="status" aria-live="polite"></div>
+
+      <footer class="app-dialog-footer">
+        <button class="button button-primary" type="submit" form="project-edit-form" data-dialog-submit>Save changes</button>
+      </footer>
+    {% endcall %}
+  {% endif %}
 {% endblock %}

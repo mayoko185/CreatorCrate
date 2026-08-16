@@ -1,0 +1,167 @@
+{% import "partials/dropdown.njk" as dropdown %}
+
+<section class="settings-section project-form-section{% if projectFormDialog %} project-edit-dialog-section{% endif %}">
+  <h3>Basic information</h3>
+  <div class="project-form-section-body{% if projectFormDialog %} project-edit-dialog-section-body{% endif %}">
+
+  <div class="field {% if errors.title %}field-error{% endif %}">
+    <label for="title">Title <span class="required" aria-label="required">*</span></label>
+    <input type="text" id="title" name="title" value="{{ values.title or '' }}" maxlength="200" required{% if errors.title %} aria-describedby="title-error" aria-invalid="true"{% endif %}>
+    {% if errors.title %}<span class="field-error-message" id="title-error">{{ errors.title }}</span>{% endif %}
+  </div>
+
+  <div class="field {% if errors.description %}field-error{% endif %}">
+    <label for="description">Description</label>
+    <textarea id="description" name="description" rows="6" maxlength="4000"{% if errors.description %} aria-describedby="description-error" aria-invalid="true"{% endif %}>{{ values.description or '' }}</textarea>
+    {% if errors.description %}<span class="field-error-message" id="description-error">{{ errors.description }}</span>{% endif %}
+  </div>
+
+  <div class="field {% if errors.notes %}field-error{% endif %}">
+    <label for="notes">Notes</label>
+    <textarea id="notes" name="notes" rows="4" maxlength="10000"{% if errors.notes %} aria-describedby="notes-error" aria-invalid="true"{% endif %}>{{ values.notes or '' }}</textarea>
+    {% if errors.notes %}<span class="field-error-message" id="notes-error">{{ errors.notes }}</span>{% endif %}
+  </div>
+  </div>
+</section>
+
+<section class="settings-section status-section project-form-section{% if projectFormDialog %} project-edit-dialog-section{% endif %}">
+  <h3>Status</h3>
+  <div class="project-form-section-body{% if projectFormDialog %} project-edit-dialog-section-body{% endif %}">
+
+  {% set statusSummary = '' %}
+  {% for s in statuses %}
+    {% if values.status == s %}
+      {% set statusSummary = s | replace('-', ' ') | title %}
+    {% endif %}
+  {% endfor %}
+
+  {% set tagSummary = 'No tags selected' %}
+  {% if selectedTagIds.length == 1 %}
+    {% for tag in tags %}
+      {% if selectedTagIds[0] == (tag.id | string) %}
+        {% set tagSummary = tag.displayName %}
+      {% endif %}
+    {% endfor %}
+  {% elif selectedTagIds.length > 1 %}
+    {% set tagSummary = selectedTagIds.length ~ ' tags selected' %}
+  {% endif %}
+
+  {% set tagOptions = [] %}
+  {% for tag in tags %}
+    {% set _ = tagOptions.push({ value: tag.id | string, label: tag.displayName }) %}
+  {% endfor %}
+
+  {% set statusOptions = [] %}
+  {% for s in statuses %}
+    {% set _ = statusOptions.push({ value: s, label: s | replace('-', ' ') | title }) %}
+  {% endfor %}
+
+  <div class="field-row status-row">
+    <div class="field status-field">
+      {{ dropdown.singleSelect({
+        id: "project-status-form",
+        name: "status",
+        label: "Status",
+        required: true,
+        options: statusOptions,
+        selected: values.status,
+        summary: statusSummary,
+        triggerAriaLabel: "Status: " ~ statusSummary,
+        summaryAttributes: [
+          ["aria-describedby", "status-error" if errors.status else none],
+          ["aria-invalid", "true" if errors.status else none]
+        ],
+        inputAttributes: [
+          ["required", true],
+          ["aria-describedby", "status-error" if errors.status else none],
+          ["aria-invalid", "true" if errors.status else none]
+        ],
+        fieldClasses: "status-field asset-viewer-filter-field" ~ (" field-error" if errors.status else ""),
+        panelLabel: "Status options"
+      }) }}
+      {% if errors.status %}<span class="field-error-message" id="status-error">{{ errors.status }}</span>{% endif %}
+    </div>
+
+    <div class="field status-field">
+      {{ dropdown.multiSelect({
+        id: "project-tags-form",
+        name: "tagIds[]",
+        label: "Tags",
+        options: tagOptions,
+        selectedValues: selectedTagIds,
+        emptySummary: "No tags selected",
+        countLabel: "tags",
+        summary: tagSummary,
+        triggerAriaLabel: "Tags: " ~ tagSummary,
+        summaryAttributes: [
+          ["aria-describedby", "tagIds-error" if errors.tagIds else none],
+          ["aria-invalid", "true" if errors.tagIds else none]
+        ],
+        inputAttributes: [
+          ["aria-describedby", "tagIds-error" if errors.tagIds else none],
+          ["aria-invalid", "true" if errors.tagIds else none]
+        ],
+        emptyState: {
+          text: "No tags available.",
+          link: { text: "Add tags in Settings", href: "/settings/tags" },
+          suffix: "."
+        },
+        fieldClasses: "status-field asset-viewer-filter-field" ~ (" field-error" if errors.tagIds else ""),
+        panelLabel: "Tag options"
+      }) }}
+      {% if errors.tagIds %}<span class="field-error-message" id="tagIds-error">{{ errors.tagIds }}</span>{% endif %}
+      <span class="help-text">Add new tags in <a href="/settings/tags">Settings › Tags</a>.</span>
+    </div>
+  </div>
+  </div>
+</section>
+
+<section class="settings-section scheduling-section project-form-section{% if projectFormDialog %} project-edit-dialog-section{% endif %}">
+  <h3>Scheduling</h3>
+  <div class="project-form-section-body{% if projectFormDialog %} project-edit-dialog-section-body{% endif %}">
+  <div class="field-row scheduling-row">
+    <div class="field scheduling-field {% if errors.plannedDate %}field-error{% endif %}" data-date-picker-field>
+      <label for="plannedDate">Planned date</label>
+      <div class="picker-control">
+        <div class="picker-input-row">
+          <input class="picker-input" type="date" id="plannedDate" name="plannedDate" value="{{ values.plannedDate or '' }}" aria-describedby="plannedDate-help{% if errors.plannedDate %} plannedDate-error{% endif %}"{% if errors.plannedDate %} aria-invalid="true"{% endif %} data-date-picker-input>
+          <button type="button" class="picker-trigger date-picker-trigger" aria-haspopup="dialog" aria-expanded="false" aria-controls="plannedDate-calendar" aria-label="Open calendar for planned date">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" focusable="false"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>
+          </button>
+        </div>
+        <div id="plannedDate-calendar" class="date-picker-panel" role="dialog" aria-label="Planned date calendar" hidden data-date-picker-panel data-date-picker-for="plannedDate"></div>
+      </div>
+      <span class="help-text" id="plannedDate-help">Target date for the creative project</span>
+      {% if errors.plannedDate %}<span class="field-error-message" id="plannedDate-error">{{ errors.plannedDate }}</span>{% endif %}
+    </div>
+
+    <div class="field scheduling-field {% if errors.publishedDate %}field-error{% endif %}" data-date-picker-field>
+      <label for="publishedDate">Published date</label>
+      <div class="picker-control">
+        <div class="picker-input-row">
+          <input class="picker-input" type="date" id="publishedDate" name="publishedDate" value="{{ values.publishedDate or '' }}" aria-describedby="publishedDate-help{% if errors.publishedDate %} publishedDate-error{% endif %}"{% if errors.publishedDate %} aria-invalid="true"{% endif %} data-date-picker-input>
+          <button type="button" class="picker-trigger date-picker-trigger" aria-haspopup="dialog" aria-expanded="false" aria-controls="publishedDate-calendar" aria-label="Open calendar for published date">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" focusable="false"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>
+          </button>
+        </div>
+        <div id="publishedDate-calendar" class="date-picker-panel" role="dialog" aria-label="Published date calendar" hidden data-date-picker-panel data-date-picker-for="publishedDate"></div>
+      </div>
+      <span class="help-text" id="publishedDate-help">When the project was published</span>
+      {% if errors.publishedDate %}<span class="field-error-message" id="publishedDate-error">{{ errors.publishedDate }}</span>{% endif %}
+    </div>
+  </div>
+</div>
+</section>
+
+<section class="settings-section project-form-section{% if projectFormDialog %} project-edit-dialog-section{% endif %}">
+  <h3>Links</h3>
+  <div class="project-form-section-body{% if projectFormDialog %} project-edit-dialog-section-body{% endif %}">
+
+  <div class="field {% if errors.patreonUrl %}field-error{% endif %}">
+    <label for="patreonUrl">Project link</label>
+    <input type="url" id="patreonUrl" name="patreonUrl" value="{{ values.patreonUrl or '' }}" aria-describedby="patreonUrl-help{% if errors.patreonUrl %} patreonUrl-error{% endif %}"{% if errors.patreonUrl %} aria-invalid="true"{% endif %}>
+    <span class="help-text" id="patreonUrl-help">Optional absolute HTTP or HTTPS URL for this project.</span>
+    {% if errors.patreonUrl %}<span class="field-error-message" id="patreonUrl-error">{{ errors.patreonUrl }}</span>{% endif %}
+  </div>
+  </div>
+</section>

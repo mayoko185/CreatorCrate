@@ -117,19 +117,20 @@ describe('project tags — HTTP', () => {
     expect(tagsSection).not.toContain(`>${alpha.id}<`);
   });
 
-  it('places Manage tags with the existing active project heading actions', async () => {
+  it('omits Manage tags from the active project detail actions', async () => {
     const projectId = await createProject('Heading Actions Project');
     const detail = await agent.get(`/projects/${projectId}`).expect(200);
     const actions = extractPageHeadingActions(detail.text);
     const toolbar = extractProjectDetailActionToolbar(detail.text);
 
-    expect(actions).toContain(`href="/projects/${projectId}/tags">Manage tags</a>`);
-    expect(actions).not.toContain(`/projects/${projectId}/edit`);
-    expect(actions).not.toContain(`/projects/${projectId}/assets`);
+    expect(actions).toBe('');
+    expect(detail.text).not.toContain('Manage tags');
+    expect(detail.text).not.toContain(`href="/projects/${projectId}/tags"`);
+    expect(toolbar).toContain(`href="/projects/${projectId}/edit"`);
+    expect(toolbar).toContain('data-dialog-open="project-edit-dialog"');
     expect(toolbar).toContain(`href="/projects/${projectId}/assets"`);
     expect(toolbar).toContain('aria-label="View Assets"');
-    expect(actions).not.toContain(`href="/projects/${projectId}/asset-categories"`);
-    expect((actions.match(/<a\b/g) || [])).toHaveLength(1);
+    expect(detail.text).not.toContain(`href="/projects/${projectId}/asset-categories"`);
     expect(detail.text).not.toMatch(new RegExp(`<section class="workflow-actions">[\\s\\S]*?/projects/${projectId}/tags`));
 
     const management = await agent.get(`/projects/${projectId}/tags`).expect(200);

@@ -193,12 +193,21 @@ function addOption(select, value, selected = false) {
   return option;
 }
 
-function addStandardDropdown(field, select, name, options, value, dispatchNativeChange = false) {
+function addStandardDropdown(
+  field,
+  select,
+  name,
+  options,
+  value,
+  dispatchNativeChange = false,
+  mode = 'single',
+  selectedValues = [],
+) {
   const fieldset = makeElement('fieldset');
   const details = makeElement('details', {
     id: `${name}-dropdown`,
     'data-cc-dropdown': '',
-    'data-cc-dropdown-mode': 'single',
+    'data-cc-dropdown-mode': mode,
     hidden: '',
   });
   if (dispatchNativeChange) details.setAttribute('data-cc-dropdown-dispatch-native-change', '');
@@ -213,10 +222,10 @@ function addStandardDropdown(field, select, name, options, value, dispatchNative
     const wrapper = makeElement('div', { class: 'asset-filter-multiselect-option' });
     const label = makeElement('label');
     const input = makeElement('input', {
-      type: 'radio',
+      type: mode === 'single' ? 'radio' : 'checkbox',
       value: option,
     });
-    input.checked = option === value;
+    input.checked = mode === 'multiple' ? selectedValues.includes(option) : option === value;
     label.appendChild(input);
     const optionText = makeElement('span');
     optionText.textContent = option;
@@ -224,8 +233,10 @@ function addStandardDropdown(field, select, name, options, value, dispatchNative
     wrapper.appendChild(label);
     panel.appendChild(wrapper);
   });
-  select.setAttribute('data-cc-dropdown-native-select', '');
-  fieldset.appendChild(select);
+  if (select) {
+    select.setAttribute('data-cc-dropdown-native-select', '');
+    fieldset.appendChild(select);
+  }
   details.appendChild(summary);
   details.appendChild(panel);
   fieldset.appendChild(details);
@@ -233,7 +244,12 @@ function addStandardDropdown(field, select, name, options, value, dispatchNative
   return { details, summary, panel };
 }
 
-function makeDialogPage({ standardDropdowns = false, scrollableDialog = false, liveDefault = false } = {}) {
+function makeDialogPage({
+  standardDropdowns = false,
+  scrollableDialog = false,
+  projectEditDialog = false,
+  liveDefault = false,
+} = {}) {
   const document = makeElement('document');
   document.nodeType = 9;
   document.ownerDocument = document;
@@ -265,7 +281,7 @@ function makeDialogPage({ standardDropdowns = false, scrollableDialog = false, l
   const card = makeElement('div');
   if (standardDropdowns) card.classList.add('app-dialog-card');
   if (liveDefault) card.setAttribute('data-asset-browser-default', '');
-  const close = makeElement('button', { 'data-dialog-close': '' });
+  const close = makeElement('button', { type: 'button', 'data-dialog-close': '' });
   card.appendChild(close);
   const form = makeElement('form', {
     id: 'projects-defaults-form',
@@ -290,6 +306,16 @@ function makeDialogPage({ standardDropdowns = false, scrollableDialog = false, l
   if (dialogBody) {
     dialogBody.classList.add('app-dialog-body');
     if (scrollableDialog) dialogBody.classList.add('project-asset-category-management-dialog-body');
+    if (projectEditDialog) dialogBody.classList.add('project-edit-dialog-body');
+    dialogBody.scrollTop = 0;
+    if (projectEditDialog) {
+      const toggle = dialogBody.classList.toggle.bind(dialogBody.classList);
+      dialogBody.classList.toggle = (name, force) => {
+        const result = toggle(name, force);
+        if (name === 'cc-dropdown-dialog-open') dialogBody.scrollTop = 0;
+        return result;
+      };
+    }
   }
   for (const [name, value, options] of [
     ['view', 'grid', ['grid', 'list']],
@@ -325,7 +351,25 @@ function makeDialogPage({ standardDropdowns = false, scrollableDialog = false, l
     (dialogBody || form).appendChild(field);
     fields.defaultCategory = select;
   }
-  if (scrollableDialog) {
+  if (projectEditDialog) {
+    const field = makeElement('div', { 'data-dialog-field': 'tagIds' });
+    const select = makeElement('select', { id: 'project-tags-form', name: 'tagIds[]' });
+    for (const option of ['alpha', 'beta', 'gamma']) addOption(select, option, option === 'alpha');
+    select.value = 'alpha';
+    dropdowns.tags = addStandardDropdown(
+      field,
+      select,
+      'tags',
+      ['alpha', 'beta', 'gamma'],
+      '',
+      false,
+      'multiple',
+      ['alpha'],
+    );
+    dialogBody.appendChild(field);
+    fields.tags = select;
+  }
+  if (scrollableDialog || projectEditDialog) {
     Object.values(dropdowns).forEach(({ summary, panel }) => {
       summary.getBoundingClientRect = () => ({
         left: 100,
@@ -485,9 +529,14 @@ async function flush() {
 }
 
 describe('Reusable app dialog enhancement', () => {
-  it('opens through delegation, closes on cancel, restores focus, and survives trigger replacement', () => {
+  it('uses the shared cancellation path for X and Escape, without submitting', () => {
     const page = makeDialogPage();
     page.region.appendChild(page.trigger);
+    const submit = vi.fn();
+    page.form.addEventListener('submit', submit);
+
+    expect(page.close.getAttribute('type')).toBe('button');
+    expect(page.close.getAttribute('form')).toBeNull();
 
     expect(enhanceAppDialogs(page.document)).toBe(1);
     expect(enhanceAppDialogs(page.document)).toBe(1);
@@ -496,20 +545,26 @@ describe('Reusable app dialog enhancement', () => {
     page.document.dispatch('click', { target: page.trigger });
     expect(page.dialog.open).toBe(true);
     expect(page.close.focused).toBe(true);
+    const xClick = page.close.dispatch('click');
+    expect(xClick.defaultPrevented).toBe(true);
+    expect(page.dialog.close).toHaveBeenCalledTimes(1);
+    expect(page.dialog.open).toBe(false);
+    expect(page.trigger.focused).toBe(true);
+    expect(submit).not.toHaveBeenCalled();
 
     const replacement = makeElement('a', {
       href: '/projects?defaults=1',
       'data-dialog-open': 'projects-defaults-dialog',
     });
     page.trigger.replaceWith(replacement);
-    page.dialog.dispatch('cancel');
-    expect(page.dialog.open).toBe(false);
-    expect(replacement.focused).toBe(true);
-
     page.document.dispatch('click', { target: replacement });
     expect(page.dialog.open).toBe(true);
-    page.dialog.dispatch('cancel');
+    const escape = page.dialog.dispatch('keydown', { key: 'Escape', target: page.dialog });
+    expect(escape.defaultPrevented).toBe(true);
+    expect(page.dialog.close).toHaveBeenCalledTimes(2);
+    expect(page.dialog.open).toBe(false);
     expect(replacement.focused).toBe(true);
+    expect(submit).not.toHaveBeenCalled();
   });
 
   it('saves asynchronously without navigation and closes on success', async () => {
@@ -650,6 +705,51 @@ describe('Reusable app dialog enhancement', () => {
     expect(panel.style.getPropertyValue('position')).toBe('');
     expect(body.listeners.filter(({ type }) => type === 'scroll')).toHaveLength(0);
     expect(page.windowObject.removeEventListener).toHaveBeenCalled();
+  });
+
+  it('preserves Edit Project body scroll during Status dropdown interaction', () => {
+    const page = makeDialogPage({ standardDropdowns: true, projectEditDialog: true });
+    page.region.appendChild(page.trigger);
+    enhanceDropdowns(page.document);
+    enhanceAppDialogs(page.document);
+    page.document.dispatch('click', { target: page.trigger });
+    page.dialogBody.scrollTop = 240;
+
+    const statusDropdown = page.dropdowns.view.details;
+    statusDropdown.open = true;
+    statusDropdown.setAttribute('open', '');
+    page.document.dispatch('toggle', { target: statusDropdown });
+    expect(page.dialogBody.scrollTop).toBe(240);
+
+    const statusOptions = statusDropdown.querySelectorAll('input[type="radio"]');
+    statusOptions[0].checked = false;
+    statusOptions[1].checked = true;
+    page.document.dispatch('change', { target: statusOptions[1] });
+    expect(page.dialogBody.scrollTop).toBe(240);
+  });
+
+  it('preserves Edit Project body scroll during Tags dropdown interaction', () => {
+    const page = makeDialogPage({ standardDropdowns: true, projectEditDialog: true });
+    page.region.appendChild(page.trigger);
+    enhanceDropdowns(page.document);
+    enhanceAppDialogs(page.document);
+    page.document.dispatch('click', { target: page.trigger });
+    page.dialogBody.scrollTop = 240;
+
+    const tagsDropdown = page.dropdowns.tags.details;
+    tagsDropdown.open = true;
+    tagsDropdown.setAttribute('open', '');
+    page.document.dispatch('toggle', { target: tagsDropdown });
+    expect(page.dialogBody.scrollTop).toBe(240);
+
+    const tagOptions = tagsDropdown.querySelectorAll('input[type="checkbox"]');
+    tagOptions[1].checked = true;
+    page.document.dispatch('change', { target: tagOptions[1] });
+    expect(page.dialogBody.scrollTop).toBe(240);
+
+    const escape = page.dialog.dispatch('keydown', { key: 'Escape', target: tagOptions[1] });
+    expect(escape.defaultPrevented).toBe(true);
+    expect(page.dialogBody.scrollTop).toBe(240);
   });
 
   it('persists a project asset browser default immediately, updates visible state, and keeps the dialog open', async () => {

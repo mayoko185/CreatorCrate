@@ -215,16 +215,15 @@ describe('CSRF — every mutating form has exactly one token', () => {
     expect(countTotalCsrfInputs(res.text)).toBe(3);
   });
 
-  it('project edit page has the edit and archive form tokens (plus logout forms)', async () => {
-    const res = await agent.get(`/projects/${projectId}/edit`).expect(200);
-    // Edit form + archive (danger zone) form + 2 logout forms.
-    expect(countTotalCsrfInputs(res.text)).toBe(4);
+  it('project detail edit dialog has tokens for each mutation form (plus logout forms)', async () => {
+    const res = await agent.get(`/projects/${projectId}`).expect(200);
+    // Edit, archive, and delete forms + 2 logout forms.
+    expect(countTotalCsrfInputs(res.text)).toBe(5);
   });
 
-  it('project detail page has no content form tokens (only logout forms)', async () => {
+  it('project detail page includes the edit dialog token (plus logout forms)', async () => {
     const res = await agent.get(`/projects/${projectId}`).expect(200);
-    // The archive form moved to the edit page; detail has only the 2 logout forms.
-    expect(countTotalCsrfInputs(res.text)).toBe(2);
+    expect(countTotalCsrfInputs(res.text)).toBe(5);
   });
 
   it('backup list page create form has exactly one CSRF token (plus logout forms)', async () => {

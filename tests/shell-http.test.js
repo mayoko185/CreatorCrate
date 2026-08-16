@@ -146,8 +146,8 @@ describe('application shell — navigation model', () => {
       expect(activeNavKeys(res.text)).toEqual(['projects']);
     });
 
-    it('marks Projects active on project edit', async () => {
-      const res = await agent.get(`/projects/${projectId}/edit`).expect(200);
+    it('marks Projects active on the project edit dialog', async () => {
+      const res = await agent.get(`/projects/${projectId}?edit=1`).expect(200);
       expect(activeNavKeys(res.text)).toEqual(['projects']);
     });
 

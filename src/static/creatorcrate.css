@@ -4089,7 +4089,79 @@
       #project-asset-category-management-dialog .app-dialog-body {
         padding-bottom: var(--space-lg);
       }
+      #project-edit-dialog {
+        width: min(51rem, calc(100vw - 2rem));
+        max-width: calc(100vw - 2rem);
+      }
+      /* Keep project edit sections at content height so the shared
+         viewport-capped dialog body remains the scroll owner. */
+      #project-edit-dialog .app-dialog-body {
+        gap: var(--space-md);
+        padding-bottom: var(--space-lg);
+      }
+      #project-edit-dialog .app-dialog-body > * {
+        flex-shrink: 0;
+      }
+      #project-edit-dialog .project-edit-dialog-form {
+        gap: var(--space-md);
+        min-width: 0;
+      }
+      #project-edit-dialog .project-edit-dialog-form > .error-summary {
+        margin: 0;
+      }
+      #project-edit-dialog .project-edit-dialog-section {
+        flex: 0 0 auto;
+        min-width: 0;
+        margin: 0;
+        padding: 0;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
+        overflow: visible;
+      }
+      #project-edit-dialog .project-edit-dialog-section > h3 {
+        margin: 0;
+        background: var(--surface-hover);
+      }
+      #project-edit-dialog .project-edit-dialog-section-body {
+        display: flex;
+        flex-direction: column;
+        gap: var(--space-lg);
+        min-width: 0;
+        padding: var(--space-md) var(--space-lg) var(--space-lg);
+      }
+      #project-edit-dialog .project-edit-dialog-actions-body {
+        gap: var(--space-sm);
+      }
+      #project-edit-dialog .status-row,
+      #project-edit-dialog .scheduling-row {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: var(--space-md);
+        align-items: start;
+      }
+      #project-edit-dialog .status-row > .field,
+      #project-edit-dialog .scheduling-row > .field {
+        min-width: 0;
+        max-width: none;
+      }
+      #project-edit-dialog .status-row .asset-filter-multiselect-field,
+      #project-edit-dialog .status-row .asset-filter-multiselect--sized,
+      #project-edit-dialog .status-row .asset-filter-multiselect--sized summary {
+        width: 100%;
+        max-width: none;
+      }
+      @media (max-width: 767px) {
+        #project-edit-dialog .status-row,
+        #project-edit-dialog .scheduling-row {
+          grid-template-columns: minmax(0, 1fr);
+        }
+      }
       #project-asset-category-management-dialog .asset-filter-multiselect-panel[data-cc-dropdown-overlay] {
+        position: fixed;
+        min-width: 0;
+      }
+      #project-edit-dialog .asset-filter-multiselect-panel[data-cc-dropdown-overlay] {
         position: fixed;
         min-width: 0;
       }
@@ -6577,6 +6649,11 @@
         flex-direction: column;
         gap: var(--space-lg);
         padding: 0 var(--space-md) var(--space-lg);
+      }
+      .project-form .project-form-section-body {
+        display: flex;
+        flex-direction: column;
+        gap: var(--space-lg);
       }
       .project-form .settings-section > h3 {
         margin-left: calc(-1 * var(--space-md));

@@ -486,7 +486,7 @@ describe('Phase 10.5A: Shared page-level components', () => {
       expect(hasClass(res.text, 'button-secondary')).toBe(true);
     });
 
-    it('button-danger is rendered for destructive actions', async () => {
+    it('project edit dialog includes the legacy destructive actions', async () => {
       const projRes = await agent
         .post('/projects')
         .send('title=Danger+Test')
@@ -497,9 +497,12 @@ describe('Phase 10.5A: Shared page-level components', () => {
         .expect(302);
       const id = projRes.headers.location.replace('/projects/', '');
 
-      // The archive (destructive) control now lives on the project edit page.
-      const edit = await agent.get(`/projects/${id}/edit`).expect(200);
-      expect(hasClass(edit.text, 'button-danger')).toBe(true);
+      const edit = await agent.get(`/projects/${id}?edit=1`).expect(200);
+      const dialog = edit.text.match(/<dialog id="project-edit-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+      expect(dialog).not.toBe('');
+      expect(hasClass(dialog, 'button-danger')).toBe(true);
+      expect(dialog).toContain(`action="/projects/${id}/archive"`);
+      expect(dialog).toContain(`action="/projects/${id}/delete"`);
     });
   });
 
@@ -724,7 +727,7 @@ describe('Phase 10.5A: Shared page-level components', () => {
   // ─── 8. Destructive sections ───────────────────────────────────────────
 
   describe('destructive section', () => {
-    it('project edit page has destructive section with danger styling', async () => {
+    it('project edit dialog keeps destructive actions in the established action section', async () => {
       const createRes = await agent
         .post('/projects')
         .send('title=Destructive+Test')
@@ -734,12 +737,14 @@ describe('Phase 10.5A: Shared page-level components', () => {
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
-      // The archive (destructive) control now lives on the project edit page.
-      const res = await agent.get(createRes.headers.location + '/edit').expect(200);
-      expect(res.text).toContain('destructive-section');
-      expect(res.text).toContain('button-danger');
-      expect(res.text).toContain('Danger zone');
-      expect(res.text).toContain('Archive project');
+      const res = await agent.get(`${createRes.headers.location}?edit=1`).expect(200);
+      const dialog = res.text.match(/<dialog id="project-edit-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+      expect(dialog).not.toBe('');
+      expect(dialog).not.toContain('destructive-section');
+      expect(dialog).not.toContain('Danger zone');
+      expect(dialog).toContain('button-danger');
+      expect(dialog).toContain('Archive project');
+      expect(dialog).toContain('Delete project');
     });
 
     it('archived project detail has no destructive section', async () => {

@@ -217,28 +217,14 @@ export function createProjectsRouter({ appName, db, projectService, workflowQuer
       return next(createNotFound());
     }
 
-    const workspace = workflowQueryService.getProjectWorkspace(id);
-    if (!workspace) {
+    if (!renderProjectDetailPage(req, res, {
+      appName,
+      workflowQueryService,
+      id,
+      projectEditDialogOpen: req.query.edit === '1',
+    })) {
       return next(createNotFound());
     }
-
-    const assignedProjectTags = getProjectTagService(req).listProjectTags(id);
-    const nsfwFilterEnabled = getNsfwFilterSettingsService(req).isEnabled();
-    const projectTags = assignedProjectTags
-      .map((tag) => ({ displayName: tag.display_name }));
-
-    res.render('projects/detail.njk', {
-      appName,
-      project: withNsfwBlur(workspace.project, assignedProjectTags, nsfwFilterEnabled),
-      releaseSummary: workspace.releaseSummary,
-      assetHealth: workspace.assetHealth,
-      projectTags,
-      openLocallyUri: buildOpenLocallyUri({
-        windowsRoot: getOpenLocallySettingsService(req).getWindowsProjectsPath(),
-        projectDir: workspace.project.project_dir,
-      }),
-      notice: resolveNotice(req.query.notice),
-    });
   });
 
   router.get('/:id/edit', (req, res, next) => {
@@ -259,22 +245,7 @@ export function createProjectsRouter({ appName, db, projectService, workflowQuer
       return res.redirect(`/projects/${project.id}`);
     }
 
-    try {
-      const { tags, selectedTagIds } = buildTagFormModel(req, project.id);
-      res.render('projects/form.njk', {
-        appName,
-        project,
-        values: projectToFormValues(project),
-        errors: {},
-        statuses: WORKFLOW_STATUSES,
-        action: 'Edit',
-        submitUrl: `/projects/${project.id}`,
-        tags,
-        selectedTagIds,
-      });
-    } catch (err) {
-      next(err);
-    }
+    return res.redirect(`/projects/${project.id}?edit=1`);
   });
 
   router.post('/:id', (req, res, next) => {
@@ -299,33 +270,43 @@ export function createProjectsRouter({ appName, db, projectService, workflowQuer
         return next(createNotFound());
       }
       if (err instanceof ProjectValidationError) {
-        const existing = projectService.findById(id);
-        res.status(422).render('projects/form.njk', {
+        if (!renderProjectDetailPage(req, res, {
           appName,
-          project: existing || { id },
-          values: createFormValues(req.body),
-          errors: err.errors,
-          statuses: WORKFLOW_STATUSES,
-          action: 'Edit',
-          submitUrl: `/projects/${id}`,
-          tags: loadAvailableTags(req),
-          selectedTagIds: buildSubmittedSelectedTagIds(parsedTags),
-        });
+          workflowQueryService,
+          id,
+          status: 422,
+          projectEditDialogOpen: true,
+          projectEditForm: {
+            values: createFormValues(req.body),
+            errors: err.errors,
+            statuses: WORKFLOW_STATUSES,
+            tags: loadAvailableTags(req),
+            selectedTagIds: buildSubmittedSelectedTagIds(parsedTags),
+          },
+        })) {
+          return next(createNotFound());
+        }
         return;
       }
-      // Filesystem or other error: render form with safe message + preserved values
+      // Filesystem or other error: render the detail dialog with a safe message
+      // and preserved values.
       const existing = projectService.findById(id);
-      res.status(500).render('projects/form.njk', {
+      if (!existing || !renderProjectDetailPage(req, res, {
         appName,
-        project: existing || { id },
-        values: createFormValues(req.body),
-        errors: { general: 'Project update failed. Please try again.' },
-        statuses: WORKFLOW_STATUSES,
-        action: 'Edit',
-        submitUrl: `/projects/${id}`,
-        tags: loadAvailableTags(req),
-        selectedTagIds: buildSubmittedSelectedTagIds(parsedTags),
-      });
+        workflowQueryService,
+        id,
+        status: 500,
+        projectEditDialogOpen: true,
+        projectEditForm: {
+          values: createFormValues(req.body),
+          errors: { general: 'Project update failed. Please try again.' },
+          statuses: WORKFLOW_STATUSES,
+          tags: loadAvailableTags(req),
+          selectedTagIds: buildSubmittedSelectedTagIds(parsedTags),
+        },
+      })) {
+        return next(createNotFound());
+      }
     }
   });
 
@@ -367,6 +348,48 @@ export function createProjectsRouter({ appName, db, projectService, workflowQuer
   });
 
   return router;
+}
+
+function renderProjectDetailPage(req, res, {
+  appName,
+  workflowQueryService,
+  id,
+  status = 200,
+  projectEditDialogOpen = false,
+  projectEditForm: submittedProjectEditForm = null,
+} = {}) {
+  const workspace = workflowQueryService.getProjectWorkspace(id);
+  if (!workspace) return false;
+
+  const assignedProjectTags = getProjectTagService(req).listProjectTags(id);
+  const nsfwFilterEnabled = getNsfwFilterSettingsService(req).isEnabled();
+  const projectTags = assignedProjectTags
+    .map((tag) => ({ displayName: tag.display_name }));
+  const projectEditForm = workspace.project.archived_at
+    ? null
+    : submittedProjectEditForm || {
+      values: projectToFormValues(workspace.project),
+      errors: {},
+      statuses: WORKFLOW_STATUSES,
+      tags: loadAvailableTags(req),
+      selectedTagIds: assignedProjectTags.map((tag) => String(tag.id)),
+    };
+
+  res.status(status).render('projects/detail.njk', {
+    appName,
+    project: withNsfwBlur(workspace.project, assignedProjectTags, nsfwFilterEnabled),
+    releaseSummary: workspace.releaseSummary,
+    assetHealth: workspace.assetHealth,
+    projectTags,
+    projectEditForm,
+    projectEditDialogOpen: Boolean(!workspace.project.archived_at && projectEditDialogOpen),
+    openLocallyUri: buildOpenLocallyUri({
+      windowsRoot: getOpenLocallySettingsService(req).getWindowsProjectsPath(),
+      projectDir: workspace.project.project_dir,
+    }),
+    notice: resolveNotice(req.query.notice),
+  });
+  return true;
 }
 
 function getPageDefaultsService(req) {
