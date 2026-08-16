@@ -1,25 +1,16 @@
 {% extends "layout.njk" %}
 {% import "partials/page-heading.njk" as pageHeading %}
+{% import "partials/icons.njk" as icons %}
 
 {% set page_title = "Projects — " ~ project.title %}
 
 {% block content %}
   {% if not project.archived_at %}
     {% call pageHeading.render() %}
-      <a class="button" href="/projects/{{ project.id }}/edit">Edit project</a>
-      <a class="button" href="/projects/{{ project.id }}/assets">View Assets</a>
       <a class="button button-secondary" href="/projects/{{ project.id }}/tags">Manage tags</a>
-      {% if openLocallyUri %}
-        <a class="button button-secondary" href="{{ openLocallyUri }}">Open locally</a>
-      {% endif %}
     {% endcall %}
   {% else %}
-    {% call pageHeading.render("", "archived") %}
-      <a class="button" href="/projects/{{ project.id }}/assets">View Assets</a>
-      {% if openLocallyUri %}
-        <a class="button button-secondary" href="{{ openLocallyUri }}">Open locally</a>
-      {% endif %}
-    {% endcall %}
+    {{ pageHeading.render("", "archived") }}
   {% endif %}
 
   {% if notice %}
@@ -55,30 +46,43 @@
     <div class="project-detail-summary">
       <div class="project-detail-meta">
         {% set status = project.status %}{% include "partials/status-badge.njk" %}
-        {% if project.patreon_url %}
-          <a class="project-detail-link" href="{{ project.patreon_url }}" target="_blank" rel="noopener">Project link</a>
-        {% endif %}
+        <nav class="project-detail-action-toolbar" aria-label="Project actions">
+          {% if not project.archived_at %}
+            <a class="button button-small button-secondary project-detail-action asset-tooltip asset-tooltip--right"
+               href="/projects/{{ project.id }}/edit" aria-label="Edit project" data-tooltip="Edit project">
+              {{ icons.icon('edit') }}
+            </a>
+          {% endif %}
+          <a class="button button-small button-secondary project-detail-action asset-tooltip asset-tooltip--right"
+             href="/projects/{{ project.id }}/assets" aria-label="View Assets" data-tooltip="View Assets">
+            {{ icons.icon('assets') }}
+          </a>
+          {% if openLocallyUri %}
+            <a class="button button-small button-secondary project-detail-action asset-tooltip asset-tooltip--right"
+               href="{{ openLocallyUri }}" aria-label="Open locally" data-tooltip="Open locally">
+              {{ icons.icon('open-locally') }}
+            </a>
+          {% endif %}
+        </nav>
       </div>
-
-      {% if project.description %}
-        <p class="description">{{ project.description }}</p>
-      {% endif %}
 
       {% if project.notes %}
         <h2>Notes</h2>
         <p class="notes">{{ project.notes }}</p>
       {% endif %}
 
-      <div class="count-grid project-detail-health">
-        <div class="count-card"><span class="count">{{ assetHealth.total }}</span> Total assets</div>
-        <div class="count-card"><span class="count">{{ assetHealth.present }}</span> Present</div>
-        <div class="count-card">
-          <span class="count">{{ assetHealth.missing }}</span> Missing
-          {% if assetHealth.missingByReleases > 0 %}
-            <small>({{ assetHealth.missingByReleases }} referenced by releases)</small>
-          {% endif %}
+      <section class="project-detail-health">
+        <div class="count-grid">
+          <div class="count-card"><span class="count">{{ assetHealth.total }}</span> Total assets</div>
+          <div class="count-card"><span class="count">{{ assetHealth.present }}</span> Present</div>
+          <div class="count-card">
+            <span class="count">{{ assetHealth.missing }}</span> Missing
+            {% if assetHealth.missingByReleases > 0 %}
+              <small>({{ assetHealth.missingByReleases }} referenced by releases)</small>
+            {% endif %}
+          </div>
         </div>
-      </div>
+      </section>
 
       <div class="project-detail-tags">
         {% if projectTags.length > 0 %}
@@ -93,80 +97,90 @@
       </div>
 
       {# ─── Project details ────────────────────────────────────────── #}
-      <section class="project-detail-info">
+      <section class="project-detail-info project-detail-section">
         <h2>Details</h2>
-        <dl class="detail-list">
-          {% if project.project_dir %}
-            <dt>Project directory</dt>
-            <dd><code>{{ project.project_dir }}</code> <small>(relative to projects share)</small></dd>
-          {% endif %}
+        <div class="project-detail-section-body">
+          <dl class="detail-list">
+            {% if project.project_dir %}
+              <dt>Project directory</dt>
+              <dd><code>{{ project.project_dir }}</code> <small>(relative to projects share)</small></dd>
+            {% endif %}
 
-          <dt>Slug</dt>
-          <dd><code>{{ project.slug }}</code></dd>
+            <dt>Slug</dt>
+            <dd><code>{{ project.slug }}</code></dd>
 
-          {% if project.planned_date %}
+            <dt>Created</dt>
+            <dd>{{ project.created_at }}</dd>
+
+            <dt>Updated</dt>
+            <dd>{{ project.updated_at }}</dd>
+
             <dt>Planned date</dt>
-            <dd>{{ project.planned_date }} <small>(project target)</small></dd>
-          {% endif %}
+            <dd>{{ project.planned_date or '—' }}{% if project.planned_date %} <small>(project target)</small>{% endif %}</dd>
 
-          <dt>Created</dt>
-          <dd>{{ project.created_at }}</dd>
+            <dt>Description</dt>
+            <dd class="description">{{ project.description or '—' }}</dd>
 
-          <dt>Updated</dt>
-          <dd>{{ project.updated_at }}</dd>
+            {% if project.patreon_url %}
+              <dt>Project link</dt>
+              <dd><a class="project-detail-link" href="{{ project.patreon_url }}" target="_blank" rel="noopener">Project link</a></dd>
+            {% endif %}
 
-          {% if project.archived_at %}
-            <dt>Archived</dt>
-            <dd>{{ project.archived_at }}</dd>
-          {% endif %}
-        </dl>
+            {% if project.archived_at %}
+              <dt>Archived</dt>
+              <dd>{{ project.archived_at }}</dd>
+            {% endif %}
+          </dl>
+        </div>
       </section>
     </div>
   </section>
 
   {# ─── Releases (full width) ─────────────────────────────────────── #}
-  <section class="release-summary project-detail-releases">
+  <section class="release-summary project-detail-releases project-detail-section">
     <h2>Releases</h2>
 
-    <div class="workflow-actions">
-      <a class="button" href="/release-management?project={{ project.id }}">View release records</a>
-      {% if not project.archived_at %}
-        <a class="button button-secondary" href="/releases/new?projectId={{ project.id }}">Create release record</a>
+    <div class="project-detail-section-body">
+      <div class="workflow-actions">
+        <a class="button" href="/release-management?project={{ project.id }}">View release records</a>
+        {% if not project.archived_at %}
+          <a class="button button-secondary" href="/releases/new?projectId={{ project.id }}">Create release record</a>
+        {% endif %}
+      </div>
+
+      {% if releaseSummary.recent.length > 0 %}
+        <ul class="release-list">
+          {% for r in releaseSummary.recent %}
+            <li>
+              <a href="/releases/{{ r.id }}">{{ r.title }}</a>
+              <span class="meta">
+                {% set status = r.project_status %}{% include "partials/status-badge.njk" %}{% if r.published_date %} · published {{ r.published_date }}{% elif r.planned_date %} · planned {{ r.planned_date }}{% endif %}
+                · updated {{ r.updated_at }}
+              </span>
+              {% if r.thumbnails and r.thumbnails.length > 0 %}
+                {% set thumbnailLimit = 12 %}
+                <div class="release-thumbnail-strip">
+                  {% for thumbnail in r.thumbnails %}
+                    {% if loop.index <= thumbnailLimit %}
+                      <a class="release-thumbnail-link" href="{{ thumbnail.viewerUrl }}" aria-label="View {{ thumbnail.filename }}">
+                        <img class="release-thumbnail-image" src="{{ thumbnail.thumbnailUrl }}" alt="{{ thumbnail.filename }}" loading="lazy" decoding="async">
+                      </a>
+                    {% endif %}
+                  {% endfor %}
+                  {% if r.thumbnails.length > thumbnailLimit %}
+                    <a class="release-thumbnail-more" href="/releases/{{ r.id }}">+{{ r.thumbnails.length - thumbnailLimit }} more</a>
+                  {% endif %}
+                </div>
+              {% endif %}
+            </li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        {% set emptyHeading = "No release records for this project." %}
+        {% set emptyDescription = "Create one only when you need asset packaging or a separate release history entry." %}
+        {% set emptyHeadingLevel = "h3" %}
+        {% include "partials/empty-state.njk" %}
       {% endif %}
     </div>
-
-    {% if releaseSummary.recent.length > 0 %}
-      <ul class="release-list">
-        {% for r in releaseSummary.recent %}
-          <li>
-            <a href="/releases/{{ r.id }}">{{ r.title }}</a>
-            <span class="meta">
-              {% set status = r.project_status %}{% include "partials/status-badge.njk" %}{% if r.published_date %} · published {{ r.published_date }}{% elif r.planned_date %} · planned {{ r.planned_date }}{% endif %}
-              · updated {{ r.updated_at }}
-            </span>
-            {% if r.thumbnails and r.thumbnails.length > 0 %}
-              {% set thumbnailLimit = 12 %}
-              <div class="release-thumbnail-strip">
-                {% for thumbnail in r.thumbnails %}
-                  {% if loop.index <= thumbnailLimit %}
-                    <a class="release-thumbnail-link" href="{{ thumbnail.viewerUrl }}" aria-label="View {{ thumbnail.filename }}">
-                      <img class="release-thumbnail-image" src="{{ thumbnail.thumbnailUrl }}" alt="{{ thumbnail.filename }}" loading="lazy" decoding="async">
-                    </a>
-                  {% endif %}
-                {% endfor %}
-                {% if r.thumbnails.length > thumbnailLimit %}
-                  <a class="release-thumbnail-more" href="/releases/{{ r.id }}">+{{ r.thumbnails.length - thumbnailLimit }} more</a>
-                {% endif %}
-              </div>
-            {% endif %}
-          </li>
-        {% endfor %}
-      </ul>
-    {% else %}
-      {% set emptyHeading = "No release records for this project." %}
-      {% set emptyDescription = "Create one only when you need asset packaging or a separate release history entry." %}
-      {% set emptyHeadingLevel = "h3" %}
-      {% include "partials/empty-state.njk" %}
-    {% endif %}
   </section>
 {% endblock %}

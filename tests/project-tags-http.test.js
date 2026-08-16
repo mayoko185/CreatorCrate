@@ -14,6 +14,10 @@ function extractPageHeadingActions(html) {
   return html.match(/<div class="page-heading-actions">([\s\S]*?)<\/div>/)?.[1] || '';
 }
 
+function extractProjectDetailActionToolbar(html) {
+  return html.match(/<nav class="project-detail-action-toolbar"[^>]*>[\s\S]*?<\/nav>/)?.[0] || '';
+}
+
 function extractProjectTagsSection(html) {
   return html.match(/<div class="project-detail-tags">([\s\S]*?)<\/div>/)?.[1] || '';
 }
@@ -117,12 +121,15 @@ describe('project tags — HTTP', () => {
     const projectId = await createProject('Heading Actions Project');
     const detail = await agent.get(`/projects/${projectId}`).expect(200);
     const actions = extractPageHeadingActions(detail.text);
+    const toolbar = extractProjectDetailActionToolbar(detail.text);
 
-    expect(actions).toContain(`href="/projects/${projectId}/edit">Edit project</a>`);
-    expect(actions).toContain(`href="/projects/${projectId}/assets">View Assets</a>`);
     expect(actions).toContain(`href="/projects/${projectId}/tags">Manage tags</a>`);
+    expect(actions).not.toContain(`/projects/${projectId}/edit`);
+    expect(actions).not.toContain(`/projects/${projectId}/assets`);
+    expect(toolbar).toContain(`href="/projects/${projectId}/assets"`);
+    expect(toolbar).toContain('aria-label="View Assets"');
     expect(actions).not.toContain(`href="/projects/${projectId}/asset-categories"`);
-    expect((actions.match(/<a\b/g) || [])).toHaveLength(3);
+    expect((actions.match(/<a\b/g) || [])).toHaveLength(1);
     expect(detail.text).not.toMatch(new RegExp(`<section class="workflow-actions">[\\s\\S]*?/projects/${projectId}/tags`));
 
     const management = await agent.get(`/projects/${projectId}/tags`).expect(200);
@@ -138,9 +145,12 @@ describe('project tags — HTTP', () => {
 
     const detail = await agent.get(`/projects/${projectId}`).expect(200);
     const detailActions = extractPageHeadingActions(detail.text);
+    const toolbar = extractProjectDetailActionToolbar(detail.text);
     expect(extractProjectTagsSection(detail.text)).toContain('Archived Display');
+    expect(detailActions).toBe('');
     expect(detailActions).not.toContain(`href="/projects/${projectId}/tags">Manage tags</a>`);
-    expect(detailActions).toContain(`href="/projects/${projectId}/assets">View Assets</a>`);
+    expect(toolbar).toContain(`href="/projects/${projectId}/assets"`);
+    expect(toolbar).toContain('aria-label="View Assets"');
     // Asset Categories is reached from the assets page, not the project detail header.
     expect(detailActions).not.toContain(`href="/projects/${projectId}/asset-categories"`);
 

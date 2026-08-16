@@ -43,6 +43,10 @@ function extractPageHeadingActions(html) {
   return html.match(/<div class="page-heading-actions">([\s\S]*?)<\/div>/)?.[1] || '';
 }
 
+function extractProjectDetailActionToolbar(html) {
+  return html.match(/<nav class="project-detail-action-toolbar"[^>]*>[\s\S]*?<\/nav>/)?.[0] || '';
+}
+
 function extractProjectTags(card) {
   return card.match(/<div class="project-grid-card-info-section">([\s\S]*?)<\/div>/)?.[0] || '';
 }
@@ -114,6 +118,11 @@ function extractHtmlElement(html, start) {
 function extractProjectSchedulingRow(html) {
   const start = html.indexOf('<div class="field-row scheduling-row">');
   return start >= 0 ? extractHtmlElement(html, start) : '';
+}
+
+function extractProjectDetailSection(html, className) {
+  const opening = html.match(new RegExp(`<section class="[^"]*\\b${className}\\b[^"]*">`));
+  return opening ? extractHtmlElement(html, opening.index) : '';
 }
 
 function extractDirectHtmlChildren(html) {
@@ -1862,7 +1871,7 @@ describe('project HTTP workflow', () => {
     expect(res.text).toContain('Direct Archive');
   });
 
-  it('active project detail places project actions in the page heading', async () => {
+  it('active project detail keeps Manage tags in the heading and puts compact actions beside status', async () => {
     const createRes = await agent
       .post('/projects')
       .send('title=Detail+Project')
@@ -1873,20 +1882,75 @@ describe('project HTTP workflow', () => {
     const location = createRes.headers.location;
     const res = await agent.get(location).expect(200);
     const headingActions = extractPageHeadingActions(res.text);
+    const toolbar = extractProjectDetailActionToolbar(res.text);
+    const metaStart = res.text.indexOf('<div class="project-detail-meta">');
+    const meta = metaStart >= 0 ? extractHtmlElement(res.text, metaStart) : '';
+    const summaryStart = res.text.indexOf('<div class="project-detail-summary">');
+    const summary = summaryStart >= 0 ? extractHtmlElement(res.text, summaryStart) : '';
+    const healthStart = res.text.indexOf('<section class="project-detail-health">');
 
     expect(res.text).toContain('Detail Project');
-    expect(headingActions).toContain(`href="${location}/edit">Edit project</a>`);
-    expect(headingActions).toContain(`href="${location}/assets">View Assets</a>`);
     expect(headingActions).toContain(`href="${location}/tags">Manage tags</a>`);
+    expect(headingActions).not.toContain(`${location}/edit`);
+    expect(headingActions).not.toContain(`${location}/assets`);
+    expect(headingActions).not.toContain('Open locally');
     // Asset Categories is reached from the assets page, not the detail header.
     expect(headingActions).not.toContain(`href="${location}/asset-categories"`);
-    expect((headingActions.match(/<a\b/g) || [])).toHaveLength(3);
+    expect((headingActions.match(/<a\b/g) || [])).toHaveLength(1);
+    expect(toolbar).toContain('<nav class="project-detail-action-toolbar" aria-label="Project actions">');
+    expect(toolbar).toContain(`href="${location}/edit"`);
+    expect(toolbar).toContain('aria-label="Edit project"');
+    expect(toolbar).toContain(`href="${location}/assets"`);
+    expect(toolbar).toContain('aria-label="View Assets"');
+    expect(toolbar).not.toContain('aria-label="Open locally"');
+    expect((toolbar.match(/<a\b/g) || [])).toHaveLength(2);
+    expect(meta.indexOf('status-badge')).toBeGreaterThanOrEqual(0);
+    expect(meta.indexOf('project-detail-action-toolbar')).toBeGreaterThan(meta.indexOf('status-badge'));
+    expect(summary).toMatch(/<div class="project-detail-meta">[\s\S]*?<\/div>\s*<section class="project-detail-health">\s*<div class="count-grid">/);
+    expect(healthStart).toBeGreaterThan(metaStart);
+    const health = extractProjectDetailSection(res.text, 'project-detail-health');
+    expect(health).toContain('<section class="project-detail-health">');
+    const countGridStart = health.indexOf('<div class="count-grid">');
+    const countGrid = countGridStart >= 0 ? extractHtmlElement(health, countGridStart) : '';
+    const countCards = extractDirectHtmlChildren(countGrid).filter((child) => child.includes('class="count-card"'));
+    expect(countCards).toHaveLength(3);
+    expect(countCards[0]).toContain('<span class="count">0</span> Total assets');
+    expect(countCards[1]).toContain('<span class="count">0</span> Present');
+    expect(countCards[2]).toContain('<span class="count">0</span> Missing');
+    expect(meta).not.toContain('project-detail-health');
+    expect(summary.indexOf('project-detail-action-toolbar')).toBeGreaterThanOrEqual(0);
+    expect(summary.indexOf('project-detail-action-toolbar')).toBeLessThan(summary.indexOf('project-detail-health'));
+    const css = await fetchProjectCss(app);
+    expect(css).toMatch(/\.project-detail-meta\s*\{[^}]*justify-content:\s*space-between/);
+    expect(css).toMatch(/\.project-detail-action-toolbar\s*\{[^}]*margin-left:\s*auto/);
+    expect(css).toMatch(/\.project-detail-action\s*\{[^}]*display:\s*inline-flex[^}]*align-items:\s*center[^}]*justify-content:\s*center[^}]*min-block-size:\s*2\.25rem[^}]*min-inline-size:\s*2\.25rem[^}]*padding:\s*var\(--space-sm\)/);
+    expect(css).toMatch(/\.project-detail-action svg\s*\{[^}]*width:\s*1\.25rem[^}]*height:\s*1\.25rem/);
+    const healthRule = css.match(/\.project-detail-health\s*\{[^}]*\}/)?.[0] || '';
+    expect(healthRule).toContain('margin-top: var(--space-xs)');
+    expect(healthRule).not.toContain('padding:');
+    expect(healthRule).not.toContain('background:');
+    expect(healthRule).not.toContain('border:');
+    expect(healthRule).not.toContain('border-radius:');
+    const countGridRule = css.match(/\.count-grid\s*\{[^}]*\}/)?.[0] || '';
+    expect(countGridRule).toContain('display: grid');
+    expect(countGridRule).toContain('grid-template-columns: repeat(auto-fit, minmax(7rem, 1fr))');
+    expect(countGridRule).toContain('gap: 0.75rem');
+    const countCardRule = css.match(/\.project-detail-health\s+\.count-card\s*\{[^}]*\}/)?.[0] || '';
+    expect(countCardRule).toContain('padding: var(--space-sm) var(--space-md)');
+    expect(countCardRule).toContain('background: var(--surface)');
+    expect(countCardRule).toContain('border: 1px solid var(--border)');
+    expect(countCardRule).toContain('border-radius: var(--radius-md)');
+    expect(countCardRule).toContain('text-align: center');
+    expect(countCardRule).toContain('color: var(--muted)');
+    expect(countCardRule).toContain('font-size: 0.875rem');
+    const countNumberRule = css.match(/\.project-detail-health\s+\.count\s*\{[^}]*\}/)?.[0] || '';
+    expect(countNumberRule).toContain('font-size: 1.25rem');
     expect(res.text).not.toMatch(
       new RegExp(`<section class="workflow-actions">\\s*<a[^>]+href="${location}/assets"`),
     );
   });
 
-  it('archived project detail keeps read-safe actions in the page heading without Edit', async () => {
+  it('archived project detail keeps View Assets in the compact toolbar without Edit', async () => {
     const createRes = await agent
       .post('/projects')
       .send('title=Archived+Detail+Project')
@@ -1904,12 +1968,17 @@ describe('project HTTP workflow', () => {
 
     const res = await agent.get(location).expect(200);
     const headingActions = extractPageHeadingActions(res.text);
+    const toolbar = extractProjectDetailActionToolbar(res.text);
 
-    expect(headingActions).toContain(`href="${location}/assets">View Assets</a>`);
+    expect(headingActions).toBe('');
+    expect(toolbar).toContain(`href="${location}/assets"`);
+    expect(toolbar).toContain('aria-label="View Assets"');
+    expect((toolbar.match(/<a\b/g) || [])).toHaveLength(1);
     expect(headingActions).not.toContain(`href="${location}/asset-categories"`);
-    expect(headingActions).not.toContain(`href="${location}/edit">Edit project</a>`);
+    expect(toolbar).not.toContain(`href="${location}/edit"`);
+    expect(toolbar).not.toContain('aria-label="Edit project"');
+    expect(toolbar).not.toContain('aria-label="Open locally"');
     expect(res.text).not.toContain('Edit project');
-    expect((headingActions.match(/<a\b/g) || [])).toHaveLength(1);
     expect(res.text).not.toMatch(
       new RegExp(`<section class="workflow-actions">\\s*<a[^>]+href="${location}/assets"`),
     );
@@ -3363,12 +3432,13 @@ describe('project HTTP workflow', () => {
       expect(container).toMatch(/<input[^>]*id="patreonUrl"[^>]*>/);
     });
 
-    it('project detail shows planned date and the project link, and omits the published date', async () => {
+    it('project detail shows description, planned date, and the project link, and omits the published date', async () => {
       const createRes = await agent
         .post('/projects')
         .send('title=Wording+Test')
         .send('status=tbd')
         .send('priority=normal')
+        .send('description=Project+description')
         .send('plannedDate=2025-12-01')
         .send('publishedDate=2025-12-15')
         .send('patreonUrl=https://patreon.com/test')
@@ -3378,17 +3448,53 @@ describe('project HTTP workflow', () => {
       const id = createRes.headers.location.replace('/projects/', '');
 
       const res = await agent.get(`/projects/${id}`).expect(200);
+      const details = extractProjectDetailSection(res.text, 'project-detail-info');
+      const metaStart = res.text.indexOf('<div class="project-detail-meta">');
+      const meta = metaStart >= 0 ? extractHtmlElement(res.text, metaStart) : '';
 
       // Planned date remains a labelled dt/dd pair in the Details list.
-      const plannedDt = res.text.match(/<dt>Planned date<\/dt>\s*<dd>[^<]*(?:<small>\(project target\)<\/small>)[^<]*<\/dd>/);
+      expect(details).toContain('<section class="project-detail-info project-detail-section">');
+      expect(details).toContain('<h2>Details</h2>');
+      expect(details).toContain('<div class="project-detail-section-body">');
+      const detailListStart = details.indexOf('<dl class="detail-list">');
+      const detailList = extractHtmlElement(details, detailListStart);
+      const detailRows = extractDirectHtmlChildren(detailList);
+      const detailLabels = detailRows
+        .filter((row) => row.startsWith('<dt>'))
+        .map((row) => row.match(/^<dt>([^<]+)<\/dt>$/)?.[1]);
+      expect(detailLabels).toEqual([
+        'Project directory',
+        'Slug',
+        'Created',
+        'Updated',
+        'Planned date',
+        'Description',
+        'Project link',
+      ]);
+      expect(details).toContain('<dd class="description">Project description</dd>');
+      expect(details).toMatch(/<dt>Project link<\/dt>\s*<dd><a class="project-detail-link" href="https:\/\/patreon\.com\/test" target="_blank" rel="noopener">Project link<\/a><\/dd>/);
+      const plannedDt = details.match(/<dt>Planned date<\/dt>\s*<dd>[^<]*(?:<small>\(project target\)<\/small>)[^<]*<\/dd>/);
       expect(plannedDt).not.toBeNull();
+      expect(res.text).not.toContain('<p class="description">Project description</p>');
+      expect(meta).not.toContain('project-detail-link');
 
       // Published date is intentionally not rendered on the detail page — the
       // publication model is being reworked and the date is no longer surfaced.
       expect(res.text).not.toContain('Published date');
+    });
 
-      // Project link now lives in the hero summary as a direct link.
-      expect(res.text).toMatch(/<a class="project-detail-link" href="https:\/\/patreon\.com\/test"[^>]*>Project link<\/a>/);
+    it('project detail renders the established missing value for empty description and planned date, and omits an absent project link', async () => {
+      const id = await createProject({ title: 'Optional Detail Fields Empty' });
+
+      const res = await agent.get(`/projects/${id}`).expect(200);
+      const details = extractProjectDetailSection(res.text, 'project-detail-info');
+
+      expect(details).toMatch(/<dt>Description<\/dt>\s*<dd class="description">—<\/dd>/);
+      expect(details).toMatch(/<dt>Planned date<\/dt>\s*<dd>—<\/dd>/);
+      expect(details).not.toContain('project-detail-link');
+      expect(details).toContain('<dt>Slug</dt>');
+      expect(details).toContain('<dt>Created</dt>');
+      expect(details).toContain('<dt>Updated</dt>');
     });
 
     it('project detail hero renders the primary image when one is set', async () => {
@@ -3477,6 +3583,13 @@ describe('project HTTP workflow', () => {
     });
 
     const res = await agent.get(`/projects/${projectId}`).expect(200);
+    const releases = extractProjectDetailSection(res.text, 'project-detail-releases');
+    expect(releases).toContain('<section class="release-summary project-detail-releases project-detail-section">');
+    expect(releases).toContain('<h2>Releases</h2>');
+    expect(releases).toContain('<div class="project-detail-section-body">');
+    expect(releases).toContain('href="/release-management?project=' + projectId + '"');
+    expect(releases).toContain('href="/releases/new?projectId=' + projectId + '"');
+    expect(releases).toContain('<ul class="release-list">');
     const releaseList = extractReleaseList(res.text);
     const firstItem = extractReleaseItem(releaseList, firstRelease.id);
     const secondItem = extractReleaseItem(releaseList, secondRelease.id);
@@ -3704,7 +3817,7 @@ describe('project HTTP workflow', () => {
   // URI builder. The href is Nunjucks-escaped (autoescape), so ampersands
   // appear as &amp; in the markup; browsers decode them when following the
   // link. The action must never leak the container root or an absolute path.
-  // The action lives in the page-heading action area, not inline in the
+  // The action lives in the project summary toolbar, not inline in the
   // project directory detail row.
 
   describe('open locally action on project detail', () => {
@@ -3718,7 +3831,7 @@ describe('project HTTP workflow', () => {
         .run('open_locally.windows_projects_path', 'D:\\example');
     }
 
-    it('renders the Open locally action in the page heading when project_dir exists and a windows root is configured', async () => {
+    it('renders the Open locally action in the project summary toolbar when configured', async () => {
       const id = await createDetailProject('Open Locally Test');
       const row = db.prepare('SELECT project_dir FROM projects WHERE id = ?').get(id);
       configureWindowsRoot();
@@ -3726,12 +3839,36 @@ describe('project HTTP workflow', () => {
       const res = await agent.get(`/projects/${id}`).expect(200);
 
       expect(row.project_dir).toBeTruthy();
-      const actions = extractPageHeadingActions(res.text);
+      const actions = extractProjectDetailActionToolbar(res.text);
+      expect(actions).toContain('aria-label="Edit project"');
+      expect(actions).toContain('aria-label="View Assets"');
       expect(actions).toContain('Open locally');
+      expect(actions).toContain('aria-label="Open locally"');
+      expect((actions.match(/<a\b/g) || [])).toHaveLength(3);
       expect(actions).toContain('creatorcrate-open://');
       expect(actions).toContain(
         `href="creatorcrate-open://open?v=2&amp;path=${encodeURIComponent(`D:\\example\\${row.project_dir}`)}&amp;select=0"`
       );
+    });
+
+    it('keeps View Assets and configured Open locally for archived projects without Edit', async () => {
+      const id = await createDetailProject('Archived Open Locally Test');
+      const row = db.prepare('SELECT project_dir FROM projects WHERE id = ?').get(id);
+      configureWindowsRoot();
+
+      await agent.post(`/projects/${id}/archive`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
+
+      const res = await agent.get(`/projects/${id}`).expect(200);
+      const toolbar = extractProjectDetailActionToolbar(res.text);
+
+      expect(toolbar).toContain(`href="/projects/${id}/assets"`);
+      expect(toolbar).toContain('aria-label="View Assets"');
+      expect(toolbar).toContain('aria-label="Open locally"');
+      expect(toolbar).toContain(
+        `href="creatorcrate-open://open?v=2&amp;path=${encodeURIComponent(`D:\\example\\${row.project_dir}`)}&amp;select=0"`
+      );
+      expect(toolbar).not.toContain('aria-label="Edit project"');
+      expect((toolbar.match(/<a\b/g) || [])).toHaveLength(2);
     });
 
     it('uses the creatorcrate-open scheme with the encoded absolute path and select=0', async () => {
@@ -3740,7 +3877,7 @@ describe('project HTTP workflow', () => {
       configureWindowsRoot();
 
       const res = await agent.get(`/projects/${id}`).expect(200);
-      const actions = extractPageHeadingActions(res.text);
+      const actions = extractProjectDetailActionToolbar(res.text);
       const href = actions.match(/href="(creatorcrate-open:[^"]+)"/)?.[1] || '';
 
       expect(href).toMatch(/^creatorcrate-open:\/\/open\?v=2/);
@@ -3760,32 +3897,32 @@ describe('project HTTP workflow', () => {
       expect(res.text).not.toContain(projectsRoot);
     });
 
-    it('omits the action from the page heading when no windows root is configured', async () => {
+    it('omits the action from the project summary toolbar when no windows root is configured', async () => {
       const id = await createDetailProject('Open Locally No Root Configured');
 
       const res = await agent.get(`/projects/${id}`).expect(200);
 
-      expect(extractPageHeadingActions(res.text)).not.toContain('Open locally');
+      expect(extractProjectDetailActionToolbar(res.text)).not.toContain('Open locally');
       expect(res.text).not.toContain('creatorcrate-open://');
     });
 
-    it('omits the action from the page heading when project_dir is missing', async () => {
+    it('omits the action from the project summary toolbar when project_dir is missing', async () => {
       const id = await createDetailProject('Open Locally Missing Dir');
       db.prepare('UPDATE projects SET project_dir = NULL WHERE id = ?').run(id);
 
       const res = await agent.get(`/projects/${id}`).expect(200);
 
-      expect(extractPageHeadingActions(res.text)).not.toContain('Open locally');
+      expect(extractProjectDetailActionToolbar(res.text)).not.toContain('Open locally');
       expect(res.text).not.toContain('creatorcrate-open://');
     });
 
-    it('omits the action from the page heading when project_dir is invalid', async () => {
+    it('omits the action from the project summary toolbar when project_dir is invalid', async () => {
       const id = await createDetailProject('Open Locally Invalid Dir');
       db.prepare('UPDATE projects SET project_dir = ? WHERE id = ?').run('../escape', id);
 
       const res = await agent.get(`/projects/${id}`).expect(200);
 
-      expect(extractPageHeadingActions(res.text)).not.toContain('Open locally');
+      expect(extractProjectDetailActionToolbar(res.text)).not.toContain('Open locally');
       expect(res.text).not.toContain('creatorcrate-open://');
     });
 

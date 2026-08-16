@@ -6404,13 +6404,49 @@
         display: flex;
         flex-wrap: wrap;
         align-items: center;
+        justify-content: space-between;
         gap: var(--space-sm);
+      }
+      .project-detail-action-toolbar {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: var(--space-sm);
+        flex-wrap: wrap;
+        min-width: 0;
+        max-width: 100%;
+        margin-left: auto;
+      }
+      .project-detail-action {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-block-size: 2.25rem;
+        min-inline-size: 2.25rem;
+        padding: var(--space-sm);
+      }
+      .project-detail-action svg {
+        display: block;
+        width: 1.25rem;
+        height: 1.25rem;
       }
       .project-detail-link {
         font-size: 0.875rem;
       }
       .project-detail-health {
         margin-top: var(--space-xs);
+      }
+      .project-detail-health .count-card {
+        padding: var(--space-sm) var(--space-md);
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        text-align: center;
+        color: var(--muted);
+        font-size: 0.875rem;
+      }
+      .project-detail-health .count {
+        font-size: 1.25rem;
       }
       .tag-chip-list {
         display: flex;
@@ -6430,8 +6466,34 @@
       .project-detail-info {
         margin-top: var(--space-xs);
       }
+      .project-detail-section {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
+        overflow: hidden;
+      }
+      .project-detail-section > h2 {
+        margin: 0;
+        padding: var(--space-sm) var(--space-md);
+        font-size: 0.75rem;
+        font-family: var(--mono);
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--muted);
+        background: var(--surface-hover);
+        border-bottom: 1px solid var(--border);
+      }
+      .project-detail-section-body {
+        padding: var(--space-md) var(--space-lg);
+      }
+      .project-detail-info .detail-list {
+        margin: 0;
+      }
       .project-detail-releases {
         margin-bottom: var(--space-xl);
+      }
+      .project-detail-releases .workflow-actions {
+        margin: 0 0 var(--space-md);
       }
       .release-thumbnail-strip {
         display: flex;
