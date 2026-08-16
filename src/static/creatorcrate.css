@@ -4077,6 +4077,142 @@
         flex-wrap: wrap;
       }
 
+      #project-asset-category-management-dialog {
+        width: min(68rem, calc(100vw - 2rem));
+        max-width: calc(100vw - 2rem);
+      }
+      /* Keep each management section at its content height so the shared
+         viewport-capped dialog body remains the scroll owner. */
+      #project-asset-category-management-dialog .app-dialog-body > * {
+        flex-shrink: 0;
+      }
+      #project-asset-category-management-dialog .app-dialog-body {
+        padding-bottom: var(--space-lg);
+        scrollbar-color: var(--border-strong) transparent;
+        scrollbar-width: thin;
+      }
+      #project-asset-category-management-dialog .app-dialog-body::-webkit-scrollbar {
+        width: 0.5rem;
+      }
+      #project-asset-category-management-dialog .app-dialog-body::-webkit-scrollbar-track {
+        background: transparent;
+      }
+      #project-asset-category-management-dialog .app-dialog-body::-webkit-scrollbar-thumb {
+        background: var(--border-strong);
+        border: 2px solid var(--surface-card);
+        border-radius: 999px;
+      }
+      #project-asset-category-management-dialog .app-dialog-body::-webkit-scrollbar-thumb:hover {
+        background: var(--muted);
+      }
+      #project-asset-category-management-dialog .asset-filter-multiselect-panel[data-cc-dropdown-overlay] {
+        position: fixed;
+        min-width: 0;
+      }
+      #project-asset-category-management-dialog .project-asset-category-management-dialog-body {
+        gap: var(--space-md);
+      }
+      #project-asset-category-management-dialog .project-category-management-panel {
+        flex: 0 0 auto;
+        min-width: 0;
+        margin: 0;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
+        overflow: visible;
+      }
+      #project-asset-category-management-dialog .project-category-management-panel > h3 {
+        background: var(--surface-hover);
+      }
+      #project-asset-category-management-dialog .project-category-management-panel > .error-summary {
+        margin: var(--space-md) var(--space-lg) 0;
+        padding: var(--space-sm) var(--space-md);
+      }
+      #project-asset-category-management-dialog .project-category-management-default-section > .asset-browser-default-description {
+        margin: 0;
+        padding: var(--space-sm) var(--space-lg) 0;
+      }
+      #project-asset-category-management-dialog .project-category-management-default-section > .notice {
+        margin: var(--space-md) var(--space-lg) 0;
+      }
+      #project-asset-category-management-dialog .project-category-management-default-section > .asset-browser-default-readonly {
+        margin: var(--space-md) 0 var(--space-lg);
+        padding: 0 var(--space-lg);
+      }
+      #project-asset-category-management-dialog .project-category-management-default-section .asset-browser-default-form {
+        gap: var(--space-sm);
+        padding: var(--space-md) var(--space-lg) 0;
+      }
+      #project-asset-category-management-dialog .asset-browser-default-field-row {
+        width: 100%;
+      }
+      #project-asset-category-management-dialog .project-category-management-default-section .asset-browser-default-form > .app-dialog-status {
+        min-height: 0;
+        margin-top: 0;
+      }
+      #project-asset-category-management-dialog .project-category-management-default-section .asset-browser-default-action-row {
+        margin: 0;
+      }
+      #project-asset-category-management-dialog .project-category-management-add > .project-category-management-form {
+        gap: 0;
+        padding: var(--space-md) var(--space-lg) var(--space-lg);
+      }
+      #project-asset-category-management-dialog .project-category-management-add-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) max-content max-content;
+        align-items: start;
+        column-gap: var(--space-md);
+        row-gap: var(--space-sm);
+        min-width: 0;
+      }
+      #project-asset-category-management-dialog .project-category-management-add-row > .field {
+        min-width: 0;
+      }
+      #project-asset-category-management-dialog .project-category-management-add-row .field--switch {
+        min-width: 7rem;
+      }
+      #project-asset-category-management-dialog .project-category-management-add-row input {
+        min-width: 0;
+      }
+      #project-asset-category-management-dialog .project-category-management-add-submit {
+        align-items: flex-end;
+        align-self: start;
+        min-width: 0;
+        margin: 0;
+        padding-top: calc(1.4rem + var(--space-xs));
+      }
+      #project-asset-category-management-dialog .project-category-management-add-submit > .button {
+        flex: 0 0 auto;
+        width: auto;
+      }
+      #project-asset-category-management-dialog .project-category-management-list-section .category-reorder-list {
+        padding: var(--space-md) var(--space-lg) var(--space-lg);
+      }
+      @media (max-width: 767px) {
+        #project-asset-category-management-dialog .project-category-management-add-row {
+          grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+        }
+        #project-asset-category-management-dialog .project-category-management-add-submit {
+          grid-column: 1 / -1;
+          justify-self: start;
+          padding-top: 0;
+        }
+      }
+      @media (max-width: 540px) {
+        #project-asset-category-management-dialog .project-category-management-add-row {
+          grid-template-columns: minmax(0, 1fr);
+        }
+        #project-asset-category-management-dialog .project-category-management-add-submit {
+          grid-column: auto;
+          width: 100%;
+          padding-top: 0;
+        }
+        #project-asset-category-management-dialog .project-category-management-add-submit > .button {
+          justify-content: center;
+          width: 100%;
+        }
+      }
+
       /* ── Shared native dialog primitive ── */
       body.app-dialog-open { overflow: hidden; }
       .app-dialog {
@@ -4191,6 +4327,10 @@
           margin-right: var(--space-md);
         }
         #auto-rename-confirmation-dialog {
+          width: calc(100vw - 1rem);
+          max-width: calc(100vw - 1rem);
+        }
+        #project-asset-category-management-dialog {
           width: calc(100vw - 1rem);
           max-width: calc(100vw - 1rem);
         }
@@ -5861,18 +6001,6 @@
       .asset-browser-default-section--project > .asset-browser-default-description {
         margin: 0;
         padding: var(--space-sm) var(--space-md) 0;
-      }
-      .asset-browser-default-section--project > .asset-browser-default-summary {
-        display: flex;
-        flex-wrap: wrap;
-        gap: var(--space-sm) var(--space-lg);
-        margin: 0;
-        padding: var(--space-xs) var(--space-md) 0;
-        color: var(--muted);
-        font-size: 0.875rem;
-      }
-      .asset-browser-default-section--project .asset-browser-default-summary-label {
-        color: var(--muted);
       }
       .asset-browser-default-section.asset-browser-default-section--project > .notice {
         margin: var(--space-sm) var(--space-md) 0;

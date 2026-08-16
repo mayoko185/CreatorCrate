@@ -43,7 +43,7 @@
   {% endif %}
 {% endmacro %}
 
-{% macro renderAssetSelectionControls(projectId, csrfToken, assetTotal, currentView, autoRenameCategory, showSelectionTools) %}
+{% macro renderAssetSelectionControls(projectId, csrfToken, assetTotal, currentView, autoRenameCategory, showSelectionTools, categoryManagementUrl) %}
   <div class="asset-selection-controls-area">
     <div class="asset-selection-buttons-row">
       {% if autoRenameCategory %}
@@ -64,6 +64,8 @@
         <div class="asset-selection-tools" role="group" aria-label="Selection controls">
           <button type="button" class="button button-small" form="bulk-select-form" data-select-all>Select all visible</button>
           <button type="button" class="button button-small button-secondary" form="bulk-select-form" data-clear-selection>Clear selection</button>
+          <a class="button button-small button-secondary" href="{{ categoryManagementUrl or ('/projects/' ~ projectId ~ '/assets?manage_categories=1') }}"
+             data-dialog-open="project-asset-category-management-dialog">Manage Categories</a>
         </div>
       {% endif %}
     </div>
@@ -314,7 +316,6 @@
   {% set assetsHeadingDescription = "Browse scanned files, category, and release usage." %}
   {% if project.archived_at %}
     {% call pageHeading.render(assetsHeadingDescription, "archived") %}
-      <a class="button button-secondary" href="/projects/{{ project.id }}/asset-categories">Manage Categories</a>
       <a class="button" href="/projects/{{ project.id }}">Back to Project</a>
       {% if openLocallyUri %}
         <a class="button button-secondary" href="{{ openLocallyUri }}">Open locally</a>
@@ -334,7 +335,6 @@
       {% endif %}
       <a class="button" href="/projects/{{ project.id }}/edit">Edit project</a>
       {% endif %}
-    <a class="button button-secondary" href="/projects/{{ project.id }}/asset-categories">Manage Categories</a>
     <a class="button" href="/projects/{{ project.id }}">Back to Project</a>
     {% if openLocallyUri %}
       <a class="button button-secondary" href="{{ openLocallyUri }}">Open locally</a>
@@ -695,7 +695,7 @@
                     <span class="asset-actions-helper">Drag assets to change their filename order</span>
                   </div>
                   <div class="asset-actions-controls">
-                    {{ renderAssetSelectionControls(project.id, _csrf, assets.length, filters.view, autoRenameCategory, not isArchived) }}
+                    {{ renderAssetSelectionControls(project.id, _csrf, assets.length, filters.view, autoRenameCategory, not isArchived, categoryManagementDialogUrl) }}
                   </div>
                 </div>
                 {% if not isArchived %}
@@ -769,7 +769,7 @@
                 <span class="asset-actions-helper">Drag assets to change their filename order</span>
               </div>
               <div class="asset-actions-controls">
-                {{ renderAssetSelectionControls(project.id, _csrf, assets.length, filters.view, none, true) }}
+                {{ renderAssetSelectionControls(project.id, _csrf, assets.length, filters.view, none, true, categoryManagementDialogUrl) }}
               </div>
             </div>
             <form id="bulk-select-form" method="post" action="/projects/{{ project.id }}/assets/add-to-release" class="bulk-select-form" data-asset-selection-form>
@@ -937,6 +937,12 @@
 
 {% endblock %}
 {% block overlay %}
+  {% call dialog.render('project-asset-category-management-dialog', 'Manage Categories', categoryManagementDialogOpen, 'project-asset-category-management-description') %}
+    <p id="project-asset-category-management-description" class="app-dialog-description">
+      Manage categories and asset browser defaults for {{ project.title }}. Changes here apply only to this project.
+    </p>
+    {% include "partials/project-asset-category-management.njk" %}
+  {% endcall %}
   {% call dialog.render('project-assets-defaults-dialog', 'Project Assets defaults', projectAssetsDefaultsDialogOpen, 'project-assets-defaults-description', 'project-assets-defaults-form') %}
     <form id="project-assets-defaults-form" method="post" action="/projects/{{ project.id }}/assets/defaults" class="app-dialog-form project-form"
           data-dialog-form data-dialog-async novalidate>

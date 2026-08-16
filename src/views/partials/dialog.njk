@@ -6,7 +6,7 @@
   <div class="app-dialog-card" role="document">
     <header class="app-dialog-header">
       <h2 id="{{ id }}-title">{{ title }}</h2>
-      <button class="app-dialog-close button button-small button-secondary" type="submit"{% if formId %} form="{{ formId }}" formmethod="dialog"{% endif %}
+      <button class="app-dialog-close button button-small button-secondary" type="{% if formId %}submit{% else %}button{% endif %}"{% if formId %} form="{{ formId }}" formmethod="dialog"{% endif %}
               data-dialog-close aria-label="Close {{ title }}" title="Close {{ title }}">
         {{ icons.icon('close') }}
       </button>

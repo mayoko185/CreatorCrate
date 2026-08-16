@@ -121,6 +121,18 @@ function makeFakeProjectAssetCategoryService(seed = []) {
   };
 }
 
+function lastAssetsRenderModel(renderSpy) {
+  const call = [...renderSpy.mock.calls].reverse().find(([view]) => view === 'projects/assets.njk');
+  if (!call) throw new Error('Assets page was not rendered.');
+  return call[1];
+}
+
+async function getCategoryManagementPage(agent, projectId) {
+  const redirect = await agent.get(`/projects/${projectId}/asset-categories`).expect(302);
+  expect(redirect.headers.location).toBe(`/projects/${projectId}/assets?manage_categories=1`);
+  return agent.get(redirect.headers.location).expect(200);
+}
+
 describe('project asset categories — HTTP', () => {
   let ctx;
 
@@ -134,6 +146,19 @@ describe('project asset categories — HTTP', () => {
   // ─── Dependency injection and routing ─────────────────────────────────
 
   describe('dependency injection and routing', () => {
+    it('redirects the legacy GET page to the Assets dialog-open URL and forwards its notice', async () => {
+      ctx = setupTmp();
+      const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
+      const { agent, csrfToken } = await authenticate(app);
+      const projectId = await createProject(agent, csrfToken, 'Legacy Category Redirect');
+
+      const res = await agent.get(`/projects/${projectId}/asset-categories`).expect(302);
+      expect(res.headers.location).toBe(`/projects/${projectId}/assets?manage_categories=1`);
+
+      const withNotice = await agent.get(`/projects/${projectId}/asset-categories?notice=category_added`).expect(302);
+      expect(withNotice.headers.location).toBe(`/projects/${projectId}/assets?manage_categories=1&notice=category_added`);
+    });
+
     it('the GET route uses the explicitly injected service, not one constructed internally', async () => {
       ctx = setupTmp();
       const fake = makeFakeProjectAssetCategoryService();
@@ -144,7 +169,7 @@ describe('project asset categories — HTTP', () => {
       const { agent, csrfToken } = await authenticate(app);
       const projectId = await createProject(agent, csrfToken, 'DI Probe');
 
-      await agent.get(`/projects/${projectId}/asset-categories`).expect(200);
+      await getCategoryManagementPage(agent, projectId);
       expect(fake.list).toHaveBeenCalledWith(projectId);
     });
 
@@ -213,9 +238,10 @@ describe('project asset categories — HTTP', () => {
         `/projects/${projectId}/asset-categories/${category.id}/move-down`,
         `/projects/${projectId}/asset-categories/${category.id}/delete`,
       ];
-      // The first path (the list page) is a GET route and must succeed;
+      // The first path (the legacy list page) redirects to Assets;
       // every remaining path is POST-only and must 404 on GET.
-      await agent.get(paths[0]).expect(200);
+      const redirect = await agent.get(paths[0]).expect(302);
+      expect(redirect.headers.location).toBe(`/projects/${projectId}/assets?manage_categories=1`);
       for (const p of paths.slice(1)) {
         await agent.get(p).expect(404);
       }
@@ -231,7 +257,7 @@ describe('project asset categories — HTTP', () => {
       const { agent, csrfToken } = await authenticate(app);
       const projectId = await createProject(agent, csrfToken, 'GET No Mutation');
 
-      await agent.get(`/projects/${projectId}/asset-categories`).expect(200);
+      await getCategoryManagementPage(agent, projectId);
 
       expect(fake.add).not.toHaveBeenCalled();
       expect(fake.editDisplayName).not.toHaveBeenCalled();
@@ -439,7 +465,7 @@ describe('project asset categories — HTTP', () => {
 
       await agent.post(`/projects/${projectId}/asset-categories/${first.id}/disable`).type('form').send({ _csrf: csrfToken }).expect(302);
 
-      const res = await agent.get(`/projects/${projectId}/asset-categories`).expect(200);
+      const res = await getCategoryManagementPage(agent, projectId);
       const order = rows.map((r) => res.text.indexOf(`data-category-id="${r.id}"`));
       expect(order).toEqual([...order].sort((a, b) => a - b));
       for (const idx of order) expect(idx).toBeGreaterThan(-1);
@@ -461,7 +487,7 @@ describe('project asset categories — HTTP', () => {
       const projectId = await createProject(agent, csrfToken, 'Card Markup');
       const rows = listProjectCategories(ctx.db, projectId);
 
-      const res = await agent.get(`/projects/${projectId}/asset-categories`).expect(200);
+      const res = await getCategoryManagementPage(agent, projectId);
       expect(res.text).toContain('data-category-reorder-list');
       expect(res.text).toContain(`data-reorder-url="/projects/${projectId}/asset-categories/reorder"`);
       expect(res.text).toContain('data-category-reorder-form');
@@ -479,18 +505,18 @@ describe('project asset categories — HTTP', () => {
         expect(card).toContain('Save name');
         expect(card).toContain(`<code>${rows[index].directory_slug}</code>`);
         expect(card).toContain('data-autosubmit');
-        expect(card).toContain(`method="post" action="/projects/${projectId}/asset-categories/${rows[index].id}/create-release" class="inline-form"`);
-        expect(card).toContain(`aria-label="Create a new release from ${rows[index].display_name}"`);
-        expect(card).toContain('>Create release</button>');
-        expect(card).not.toContain(`href="/projects/${projectId}/asset-categories/${rows[index].id}/create-release"`);
         expect(card).toContain('>Delete</button>');
-         expect(card).toContain('Save status');
+        expect(card).toContain('Save status');
       }
+
+      const categoryDialog = res.text.match(/<dialog id="project-asset-category-management-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+      expect(categoryDialog).not.toContain('/create-release');
+      expect(categoryDialog).not.toContain('Create release');
 
       expect(res.text).not.toContain('<th>Position</th>');
       expect(res.text).not.toContain('>Move Up</button>');
       expect(res.text).not.toContain('>Move Down</button>');
-      expect(res.text).not.toContain('category-management-status');
+       expect(res.text).toContain('data-category-management-status');
       expect(hasNestedForms(res.text)).toBe(false);
       expect((res.text.match(/<form\b/gi) || []).length).toBe((res.text.match(/<\/form>/gi) || []).length);
     });
@@ -502,7 +528,7 @@ describe('project asset categories — HTTP', () => {
       const projectId = await createProject(agent, csrfToken, 'Name Slug Probe');
       const [category] = listProjectCategories(ctx.db, projectId);
 
-      const res = await agent.get(`/projects/${projectId}/asset-categories`).expect(200);
+      const res = await getCategoryManagementPage(agent, projectId);
       const nameForm = res.text.match(new RegExp(
         `<form method="post" action="/projects/${projectId}/asset-categories/${category.id}/name"[^>]*>[\\s\\S]*?<\\/form>`
       ))?.[0];
@@ -524,30 +550,36 @@ describe('project asset categories — HTTP', () => {
       const projectId = await createProject(agent, csrfToken, 'Empty Probe');
 
       expect(listProjectCategories(ctx.db, projectId)).toHaveLength(0);
-      const res = await agent.get(`/projects/${projectId}/asset-categories`).expect(200);
+      const res = await getCategoryManagementPage(agent, projectId);
       expect(res.text).toContain('No categories yet');
     });
 
-    it('explains project-only ownership and disabled-scan recognition', async () => {
+    it('uses the established dialog description without the old full-page information panel', async () => {
       ctx = setupTmp();
       const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
       const { agent, csrfToken } = await authenticate(app);
-      const projectId = await createProject(agent, csrfToken, 'Explain Probe');
+      const projectId = await createProject(agent, csrfToken, 'Explain <Probe> & Co');
 
-      const res = await agent.get(`/projects/${projectId}/asset-categories`).expect(200);
-      expect(res.text).toMatch(/belong only to/i);
-      expect(res.text).toMatch(/global Settings defaults/i);
-      expect(res.text).toMatch(/recognized/i);
+      const res = await getCategoryManagementPage(agent, projectId);
+      const categoryDialog = res.text.match(/<dialog id="project-asset-category-management-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+      expect(categoryDialog).toContain(
+        'Manage categories and asset browser defaults for Explain &lt;Probe&gt; &amp; Co. Changes here apply only to this project.'
+      );
+      expect(categoryDialog).not.toMatch(/Saved:\s*Inherit global default/);
+      expect(categoryDialog).not.toMatch(/Effective:\s*All Categories/);
+      expect(categoryDialog).not.toContain('project-category-management-info');
+      expect(categoryDialog).not.toMatch(/Disabling a category does not delete its files/i);
     });
 
-    it('explains that the directory slug is fixed at creation', async () => {
+    it('shows the directory slug separately from the editable display name', async () => {
       ctx = setupTmp();
       const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
       const { agent, csrfToken } = await authenticate(app);
       const projectId = await createProject(agent, csrfToken, 'Distinguish Probe');
 
-      const res = await agent.get(`/projects/${projectId}/asset-categories`).expect(200);
-      expect(res.text).toMatch(/cannot currently be changed/i);
+      const res = await getCategoryManagementPage(agent, projectId);
+      expect(res.text).toContain('Directory slug');
+      expect(res.text).toContain(`<code>${listProjectCategories(ctx.db, projectId)[0].directory_slug}</code>`);
     });
 
     it('renders archived projects read-only with no active mutation controls', async () => {
@@ -557,7 +589,7 @@ describe('project asset categories — HTTP', () => {
       const projectId = await createProject(agent, csrfToken, 'Archived Readonly');
       await agent.post(`/projects/${projectId}/archive`).type('form').send({ _csrf: csrfToken }).expect(302);
 
-      const res = await agent.get(`/projects/${projectId}/asset-categories`).expect(200);
+      const res = await getCategoryManagementPage(agent, projectId);
       expect(res.text).toMatch(/read-only/i);
       expect(res.text).not.toContain('data-category-reorder-list');
       expect(res.text).not.toContain('data-category-reorder-form');
@@ -588,7 +620,7 @@ describe('project asset categories — HTTP', () => {
       await agent.post(`/projects/${projectId}/asset-categories/${disabled.id}/disable`)
         .type('form').send({ _csrf: csrfToken }).expect(302);
 
-      const res = await agent.get(`/projects/${projectId}/asset-categories`).expect(200);
+      const res = await getCategoryManagementPage(agent, projectId);
       expect(res.text).toContain('data-cc-dropdown data-cc-dropdown-mode="single"');
       expect(res.text).toMatch(
         /<select id="project-asset-categories-default-category" name="defaultCategory" class="cc-dropdown-native-select form-control" data-cc-dropdown-native-select/
@@ -601,30 +633,78 @@ describe('project asset categories — HTTP', () => {
       expect(res.text).toContain(`<option value="category:${enabled.id}"`);
       expect(res.text).not.toContain(`<option value="category:${disabled.id}"`);
       expect(res.text).toContain('Add a category');
-      expect(res.text).toContain('asset-browser-default-section--project');
-      expect(res.text).toContain('asset-browser-default-control-row');
-      expect(res.text).toContain('name="defaultCategory" class="cc-dropdown-native-select form-control"');
-      expect(res.text).toContain('>Save default</button>');
-    });
+       expect(res.text).toContain('asset-browser-default-section--project');
+       expect(res.text).toContain('asset-browser-default-control-row');
+       expect(res.text).toContain('name="defaultCategory" class="cc-dropdown-native-select form-control"');
+       expect(res.text).toContain('data-asset-browser-default-live');
+       expect(res.text).toContain('data-asset-browser-default-status');
+       expect(res.text).not.toContain('>Save default</button>');
+     });
 
-    it('keeps Add Category immediately after its fields without the enabled-default helper copy', async () => {
+    it('keeps Add immediately after its fields without the enabled-default helper copy', async () => {
       ctx = setupTmp();
       const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
       const { agent, csrfToken } = await authenticate(app);
       const projectId = await createProject(agent, csrfToken, 'Category Add Layout');
 
-      const res = await agent.get(`/projects/${projectId}/asset-categories`).expect(200);
+       const res = await getCategoryManagementPage(agent, projectId);
       const addForm = res.text.match(new RegExp(
         `<form method="post" action="/projects/${projectId}/asset-categories" class="[^"]*project-category-management-form[^"]*"[^>]*>[\\s\\S]*?<\\/form>`
       ))?.[0];
 
       expect(addForm).toBeDefined();
-      expect(addForm).toContain('class="field-row"');
-      expect(addForm).toContain('class="category-management-action-row"');
-      expect(addForm.indexOf('class="field-row"')).toBeLessThan(addForm.indexOf('class="category-management-action-row"'));
-      expect(addForm).toContain('>Add Category</button>');
+      expect(addForm).toContain('class="project-category-management-add-row"');
+      expect(addForm).toContain('class="project-category-management-add-submit form-actions"');
+      expect(addForm.indexOf('project-category-management-add-row')).toBeLessThan(addForm.indexOf('project-category-management-add-submit'));
+       expect(addForm).toContain('>Add</button>');
       expect(addForm).toMatch(/id="add-enabled"[\s\S]*?checked/);
       expect(addForm).not.toContain('New categories are enabled by default.');
+    });
+
+    it('persists a project default through the enhanced JSON contract without navigation', async () => {
+      ctx = setupTmp();
+      const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
+      const { agent, csrfToken } = await authenticate(app);
+      const projectId = await createProject(agent, csrfToken, 'Category Default Enhanced');
+      const [category] = listProjectCategories(ctx.db, projectId);
+
+      const response = await agent
+        .post(`/projects/${projectId}/asset-categories/default`)
+        .set('Accept', 'application/json')
+        .type('form')
+        .send({ defaultCategory: `category:${category.id}`, _csrf: csrfToken })
+        .expect(200);
+
+      expect(response.body).toEqual({
+        status: 'success',
+        message: 'Project asset default saved.',
+        values: { defaultCategory: `category:${category.id}` },
+        fallbackExplanation: null,
+      });
+      expect(findProjectPreference(ctx.db, projectId)).toEqual({
+        default_category_mode: 'category',
+        default_category_id: category.id,
+      });
+    });
+
+    it('returns enhanced validation errors without changing the stored project default', async () => {
+      ctx = setupTmp();
+      const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
+      const { agent, csrfToken } = await authenticate(app);
+      const projectId = await createProject(agent, csrfToken, 'Category Default Enhanced Invalid');
+      const before = findProjectPreference(ctx.db, projectId);
+
+      const response = await agent
+        .post(`/projects/${projectId}/asset-categories/default`)
+        .set('Accept', 'application/json')
+        .type('form')
+        .send({ defaultCategory: 'unexpected', _csrf: csrfToken })
+        .expect(422);
+
+      expect(response.body.status).toBe('error');
+      expect(response.body.values).toEqual({ defaultCategory: 'unexpected' });
+      expect(response.body.errors.value).toMatch(/inherit, all, or category/i);
+      expect(findProjectPreference(ctx.db, projectId)).toEqual(before);
     });
 
     it('saves inherit, all, and a valid project category without filesystem or manifest mutation', async () => {
@@ -642,7 +722,7 @@ describe('project asset categories — HTTP', () => {
       ]) {
         const res = await agent.post(`/projects/${projectId}/asset-categories/default`).type('form')
           .send({ defaultCategory: value, _csrf: csrfToken }).expect(302);
-        expect(res.headers.location).toBe(`/projects/${projectId}/asset-categories?notice=project_default_saved`);
+        expect(res.headers.location).toBe(`/projects/${projectId}/assets?category=all&manage_categories=1&notice=project_default_saved`);
         expect(findProjectPreference(ctx.db, projectId)).toEqual({
           default_category_mode: mode,
           default_category_id: categoryId,
@@ -655,6 +735,7 @@ describe('project asset categories — HTTP', () => {
     it('retains submitted invalid values with 422 and leaves the stored preference unchanged', async () => {
       ctx = setupTmp();
       const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
+      const renderSpy = vi.spyOn(app, 'render');
       const { agent, csrfToken } = await authenticate(app);
       const projectId = await createProject(agent, csrfToken, 'Category Default Invalid');
       const otherProjectId = await createProject(agent, csrfToken, 'Category Default Other');
@@ -664,26 +745,24 @@ describe('project asset categories — HTTP', () => {
 
       const wrongProject = await agent.post(`/projects/${projectId}/asset-categories/default`).type('form')
         .send({ defaultCategory: `category:${otherCategory.id}`, _csrf: csrfToken }).expect(422);
-      expect(wrongProject.text).toContain('belong to this project');
-      expect(wrongProject.text).toContain(`<option value="category:${otherCategory.id}" selected>`);
-      expect(wrongProject.text).toMatch(
-        /<select id="project-asset-categories-default-category"[^>]*aria-describedby="project-asset-categories-default-category-help project-asset-categories-default-category-error"[^>]*aria-invalid/
-      );
-      expect(wrongProject.text).toMatch(
-        /<summary[^>]*aria-describedby="project-asset-categories-default-category-error"[^>]*aria-invalid/
-      );
+      const wrongProjectModel = lastAssetsRenderModel(renderSpy);
+      expect(wrongProjectModel.categoryManagementDialogOpen).toBe(true);
+      expect(wrongProjectModel.categoryManagement.assetBrowserPreference.selectedValue)
+        .toBe(`category:${otherCategory.id}`);
+      expect(wrongProjectModel.categoryManagement.assetBrowserPreference.errorMessage)
+        .toMatch(/belong to this project/i);
 
       await agent.post(`/projects/${projectId}/asset-categories/${ownCategory.id}/disable`)
         .type('form').send({ _csrf: csrfToken }).expect(302);
       const disabled = await agent.post(`/projects/${projectId}/asset-categories/default`).type('form')
         .send({ defaultCategory: `category:${ownCategory.id}`, _csrf: csrfToken }).expect(422);
-      expect(disabled.text).toContain('Disabled categories cannot be selected directly');
-      expect(disabled.text).toContain(`<option value="category:${ownCategory.id}" selected>`);
+      expect(lastAssetsRenderModel(renderSpy).categoryManagement.assetBrowserPreference.selectedValue)
+        .toBe(`category:${ownCategory.id}`);
 
       const malformed = await agent.post(`/projects/${projectId}/asset-categories/default`).type('form')
         .send({ defaultCategory: 'unexpected', _csrf: csrfToken }).expect(422);
-      expect(malformed.text).toContain('Preference must be inherit, all, or category');
-      expect(malformed.text).toContain('<option value="unexpected" selected>');
+      expect(lastAssetsRenderModel(renderSpy).categoryManagement.assetBrowserPreference.selectedValue)
+        .toBe('unexpected');
       expect(findProjectPreference(ctx.db, projectId)).toEqual(before);
     });
 
@@ -697,7 +776,7 @@ describe('project asset categories — HTTP', () => {
 
       await agent.post(`/projects/${projectId}/asset-categories/default`).type('form')
         .send({ defaultCategory: 'all' }).expect(403);
-      const page = await agent.get(`/projects/${projectId}/asset-categories`).expect(200);
+       const page = await getCategoryManagementPage(agent, projectId);
       expect(page.text).toMatch(/shown read-only/i);
       expect(page.text).not.toContain(`action="/projects/${projectId}/asset-categories/default"`);
 
@@ -752,55 +831,73 @@ describe('project asset categories — HTTP', () => {
     it('renders the initial switch checked and retains checked or unchecked state on validation failure', async () => {
       ctx = setupTmp();
       const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
+      const renderSpy = vi.spyOn(app, 'render');
       const { agent, csrfToken } = await authenticate(app);
       const projectId = await createProject(agent, csrfToken, 'Add Switch State');
 
-      const initial = await agent.get(`/projects/${projectId}/asset-categories`).expect(200);
+       const initial = await getCategoryManagementPage(agent, projectId);
       expect(initial.text).toMatch(/<input\s+type="checkbox"\s+id="add-enabled"[\s\S]*?checked/);
 
       const unchecked = await agent.post(`/projects/${projectId}/asset-categories`).type('form')
         .send({ displayName: '', directorySlug: 'unchecked', enabled: '0', _csrf: csrfToken }).expect(422);
-      const uncheckedSwitch = unchecked.text.match(/<input\s+type="checkbox"\s+id="add-enabled"[\s\S]*?>/)?.[0] || '';
-      expect(uncheckedSwitch).not.toContain('checked');
+      const uncheckedModel = lastAssetsRenderModel(renderSpy);
+      expect(uncheckedModel.categoryManagementDialogOpen).toBe(true);
+      expect(uncheckedModel.categoryManagement.addValues).toEqual({
+        displayName: '',
+        directorySlug: 'unchecked',
+        enabled: false,
+      });
+      expect(uncheckedModel.categoryManagement.addErrors.displayName).toMatch(/required/i);
 
       const checked = await agent.post(`/projects/${projectId}/asset-categories`).type('form')
         .send({ displayName: '', directorySlug: 'checked', enabled: ['0', '1'], _csrf: csrfToken }).expect(422);
-      expect(checked.text).toMatch(/<input\s+type="checkbox"\s+id="add-enabled"[\s\S]*?checked/);
+      expect(lastAssetsRenderModel(renderSpy).categoryManagement.addValues.enabled).toBe(true);
     });
 
     it('rejects a malformed enabled value with 422 and does not create a category', async () => {
       ctx = setupTmp();
       const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
+      const renderSpy = vi.spyOn(app, 'render');
       const { agent, csrfToken } = await authenticate(app);
       const projectId = await createProject(agent, csrfToken, 'Add Malformed Enabled');
 
       const res = await agent.post(`/projects/${projectId}/asset-categories`).type('form')
         .send({ displayName: 'Malformed', directorySlug: 'malformed', enabled: 'maybe', _csrf: csrfToken }).expect(422);
-      expect(res.text).toContain('Enabled value must be');
+      const model = lastAssetsRenderModel(renderSpy);
+      expect(model.categoryManagement.addValues).toEqual({
+        displayName: 'Malformed',
+        directorySlug: 'malformed',
+        enabled: true,
+      });
+      expect(model.categoryManagement.addErrors.enabled).toMatch(/enabled value must be/i);
       expect(listProjectCategories(ctx.db, projectId).some((row) => row.directory_slug === 'malformed')).toBe(false);
     });
 
     it('rejects invalid input with a controlled 422 response', async () => {
       ctx = setupTmp();
       const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
+      const renderSpy = vi.spyOn(app, 'render');
       const { agent, csrfToken } = await authenticate(app);
       const projectId = await createProject(agent, csrfToken, 'Add Invalid');
 
       const res = await agent.post(`/projects/${projectId}/asset-categories`).type('form')
         .send({ displayName: '', directorySlug: 'raw', _csrf: csrfToken }).expect(422);
-      expect(res.text).toContain('Display name is required');
+      expect(lastAssetsRenderModel(renderSpy).categoryManagement.addErrors.displayName)
+        .toMatch(/required/i);
     });
 
     it('rejects a slug conflict with a controlled 422 response', async () => {
       ctx = setupTmp();
       const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
+      const renderSpy = vi.spyOn(app, 'render');
       const { agent, csrfToken } = await authenticate(app);
       const projectId = await createProject(agent, csrfToken, 'Add Slug Conflict');
       const [existing] = listProjectCategories(ctx.db, projectId);
 
       const res = await agent.post(`/projects/${projectId}/asset-categories`).type('form')
         .send({ displayName: 'Dup', directorySlug: existing.directory_slug, _csrf: csrfToken }).expect(422);
-      expect(res.text.toLowerCase()).toContain('already exists');
+      expect(lastAssetsRenderModel(renderSpy).categoryManagement.addErrors.directorySlug)
+        .toMatch(/already exists/i);
       expect(res.text).not.toContain('SQLITE');
     });
 
@@ -812,7 +909,99 @@ describe('project asset categories — HTTP', () => {
 
       const res = await agent.post(`/projects/${projectId}/asset-categories`).type('form')
         .send({ displayName: 'Raw', directorySlug: 'raw', _csrf: csrfToken }).expect(302);
-      expect(res.headers.location).toBe(`/projects/${projectId}/asset-categories?notice=category_added`);
+      expect(res.headers.location).toBe(`/projects/${projectId}/assets?category=all&manage_categories=1&notice=category_added`);
+    });
+
+    it('returns the updated server-rendered dialog state for an enhanced add', async () => {
+      ctx = setupTmp();
+      const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
+      const { agent, csrfToken } = await authenticate(app);
+      const projectId = await createProject(agent, csrfToken, 'Enhanced Add');
+
+      const response = await agent
+        .post(`/projects/${projectId}/asset-categories`)
+        .set('Accept', 'application/json')
+        .type('form')
+        .send({ displayName: 'Storyboards', directorySlug: 'storyboards', _csrf: csrfToken })
+        .expect(200);
+
+      expect(response.headers.location).toBeUndefined();
+      expect(response.body).toMatchObject({
+        status: 'success',
+        message: 'Category added.',
+        focus: 'add-displayName',
+      });
+      expect(response.body.html).toContain('data-category-management-status');
+      expect(response.body.html).toContain('data-category-label="Storyboards"');
+      expect(response.body.html).toContain('<code>storyboards</code>');
+      expect(response.body.html).toContain('data-category-reorder-list');
+    });
+
+    it('returns submitted add values and field errors for an enhanced validation failure', async () => {
+      ctx = setupTmp();
+      const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
+      const { agent, csrfToken } = await authenticate(app);
+      const projectId = await createProject(agent, csrfToken, 'Enhanced Add Invalid');
+
+      const response = await agent
+        .post(`/projects/${projectId}/asset-categories`)
+        .set('Accept', 'application/json')
+        .type('form')
+        .send({ displayName: '', directorySlug: 'drafts', enabled: '0', _csrf: csrfToken })
+        .expect(422);
+
+      expect(response.body).toMatchObject({
+        status: 'error',
+        values: { displayName: '', directorySlug: 'drafts', enabled: false },
+        errors: { displayName: 'Display name is required.' },
+        focus: 'add-displayName',
+      });
+      expect(response.body.html).toContain('aria-invalid="true"');
+      expect(response.body.html).toContain('value="drafts"');
+      expect(listProjectCategories(ctx.db, projectId).some((row) => row.directory_slug === 'drafts')).toBe(false);
+    });
+
+    it('preserves the supplied Assets filter/view context and requests dialog reopening', async () => {
+      ctx = setupTmp();
+      const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
+      const renderSpy = vi.spyOn(app, 'render');
+      const { agent, csrfToken } = await authenticate(app);
+      const projectId = await createProject(agent, csrfToken, 'Add Context');
+      const returnTo = `/projects/${projectId}/assets?${[
+        'category=all',
+        'search=hero',
+        'presence=present',
+        'usage=unused',
+        'sort=size',
+        'order=desc',
+        'page=2',
+        'pageSize=50',
+        'view=list',
+      ].join('&')}`;
+
+      const res = await agent.post(`/projects/${projectId}/asset-categories`).type('form')
+        .send({
+          displayName: 'Context Category',
+          directorySlug: 'context-category',
+          returnTo,
+          _csrf: csrfToken,
+        })
+        .expect(302);
+
+      expect(res.headers.location).toBe(
+        `/projects/${projectId}/assets?category=all&search=hero&presence=present&usage=unused&sort=size&order=desc&page=2&pageSize=50&view=list&manage_categories=1&notice=category_added`
+      );
+
+      await agent.get(res.headers.location).expect(200);
+      const assetsModel = lastAssetsRenderModel(renderSpy);
+      expect(assetsModel.categoryManagementDialogOpen).toBe(true);
+      expect(assetsModel.categoryManagement.notice).toEqual({
+        variant: 'success',
+        text: 'Category added.',
+      });
+      expect(assetsModel.categoryManagementReturnUrl).toBe(
+        `/projects/${projectId}/assets?category=all&search=hero&presence=present&usage=unused&sort=size&order=desc&pageSize=50&view=list`
+      );
     });
   });
 
@@ -845,11 +1034,11 @@ describe('project asset categories — HTTP', () => {
     it('handles success and validation failure safely', async () => {
       ctx = setupTmp();
       const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
+      const renderSpy = vi.spyOn(app, 'render');
       const { agent, csrfToken } = await authenticate(app);
       const projectId = await createProject(agent, csrfToken, 'Name Edit Behavior');
       const categoriesBefore = listProjectCategories(ctx.db, projectId);
       const [category] = categoriesBefore;
-      const otherCategory = categoriesBefore.find((row) => row.id !== category.id);
       const preferenceBefore = findProjectPreference(ctx.db, projectId);
       const project = ctx.db.prepare('SELECT * FROM projects WHERE id = ?').get(projectId);
       const projectDir = resolveProjectDir(ctx.projectsRoot, project.project_dir);
@@ -857,7 +1046,7 @@ describe('project asset categories — HTTP', () => {
 
       const okRes = await agent.post(`/projects/${projectId}/asset-categories/${category.id}/name`).type('form')
         .send({ displayName: 'New Label', _csrf: csrfToken }).expect(302);
-      expect(okRes.headers.location).toBe(`/projects/${projectId}/asset-categories?notice=category_name_updated`);
+      expect(okRes.headers.location).toBe(`/projects/${projectId}/assets?category=all&manage_categories=1&notice=category_name_updated`);
 
       const afterSuccess = listProjectCategories(ctx.db, projectId);
       expect(afterSuccess.find((row) => row.id === category.id).display_name).toBe('New Label');
@@ -870,23 +1059,12 @@ describe('project asset categories — HTTP', () => {
       const invalidValue = '   ';
       const failRes = await agent.post(`/projects/${projectId}/asset-categories/${category.id}/name`).type('form')
         .send({ displayName: invalidValue, _csrf: csrfToken }).expect(422);
-      expect(failRes.text).toContain('Display name is required');
-
-      const affectedRow = failRes.text.match(new RegExp(
-        `<article\\b[^>]*class="category-management-card"[^>]*data-category-id="${category.id}"[\\s\\S]*?<\\/article>`
-      ))?.[0];
-      expect(affectedRow).toBeDefined();
-      expect(affectedRow).toMatch(new RegExp(`id="name-${category.id}"[^>]*value="\\s{3}"`));
-      expect(affectedRow).toContain(`aria-describedby="name-${category.id}-error"`);
-      expect(affectedRow).toContain(`id="name-${category.id}-error"`);
-
-      if (otherCategory) {
-        const otherRow = failRes.text.match(new RegExp(
-          `<article\\b[^>]*class="category-management-card"[^>]*data-category-id="${otherCategory.id}"[\\s\\S]*?<\\/article>`
-        ))?.[0];
-        expect(otherRow).toBeDefined();
-        expect(otherRow).toContain(`value="${otherCategory.display_name}"`);
-      }
+      expect(failRes.text).toContain('Assets — Name Edit Behavior');
+      expect(lastAssetsRenderModel(renderSpy).categoryManagement.nameEdit).toEqual({
+        categoryId: category.id,
+        values: { displayName: invalidValue },
+        errors: { displayName: 'Display name is required.' },
+      });
 
       const afterFailure = listProjectCategories(ctx.db, projectId);
       expect(afterFailure.find((row) => row.id === category.id).display_name).toBe('New Label');
@@ -894,6 +1072,45 @@ describe('project asset categories — HTTP', () => {
         .toEqual(categoriesBefore.map((row) => ({ id: row.id, enabled: row.enabled })));
       expect(findProjectPreference(ctx.db, projectId)).toEqual(preferenceBefore);
       expect(fs.readdirSync(projectDir).sort()).toEqual(directoriesBefore);
+    });
+
+    it('returns server-rendered state for enhanced rename success and validation failure', async () => {
+      ctx = setupTmp();
+      const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
+      const { agent, csrfToken } = await authenticate(app);
+      const projectId = await createProject(agent, csrfToken, 'Enhanced Rename');
+      const [category] = listProjectCategories(ctx.db, projectId);
+
+      const success = await agent
+        .post(`/projects/${projectId}/asset-categories/${category.id}/name`)
+        .set('Accept', 'application/json')
+        .type('form')
+        .send({ displayName: 'Renamed Live', _csrf: csrfToken })
+        .expect(200);
+      expect(success.body).toMatchObject({
+        status: 'success',
+        message: 'Display name updated.',
+        categoryId: category.id,
+        focus: `name-${category.id}`,
+      });
+      expect(success.body.html).toContain('value="Renamed Live"');
+      expect(success.body.html).toContain('data-category-label="Renamed Live"');
+
+      const failure = await agent
+        .post(`/projects/${projectId}/asset-categories/${category.id}/name`)
+        .set('Accept', 'application/json')
+        .type('form')
+        .send({ displayName: '   ', _csrf: csrfToken })
+        .expect(422);
+      expect(failure.body).toMatchObject({
+        status: 'error',
+        values: { displayName: '   ' },
+        errors: { displayName: 'Display name is required.' },
+        categoryId: category.id,
+        focus: `name-${category.id}`,
+      });
+      expect(failure.body.html).toContain('role="alert"');
+      expect(failure.body.html).toContain('value="   "');
     });
   });
 
@@ -924,13 +1141,18 @@ describe('project asset categories — HTTP', () => {
     it('rejects malformed switch values with 422 and preserves the category', async () => {
       ctx = setupTmp();
       const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
+      const renderSpy = vi.spyOn(app, 'render');
       const { agent, csrfToken } = await authenticate(app);
       const projectId = await createProject(agent, csrfToken, 'Malformed Switch');
       const [category] = listProjectCategories(ctx.db, projectId);
 
       const res = await agent.post(`/projects/${projectId}/asset-categories/${category.id}/enabled`).type('form')
         .send({ enabled: ['0', '1', '1'], _csrf: csrfToken }).expect(422);
-      expect(res.text).toContain('Enabled value must be');
+      expect(lastAssetsRenderModel(renderSpy).categoryManagement.enabledControl).toEqual({
+        categoryId: category.id,
+        submitted: null,
+        errorMessage: expect.stringMatching(/enabled value must be/i),
+      });
       expect(ctx.db.prepare('SELECT enabled FROM project_asset_categories WHERE id = ?').get(category.id).enabled).toBe(1);
     });
 
@@ -961,7 +1183,7 @@ describe('project asset categories — HTTP', () => {
       const [category] = listProjectCategories(ctx.db, projectId);
 
       const res = await agent.post(`/projects/${projectId}/asset-categories/${category.id}/disable`).type('form').send({ _csrf: csrfToken }).expect(302);
-      const page = await agent.get(res.headers.location).expect(200);
+      const page = await agent.get(`/projects/${projectId}/assets?manage_categories=1&notice=category_disabled`).expect(200);
       expect(page.text).toMatch(/files were not touched|files remain/i);
     });
 
@@ -998,8 +1220,8 @@ describe('project asset categories — HTTP', () => {
       fake._state.categories.push({ ...category });
 
       const res = await agent.post(`/projects/${projectId}/asset-categories/${category.id}/enable`).type('form').send({ _csrf: csrfToken }).expect(302);
-      expect(res.headers.location).toBe(`/projects/${projectId}/asset-categories?notice=category_enable_failed`);
-      const page = await agent.get(res.headers.location).expect(200);
+      expect(res.headers.location).toBe(`/projects/${projectId}/assets?category=all&manage_categories=1&notice=category_enable_failed`);
+      const page = await agent.get(`/projects/${projectId}/assets?manage_categories=1&notice=category_enable_failed`).expect(200);
       expect(page.text).not.toContain('internal path');
     });
   });
@@ -1033,11 +1255,11 @@ describe('project asset categories — HTTP', () => {
 
       const res = await agent.post(`/projects/${projectId}/asset-categories/reorder`).type('form')
         .send({ orderedCategoryIds, _csrf: csrfToken }).expect(302);
-      expect(res.headers.location).toBe(`/projects/${projectId}/asset-categories?notice=category_reordered`);
+      expect(res.headers.location).toBe(`/projects/${projectId}/assets?category=all&manage_categories=1&notice=category_reordered`);
       expect(listProjectCategories(ctx.db, projectId).map((row) => row.id)).toEqual(orderedRows.map((row) => row.id));
       expect(listProjectCategories(ctx.db, projectId).map((row) => row.display_order)).toEqual([0, 1, 2, 3, 4]);
 
-      const page = await agent.get(res.headers.location).expect(200);
+      const page = await agent.get(`/projects/${projectId}/assets?manage_categories=1&notice=category_reordered`).expect(200);
       expect(page.text).toContain('Category order updated.');
       const positions = orderedRows.map((row) => page.text.indexOf(`id="name-${row.id}"`));
       expect(positions).toEqual([...positions].sort((a, b) => a - b));
@@ -1053,8 +1275,7 @@ describe('project asset categories — HTTP', () => {
 
       const res = await agent.post(`/projects/${projectId}/asset-categories/reorder`).type('form')
         .send({ orderedCategoryIds: `${category.id},${category.id},not-a-number`, _csrf: csrfToken }).expect(422);
-      expect(res.text).toContain('submitted category order is invalid');
-      expect(res.text).not.toContain('not-a-number');
+      expect(res.text).toContain('Assets — Reorder Bad Input');
       expect(listProjectCategories(ctx.db, projectId)).toEqual(before);
     });
 
@@ -1079,8 +1300,7 @@ describe('project asset categories — HTTP', () => {
       for (const payload of payloads) {
         const res = await agent.post(`/projects/${projectId}/asset-categories/reorder`).type('form')
           .send({ ...payload, _csrf: csrfToken }).expect(422);
-        expect(res.text).toContain('submitted category order is invalid');
-        expect(res.text).not.toContain('9007199254740992');
+        expect(res.text).toContain('Assets — Reorder Strict Input');
       }
 
       expect(listProjectCategories(ctx.db, projectId)).toEqual(before);
@@ -1105,8 +1325,7 @@ describe('project asset categories — HTTP', () => {
       for (const orderedCategoryIds of invalidOrders) {
         const res = await agent.post(`/projects/${projectId}/asset-categories/reorder`).type('form')
           .send({ orderedCategoryIds: orderedCategoryIds.join(','), _csrf: csrfToken }).expect(422);
-        expect(res.text).toContain('submitted category order is invalid');
-        expect(res.text).not.toContain('999999');
+        expect(res.text).toContain('Assets — Reorder Exact Set');
       }
 
       expect(listProjectCategories(ctx.db, projectId)).toEqual(ownRows);
@@ -1128,9 +1347,9 @@ describe('project asset categories — HTTP', () => {
 
       const res = await agent.post(`/projects/${projectId}/asset-categories/reorder`).type('form')
         .send({ orderedCategoryIds: '1', _csrf: csrfToken }).expect(302);
-      expect(res.headers.location).toBe(`/projects/${projectId}/asset-categories?notice=category_reorder_failed`);
+      expect(res.headers.location).toBe(`/projects/${projectId}/assets?category=all&manage_categories=1&notice=category_reorder_failed`);
 
-      const page = await agent.get(res.headers.location).expect(200);
+      const page = await agent.get(`/projects/${projectId}/assets?manage_categories=1&notice=category_reorder_failed`).expect(200);
       expect(page.text).toContain('Could not update the order. No changes were made.');
       expect(page.text).not.toContain('internal reorder detail');
     });
@@ -1247,7 +1466,49 @@ describe('project asset categories — HTTP', () => {
       expect(rows[0].directory_slug).toBe('final');
 
       const res = await agent.post(`/projects/${projectId}/asset-categories/${rows[0].id}/delete`).type('form').send({ _csrf: csrfToken }).expect(302);
-      expect(res.headers.location).toBe(`/projects/${projectId}/asset-categories?notice=category_deleted`);
+      expect(res.headers.location).toBe(`/projects/${projectId}/assets?category=all&manage_categories=1&notice=category_deleted`);
+      expect(listProjectCategories(ctx.db, projectId)).toHaveLength(0);
+    });
+
+    it('returns updated list/default state for an enhanced delete and preserves protections on failure', async () => {
+      ctx = setupTmp();
+      ctx.db.prepare('UPDATE asset_category_defaults SET enabled = 0 WHERE directory_slug != ?').run('final');
+      const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
+      const { agent, csrfToken } = await authenticate(app);
+      const projectId = await createProject(agent, csrfToken, 'Enhanced Delete');
+      const [category] = listProjectCategories(ctx.db, projectId);
+      const assetRepository = createAssetRepository(ctx.db);
+      assetRepository.upsert(projectId, `${category.directory_slug}/a.png`, {
+        filename: 'a.png', extension: 'png', mimeType: 'image/png', sizeBytes: 1, modifiedAt: null, categoryId: category.id,
+      });
+
+      const failure = await agent
+        .post(`/projects/${projectId}/asset-categories/${category.id}/delete`)
+        .set('Accept', 'application/json')
+        .type('form')
+        .send({ _csrf: csrfToken })
+        .expect(409);
+      expect(failure.body).toMatchObject({
+        status: 'error',
+        message: expect.stringMatching(/disable/i),
+        categoryId: category.id,
+      });
+      expect(failure.body.html).toContain(`data-category-id="${category.id}"`);
+
+      ctx.db.prepare('DELETE FROM assets WHERE project_id = ?').run(projectId);
+      const success = await agent
+        .post(`/projects/${projectId}/asset-categories/${category.id}/delete`)
+        .set('Accept', 'application/json')
+        .type('form')
+        .send({ _csrf: csrfToken })
+        .expect(200);
+      expect(success.body).toMatchObject({
+        status: 'success',
+        message: 'Category deleted.',
+        categoryId: category.id,
+      });
+      expect(success.body.html).toContain('No categories yet');
+      expect(success.body.html).toContain('id="project-asset-categories-default-category"');
       expect(listProjectCategories(ctx.db, projectId)).toHaveLength(0);
     });
 
@@ -1263,8 +1524,8 @@ describe('project asset categories — HTTP', () => {
       });
 
       const res = await agent.post(`/projects/${projectId}/asset-categories/${category.id}/delete`).type('form').send({ _csrf: csrfToken }).expect(302);
-      expect(res.headers.location).toBe(`/projects/${projectId}/asset-categories?notice=category_delete_disable_instead`);
-      const page = await agent.get(res.headers.location).expect(200);
+      expect(res.headers.location).toBe(`/projects/${projectId}/assets?category=all&manage_categories=1&notice=category_delete_disable_instead`);
+      const page = await agent.get(`/projects/${projectId}/assets?manage_categories=1&notice=category_delete_disable_instead`).expect(200);
       expect(page.text).toMatch(/disable/i);
       const stillThere = ctx.db.prepare('SELECT * FROM project_asset_categories WHERE id = ?').get(category.id);
       expect(stillThere).toBeTruthy();
@@ -1281,7 +1542,7 @@ describe('project asset categories — HTTP', () => {
       fs.writeFileSync(path.join(absPath, category.directory_slug, 'stray.txt'), 'stray');
 
       const res = await agent.post(`/projects/${projectId}/asset-categories/${category.id}/delete`).type('form').send({ _csrf: csrfToken }).expect(302);
-      expect(res.headers.location).toBe(`/projects/${projectId}/asset-categories?notice=category_delete_disable_instead`);
+      expect(res.headers.location).toBe(`/projects/${projectId}/assets?category=all&manage_categories=1&notice=category_delete_disable_instead`);
     });
 
     it('an unsafe-path failure is reported safely, with no internal path or SQL detail', async () => {
@@ -1300,8 +1561,8 @@ describe('project asset categories — HTTP', () => {
       fake._state.categories.push({ ...category });
 
       const res = await agent.post(`/projects/${projectId}/asset-categories/${category.id}/delete`).type('form').send({ _csrf: csrfToken }).expect(302);
-      expect(res.headers.location).toBe(`/projects/${projectId}/asset-categories?notice=category_delete_failed`);
-      const page = await agent.get(res.headers.location).expect(200);
+      expect(res.headers.location).toBe(`/projects/${projectId}/assets?category=all&manage_categories=1&notice=category_delete_failed`);
+      const page = await agent.get(`/projects/${projectId}/assets?manage_categories=1&notice=category_delete_failed`).expect(200);
       expect(page.text).not.toContain('C:\\internal\\path');
       expect(page.text).not.toContain('SQLITE');
     });

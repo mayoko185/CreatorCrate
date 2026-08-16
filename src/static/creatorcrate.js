@@ -3107,6 +3107,7 @@ const APP_DIALOG_SELECTOR = '[data-app-dialog]';
 const APP_DIALOG_TRIGGER_SELECTOR = '[data-dialog-open]';
 const APP_DIALOG_CLOSE_SELECTOR = '[data-dialog-close]';
 const APP_DIALOG_FORM_SELECTOR = '[data-dialog-form]';
+const ASSET_BROWSER_DEFAULT_LIVE_FORM_SELECTOR = '[data-asset-browser-default-live]';
 const APP_DIALOG_FOCUSABLE_SELECTOR = 'a[href], button, input, select, textarea, summary, [tabindex]';
 const PROJECT_ASSET_CATEGORY_FILTER_SELECTOR = '[data-asset-category-filter]';
 const ASSET_VIEWER_FILTER_DISCLOSURE_SELECTOR = '[data-asset-viewer-filter-disclosure]';
@@ -3119,6 +3120,17 @@ const ASSET_VIEWER_FILTER_MULTI_SELECT_SELECTOR = '[data-asset-viewer-filter-mul
 const ASSET_VIEWER_FILTER_SINGLE_SELECT_SUMMARY_SELECTOR = '.asset-filter-multiselect-summary-current';
 const CC_DROPDOWN_CURRENT_SUMMARY_SELECTOR = '[data-cc-dropdown-summary-current]';
 const CC_DROPDOWN_NATIVE_SELECT_SELECTOR = '[data-cc-dropdown-native-select]';
+const SCROLLABLE_CATEGORY_DIALOG_BODY_CLASS = 'project-asset-category-management-dialog-body';
+const CC_DROPDOWN_PANEL_SELECTOR = '.asset-filter-multiselect-panel';
+const CC_DROPDOWN_OVERLAY_ATTRIBUTE = 'data-cc-dropdown-overlay';
+const CC_DROPDOWN_OVERLAY_STATE = '__creatorCrateDropdownOverlayState';
+const CC_DROPDOWN_VIEWPORT_GUTTER = 8;
+const CC_DROPDOWN_PANEL_GAP = 4;
+const PROJECT_ASSET_CATEGORY_MANAGEMENT_DIALOG_ID = 'project-asset-category-management-dialog';
+const PROJECT_ASSET_CATEGORY_MANAGEMENT_BODY_SELECTOR = '.project-asset-category-management-dialog-body';
+const PROJECT_ASSET_CATEGORY_MANAGEMENT_ADD_FORM_SELECTOR = '#project-category-management-add-form';
+const PROJECT_ASSET_CATEGORY_MANAGEMENT_RENAME_FORM_SELECTOR = '.category-name-form';
+const PROJECT_ASSET_CATEGORY_MANAGEMENT_DELETE_FORM_SELECTOR = '[data-category-management-delete-form]';
 const ASSET_VIEWER_INFO_SELECTOR = '[data-asset-info-card]';
 const ASSET_VIEWER_PREVIEW_SELECTOR = '[data-asset-viewer-preview]';
 const ASSET_VIEWER_INFO_GUTTER = 8;
@@ -3619,6 +3631,7 @@ function appDialogRestoreFocus(state) {
 }
 
 function appDialogFinishClose(state) {
+  cleanupScrollableCategoryDialogDropdowns(state.dialog);
   state.open = false;
   appDialogBodyLock(state, false);
   appDialogRestoreFocus(state);
@@ -3757,11 +3770,391 @@ function appDialogFeedback(document, message, error = false) {
   feedback.removeAttribute?.('hidden');
 }
 
+function assetBrowserDefaultRoot(form) {
+  return form?.closest?.('[data-asset-browser-default]') || form;
+}
+
+function assetBrowserDefaultControl(form) {
+  return form?.querySelector?.('[name="defaultCategory"]') || null;
+}
+
+function assetBrowserDefaultSetDisabled(state, disabled) {
+  const control = state.control;
+  if (!control) return;
+  control.disabled = disabled;
+  if (disabled) control.setAttribute?.('disabled', '');
+  else control.removeAttribute?.('disabled');
+
+  const dropdown = creatorCrateDropdownForNativeSelect(control);
+  if (dropdown) {
+    syncCreatorCrateDropdownDisabledState(dropdown);
+    updateAssetViewerFilterDisclosureState(dropdown);
+  }
+}
+
+function assetBrowserDefaultSyncControl(state, value) {
+  state.control.value = String(value ?? '');
+  syncCreatorCrateDropdownFromNative(state.control);
+}
+
+function assetBrowserDefaultClearError(state) {
+  const root = assetBrowserDefaultRoot(state.form);
+  const error = root?.querySelector?.('[data-asset-browser-default-error]');
+  setHidden(error, true);
+  const errorText = root?.querySelector?.('[data-asset-browser-default-error-text]');
+  if (errorText) errorText.textContent = '';
+
+  state.control.removeAttribute?.('aria-invalid');
+  if (state.controlDescribedBy) state.control.setAttribute?.('aria-describedby', state.controlDescribedBy);
+  else state.control.removeAttribute?.('aria-describedby');
+  const summary = creatorCrateDropdownForNativeSelect(state.control)?.querySelector?.('summary');
+  summary?.removeAttribute?.('aria-invalid');
+  if (state.summaryDescribedBy) summary?.setAttribute?.('aria-describedby', state.summaryDescribedBy);
+  else summary?.removeAttribute?.('aria-describedby');
+}
+
+function assetBrowserDefaultShowError(state, message) {
+  const root = assetBrowserDefaultRoot(state.form);
+  const error = root?.querySelector?.('[data-asset-browser-default-error]');
+  const errorText = root?.querySelector?.('[data-asset-browser-default-error-text]');
+  if (errorText) errorText.textContent = message;
+  setHidden(error, false);
+
+  const errorId = error?.id || 'asset-browser-default-error';
+  state.control.setAttribute?.('aria-invalid', 'true');
+  state.control.setAttribute?.('aria-describedby', [state.controlDescribedBy, errorId].filter(Boolean).join(' '));
+  const summary = creatorCrateDropdownForNativeSelect(state.control)?.querySelector?.('summary');
+  summary?.setAttribute?.('aria-invalid', 'true');
+  summary?.setAttribute?.('aria-describedby', [state.summaryDescribedBy, errorId].filter(Boolean).join(' '));
+}
+
+function assetBrowserDefaultResponseMessage(payload, fallback) {
+  const details = Object.values(payload?.errors || {}).filter((value) => typeof value === 'string');
+  return [payload?.message, ...details].filter(Boolean).join(' ') || fallback;
+}
+
+function assetBrowserDefaultUpdatePresentation(state, payload) {
+  const root = assetBrowserDefaultRoot(state.form);
+  const fallback = root?.querySelector?.('[data-asset-browser-default-fallback]');
+  const fallbackText = root?.querySelector?.('[data-asset-browser-default-fallback-text]');
+  if (payload?.fallbackExplanation) {
+    if (fallbackText) fallbackText.textContent = payload.fallbackExplanation;
+    setHidden(fallback, false);
+  } else if (payload?.fallbackExplanation === null) {
+    if (fallbackText) fallbackText.textContent = '';
+    setHidden(fallback, true);
+  }
+}
+
+function appDialogBindLiveAssetBrowserDefault(state) {
+  const form = state.form;
+  if (!form || !form.matches?.(ASSET_BROWSER_DEFAULT_LIVE_FORM_SELECTOR)
+    || isEnhancementBound(form, 'assetBrowserDefaultLiveBound')) return;
+
+  const control = assetBrowserDefaultControl(form);
+  if (!control) return;
+
+  const dropdown = creatorCrateDropdownForNativeSelect(control);
+  const summary = dropdown?.querySelector?.('summary');
+  const errorId = assetBrowserDefaultRoot(form)?.querySelector?.('[data-asset-browser-default-error]')?.id || '';
+  const withoutErrorId = (value) => String(value || '')
+    .split(/\s+/)
+    .filter((candidate) => candidate && candidate !== errorId)
+    .join(' ');
+  const liveState = {
+    form,
+    control,
+    confirmedValue: String(control.value ?? ''),
+    pending: false,
+    controlDescribedBy: withoutErrorId(control.getAttribute?.('aria-describedby')),
+    summaryDescribedBy: withoutErrorId(summary?.getAttribute?.('aria-describedby')),
+  };
+  state.assetBrowserDefault = liveState;
+  markEnhancementBound(form, 'assetBrowserDefaultLiveBound');
+
+  control.addEventListener?.('change', (event) => {
+    const windowObject = state.document?.defaultView || globalThis;
+    if (typeof windowObject.fetch !== 'function'
+      || typeof windowObject.FormData !== 'function'
+      || typeof windowObject.URLSearchParams !== 'function') return;
+
+    const requestedValue = String(control.value ?? '');
+    if (liveState.pending) {
+      event.preventDefault?.();
+      assetBrowserDefaultSyncControl(liveState, liveState.confirmedValue);
+      return;
+    }
+    if (requestedValue === liveState.confirmedValue) return;
+
+    let body;
+    try {
+      body = new windowObject.URLSearchParams(new windowObject.FormData(form));
+    } catch {
+      return;
+    }
+
+    event.preventDefault?.();
+    liveState.pending = true;
+    assetBrowserDefaultClearError(liveState);
+    form.setAttribute?.('aria-busy', 'true');
+    form.setAttribute?.('data-asset-browser-default-state', 'pending');
+    const root = assetBrowserDefaultRoot(form);
+    const status = root?.querySelector?.('[data-asset-browser-default-status]');
+    if (status) status.textContent = 'Saving asset browser default.';
+    assetBrowserDefaultSetDisabled(liveState, true);
+
+    const action = form.action || form.getAttribute?.('action');
+    const method = String(form.method || form.getAttribute?.('method') || 'POST').toUpperCase();
+    Promise.resolve().then(() => windowObject.fetch(action, {
+      method,
+      body,
+      credentials: 'same-origin',
+      redirect: 'follow',
+      headers: { Accept: 'application/json' },
+    })).then(async (response) => ({ response, payload: await appDialogPayload(response) }))
+      .then(({ response, payload }) => {
+        liveState.pending = false;
+        assetBrowserDefaultSetDisabled(liveState, false);
+        form.removeAttribute?.('aria-busy');
+        if (response?.ok !== true || payload?.status !== 'success') {
+          assetBrowserDefaultSyncControl(liveState, liveState.confirmedValue);
+          const message = `${assetBrowserDefaultResponseMessage(
+            payload,
+            'Could not save the asset browser default.',
+          )} The previous setting was restored.`;
+          form.setAttribute?.('data-asset-browser-default-state', 'error');
+          if (status) status.textContent = message;
+          assetBrowserDefaultShowError(liveState, message);
+          return;
+        }
+
+        liveState.confirmedValue = String(payload.values?.defaultCategory ?? requestedValue);
+        assetBrowserDefaultSyncControl(liveState, liveState.confirmedValue);
+        assetBrowserDefaultUpdatePresentation(liveState, payload);
+        assetBrowserDefaultClearError(liveState);
+        form.setAttribute?.('data-asset-browser-default-state', 'saved');
+        if (status) status.textContent = payload.message || 'Asset browser default saved.';
+      })
+      .catch(() => {
+        liveState.pending = false;
+        assetBrowserDefaultSetDisabled(liveState, false);
+        form.removeAttribute?.('aria-busy');
+        assetBrowserDefaultSyncControl(liveState, liveState.confirmedValue);
+        const message = 'Could not save the asset browser default. The previous setting was restored. Check your connection and try again.';
+        form.setAttribute?.('data-asset-browser-default-state', 'error');
+        if (status) status.textContent = message;
+        assetBrowserDefaultShowError(liveState, message);
+      });
+  });
+}
+
 async function appDialogPayload(response) {
   if (typeof response?.json === 'function') {
     try { return await response.json(); } catch {}
   }
   return {};
+}
+
+function categoryManagementMutationVerb(kind) {
+  return {
+    add: 'add the category',
+    rename: 'save the category name',
+    delete: 'delete the category',
+  }[kind] || 'update the category';
+}
+
+function categoryManagementSetStatus(state, message, error = false) {
+  const status = state.dialog.querySelector?.('[data-category-management-status]');
+  if (status) {
+    status.textContent = message || '';
+    status.setAttribute?.('role', error ? 'alert' : 'status');
+    status.setAttribute?.('aria-live', error ? 'assertive' : 'polite');
+  }
+  if (message) state.dialog.setAttribute?.('data-category-management-state', error ? 'error' : 'pending');
+  else state.dialog.removeAttribute?.('data-category-management-state');
+}
+
+function categoryManagementFocus(state, focusId, error = false) {
+  const dialog = state.dialog;
+  const invalid = error ? dialog.querySelector?.('[aria-invalid="true"]') : null;
+  const preferred = focusId && state.document?.getElementById?.(focusId);
+  const fallback = dialog.querySelector?.('[data-category-reorder-handle]')
+    || dialog.querySelector?.('#add-displayName')
+    || dialog.querySelector?.('[data-category-management-status]');
+  const target = invalid && dialog.contains?.(invalid)
+    ? invalid
+    : preferred && dialog.contains?.(preferred)
+      ? preferred
+      : fallback;
+  target?.focus?.({ preventScroll: true });
+}
+
+function categoryManagementReplaceBody(state, html) {
+  if (typeof html !== 'string') throw new Error('Category management response did not include markup.');
+
+  const currentBody = state.dialog.querySelector?.(PROJECT_ASSET_CATEGORY_MANAGEMENT_BODY_SELECTOR);
+  const windowObject = state.document?.defaultView || globalThis;
+  if (!currentBody || typeof windowObject.DOMParser !== 'function') {
+    throw new Error('Category management markup could not be applied.');
+  }
+
+  const parsed = new windowObject.DOMParser().parseFromString(html, 'text/html');
+  const nextBody = parsed.querySelector?.(PROJECT_ASSET_CATEGORY_MANAGEMENT_BODY_SELECTOR);
+  if (!nextBody) throw new Error('Category management response did not contain its dialog body.');
+
+  const scrollTop = Number(currentBody.scrollTop) || 0;
+  cleanupScrollableCategoryDialogDropdowns(state.dialog);
+  currentBody.replaceWith?.(nextBody);
+  nextBody.scrollTop = scrollTop;
+
+  // The default form is part of the replaced server-rendered state. Rebind it
+  // before the category-specific controls so its custom dropdown remains live.
+  state.form = state.dialog.querySelector?.(APP_DIALOG_FORM_SELECTOR) || null;
+  enhanceDropdowns(state.dialog);
+  appDialogBindLiveAssetBrowserDefault(state);
+  enhanceAutoSubmit(nextBody);
+  enhanceCategoryReorder(nextBody);
+  enhanceConfirmations(nextBody);
+  enhanceProjectAssetCategoryManagement(state.dialog);
+  return nextBody;
+}
+
+function categoryManagementSetPending(form, pending) {
+  if (!form) return;
+  if (pending) {
+    form.setAttribute?.('aria-busy', 'true');
+    form.setAttribute?.('data-category-management-state', 'pending');
+  } else {
+    form.removeAttribute?.('aria-busy');
+    form.removeAttribute?.('data-category-management-state');
+  }
+  form.querySelectorAll?.('button[type="submit"], input[type="submit"]').forEach((control) => {
+    control.disabled = pending;
+    if (pending) control.setAttribute?.('disabled', '');
+    else control.removeAttribute?.('disabled');
+  });
+}
+
+function submitCategoryManagementMutation(state, form, kind, event) {
+  const windowObject = state.document?.defaultView || globalThis;
+  if (typeof windowObject.fetch !== 'function'
+    || typeof windowObject.FormData !== 'function'
+    || typeof windowObject.URLSearchParams !== 'function'
+    || typeof windowObject.DOMParser !== 'function') {
+    return; // Leave the traditional POST fallback intact.
+  }
+
+  if (state.categoryManagementSubmitting) {
+    event.preventDefault?.();
+    return;
+  }
+
+  let body;
+  try {
+    body = new windowObject.URLSearchParams(new windowObject.FormData(form));
+  } catch {
+    return; // A native submit is safer than sending a partial payload.
+  }
+
+  event.preventDefault?.();
+  state.categoryManagementSubmitting = true;
+  const submitter = event.submitter;
+  categoryManagementSetPending(form, true);
+  categoryManagementSetStatus(state, `Saving ${kind === 'add' ? 'new category' : `category ${kind}`}.`);
+
+  const action = form.action || form.getAttribute?.('action');
+  const method = String(form.method || form.getAttribute?.('method') || 'POST').toUpperCase();
+  let request;
+  try {
+    request = windowObject.fetch(action, {
+      method,
+      body,
+      credentials: 'same-origin',
+      redirect: 'follow',
+      headers: { Accept: 'application/json' },
+    });
+  } catch (error) {
+    request = Promise.reject(error);
+  }
+
+  Promise.resolve(request)
+    .then(async (response) => ({ response, payload: await appDialogPayload(response) }))
+    .then(({ response, payload }) => {
+      state.categoryManagementSubmitting = false;
+      categoryManagementSetPending(form, false);
+
+      const successful = response?.ok === true && payload?.status === 'success';
+      if (!successful) {
+        if (typeof payload?.html === 'string') {
+          try {
+            categoryManagementReplaceBody(state, payload.html);
+          } catch {
+            // Keep the existing controls available when a malformed fragment
+            // cannot be applied; the server mutation still remains authoritative.
+          }
+        }
+        const message = payload?.message || `Could not ${categoryManagementMutationVerb(kind)}.`;
+        categoryManagementSetStatus(state, message, true);
+        categoryManagementFocus(state, payload?.focus, true);
+        return;
+      }
+
+      try {
+        categoryManagementReplaceBody(state, payload.html);
+      } catch {
+        categoryManagementSetStatus(
+          state,
+          `${payload.message || 'Category updated.'} Refresh the page to verify the current category state.`,
+          true,
+        );
+        categoryManagementFocus(state, null, true);
+        return;
+      }
+      categoryManagementSetStatus(state, payload.message || 'Category updated.');
+      categoryManagementFocus(state, payload.focus, false);
+    })
+    .catch(() => {
+      state.categoryManagementSubmitting = false;
+      categoryManagementSetPending(form, false);
+      categoryManagementSetStatus(
+        state,
+        `Could not ${categoryManagementMutationVerb(kind)}. The previous state was kept. Check your connection and try again.`,
+        true,
+      );
+      categoryManagementFocus(state, submitter?.id, true);
+    });
+}
+
+function bindCategoryManagementMutationForm(state, form, kind) {
+  if (!form || isEnhancementBound(form, 'categoryManagementMutationBound')) return;
+  markEnhancementBound(form, 'categoryManagementMutationBound');
+  form.addEventListener?.('submit', (event) => {
+    submitCategoryManagementMutation(state, form, kind, event);
+  });
+}
+
+export function enhanceProjectAssetCategoryManagement(scope = globalThis.document) {
+  const document = appDialogDocument(scope);
+  if (!document || typeof document.querySelectorAll !== 'function') return 0;
+
+  const dialogs = Array.from(document.querySelectorAll(APP_DIALOG_SELECTOR))
+    .filter((dialog) => (dialog.id || dialog.getAttribute?.('id')) === PROJECT_ASSET_CATEGORY_MANAGEMENT_DIALOG_ID);
+  dialogs.forEach((dialog) => {
+    const state = dialog.__creatorCrateAppDialogState;
+    const body = dialog.querySelector?.(PROJECT_ASSET_CATEGORY_MANAGEMENT_BODY_SELECTOR);
+    if (!state || !body) return;
+
+    bindCategoryManagementMutationForm(
+      state,
+      body.querySelector?.(PROJECT_ASSET_CATEGORY_MANAGEMENT_ADD_FORM_SELECTOR),
+      'add',
+    );
+    body.querySelectorAll?.(PROJECT_ASSET_CATEGORY_MANAGEMENT_RENAME_FORM_SELECTOR)
+      .forEach((form) => bindCategoryManagementMutationForm(state, form, 'rename'));
+    body.querySelectorAll?.(PROJECT_ASSET_CATEGORY_MANAGEMENT_DELETE_FORM_SELECTOR)
+      .forEach((form) => bindCategoryManagementMutationForm(state, form, 'delete'));
+  });
+  return dialogs.length;
 }
 
 function appDialogBindForm(state) {
@@ -3856,6 +4249,7 @@ function appDialogBind(state) {
   markEnhancementBound(state.dialog, 'appDialogBound');
   state.form = state.dialog.querySelector?.(APP_DIALOG_FORM_SELECTOR) || null;
   appDialogBindForm(state);
+  appDialogBindLiveAssetBrowserDefault(state);
   state.dialog.addEventListener?.('close', () => appDialogFinishClose(state));
   state.dialog.addEventListener?.('cancel', (event) => {
     event.preventDefault?.();
@@ -5190,11 +5584,178 @@ export function enhanceAssetLibraryLiveFiltering(scope = globalThis.document) {
   return assetLibraryLiveEngine.enhance(scope);
 }
 
+function isScrollableCategoryDialogBody(dialogBody) {
+  return Boolean(dialogBody?.classList?.contains?.(SCROLLABLE_CATEGORY_DIALOG_BODY_CLASS));
+}
+
+function dropdownPanelStyleSet(panel, property, value) {
+  const style = panel?.style;
+  if (!style) return false;
+  if (typeof style.setProperty === 'function') style.setProperty(property, value);
+  else style[property === 'max-height' ? 'maxHeight' : property] = value;
+  return true;
+}
+
+function dropdownPanelStyleRemove(panel, property) {
+  const style = panel?.style;
+  if (!style) return;
+  if (typeof style.removeProperty === 'function') style.removeProperty(property);
+  else delete style[property === 'max-height' ? 'maxHeight' : property];
+}
+
+function cleanupScrollableDropdownPositioning(dropdown) {
+  const state = dropdown?.[CC_DROPDOWN_OVERLAY_STATE];
+  if (state) {
+    state.body?.removeEventListener?.('scroll', state.reposition);
+    state.viewport?.removeEventListener?.('resize', state.reposition);
+    state.viewport?.removeEventListener?.('scroll', state.reposition, true);
+    delete dropdown[CC_DROPDOWN_OVERLAY_STATE];
+  }
+
+  const panel = dropdown?.querySelector?.(CC_DROPDOWN_PANEL_SELECTOR);
+  if (!panel) return;
+  panel.removeAttribute?.(CC_DROPDOWN_OVERLAY_ATTRIBUTE);
+  ['position', 'left', 'top', 'width', 'max-height'].forEach((property) => {
+    dropdownPanelStyleRemove(panel, property);
+  });
+}
+
+function dropdownViewport(dropdown) {
+  const document = dropdown?.ownerDocument || globalThis.document;
+  const viewport = document?.defaultView || globalThis;
+  const width = Number(viewport?.innerWidth) || Number(document?.documentElement?.clientWidth) || 0;
+  const height = Number(viewport?.innerHeight) || Number(document?.documentElement?.clientHeight) || 0;
+  return { viewport, width, height };
+}
+
+function positionScrollableCategoryDropdown(dropdown, dialogBody) {
+  if (!dropdown || dropdown.open !== true || !isScrollableCategoryDialogBody(dialogBody)) return false;
+
+  const summary = dropdown.querySelector?.('summary');
+  const panel = dropdown.querySelector?.(CC_DROPDOWN_PANEL_SELECTOR);
+  const summaryRect = summary?.getBoundingClientRect?.();
+  const panelRect = panel?.getBoundingClientRect?.();
+  const { width: viewportWidth, height: viewportHeight } = dropdownViewport(dropdown);
+  if (!summaryRect || !panelRect || viewportWidth <= 0 || viewportHeight <= 0) return false;
+
+  const triggerLeft = Number(summaryRect.left);
+  const triggerTop = Number(summaryRect.top);
+  const triggerBottom = Number(summaryRect.bottom);
+  const triggerWidth = Number(summaryRect.width) || Number(summaryRect.right) - triggerLeft;
+  if (![triggerLeft, triggerTop, triggerBottom, triggerWidth].every(Number.isFinite)) return false;
+  if (triggerBottom <= CC_DROPDOWN_VIEWPORT_GUTTER || triggerTop >= viewportHeight - CC_DROPDOWN_VIEWPORT_GUTTER) {
+    return false;
+  }
+
+  const initialPanelWidth = Number(panelRect.width);
+  const maxPanelWidth = Math.max(1, viewportWidth - (CC_DROPDOWN_VIEWPORT_GUTTER * 2));
+  const panelWidth = Math.min(
+    maxPanelWidth,
+    Math.max(1, initialPanelWidth || triggerWidth),
+  );
+  if (!dropdownPanelStyleSet(panel, 'position', 'fixed')
+    || !dropdownPanelStyleSet(panel, 'left', '0px')
+    || !dropdownPanelStyleSet(panel, 'top', '0px')
+    || !dropdownPanelStyleSet(panel, 'width', `${panelWidth}px`)) {
+    return false;
+  }
+  panel.setAttribute?.(CC_DROPDOWN_OVERLAY_ATTRIBUTE, '');
+
+  const positionedPanelRect = panel.getBoundingClientRect?.() || panelRect;
+  const naturalPanelHeight = Number(positionedPanelRect.height) || Number(panelRect.height) || 0;
+  const spaceBelow = Math.max(1, viewportHeight - triggerBottom - CC_DROPDOWN_VIEWPORT_GUTTER);
+  const spaceAbove = Math.max(1, triggerTop - CC_DROPDOWN_VIEWPORT_GUTTER);
+  const opensAbove = naturalPanelHeight > spaceBelow && spaceAbove > spaceBelow;
+  const availableHeight = opensAbove ? spaceAbove : spaceBelow;
+  const maxPanelHeight = Math.max(1, Math.min(naturalPanelHeight || availableHeight, availableHeight));
+  dropdownPanelStyleSet(panel, 'max-height', `${maxPanelHeight}px`);
+
+  const finalPanelRect = panel.getBoundingClientRect?.() || positionedPanelRect;
+  const renderedPanelHeight = Number(finalPanelRect.height) || maxPanelHeight;
+  const left = Math.max(
+    CC_DROPDOWN_VIEWPORT_GUTTER,
+    Math.min(triggerLeft, viewportWidth - CC_DROPDOWN_VIEWPORT_GUTTER - panelWidth),
+  );
+  let top = opensAbove
+    ? triggerTop - CC_DROPDOWN_PANEL_GAP - renderedPanelHeight
+    : triggerBottom + CC_DROPDOWN_PANEL_GAP;
+  top = Math.max(
+    CC_DROPDOWN_VIEWPORT_GUTTER,
+    Math.min(top, viewportHeight - CC_DROPDOWN_VIEWPORT_GUTTER - renderedPanelHeight),
+  );
+  dropdownPanelStyleSet(panel, 'left', `${left}px`);
+  dropdownPanelStyleSet(panel, 'top', `${top}px`);
+  return true;
+}
+
+function bindScrollableCategoryDropdownPositioning(dropdown, dialogBody) {
+  const currentState = dropdown?.[CC_DROPDOWN_OVERLAY_STATE];
+  if (currentState?.body === dialogBody) return;
+  cleanupScrollableDropdownPositioning(dropdown);
+
+  const { viewport } = dropdownViewport(dropdown);
+  const reposition = () => {
+    if (dropdown.open !== true) {
+      cleanupScrollableDropdownPositioning(dropdown);
+      return;
+    }
+    if (positionScrollableCategoryDropdown(dropdown, dialogBody)) return;
+    dropdown.open = false;
+    dropdown.removeAttribute?.('open');
+    cleanupScrollableDropdownPositioning(dropdown);
+    dropdown.querySelector?.('summary')?.focus?.({ preventScroll: true });
+  };
+
+  dialogBody.addEventListener?.('scroll', reposition, { passive: true });
+  viewport?.addEventListener?.('resize', reposition);
+  viewport?.addEventListener?.('scroll', reposition, true);
+  dropdown[CC_DROPDOWN_OVERLAY_STATE] = { body: dialogBody, viewport, reposition };
+}
+
+function closeScrollableCategoryDropdown(dropdown, restoreFocus = false) {
+  dropdown.open = false;
+  dropdown.removeAttribute?.('open');
+  cleanupScrollableDropdownPositioning(dropdown);
+  if (restoreFocus) dropdown.querySelector?.('summary')?.focus?.({ preventScroll: true });
+}
+
+function cleanupScrollableCategoryDialogDropdowns(dialog) {
+  const dialogBody = dialog?.querySelector?.(`.${SCROLLABLE_CATEGORY_DIALOG_BODY_CLASS}`);
+  if (!dialogBody) return;
+  Array.from(dialogBody.querySelectorAll?.(CC_DROPDOWN_SELECTOR) || []).forEach((dropdown) => {
+    if (dropdown.open === true) {
+      dropdown.open = false;
+      dropdown.removeAttribute?.('open');
+    }
+    cleanupScrollableDropdownPositioning(dropdown);
+  });
+  dialogBody.classList?.remove?.('cc-dropdown-dialog-open');
+  dialogBody.closest?.('.app-dialog-card')?.classList?.remove?.('cc-dropdown-dialog-open');
+}
+
 function updateAssetViewerFilterDisclosureState(disclosure) {
   disclosure?.querySelector?.('summary')?.setAttribute?.('aria-expanded', String(disclosure.open === true));
   const dialogBody = disclosure?.closest?.('.app-dialog-body');
   if (!dialogBody) return;
+
   const dialog = dialogBody.closest?.('[data-app-dialog]');
+  const panel = disclosure?.querySelector?.(CC_DROPDOWN_PANEL_SELECTOR);
+  if (isScrollableCategoryDialogBody(dialogBody)) {
+    dialogBody.classList?.remove?.('cc-dropdown-dialog-open');
+    dialogBody.closest?.('.app-dialog-card')?.classList?.remove?.('cc-dropdown-dialog-open');
+    if (!panel) return;
+    if (disclosure.open === true) {
+      bindScrollableCategoryDropdownPositioning(disclosure, dialogBody);
+      if (!positionScrollableCategoryDropdown(disclosure, dialogBody)) {
+        closeScrollableCategoryDropdown(disclosure);
+        return;
+      }
+    } else {
+      cleanupScrollableDropdownPositioning(disclosure);
+    }
+    return;
+  }
+
   const hasOpenDropdown = Boolean(dialog?.querySelector?.(`${CC_DROPDOWN_SELECTOR}[open]`));
   dialogBody.classList?.toggle?.('cc-dropdown-dialog-open', hasOpenDropdown);
   dialogBody.closest?.('.app-dialog-card')?.classList?.toggle?.('cc-dropdown-dialog-open', hasOpenDropdown);
@@ -7279,6 +7840,7 @@ if (typeof document !== 'undefined') {
     enhanceDropdowns(document);
     enhanceAssetViewerFilterDisclosures(document);
     enhanceAppDialogs(document);
+    enhanceProjectAssetCategoryManagement(document);
     enhanceProjectsLiveFiltering(document);
     enhanceReleasesLiveFiltering(document);
     enhanceProjectAssetsLiveFiltering(document);

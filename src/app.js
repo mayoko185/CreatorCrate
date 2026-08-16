@@ -524,6 +524,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
       assetScanner,
       workflowQueryService,
       releaseService,
+      projectAssetCategoryService,
       assetActionService,
       assetBrowserPreferenceService,
       autoRenameService,
@@ -545,7 +546,6 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
       projectService,
       projectAssetCategoryService,
       assetBrowserPreferenceService,
-      releaseService,
     }));
   }
 

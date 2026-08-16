@@ -96,14 +96,6 @@ function describeProjectStoredPreference(preference, category, storedValue) {
   return 'Invalid saved preference';
 }
 
-function describeEffectiveCategory(resolution) {
-  if (resolution?.effective?.kind === 'category') {
-    const category = normalizeCategory(resolution.effective.category);
-    return category.displayName;
-  }
-  return 'All Categories';
-}
-
 function projectFallbackExplanation(reason) {
   return reason ? PROJECT_FALLBACK_MESSAGES[reason] || 'The saved default is unavailable. The browser currently uses All Categories.' : null;
 }
@@ -153,9 +145,7 @@ export function buildProjectAssetBrowserPreferenceModel({
     storedMode: preference?.mode ?? 'inherit',
     storedCategoryId: preference?.categoryId ?? null,
     storedValue,
-    storedLabel: describeProjectStoredPreference(preference, storedCategory, storedValue),
     storedAvailable,
-    effectiveLabel: describeEffectiveCategory(resolution),
     effectiveCategory: resolution?.effective?.kind === 'category' ? resolution.effective.category : null,
     fallback: Boolean(resolution?.fallback),
     fallbackReason: resolution?.fallbackReason || null,

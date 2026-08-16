@@ -610,8 +610,13 @@ describe('asset browser HTTP workflow', () => {
     const filterForm = pageOne.text.match(/<form class="filters asset-viewer-filters asset-viewer-filters--project-assets" method="get" action="\/projects\/\d+\/assets" id="asset-filters">[\s\S]*?<\/form>/)?.[0] || '';
     expect(filterForm).toContain('<input type="hidden" name="view" value="list">');
     expect(filterForm).not.toContain('name="page"');
-    const ids = [...pageOne.text.matchAll(/\bid="([^"]+)"/g)].map((match) => match[1]);
-    expect(new Set(ids).size).toBe(ids.length);
+    const ids = [...pageOne.text.matchAll(/\sid="([^"]+)"/g)].map((match) => match[1]);
+    const duplicateIds = ids.filter((id, index) => ids.indexOf(id) !== index);
+    const duplicateContexts = duplicateIds.map((id) => ({
+      id,
+      matches: [...pageOne.text.matchAll(new RegExp(`.{0,80}id="${id}".{0,80}`, 'g'))].map((match) => match[0]),
+    }));
+    expect(duplicateContexts).toEqual([]);
     expect(nextUrl.searchParams.get('tag')).toBe(String(shared.id));
     expect(nextUrl.searchParams.get('page')).toBe('2');
     expect(nextUrl.searchParams.get('pageSize')).toBe('2');
@@ -1124,17 +1129,17 @@ describe('asset browser HTTP workflow', () => {
       return Number(res.headers.location.replace('/projects/', ''));
     }
 
-    it('does not render the preference control or its success notice', async () => {
+    it('renders the project preference control inside the category-management dialog', async () => {
       const id = await createProjectId('Assets Default Removed');
       const res = await agent
         .get(`/projects/${id}/assets?category=all&notice=project_asset_default_saved`)
         .expect(200);
 
-      expect(res.text).not.toContain('Asset browser default');
-      expect(res.text).not.toContain('assets-default-category');
+      expect(res.text).toContain('Asset browser default');
+      expect(res.text).toContain('project-asset-categories-default-category');
       expect(res.text).not.toContain(`action="/projects/${id}/assets/default-category"`);
       expect(res.text).not.toContain('Project asset default saved.');
-      expect(res.text).not.toContain('name="defaultCategory"');
+      expect(res.text).toContain('name="defaultCategory"');
     });
 
     it('returns normal not-found behavior for the removed preference endpoint', async () => {
@@ -4208,7 +4213,7 @@ describe('asset browser HTTP workflow', () => {
     expect(style).toMatch(/\.asset-card-title-text\s*\{[^}]*overflow-wrap:\s*anywhere[^}]*word-break:\s*break-word/);
   });
 
-  it('renders a full-row native category picker with counts before Search and places Manage Categories in page actions', async () => {
+  it('renders a full-row native category picker with counts before Search and places Manage Categories after Clear selection', async () => {
     const res = await createProject('Category Disclosure');
     const id = Number(res.headers.location.replace('/projects/', ''));
     const projectDir = getProjectDir('Category Disclosure');
@@ -4238,7 +4243,8 @@ describe('asset browser HTTP workflow', () => {
     const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
 
     const pageHeadingActions = res2.text.match(/<div class="page-heading-actions">[\s\S]*?<\/div>/)?.[0];
-    expect(pageHeadingActions).toContain(`<a class="button button-secondary" href="/projects/${id}/asset-categories">Manage Categories</a>`);
+    expect(pageHeadingActions).toBeDefined();
+    expect(pageHeadingActions).not.toContain('Manage Categories');
 
     const displayControlsStart = res2.text.indexOf('<div class="asset-viewer-display-controls">');
     const filterActionsStart = res2.text.indexOf('<div class="project-filter-actions project-filter-actions--projects">');
@@ -4353,9 +4359,20 @@ describe('asset browser HTTP workflow', () => {
       expect(option).toMatch(new RegExp(`<label for="${input[1]}">\\s*<input`));
       expect(input[2]).not.toContain('(');
     }
-    expect(res2.text).toContain(`href="/projects/${id}/asset-categories"`);
-    expect(res2.text).toContain('Manage Categories');
+    expect(res2.text).not.toContain(`href="/projects/${id}/asset-categories"`);
+    const selectionControls = assetSelectionControlsHtml(assetActionsPanelHtml(res2.text));
+    expect(selectionControls).toMatch(
+      /data-clear-selection>Clear selection<\/button>\s*<a class="button button-small button-secondary" href="[^"]*manage_categories=1"\s+data-dialog-open="project-asset-category-management-dialog">Manage Categories<\/a>/
+    );
+    expect(res2.text).toContain('id="project-asset-category-management-dialog"');
+    expect(res2.text).toContain('data-category-reorder-list');
+    expect(res2.text).toContain('action="/projects/' + id + '/asset-categories/reorder"');
+    expect(res2.text).toContain('action="/projects/' + id + '/asset-categories"');
     expect(res2.text).not.toContain('class="asset-browser-nav"');
+
+    const opened = await agent.get(`/projects/${id}/assets?manage_categories=1`).expect(200);
+    expect(opened.text).toMatch(/<dialog id="project-asset-category-management-dialog"[^>]* data-app-dialog open/);
+    expect(opened.text).toContain('Manage Categories');
 
     const style = await readStylesheetSource(res2.text);
     expect(categoryFieldset).toContain('asset-filter-multiselect-field');
@@ -4523,12 +4540,17 @@ describe('asset browser HTTP workflow', () => {
         'data-auto-rename-submit',
         'data-select-all',
         'data-clear-selection',
+        'data-dialog-open="project-asset-category-management-dialog"',
         'class="selected-count-row"',
       ].map((marker) => completeSelectionControls.indexOf(marker));
       expect(topControlOrder.every((position) => position >= 0)).toBe(true);
       expect(topControlOrder[0]).toBeLessThan(topControlOrder[1]);
       expect(topControlOrder[1]).toBeLessThan(topControlOrder[2]);
       expect(topControlOrder[2]).toBeLessThan(topControlOrder[3]);
+      expect(topControlOrder[3]).toBeLessThan(topControlOrder[4]);
+      expect(completeSelectionControls).toMatch(
+        /data-clear-selection>Clear selection<\/button>\s*<a class="button button-small button-secondary" href="[^"]*manage_categories=1"\s+data-dialog-open="project-asset-category-management-dialog">Manage Categories<\/a>/
+      );
       expect(res2.text).not.toContain('Selection applies to this page');
 
       const ordinaryResponse = await agent.get(`/projects/${id}/assets?view=list`).expect(200);
@@ -4539,6 +4561,10 @@ describe('asset browser HTTP workflow', () => {
       expect(ordinaryActionPanel).toContain('Drag assets to change their filename order');
       expect(ordinaryActionPanel).toContain('<h3 class="asset-action-group-heading">Release actions</h3>');
       expect(ordinaryActionPanel).toContain('<h3 class="asset-action-group-heading">Category &amp; file actions</h3>');
+      const ordinarySelectionControls = assetSelectionControlsHtml(ordinaryActionPanel);
+      expect(ordinarySelectionControls).toMatch(
+        /data-clear-selection>Clear selection<\/button>\s*<a class="button button-small button-secondary" href="[^"]*manage_categories=1"\s+data-dialog-open="project-asset-category-management-dialog">Manage Categories<\/a>/
+      );
     expect(res2.text).toContain('<form class="filters asset-viewer-filters asset-viewer-filters--project-assets" method="get" action="/projects/' + id + '/assets" id="asset-filters">');
     expect(res2.text).toContain('id="search" name="search"');
     expect(res2.text).toMatch(new RegExp(`<input id="asset-category-option-${cat.id}"[^>]*value="${cat.id}"[\\s\\S]*?checked>`));
@@ -4849,7 +4875,7 @@ describe('asset browser HTTP workflow', () => {
     expect(multiCard).not.toBe('');
     expect(html).toMatch(/none[\s\S]{0,900}Not used by a release/);
     expect(html).toMatch(new RegExp(`single\\.png[\\s\\S]{0,900}Solo Release[\\s\\S]{0,200}Attachment`));
-    expect(html).toContain('<details class="release-usage-details asset-usage-details">');
+    expect(multiCard).toContain('<details class="release-usage-details asset-usage-details asset-list-card-release-membership"');
     expect(html).toContain('aria-label="Used in 2 releases"');
     expect(html).toContain('Release One');
     expect(html).toContain('Release Two');

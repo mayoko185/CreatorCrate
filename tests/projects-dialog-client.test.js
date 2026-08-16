@@ -1,5 +1,11 @@
 import { describe, it, expect, vi } from 'vitest';
-import { enhanceAppDialogs, enhanceDropdowns } from '../src/static/creatorcrate.js';
+import {
+  enhanceAppDialogs,
+  enhanceCategoryReorder,
+  enhanceConfirmations,
+  enhanceDropdowns,
+  enhanceProjectAssetCategoryManagement,
+} from '../src/static/creatorcrate.js';
 
 function makeElement(tagName = 'div', attrs = {}) {
   const attributes = new Map();
@@ -30,6 +36,12 @@ function makeElement(tagName = 'div', attrs = {}) {
         return next;
       },
       contains(name) { return this.values.has(name); },
+    },
+    style: {
+      values: new Map(),
+      setProperty(name, value) { this.values.set(name, String(value)); },
+      getPropertyValue(name) { return this.values.get(name) || ''; },
+      removeProperty(name) { this.values.delete(name); },
     },
     setAttribute(name, rawValue) {
       const value = String(rawValue);
@@ -104,6 +116,11 @@ function makeElement(tagName = 'div', attrs = {}) {
       next.parentNode = parent;
       next.parentElement = parent;
       next.ownerDocument = parent.ownerDocument || parent;
+      const adopt = (current) => {
+        current.ownerDocument = next.ownerDocument;
+        current.children.forEach(adopt);
+      };
+      next.children.forEach(adopt);
     },
     remove() {
       const parent = this.parentNode;
@@ -119,6 +136,10 @@ function makeElement(tagName = 'div', attrs = {}) {
       this.parentElement = null;
     },
     addEventListener(type, handler) { listeners.push({ type, handler }); },
+    removeEventListener(type, handler) {
+      const index = listeners.findIndex((listener) => listener.type === type && listener.handler === handler);
+      if (index >= 0) listeners.splice(index, 1);
+    },
     dispatch(type, props = {}) {
       const event = {
         type,
@@ -130,6 +151,9 @@ function makeElement(tagName = 'div', attrs = {}) {
       listeners.filter((listener) => listener.type === type)
         .forEach((listener) => listener.handler(event));
       return event;
+    },
+    dispatchEvent(event) {
+      return this.dispatch(event.type, { ...event, target: this });
     },
     focus() {
       this.focused = true;
@@ -169,7 +193,7 @@ function addOption(select, value, selected = false) {
   return option;
 }
 
-function addStandardDropdown(field, select, name, options, value) {
+function addStandardDropdown(field, select, name, options, value, dispatchNativeChange = false) {
   const fieldset = makeElement('fieldset');
   const details = makeElement('details', {
     id: `${name}-dropdown`,
@@ -177,13 +201,14 @@ function addStandardDropdown(field, select, name, options, value) {
     'data-cc-dropdown-mode': 'single',
     hidden: '',
   });
+  if (dispatchNativeChange) details.setAttribute('data-cc-dropdown-dispatch-native-change', '');
   const summary = makeElement('summary', {
     'aria-label': `${name} filter: ${value}`,
   });
   const current = makeElement('span', { 'data-cc-dropdown-summary-current': '' });
   current.textContent = value;
   summary.appendChild(current);
-  const panel = makeElement('div', { 'data-cc-dropdown-option-list': '' });
+  const panel = makeElement('div', { class: 'asset-filter-multiselect-panel', 'data-cc-dropdown-option-list': '' });
   options.forEach((option) => {
     const wrapper = makeElement('div', { class: 'asset-filter-multiselect-option' });
     const label = makeElement('label');
@@ -208,7 +233,7 @@ function addStandardDropdown(field, select, name, options, value) {
   return { details, summary, panel };
 }
 
-function makeDialogPage({ standardDropdowns = false } = {}) {
+function makeDialogPage({ standardDropdowns = false, scrollableDialog = false, liveDefault = false } = {}) {
   const document = makeElement('document');
   document.nodeType = 9;
   document.ownerDocument = document;
@@ -239,6 +264,7 @@ function makeDialogPage({ standardDropdowns = false } = {}) {
 
   const card = makeElement('div');
   if (standardDropdowns) card.classList.add('app-dialog-card');
+  if (liveDefault) card.setAttribute('data-asset-browser-default', '');
   const close = makeElement('button', { 'data-dialog-close': '' });
   card.appendChild(close);
   const form = makeElement('form', {
@@ -247,6 +273,10 @@ function makeDialogPage({ standardDropdowns = false } = {}) {
     method: 'post',
     'data-dialog-form': '',
   });
+  if (liveDefault) {
+    form.setAttribute('data-dialog-async', 'false');
+    form.setAttribute('data-asset-browser-default-live', '');
+  }
   const error = makeElement('div', { 'data-dialog-error': '', hidden: '' });
   const errorText = makeElement('p', { 'data-dialog-error-text': '' });
   const errorList = makeElement('ul', { 'data-dialog-error-list': '' });
@@ -257,7 +287,10 @@ function makeDialogPage({ standardDropdowns = false } = {}) {
   const fields = {};
   const dropdowns = {};
   const dialogBody = standardDropdowns ? makeElement('div') : null;
-  if (dialogBody) dialogBody.classList.add('app-dialog-body');
+  if (dialogBody) {
+    dialogBody.classList.add('app-dialog-body');
+    if (scrollableDialog) dialogBody.classList.add('project-asset-category-management-dialog-body');
+  }
   for (const [name, value, options] of [
     ['view', 'grid', ['grid', 'list']],
     ['sort', 'created', ['updated', 'created', 'title', 'published']],
@@ -272,12 +305,58 @@ function makeDialogPage({ standardDropdowns = false } = {}) {
     (dialogBody || form).appendChild(field);
     fields[name] = select;
   }
+  if (liveDefault) {
+    const field = makeElement('div', { 'data-dialog-field': 'defaultCategory' });
+    const select = makeElement('select', { id: 'project-asset-categories-default-category', name: 'defaultCategory' });
+    for (const option of ['inherit', 'all', 'category:1']) addOption(select, option, option === 'inherit');
+    select.value = 'inherit';
+    if (standardDropdowns) {
+      dropdowns.defaultCategory = addStandardDropdown(
+        field,
+        select,
+        'defaultCategory',
+        ['inherit', 'all', 'category:1'],
+        'inherit',
+        true,
+      );
+    } else {
+      field.appendChild(select);
+    }
+    (dialogBody || form).appendChild(field);
+    fields.defaultCategory = select;
+  }
+  if (scrollableDialog) {
+    Object.values(dropdowns).forEach(({ summary, panel }) => {
+      summary.getBoundingClientRect = () => ({
+        left: 100,
+        top: 120,
+        right: 500,
+        bottom: 160,
+        width: 400,
+        height: 40,
+      });
+      panel.getBoundingClientRect = () => ({ width: 400, height: 180 });
+    });
+  }
   if (dialogBody) form.appendChild(dialogBody);
   const status = makeElement('div', { 'data-dialog-status': '' });
-  const save = makeElement('button', { 'data-dialog-submit': '', type: 'submit' });
+  if (liveDefault) status.setAttribute('data-asset-browser-default-status', '');
+  const save = liveDefault ? null : makeElement('button', { 'data-dialog-submit': '', type: 'submit' });
   form.appendChild(status);
-  form.appendChild(save);
+  if (save) form.appendChild(save);
   card.appendChild(form);
+  let liveError = null;
+  let liveErrorText = null;
+  if (liveDefault) {
+    liveError = makeElement('div', {
+      id: 'project-asset-categories-default-category-error',
+      'data-asset-browser-default-error': '',
+      hidden: '',
+    });
+    liveErrorText = makeElement('p', { 'data-asset-browser-default-error-text': '' });
+    liveError.appendChild(liveErrorText);
+    card.appendChild(liveError);
+  }
   dialog.appendChild(card);
 
   const feedback = makeElement('div', { 'data-dialog-feedback': '', hidden: '' });
@@ -288,6 +367,10 @@ function makeDialogPage({ standardDropdowns = false } = {}) {
 
   const windowObject = {
     fetch: vi.fn(),
+    innerWidth: 1024,
+    innerHeight: 768,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
     FormData: class FormDataMock {
       constructor(ownerForm) {
         this.fields = ownerForm.querySelectorAll('select, input, textarea')
@@ -312,7 +395,88 @@ function makeDialogPage({ standardDropdowns = false } = {}) {
     save,
     fields,
     dropdowns,
+    dialogBody,
     feedback,
+    liveError,
+    liveErrorText,
+  };
+}
+
+function makeCategoryManagementBody({ categoryName = 'Original', invalidRename = false } = {}) {
+  const body = makeElement('div', { class: 'app-dialog-body project-asset-category-management-dialog-body' });
+  const status = makeElement('div', {
+    id: 'project-category-management-status',
+    'data-category-management-status': '',
+  });
+  body.appendChild(status);
+
+  const addForm = makeElement('form', {
+    id: 'project-category-management-add-form',
+    action: '/projects/1/asset-categories',
+    method: 'post',
+  });
+  addForm.appendChild(makeElement('input', { type: 'hidden', name: '_csrf', value: 'csrf-token' }));
+  addForm.appendChild(makeElement('input', { name: 'displayName', id: 'add-displayName', value: '' }));
+  addForm.appendChild(makeElement('input', { name: 'directorySlug', id: 'add-directorySlug', value: '' }));
+  const addSubmit = makeElement('button', { type: 'submit' });
+  addForm.appendChild(addSubmit);
+  body.appendChild(addForm);
+
+  const list = makeElement('div', { class: 'category-reorder-list', 'data-category-reorder-list': '' });
+  const item = makeElement('article', {
+    'data-category-reorder-item': '',
+    'data-category-id': '1',
+    'data-category-label': categoryName,
+  });
+  item.appendChild(makeElement('button', { type: 'button', 'data-category-reorder-handle': '' }));
+  const renameForm = makeElement('form', {
+    class: 'category-name-form',
+    action: '/projects/1/asset-categories/1/name',
+    method: 'post',
+  });
+  const renameInputAttrs = { name: 'displayName', id: 'name-1', value: categoryName };
+  if (invalidRename) renameInputAttrs['aria-invalid'] = 'true';
+  renameForm.appendChild(makeElement('input', renameInputAttrs));
+  renameForm.appendChild(makeElement('button', { type: 'submit' }));
+  item.appendChild(renameForm);
+  const deleteForm = makeElement('form', {
+    action: '/projects/1/asset-categories/1/delete',
+    method: 'post',
+    'data-category-management-delete-form': '',
+  });
+  deleteForm.appendChild(makeElement('button', {
+    type: 'submit',
+    'data-confirm': 'Delete this category?',
+  }));
+  item.appendChild(deleteForm);
+  list.appendChild(item);
+  body.appendChild(list);
+  return { body, addSubmit };
+}
+
+function makeCategoryDialogPage() {
+  const page = makeDialogPage({ standardDropdowns: true });
+  const dialogId = 'project-asset-category-management-dialog';
+  page.dialog.setAttribute('id', dialogId);
+  page.trigger.setAttribute('data-dialog-open', dialogId);
+  const card = page.dialog.querySelector('.app-dialog-card');
+  const initial = makeCategoryManagementBody();
+  card.appendChild(initial.body);
+
+  let replacement = makeCategoryManagementBody({ categoryName: 'Added category' });
+  page.windowObject.DOMParser = class DOMParserMock {
+    parseFromString() {
+      return {
+        querySelector: () => replacement.body,
+      };
+    }
+  };
+
+  page.region.appendChild(page.trigger);
+  return {
+    ...page,
+    initial,
+    setReplacement(next) { replacement = next; },
   };
 }
 
@@ -431,6 +595,127 @@ describe('Reusable app dialog enhancement', () => {
     expect(page.dialog.open).toBe(false);
   });
 
+  it('overlays dropdown panels in the scrollable category dialog without changing its overflow state', () => {
+    const page = makeDialogPage({ standardDropdowns: true, scrollableDialog: true });
+    page.region.appendChild(page.trigger);
+    enhanceDropdowns(page.document);
+    enhanceAppDialogs(page.document);
+    page.document.dispatch('click', { target: page.trigger });
+
+    const body = page.dialogBody;
+    const viewDropdown = page.dropdowns.view.details;
+    const panel = page.dropdowns.view.panel;
+    viewDropdown.open = true;
+    viewDropdown.setAttribute('open', '');
+    page.document.dispatch('toggle', { target: viewDropdown });
+
+    expect(body.classList.contains('cc-dropdown-dialog-open')).toBe(false);
+    expect(page.dialog.querySelector('.app-dialog-card').classList.contains('cc-dropdown-dialog-open')).toBe(false);
+    expect(viewDropdown.open).toBe(true);
+    expect(panel.getAttribute('data-cc-dropdown-overlay')).toBe('');
+    expect(panel.style.getPropertyValue('position')).toBe('fixed');
+    expect(panel.style.getPropertyValue('left')).toBe('100px');
+    expect(panel.style.getPropertyValue('top')).toBe('164px');
+    expect(body.listeners.filter(({ type }) => type === 'scroll')).toHaveLength(1);
+
+    const [viewGrid, viewList] = panel.querySelectorAll('input[type="radio"]');
+    viewGrid.checked = false;
+    viewList.checked = true;
+    page.document.dispatch('change', { target: viewList });
+    expect(page.fields.view.value).toBe('list');
+    expect(viewDropdown.open).toBe(false);
+    expect(panel.style.getPropertyValue('position')).toBe('');
+    expect(page.dropdowns.view.summary.focused).toBe(true);
+
+    viewDropdown.open = true;
+    viewDropdown.setAttribute('open', '');
+    page.document.dispatch('toggle', { target: viewDropdown });
+
+    page.dropdowns.view.summary.getBoundingClientRect = () => ({
+      left: 900,
+      top: 700,
+      right: 1000,
+      bottom: 740,
+      width: 100,
+      height: 40,
+    });
+    body.dispatch('scroll');
+    expect(panel.style.getPropertyValue('left')).toBe('616px');
+    expect(panel.style.getPropertyValue('top')).toBe('516px');
+
+    page.close.dispatch('click');
+    expect(page.dialog.open).toBe(false);
+    expect(viewDropdown.open).toBe(false);
+    expect(panel.getAttribute('data-cc-dropdown-overlay')).toBeNull();
+    expect(panel.style.getPropertyValue('position')).toBe('');
+    expect(body.listeners.filter(({ type }) => type === 'scroll')).toHaveLength(0);
+    expect(page.windowObject.removeEventListener).toHaveBeenCalled();
+  });
+
+  it('persists a project asset browser default immediately, updates visible state, and keeps the dialog open', async () => {
+    const page = makeDialogPage({ standardDropdowns: true, liveDefault: true });
+    page.region.appendChild(page.trigger);
+    page.windowObject.fetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        status: 'success',
+        message: 'Project asset default saved.',
+        values: { defaultCategory: 'category:1' },
+        fallbackExplanation: null,
+      }),
+    });
+    enhanceDropdowns(page.document);
+    enhanceAppDialogs(page.document);
+    page.document.dispatch('click', { target: page.trigger });
+
+    const categoryRadio = page.dropdowns.defaultCategory.panel.querySelectorAll('input[type="radio"]')[2];
+    categoryRadio.checked = true;
+    page.document.dispatch('change', { target: categoryRadio });
+    await flush();
+
+    expect(page.windowObject.fetch).toHaveBeenCalledTimes(1);
+    expect(page.windowObject.fetch.mock.calls[0][0]).toBe('/projects/defaults');
+    expect(page.windowObject.fetch.mock.calls[0][1].headers).toEqual({ Accept: 'application/json' });
+    expect([...page.windowObject.fetch.mock.calls[0][1].body.entries()]).toContainEqual(['defaultCategory', 'category:1']);
+    expect(page.dialog.open).toBe(true);
+    expect(page.fields.defaultCategory.value).toBe('category:1');
+    expect(page.form.querySelector('[data-asset-browser-default-status]').textContent)
+      .toBe('Project asset default saved.');
+    expect(page.liveError.hidden).toBe(true);
+  });
+
+  it('rolls a failed live project default back to the confirmed value and exposes the error accessibly', async () => {
+    const page = makeDialogPage({ standardDropdowns: true, liveDefault: true });
+    page.region.appendChild(page.trigger);
+    page.windowObject.fetch.mockResolvedValue({
+      ok: false,
+      status: 422,
+      json: async () => ({
+        status: 'error',
+        message: 'Project asset browser default could not be saved.',
+        errors: { categoryId: 'Disabled categories cannot be selected directly.' },
+        values: { defaultCategory: 'category:1' },
+      }),
+    });
+    enhanceDropdowns(page.document);
+    enhanceAppDialogs(page.document);
+    page.document.dispatch('click', { target: page.trigger });
+
+    const categoryRadio = page.dropdowns.defaultCategory.panel.querySelectorAll('input[type="radio"]')[2];
+    categoryRadio.checked = true;
+    page.document.dispatch('change', { target: categoryRadio });
+    await flush();
+
+    expect(page.dialog.open).toBe(true);
+    expect(page.fields.defaultCategory.value).toBe('inherit');
+    expect(page.dropdowns.defaultCategory.panel.querySelectorAll('input[type="radio"]')[0].checked).toBe(true);
+    expect(page.liveError.hidden).toBe(false);
+    expect(page.liveErrorText.textContent).toContain('Disabled categories cannot be selected directly.');
+    expect(page.fields.defaultCategory.getAttribute('aria-invalid')).toBe('true');
+    expect(page.form.querySelector('[data-asset-browser-default-status]').textContent)
+      .toContain('The previous setting was restored.');
+  });
+
   it('keeps the dialog open and preserves submitted values on validation failure', async () => {
     const page = makeDialogPage({ standardDropdowns: true });
     page.region.appendChild(page.trigger);
@@ -543,5 +828,78 @@ describe('Reusable app dialog enhancement', () => {
     expect(page.dialog.open).toBe(true);
     expect(page.dialog.querySelector('[data-dialog-status]').textContent).toContain('Could not save defaults');
     expect(page.dialog.querySelector('[data-dialog-error-text]').textContent).toContain('Your selections were kept');
+  });
+});
+
+describe('Live project category mutations', () => {
+  it('replaces server-rendered add state, keeps the dialog open, and remains idempotent', async () => {
+    const page = makeCategoryDialogPage();
+    page.windowObject.fetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        status: 'success',
+        message: 'Category added.',
+        focus: 'add-displayName',
+        html: '<server-rendered-category-management-body>',
+      }),
+    });
+
+    enhanceAppDialogs(page.document);
+    page.document.dispatch('click', { target: page.trigger });
+    enhanceConfirmations(page.document);
+    enhanceCategoryReorder(page.document);
+    enhanceProjectAssetCategoryManagement(page.document);
+    expect(page.dialog.open).toBe(true);
+    const addForm = page.initial.body.querySelector('#project-category-management-add-form');
+    addForm.dispatch('submit', { submitter: page.initial.addSubmit });
+    await flush();
+
+    expect(page.windowObject.fetch).toHaveBeenCalledTimes(1);
+    expect(page.windowObject.fetch.mock.calls[0][1].headers).toEqual({ Accept: 'application/json' });
+    expect([...page.windowObject.fetch.mock.calls[0][1].body.entries()]).toContainEqual(['_csrf', 'csrf-token']);
+    expect(page.dialog.open).toBe(true);
+    expect(page.dialog.querySelector('[data-category-label="Added category"]')).toBeTruthy();
+    expect(page.dialog.querySelector('[data-category-management-status]').textContent).toBe('Category added.');
+    expect(page.document.activeElement?.id).toBe('add-displayName');
+
+    enhanceProjectAssetCategoryManagement(page.document);
+    const replacementAddForm = page.dialog.querySelector('#project-category-management-add-form');
+    expect(replacementAddForm.listeners.filter(({ type }) => type === 'submit')).toHaveLength(1);
+  });
+
+  it('preserves inline rename errors and does not bypass delete confirmation', async () => {
+    const page = makeCategoryDialogPage();
+    page.setReplacement(makeCategoryManagementBody({ categoryName: 'Submitted name', invalidRename: true }));
+    page.windowObject.fetch.mockResolvedValue({
+      ok: false,
+      status: 422,
+      json: async () => ({
+        status: 'error',
+        message: 'Could not update the display name. Fix the field below and try again.',
+        errors: { displayName: 'Display name is required.' },
+        focus: 'name-1',
+        html: '<server-rendered-rename-error>',
+      }),
+    });
+
+    vi.stubGlobal('confirm', vi.fn(() => false));
+    enhanceAppDialogs(page.document);
+    page.document.dispatch('click', { target: page.trigger });
+    enhanceConfirmations(page.document);
+    enhanceProjectAssetCategoryManagement(page.document);
+    expect(page.dialog.open).toBe(true);
+    const renameForm = page.initial.body.querySelector('.category-name-form');
+    renameForm.dispatch('submit', { submitter: renameForm.querySelector('button') });
+    await flush();
+
+    expect(page.dialog.open).toBe(true);
+    expect(page.dialog.querySelector('[data-category-management-status]').getAttribute('role')).toBe('alert');
+    expect(page.document.activeElement?.id).toBe('name-1');
+
+    const deleteButton = page.initial.body.querySelector('[data-confirm]');
+    const click = deleteButton.dispatch('click');
+    expect(click.defaultPrevented).toBe(true);
+    expect(page.windowObject.fetch).toHaveBeenCalledTimes(1);
+    vi.unstubAllGlobals();
   });
 });

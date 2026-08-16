@@ -713,6 +713,7 @@ describe('app construction — asset actions chunk 3 wiring', () => {
     expect(dependencies.assetScanner).toBe(app.locals.assetScanner);
     expect(dependencies.workflowQueryService).toBeTruthy();
     expect(dependencies.releaseService).toBeTruthy();
+    expect(dependencies.projectAssetCategoryService).toBe(app.locals.projectAssetCategoryService);
     expect(dependencies.assetActionService).toBe(app.locals.assetActionService);
     expect(dependencies.assetBrowserPreferenceService).toBe(app.locals.assetBrowserPreferenceService);
     expect(dependencies.projectPrimaryImageService).toBe(app.locals.projectPrimaryImageService);
@@ -765,6 +766,15 @@ describe('app construction — asset actions chunk 3 wiring', () => {
       .toBe(app.locals.assetBrowserPreferenceService);
     expect(dependencyInstrumentation.settingsRouters[0].args[0].assetBrowserPreferenceService)
       .toBe(app.locals.assetBrowserPreferenceService);
+  });
+
+  it('keeps the standalone category router read-only while Assets owns category POST routes', () => {
+    const app = buildApp();
+    const assetsDependencies = dependencyInstrumentation.assetRouters[0].args[0];
+    const categoryDependencies = dependencyInstrumentation.projectAssetCategoryRouters[0].args[0];
+
+    expect(assetsDependencies.projectAssetCategoryService).toBe(app.locals.projectAssetCategoryService);
+    expect(categoryDependencies).not.toHaveProperty('releaseService');
   });
 
   it('does not initialize project preference rows during dependency construction', () => {

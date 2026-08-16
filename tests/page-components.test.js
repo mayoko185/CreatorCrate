@@ -889,7 +889,6 @@ describe('Phase 10.5A: Shared page-level components', () => {
       expect(html).toContain('form-switch-track');
       expect(html).toContain('form-switch-state--on');
       expect(html).toContain('form-switch-state--off');
-      expect(html).not.toMatch(/type="radio"/i);
     }
 
     function enabledForms(html) {
@@ -926,15 +925,31 @@ describe('Phase 10.5A: Shared page-level components', () => {
         LIMIT 1
       `).get(Number(projectId));
 
-      const res = await agent.get(`/projects/${projectId}/asset-categories`).expect(200);
-      expectAccessibleSwitches(res.text);
-      expectDirectEnabledSubmission(res.text);
+      const res = await agent.get(`/projects/${projectId}/assets?manage_categories=1`).expect(200);
+      const categoryDialog = res.text.match(/<dialog id="project-asset-category-management-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+      expect(categoryDialog).not.toBe('');
+      expect(categoryDialog).toContain('class="app-dialog-body project-asset-category-management-dialog-body"');
+      expect(categoryDialog).toContain('<h3 id="project-asset-categories-default-category-heading">Asset browser default</h3>');
+      expect(categoryDialog).toContain('<h3>Add a category</h3>');
+      expect(categoryDialog).toContain('<h3>Categories</h3>');
+      expect(categoryDialog).toContain(
+        'Manage categories and asset browser defaults for Switch Markup Project. Changes here apply only to this project.'
+      );
+      expect(categoryDialog).not.toMatch(/Saved:\s*Inherit global default/);
+      expect(categoryDialog).not.toMatch(/Effective:\s*All Categories/);
+      expect(categoryDialog).not.toContain('data-asset-browser-default-saved');
+      expect(categoryDialog).not.toContain('data-asset-browser-default-effective');
+      expect(categoryDialog).not.toContain('project-category-management-panel-heading');
+      expectAccessibleSwitches(categoryDialog);
+      expectDirectEnabledSubmission(categoryDialog);
       expect(res.text).toContain(`/projects/${projectId}/asset-categories/${category.id}/enabled`);
       expect(res.text).toContain('>Save status</button>');
-      expect(res.text).toContain('>Save default</button>');
+      expect(categoryDialog).toContain('data-asset-browser-default-live');
+      expect(categoryDialog).toContain('data-asset-browser-default-status');
+      expect(categoryDialog).not.toContain('>Save default</button>');
       expect(res.text).toContain('asset-browser-default-section--project');
       expect(res.text).toContain('asset-browser-default-control-row');
-      expect(res.text).toContain('name="defaultCategory" class="form-control"');
+      expect(res.text).toContain('name="defaultCategory" class="cc-dropdown-native-select form-control"');
       expect(res.text).not.toContain('New categories are enabled by default.');
       expect(res.text).toContain('category-management-card');
       expect(res.text).toContain('category-management-add');
@@ -947,22 +962,27 @@ describe('Phase 10.5A: Shared page-level components', () => {
       expect(res.text).not.toContain('>Move Down</button>');
       expect(res.text).toContain('>Save status</button>');
 
-      const defaultSection = res.text.match(/<section class="[^"]*asset-browser-default-section--project[^"]*"[^>]*>[\s\S]*?<\/section>/)?.[0] || '';
+      const defaultSection = res.text.match(/<section class="project-category-management-panel project-category-management-default-section[^"]*asset-browser-default-section--project[^"]*"[^>]*>[\s\S]*?<\/section>/)?.[0] || '';
       const defaultFieldRow = defaultSection.match(/<div class="field asset-browser-default-field-row">[\s\S]*?<\/div>/)?.[0] || '';
       expect(defaultFieldRow).toContain('asset-browser-default-field-row');
       expect(defaultFieldRow.indexOf('<label')).toBeGreaterThan(-1);
-      expect(defaultFieldRow.indexOf('<select')).toBeGreaterThan(defaultFieldRow.indexOf('<label'));
-      expect(defaultFieldRow).toContain('class="form-control"');
+      expect(defaultSection.indexOf('<select')).toBeGreaterThan(defaultSection.indexOf('<legend>Default category</legend>'));
+      expect(defaultSection).toContain('class="cc-dropdown-native-select form-control"');
+      expect(defaultSection).toContain('asset-browser-default-dropdown-field');
       expect(defaultFieldRow).not.toMatch(/class="[^"]*(?:full-width|width-100|stretch)[^"]*"/i);
       expect(defaultSection.indexOf('asset-browser-default-control-row')).toBeGreaterThan(-1);
-      expect(defaultSection.indexOf('asset-browser-default-action-row')).toBeGreaterThan(defaultSection.indexOf('asset-browser-default-control-row'));
+       expect(defaultSection).toContain('Apply selection');
+       expect(defaultSection.indexOf('asset-browser-default-control-row')).toBeGreaterThan(-1);
       const addForm = res.text.match(new RegExp(
         `<form method="post" action="/projects/${projectId}/asset-categories"[^>]*>[\\s\\S]*?<\\/form>`
       ))?.[0] || '';
-      expect(addForm.indexOf('field-row')).toBeGreaterThan(-1);
-      expect(addForm.indexOf('category-management-action-row')).toBeGreaterThan(addForm.indexOf('field-row'));
-      expect(addForm).toContain('>Add Category</button>');
-      expect(addForm).toMatch(/<div class="category-management-action-row">[\s\S]*>Add Category<\/button>/);
+      expect(addForm.indexOf('project-category-management-add-row')).toBeGreaterThan(-1);
+      expect(addForm.indexOf('project-category-management-add-submit')).toBeGreaterThan(addForm.indexOf('project-category-management-add-row'));
+      expect(addForm.indexOf('for="add-displayName"')).toBeLessThan(addForm.indexOf('for="add-directorySlug"'));
+      expect(addForm.indexOf('for="add-directorySlug"')).toBeLessThan(addForm.indexOf('class="field-label">Enabled</span>'));
+       expect(addForm.indexOf('class="field-label">Enabled</span>')).toBeLessThan(addForm.indexOf('>Add</button>'));
+       expect(addForm).toContain('>Add</button>');
+       expect(addForm).toMatch(/<div class="project-category-management-add-submit form-actions">[\s\S]*>Add<\/button>/);
       expect(addForm).toMatch(/<input\s+type="checkbox"\s+id="add-enabled"[\s\S]*?checked/);
       expect(addForm).not.toContain('data-autosubmit');
 
@@ -995,9 +1015,42 @@ describe('Phase 10.5A: Shared page-level components', () => {
       expect(new Set(ids).size).toBe(ids.length);
       expect(hasNestedForms(res.text)).toBe(false);
       expect((res.text.match(/<form\b/gi) || []).length).toBe((res.text.match(/<\/form>/gi) || []).length);
-      for (const form of res.text.match(/<form\b[\s\S]*?<\/form>/gi) || []) {
+      expect(hasNestedForms(categoryDialog)).toBe(false);
+      for (const form of categoryDialog.match(/<form\b[\s\S]*?<\/form>/gi) || []) {
         expect(form).toContain('name="_csrf"');
       }
+    });
+
+    it('keeps the Manage Categories dialog body scrollable when it exceeds the viewport', () => {
+      // The shared dialog primitive caps the card at the viewport and scrolls
+      // .app-dialog-body. Keep each management section content-sized so the
+      // body owns overflow and lower controls remain reachable.
+      expect(creatorCrateCss).toMatch(
+        /#project-asset-category-management-dialog \.app-dialog-body > \*\s*\{\s*flex-shrink:\s*0;\s*\}/
+      );
+      const managementBodyRule = creatorCrateCss.match(
+        /#project-asset-category-management-dialog \.app-dialog-body\s*\{([^}]*)\}/
+      )?.[1] || '';
+      expect(managementBodyRule).toMatch(/scrollbar-color:\s*var\(--border-strong\)\s+transparent/);
+      expect(managementBodyRule).toMatch(/scrollbar-width:\s*thin/);
+      expect(creatorCrateCss).toMatch(
+        /#project-asset-category-management-dialog \.app-dialog-body::\-webkit-scrollbar\s*\{[^}]*width:\s*0\.5rem/
+      );
+      expect(creatorCrateCss).toMatch(
+        /#project-asset-category-management-dialog \.app-dialog-body::\-webkit-scrollbar-thumb\s*\{[\s\S]*?background:\s*var\(--border-strong\)[\s\S]*?border:\s*2px solid var\(--surface-card\)[\s\S]*?border-radius:\s*999px/
+      );
+      expect(creatorCrateCss).toMatch(
+        /#project-asset-category-management-dialog \.app-dialog-body::\-webkit-scrollbar-track\s*\{[^}]*background:\s*transparent/
+      );
+      expect(creatorCrateCss).toMatch(
+        /#project-asset-category-management-dialog \.app-dialog-body::\-webkit-scrollbar-thumb:hover\s*\{[^}]*background:\s*var\(--muted\)/
+      );
+      expect(creatorCrateCss).toMatch(
+        /#project-asset-category-management-dialog \.asset-filter-multiselect-panel\[data-cc-dropdown-overlay\]\s*\{[^}]*position:\s*fixed/
+      );
+      // The shared scroll container must keep owning the dialog layout.
+      expect(creatorCrateCss).toMatch(/\.app-dialog-body\s*\{[^}]*overflow-y:\s*auto/);
+      expect(creatorCrateCss).toMatch(/\.app-dialog-card\s*\{[^}]*max-height:\s*calc\(100vh - 2rem\)/);
     });
 
     it('global category cards use native labelled switches, complete reorder semantics, and scoped layout classes', async () => {
@@ -1081,7 +1134,7 @@ describe('Phase 10.5A: Shared page-level components', () => {
       const projectId = projectRes.headers.location.replace('/projects/', '');
 
       await agent.post(`/projects/${projectId}/archive`).type('form').send({ _csrf: csrfToken }).expect(302);
-      const res = await agent.get(`/projects/${projectId}/asset-categories`).expect(200);
+      const res = await agent.get(`/projects/${projectId}/assets?manage_categories=1`).expect(200);
 
       expect(res.text).not.toMatch(/class="[^"]*category-enabled-form[^"]*"/);
       expect(res.text).not.toContain('data-autosubmit');
@@ -1109,14 +1162,28 @@ describe('Phase 10.5A: Shared page-level components', () => {
       expect(css).toMatch(/\.asset-browser-default-field-row[\s\S]*?flex-direction:\s*row/);
       expect(css).toMatch(/\.asset-browser-default-field-row[\s\S]*?flex-wrap:\s*wrap/);
       expect(css).toMatch(/\.asset-browser-default-field-row \.form-control[\s\S]*?width:\s*max-content/);
-      expect(css).toMatch(/\.asset-browser-default-field-row \.form-control[\s\S]*?max-width:\s*100%/);
-      expect(css).toMatch(/\.asset-browser-default-field-row \.form-control[\s\S]*?flex:\s*0 1 auto/);
-      expect(css).toContain('.asset-browser-default-action-row > .button');
-      expect(css).toContain('.category-management-form > .category-management-action-row > .button');
-      expect(css).toMatch(/\.asset-browser-default-action-row\s*\{[\s\S]*?align-self:\s*flex-start;[\s\S]*?width:\s*max-content;[\s\S]*?max-width:\s*100%/);
-      expect(css).toMatch(/\.asset-browser-default-action-row > \.button\s*\{[\s\S]*?flex:\s*0 0 auto;[\s\S]*?width:\s*auto/);
-      expect(css).toMatch(/\.category-management-form > \.category-management-action-row\s*\{[\s\S]*?align-self:\s*flex-start;[\s\S]*?width:\s*max-content;[\s\S]*?max-width:\s*100%/);
-      expect(css).toMatch(/\.category-management-form > \.category-management-action-row > \.button\s*\{[\s\S]*?flex:\s*0 0 auto;[\s\S]*?width:\s*auto/);
+       expect(css).toMatch(/\.asset-browser-default-field-row \.form-control[\s\S]*?max-width:\s*100%/);
+       expect(css).toMatch(/\.asset-browser-default-field-row \.form-control[\s\S]*?flex:\s*0 1 auto/);
+       expect(css).toMatch(/#project-asset-category-management-dialog \.asset-browser-default-field-row\s*\{[^}]*width:\s*100%/);
+       expect(css).toContain('.asset-browser-default-action-row > .button');
+       expect(css).toContain('.category-management-form > .category-management-action-row > .button');
+       expect(css).toMatch(/\.asset-browser-default-action-row\s*\{[\s\S]*?align-self:\s*flex-start;[\s\S]*?width:\s*max-content;[\s\S]*?max-width:\s*100%/);
+       expect(css).toMatch(/\.asset-browser-default-action-row > \.button\s*\{[\s\S]*?flex:\s*0 0 auto;[\s\S]*?width:\s*auto/);
+       expect(css).toMatch(/\.category-management-form > \.category-management-action-row\s*\{[\s\S]*?align-self:\s*flex-start;[\s\S]*?width:\s*max-content;[\s\S]*?max-width:\s*100%/);
+       expect(css).toMatch(/\.category-management-form > \.category-management-action-row > \.button\s*\{[\s\S]*?flex:\s*0 0 auto;[\s\S]*?width:\s*auto/);
+       expect(css).toContain('#project-asset-category-management-dialog .project-category-management-add-row');
+       expect(css).toMatch(/#project-asset-category-management-dialog \.project-category-management-add-row\s*\{[\s\S]*?display:\s*grid;[\s\S]*?grid-template-columns:/);
+      expect(css).toMatch(/#project-asset-category-management-dialog \.project-category-management-add-submit\s*\{[\s\S]*?align-items:\s*flex-end/);
+      expect(css).toMatch(/#project-asset-category-management-dialog\s*\{[\s\S]*?width:\s*min\(68rem,\s*calc\(100vw - 2rem\)\)/);
+      expect(css).toMatch(/#project-asset-category-management-dialog \.project-category-management-default-section \.asset-browser-default-form\s*\{[\s\S]*?padding:\s*var\(--space-md\) var\(--space-lg\) 0/);
+       expect(css).toMatch(/\.app-dialog \.asset-filter-multiselect-field\s*\{/);
+       expect(css).toMatch(/\.asset-filter-multiselect-field\s*\{[\s\S]*?width:\s*max-content[\s\S]*?max-width:\s*min\(100%,\s*26rem\)/);
+       expect(css).toMatch(/#project-asset-category-management-dialog \.project-category-management-panel > h3\s*\{[^}]*background:\s*var\(--surface-hover\)/);
+       expect(css).toMatch(/#project-asset-category-management-dialog \.asset-filter-multiselect-panel\[data-cc-dropdown-overlay\]\s*\{[^}]*position:\s*fixed[^}]*min-width:\s*0/);
+       expect(css).toMatch(/#project-asset-category-management-dialog \.project-category-management-add-row\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0, 1fr\) minmax\(0, 1fr\) max-content max-content;[\s\S]*?align-items:\s*start;[\s\S]*?column-gap:/);
+       expect(css).toMatch(/\.settings-section h3\s*\{[\s\S]*?padding:\s*var\(--space-sm\) var\(--space-md\);[\s\S]*?font-family:\s*var\(--mono\);[\s\S]*?text-transform:\s*uppercase/);
+       expect(css).toMatch(/@media \(max-width:\s*767px\)[\s\S]*?project-category-management-add-row[\s\S]*?grid-template-columns:\s*minmax\(0, 1fr\) minmax\(0, 1fr\)/);
+      expect(css).toMatch(/@media \(max-width:\s*540px\)[\s\S]*?project-category-management-add-row[\s\S]*?grid-template-columns:\s*minmax\(0, 1fr\)/);
       expect(css).not.toMatch(/(?:^|\n)\s*(?:button|select|\.form-control)\s*\{/i);
       expect(css).toContain('.category-reorder-handle:focus-visible');
       expect(css).toContain('.category-management-card.is-drop-before');
