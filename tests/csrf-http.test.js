@@ -103,6 +103,26 @@ describe('CSRF protection — authenticated mutations', () => {
       .expect(403);
   });
 
+  // ─── Header-based CSRF (JSON/multipart processing routes) ────────────
+
+  it('accepts a JSON POST with the CSRF token in the X-CSRF-Token header', async () => {
+    const id = insertProject(db, 'CSRF Header Test');
+    await agent
+      .post(`/projects/${id}/archive`)
+      .set('X-CSRF-Token', csrfToken)
+      .send({})
+      .expect(302);
+  });
+
+  it('rejects a JSON POST with an invalid X-CSRF-Token header', async () => {
+    const id = insertProject(db, 'CSRF Bad Header Test');
+    await agent
+      .post(`/projects/${id}/archive`)
+      .set('X-CSRF-Token', 'invalid-token-value')
+      .send({})
+      .expect(403);
+  });
+
   // ─── Valid CSRF token ─────────────────────────────────────────────────
 
   it('accepts POST with a valid CSRF token', async () => {

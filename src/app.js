@@ -6,6 +6,7 @@ import { createIndexRouter } from './routes/index.js';
 import { createHealthRouter } from './routes/health.js';
 import { createProjectsRouter } from './routes/projects.js';
 import { createAssetsRouter } from './routes/assets.js';
+import { createProcessingRouter } from './routes/processing.js';
 import { createAssetLibraryRouter } from './routes/asset-library.js';
 import { createProjectAssetCategoriesRouter } from './routes/project-asset-categories.js';
 import { createProjectTagsRouter } from './routes/project-tags.js';
@@ -19,6 +20,10 @@ import { createSettingsRouter } from './routes/settings.js';
 import { createDownloadsRouter } from './routes/downloads.js';
 import { createProjectService } from './services/project-service.js';
 import { createAssetCategoryRepository } from './data/asset-category-repository.js';
+import { createGeneratedArtifactRepository } from './data/generated-artifact-repository.js';
+import { createWatermarkRepository } from './data/watermark-repository.js';
+import { createWatermarkScaleMapRepository } from './data/watermark-scale-map-repository.js';
+import { createProcessingPresetRepository } from './data/processing-preset-repository.js';
 import { createNoteRepository } from './data/note-repository.js';
 import { createChapterRepository } from './data/chapter-repository.js';
 import { createBookRepository } from './data/book-repository.js';
@@ -40,6 +45,12 @@ import { createNsfwFilterSettingsService } from './services/nsfw-filter-settings
 import { createProjectAssetCategoryService } from './services/project-asset-category-service.js';
 import { createAssetScanner } from './services/asset-scanner.js';
 import { createAssetActionService } from './services/asset-action-service.js';
+import { createAssetProcessingService } from './services/asset-processing-service.js';
+import { createAssetProcessingScopeService } from './services/asset-processing-scope-service.js';
+import { createAssetProcessingPlanner } from './services/asset-processing-planner.js';
+import { createWatermarkService } from './services/watermark-service.js';
+import { createWatermarkScaleMapService } from './services/watermark-scale-map-service.js';
+import { createProcessingPresetService } from './services/processing-preset-service.js';
 import { createAutoRenameService } from './services/auto-rename-service.js';
 import { createProjectPrimaryImageService } from './services/project-primary-image-service.js';
 import { createProjectOperationCoordinator } from './services/project-operation-coordinator.js';
@@ -102,6 +113,8 @@ function resolveAppAssetMode(opts) {
 
 export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {}) {
   const app = express();
+  const databasePath = opts.databasePath || db.name;
+  const appDataRoot = opts.appDataRoot || path.dirname(databasePath);
   // Phase 12.1: forwarded via `opts` (like databasePath/backupService/etc.)
   // rather than the first positional arg, so app-context.js's replaceDatabase
   // rebuild path (which threads appOpts straight through) carries it too.
@@ -327,6 +340,82 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     : null);
   app.locals.assetActionService = assetActionService;
 
+  // Shared read-only scope resolution is available before operation planning
+  // consumes it. It uses indexed assets only and does not require a filesystem
+  // root or invoke the scanner.
+  const assetProcessingScopeService = opts.assetProcessingScopeService
+    || createAssetProcessingScopeService({
+      projectRepository: projectService.repository,
+      assetRepository: assetScanner.repository,
+    });
+  app.locals.assetProcessingScopeService = assetProcessingScopeService;
+  const generatedArtifactRepository = opts.generatedArtifactRepository || createGeneratedArtifactRepository(db);
+  app.locals.generatedArtifactRepository = generatedArtifactRepository;
+  const watermarkRepository = opts.watermarkRepository || createWatermarkRepository(db);
+  const watermarkService = opts.watermarkService || createWatermarkService({
+    repository: watermarkRepository,
+    storageRoot: opts.watermarkStorageRoot || path.join(appDataRoot, 'watermarks'),
+    sharpImplementation: opts.sharpImplementation,
+  });
+  app.locals.watermarkRepository = watermarkRepository;
+  app.locals.watermarkService = watermarkService;
+  const watermarkScaleMapRepository = opts.watermarkScaleMapRepository || createWatermarkScaleMapRepository(db);
+  const watermarkScaleMapService = opts.watermarkScaleMapService || createWatermarkScaleMapService({
+    repository: watermarkScaleMapRepository,
+  });
+  app.locals.watermarkScaleMapRepository = watermarkScaleMapRepository;
+  app.locals.watermarkScaleMapService = watermarkScaleMapService;
+  const processingPresetRepository = opts.processingPresetRepository || createProcessingPresetRepository(db);
+  const processingPresetService = opts.processingPresetService || createProcessingPresetService({
+    repository: processingPresetRepository,
+    watermarkService,
+    scaleMapService: watermarkScaleMapService,
+  });
+  // A version marker makes these editable examples a one-time database setup,
+  // rather than hidden application defaults recreated by every restart. An
+  // injected service owns its own lifecycle (useful for focused tests).
+  if (!opts.processingPresetService) processingPresetService.seedReferencePresets();
+  app.locals.processingPresetRepository = processingPresetRepository;
+  app.locals.processingPresetService = processingPresetService;
+
+  // Preview is advisory and intentionally does not use the project-operation
+  // coordinator. Apply must always rerun authoritative preflight under its
+  // project lock; a plan is only a read-only snapshot of current state.
+  const assetProcessingPlanner = opts.assetProcessingPlanner || (projectsRoot
+    ? createAssetProcessingPlanner({
+      scopeService: assetProcessingScopeService,
+      projectRepository: projectService.repository,
+      assetRepository: assetScanner.repository,
+      generatedArtifactRepository,
+      assetCategoryService,
+      projectsRoot,
+      sharpImplementation: opts.sharpImplementation,
+      watermarkService,
+      scaleMapService: watermarkScaleMapService,
+      watermarkScaleMap: opts.watermarkScaleMap,
+    })
+    : null);
+  app.locals.assetProcessingPlanner = assetProcessingPlanner;
+
+  // Native asset processing is constructed alongside the existing filesystem
+  // action service, but is intentionally not consumed by a route yet. The
+  // shared coordinator keeps conversion, scanning, and other asset actions
+  // mutually exclusive for one project across application rebuilds.
+  const assetProcessingService = opts.assetProcessingService || (projectsRoot
+    ? createAssetProcessingService({
+      projectRepository: projectService.repository,
+      assetRepository: assetScanner.repository,
+      generatedArtifactRepository,
+      assetCategoryService,
+      projectsRoot,
+      projectOperationCoordinator,
+      watermarkService,
+      scaleMapService: watermarkScaleMapService,
+      watermarkScaleMap: opts.watermarkScaleMap,
+    })
+    : null);
+  app.locals.assetProcessingService = assetProcessingService;
+
   // Phase H3: Auto Rename is one application-scoped service per rooted app
   // build. It reuses the already-constructed project repository, asset
   // repository, and operation coordinator; no database connection or lock is
@@ -390,8 +479,6 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   // live connection's own file path (better-sqlite3 exposes it as `db.name`)
   // so callers that already have an open `db` never need to repeat the path.
   // migrationsDir defaults to the application's real migrations directory.
-  const databasePath = opts.databasePath || db.name;
-  const appDataRoot = opts.appDataRoot || path.dirname(databasePath);
   const migrationsDir = opts.migrationsDir || path.join(__dirname, '..', 'migrations');
   const backupService =
     opts.backupService ||
@@ -502,6 +589,18 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   app.use('/health', createHealthRouter({ db, maintenanceState }));
   app.use('/projects', createProjectsRouter({ appName, db, projectService, workflowQueryService }));
   app.use('/assets', createAssetLibraryRouter({ appName, db, workflowQueryService }));
+  // Managed resources are application-global. Project execution endpoints are
+  // added by the same router only when rooted processing dependencies exist.
+  app.use(createProcessingRouter({
+    projectService,
+    assetRepository: assetScanner.repository,
+    assetProcessingScopeService,
+    assetProcessingPlanner,
+    assetProcessingService,
+    watermarkService,
+    watermarkScaleMapService,
+    processingPresetService,
+  }));
 
   // Media routes stay before the asset browser/viewer router. The media
   // routes have four path segments under /projects; the viewer route has
@@ -517,6 +616,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   // complete router instead of mounting handlers that would receive null
   // dependencies and fail at request time.
   if (projectsRoot) {
+
     app.use('/projects', createAssetsRouter({
       appName,
       db,

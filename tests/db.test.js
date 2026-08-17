@@ -101,6 +101,12 @@ describe('database and migrations', () => {
       '008_add_note_hierarchy.sql',
       '009_add_note_book_id.sql',
       '010_add_book_contents.sql',
+      '011_add_watermark_asset_provenance.sql',
+      '012_add_watermark_generated_variant.sql',
+      '013_add_generated_artifacts.sql',
+       '014_add_managed_watermarks.sql',
+       '015_add_watermark_scale_maps.sql',
+       '016_add_processing_presets.sql',
     ]);
   });
 
@@ -123,10 +129,12 @@ describe('database and migrations', () => {
       'book_contents',
       'books',
       'chapters',
+      'generated_artifacts',
       'note_assets',
       'note_projects',
-      'notes',
-      'project_asset_browser_preferences',
+       'notes',
+       'processing_presets',
+       'project_asset_browser_preferences',
       'project_asset_categories',
       'project_primary_images',
       'project_tags',
@@ -136,9 +144,71 @@ describe('database and migrations', () => {
       'schema_migrations',
       'sessions',
       'tags',
+       'watermark_scale_maps',
+       'watermarks',
     ]);
     expect(db.pragma('foreign_keys', { simple: true })).toBe(1);
     expect(db.pragma('foreign_key_check')).toEqual([]);
+  });
+
+  it('creates managed Watermark scale maps without changing existing provenance tables', () => {
+    db = openDatabase(dbPath);
+    runMigrations(db, MIGRATIONS_DIR);
+    const columns = db.prepare("SELECT name FROM pragma_table_info('watermark_scale_maps')").pluck().all();
+    expect(columns).toEqual(['id', 'display_name', 'definition_json', 'created_at', 'updated_at', 'system_key']);
+    expect(() => db.prepare(`
+      INSERT INTO watermark_scale_maps (display_name, definition_json) VALUES ('Same', '{}'), ('same', '{}')
+    `).run()).toThrow(/UNIQUE constraint failed/i);
+    expect(db.prepare("SELECT name FROM pragma_table_info('assets')").pluck().all()).not.toContain('generated_scale_map_id');
+  });
+
+  it('upgrades a 014 database to 015 without changing existing Watermark provenance', () => {
+    const legacyMigrationsDir = path.join(tmpDir, 'migrations-through-014');
+    fs.mkdirSync(legacyMigrationsDir);
+    for (const filename of fs.readdirSync(MIGRATIONS_DIR).filter((name) => name <= '014_add_managed_watermarks.sql')) {
+      fs.copyFileSync(path.join(MIGRATIONS_DIR, filename), path.join(legacyMigrationsDir, filename));
+    }
+    db = openDatabase(dbPath);
+    runMigrations(db, legacyMigrationsDir);
+    const watermarkId = Number(db.prepare(`
+      INSERT INTO watermarks (display_name, storage_key, sha256, width, height)
+      VALUES ('Existing', 'wm-00000000-0000-0000-0000-000000000000.png', ?, 1, 1)
+    `).run('a'.repeat(64)).lastInsertRowid);
+
+    runMigrations(db, MIGRATIONS_DIR);
+
+    expect(db.prepare('SELECT id, display_name FROM watermarks WHERE id = ?').get(watermarkId))
+      .toEqual({ id: watermarkId, display_name: 'Existing' });
+    expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'watermark_scale_maps'").get())
+      .toBeTruthy();
+    expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'processing_presets'").get())
+      .toBeTruthy();
+  });
+
+  it('upgrades a 015 database to 016 while retaining scale maps and enforcing preset resource FKs', () => {
+    const legacyMigrationsDir = path.join(tmpDir, 'migrations-through-015');
+    fs.mkdirSync(legacyMigrationsDir);
+    for (const filename of fs.readdirSync(MIGRATIONS_DIR).filter((name) => name <= '015_add_watermark_scale_maps.sql')) {
+      fs.copyFileSync(path.join(MIGRATIONS_DIR, filename), path.join(legacyMigrationsDir, filename));
+    }
+    db = openDatabase(dbPath);
+    runMigrations(db, legacyMigrationsDir);
+    const scaleMapId = Number(db.prepare(`
+      INSERT INTO watermark_scale_maps (display_name, definition_json) VALUES ('Existing map', '{}')
+    `).run().lastInsertRowid);
+
+    runMigrations(db, MIGRATIONS_DIR);
+
+    expect(db.prepare('SELECT id, system_key FROM watermark_scale_maps WHERE id = ?').get(scaleMapId))
+      .toEqual({ id: scaleMapId, system_key: null });
+    expect(db.prepare("SELECT name FROM pragma_table_info('processing_presets')").pluck().all())
+      .toEqual(['id', 'operation_type', 'display_name', 'system_key', 'config_version', 'config_json', 'watermark_id', 'scale_map_id', 'created_at', 'updated_at']);
+    expect(() => db.prepare(`
+      INSERT INTO processing_presets (operation_type, display_name, config_json, scale_map_id)
+      VALUES ('watermark', 'Bound map', '{}', ?)
+    `).run(scaleMapId)).not.toThrow();
+    expect(() => db.prepare('DELETE FROM watermark_scale_maps WHERE id = ?').run(scaleMapId))
+      .toThrow(/FOREIGN KEY constraint failed/i);
   });
 
   it('rejects published as a project status', () => {
@@ -560,6 +630,13 @@ describe('database and migrations', () => {
       { name: 'is_present', type: 'INTEGER', notnull: 1, dflt_value: '1', pk: 0 },
       { name: 'last_seen_at', type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 },
       { name: 'missing_since', type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 },
+      { name: 'generated_by', type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 },
+      { name: 'generated_source_asset_id', type: 'INTEGER', notnull: 0, dflt_value: null, pk: 0 },
+      { name: 'generated_mode', type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 },
+      { name: 'generated_source_relative_path', type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 },
+      { name: 'generated_output_sha256', type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 },
+      { name: 'generated_variant', type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 },
+       { name: 'generated_watermark_id', type: 'INTEGER', notnull: 0, dflt_value: null, pk: 0 },
     ]);
   });
 });

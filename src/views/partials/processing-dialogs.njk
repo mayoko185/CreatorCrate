@@ -1,0 +1,497 @@
+{# Processing dialogs: Convert, Workflow Prompt Editor, Watermark, and the
+   managed-resource (Watermarks/Scale maps) dialogs they link to. Rendered
+   once in the assets page overlay block (outside the live-filtered region,
+   so they survive live category/search/sort changes). All async behavior is
+   handled by client/processing.js — these are plain [data-processing-*]
+   marked-up fields, not [data-dialog-form] forms, so the generic
+   appDialogBindForm submit handler never engages them. #}
+{% import "partials/dialog.njk" as dialog %}
+{% import "partials/dropdown.njk" as dropdown %}
+
+{# Static-option select: routed through the shared cc-dropdown component like
+   every other choice control on this page (see dropdown.njk). #}
+{% macro processingSelect(id, field, type, label, options) %}
+  <div class="field app-dialog-field">
+    {{ dropdown.singleSelect({
+      id: id ~ '-dropdown',
+      label: label,
+      fieldClasses: 'processing-select-field',
+      options: options,
+      optionIdPrefix: id,
+      panelLabel: label ~ ' options',
+      nativeSelect: {
+        id: id,
+        attributes: [['data-processing-field', field], ['data-processing-type', type]]
+      }
+    }) }}
+  </div>
+{% endmacro %}
+
+{# Async-populated select (presets, managed watermarks/scale maps): the
+   cc-dropdown widget's option list is fixed at server-render time, so it
+   can't represent options fetched after load. Styled with the same native
+   select class for visual consistency; functions as a plain control. #}
+{% macro processingDynamicSelect(id, field, type, label, placeholderText) %}
+  <select id="{{ id }}" class="cc-dropdown-native-select" data-cc-dropdown-native-select aria-label="{{ label }}"
+          data-processing-field="{{ field }}" data-processing-type="{{ type }}">
+    <option value="">{{ placeholderText }}</option>
+  </select>
+{% endmacro %}
+
+{% macro scopeSection(prefix) %}
+  <fieldset class="processing-scope" data-processing-scope>
+    <legend>Scope</legend>
+    <label class="processing-scope-option">
+      <input type="radio" name="{{ prefix }}-scope-type" value="selected" data-processing-scope-option="selected" checked>
+      Selection (<span data-processing-selected-count>0</span> selected)
+    </label>
+    <p class="processing-scope-hint" data-processing-selected-hint hidden>Select assets in the browser list to use this scope.</p>
+
+    <label class="processing-scope-option" data-processing-scope-category-wrap hidden>
+      <input type="radio" name="{{ prefix }}-scope-type" value="category" data-processing-scope-option="category">
+      <span data-processing-category-label>Current category</span>
+    </label>
+
+    <label class="processing-scope-option">
+      <input type="radio" name="{{ prefix }}-scope-type" value="directory" data-processing-scope-option="directory">
+      Directory
+    </label>
+    <div class="processing-scope-directory-fields">
+      <label class="field">
+        <span>Project-relative directory</span>
+        <input type="text" data-processing-directory placeholder="e.g. Final/sub" autocomplete="off">
+      </label>
+      <label class="processing-checkbox-label">
+        <input type="checkbox" data-processing-recursive> Recursive
+      </label>
+      <p class="help-text">A path like <code>Final/sub</code> means a directory inside this project — not a location on disk.</p>
+    </div>
+
+    <label class="processing-scope-option">
+      <input type="radio" name="{{ prefix }}-scope-type" value="project" data-processing-scope-option="project">
+      Entire project
+    </label>
+  </fieldset>
+{% endmacro %}
+
+{% macro presetSection(prefix, label='Preset') %}
+  <div class="field app-dialog-field">
+    <label for="{{ prefix }}-preset-select">{{ label }}</label>
+    <select id="{{ prefix }}-preset-select" class="cc-dropdown-native-select" data-cc-dropdown-native-select
+            aria-label="{{ label }}" data-processing-preset-select>
+      <option value="">Custom</option>
+    </select>
+    <p class="processing-preset-modified" data-processing-preset-modified hidden>Modified from preset.</p>
+  </div>
+{% endmacro %}
+
+{% macro planFooter() %}
+  <div class="processing-plan" data-processing-plan hidden>
+    <h3>Plan</h3>
+    <dl class="processing-plan-counts" data-processing-plan-counts></dl>
+    <div class="notice notice--warning processing-plan-destructive" data-processing-plan-destructive hidden></div>
+    <ul class="processing-plan-items" data-processing-plan-items></ul>
+  </div>
+  <div class="app-dialog-error processing-error" data-processing-error role="alert" hidden>
+    <p data-processing-error-text></p>
+  </div>
+  <div class="processing-result" data-processing-result hidden>
+    <h3>Result</h3>
+    <div data-processing-result-body></div>
+    <button type="button" class="button" data-processing-refresh>Refresh assets</button>
+  </div>
+  <div class="app-dialog-status" data-processing-status role="status" aria-live="polite"></div>
+  <footer class="app-dialog-footer">
+    <button type="button" class="button button-secondary" data-dialog-close>Close</button>
+    <button type="button" class="button button-secondary" data-processing-preview>Preview</button>
+    <button type="button" class="button button-primary" data-processing-apply disabled aria-disabled="true">Apply</button>
+  </footer>
+{% endmacro %}
+
+{# ─── Convert ──────────────────────────────────────────────────────────── #}
+{% call dialog.render('processing-convert-dialog', 'Convert', false, 'processing-convert-description') %}
+  <div class="app-dialog-body processing-dialog-body" data-processing-root data-processing-operation="convert"
+       data-project-id="{{ project.id }}" data-csrf="{{ _csrf }}"
+       data-current-category-id="{{ currentCategoryId or '' }}" data-current-category-label="{{ currentCategoryLabel or '' }}">
+    <p id="processing-convert-description" class="app-dialog-description">Convert selected assets to a different image format.</p>
+
+    {{ presetSection('convert') }}
+    {{ scopeSection('convert') }}
+
+    {{ processingSelect('convert-format', 'format', 'string', 'Format', [
+      { value: 'png', label: 'PNG' },
+      { value: 'jpg', label: 'JPG' },
+      { value: 'jpeg', label: 'JPEG' },
+      { value: 'bmp', label: 'BMP' },
+      { value: 'gif', label: 'GIF' },
+      { value: 'webp', label: 'WebP', selected: true }
+    ]) }}
+    <div class="field app-dialog-field">
+      <label for="convert-quality">Quality</label>
+      <input id="convert-quality" type="number" min="1" max="95" placeholder="85"
+             data-processing-field="quality" data-processing-type="int" data-processing-omit-if-empty="true">
+      <p class="help-text">Only affects JPEG/WebP output. 1–95, default 85.</p>
+    </div>
+    {{ processingSelect('convert-original-handling', 'originalHandling', 'string', 'Original handling', [
+      { value: 'keep', label: 'Keep originals', selected: true },
+      { value: 'move', label: 'Move originals (file-changing)' },
+      { value: 'delete', label: 'Delete originals (file-changing)' }
+    ]) }}
+    <p class="help-text">Converting to the same extension requires Keep originals.</p>
+
+    {{ planFooter() }}
+  </div>
+{% endcall %}
+
+{# ─── Workflow Prompt Editor ──────────────────────────────────────────── #}
+{% call dialog.render('processing-workflow-dialog', 'Edit workflow prompts', false, 'processing-workflow-description') %}
+  <div class="app-dialog-body processing-dialog-body" data-processing-root data-processing-operation="workflow-prompt"
+       data-project-id="{{ project.id }}" data-csrf="{{ _csrf }}"
+       data-current-category-id="{{ currentCategoryId or '' }}" data-current-category-label="{{ currentCategoryLabel or '' }}">
+    <p id="processing-workflow-description" class="app-dialog-description">Edit PNG workflow metadata prompts for selected assets.</p>
+
+    {{ presetSection('workflow') }}
+    {{ scopeSection('workflow') }}
+
+    <p class="help-text">Rules run in Remove → Replace → Prepend → Append order, regardless of the order added below. Within each type, row order matters.</p>
+
+    <template data-processing-rule-row-template>
+      <li class="processing-rule-row" data-processing-rule-row>
+        <fieldset class="processing-rule-type" data-processing-rule-type>
+          <legend class="sr-only">Rule type</legend>
+          <label><input type="radio" name="rule-type" value="remove" checked> Remove</label>
+          <label><input type="radio" name="rule-type" value="replace"> Replace</label>
+          <label><input type="radio" name="rule-type" value="prepend"> Prepend</label>
+          <label><input type="radio" name="rule-type" value="append"> Append</label>
+        </fieldset>
+        <input type="text" data-processing-rule-text placeholder="Text" autocomplete="off">
+        <input type="text" data-processing-rule-search placeholder="Search (may be left empty)" autocomplete="off" hidden>
+        <input type="text" data-processing-rule-replacement placeholder="Replacement" autocomplete="off" hidden>
+        <button type="button" class="button button-small button-secondary" data-processing-remove-rule aria-label="Remove rule">Remove</button>
+      </li>
+    </template>
+
+    <div class="processing-rule-section" data-processing-rules="positive">
+      <h3>Positive prompt rules</h3>
+      <ul class="processing-rule-list" data-processing-rule-list aria-label="Positive prompt rules"></ul>
+      <button type="button" class="button button-small" data-processing-add-rule="positive">Add rule</button>
+    </div>
+    <div class="processing-rule-section" data-processing-rules="negative">
+      <h3>Negative prompt rules</h3>
+      <ul class="processing-rule-list" data-processing-rule-list aria-label="Negative prompt rules"></ul>
+      <button type="button" class="button button-small" data-processing-add-rule="negative">Add rule</button>
+    </div>
+
+    {{ planFooter() }}
+  </div>
+{% endcall %}
+
+{# ─── Watermark ────────────────────────────────────────────────────────── #}
+{% call dialog.render('processing-watermark-dialog', 'Watermark', false, 'processing-watermark-description') %}
+  <div class="app-dialog-body processing-dialog-body" data-processing-root data-processing-operation="watermark"
+       data-project-id="{{ project.id }}" data-csrf="{{ _csrf }}"
+       data-current-category-id="{{ currentCategoryId or '' }}" data-current-category-label="{{ currentCategoryLabel or '' }}">
+    <p id="processing-watermark-description" class="app-dialog-description">Apply a managed watermark to selected assets, with optional resize and archive output.</p>
+
+    {{ presetSection('watermark') }}
+
+    <div class="field app-dialog-field">
+      <label for="watermark-resource-select">Watermark</label>
+      {{ processingDynamicSelect('watermark-resource-select', 'watermarkId', 'int-or-null', 'Watermark', 'Select a watermark…') }}
+      <button type="button" class="button button-small button-secondary" data-dialog-open="processing-manage-watermarks-dialog">Manage watermarks</button>
+      <div class="processing-watermark-thumb" data-processing-watermark-thumb hidden>
+        <img data-processing-watermark-thumb-img alt="">
+      </div>
+    </div>
+    <div class="field app-dialog-field">
+      <label for="watermark-scale-map-select">Scale map</label>
+      {{ processingDynamicSelect('watermark-scale-map-select', 'scaleMapId', 'int-or-null', 'Scale map', 'None') }}
+      <button type="button" class="button button-small button-secondary" data-dialog-open="processing-manage-scale-maps-dialog">Manage scale maps</button>
+    </div>
+    <input type="hidden" data-processing-field="mode" data-processing-type="string" value="custom">
+
+    {{ scopeSection('watermark') }}
+
+    <details class="processing-section" open>
+      <summary>Placement</summary>
+      {{ processingSelect('watermark-scale-basis', 'scaleBasis', 'string', 'Scale basis', [
+        { value: 'width', label: 'Width' },
+        { value: 'height', label: 'Height' },
+        { value: 'short', label: 'Short side' },
+        { value: 'long', label: 'Long side' },
+        { value: 'geo', label: 'Geometric mean' },
+        { value: 'diagonal', label: 'Diagonal' },
+        { value: 'window', label: 'Window', selected: true }
+      ]) }}
+      <div class="field app-dialog-field">
+        <label for="watermark-scale">Scale</label>
+        <input id="watermark-scale" type="number" step="any" min="0" placeholder="0.25 (used unless the scale map or a fixed width applies)"
+               data-processing-field="scale" data-processing-type="float" data-processing-omit-if-empty="true">
+      </div>
+      <div class="field app-dialog-field">
+        <label for="watermark-fixed-width">Fixed watermark width (px)</label>
+        <input id="watermark-fixed-width" type="number" min="0" step="1" placeholder="0 (off — uses scale map/manual scale)"
+               data-processing-field="fixedWatermarkWidthPx" data-processing-type="int" data-processing-omit-if-empty="true">
+        <p class="help-text">Overrides the scale map and manual scale for watermark size; margin can still depend on scale basis.</p>
+      </div>
+      <div class="field app-dialog-field">
+        <label for="watermark-window-aspect">Window aspect</label>
+        <input id="watermark-window-aspect" type="number" step="any" min="0" placeholder="1.777778 (16:9)"
+               data-processing-field="windowAspect" data-processing-type="float" data-processing-omit-if-empty="true">
+      </div>
+      {{ processingSelect('watermark-position', 'position', 'string', 'Position', [
+        { value: 'br', label: 'Bottom-right' },
+        { value: 'bl', label: 'Bottom-left', selected: true },
+        { value: 'tr', label: 'Top-right' },
+        { value: 'tl', label: 'Top-left' },
+        { value: 'c', label: 'Center' }
+      ]) }}
+      <div class="field app-dialog-field">
+        <label for="watermark-margin-ratio">Margin (%/ratio)</label>
+        <input id="watermark-margin-ratio" type="number" step="any" min="0" placeholder="0.02 (2%)"
+               data-processing-field="marginRatio" data-processing-type="float" data-processing-omit-if-empty="true">
+      </div>
+      <div class="field app-dialog-field">
+        <label for="watermark-margin-px">Margin (px)</label>
+        <input id="watermark-margin-px" type="number" step="1" placeholder="0"
+               data-processing-field="marginPx" data-processing-type="int" data-processing-omit-if-empty="true">
+      </div>
+      <div class="field app-dialog-field">
+        <label for="watermark-nudge-x">Nudge X (px)</label>
+        <input id="watermark-nudge-x" type="number" step="1" placeholder="0" data-processing-field="nudgeX" data-processing-type="int" data-processing-omit-if-empty="true">
+      </div>
+      <div class="field app-dialog-field">
+        <label for="watermark-nudge-y">Nudge Y (px)</label>
+        <input id="watermark-nudge-y" type="number" step="1" placeholder="0" data-processing-field="nudgeY" data-processing-type="int" data-processing-omit-if-empty="true">
+      </div>
+      <div class="field app-dialog-field">
+        <label for="watermark-nudge-x-ratio">Nudge X (%/ratio)</label>
+        <input id="watermark-nudge-x-ratio" type="number" step="any" placeholder="0" data-processing-field="nudgeXRatio" data-processing-type="float" data-processing-omit-if-empty="true">
+      </div>
+      <div class="field app-dialog-field">
+        <label for="watermark-nudge-y-ratio">Nudge Y (%/ratio)</label>
+        <input id="watermark-nudge-y-ratio" type="number" step="any" placeholder="0" data-processing-field="nudgeYRatio" data-processing-type="float" data-processing-omit-if-empty="true">
+      </div>
+      <label class="processing-checkbox-label">
+        <input type="checkbox" data-processing-field="allowOffCanvas" data-processing-type="bool"> Allow off-canvas
+      </label>
+      {{ processingSelect('watermark-containment', 'containment', 'string', 'Containment', [
+        { value: 'clamp', label: 'Clamp', selected: true },
+        { value: 'shrink', label: 'Shrink' }
+      ]) }}
+      <div class="field app-dialog-field">
+        <label for="watermark-opacity">Opacity</label>
+        <input id="watermark-opacity" type="number" step="any" min="0" max="1" placeholder="0.65"
+               data-processing-field="opacity" data-processing-type="float" data-processing-omit-if-empty="true">
+      </div>
+    </details>
+
+    <details class="processing-section">
+      <summary>Resize &amp; output</summary>
+      <div class="field app-dialog-field">
+        <label for="watermark-max-dimension">Max dimension</label>
+        <input id="watermark-max-dimension" type="number" min="0" step="1" placeholder="0 (no resize)"
+               data-processing-field="maxDimension" data-processing-type="int" data-processing-omit-if-empty="true">
+      </div>
+      <label class="processing-checkbox-label">
+        <input type="checkbox" data-processing-field="watermarkBeforeResize" data-processing-type="bool"> Watermark before resize
+      </label>
+      <label class="processing-checkbox-label">
+        <input type="checkbox" data-processing-field="trimWatermark" data-processing-type="bool" checked> Trim transparent watermark border
+      </label>
+      <div class="field app-dialog-field">
+        <label for="watermark-output-directory">Output directory</label>
+        <input id="watermark-output-directory" type="text" placeholder="e.g. processed/watermarked" autocomplete="off"
+               data-processing-field="outputDirectory" data-processing-type="string" data-processing-omit-if-empty="true">
+        <p class="help-text">Project-relative only — never a host filesystem path.</p>
+      </div>
+      {{ processingSelect('watermark-output-format', 'outputFormat', 'string', 'Primary format', [
+        { value: 'png', label: 'PNG', selected: true },
+        { value: 'jpg', label: 'JPG' },
+        { value: 'webp', label: 'WebP' }
+      ]) }}
+      <div class="field app-dialog-field">
+        <label for="watermark-quality">Quality</label>
+        <input id="watermark-quality" type="number" min="1" max="100" placeholder="90"
+               data-processing-field="quality" data-processing-type="int" data-processing-omit-if-empty="true">
+      </div>
+      <label class="processing-checkbox-label">
+        <input type="checkbox" data-processing-field="webpLossless" data-processing-type="bool"> Lossless WebP
+      </label>
+      <div class="field app-dialog-field">
+        <label for="watermark-jpeg-background">JPEG background</label>
+        <input id="watermark-jpeg-background" type="text" placeholder="white"
+               data-processing-field="jpegBackground" data-processing-type="string" data-processing-omit-if-empty="true">
+      </div>
+      <label class="processing-checkbox-label" data-processing-delete-source-toggle>
+        <input type="checkbox" data-processing-field="deleteSource" data-processing-type="bool"> Delete source
+      </label>
+      <p class="notice notice--warning processing-delete-source-warning" data-processing-delete-source-warning hidden>
+        Source files are only removed after all required outputs and artifacts succeed. Preview shows any protection or skip conditions — deletion is never guaranteed by this checkbox alone.
+      </p>
+      <label class="processing-checkbox-label">
+        <input type="checkbox" data-processing-field="alsoUnresized" data-processing-type="bool"> Also create unresized variant
+      </label>
+      <div class="field app-dialog-field">
+        <label for="watermark-suffix">Single suffix</label>
+        <input id="watermark-suffix" type="text" placeholder="_wm (or _lq_wm when resizing)" autocomplete="off"
+               data-processing-field="suffix" data-processing-type="string" data-processing-omit-if-empty="true">
+        <p class="help-text">Used when not also creating an unresized variant.</p>
+      </div>
+      <div class="field app-dialog-field">
+        <label for="watermark-suffix-unresized">Unresized suffix</label>
+        <input id="watermark-suffix-unresized" type="text" placeholder="_wm" autocomplete="off"
+               data-processing-field="suffixUnresized" data-processing-type="string" data-processing-omit-if-empty="true">
+      </div>
+      <div class="field app-dialog-field">
+        <label for="watermark-suffix-resized">Resized suffix</label>
+        <input id="watermark-suffix-resized" type="text" placeholder="_lq_wm" autocomplete="off"
+               data-processing-field="suffixResized" data-processing-type="string" data-processing-omit-if-empty="true">
+      </div>
+      <fieldset class="field app-dialog-field" data-processing-field="additionalFormats" data-processing-type="list">
+        <legend>Additional formats — unresized</legend>
+        <label><input type="checkbox" value="png"> PNG</label>
+        <label><input type="checkbox" value="jpg"> JPG</label>
+        <label><input type="checkbox" value="webp"> WebP</label>
+      </fieldset>
+      <fieldset class="field app-dialog-field" data-processing-field="additionalFormatsResized" data-processing-type="list">
+        <legend>Additional formats — resized</legend>
+        <label><input type="checkbox" value="png"> PNG</label>
+        <label><input type="checkbox" value="jpg"> JPG</label>
+        <label><input type="checkbox" value="webp"> WebP</label>
+      </fieldset>
+      <label class="processing-checkbox-label">
+        <input type="checkbox" data-processing-field="overwrite" data-processing-type="bool" checked> Replace existing generated outputs
+      </label>
+    </details>
+
+    <details class="processing-section">
+      <summary>Archives</summary>
+      <label class="processing-checkbox-label">
+        <input type="checkbox" data-processing-field="makeArchives" data-processing-type="bool"> Create JPEG/WebP archive pair
+      </label>
+      {{ processingSelect('watermark-archive-format', 'archiveFormat', 'string', 'Archive format', [
+        { value: 'zip', label: 'ZIP', selected: true },
+        { value: '7z', label: '7z' }
+      ]) }}
+      <div class="field app-dialog-field">
+        <label for="watermark-set-name">Archive name / Set name</label>
+        <input id="watermark-set-name" type="text" placeholder="Overrides legacy prefix/base name below" autocomplete="off"
+               data-processing-field="setName" data-processing-type="string" data-processing-omit-if-empty="true">
+      </div>
+      <div class="field app-dialog-field">
+        <label for="watermark-zip-jpg-quality">JPEG archive quality</label>
+        <input id="watermark-zip-jpg-quality" type="number" min="1" max="100" placeholder="80"
+               data-processing-field="zipJpgQuality" data-processing-type="int" data-processing-omit-if-empty="true">
+      </div>
+      <div class="field app-dialog-field">
+        <label for="watermark-zip-webp-quality">WebP archive quality</label>
+        <input id="watermark-zip-webp-quality" type="number" min="1" max="100" placeholder="90"
+               data-processing-field="zipWebpQuality" data-processing-type="int" data-processing-omit-if-empty="true">
+      </div>
+      <label class="processing-checkbox-label">
+        <input type="checkbox" data-processing-field="archiveIncludeResized" data-processing-type="bool"> Include resized variants
+      </label>
+      <label class="processing-checkbox-label">
+        <input type="checkbox" data-processing-field="replaceExistingArchives" data-processing-type="bool"> Replace existing archives
+      </label>
+
+      <label class="processing-checkbox-label">
+        <input type="checkbox" data-processing-field="makeCbz" data-processing-type="bool"> Create CBZ
+      </label>
+      <div class="field app-dialog-field">
+        <label for="watermark-cbz-quality">CBZ quality</label>
+        <input id="watermark-cbz-quality" type="number" min="1" max="100" placeholder="85"
+               data-processing-field="cbzJpgQuality" data-processing-type="int" data-processing-omit-if-empty="true">
+      </div>
+      {{ processingSelect('watermark-cbz-from', 'cbzFrom', 'string', 'CBZ from', [
+        { value: 'unresized', label: 'Unresized', selected: true },
+        { value: 'resized', label: 'Resized' }
+      ]) }}
+      <div class="field app-dialog-field">
+        <label for="watermark-cbz-prefix">CBZ prefix</label>
+        <input id="watermark-cbz-prefix" type="text" placeholder="watermarked_" autocomplete="off"
+               data-processing-field="cbzPrefix" data-processing-type="string" data-processing-omit-if-empty="true">
+      </div>
+
+      <details class="processing-section processing-section--nested">
+        <summary>Advanced archive naming</summary>
+        <p class="help-text">Set name above overrides these legacy prefix/base fields, kept for Python parity.</p>
+        <div class="field app-dialog-field">
+          <label for="watermark-archive-prefix">Archive prefix (legacy)</label>
+          <input id="watermark-archive-prefix" type="text" autocomplete="off"
+                 data-processing-field="archivePrefix" data-processing-type="string" data-processing-omit-if-empty="true">
+        </div>
+        <div class="field app-dialog-field">
+          <label for="watermark-zip-base-name">ZIP base name (legacy)</label>
+          <input id="watermark-zip-base-name" type="text" placeholder="watermarked" autocomplete="off"
+                 data-processing-field="zipBaseName" data-processing-type="string" data-processing-omit-if-empty="true">
+        </div>
+      </details>
+    </details>
+
+    {{ planFooter() }}
+  </div>
+{% endcall %}
+
+{# ─── Manage Watermarks ───────────────────────────────────────────────── #}
+{% call dialog.render('processing-manage-watermarks-dialog', 'Manage watermarks', false, 'processing-manage-watermarks-description') %}
+  <div class="app-dialog-body processing-manage-body" data-processing-manage-watermarks
+       data-project-id="{{ project.id }}" data-csrf="{{ _csrf }}">
+    <p id="processing-manage-watermarks-description" class="app-dialog-description">
+      Managed watermark PNGs used by watermark presets and Custom watermarking. PNG only, up to 5 MiB, with visible content.
+    </p>
+    <div class="app-dialog-error processing-error" data-processing-error role="alert" hidden><p data-processing-error-text></p></div>
+    <ul class="processing-resource-list" data-processing-watermark-list aria-label="Managed watermarks"></ul>
+    <form class="processing-add-form" data-processing-add-watermark-form>
+      <h3>Add watermark</h3>
+      <div class="field">
+        <label for="processing-add-watermark-name">Display name</label>
+        <input id="processing-add-watermark-name" type="text" required maxlength="200" autocomplete="off">
+      </div>
+      <div class="field">
+        <label for="processing-add-watermark-file">PNG file</label>
+        <input id="processing-add-watermark-file" type="file" accept="image/png" required>
+      </div>
+      <button type="submit" class="button button-primary">Add watermark</button>
+    </form>
+    <div class="app-dialog-status" data-processing-status role="status" aria-live="polite"></div>
+  </div>
+{% endcall %}
+
+{# ─── Manage Scale Maps ───────────────────────────────────────────────── #}
+{% call dialog.render('processing-manage-scale-maps-dialog', 'Manage scale maps', false, 'processing-manage-scale-maps-description') %}
+  <div class="app-dialog-body processing-manage-body" data-processing-manage-scale-maps
+       data-project-id="{{ project.id }}" data-csrf="{{ _csrf }}">
+    <p id="processing-manage-scale-maps-description" class="app-dialog-description">
+      Managed watermark scale maps: watermark scale per exact source resolution (width×height are orientation-specific — 1365×768 is distinct from 768×1365).
+    </p>
+    <div class="app-dialog-error processing-error" data-processing-error role="alert" hidden><p data-processing-error-text></p></div>
+    <ul class="processing-resource-list" data-processing-scale-map-list aria-label="Managed scale maps"></ul>
+
+    <div class="processing-scale-map-editor" data-processing-scale-map-editor hidden>
+      <h3 data-processing-scale-map-editor-title>New scale map</h3>
+      <div class="field">
+        <label for="processing-scale-map-name">Display name</label>
+        <input id="processing-scale-map-name" type="text" maxlength="200" autocomplete="off" data-processing-scale-map-name>
+      </div>
+      <div class="processing-scale-map-grid" role="group" aria-label="Resolution scale rows">
+        <div class="processing-scale-map-grid-header" aria-hidden="true">
+          <span>Width</span><span>Height</span><span>Scale</span><span></span>
+        </div>
+        <div data-processing-scale-map-rows></div>
+      </div>
+      <button type="button" class="button button-small" data-processing-scale-map-add-row>Add resolution</button>
+      <div class="field">
+        <label for="processing-scale-map-default">Default scale (optional)</label>
+        <input id="processing-scale-map-default" type="text" placeholder="e.g. 0.10" data-processing-scale-map-default>
+      </div>
+      <div class="processing-scale-map-editor-actions">
+        <button type="button" class="button button-primary" data-processing-scale-map-save>Save</button>
+        <button type="button" class="button button-secondary" data-processing-scale-map-cancel>Cancel</button>
+      </div>
+    </div>
+    <button type="button" class="button" data-processing-scale-map-new>Create scale map</button>
+    <div class="app-dialog-status" data-processing-status role="status" aria-live="polite"></div>
+  </div>
+{% endcall %}

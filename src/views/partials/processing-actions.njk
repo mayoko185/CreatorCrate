@@ -1,0 +1,24 @@
+{# Processing actions — sibling subcard to Release actions / Category & file
+   actions. Rendered from both /projects/:id/assets action-panel branches
+   (the complete-category/auto-rename surface and the ordinary/selection-only
+   surface) so it never disappears when viewing All, a downgraded surface, or
+   Uncategorized. Not gated on Auto Rename availability. #}
+{% macro render(isArchived) %}
+<section class="asset-action-group processing-action-group" data-processing-actions>
+  <h3 class="asset-action-group-heading">Processing actions</h3>
+  {% if isArchived %}
+    <p class="processing-actions-archived-note">Archived projects cannot be processed. Unarchive the project to convert, watermark, or edit workflow prompts.</p>
+    <div class="asset-action-group-controls">
+      <button type="button" class="button" disabled aria-disabled="true" title="Unavailable for archived projects">Watermark</button>
+      <button type="button" class="button" disabled aria-disabled="true" title="Unavailable for archived projects">Edit workflow prompts</button>
+      <button type="button" class="button" disabled aria-disabled="true" title="Unavailable for archived projects">Convert</button>
+    </div>
+  {% else %}
+    <div class="asset-action-group-controls">
+      <button type="button" class="button" data-dialog-open="processing-watermark-dialog">Watermark</button>
+      <button type="button" class="button" data-dialog-open="processing-workflow-dialog">Edit workflow prompts</button>
+      <button type="button" class="button" data-dialog-open="processing-convert-dialog">Convert</button>
+    </div>
+  {% endif %}
+</section>
+{% endmacro %}

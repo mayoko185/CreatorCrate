@@ -5,6 +5,7 @@
 {% import "partials/view-switcher.njk" as viewSwitcher %}
 {% import "partials/dialog.njk" as dialog %}
 {% import "partials/dropdown.njk" as dropdown %}
+{% import "partials/processing-actions.njk" as processingActions %}
 
 {% macro renderContextFields(context, contextFields, disabled) %}
   {% for key in contextFields %}
@@ -753,6 +754,7 @@
                                     data-confirm="The selected files will be permanently deleted from disk and cannot be restored through CreatorCrate. Continue?">Delete</button>
                           </div>
                         </section>
+                        {{ processingActions.render(isArchived) }}
                       </div>
                     </div>
                   </form>
@@ -824,9 +826,23 @@
                               data-confirm="The selected files will be permanently deleted from disk and cannot be restored through CreatorCrate. Continue?">Delete</button>
                     </div>
                   </section>
+                  {{ processingActions.render(isArchived) }}
                 </div>
               </div>
             </form>
+          </div>
+        {% endif %}
+
+        {% if isArchived %}
+          {# Release actions / Category & file actions are mutation forms and
+             stay fully hidden for archived projects, but Processing actions
+             must still surface — visibly disabled — per its archived-state
+             requirement, so it gets its own minimal panel here rather than
+             living inside the bulk-select-form gated above. #}
+          <div class="asset-actions-panel asset-actions-panel--archived-processing" data-asset-actions-panel>
+            <div class="asset-action-groups">
+              {{ processingActions.render(isArchived) }}
+            </div>
           </div>
         {% endif %}
 
@@ -937,6 +953,19 @@
 
 {% endblock %}
 {% block overlay %}
+  {% set currentCategoryId = '' %}
+  {% set currentCategoryLabel = '' %}
+  {% if filters.category != 'all' and filters.category != 'uncategorized' %}
+    {% for cat in categoryNavigation.enabled %}
+      {% if (cat.id ~ '') == (filters.category ~ '') %}{% set currentCategoryId = cat.id %}{% set currentCategoryLabel = cat.displayName %}{% endif %}
+    {% endfor %}
+    {% for cat in categoryNavigation.disabled %}
+      {% if (cat.id ~ '') == (filters.category ~ '') %}{% set currentCategoryId = cat.id %}{% set currentCategoryLabel = cat.displayName %}{% endif %}
+    {% endfor %}
+  {% endif %}
+  {% if not isArchived %}
+    {% include "partials/processing-dialogs.njk" %}
+  {% endif %}
   {% call dialog.render('project-asset-category-management-dialog', 'Manage Categories', categoryManagementDialogOpen, 'project-asset-category-management-description') %}
     <p id="project-asset-category-management-description" class="app-dialog-description">
       Manage categories and asset browser defaults for {{ project.title }}. Changes here apply only to this project.

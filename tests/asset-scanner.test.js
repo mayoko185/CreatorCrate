@@ -147,6 +147,17 @@ describe('asset scanner', () => {
     expect(filenames).toEqual(['preview.webp', 'render.png']);
   });
 
+  it('indexes BMP files as selectable images', () => {
+    const { project, absPath } = createProjectWithDir('BMP Project');
+    fs.writeFileSync(path.join(absPath, 'source.BMP'), 'bmp content');
+
+    const result = assetScanner.scanProjectAssets(project.id);
+    expect(result).toMatchObject({ added: 1, total: 1 });
+    expect(assetScanner.classifyType('bmp')).toBe('image');
+    expect(assetScanner.repository.findByProjectIdAndPath(project.id, 'source.BMP'))
+      .toMatchObject({ extension: 'bmp', mime_type: 'image/bmp', is_present: 1 });
+  });
+
   it('discovers Krita files', () => {
     const { project, absPath } = createProjectWithDir('Krita Project');
     fs.writeFileSync(path.join(absPath, 'sketch.kra'), 'krita data');
@@ -159,15 +170,18 @@ describe('asset scanner', () => {
     expect(assets[0].mime_type).toBe('application/x-krita');
   });
 
-  it('handles unknown extensions', () => {
+  it('keeps generated archives out of the asset index while retaining other unknown files', () => {
     const { project, absPath } = createProjectWithDir('Mixed Project');
     fs.writeFileSync(path.join(absPath, 'document.pdf'), 'pdf data');
     fs.writeFileSync(path.join(absPath, 'archive.zip'), 'zip data');
+    fs.writeFileSync(path.join(absPath, 'comic.cbz'), 'cbz data');
+    fs.writeFileSync(path.join(absPath, 'future.7z'), '7z data');
 
     const result = assetScanner.scanProjectAssets(project.id);
-    expect(result.added).toBe(2);
+    expect(result.added).toBe(1);
 
     const assets = assetScanner.repository.findByProjectId(project.id);
+    expect(assets.map((asset) => asset.filename)).toEqual(['document.pdf']);
     for (const asset of assets) {
       expect(asset.mime_type).toBe('application/octet-stream');
     }

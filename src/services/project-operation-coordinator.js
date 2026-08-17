@@ -5,11 +5,9 @@
  * a single process. It is not a distributed lock, does not persist across
  * restarts, and does not coordinate across multiple processes/workers.
  *
- * The current execution model is fully synchronous (better-sqlite3 + sync
- * fs calls), so `run` takes a synchronous callback and returns its result
- * synchronously. There is no queueing: a second call for the same project
- * while the first is still running is rejected immediately rather than
- * waiting.
+ * Synchronous callers use `run`; asynchronous callers use `runAsync`. There
+ * is no queueing: a second call for the same project while the first is still
+ * running is rejected immediately rather than waiting.
  */
 
 export class ProjectOperationError extends Error {
@@ -21,7 +19,7 @@ export class ProjectOperationError extends Error {
 }
 
 /**
- * @returns {{ run<T>(projectId: number, callback: () => T): T, isActive(projectId: number): boolean }}
+ * @returns {{ run<T>(projectId: number, callback: () => T): T, runAsync<T>(projectId: number, callback: () => Promise<T> | T): Promise<T>, isActive(projectId: number): boolean }}
  */
 export function createProjectOperationCoordinator() {
   const activeProjectIds = new Set();
@@ -57,6 +55,40 @@ export function createProjectOperationCoordinator() {
       activeProjectIds.add(projectId);
       try {
         return callback();
+      } finally {
+        activeProjectIds.delete(projectId);
+      }
+    },
+
+    /**
+     * Run an asynchronous callback exclusively for `projectId`. The project
+     * remains active until the returned promise settles, including while the
+     * callback is suspended at an await.
+     *
+     * @param {number} projectId
+     * @param {() => Promise<any> | any} callback
+     * @returns {Promise<any>} whatever `callback` resolves to
+     * @throws {ProjectOperationError} if `projectId` is not a positive
+     *   integer, or if an operation for `projectId` is already in progress
+     */
+    async runAsync(projectId, callback) {
+      if (!Number.isInteger(projectId) || projectId <= 0) {
+        throw new ProjectOperationError(
+          `Project operation requires a positive integer project ID, got ${JSON.stringify(projectId)}.`,
+          { code: 'INVALID_PROJECT_ID' }
+        );
+      }
+
+      if (activeProjectIds.has(projectId)) {
+        throw new ProjectOperationError(
+          `An operation is already in progress for project ${projectId}.`,
+          { code: 'PROJECT_OPERATION_IN_PROGRESS' }
+        );
+      }
+
+      activeProjectIds.add(projectId);
+      try {
+        return await callback();
       } finally {
         activeProjectIds.delete(projectId);
       }

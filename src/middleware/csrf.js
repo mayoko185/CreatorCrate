@@ -167,6 +167,23 @@ export function deriveDisabledModeCsrfToken(csrfPepper, visitorSecret) {
   return crypto.createHmac('sha256', csrfPepper).update(visitorSecret).digest('hex');
 }
 
+/**
+ * Read the submitted CSRF token from a request. Forms submit it as a
+ * `_csrf` body field, but that doesn't work for every mutating request:
+ * JSON API bodies with a closed field allowlist (e.g. the processing
+ * routes) reject an extra `_csrf` key, and multipart uploads haven't been
+ * parsed into req.body yet by the time this middleware runs (it sits
+ * before the route handler's own multipart parser). The `X-CSRF-Token`
+ * header covers both cases without weakening the check — it still has to
+ * match the session-bound token.
+ */
+function extractSubmittedCsrfToken(req) {
+  const fromBody = typeof req.body === 'object' && req.body !== null ? req.body._csrf : undefined;
+  if (typeof fromBody === 'string') return fromBody;
+  const header = req.headers['x-csrf-token'];
+  return typeof header === 'string' ? header : undefined;
+}
+
 function getCookie(req, name) {
   const header = req.headers.cookie;
   if (!header) return null;
@@ -221,7 +238,7 @@ export function createDisabledModeCsrfMiddleware({ cookieSecure, csrfPepper }) {
     }
 
     const secret = getCookie(req, DISABLED_CSRF_COOKIE);
-    const submitted = typeof req.body === 'object' && req.body !== null ? req.body._csrf : undefined;
+    const submitted = extractSubmittedCsrfToken(req);
 
     if (!secret || typeof submitted !== 'string') {
       return res.status(403).json({ status: 'error', message: 'Invalid or missing CSRF token.' });
@@ -292,9 +309,7 @@ export function createCsrfMiddleware({ authService, cookieOptions }) {
       return res.status(401).json({ status: 'error', message: 'Authentication required.' });
     }
 
-    const submitted = typeof req.body === 'object' && req.body !== null
-      ? req.body._csrf
-      : undefined;
+    const submitted = extractSubmittedCsrfToken(req);
 
     if (!verifyCsrfToken(submitted, auth.csrfSecret)) {
       return res.status(403).json({ status: 'error', message: 'Invalid or missing CSRF token.' });

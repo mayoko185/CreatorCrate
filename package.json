@@ -20,15 +20,19 @@
     "auth:reset": "node scripts/auth-reset.js"
   },
   "dependencies": {
+    "7z-wasm": "1.2.0",
+    "@nktkas/bmp": "4.0.0",
     "@sindresorhus/slugify": "^2.2.1",
     "better-sqlite3": "13.0.3",
+    "busboy": "1.6.0",
     "dotenv": "^16.4.5",
     "express": "^4.21.1",
     "markdown-it": "^15.0.0",
     "nunjucks": "^3.2.4",
     "sanitize-html": "2.16.0",
     "sharp": "0.35.3",
-    "yauzl": "^3.4.0"
+    "yauzl": "^3.4.0",
+    "yazl": "3.3.1"
   },
   "devDependencies": {
     "@playwright/test": "1.62.1",

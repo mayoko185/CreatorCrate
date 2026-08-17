@@ -687,6 +687,29 @@ describe('app construction — asset actions chunk 3 wiring', () => {
     expect(dependencyInstrumentation.assetRouters[0].args[0].autoRenameService).toBe(injected);
   });
 
+  it('constructs the native asset processing service without route wiring', () => {
+    const app = buildApp();
+
+    expect(app.locals.assetProcessingService).toBeTruthy();
+    expect(typeof app.locals.assetProcessingService.convertAssets).toBe('function');
+    expect(typeof app.locals.assetProcessingService.editWorkflowPrompts).toBe('function');
+    expect(app.locals.assetProcessingScopeService).toBeTruthy();
+    expect(typeof app.locals.assetProcessingScopeService.resolveAssetProcessingScope).toBe('function');
+    expect(app.locals.assetProcessingPlanner).toBeTruthy();
+    expect(typeof app.locals.assetProcessingPlanner.planConvert).toBe('function');
+    expect(typeof app.locals.assetProcessingPlanner.planWorkflowPromptEdit).toBe('function');
+    expect(typeof app.locals.assetProcessingPlanner.planWatermark).toBe('function');
+    expect(dependencyInstrumentation.assetRouters[0].args[0]).not.toHaveProperty('assetProcessingService');
+    expect(dependencyInstrumentation.assetRouters[0].args[0]).not.toHaveProperty('assetProcessingPlanner');
+  });
+
+  it('preserves an injected native asset processing service', () => {
+    const injected = { convertAssets: vi.fn() };
+    const app = buildApp({ assetProcessingService: injected });
+
+    expect(app.locals.assetProcessingService).toBe(injected);
+  });
+
   it('omits the Assets router when filesystem roots are unavailable', () => {
     const app = createApp(
       { appName: 'CreatorCrate', db },
@@ -697,6 +720,7 @@ describe('app construction — asset actions chunk 3 wiring', () => {
     expect(dependencyInstrumentation.projectAssetCategoryRouters).toHaveLength(0);
     expect(dependencyInstrumentation.settingsRouters).toHaveLength(1);
     expect(app.locals.assetActionService).toBeNull();
+    expect(app.locals.assetProcessingService).toBeNull();
     expect(app.locals.projectAssetCategoryService).toBeNull();
     expect(app.locals.projectPrimaryImageService).toBeTruthy();
     expect(typeof app.locals.projectPrimaryImageService.getPrimaryImage).toBe('function');

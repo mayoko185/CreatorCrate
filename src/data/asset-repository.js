@@ -27,6 +27,13 @@ const ASSET_COLUMNS = [
   'is_present',
   'last_seen_at',
   'missing_since',
+  'generated_by',
+  'generated_source_asset_id',
+  'generated_source_relative_path',
+  'generated_mode',
+  'generated_variant',
+  'generated_output_sha256',
+  'generated_watermark_id',
   'created_at',
   'updated_at',
 ];
@@ -57,6 +64,8 @@ const ALLOWED_SORTS = {
   size: { column: 'size_bytes' },
   modified: { column: 'modified_at' },
 };
+
+const ASSET_PROCESSING_SCOPE_ORDER = 'ORDER BY filename COLLATE NOCASE ASC, id ASC';
 
 function buildOrderClause(sortBy, order) {
   const sort = ALLOWED_SORTS[sortBy] || ALLOWED_SORTS.filename;
@@ -322,6 +331,15 @@ function isAssetPathUniqueConstraintError(err) {
   );
 }
 
+function isGeneratedArtifactPathUniqueConstraintError(err) {
+  return (
+    err != null
+    && err.code === 'SQLITE_CONSTRAINT_UNIQUE'
+    && typeof err.message === 'string'
+    && err.message.includes('generated_artifacts.project_id, generated_artifacts.relative_path')
+  );
+}
+
 /**
  * Create an asset repository bound to a database connection.
  * @param {import('better-sqlite3').Database} db
@@ -347,6 +365,54 @@ export function createAssetRepository(db) {
     SELECT ${ASSET_COLUMNS.join(', ')}
     FROM assets
     WHERE project_id = ? AND relative_path = ?
+  `);
+
+  const insertGeneratedArtifactStmt = db.prepare(`
+    INSERT INTO generated_artifacts (
+      project_id, relative_path, kind, generated_by, generated_mode, generated_watermark_id, sha256, size_bytes
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    RETURNING id, project_id, relative_path, kind, generated_by, generated_mode, generated_watermark_id, sha256, size_bytes, created_at, updated_at
+  `);
+  const updateGeneratedArtifactStmt = db.prepare(`
+    UPDATE generated_artifacts
+    SET sha256 = ?, size_bytes = ?, generated_by = ?, generated_mode = ?, generated_watermark_id = ?, updated_at = datetime('now')
+    WHERE project_id = ? AND id = ? AND relative_path = ? AND kind = ? AND sha256 = ? AND generated_watermark_id IS ?
+    RETURNING id, project_id, relative_path, kind, generated_by, generated_mode, generated_watermark_id, sha256, size_bytes, created_at, updated_at
+  `);
+
+  const findPresentProjectAssetsStmt = db.prepare(`
+    SELECT ${ASSET_COLUMNS.join(', ')}
+    FROM assets
+    WHERE project_id = ? AND is_present = 1
+    ${ASSET_PROCESSING_SCOPE_ORDER}
+  `);
+
+  const findPresentProjectRootAssetsStmt = db.prepare(`
+    SELECT ${ASSET_COLUMNS.join(', ')}
+    FROM assets
+    WHERE project_id = ?
+      AND is_present = 1
+      AND instr(relative_path, '/') = 0
+    ${ASSET_PROCESSING_SCOPE_ORDER}
+  `);
+
+  const findPresentProjectDirectoryAssetsStmt = db.prepare(`
+    SELECT ${ASSET_COLUMNS.join(', ')}
+    FROM assets
+    WHERE project_id = ?
+      AND is_present = 1
+      AND substr(relative_path, 1, length(?)) = ?
+    ${ASSET_PROCESSING_SCOPE_ORDER}
+  `);
+
+  const findPresentProjectImmediateDirectoryAssetsStmt = db.prepare(`
+    SELECT ${ASSET_COLUMNS.join(', ')}
+    FROM assets
+    WHERE project_id = ?
+      AND is_present = 1
+      AND substr(relative_path, 1, length(?)) = ?
+      AND instr(substr(relative_path, length(?) + 1), '/') = 0
+    ${ASSET_PROCESSING_SCOPE_ORDER}
   `);
 
   // Same-ID location update for asset rename/move (Phase: asset actions
@@ -389,6 +455,69 @@ export function createAssetRepository(db) {
       last_seen_at = datetime('now'),
       missing_since = NULL,
       updated_at = datetime('now')
+    RETURNING ${ASSET_COLUMNS.join(', ')}
+  `);
+
+  const insertConversionOutputStmt = db.prepare(`
+    INSERT INTO assets (project_id, relative_path, category_id, nested_path, filename, extension, mime_type, size_bytes, modified_at, is_present, last_seen_at, missing_since)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'), NULL)
+    RETURNING ${ASSET_COLUMNS.join(', ')}
+  `);
+
+  const insertWatermarkOutputStmt = db.prepare(`
+    INSERT INTO assets (project_id, relative_path, category_id, nested_path, filename, extension, mime_type, size_bytes, modified_at, is_present, last_seen_at, missing_since, generated_by, generated_source_asset_id, generated_source_relative_path, generated_mode, generated_variant, generated_output_sha256, generated_watermark_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'), NULL, 'watermark', ?, ?, ?, ?, ?, ?)
+    RETURNING ${ASSET_COLUMNS.join(', ')}
+  `);
+
+  const updateWatermarkOutputStmt = db.prepare(`
+    UPDATE assets
+    SET relative_path = ?,
+        filename = ?,
+        extension = ?,
+        mime_type = ?,
+        category_id = ?,
+        nested_path = ?,
+        size_bytes = ?,
+        modified_at = ?,
+        is_present = 1,
+        last_seen_at = datetime('now'),
+        missing_since = NULL,
+        generated_by = 'watermark',
+        generated_source_asset_id = ?,
+        generated_source_relative_path = ?,
+        generated_mode = ?,
+        generated_variant = ?,
+        generated_output_sha256 = ?,
+        generated_watermark_id = ?,
+        updated_at = datetime('now')
+    WHERE project_id = ?
+      AND id = ?
+      AND relative_path = ?
+      AND generated_by = 'watermark'
+      AND generated_source_asset_id IS ?
+      AND generated_source_relative_path IS ?
+      AND generated_mode IS ?
+      AND generated_variant IS ?
+      AND generated_output_sha256 IS ?
+      AND generated_watermark_id IS ?
+      RETURNING ${ASSET_COLUMNS.join(', ')}
+  `);
+
+  const updateConversionReencodeStmt = db.prepare(`
+    UPDATE assets
+    SET size_bytes = ?,
+        modified_at = ?,
+        is_present = 1,
+        last_seen_at = datetime('now'),
+        missing_since = NULL,
+        updated_at = datetime('now')
+    WHERE project_id = ?
+      AND id = ?
+      AND relative_path = ?
+      AND size_bytes = ?
+      AND modified_at IS ?
+      AND is_present = 1
     RETURNING ${ASSET_COLUMNS.join(', ')}
   `);
 
@@ -698,6 +827,266 @@ export function createAssetRepository(db) {
     ));
   });
 
+  const applyAssetConversionsTx = db.transaction((projectId, {
+    moves = [],
+    deletes = [],
+    outputs = [],
+    reencodes = [],
+  } = {}) => {
+    if (!Array.isArray(moves) || !Array.isArray(deletes)
+      || !Array.isArray(outputs) || !Array.isArray(reencodes)) {
+      throw new TypeError('Asset conversion mutation input must contain arrays.');
+    }
+
+    const moved = moves.map((move) => executeAssetLocationUpdate(
+      projectId,
+      move.assetId,
+      move.expectedOldRelativePath,
+      move.data,
+    ));
+
+    const deleted = [];
+    for (const expected of deletes) {
+      const asset = deleteAssetStmt.get(projectId, expected.assetId, expected.relativePath);
+      if (!asset) {
+        const error = new Error('Asset conversion delete did not match the expected database state.');
+        error.code = 'NOT_FOUND';
+        throw error;
+      }
+      deleted.push(asset);
+    }
+
+    const reencoded = [];
+    for (const update of reencodes) {
+      const asset = updateConversionReencodeStmt.get(
+        update.sizeBytes,
+        update.modifiedAt || null,
+        projectId,
+        update.assetId,
+        update.expectedRelativePath,
+        update.expectedSizeBytes,
+        update.expectedModifiedAt || null,
+      );
+      if (!asset) {
+        const error = new Error('Asset conversion re-encode did not match the expected database state.');
+        error.code = 'STALE_STATE';
+        throw error;
+      }
+      reencoded.push(asset);
+    }
+
+    const inserted = [];
+    for (const output of outputs) {
+      try {
+        inserted.push(insertConversionOutputStmt.get(
+          projectId,
+          output.relativePath,
+          output.categoryId ?? null,
+          output.nestedPath ?? '',
+          output.filename,
+          output.extension,
+          output.mimeType,
+          output.sizeBytes,
+          output.modifiedAt || null,
+        ));
+      } catch (err) {
+        if (isAssetPathUniqueConstraintError(err)) {
+          const conflict = new Error('Asset conversion output destination conflicts with another row.');
+          conflict.code = 'DESTINATION_CONFLICT';
+          throw conflict;
+        }
+        throw err;
+      }
+    }
+
+    return { moved, deleted, reencoded, outputs: inserted };
+  });
+
+  const applyAssetWatermarksTx = db.transaction((projectId, {
+    replacements = [],
+    deletes = [],
+    outputs = [],
+    artifactReplacements = [],
+    artifactOutputs = [],
+  } = {}) => {
+    if (![replacements, deletes, outputs, artifactReplacements, artifactOutputs].every(Array.isArray)) {
+      throw new TypeError('Asset watermark mutation input must contain arrays.');
+    }
+
+    const replaced = [];
+    for (const replacement of replacements) {
+      const data = replacement.data;
+      const asset = updateWatermarkOutputStmt.get(
+        data.relativePath,
+        data.filename,
+        data.extension,
+        data.mimeType,
+        data.categoryId ?? null,
+        data.nestedPath ?? '',
+        data.sizeBytes,
+        data.modifiedAt || null,
+        replacement.generatedSourceAssetId,
+        replacement.generatedSourceRelativePath ?? null,
+        replacement.generatedMode,
+        replacement.generatedVariant ?? null,
+        replacement.generatedOutputSha256,
+        replacement.generatedWatermarkId ?? null,
+        projectId,
+        replacement.assetId,
+        replacement.expectedOldRelativePath,
+        replacement.expectedGeneratedSourceAssetId ?? null,
+        replacement.expectedGeneratedSourceRelativePath ?? null,
+        replacement.expectedGeneratedMode ?? null,
+        replacement.expectedGeneratedVariant ?? null,
+        replacement.expectedGeneratedOutputSha256 ?? null,
+        replacement.expectedGeneratedWatermarkId ?? null,
+      );
+      if (!asset) {
+        const error = new Error('Asset watermark replacement did not match the expected database state.');
+        error.code = 'STALE_STATE';
+        throw error;
+      }
+      replaced.push(asset);
+    }
+
+    const deleted = [];
+    for (const expected of deletes) {
+      const asset = deleteAssetStmt.get(projectId, expected.assetId, expected.relativePath);
+      if (!asset) {
+        const error = new Error('Asset watermark delete did not match the expected database state.');
+        error.code = 'NOT_FOUND';
+        throw error;
+      }
+      deleted.push(asset);
+    }
+
+    const inserted = [];
+    for (const output of outputs) {
+      try {
+        inserted.push(insertWatermarkOutputStmt.get(
+          projectId,
+          output.relativePath,
+          output.categoryId ?? null,
+          output.nestedPath ?? '',
+          output.filename,
+          output.extension,
+          output.mimeType,
+          output.sizeBytes,
+          output.modifiedAt || null,
+          output.generatedSourceAssetId,
+          output.generatedSourceRelativePath ?? null,
+          output.generatedMode,
+          output.generatedVariant ?? null,
+          output.generatedOutputSha256,
+          output.generatedWatermarkId ?? null,
+        ));
+      } catch (err) {
+        if (isGeneratedArtifactPathUniqueConstraintError(err)) {
+          const conflict = new Error('Asset watermark output destination conflicts with another row.');
+          conflict.code = 'DESTINATION_CONFLICT';
+          throw conflict;
+        }
+        throw err;
+      }
+    }
+
+    const artifactReplaced = [];
+    for (const artifact of artifactReplacements) {
+      const updated = updateGeneratedArtifactStmt.get(
+        artifact.sha256,
+        artifact.sizeBytes,
+        artifact.generatedBy,
+        artifact.generatedMode ?? null,
+        artifact.generatedWatermarkId ?? null,
+        projectId,
+        artifact.id,
+        artifact.relativePath,
+        artifact.kind,
+        artifact.expectedSha256,
+        artifact.expectedGeneratedWatermarkId ?? null,
+      );
+      if (!updated) {
+        const error = new Error('Generated artifact replacement did not match the expected database state.');
+        error.code = 'STALE_STATE';
+        throw error;
+      }
+      artifactReplaced.push(updated);
+    }
+    const artifactInserted = [];
+    for (const artifact of artifactOutputs) {
+      try {
+        artifactInserted.push(insertGeneratedArtifactStmt.get(
+          projectId,
+          artifact.relativePath,
+          artifact.kind,
+          artifact.generatedBy,
+          artifact.generatedMode ?? null,
+          artifact.generatedWatermarkId ?? null,
+          artifact.sha256,
+          artifact.sizeBytes,
+        ));
+      } catch (err) {
+        if (isGeneratedArtifactPathUniqueConstraintError(err)) {
+          const conflict = new Error('Generated artifact destination conflicts with another row.');
+          conflict.code = 'DESTINATION_CONFLICT';
+          throw conflict;
+        }
+        throw err;
+      }
+    }
+
+    return {
+      replaced,
+      deleted,
+      outputs: inserted,
+      artifactReplaced,
+      artifactOutputs: artifactInserted,
+    };
+  });
+
+  const updateAssetPromptMetadataStmt = db.prepare(`
+    UPDATE assets
+    SET size_bytes = ?,
+        modified_at = ?,
+        is_present = 1,
+        last_seen_at = datetime('now'),
+        missing_since = NULL,
+        updated_at = datetime('now')
+    WHERE project_id = ?
+      AND id = ?
+      AND relative_path = ?
+      AND size_bytes = ?
+      AND modified_at IS ?
+      AND is_present = 1
+    RETURNING ${ASSET_COLUMNS.join(', ')}
+  `);
+
+  const applyAssetPromptEditsTx = db.transaction((projectId, updates) => {
+    if (!Array.isArray(updates)) {
+      throw new TypeError('Asset prompt edit input must be an array.');
+    }
+
+    const updated = [];
+    for (const update of updates) {
+      const asset = updateAssetPromptMetadataStmt.get(
+        update.sizeBytes,
+        update.modifiedAt || null,
+        projectId,
+        update.assetId,
+        update.expectedRelativePath,
+        update.expectedSizeBytes,
+        update.expectedModifiedAt || null,
+      );
+      if (!asset) {
+        const error = new Error('Asset prompt edit did not match the expected database state.');
+        error.code = 'STALE_STATE';
+        throw error;
+      }
+      updated.push(asset);
+    }
+    return updated;
+  });
+
   const totalCountStmt = db.prepare(`
     SELECT COUNT(*) AS c FROM assets
   `);
@@ -951,6 +1340,43 @@ export function createAssetRepository(db) {
     },
 
     /**
+     * Find present assets beneath one project-relative directory. Directory
+     * membership is determined from the stored relative_path boundary rather
+     * than from category_id or filesystem traversal.
+     *
+     * @param {number} projectId
+     * @param {string} relativeDirectory - Canonical project-relative directory; empty is root
+     * @param {{ recursive?: boolean }} [options]
+     * @returns {import('./asset-repository.js').AssetRecord[]}
+     */
+    findPresentProjectAssetsByDirectory(projectId, relativeDirectory, { recursive = false } = {}) {
+      if (!Number.isSafeInteger(projectId) || projectId <= 0) return [];
+      if (typeof relativeDirectory !== 'string' || typeof recursive !== 'boolean') return [];
+
+      if (relativeDirectory === '') {
+        return recursive
+          ? findPresentProjectAssetsStmt.all(projectId)
+          : findPresentProjectRootAssetsStmt.all(projectId);
+      }
+
+      const prefix = `${relativeDirectory}/`;
+      if (recursive) {
+        return findPresentProjectDirectoryAssetsStmt.all(
+          projectId,
+          prefix,
+          prefix,
+        );
+      }
+
+      return findPresentProjectImmediateDirectoryAssetsStmt.all(
+        projectId,
+        prefix,
+        prefix,
+        prefix,
+      );
+    },
+
+    /**
      * Find a single asset by project and relative path.
      * @param {number} projectId
      * @param {string} relativePath
@@ -1092,6 +1518,42 @@ export function createAssetRepository(db) {
      */
     upsertMany(projectId, assets) {
       return upsertManyTx(projectId, assets);
+    },
+
+    /**
+     * Apply one already-completed conversion batch atomically. Filesystem
+     * work is intentionally performed by the asset-processing service before
+     * this method is called; this transaction only keeps the indexed rows
+     * coherent when move/delete/insert/in-place re-encode changes are committed together.
+     *
+     * @param {number} projectId
+     * @param {{moves?: Array, deletes?: Array, outputs?: Array, reencodes?: Array}} changes
+     * @returns {{moved: Array, deleted: Array, outputs: Array, reencoded: Array}}
+     */
+    applyAssetConversions(projectId, changes) {
+      return applyAssetConversionsTx(projectId, changes);
+    },
+
+    /**
+     * Apply an already-completed watermark batch atomically. Generated rows
+     * carry provenance so an explicit overwrite can never claim an unrelated
+     * destination merely because its path matches the naming convention.
+     */
+    applyAssetWatermarks(projectId, changes) {
+      return applyAssetWatermarksTx(projectId, changes);
+    },
+
+    /**
+     * Update filesystem-derived metadata after an in-place prompt edit. The
+     * expected row values make a stale caller fail without changing the asset
+     * identity, path, category, or associations.
+     *
+     * @param {number} projectId
+     * @param {Array<{assetId: number, expectedRelativePath: string, expectedSizeBytes: number, expectedModifiedAt: string|null, sizeBytes: number, modifiedAt: string|null}>} updates
+     * @returns {import('./asset-repository.js').AssetRecord[]}
+     */
+    applyAssetPromptEdits(projectId, updates) {
+      return applyAssetPromptEditsTx(projectId, updates);
     },
 
     /**

@@ -7,6 +7,7 @@ import { PRIMARY_IMAGE_PROVENANCE } from '../data/project-primary-image-reposito
 import { mimeFromExtension } from './asset-metadata.js';
 import { classifyPreviewable } from './preview-service.js';
 import { PREVIEW_CATEGORY_DISABLED_VALUE } from './preview-category-settings-service.js';
+import { classifyAssetPath } from './asset-path-classification.js';
 
 /**
  * Files to skip during scanning.
@@ -18,6 +19,7 @@ const SKIP_FILENAMES = new Set([
   'Thumbs.db',
   'desktop.ini',
 ]);
+const SKIP_EXTENSIONS = new Set(['zip', 'cbz', '7z']);
 
 /**
  * Check if a filename is a temporary manifest file (e.g., .{hex}.project.json.tmp).
@@ -44,7 +46,7 @@ function categorizeFsError(err) {
  * @returns {string}
  */
 function classifyType(ext) {
-  if (['png', 'webp', 'jpg', 'jpeg', 'gif'].includes(ext)) return 'image';
+  if (['png', 'webp', 'jpg', 'jpeg', 'bmp', 'gif'].includes(ext)) return 'image';
   if (['kra', 'krz'].includes(ext)) return 'krita';
   return 'unknown';
 }
@@ -141,6 +143,7 @@ function walkDirectory(dirPath, projectRelPrefix = '') {
       }
 
       const ext = path.extname(entry.name).toLowerCase().replace('.', '');
+      if (SKIP_EXTENSIONS.has(ext)) continue;
       const filename = entry.name;
 
       let relativePath;
@@ -178,46 +181,6 @@ function walkDirectory(dirPath, projectRelPrefix = '') {
   }
 
   return entries;
-}
-
-/**
- * Classify a discovered file's category assignment and nested path from its
- * normalized relative path and the project's categories (including disabled
- * ones). Never infers from size, mtime, or filename — only the first path
- * segment is matched against category directory slugs.
- *
- * Match order: exact slug match, then a unique case-insensitive match. An
- * ambiguous case-insensitive match (0 or 2+ candidates) fails closed to
- * uncategorized, preserving the full unknown directory portion in
- * nested_path.
- *
- * @param {string} relativePath
- * @param {Array<{id: number, directory_slug: string}>} categories
- * @returns {{ categoryId: number|null, nestedPath: string }}
- */
-function classifyAsset(relativePath, categories) {
-  const normalized = relativePath.replace(/\\/g, '/');
-  const segments = normalized.split('/');
-  const dirSegments = segments.slice(0, -1);
-
-  if (dirSegments.length === 0) {
-    return { categoryId: null, nestedPath: '' };
-  }
-
-  const firstSegment = dirSegments[0];
-
-  const exactMatch = categories.find((c) => c.directory_slug === firstSegment);
-  if (exactMatch) {
-    return { categoryId: exactMatch.id, nestedPath: dirSegments.slice(1).join('/') };
-  }
-
-  const lowerFirst = firstSegment.toLowerCase();
-  const ciMatches = categories.filter((c) => c.directory_slug.toLowerCase() === lowerFirst);
-  if (ciMatches.length === 1) {
-    return { categoryId: ciMatches[0].id, nestedPath: dirSegments.slice(1).join('/') };
-  }
-
-  return { categoryId: null, nestedPath: dirSegments.join('/') };
 }
 
 /**
@@ -381,7 +344,7 @@ export function createAssetScanner(
     // while walking the directory.
     const categories = assetCategoryService.listProjectCategories(projectId);
     const classified = discovered.map((file) => {
-      const { categoryId, nestedPath } = classifyAsset(file.relativePath, categories);
+      const { categoryId, nestedPath } = classifyAssetPath(file.relativePath, categories);
       return { ...file, categoryId, nestedPath };
     });
 

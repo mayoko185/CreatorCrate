@@ -10,10 +10,34 @@ import { createProjectRepository } from '../src/data/project-repository.js';
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 
 const EXPECTED_ASSET_COLUMNS = [
-  'category_id', 'created_at', 'extension', 'filename', 'id', 'is_present',
+  'category_id', 'created_at', 'extension', 'filename', 'generated_by',
+  'generated_mode', 'generated_output_sha256', 'generated_source_asset_id', 'generated_watermark_id',
+  'generated_source_relative_path', 'generated_variant', 'id', 'is_present',
   'last_seen_at', 'mime_type', 'missing_since', 'modified_at', 'nested_path',
   'project_id', 'relative_path', 'size_bytes', 'updated_at',
 ].sort();
+
+const PRE_011_MIGRATION_FILENAMES = [
+  '001_initial.sql',
+  '002_add_completed_status.sql',
+  '003_remove_project_priority.sql',
+  '004_add_primary_image_provenance.sql',
+  '005_add_notes_table.sql',
+  '006_add_note_associations.sql',
+  '007_add_asset_picker_order_index.sql',
+  '008_add_note_hierarchy.sql',
+  '009_add_note_book_id.sql',
+  '010_add_book_contents.sql',
+];
+
+function createPre011MigrationsDir(parentDir) {
+  const legacyDir = path.join(parentDir, 'pre-011-migrations');
+  fs.mkdirSync(legacyDir);
+  for (const filename of PRE_011_MIGRATION_FILENAMES) {
+    fs.copyFileSync(path.join(MIGRATIONS_DIR, filename), path.join(legacyDir, filename));
+  }
+  return legacyDir;
+}
 
 describe('asset category assignment baseline schema', () => {
   let tmpDir;
@@ -46,12 +70,29 @@ describe('asset category assignment baseline schema', () => {
   }
 
   describe('applying from scratch', () => {
-    it('records the single consolidated migration', () => {
+    it('records the complete migration sequence', () => {
       db = openDatabase(dbPath);
       runMigrations(db, MIGRATIONS_DIR);
 
       const applied = db.prepare('SELECT filename FROM schema_migrations ORDER BY rowid').pluck().all();
-      expect(applied).toEqual(['001_initial.sql', '002_add_completed_status.sql', '003_remove_project_priority.sql']);
+      expect(applied).toEqual([
+        '001_initial.sql',
+        '002_add_completed_status.sql',
+        '003_remove_project_priority.sql',
+        '004_add_primary_image_provenance.sql',
+        '005_add_notes_table.sql',
+        '006_add_note_associations.sql',
+        '007_add_asset_picker_order_index.sql',
+        '008_add_note_hierarchy.sql',
+        '009_add_note_book_id.sql',
+        '010_add_book_contents.sql',
+      '011_add_watermark_asset_provenance.sql',
+      '012_add_watermark_generated_variant.sql',
+      '013_add_generated_artifacts.sql',
+      '014_add_managed_watermarks.sql',
+      '015_add_watermark_scale_maps.sql',
+      '016_add_processing_presets.sql',
+      ]);
     });
 
     it('creates category_id and nested_path without natural-sort columns', () => {
@@ -143,6 +184,31 @@ describe('asset category assignment baseline schema', () => {
       expect(db.prepare('SELECT COUNT(*) AS c FROM assets WHERE project_id = ?').get(projectId).c).toBe(0);
       expect(db.prepare('SELECT COUNT(*) AS c FROM project_asset_categories WHERE project_id = ?').get(projectId).c).toBe(0);
       expect(db.pragma('foreign_key_check')).toEqual([]);
+    });
+  });
+
+  it('upgrades pre-011 assets with NULL generated content identity', () => {
+    db = openDatabase(dbPath);
+    runMigrations(db, createPre011MigrationsDir(tmpDir));
+    const projectRepo = createProjectRepository(db);
+    const project = createProject(projectRepo, 'Pre-011 Provenance');
+    const assetId = Number(db.prepare(`
+      INSERT INTO assets (project_id, relative_path, filename)
+      VALUES (?, 'Final/legacy.png', 'legacy.png')
+    `).run(project.id).lastInsertRowid);
+
+    runMigrations(db, MIGRATIONS_DIR);
+
+    expect(db.prepare(`
+      SELECT generated_by, generated_source_asset_id, generated_source_relative_path,
+             generated_mode, generated_output_sha256
+      FROM assets WHERE id = ?
+    `).get(assetId)).toEqual({
+      generated_by: null,
+      generated_source_asset_id: null,
+      generated_source_relative_path: null,
+      generated_mode: null,
+      generated_output_sha256: null,
     });
   });
 });

@@ -82,4 +82,59 @@ describe('project operation coordinator', () => {
       expect(err.code).toBe('INVALID_PROJECT_ID');
     }
   });
+
+  it('holds an async lock across awaited work and releases it after success', async () => {
+    const coordinator = createProjectOperationCoordinator();
+    let entered;
+    const enteredPromise = new Promise((resolve) => { entered = resolve; });
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+
+    const operation = coordinator.runAsync(1, async () => {
+      entered();
+      await gate;
+      return 'async-done';
+    });
+
+    await enteredPromise;
+    expect(coordinator.isActive(1)).toBe(true);
+    expect(() => coordinator.run(1, () => 'blocked')).toThrow(ProjectOperationError);
+    await expect(coordinator.runAsync(1, () => 'blocked')).rejects.toMatchObject({
+      code: 'PROJECT_OPERATION_IN_PROGRESS',
+    });
+
+    release();
+    await expect(operation).resolves.toBe('async-done');
+    expect(coordinator.isActive(1)).toBe(false);
+  });
+
+  it('mutually blocks run and runAsync for one project while allowing another', async () => {
+    const coordinator = createProjectOperationCoordinator();
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+
+    const operation = coordinator.runAsync(1, async () => {
+      await gate;
+      return 'project-1-done';
+    });
+
+    expect(() => coordinator.run(1, () => 'blocked')).toThrow(ProjectOperationError);
+    await expect(coordinator.runAsync(2, () => 'project-2-done')).resolves.toBe('project-2-done');
+
+    release();
+    await expect(operation).resolves.toBe('project-1-done');
+    expect(coordinator.isActive(1)).toBe(false);
+  });
+
+  it('releases an async lock after a rejected callback', async () => {
+    const coordinator = createProjectOperationCoordinator();
+
+    await expect(coordinator.runAsync(1, async () => {
+      await Promise.resolve();
+      throw new Error('async boom');
+    })).rejects.toThrow('async boom');
+
+    expect(coordinator.isActive(1)).toBe(false);
+    await expect(coordinator.runAsync(1, () => 'recovered')).resolves.toBe('recovered');
+  });
 });

@@ -14,7 +14,10 @@ const EXTENSION_MIME_MAP = {
   webp: 'image/webp',
   jpg: 'image/jpeg',
   jpeg: 'image/jpeg',
+  bmp: 'image/bmp',
   gif: 'image/gif',
+  tif: 'image/tiff',
+  tiff: 'image/tiff',
   kra: 'application/x-krita',
   krz: 'application/x-krita',
 };

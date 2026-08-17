@@ -47,6 +47,45 @@ import { resolveProjectDir } from './project-storage.js';
  * @property {fs.Stats} stat        - fstat result from the opened descriptor.
  */
 
+const WINDOWS_DRIVE_PREFIX = /^[A-Za-z]:/;
+const CONTROL_CHARACTER_PATTERN = /[\x00-\x1f\x7f]/u;
+
+/**
+ * Normalize a stored project-relative asset path without touching the
+ * filesystem. Stored asset paths use forward slashes; empty is valid only
+ * when the caller is representing the project root. Dot and empty segments
+ * are rejected instead of being collapsed into a different scope.
+ *
+ * @param {unknown} value
+ * @param {{allowEmpty?: boolean}} [options]
+ * @returns {string}
+ * @throws {StorageError} when the value is not a canonical project-relative path
+ */
+export function normalizeProjectRelativePath(value, { allowEmpty = false } = {}) {
+  if (typeof value !== 'string') {
+    throw new StorageError('Project-relative asset path must be a string.');
+  }
+  if (value.length === 0) {
+    if (allowEmpty) return '';
+    throw new StorageError('Project-relative asset path must not be empty.');
+  }
+
+  const normalized = value.replace(/\\/g, '/');
+  if (normalized.startsWith('/') || WINDOWS_DRIVE_PREFIX.test(normalized)) {
+    throw new StorageError('Project-relative asset path must not be absolute.');
+  }
+  if (CONTROL_CHARACTER_PATTERN.test(normalized)) {
+    throw new StorageError('Project-relative asset path must not contain control characters.');
+  }
+
+  const segments = normalized.split('/');
+  if (segments.some((segment) => segment.length === 0 || segment === '.' || segment === '..')) {
+    throw new StorageError('Project-relative asset path must not contain empty or dot segments.');
+  }
+
+  return segments.join('/');
+}
+
 /**
  * Resolve an asset-relative path beneath an already-validated project
  * directory, with full containment and symlink checks, WITHOUT opening the
