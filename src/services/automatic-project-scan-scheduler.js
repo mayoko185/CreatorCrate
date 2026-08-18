@@ -23,7 +23,7 @@ function isPromiseLike(value) {
  *
  * @param {object} deps
  * @param {number|null} deps.intervalMinutes - null disables scheduling
- * @param {() => {projectService: object, assetScanner: object, appMetaRepository: object}} deps.getScanDependencies
+ * @param {() => {projectService: object, assetScanner: object, appMetaRepository: object, watermarkService?: object}} deps.getScanDependencies
  * @param {typeof setInterval} [deps.setIntervalFn]
  * @param {typeof clearInterval} [deps.clearIntervalFn]
  * @param {Console} [deps.logger]
@@ -125,7 +125,20 @@ export function createAutomaticProjectScanScheduler({
     try {
       logger.log('[CreatorCrate] Automatic project scan cycle started.');
 
-      const { projectService } = getScanDependencies();
+      const dependencies = getScanDependencies();
+      const { projectService, watermarkService } = dependencies;
+      if (watermarkService && typeof watermarkService.scanWatermarks === 'function') {
+        try {
+          const watermarkResult = watermarkService.scanWatermarks();
+          const scan = isPromiseLike(watermarkResult) ? await watermarkResult : watermarkResult;
+          if (scan?.failed > 0) {
+            logger.error(`[CreatorCrate] Automatic global Watermark scan completed with ${scan.failed} failed source read(s).`);
+          }
+        } catch (error) {
+          logger.error(`[CreatorCrate] Automatic global Watermark scan failed: ${formatError(error)}`);
+        }
+      }
+
       const projectResult = projectService.listScanEligibleProjects();
       const projects = isPromiseLike(projectResult) ? await projectResult : projectResult;
 

@@ -49,6 +49,7 @@ import { createAssetProcessingService } from './services/asset-processing-servic
 import { createAssetProcessingScopeService } from './services/asset-processing-scope-service.js';
 import { createAssetProcessingPlanner } from './services/asset-processing-planner.js';
 import { createWatermarkService } from './services/watermark-service.js';
+import { createWatermarkDefaultService } from './services/watermark-default-service.js';
 import { createWatermarkScaleMapService } from './services/watermark-scale-map-service.js';
 import { createProcessingPresetService } from './services/processing-preset-service.js';
 import { createAutoRenameService } from './services/auto-rename-service.js';
@@ -324,6 +325,8 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     : null);
   app.locals.projectAssetCategoryService = projectAssetCategoryService;
 
+
+
   // Phase: asset actions chunk 3 — rename/move filesystem action service.
   // Shares projectService.repository / assetScanner.repository (no
   // duplicate repository construction) and the same coordinator instance
@@ -352,13 +355,21 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   const generatedArtifactRepository = opts.generatedArtifactRepository || createGeneratedArtifactRepository(db);
   app.locals.generatedArtifactRepository = generatedArtifactRepository;
   const watermarkRepository = opts.watermarkRepository || createWatermarkRepository(db);
+  const watermarkStorageRoot = projectsRoot
+    ? path.join(projectsRoot, 'watermarks')
+    : (opts.watermarkStorageRoot || path.join(appDataRoot, 'watermarks'));
   const watermarkService = opts.watermarkService || createWatermarkService({
     repository: watermarkRepository,
-    storageRoot: opts.watermarkStorageRoot || path.join(appDataRoot, 'watermarks'),
+    projectsRoot,
+    storageRoot: watermarkStorageRoot,
     sharpImplementation: opts.sharpImplementation,
   });
+  if (projectsRoot && typeof watermarkService.ensureRoot === 'function') watermarkService.ensureRoot();
   app.locals.watermarkRepository = watermarkRepository;
   app.locals.watermarkService = watermarkService;
+  app.locals.watermarkSourceRoot = watermarkStorageRoot;
+  const watermarkDefaultService = opts.watermarkDefaultService || createWatermarkDefaultService({ appMetaRepository, watermarkService });
+  app.locals.watermarkDefaultService = watermarkDefaultService;
   const watermarkScaleMapRepository = opts.watermarkScaleMapRepository || createWatermarkScaleMapRepository(db);
   const watermarkScaleMapService = opts.watermarkScaleMapService || createWatermarkScaleMapService({
     repository: watermarkScaleMapRepository,
@@ -398,9 +409,9 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   app.locals.assetProcessingPlanner = assetProcessingPlanner;
 
   // Native asset processing is constructed alongside the existing filesystem
-  // action service, but is intentionally not consumed by a route yet. The
-  // shared coordinator keeps conversion, scanning, and other asset actions
-  // mutually exclusive for one project across application rebuilds.
+  // action service and exposed through the processing router below. The shared
+  // coordinator keeps conversion, scanning, archive generation, and other asset
+  // actions mutually exclusive for one project across application rebuilds.
   const assetProcessingService = opts.assetProcessingService || (projectsRoot
     ? createAssetProcessingService({
       projectRepository: projectService.repository,
@@ -598,6 +609,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     assetProcessingPlanner,
     assetProcessingService,
     watermarkService,
+    watermarkDefaultService,
     watermarkScaleMapService,
     processingPresetService,
   }));

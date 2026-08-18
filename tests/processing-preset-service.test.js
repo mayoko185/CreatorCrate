@@ -5,8 +5,6 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { closeDatabase, openDatabase, runMigrations } from '../src/db.js';
 import { createProcessingPresetRepository } from '../src/data/processing-preset-repository.js';
-import { createWatermarkScaleMapRepository } from '../src/data/watermark-scale-map-repository.js';
-import { createWatermarkScaleMapService } from '../src/services/watermark-scale-map-service.js';
 import {
   createProcessingPresetService,
   ProcessingPresetServiceError,
@@ -19,7 +17,6 @@ describe('processing preset service', () => {
   let tmpDir;
   let db;
   let repository;
-  let scaleMapService;
   let watermarkService;
   let service;
 
@@ -28,7 +25,6 @@ describe('processing preset service', () => {
     db = openDatabase(path.join(tmpDir, 'test.db'));
     runMigrations(db, MIGRATIONS_DIR);
     repository = createProcessingPresetRepository(db);
-    scaleMapService = createWatermarkScaleMapService({ repository: createWatermarkScaleMapRepository(db) });
     watermarkService = {
       getWatermark(id) {
         if (id !== 1) throw Object.assign(new Error('Watermark not found.'), { code: 'WATERMARK_NOT_FOUND' });
@@ -36,7 +32,7 @@ describe('processing preset service', () => {
       },
       resolveForProcessing(id) { return { watermark: this.getWatermark(id), filePath: 'not-exposed-to-presets' }; },
     };
-    service = createProcessingPresetService({ repository, watermarkService, scaleMapService });
+    service = createProcessingPresetService({ repository, watermarkService });
   });
 
   afterEach(() => {
@@ -48,16 +44,17 @@ describe('processing preset service', () => {
     expect(service.seedReferencePresets()).toBe(true);
     expect(service.seedReferencePresets()).toBe(false);
 
-    const scaleMap = scaleMapService.listScaleMaps();
-    expect(scaleMap).toHaveLength(1);
-    expect(scaleMap[0]).toMatchObject({
-      systemKey: 'reference-watermark-scale-map',
-      definition: {
+    const scaleMap = db.prepare(`
+      SELECT system_key, definition_json FROM watermark_scale_maps
+      WHERE system_key = 'reference-watermark-scale-map'
+    `).get();
+    expect(scaleMap.system_key).toBe('reference-watermark-scale-map');
+    expect(JSON.parse(scaleMap.definition_json)).toEqual({
         '1365x768': 0.35, '1248x832': 0.35, '2496x1664': 0.35, '5376x3072': 0.35, '4992x3328': 0.35,
         '1024x1024': 0.37, '2048x2048': 0.37, '2304x2304': 0.37, '3072x3072': 0.37, '4096x4096': 0.37,
         '1600x2592': 0.31, '2560x6144': 0.28, '832x1248': 0.32, '1365x2048': 0.32, '1664x2496': 0.32,
         '3328x4992': 0.32, default: 0.1,
-      },
+
     });
     const presets = service.listPresets();
     expect(presets).toHaveLength(9);
@@ -67,13 +64,34 @@ describe('processing preset service', () => {
       'workflow-oliver', 'workflow-rory',
     ]));
     expect(presets.find(({ systemKey }) => systemKey === 'watermark-patreon')).toMatchObject({
-      watermarkId: null, scaleMapId: scaleMap[0].id,
-      config: expect.objectContaining({ mode: 'patreon', outputDirectory: 'wm', suffix: '_wm' }),
+      watermarkId: null,
+      config: expect.objectContaining({ mode: 'patreon', outputCategorySlug: 'wm', primaryFormat: 'png', secondaryFormat: null, resizedFormat: null, unresizedSuffix: '_wm', resizedSuffix: '_lq_wm' }),
     });
     expect(presets.find(({ systemKey }) => systemKey === 'watermark-social')).toMatchObject({
-      watermarkId: null, scaleMapId: scaleMap[0].id,
-      config: expect.objectContaining({ mode: 'social', maxDimension: 1100, suffix: '_lq_wm', deleteSource: true }),
+      watermarkId: null,
+      config: expect.objectContaining({ mode: 'social', outputCategorySlug: 'wm-lq', maxDimension: 1100, primaryFormat: null, secondaryFormat: null, resizedFormat: 'png', unresizedSuffix: '_wm', resizedSuffix: '_lq_wm', deleteSource: true }),
     });
+    expect(presets.filter(({ operationType }) => operationType === 'watermark')).toEqual(
+      expect.not.arrayContaining([expect.objectContaining({ scaleMapId: expect.anything() })]),
+    );
+    expect(db.prepare(`
+      SELECT scale_map_id FROM processing_presets
+      WHERE system_key IN ('watermark-patreon', 'watermark-social')
+      ORDER BY system_key
+    `).pluck().all()).toEqual([null, null]);
+  });
+
+  it('normalizes a legacy stored single suffix without rewriting the database row', () => {
+    const result = db.prepare(`
+      INSERT INTO processing_presets (operation_type, display_name, config_version, config_json)
+      VALUES ('watermark', 'Legacy suffix', 1, ?)
+    `).run(JSON.stringify({ mode: 'custom', singleSuffix: '_legacy' }));
+
+    const preset = service.getPreset(Number(result.lastInsertRowid));
+    expect(preset.config).toMatchObject({ unresizedSuffix: '_legacy', resizedSuffix: '_lq_wm' });
+    expect(preset.config).not.toHaveProperty('singleSuffix');
+    expect(JSON.parse(db.prepare('SELECT config_json FROM processing_presets WHERE id = ?').get(result.lastInsertRowid).config_json))
+      .toEqual({ mode: 'custom', singleSuffix: '_legacy' });
   });
 
   it('seeds safely around single, case-insensitive, and multiple user display-name collisions', () => {
@@ -106,8 +124,9 @@ describe('processing preset service', () => {
     expect(seeded.find((preset) => preset.systemKey === 'convert-webp-85-delete-originals')).toMatchObject({
       displayName: 'WebP 85 — Delete Originals (CreatorCrate)',
     });
-    expect(scaleMapService.listScaleMaps()).toHaveLength(1);
-    expect(db.prepare('SELECT value FROM app_meta WHERE key = ?').get('processing_presets.seed_version')).toEqual({ value: '1' });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM watermark_scale_maps WHERE system_key = 'reference-watermark-scale-map'").get())
+      .toEqual({ count: 1 });
+    expect(db.prepare('SELECT value FROM app_meta WHERE key = ?').get('processing_presets.seed_version_2')).toEqual({ value: '1' });
 
     expect(service.seedReferencePresets()).toBe(false);
     expect(service.listPresets().filter((preset) => preset.systemKey)).toHaveLength(9);
@@ -152,21 +171,142 @@ describe('processing preset service', () => {
     })).toThrow(expect.objectContaining({ code: 'PRESET_FIELD_NOT_ALLOWED' }));
   });
 
+  it('validates the complete bundle before mutating any presets', () => {
+    expect(() => service.importPresetBundle({
+      creatorcrate: 'processing-presets',
+      version: 1,
+      operationType: 'convert',
+      presets: [
+        { displayName: 'Valid A', config: { format: 'webp', quality: 85, originalHandling: 'keep' } },
+        { displayName: 'Malformed B', config: { format: 'webp', quality: 0, originalHandling: 'keep' } },
+        { displayName: 'Valid C', config: { format: 'png', quality: 85, originalHandling: 'delete' } },
+      ],
+    })).toThrow(ProcessingPresetServiceError);
+
+    expect(service.listPresets({ operationType: 'convert' })).toEqual([]);
+  });
+
+  it('imports all entries with deterministic case-insensitive collision suffixes', () => {
+    service.createPreset({ operationType: 'convert', displayName: 'Foo', config: { format: 'webp', quality: 85, originalHandling: 'keep' } });
+    service.createPreset({ operationType: 'convert', displayName: 'Foo (1)', config: { format: 'webp', quality: 85, originalHandling: 'keep' } });
+
+    const imported = service.importPresetBundle({
+      creatorcrate: 'processing-presets',
+      version: 1,
+      operationType: 'convert',
+      presets: [
+        { displayName: 'foo', config: { format: 'webp', quality: 80, originalHandling: 'keep' } },
+        { displayName: 'Bar', config: { format: 'png', quality: 70, originalHandling: 'delete' } },
+        { displayName: 'Foo', config: { format: 'webp', quality: 75, originalHandling: 'move' } },
+      ],
+    });
+
+    expect(imported).toMatchObject({ imported: 3, renamed: 2 });
+    expect(imported.presets.map(({ displayName }) => displayName)).toEqual(['foo (2)', 'Bar', 'Foo (3)']);
+    expect(imported.presets.every(({ systemKey }) => systemKey === null)).toBe(true);
+
+    const duplicateBundle = service.importPresetBundle({
+      operationType: 'convert',
+      presets: [
+        { displayName: 'Baz', config: { format: 'webp', quality: 85, originalHandling: 'keep' } },
+        { displayName: 'Baz', config: { format: 'webp', quality: 86, originalHandling: 'keep' } },
+      ],
+    });
+    expect(duplicateBundle.presets.map(({ displayName }) => displayName)).toEqual(['Baz', 'Baz (1)']);
+  });
+
+  it('never overwrites a seeded/system preset during import', () => {
+    service.seedReferencePresets();
+    const systemPreset = service.listPresets({ operationType: 'convert' })
+      .find(({ systemKey }) => systemKey === 'convert-webp-85-delete-originals');
+
+    const imported = service.importPresetBundle({
+      creatorcrate: 'processing-presets',
+      version: 1,
+      operationType: 'convert',
+      presets: [{
+        displayName: systemPreset.displayName,
+        config: { format: 'webp', quality: 77, originalHandling: 'keep' },
+      }],
+    });
+
+    expect(imported.presets[0]).toMatchObject({
+      displayName: `${systemPreset.displayName} (1)`,
+      systemKey: null,
+      config: { quality: 77, originalHandling: 'keep' },
+    });
+    expect(service.getPreset(systemPreset.id)).toMatchObject({
+      displayName: systemPreset.displayName,
+      systemKey: systemPreset.systemKey,
+      config: systemPreset.config,
+    });
+  });
+
+  it('preserves Workflow rule order and Watermark portability boundaries', () => {
+    const workflow = service.importPresetBundle({
+      creatorcrate: 'processing-presets',
+      version: 1,
+      operationType: 'workflow-prompt',
+      presets: [{
+        displayName: 'Rules',
+        config: {
+          positive: [
+            { type: 'remove', text: 'remove' },
+            { type: 'replace', search: '', replacement: 'replace' },
+            { type: 'append', text: 'append' },
+          ],
+          negative: [{ type: 'prepend', text: 'prepend' }],
+        },
+      }],
+    });
+    expect(workflow.presets[0].config).toEqual({
+      positive: [
+        { type: 'remove', text: 'remove' },
+        { type: 'replace', search: '', replacement: 'replace' },
+        { type: 'append', text: 'append' },
+      ],
+      negative: [{ type: 'prepend', text: 'prepend' }],
+    });
+
+    const watermark = service.importPresetBundle({
+      creatorcrate: 'processing-presets',
+      version: 1,
+      operationType: 'watermark',
+      presets: [{ displayName: 'Portable Watermark', config: { mode: 'custom', outputFormat: 'png', scale: 0.3 } }],
+    }).presets[0];
+    expect(watermark).toMatchObject({ operationType: 'watermark', watermarkId: null });
+    expect(watermark.config).not.toHaveProperty('watermarkId');
+    expect(watermark.config).not.toHaveProperty('watermarkAssetId');
+    expect(watermark.config).not.toHaveProperty('scaleMapId');
+    expect(watermark.config).not.toHaveProperty('scaleMap');
+  });
+
   it('fails closed for corrupted config and uses explicit resource override precedence for resolution', () => {
     service.seedReferencePresets();
     const patreon = service.listPresets().find(({ systemKey }) => systemKey === 'watermark-patreon');
     expect(() => service.resolvePresetForExecution(patreon.id)).toThrow(expect.objectContaining({ code: 'WATERMARK_REQUIRED' }));
-    expect(service.resolvePresetForExecution(patreon.id, { watermarkId: 1 })).toMatchObject({
-      watermark: { id: 1 }, scaleMapId: patreon.scaleMapId,
-    });
-    expect(service.resolvePresetForExecution(patreon.id, { watermarkId: 1, scaleMapId: null })).toMatchObject({
-      watermark: { id: 1 }, scaleMap: null, scaleMapId: null,
-    });
+    const resolved = service.resolvePresetForExecution(patreon.id, { watermarkId: 1, scaleMapId: 999 });
+    expect(resolved).toMatchObject({ watermark: { id: 1 }, watermarkId: 1 });
+    expect(resolved).not.toHaveProperty('scaleMap');
+    expect(resolved).not.toHaveProperty('scaleMapId');
+    expect(resolved.options).not.toHaveProperty('scaleMapId');
     db.prepare('UPDATE processing_presets SET config_json = ? WHERE id = ?').run('{broken', patreon.id);
     expect(() => service.getPreset(patreon.id)).toThrow(expect.objectContaining({ code: 'PRESET_INVALID' }));
   });
 
-  it('preserves workflow command rule semantics and protects referenced maps from deletion', () => {
+  it('requires a global runtime Watermark ID for Patreon and Social presets', () => {
+    service.seedReferencePresets();
+    for (const systemKey of ['watermark-patreon', 'watermark-social']) {
+      const preset = service.listPresets().find((candidate) => candidate.systemKey === systemKey);
+      const resolved = service.resolvePresetForExecution(preset.id, { watermarkId: 1 });
+      expect(resolved).toMatchObject({ watermarkId: 1, watermark: { id: 1 } });
+      expect(resolved).not.toHaveProperty('scaleMapId');
+      expect(resolved.options).toMatchObject({ watermarkId: 1 });
+      expect(resolved.options).not.toHaveProperty('watermarkAssetId');
+    }
+  });
+
+  it('preserves workflow command rule semantics without exposing Scale Map deletion', () => {
     service.seedReferencePresets();
     const general = service.listPresets().find(({ systemKey }) => systemKey === 'workflow-general');
     const result = applyPromptRules(
@@ -175,10 +315,6 @@ describe('processing preset service', () => {
     );
     expect(result).toContain('<lora:Illustrious/concept/erection_under_clothes:0.8>');
     expect(result).not.toContain('masterwork, ');
-    const map = scaleMapService.listScaleMaps()[0];
-    expect(() => scaleMapService.deleteScaleMap(map.id)).toThrow(expect.objectContaining({ code: 'SCALE_MAP_IN_USE' }));
-    for (const preset of service.listPresets({ operationType: 'watermark' })) service.deletePreset(preset.id);
-    expect(scaleMapService.deleteScaleMap(map.id)).toMatchObject({ id: map.id });
   });
 
   it('matches the supplied workflow command transformations for all five usable presets', () => {
@@ -197,18 +333,17 @@ describe('processing preset service', () => {
       .toBe('<lora:Mayoko/rory/rory_run2_2026-06-1280:0.7>');
   });
 
-  it('keeps a preset after its managed Watermark is deleted and makes it unbound', () => {
-    db.prepare(`
-      INSERT INTO watermarks (id, display_name, storage_key, sha256, width, height)
-      VALUES (1, 'Managed watermark', 'wm-00000000-0000-0000-0000-000000000000.png', ?, 1, 1)
-    `).run('a'.repeat(64));
+  it('keeps Watermark identity runtime-only on saved presets', () => {
     const preset = service.createPreset({
-      operationType: 'watermark', displayName: 'Bound', watermarkId: 1,
+      operationType: 'watermark', displayName: 'Runtime-only', watermarkId: 1,
       config: { mode: 'custom', scale: 0.3, outputFormat: 'png' },
     });
-    db.prepare('DELETE FROM watermarks WHERE id = 1').run();
     expect(service.getPreset(preset.id)).toMatchObject({ id: preset.id, watermarkId: null });
     expect(() => service.resolvePresetForExecution(preset.id)).toThrow(expect.objectContaining({ code: 'WATERMARK_REQUIRED' }));
+    expect(service.resolvePresetForExecution(preset.id, { watermarkId: 1 })).toMatchObject({
+      watermarkId: 1,
+      watermark: { id: 1 },
+    });
   });
 
   it('does not expose preset storage corruption as executable options', () => {

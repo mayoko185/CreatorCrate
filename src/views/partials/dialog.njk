@@ -1,9 +1,9 @@
 {# Shared native-dialog structure. Callers provide the body and optional actions. #}
 {% import "partials/icons.njk" as icons %}
-{% macro render(id, title, open=false, descriptionId='', formId='') %}
-<dialog id="{{ id }}" class="app-dialog" data-app-dialog{% if open %} open{% endif %}
+{% macro render(id, title, open=false, descriptionId='', formId='', dialogClass='', cardAttributes=[]) %}
+<dialog id="{{ id }}" class="app-dialog{{ ' ' ~ dialogClass if dialogClass }}" data-app-dialog{% if open %} open{% endif %}
         aria-labelledby="{{ id }}-title"{% if descriptionId %} aria-describedby="{{ descriptionId }}"{% endif %}>
-  <div class="app-dialog-card" role="document">
+  <div class="app-dialog-card" role="document"{% for attribute, value in cardAttributes %} {{ attribute }}{% if value != true %}="{{ value }}"{% endif %}{% endfor %}>
     <header class="app-dialog-header">
       <h2 id="{{ id }}-title">{{ title }}</h2>
       <button class="app-dialog-close button button-small button-secondary" type="button"

@@ -3,28 +3,44 @@ import { normalizePromptEditOptions } from './workflow-prompt-editor.js';
 import { normalizeWatermarkOptions } from './watermark-engine.js';
 
 const CONFIG_VERSION = 1;
-const SEED_MARKER_KEY = 'processing_presets.seed_version';
-const OPERATION_TYPES = new Set(['watermark', 'workflow-prompt', 'convert']);
+const SEED_MARKER_KEY = 'processing_presets.seed_version_2';
+export const PROCESSING_PRESET_OPERATION_TYPES = Object.freeze({
+  CONVERT: 'convert',
+  WORKFLOW_PROMPT: 'workflow-prompt',
+  WATERMARK: 'watermark',
+});
+export const PROCESSING_PRESET_BUNDLE_MARKER = 'processing-presets';
+export const PROCESSING_PRESET_BUNDLE_VERSION = 1;
+const OPERATION_TYPES = new Set(Object.values(PROCESSING_PRESET_OPERATION_TYPES));
 const CONTROL_CHARACTERS = /[\x00-\x1f\x7f]/u;
 const FORBIDDEN_CONFIG_KEYS = new Set([
   'projectid', 'assetid', 'assetids', 'selectedassetid', 'selectedassetids',
   'directory', 'directories', 'scope', 'recursive', 'watermarkid', 'scalemapid',
   'watermarkpath', 'watermarkfile', 'scalemappath', 'scalemapfile', 'scalemap',
 ]);
+const PORTABLE_FORBIDDEN_CONFIG_KEYS = new Set([
+  ...FORBIDDEN_CONFIG_KEYS,
+  'categoryid', 'outputcategoryid', 'projectroot', 'watermarkassetid', 'path', 'relativepath', 'absolutepath',
+  'generatedoutput', 'generatedstate', 'systemkey', 'createdat', 'updatedat',
+  'configversion', 'operationtype', 'displayname', 'presetid', 'id',
+]);
 const CONVERT_KEYS = new Set(['format', 'originalHandling', 'quality']);
 const WORKFLOW_KEYS = new Set(['positive', 'negative']);
 const WATERMARK_KEYS = new Set([
   'mode', 'workflow', 'position', 'marginRatio', 'margin', 'marginPercent', 'marginPx', 'opacity',
-  'outputFormat', 'format', 'quality', 'maxDimension', 'deleteSource', 'deleteOriginal', 'scale',
+  'primaryFormat', 'secondaryFormat', 'resizedFormat', 'outputFormat', 'format', 'quality', 'maxDimension', 'deleteSource', 'deleteOriginal', 'scale',
   'watermarkScale', 'scaleBasis', 'windowAspect', 'fixedWatermarkWidthPx', 'fixedWmPx', 'nudgeX',
   'nudgeY', 'nudgeXRatio', 'nudgeXPercent', 'nudgeYRatio', 'nudgeYPercent', 'allowOffCanvas',
-  'containment', 'overwrite', 'alsoUnresized', 'suffix', 'socialSuffix', 'suffixUnresized',
-  'suffixResized', 'outputDirectory', 'trimWatermark', 'watermarkBeforeResize', 'webpLossless',
+  'containment', 'overwrite', 'alsoUnresized', 'unresizedSuffix', 'resizedSuffix', 'singleSuffix',
+  'suffix', 'socialSuffix', 'suffixUnresized', 'suffixResized', 'outputCategorySlug', 'outputDir', 'outputDirectory', 'trimWatermark', 'watermarkBeforeResize', 'webpLossless',
   'additionalFormats', 'additionalFormatsResized', 'jpegBackground', 'makeArchives', 'makeCbz',
   'archiveIncludeResized', 'replaceExistingArchives', 'archiveFormat', 'zipJpgQuality',
   'zipWebpQuality', 'setName', 'archivePrefix', 'zipBaseName', 'cbzPrefix', 'cbzFrom', 'cbzJpgQuality',
 ]);
-const WATERMARK_DERIVED_KEYS = new Set(['scaleMap', 'socialSuffix', 'dualVariants', 'archiveResizedOnlyBlocked']);
+const WATERMARK_DERIVED_KEYS = new Set([
+  'scaleMap', 'legacyOutputVariants', 'archiveResizedOnlyBlocked',
+  'singleSuffix', 'suffix', 'socialSuffix', 'suffixUnresized', 'suffixResized',
+]);
 
 const REFERENCE_SCALE_MAP = Object.freeze({
   '1365x768': 0.35, '1248x832': 0.35, '2496x1664': 0.35, '5376x3072': 0.35, '4992x3328': 0.35,
@@ -89,6 +105,23 @@ function assertAllowedKeys(value, allowed, label) {
   }
 }
 
+function assertPortableConfig(value, label = 'Preset configuration') {
+  if (Array.isArray(value)) {
+    value.forEach((item) => assertPortableConfig(item, label));
+    return;
+  }
+  if (!value || typeof value !== 'object') return;
+  for (const [key, item] of Object.entries(value)) {
+    const compact = key.replace(/[^a-z0-9]/gi, '').toLowerCase();
+    if (PORTABLE_FORBIDDEN_CONFIG_KEYS.has(compact)) {
+      throw new ProcessingPresetServiceError(`${label} contains an unsupported or runtime-only field.`, {
+        code: 'PRESET_FIELD_NOT_ALLOWED',
+      });
+    }
+    assertPortableConfig(item, label);
+  }
+}
+
 function normalizeWorkflowConfig(config) {
   assertAllowedKeys(config, WORKFLOW_KEYS, 'Workflow preset configuration');
   const asInput = (value, label) => {
@@ -120,14 +153,55 @@ function normalizeConfig(operationType, config) {
     }
     if (operationType === 'workflow-prompt') return normalizeWorkflowConfig(config);
     assertAllowedKeys(config, WATERMARK_KEYS, 'Watermark preset configuration');
-    const normalized = normalizeWatermarkOptions(config, { scaleMap: null });
-    return Object.fromEntries(Object.entries(normalized).filter(([key]) => !WATERMARK_DERIVED_KEYS.has(key)));
+    const normalized = normalizeWatermarkOptions(config, { scaleMap: null, requireOutputCategory: false });
+    return Object.fromEntries(Object.entries(normalized)
+      .filter(([key, value]) => value !== undefined && !WATERMARK_DERIVED_KEYS.has(key)));
   } catch (cause) {
     if (cause instanceof ProcessingPresetServiceError) throw cause;
     throw new ProcessingPresetServiceError(cause?.message || 'Preset configuration is invalid.', {
       code: cause?.code || 'INVALID_PRESET_CONFIG', cause,
     });
   }
+}
+
+function normalizePresetBundle(bundle) {
+  assertPlainObject(bundle, 'Preset bundle');
+  const hasMarker = Object.hasOwn(bundle, 'creatorcrate');
+  const hasVersion = Object.hasOwn(bundle, 'version');
+  if (hasMarker !== hasVersion) {
+    throw new ProcessingPresetServiceError('Preset bundle metadata is incomplete.', { code: 'INVALID_PRESET_BUNDLE' });
+  }
+  const allowedKeys = hasMarker
+    ? new Set(['creatorcrate', 'version', 'operationType', 'presets'])
+    : new Set(['operationType', 'presets']);
+  for (const key of Object.keys(bundle)) {
+    if (!allowedKeys.has(key)) {
+      throw new ProcessingPresetServiceError('Preset bundle contains an unsupported field.', { code: 'INVALID_PRESET_BUNDLE' });
+    }
+  }
+  if (hasMarker && bundle.creatorcrate !== PROCESSING_PRESET_BUNDLE_MARKER) {
+    throw new ProcessingPresetServiceError('This is not a CreatorCrate processing preset bundle.', { code: 'INVALID_PRESET_BUNDLE' });
+  }
+  if (hasVersion && bundle.version !== PROCESSING_PRESET_BUNDLE_VERSION) {
+    throw new ProcessingPresetServiceError('This processing preset bundle version is unsupported.', { code: 'INVALID_PRESET_BUNDLE' });
+  }
+  const operationType = normalizeOperationType(bundle.operationType);
+  if (!Array.isArray(bundle.presets)) {
+    throw new ProcessingPresetServiceError('Preset bundle presets must be an array.', { code: 'INVALID_PRESET_BUNDLE' });
+  }
+  const presets = bundle.presets.map((entry, index) => {
+    assertPlainObject(entry, `Preset ${index + 1}`);
+    assertAllowedKeys(entry, new Set(['displayName', 'config']), `Preset ${index + 1}`);
+    const displayName = normalizeDisplayName(entry.displayName);
+    assertPortableConfig(entry.config, `Preset ${index + 1} configuration`);
+    return { displayName, config: normalizeConfig(operationType, entry.config) };
+  });
+  return {
+    creatorcrate: PROCESSING_PRESET_BUNDLE_MARKER,
+    version: PROCESSING_PRESET_BUNDLE_VERSION,
+    operationType,
+    presets,
+  };
 }
 
 function parseStoredConfig(record) {
@@ -151,8 +225,7 @@ function publicRecord(record) {
     systemKey: record.system_key,
     configVersion: record.config_version,
     config,
-    watermarkId: record.watermark_id,
-    scaleMapId: record.scale_map_id,
+    watermarkId: null,
     createdAt: record.created_at,
     updatedAt: record.updated_at,
   };
@@ -163,8 +236,8 @@ function seededWorkflow(positive = [], negative = []) {
 }
 
 const SEEDED_PRESETS = Object.freeze([
-  { operationType: 'watermark', displayName: 'Patreon Watermark', systemKey: 'watermark-patreon', scaleMapId: 'reference', config: { mode: 'patreon', scaleBasis: 'window', marginRatio: 0.02, opacity: 1, outputFormat: 'png', position: 'bl', overwrite: true, deleteSource: false, outputDirectory: 'wm' } },
-  { operationType: 'watermark', displayName: 'Social Watermark', systemKey: 'watermark-social', scaleMapId: 'reference', config: { mode: 'social', scaleBasis: 'window', marginRatio: 0.02, opacity: 1, outputFormat: 'png', position: 'bl', overwrite: true, maxDimension: 1100, deleteSource: true, watermarkBeforeResize: false } },
+  { operationType: 'watermark', displayName: 'Patreon Watermark', systemKey: 'watermark-patreon', config: { mode: 'patreon', scaleBasis: 'window', marginRatio: 0.02, opacity: 1, primaryFormat: 'png', secondaryFormat: null, resizedFormat: null, position: 'bl', overwrite: true, deleteSource: false, outputCategorySlug: 'wm' } },
+  { operationType: 'watermark', displayName: 'Social Watermark', systemKey: 'watermark-social', config: { mode: 'social', scaleBasis: 'window', marginRatio: 0.02, opacity: 1, primaryFormat: null, secondaryFormat: null, resizedFormat: 'png', position: 'bl', overwrite: true, maxDimension: 1100, deleteSource: true, watermarkBeforeResize: false, outputCategorySlug: 'wm-lq' } },
   { operationType: 'convert', displayName: 'WebP 85 — Delete Originals', systemKey: 'convert-webp-85-delete-originals', config: { format: 'webp', quality: 85, originalHandling: 'delete' } },
   { operationType: 'convert', displayName: 'WebP 85 — Move Originals', systemKey: 'convert-webp-85-move-originals', config: { format: 'webp', quality: 85, originalHandling: 'move' } },
   { operationType: 'workflow-prompt', displayName: 'General', systemKey: 'workflow-general', config: seededWorkflow([
@@ -185,17 +258,13 @@ const SEEDED_PRESETS = Object.freeze([
   { operationType: 'workflow-prompt', displayName: 'Rory', systemKey: 'workflow-rory', config: seededWorkflow([{ type: 'remove', text: '<lora:Illustrious\\style\\heightRatioSliderIllustrious.safetensors:0.5>' }, { type: 'replace', search: '<lora:Mayoko\\rory\\rory_run2_2026-06-1280.safetensors:0.8>', replacement: '<lora:Mayoko/rory/rory_run2_2026-06-1280:0.7>' }]) },
 ]);
 
-export function createProcessingPresetService({ repository, watermarkService, scaleMapService } = {}) {
+export function createProcessingPresetService({ repository, watermarkService } = {}) {
   if (!repository || !['findById', 'list', 'create', 'rename', 'replace', 'delete', 'seedReferenceData'].every((method) => typeof repository[method] === 'function')) {
     throw new Error('createProcessingPresetService requires a processing preset repository.');
   }
   if (!watermarkService || typeof watermarkService.getWatermark !== 'function' || typeof watermarkService.resolveForProcessing !== 'function') {
     throw new Error('createProcessingPresetService requires a managed Watermark service.');
   }
-  if (!scaleMapService || typeof scaleMapService.getScaleMap !== 'function' || typeof scaleMapService.resolveForProcessing !== 'function') {
-    throw new Error('createProcessingPresetService requires a managed scale-map service.');
-  }
-
   function requireRecord(id) {
     if (!isPositiveId(id)) throw new ProcessingPresetServiceError('presetId must be a positive integer.', { code: 'INVALID_PRESET_ID' });
     const record = repository.findById(id);
@@ -203,36 +272,17 @@ export function createProcessingPresetService({ repository, watermarkService, sc
     return record;
   }
 
-  function resolveOptionalResource(id, service, label) {
-    if (id === null || id === undefined) return null;
-    if (!isPositiveId(id)) throw new ProcessingPresetServiceError(`${label}Id must be a positive integer.`, { code: `INVALID_${label.toUpperCase()}_ID` });
-    try { return service.getWatermark ? service.getWatermark(id) : service.getScaleMap(id); } catch (cause) {
-      throw new ProcessingPresetServiceError(cause?.message || `${label} is unavailable.`, { code: cause?.code || `${label.toUpperCase()}_NOT_FOUND`, cause });
-    }
+  function normalizeBindings() {
+    // The column remains legacy schema; Scale Maps are no longer preset resources.
+    return { watermarkId: null, scaleMapId: null };
   }
 
-  function normalizeBindings(operationType, { watermarkId, scaleMapId }) {
-    if (operationType !== 'watermark' && (watermarkId !== null && watermarkId !== undefined || scaleMapId !== null && scaleMapId !== undefined)) {
-      throw new ProcessingPresetServiceError('Only Watermark presets may bind managed resources.', { code: 'PRESET_RESOURCE_NOT_ALLOWED' });
-    }
-    resolveOptionalResource(watermarkId, watermarkService, 'watermark');
-    resolveOptionalResource(scaleMapId, scaleMapService, 'scaleMap');
-    return { watermarkId: watermarkId ?? null, scaleMapId: scaleMapId ?? null };
-  }
-
-  function resolveExecutionResource(id, service, label) {
-    if (id === null || id === undefined) return null;
-    if (!isPositiveId(id)) {
-      throw new ProcessingPresetServiceError(`${label}Id must be a positive integer.`, {
-        code: `INVALID_${label.toUpperCase()}_ID`,
-      });
-    }
+  function resolveWatermarkForExecution(watermarkId) {
     try {
-      const resolved = service.resolveForProcessing(id);
-      return resolved.watermark || resolved.scaleMap;
+      return watermarkService.resolveForProcessing(watermarkId).watermark;
     } catch (cause) {
-      throw new ProcessingPresetServiceError(cause?.message || `${label} is unavailable.`, {
-        code: cause?.code || `${label.toUpperCase()}_NOT_FOUND`, cause,
+      throw new ProcessingPresetServiceError(cause?.message || 'Watermark is unavailable.', {
+        code: cause?.code || 'WATERMARK_NOT_FOUND', cause,
       });
     }
   }
@@ -255,11 +305,33 @@ export function createProcessingPresetService({ repository, watermarkService, sc
       });
     },
     getPreset(id) { return publicRecord(requireRecord(id)); },
-    createPreset({ operationType, displayName, config, watermarkId = null, scaleMapId = null } = {}) {
+    createPreset({ operationType, displayName, config } = {}) {
       const normalizedOperation = normalizeOperationType(operationType);
-      const bindings = normalizeBindings(normalizedOperation, { watermarkId, scaleMapId });
+      // Transition: accept the legacy UI field but never store a Scale Map binding.
+      const bindings = normalizeBindings();
       try {
         return publicRecord(repository.create({ operationType: normalizedOperation, displayName: normalizeDisplayName(displayName), configVersion: CONFIG_VERSION, configJson: stableJson(normalizeConfig(normalizedOperation, config)), ...bindings }));
+      } catch (cause) { mapRepositoryError(cause); }
+    },
+    importPresetBundle(bundle = {}) {
+      if (typeof repository.importPresets !== 'function') {
+        throw new ProcessingPresetServiceError('Processing preset bundle import is unavailable.', { code: 'PRESET_IMPORT_UNAVAILABLE' });
+      }
+      const normalized = normalizePresetBundle(bundle);
+      try {
+        const records = repository.importPresets({
+          operationType: normalized.operationType,
+          presets: normalized.presets.map((preset) => ({
+            displayName: preset.displayName,
+            configVersion: CONFIG_VERSION,
+            configJson: stableJson(preset.config),
+          })),
+        });
+        const presets = records.map(publicRecord);
+        const renamed = presets.reduce((count, preset, index) => (
+          count + (preset.displayName === normalized.presets[index].displayName ? 0 : 1)
+        ), 0);
+        return { imported: presets.length, renamed, presets };
       } catch (cause) { mapRepositoryError(cause); }
     },
     renamePreset(id, displayName) {
@@ -270,13 +342,11 @@ export function createProcessingPresetService({ repository, watermarkService, sc
         return publicRecord(record);
       } catch (cause) { mapRepositoryError(cause); }
     },
-    replacePreset(id, { config, watermarkId, scaleMapId } = {}) {
+    replacePreset(id, { config } = {}) {
       const current = requireRecord(id);
       const normalizedConfig = normalizeConfig(current.operation_type, config);
-      const bindings = normalizeBindings(current.operation_type, {
-        watermarkId: watermarkId === undefined ? current.watermark_id : watermarkId,
-        scaleMapId: scaleMapId === undefined ? current.scale_map_id : scaleMapId,
-      });
+      // A submitted legacy scaleMapId is intentionally ignored during this transition.
+      const bindings = normalizeBindings();
       try {
         return publicRecord(repository.replace(id, { configJson: stableJson(normalizedConfig), ...bindings }));
       } catch (cause) { mapRepositoryError(cause); }
@@ -292,19 +362,24 @@ export function createProcessingPresetService({ repository, watermarkService, sc
       if (!runtimeResources || typeof runtimeResources !== 'object' || Array.isArray(runtimeResources)) {
         throw new ProcessingPresetServiceError('Runtime preset resources must be an object.', { code: 'INVALID_PRESET_RESOURCES' });
       }
-      if (preset.operationType !== 'watermark') return { ...preset, options: preset.config, watermark: null, scaleMap: null };
+      if (preset.operationType !== 'watermark') return { ...preset, options: preset.config, watermark: null };
       const hasWatermarkOverride = Object.hasOwn(runtimeResources, 'watermarkId');
-      const hasScaleMapOverride = Object.hasOwn(runtimeResources, 'scaleMapId');
-      const watermarkId = hasWatermarkOverride ? runtimeResources.watermarkId : preset.watermarkId;
-      const scaleMapId = hasScaleMapOverride ? runtimeResources.scaleMapId : preset.scaleMapId;
-      if (watermarkId === null || watermarkId === undefined) {
-        throw new ProcessingPresetServiceError('A managed Watermark must be selected before execution.', { code: 'WATERMARK_REQUIRED' });
+      if (!hasWatermarkOverride || runtimeResources.watermarkId === null || runtimeResources.watermarkId === undefined) {
+        throw new ProcessingPresetServiceError('A global Watermark must be selected before execution.', { code: 'WATERMARK_REQUIRED' });
       }
-      // Resolve through the managed services at execution time: this validates
-      // watermark bytes and scale-map definitions without leaking either path.
-      const watermark = resolveExecutionResource(watermarkId, watermarkService, 'watermark');
-      const scaleMap = resolveExecutionResource(scaleMapId, scaleMapService, 'scaleMap');
-      return { ...preset, options: preset.config, watermarkId, scaleMapId: scaleMapId ?? null, watermark, scaleMap };
+      if (!isPositiveId(runtimeResources.watermarkId)) {
+        throw new ProcessingPresetServiceError('watermarkId must be a positive integer.', { code: 'INVALID_WATERMARK_ID' });
+      }
+      const watermarkId = runtimeResources.watermarkId;
+      // Scale maps resolve in Planner/Apply through the canonical singleton.
+      // A legacy runtime scaleMapId is accepted by the route but intentionally ignored.
+      const watermark = resolveWatermarkForExecution(watermarkId);
+      return {
+        ...preset,
+        options: { ...preset.config, watermarkId },
+        watermarkId,
+        watermark,
+      };
     },
     seedReferencePresets() {
       const scaleMapConfig = stableJson(REFERENCE_SCALE_MAP);
@@ -313,7 +388,7 @@ export function createProcessingPresetService({ repository, watermarkService, sc
         configVersion: CONFIG_VERSION,
         configJson: stableJson(normalizeConfig(preset.operationType, preset.config)),
         watermarkId: null,
-        scaleMapId: preset.scaleMapId ?? null,
+        scaleMapId: null,
       }));
       return repository.seedReferenceData({
         markerKey: SEED_MARKER_KEY,

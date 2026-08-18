@@ -56,7 +56,9 @@ describe('managed Watermark service', () => {
     expect(stored.storage_key).toMatch(/^wm-[0-9a-f-]{36}\.png$/);
     expect(fs.existsSync(filePath)).toBe(true);
     expect(stored.sha256).toBe(createHash('sha256').update(fs.readFileSync(filePath)).digest('hex'));
-    expect(service.listWatermarks()).toEqual([watermark]);
+    // Migration-014 rows without a filesystem source path remain preserved
+    // for historical provenance but are not global source candidates.
+    expect(service.listWatermarks()).toEqual([]);
     expect(service.resolveForProcessing(watermark.id).watermark).toEqual(watermark);
   });
 

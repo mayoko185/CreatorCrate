@@ -709,8 +709,8 @@
                     <div class="asset-selection-controls">
                       <div class="asset-action-groups">
                         <section class="asset-action-group">
-                          <h3 class="asset-action-group-heading">Release actions</h3>
-                          <div class="asset-action-group-controls">
+                          <h3 class="asset-action-group-heading">Release</h3>
+                          <div class="asset-action-group-controls asset-action-group-controls--stacked">
                             {{ dropdown.singleSelect({
                               id: "releaseId-action",
                               name: "releaseId",
@@ -726,14 +726,16 @@
                                 attributes: [["data-release-select", true]]
                               }
                             }) }}
-                            <button type="submit" class="button button-primary" data-bulk-submit>Add</button>
-                            <button type="submit" class="button button-secondary"
-                                    formaction="/projects/{{ project.id }}/assets/create-release">New</button>
+                            <div class="asset-action-group-button-row">
+                              <button type="submit" class="button button-primary" data-bulk-submit>Add</button>
+                              <button type="submit" class="button button-secondary"
+                                      formaction="/projects/{{ project.id }}/assets/create-release">New</button>
+                            </div>
                           </div>
                         </section>
                         <section class="asset-action-group">
-                          <h3 class="asset-action-group-heading">Category &amp; file actions</h3>
-                          <div class="asset-action-group-controls">
+                          <h3 class="asset-action-group-heading">File</h3>
+                          <div class="asset-action-group-controls asset-action-group-controls--stacked">
                             {{ dropdown.singleSelect({
                               id: "destination-category-action",
                               name: "destinationCategory",
@@ -745,13 +747,15 @@
                               panelLabel: "Destination category options",
                               nativeSelect: { id: "destinationCategory-action-native" }
                             }) }}
-                            <button type="submit" class="button"
-                                    formaction="/projects/{{ project.id }}/assets/move-selected">Move</button>
-                            <button type="submit" class="button button-secondary"
-                                    formaction="/projects/{{ project.id }}/assets/copy-selected">Copy</button>
-                            <button type="submit" class="button button-danger"
-                                    formaction="/projects/{{ project.id }}/assets/delete-selected"
-                                    data-confirm="The selected files will be permanently deleted from disk and cannot be restored through CreatorCrate. Continue?">Delete</button>
+                            <div class="asset-action-group-button-row">
+                              <button type="submit" class="button"
+                                      formaction="/projects/{{ project.id }}/assets/move-selected">Move</button>
+                              <button type="submit" class="button button-secondary"
+                                      formaction="/projects/{{ project.id }}/assets/copy-selected">Copy</button>
+                              <button type="submit" class="button button-danger"
+                                      formaction="/projects/{{ project.id }}/assets/delete-selected"
+                                      data-confirm="The selected files will be permanently deleted from disk and cannot be restored through CreatorCrate. Continue?">Delete</button>
+                            </div>
                           </div>
                         </section>
                         {{ processingActions.render(isArchived) }}
@@ -781,8 +785,8 @@
               <div class="asset-selection-controls">
                 <div class="asset-action-groups">
                   <section class="asset-action-group">
-                    <h3 class="asset-action-group-heading">Release actions</h3>
-                    <div class="asset-action-group-controls">
+                    <h3 class="asset-action-group-heading">Release</h3>
+                    <div class="asset-action-group-controls asset-action-group-controls--stacked">
                       {{ dropdown.singleSelect({
                         id: "releaseId-action",
                         name: "releaseId",
@@ -798,14 +802,16 @@
                           attributes: [["data-release-select", true]]
                         }
                       }) }}
-                      <button type="submit" class="button button-primary" data-bulk-submit>Add</button>
-                      <button type="submit" class="button button-secondary"
-                              formaction="/projects/{{ project.id }}/assets/create-release">New</button>
+                      <div class="asset-action-group-button-row">
+                        <button type="submit" class="button button-primary" data-bulk-submit>Add</button>
+                        <button type="submit" class="button button-secondary"
+                                formaction="/projects/{{ project.id }}/assets/create-release">New</button>
+                      </div>
                     </div>
                   </section>
                   <section class="asset-action-group">
-                    <h3 class="asset-action-group-heading">Category &amp; file actions</h3>
-                    <div class="asset-action-group-controls">
+                    <h3 class="asset-action-group-heading">File</h3>
+                    <div class="asset-action-group-controls asset-action-group-controls--stacked">
                       {{ dropdown.singleSelect({
                         id: "destination-category-action",
                         name: "destinationCategory",
@@ -817,13 +823,15 @@
                         panelLabel: "Destination category options",
                         nativeSelect: { id: "destinationCategory-action-native" }
                       }) }}
-                      <button type="submit" class="button"
-                              formaction="/projects/{{ project.id }}/assets/move-selected">Move</button>
-                      <button type="submit" class="button button-secondary"
-                              formaction="/projects/{{ project.id }}/assets/copy-selected">Copy</button>
-                      <button type="submit" class="button button-danger"
-                              formaction="/projects/{{ project.id }}/assets/delete-selected"
-                              data-confirm="The selected files will be permanently deleted from disk and cannot be restored through CreatorCrate. Continue?">Delete</button>
+                      <div class="asset-action-group-button-row">
+                        <button type="submit" class="button"
+                                formaction="/projects/{{ project.id }}/assets/move-selected">Move</button>
+                        <button type="submit" class="button button-secondary"
+                                formaction="/projects/{{ project.id }}/assets/copy-selected">Copy</button>
+                        <button type="submit" class="button button-danger"
+                                formaction="/projects/{{ project.id }}/assets/delete-selected"
+                                data-confirm="The selected files will be permanently deleted from disk and cannot be restored through CreatorCrate. Continue?">Delete</button>
+                      </div>
                     </div>
                   </section>
                   {{ processingActions.render(isArchived) }}
@@ -834,7 +842,7 @@
         {% endif %}
 
         {% if isArchived %}
-          {# Release actions / Category & file actions are mutation forms and
+          {# Release / File are mutation forms and
              stay fully hidden for archived projects, but Processing actions
              must still surface — visibly disabled — per its archived-state
              requirement, so it gets its own minimal panel here rather than

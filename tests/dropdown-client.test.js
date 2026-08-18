@@ -1,6 +1,91 @@
 import { describe, expect, it, vi } from 'vitest';
 import { enhanceDropdowns } from '../src/static/creatorcrate.js';
 
+function makeMockElement(tag, document = null) {
+  const attrs = {};
+  const children = [];
+  const node = {
+    tagName: String(tag).toUpperCase(),
+    nodeType: 1,
+    ownerDocument: document,
+    parentNode: null,
+    children,
+    textContent: '',
+    getAttribute(name) {
+      return attrs[name] ?? null;
+    },
+    setAttribute(name, value) {
+      attrs[name] = String(value);
+      if (name === 'value' && tag === 'input') this.value = String(value);
+      if (name === 'type' && tag === 'input') this.type = String(value);
+    },
+    removeAttribute(name) {
+      delete attrs[name];
+    },
+    appendChild(child) {
+      children.push(child);
+      if (child) child.parentNode = this;
+      return child;
+    },
+    remove() {
+      if (this.parentNode) {
+        const idx = this.parentNode.children.indexOf(this);
+        if (idx >= 0) this.parentNode.children.splice(idx, 1);
+        this.parentNode = null;
+      }
+    },
+    closest(selector) {
+      if (selector === '.asset-filter-multiselect-option' && this.getAttribute('class')?.includes('asset-filter-multiselect-option')) return this;
+      if (selector === '[data-cc-dropdown]') return null;
+      let node = this.parentNode;
+      while (node) {
+        if (selector === '.asset-filter-multiselect-option' && node.getAttribute?.('class')?.includes('asset-filter-multiselect-option')) return node;
+        node = node.parentNode;
+      }
+      return null;
+    },
+    querySelector(selector) {
+      for (const child of children) {
+        const found = child.querySelector?.(selector);
+        if (found) return found;
+        if (matchesSelector(child, selector)) return child;
+      }
+      return null;
+    },
+    querySelectorAll(selector) {
+      const results = [];
+      for (const child of children) {
+        if (matchesSelector(child, selector)) results.push(child);
+        results.push(...(child.querySelectorAll?.(selector) || []));
+      }
+      return results;
+    },
+  };
+  if (tag === 'input') {
+    node.value = '';
+    node.checked = false;
+    node.type = 'text';
+    node.disabled = false;
+  }
+  return node;
+}
+
+function matchesSelector(el, selector) {
+  if (selector === 'input[type="radio"]' && el.tagName === 'INPUT' && el.getAttribute('type') === 'radio') return true;
+  if (selector === 'input[type="checkbox"]' && el.tagName === 'INPUT' && el.getAttribute('type') === 'checkbox') return true;
+  if (selector === '.asset-filter-multiselect-option' && el.getAttribute('class')?.includes('asset-filter-multiselect-option')) return true;
+  return false;
+}
+
+function makeMockDocument() {
+  return {
+    createElement(tag) {
+      return makeMockElement(tag, this);
+    },
+    defaultView: { Event },
+  };
+}
+
 function makeDropdown(mode, options, selectedValues = [], nativeConfig = null) {
   const listeners = [];
   const summaryAttrs = {
@@ -22,21 +107,41 @@ function makeDropdown(mode, options, selectedValues = [], nativeConfig = null) {
       this.focused = true;
     },
   };
-  const inputs = options.map(({ value, label }, index) => {
-    const input = {
-      type: mode === 'single' ? 'radio' : 'checkbox',
-      name: mode === 'single' ? 'format' : 'tag',
+    let nativeOptions = options.map(({ value, label }) => ({
       value,
-      checked: selectedValues.includes(value),
-      closest(selector) {
-        if (selector === 'label') return { textContent: label };
-        if (selector === '[data-cc-dropdown]') return dropdown;
-        return null;
+      label,
+      textContent: label ?? value,
+      selected: value === (nativeConfig?.value ?? ''),
+    }));
+    const widthSizerSpans = [];
+    const widthSizer = {
+      get children() {
+        return widthSizerSpans.slice();
+      },
+      appendChild(child) {
+        widthSizerSpans.push(child);
+        return child;
+      },
+      replaceChildren(...children) {
+        widthSizerSpans.length = 0;
+        children.forEach((child) => widthSizerSpans.push(child));
       },
     };
-    input.id = `${mode}-${index}`;
-    return input;
-  });
+    const inputs = options.map(({ value, label }, index) => {
+      const input = {
+        type: mode === 'single' ? 'radio' : 'checkbox',
+        name: mode === 'single' ? 'format' : 'tag',
+        value,
+        checked: selectedValues.includes(value),
+        closest(selector) {
+          if (selector === 'label') return { textContent: label };
+          if (selector === '[data-cc-dropdown]') return dropdown;
+          return null;
+        },
+      };
+      input.id = `${mode}-${index}`;
+      return input;
+    });
   const dropdown = {
     dataset: {
       ccDropdownMode: mode,
@@ -47,6 +152,7 @@ function makeDropdown(mode, options, selectedValues = [], nativeConfig = null) {
     querySelector(selector) {
       if (selector === 'summary') return summary;
       if (selector === '.asset-filter-multiselect-summary-current') return currentSummary;
+      if (selector === '.asset-filter-multiselect-summary-width') return widthSizer;
       if (selector === 'input[type="radio"]:checked') return inputs.find((input) => input.checked) || null;
       return null;
     },
@@ -63,7 +169,7 @@ function makeDropdown(mode, options, selectedValues = [], nativeConfig = null) {
       value: nativeConfig.value,
       hidden: false,
       disabled: Boolean(nativeConfig.disabled),
-      options: options.map(({ value }) => ({ value, selected: value === nativeConfig.value })),
+      options: nativeOptions,
       setAttribute(name) {
         if (name === 'hidden') this.hidden = true;
         if (name === 'disabled') this.disabled = true;
@@ -116,7 +222,9 @@ function makeDropdown(mode, options, selectedValues = [], nativeConfig = null) {
     },
   };
 
-  return { scope, dropdown, inputs, summary, summaryAttrs, currentSummary, listeners, nativeSelect };
+  return {
+    scope, dropdown, inputs, summary, summaryAttrs, currentSummary, listeners, nativeSelect, widthSizer,
+  };
 }
 
 function makeSearchableDropdown(options, selectedValues = []) {
@@ -170,6 +278,29 @@ function makeSearchableDropdown(options, selectedValues = []) {
   };
 
   return { ...fixture, rows, optionList, search, noResults };
+}
+
+function wireNativeSyncFixture(fixture) {
+  const document = makeMockDocument();
+  const panel = makeMockElement('div', document);
+  const field = {
+    querySelector(selector) {
+      if (selector === '[data-cc-dropdown-native-select]') return fixture.nativeSelect;
+      if (selector === '[data-cc-dropdown]') return fixture.dropdown;
+      return null;
+    },
+  };
+  const originalQuerySelector = fixture.dropdown.querySelector.bind(fixture.dropdown);
+  fixture.dropdown.ownerDocument = document;
+  fixture.dropdown.querySelector = (selector) => {
+    if (selector === '[data-cc-dropdown-option-list]' || selector === '.asset-filter-multiselect-panel') return panel;
+    if (selector === 'input[type="radio"]:checked') return panel.querySelectorAll('input[type="radio"]').find((input) => input.checked) || null;
+    return originalQuerySelector(selector);
+  };
+  fixture.dropdown.querySelectorAll = (selector) => panel.querySelectorAll(selector);
+  fixture.dropdown.parentElement = field;
+  fixture.dropdown.parentNode = field;
+  return { document, panel };
 }
 
 describe('generic dropdown enhancement', () => {
@@ -448,5 +579,281 @@ describe('generic dropdown enhancement', () => {
     expect(fixture.inputs.every((input) => !input.disabled)).toBe(true);
     expect(fixture.summary.disabled).toBe(false);
     expect(fixture.summaryAttrs['aria-disabled']).toBeUndefined();
+  });
+
+  it('resyncs enhanced options from a mutated native select and preserves selected value', () => {
+    const fixture = makeDropdown('single', [
+      { value: 'png', label: 'PNG' },
+    ], [], { value: 'png', dispatchNativeChange: true });
+    const document = makeMockDocument();
+    const panel = makeMockElement('div', document);
+    const field = {
+      querySelector(selector) {
+        if (selector === '[data-cc-dropdown-native-select]') return fixture.nativeSelect;
+        if (selector === '[data-cc-dropdown]') return fixture.dropdown;
+        return null;
+      },
+    };
+    const originalQuerySelector = fixture.dropdown.querySelector.bind(fixture.dropdown);
+    fixture.dropdown.ownerDocument = document;
+    fixture.dropdown.querySelector = (selector) => {
+      if (selector === '[data-cc-dropdown-option-list]' || selector === '.asset-filter-multiselect-panel') return panel;
+      if (selector === 'input[type="radio"]:checked') return panel.querySelectorAll('input[type="radio"]').find((input) => input.checked) || null;
+      return originalQuerySelector(selector);
+    };
+    fixture.dropdown.querySelectorAll = (selector) => panel.querySelectorAll(selector);
+    fixture.dropdown.parentElement = field;
+    fixture.dropdown.parentNode = field;
+
+    const getInputs = () => Array.from(fixture.dropdown.querySelectorAll('input[type="radio"]'));
+
+    enhanceDropdowns(fixture.scope);
+    let inputs = getInputs();
+    expect(inputs).toHaveLength(1);
+    expect(inputs[0].checked).toBe(true);
+
+    fixture.nativeSelect.options.push({ value: 'kra', selected: false });
+    fixture.nativeSelect.value = 'kra';
+    fixture.scope.dispatch('change', fixture.nativeSelect);
+
+    inputs = getInputs();
+    expect(inputs).toHaveLength(2);
+    expect(inputs[0].checked).toBe(false);
+    expect(inputs[1].checked).toBe(true);
+    expect(fixture.currentSummary.textContent).toBe('kra');
+  });
+
+  it('removes stale enhanced options when native select options are deleted', () => {
+    const fixture = makeDropdown('single', [
+      { value: 'png', label: 'PNG' },
+      { value: 'kra', label: 'Krita' },
+    ], [], { value: 'png', dispatchNativeChange: true });
+    const document = makeMockDocument();
+    const panel = makeMockElement('div', document);
+    const field = {
+      querySelector(selector) {
+        if (selector === '[data-cc-dropdown-native-select]') return fixture.nativeSelect;
+        if (selector === '[data-cc-dropdown]') return fixture.dropdown;
+        return null;
+      },
+    };
+    const originalQuerySelector = fixture.dropdown.querySelector.bind(fixture.dropdown);
+    fixture.dropdown.ownerDocument = document;
+    fixture.dropdown.querySelector = (selector) => {
+      if (selector === '[data-cc-dropdown-option-list]' || selector === '.asset-filter-multiselect-panel') return panel;
+      if (selector === 'input[type="radio"]:checked') return panel.querySelectorAll('input[type="radio"]').find((input) => input.checked) || null;
+      return originalQuerySelector(selector);
+    };
+    fixture.dropdown.querySelectorAll = (selector) => panel.querySelectorAll(selector);
+    fixture.dropdown.parentElement = field;
+    fixture.dropdown.parentNode = field;
+
+    const getInputs = () => Array.from(fixture.dropdown.querySelectorAll('input[type="radio"]'));
+
+    enhanceDropdowns(fixture.scope);
+    expect(getInputs()).toHaveLength(2);
+
+    fixture.nativeSelect.options.pop();
+    fixture.scope.dispatch('change', fixture.nativeSelect);
+
+    expect(getInputs()).toHaveLength(1);
+  });
+
+  it('preserves dialog body scroll position when a dropdown is opened and closed in a scrollable dialog', () => {
+    const fixture = makeDropdown('single', [
+      { value: 'png', label: 'PNG' },
+      { value: 'kra', label: 'Krita' },
+    ], [], { value: 'png', dispatchNativeChange: true });
+    const dialogBody = {
+      nodeType: 1,
+      tagName: 'DIV',
+      className: 'app-dialog-body processing-dialog-body',
+      scrollTop: 250,
+      scrollLeft: 0,
+      dataset: {},
+      classList: {
+        contains(name) { return dialogBody.className.includes(name); },
+        add() {},
+        remove() {},
+        toggle() { return false; },
+      },
+      contains() { return true; },
+      getAttribute() { return null; },
+      querySelector() { return null; },
+      querySelectorAll() { return []; },
+      closest(selector) {
+        if (selector === '.app-dialog-body') return dialogBody;
+        if (selector === '[data-app-dialog]') return { querySelector: () => null };
+        return null;
+      },
+      addEventListener() {},
+      removeEventListener() {},
+    };
+    const panel = {
+      nodeType: 1,
+      getBoundingClientRect() { return { width: 300, height: 80 }; },
+      style: {},
+      removeAttribute() {},
+      setAttribute() {},
+    };
+    const summary = {
+      nodeType: 1,
+      getBoundingClientRect() { return { left: 10, top: 300, bottom: 330, right: 130, width: 120 }; },
+      setAttribute() {},
+      focus: () => {},
+    };
+    fixture.dropdown.className = 'asset-filter-multiselect asset-filter-multiselect--sized cc-dropdown';
+    fixture.dropdown.closest = (selector) => {
+      if (selector === '.app-dialog-body') return dialogBody;
+      if (selector === '[data-app-dialog]') return { querySelector: () => null };
+      return null;
+    };
+    fixture.dropdown.querySelector = (selector) => {
+      if (selector === '.asset-filter-multiselect-panel') return panel;
+      if (selector === 'summary') return summary;
+      return null;
+    };
+    fixture.dropdown.parentElement = {
+      querySelector(selector) {
+        if (selector === '[data-cc-dropdown-native-select]') return fixture.nativeSelect;
+        if (selector === '[data-cc-dropdown]') return fixture.dropdown;
+        return null;
+      },
+    };
+    fixture.dropdown.parentNode = fixture.dropdown.parentElement;
+    fixture.dropdown.ownerDocument = {
+      defaultView: {
+        innerWidth: 640,
+        innerHeight: 480,
+        addEventListener() {},
+        removeEventListener() {},
+        getComputedStyle() { return { maxWidth: '200px' }; },
+      },
+    };
+
+    enhanceDropdowns(fixture.scope);
+    fixture.dropdown.open = true;
+    fixture.scope.dispatch('toggle', fixture.dropdown);
+    expect(dialogBody.scrollTop).toBe(250);
+    expect(panel.style.position).toBe('fixed');
+    expect(panel.style.width).toBe('200px');
+    expect(panel.style.minWidth).toBe('0px');
+    expect(panel.style.right).toBeUndefined();
+
+    fixture.dropdown.open = false;
+    fixture.scope.dispatch('toggle', fixture.dropdown);
+    expect(dialogBody.scrollTop).toBe(250);
+    expect(panel.style.minWidth).toBeUndefined();
+  });
+});
+
+describe('async dropdown intrinsic-width sizer synchronization', () => {
+  it('mirrors a single-placeholder native select into the width sizer on initial sync', () => {
+    const fixture = makeDropdown('single', [
+      { value: 'custom', label: 'Custom' },
+    ], [], { value: 'custom', dispatchNativeChange: true });
+    wireNativeSyncFixture(fixture);
+
+    enhanceDropdowns(fixture.scope);
+
+    expect(fixture.widthSizer.children.map((span) => span.textContent)).toEqual(['Custom']);
+  });
+
+  it('adds, renames, and removes sizer spans in step with the native select, without duplicating on repeated syncs', () => {
+    const fixture = makeDropdown('single', [
+      { value: 'custom', label: 'Custom' },
+    ], [], { value: 'custom', dispatchNativeChange: true });
+    wireNativeSyncFixture(fixture);
+
+    enhanceDropdowns(fixture.scope);
+    expect(fixture.widthSizer.children.map((span) => span.textContent)).toEqual(['Custom']);
+
+    fixture.nativeSelect.options.push(
+      { value: 'preset-a', textContent: 'A' },
+      { value: 'preset-long', textContent: 'A Really Long Preset Name' },
+    );
+    fixture.scope.dispatch('change', fixture.nativeSelect);
+    expect(fixture.widthSizer.children.map((span) => span.textContent)).toEqual([
+      'Custom', 'A', 'A Really Long Preset Name',
+    ]);
+
+    fixture.scope.dispatch('change', fixture.nativeSelect);
+    expect(fixture.widthSizer.children).toHaveLength(3);
+
+    fixture.nativeSelect.options[1].textContent = 'Preset A Renamed';
+    fixture.scope.dispatch('change', fixture.nativeSelect);
+    expect(fixture.widthSizer.children.map((span) => span.textContent)).toEqual([
+      'Custom', 'Preset A Renamed', 'A Really Long Preset Name',
+    ]);
+
+    fixture.nativeSelect.options.splice(1, 1);
+    fixture.scope.dispatch('change', fixture.nativeSelect);
+    expect(fixture.widthSizer.children.map((span) => span.textContent)).toEqual([
+      'Custom', 'A Really Long Preset Name',
+    ]);
+  });
+
+  it('leaves a valid, empty sizer when the native select ends up with no options', () => {
+    const fixture = makeDropdown('single', [
+      { value: 'custom', label: 'Custom' },
+    ], [], { value: 'custom', dispatchNativeChange: true });
+    wireNativeSyncFixture(fixture);
+
+    enhanceDropdowns(fixture.scope);
+    fixture.nativeSelect.options.length = 0;
+    fixture.scope.dispatch('change', fixture.nativeSelect);
+
+    expect(fixture.widthSizer.children).toEqual([]);
+  });
+
+  it('assigns option text via textContent, preserving it literally rather than parsing it as markup', () => {
+    const fixture = makeDropdown('single', [
+      { value: 'custom', label: 'Custom' },
+    ], [], { value: 'custom', dispatchNativeChange: true });
+    wireNativeSyncFixture(fixture);
+
+    enhanceDropdowns(fixture.scope);
+    fixture.nativeSelect.options.push({ value: 'unsafe', textContent: '<img src=x onerror=alert(1)>' });
+    fixture.scope.dispatch('change', fixture.nativeSelect);
+
+    expect(fixture.widthSizer.children[1].textContent).toBe('<img src=x onerror=alert(1)>');
+  });
+
+  it('rebuilds the sizer the same way for searchable dropdowns as non-searchable ones', () => {
+    const fixture = makeDropdown('single', [
+      { value: 'custom', label: 'Custom' },
+    ], [], { value: 'custom', dispatchNativeChange: true });
+    fixture.dropdown.dataset.ccDropdownSearchable = '';
+    wireNativeSyncFixture(fixture);
+
+    enhanceDropdowns(fixture.scope);
+    fixture.nativeSelect.options.push({ value: 'preset-a', textContent: 'Preset A' });
+    fixture.scope.dispatch('change', fixture.nativeSelect);
+
+    expect(fixture.widthSizer.children.map((span) => span.textContent)).toEqual(['Custom', 'Preset A']);
+  });
+
+  it('keeps selected value, visible summary, and disabled-state synchronization correct while the sizer resyncs', () => {
+    const fixture = makeDropdown('single', [
+      { value: 'png', label: 'PNG' },
+    ], [], { value: 'png', dispatchNativeChange: true });
+    wireNativeSyncFixture(fixture);
+
+    enhanceDropdowns(fixture.scope);
+    fixture.nativeSelect.options.push({ value: 'kra', textContent: 'Krita' });
+    fixture.nativeSelect.value = 'kra';
+    fixture.scope.dispatch('change', fixture.nativeSelect);
+
+    expect(fixture.currentSummary.textContent).toBe('kra');
+    expect(fixture.widthSizer.children.map((span) => span.textContent)).toEqual(['PNG', 'Krita']);
+
+    fixture.nativeSelect.disabled = true;
+    fixture.scope.dispatch('change', fixture.nativeSelect);
+    expect(fixture.summary.disabled).toBe(true);
+
+    fixture.nativeSelect.disabled = false;
+    fixture.scope.dispatch('change', fixture.nativeSelect);
+    expect(fixture.summary.disabled).toBe(false);
+    expect(fixture.widthSizer.children.map((span) => span.textContent)).toEqual(['PNG', 'Krita']);
   });
 });

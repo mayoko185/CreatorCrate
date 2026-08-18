@@ -3121,6 +3121,7 @@ const ASSET_VIEWER_FILTER_MULTI_SELECT_SELECTOR = '[data-asset-viewer-filter-mul
 const ASSET_VIEWER_FILTER_SINGLE_SELECT_SUMMARY_SELECTOR = '.asset-filter-multiselect-summary-current';
 const CC_DROPDOWN_CURRENT_SUMMARY_SELECTOR = '[data-cc-dropdown-summary-current]';
 const CC_DROPDOWN_NATIVE_SELECT_SELECTOR = '[data-cc-dropdown-native-select]';
+const CC_DROPDOWN_SUMMARY_WIDTH_SELECTOR = '.asset-filter-multiselect-summary-width';
 const SCROLLABLE_CATEGORY_DIALOG_BODY_CLASS = 'project-asset-category-management-dialog-body';
 const PROJECT_EDIT_DIALOG_BODY_CLASS = 'project-edit-dialog-body';
 const CC_DROPDOWN_PANEL_SELECTOR = '.asset-filter-multiselect-panel';
@@ -3256,6 +3257,113 @@ function markEnhancementBound(element, key) {
   if (!element) return;
   if (element.dataset) element.dataset[key] = 'true';
   else element[key] = true;
+}
+
+const NUMBER_INPUT_SELECTOR = 'input[type="number"]';
+
+function numberStepperFieldName(input) {
+  const labels = Array.from(input?.labels || []);
+  const document = input?.ownerDocument;
+  const inputId = input?.id || input?.getAttribute?.('id');
+  if (labels.length === 0 && inputId && typeof document?.querySelectorAll === 'function') {
+    labels.push(...Array.from(document.querySelectorAll('label')).filter((label) => (
+      label.getAttribute?.('for') === inputId
+    )));
+  }
+  if (labels.length === 0) {
+    const field = input?.closest?.('.field');
+    const label = field?.querySelector?.('label');
+    if (label) labels.push(label);
+  }
+  const name = String(labels[0]?.textContent || input?.getAttribute?.('aria-label') || '').trim();
+  return name || 'value';
+}
+
+function syncNumberStepperState(input) {
+  const wrapper = input?.parentElement;
+  if (!wrapper?.classList?.contains('cc-number-stepper')) return;
+  const locked = Boolean(input.disabled || input.readOnly
+    || input.hasAttribute?.('disabled') || input.hasAttribute?.('readonly'));
+  if (wrapper.classList.contains('is-disabled') !== locked) {
+    wrapper.classList.toggle('is-disabled', locked);
+  }
+  wrapper.querySelectorAll?.('[data-number-stepper-direction]').forEach((button) => {
+    const direction = button.dataset?.numberStepperDirection || button.getAttribute?.('data-number-stepper-direction');
+    const label = `${direction === 'decrement' ? 'Decrease' : 'Increase'} ${numberStepperFieldName(input)}`;
+    if (button.disabled !== locked) button.disabled = locked;
+    if (button.getAttribute?.('aria-disabled') !== String(locked)) {
+      button.setAttribute?.('aria-disabled', String(locked));
+    }
+    if (button.getAttribute?.('aria-label') !== label) button.setAttribute?.('aria-label', label);
+  });
+}
+
+function dispatchNumberStepperEvents(input) {
+  const EventConstructor = input?.ownerDocument?.defaultView?.Event || globalThis.Event;
+  ['input', 'change'].forEach((type) => {
+    if (typeof EventConstructor === 'function') {
+      input.dispatchEvent?.(new EventConstructor(type, { bubbles: true }));
+    } else {
+      input.dispatchEvent?.({ type, bubbles: true });
+    }
+  });
+}
+
+function createNumberStepperButton(document, direction) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.setAttribute('class', `cc-number-stepper-button cc-number-stepper-button--${direction}`);
+  button.setAttribute('data-number-stepper-direction', direction);
+  button.textContent = direction === 'decrement' ? '−' : '+';
+  return button;
+}
+
+function enhanceNumberInput(input) {
+  if (!input?.matches?.(NUMBER_INPUT_SELECTOR)) return false;
+  if (isEnhancementBound(input, 'numberStepperBound')) {
+    syncNumberStepperState(input);
+    return false;
+  }
+
+  const document = input.ownerDocument;
+  const parent = input.parentElement;
+  if (!document?.createElement || !parent?.insertBefore) return false;
+
+  const wrapper = document.createElement('span');
+  wrapper.setAttribute('class', 'cc-number-stepper');
+  wrapper.setAttribute('data-number-stepper', '');
+  const decrement = createNumberStepperButton(document, 'decrement');
+  const increment = createNumberStepperButton(document, 'increment');
+
+  parent.insertBefore(wrapper, input);
+  wrapper.append(input, decrement, increment);
+  markEnhancementBound(input, 'numberStepperBound');
+
+  [decrement, increment].forEach((button) => {
+    button.addEventListener?.('click', () => {
+      if (input.disabled || input.readOnly || input.hasAttribute?.('readonly')) return;
+      const previousValue = input.value;
+      try {
+        if (button.dataset?.numberStepperDirection === 'decrement') input.stepDown();
+        else input.stepUp();
+      } catch {
+        return;
+      }
+      if (input.value !== previousValue) dispatchNumberStepperEvents(input);
+      syncNumberStepperState(input);
+    });
+  });
+
+  syncNumberStepperState(input);
+  return true;
+}
+
+export function enhanceNumberInputs(scope = globalThis.document) {
+  if (!scope) return 0;
+  const inputs = [];
+  if (scope.matches?.(NUMBER_INPUT_SELECTOR)) inputs.push(scope);
+  if (typeof scope.querySelectorAll === 'function') inputs.push(...scope.querySelectorAll(NUMBER_INPUT_SELECTOR));
+  return inputs.reduce((count, input) => count + Number(enhanceNumberInput(input)), 0);
 }
 
 function updateAssetSelectionState(form, scope = form) {
@@ -4467,6 +4575,7 @@ function liveRegionRestoreState(region, document, captured) {
 
 function enhanceProjectsLiveRegion(region) {
   enhancePreviewMedia(region);
+  enhanceNumberInputs(region);
   enhanceProjectCards(region);
   enhanceProjectGridSize(region);
   enhanceDropdowns(liveRegionDocument(region));
@@ -5234,6 +5343,7 @@ function bindProjectAssetsNsfwForm(state, region) {
 
 function enhanceProjectAssetsLiveRegion(region) {
   enhancePreviewMedia(region);
+  enhanceNumberInputs(region);
   enhanceAssetSelection(region);
   enhanceAssetRenames(region);
   enhanceAssetGridSize(region);
@@ -5349,6 +5459,37 @@ const projectAssetsLiveEngine = createLiveRegionEngine({
 
 export function enhanceProjectAssetsLiveFiltering(scope = globalThis.document) {
   return projectAssetsLiveEngine.enhance(scope);
+}
+
+/**
+ * Reload the Project Assets live region using its active filter form. This is
+ * intentionally shared with non-browser callers that mutate project files,
+ * so the current query and presentation state remain authoritative.
+ */
+export function refreshProjectAssetsLiveRegion(scope = globalThis.document) {
+  const document = liveRegionDocument(scope);
+  const region = projectAssetsLiveEngine.getRegion(document);
+  if (!document || !region) return false;
+
+  projectAssetsLiveEngine.enhance(document);
+  const state = document.__creatorCrateProjectAssetsLiveFiltering;
+  const form = projectAssetsLiveEngine.getForm(region);
+  if (!state || !form || !projectAssetsLiveEngine.capabilities(state.window)) return false;
+
+  let url;
+  try {
+    if (state.timer) state.window.clearTimeout?.(state.timer);
+    state.timer = null;
+    url = state.controller && state.requestedUrl
+      ? new state.window.URL(state.requestedUrl.href, state.window.location?.href || state.requestedUrl.href)
+      : projectAssetsLiveEngine.url(form, state.window, { preservePage: true });
+  } catch {
+    return false;
+  }
+
+  projectAssetsLiveEngine.invalidate(state);
+  projectAssetsLiveEngine.load(state, url, 'none', form);
+  return true;
 }
 
 export function enhanceProjectsLiveFiltering(scope = globalThis.document) {
@@ -5519,6 +5660,7 @@ function bindAssetLibraryNsfwForm(state, region) {
 
 function enhanceAssetLibraryLiveRegion(region) {
   enhancePreviewMedia(region);
+  enhanceNumberInputs(region);
   enhanceAssetGridSize(region);
   enhanceDropdowns(liveRegionDocument(region));
   enhanceAssetViewerFilterDisclosures(liveRegionDocument(region));
@@ -5634,15 +5776,34 @@ export function enhanceAssetLibraryLiveFiltering(scope = globalThis.document) {
 function isScrollableDialogBody(dialogBody) {
   return Boolean(
     dialogBody?.classList?.contains?.(SCROLLABLE_CATEGORY_DIALOG_BODY_CLASS)
-      || dialogBody?.classList?.contains?.(PROJECT_EDIT_DIALOG_BODY_CLASS),
+      || dialogBody?.classList?.contains?.(PROJECT_EDIT_DIALOG_BODY_CLASS)
+      || dialogBody?.classList?.contains?.('processing-dialog-body')
+      || dialogBody?.classList?.contains?.('processing-manage-body'),
   );
+}
+
+function captureDialogBodyScroll(disclosure) {
+  const dialogBody = disclosure?.closest?.('.app-dialog-body');
+  if (!dialogBody) return null;
+  const scrollTop = Number(dialogBody.scrollTop) || 0;
+  const scrollLeft = Number(dialogBody.scrollLeft) || 0;
+  return { dialogBody, scrollTop, scrollLeft };
+}
+
+function restoreDialogBodyScroll(target) {
+  const state = target?.__creatorCrateDropdownScrollState;
+  if (state?.dialogBody && state.dialogBody.isConnected) {
+    state.dialogBody.scrollTop = state.scrollTop;
+    state.dialogBody.scrollLeft = state.scrollLeft;
+  }
+  if (target) target.__creatorCrateDropdownScrollState = null;
 }
 
 function dropdownPanelStyleSet(panel, property, value) {
   const style = panel?.style;
   if (!style) return false;
   if (typeof style.setProperty === 'function') style.setProperty(property, value);
-  else style[property === 'max-height' ? 'maxHeight' : property] = value;
+  else style[property === 'max-height' ? 'maxHeight' : property === 'min-width' ? 'minWidth' : property] = value;
   return true;
 }
 
@@ -5650,22 +5811,26 @@ function dropdownPanelStyleRemove(panel, property) {
   const style = panel?.style;
   if (!style) return;
   if (typeof style.removeProperty === 'function') style.removeProperty(property);
-  else delete style[property === 'max-height' ? 'maxHeight' : property];
+  else delete style[property === 'max-height' ? 'maxHeight' : property === 'min-width' ? 'minWidth' : property];
 }
 
-function cleanupScrollableDropdownPositioning(dropdown) {
+function cleanupScrollableDropdownPositioning(dropdown, { restoreScroll = true } = {}) {
   const state = dropdown?.[CC_DROPDOWN_OVERLAY_STATE];
   if (state) {
-    state.body?.removeEventListener?.('scroll', state.reposition);
+    state.body?.removeEventListener?.('scroll', dropdown.__creatorCrateDropdownRecordScroll);
     state.viewport?.removeEventListener?.('resize', state.reposition);
     state.viewport?.removeEventListener?.('scroll', state.reposition, true);
+    if (restoreScroll && state.body) {
+      state.body.scrollTop = state.lastScrollTop ?? state.body.scrollTop;
+    }
     delete dropdown[CC_DROPDOWN_OVERLAY_STATE];
+    delete dropdown.__creatorCrateDropdownRecordScroll;
   }
 
   const panel = dropdown?.querySelector?.(CC_DROPDOWN_PANEL_SELECTOR);
   if (!panel) return;
   panel.removeAttribute?.(CC_DROPDOWN_OVERLAY_ATTRIBUTE);
-  ['position', 'left', 'top', 'width', 'max-height'].forEach((property) => {
+  ['position', 'left', 'top', 'width', 'min-width', 'max-height'].forEach((property) => {
     dropdownPanelStyleRemove(panel, property);
   });
 }
@@ -5698,7 +5863,17 @@ function positionScrollableCategoryDropdown(dropdown, dialogBody) {
   }
 
   const initialPanelWidth = Number(panelRect.width);
-  const maxPanelWidth = Math.max(1, viewportWidth - (CC_DROPDOWN_VIEWPORT_GUTTER * 2));
+  const cssMaxPanelWidth = Number.parseFloat(
+    dropdown.ownerDocument?.defaultView?.getComputedStyle?.(panel)?.maxWidth,
+  );
+  const viewportMaxPanelWidth = viewportWidth - (CC_DROPDOWN_VIEWPORT_GUTTER * 2);
+  const maxPanelWidth = Math.min(
+    viewportMaxPanelWidth,
+    Math.max(
+      triggerWidth,
+      Number.isFinite(cssMaxPanelWidth) ? cssMaxPanelWidth : viewportMaxPanelWidth,
+    ),
+  );
   const panelWidth = Math.min(
     maxPanelWidth,
     Math.max(1, initialPanelWidth || triggerWidth),
@@ -5706,7 +5881,8 @@ function positionScrollableCategoryDropdown(dropdown, dialogBody) {
   if (!dropdownPanelStyleSet(panel, 'position', 'fixed')
     || !dropdownPanelStyleSet(panel, 'left', '0px')
     || !dropdownPanelStyleSet(panel, 'top', '0px')
-    || !dropdownPanelStyleSet(panel, 'width', `${panelWidth}px`)) {
+    || !dropdownPanelStyleSet(panel, 'width', `${panelWidth}px`)
+    || !dropdownPanelStyleSet(panel, 'min-width', '0px')) {
     return false;
   }
   panel.setAttribute?.(CC_DROPDOWN_OVERLAY_ATTRIBUTE, '');
@@ -5744,22 +5920,35 @@ function bindScrollableCategoryDropdownPositioning(dropdown, dialogBody) {
   cleanupScrollableDropdownPositioning(dropdown);
 
   const { viewport } = dropdownViewport(dropdown);
+  let lastScrollTop = Number(dialogBody.scrollTop) || 0;
   const reposition = () => {
     if (dropdown.open !== true) {
       cleanupScrollableDropdownPositioning(dropdown);
       return;
     }
+    lastScrollTop = Number(dialogBody.scrollTop) || 0;
     if (positionScrollableCategoryDropdown(dropdown, dialogBody)) return;
     dropdown.open = false;
     dropdown.removeAttribute?.('open');
     cleanupScrollableDropdownPositioning(dropdown);
     dropdown.querySelector?.('summary')?.focus?.({ preventScroll: true });
+    restoreDialogBodyScroll(dropdown);
   };
 
-  dialogBody.addEventListener?.('scroll', reposition, { passive: true });
+  const recordScroll = () => {
+    lastScrollTop = Number(dialogBody.scrollTop) || 0;
+  };
+
+  dialogBody.addEventListener?.('scroll', recordScroll, { passive: true });
   viewport?.addEventListener?.('resize', reposition);
   viewport?.addEventListener?.('scroll', reposition, true);
-  dropdown[CC_DROPDOWN_OVERLAY_STATE] = { body: dialogBody, viewport, reposition };
+  dropdown.__creatorCrateDropdownRecordScroll = recordScroll;
+  dropdown[CC_DROPDOWN_OVERLAY_STATE] = {
+    body: dialogBody,
+    viewport,
+    reposition,
+    get lastScrollTop() { return lastScrollTop; },
+  };
 }
 
 function closeScrollableCategoryDropdown(dropdown, restoreFocus = false) {
@@ -5767,6 +5956,7 @@ function closeScrollableCategoryDropdown(dropdown, restoreFocus = false) {
   dropdown.removeAttribute?.('open');
   cleanupScrollableDropdownPositioning(dropdown);
   if (restoreFocus) dropdown.querySelector?.('summary')?.focus?.({ preventScroll: true });
+  restoreDialogBodyScroll(dropdown);
 }
 
 function cleanupScrollableCategoryDialogDropdowns(dialog) {
@@ -5796,13 +5986,15 @@ function updateAssetViewerFilterDisclosureState(disclosure) {
     dialogBody.closest?.('.app-dialog-card')?.classList?.remove?.('cc-dropdown-dialog-open');
     if (!panel) return;
     if (disclosure.open === true) {
+      disclosure.__creatorCrateDropdownScrollState = captureDialogBodyScroll(disclosure);
       bindScrollableCategoryDropdownPositioning(disclosure, dialogBody);
       if (!positionScrollableCategoryDropdown(disclosure, dialogBody)) {
         closeScrollableCategoryDropdown(disclosure);
         return;
       }
     } else {
-      cleanupScrollableDropdownPositioning(disclosure);
+      cleanupScrollableDropdownPositioning(disclosure, { restoreScroll: false });
+      restoreDialogBodyScroll(disclosure);
     }
     return;
   }
@@ -5962,12 +6154,37 @@ function creatorCrateDropdownIsDisabled(dropdown) {
     || dropdown?.hasAttribute?.('data-cc-dropdown-config-disabled'));
 }
 
+function clearCreatorCrateElementChildren(element) {
+  if (!element) return;
+  if (typeof element.replaceChildren === 'function') {
+    element.replaceChildren();
+    return;
+  }
+  while (element.firstChild && typeof element.removeChild === 'function') {
+    element.removeChild(element.firstChild);
+  }
+}
+
+function syncCreatorCrateDropdownSummaryWidthFromNative(dropdown, nativeOptions) {
+  const widthSizer = dropdown.querySelector?.(CC_DROPDOWN_SUMMARY_WIDTH_SELECTOR);
+  const document = dropdown.ownerDocument || globalThis.document;
+  if (!widthSizer || !document?.createElement) return;
+
+  clearCreatorCrateElementChildren(widthSizer);
+  nativeOptions.forEach((option) => {
+    const span = document.createElement('span');
+    span.textContent = option.textContent || creatorCrateDropdownNativeValue(option);
+    widthSizer.appendChild?.(span);
+  });
+}
+
 function syncCreatorCrateDropdownOptionsFromNative(dropdown) {
   const nativeSelect = creatorCrateDropdownNativeSelect(dropdown);
   const mode = creatorCrateDropdownMode(dropdown);
   if (!nativeSelect || !mode) return;
 
   const nativeOptions = creatorCrateDropdownNativeOptions(nativeSelect);
+  syncCreatorCrateDropdownSummaryWidthFromNative(dropdown, nativeOptions);
   const nativeValues = new Set(nativeOptions.map(creatorCrateDropdownNativeValue));
   creatorCrateDropdownInputs(dropdown, mode)
     .filter((input) => !nativeValues.has(String(input.value ?? '')))
@@ -5981,12 +6198,19 @@ function syncCreatorCrateDropdownOptionsFromNative(dropdown) {
   const document = dropdown.ownerDocument || globalThis.document;
   if (!panel || !document?.createElement) return;
 
+  const searchable = creatorCrateDropdownIsSearchable(dropdown);
+  const optionList = searchable
+    ? panel.querySelector?.(CC_DROPDOWN_OPTION_LIST_SELECTOR)
+    : panel;
+  const targetContainer = optionList || panel;
+
   nativeOptions.forEach((option, index) => {
     const value = creatorCrateDropdownNativeValue(option);
     if (existingValues.has(value)) return;
 
     const wrapper = document.createElement('div');
     wrapper.setAttribute?.('class', 'asset-filter-multiselect-option');
+    if (searchable) wrapper.setAttribute?.('class', 'asset-filter-multiselect-option asset-project-filter-option');
     const label = document.createElement('label');
     const input = document.createElement('input');
     const span = document.createElement('span');
@@ -6003,7 +6227,7 @@ function syncCreatorCrateDropdownOptionsFromNative(dropdown) {
     label.appendChild?.(input);
     label.appendChild?.(span);
     wrapper.appendChild?.(label);
-    panel.appendChild?.(wrapper);
+    targetContainer.appendChild?.(wrapper);
     existingValues.add(value);
   });
 }
@@ -6080,7 +6304,7 @@ function dispatchCreatorCrateDropdownNativeChange(nativeSelect) {
   nativeSelect.dispatchEvent(new EventConstructor('change', { bubbles: true }));
 }
 
-function syncCreatorCrateDropdownFromNative(nativeSelect) {
+export function syncCreatorCrateDropdownFromNative(nativeSelect) {
   const dropdown = creatorCrateDropdownForNativeSelect(nativeSelect);
   if (!dropdown) return;
   syncCreatorCrateDropdownOptionsFromNative(dropdown);
@@ -6177,6 +6401,7 @@ function handleCreatorCrateDropdownChange(dropdown, event) {
     syncCreatorCrateDropdownDisabledState(dropdown);
     updateAssetViewerFilterDisclosureState(dropdown);
     dropdown.querySelector?.('summary')?.focus?.({ preventScroll: true });
+    restoreDialogBodyScroll(dropdown);
   } else if (mode === 'multiple' && event.target?.type === 'checkbox') {
     syncCreatorCrateDropdownNativeFromInputs(dropdown);
     if (creatorCrateDropdownDispatchesNativeChange(dropdown)) {
@@ -6272,6 +6497,7 @@ function enhanceAssetDisclosures(scope, {
       active.removeAttribute?.('open');
       updateAssetViewerFilterDisclosureState(active);
       active.querySelector?.('summary')?.focus?.({ preventScroll: true });
+      restoreDialogBodyScroll(active);
     }, true);
 
     scope.addEventListener?.('toggle', (event) => {
@@ -6287,7 +6513,10 @@ function enhanceAssetDisclosures(scope, {
           updateAssetViewerFilterDisclosureState(disclosure);
           return;
         }
+        disclosure.__creatorCrateDropdownScrollState = captureDialogBodyScroll(disclosure);
         closeAssetDisclosures(currentDisclosures, disclosure);
+      } else {
+        restoreDialogBodyScroll(disclosure);
       }
     }, true);
   }
@@ -7868,6 +8097,7 @@ export function enhanceProjectAssetsPreviewSlideshow(scope = globalThis.document
 if (typeof document !== 'undefined') {
   const run = () => {
     enhancePreviewMedia(document);
+    enhanceNumberInputs(document);
     enhanceNotesCodeBlocks(document);
     enhanceProjectCards(document);
     enhanceAutoSubmit(document);

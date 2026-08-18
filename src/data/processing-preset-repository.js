@@ -60,6 +60,34 @@ export function createProcessingPresetRepository(db) {
     WHERE id = ?
     RETURNING ${PRESET_COLUMNS.join(', ')}
   `);
+  const importPresets = db.transaction(({ operationType, presets }) => {
+    const imported = [];
+    for (const preset of presets) {
+      let suffix = 0;
+      while (true) {
+        const displayName = suffix === 0 ? preset.displayName : `${preset.displayName} (${suffix})`;
+        try {
+          imported.push(insertStmt.get(
+            operationType,
+            displayName,
+            null,
+            preset.configVersion,
+            preset.configJson,
+            null,
+            null,
+          ));
+          break;
+        } catch (error) {
+          // The database's NOCASE unique index is the authority for name
+          // equality, including collisions with seeded/system presets and
+          // earlier entries from this same bundle.
+          if (error?.code !== 'SQLITE_CONSTRAINT_UNIQUE') throw error;
+          suffix += 1;
+        }
+      }
+    }
+    return imported;
+  });
   const getMetaStmt = db.prepare('SELECT value FROM app_meta WHERE key = ?');
   const setMetaStmt = db.prepare(`
     INSERT INTO app_meta (key, value) VALUES (?, ?)
@@ -70,6 +98,12 @@ export function createProcessingPresetRepository(db) {
   `);
   const findPresetBySystemKeyStmt = db.prepare(`
     SELECT ${PRESET_COLUMNS.join(', ')} FROM processing_presets WHERE system_key = ?
+  `);
+  const updatePresetBySystemKeyStmt = db.prepare(`
+    UPDATE processing_presets
+    SET config_version = ?, config_json = ?,
+        watermark_id = ?, scale_map_id = NULL, updated_at = datetime('now')
+    WHERE system_key = ?
   `);
   const insertScaleMapStmt = db.prepare(`
     INSERT INTO watermark_scale_maps (display_name, system_key, definition_json)
@@ -96,7 +130,15 @@ export function createProcessingPresetRepository(db) {
     }
 
     for (const preset of presets) {
-      if (findPresetBySystemKeyStmt.get(preset.systemKey)) continue;
+      if (findPresetBySystemKeyStmt.get(preset.systemKey)) {
+        updatePresetBySystemKeyStmt.run(
+          preset.configVersion,
+          preset.configJson,
+          preset.watermarkId,
+          preset.systemKey,
+        );
+        continue;
+      }
 
       let displayName = preset.displayName;
       let seededPreset;
@@ -109,7 +151,8 @@ export function createProcessingPresetRepository(db) {
             preset.configVersion,
             preset.configJson,
             preset.watermarkId,
-            preset.scaleMapId === 'reference' ? seededScaleMap.id : preset.scaleMapId,
+            // Scale maps are singleton execution state, never preset bindings.
+            null,
           );
           break;
         } catch (error) {
@@ -132,6 +175,7 @@ export function createProcessingPresetRepository(db) {
     rename(id, displayName) { return renameStmt.get(displayName, id); },
     replace(id, { configJson, watermarkId, scaleMapId }) { return replaceStmt.get(configJson, watermarkId, scaleMapId, id); },
     delete(id) { return deleteStmt.get(id); },
+    importPresets,
     seedReferenceData,
   };
 }

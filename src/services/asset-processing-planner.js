@@ -30,12 +30,25 @@ import {
   deriveWatermarkOutputPlan,
   normalizeWatermarkOptions,
   prepareWatermark,
+  renderWatermarkedImage,
+  resolveWatermarkOutputCategory,
   WatermarkEngineError,
 } from './watermark-engine.js';
 import { deriveWatermarkArchivePlans, WatermarkArchiveError } from './watermark-archive.js';
+import {
+  ARCHIVE_SOURCE_IMAGE_EXTENSIONS,
+  ARCHIVES_GENERATED_BY,
+  ArchiveProcessingError,
+  deriveArchivePlans,
+  normalizeArchiveOptions,
+} from './archive-processing.js';
 
 const SOURCE_MISSING_CODES = new Set(['ENOENT', 'SOURCE_MISSING']);
 const SWAPPED_ORIENTATIONS = new Set([5, 6, 7, 8]);
+
+function isPositiveSafeInteger(value) {
+  return Number.isSafeInteger(value) && value > 0;
+}
 
 const ITEM_ERROR_MESSAGES = Object.freeze({
   MISSING_SOURCE: 'Source file does not exist.',
@@ -421,22 +434,59 @@ export function createAssetProcessingPlanner({
     return { ...resolved, ...context };
   }
 
-  function resolveManagedScaleMap(rawOptions) {
-    const scaleMapId = rawOptions?.scaleMapId;
-    if (scaleMapId === undefined || scaleMapId === null) {
-      return { definition: watermarkScaleMap, scaleMap: null };
-    }
-    if (!scaleMapService || typeof scaleMapService.resolveForProcessing !== 'function') {
+  function resolveManagedScaleMap() {
+    if (!scaleMapService) return { definition: watermarkScaleMap, scaleMap: null };
+    if (typeof scaleMapService.resolveForProcessing !== 'function') {
       throw plannerError('Managed scale maps are unavailable.', 'SCALE_MAP_UNAVAILABLE');
     }
     try {
-      return scaleMapService.resolveForProcessing(scaleMapId);
+      // Transition: the current UI may submit scaleMapId, but it is intentionally
+      // ignored. Planning is bound only to the canonical system-keyed map.
+      return scaleMapService.resolveForProcessing();
     } catch (cause) {
       throw plannerError(cause?.message || 'Managed scale map is unavailable.', cause?.code || 'SCALE_MAP_INVALID', cause);
     }
   }
 
-  function planWatermarkArchives(projectId, resolved, options, candidates, watermarkId) {
+  function resolveWatermarkInput(rawOptions) {
+    const input = rawOptions ?? {};
+    if (input.watermarkId !== undefined) {
+      const watermarkId = input.watermarkId;
+      if (!isPositiveSafeInteger(watermarkId)) {
+        throw plannerError('watermarkId must be a positive integer.', 'INVALID_WATERMARK_ID');
+      }
+      if (!watermarkService || typeof watermarkService.resolveForProcessing !== 'function') {
+        throw plannerError('Global Watermark processing is unavailable.', 'WATERMARK_SERVICE_UNAVAILABLE');
+      }
+
+      try {
+        const resolvedWatermark = watermarkService.resolveForProcessing(watermarkId);
+        return {
+          filePath: resolvedWatermark.filePath,
+          watermarkId,
+          metadata: resolvedWatermark.watermark,
+        };
+      } catch (cause) {
+        throw plannerError(cause?.message || 'The global Watermark is unavailable.', cause?.code || 'WATERMARK_FILE_INVALID', cause);
+      }
+    }
+
+    if (watermarkService) {
+      throw plannerError('watermarkId must be a positive integer.', 'INVALID_WATERMARK_ID');
+    }
+
+    try {
+      return {
+        filePath: resolveTrustedWatermarkPath(watermarkPath, watermarkRoot),
+        metadata: null,
+      };
+    } catch (err) {
+      throw plannerError('The trusted Watermark file is invalid.', err?.code || 'WATERMARK_FILE_INVALID', err);
+    }
+  }
+
+  function planWatermarkArchives(projectId, resolved, options, candidates, watermarkIdentity = {}) {
+    const { watermarkId } = watermarkIdentity;
     if (!options.makeArchives && !options.makeCbz) return { archives: [], blockers: [] };
     if (options.archiveResizedOnlyBlocked) {
       return {
@@ -774,25 +824,180 @@ export function createAssetProcessingPlanner({
     return completePlan('workflowPromptEdit', projectId, resolved.scope, items, options);
   }
 
-  async function planWatermark(projectId, scope, rawOptions) {
-    const resolvedScaleMap = resolveManagedScaleMap(rawOptions);
+  function planArchives(projectId, scope, rawOptions) {
     let options;
     try {
-      options = normalizeWatermarkOptions(rawOptions, { scaleMap: resolvedScaleMap.definition });
+      options = normalizeArchiveOptions(rawOptions);
+    } catch (err) {
+      throw plannerError(err.message || 'Archive options are invalid.', err.code || 'INVALID_ARCHIVE_OPTIONS', err);
+    }
+
+    const resolved = resolveScope(projectId, scope);
+    const items = [];
+    const sources = [];
+
+    for (const asset of resolved.assets) {
+      let item = baseItem(asset);
+      const sourceExtension = item.filename ? deriveExtensionFromFilename(item.filename) : '';
+      if (!ARCHIVE_SOURCE_IMAGE_EXTENSIONS.has(sourceExtension)) {
+        items.push(unsupportedItem(item));
+        continue;
+      }
+
+      item = {
+        ...item,
+        eligible: true,
+        operationEligibility: 'supported',
+        plannedDestination: {
+          operation: 'archive',
+          sourceRelativePath: item.relativePath,
+          formats: ['jpg', 'webp'],
+          cbz: options.makeCbz,
+        },
+        sourceAction: {
+          type: 'keep',
+          relativePath: item.relativePath,
+          destructive: false,
+        },
+      };
+
+      try {
+        const sourceAbsPath = resolveContained(resolved.projectDir, item.relativePath, 'SOURCE_PATH_UNSAFE', 'Source');
+        const sourceStats = inspectRequiredFile(sourceAbsPath, 'SOURCE_PATH_UNSAFE', 'Source');
+        sources.push({
+          asset,
+          sourceRelativePath: item.relativePath,
+          sourceAbsPath,
+          sourceIdentity: { dev: sourceStats.dev, ino: sourceStats.ino },
+        });
+        items.push({
+          ...item,
+          status: 'ready',
+          reasonCode: null,
+          reason: null,
+          changed: options.makeArchives || options.makeCbz,
+        });
+      } catch (err) {
+        items.push(itemError(item, err, err.code || 'SOURCE_PATH_UNSAFE', 'The asset could not be planned for archiving.'));
+      }
+    }
+
+    let plans;
+    const operationBlockers = [];
+    try {
+      plans = deriveArchivePlans({
+        sources,
+        options,
+        projectSlug: String(resolved.project.slug || 'project'),
+      });
+    } catch (err) {
+      const code = err instanceof ArchiveProcessingError ? err.code : err.code || 'ARCHIVE_PRECHECK_FAILED';
+      operationBlockers.push({
+        code,
+        reason: err.message || 'Archive planning failed.',
+      });
+      plans = [];
+    }
+
+    if (plans.length > 0
+      && (!generatedArtifactRepository || typeof generatedArtifactRepository.findByProjectIdAndPath !== 'function')) {
+      operationBlockers.push({
+        code: 'ARTIFACT_PERSISTENCE_UNAVAILABLE',
+        reason: 'Generated artifact persistence is unavailable.',
+      });
+    }
+
+    const archives = [];
+    for (const plan of plans) {
+      let status = 'ready';
+      let reasonCode = null;
+      let ownership = 'new-artifact';
+      try {
+        const outputPath = resolveContained(resolved.projectDir, plan.relativePath, 'ARCHIVE_PATH_UNSAFE', 'Archive');
+        const stats = inspectOptionalFile(outputPath, 'ARCHIVE_PATH_UNSAFE', 'Archive');
+        const artifact = generatedArtifactRepository?.findByProjectIdAndPath(projectId, plan.relativePath) || null;
+        if (!artifact && stats) {
+          status = 'conflict';
+          reasonCode = 'ARCHIVE_DESTINATION_CONFLICT';
+          ownership = 'foreign';
+        } else if (artifact) {
+          const hasWatermarkProvenance = artifact.generated_watermark_id !== null
+            && artifact.generated_watermark_id !== undefined;
+          if (artifact.kind !== plan.kind
+            || artifact.generated_by !== ARCHIVES_GENERATED_BY
+            || hasWatermarkProvenance
+            || !isValidGeneratedOutputSha256(artifact.sha256)) {
+            status = 'conflict';
+            reasonCode = 'ARCHIVE_DESTINATION_CONFLICT';
+            ownership = 'invalid-provenance';
+          } else if (!stats) {
+            ownership = 'missing-owned-artifact';
+          } else if (hashRegularFile(outputPath) !== artifact.sha256.toLowerCase()) {
+            status = 'conflict';
+            reasonCode = 'ARCHIVE_DESTINATION_CONFLICT';
+            ownership = 'externally-replaced';
+          } else if (!options.replaceExistingArchives) {
+            status = 'conflict';
+            reasonCode = 'ARCHIVE_DESTINATION_CONFLICT';
+            ownership = 'replace-disabled';
+          } else {
+            ownership = 'creatorcrate-owned-replace';
+          }
+        }
+      } catch (err) {
+        status = 'conflict';
+        reasonCode = err.code || 'ARCHIVE_PATH_UNSAFE';
+        ownership = 'unsafe';
+      }
+
+      const archive = {
+        kind: plan.kind,
+        format: plan.format,
+        containerFormat: plan.containerFormat,
+        relativePath: plan.relativePath,
+        quality: plan.quality,
+        entryCount: plan.entries.length,
+        variants: plan.variants,
+        entryNames: plan.entries.length <= 50 ? plan.entries.map((entry) => entry.name) : undefined,
+        status,
+        reasonCode,
+        ownership,
+      };
+      archives.push(archive);
+      if (status !== 'ready') {
+        operationBlockers.push({
+          code: reasonCode,
+          reason: `The planned archive ${plan.relativePath} cannot be safely applied.`,
+          relativePath: plan.relativePath,
+        });
+      }
+    }
+
+    return {
+      ...completePlan('archive', projectId, resolved.scope, items, options),
+      sourceCount: sources.length,
+      entryCount: archives.reduce((total, archive) => total + archive.entryCount, 0),
+      archives,
+      operationBlockers,
+    };
+  }
+
+  async function prepareWatermarkPlan(projectId, scope, rawOptions) {
+    const resolvedScaleMap = resolveManagedScaleMap();
+    let normalizedOptions;
+    try {
+      normalizedOptions = normalizeWatermarkOptions(rawOptions, { scaleMap: resolvedScaleMap.definition });
     } catch (err) {
       throw plannerError(err.message || 'Watermark options are invalid.', err.code || 'INVALID_OPTIONS', err);
     }
 
-    let resolvedWatermark;
-    try {
-      resolvedWatermark = watermarkService
-        ? watermarkService.resolveForProcessing(rawOptions?.watermarkId)
-        : { filePath: resolveTrustedWatermarkPath(watermarkPath, watermarkRoot), watermark: null };
-    } catch (err) {
-      throw plannerError('The managed Watermark is unavailable.', err?.code || 'WATERMARK_FILE_INVALID', err);
-    }
-    const trustedPath = resolvedWatermark.filePath;
-    const watermarkId = watermarkService ? rawOptions?.watermarkId : undefined;
+    const resolved = resolveScope(projectId, scope);
+    const watermarkSelection = resolveWatermarkInput(rawOptions);
+    const trustedPath = watermarkSelection.filePath;
+    const watermarkId = watermarkSelection.watermarkId;
+    const options = watermarkId === undefined
+      ? normalizedOptions
+      : { ...normalizedOptions, watermarkId };
     let watermarkInput;
     try {
       watermarkInput = await prepareWatermark(trustedPath, sharpImplementation);
@@ -803,8 +1008,8 @@ export function createAssetProcessingPlanner({
       throw plannerError('The trusted watermark file is invalid.', 'WATERMARK_FILE_INVALID', err);
     }
 
-    const resolved = resolveScope(projectId, scope);
     const categories = assetCategoryService.listProjectCategories(projectId);
+    resolveWatermarkOutputCategory(categories, options.outputCategorySlug);
     const items = [];
     const candidates = [];
 
@@ -1014,7 +1219,9 @@ export function createAssetProcessingPlanner({
       candidate.result = result;
     }
 
-    const archivePlan = planWatermarkArchives(projectId, resolved, options, candidates, watermarkId);
+    const archivePlan = planWatermarkArchives(projectId, resolved, options, candidates, {
+      watermarkId,
+    });
     const archiveBlocked = archivePlan.blockers.length > 0 || archivePlan.archives.some((archive) => archive.status !== 'ready');
     const finalItems = archiveBlocked && options.deleteSource
       ? items.map((item) => (item.destructive ? {
@@ -1028,15 +1235,49 @@ export function createAssetProcessingPlanner({
       : items;
     return {
       ...completePlan('watermark', projectId, resolved.scope, finalItems, options),
-      watermark: resolvedWatermark.watermark,
-      scaleMap: resolvedScaleMap.scaleMap && {
-        id: resolvedScaleMap.scaleMap.id,
-        displayName: resolvedScaleMap.scaleMap.displayName,
-      },
+      watermark: watermarkSelection.metadata,
       archives: archivePlan.archives,
       operationBlockers: archivePlan.blockers,
+      _preview: {
+        candidates,
+        options,
+        watermarkInput,
+      },
     };
   }
 
-  return { planConvert, planWorkflowPromptEdit, planWatermark };
+  async function planWatermark(projectId, scope, rawOptions) {
+    const plan = await prepareWatermarkPlan(projectId, scope, rawOptions);
+    delete plan._preview;
+    return plan;
+  }
+
+  async function renderWatermarkPreview(projectId, scope, rawOptions) {
+    const plan = await prepareWatermarkPlan(projectId, scope, rawOptions);
+    const { candidates, options, watermarkInput } = plan._preview;
+    const candidate = candidates[0];
+    if (!candidate) return null;
+
+    // deriveWatermarkOutputPlan keeps its primary output first. This matches
+    // Apply's deterministic variant order without exposing output paths.
+    const output = candidate.derivedOutput.outputs[0];
+    const rendered = await renderWatermarkedImage({
+      baseInput: readStableSource(candidate.sourceAbsPath).bytes,
+      watermarkInput,
+      options: { ...options, maxDimension: output.maxDimension },
+      outputFormat: output.outputFormat,
+      sharpImplementation,
+    });
+    return {
+      buffer: rendered.buffer,
+      contentType: `image/${rendered.format === 'jpeg' ? 'jpeg' : rendered.format}`,
+      filename: candidate.item.filename,
+      eligibleCount: candidates.length,
+      variant: output.variant,
+      width: rendered.width,
+      height: rendered.height,
+    };
+  }
+
+  return { planConvert, planWorkflowPromptEdit, planWatermark, renderWatermarkPreview, planArchives };
 }

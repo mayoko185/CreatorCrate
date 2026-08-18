@@ -2,7 +2,6 @@ import fs from 'node:fs';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import sharp from 'sharp';
-import yazl from 'yazl';
 import { decode as decodeBmp, encode as encodeBmp } from '@nktkas/bmp';
 import { resolveContainedAssetPath } from '../storage/asset-file.js';
 import { resolveProjectDir } from '../storage/project-storage.js';
@@ -26,9 +25,18 @@ import {
   prepareWatermark,
   renderWatermarkedImage,
   deriveWatermarkOutputPlan,
+  resolveWatermarkOutputCategory,
 } from './watermark-engine.js';
 import { deriveWatermarkArchivePlans, WatermarkArchiveError } from './watermark-archive.js';
-import { create7zArchive } from './watermark-7z.js';
+import {
+  ARCHIVE_SOURCE_IMAGE_EXTENSIONS,
+  ARCHIVES_GENERATED_BY,
+  ArchiveProcessingError,
+  deriveArchivePlans,
+  normalizeArchiveOptions,
+  STANDALONE_ARCHIVE_KINDS,
+  writeArchiveFile,
+} from './archive-processing.js';
 
 export const CONVERSION_FORMATS = Object.freeze(['png', 'jpg', 'jpeg', 'bmp', 'gif', 'webp']);
 export const ORIGINAL_HANDLINGS = Object.freeze(['keep', 'move', 'delete']);
@@ -220,8 +228,14 @@ function encodeBmpFromSharp(rawResult) {
 
 function normalizeWatermarkServiceOptions(options, scaleMap) {
   try {
-    return normalizeWatermarkOptions(options, { scaleMap });
+    const normalized = normalizeWatermarkOptions(options, { scaleMap });
+    if (options?.watermarkId === undefined) return normalized;
+    if (!isPositiveSafeInteger(options.watermarkId)) {
+      throw new AssetProcessingError('watermarkId must be a positive integer.', { code: 'INVALID_WATERMARK_ID' });
+    }
+    return { ...normalized, watermarkId: options.watermarkId };
   } catch (err) {
+    if (err instanceof AssetProcessingError) throw err;
     if (err instanceof WatermarkEngineError) {
       throw new AssetProcessingError(err.message, { code: err.code, cause: err });
     }
@@ -236,35 +250,6 @@ function isSha256(value) {
   return typeof value === 'string' && /^[a-f0-9]{64}$/i.test(value);
 }
 
-async function writeZipArchive(filePath, entries) {
-  await new Promise((resolve, reject) => {
-    const zip = new yazl.ZipFile();
-    const output = fs.createWriteStream(filePath, { flags: 'wx' });
-    let settled = false;
-    const finish = (error) => {
-      if (settled) return;
-      settled = true;
-      if (error) reject(error);
-      else resolve();
-    };
-    output.once('error', finish);
-    output.once('close', () => finish());
-    zip.outputStream.once('error', finish);
-    zip.outputStream.pipe(output);
-    try {
-      for (const entry of entries) {
-        zip.addBuffer(entry.buffer, entry.name, {
-          compress: true,
-          mtime: new Date('1980-01-01T00:00:00.000Z'),
-        });
-      }
-      zip.end();
-    } catch (err) {
-      output.destroy();
-      finish(err);
-    }
-  });
-}
 
 export function createAssetProcessingService({
   projectRepository,
@@ -552,16 +537,55 @@ export function createAssetProcessingService({
     }
   }
 
-  function resolveManagedScaleMap(rawOptions) {
-    const scaleMapId = rawOptions?.scaleMapId;
-    if (scaleMapId === undefined || scaleMapId === null) {
-      return { definition: watermarkScaleMap, scaleMap: null };
+  function resolveWatermarkInput(rawOptions) {
+    const input = rawOptions ?? {};
+    if (input.watermarkId !== undefined) {
+      const watermarkId = input.watermarkId;
+      if (!isPositiveSafeInteger(watermarkId)) {
+        throw new AssetProcessingError('watermarkId must be a positive integer.', {
+          code: 'INVALID_WATERMARK_ID',
+        });
+      }
+      if (!watermarkService || typeof watermarkService.resolveForProcessing !== 'function') {
+        throw new AssetProcessingError('Global Watermark processing is unavailable.', {
+          code: 'WATERMARK_SERVICE_UNAVAILABLE',
+        });
+      }
+
+      try {
+        const resolvedWatermark = watermarkService.resolveForProcessing(watermarkId);
+        return {
+          filePath: resolvedWatermark.filePath,
+          watermarkId,
+        };
+      } catch (cause) {
+        throw new AssetProcessingError(
+          cause?.message || 'The global Watermark is unavailable.',
+          { code: cause?.code || 'WATERMARK_FILE_INVALID', cause },
+        );
+      }
     }
-    if (!scaleMapService || typeof scaleMapService.resolveForProcessing !== 'function') {
+
+    if (watermarkService) {
+      throw new AssetProcessingError('watermarkId must be a positive integer.', {
+        code: 'INVALID_WATERMARK_ID',
+      });
+    }
+
+    return {
+      filePath: resolveTrustedWatermarkPath(undefined),
+    };
+  }
+
+  function resolveManagedScaleMap() {
+    if (!scaleMapService) return { definition: watermarkScaleMap, scaleMap: null };
+    if (typeof scaleMapService.resolveForProcessing !== 'function') {
       throw new AssetProcessingError('Managed scale maps are unavailable.', { code: 'SCALE_MAP_UNAVAILABLE' });
     }
     try {
-      return scaleMapService.resolveForProcessing(scaleMapId);
+      // Transition: legacy request scaleMapId values are accepted by the route
+      // but never influence Apply; execution uses the canonical singleton.
+      return scaleMapService.resolveForProcessing();
     } catch (cause) {
       throw new AssetProcessingError(cause?.message || 'Managed scale map is unavailable.', {
         code: cause?.code || 'SCALE_MAP_INVALID',
@@ -629,7 +653,7 @@ export function createAssetProcessingService({
     return { directory, items: [], artifacts: [], createdOutputDirs: [] };
   }
 
-  function preflightArchivePlans(project, projectId, projectDir, sources, options, watermarkId) {
+  function preflightArchivePlans(project, projectId, projectDir, sources, options, provenance = {}) {
     if (!options.makeArchives && !options.makeCbz) return [];
     if (options.archiveResizedOnlyBlocked) {
       throw new AssetProcessingError(
@@ -640,15 +664,21 @@ export function createAssetProcessingService({
     if (!generatedArtifactRepository || typeof generatedArtifactRepository.findByProjectIdAndPath !== 'function') {
       throw new AssetProcessingError('Generated artifact persistence is unavailable.', { code: 'ARTIFACT_PERSISTENCE_UNAVAILABLE' });
     }
+
+    const derivePlans = provenance.derivePlans || deriveWatermarkArchivePlans;
+    const generatedBy = provenance.generatedBy || WATERMARK_GENERATED_BY;
+    const expectedWatermarkId = provenance.watermarkId;
+    const requireNullWatermarkId = provenance.requireNullWatermarkId === true;
+    const archiveLabel = provenance.archiveLabel || 'archive';
     let plans;
     try {
-      plans = deriveWatermarkArchivePlans({
+      plans = derivePlans({
         sources,
         options,
         projectSlug: String(project.slug || 'project'),
       });
     } catch (err) {
-      if (err instanceof WatermarkArchiveError) {
+      if (err instanceof WatermarkArchiveError || err instanceof ArchiveProcessingError) {
         throw new AssetProcessingError(err.message, { code: err.code, cause: err });
       }
       throw err;
@@ -664,7 +694,7 @@ export function createAssetProcessingService({
         ? { dev: plan.destinationStats.dev, ino: plan.destinationStats.ino }
         : null;
       if (!plan.artifact && plan.destinationStats) {
-        throw new AssetProcessingError('The archive destination already exists and is not owned by CreatorCrate.', {
+        throw new AssetProcessingError(`The ${archiveLabel} destination already exists and is not owned by CreatorCrate.`, {
           code: 'ARCHIVE_DESTINATION_CONFLICT',
         });
       }
@@ -672,10 +702,11 @@ export function createAssetProcessingService({
         plan.ownership = 'new-artifact';
         continue;
       }
-      if (plan.artifact.kind !== plan.kind || plan.artifact.generated_by !== WATERMARK_GENERATED_BY
+      if (plan.artifact.kind !== plan.kind || plan.artifact.generated_by !== generatedBy
         || !isSha256(plan.artifact.sha256)
-        || (watermarkId !== undefined && plan.artifact.generated_watermark_id !== watermarkId)) {
-        throw new AssetProcessingError('The indexed archive has invalid ownership provenance.', {
+        || (requireNullWatermarkId && plan.artifact.generated_watermark_id !== null)
+        || (expectedWatermarkId !== undefined && plan.artifact.generated_watermark_id !== expectedWatermarkId)) {
+        throw new AssetProcessingError(`The indexed ${archiveLabel} has invalid ownership provenance.`, {
           code: 'ARCHIVE_DESTINATION_CONFLICT',
         });
       }
@@ -687,17 +718,17 @@ export function createAssetProcessingService({
       try {
         currentHash = hashRegularFileInProject(projectDir, plan.outputAbsPath);
       } catch (err) {
-        throw new AssetProcessingError('The existing archive could not be verified.', {
+        throw new AssetProcessingError(`The existing ${archiveLabel} could not be verified.`, {
           code: 'ARCHIVE_DESTINATION_CONFLICT', cause: err,
         });
       }
       if (currentHash !== plan.artifact.sha256.toLowerCase()) {
-        throw new AssetProcessingError('The existing archive is no longer owned by CreatorCrate.', {
+        throw new AssetProcessingError(`The existing ${archiveLabel} is no longer owned by CreatorCrate.`, {
           code: 'ARCHIVE_DESTINATION_CONFLICT',
         });
       }
       if (!options.replaceExistingArchives) {
-        throw new AssetProcessingError('The archive destination already exists and archive replacement is disabled.', {
+        throw new AssetProcessingError(`The ${archiveLabel} destination already exists and replacement is disabled.`, {
           code: 'ARCHIVE_DESTINATION_CONFLICT',
         });
       }
@@ -706,7 +737,14 @@ export function createAssetProcessingService({
     return plans;
   }
 
-  async function stageArchiveArtifact(plan, staging, index, watermarkInput, options, projectDir) {
+  async function stageArchiveArtifactWithRenderer(
+    plan,
+    staging,
+    index,
+    projectDir,
+    renderEntry,
+    failureMessage = 'CreatorCrate could not build an archive.',
+  ) {
     const stageOutput = path.join(staging.directory, `archive-${index}.${plan.format}`);
     plan.stageOutput = stageOutput;
     plan.stageIndex = index;
@@ -714,6 +752,39 @@ export function createAssetProcessingService({
     try {
       const entries = [];
       for (const entry of plan.entries) {
+        const rendered = await renderEntry(entry, plan);
+        const buffer = Buffer.isBuffer(rendered) ? rendered : rendered?.buffer;
+        if (!Buffer.isBuffer(buffer) || buffer.length === 0) {
+          throw new Error('Archive renderer returned invalid bytes.');
+        }
+        entries.push({ name: entry.name, buffer });
+      }
+      await writeArchiveFile(stageOutput, plan.format, entries);
+      const stats = inspectGeneratedFile(stageOutput, 'ARCHIVE_OUTPUT_INVALID');
+      if (stats.size <= 0) throw new Error('Generated archive is empty.');
+      plan.stageOutputIdentity = { dev: stats.dev, ino: stats.ino };
+      plan.outputStats = stats;
+      plan.sha256 = hashRegularFileInProject(projectDir, stageOutput);
+    } catch (err) {
+      if (!plan.stageOutputIdentity) {
+        try {
+          const stats = fs.lstatSync(stageOutput);
+          if (stats.isFile() && !stats.isSymbolicLink()) plan.stageOutputIdentity = { dev: stats.dev, ino: stats.ino };
+        } catch { /* recovery remains identity-safe */ }
+      }
+      throw new AssetProcessingError(failureMessage, {
+        code: 'ARCHIVE_BUILD_FAILED', cause: err,
+      });
+    }
+  }
+
+  async function stageArchiveArtifact(plan, staging, index, watermarkInput, options, projectDir) {
+    return stageArchiveArtifactWithRenderer(
+      plan,
+      staging,
+      index,
+      projectDir,
+      async (entry) => {
         const sourceBuffer = readSourceBytes(entry.source);
         const rendered = await renderWatermarkedImage({
           baseInput: sourceBuffer,
@@ -728,29 +799,10 @@ export function createAssetProcessingService({
           outputFormat: plan.kind === 'watermark-archive-webp' ? 'webp' : 'jpeg',
           sharpImplementation,
         });
-        entries.push({ name: entry.name, buffer: rendered.buffer });
-      }
-      if (plan.format === '7z') {
-        fs.writeFileSync(stageOutput, await create7zArchive(entries), { flag: 'wx' });
-      } else {
-        await writeZipArchive(stageOutput, entries);
-      }
-      const stats = inspectGeneratedFile(stageOutput, 'ARCHIVE_OUTPUT_INVALID');
-      if (stats.size <= 0) throw new Error('Generated archive is empty.');
-      plan.stageOutputIdentity = { dev: stats.dev, ino: stats.ino };
-      plan.outputStats = stats;
-      plan.sha256 = hashRegularFileInProject(projectDir, stageOutput);
-    } catch (err) {
-      if (!plan.stageOutputIdentity) {
-        try {
-          const stats = fs.lstatSync(stageOutput);
-          if (stats.isFile() && !stats.isSymbolicLink()) plan.stageOutputIdentity = { dev: stats.dev, ino: stats.ino };
-        } catch { /* recovery remains identity-safe */ }
-      }
-      throw new AssetProcessingError('CreatorCrate could not build a watermark archive.', {
-        code: 'ARCHIVE_BUILD_FAILED', cause: err,
-      });
-    }
+        return rendered.buffer;
+      },
+      'CreatorCrate could not build a watermark archive.',
+    );
   }
 
   function publishArchiveArtifact(plan, projectDir) {
@@ -817,11 +869,21 @@ export function createAssetProcessingService({
   }
 
   function cleanupArchiveStaging(plans) {
+    const removeStagingPath = (stagingPath, identity) => {
+      if (!stagingPath) return true;
+      if (identity) return removeFileIfIdentityMatches(stagingPath, identity);
+      try {
+        fs.lstatSync(stagingPath);
+        return false;
+      } catch (err) {
+        return err.code === 'ENOENT';
+      }
+    };
+
     let clean = true;
     for (const plan of plans) {
-      if (plan.stageOutput && !removeFileIfIdentityMatches(plan.stageOutput, plan.stageOutputIdentity)) clean = false;
-      if (plan.destinationBackupPath
-        && !removeFileIfIdentityMatches(plan.destinationBackupPath, plan.destinationBackupIdentity)) clean = false;
+      if (!removeStagingPath(plan.stageOutput, plan.stageOutputIdentity)) clean = false;
+      if (!removeStagingPath(plan.destinationBackupPath, plan.destinationBackupIdentity)) clean = false;
     }
     return clean;
   }
@@ -2071,10 +2133,45 @@ export function createAssetProcessingService({
     };
   }
 
-  async function watermarkAssetsLocked(projectId, assetIds, options, watermarkId) {
+  function buildArchiveArtifactChanges(archivePlans) {
+    return {
+      replacements: [],
+      deletes: [],
+      outputs: [],
+      artifactReplacements: archivePlans
+        .filter((plan) => plan.artifact)
+        .map((plan) => ({
+          id: plan.artifact.id,
+          relativePath: plan.relativePath,
+          kind: plan.kind,
+          expectedSha256: plan.artifact.sha256,
+          sha256: plan.sha256,
+          sizeBytes: plan.outputStats.size,
+          generatedBy: ARCHIVES_GENERATED_BY,
+          generatedMode: 'standalone',
+          generatedWatermarkId: null,
+          expectedGeneratedWatermarkId: null,
+        })),
+      artifactOutputs: archivePlans
+        .filter((plan) => !plan.artifact)
+        .map((plan) => ({
+          relativePath: plan.relativePath,
+          kind: plan.kind,
+          sha256: plan.sha256,
+          sizeBytes: plan.outputStats.size,
+          generatedBy: ARCHIVES_GENERATED_BY,
+          generatedMode: 'standalone',
+          generatedWatermarkId: null,
+        })),
+    };
+  }
+
+  async function watermarkAssetsLocked(projectId, assetIds, options, watermarkIdentity = {}) {
+    const { watermarkId } = watermarkIdentity;
     const project = requireMutableProject(projectId);
     const projectDir = resolveProjectAbsPath(project);
     const categories = assetCategoryService.listProjectCategories(projectId);
+    resolveWatermarkOutputCategory(categories, options.outputCategorySlug);
     if (options.deleteSource) {
       const protectedIds = assetRepository.findPublishedReleaseAssetIds(projectId, assetIds);
       if (protectedIds.length > 0) {
@@ -2084,7 +2181,8 @@ export function createAssetProcessingService({
         );
       }
     }
-    const trustedWatermarkPath = resolveTrustedWatermarkPath(watermarkId);
+    const watermarkSelection = resolveWatermarkInput({ watermarkId });
+    const trustedWatermarkPath = watermarkSelection.filePath;
     let watermarkInput;
     try {
       watermarkInput = await prepareWatermark(trustedWatermarkPath, sharpImplementation, options.trimWatermark);
@@ -2201,7 +2299,9 @@ export function createAssetProcessingService({
       }
     }
 
-    const archivePlans = preflightArchivePlans(project, projectId, projectDir, sources, options, watermarkId);
+    const archivePlans = preflightArchivePlans(project, projectId, projectDir, sources, options, {
+      watermarkId,
+    });
     const staging = createWatermarkStaging(projectDir);
     staging.items = items;
     staging.artifacts = archivePlans;
@@ -2370,13 +2470,245 @@ export function createAssetProcessingService({
       seen.add(assetId);
     }
 
-    const resolvedScaleMap = resolveManagedScaleMap(rawOptions);
+    const resolvedScaleMap = resolveManagedScaleMap();
     const options = normalizeWatermarkServiceOptions(rawOptions, resolvedScaleMap.definition);
     const watermarkId = rawOptions?.watermarkId;
     try {
       return await projectOperationCoordinator.runAsync(
         projectId,
-        () => watermarkAssetsLocked(projectId, assetIds, options, watermarkId),
+        () => watermarkAssetsLocked(projectId, assetIds, options, { watermarkId }),
+      );
+    } catch (err) {
+      if (err instanceof ProjectOperationError
+        && err.code === 'PROJECT_OPERATION_IN_PROGRESS') {
+        throw new AssetProcessingError(
+          `An operation is already in progress for project ${projectId}. Try again shortly.`,
+          { code: 'PROJECT_BUSY', cause: err },
+        );
+      }
+      throw err;
+    }
+  }
+
+  async function createArchivesLocked(projectId, assetIds, options) {
+    const project = requireMutableProject(projectId);
+    const projectDir = resolveProjectAbsPath(project);
+    const sources = [];
+    const sourcePaths = new Map();
+
+    for (const assetId of assetIds) {
+      const asset = assetRepository.findById(assetId);
+      if (!asset || asset.project_id !== projectId) {
+        throw new AssetProcessingError(`Asset ${assetId} not found.`, { code: 'ASSET_NOT_FOUND' });
+      }
+      if (!isPresent(asset)) {
+        throw new AssetProcessingError(`Asset ${assetId} is marked missing.`, { code: 'ASSET_MISSING' });
+      }
+      if (typeof asset.relative_path !== 'string' || asset.relative_path.length === 0) {
+        throw new AssetProcessingError('The selected asset path is unsafe.', { code: 'SOURCE_PATH_UNSAFE' });
+      }
+
+      const sourceRelativePath = normalizeRelativePath(asset.relative_path);
+      const sourceExtension = deriveExtensionFromFilename(path.posix.basename(sourceRelativePath));
+      if (!ARCHIVE_SOURCE_IMAGE_EXTENSIONS.has(sourceExtension)) {
+        throw new AssetProcessingError('The selected asset is not a supported archive source image.', {
+          code: 'UNSUPPORTED_SOURCE_TYPE',
+        });
+      }
+
+      const sourceAbsPath = resolveContained(projectDir, sourceRelativePath, 'SOURCE_PATH_UNSAFE', 'Source');
+      const sourceStats = inspectSource(sourceAbsPath);
+      const sourceKey = pathKey(sourceAbsPath);
+      if (sourcePaths.has(sourceKey)) {
+        throw new AssetProcessingError('Two selected assets resolve to the same source path.', {
+          code: 'INTRA_BATCH_COLLISION',
+        });
+      }
+      sourcePaths.set(sourceKey, assetId);
+      sources.push({
+        asset,
+        sourceRelativePath,
+        sourceAbsPath,
+        sourceIdentity: { dev: sourceStats.dev, ino: sourceStats.ino },
+      });
+    }
+
+    const archivePlans = preflightArchivePlans(
+      project,
+      projectId,
+      projectDir,
+      sources,
+      options,
+      {
+        derivePlans: deriveArchivePlans,
+        generatedBy: ARCHIVES_GENERATED_BY,
+        requireNullWatermarkId: true,
+        archiveLabel: 'standalone archive',
+      },
+    );
+    const staging = createWatermarkStaging(projectDir);
+    staging.items = [];
+    staging.artifacts = archivePlans;
+
+    try {
+      ensureWatermarkOutputDirectories(archivePlans, staging);
+      for (let index = 0; index < archivePlans.length; index++) {
+        await stageArchiveArtifactWithRenderer(
+          archivePlans[index],
+          staging,
+          index,
+          projectDir,
+          async (entry, plan) => {
+            const sourceBuffer = readSourceBytes(entry.source);
+            const pipeline = sharpImplementation(sourceBuffer, { animated: false }).rotate();
+            if (plan.kind === STANDALONE_ARCHIVE_KINDS.webp) {
+              return pipeline.webp({ quality: plan.quality, lossless: false }).toBuffer();
+            }
+            return pipeline.jpeg({ quality: plan.quality }).toBuffer();
+          },
+          'CreatorCrate could not build a standalone archive.',
+        );
+      }
+      for (const archivePlan of archivePlans) {
+        publishArchiveArtifact(archivePlan, projectDir);
+      }
+    } catch (err) {
+      const recoverable = restoreArchiveArtifacts(archivePlans)
+        && cleanupArchiveStaging(archivePlans)
+        && cleanupWatermarkStaging(staging)
+        && cleanupCreatedOutputDirs(staging.createdOutputDirs);
+      if (!recoverable) {
+        throw new AssetProcessingError(
+          'Standalone archives changed the filesystem but could not be safely recovered.',
+          { code: 'RECOVERY_REQUIRED', cause: err },
+        );
+      }
+      throw err;
+    }
+
+    let databaseResult;
+    try {
+      databaseResult = assetRepository.applyAssetWatermarks(
+        projectId,
+        buildArchiveArtifactChanges(archivePlans),
+      );
+      if (!databaseResult
+        || !Array.isArray(databaseResult.replaced)
+        || databaseResult.replaced.length !== 0
+        || !Array.isArray(databaseResult.outputs)
+        || databaseResult.outputs.length !== 0
+        || !Array.isArray(databaseResult.deleted)
+        || databaseResult.deleted.length !== 0
+        || !Array.isArray(databaseResult.artifactReplaced)
+        || !Array.isArray(databaseResult.artifactOutputs)
+        || databaseResult.artifactReplaced.length + databaseResult.artifactOutputs.length !== archivePlans.length) {
+        throw new Error('Generated artifact repository returned an unexpected result.');
+      }
+    } catch (err) {
+      const recoverable = restoreArchiveArtifacts(archivePlans)
+        && cleanupArchiveStaging(archivePlans)
+        && cleanupWatermarkStaging(staging)
+        && cleanupCreatedOutputDirs(staging.createdOutputDirs);
+      if (!recoverable) {
+        throw new AssetProcessingError(
+          'Standalone archives were written but could not be restored after an index failure.',
+          { code: 'RECOVERY_REQUIRED', cause: err },
+        );
+      }
+      throw new AssetProcessingError(
+        'Standalone archives were removed because CreatorCrate could not update the artifact index.',
+        { code: 'DATABASE_OPERATION_FAILED', cause: err },
+      );
+    }
+
+    const artifactsClean = cleanupArchiveStaging(archivePlans);
+    const stagingClean = cleanupWatermarkStaging(staging);
+    if (!artifactsClean || !stagingClean) {
+      throw new AssetProcessingError(
+        'Standalone archive records were updated, but filesystem cleanup requires recovery.',
+        { code: 'RECOVERY_REQUIRED' },
+      );
+    }
+
+    let artifactReplacedIndex = 0;
+    let artifactOutputIndex = 0;
+    const artifacts = archivePlans.map((plan) => (
+      plan.artifact
+        ? databaseResult.artifactReplaced[artifactReplacedIndex++]
+        : databaseResult.artifactOutputs[artifactOutputIndex++]
+    ));
+    return {
+      status: 'completed',
+      operation: 'archives',
+      requestedCount: assetIds.length,
+      sourceCount: sources.length,
+      generatedCount: artifacts.length,
+      changedCount: artifacts.length,
+      unchangedCount: 0,
+      generatedPaths: artifacts.map((artifact) => artifact.relative_path),
+      artifacts: artifacts.map((artifact, index) => ({
+        id: artifact.id,
+        kind: artifact.kind,
+        relativePath: artifact.relative_path,
+        format: archivePlans[index].format,
+        containerFormat: archivePlans[index].containerFormat,
+        quality: archivePlans[index].quality,
+        entryCount: archivePlans[index].entries.length,
+        sizeBytes: artifact.size_bytes,
+        sha256: artifact.sha256,
+        status: 'written',
+      })),
+      sources: sources.map((source) => ({
+        assetId: source.asset.id,
+        relativePath: source.sourceRelativePath,
+        entryPaths: archivePlans.map((plan) => ({
+          kind: plan.kind,
+          relativePath: plan.entries.find((entry) => entry.source.asset.id === source.asset.id)?.name || null,
+        })),
+      })),
+    };
+  }
+
+  async function createArchives(projectId, assetIds, rawOptions) {
+    if (!isPositiveSafeInteger(projectId)) {
+      throw new AssetProcessingError('projectId must be a positive integer.', { code: 'INVALID_PROJECT_ID' });
+    }
+    if (!Array.isArray(assetIds)) {
+      throw new AssetProcessingError('assetIds must be an array.', { code: 'INVALID_ASSET_SELECTION' });
+    }
+    if (assetIds.length === 0) {
+      throw new AssetProcessingError('No assets selected.', { code: 'NO_ASSETS_SELECTED' });
+    }
+    const seen = new Set();
+    for (const assetId of assetIds) {
+      if (!isPositiveSafeInteger(assetId)) {
+        throw new AssetProcessingError(
+          'assetIds must contain only positive integer IDs.',
+          { code: 'INVALID_ASSET_SELECTION' },
+        );
+      }
+      if (seen.has(assetId)) {
+        throw new AssetProcessingError('Duplicate asset IDs in selection.', {
+          code: 'DUPLICATE_ASSET_SELECTION',
+        });
+      }
+      seen.add(assetId);
+    }
+
+    let options;
+    try {
+      options = normalizeArchiveOptions(rawOptions);
+    } catch (err) {
+      throw new AssetProcessingError(err.message, {
+        code: err.code || 'INVALID_ARCHIVE_OPTIONS',
+        cause: err,
+      });
+    }
+
+    try {
+      return await projectOperationCoordinator.runAsync(
+        projectId,
+        () => createArchivesLocked(projectId, assetIds, options),
       );
     } catch (err) {
       if (err instanceof ProjectOperationError
@@ -2874,6 +3206,8 @@ export function createAssetProcessingService({
     convertSelectedAssets: convertAssets,
     watermarkAssets,
     watermarkSelectedAssets: watermarkAssets,
+    createArchives,
+    createArchiveAssets: createArchives,
     editWorkflowPrompts,
     editSelectedWorkflowPrompts: editWorkflowPrompts,
   };

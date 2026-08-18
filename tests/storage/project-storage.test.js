@@ -208,7 +208,7 @@ describe('createProjectCategoryDirs', () => {
   let tmpDir;
   let projectDir;
 
-  const EXPECTED_SUBDIRS = ['final', 'wip', 'krz', 'wm', 'wm-lq'];
+const EXPECTED_SUBDIRS = ['final', 'wip', 'krz', 'wm', 'wm-lq'];
 
   /** Ordered, all-enabled category rows matching the seeded defaults. */
   function makeCategories(slugs = EXPECTED_SUBDIRS) {

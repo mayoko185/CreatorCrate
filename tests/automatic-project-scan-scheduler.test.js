@@ -340,6 +340,33 @@ describe('automatic project scan scheduler', () => {
     expect(apps[1].locals.appMetaRepository.setValue).toHaveBeenCalledTimes(2);
   });
 
+  it('scans the global Watermark source once per cycle and resolves the fresh service', async () => {
+    const firstWatermarkService = { scanWatermarks: vi.fn() };
+    const secondWatermarkService = { scanWatermarks: vi.fn() };
+    const scanner = { scanProjectAssets: vi.fn() };
+    const projectService = { listScanEligibleProjects: vi.fn(() => [{ id: 1 }, { id: 2 }]) };
+    const appMetaRepository = makeAppMetaRepository();
+    let watermarkService = firstWatermarkService;
+    const scheduler = createAutomaticProjectScanScheduler({
+      intervalMinutes: 1,
+      getScanDependencies: () => ({
+        projectService,
+        assetScanner: scanner,
+        appMetaRepository,
+        watermarkService,
+      }),
+      logger: makeLogger(),
+    });
+
+    await scheduler.runCycle();
+    watermarkService = secondWatermarkService;
+    await scheduler.runCycle();
+
+    expect(firstWatermarkService.scanWatermarks).toHaveBeenCalledOnce();
+    expect(secondWatermarkService.scanWatermarks).toHaveBeenCalledOnce();
+    expect(scanner.scanProjectAssets).toHaveBeenCalledTimes(4);
+  });
+
   it('clears the recurring timer when stopped', () => {
     const timer = makeTimerHarness();
     const appMetaRepository = makeAppMetaRepository();

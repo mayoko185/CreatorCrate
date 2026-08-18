@@ -16,13 +16,30 @@ import { createAssetCategoryService } from '../src/services/asset-category-servi
 import { createProjectRepository } from '../src/data/project-repository.js';
 import { createProjectService } from '../src/services/project-service.js';
 import { createAssetProcessingScopeService } from '../src/services/asset-processing-scope-service.js';
-import { createAssetProcessingPlanner } from '../src/services/asset-processing-planner.js';
+import { createAssetProcessingPlanner as createAssetProcessingPlannerRaw } from '../src/services/asset-processing-planner.js';
 import { createWatermarkScaleMapService } from '../src/services/watermark-scale-map-service.js';
 import { createProcessingPresetService } from '../src/services/processing-preset-service.js';
 import { createPngChunk, PNG_SIGNATURE } from '../src/services/workflow-prompt-editor.js';
 import { resolveProjectDir } from '../src/storage/project-storage.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
+
+function createAssetProcessingPlanner(dependencies) {
+  const planner = createAssetProcessingPlannerRaw(dependencies);
+  const planWatermark = planner.planWatermark.bind(planner);
+  const renderWatermarkPreview = planner.renderWatermarkPreview.bind(planner);
+  return {
+    ...planner,
+    planWatermark(projectId, scope, options = {}) {
+      const outputCategorySlug = options.mode === 'social' ? 'wm-lq' : 'wm';
+      return planWatermark(projectId, scope, { outputCategorySlug, ...options });
+    },
+    renderWatermarkPreview(projectId, scope, options = {}) {
+      const outputCategorySlug = options.mode === 'social' ? 'wm-lq' : 'wm';
+      return renderWatermarkPreview(projectId, scope, { outputCategorySlug, ...options });
+    },
+  };
+}
 
 function projectInput() {
   return {
@@ -139,6 +156,7 @@ describe('asset processing planner', () => {
   let project;
   let projectDir;
   let finalCategory;
+  let wmCategory;
   let watermarkPath;
   let baseImage;
 
@@ -161,6 +179,8 @@ describe('asset processing planner', () => {
     projectDir = resolveProjectDir(projectsRoot, project.project_dir);
     finalCategory = categoryRepository.listProjectCategories(project.id)
       .find((category) => category.directory_slug === 'final');
+    wmCategory = categoryRepository.listProjectCategories(project.id)
+      .find((category) => category.directory_slug === 'wm');
     baseImage = await imageBuffer();
     watermarkPath = path.join(tmpDir, 'trusted-watermark.png');
     fs.writeFileSync(watermarkPath, await sharp({
@@ -228,6 +248,7 @@ describe('asset processing planner', () => {
           generated_source_asset_id = ?,
           generated_source_relative_path = ?,
           generated_mode = ?,
+          generated_variant = 'unresized',
           generated_output_sha256 = ?
       WHERE id = ?
     `).run(source.id, source.relative_path, mode, digest, asset.id);
@@ -444,13 +465,13 @@ describe('asset processing planner', () => {
     const unsupported = writeAsset('Final/source.txt', Buffer.from('not an image'));
     const safeSource = writeAsset('Final/safe.png');
     const safeOutputBuffer = await imageBuffer();
-    const safeOutput = writeAsset('Final/wm/safe_wm.png', safeOutputBuffer);
-    db.prepare('UPDATE assets SET nested_path = ? WHERE id = ?').run('wm', safeOutput.id);
+    const safeOutput = writeAsset('wm/safe_wm.png', safeOutputBuffer);
+    db.prepare('UPDATE assets SET category_id = ?, nested_path = ? WHERE id = ?').run(wmCategory.id, '', safeOutput.id);
     setWatermarkProvenance(safeOutput, safeSource, 'patreon', sha256(safeOutputBuffer));
     const missingSource = writeAsset('Final/missing-generated.png');
-    const missingOutput = assetRepository.upsert(project.id, 'Final/wm/missing-generated_wm.png', {
-      categoryId: finalCategory.id,
-      nestedPath: 'wm',
+    const missingOutput = assetRepository.upsert(project.id, 'wm/missing-generated_wm.png', {
+      categoryId: wmCategory.id,
+      nestedPath: '',
       filename: 'missing-generated_wm.png',
       extension: 'png',
       mimeType: 'image/png',
@@ -459,13 +480,13 @@ describe('asset processing planner', () => {
     });
     setWatermarkProvenance(missingOutput, missingSource, 'patreon', 'a'.repeat(64));
     const malformedSource = writeAsset('Final/malformed.png');
-    const malformedOutput = writeAsset('Final/wm/malformed_wm.png');
-    db.prepare('UPDATE assets SET nested_path = ? WHERE id = ?').run('wm', malformedOutput.id);
+    const malformedOutput = writeAsset('wm/malformed_wm.png');
+    db.prepare('UPDATE assets SET category_id = ?, nested_path = ? WHERE id = ?').run(wmCategory.id, '', malformedOutput.id);
     setWatermarkProvenance(malformedOutput, malformedSource, 'patreon', 'not-a-sha256');
     const protectedSource = writeAsset('Final/protected-watermark.png');
     addPublishedRelease(protectedSource.id);
     const foreignSource = writeAsset('Final/foreign.png');
-    const foreignDestinationPath = path.join(projectDir, 'Final', 'wm', 'foreign_wm.png');
+    const foreignDestinationPath = path.join(projectDir, 'wm', 'foreign_wm.png');
     fs.mkdirSync(path.dirname(foreignDestinationPath), { recursive: true });
     fs.writeFileSync(foreignDestinationPath, await imageBuffer());
     const collisionPng = writeAsset('Final/collision.png');
@@ -476,24 +497,32 @@ describe('asset processing planner', () => {
     const patreonPlan = await planner.planWatermark(project.id, {
       type: 'selected',
       assetIds: [patreon.id, unsupported.id, safeSource.id, missingSource.id, malformedSource.id],
-    }, { mode: 'patreon', outputFormat: 'png', deleteSource: false });
+    }, { mode: 'patreon', primaryFormat: 'png', secondaryFormat: null, resizedFormat: null, deleteSource: false });
     const socialPlan = await planner.planWatermark(project.id, {
       type: 'selected',
       assetIds: [social.id, protectedSource.id],
-    }, { mode: 'social', outputFormat: 'png' });
+    }, { mode: 'social', primaryFormat: null, secondaryFormat: null, resizedFormat: 'png' });
     const foreignPlan = await planner.planWatermark(project.id, {
       type: 'selected',
       assetIds: [foreignSource.id],
-    }, { mode: 'patreon', outputFormat: 'png', deleteSource: false });
+    }, { mode: 'patreon', primaryFormat: 'png', secondaryFormat: null, resizedFormat: null, deleteSource: false });
     const collisionPlan = await planner.planWatermark(project.id, {
       type: 'selected',
       assetIds: [collisionPng.id, collisionJpg.id],
-    }, { mode: 'social', outputFormat: 'png', deleteSource: false });
+    }, { mode: 'social', primaryFormat: null, secondaryFormat: null, resizedFormat: 'png', deleteSource: false });
+    await expect(planner.planWatermark(project.id, {
+      type: 'selected', assetIds: [patreon.id],
+    }, { mode: 'patreon', outputCategorySlug: 'missing-category' }))
+      .rejects.toMatchObject({ code: 'OUTPUT_CATEGORY_NOT_FOUND' });
+    await expect(planner.planWatermark(project.id, {
+      type: 'selected', assetIds: [patreon.id],
+    }, { mode: 'patreon', outputCategorySlug: '../outside' }))
+      .rejects.toMatchObject({ code: 'INVALID_OUTPUT_CATEGORY' });
 
     expect(patreonPlan.items.find((item) => item.assetId === patreon.id)).toMatchObject({
       status: 'ready',
       plannedDestination: {
-        relativePath: 'Final/wm/patreon_wm.png',
+        relativePath: 'wm/patreon_wm.png',
         existsInIndex: false,
         existsOnFilesystem: false,
       },
@@ -528,7 +557,7 @@ describe('asset processing planner', () => {
     expect(socialPlan.items.find((item) => item.assetId === social.id)).toMatchObject({
       status: 'ready',
       sourceAction: { type: 'delete', destructive: true },
-      plannedDestination: { relativePath: 'Final/social_lq_wm.png' },
+      plannedDestination: { relativePath: 'wm-lq/social_lq_wm.png' },
     });
     expect(socialPlan.items.find((item) => item.assetId === protectedSource.id)).toMatchObject({
       status: 'blocked',
@@ -555,18 +584,18 @@ describe('asset processing planner', () => {
     const plan = await planner.planWatermark(project.id, {
       type: 'selected', assetIds: [source.id],
     }, {
-      mode: 'custom', outputFormat: 'png', deleteSource: false,
+      mode: 'custom', primaryFormat: 'png', secondaryFormat: null, resizedFormat: null, deleteSource: false,
       makeArchives: true, makeCbz: true, setName: 'Preview Set',
     });
     expect(plan.archives).toEqual(expect.arrayContaining([
-      expect.objectContaining({ relativePath: 'Preview Set_jpg_q80.zip', entryCount: 1, variants: ['single'], status: 'ready' }),
-      expect.objectContaining({ relativePath: 'Preview Set_webp_q90.zip', entryCount: 1, variants: ['single'], status: 'ready' }),
+      expect.objectContaining({ relativePath: 'Preview Set_jpg_q80.zip', entryCount: 1, variants: ['unresized'], status: 'ready' }),
+      expect.objectContaining({ relativePath: 'Preview Set_webp_q90.zip', entryCount: 1, variants: ['unresized'], status: 'ready' }),
       expect.objectContaining({ relativePath: 'Preview Set_jpg_q85.cbz', entryCount: 1, format: 'cbz', status: 'ready' }),
     ]));
     const sevenPlan = await planner.planWatermark(project.id, {
       type: 'selected', assetIds: [source.id],
     }, {
-      mode: 'custom', outputFormat: 'png', deleteSource: false,
+      mode: 'custom', primaryFormat: 'png', secondaryFormat: null, resizedFormat: null, deleteSource: false,
       makeArchives: true, makeCbz: true, archiveFormat: '7z', setName: 'Preview 7z',
     });
     expect(sevenPlan.archives).toEqual(expect.arrayContaining([
@@ -578,7 +607,7 @@ describe('asset processing planner', () => {
     const blocked = await planner.planWatermark(project.id, {
       type: 'selected', assetIds: [source.id],
     }, {
-      mode: 'custom', outputFormat: 'png', deleteSource: true,
+      mode: 'custom', primaryFormat: null, secondaryFormat: null, resizedFormat: 'png', deleteSource: true,
       maxDimension: 20, makeArchives: true,
     });
     expect(blocked.operationBlockers).toEqual(expect.arrayContaining([
@@ -588,47 +617,58 @@ describe('asset processing planner', () => {
     expect(snapshotDatabase(db)).toEqual(beforeDatabase);
   });
 
-  it('resolves managed scale maps by ID for plan geometry without mutating the map or project', async () => {
+  it('renders the first canonical Watermark source in memory with the primary resized variant', async () => {
+    const first = writeAsset('Final/a-first.png', await imageBuffer('png', 100, 60));
+    const second = writeAsset('Final/b-second.png', await imageBuffer('png', 100, 60));
+    const beforeTree = snapshotTree(projectDir);
+    const beforeDatabase = snapshotDatabase(db);
+
+    const preview = await planner.renderWatermarkPreview(project.id, {
+      type: 'selected', assetIds: [second.id, first.id],
+    }, {
+      mode: 'custom', primaryFormat: null, secondaryFormat: null, resizedFormat: 'png', maxDimension: 40, deleteSource: false,
+    });
+
+    expect(preview).toMatchObject({
+      filename: 'b-second.png', eligibleCount: 2, variant: 'resized', contentType: 'image/png', width: 40, height: 24,
+    });
+    expect(preview.buffer).toBeInstanceOf(Buffer);
+    expect(preview.buffer.equals(baseImage)).toBe(false);
+    expect(snapshotTree(projectDir)).toEqual(beforeTree);
+    expect(snapshotDatabase(db)).toEqual(beforeDatabase);
+  });
+
+  it('uses the canonical scale map for plan geometry and ignores a historical request ID', async () => {
     const source = writeAsset('Final/managed-scale.png', await imageBuffer('png', 100, 60));
-    const scaleMapService = createWatermarkScaleMapService({
-      repository: createWatermarkScaleMapRepository(db),
-    });
-    const scaleMap = scaleMapService.createScaleMap({
-      displayName: 'Exact managed map',
-      definition: { '100x60': 0.35, default: 0.1 },
-    });
+    const scaleMapRepository = createWatermarkScaleMapRepository(db);
+    const scaleMapService = createWatermarkScaleMapService({ repository: scaleMapRepository });
+    const canonicalId = Number(db.prepare(`
+      INSERT INTO watermark_scale_maps (display_name, system_key, definition_json)
+      VALUES ('Reference', 'reference-watermark-scale-map', '{"100x60":0.35,"default":0.1}')
+    `).run().lastInsertRowid);
+    const historicalId = Number(db.prepare(`
+      INSERT INTO watermark_scale_maps (display_name, definition_json)
+      VALUES ('Historical map', '{"100x60":0.9,"default":0.1}')
+    `).run().lastInsertRowid);
     const managedPlanner = createAssetProcessingPlanner({
-      scopeService,
-      projectRepository,
-      assetRepository,
-      assetCategoryService,
-      projectsRoot,
-      watermarkPath,
-      watermarkRoot: tmpDir,
-      scaleMapService,
+      scopeService, projectRepository, assetRepository, assetCategoryService, projectsRoot,
+      watermarkPath, watermarkRoot: tmpDir, scaleMapService,
     });
     const beforeTree = snapshotTree(projectDir);
     const beforeDatabase = snapshotDatabase(db);
 
-    const first = await managedPlanner.planWatermark(project.id, {
-      type: 'selected', assetIds: [source.id],
-    }, { mode: 'custom', outputFormat: 'png', deleteSource: false, scaleMapId: scaleMap.id });
+    const canonicalRequest = await managedPlanner.planWatermark(project.id, { type: 'selected', assetIds: [source.id] }, {
+      mode: 'custom', outputFormat: 'png', deleteSource: false, scaleMapId: canonicalId,
+    });
+    const historicalRequest = await managedPlanner.planWatermark(project.id, { type: 'selected', assetIds: [source.id] }, {
+      mode: 'custom', outputFormat: 'png', deleteSource: false, scaleMapId: historicalId,
+    });
+
+    expect(canonicalRequest).not.toHaveProperty('scaleMap');
+    expect(canonicalRequest.items[0].geometry.watermark.scale).toBe(0.35);
+    expect(historicalRequest.items[0].geometry.watermark.scale).toBe(0.35);
+    expect(scaleMapRepository.findById(historicalId).definition_json).toBe('{"100x60":0.9,"default":0.1}');
     expect(snapshotTree(projectDir)).toEqual(beforeTree);
     expect(snapshotDatabase(db)).toEqual(beforeDatabase);
-    scaleMapService.replaceScaleMap(scaleMap.id, { '100x60': 0.5 });
-    const beforeSecondTree = snapshotTree(projectDir);
-    const beforeSecondDatabase = snapshotDatabase(db);
-    const second = await managedPlanner.planWatermark(project.id, {
-      type: 'selected', assetIds: [source.id],
-    }, { mode: 'custom', outputFormat: 'png', deleteSource: false, scaleMapId: scaleMap.id });
-
-    expect(first.scaleMap).toEqual({ id: scaleMap.id, displayName: 'Exact managed map' });
-    expect(first.items[0].geometry.watermark.scale).toBe(0.35);
-    expect(second.items[0].geometry.watermark.scale).toBe(0.5);
-    expect(snapshotTree(projectDir)).toEqual(beforeSecondTree);
-    expect(snapshotDatabase(db)).toEqual(beforeSecondDatabase);
-    await expect(managedPlanner.planWatermark(project.id, { type: 'selected', assetIds: [source.id] }, {
-      mode: 'custom', scaleMapId: 999,
-    })).rejects.toMatchObject({ code: 'SCALE_MAP_NOT_FOUND' });
   });
 });

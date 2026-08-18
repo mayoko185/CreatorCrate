@@ -9,11 +9,16 @@ import {
   calculateWatermarkPosition,
   deriveWatermarkOutputPlan,
   fitWatermarkDimensions,
-  normalizeWatermarkOptions,
+  normalizeWatermarkOptions as normalizeWatermarkOptionsRaw,
   renderWatermarkedImage,
+  resolveWatermarkOutputCategory,
   resolveWatermarkScale,
   trimTransparentBorder,
 } from '../src/services/watermark-engine.js';
+
+function normalizeWatermarkOptions(options = {}, config) {
+  return normalizeWatermarkOptionsRaw({ outputCategorySlug: 'wm', ...options }, config);
+}
 
 async function makeBorderedWatermark() {
   const visible = await sharp({
@@ -195,39 +200,87 @@ describe('watermark engine', () => {
   it('uses PNG, bottom-left, and reference resize defaults for both modes', () => {
     expect(normalizeWatermarkOptions({ mode: 'patreon' })).toMatchObject({
       position: 'bl',
-      outputFormat: 'png',
+      primaryFormat: 'png',
+      secondaryFormat: null,
+      resizedFormat: null,
       maxDimension: null,
       deleteSource: false,
       overwrite: true,
-      socialSuffix: '_wm',
+      unresizedSuffix: '_wm',
+      resizedSuffix: '_lq_wm',
     });
     expect(normalizeWatermarkOptions({ mode: 'social' })).toMatchObject({
       position: 'bl',
-      outputFormat: 'png',
+      primaryFormat: null,
+      secondaryFormat: null,
+      resizedFormat: 'png',
       maxDimension: 1100,
       deleteSource: true,
       overwrite: true,
-      socialSuffix: '_lq_wm',
+      unresizedSuffix: '_wm',
+      resizedSuffix: '_lq_wm',
     });
   });
 
-  it('derives deduplicated dual-variant output paths beneath a project-relative output directory', () => {
-    const options = normalizeWatermarkOptions({
-      mode: 'custom',
-      maxDimension: 900,
-      alsoUnresized: true,
-      outputDirectory: 'processed/wm',
-      outputFormat: 'png',
-      additionalFormats: ['webp', 'png'],
-      additionalFormatsResized: ['jpg', 'webp', 'jpg'],
+  it('normalizes legacy single suffixes into the canonical unresized suffix', () => {
+    const normalized = normalizeWatermarkOptions({ mode: 'custom', singleSuffix: '_legacy' });
+    expect(normalized).toMatchObject({ unresizedSuffix: '_legacy', resizedSuffix: '_lq_wm' });
+    expect(normalized).not.toHaveProperty('singleSuffix');
+    expect(normalized).not.toHaveProperty('suffix');
+
+    expect(normalizeWatermarkOptions({
+      mode: 'custom', singleSuffix: '_legacy', unresizedSuffix: '_current',
+    }).unresizedSuffix).toBe('_current');
+  });
+
+  it('normalizes only safe legacy output destinations and gives the explicit category precedence', () => {
+    expect(normalizeWatermarkOptionsRaw({ outputDir: 'wm' }, { requireOutputCategory: false }).outputCategorySlug).toBe('wm');
+    expect(normalizeWatermarkOptionsRaw({ outputDirectory: 'wm-lq' }, { requireOutputCategory: false }).outputCategorySlug).toBe('wm-lq');
+    expect(normalizeWatermarkOptionsRaw({ outputCategorySlug: 'wm', outputDir: 'wm-lq' }).outputCategorySlug).toBe('wm');
+    for (const outputDir of ['foo/bar', 'foo\\bar', '../foo']) {
+      expect(normalizeWatermarkOptionsRaw({ outputDir }, { requireOutputCategory: false }).outputCategorySlug).toBeUndefined();
+    }
+  });
+
+  it('resolves only enabled categories from the current project category set', () => {
+    const enabled = { id: 1, directory_slug: 'wm', enabled: 1 };
+    expect(resolveWatermarkOutputCategory([enabled], 'wm')).toBe(enabled);
+    expect(() => resolveWatermarkOutputCategory([{ ...enabled, enabled: 0 }], 'wm')).toThrow(/not available/);
+    expect(() => resolveWatermarkOutputCategory([enabled], 'wm-lq')).toThrow(/not available/);
+  });
+
+  it('derives primary, secondary, and resized output slots in deterministic order', () => {
+    const outputsFor = (slots) => deriveWatermarkOutputPlan('Final/image.png', normalizeWatermarkOptions({
+      mode: 'custom', maxDimension: 900, unresizedSuffix: '_u', resizedSuffix: '_r', ...slots,
+    })).outputs.map(({ variant, outputFormat, outputRelativePath }) => ({ variant, outputFormat, outputRelativePath }));
+
+    expect(outputsFor({ primaryFormat: 'png', secondaryFormat: null, resizedFormat: null }))
+      .toEqual([{ variant: 'unresized', outputFormat: 'png', outputRelativePath: 'wm/image_u.png' }]);
+    expect(outputsFor({ primaryFormat: null, secondaryFormat: 'jpeg', resizedFormat: null }))
+      .toEqual([{ variant: 'unresized', outputFormat: 'jpeg', outputRelativePath: 'wm/image_u.jpg' }]);
+    expect(outputsFor({ primaryFormat: null, secondaryFormat: null, resizedFormat: 'webp' }))
+      .toEqual([{ variant: 'resized', outputFormat: 'webp', outputRelativePath: 'wm/image_r.webp' }]);
+    expect(outputsFor({ primaryFormat: 'png', secondaryFormat: 'webp', resizedFormat: 'jpeg' }))
+      .toEqual([
+        { variant: 'unresized', outputFormat: 'png', outputRelativePath: 'wm/image_u.png' },
+        { variant: 'unresized', outputFormat: 'webp', outputRelativePath: 'wm/image_u.webp' },
+        { variant: 'resized', outputFormat: 'jpeg', outputRelativePath: 'wm/image_r.jpg' },
+      ]);
+  });
+
+  it('rejects invalid slot combinations and emits no legacy output fields', () => {
+    expect(() => normalizeWatermarkOptions({ primaryFormat: null, secondaryFormat: null, resizedFormat: null }))
+      .toThrowError(expect.objectContaining({ code: 'OUTPUT_FORMAT_REQUIRED' }));
+    expect(() => normalizeWatermarkOptions({ primaryFormat: 'png', secondaryFormat: 'png', resizedFormat: null }))
+      .toThrowError(expect.objectContaining({ code: 'DUPLICATE_NORMAL_FORMAT' }));
+    expect(() => normalizeWatermarkOptions({ primaryFormat: null, secondaryFormat: null, resizedFormat: 'webp' }))
+      .toThrowError(expect.objectContaining({ code: 'RESIZED_FORMAT_REQUIRES_DIMENSION' }));
+
+    const normalized = normalizeWatermarkOptions({ maxDimension: 900, alsoUnresized: true, outputFormat: 'png', additionalFormats: ['webp'] });
+    expect(normalized).toMatchObject({ primaryFormat: 'png', secondaryFormat: 'webp', resizedFormat: 'png' });
+    ['outputFormat', 'alsoUnresized', 'additionalFormats', 'additionalFormatsResized'].forEach((field) => {
+      expect(normalized).not.toHaveProperty(field);
     });
-    expect(deriveWatermarkOutputPlan('Final/sub/image.tiff', options).outputs).toMatchObject([
-      { variant: 'unresized', outputFormat: 'png', outputRelativePath: 'processed/wm/Final/sub/image_wm.png' },
-      { variant: 'unresized', outputFormat: 'webp', outputRelativePath: 'processed/wm/Final/sub/image_wm.webp' },
-      { variant: 'resized', outputFormat: 'png', outputRelativePath: 'processed/wm/Final/sub/image_lq_wm.png' },
-      { variant: 'resized', outputFormat: 'jpg', outputRelativePath: 'processed/wm/Final/sub/image_lq_wm.jpg' },
-      { variant: 'resized', outputFormat: 'webp', outputRelativePath: 'processed/wm/Final/sub/image_lq_wm.webp' },
-    ]);
   });
 
   it.each(['../x', '/x', '\\x', 'a/b', 'a\\b', 'x\n'])('rejects unsafe watermark suffix %j', (suffix) => {

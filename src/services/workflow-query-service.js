@@ -1705,6 +1705,7 @@ export function createWorkflowQueryService({
     const items = projectCategories.map((category) => ({
       id: category.id,
       displayName: category.display_name,
+      directorySlug: category.directory_slug,
       enabled: Boolean(category.enabled),
       displayOrder: category.display_order,
       assetCount: navCounts.byCategoryId[category.id] || 0,

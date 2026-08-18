@@ -31,6 +31,17 @@ function publicRecord(record) {
   };
 }
 
+function sourcePublicRecord(record) {
+  const relativePath = record.source_relative_path;
+  return {
+    id: record.id,
+    filename: path.posix.basename(relativePath),
+    relativePath,
+    width: record.width,
+    height: record.height,
+  };
+}
+
 function sha256(bytes) {
   return createHash('sha256').update(bytes).digest('hex');
 }
@@ -47,35 +58,52 @@ function normalizeDisplayName(value) {
 }
 
 /**
- * Owns registry-backed PNG files rooted under APP_DATA_ROOT/watermarks.
- * Returned public metadata intentionally never includes storage_key or a path.
+ * Owns the global filesystem-backed Watermark registry rooted under
+ * PROJECTS_ROOT/watermarks. The legacy app-owned mutation methods remain
+ * available only for transitional processing compatibility; the HTTP resource
+ * surface is read-only and all filesystem source reconciliation is driven by
+ * scanWatermarks().
  */
-export function createWatermarkService({ repository, storageRoot, sharpImplementation = sharp } = {}) {
+export function createWatermarkService({
+  repository,
+  projectsRoot,
+  storageRoot,
+  sharpImplementation = sharp,
+} = {}) {
   if (!repository
     || typeof repository.findById !== 'function'
     || typeof repository.list !== 'function'
-    || typeof repository.create !== 'function'
-    || typeof repository.rename !== 'function'
-    || typeof repository.replaceImage !== 'function'
-    || typeof repository.delete !== 'function') {
+    || typeof repository.listSourceRecords !== 'function'
+    || typeof repository.reconcileSources !== 'function') {
     throw new Error('createWatermarkService requires a watermark repository.');
   }
-  if (typeof storageRoot !== 'string' || storageRoot.length === 0) {
-    throw new Error('createWatermarkService requires a managed watermark storageRoot.');
+  if ((projectsRoot === undefined || projectsRoot === null)
+    && (typeof storageRoot !== 'string' || storageRoot.length === 0)) {
+    throw new Error('createWatermarkService requires PROJECTS_ROOT or a transitional storageRoot.');
   }
   if (typeof sharpImplementation !== 'function') {
     throw new Error('createWatermarkService requires a Sharp implementation.');
   }
 
-  const root = path.resolve(storageRoot);
+  const projectRoot = projectsRoot === undefined || projectsRoot === null
+    ? null
+    : path.resolve(projectsRoot);
+  const root = path.resolve(storageRoot || path.join(projectRoot, 'watermarks'));
+  if (projectRoot) {
+    const directChild = path.relative(projectRoot, root);
+    if (directChild !== 'watermarks') {
+      throw new Error('createWatermarkService requires the global Watermark root to be PROJECTS_ROOT/watermarks.');
+    }
+  }
 
   function ensureRoot() {
     try {
       fs.mkdirSync(root, { recursive: true, mode: 0o700 });
       const stats = fs.lstatSync(root);
       if (stats.isSymbolicLink() || !stats.isDirectory()) throw new Error('Managed watermark root is unsafe.');
+      fs.accessSync(root, fs.constants.R_OK | fs.constants.X_OK);
     } catch (cause) {
-      throw new WatermarkServiceError('Managed watermark storage is unavailable.', {
+      throw new WatermarkServiceError('Global Watermark source storage is unavailable.', {
         code: 'WATERMARK_STORAGE_UNAVAILABLE',
         cause,
       });
@@ -94,6 +122,122 @@ export function createWatermarkService({ repository, storageRoot, sharpImplement
         cause,
       });
     }
+  }
+
+  function normalizeSourceRelativePath(value) {
+    if (typeof value !== 'string' || value.length === 0) {
+      throw new WatermarkServiceError('Watermark source path is invalid.', { code: 'WATERMARK_SOURCE_UNSAFE' });
+    }
+    const normalized = value.replace(/\\/g, '/');
+    if (normalized.startsWith('/') || /^[A-Za-z]:/.test(normalized)
+      || CONTROL_CHARACTERS.test(normalized)) {
+      throw new WatermarkServiceError('Watermark source path is invalid.', { code: 'WATERMARK_SOURCE_UNSAFE' });
+    }
+    const segments = normalized.split('/');
+    if (segments.some((segment) => segment.length === 0 || segment === '.' || segment === '..')) {
+      throw new WatermarkServiceError('Watermark source path is invalid.', { code: 'WATERMARK_SOURCE_UNSAFE' });
+    }
+    const resolved = path.resolve(root, ...segments);
+    const relativeToRoot = path.relative(root, resolved);
+    if (relativeToRoot === '' || relativeToRoot.startsWith('..') || path.isAbsolute(relativeToRoot)) {
+      throw new WatermarkServiceError('Watermark source path escapes the global root.', { code: 'WATERMARK_SOURCE_UNSAFE' });
+    }
+    return segments.join('/');
+  }
+
+  function resolveSourcePath(relativePath) {
+    const normalized = normalizeSourceRelativePath(relativePath);
+    try {
+      return resolveContainedAssetPath(root, normalized, { checkFinalSymlink: false });
+    } catch (cause) {
+      throw new WatermarkServiceError('Watermark source path is unsafe.', {
+        code: 'WATERMARK_SOURCE_UNSAFE',
+        cause,
+      });
+    }
+  }
+
+  function collectPngPaths(directory, relativeDirectory = '') {
+    let entries;
+    try {
+      entries = fs.readdirSync(directory, { withFileTypes: true });
+    } catch (cause) {
+      throw new WatermarkServiceError('Global Watermark sources could not be enumerated.', {
+        code: 'WATERMARK_STORAGE_UNAVAILABLE',
+        cause,
+      });
+    }
+
+    entries.sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0);
+    const paths = [];
+    for (const entry of entries) {
+      const relativePath = relativeDirectory ? `${relativeDirectory}/${entry.name}` : entry.name;
+      const absolutePath = path.join(directory, entry.name);
+      let stats;
+      try {
+        stats = fs.lstatSync(absolutePath);
+      } catch (cause) {
+        throw new WatermarkServiceError('Global Watermark source changed during scan.', {
+          code: 'WATERMARK_SCAN_RACE',
+          cause,
+        });
+      }
+      if (stats.isSymbolicLink()) continue;
+      if (stats.isDirectory()) {
+        paths.push(...collectPngPaths(absolutePath, relativePath));
+        continue;
+      }
+      if (stats.isFile() && /\.png$/i.test(entry.name)) {
+        paths.push(normalizeSourceRelativePath(relativePath));
+      }
+    }
+    return paths;
+  }
+
+  async function readSource(relativePath) {
+    const normalized = normalizeSourceRelativePath(relativePath);
+    const filePath = resolveSourcePath(normalized);
+    let before;
+    let after;
+    let bytes;
+    try {
+      before = fs.lstatSync(filePath);
+      if (before.isSymbolicLink() || !before.isFile()) throw new Error('Source is not a regular file.');
+      bytes = fs.readFileSync(filePath);
+      after = fs.lstatSync(filePath);
+      if (after.isSymbolicLink() || !after.isFile()
+        || before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size) {
+        throw new Error('Source changed during read.');
+      }
+    } catch (cause) {
+      throw new WatermarkServiceError('Global Watermark source could not be read safely.', {
+        code: 'WATERMARK_SOURCE_UNSAFE',
+        cause,
+      });
+    }
+
+    let metadata;
+    try {
+      metadata = await sharpImplementation(bytes, { animated: false }).metadata();
+    } catch (cause) {
+      throw new WatermarkServiceError('Watermark source is not a readable PNG.', {
+        code: 'INVALID_WATERMARK_PNG',
+        cause,
+      });
+    }
+    if (metadata.format !== 'png' || !Number.isSafeInteger(metadata.width) || metadata.width <= 0
+      || !Number.isSafeInteger(metadata.height) || metadata.height <= 0) {
+      throw new WatermarkServiceError('Watermark source is not a readable PNG.', { code: 'INVALID_WATERMARK_PNG' });
+    }
+
+    return {
+      relativePath: normalized,
+      displayName: `source:${sha256(Buffer.from(normalized)).slice(0, 32)}`,
+      storageKey: `source-${sha256(Buffer.from(normalized)).slice(0, 32)}`,
+      sha256: sha256(bytes),
+      width: metadata.width,
+      height: metadata.height,
+    };
   }
 
   function readVerified(record) {
@@ -115,6 +259,35 @@ export function createWatermarkService({ repository, storageRoot, sharpImplement
       return { filePath, bytes, stat: after };
     } catch (cause) {
       throw new WatermarkServiceError('Managed Watermark bytes are missing or changed.', {
+        code: 'WATERMARK_RESOURCE_TAMPERED',
+        cause,
+      });
+    }
+  }
+
+  function readVerifiedSource(record) {
+    if (!record || record.source_present !== 1 || !record.source_relative_path
+      || !SHA256_PATTERN.test(record.sha256 || '')) {
+      throw new WatermarkServiceError('Watermark source is not currently available.', {
+        code: 'WATERMARK_NOT_FOUND',
+      });
+    }
+    ensureRoot();
+    const filePath = resolveSourcePath(record.source_relative_path);
+    let before;
+    try {
+      before = fs.lstatSync(filePath);
+      if (before.isSymbolicLink() || !before.isFile()) throw new Error('Not a regular file.');
+      const bytes = fs.readFileSync(filePath);
+      const after = fs.lstatSync(filePath);
+      if (after.isSymbolicLink() || !after.isFile()
+        || before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size
+        || sha256(bytes) !== record.sha256.toLowerCase()) {
+        throw new Error('Source bytes do not match the indexed Watermark.');
+      }
+      return { filePath, bytes, stat: after };
+    } catch (cause) {
+      throw new WatermarkServiceError('Watermark source bytes are missing or changed; rescan is required.', {
         code: 'WATERMARK_RESOURCE_TAMPERED',
         cause,
       });
@@ -220,13 +393,62 @@ export function createWatermarkService({ repository, storageRoot, sharpImplement
     throw error;
   }
 
+  function publicSourceRecord(record) {
+    normalizeSourceRelativePath(record.source_relative_path);
+    return sourcePublicRecord(record);
+  }
+
+  function scanFailure(relativePath, error) {
+    return {
+      relativePath,
+      code: error?.code === 'INVALID_WATERMARK_PNG'
+        ? 'INVALID_WATERMARK_PNG'
+        : 'WATERMARK_SOURCE_UNSAFE',
+    };
+  }
+
+  function shouldRetainSourceDuringScan(error) {
+    return error?.code === 'WATERMARK_SOURCE_UNSAFE' && error?.cause?.code !== 'ENOENT';
+  }
+
   return {
+    ensureRoot,
+
+    async scanWatermarks() {
+      ensureRoot();
+      const relativePaths = collectPngPaths(root);
+      const sources = [];
+      const failures = [];
+      const retainedSourcePaths = [];
+      for (const relativePath of relativePaths) {
+        try {
+          sources.push(await readSource(relativePath));
+        } catch (error) {
+          failures.push(scanFailure(relativePath, error));
+          if (shouldRetainSourceDuringScan(error)) retainedSourcePaths.push(relativePath);
+        }
+      }
+      const summary = repository.reconcileSources(sources, new Date().toISOString(), { retainedSourcePaths });
+      return failures.length > 0
+        ? { ...summary, failed: failures.length, errors: failures }
+        : { ...summary, failed: 0 };
+    },
+
     listWatermarks() {
-      return repository.list().map(publicRecord);
+      return repository.listSourceRecords()
+        .filter((record) => record.source_present === 1)
+        .map(publicSourceRecord);
     },
 
     getWatermark(id) {
-      return publicRecord(requireRecord(id));
+      const record = requireRecord(id);
+      if (record.source_relative_path) {
+        if (record.source_present !== 1) {
+          throw new WatermarkServiceError('Watermark not found.', { code: 'WATERMARK_NOT_FOUND' });
+        }
+        return publicSourceRecord(record);
+      }
+      return publicRecord(record);
     },
 
     async createWatermark({ displayName, pngBytes } = {}) {
@@ -381,8 +603,12 @@ export function createWatermarkService({ repository, storageRoot, sharpImplement
 
     resolveForProcessing(id) {
       const record = requireRecord(id);
-      const { filePath } = readVerified(record);
-      return { watermark: publicRecord(record), filePath };
+      if (record.source_relative_path) {
+        const { filePath, bytes } = readVerifiedSource(record);
+        return { watermark: publicSourceRecord(record), filePath, bytes };
+      }
+      const { filePath, bytes } = readVerified(record);
+      return { watermark: publicRecord(record), filePath, bytes };
     },
   };
 }

@@ -859,4 +859,27 @@ describe('Project Assets action select enhancement', () => {
     expect(fixture.release.details.open).toBe(false);
     expect(fixture.release.details.querySelector('summary').focused).toBe(true);
   });
+
+  it('re-enhances action selects after live-region replacement without duplicate listeners', async () => {
+    const oldFixture = makeActionSelectFixture();
+    enhanceDropdowns(oldFixture.document);
+
+    // Same scope is idempotent: a second enhancement adds no duplicate listeners.
+    expect(enhanceDropdowns(oldFixture.document)).toBe(2);
+    expect(oldFixture.document.listeners.filter(({ type }) => type === 'change')).toHaveLength(1);
+
+    // Simulate a live-region replacement: the new document's dropdowns are enhanced
+    // exactly once and respond to input changes.
+    const newFixture = makeActionSelectFixture();
+    expect(enhanceDropdowns(newFixture.document)).toBe(2);
+    expect(newFixture.document.listeners.filter(({ type }) => type === 'change')).toHaveLength(1);
+
+    newFixture.release.customOptions[1].input.checked = true;
+    newFixture.release.customOptions[0].input.checked = false;
+    newFixture.document.dispatch('change', { target: newFixture.release.customOptions[1].input });
+    expect(newFixture.release.native.value).toBe('5');
+
+    // The old scope is unaffected and still has exactly one listener.
+    expect(oldFixture.document.listeners.filter(({ type }) => type === 'change')).toHaveLength(1);
+  });
 });

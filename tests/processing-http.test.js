@@ -27,26 +27,29 @@ function createHarness(overrides = {}) {
       planConvert: vi.fn(async (_id, scope, options) => ({ scope, options, items: [] })),
       planWorkflowPromptEdit: vi.fn(async (_id, scope, options) => ({ scope, options, items: [] })),
       planWatermark: vi.fn(async (_id, scope, options) => ({ scope, options, items: [] })),
+      renderWatermarkPreview: vi.fn(async () => ({
+        buffer: Buffer.from('preview-bytes'), contentType: 'image/png', filename: 'source.png', eligibleCount: 2, variant: 'resized',
+      })),
+      planArchives: vi.fn(async (_id, scope, options) => ({ scope, options, items: [], archives: [] })),
     },
     assetProcessingService: {
       convertAssets: vi.fn(async () => ({ changedCount: 1 })),
       editWorkflowPrompts: vi.fn(async () => ({ changedCount: 1 })),
       watermarkAssets: vi.fn(async () => ({ changedCount: 1 })),
+      createArchives: vi.fn(async () => ({ changedCount: 2 })),
     },
     watermarkService: {
-      listWatermarks: vi.fn(() => []),
-      createWatermark: vi.fn(async (input) => ({ id: 10, displayName: input.displayName, width: 1, height: 1 })),
-      renameWatermark: vi.fn(() => ({ id: 10, displayName: 'Renamed' })),
-      replaceWatermark: vi.fn(async () => ({ id: 10, displayName: 'Replaced' })),
-      deleteWatermark: vi.fn(),
+      listWatermarks: vi.fn(() => [{ id: 10, filename: 'mark.png', relativePath: 'mark.png', width: 1, height: 1 }]),
+      scanWatermarks: vi.fn(async () => ({ added: 1, updated: 0, restored: 0, removed: 0, total: 1 })),
       resolveForProcessing: vi.fn(() => ({ watermark: { id: 10 }, filePath: 'C:/not-used.png' })),
     },
+    watermarkDefaultService: {
+      getDefaultWatermarkId: vi.fn(() => null),
+      setDefaultWatermarkId: vi.fn((id) => id),
+    },
     watermarkScaleMapService: {
-      listScaleMaps: vi.fn(() => []),
-      createScaleMap: vi.fn((input) => ({ id: 11, ...input })),
-      renameScaleMap: vi.fn(() => ({ id: 11, displayName: 'Renamed' })),
-      replaceScaleMap: vi.fn(() => ({ id: 11, definition: {} })),
-      deleteScaleMap: vi.fn(),
+      getScaleMap: vi.fn(() => ({ definition: { '1024x1024': 0.37, default: 0.1 } })),
+      replaceScaleMap: vi.fn((definition) => ({ definition })),
     },
     processingPresetService: {
       listPresets: vi.fn(() => []),
@@ -83,6 +86,100 @@ describe('processing HTTP routes', () => {
       { format: 'webp', quality: 85, originalHandling: 'keep' },
     );
     expect(services.assetProcessingService.convertAssets).not.toHaveBeenCalled();
+  });
+
+  it('accepts global watermarkId for plan and apply and rejects mixed identities', async () => {
+    const { app, services } = createHarness();
+    const options = {
+      mode: 'patreon',
+      outputFormat: 'png',
+      deleteSource: false,
+      watermarkId: 10,
+    };
+    const plan = await request(app)
+      .post('/projects/1/assets/processing/watermark/plan')
+      .send({
+        scope: { type: 'selected', assetIds: [9] },
+        options,
+      });
+
+    expect(plan.status).toBe(200);
+    expect(services.assetProcessingPlanner.planWatermark).toHaveBeenCalledWith(
+      1,
+      { type: 'selected', assetIds: [9] },
+      options,
+    );
+
+    const apply = await request(app)
+      .post('/projects/1/assets/processing/watermark/apply')
+      .send({
+        scope: { type: 'selected', assetIds: [9] },
+        options,
+      });
+
+    expect(apply.status).toBe(200);
+    expect(services.assetProcessingService.watermarkAssets).toHaveBeenCalledWith(1, [9], options);
+
+  });
+
+  it('renders a Watermark preview image through the trusted plan payload without applying', async () => {
+    const { app, services } = createHarness();
+    const options = { mode: 'patreon', outputFormat: 'png', deleteSource: false, watermarkId: 10 };
+    const response = await request(app)
+      .post('/projects/1/assets/processing/watermark/preview-image')
+      .send({ scope: { type: 'selected', assetIds: [9] }, options });
+
+    expect(response.status).toBe(200);
+    expect(response.headers['content-type']).toMatch(/^image\/png/);
+    expect(response.headers['x-creatorcrate-preview-source']).toBe('source.png');
+    expect(response.headers['x-creatorcrate-preview-eligible-count']).toBe('2');
+    expect(response.body).toEqual(Buffer.from('preview-bytes'));
+    expect(services.assetProcessingPlanner.renderWatermarkPreview).toHaveBeenCalledWith(
+      1, { type: 'selected', assetIds: [9] }, options,
+    );
+    expect(services.assetProcessingService.watermarkAssets).not.toHaveBeenCalled();
+  });
+
+  it('plans and applies the standalone Archive operation through explicit routes', async () => {
+    const { app, services } = createHarness();
+    const plan = await request(app)
+      .post('/projects/1/assets/processing/archive/plan')
+      .send({
+        scope: { type: 'selected', assetIds: [9] },
+        options: { makeArchives: true, archiveFormat: '7z' },
+      });
+
+    expect(plan.status).toBe(200);
+    expect(plan.body).toMatchObject({ ok: true, operation: 'archive' });
+    expect(services.assetProcessingPlanner.planArchives).toHaveBeenCalledWith(
+      1,
+      { type: 'selected', assetIds: [9] },
+      { makeArchives: true, archiveFormat: '7z' },
+    );
+    expect(services.assetProcessingService.createArchives).not.toHaveBeenCalled();
+
+    const apply = await request(app)
+      .post('/projects/1/assets/processing/archive/apply')
+      .send({
+        scope: { type: 'category', categoryId: 4 },
+        options: { makeCbz: true },
+      });
+
+    expect(apply.status).toBe(200);
+    expect(apply.body).toMatchObject({
+      ok: true,
+      operation: 'archive',
+      refreshUrl: '/projects/1/assets',
+    });
+    expect(services.assetProcessingScopeService.resolveAssetProcessingScope).toHaveBeenCalledWith(
+      1,
+      { type: 'selected', assetIds: [4] },
+    );
+    expect(services.assetProcessingService.createArchives).toHaveBeenCalledWith(
+      1,
+      [4],
+      { makeCbz: true },
+    );
   });
 
   it('resolves a preset once and applies the resulting normalized options', async () => {
@@ -130,17 +227,43 @@ describe('processing HTTP routes', () => {
       .send({ scope: { type: 'project' }, options: { format: 'webp', quality: 85, originalHandling: 'keep' } });
     expect(archived.status).toBe(409);
     expect(archived.body.error.code).toBe('PROJECT_ARCHIVED');
+    const archivedArchive = await request(app)
+      .post('/projects/1/assets/processing/archive/apply')
+      .send({ scope: { type: 'project' }, options: { makeArchives: true } });
+    expect(archivedArchive.status).toBe(409);
+    expect(archivedArchive.body.error.code).toBe('PROJECT_ARCHIVED');
 
     project.status = 'active';
-    services.watermarkScaleMapService.deleteScaleMap.mockImplementation(() => {
+    services.watermarkScaleMapService.replaceScaleMap.mockImplementation(() => {
       throw new WatermarkScaleMapServiceError('Scale map is in use.', { code: 'SCALE_MAP_IN_USE' });
     });
-    const conflict = await request(app).post('/processing/scale-maps/11/delete').send({});
+    const conflict = await request(app).post('/processing/scale-map/replace').send({ definition: {} });
     expect(conflict.status).toBe(409);
     expect(conflict.body).toEqual({
       ok: false,
       error: { code: 'SCALE_MAP_IN_USE', message: 'Scale map is in use.' },
     });
+  });
+
+  it('exposes only the singleton Scale Map HTTP contract', async () => {
+    const { app, services } = createHarness();
+    const listed = await request(app).get('/processing/scale-map');
+    expect(listed.status).toBe(200);
+    expect(listed.body).toEqual({ ok: true, definition: { '1024x1024': 0.37, default: 0.1 } });
+
+    const replaced = await request(app)
+      .post('/processing/scale-map/replace')
+      .send({ definition: { '1920x1080': 0.22, default: 0.1 } });
+    expect(replaced.status).toBe(200);
+    expect(replaced.body).toEqual({ ok: true, definition: { '1920x1080': 0.22, default: 0.1 } });
+    expect(services.watermarkScaleMapService.replaceScaleMap).toHaveBeenCalledWith({ '1920x1080': 0.22, default: 0.1 });
+
+    for (const route of [
+      '/processing/scale-maps', '/processing/scale-maps/99/rename',
+      '/processing/scale-maps/99/replace', '/processing/scale-maps/99/delete',
+    ]) {
+      await request(app).post(route).send({}).expect(404);
+    }
   });
 
   it('rejects forbidden filesystem fields and wrong-project or malformed request input', async () => {
@@ -161,19 +284,28 @@ describe('processing HTTP routes', () => {
     expect(missing.body.error.code).toBe('PROJECT_NOT_FOUND');
   });
 
-  it('supports bounded multipart Watermark creation and safe resource responses', async () => {
+  it('lists global Watermark candidates, scans manually, and exposes no source mutation routes', async () => {
     const { app, services } = createHarness();
-    const response = await request(app)
-      .post('/processing/watermarks')
-      .field('displayName', 'Creator mark')
-      .attach('file', Buffer.from([0x89, 0x50, 0x4e, 0x47]), { filename: 'mark.png', contentType: 'image/png' });
-
-    expect(response.status).toBe(201);
-    expect(response.body).toMatchObject({ ok: true, watermark: { id: 10, displayName: 'Creator mark' } });
-    expect(services.watermarkService.createWatermark).toHaveBeenCalledWith({
-      displayName: 'Creator mark',
-      pngBytes: Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+    const listed = await request(app).get('/processing/watermarks');
+    expect(listed.status).toBe(200);
+    expect(listed.body).toEqual({
+      ok: true,
+      watermarks: [{ id: 10, filename: 'mark.png', relativePath: 'mark.png', width: 1, height: 1 }],
     });
+
+    const scanned = await request(app).post('/processing/watermarks/scan').send({});
+    expect(scanned.status).toBe(200);
+    expect(scanned.body).toEqual({ ok: true, scan: { added: 1, updated: 0, restored: 0, removed: 0, total: 1 } });
+    expect(services.watermarkService.scanWatermarks).toHaveBeenCalledOnce();
+
+    for (const route of [
+      '/processing/watermarks',
+      '/processing/watermarks/10/rename',
+      '/processing/watermarks/10/replace',
+      '/processing/watermarks/10/delete',
+    ]) {
+      await request(app).post(route).send({}).expect(404);
+    }
   });
 
   it('does not turn unexpected failures into successful JSON responses', async () => {

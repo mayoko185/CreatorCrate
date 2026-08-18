@@ -117,6 +117,9 @@ describe('Vite production asset app integration', () => {
     expect(response.text).not.toContain('src="/creatorcrate.js"');
     expect(response.text).not.toContain('/@vite/client');
     expect(response.headers['content-security-policy']).toBe(SECURITY_CSP);
+    expect(response.headers['content-security-policy']).toContain("img-src 'self' data: blob:");
+    expect(response.headers['content-security-policy']).toContain("script-src 'self'");
+    expect(response.headers['content-security-policy']).not.toContain("script-src 'self' blob:");
   });
 
   it('renders same-origin Vite development client and source entry without legacy main assets', async () => {
@@ -133,6 +136,9 @@ describe('Vite production asset app integration', () => {
     expect(response.text).not.toContain('/vite/assets/main-TEST.js');
     expect(response.text).not.toContain('/vite/assets/main-TEST.css');
     expect(response.headers['content-security-policy']).toBe(DEVELOPMENT_SECURITY_CSP);
+    expect(response.headers['content-security-policy']).toContain("img-src 'self' data: blob:");
+    expect(response.headers['content-security-policy']).toContain("script-src 'self'");
+    expect(response.headers['content-security-policy']).not.toContain("script-src 'self' blob:");
   });
 
   it('fails production startup clearly when the manifest is absent', () => {

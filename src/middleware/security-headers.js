@@ -1,6 +1,6 @@
 const CSP = [
   "default-src 'self'",
-  "img-src 'self' data:",
+  "img-src 'self' data: blob:",
   "style-src 'self'",
   "style-src-attr 'unsafe-inline'",
   "script-src 'self'",
@@ -12,7 +12,7 @@ const CSP = [
 
 const DEVELOPMENT_CSP = [
   "default-src 'self'",
-  "img-src 'self' data:",
+  "img-src 'self' data: blob:",
   "style-src 'self' 'unsafe-inline'",
   "script-src 'self'",
   "connect-src 'self' ws: wss:",

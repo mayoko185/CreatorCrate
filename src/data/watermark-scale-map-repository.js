@@ -18,6 +18,11 @@ export function createWatermarkScaleMapRepository(db) {
     FROM watermark_scale_maps
     ORDER BY display_name COLLATE NOCASE ASC, id ASC
   `);
+  const findBySystemKeyStmt = db.prepare(`
+    SELECT ${SCALE_MAP_COLUMNS.join(', ')}
+    FROM watermark_scale_maps
+    WHERE system_key = ?
+  `);
   const insertStmt = db.prepare(`
     INSERT INTO watermark_scale_maps (display_name, definition_json)
     VALUES (?, ?)
@@ -43,6 +48,7 @@ export function createWatermarkScaleMapRepository(db) {
 
   return {
     findById(id) { return findByIdStmt.get(id); },
+    findBySystemKey(systemKey) { return findBySystemKeyStmt.get(systemKey); },
     list() { return listStmt.all(); },
     create({ displayName, definitionJson }) { return insertStmt.get(displayName, definitionJson); },
     rename(id, displayName) { return renameStmt.get(displayName, id); },

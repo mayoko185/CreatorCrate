@@ -69,6 +69,26 @@ export function createApplicationRequestHandler(appContext, viteServer = null) {
   return (req, res) => viteServer.middlewares(req, res, () => appContext.handleRequest(req, res));
 }
 
+export async function runInitialWatermarkScan(appContext, logger = console) {
+  const watermarkService = appContext?.app?.locals?.watermarkService;
+  if (!watermarkService || typeof watermarkService.scanWatermarks !== 'function') {
+    throw new TypeError('Initial startup scan requires a global Watermark service.');
+  }
+
+  try {
+    const scan = await watermarkService.scanWatermarks();
+    logger.log(
+      `[CreatorCrate] Initial global Watermark scan completed: ` +
+      `${scan.total} present, ${scan.added} added, ${scan.updated} updated, ` +
+      `${scan.restored} restored, ${scan.removed} removed, ${scan.failed || 0} failed.`
+    );
+    return scan;
+  } catch (err) {
+    logger.error(`[CreatorCrate] Initial global Watermark scan failed: ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  }
+}
+
 async function main() {
   let config;
   try {
@@ -205,6 +225,8 @@ async function main() {
     },
   }, db);
 
+  await runInitialWatermarkScan(appContext);
+
   const server = http.createServer();
   let viteServer;
   try {
@@ -223,6 +245,7 @@ async function main() {
       projectService: appContext.app.locals.projectService,
       assetScanner: appContext.app.locals.assetScanner,
       appMetaRepository: appContext.app.locals.appMetaRepository,
+      watermarkService: appContext.app.locals.watermarkService,
     }),
   });
 

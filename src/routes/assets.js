@@ -459,6 +459,8 @@ export function createAssetsRouter({
     }
   });
 
+
+
   router.post('/:projectId/asset-categories', (req, res, next) => {
     const project = loadCategoryProject(req, next);
     if (!project) return;
@@ -1379,10 +1381,14 @@ export function createAssetsRouter({
 
   // POST /projects/:id/scan — Trigger a manual scan
   router.post('/:id/scan', (req, res, next) => {
+    const wantsJson = isEnhancedAssetRequest(req);
     try {
-      const pageDefaultsService = getPageDefaultsService(req);
+      const pageDefaultsService = wantsJson ? null : getPageDefaultsService(req);
       const id = parseId(req.params.id);
       if (id === null) {
+        if (wantsJson) {
+          return sendAssetJsonError(res, 400, 'INVALID_PROJECT_ID', 'Project ID must be a positive integer.');
+        }
         return next(createNotFound());
       }
 
@@ -1391,9 +1397,15 @@ export function createAssetsRouter({
       // bypassing the template-level gating.
       const project = projectService.findById(id);
       if (!project) {
+        if (wantsJson) {
+          return sendAssetJsonError(res, 404, 'PROJECT_NOT_FOUND', 'Project not found.');
+        }
         return next(createNotFound());
       }
       if (project.archived_at) {
+        if (wantsJson) {
+          return sendAssetJsonError(res, 409, 'PROJECT_ARCHIVED', 'This project is archived and read-only.');
+        }
         return res.redirect(buildAssetsRedirectUrl(
           workflowQueryService,
           id,
@@ -1404,6 +1416,18 @@ export function createAssetsRouter({
       }
 
       const result = assetScanner.scanProjectAssets(id);
+
+      if (wantsJson) {
+        return res.json({
+          ok: true,
+          scan: {
+            added: result.added,
+            updated: result.updated,
+            missing: result.removed,
+            total: result.total,
+          },
+        });
+      }
 
       // Scanner field is `removed`; the user-facing label is `Missing` —
       // CreatorCrate never deletes files merely because a scan no longer
@@ -1423,7 +1447,13 @@ export function createAssetsRouter({
       ));
     } catch (err) {
       if (err instanceof ProjectNotFoundError) {
+        if (wantsJson) {
+          return sendAssetJsonError(res, 404, 'PROJECT_NOT_FOUND', 'Project not found.');
+        }
         return next(createNotFound());
+      }
+      if (wantsJson) {
+        return sendAssetJsonError(res, 500, 'SCAN_FAILED', 'Project scan failed.');
       }
       // Catch filesystem errors and redirect with an error flag.
       // Use scan_error=filesystem so it can be distinguished from spoofed values.
@@ -2199,6 +2229,10 @@ function isEnhancedAssetRequest(req) {
   return String(req.get?.('Accept') || '').toLowerCase().includes('application/json');
 }
 
+function sendAssetJsonError(res, status, code, message) {
+  return res.status(status).json({ ok: false, error: { code, message } });
+}
+
 function readProjectAssetsReturnUrl(req, projectId) {
   const candidate = typeof req.body?.returnTo === 'string' ? req.body.returnTo : '';
   const fallback = `/projects/${projectId}/assets`;
@@ -2462,6 +2496,22 @@ function buildBrowserRenderModel(project, data, pageDefaultsService, req, nsfwFi
         label: category.displayName,
       })),
     ],
+    processingCategoryOptions: [
+      ...(data.categoryNavigation?.enabled || []).map((category) => ({
+        value: String(category.id),
+        label: `${category.displayName} (${category.assetCount || 0})`,
+        selected: String(data.filters?.category || '') === String(category.id),
+      })),
+      ...(data.categoryNavigation?.disabled || []).map((category) => ({
+        value: String(category.id),
+        label: `${category.displayName} (${category.assetCount || 0}) (disabled)`,
+        selected: String(data.filters?.category || '') === String(category.id),
+      })),
+    ],
+    processingOutputCategoryOptions: (data.categoryNavigation?.enabled || []).map((category) => ({
+      value: category.directorySlug,
+      label: category.displayName,
+    })),
     searchMaxLength: data.searchMaxLength,
     bulkError: null,
     bulkMoveError: null,

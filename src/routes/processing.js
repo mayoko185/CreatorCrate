@@ -1,18 +1,20 @@
 import express from 'express';
-import Busboy from 'busboy';
 import { AssetProcessingError } from '../services/asset-processing-service.js';
 import { AssetProcessingScopeError } from '../services/asset-processing-scope-service.js';
 import { WatermarkServiceError } from '../services/watermark-service.js';
 import { WatermarkScaleMapServiceError } from '../services/watermark-scale-map-service.js';
-import { ProcessingPresetServiceError } from '../services/processing-preset-service.js';
+import {
+  PROCESSING_PRESET_OPERATION_TYPES,
+  ProcessingPresetServiceError,
+} from '../services/processing-preset-service.js';
 
-const MAX_WATERMARK_UPLOAD_BYTES = 5 * 1024 * 1024;
 const DANGEROUS_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
 const FORBIDDEN_PATH_KEYS = new Set(['watermarkPath', 'scaleMapPath', 'projectRoot']);
 const OPERATION_METHODS = Object.freeze({
-  convert: { plan: 'planConvert', apply: 'convertAssets' },
-  'workflow-prompt': { plan: 'planWorkflowPromptEdit', apply: 'editWorkflowPrompts' },
-  watermark: { plan: 'planWatermark', apply: 'watermarkAssets' },
+  [PROCESSING_PRESET_OPERATION_TYPES.CONVERT]: { plan: 'planConvert', apply: 'convertAssets' },
+  [PROCESSING_PRESET_OPERATION_TYPES.WORKFLOW_PROMPT]: { plan: 'planWorkflowPromptEdit', apply: 'editWorkflowPrompts' },
+  [PROCESSING_PRESET_OPERATION_TYPES.WATERMARK]: { plan: 'planWatermark', apply: 'watermarkAssets' },
+  archive: { plan: 'planArchives', apply: 'createArchives' },
 });
 
 class ProcessingRouteError extends Error {
@@ -98,6 +100,7 @@ function sendError(res, status, code, message, field) {
 
 function errorStatus(error) {
   if (error instanceof ProcessingRouteError) return error.status;
+  if (Number.isInteger(error?.status) && error.status >= 400 && error.status < 600) return error.status;
   const code = error?.code || 'INVALID_REQUEST';
   if (code.endsWith('_NOT_FOUND') || code === 'PROJECT_NOT_FOUND' || code === 'ASSET_NOT_FOUND') return 404;
   if (/(?:_IN_USE|_TAMPERED|_ARCHIVED|_CONFLICT|_STALE|_BUSY|_RECOVERY_REQUIRED|PUBLISHED_RELEASE|DELETION_WITHHELD)/.test(code)) return 409;
@@ -148,6 +151,28 @@ function normalizeScope(scope, { projectId, assetRepository }) {
   });
 }
 
+function normalizeWatermarkIdentity(value, field) {
+  const hasWatermarkId = Object.hasOwn(value, 'watermarkId');
+  if (hasWatermarkId) value.watermarkId = parsePositiveId(value.watermarkId, field + '.watermarkId');
+  return value;
+}
+
+function normalizeWatermarkRequestOptions(options) {
+  return normalizeWatermarkIdentity({ ...options }, 'options');
+}
+
+function normalizeRuntimeResources(resources) {
+  const normalized = normalizeWatermarkIdentity({ ...resources }, 'runtimeResources');
+  for (const key of Object.keys(normalized)) {
+    if (key === 'watermarkId') continue;
+    if (normalized[key] !== null) normalized[key] = parsePositiveId(
+      normalized[key],
+      'runtimeResources.' + key,
+    );
+  }
+  return normalized;
+}
+
 function parseExecutionRequest(body, { operation, projectId, assetRepository, processingPresetService }) {
   const input = parseJsonObject(body, 'body');
   assertAllowedKeys(input, new Set(['scope', 'options', 'presetId', 'runtimeResources']), 'body');
@@ -159,12 +184,10 @@ function parseExecutionRequest(body, { operation, projectId, assetRepository, pr
     }
     const runtimeResources = input.runtimeResources ?? {};
     assertAllowedKeys(runtimeResources, new Set(['watermarkId', 'scaleMapId']), 'runtimeResources');
-    for (const key of Object.keys(runtimeResources)) {
-      if (runtimeResources[key] !== null) parsePositiveId(runtimeResources[key], `runtimeResources.${key}`);
-    }
+    const normalizedRuntimeResources = normalizeRuntimeResources(runtimeResources);
     const preset = processingPresetService.resolvePresetForExecution(
       parsePositiveId(input.presetId, 'presetId'),
-      runtimeResources,
+      normalizedRuntimeResources,
     );
     if (preset.operationType !== operation) {
       throw new ProcessingRouteError('The selected preset belongs to a different processing operation.', {
@@ -172,81 +195,25 @@ function parseExecutionRequest(body, { operation, projectId, assetRepository, pr
         field: 'presetId',
       });
     }
-    return { scope, options: preset.options, preset };
+
+    const options = { ...preset.options };
+    if (operation === 'watermark') {
+      if (Object.hasOwn(normalizedRuntimeResources, 'watermarkId')) {
+        options.watermarkId = normalizedRuntimeResources.watermarkId;
+      } else if (preset.watermarkId !== null && preset.watermarkId !== undefined) {
+        options.watermarkId = preset.watermarkId;
+      }
+    }
+    return { scope, options, preset };
   }
 
   if (Object.hasOwn(input, 'runtimeResources')) {
     throw new ProcessingRouteError('runtimeResources requires presetId.', { field: 'runtimeResources' });
   }
-  const options = parseJsonObject(input.options, 'options');
+  let options = parseJsonObject(input.options, 'options');
   assertNoForbiddenPathKeys(options);
+  if (operation === 'watermark') options = normalizeWatermarkRequestOptions(options);
   return { scope, options, preset: null };
-}
-
-function parseMultipartWatermark(req) {
-  return new Promise((resolve, reject) => {
-    if (!/^multipart\/form-data(?:;|$)/i.test(req.headers['content-type'] || '')) {
-      reject(new ProcessingRouteError('Watermark uploads must use multipart/form-data.', { code: 'INVALID_UPLOAD', field: 'file' }));
-      return;
-    }
-
-    let settled = false;
-    let fileBytes = null;
-    let displayName;
-    let failure = null;
-    const fail = (error) => {
-      if (!failure) failure = error;
-    };
-    const finish = () => {
-      if (settled) return;
-      settled = true;
-      if (failure) reject(failure);
-      else if (!fileBytes) reject(new ProcessingRouteError('A PNG file is required.', { code: 'PNG_REQUIRED', field: 'file' }));
-      else resolve({ displayName, pngBytes: fileBytes });
-    };
-
-    let parser;
-    try {
-      parser = Busboy({
-        headers: req.headers,
-        limits: { files: 1, fields: 4, parts: 6, fileSize: MAX_WATERMARK_UPLOAD_BYTES },
-      });
-    } catch {
-      reject(new ProcessingRouteError('Watermark upload is malformed.', { code: 'INVALID_UPLOAD' }));
-      return;
-    }
-
-    parser.on('field', (name, value) => {
-      if (name !== 'displayName') {
-        fail(new ProcessingRouteError(`Unsupported upload field: ${name}.`, { field: name }));
-        return;
-      }
-      displayName = value;
-    });
-    parser.on('file', (name, stream) => {
-      if (name !== 'file' || fileBytes) {
-        stream.resume();
-        fail(new ProcessingRouteError('Exactly one PNG file field is required.', { code: 'INVALID_UPLOAD', field: 'file' }));
-        return;
-      }
-      const chunks = [];
-      stream.on('data', (chunk) => chunks.push(chunk));
-      stream.on('limit', () => fail(new ProcessingRouteError('Watermark upload exceeds the 5 MiB limit.', {
-        code: 'UPLOAD_TOO_LARGE',
-        field: 'file',
-      })));
-      stream.on('end', () => {
-        if (!failure) fileBytes = Buffer.concat(chunks);
-      });
-      stream.on('error', () => fail(new ProcessingRouteError('Watermark upload could not be read.', { code: 'INVALID_UPLOAD', field: 'file' })));
-    });
-    parser.on('filesLimit', () => fail(new ProcessingRouteError('Exactly one PNG file field is required.', { code: 'INVALID_UPLOAD', field: 'file' })));
-    parser.on('fieldsLimit', () => fail(new ProcessingRouteError('Too many upload fields.', { code: 'INVALID_UPLOAD' })));
-    parser.on('partsLimit', () => fail(new ProcessingRouteError('Watermark upload has too many parts.', { code: 'INVALID_UPLOAD' })));
-    parser.on('error', () => fail(new ProcessingRouteError('Watermark upload is malformed.', { code: 'INVALID_UPLOAD' })));
-    parser.on('close', finish);
-    req.pipe(parser);
-  });
 }
 
 function assertResourceRequest(body, allowed) {
@@ -295,11 +262,15 @@ export function createProcessingRouter({
   assetProcessingPlanner,
   assetProcessingService,
   watermarkService,
+  watermarkDefaultService,
   watermarkScaleMapService,
   processingPresetService,
 } = {}) {
   if (!watermarkService || typeof watermarkService.listWatermarks !== 'function') throw new TypeError('watermarkService is required');
-  if (!watermarkScaleMapService || typeof watermarkScaleMapService.listScaleMaps !== 'function') throw new TypeError('watermarkScaleMapService is required');
+  if (!watermarkDefaultService || typeof watermarkDefaultService.getDefaultWatermarkId !== 'function'
+    || typeof watermarkDefaultService.setDefaultWatermarkId !== 'function') throw new TypeError('watermarkDefaultService is required');
+  if (!watermarkScaleMapService || typeof watermarkScaleMapService.getScaleMap !== 'function'
+    || typeof watermarkScaleMapService.replaceScaleMap !== 'function') throw new TypeError('watermarkScaleMapService is required');
   if (!processingPresetService || typeof processingPresetService.listPresets !== 'function') throw new TypeError('processingPresetService is required');
 
   const router = express.Router();
@@ -310,12 +281,12 @@ export function createProcessingRouter({
     && assetProcessingService
     && typeof projectService.findById === 'function'
     && typeof assetRepository.findProjectAssetsByCategoryInBrowserOrder === 'function'
-    && typeof assetProcessingScopeService.resolveAssetProcessingScope === 'function'
-    && Object.values(OPERATION_METHODS).every(({ plan }) => typeof assetProcessingPlanner[plan] === 'function')
-    && Object.values(OPERATION_METHODS).every(({ apply }) => typeof assetProcessingService[apply] === 'function');
+    && typeof assetProcessingScopeService.resolveAssetProcessingScope === 'function';
 
   if (hasExecutionSurface) {
-    for (const operation of Object.keys(OPERATION_METHODS)) {
+    for (const [operation, methods] of Object.entries(OPERATION_METHODS)) {
+      if (typeof assetProcessingPlanner[methods.plan] !== 'function'
+        || typeof assetProcessingService[methods.apply] !== 'function') continue;
       router.post(`/projects/:id/assets/processing/${operation}/plan`, createExecutionHandler({
         operation, mode: 'plan', projectService, assetRepository, assetProcessingScopeService, assetProcessingPlanner, assetProcessingService, processingPresetService,
       }));
@@ -323,75 +294,68 @@ export function createProcessingRouter({
         operation, mode: 'apply', projectService, assetRepository, assetProcessingScopeService, assetProcessingPlanner, assetProcessingService, processingPresetService,
       }));
     }
+
+    if (typeof assetProcessingPlanner.renderWatermarkPreview === 'function') {
+      router.post('/projects/:id/assets/processing/watermark/preview-image', async (req, res, next) => {
+        try {
+          const projectId = parsePositiveId(req.params.id, 'projectId');
+          const project = projectService.findById(projectId);
+          if (!project) return sendError(res, 404, 'PROJECT_NOT_FOUND', 'Project not found.');
+          if (project.archived_at || project.status === 'archived') {
+            return sendError(res, 409, 'PROJECT_ARCHIVED', 'Archived projects cannot be processed.');
+          }
+          const { scope, options } = parseExecutionRequest(req.body, {
+            operation: 'watermark', projectId, assetRepository, processingPresetService,
+          });
+          const preview = await assetProcessingPlanner.renderWatermarkPreview(projectId, scope, options);
+          if (!preview) return res.status(204).end();
+          return res
+            .type(preview.contentType)
+            .set('Cache-Control', 'no-store')
+            .set('X-CreatorCrate-Preview-Source', encodeURIComponent(preview.filename))
+            .set('X-CreatorCrate-Preview-Eligible-Count', String(preview.eligibleCount))
+            .set('X-CreatorCrate-Preview-Variant', preview.variant)
+            .send(preview.buffer);
+        } catch (error) {
+          return handleError(error, res, next);
+        }
+      });
+    }
   }
 
   router.get('/processing/watermarks', (_req, res, next) => {
     try { return res.json({ ok: true, watermarks: watermarkService.listWatermarks() }); } catch (error) { return handleError(error, res, next); }
   });
-  router.post('/processing/watermarks', async (req, res, next) => {
+  router.post('/processing/watermarks/scan', async (_req, res, next) => {
     try {
-      const upload = await parseMultipartWatermark(req);
-      const watermark = await watermarkService.createWatermark(upload);
-      return res.status(201).json({ ok: true, watermark });
+      const scan = await watermarkService.scanWatermarks();
+      return res.json({ ok: true, scan });
     } catch (error) { return handleError(error, res, next); }
   });
-  router.post('/processing/watermarks/:id/rename', (req, res, next) => {
-    try {
-      const body = assertResourceRequest(req.body, ['displayName']);
-      const watermark = watermarkService.renameWatermark(parsePositiveId(req.params.id, 'watermarkId'), body.displayName);
-      return res.json({ ok: true, watermark });
-    } catch (error) { return handleError(error, res, next); }
+  router.get('/processing/watermarks/default', (_req, res, next) => {
+    try { return res.json({ ok: true, watermarkId: watermarkDefaultService.getDefaultWatermarkId() }); } catch (error) { return handleError(error, res, next); }
   });
-  router.post('/processing/watermarks/:id/replace', async (req, res, next) => {
+  router.post('/processing/watermarks/default', (req, res, next) => {
     try {
-      const upload = await parseMultipartWatermark(req);
-      const watermark = await watermarkService.replaceWatermark(parsePositiveId(req.params.id, 'watermarkId'), upload);
-      return res.json({ ok: true, watermark });
-    } catch (error) { return handleError(error, res, next); }
-  });
-  router.post('/processing/watermarks/:id/delete', (req, res, next) => {
-    try {
-      const id = parsePositiveId(req.params.id, 'watermarkId');
-      watermarkService.deleteWatermark(id);
-      return res.json({ ok: true, id });
+      const body = assertResourceRequest(req.body, ['watermarkId']);
+      return res.json({ ok: true, watermarkId: watermarkDefaultService.setDefaultWatermarkId(parsePositiveId(body.watermarkId, 'watermarkId')) });
     } catch (error) { return handleError(error, res, next); }
   });
   router.get('/processing/watermarks/:id/image', (req, res, next) => {
     try {
       const resolved = watermarkService.resolveForProcessing(parsePositiveId(req.params.id, 'watermarkId'));
-      return res.type('png').set('Cache-Control', 'private, max-age=3600').sendFile(resolved.filePath);
+      const response = res.type('png').set('Cache-Control', 'private, max-age=3600');
+      return resolved.bytes ? response.send(resolved.bytes) : response.sendFile(resolved.filePath);
     } catch (error) { return handleError(error, res, next); }
   });
 
-  router.get('/processing/scale-maps', (_req, res, next) => {
-    try { return res.json({ ok: true, scaleMaps: watermarkScaleMapService.listScaleMaps() }); } catch (error) { return handleError(error, res, next); }
+  router.get('/processing/scale-map', (_req, res, next) => {
+    try { return res.json({ ok: true, definition: watermarkScaleMapService.getScaleMap().definition }); } catch (error) { return handleError(error, res, next); }
   });
-  router.post('/processing/scale-maps', (req, res, next) => {
-    try {
-      const body = assertResourceRequest(req.body, ['displayName', 'definition']);
-      const scaleMap = watermarkScaleMapService.createScaleMap(body);
-      return res.status(201).json({ ok: true, scaleMap });
-    } catch (error) { return handleError(error, res, next); }
-  });
-  router.post('/processing/scale-maps/:id/rename', (req, res, next) => {
-    try {
-      const body = assertResourceRequest(req.body, ['displayName']);
-      const scaleMap = watermarkScaleMapService.renameScaleMap(parsePositiveId(req.params.id, 'scaleMapId'), body.displayName);
-      return res.json({ ok: true, scaleMap });
-    } catch (error) { return handleError(error, res, next); }
-  });
-  router.post('/processing/scale-maps/:id/replace', (req, res, next) => {
+  router.post('/processing/scale-map/replace', (req, res, next) => {
     try {
       const body = assertResourceRequest(req.body, ['definition']);
-      const scaleMap = watermarkScaleMapService.replaceScaleMap(parsePositiveId(req.params.id, 'scaleMapId'), body.definition);
-      return res.json({ ok: true, scaleMap });
-    } catch (error) { return handleError(error, res, next); }
-  });
-  router.post('/processing/scale-maps/:id/delete', (req, res, next) => {
-    try {
-      const id = parsePositiveId(req.params.id, 'scaleMapId');
-      watermarkScaleMapService.deleteScaleMap(id);
-      return res.json({ ok: true, id });
+      return res.json({ ok: true, definition: watermarkScaleMapService.replaceScaleMap(body.definition).definition });
     } catch (error) { return handleError(error, res, next); }
   });
 
@@ -410,6 +374,13 @@ export function createProcessingRouter({
       assertNoForbiddenPathKeys(body.config);
       const preset = processingPresetService.createPreset(body);
       return res.status(201).json({ ok: true, preset });
+    } catch (error) { return handleError(error, res, next); }
+  });
+  router.post('/processing/presets/import', (req, res, next) => {
+    try {
+      const body = assertResourceRequest(req.body, ['creatorcrate', 'version', 'operationType', 'presets']);
+      const result = processingPresetService.importPresetBundle(body);
+      return res.json({ ok: true, ...result });
     } catch (error) { return handleError(error, res, next); }
   });
   router.post('/processing/presets/:id/rename', (req, res, next) => {

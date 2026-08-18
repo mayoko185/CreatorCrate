@@ -1,5 +1,6 @@
 import sharp from 'sharp';
 import { validateArchiveNamePart } from './watermark-archive.js';
+import { validateDirectorySlug } from './asset-category-validation.js';
 
 export const WATERMARK_OUTPUT_MODES = Object.freeze(['patreon', 'social', 'custom']);
 export const WATERMARK_POSITIONS = Object.freeze(['br', 'bl', 'tr', 'tl', 'c']);
@@ -14,8 +15,8 @@ export const WATERMARK_SOCIAL_MAX_DIMENSION = 1100;
 export const WATERMARK_SOCIAL_SUFFIX = '_lq_wm';
 
 // This is the trusted built-in equivalent of the supplied scale_map.json.
-// It remains the legacy Patreon/Social compatibility default until presets
-// reference managed resources; new managed/custom calls resolve scaleMapId.
+// It remains the legacy Patreon/Social compatibility default until the
+// canonical singleton map resolves at execution time.
 // Resolution keys are intentionally exact and orientation-specific.
 export const WATERMARK_RESOLUTION_SCALE_MAP = Object.freeze({
   '1365x768': 0.35,
@@ -63,6 +64,77 @@ function positiveFinite(value) {
 
 function normalizeFormat(value) {
   return typeof value === 'string' ? value.toLowerCase() : value;
+}
+
+function normalizeOutputSlotFormat(value, field) {
+  const normalized = normalizeFormat(value);
+  if (normalized === undefined || normalized === null || normalized === '' || normalized === 'none') return null;
+  const format = normalized === 'jpg' ? 'jpeg' : normalized;
+  if (!WATERMARK_OUTPUT_FORMATS.includes(format)) {
+    throw new WatermarkEngineError(
+      `${field} must be one of: None, PNG, JPG, WebP.`,
+      { code: 'INVALID_FORMAT' },
+    );
+  }
+  return format;
+}
+
+function normalizeOutputSlots(rawOptions, maxDimension) {
+  const hasCanonicalSlots = ['primaryFormat', 'secondaryFormat', 'resizedFormat']
+    .some((key) => Object.hasOwn(rawOptions, key));
+
+  let primaryFormat;
+  let secondaryFormat;
+  let resizedFormat;
+  let legacyOutputVariants = null;
+  if (hasCanonicalSlots) {
+    primaryFormat = normalizeOutputSlotFormat(rawOptions.primaryFormat, 'Primary format');
+    secondaryFormat = normalizeOutputSlotFormat(rawOptions.secondaryFormat, 'Secondary format');
+    resizedFormat = normalizeOutputSlotFormat(rawOptions.resizedFormat, 'Resized format');
+  } else {
+    const legacyPrimaryRaw = normalizeFormat(rawOptions.outputFormat ?? rawOptions.format ?? 'png');
+    if (legacyPrimaryRaw !== 'same' && !WATERMARK_OUTPUT_FORMATS.includes(legacyPrimaryRaw)) {
+      throw new WatermarkEngineError('Primary format is unsupported.', { code: 'INVALID_FORMAT' });
+    }
+    const legacyPrimary = normalizeOutputSlotFormat(legacyPrimaryRaw, 'Primary format');
+    const legacyAdditionalUnresized = normalizeAdditionalFormats(rawOptions.additionalFormats ?? []);
+    const legacyAdditionalResized = normalizeAdditionalFormats(rawOptions.additionalFormatsResized ?? []);
+    const legacySecondary = legacyAdditionalUnresized
+      .map((format) => normalizeOutputSlotFormat(format, 'Secondary format'))[0] ?? null;
+    const alsoUnresized = rawOptions.alsoUnresized ?? false;
+    if (typeof alsoUnresized !== 'boolean') {
+      throw new WatermarkEngineError('alsoUnresized must be a boolean.', { code: 'INVALID_VARIANTS' });
+    }
+    const includeNormalOutputs = maxDimension === null || alsoUnresized;
+    primaryFormat = includeNormalOutputs ? legacyPrimary : null;
+    secondaryFormat = includeNormalOutputs ? legacySecondary : null;
+    resizedFormat = maxDimension === null ? null : legacyPrimary;
+    const normalFormats = [...new Set([legacyPrimaryRaw, ...legacyAdditionalUnresized])];
+    const resizedFormats = [...new Set([legacyPrimaryRaw, ...legacyAdditionalResized])];
+    legacyOutputVariants = alsoUnresized && maxDimension !== null
+      ? [
+        { variant: 'unresized', maxDimension: null, suffix: null, formats: normalFormats, legacy: true },
+        { variant: 'resized', maxDimension, suffix: null, formats: resizedFormats, legacy: true },
+      ]
+      : [{
+        variant: 'single', maxDimension,
+        suffix: null,
+        formats: maxDimension === null ? normalFormats : resizedFormats, legacy: true,
+      }];
+  }
+
+  if (primaryFormat !== null && primaryFormat === secondaryFormat) {
+    throw new WatermarkEngineError('Primary and Secondary formats must differ when both are enabled.', {
+      code: 'DUPLICATE_NORMAL_FORMAT',
+    });
+  }
+  if ([primaryFormat, secondaryFormat, resizedFormat].every((format) => format === null)) {
+    throw new WatermarkEngineError('Choose at least one Watermark output format.', { code: 'OUTPUT_FORMAT_REQUIRED' });
+  }
+  if (resizedFormat !== null && maxDimension === null) {
+    throw new WatermarkEngineError('Resized format requires a Max dimension.', { code: 'RESIZED_FORMAT_REQUIRES_DIMENSION' });
+  }
+  return { primaryFormat, secondaryFormat, resizedFormat, legacyOutputVariants };
 }
 
 function normalizePosition(value) {
@@ -474,6 +546,7 @@ export function deriveWatermarkGeometry({
 
 export function normalizeWatermarkOptions(rawOptions = {}, {
   scaleMap = WATERMARK_WINDOW_SCALE_MAP,
+  requireOutputCategory = true,
 } = {}) {
   if (!rawOptions || typeof rawOptions !== 'object' || Array.isArray(rawOptions)) {
     throw new WatermarkEngineError('Watermark options are required.', { code: 'INVALID_OPTIONS' });
@@ -523,15 +596,6 @@ export function normalizeWatermarkOptions(rawOptions = {}, {
     });
   }
 
-  const requestedFormat = rawOptions.outputFormat ?? rawOptions.format ?? 'png';
-  const outputFormat = normalizeFormat(requestedFormat);
-  if (outputFormat !== 'same' && !WATERMARK_OUTPUT_FORMATS.includes(outputFormat)) {
-    throw new WatermarkEngineError(
-      `Watermark output format must be one of: ${WATERMARK_OUTPUT_FORMATS.join(', ')}, same.`,
-      { code: 'INVALID_FORMAT' },
-    );
-  }
-
   const quality = rawOptions.quality ?? WATERMARK_DEFAULT_QUALITY;
   if (!Number.isInteger(quality) || quality < 1 || quality > 100) {
     throw new WatermarkEngineError('Watermark quality must be an integer from 1 to 100.', {
@@ -549,6 +613,9 @@ export function normalizeWatermarkOptions(rawOptions = {}, {
     });
   }
   const maxDimension = requestedMaxDimension || null;
+  const {
+    primaryFormat, secondaryFormat, resizedFormat, legacyOutputVariants,
+  } = normalizeOutputSlots(rawOptions, maxDimension);
 
   const deleteSource = rawOptions.deleteSource
     ?? rawOptions.deleteOriginal
@@ -618,23 +685,25 @@ export function normalizeWatermarkOptions(rawOptions = {}, {
     });
   }
 
-  const alsoUnresized = rawOptions.alsoUnresized ?? false;
-  if (typeof alsoUnresized !== 'boolean') throw new WatermarkEngineError('alsoUnresized must be a boolean.', { code: 'INVALID_VARIANTS' });
-  const dualVariants = alsoUnresized && maxDimension !== null;
-  const defaultSuffix = maxDimension === null ? WATERMARK_DEFAULT_SUFFIX : WATERMARK_SOCIAL_SUFFIX;
-  const suffix = rawOptions.suffix ?? rawOptions.socialSuffix ?? defaultSuffix;
-  const suffixUnresized = rawOptions.suffixUnresized ?? WATERMARK_DEFAULT_SUFFIX;
-  const suffixResized = rawOptions.suffixResized ?? WATERMARK_SOCIAL_SUFFIX;
-  for (const value of dualVariants ? [suffixUnresized, suffixResized] : [suffix]) {
+  const hasOwn = (key) => Object.prototype.hasOwnProperty.call(rawOptions, key);
+  const suffixValue = (canonicalKey, legacyKeys, fallback) => {
+    if (hasOwn(canonicalKey)) return rawOptions[canonicalKey];
+    const legacyKey = legacyKeys.find((key) => hasOwn(key)
+      && typeof rawOptions[key] === 'string' && rawOptions[key].length > 0);
+    return legacyKey ? rawOptions[legacyKey] : fallback;
+  };
+  const unresizedSuffix = suffixValue(
+    'unresizedSuffix', ['suffixUnresized', 'singleSuffix', 'suffix', 'socialSuffix'], WATERMARK_DEFAULT_SUFFIX,
+  );
+  const resizedSuffix = suffixValue('resizedSuffix', ['suffixResized'], WATERMARK_SOCIAL_SUFFIX);
+  for (const value of [unresizedSuffix, resizedSuffix]) {
     if (typeof value !== 'string' || /[\\/\u0000-\u001f\u007f]/.test(value)) throw new WatermarkEngineError('The watermark suffix is unsafe.', { code: 'INVALID_SUFFIX' });
   }
-  const outputDirectory = normalizeOutputDirectory(rawOptions.outputDirectory ?? '');
+  const outputCategorySlug = normalizeOutputCategorySlug(rawOptions, { required: requireOutputCategory });
   const trimWatermark = rawOptions.trimWatermark ?? true;
   const watermarkBeforeResize = rawOptions.watermarkBeforeResize ?? false;
   const webpLossless = rawOptions.webpLossless ?? false;
   if (![trimWatermark, watermarkBeforeResize, webpLossless].every((value) => typeof value === 'boolean')) throw new WatermarkEngineError('Watermark boolean options are invalid.', { code: 'INVALID_OPTIONS' });
-  const additionalFormats = normalizeAdditionalFormats(rawOptions.additionalFormats ?? []);
-  const additionalFormatsResized = normalizeAdditionalFormats(rawOptions.additionalFormatsResized ?? []);
   const jpegBackground = normalizeJpegBackground(rawOptions.jpegBackground ?? 'white');
   const makeArchives = rawOptions.makeArchives ?? false;
   const makeCbz = rawOptions.makeCbz ?? false;
@@ -670,7 +739,10 @@ export function normalizeWatermarkOptions(rawOptions = {}, {
     marginRatio,
     marginPx,
     opacity,
-    outputFormat,
+    primaryFormat,
+    secondaryFormat,
+    resizedFormat,
+    legacyOutputVariants,
     quality,
     maxDimension,
     deleteSource,
@@ -686,18 +758,12 @@ export function normalizeWatermarkOptions(rawOptions = {}, {
     containment,
     scaleMap,
     overwrite,
-    socialSuffix: suffix,
-    suffix,
-    suffixUnresized,
-    suffixResized,
-    alsoUnresized,
-    dualVariants,
-    outputDirectory,
+    unresizedSuffix,
+    resizedSuffix,
+    outputCategorySlug,
     trimWatermark,
     watermarkBeforeResize,
     webpLossless,
-    additionalFormats,
-    additionalFormatsResized,
     jpegBackground,
     makeArchives,
     archiveFormat,
@@ -712,17 +778,34 @@ export function normalizeWatermarkOptions(rawOptions = {}, {
     cbzFrom,
     cbzJpgQuality: archiveQuality('cbzJpgQuality', 85),
     replaceExistingArchives,
-    archiveResizedOnlyBlocked: makeArchives && !archiveIncludeResized && !dualVariants && maxDimension !== null,
+    archiveResizedOnlyBlocked: makeArchives && !archiveIncludeResized
+      && primaryFormat === null && secondaryFormat === null && resizedFormat !== null,
   };
 }
 
-function normalizeOutputDirectory(value) {
-  if (typeof value !== 'string' || /[\u0000-\u001f\u007f]/.test(value)
-    || value.startsWith('/') || value.startsWith('\\') || /^[a-zA-Z]:/.test(value)
-    || value.split(/[\\/]/).some((part) => part === '..')) {
-    throw new WatermarkEngineError('The output directory must be a safe project-relative path.', { code: 'INVALID_OUTPUT_DIRECTORY' });
+function normalizeOutputCategorySlug(rawOptions, { required }) {
+  const explicit = Object.prototype.hasOwnProperty.call(rawOptions, 'outputCategorySlug');
+  const value = explicit
+    ? rawOptions.outputCategorySlug
+    : rawOptions.outputDir ?? rawOptions.outputDirectory;
+  if (!validateDirectorySlug(value)) return value;
+  if (explicit || required) {
+    throw new WatermarkEngineError('Choose an output category.', { code: 'INVALID_OUTPUT_CATEGORY' });
   }
-  return value.replace(/\\/g, '/').replace(/^\.\/?/, '').replace(/\/+$/, '');
+  return undefined;
+}
+
+export function resolveWatermarkOutputCategory(categories, outputCategorySlug) {
+  if (!Array.isArray(categories)) {
+    throw new WatermarkEngineError('Output categories are unavailable.', { code: 'OUTPUT_CATEGORY_UNAVAILABLE' });
+  }
+  const category = categories.find((item) => item?.directory_slug === outputCategorySlug) || null;
+  if (!category || !(category.enabled === true || category.enabled === 1)) {
+    throw new WatermarkEngineError('The output category is not available in this project. Choose another category.', {
+      code: 'OUTPUT_CATEGORY_NOT_FOUND',
+    });
+  }
+  return category;
 }
 
 function normalizeAdditionalFormats(value) {
@@ -970,18 +1053,19 @@ export function outputExtensionForSource(sourceExtension, requestedFormat) {
       code: 'UNSUPPORTED_SOURCE_TYPE',
     });
   }
-  return requestedFormat === 'same' && sourceExtension === 'jpg' ? 'jpg' : format;
+  if (requestedFormat === 'same' && sourceExtension === 'jpg') return 'jpg';
+  return format === 'jpeg' ? 'jpg' : format;
 }
 
-export function watermarkFilenameForSource(filename, { mode, socialSuffix } = {}) {
+export function watermarkFilenameForSource(filename, { mode, suffix, socialSuffix } = {}) {
   const dotIndex = filename.lastIndexOf('.');
   const stem = dotIndex > 0 ? filename.slice(0, dotIndex) : filename;
   const extension = dotIndex > 0 ? filename.slice(dotIndex) : '';
-  const suffix = socialSuffix ?? (
+  const resolvedSuffix = suffix ?? socialSuffix ?? (
     mode === 'social' ? WATERMARK_SOCIAL_SUFFIX : WATERMARK_DEFAULT_SUFFIX
   );
-  if (WATERMARK_OUTPUT_MODES.includes(mode) && typeof suffix === 'string') {
-    return `${stem}${suffix}${extension}`;
+  if (WATERMARK_OUTPUT_MODES.includes(mode) && typeof resolvedSuffix === 'string') {
+    return `${stem}${resolvedSuffix}${extension}`;
   }
   throw new WatermarkEngineError('The watermark output naming mode is unsupported.', {
     code: 'INVALID_MODE',
@@ -990,8 +1074,8 @@ export function watermarkFilenameForSource(filename, { mode, socialSuffix } = {}
 
 /**
  * Derive the watermark destination without touching the filesystem. Apply and
- * Preview both use this so mode, suffix, extension, and parent-directory rules
- * cannot drift apart.
+ * Preview and Apply both use this so mode, suffix, extension, and category-root
+ * destination rules cannot drift apart.
  */
 export function deriveWatermarkOutputPlan(sourceRelativePath, options) {
   if (typeof sourceRelativePath !== 'string' || sourceRelativePath.length === 0) {
@@ -1002,7 +1086,6 @@ export function deriveWatermarkOutputPlan(sourceRelativePath, options) {
 
   const normalizedSourcePath = sourceRelativePath.replace(/\\/g, '/');
   const separator = normalizedSourcePath.lastIndexOf('/');
-  const sourceParent = separator < 0 ? '' : normalizedSourcePath.slice(0, separator);
   const sourceFilename = separator < 0
     ? normalizedSourcePath
     : normalizedSourcePath.slice(separator + 1);
@@ -1010,32 +1093,42 @@ export function deriveWatermarkOutputPlan(sourceRelativePath, options) {
   const sourceExtension = extensionStart > 0
     ? sourceFilename.slice(extensionStart + 1).toLowerCase()
     : '';
-  const variants = options.dualVariants
-    ? [
-      { variant: 'unresized', maxDimension: null, suffix: options.suffixUnresized, additionalFormats: options.additionalFormats },
-      { variant: 'resized', maxDimension: options.maxDimension, suffix: options.suffixResized, additionalFormats: options.additionalFormatsResized },
-    ]
-    : [{ variant: 'single', maxDimension: options.maxDimension, suffix: options.suffix, additionalFormats: options.maxDimension === null ? options.additionalFormats : options.additionalFormatsResized }];
-  const outputParent = options.outputDirectory
-    ? `${options.outputDirectory}/${sourceParent}`.replace(/\/$/, '')
-    : options.mode === 'patreon' ? (sourceParent ? `${sourceParent}/wm` : 'wm') : sourceParent;
-  const outputs = variants.flatMap((variant) => [...new Set([options.outputFormat, ...variant.additionalFormats])].map((format) => {
-    const outputExtension = outputExtensionForSource(sourceExtension, format);
-    const namedFilename = watermarkFilenameForSource(sourceFilename, { mode: options.mode, socialSuffix: variant.suffix });
+  const canonicalVariants = [
+    {
+      variant: 'unresized', maxDimension: null, suffix: options.unresizedSuffix,
+      formats: [options.primaryFormat, options.secondaryFormat].filter(Boolean),
+    },
+    {
+      variant: 'resized', maxDimension: options.maxDimension, suffix: options.resizedSuffix,
+      formats: options.resizedFormat ? [options.resizedFormat] : [],
+    },
+  ].filter((variant) => variant.formats.length > 0);
+  const variants = options.legacyOutputVariants || canonicalVariants;
+  const outputs = variants.flatMap((variant) => variant.formats.map((format) => {
+    const outputExtension = variant.legacy && format === 'jpeg'
+      ? 'jpeg'
+      : outputExtensionForSource(sourceExtension, format);
+    const suffix = variant.suffix ?? (variant.variant === 'resized' || (variant.variant === 'single' && variant.maxDimension !== null)
+      ? options.resizedSuffix
+      : options.unresizedSuffix);
+    const namedFilename = watermarkFilenameForSource(sourceFilename, {
+      mode: options.mode,
+      suffix,
+    });
     const outputFilename = extensionStart > 0
       ? `${namedFilename.slice(0, namedFilename.lastIndexOf('.'))}.${outputExtension}`
       : `${namedFilename}.${outputExtension}`;
     return {
       ...variant,
+      suffix,
       outputFilename,
       outputExtension,
       outputFormat: format,
-      outputRelativePath: outputParent ? `${outputParent}/${outputFilename}` : outputFilename,
+      outputRelativePath: `${options.outputCategorySlug}/${outputFilename}`,
     };
   }));
   return {
     sourceRelativePath: normalizedSourcePath,
-    sourceParent,
     sourceFilename,
     sourceExtension,
     outputs,

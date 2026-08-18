@@ -14,15 +14,37 @@ import { createProjectRepository } from '../src/data/project-repository.js';
 import { createProjectService } from '../src/services/project-service.js';
 import {
   AssetProcessingError,
-  createAssetProcessingService,
+  createAssetProcessingService as createAssetProcessingServiceRaw,
 } from '../src/services/asset-processing-service.js';
-import { createAssetProcessingPlanner } from '../src/services/asset-processing-planner.js';
+import { createAssetProcessingPlanner as createAssetProcessingPlannerRaw } from '../src/services/asset-processing-planner.js';
 import { createAssetProcessingScopeService } from '../src/services/asset-processing-scope-service.js';
 import { createProjectOperationCoordinator } from '../src/services/project-operation-coordinator.js';
 import { createAssetScanner } from '../src/services/asset-scanner.js';
 import { resolveProjectDir } from '../src/storage/project-storage.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
+
+function createAssetProcessingService(dependencies) {
+  const service = createAssetProcessingServiceRaw(dependencies);
+  const watermarkAssets = service.watermarkAssets.bind(service);
+  return {
+    ...service,
+    watermarkAssets(projectId, assetIds, options = {}, ...rest) {
+      return watermarkAssets(projectId, assetIds, { outputCategorySlug: 'wm', ...options }, ...rest);
+    },
+  };
+}
+
+function createAssetProcessingPlanner(dependencies) {
+  const planner = createAssetProcessingPlannerRaw(dependencies);
+  const planWatermark = planner.planWatermark.bind(planner);
+  return {
+    ...planner,
+    planWatermark(projectId, scope, options = {}) {
+      return planWatermark(projectId, scope, { outputCategorySlug: 'wm', ...options });
+    },
+  };
+}
 
 function projectInput(title = 'Verification Project') {
   return {
@@ -315,9 +337,9 @@ describe('watermark verification', () => {
 
     expect(result.generatedCount).toBe(3);
 
-    const pngPath = path.join(projectDir, 'Final', 'tiff-source_wm.png');
-    const jpgPath = path.join(projectDir, 'Final', 'tiff-source_wm.jpg');
-    const webpPath = path.join(projectDir, 'Final', 'tiff-source_wm.webp');
+    const pngPath = path.join(projectDir, 'wm', 'tiff-source_wm.png');
+    const jpgPath = path.join(projectDir, 'wm', 'tiff-source_wm.jpg');
+    const webpPath = path.join(projectDir, 'wm', 'tiff-source_wm.webp');
 
     expect(fs.existsSync(pngPath)).toBe(true);
     expect(fs.existsSync(jpgPath)).toBe(true);
@@ -362,7 +384,7 @@ describe('watermark verification', () => {
     });
 
     expect(fs.existsSync(path.join(projectDir, 'Final', 'tiff-delete.tif'))).toBe(false);
-    expect(fs.existsSync(path.join(projectDir, 'Final', 'tiff-delete_wm.png'))).toBe(true);
+    expect(fs.existsSync(path.join(projectDir, 'wm', 'tiff-delete_wm.png'))).toBe(true);
     expect(assetRepository.findById(source.id)).toBeUndefined();
   });
 
@@ -393,7 +415,7 @@ describe('watermark verification', () => {
       marginRatio: 0.02,
     });
 
-    const afterPath = path.join(projectDir, 'Final', 'before-resize_lq_wm.png');
+    const afterPath = path.join(projectDir, 'wm', 'before-resize_lq_wm.png');
     expect(fs.existsSync(afterPath)).toBe(true);
     const afterMeta = await metadataFor(afterPath);
     expect(afterMeta.width).toBe(100);
@@ -416,7 +438,7 @@ describe('watermark verification', () => {
       marginRatio: 0.02,
     });
 
-    const beforePath = path.join(projectDir, 'Final', 'before-resize-2_lq_wm.png');
+    const beforePath = path.join(projectDir, 'wm', 'before-resize-2_lq_wm.png');
     expect(fs.existsSync(beforePath)).toBe(true);
     const beforeMeta = await metadataFor(beforePath);
     expect(beforeMeta.width).toBe(100);
@@ -481,12 +503,12 @@ describe('watermark verification', () => {
     expect(result.generatedCount).toBe(6);
 
     const expectedPaths = [
-      'Final/matrix_wm.png',
-      'Final/matrix_wm.webp',
-      'Final/matrix_wm.jpg',
-      'Final/matrix_lq_wm.png',
-      'Final/matrix_lq_wm.jpg',
-      'Final/matrix_lq_wm.webp',
+      'wm/matrix_wm.png',
+      'wm/matrix_wm.webp',
+      'wm/matrix_wm.jpg',
+      'wm/matrix_lq_wm.png',
+      'wm/matrix_lq_wm.jpg',
+      'wm/matrix_lq_wm.webp',
     ];
 
     for (const relPath of expectedPaths) {
@@ -553,13 +575,13 @@ describe('watermark verification', () => {
     // additionalFormatsResized has 'jpeg' which is NOT in the unresized output
     expect(unresizedResult.generatedCount).toBe(3);
     expect(unresizedResult.generatedPaths.sort()).toEqual([
-      'Final/single-unresized_wm.jpg',
-      'Final/single-unresized_wm.png',
-      'Final/single-unresized_wm.webp',
+      'wm/single-unresized_wm.jpg',
+      'wm/single-unresized_wm.png',
+      'wm/single-unresized_wm.webp',
     ].sort());
 
     // Verify no jpeg output exists (additionalFormatsResized not used for unresized)
-    expect(fs.existsSync(path.join(projectDir, 'Final', 'single-unresized_wm.jpeg'))).toBe(false);
+    expect(fs.existsSync(path.join(projectDir, 'wm', 'single-unresized_wm.jpeg'))).toBe(false);
 
     const resizedSource = await writeIndexedImage('Final/single-resized.png', {
       width: 200, height: 150, format: 'png',
@@ -579,13 +601,13 @@ describe('watermark verification', () => {
     // Dedup: png + [jpg, webp] => 3 distinct (gif not included)
     expect(resizedResult.generatedCount).toBe(3);
     expect(resizedResult.generatedPaths.sort()).toEqual([
-      'Final/single-resized_lq_wm.jpg',
-      'Final/single-resized_lq_wm.png',
-      'Final/single-resized_lq_wm.webp',
+      'wm/single-resized_lq_wm.jpg',
+      'wm/single-resized_lq_wm.png',
+      'wm/single-resized_lq_wm.webp',
     ].sort());
 
     // Verify no gif output exists
-    expect(fs.existsSync(path.join(projectDir, 'Final', 'single-resized_lq_wm.gif'))).toBe(false);
+    expect(fs.existsSync(path.join(projectDir, 'wm', 'single-resized_lq_wm.gif'))).toBe(false);
   });
 
   // ─── Item 5: Skip-existing deletion gate ─────────────────────────────
@@ -596,7 +618,7 @@ describe('watermark verification', () => {
     });
 
     // Pre-create exactly one required destination (png)
-    const preExistingPath = path.join(projectDir, 'Final', 'skip-delete_wm.png');
+    const preExistingPath = path.join(projectDir, 'wm', 'skip-delete_wm.png');
     fs.mkdirSync(path.dirname(preExistingPath), { recursive: true });
     fs.writeFileSync(preExistingPath, await makeImage({ width: 100, height: 60, format: 'png' }));
 
@@ -633,7 +655,7 @@ describe('watermark verification', () => {
     });
 
     // Pre-create one resized destination
-    const preExistingPath = path.join(projectDir, 'Final', 'skip-dual_lq_wm.png');
+    const preExistingPath = path.join(projectDir, 'wm', 'skip-dual_lq_wm.png');
     fs.mkdirSync(path.dirname(preExistingPath), { recursive: true });
     fs.writeFileSync(preExistingPath, await makeImage({ width: 100, height: 75, format: 'png' }));
 
@@ -662,7 +684,7 @@ describe('watermark verification', () => {
     });
 
     // Pre-create a destination that is NOT CreatorCrate-owned (foreign bytes)
-    const foreignPath = path.join(projectDir, 'Final', 'foreign-conflict_wm.png');
+    const foreignPath = path.join(projectDir, 'wm', 'foreign-conflict_wm.png');
     fs.mkdirSync(path.dirname(foreignPath), { recursive: true });
     const foreignBytes = Buffer.from('foreign content not from CreatorCrate');
     fs.writeFileSync(foreignPath, foreignBytes);
@@ -681,7 +703,7 @@ describe('watermark verification', () => {
     expect(fs.existsSync(path.join(projectDir, 'Final', 'foreign-conflict.png'))).toBe(true);
     expect(assetRepository.findById(source.id)).toBeTruthy();
     // No false successful provenance
-    expect(assetRepository.findByProjectIdAndPath(project.id, 'Final/foreign-conflict_wm.png')).toBeUndefined();
+    expect(assetRepository.findByProjectIdAndPath(project.id, 'wm/foreign-conflict_wm.png')).toBeUndefined();
   });
 
   // ─── Item 7: Valid owned overwrite among multiple outputs ────────────
@@ -765,11 +787,11 @@ describe('watermark verification', () => {
     });
 
     // Externally delete exactly one generated file (the resized webp)
-    const missingPath = path.join(projectDir, 'final', 'missing-output_lq_wm.webp');
+    const missingPath = path.join(projectDir, 'wm', 'missing-output_lq_wm.webp');
     fs.unlinkSync(missingPath);
     assetScanner.scanProjectAssets(project.id);
 
-    const missingAsset = assetRepository.findByProjectIdAndPath(project.id, 'final/missing-output_lq_wm.webp');
+    const missingAsset = assetRepository.findByProjectIdAndPath(project.id, 'wm/missing-output_lq_wm.webp');
     expect(missingAsset.is_present).toBe(0);
 
     // Rerun
@@ -787,14 +809,14 @@ describe('watermark verification', () => {
     // Missing destination recreated
     expect(fs.existsSync(missingPath)).toBe(true);
     // Same generated asset ID reused
-    const recreated = assetRepository.findByProjectIdAndPath(project.id, 'final/missing-output_lq_wm.webp');
-    expect(recreated.id).toBe(first.generatedAssetIds.find((id) => assetRepository.findById(id).relative_path === 'final/missing-output_lq_wm.webp'));
+    const recreated = assetRepository.findByProjectIdAndPath(project.id, 'wm/missing-output_lq_wm.webp');
+    expect(recreated.id).toBe(first.generatedAssetIds.find((id) => assetRepository.findById(id).relative_path === 'wm/missing-output_lq_wm.webp'));
     expect(recreated.is_present).toBe(1);
     expect(recreated.generated_output_sha256).toBe(sha256For(missingPath));
 
     // No duplicate asset row
     const allRows = db.prepare('SELECT * FROM assets WHERE relative_path = ? AND project_id = ?')
-      .all('final/missing-output_lq_wm.webp', project.id);
+      .all('wm/missing-output_lq_wm.webp', project.id);
     expect(allRows.length).toBe(1);
 
     // Source deletion gate remains correct (source retained)
@@ -819,14 +841,14 @@ describe('watermark verification', () => {
     });
 
     // Externally replace one output's bytes (the unresized jpg)
-    const replacedPath = path.join(projectDir, 'final', 'replaced-one_wm.jpg');
+    const replacedPath = path.join(projectDir, 'wm', 'replaced-one_wm.jpg');
     const originalBytes = fs.readFileSync(replacedPath);
     const replacement = Buffer.from(originalBytes);
     replacement[0] ^= 0xff;
     fs.writeFileSync(replacedPath, replacement);
 
     assetScanner.scanProjectAssets(project.id);
-    const replacedAsset = assetRepository.findByProjectIdAndPath(project.id, 'final/replaced-one_wm.jpg');
+    const replacedAsset = assetRepository.findByProjectIdAndPath(project.id, 'wm/replaced-one_wm.jpg');
     expect(replacedAsset.generated_output_sha256).not.toBe(sha256For(replacedPath));
 
     // Rerun with overwrite enabled
@@ -845,9 +867,9 @@ describe('watermark verification', () => {
     expect(fs.readFileSync(replacedPath)).toEqual(replacement);
 
     // Legitimate sibling outputs not damaged (the unresized png and resized webp/png)
-    const pngPath = path.join(projectDir, 'final', 'replaced-one_wm.png');
+    const pngPath = path.join(projectDir, 'wm', 'replaced-one_wm.png');
     expect(fs.existsSync(pngPath)).toBe(true);
-    const webpPath = path.join(projectDir, 'final', 'replaced-one_lq_wm.webp');
+    const webpPath = path.join(projectDir, 'wm', 'replaced-one_lq_wm.webp');
     expect(fs.existsSync(webpPath)).toBe(true);
 
     // Source retained
@@ -874,7 +896,7 @@ describe('watermark verification', () => {
     // Mutate one output row's generated_output_sha256 to be malformed
     const targetAsset = first.generatedAssetIds
       .map((id) => assetRepository.findById(id))
-      .find((a) => a.relative_path === 'Final/malformed-isolated_wm.jpg');
+      .find((a) => a.relative_path === 'wm/malformed-isolated_wm.jpg');
     db.prepare('UPDATE assets SET generated_output_sha256 = ? WHERE id = ?')
       .run('g'.repeat(64), targetAsset.id);
 
@@ -893,7 +915,7 @@ describe('watermark verification', () => {
     // Source retained
     expect(fs.existsSync(path.join(projectDir, 'Final', 'malformed-isolated.png'))).toBe(true);
     // The malformed output's file untouched (not overwritten)
-    const malformedPath = path.join(projectDir, 'Final', 'malformed-isolated_wm.jpg');
+    const malformedPath = path.join(projectDir, 'wm', 'malformed-isolated_wm.jpg');
     expect(fs.existsSync(malformedPath)).toBe(true);
   });
 
@@ -920,16 +942,16 @@ describe('watermark verification', () => {
       })).rejects.toMatchObject({ code: 'DATABASE_OPERATION_FAILED' });
 
       // DB transaction rolled back - no generated asset rows persisted
-      expect(assetRepository.findByProjectIdAndPath(project.id, 'Final/db-failure_wm.png')).toBeUndefined();
-      expect(assetRepository.findByProjectIdAndPath(project.id, 'Final/db-failure_wm.jpg')).toBeUndefined();
-      expect(assetRepository.findByProjectIdAndPath(project.id, 'Final/db-failure_lq_wm.png')).toBeUndefined();
-      expect(assetRepository.findByProjectIdAndPath(project.id, 'Final/db-failure_lq_wm.webp')).toBeUndefined();
+      expect(assetRepository.findByProjectIdAndPath(project.id, 'wm/db-failure_wm.png')).toBeUndefined();
+      expect(assetRepository.findByProjectIdAndPath(project.id, 'wm/db-failure_wm.jpg')).toBeUndefined();
+      expect(assetRepository.findByProjectIdAndPath(project.id, 'wm/db-failure_lq_wm.png')).toBeUndefined();
+      expect(assetRepository.findByProjectIdAndPath(project.id, 'wm/db-failure_lq_wm.webp')).toBeUndefined();
 
       // Newly published output files removed
-      expect(fs.existsSync(path.join(projectDir, 'Final', 'db-failure_wm.png'))).toBe(false);
-      expect(fs.existsSync(path.join(projectDir, 'Final', 'db-failure_wm.jpg'))).toBe(false);
-      expect(fs.existsSync(path.join(projectDir, 'Final', 'db-failure_lq_wm.png'))).toBe(false);
-      expect(fs.existsSync(path.join(projectDir, 'Final', 'db-failure_lq_wm.webp'))).toBe(false);
+      expect(fs.existsSync(path.join(projectDir, 'wm', 'db-failure_wm.png'))).toBe(false);
+      expect(fs.existsSync(path.join(projectDir, 'wm', 'db-failure_wm.jpg'))).toBe(false);
+      expect(fs.existsSync(path.join(projectDir, 'wm', 'db-failure_lq_wm.png'))).toBe(false);
+      expect(fs.existsSync(path.join(projectDir, 'wm', 'db-failure_lq_wm.webp'))).toBe(false);
 
       // Source remains
       expect(fs.existsSync(path.join(projectDir, 'Final', 'db-failure.png'))).toBe(true);
@@ -961,9 +983,9 @@ describe('watermark verification', () => {
     });
 
     // Record original bytes for the unresized png (will be replaced)
-    const replacePath = path.join(projectDir, 'Final', 'mixed-recovery_wm.png');
+    const replacePath = path.join(projectDir, 'wm', 'mixed-recovery_wm.png');
     const originalBytes = fs.readFileSync(replacePath);
-    const replaceAsset = assetRepository.findByProjectIdAndPath(project.id, 'Final/mixed-recovery_wm.png');
+    const replaceAsset = assetRepository.findByProjectIdAndPath(project.id, 'wm/mixed-recovery_wm.png');
     const originalHash = replaceAsset.generated_output_sha256;
 
     // Change watermark so replacement produces different bytes
@@ -995,7 +1017,7 @@ describe('watermark verification', () => {
       expect(fs.readFileSync(replacePath)).toEqual(originalBytes);
 
       // Original stored SHA/provenance remain coherent after DB rollback
-      const restoredAsset = assetRepository.findByProjectIdAndPath(project.id, 'Final/mixed-recovery_wm.png');
+      const restoredAsset = assetRepository.findByProjectIdAndPath(project.id, 'wm/mixed-recovery_wm.png');
       expect(restoredAsset.id).toBe(replaceAsset.id);
       expect(restoredAsset.generated_output_sha256).toBe(originalHash);
 
@@ -1023,7 +1045,7 @@ describe('watermark verification', () => {
       outputFormat: 'png',
       deleteSource: false,
     });
-    const firstPngPath = path.join(projectDir, 'Final', 'mixed-new_wm.png');
+    const firstPngPath = path.join(projectDir, 'wm', 'mixed-new_wm.png');
     const firstPngBytes = fs.readFileSync(firstPngPath);
 
     // Second run: add new outputs (jpg, webp) + replace the png
@@ -1045,8 +1067,8 @@ describe('watermark verification', () => {
       expect(fs.readFileSync(firstPngPath)).toEqual(firstPngBytes);
 
       // New outputs (jpg, webp) removed safely
-      expect(fs.existsSync(path.join(projectDir, 'Final', 'mixed-new_wm.jpg'))).toBe(false);
-      expect(fs.existsSync(path.join(projectDir, 'Final', 'mixed-new_wm.webp'))).toBe(false);
+      expect(fs.existsSync(path.join(projectDir, 'wm', 'mixed-new_wm.jpg'))).toBe(false);
+      expect(fs.existsSync(path.join(projectDir, 'wm', 'mixed-new_wm.webp'))).toBe(false);
 
       // Source remains
       expect(fs.existsSync(path.join(projectDir, 'Final', 'mixed-new.png'))).toBe(true);
@@ -1077,7 +1099,7 @@ describe('watermark verification', () => {
     });
 
     // Delete one output to force recreation path
-    const racePath = path.join(projectDir, 'final', 'race-multi_lq_wm.webp');
+    const racePath = path.join(projectDir, 'wm', 'race-multi_lq_wm.webp');
     fs.unlinkSync(racePath);
     assetScanner.scanProjectAssets(project.id);
 
@@ -1176,8 +1198,8 @@ describe('watermark verification', () => {
     expect(assetRepository.findById(source.id)).toBeTruthy();
 
     // No output set left behind (operation blocked before mutation)
-    expect(fs.existsSync(path.join(projectDir, 'Final', 'published-protect_wm.png'))).toBe(false);
-    expect(fs.existsSync(path.join(projectDir, 'Final', 'published-protect_lq_wm.png'))).toBe(false);
+    expect(fs.existsSync(path.join(projectDir, 'wm', 'published-protect_wm.png'))).toBe(false);
+    expect(fs.existsSync(path.join(projectDir, 'wm', 'published-protect_lq_wm.png'))).toBe(false);
   });
 
   it('planner indicates deletion blocked for published-release source', async () => {
@@ -1201,35 +1223,33 @@ describe('watermark verification', () => {
     });
   });
 
-  // ─── Item 16: Custom output-directory apply verification ──────────────
+  // ─── Item 16: Output-category apply verification ─────────────────────
 
-  it('applies watermark to a nested project-relative output directory', async () => {
+  it('applies watermark directly at the selected output category root', async () => {
     const source = await writeIndexedImage('Final/sub/image.png', {
       width: 100, height: 60, format: 'png',
     });
 
     const result = await processingService.watermarkAssets(project.id, [source.id], {
       mode: 'custom',
-      outputDirectory: 'processed',
+      outputCategorySlug: 'wm',
       outputFormat: 'png',
       additionalFormats: ['jpg'],
       deleteSource: false,
       overwrite: true,
     });
 
-    // Final path: processed/Final/sub/image_wm.png
-    expect(fs.existsSync(path.join(projectDir, 'processed', 'Final', 'sub', 'image_wm.png'))).toBe(true);
-    expect(fs.existsSync(path.join(projectDir, 'processed', 'Final', 'sub', 'image_wm.jpg'))).toBe(true);
+    expect(fs.existsSync(path.join(projectDir, 'wm', 'image_wm.png'))).toBe(true);
+    expect(fs.existsSync(path.join(projectDir, 'wm', 'image_wm.jpg'))).toBe(true);
 
-    const pngAsset = assetRepository.findByProjectIdAndPath(project.id, 'processed/Final/sub/image_wm.png');
+    const pngAsset = assetRepository.findByProjectIdAndPath(project.id, 'wm/image_wm.png');
     expect(pngAsset).toBeTruthy();
     expect(pngAsset.generated_source_relative_path).toBe('Final/sub/image.png');
 
-    // Nested directories created only during Apply (they didn't exist before)
-    expect(fs.existsSync(path.join(projectDir, 'processed', 'Final', 'sub'))).toBe(true);
+    expect(pngAsset).toMatchObject({ category_id: expect.any(Number), nested_path: '' });
   });
 
-  it('planner creates no directories for nested output-directory plan', async () => {
+  it('planner creates no directories for an output-category plan', async () => {
     const source = await writeIndexedImage('Final/sub/planner-dir.png', {
       width: 100, height: 60, format: 'png',
     });
@@ -1238,41 +1258,41 @@ describe('watermark verification', () => {
     await planner.planWatermark(project.id, {
       type: 'selected', assetIds: [source.id],
     }, {
-      mode: 'custom', outputDirectory: 'processed',
+      mode: 'custom', outputCategorySlug: 'wm',
       outputFormat: 'png', deleteSource: false,
     });
     expect(snapshotTree(projectDir)).toEqual(beforeTree);
-    expect(fs.existsSync(path.join(projectDir, 'processed'))).toBe(false);
+    expect(fs.existsSync(path.join(projectDir, 'wm', 'sub'))).toBe(false);
   });
 
   it.each([
     ['absolute', '/absolute/path'],
     ['windows-drive', 'C:/path'],
     ['traversal', '../escape'],
-  ])('rejects %s output directory', async (_label, outputDirectory) => {
-    await expect(processingService.watermarkAssets(project.id, [1], {
+  ])('rejects %s legacy output directory', async (_label, outputDir) => {
+    const source = await writeIndexedImage(`Final/invalid-output-${_label}.png`);
+    await expect(processingService.watermarkAssets(project.id, [source.id], {
       mode: 'custom',
-      outputDirectory,
+      outputCategorySlug: outputDir,
       outputFormat: 'png',
-    })).rejects.toMatchObject({ code: 'INVALID_OUTPUT_DIRECTORY' });
+    })).rejects.toMatchObject({ code: 'INVALID_OUTPUT_CATEGORY' });
   });
 
-  it('keeps distinct nested source paths distinct under output directory', async () => {
+  it('rejects nested source filename collisions before mutating the category root', async () => {
     const a = await writeIndexedImage('Final/a/image.png', { width: 50, height: 30 });
     const b = await writeIndexedImage('Final/b/image.png', { width: 50, height: 30 });
 
-    await processingService.watermarkAssets(project.id, [a.id, b.id], {
+    await expect(processingService.watermarkAssets(project.id, [a.id, b.id], {
       mode: 'custom',
-      outputDirectory: 'out',
+      outputCategorySlug: 'wm',
       outputFormat: 'png',
       deleteSource: false,
-    });
+    })).rejects.toMatchObject({ code: 'INTRA_BATCH_COLLISION' });
 
-    expect(fs.existsSync(path.join(projectDir, 'out', 'Final', 'a', 'image_wm.png'))).toBe(true);
-    expect(fs.existsSync(path.join(projectDir, 'out', 'Final', 'b', 'image_wm.png'))).toBe(true);
+    expect(fs.existsSync(path.join(projectDir, 'wm', 'image_wm.png'))).toBe(false);
   });
 
-  it('preserves the Patreon preset parent/wm/<stem>_wm.png layout', async () => {
+  it('writes Patreon output beneath the selected category', async () => {
     const source = await writeIndexedImage('Final/patreon-preset.png', {
       width: 100, height: 60, format: 'png',
     });
@@ -1282,7 +1302,7 @@ describe('watermark verification', () => {
       deleteSource: false,
     });
 
-    expect(fs.existsSync(path.join(projectDir, 'Final', 'wm', 'patreon-preset_wm.png'))).toBe(true);
+    expect(fs.existsSync(path.join(projectDir, 'wm', 'patreon-preset_wm.png'))).toBe(true);
   });
 
   // ─── Item 17: Custom suffix apply verification ───────────────────────
@@ -1294,12 +1314,12 @@ describe('watermark verification', () => {
 
     await processingService.watermarkAssets(project.id, [source.id], {
       mode: 'custom',
-      suffix,
+      unresizedSuffix: suffix,
       outputFormat: 'png',
       deleteSource: false,
     });
 
-    const expectedRelPath = `Final/suffix-${suffix.slice(1)}${suffix}.png`;
+    const expectedRelPath = `wm/suffix-${suffix.slice(1)}${suffix}.png`;
     expect(fs.existsSync(path.join(projectDir, ...expectedRelPath.split('/')))).toBe(true);
 
     const asset = assetRepository.findByProjectIdAndPath(project.id, expectedRelPath);
@@ -1314,12 +1334,12 @@ describe('watermark verification', () => {
 
     await expect(processingService.watermarkAssets(project.id, [source.id], {
       mode: 'custom',
-      suffix,
+      unresizedSuffix: suffix,
       outputFormat: 'png',
       deleteSource: false,
     })).rejects.toMatchObject({ code: 'INVALID_SUFFIX' });
 
-    expect(fs.existsSync(path.join(projectDir, 'Final', 'unsafe-suffix_wm.png'))).toBe(false);
+    expect(fs.existsSync(path.join(projectDir, 'wm', 'unsafe-suffix_wm.png'))).toBe(false);
   });
 
   // ─── Item 18: WebP lossless verification ──────────────────────────────
@@ -1337,7 +1357,7 @@ describe('watermark verification', () => {
       deleteSource: false,
     });
 
-    const webpPath = path.join(projectDir, 'Final', 'webp-lossless_wm.webp');
+    const webpPath = path.join(projectDir, 'wm', 'webp-lossless_wm.webp');
     const meta = await metadataFor(webpPath);
     expect(meta.format).toBe('webp');
 
@@ -1360,7 +1380,7 @@ describe('watermark verification', () => {
       deleteSource: false,
     });
 
-    const webpPath = path.join(projectDir, 'Final', 'webp-lossy_wm.webp');
+    const webpPath = path.join(projectDir, 'wm', 'webp-lossy_wm.webp');
     const webpBuffer = fs.readFileSync(webpPath);
     const riffType = webpBuffer.subarray(12, 16).toString('ascii');
     expect(riffType).toBe('VP8 ');
@@ -1393,7 +1413,7 @@ describe('watermark verification', () => {
       deleteSource: false,
     });
 
-    const jpgPath = path.join(projectDir, 'Final', 'jpeg-bg-default_wm.jpg');
+    const jpgPath = path.join(projectDir, 'wm', 'jpeg-bg-default_wm.jpg');
     const { data, info } = await rawPixels(jpgPath);
     // JPEG has no alpha; background should be near-white (255)
     // Check a corner pixel (should be white-ish from flatten)
@@ -1428,7 +1448,7 @@ describe('watermark verification', () => {
       deleteSource: false,
     });
 
-    const jpgPath = path.join(projectDir, 'Final', 'jpeg-bg-custom_wm.jpg');
+    const jpgPath = path.join(projectDir, 'wm', 'jpeg-bg-custom_wm.jpg');
     const { data } = await rawPixels(jpgPath);
     // Corner should be approximately the custom background (within JPEG tolerance)
     expect(Math.abs(data[0] - 30)).toBeLessThan(15);
@@ -1444,10 +1464,10 @@ describe('watermark verification', () => {
     });
 
     // Create a valid existing generated output (unresized png) with provenance
-    const existingOutput = await writeIndexedImage('Final/no-mutation_wm.png', {
+    const existingOutput = await writeIndexedImage('wm/no-mutation_wm.png', {
       width: 400, height: 300, format: 'png',
     });
-    const existingPath = path.join(projectDir, 'Final', 'no-mutation_wm.png');
+    const existingPath = path.join(projectDir, 'wm', 'no-mutation_wm.png');
     setWatermarkProvenance(existingOutput.id, source.id, 'Final/no-mutation.png', 'custom', 'unresized', sha256For(existingPath));
 
     const beforeTree = snapshotTree(projectDir);
@@ -1595,13 +1615,13 @@ describe('watermark verification', () => {
         deleteSource: false,
       });
 
-      const unresizedAsset = assetRepository.findByProjectIdAndPath(project.id, 'final/scanner-variant_wm.png');
+      const unresizedAsset = assetRepository.findByProjectIdAndPath(project.id, 'wm/scanner-variant_wm.png');
       expect(unresizedAsset.generated_variant).toBe('unresized');
 
       // Re-scan
       assetScanner.scanProjectAssets(project.id);
 
-      const rescanned = assetRepository.findByProjectIdAndPath(project.id, 'final/scanner-variant_wm.png');
+      const rescanned = assetRepository.findByProjectIdAndPath(project.id, 'wm/scanner-variant_wm.png');
       expect(rescanned.generated_variant).toBe('unresized');
       expect(rescanned.id).toBe(unresizedAsset.id);
     });

@@ -104,10 +104,15 @@ describe('database and migrations', () => {
       '011_add_watermark_asset_provenance.sql',
       '012_add_watermark_generated_variant.sql',
       '013_add_generated_artifacts.sql',
-       '014_add_managed_watermarks.sql',
-       '015_add_watermark_scale_maps.sql',
-       '016_add_processing_presets.sql',
-    ]);
+        '014_add_managed_watermarks.sql',
+        '015_add_watermark_scale_maps.sql',
+         '016_add_processing_presets.sql',
+         '017_add_project_watermarks.sql',
+         '018_add_project_watermark_asset_provenance.sql',
+         '019_add_global_watermark_sources.sql',
+         '020_retire_project_watermarks.sql',
+         '021_clear_processing_preset_scale_map_bindings.sql',
+       ]);
   });
 
   it('creates the complete fresh-install table set with foreign keys enabled', () => {
@@ -209,6 +214,36 @@ describe('database and migrations', () => {
     `).run(scaleMapId)).not.toThrow();
     expect(() => db.prepare('DELETE FROM watermark_scale_maps WHERE id = ?').run(scaleMapId))
       .toThrow(/FOREIGN KEY constraint failed/i);
+  });
+
+
+  it('upgrades a 020 database by clearing preset bindings while preserving all scale-map rows', () => {
+    const legacyMigrationsDir = path.join(tmpDir, 'migrations-through-020');
+    fs.mkdirSync(legacyMigrationsDir);
+    for (const filename of fs.readdirSync(MIGRATIONS_DIR).filter((name) => name <= '020_retire_project_watermarks.sql')) {
+      fs.copyFileSync(path.join(MIGRATIONS_DIR, filename), path.join(legacyMigrationsDir, filename));
+    }
+    db = openDatabase(dbPath);
+    runMigrations(db, legacyMigrationsDir);
+    const canonicalId = Number(db.prepare(`
+      INSERT INTO watermark_scale_maps (display_name, system_key, definition_json)
+      VALUES ('Reference', 'reference-watermark-scale-map', '{}')
+    `).run().lastInsertRowid);
+    const historicalId = Number(db.prepare(`
+      INSERT INTO watermark_scale_maps (display_name, definition_json)
+      VALUES ('Historical', '{}')
+    `).run().lastInsertRowid);
+    db.prepare(`
+      INSERT INTO processing_presets (operation_type, display_name, config_json, scale_map_id)
+      VALUES ('watermark', 'Legacy binding', '{}', ?)
+    `).run(historicalId);
+
+    runMigrations(db, MIGRATIONS_DIR);
+
+    expect(db.prepare('SELECT scale_map_id FROM processing_presets WHERE display_name = ?').get('Legacy binding'))
+      .toEqual({ scale_map_id: null });
+    expect(db.prepare('SELECT id, system_key FROM watermark_scale_maps ORDER BY id').all())
+      .toEqual([{ id: canonicalId, system_key: 'reference-watermark-scale-map' }, { id: historicalId, system_key: null }]);
   });
 
   it('rejects published as a project status', () => {
@@ -637,6 +672,7 @@ describe('database and migrations', () => {
       { name: 'generated_output_sha256', type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 },
       { name: 'generated_variant', type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 },
        { name: 'generated_watermark_id', type: 'INTEGER', notnull: 0, dflt_value: null, pk: 0 },
+       { name: 'generated_watermark_asset_id', type: 'INTEGER', notnull: 0, dflt_value: null, pk: 0 },
     ]);
   });
 });

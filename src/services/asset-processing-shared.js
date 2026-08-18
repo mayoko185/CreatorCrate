@@ -66,7 +66,9 @@ export function isOwnedWatermarkDestination({
     || destinationAsset.generated_by !== 'watermark'
     || destinationAsset.generated_mode !== options.mode
     || (destinationAsset.generated_variant !== (variant ?? 'single')
-      && !(destinationAsset.generated_variant === null && (variant ?? 'single') === 'single'))
+      && !(destinationAsset.generated_variant === null && (variant ?? 'single') === 'single')
+      && !(destinationAsset.generated_variant === 'single'
+        && ['unresized', 'resized'].includes(variant)))
     || destinationAsset.generated_source_relative_path !== sourceRelativePath
     || (watermarkId !== undefined && destinationAsset.generated_watermark_id !== watermarkId)
     || destinationAsset.category_id !== outputCategoryId

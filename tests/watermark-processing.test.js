@@ -20,12 +20,38 @@ import { createProjectRepository } from '../src/data/project-repository.js';
 import { createProjectService } from '../src/services/project-service.js';
 import {
   AssetProcessingError,
-  createAssetProcessingService,
+  createAssetProcessingService as createAssetProcessingServiceRaw,
 } from '../src/services/asset-processing-service.js';
 import { createProjectOperationCoordinator } from '../src/services/project-operation-coordinator.js';
+import { createAssetProcessingPlanner as createAssetProcessingPlannerRaw } from '../src/services/asset-processing-planner.js';
+import { createAssetProcessingScopeService } from '../src/services/asset-processing-scope-service.js';
 import { createAssetScanner } from '../src/services/asset-scanner.js';
 import { resolveProjectDir } from '../src/storage/project-storage.js';
 import { read7zArchiveEntries } from '../src/services/watermark-7z.js';
+
+function createAssetProcessingService(dependencies) {
+  const service = createAssetProcessingServiceRaw(dependencies);
+  const watermarkAssets = service.watermarkAssets.bind(service);
+  return {
+    ...service,
+    watermarkAssets(projectId, assetIds, options = {}, ...rest) {
+      const outputCategorySlug = options.mode === 'social' ? 'wm-lq' : 'wm';
+      return watermarkAssets(projectId, assetIds, { outputCategorySlug, ...options }, ...rest);
+    },
+  };
+}
+
+function createAssetProcessingPlanner(dependencies) {
+  const planner = createAssetProcessingPlannerRaw(dependencies);
+  const planWatermark = planner.planWatermark.bind(planner);
+  return {
+    ...planner,
+    planWatermark(projectId, scope, options = {}) {
+      const outputCategorySlug = options.mode === 'social' ? 'wm-lq' : 'wm';
+      return planWatermark(projectId, scope, { outputCategorySlug, ...options });
+    },
+  };
+}
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 
@@ -244,7 +270,7 @@ describe('watermark asset processing', () => {
     expect(fs.existsSync(path.join(projectDir, 'Final', `${sourceName}.png`))).toBe(true);
     expect(assetRepository.findByProjectIdAndPath(
       project.id,
-      `Final/wm/${sourceName}_wm.png`,
+      `wm/${sourceName}_wm.png`,
     )).toBeUndefined();
   }
 
@@ -262,7 +288,7 @@ describe('watermark asset processing', () => {
       .run(releaseId, assetId, 'attachment', 0);
   }
 
-  it('creates a Patreon-style nested wm output and preserves the source', async () => {
+  it('creates a Patreon output at the selected category root and preserves the source', async () => {
     const source = await writeIndexedImage('Final/patreon.png', { width: 1000, height: 600 });
 
     const result = await processingService.watermarkAssets(project.id, [source.id], {
@@ -271,7 +297,9 @@ describe('watermark asset processing', () => {
       margin: 0.02,
     });
 
-    const output = assetRepository.findByProjectIdAndPath(project.id, 'Final/wm/patreon_wm.png');
+    const output = assetRepository.findByProjectIdAndPath(project.id, 'wm/patreon_wm.png');
+    const wmCategory = assetCategoryService.listProjectCategories(project.id)
+      .find((category) => category.directory_slug === 'wm');
     expect(result).toMatchObject({
       status: 'completed',
       operation: 'watermarkAssets',
@@ -282,18 +310,28 @@ describe('watermark asset processing', () => {
     });
     expect(output).toMatchObject({
       project_id: project.id,
-      category_id: finalCategory.id,
-      nested_path: 'wm',
+      category_id: wmCategory.id,
+      nested_path: '',
       generated_by: 'watermark',
       generated_source_asset_id: source.id,
       generated_source_relative_path: 'Final/patreon.png',
       generated_mode: 'patreon',
-      generated_output_sha256: sha256For(path.join(projectDir, 'Final', 'wm', 'patreon_wm.png')),
+      generated_output_sha256: sha256For(path.join(projectDir, 'wm', 'patreon_wm.png')),
       is_present: 1,
     });
     expect(fs.existsSync(path.join(projectDir, 'Final', 'patreon.png'))).toBe(true);
-    expect(fs.existsSync(path.join(projectDir, 'Final', 'wm', 'patreon_wm.png'))).toBe(true);
-    expect((await metadataFor(path.join(projectDir, 'Final', 'wm', 'patreon_wm.png'))).format).toBe('png');
+    expect(fs.existsSync(path.join(projectDir, 'wm', 'patreon_wm.png'))).toBe(true);
+    expect((await metadataFor(path.join(projectDir, 'wm', 'patreon_wm.png'))).format).toBe('png');
+  });
+
+  it('rejects unavailable and path-like output category values during Apply', async () => {
+    const source = await writeIndexedImage('Final/category-validation.png');
+    await expect(processingService.watermarkAssets(project.id, [source.id], {
+      mode: 'patreon', outputCategorySlug: 'missing-category',
+    })).rejects.toMatchObject({ code: 'OUTPUT_CATEGORY_NOT_FOUND' });
+    await expect(processingService.watermarkAssets(project.id, [source.id], {
+      mode: 'patreon', outputCategorySlug: '../outside',
+    })).rejects.toMatchObject({ code: 'INVALID_OUTPUT_CATEGORY' });
   });
 
   it('selects a managed Watermark by ID and rejects output ownership from another ID', async () => {
@@ -320,7 +358,7 @@ describe('watermark asset processing', () => {
       mode: 'patreon',
       watermarkId: managedA.id,
     });
-    const output = assetRepository.findByProjectIdAndPath(project.id, 'Final/wm/managed_wm.png');
+    const output = assetRepository.findByProjectIdAndPath(project.id, 'wm/managed_wm.png');
     expect(output.generated_watermark_id).toBe(managedA.id);
 
     await expect(managedService.watermarkAssets(project.id, [source.id], {
@@ -330,33 +368,32 @@ describe('watermark asset processing', () => {
     })).rejects.toMatchObject({ code: 'OUTPUT_DESTINATION_CONFLICT' });
   });
 
-  it('resolves a managed scale map by ID before mutation and rejects a missing requested map', async () => {
-    const scaleMapService = createWatermarkScaleMapService({
-      repository: createWatermarkScaleMapRepository(db),
-    });
-    const scaleMap = scaleMapService.createScaleMap({
-      displayName: 'Processing map',
-      definition: { '100x60': 0.35, default: 0.1 },
-    });
+  it('uses the canonical scale map during Apply and ignores a historical request ID', async () => {
+    const scaleMapRepository = createWatermarkScaleMapRepository(db);
+    const scaleMapService = createWatermarkScaleMapService({ repository: scaleMapRepository });
+    const canonicalId = Number(db.prepare(`
+      INSERT INTO watermark_scale_maps (display_name, system_key, definition_json)
+      VALUES ('Reference', 'reference-watermark-scale-map', '{"100x60":0.35,"default":0.1}')
+    `).run().lastInsertRowid);
+    const historicalId = Number(db.prepare(`
+      INSERT INTO watermark_scale_maps (display_name, definition_json)
+      VALUES ('Historical map', '{"100x60":0.9,"default":0.1}')
+    `).run().lastInsertRowid);
     const managedService = createAssetProcessingService({
-      projectRepository,
-      assetRepository,
-      generatedArtifactRepository,
-      assetCategoryService,
-      projectsRoot,
-      projectOperationCoordinator: coordinator,
-      watermarkPath,
-      watermarkRoot: tmpDir,
-      scaleMapService,
+      projectRepository, assetRepository, generatedArtifactRepository, assetCategoryService, projectsRoot,
+      projectOperationCoordinator: coordinator, watermarkPath, watermarkRoot: tmpDir, scaleMapService,
     });
-    const source = await writeIndexedImage('Final/managed-scale.png', { width: 100, height: 60 });
+    const first = await writeIndexedImage('Final/managed-scale-a.png', { width: 100, height: 60 });
+    const second = await writeIndexedImage('Final/managed-scale-b.png', { width: 100, height: 60 });
 
-    await expect(managedService.watermarkAssets(project.id, [source.id], {
-      mode: 'custom', outputFormat: 'png', deleteSource: false, scaleMapId: scaleMap.id,
+    await expect(managedService.watermarkAssets(project.id, [first.id], {
+      mode: 'custom', outputFormat: 'png', deleteSource: false, scaleMapId: canonicalId,
     })).resolves.toMatchObject({ status: 'completed', generatedCount: 1 });
-    await expect(managedService.watermarkAssets(project.id, [source.id], {
-      mode: 'custom', outputFormat: 'png', deleteSource: false, scaleMapId: 999,
-    })).rejects.toMatchObject({ code: 'SCALE_MAP_NOT_FOUND' });
+    await expect(managedService.watermarkAssets(project.id, [second.id], {
+      mode: 'custom', outputFormat: 'png', deleteSource: false, scaleMapId: historicalId,
+    })).resolves.toMatchObject({ status: 'completed', generatedCount: 1 });
+    expect(db.prepare('SELECT definition_json FROM watermark_scale_maps WHERE id = ?').get(historicalId))
+      .toEqual({ definition_json: '{"100x60":0.9,"default":0.1}' });
   });
 
   it('creates paired ZIP archives and a CBZ from logical variants', async () => {
@@ -494,14 +531,14 @@ describe('watermark asset processing', () => {
       mode: 'patreon',
       deleteSource: false,
     });
-    const outputPath = path.join(projectDir, 'final', 'wm', 'image_wm.png');
+    const outputPath = path.join(projectDir, 'wm', 'image_wm.png');
     const priorOutput = assetRepository.findById(first.generatedAssetIds[0]);
 
     fs.unlinkSync(outputPath);
     assetScanner.scanProjectAssets(project.id);
     const missingOutput = assetRepository.findByProjectIdAndPath(
       project.id,
-      'final/wm/image_wm.png',
+      'wm/image_wm.png',
     );
     expect(missingOutput).toMatchObject({
       id: priorOutput.id,
@@ -520,7 +557,7 @@ describe('watermark asset processing', () => {
     });
     const recreated = assetRepository.findByProjectIdAndPath(
       project.id,
-      'final/wm/image_wm.png',
+      'wm/image_wm.png',
     );
 
     expect(rerun.generatedAssetIds).toEqual([priorOutput.id]);
@@ -542,7 +579,7 @@ describe('watermark asset processing', () => {
       mode: 'patreon',
       deleteSource: false,
     });
-    const outputPath = path.join(projectDir, 'final', 'wm', 'uppercase-hash_wm.png');
+    const outputPath = path.join(projectDir, 'wm', 'uppercase-hash_wm.png');
     const priorOutput = assetRepository.findById(first.generatedAssetIds[0]);
     const uppercaseHash = priorOutput.generated_output_sha256.toUpperCase();
 
@@ -571,7 +608,7 @@ describe('watermark asset processing', () => {
       mode: 'patreon',
       deleteSource: false,
     });
-    const destinationPath = path.join(projectDir, 'final', 'wm', 'uppercase-existing-hash_wm.png');
+    const destinationPath = path.join(projectDir, 'wm', 'uppercase-existing-hash_wm.png');
     const priorOutput = assetRepository.findById(first.generatedAssetIds[0]);
     const uppercaseHash = priorOutput.generated_output_sha256.toUpperCase();
 
@@ -604,12 +641,7 @@ describe('watermark asset processing', () => {
       mode: 'patreon',
       deleteSource: false,
     });
-    const outputPath = path.join(
-      projectDir,
-      'final',
-      'wm',
-      `malformed-hash-${label.toLowerCase()}_wm.png`,
-    );
+    const outputPath = path.join(projectDir, 'wm', `malformed-hash-${label.toLowerCase()}_wm.png`);
     const priorOutput = assetRepository.findById(first.generatedAssetIds[0]);
 
     db.prepare('UPDATE assets SET generated_output_sha256 = ? WHERE id = ?')
@@ -633,7 +665,7 @@ describe('watermark asset processing', () => {
     expect(assetRepository.findById(priorOutput.id)).toEqual(before);
   });
 
-  it('uses scanner classification for root, categorized, and nested Patreon outputs', async () => {
+  it('keeps generated Patreon outputs classified at the category root after scanning', async () => {
     const categorized = await writeIndexedImage('final/classified.png');
     const root = await writeIndexedImage('root-classified.png');
     const nested = await writeIndexedImage('final/sub/nested-classified.png');
@@ -646,12 +678,12 @@ describe('watermark asset processing', () => {
 
     const categories = assetCategoryService.listProjectCategories(project.id);
     const wmCategory = categories.find((category) => category.directory_slug === 'wm');
-    expect(assetScanner.repository.findByProjectIdAndPath(project.id, 'final/wm/classified_wm.png'))
-      .toMatchObject({ category_id: finalCategory.id, nested_path: 'wm' });
+    expect(assetScanner.repository.findByProjectIdAndPath(project.id, 'wm/classified_wm.png'))
+      .toMatchObject({ category_id: wmCategory.id, nested_path: '' });
     expect(assetScanner.repository.findByProjectIdAndPath(project.id, 'wm/root-classified_wm.png'))
       .toMatchObject({ category_id: wmCategory.id, nested_path: '' });
-    expect(assetScanner.repository.findByProjectIdAndPath(project.id, 'final/sub/wm/nested-classified_wm.png'))
-      .toMatchObject({ category_id: finalCategory.id, nested_path: 'sub/wm' });
+    expect(assetScanner.repository.findByProjectIdAndPath(project.id, 'wm/nested-classified_wm.png'))
+      .toMatchObject({ category_id: wmCategory.id, nested_path: '' });
   });
 
   it('resizes social output to 1100 without upscaling and deletes the source after success', async () => {
@@ -661,22 +693,22 @@ describe('watermark asset processing', () => {
       mode: 'social',
     });
 
-    const output = assetRepository.findByProjectIdAndPath(project.id, 'Final/social_lq_wm.png');
-    const metadata = await metadataFor(path.join(projectDir, 'Final', 'social_lq_wm.png'));
+    const output = assetRepository.findByProjectIdAndPath(project.id, 'wm-lq/social_lq_wm.png');
+    const metadata = await metadataFor(path.join(projectDir, 'wm-lq', 'social_lq_wm.png'));
     expect(metadata).toMatchObject({ width: 1100, height: 550, format: 'png' });
     expect(result.deletedSourceAssetIds).toEqual([source.id]);
     expect(assetRepository.findById(source.id)).toBeUndefined();
     expect(output.generated_mode).toBe('social');
-    expect(fs.existsSync(path.join(projectDir, 'Final', 'social.png'))).toBe(false);
+    expect(fs.existsSync(path.join(projectDir, 'wm-lq', 'social.png'))).toBe(false);
   });
 
   it('refreshes a Social output after its source is restored with a new asset ID', async () => {
     const source = await writeIndexedImage('final/restored-social.png', { width: 2200, height: 1100 });
     await processingService.watermarkAssets(project.id, [source.id], { mode: 'social' });
-    const outputPath = path.join(projectDir, 'final', 'restored-social_lq_wm.png');
+    const outputPath = path.join(projectDir, 'wm-lq', 'restored-social_lq_wm.png');
     const priorOutput = assetRepository.findByProjectIdAndPath(
       project.id,
-      'final/restored-social_lq_wm.png',
+      'wm-lq/restored-social_lq_wm.png',
     );
 
     fs.writeFileSync(path.join(projectDir, 'final', 'restored-social.png'), await makeImage({ width: 1800, height: 900 }));
@@ -688,7 +720,7 @@ describe('watermark asset processing', () => {
     assetScanner.scanProjectAssets(project.id);
     const missingOutput = assetRepository.findByProjectIdAndPath(
       project.id,
-      'final/restored-social_lq_wm.png',
+      'wm-lq/restored-social_lq_wm.png',
     );
     expect(missingOutput).toMatchObject({
       id: priorOutput.id,
@@ -706,7 +738,7 @@ describe('watermark asset processing', () => {
 
     const refreshed = assetRepository.findByProjectIdAndPath(
       project.id,
-      'final/restored-social_lq_wm.png',
+      'wm-lq/restored-social_lq_wm.png',
     );
     expect(refreshed).toMatchObject({
       id: priorOutput.id,
@@ -722,7 +754,7 @@ describe('watermark asset processing', () => {
   it('does not let a source restored at another relative path claim stale Social provenance', async () => {
     const source = await writeIndexedImage('final/path-bound.png');
     await processingService.watermarkAssets(project.id, [source.id], { mode: 'social' });
-    const priorOutputPath = path.join(projectDir, 'final', 'path-bound_lq_wm.png');
+    const priorOutputPath = path.join(projectDir, 'wm-lq', 'path-bound_lq_wm.png');
     const priorOutput = fs.readFileSync(priorOutputPath);
 
     const otherPath = path.join(projectDir, 'other', 'path-bound.png');
@@ -731,13 +763,13 @@ describe('watermark asset processing', () => {
     assetScanner.scanProjectAssets(project.id);
     const otherSource = assetRepository.findByProjectIdAndPath(project.id, 'other/path-bound.png');
 
-    await processingService.watermarkAssets(project.id, [otherSource.id], {
+    await expect(processingService.watermarkAssets(project.id, [otherSource.id], {
       mode: 'social',
       overwrite: true,
-    });
+    })).rejects.toMatchObject({ code: 'OUTPUT_DESTINATION_CONFLICT' });
 
     expect(fs.readFileSync(priorOutputPath)).toEqual(priorOutput);
-    expect(fs.existsSync(path.join(projectDir, 'other', 'path-bound_lq_wm.png'))).toBe(true);
+    expect(fs.existsSync(path.join(projectDir, 'wm-lq', 'path-bound_lq_wm.png'))).toBe(true);
   });
 
   it.each([
@@ -753,12 +785,7 @@ describe('watermark asset processing', () => {
       outputFormat,
       deleteSource: false,
     });
-    const outputPath = path.join(
-      projectDir,
-      'Final',
-      'wm',
-      `formats_wm.${outputFormat === 'jpeg' ? 'jpeg' : outputFormat}`,
-    );
+    const outputPath = path.join(projectDir, 'wm', `formats_wm.${outputFormat === 'jpeg' ? 'jpeg' : outputFormat}`);
     expect((await metadataFor(outputPath)).format).toBe(outputFormat);
   });
 
@@ -774,7 +801,7 @@ describe('watermark asset processing', () => {
       outputFormat: 'jpeg',
       deleteSource: false,
     });
-    const metadata = await metadataFor(path.join(projectDir, 'Final', 'wm', 'oriented_wm.jpeg'));
+    const metadata = await metadataFor(path.join(projectDir, 'wm', 'oriented_wm.jpeg'));
     expect(metadata).toMatchObject({ width: 60, height: 100, format: 'jpeg' });
   });
 
@@ -785,7 +812,7 @@ describe('watermark asset processing', () => {
       outputFormat: 'png',
       deleteSource: false,
     });
-    const destination = path.join(projectDir, 'final', 'wm', 'repeat_wm.png');
+    const destination = path.join(projectDir, 'wm', 'repeat_wm.png');
     const before = fs.readFileSync(destination);
     const firstAsset = assetRepository.findById(first.generatedAssetIds[0]);
     expect(firstAsset.generated_source_relative_path).toBe('final/repeat.png');
@@ -812,7 +839,7 @@ describe('watermark asset processing', () => {
     expect(replacement.generatedAssetIds).toEqual(first.generatedAssetIds);
 
     const unrelatedSource = await writeIndexedImage('Final/unrelated.png');
-    await writeIndexedImage('Final/wm/unrelated_wm.png', { nestedPath: 'wm' });
+    await writeIndexedImage('wm/unrelated_wm.png', { nestedPath: 'wm' });
     await expect(processingService.watermarkAssets(project.id, [unrelatedSource.id], {
       mode: 'patreon',
       outputFormat: 'png',
@@ -827,7 +854,7 @@ describe('watermark asset processing', () => {
       mode: 'patreon',
       deleteSource: false,
     });
-    const destinationPath = path.join(projectDir, 'final', 'wm', 'external-replacement_wm.png');
+    const destinationPath = path.join(projectDir, 'wm', 'external-replacement_wm.png');
     const replacement = Buffer.from(fs.readFileSync(destinationPath));
     replacement[0] ^= 0xff;
     fs.writeFileSync(destinationPath, replacement);
@@ -835,7 +862,7 @@ describe('watermark asset processing', () => {
     assetScanner.scanProjectAssets(project.id);
     const reconciled = assetRepository.findByProjectIdAndPath(
       project.id,
-      'final/wm/external-replacement_wm.png',
+      'wm/external-replacement_wm.png',
     );
     expect(reconciled.size_bytes).toBe(replacement.length);
     expect(reconciled.generated_output_sha256).not.toBe(sha256For(destinationPath));
@@ -854,7 +881,7 @@ describe('watermark asset processing', () => {
       mode: 'patreon',
       deleteSource: false,
     });
-    const destinationPath = path.join(projectDir, 'final', 'wm', 'malformed-existing-hash_wm.png');
+    const destinationPath = path.join(projectDir, 'wm', 'malformed-existing-hash_wm.png');
     const destinationAsset = assetRepository.findById(first.generatedAssetIds[0]);
     const malformedHash = 'g'.repeat(64);
     db.prepare('UPDATE assets SET generated_output_sha256 = ? WHERE id = ?')
@@ -878,7 +905,7 @@ describe('watermark asset processing', () => {
       mode: 'patreon',
       deleteSource: false,
     });
-    const destinationPath = path.join(projectDir, 'final', 'wm', 'missing-race_wm.png');
+    const destinationPath = path.join(projectDir, 'wm', 'missing-race_wm.png');
     const destinationAsset = assetRepository.findById(first.generatedAssetIds[0]);
     fs.unlinkSync(destinationPath);
     assetScanner.scanProjectAssets(project.id);
@@ -911,10 +938,10 @@ describe('watermark asset processing', () => {
       mode: 'patreon',
       deleteSource: false,
     });
-    const destinationPath = path.join(projectDir, 'Final', 'wm', 'legacy-provenance_wm.png');
+    const destinationPath = path.join(projectDir, 'wm', 'legacy-provenance_wm.png');
     const destination = assetRepository.findByProjectIdAndPath(
       project.id,
-      'Final/wm/legacy-provenance_wm.png',
+      'wm/legacy-provenance_wm.png',
     );
     db.prepare(`
       UPDATE assets
@@ -982,7 +1009,7 @@ describe('watermark asset processing', () => {
       outputFormat: 'png',
       deleteSource: false,
     })).rejects.toMatchObject({ code: 'ASSET_NOT_FOUND' });
-    expect(fs.existsSync(path.join(projectDir, 'Final', 'wm', 'preflight_wm.png'))).toBe(false);
+    expect(fs.existsSync(path.join(projectDir, 'wm', 'preflight_wm.png'))).toBe(false);
 
     const first = await writeIndexedImage('Final/collision.png');
     const second = await writeIndexedImage('Final/collision.jpg', { format: 'jpeg' });
@@ -991,7 +1018,7 @@ describe('watermark asset processing', () => {
       outputFormat: 'png',
       deleteSource: false,
     })).rejects.toMatchObject({ code: 'INTRA_BATCH_COLLISION' });
-    expect(fs.existsSync(path.join(projectDir, 'Final', 'wm', 'collision_wm.png'))).toBe(false);
+    expect(fs.existsSync(path.join(projectDir, 'wm', 'collision_wm.png'))).toBe(false);
   });
 
   it('rolls back staged output when the asset index update fails', async () => {
@@ -1007,8 +1034,8 @@ describe('watermark asset processing', () => {
 
     applySpy.mockRestore();
     expect(fs.existsSync(path.join(projectDir, 'Final', 'failure.png'))).toBe(true);
-    expect(fs.existsSync(path.join(projectDir, 'Final', 'wm', 'failure_wm.png'))).toBe(false);
-    expect(assetRepository.findByProjectIdAndPath(project.id, 'Final/wm/failure_wm.png')).toBeUndefined();
+    expect(fs.existsSync(path.join(projectDir, 'wm', 'failure_wm.png'))).toBe(false);
+    expect(assetRepository.findByProjectIdAndPath(project.id, 'wm/failure_wm.png')).toBeUndefined();
   });
 
   it('restores an existing generated destination when overwrite indexing fails', async () => {
@@ -1018,11 +1045,11 @@ describe('watermark asset processing', () => {
       outputFormat: 'png',
       deleteSource: false,
     });
-    const destination = path.join(projectDir, 'Final', 'wm', 'overwrite-failure_wm.png');
+    const destination = path.join(projectDir, 'wm', 'overwrite-failure_wm.png');
     const before = fs.readFileSync(destination);
     const destinationAsset = assetRepository.findByProjectIdAndPath(
       project.id,
-      'Final/wm/overwrite-failure_wm.png',
+      'wm/overwrite-failure_wm.png',
     );
     const applySpy = vi.spyOn(assetRepository, 'applyAssetWatermarks')
       .mockImplementation(() => { throw new Error('injected overwrite database failure'); });
@@ -1036,7 +1063,7 @@ describe('watermark asset processing', () => {
 
     applySpy.mockRestore();
     expect(fs.readFileSync(destination)).toEqual(before);
-    expect(assetRepository.findByProjectIdAndPath(project.id, 'Final/wm/overwrite-failure_wm.png').id)
+    expect(assetRepository.findByProjectIdAndPath(project.id, 'wm/overwrite-failure_wm.png').id)
       .toBe(destinationAsset.id);
   });
 
@@ -1066,7 +1093,7 @@ describe('watermark asset processing', () => {
     });
 
     expect(result).toMatchObject({ status: 'completed', generatedCount: 1 });
-    expect(fs.existsSync(path.join(projectDir, 'Final', 'wm', 'nested-trusted_wm.png')))
+    expect(fs.existsSync(path.join(projectDir, 'wm', 'nested-trusted_wm.png')))
       .toBe(true);
   });
 
@@ -1202,5 +1229,203 @@ describe('watermark asset processing', () => {
       code: 'WATERMARK_FILE_INVALID',
     });
     expect(fs.existsSync(path.join(projectDir, 'Final', 'missing-watermark.png'))).toBe(true);
+  });
+
+  it('uses global Watermark IDs for planning, cross-project apply, and archive provenance', async () => {
+    const globalService = createWatermarkService({
+      repository: watermarkRepository,
+      projectsRoot,
+    });
+    const globalPath = path.join(projectsRoot, 'watermarks', 'branding.png');
+    fs.mkdirSync(path.dirname(globalPath), { recursive: true });
+    fs.writeFileSync(globalPath, await makeWatermark());
+    await globalService.scanWatermarks();
+    const global = globalService.listWatermarks().find((candidate) => candidate.relativePath === 'branding.png');
+    expect(global).toBeDefined();
+
+    const source = await writeIndexedImage('Final/global.png');
+    const otherProject = projectService.create(projectInput('Other Global Project'));
+    const otherProjectDir = resolveProjectDir(projectsRoot, otherProject.project_dir);
+    const otherFinalCategory = assetCategoryService.listProjectCategories(otherProject.id)
+      .find((category) => category.directory_slug === 'final');
+    const otherPath = path.join(otherProjectDir, 'Final', 'global.png');
+    const otherBytes = await makeImage();
+    fs.mkdirSync(path.dirname(otherPath), { recursive: true });
+    fs.writeFileSync(otherPath, otherBytes);
+    const otherStats = fs.statSync(otherPath);
+    const otherSource = assetRepository.upsert(otherProject.id, 'Final/global.png', {
+      categoryId: otherFinalCategory.id,
+      nestedPath: '',
+      filename: 'global.png',
+      extension: 'png',
+      mimeType: 'image/png',
+      sizeBytes: otherStats.size,
+      modifiedAt: otherStats.mtime.toISOString(),
+    });
+
+    const globalProcessingService = createAssetProcessingService({
+      projectRepository,
+      assetRepository,
+      generatedArtifactRepository,
+      assetCategoryService,
+      projectsRoot,
+      projectOperationCoordinator: coordinator,
+      watermarkService: globalService,
+    });
+    const planner = createAssetProcessingPlanner({
+      scopeService: createAssetProcessingScopeService({ projectRepository, assetRepository }),
+      projectRepository,
+      assetRepository,
+      generatedArtifactRepository,
+      assetCategoryService,
+      projectsRoot,
+      watermarkService: globalService,
+    });
+    const plan = await planner.planWatermark(project.id, {
+      type: 'selected',
+      assetIds: [source.id],
+    }, {
+      mode: 'patreon',
+      outputFormat: 'png',
+      deleteSource: false,
+      watermarkId: global.id,
+    });
+
+    expect(plan.options.watermarkId).toBe(global.id);
+    expect(plan.watermark).toMatchObject({
+      id: global.id,
+      relativePath: 'branding.png',
+    });
+    expect(plan.watermark).not.toHaveProperty('filePath');
+    expect(plan.items[0].status).toBe('ready');
+
+    await globalProcessingService.watermarkAssets(project.id, [source.id], {
+      mode: 'patreon',
+      outputFormat: 'png',
+      deleteSource: false,
+      watermarkId: global.id,
+    });
+    await globalProcessingService.watermarkAssets(otherProject.id, [otherSource.id], {
+      mode: 'patreon',
+      outputFormat: 'png',
+      deleteSource: false,
+      watermarkId: global.id,
+    });
+
+    expect(assetRepository.findByProjectIdAndPath(project.id, 'wm/global_wm.png')).toMatchObject({
+      generated_watermark_id: global.id,
+    });
+    expect(assetRepository.findByProjectIdAndPath(otherProject.id, 'wm/global_wm.png')).toMatchObject({
+      generated_watermark_id: global.id,
+    });
+
+    const archiveSource = await writeIndexedImage('Final/global-archive.png');
+    await globalProcessingService.watermarkAssets(project.id, [archiveSource.id], {
+      mode: 'patreon',
+      outputFormat: 'png',
+      deleteSource: false,
+      makeArchives: true,
+      watermarkId: global.id,
+    });
+    const artifacts = generatedArtifactRepository.listByProjectId(project.id);
+    expect(artifacts.length).toBeGreaterThan(0);
+    expect(artifacts.every((artifact) => artifact.generated_watermark_id === global.id)).toBe(true);
+  });
+
+  it('re-resolves the global source during apply and rejects stale or missing source bytes', async () => {
+    const globalService = createWatermarkService({
+      repository: watermarkRepository,
+      projectsRoot,
+    });
+    const globalPath = path.join(projectsRoot, 'watermarks', 'stale.png');
+    fs.mkdirSync(path.dirname(globalPath), { recursive: true });
+    fs.writeFileSync(globalPath, await makeWatermark());
+    await globalService.scanWatermarks();
+    const global = globalService.listWatermarks().find((candidate) => candidate.relativePath === 'stale.png');
+    const source = await writeIndexedImage('Final/stale-source.png');
+    const globalProcessingService = createAssetProcessingService({
+      projectRepository,
+      assetRepository,
+      assetCategoryService,
+      projectsRoot,
+      projectOperationCoordinator: coordinator,
+      watermarkService: globalService,
+    });
+    const planner = createAssetProcessingPlanner({
+      scopeService: createAssetProcessingScopeService({ projectRepository, assetRepository }),
+      projectRepository,
+      assetRepository,
+      assetCategoryService,
+      projectsRoot,
+      watermarkService: globalService,
+    });
+
+    const plan = await planner.planWatermark(project.id, {
+      type: 'selected',
+      assetIds: [source.id],
+    }, {
+      mode: 'patreon',
+      outputFormat: 'png',
+      deleteSource: false,
+      watermarkId: global.id,
+    });
+    expect(plan.items[0].status).toBe('ready');
+
+    fs.writeFileSync(globalPath, await makeImage({ width: 21, height: 16 }));
+    await expect(globalProcessingService.watermarkAssets(project.id, [source.id], {
+      mode: 'patreon',
+      outputFormat: 'png',
+      deleteSource: false,
+      watermarkId: global.id,
+    })).rejects.toMatchObject({ code: 'WATERMARK_RESOURCE_TAMPERED' });
+    expect(assetRepository.findByProjectIdAndPath(project.id, 'wm/stale-source_wm.png')).toBeUndefined();
+
+    fs.unlinkSync(globalPath);
+    await globalService.scanWatermarks();
+    const missingSource = await writeIndexedImage('Final/missing-global-source.png');
+    await expect(globalProcessingService.watermarkAssets(project.id, [missingSource.id], {
+      mode: 'patreon',
+      outputFormat: 'png',
+      deleteSource: false,
+      watermarkId: global.id,
+    })).rejects.toMatchObject({ code: 'WATERMARK_NOT_FOUND' });
+  });
+
+  it('does not treat historical project-local provenance as global ownership', async () => {
+    const globalService = createWatermarkService({
+      repository: watermarkRepository,
+      projectsRoot,
+    });
+    const globalPath = path.join(projectsRoot, 'watermarks', 'ownership.png');
+    fs.mkdirSync(path.dirname(globalPath), { recursive: true });
+    fs.writeFileSync(globalPath, await makeWatermark());
+    await globalService.scanWatermarks();
+    const global = globalService.listWatermarks().find((candidate) => candidate.relativePath === 'ownership.png');
+    const source = await writeIndexedImage('Final/ownership.png');
+    const globalProcessingService = createAssetProcessingService({
+      projectRepository,
+      assetRepository,
+      assetCategoryService,
+      projectsRoot,
+      projectOperationCoordinator: coordinator,
+      watermarkService: globalService,
+    });
+
+    await globalProcessingService.watermarkAssets(project.id, [source.id], {
+      mode: 'patreon',
+      outputFormat: 'png',
+      deleteSource: false,
+      watermarkId: global.id,
+    });
+    const output = assetRepository.findByProjectIdAndPath(project.id, 'wm/ownership_wm.png');
+    db.prepare('UPDATE assets SET generated_watermark_id = NULL, generated_watermark_asset_id = ? WHERE id = ?')
+      .run(source.id, output.id);
+    await expect(globalProcessingService.watermarkAssets(project.id, [source.id], {
+      mode: 'patreon',
+      outputFormat: 'png',
+      deleteSource: false,
+      overwrite: true,
+      watermarkId: global.id,
+    })).rejects.toMatchObject({ code: 'OUTPUT_DESTINATION_CONFLICT' });
   });
 });

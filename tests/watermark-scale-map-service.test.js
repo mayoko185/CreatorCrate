@@ -31,47 +31,52 @@ describe('managed Watermark scale-map service', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('creates canonical, parsed definitions while preserving stable IDs across rename and replacement', () => {
-    const created = service.createScaleMap({
-      displayName: 'Patreon / Social Map',
-      definition: { default: 0.1, '1024x1024': 0.37, '1365x768': 2 },
-    });
+  function createCanonical(definition = { '100x60': 0.35, default: 0.1 }) {
+    return Number(db.prepare(`
+      INSERT INTO watermark_scale_maps (display_name, system_key, definition_json)
+      VALUES ('Reference', 'reference-watermark-scale-map', ?)
+    `).run(JSON.stringify(definition)).lastInsertRowid);
+  }
 
-    expect(created).toMatchObject({
-      id: 1,
-      displayName: 'Patreon / Social Map',
-      definition: { '1024x1024': 0.37, '1365x768': 2, default: 0.1 },
-    });
-    expect(repository.findById(created.id).definition_json)
-      .toBe('{"1024x1024":0.37,"1365x768":2,"default":0.1}');
+  it('reads and replaces only the canonical singleton definition', () => {
+    const canonicalId = createCanonical();
+    const historicalId = Number(db.prepare(`
+      INSERT INTO watermark_scale_maps (display_name, definition_json)
+      VALUES ('Historical map', '{"100x60":0.9}')
+    `).run().lastInsertRowid);
 
-    const renamed = service.renameScaleMap(created.id, 'Renamed map');
-    const replaced = service.replaceScaleMap(created.id, { '1365x768': 0.5 });
-    expect(renamed.id).toBe(created.id);
-    expect(replaced).toMatchObject({ id: created.id, displayName: 'Renamed map', definition: { '1365x768': 0.5 } });
-    expect(service.listScaleMaps()).toEqual([replaced]);
+    expect(service.getScaleMap()).toEqual({ definition: { '100x60': 0.35, default: 0.1 } });
+    expect(service.replaceScaleMap({ default: 0.2, '1365x768': 0.5 }))
+      .toEqual({ definition: { '1365x768': 0.5, default: 0.2 } });
+    expect(repository.findById(canonicalId).definition_json).toBe('{"1365x768":0.5,"default":0.2}');
+    expect(repository.findById(historicalId).definition_json).toBe('{"100x60":0.9}');
   });
 
-  it('allows an empty map as the intentional manual-scale fallback and rejects invalid shared-validator inputs', () => {
-    expect(service.createScaleMap({ displayName: 'Manual fallback', definition: {} }).definition).toEqual({});
+  it('allows an empty singleton map as the intentional manual-scale fallback and rejects invalid definitions', () => {
+    createCanonical();
+    expect(service.replaceScaleMap({}).definition).toEqual({});
     for (const definition of [
       { '1365X768': 0.35 },
       { '1365x768': 0 },
       { '1365x768': '0.35' },
       { DEFAULT: 0.1 },
     ]) {
-      expect(() => service.createScaleMap({ displayName: `Invalid ${JSON.stringify(definition)}`, definition }))
+      expect(() => service.replaceScaleMap(definition))
         .toThrow(WatermarkScaleMapServiceError);
     }
   });
 
-  it('fails closed for malformed IDs and corrupted stored definitions, then deletes only the row', () => {
-    const created = service.createScaleMap({ displayName: 'Disposable', definition: { '100x60': 0.25 } });
-    expect(() => service.getScaleMap('1')).toThrow(expect.objectContaining({ code: 'INVALID_SCALE_MAP_ID' }));
-    db.prepare('UPDATE watermark_scale_maps SET definition_json = ? WHERE id = ?').run('{bad', created.id);
-    expect(() => service.resolveForProcessing(created.id)).toThrow(expect.objectContaining({ code: 'SCALE_MAP_INVALID' }));
-    db.prepare('UPDATE watermark_scale_maps SET definition_json = ? WHERE id = ?').run('{"100x60":0.25}', created.id);
-    expect(service.deleteScaleMap(created.id)).toMatchObject({ id: created.id });
-    expect(repository.findById(created.id)).toBeUndefined();
+  it('resolves processing strictly through the system-keyed canonical singleton', () => {
+    const historicalId = Number(db.prepare(`
+      INSERT INTO watermark_scale_maps (display_name, definition_json)
+      VALUES ('Historical map', '{"100x60":0.9}')
+    `).run().lastInsertRowid);
+    const canonicalId = createCanonical();
+
+    expect(service.resolveForProcessing()).toMatchObject({ definition: { '100x60': 0.35, default: 0.1 } });
+    expect(repository.findById(historicalId).definition_json).toBe('{"100x60":0.9}');
+
+    db.prepare('UPDATE watermark_scale_maps SET definition_json = ? WHERE id = ?').run('{bad', canonicalId);
+    expect(() => service.resolveForProcessing()).toThrow(expect.objectContaining({ code: 'SCALE_MAP_INVALID' }));
   });
 });
