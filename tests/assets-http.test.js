@@ -305,8 +305,15 @@ describe('asset browser HTTP workflow', () => {
     const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
     expect(res2.text).toContain('Assets — Browser Title Test');
     expect(res2.text).toContain('Scan Now');
-    expect(res2.text).toContain('Back to Project');
     expect(res2.text).toContain('class="page-heading"');
+    const pageHeading = res2.text.match(/<header class="page-heading">([\s\S]*?)<\/header>/)?.[1] || '';
+    const headingActions = pageHeading.match(/<div class="page-heading-actions">([\s\S]*?)<\/div>/)?.[1] || '';
+    expect(pageHeading).toContain(`<a class="button button-secondary page-heading-lead" href="/projects/${id}">Project: Browser Title Test</a>`);
+    expect(pageHeading.indexOf('page-heading-lead')).toBeLessThan(pageHeading.indexOf('<div class="page-heading-actions">'));
+    expect(headingActions).toContain('Scan Now');
+    expect(headingActions).toContain(`href="/projects/${id}/edit">Edit project</a>`);
+    expect(headingActions).not.toContain('Project: Browser Title Test');
+    expect(res2.text).not.toContain('Back to Project');
     expect((res2.text.match(/<h1\b/g) || []).length).toBe(1);
     expect(res2.text).not.toContain('asset-tag-option-all');
     expect(res2.text).toContain('No tags available');
@@ -344,6 +351,12 @@ describe('asset browser HTTP workflow', () => {
 
     await agent.post(`/projects/${id}/archive`).type('form').send({ _csrf: csrfToken }).expect(302);
     const archived = await agent.get(`/projects/${id}/assets`).expect(200);
+    const archivedHeading = archived.text.match(/<header class="page-heading">([\s\S]*?)<\/header>/)?.[1] || '';
+    const archivedActions = archivedHeading.match(/<div class="page-heading-actions">([\s\S]*?)<\/div>/)?.[1] || '';
+    expect(archivedHeading).toContain(`<a class="button button-secondary page-heading-lead" href="/projects/${id}">Project: Missing Cleanup Controls</a>`);
+    expect(archivedHeading.indexOf('page-heading-lead')).toBeLessThan(archivedHeading.indexOf('<div class="page-heading-actions">'));
+    expect(archivedActions).not.toContain('Project: Missing Cleanup Controls');
+    expect(archived.text).not.toContain('Back to Project');
     expect(archived.text).not.toContain('remove-missing-assets-dialog');
     expect(archived.text).not.toContain('Scan Now');
     expect(archived.text).not.toContain(`href="/projects/${id}/edit">Edit project</a>`);
@@ -1585,12 +1598,12 @@ describe('asset browser HTTP workflow', () => {
     expect(new URL(rowHref, 'http://localhost').searchParams.get('category')).toBe('all');
 
     const viewer = await agent.get(rowHref).expect(200);
-    for (const className of ['asset-viewer-back', 'asset-viewer-next']) {
+    for (const className of ['asset-viewer-back', 'asset-preview-nav--next']) {
       const href = anchorHref(viewer.text, className);
       expect(href).not.toBeNull();
       expect(new URL(decodeHtmlHref(href), 'http://localhost').searchParams.get('category')).toBe('all');
     }
-    expect(new URL(decodeHtmlHref(anchorHref(viewer.text, 'asset-viewer-next')), 'http://localhost').pathname)
+    expect(new URL(decodeHtmlHref(anchorHref(viewer.text, 'asset-preview-nav--next')), 'http://localhost').pathname)
       .toBe(`/projects/${id}/assets/${assets.bravo.id}`);
 
     const scanForm = response.text.match(/<form method="post" action="\/projects\/\d+\/scan"[^>]*>[\s\S]*?<\/form>/)?.[0];
@@ -2751,11 +2764,18 @@ describe('asset browser HTTP workflow', () => {
     const previousHref = `/projects/${id}/assets/${assets.alpha.id}?pageSize=1`;
     const backHref = `/projects/${id}/assets?page=2&pageSize=1`;
     const nextHref = `/projects/${id}/assets/${assets.charlie.id}?page=3&pageSize=1`;
-    expectAnchorHref(res.text, 'asset-viewer-prev', previousHref);
+    expectAnchorHref(res.text, 'asset-preview-nav--previous', previousHref);
     expectAnchorHref(res.text, 'asset-viewer-back', backHref);
-    expectAnchorHref(res.text, 'asset-viewer-next', nextHref);
-    expect(anchorText(res.text, 'asset-viewer-prev')).toBe('Previous asset');
-    expect(anchorText(res.text, 'asset-viewer-next')).toBe('Next asset');
+    expectAnchorHref(res.text, 'asset-preview-nav--next', nextHref);
+    expect(anchorText(res.text, 'asset-preview-nav--previous')).toBe('');
+    expect(anchorText(res.text, 'asset-preview-nav--next')).toBe('');
+    expect(res.text).toMatch(/class="asset-preview-nav asset-preview-nav--previous"[^>]*rel="prev"[^>]*aria-label="Previous asset"/);
+    expect(res.text).toMatch(/class="asset-preview-nav asset-preview-nav--next"[^>]*rel="next"[^>]*aria-label="Next asset"/);
+    expect(anchorMatch(res.text, 'asset-preview-nav--previous')?.[2]).toMatch(/<svg\b[^>]*aria-hidden="true"[^>]*focusable="false"/);
+    expect(anchorMatch(res.text, 'asset-preview-nav--next')?.[2]).toMatch(/<svg\b[^>]*aria-hidden="true"[^>]*focusable="false"/);
+    const headingActions = res.text.match(/<div class="page-heading-actions">([\s\S]*?)<\/div>/)?.[1] || '';
+    expect(headingActions).not.toContain('asset-preview-nav--previous');
+    expect(headingActions).not.toContain('asset-preview-nav--next');
     expectQueryKeys(previousHref, ['pageSize']);
     expectQueryKeys(backHref, ['page', 'pageSize']);
     expectQueryKeys(nextHref, ['page', 'pageSize']);
@@ -2771,9 +2791,9 @@ describe('asset browser HTTP workflow', () => {
     const previousHref = `/projects/${id}/assets/${assets.alpha.id}`;
     const backHref = `/projects/${id}/assets`;
     const nextHref = `/projects/${id}/assets/${assets.charlie.id}`;
-    expectAnchorHref(res.text, 'asset-viewer-prev', previousHref);
+    expectAnchorHref(res.text, 'asset-preview-nav--previous', previousHref);
     expectAnchorHref(res.text, 'asset-viewer-back', backHref);
-    expectAnchorHref(res.text, 'asset-viewer-next', nextHref);
+    expectAnchorHref(res.text, 'asset-preview-nav--next', nextHref);
     expectQueryKeys(previousHref, []);
     expectQueryKeys(backHref, []);
     expectQueryKeys(nextHref, []);
@@ -2785,14 +2805,14 @@ describe('asset browser HTTP workflow', () => {
     const first = await agent
       .get(`/projects/${id}/assets/${assets.alpha.id}?pageSize=1`)
       .expect(200);
-    expectNoAnchor(first.text, 'asset-viewer-prev');
-    expectAnchorHref(first.text, 'asset-viewer-next', `/projects/${id}/assets/${assets.bravo.id}?page=2&pageSize=1`);
+    expectNoAnchor(first.text, 'asset-preview-nav--previous');
+    expectAnchorHref(first.text, 'asset-preview-nav--next', `/projects/${id}/assets/${assets.bravo.id}?page=2&pageSize=1`);
 
     const last = await agent
       .get(`/projects/${id}/assets/${assets.charlie.id}?pageSize=1`)
       .expect(200);
-    expectNoAnchor(last.text, 'asset-viewer-next');
-    expectAnchorHref(last.text, 'asset-viewer-prev', `/projects/${id}/assets/${assets.bravo.id}?page=2&pageSize=1`);
+    expectNoAnchor(last.text, 'asset-preview-nav--next');
+    expectAnchorHref(last.text, 'asset-preview-nav--previous', `/projects/${id}/assets/${assets.bravo.id}?page=2&pageSize=1`);
   });
 
   it('preserves normalized filters and ignores an incorrect supplied page in viewer links', async () => {
@@ -2813,9 +2833,9 @@ describe('asset browser HTTP workflow', () => {
     // navigation URLs while the other normalized filters are preserved.
     const previousHref = `/projects/${id}/assets/${heroOne.id}?search=Hero+%26&extension=png&presence=present&usage=unused&pageSize=1`;
     const backHref = `/projects/${id}/assets?search=Hero+%26&extension=png&presence=present&usage=unused&page=2&pageSize=1`;
-    expectAnchorHref(res2.text, 'asset-viewer-prev', previousHref);
+    expectAnchorHref(res2.text, 'asset-preview-nav--previous', previousHref);
     expectAnchorHref(res2.text, 'asset-viewer-back', backHref);
-    expectNoAnchor(res2.text, 'asset-viewer-next');
+    expectNoAnchor(res2.text, 'asset-preview-nav--next');
     expectQueryKeys(previousHref, ['search', 'extension', 'presence', 'usage', 'pageSize']);
     expectQueryKeys(backHref, ['search', 'extension', 'presence', 'usage', 'page', 'pageSize']);
     expect(res2.text).not.toContain('junk=1');
@@ -2836,8 +2856,8 @@ describe('asset browser HTTP workflow', () => {
 
     const backHref = `/projects/${id}/assets?search=Hero+%26&pageSize=1`;
     expect(res2.text).toContain('This asset is outside the current asset-browser filters');
-    expectNoAnchor(res2.text, 'asset-viewer-prev');
-    expectNoAnchor(res2.text, 'asset-viewer-next');
+    expectNoAnchor(res2.text, 'asset-preview-nav--previous');
+    expectNoAnchor(res2.text, 'asset-preview-nav--next');
     expectAnchorHref(res2.text, 'asset-viewer-back', backHref);
     expectQueryKeys(backHref, ['search', 'pageSize']);
   });
@@ -2848,7 +2868,8 @@ describe('asset browser HTTP workflow', () => {
     const projectDir = getProjectDir('Viewer Missing');
     if (!projectDir) throw new Error('projectDir not found for Viewer Missing');
     const asset = writeIndexedAsset(id, projectDir, 'gone.png', await makePng());
-    assetRepo.markMissingByProjectIdAndPathNotIn(id, []);
+    const nextAsset = writeIndexedAsset(id, projectDir, 'next.png', await makePng());
+    assetRepo.markMissingByProjectIdAndPathNotIn(id, ['next.png']);
 
     const res2 = await agent
       .get(`/projects/${id}/assets/${asset.id}`)
@@ -2859,6 +2880,8 @@ describe('asset browser HTTP workflow', () => {
     expect(previewSectionHtml(res2.text)).not.toContain('<img ');
     expect(res2.text).not.toContain('/preview?v=');
     expectNoAnchor(res2.text, 'asset-viewer-original');
+    expect(res2.text).toContain('class="asset-preview-viewer"');
+    expectAnchorHref(res2.text, 'asset-preview-nav--next', `/projects/${id}/assets/${nextAsset.id}`);
   });
 
   it('renders MIME-mismatched Krita assets without preview or original links', async () => {
@@ -3282,8 +3305,8 @@ describe('asset browser HTTP workflow', () => {
 
     expect((res.text.match(/<h1\b/g) || []).length).toBe(1);
     expect(res.text).toContain('alt="Preview of bravo.png"');
-    expect(anchorText(res.text, 'asset-viewer-prev')).toBe('Previous asset');
-    expect(anchorText(res.text, 'asset-viewer-next')).toBe('Next asset');
+    expect(anchorText(res.text, 'asset-preview-nav--previous')).toBe('');
+    expect(anchorText(res.text, 'asset-preview-nav--next')).toBe('');
     expect(res.text).toContain('Present at last scan');
     expect(res.text).toContain('<dl class="detail-list asset-metadata">');
     expect(anchorText(res.text, 'asset-viewer-back')).toBe('Back to Assets');
@@ -3292,26 +3315,26 @@ describe('asset browser HTTP workflow', () => {
     // guarantees its own navigation links never reorder focus with tabindex.
     expect(res.text).not.toMatch(/<a\b[^>]*\btabindex=/);
 
-    const headingActions = res.text.match(/<div class="page-heading-actions">([\s\S]*?)<\/div>/)?.[1] || '';
+    const pageHeading = res.text.match(/<header class="page-heading">([\s\S]*?)<\/header>/)?.[1] || '';
+    const headingActions = pageHeading.match(/<div class="page-heading-actions">([\s\S]*?)<\/div>/)?.[1] || '';
     expect(headingActions).not.toBe('');
-    expect(anchorText(headingActions, 'asset-viewer-project')).toBe('Project: Viewer Accessibility');
+    expect(anchorText(pageHeading, 'asset-viewer-project')).toBe('Project: Viewer Accessibility');
     expect(anchorText(headingActions, 'asset-viewer-back')).toBe('Back to Assets');
-    expect(anchorHref(headingActions, 'asset-viewer-project')).toBe(`/projects/${id}`);
+    expect(anchorHref(pageHeading, 'asset-viewer-project')).toBe(`/projects/${id}`);
     expect(anchorHref(headingActions, 'asset-viewer-back')).toBe(`/projects/${id}/assets?page=2&pageSize=1`);
+    expect(pageHeading).toMatch(new RegExp(`<a class="button button-secondary page-heading-lead asset-viewer-project" href="/projects/${id}">Project: Viewer Accessibility</a>`));
+    expect(pageHeading.indexOf('asset-viewer-project')).toBeLessThan(pageHeading.indexOf('<div class="page-heading-actions">'));
+    expect(headingActions).not.toContain('asset-viewer-project');
 
-    const projectIndex = headingActions.indexOf('asset-viewer-project');
+    expect(headingActions).not.toContain('asset-preview-nav--previous');
+    expect(headingActions).not.toContain('asset-preview-nav--next');
     const backIndex = headingActions.indexOf('asset-viewer-back');
-    const previousIndex = headingActions.indexOf('asset-viewer-prev');
-    const nextIndex = headingActions.indexOf('asset-viewer-next');
     const manageTagsIndex = headingActions.indexOf('asset-viewer-manage-tags');
     const originalIndex = headingActions.indexOf('asset-viewer-original');
-    expect(projectIndex).toBeGreaterThan(-1);
-    expect(projectIndex).toBeLessThan(backIndex);
-    expect(backIndex).toBeLessThan(previousIndex);
-    expect(previousIndex).toBeLessThan(nextIndex);
-    expect(nextIndex).toBeLessThan(manageTagsIndex);
+    expect(backIndex).toBeLessThan(manageTagsIndex);
     expect(manageTagsIndex).toBeLessThan(originalIndex);
-    expect(nextIndex).toBeLessThan(originalIndex);
+    expect(res.text.indexOf('asset-preview-nav--previous')).toBeGreaterThan(res.text.indexOf('asset-preview-viewer'));
+    expect(res.text.indexOf('asset-preview-nav--next')).toBeGreaterThan(res.text.indexOf('asset-preview-viewer'));
   });
 
   it('renders long viewer filenames, paths, MIME types, and release usage without truncation', async () => {
@@ -3568,6 +3591,12 @@ describe('asset browser HTTP workflow', () => {
       .expect(200);
     const style = await readStylesheetSource(res2.text);
     expect(style).not.toMatch(/\.asset-preview-frame\s*\{[^}]*border\s*:/);
+    expect(style).toMatch(/\.asset-preview-viewer\s*\{[^}]*position:\s*relative[^}]*min-width:\s*0[^}]*max-width:\s*100%/);
+    expect(style).toMatch(/\.asset-preview-nav--previous\s*\{[^}]*left:\s*var\(--space-lg\)/);
+    expect(style).toMatch(/\.asset-preview-nav--next\s*\{[^}]*right:\s*var\(--space-lg\)/);
+    expect(style).toMatch(/\.asset-preview-nav\s*\{[^}]*z-index:\s*2[^}]*background:\s*rgba\(13 15 19 \/ 0\.72\)/);
+    expect(style).toMatch(/\.asset-preview-nav:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--focus-ring\)/);
+    expect(style).toMatch(/@media \(max-width:\s*540px\)[\s\S]*?\.asset-preview-nav--previous\s*\{[^}]*left:\s*var\(--space-sm\)/);
     expect(style).toMatch(/\.asset-preview-link\s*\{[^}]*display:\s*block[^}]*max-width:\s*100%/);
     expect(style).toMatch(/\.asset-preview-link:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--focus-ring\)[^}]*outline-offset:\s*3px/);
     expect(style).toMatch(/\.asset-preview-image\s*\{[^}]*max-height/);
@@ -3646,7 +3675,7 @@ describe('asset browser HTTP workflow', () => {
     // wrapping, since it lives in a fixed-height header bar.
     expect(style).toMatch(/\.app-section-title\s*\{[^}]*overflow:\s*hidden[^}]*text-overflow:\s*ellipsis[^}]*white-space:\s*nowrap/);
     expect(style).toMatch(/\.page-heading-actions\s*\{[^}]*min-width:\s*0[^}]*max-width:\s*100%/);
-    expect(style).toMatch(/\.page-heading-actions\s*>\s*\.asset-viewer-project,[\s\S]*?\.page-heading-actions\s*>\s*\.asset-viewer-back\s*\{[^}]*overflow-wrap:\s*anywhere[^}]*word-break:\s*break-word[^}]*white-space:\s*normal/);
+    expect(style).toMatch(/\.page-heading\s*>\s*\.page-heading-lead,[\s\S]*?\.page-heading-actions\s*>\s*\.asset-viewer-back\s*\{[^}]*overflow-wrap:\s*anywhere[^}]*word-break:\s*break-word[^}]*white-space:\s*normal/);
     expect(style).toMatch(/\.detail-list\s*\{[^}]*grid-template-columns:\s*minmax\(0, 8rem\) minmax\(0, 1fr\)[^}]*min-width:\s*0/);
     expect(style).toMatch(/\.detail-list code\s*\{[^}]*overflow-wrap:\s*anywhere[^}]*word-break:\s*break-word/);
     expect(style).toMatch(/\.asset-preview-frame\s*\{[^}]*min-width:\s*0[^}]*max-width:\s*100%/);

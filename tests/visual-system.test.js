@@ -584,6 +584,14 @@ describe('Phase 10.6B: Visual-polish hardening', () => {
       expect(css).toMatch(/\.app-header\s*\{[^}]*margin:\s*0 auto/);
     });
 
+    it('aligns the disabled-authentication banner to the outer page frame with gutters', async () => {
+      const res = await request(app).get('/').expect(200);
+      const css = await extractStyle(app, res.text);
+      expect(css).toMatch(/\.auth-disabled-banner\s*\{[^}]*width:\s*calc\(100%\s*-\s*\(2\s*\*\s*var\(--space-lg\)\)\)/);
+      expect(css).toMatch(/\.auth-disabled-banner\s*\{[^}]*max-width:\s*var\(--page-width\)/);
+      expect(css).toMatch(/\.auth-disabled-banner\s*\{[^}]*margin:\s*0 auto var\(--space-lg\)/);
+    });
+
     it('no page defines its own outer-width override', async () => {
       const res = await request(app).get('/').expect(200);
       const css = await extractStyle(app, res.text);

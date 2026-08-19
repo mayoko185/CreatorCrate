@@ -463,13 +463,49 @@ describe('Phase 10.5A: Shared page-level components', () => {
       expect(html).not.toMatch(/<h1/);
     });
 
-    it('the page-heading macro renders no wrapper when called with no arguments', () => {
+    it('the page-heading macro still renders no wrapper when called with no arguments', () => {
       const env = nunjucks.configure(VIEWS_DIR, { autoescape: true, noCache: true });
       const html = env.renderString(
         '{% import "partials/page-heading.njk" as pageHeading %}{{ pageHeading.render() }}',
         {}
       );
       expect(html.trim()).toBe('');
+    });
+
+    it('keeps caller-provided actions unchanged when no lead is supplied', () => {
+      const env = nunjucks.configure(VIEWS_DIR, { autoescape: true, noCache: true });
+      const html = env.renderString(
+        '{% import "partials/page-heading.njk" as pageHeading %}{% call pageHeading.render() %}<a class="button button-primary" href="/new">Create</a>{% endcall %}',
+        {}
+      );
+      expect(html).toContain('<header class="page-heading">');
+      expect(html).toContain('<div class="page-heading-actions">');
+      expect(html).toContain('<a class="button button-primary" href="/new">Create</a>');
+      expect(html).not.toContain('page-heading-lead');
+    });
+
+    it('renders an optional far-left lead link before actions, including its extra class', () => {
+      const env = nunjucks.configure(VIEWS_DIR, { autoescape: true, noCache: true });
+      const html = env.renderString(
+        '{% import "partials/page-heading.njk" as pageHeading %}{% call pageHeading.render("", "", "", "/projects/7", "Project: Long Project Title", "asset-viewer-project") %}<a href="/next">Next</a>{% endcall %}',
+        {}
+      );
+      expect(html).toContain('<header class="page-heading">');
+      expect(html).toContain('class="button button-secondary page-heading-lead asset-viewer-project"');
+      expect(html).toContain('href="/projects/7"');
+      expect(html).toContain('>Project: Long Project Title</a>');
+      expect(html.indexOf('page-heading-lead')).toBeLessThan(html.indexOf('page-heading-actions'));
+    });
+
+    it('renders the page-heading wrapper for a lead-only invocation', () => {
+      const env = nunjucks.configure(VIEWS_DIR, { autoescape: true, noCache: true });
+      const html = env.renderString(
+        '{% import "partials/page-heading.njk" as pageHeading %}{{ pageHeading.render("", "", "", "/projects/7", "Project: Solo") }}',
+        {}
+      );
+      expect(html).toContain('<header class="page-heading">');
+      expect(html).toContain('href="/projects/7"');
+      expect(html).not.toContain('page-heading-actions');
     });
   });
 

@@ -3,10 +3,10 @@
   in the compact top header (see layout.njk's `page_title` contract), not here:
   authenticated pages render exactly one <h1>, and this macro never emits one.
 
-  This area is reserved for navigation (action buttons) and an optional status
-  badge. Page descriptions are intentionally NOT rendered — the first argument
-  is accepted for backward compatibility but ignored, so existing callers do
-  not need to be changed.
+  This area is reserved for a leading navigation item, action buttons, and an
+  optional status badge. Page descriptions are intentionally NOT rendered —
+  the first argument is accepted for backward compatibility but ignored, so
+  existing callers do not need to be changed.
 
   Usage with actions:
     {% import "partials/page-heading.njk" as pageHeading %}
@@ -14,15 +14,18 @@
       <a class="button button-primary" href="/new">Create</a>
     {% endcall %}
 
-  Renders nothing when there is no badge or caller content — callers should not
-  end up with an empty wrapper.
+  Renders nothing when there is no lead item, badge, or caller content —
+  callers should not end up with an empty wrapper.
 
   Text parameters are escaped by Nunjucks autoescaping. Action markup is only
   accepted through the Nunjucks caller block; do not pass arbitrary HTML strings.
 #}
-{% macro render(description='', badgeStatus='', badgeText='') %}
-{% if badgeStatus or badgeText or caller is defined %}
+{% macro render(description='', badgeStatus='', badgeText='', leadHref='', leadLabel='', leadClass='') %}
+{% if leadHref and leadLabel or badgeStatus or badgeText or caller is defined %}
 <header class="page-heading">
+  {% if leadHref and leadLabel %}
+    <a class="button button-secondary page-heading-lead{% if leadClass %} {{ leadClass }}{% endif %}" href="{{ leadHref }}">{{ leadLabel }}</a>
+  {% endif %}
   {% if badgeStatus or badgeText %}
     <div class="page-heading-copy">
       {% if badgeText %}

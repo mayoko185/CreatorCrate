@@ -316,14 +316,13 @@
 {% block content %}
   {% set assetsHeadingDescription = "Browse scanned files, category, and release usage." %}
   {% if project.archived_at %}
-    {% call pageHeading.render(assetsHeadingDescription, "archived") %}
-      <a class="button" href="/projects/{{ project.id }}">Back to Project</a>
+    {% call pageHeading.render(assetsHeadingDescription, "archived", "", "/projects/" ~ project.id, "Project: " ~ project.title) %}
       {% if openLocallyUri %}
         <a class="button button-secondary" href="{{ openLocallyUri }}">Open locally</a>
       {% endif %}
     {% endcall %}
   {% else %}
-    {% call pageHeading.render(assetsHeadingDescription) %}
+    {% call pageHeading.render(assetsHeadingDescription, "", "", "/projects/" ~ project.id, "Project: " ~ project.title) %}
     {% if not project.archived_at %}
       <form method="post" action="/projects/{{ project.id }}/scan" class="inline-form">
         <input type="hidden" name="_csrf" value="{{ _csrf }}">
@@ -336,7 +335,6 @@
       {% endif %}
       <a class="button" href="/projects/{{ project.id }}/edit">Edit project</a>
       {% endif %}
-    <a class="button" href="/projects/{{ project.id }}">Back to Project</a>
     {% if openLocallyUri %}
       <a class="button button-secondary" href="{{ openLocallyUri }}">Open locally</a>
     {% endif %}

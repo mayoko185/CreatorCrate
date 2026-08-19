@@ -1,5 +1,6 @@
 {% extends "layout.njk" %}
 {% import "partials/page-heading.njk" as pageHeading %}
+{% import "partials/icons.njk" as icons %}
 
 {% set page_title = "Assets — " ~ project.title ~ " — " ~ asset.filename %}
 
@@ -17,15 +18,8 @@
     {% set viewerBadgeStatus = "unavailable" %}
     {% set viewerBadgeText = "Unavailable" %}
   {% endif %}
-  {% call pageHeading.render("Asset preview, metadata, and release usage.", viewerBadgeStatus, viewerBadgeText) %}
-    <a class="button button-secondary asset-viewer-project" href="/projects/{{ project.id }}">Project: {{ project.title }}</a>
+  {% call pageHeading.render("Asset preview, metadata, and release usage.", viewerBadgeStatus, viewerBadgeText, "/projects/" ~ project.id, "Project: " ~ project.title, "asset-viewer-project") %}
     <a class="button button-secondary asset-viewer-back" href="{{ backToAssetsLink.href }}">Back to Assets</a>
-    {% if previousAssetLink %}
-      <a class="button asset-viewer-prev" href="{{ previousAssetLink.href }}" rel="prev">Previous asset</a>
-    {% endif %}
-    {% if nextAssetLink %}
-      <a class="button asset-viewer-next" href="{{ nextAssetLink.href }}" rel="next">Next asset</a>
-    {% endif %}
     {% if canManageTags %}
       <a class="button button-secondary asset-viewer-manage-tags" href="/projects/{{ project.id }}/assets/{{ asset.id }}/tags">Manage tags</a>
     {% endif %}
@@ -57,38 +51,46 @@
 
   <section class="asset-preview-section" aria-labelledby="asset-preview-heading">
     <h2 id="asset-preview-heading">Preview</h2>
-    {% if asset.preview.previewable and asset.preview_url %}
-      <figure class="asset-preview-frame{% if asset.preview.kind == 'krita' %} asset-media--krita{% endif %}" data-preview-enhancement data-preview-state="loading">
-        {% if asset.original_url %}
-          <a class="asset-preview-link" href="{{ asset.original_url }}" aria-label="View original {{ asset.filename }}">
+    <div class="asset-preview-viewer">
+      {% if asset.preview.previewable and asset.preview_url %}
+        <figure class="asset-preview-frame{% if asset.preview.kind == 'krita' %} asset-media--krita{% endif %}" data-preview-enhancement data-preview-state="loading">
+          {% if asset.original_url %}
+            <a class="asset-preview-link" href="{{ asset.original_url }}" aria-label="View original {{ asset.filename }}">
+              <img class="asset-preview-image" src="{{ asset.preview_url }}" alt="{{ asset.previewAltText }}" data-preview-image>
+            </a>
+          {% else %}
             <img class="asset-preview-image" src="{{ asset.preview_url }}" alt="{{ asset.previewAltText }}" data-preview-image>
-          </a>
-        {% else %}
-          <img class="asset-preview-image" src="{{ asset.preview_url }}" alt="{{ asset.previewAltText }}" data-preview-image>
-        {% endif %}
-        <p class="asset-preview-placeholder asset-preview-fallback" data-preview-fallback hidden>Preview unavailable</p>
-      </figure>
-      <noscript>
-        <p class="notice asset-preview-noscript">
-          JavaScript is disabled. If the preview does not load, {% if asset.original_url %}use View Original to open the asset{% else %}the asset cannot be opened as an original{% endif %}.
-        </p>
-      </noscript>
-    {% elseif asset.missing %}
-      {% set noticeVariant = "danger" %}
-      {% set noticeText = "Missing at last scan. Preview and original viewing are unavailable." %}
-      {% include "partials/notice.njk" %}
-      <p class="asset-preview-placeholder">Preview unavailable for missing assets.</p>
-    {% elseif asset.preview_state == 'unsupported' %}
-      {% set noticeVariant = "warning" %}
-      {% set noticeText = "Unsupported asset preview. This asset type or recorded MIME cannot be previewed inline." %}
-      {% include "partials/notice.njk" %}
-      <p class="asset-preview-placeholder">Preview unavailable for unsupported assets.</p>
-    {% else %}
-      {% set noticeVariant = "neutral" %}
-      {% set noticeText = "Preview unavailable because recorded source metadata is incomplete." %}
-      {% include "partials/notice.njk" %}
-      <p class="asset-preview-placeholder">No preview link is available.</p>
-    {% endif %}
+          {% endif %}
+          <p class="asset-preview-placeholder asset-preview-fallback" data-preview-fallback hidden>Preview unavailable</p>
+        </figure>
+        <noscript>
+          <p class="notice asset-preview-noscript">
+            JavaScript is disabled. If the preview does not load, {% if asset.original_url %}use View Original to open the asset{% else %}the asset cannot be opened as an original{% endif %}.
+          </p>
+        </noscript>
+      {% elseif asset.missing %}
+        {% set noticeVariant = "danger" %}
+        {% set noticeText = "Missing at last scan. Preview and original viewing are unavailable." %}
+        {% include "partials/notice.njk" %}
+        <p class="asset-preview-placeholder">Preview unavailable for missing assets.</p>
+      {% elseif asset.preview_state == 'unsupported' %}
+        {% set noticeVariant = "warning" %}
+        {% set noticeText = "Unsupported asset preview. This asset type or recorded MIME cannot be previewed inline." %}
+        {% include "partials/notice.njk" %}
+        <p class="asset-preview-placeholder">Preview unavailable for unsupported assets.</p>
+      {% else %}
+        {% set noticeVariant = "neutral" %}
+        {% set noticeText = "Preview unavailable because recorded source metadata is incomplete." %}
+        {% include "partials/notice.njk" %}
+        <p class="asset-preview-placeholder">No preview link is available.</p>
+      {% endif %}
+      {% if previousAssetLink %}
+        <a class="asset-preview-nav asset-preview-nav--previous" href="{{ previousAssetLink.href }}" rel="prev" aria-label="Previous asset">{{ icons.icon('chevron-left') }}</a>
+      {% endif %}
+      {% if nextAssetLink %}
+        <a class="asset-preview-nav asset-preview-nav--next" href="{{ nextAssetLink.href }}" rel="next" aria-label="Next asset">{{ icons.icon('chevron-right') }}</a>
+      {% endif %}
+    </div>
   </section>
 
   <section class="asset-metadata-section" aria-labelledby="asset-metadata-heading">
