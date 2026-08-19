@@ -232,8 +232,7 @@ describe('project asset categories — HTTP', () => {
         `/projects/${projectId}/asset-categories/reorder`,
         `/projects/${projectId}/asset-categories/${category.id}/create-release`,
         `/projects/${projectId}/asset-categories/${category.id}/name`,
-        `/projects/${projectId}/asset-categories/${category.id}/enable`,
-        `/projects/${projectId}/asset-categories/${category.id}/disable`,
+        `/projects/${projectId}/asset-categories/${category.id}/enabled`,
         `/projects/${projectId}/asset-categories/${category.id}/move-up`,
         `/projects/${projectId}/asset-categories/${category.id}/move-down`,
         `/projects/${projectId}/asset-categories/${category.id}/delete`,
@@ -431,8 +430,8 @@ describe('project asset categories — HTTP', () => {
       await agent.post(`/projects/${projectId}/asset-categories/reorder`).type('form').send({ orderedCategoryIds: String(category.id) }).expect(403);
       await agent.post(`/projects/${projectId}/asset-categories/${category.id}/name`).type('form').send({ displayName: 'X' }).expect(403);
       await agent.post(`/projects/${projectId}/asset-categories/${category.id}/enabled`).type('form').send({ enabled: '0' }).expect(403);
-      await agent.post(`/projects/${projectId}/asset-categories/${category.id}/enable`).type('form').send({}).expect(403);
-      await agent.post(`/projects/${projectId}/asset-categories/${category.id}/disable`).type('form').send({}).expect(403);
+      await agent.post(`/projects/${projectId}/asset-categories/${category.id}/enabled`).type('form').send({ enabled: ['0', '1'] }).expect(403);
+      await agent.post(`/projects/${projectId}/asset-categories/${category.id}/enabled`).type('form').send({ enabled: '0' }).expect(403);
       await agent.post(`/projects/${projectId}/asset-categories/${category.id}/move-up`).type('form').send({}).expect(403);
       await agent.post(`/projects/${projectId}/asset-categories/${category.id}/move-down`).type('form').send({}).expect(403);
       await agent.post(`/projects/${projectId}/asset-categories/${category.id}/delete`).type('form').send({}).expect(403);
@@ -463,7 +462,7 @@ describe('project asset categories — HTTP', () => {
       const rows = listProjectCategories(ctx.db, projectId);
       const [first] = rows;
 
-      await agent.post(`/projects/${projectId}/asset-categories/${first.id}/disable`).type('form').send({ _csrf: csrfToken }).expect(302);
+      await agent.post(`/projects/${projectId}/asset-categories/${first.id}/enabled`).type('form').send({ enabled: '0', _csrf: csrfToken }).expect(302);
 
       const res = await getCategoryManagementPage(agent, projectId);
       const order = rows.map((r) => res.text.indexOf(`data-category-id="${r.id}"`));
@@ -601,8 +600,7 @@ describe('project asset categories — HTTP', () => {
       expect(res.text).not.toContain(`/projects/${projectId}/asset-categories/${category.id}/name`);
       expect(res.text).not.toContain('category-name-form');
       expect(res.text).not.toContain(`id="name-${category.id}"`);
-      expect(res.text).not.toContain(`/projects/${projectId}/asset-categories/${category.id}/enable`);
-       expect(res.text).not.toContain(`/projects/${projectId}/asset-categories/${category.id}/disable`);
+      expect(res.text).not.toContain(`action="/projects/${projectId}/asset-categories/${category.id}/enabled"`);
        expect(res.text).not.toContain(`/projects/${projectId}/asset-categories/${category.id}/create-release`);
        expect(res.text).not.toContain('id="add-displayName"');
     });
@@ -617,8 +615,8 @@ describe('project asset categories — HTTP', () => {
       const categories = listProjectCategories(ctx.db, projectId);
       const disabled = categories[0];
       const enabled = categories[1];
-      await agent.post(`/projects/${projectId}/asset-categories/${disabled.id}/disable`)
-        .type('form').send({ _csrf: csrfToken }).expect(302);
+      await agent.post(`/projects/${projectId}/asset-categories/${disabled.id}/enabled`)
+        .type('form').send({ enabled: '0', _csrf: csrfToken }).expect(302);
 
       const res = await getCategoryManagementPage(agent, projectId);
       expect(res.text).toContain('data-cc-dropdown data-cc-dropdown-mode="single"');
@@ -752,8 +750,8 @@ describe('project asset categories — HTTP', () => {
       expect(wrongProjectModel.categoryManagement.assetBrowserPreference.errorMessage)
         .toMatch(/belong to this project/i);
 
-      await agent.post(`/projects/${projectId}/asset-categories/${ownCategory.id}/disable`)
-        .type('form').send({ _csrf: csrfToken }).expect(302);
+      await agent.post(`/projects/${projectId}/asset-categories/${ownCategory.id}/enabled`)
+        .type('form').send({ enabled: '0', _csrf: csrfToken }).expect(302);
       const disabled = await agent.post(`/projects/${projectId}/asset-categories/default`).type('form')
         .send({ defaultCategory: `category:${ownCategory.id}`, _csrf: csrfToken }).expect(422);
       expect(lastAssetsRenderModel(renderSpy).categoryManagement.assetBrowserPreference.selectedValue)
@@ -1156,7 +1154,7 @@ describe('project asset categories — HTTP', () => {
       expect(ctx.db.prepare('SELECT enabled FROM project_asset_categories WHERE id = ?').get(category.id).enabled).toBe(1);
     });
 
-    it('separate routes invoke the correct service operation', async () => {
+    it('unified switch route invokes the correct service operation for each state', async () => {
       ctx = setupTmp();
       const fake = makeFakeProjectAssetCategoryService();
       const app = createApp(
@@ -1168,10 +1166,10 @@ describe('project asset categories — HTTP', () => {
       const [category] = listProjectCategories(ctx.db, projectId);
       fake._state.categories.push({ ...category });
 
-      await agent.post(`/projects/${projectId}/asset-categories/${category.id}/disable`).type('form').send({ _csrf: csrfToken }).expect(302);
+      await agent.post(`/projects/${projectId}/asset-categories/${category.id}/enabled`).type('form').send({ enabled: '0', _csrf: csrfToken }).expect(302);
       expect(fake.setEnabled).toHaveBeenLastCalledWith(projectId, category.id, false);
 
-      await agent.post(`/projects/${projectId}/asset-categories/${category.id}/enable`).type('form').send({ _csrf: csrfToken }).expect(302);
+      await agent.post(`/projects/${projectId}/asset-categories/${category.id}/enabled`).type('form').send({ enabled: ['0', '1'], _csrf: csrfToken }).expect(302);
       expect(fake.setEnabled).toHaveBeenLastCalledWith(projectId, category.id, true);
     });
 
@@ -1182,7 +1180,7 @@ describe('project asset categories — HTTP', () => {
       const projectId = await createProject(agent, csrfToken, 'Disable Copy');
       const [category] = listProjectCategories(ctx.db, projectId);
 
-      const res = await agent.post(`/projects/${projectId}/asset-categories/${category.id}/disable`).type('form').send({ _csrf: csrfToken }).expect(302);
+      const res = await agent.post(`/projects/${projectId}/asset-categories/${category.id}/enabled`).type('form').send({ enabled: '0', _csrf: csrfToken }).expect(302);
       const page = await agent.get(`/projects/${projectId}/assets?manage_categories=1&notice=category_disabled`).expect(200);
       expect(page.text).toMatch(/files were not touched|files remain/i);
     });
@@ -1195,7 +1193,7 @@ describe('project asset categories — HTTP', () => {
       const [category] = listProjectCategories(ctx.db, projectId);
       await agent.post(`/projects/${projectId}/archive`).type('form').send({ _csrf: csrfToken }).expect(302);
 
-      const res = await agent.post(`/projects/${projectId}/asset-categories/${category.id}/disable`).type('form').send({ _csrf: csrfToken }).expect(409);
+      const res = await agent.post(`/projects/${projectId}/asset-categories/${category.id}/enabled`).type('form').send({ enabled: '0', _csrf: csrfToken }).expect(409);
       expect(res.text).toMatch(/archived/i);
       const unchanged = ctx.db.prepare('SELECT enabled FROM project_asset_categories WHERE id = ?').get(category.id);
       expect(unchanged.enabled).toBe(1);
@@ -1219,7 +1217,7 @@ describe('project asset categories — HTTP', () => {
       const [category] = listProjectCategories(ctx.db, projectId);
       fake._state.categories.push({ ...category });
 
-      const res = await agent.post(`/projects/${projectId}/asset-categories/${category.id}/enable`).type('form').send({ _csrf: csrfToken }).expect(302);
+      const res = await agent.post(`/projects/${projectId}/asset-categories/${category.id}/enabled`).type('form').send({ enabled: ['0', '1'], _csrf: csrfToken }).expect(302);
       expect(res.headers.location).toBe(`/projects/${projectId}/assets?category=all&manage_categories=1&notice=category_enable_failed`);
       const page = await agent.get(`/projects/${projectId}/assets?manage_categories=1&notice=category_enable_failed`).expect(200);
       expect(page.text).not.toContain('internal path');
@@ -1610,7 +1608,7 @@ describe('project asset categories — HTTP', () => {
       const project = ctx.db.prepare('SELECT * FROM projects WHERE id = ?').get(projectId);
       const absPath = resolveProjectDir(ctx.projectsRoot, project.project_dir);
 
-      await agent.post(`/projects/${projectId}/asset-categories/${category.id}/disable`).type('form').send({ _csrf: csrfToken }).expect(302);
+      await agent.post(`/projects/${projectId}/asset-categories/${category.id}/enabled`).type('form').send({ enabled: '0', _csrf: csrfToken }).expect(302);
       let manifest = readManifestSync(absPath);
       expect(manifest.assetCategories.find((c) => c.directorySlug === category.directory_slug).enabled).toBe(false);
     });
@@ -1642,7 +1640,7 @@ describe('project asset categories — HTTP', () => {
 
       await agent.post(`/projects/${projectId}/asset-categories/${category.id}/name`).type('form')
         .send({ displayName: 'Project Only Name', _csrf: csrfToken }).expect(302);
-      await agent.post(`/projects/${projectId}/asset-categories/${category.id}/disable`).type('form').send({ _csrf: csrfToken }).expect(302);
+      await agent.post(`/projects/${projectId}/asset-categories/${category.id}/enabled`).type('form').send({ enabled: '0', _csrf: csrfToken }).expect(302);
       await agent.post(`/projects/${projectId}/asset-categories`).type('form')
         .send({ displayName: 'New Project Category', directorySlug: 'new-project-category', _csrf: csrfToken }).expect(302);
 

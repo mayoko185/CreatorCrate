@@ -48,37 +48,3 @@ export function ensurePreviewRoot(previewRoot) {
     );
   }
 }
-
-/**
- * Rename a project directory synchronously.
- * @param {string} oldPath
- * @param {string} newPath
- * @throws {StorageError} on failure.
- */
-export function renameProjectDir(oldPath, newPath) {
-  try {
-    fs.renameSync(oldPath, newPath);
-  } catch (err) {
-    throw new StorageError(
-      `Failed to move directory "${path.basename(oldPath)}" to "${path.basename(path.dirname(newPath))}/${path.basename(newPath)}".`
-    );
-  }
-}
-
-/**
- * Remove an empty project directory synchronously.
- * No-op if the directory does not exist.
- * @param {string} projectDir
- * @throws {StorageError} if the path exists but is not a directory,
- *   or is a non-empty directory, or cannot be removed.
- */
-export function removeEmptyProjectDir(projectDir) {
-  try {
-    fs.rmSync(projectDir, { recursive: false, force: true });
-  } catch (err) {
-    if (err.code === 'ENOENT') return;
-    throw new StorageError(
-      `Failed to remove directory "${path.basename(projectDir)}".`
-    );
-  }
-}

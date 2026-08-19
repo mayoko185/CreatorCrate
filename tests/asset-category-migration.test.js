@@ -11,7 +11,7 @@ const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 
 const EXPECTED_ASSET_COLUMNS = [
   'category_id', 'created_at', 'extension', 'filename', 'generated_by',
-  'generated_mode', 'generated_output_sha256', 'generated_source_asset_id', 'generated_watermark_asset_id', 'generated_watermark_id',
+  'generated_mode', 'generated_output_sha256', 'generated_source_asset_id', 'generated_watermark_id',
   'generated_source_relative_path', 'generated_variant', 'id', 'is_present',
   'last_seen_at', 'mime_type', 'missing_since', 'modified_at', 'nested_path',
   'project_id', 'relative_path', 'size_bytes', 'updated_at',
@@ -97,6 +97,8 @@ describe('asset category assignment baseline schema', () => {
         '019_add_global_watermark_sources.sql',
         '020_retire_project_watermarks.sql',
         '021_clear_processing_preset_scale_map_bindings.sql',
+        '022_add_project_type.sql',
+        '023_drop_generated_watermark_asset_id.sql',
         ]);
     });
 
@@ -246,13 +248,13 @@ describe('asset category assignment baseline schema', () => {
     runMigrations(db, MIGRATIONS_DIR);
 
     expect(db.prepare(`
-      SELECT generated_watermark_id, generated_watermark_asset_id
+      SELECT generated_watermark_id
       FROM assets WHERE id = ?
-    `).get(assetId)).toEqual({ generated_watermark_id: watermarkId, generated_watermark_asset_id: null });
+    `).get(assetId)).toEqual({ generated_watermark_id: watermarkId });
     expect(db.prepare(`
-      SELECT generated_watermark_id, generated_watermark_asset_id
+      SELECT generated_watermark_id
       FROM generated_artifacts WHERE id = ?
-    `).get(artifactId)).toEqual({ generated_watermark_id: watermarkId, generated_watermark_asset_id: null });
+    `).get(artifactId)).toEqual({ generated_watermark_id: watermarkId });
   });
 
   it('retires the default without mutating existing project Watermarks categories or files', () => {

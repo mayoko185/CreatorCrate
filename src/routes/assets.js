@@ -697,15 +697,7 @@ export function createAssetsRouter({
     }
   });
 
-  function handleSetCategoryEnabled(req, res, next, enabled, {
-    project: suppliedProject = null,
-    categoryId: suppliedCategoryId = null,
-  } = {}) {
-    const project = suppliedProject || loadCategoryProject(req, next);
-    if (!project) return;
-    const categoryId = suppliedCategoryId || parseId(req.params.categoryId);
-    if (categoryId === null) return next(createNotFound());
-
+  function handleSetCategoryEnabled(req, res, next, enabled, { project, categoryId }) {
     try {
       projectAssetCategoryService.setEnabled(project.id, categoryId, enabled);
       const notice = enabled ? 'category_enabled' : 'category_disabled';
@@ -747,13 +739,6 @@ export function createAssetsRouter({
 
     return handleSetCategoryEnabled(req, res, next, enabled, { project, categoryId });
   });
-
-  router.post('/:projectId/asset-categories/:categoryId/enable', (req, res, next) => (
-    handleSetCategoryEnabled(req, res, next, true)
-  ));
-  router.post('/:projectId/asset-categories/:categoryId/disable', (req, res, next) => (
-    handleSetCategoryEnabled(req, res, next, false)
-  ));
 
   function handleMoveCategory(req, res, next, direction) {
     const project = loadCategoryProject(req, next);

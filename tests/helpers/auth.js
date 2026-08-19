@@ -41,25 +41,6 @@ export function extractCsrfToken(html) {
 }
 
 /**
- * Extract the anonymous CSRF cookie value from Set-Cookie headers.
- */
-export function extractAnonCsrfCookie(setCookieHeaders) {
-  if (!setCookieHeaders) return null;
-  const headers = Array.isArray(setCookieHeaders) ? setCookieHeaders : [setCookieHeaders];
-  for (const header of headers) {
-    if (header.startsWith('cc_csrf=')) {
-      const value = header.split(';')[0].split('=')[1];
-      try {
-        return decodeURIComponent(value);
-      } catch {
-        return value;
-      }
-    }
-  }
-  return null;
-}
-
-/**
  * Request the login page, extract its CSRF token and anonymous CSRF cookie.
  * Returns { agent, csrfToken }.
  */
@@ -100,16 +81,6 @@ export async function authenticate(app, username = TEST_USERNAME, password = TES
 }
 
 /**
- * Authenticate and submit a form with a valid CSRF token.
- * The agent is already authenticated; the csrfToken comes from the session.
- */
-export async function submitAuthenticatedForm(agent, csrfToken, method, path, fields = {}) {
-  return agent[method](path)
-    .type('form')
-    .send({ ...fields, _csrf: csrfToken });
-}
-
-/**
  * Phase 13 — disabled-mode CSRF (no authConfig / no session at all). Any
  * response sets the anonymous `cc_csrf_anon` cookie (see
  * middleware/csrf.js's createDisabledModeCsrfMiddleware); the expected token
@@ -139,14 +110,6 @@ export async function getDisabledModeCsrf(app, appDataRoot, path = '/health') {
   const { csrfPepper } = ensureAuthEnablement(appDataRoot);
   const csrfToken = deriveDisabledModeCsrfToken(csrfPepper, cookieSecret);
   return { agent, csrfToken };
-}
-
-/**
- * Count the number of _csrf hidden inputs in rendered HTML.
- * Used to verify exactly one CSRF token per form.
- */
-export function countCsrfInputs(html) {
-  return (html.match(/<input[^>]+name="_csrf"[^>]*>/g) || []).length;
 }
 
 /**

@@ -1,0 +1,35 @@
+.codegraph/
+.atl/
+.playwright-mcp/
+.claude/
+.cursor/
+node_modules/
+.pnpm-store/
+*.log
+.env
+.DS_Store
+coverage/
+test-results/
+dist/
+.lean-ctx.toml
+LEAN-CTX.md
+AGENTS.md
+.mcp.json
+opencode.jsonc
+
+# Application data must not be committed; it lives on bind-mounted host directories.
+/data/
+*.db
+*.db-shm
+*.db-wal
+/native/creatorcrate-fs/target/
+
+# Downloadable artifacts (built by helper/windows/installer). Unrelated .exe files
+# stay ignored, but the shipped Open locally installer is a required release
+# artifact and must be versioned.
+/downloads/*.exe
+!/downloads/CreatorCrate.OpenLocally-Setup.exe
+
+# Windows OpenLocally .NET build output (generated locally; never version).
+/helper/windows/src/OpenLocally/bin/
+/helper/windows/src/OpenLocally/obj/

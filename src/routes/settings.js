@@ -1243,18 +1243,6 @@ export function createSettingsRouter({
     }
   });
 
-  router.post('/asset-categories/:id/enable', (req, res, next) => {
-    const id = parseCategoryId(req.params.id);
-    if (id === null) return next(createNotFound());
-    try {
-      assetCategoryService.setDefaultEnabled(id, true);
-      res.redirect('/settings/asset-categories?notice=category_enabled');
-    } catch (err) {
-      if (err instanceof AssetCategoryNotFoundError) return next(createNotFound());
-      next(err);
-    }
-  });
-
   router.post('/asset-categories/:id/enabled', (req, res, next) => {
     const id = parseCategoryId(req.params.id);
     if (id === null) return next(createNotFound());
@@ -1280,18 +1268,6 @@ export function createSettingsRouter({
       assetCategoryService.setDefaultEnabled(id, enabled);
       const notice = enabled ? 'category_enabled' : 'category_disabled';
       res.redirect(`/settings/asset-categories?notice=${notice}`);
-    } catch (err) {
-      if (err instanceof AssetCategoryNotFoundError) return next(createNotFound());
-      next(err);
-    }
-  });
-
-  router.post('/asset-categories/:id/disable', (req, res, next) => {
-    const id = parseCategoryId(req.params.id);
-    if (id === null) return next(createNotFound());
-    try {
-      assetCategoryService.setDefaultEnabled(id, false);
-      res.redirect('/settings/asset-categories?notice=category_disabled');
     } catch (err) {
       if (err instanceof AssetCategoryNotFoundError) return next(createNotFound());
       next(err);

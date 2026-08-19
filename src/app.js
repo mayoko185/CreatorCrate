@@ -530,7 +530,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     const authMiddleware = createAuthMiddleware({ authService, cookieOptions });
     resolveSession = authMiddleware.resolveSession;
     requireAuth = authMiddleware.requireAuth;
-    const csrfMiddleware = createCsrfMiddleware({ authService, cookieOptions });
+    const csrfMiddleware = createCsrfMiddleware();
     exposeCsrfToken = csrfMiddleware.exposeCsrfToken;
     requireCsrf = csrfMiddleware.requireCsrf;
   } else if (opts.authState?.csrfPepper) {

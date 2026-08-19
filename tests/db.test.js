@@ -112,6 +112,8 @@ describe('database and migrations', () => {
          '019_add_global_watermark_sources.sql',
          '020_retire_project_watermarks.sql',
          '021_clear_processing_preset_scale_map_bindings.sql',
+         '022_add_project_type.sql',
+         '023_drop_generated_watermark_asset_id.sql',
        ]);
   });
 
@@ -672,7 +674,6 @@ describe('database and migrations', () => {
       { name: 'generated_output_sha256', type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 },
       { name: 'generated_variant', type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 },
        { name: 'generated_watermark_id', type: 'INTEGER', notnull: 0, dflt_value: null, pk: 0 },
-       { name: 'generated_watermark_asset_id', type: 'INTEGER', notnull: 0, dflt_value: null, pk: 0 },
     ]);
   });
 });

@@ -178,11 +178,9 @@ export function deriveDisabledModeCsrfToken(csrfPepper, visitorSecret) {
  * Read the submitted CSRF token from a request. Forms submit it as a
  * `_csrf` body field, but that doesn't work for every mutating request:
  * JSON API bodies with a closed field allowlist (e.g. the processing
- * routes) reject an extra `_csrf` key, and multipart uploads haven't been
- * parsed into req.body yet by the time this middleware runs (it sits
- * before the route handler's own multipart parser). The `X-CSRF-Token`
- * header covers both cases without weakening the check — it still has to
- * match the session-bound token.
+ * routes) reject an extra `_csrf` key. The `X-CSRF-Token` header covers
+ * that case without weakening the check — it still has to match the
+ * session-bound token.
  */
 function extractSubmittedCsrfToken(req) {
   const fromBody = typeof req.body === 'object' && req.body !== null ? req.body._csrf : undefined;
@@ -271,12 +269,8 @@ export function createDisabledModeCsrfMiddleware({ cookieSecure, csrfPepper }) {
  *    valid _csrf field, unless the request is exempt (login POST verifies
  *    its own anonymous CSRF).
  *
- * @param {object} opts
- * @param {import('../services/auth-service.js').createAuthService} [opts.authService]
- *   Required for authenticated CSRF; null when authConfig is omitted.
- * @param {{name: string, path: string, secure: boolean, maxAgeMs: number}} opts.cookieOptions
  */
-export function createCsrfMiddleware({ authService, cookieOptions }) {
+export function createCsrfMiddleware() {
   /**
    * Derive and expose the CSRF token for template rendering.
    * For authenticated users: derive from session's csrf_secret column.

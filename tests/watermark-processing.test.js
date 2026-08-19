@@ -1418,8 +1418,7 @@ describe('watermark asset processing', () => {
       watermarkId: global.id,
     });
     const output = assetRepository.findByProjectIdAndPath(project.id, 'wm/ownership_wm.png');
-    db.prepare('UPDATE assets SET generated_watermark_id = NULL, generated_watermark_asset_id = ? WHERE id = ?')
-      .run(source.id, output.id);
+    db.prepare('UPDATE assets SET generated_watermark_id = NULL WHERE id = ?').run(output.id);
     await expect(globalProcessingService.watermarkAssets(project.id, [source.id], {
       mode: 'patreon',
       outputFormat: 'png',
