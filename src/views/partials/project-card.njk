@@ -1,4 +1,4 @@
-{% macro render(project, variant = 'grid') %}
+{% macro render(project, variant = 'grid', headingLevel = 'h2') %}
   {% set imageUrl = project.primaryImage.previewUrl %}
   {% if variant == 'list' %}
     {% set imageUrl = project.primaryImage.thumbnailUrl %}
@@ -31,9 +31,9 @@
         <div class="project-list-card-body project-card-body">
           <div class="project-list-card-header">
             <div class="project-list-card-heading">
-              <h2 class="project-list-card-title project-card-title">
+              <{{ headingLevel }} class="project-list-card-title project-card-title">
                 <a class="project-list-card-link project-card-link" data-project-card-link href="/projects/{{ project.id }}">{{ project.title }}</a>
-              </h2>
+              </{{ headingLevel }}>
             </div>
             <div class="project-list-card-indicators" aria-label="Project status">
               <span class="project-list-card-status">
@@ -138,9 +138,9 @@
         </div>
 
         <div class="project-grid-card-title-area">
-          <h2 class="project-grid-card-title">
+          <{{ headingLevel }} class="project-grid-card-title">
             <a class="project-card-link" data-project-card-link href="/projects/{{ project.id }}">{{ project.title }}</a>
-          </h2>
+          </{{ headingLevel }}>
         </div>
       {% endif %}
     </article>

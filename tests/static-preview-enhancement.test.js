@@ -3225,9 +3225,9 @@ describe('asset grid size enhancement', () => {
     }
   });
 
-  it('finds the Projects grid and control, maps every size, and keeps state isolated', () => {
+  it('finds every Projects grid and its control, maps every size, and keeps state isolated', () => {
     const assetGrid = makeGrid();
-    const projectGrid = makeGrid();
+    const projectGrids = [makeGrid(), makeGrid(), makeGrid()];
     const assetControls = makeGridSliderControls();
     const projectControls = makeGridSliderControls({ project: true });
     const storage = new Map([
@@ -3247,20 +3247,24 @@ describe('asset grid size enhancement', () => {
             return [projectControls.group];
           }
           if (selector === '.asset-grid') return [assetGrid];
-          if (selector === '.project-grid') return [projectGrid];
+          if (selector === '.project-grid') return projectGrids;
           return [];
         },
       };
 
       expect(enhanceAssetGridSize(scope)).toBe(1);
       expect(assetGrid.style.values['--asset-card-min']).toBe('20rem');
-      expect(projectGrid.style.values).toEqual({});
+      for (const projectGrid of projectGrids) {
+        expect(projectGrid.style.values).toEqual({});
+      }
       expect(storage.get('creatorcrate-asset-grid-size')).toBe('large');
 
       expect(enhanceProjectGridSize(scope)).toBe(1);
-      expect(projectGrid.attrs['data-grid-size']).toBe('compact');
-      expect(projectGrid.style.values['--project-card-min']).toBe('12rem');
-      expect(projectGrid.style.values['--asset-card-min']).toBeUndefined();
+      for (const projectGrid of projectGrids) {
+        expect(projectGrid.attrs['data-grid-size']).toBe('compact');
+        expect(projectGrid.style.values['--project-card-min']).toBe('12rem');
+        expect(projectGrid.style.values['--asset-card-min']).toBeUndefined();
+      }
       expect(projectControls.slider.attrs['aria-valuetext']).toBe('Compact');
       expect(storage.get('creatorcrate-project-grid-size')).toBe('compact');
 
@@ -3276,10 +3280,12 @@ describe('asset grid size enhancement', () => {
         expect(storage.get('creatorcrate-project-grid-size')).toBe(size);
         expect(projectControls.slider.attrs['aria-valuenow']).toBe(position);
         expect(projectControls.slider.attrs['aria-valuetext']).toBe(label);
-        if (min) expect(projectGrid.style.values['--project-card-min']).toBe(min);
-        else expect(projectGrid.style.values).toEqual({});
-        if (size === 'default') expect(projectGrid.attrs['data-grid-size']).toBeUndefined();
-        else expect(projectGrid.attrs['data-grid-size']).toBe(size);
+        for (const projectGrid of projectGrids) {
+          if (min) expect(projectGrid.style.values['--project-card-min']).toBe(min);
+          else expect(projectGrid.style.values).toEqual({});
+          if (size === 'default') expect(projectGrid.attrs['data-grid-size']).toBeUndefined();
+          else expect(projectGrid.attrs['data-grid-size']).toBe(size);
+        }
       }
 
       assetControls.slider.value = '1';
@@ -3287,7 +3293,9 @@ describe('asset grid size enhancement', () => {
       expect(storage.get('creatorcrate-asset-grid-size')).toBe('compact');
       expect(storage.get('creatorcrate-project-grid-size')).toBe('large');
       expect(assetGrid.style.values['--asset-card-min']).toBe('12rem');
-      expect(projectGrid.style.values['--project-card-min']).toBe('20rem');
+      for (const projectGrid of projectGrids) {
+        expect(projectGrid.style.values['--project-card-min']).toBe('20rem');
+      }
       expect(storage.get('creatorcrate-asset-grid-size')).not.toBe(storage.get('creatorcrate-project-grid-size'));
     } finally {
       if (previousStorage === undefined) delete globalThis.localStorage;

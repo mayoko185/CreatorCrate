@@ -101,6 +101,23 @@ export function createProjectRepository(db) {
     WHERE effective_date IS NOT NULL AND effective_date >= ? AND effective_date < ?
     ORDER BY effective_date ASC, id ASC
   `);
+  const findOverdueWithoutReleasesStmt = db.prepare(`
+    ${SELECT_ALL}
+    WHERE archived_at IS NULL AND status <> 'archived'
+      AND planned_date IS NOT NULL
+      AND date(planned_date) <= ?
+      AND NOT EXISTS (SELECT 1 FROM releases WHERE releases.project_id = projects.id)
+    ORDER BY date(planned_date) ASC, id ASC
+    LIMIT ?
+  `);
+  const findUpcomingPlannedStmt = db.prepare(`
+    ${SELECT_ALL}
+    WHERE archived_at IS NULL AND status <> 'archived'
+      AND planned_date IS NOT NULL
+      AND date(planned_date) > ?
+    ORDER BY date(planned_date) ASC, id ASC
+    LIMIT ?
+  `);
 
   return {
     /**
@@ -303,6 +320,88 @@ export function createProjectRepository(db) {
     },
 
     /**
+     * Active, non-archived projects with a planned date on or before `today`
+     * that have no releases at all — not even archived or published ones.
+     * Any release row for the project (regardless of status) disqualifies it,
+     * since the project's schedule is then tracked via its releases instead.
+     * The caller is expected to inject `today` so every consumer shares a
+     * single application-local date snapshot — this method must not call
+     * `new Date()` itself.
+     * @param {number} limit
+     * @param {string} today ISO date string YYYY-MM-DD
+     * @returns {ProjectRecord[]}
+     */
+    findOverdueWithoutReleases(limit, today) {
+      return findOverdueWithoutReleasesStmt.all(today, limit);
+    },
+
+    /**
+     * Active, non-archived projects whose planned_date is strictly after the
+     * supplied `today`. Project-oriented (no release-existence condition):
+     * every active project with a future planned date qualifies, whether or
+     * not it has releases. The caller is expected to inject `today` so every
+     * consumer shares a single application-local date snapshot — this method
+     * must not call `new Date()` itself.
+     * @param {number} limit
+     * @param {string} today ISO date string YYYY-MM-DD
+     * @returns {ProjectRecord[]}
+     */
+    findUpcomingPlanned(limit, today) {
+      return findUpcomingPlannedStmt.all(today, limit);
+    },
+
+    /**
+     * Find independently bounded project collections for requested Dashboard
+     * statuses with one windowed SQL statement.
+     *
+     * Invalid or unsupported status limits are ignored. A valid limit is a
+     * safe integer from 1 through 25, so malformed input can never create an
+     * unbounded query.
+     *
+     * @param {Object.<string, number>} limitByStatus
+     * @returns {Array<ProjectRecord & {effective_status: string}>}
+     */
+    findDashboardProjectsByStatus(limitByStatus) {
+      const requested = normalizeDashboardStatusLimits(limitByStatus);
+      if (requested.length === 0) return [];
+
+      const requestedStatusCte = requested.map(() => '(?, ?)').join(', ');
+      const params = requested.flatMap(({ status, limit }) => [status, limit]);
+      const projectColumns = COLUMNS.map((column) => `projects.${column}`).join(', ');
+
+      const rows = db.prepare(`
+        WITH requested_statuses(status, item_limit) AS (
+          VALUES ${requestedStatusCte}
+        ),
+        effective_projects AS (
+          SELECT ${projectColumns},
+            CASE
+              WHEN projects.archived_at IS NOT NULL OR projects.status = 'archived'
+                THEN 'archived'
+              ELSE projects.status
+            END AS effective_status
+          FROM projects
+        ),
+        ranked_projects AS (
+          SELECT effective_projects.*, requested_statuses.item_limit,
+            ROW_NUMBER() OVER (
+              PARTITION BY effective_projects.effective_status
+              ORDER BY effective_projects.updated_at DESC, effective_projects.id DESC
+            ) AS status_rank
+          FROM effective_projects
+          INNER JOIN requested_statuses
+            ON requested_statuses.status = effective_projects.effective_status
+        )
+        SELECT ${COLUMNS.join(', ')}, effective_status
+        FROM ranked_projects
+        WHERE status_rank <= item_limit
+        ORDER BY effective_status ASC, updated_at DESC, id DESC
+      `).all(...params);
+
+      return rows;
+    },
+
+    /**
      * @param {Object} [options]
      * @param {string|string[]} [options.status]
      * @param {string[]} [options.statuses]
@@ -404,6 +503,19 @@ function escapeLike(value) {
 function normalizeStatusSelection(value) {
   const values = new Set(Array.isArray(value) ? value : [value]);
   return STATUSES.filter((status) => values.has(status));
+}
+
+function normalizeDashboardStatusLimits(limitByStatus) {
+  if (!limitByStatus || typeof limitByStatus !== 'object' || Array.isArray(limitByStatus)) {
+    return [];
+  }
+
+  return STATUSES.flatMap((status) => {
+    const limit = limitByStatus[status];
+    return Number.isSafeInteger(limit) && limit >= 1 && limit <= 25
+      ? [{ status, limit }]
+      : [];
+  });
 }
 
 function normalizeTagSelection(value) {

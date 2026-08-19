@@ -27,6 +27,7 @@ const dependencyInstrumentation = vi.hoisted(() => ({
   projectServices: [],
   preferenceServices: [],
   pageDefaultsServices: [],
+  dashboardDefaultsServices: [],
   tagServices: [],
   projectTagServices: [],
   assetTagServices: [],
@@ -193,6 +194,18 @@ vi.mock('../src/services/page-defaults-service.js', async (importOriginal) => {
     createPageDefaultsService(...args) {
       const service = actual.createPageDefaultsService(...args);
       dependencyInstrumentation.pageDefaultsServices.push({ args, service });
+      return service;
+    },
+  };
+});
+
+vi.mock('../src/services/dashboard-defaults-service.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    createDashboardDefaultsService(...args) {
+      const service = actual.createDashboardDefaultsService(...args);
+      dependencyInstrumentation.dashboardDefaultsServices.push({ args, service });
       return service;
     },
   };
@@ -685,6 +698,17 @@ describe('app construction — asset actions chunk 3 wiring', () => {
     expect(dependencyInstrumentation.autoRenameServices).toHaveLength(0);
     expect(app.locals.autoRenameService).toBe(injected);
     expect(dependencyInstrumentation.assetRouters[0].args[0].autoRenameService).toBe(injected);
+  });
+
+  it('constructs one Dashboard defaults service over the shared app-meta repository', () => {
+    const app = buildApp();
+
+    expect(dependencyInstrumentation.dashboardDefaultsServices).toHaveLength(1);
+    const { args, service } = dependencyInstrumentation.dashboardDefaultsServices[0];
+    const { repository: appMetaRepository } = dependencyInstrumentation.appMetaRepositories[0];
+
+    expect(args[0]).toEqual({ appMetaRepository });
+    expect(app.locals.dashboardDefaultsService).toBe(service);
   });
 
   it('constructs the native asset processing service without route wiring', () => {

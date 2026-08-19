@@ -8228,6 +8228,78 @@
         padding: var(--space-sm) var(--space-md);
         transition: opacity var(--transition-fast), box-shadow var(--transition-fast), background var(--transition-fast);
       }
+      .dashboard-defaults-section-list {
+        display: grid;
+        gap: var(--space-sm);
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+      #dashboard-defaults-dialog .app-dialog-form {
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow: hidden;
+      }
+      #dashboard-defaults-dialog .app-dialog-body {
+        flex: 1 1 auto;
+        min-height: 0;
+      }
+      #dashboard-defaults-dialog .dashboard-defaults-settings-section {
+        flex: 0 0 auto;
+        gap: var(--space-md);
+        margin-bottom: 0;
+        padding-bottom: var(--space-md);
+        overflow: visible;
+      }
+      .dashboard-defaults-section {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        cursor: grab;
+      }
+      .dashboard-defaults-section:hover { background: var(--surface-hover); }
+      .dashboard-defaults-section:focus-within { border-color: var(--border-strong); }
+      .dashboard-defaults-section-content {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto minmax(4.75rem, 5.5rem);
+        align-items: center;
+        gap: var(--space-sm);
+        min-width: 0;
+      }
+      .dashboard-defaults-section-identity {
+        min-width: 0;
+      }
+      .dashboard-defaults-section-identity h4 {
+        margin: 0;
+        font-size: 0.875rem;
+        line-height: 1.25;
+        overflow-wrap: anywhere;
+      }
+      .dashboard-defaults-section :is(.dashboard-defaults-section-visibility, .dashboard-defaults-section-item-count) {
+        min-width: 0;
+      }
+      .dashboard-defaults-section .dashboard-defaults-section-item-count {
+        width: 100%;
+      }
+      .dashboard-defaults-section .dashboard-defaults-section-item-count :is(input[type="number"], .cc-number-stepper) {
+        width: 100%;
+        min-width: 0;
+      }
+      .dashboard-defaults-section .form-switch-label {
+        min-height: 2rem;
+        gap: var(--space-xs);
+      }
+      .dashboard-defaults-section :is(button, input, label, [role="alert"], .field-error-message) {
+        cursor: auto;
+      }
+      .dashboard-defaults-section .form-switch-label { cursor: pointer; }
+      @media (max-width: 767px) {
+        .dashboard-defaults-section-content {
+          grid-template-columns: minmax(0, 1fr);
+          align-items: start;
+          gap: var(--space-sm);
+        }
+      }
       .notes-reorder-row.is-dragging { opacity: 0.55; }
       .notes-reorder-row.is-drop-before { box-shadow: 0 -3px 0 var(--accent); }
       .notes-reorder-row.is-drop-after { box-shadow: 0 3px 0 var(--accent); }

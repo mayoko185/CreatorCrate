@@ -923,6 +923,12 @@ const BOOK_CONTENT_REORDER_LIST_SELECTOR = '[data-book-content-reorder-list]';
 const BOOK_CONTENT_REORDER_ITEM_SELECTOR = '[data-book-content-reorder-item]';
 const BOOK_CONTENT_REORDER_HANDLE_SELECTOR = '[data-book-content-reorder-handle]';
 
+const DASHBOARD_DEFAULTS_DIALOG_ID = 'dashboard-defaults-dialog';
+const DASHBOARD_DEFAULTS_REORDER_LIST_SELECTOR = '[data-dashboard-defaults-reorder-list]';
+const DASHBOARD_DEFAULTS_REORDER_ITEM_SELECTOR = '[data-dashboard-defaults-reorder-item]';
+const DASHBOARD_DEFAULTS_REORDER_HANDLE_SELECTOR = '[data-dashboard-defaults-reorder-handle]';
+const DASHBOARD_DEFAULTS_ORDER_INPUT_SELECTOR = '[data-dashboard-defaults-order-input]';
+
 function dedicatedReorderItems(list, config) {
   return Array.from(list?.querySelectorAll?.(config.itemSelector) || []);
 }
@@ -989,6 +995,21 @@ function dedicatedReorderElementIsInside(item, element) {
   if (!item || !element) return false;
   if (item === element) return true;
   return typeof item.contains !== 'function' || item.contains(element);
+}
+
+function canStartDedicatedReorderDrag(item, event, config) {
+  const target = event.target;
+  const handleTarget = target?.closest?.(config.handleSelector);
+  if (dedicatedReorderElementIsInside(item, handleTarget)) return true;
+
+  if (!config.pointerDragSurfaceSelector) return false;
+  const surfaceTarget = target?.closest?.(config.pointerDragSurfaceSelector);
+  if (!dedicatedReorderElementIsInside(item, surfaceTarget)) return false;
+
+  const excludedTarget = config.pointerDragExcludedSelector
+    ? target?.closest?.(config.pointerDragExcludedSelector)
+    : null;
+  return !dedicatedReorderElementIsInside(item, excludedTarget);
 }
 
 function clearDedicatedDropIndicator(state) {
@@ -1097,8 +1118,7 @@ function enhanceDedicatedReorder(scope, config) {
       const handle = item.querySelector?.(config.handleSelector);
 
       item.addEventListener?.('dragstart', (event) => {
-        const handleTarget = event.target?.closest?.(config.handleSelector);
-        if (!dedicatedReorderElementIsInside(item, handleTarget)) {
+        if (!canStartDedicatedReorderDrag(item, event, config)) {
           event.preventDefault?.();
           return;
         }
@@ -1224,6 +1244,99 @@ export function enhanceBookContentReorder(scope = globalThis.document) {
     label: 'Book content',
     bindingKey: 'bookContentReorderBound',
   });
+}
+
+function dashboardDefaultsItemId(item) {
+  return item?.dataset?.dashboardSectionId
+    || item?.getAttribute?.('data-dashboard-section-id')
+    || '';
+}
+
+function dashboardDefaultsSnapshot(list) {
+  const items = Array.from(list?.querySelectorAll?.(DASHBOARD_DEFAULTS_REORDER_ITEM_SELECTOR) || []);
+  return {
+    order: items.map((item) => dashboardDefaultsItemId(item)),
+    values: new Map(items.map((item) => {
+      const visible = item.querySelector?.('input[type="checkbox"]');
+      const itemCount = item.querySelector?.('input[type="number"]');
+      return [dashboardDefaultsItemId(item), {
+        visible: Boolean(visible?.checked),
+        itemCount: String(itemCount?.value ?? ''),
+      }];
+    })),
+  };
+}
+
+function restoreDashboardDefaultsSnapshot(state) {
+  const { list, form, confirmed } = state;
+  const itemsById = new Map(
+    Array.from(list?.querySelectorAll?.(DASHBOARD_DEFAULTS_REORDER_ITEM_SELECTOR) || [])
+      .map((item) => [dashboardDefaultsItemId(item), item]),
+  );
+  confirmed.order.forEach((id) => {
+    const item = itemsById.get(id);
+    if (item) list.appendChild?.(item);
+  });
+  confirmed.values.forEach((values, id) => {
+    const item = itemsById.get(id);
+    const visible = item?.querySelector?.('input[type="checkbox"]');
+    const itemCount = item?.querySelector?.('input[type="number"]');
+    if (visible) visible.checked = values.visible;
+    if (itemCount) itemCount.value = values.itemCount;
+  });
+  updateDedicatedReorderMetadata(list, {
+    itemSelector: DASHBOARD_DEFAULTS_REORDER_ITEM_SELECTOR,
+    positionSelector: '[data-dashboard-defaults-order-position]',
+  });
+  const input = form?.querySelector?.(DASHBOARD_DEFAULTS_ORDER_INPUT_SELECTOR);
+  if (input) input.value = confirmed.order.join(',');
+}
+
+export function enhanceDashboardDefaultsDialog(scope = globalThis.document) {
+  const document = appDialogDocument(scope);
+  if (!document || typeof document.querySelectorAll !== 'function') return 0;
+
+  const dialogs = Array.from(document.querySelectorAll(APP_DIALOG_SELECTOR))
+    .filter((dialog) => (dialog.id || dialog.getAttribute?.('id')) === DASHBOARD_DEFAULTS_DIALOG_ID);
+  dialogs.forEach((dialog) => {
+    const form = dialog.querySelector?.('[data-dashboard-defaults-reorder-form]');
+    const list = dialog.querySelector?.(DASHBOARD_DEFAULTS_REORDER_LIST_SELECTOR);
+    const appDialogState = dialog.__creatorCrateAppDialogState;
+    if (!form || !list || !appDialogState || dialog.__creatorCrateDashboardDefaultsState) return;
+
+    const state = { list, form, confirmed: dashboardDefaultsSnapshot(list) };
+    dialog.__creatorCrateDashboardDefaultsState = state;
+    enhanceDedicatedReorder(dialog, {
+      listSelector: DASHBOARD_DEFAULTS_REORDER_LIST_SELECTOR,
+      itemSelector: DASHBOARD_DEFAULTS_REORDER_ITEM_SELECTOR,
+      handleSelector: DASHBOARD_DEFAULTS_REORDER_HANDLE_SELECTOR,
+      formSelector: '[data-dashboard-defaults-reorder-form]',
+      inputSelector: DASHBOARD_DEFAULTS_ORDER_INPUT_SELECTOR,
+      liveSelector: '[data-dashboard-defaults-reorder-live]',
+      positionSelector: '[data-dashboard-defaults-order-position]',
+      idDataset: 'dashboardSectionId',
+      idAttribute: 'data-dashboard-section-id',
+      labelDataset: 'dashboardSectionLabel',
+      labelAttribute: 'data-dashboard-section-label',
+      label: 'Dashboard section',
+      pointerDragSurfaceSelector: DASHBOARD_DEFAULTS_REORDER_ITEM_SELECTOR,
+      pointerDragExcludedSelector: 'a, button, input, select, textarea, label, summary, details, [contenteditable="true"], [role="button"]',
+      bindingKey: 'dashboardDefaultsReorderBound',
+    });
+
+    // The generic form value collector cannot model the hidden 0 + checkbox 1
+    // pair, and it cannot restore DOM order. Dashboard owns that confirmed state.
+    appDialogState.preserveValuesOnError = true;
+    appDialogState.onOpen = () => restoreDashboardDefaultsSnapshot(state);
+    appDialogState.onClose = () => restoreDashboardDefaultsSnapshot(state);
+    appDialogState.onSuccessfulSubmit = () => {
+      state.confirmed = dashboardDefaultsSnapshot(list);
+      const windowObject = dialog.ownerDocument?.defaultView || globalThis;
+      windowObject.location.assign('/?notice=dashboard_defaults_saved');
+      return true;
+    };
+  });
+  return dialogs.length;
 }
 
 const NOTE_EDITOR_FORM_SELECTOR = '[data-notes-editor-form]';
@@ -3763,6 +3876,7 @@ function appDialogRestoreFocus(state) {
 
 function appDialogFinishClose(state) {
   cleanupScrollableCategoryDialogDropdowns(state.dialog);
+  state.onClose?.();
   state.open = false;
   appDialogBodyLock(state, false);
   appDialogRestoreFocus(state);
@@ -3847,7 +3961,7 @@ function appDialogApplyValues(form, values = {}) {
 function appDialogClearErrors(state) {
   state.form?.querySelectorAll?.('[data-dialog-field]').forEach((field) => {
     field.classList?.remove('field-error');
-    const control = field.querySelector?.('select, input, textarea');
+    const control = field.querySelector?.('select, input:not([type="hidden"]), textarea');
     control?.removeAttribute?.('aria-invalid');
     control?.removeAttribute?.('aria-describedby');
     const summary = creatorCrateDropdownForNativeSelect(control)?.querySelector?.('summary');
@@ -3882,7 +3996,7 @@ function appDialogShowErrors(state, errors = {}, message = 'Fix the highlighted 
       .find((candidate) => candidate.getAttribute?.('data-dialog-field') === name);
     if (!field) return;
     field.classList?.add('field-error');
-    const control = field.querySelector?.('select, input, textarea');
+    const control = field.querySelector?.('select, input:not([type="hidden"]), textarea');
     if (!control) return;
     control.setAttribute?.('aria-invalid', 'true');
     const errorId = `${control.id || `dialog-${name}`}-error`;
@@ -4354,11 +4468,15 @@ function appDialogBindForm(state) {
         form.removeAttribute?.('aria-busy');
         if (submitButton) submitButton.disabled = false;
         if (response?.ok === false || payload?.status !== 'success') {
-          appDialogApplyValues(form, payload?.values || appDialogValues(form));
+          if (!state.preserveValuesOnError) {
+            appDialogApplyValues(form, payload?.values || appDialogValues(form));
+          }
           appDialogShowErrors(state, payload?.errors || {}, payload?.message || appDialogSaveErrorMessage(state));
           appDialogStatus(state, payload?.message || 'Could not save defaults.', true);
           return;
         }
+        // A successful-submit hook that begins navigation owns the terminal lifecycle.
+        if (state.onSuccessfulSubmit?.(payload) === true) return;
         state.savedValues = payload?.values || appDialogValues(form);
         syncProjectAssetsSizePreferences(state.dialog, state.savedValues);
         appDialogStatus(state, '');
@@ -4380,6 +4498,7 @@ function appDialogOpen(state, opener = null) {
     `${APP_DIALOG_TRIGGER_SELECTOR}[data-dialog-open="${state.dialog.id}"]`
   );
   appDialogApplyValues(state.form, state.savedValues || {});
+  state.onOpen?.();
   try {
     if (typeof state.dialog.showModal === 'function') {
       if (state.dialog.open) state.dialog.close?.();
@@ -4461,6 +4580,10 @@ export function enhanceAppDialogs(scope = globalThis.document) {
       savedValues: null,
       open: false,
       submitting: false,
+      preserveValuesOnError: false,
+      onOpen: null,
+      onClose: null,
+      onSuccessfulSubmit: null,
     };
     dialog.__creatorCrateAppDialogState = state;
     appDialogBind(state);
@@ -8120,6 +8243,7 @@ if (typeof document !== 'undefined') {
     enhanceDropdowns(document);
     enhanceAssetViewerFilterDisclosures(document);
     enhanceAppDialogs(document);
+    enhanceDashboardDefaultsDialog(document);
     enhanceProjectAssetCategoryManagement(document);
     enhanceProjectsLiveFiltering(document);
     enhanceReleasesLiveFiltering(document);

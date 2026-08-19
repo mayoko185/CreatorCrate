@@ -49,13 +49,15 @@ import {
   buildPreviewAltText,
   formatFileSize,
 } from './asset-presentation.js';
+import {
+  DASHBOARD_SECTION_REGISTRY,
+  normalizeDashboardDefaults,
+} from './dashboard-defaults-service.js';
 import { getLocalTodayIso } from '../util/date.js';
 
 const DEFAULT_LIMITS = Object.freeze({
   // Dashboard sections
   overdue: 5,
-  missingPlannedDate: 5,
-  missingSelectedAssets: 5,
   upcoming: 10,
   recentlyUpdatedProjects: 10,
   // Project workspace sections
@@ -364,28 +366,6 @@ export function isPrimaryImageAssetUsable(asset, { kritaQuality = null } = {}) {
 }
 
 /**
- * Group an ordered list of releases by their planned_date. Returns an array
- * of `{ plannedDate, releases }` objects, preserving the order in which each
- * date first appears. Releases without a planned_date are dropped (this
- * should not happen for the upcoming query, but is a safety net).
- */
-function groupByDate(releases) {
-  const groups = [];
-  const indexByDate = new Map();
-  for (const release of releases) {
-    if (!release.planned_date) continue;
-    let entry = indexByDate.get(release.planned_date);
-    if (!entry) {
-      entry = { plannedDate: release.planned_date, releases: [] };
-      indexByDate.set(release.planned_date, entry);
-      groups.push(entry);
-    }
-    entry.releases.push(release);
-  }
-  return groups;
-}
-
-/**
  * @param {object} deps
  * @param {import('better-sqlite3').Database} deps.db
  * @param {object} [deps.releaseRepository] — release repository for page-local
@@ -413,83 +393,87 @@ export function createWorkflowQueryService({
     });
 
   /**
-   * Compose the dashboard view-model. Returns an object with all sections
-   * the dashboard template needs; nothing is computed lazily.
-   *
-   * `today` is computed once and threaded through every date-sensitive
-   * repository call so the dashboard cannot classify a release differently
-   * across sections (overdue vs upcoming) due to per-call clock drift.
+   * Compose dashboard project data from an already-normalized section document.
+   * Project enrichment is deliberately applied to one deduplicated union, then
+   * projected back into each section to retain repository order.
    *
    * @param {object} [options]
-   * @param {Partial<typeof DEFAULT_LIMITS>} [options.limits]
-   * @param {string} [options.today] ISO date YYYY-MM-DD (defaults to the
-   *   service's current date). Tests inject a fixed value to assert
-   *   classification without depending on the system clock.
-   * @returns {{
-   *   releasesNeedingAttention: {
-   *     overdue: Array,
-   *     missingPlannedDate: Array,
-   *     missingSelectedAssets: Array,
-   *     releasesWithoutAssets: Array,
-   *     totalCount: number,
-   *   },
-   *   upcomingReleases: Array,
-   *   workflowSummary: {
-   *     totalProjects: number,
-   *     totalAssets: number,
-   *     missingAssetSummary: { total: number, referencedByReleases: number },
-   *   },
-   *   projectCounts: Object<string, number>,
-   *   recentlyUpdated: Array,
-   *   today: string,
-   * }}
+   * @param {object} [options.dashboardDefaults] normalized Dashboard defaults
+   * @param {string} [options.today] ISO date YYYY-MM-DD
    */
   function getDashboardData(options = {}) {
-    const limits = mergeLimits(options);
     const today = options.today || defaultToday();
+    const dashboardDefaults = normalizeDashboardDefaults(options.dashboardDefaults);
+    const sections = Object.fromEntries(
+      DASHBOARD_SECTION_REGISTRY.map(({ id }) => [id, []])
+    );
+    const { sections: sectionDefaults } = dashboardDefaults;
 
-    const overdue = releaseRepository.findOverdue(limits.overdue, today);
-    const missingPlannedDate = releaseRepository.findActiveWithoutPlannedDate(limits.missingPlannedDate);
-    const missingSelectedAssets = releaseRepository.findReleasesWithMissingSelectedAssets(limits.missingSelectedAssets);
-    const releasesWithoutAssets = releaseRepository.findReleasesWithoutSelectedAssets(limits.missingSelectedAssets);
-    const upcomingRaw = releaseRepository.findUpcoming(limits.upcoming, today);
-    const upcoming = groupByDate(upcomingRaw);
+    if (sectionDefaults.overdue.visible) {
+      sections.overdue = projectRepository.findOverdueWithoutReleases(
+        sectionDefaults.overdue.itemCount,
+        today,
+      );
+    }
+    if (sectionDefaults.upcoming.visible) {
+      sections.upcoming = projectRepository.findUpcomingPlanned(
+        sectionDefaults.upcoming.itemCount,
+        today,
+      );
+    }
+    if (sectionDefaults['recently-updated'].visible) {
+      sections['recently-updated'] = projectRepository.list({
+        sortBy: 'updated',
+        order: 'desc',
+        limit: sectionDefaults['recently-updated'].itemCount,
+        includeArchived: false,
+      }).rows;
+    }
+
+    const statusLimits = Object.fromEntries(
+      DASHBOARD_SECTION_REGISTRY
+        .filter(({ status }) => status && sectionDefaults[`status:${status}`].visible)
+        .map(({ status }) => [status, sectionDefaults[`status:${status}`].itemCount])
+    );
+    if (Object.keys(statusLimits).length > 0) {
+      for (const project of projectRepository.findDashboardProjectsByStatus(statusLimits)) {
+        sections[`status:${project.effective_status}`].push(project);
+      }
+    }
 
     const projectCounts = projectRepository.countByStatus();
     const totalAssets = assetRepository.getTotalCount();
+    const totalReleases = releaseRepository.countFiltered({ includeArchived: true });
     const missingTotal = assetRepository.getTotalMissingCount();
-    const missingReferenced = releaseRepository.countMissingAssetsReferenced();
 
-    const recentlyUpdated = projectRepository.list({
-      sortBy: 'updated',
-      order: 'desc',
-      limit: limits.recentlyUpdatedProjects,
-      includeArchived: false,
-    }).rows;
+    const uniqueProjectsById = new Map();
+    for (const projects of Object.values(sections)) {
+      for (const project of projects) {
+        if (!uniqueProjectsById.has(project.id)) uniqueProjectsById.set(project.id, project);
+      }
+    }
+    const enrichedProjectsById = new Map(
+      attachProjectTags(attachPrimaryImages([...uniqueProjectsById.values()]))
+        .map((project) => [project.id, project])
+    );
+    for (const [sectionId, projects] of Object.entries(sections)) {
+      sections[sectionId] = projects.map((project) => enrichedProjectsById.get(project.id));
+    }
 
     return {
-      releasesNeedingAttention: {
-        overdue,
-        missingPlannedDate,
-        missingSelectedAssets,
-        releasesWithoutAssets,
-        totalCount:
-          overdue.length
-          + missingPlannedDate.length
-          + missingSelectedAssets.length
-          + releasesWithoutAssets.length,
-      },
-      upcomingReleases: upcoming,
+      // Keep existing route consumers working until the route is migrated.
+      overdue: sections.overdue,
+      upcoming: sections.upcoming,
       workflowSummary: {
         totalProjects: totalFromCounts(projectCounts),
         totalAssets,
+        totalReleases,
         missingAssetSummary: {
           total: missingTotal,
-          referencedByReleases: missingReferenced,
         },
       },
-      projectCounts,
-      recentlyUpdated,
+      recentlyUpdated: sections['recently-updated'],
+      sections,
       today,
     };
   }

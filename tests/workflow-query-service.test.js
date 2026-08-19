@@ -21,7 +21,6 @@ import { getLocalTodayIso } from '../src/util/date.js';
 import { buildRevisionToken } from '../src/storage/preview-cache.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
-const DASHBOARD_FIXED_STATEMENT_EXECUTIONS = 12;
 // Phase 3 chunk 1: browser composition now also loads the project's
 // category rows and whole-project navigation counts (2 additional bounded
 // statements); viewer composition loads the category rows for canonical
@@ -38,6 +37,13 @@ const ASSET_VIEWER_FIXED_STATEMENT_EXECUTIONS = 5;
 // countFiltered({ includeArchived: true }) (hasAnyReleases existence), and
 // findPage (page rows). The count is fixed at 3 for every page.
 const RELEASE_LIST_FIXED_STATEMENT_EXECUTIONS = 3;
+
+function dashboardDefaults(sectionOverrides = {}) {
+  return {
+    version: 1,
+    sections: sectionOverrides,
+  };
+}
 
 /**
  * Helper to insert a project directly without filesystem operations.
@@ -175,22 +181,15 @@ describe('workflow query service', () => {
     it('returns safe empty sections for an empty database', () => {
       const data = service.getDashboardData();
 
-      expect(data.releasesNeedingAttention).toEqual({
-        overdue: [],
-        missingPlannedDate: [],
-        missingSelectedAssets: [],
-        releasesWithoutAssets: [],
-        totalCount: 0,
-      });
-      expect(data.upcomingReleases).toEqual([]);
+      expect(data.overdue).toEqual([]);
+      expect(data.upcoming).toEqual([]);
       expect(data.workflowSummary.totalProjects).toBe(0);
       expect(data.workflowSummary.totalAssets).toBe(0);
+      expect(data.workflowSummary.totalReleases).toBe(0);
       expect(data.workflowSummary.missingAssetSummary.total).toBe(0);
-      expect(data.workflowSummary.missingAssetSummary.referencedByReleases).toBe(0);
+      expect(data.workflowSummary.missingAssetSummary).not.toHaveProperty('referencedByReleases');
       expect(data.workflowSummary).not.toHaveProperty('releaseStatusCounts');
-      expect(data.projectCounts).toEqual({
-        tbd: 0, planned: 0, 'in-progress': 0, ready: 0, completed: 0, archived: 0,
-      });
+      expect(data).not.toHaveProperty('projectCounts');
       expect(data.recentlyUpdated).toEqual([]);
       expect(data.today).toBe(today);
     });
@@ -456,210 +455,244 @@ describe('workflow query service', () => {
     });
   });
 
-  // ─── getDashboardData: releases needing attention ───────────────────
+  // ─── getDashboardData: overdue projects ─────────────────────────────
 
-  describe('getDashboardData — releases needing attention', () => {
-    it('overdue releases appear in the overdue section', () => {
-      const project = insertProject(db, { title: 'Overdue Project', status: 'planned' });
-      const release = insertRelease(db, {
-        projectId: project.id,
-        title: 'Overdue Release',
-        status: 'planned',
-        plannedDate: '2020-01-01', // way in the past
+  describe('getDashboardData — overdue projects', () => {
+    it('overdue projects appear in the overdue section', () => {
+      const project = insertProject(db, {
+        title: 'Overdue Project', status: 'planned', plannedDate: '2020-01-01',
       });
-      // Link a present asset so the release does not also appear in
-      // missing-selection (kept focused on the overdue section).
+
+      const data = service.getDashboardData();
+      expect(data.overdue).toHaveLength(1);
+      expect(data.overdue[0].id).toBe(project.id);
+    });
+
+    it('a planned project with a release is not overdue', () => {
+      const project = insertProject(db, {
+        title: 'Has Release', status: 'planned', plannedDate: '2020-01-01',
+      });
+      insertRelease(db, { projectId: project.id, title: 'Any Release' });
+
+      const data = service.getDashboardData();
+      expect(data.overdue.map((p) => p.id)).not.toContain(project.id);
+    });
+
+    it('attaches available selected primary-image and tag data to overdue projects', () => {
+      const tag = tagRepository.create({ displayName: 'Overdue Tag', normalizedName: 'overdue-tag' });
+      const project = insertProject(db, {
+        title: 'Enriched Overdue', status: 'planned', plannedDate: '2020-01-01',
+      });
       const asset = insertAsset(db, {
         projectId: project.id,
-        relativePath: 'a.txt',
-        filename: 'a.txt',
-        isPresent: 1,
+        relativePath: 'overdue-cover.png',
+        filename: 'overdue-cover.png',
+        extension: 'png',
+        mimeType: 'image/png',
+        modifiedAt: '2026-08-02T12:00:00.000Z',
       });
-      linkAssetToRelease(db, { releaseId: release.id, assetId: asset.id });
+      primaryImageRepository.setPrimaryImage(project.id, asset.id);
+      tagRepository.assignToProject(project.id, tag.id);
 
       const data = service.getDashboardData();
-      expect(data.releasesNeedingAttention.overdue).toHaveLength(1);
-      expect(data.releasesNeedingAttention.overdue[0].title).toBe('Overdue Release');
-      expect(data.releasesNeedingAttention.totalCount).toBe(1);
+      const row = data.overdue.find((p) => p.id === project.id);
+      expect(row.primaryImage).toMatchObject({
+        selectedAssetId: asset.id,
+        provenance: PRIMARY_IMAGE_PROVENANCE.MANUAL,
+        state: 'available',
+        kind: 'image',
+        alt: 'Preview of overdue-cover.png',
+      });
+      expect(row.primaryImage.previewUrl).toContain(`/projects/${project.id}/assets/${asset.id}/preview`);
+      expect(row.tags).toEqual([{ displayName: 'Overdue Tag' }]);
     });
 
-    it('upcoming releases appear in the upcoming section', () => {
-      const project = insertProject(db, { title: 'Upcoming Project', status: 'planned' });
-      insertRelease(db, {
-        projectId: project.id,
-        title: 'Upcoming Release',
-        status: 'planned',
-        plannedDate: '2099-12-31',
-      });
+    it('does not surface archived projects as overdue', () => {
+      const project = insertProject(db, { title: 'Archived Overdue', status: 'planned', plannedDate: '2020-01-01' });
+      db.prepare(`UPDATE projects SET archived_at = datetime('now') WHERE id = ?`).run(project.id);
 
       const data = service.getDashboardData();
-      // Upcoming is grouped by plannedDate: [{ plannedDate, releases: [...] }]
-      expect(data.upcomingReleases).toHaveLength(1);
-      expect(data.upcomingReleases[0].plannedDate).toBe('2099-12-31');
-      expect(data.upcomingReleases[0].releases).toHaveLength(1);
-      expect(data.upcomingReleases[0].releases[0].title).toBe('Upcoming Release');
+      expect(data.overdue.map((p) => p.id)).not.toContain(project.id);
     });
 
-    it('active releases without planned date appear in the missing-planned-date section', () => {
-      const project = insertProject(db, { title: 'No Date Project', status: 'planned' });
-      insertRelease(db, {
-        projectId: project.id,
-        title: 'No Planned Date',
-        status: 'planned',
-        plannedDate: null,
-      });
-
-      const data = service.getDashboardData();
-      expect(data.releasesNeedingAttention.missingPlannedDate).toHaveLength(1);
-      expect(data.releasesNeedingAttention.missingPlannedDate[0].title).toBe('No Planned Date');
-    });
-
-    it('releases with missing selected assets appear in the missing-assets section', () => {
-      const project = insertProject(db, { title: 'Missing Asset Project' });
-      const release = insertRelease(db, {
-        projectId: project.id,
-        title: 'Missing Asset Release',
-        status: 'planned',
-        plannedDate: '2099-01-01',
-      });
-      const missingAsset = insertAsset(db, {
-        projectId: project.id,
-        relativePath: 'missing.txt',
-        filename: 'missing.txt',
-        isPresent: 0,
-      });
-      linkAssetToRelease(db, {
-        releaseId: release.id,
-        assetId: missingAsset.id,
-      });
-
-      const data = service.getDashboardData();
-      expect(data.releasesNeedingAttention.missingSelectedAssets).toHaveLength(1);
-      expect(data.releasesNeedingAttention.missingSelectedAssets[0].title).toBe('Missing Asset Release');
-      expect(data.releasesNeedingAttention.missingSelectedAssets[0].missing_asset_count).toBe(1);
-    });
-
-    it('does not surface archived overdue releases', () => {
-      const project = insertProject(db, { title: 'Archive Hide Project' });
-      insertRelease(db, {
-        projectId: project.id,
-        title: 'Archived Overdue',
-        status: 'planned',
-        plannedDate: '2020-01-01',
-        archivedAt: '2024-01-01 00:00:00',
-      });
-
-      const data = service.getDashboardData();
-      expect(data.releasesNeedingAttention.overdue).toHaveLength(0);
-    });
-
-    it('does not surface archived releases as overdue', () => {
-      const project = insertProject(db, { title: 'Archived Project' });
-      insertRelease(db, {
-        projectId: project.id,
-        title: 'Archived Past',
-        plannedDate: '2020-01-01',
-        archivedAt: '2024-01-01 00:00:00',
-      });
-
-      const data = service.getDashboardData();
-      expect(data.releasesNeedingAttention.overdue).toHaveLength(0);
-    });
-
-    it('totalCount is the sum of all attention lists', () => {
-      const project = insertProject(db, { title: 'Multi Attention Project', status: 'ready' });
-      // Link a present asset to every release so the missing-selection
-      // section stays empty and we can verify the totalCount math without
-      // missing-selection interference. (Missing-selection is covered by
-      // its own dedicated test below.)
-      const presentAsset = insertAsset(db, {
-        projectId: project.id,
-        relativePath: 'present.txt',
-        filename: 'present.txt',
-        isPresent: 1,
-      });
-      const overdue = insertRelease(db, {
-        projectId: project.id,
-        title: 'Overdue',
-        status: 'planned',
-        plannedDate: '2020-01-01',
-      });
-      linkAssetToRelease(db, { releaseId: overdue.id, assetId: presentAsset.id });
-      const ready = insertRelease(db, {
-        projectId: project.id,
-        title: 'Ready',
-        status: 'ready',
-        plannedDate: '2099-01-01',
-      });
-      linkAssetToRelease(db, { releaseId: ready.id, assetId: presentAsset.id });
-      const noDate = insertRelease(db, {
-        projectId: project.id,
-        title: 'No Date',
-        status: 'in-progress',
-        plannedDate: null,
-      });
-      linkAssetToRelease(db, { releaseId: noDate.id, assetId: presentAsset.id });
-      const missingAsset = insertAsset(db, {
-        projectId: project.id,
-        relativePath: 'm.txt',
-        filename: 'm.txt',
-        isPresent: 0,
-      });
-      const releaseWithMissing = insertRelease(db, {
-        projectId: project.id,
-        title: 'Has Missing',
-        status: 'in-progress',
-        plannedDate: '2099-01-01',
-      });
-      linkAssetToRelease(db, { releaseId: releaseWithMissing.id, assetId: presentAsset.id });
-      linkAssetToRelease(db, { releaseId: releaseWithMissing.id, assetId: missingAsset.id });
-
-      const data = service.getDashboardData();
-      const attention = data.releasesNeedingAttention;
-      expect(attention.totalCount).toBe(
-        attention.overdue.length
-        + attention.missingPlannedDate.length
-        + attention.missingSelectedAssets.length
-        + attention.releasesWithoutAssets.length,
-      );
-      // Sanity: the remaining ordinary attention lists retain their behavior.
-      expect(data.releasesNeedingAttention.overdue).toHaveLength(1);
-      expect(data.releasesNeedingAttention.missingPlannedDate).toHaveLength(1);
-      expect(data.releasesNeedingAttention.missingSelectedAssets).toHaveLength(1);
-      expect(data.releasesNeedingAttention.releasesWithoutAssets).toHaveLength(0);
-      // Use one variable to silence linters about unused insert
-      expect(overdue.id).toBeGreaterThan(0);
-    });
-
-    it('respects the bounded limit on overdue releases', () => {
-      const project = insertProject(db, { title: 'Bounded Overdue' });
+    it('respects the bounded limit on overdue projects', () => {
       for (let i = 0; i < 10; i++) {
-        insertRelease(db, {
-          projectId: project.id,
-          title: `Overdue ${i}`,
-          status: 'planned',
-          plannedDate: `2020-01-0${(i % 9) + 1}`,
-        });
+        insertProject(db, { title: `Overdue ${i}`, status: 'planned', plannedDate: '2020-01-01' });
       }
 
-      const data = service.getDashboardData({ limits: { overdue: 3 } });
-      expect(data.releasesNeedingAttention.overdue).toHaveLength(3);
+      const data = service.getDashboardData({
+        dashboardDefaults: dashboardDefaults({ overdue: { visible: true, itemCount: 3 } }),
+      });
+      expect(data.overdue).toHaveLength(3);
+    });
+  });
+
+  // ─── getDashboardData: upcoming projects ─────────────────────────────
+
+  describe('getDashboardData — upcoming projects', () => {
+    it('projects planned strictly after today appear in upcoming', () => {
+      const project = insertProject(db, {
+        title: 'Upcoming Project', status: 'planned', plannedDate: '2099-12-31',
+      });
+
+      const data = service.getDashboardData();
+      expect(data.upcoming.map((p) => p.id)).toContain(project.id);
+    });
+
+    it('a project planned exactly today is not upcoming', () => {
+      const project = insertProject(db, { title: 'Today Project', status: 'planned', plannedDate: today });
+
+      const data = service.getDashboardData();
+      expect(data.upcoming.map((p) => p.id)).not.toContain(project.id);
+    });
+
+    it('an upcoming project with releases still appears (no release-existence condition)', () => {
+      const project = insertProject(db, {
+        title: 'Upcoming With Release', status: 'planned', plannedDate: '2099-01-01',
+      });
+      insertRelease(db, { projectId: project.id, title: 'Any Release' });
+
+      const data = service.getDashboardData();
+      expect(data.upcoming.map((p) => p.id)).toContain(project.id);
+    });
+
+    it('attaches unavailable selected primary-image and tag data to upcoming projects', () => {
+      const tag = tagRepository.create({ displayName: 'Upcoming Tag', normalizedName: 'upcoming-tag' });
+      const project = insertProject(db, {
+        title: 'Enriched Upcoming', status: 'planned', plannedDate: '2099-01-01',
+      });
+      const asset = insertAsset(db, {
+        projectId: project.id,
+        relativePath: 'upcoming-cover.png',
+        filename: 'upcoming-cover.png',
+        extension: 'png',
+        mimeType: 'image/png',
+      });
+      primaryImageRepository.setPrimaryImage(project.id, asset.id);
+      db.prepare('UPDATE assets SET is_present = 0, missing_since = datetime(\'now\') WHERE id = ?')
+        .run(asset.id);
+      tagRepository.assignToProject(project.id, tag.id);
+
+      const data = service.getDashboardData();
+      const row = data.upcoming.find((p) => p.id === project.id);
+      expect(row.tags).toEqual([{ displayName: 'Upcoming Tag' }]);
+      expect(row.primaryImage).toEqual({
+        selectedAssetId: asset.id,
+        provenance: PRIMARY_IMAGE_PROVENANCE.MANUAL,
+        state: 'unavailable',
+        kind: 'image',
+        mediaModifier: null,
+        previewUrl: null,
+        thumbnailUrl: null,
+        revision: null,
+        alt: 'Preview of upcoming-cover.png',
+      });
+    });
+
+    it('does not surface archived projects as upcoming', () => {
+      const project = insertProject(db, { title: 'Archived Upcoming', status: 'planned', plannedDate: '2099-01-01' });
+      db.prepare(`UPDATE projects SET archived_at = datetime('now') WHERE id = ?`).run(project.id);
+
+      const data = service.getDashboardData();
+      expect(data.upcoming.map((p) => p.id)).not.toContain(project.id);
+    });
+
+    it('respects the bounded limit on upcoming projects', () => {
+      for (let i = 0; i < 15; i++) {
+        insertProject(db, { title: `Upcoming ${i}`, status: 'planned', plannedDate: '2099-01-01' });
+      }
+
+      const data = service.getDashboardData({
+        dashboardDefaults: dashboardDefaults({ upcoming: { visible: true, itemCount: 4 } }),
+      });
+      expect(data.upcoming).toHaveLength(4);
+    });
+  });
+
+  // ─── getDashboardData: today classification boundary ────────────────
+
+  describe('getDashboardData — today classification boundary', () => {
+    const FIXED_TODAY = '2025-06-15';
+
+    it('project planned today is overdue (no releases), not upcoming', () => {
+      const project = insertProject(db, { title: 'Today Project', status: 'planned', plannedDate: FIXED_TODAY });
+
+      const data = service.getDashboardData({ today: FIXED_TODAY });
+      expect(data.overdue.map((p) => p.id)).toContain(project.id);
+      expect(data.upcoming.map((p) => p.id)).not.toContain(project.id);
+    });
+
+    it('project planned yesterday is overdue', () => {
+      const project = insertProject(db, { title: 'Yesterday Project', status: 'planned', plannedDate: '2025-06-14' });
+
+      const data = service.getDashboardData({ today: FIXED_TODAY });
+      expect(data.overdue.map((p) => p.id)).toContain(project.id);
+      expect(data.upcoming.map((p) => p.id)).not.toContain(project.id);
+    });
+
+    it('project planned tomorrow is upcoming, not overdue', () => {
+      const project = insertProject(db, { title: 'Tomorrow Project', status: 'planned', plannedDate: '2025-06-16' });
+
+      const data = service.getDashboardData({ today: FIXED_TODAY });
+      expect(data.upcoming.map((p) => p.id)).toContain(project.id);
+      expect(data.overdue.map((p) => p.id)).not.toContain(project.id);
+    });
+
+    it('uses the same injected today value across overdue and upcoming', () => {
+      const yesterday = insertProject(db, { title: 'Yesterday', status: 'planned', plannedDate: '2025-06-14' });
+      const todayProject = insertProject(db, { title: 'Today', status: 'planned', plannedDate: '2025-06-15' });
+      const tomorrow = insertProject(db, { title: 'Tomorrow', status: 'planned', plannedDate: '2025-06-16' });
+
+      const data = service.getDashboardData({ today: FIXED_TODAY });
+      expect(data.today).toBe(FIXED_TODAY);
+      expect(data.overdue.map((p) => p.id)).toEqual(expect.arrayContaining([yesterday.id, todayProject.id]));
+      expect(data.upcoming.map((p) => p.id)).toEqual([tomorrow.id]);
+    });
+
+    it('does not classify a project as both overdue AND upcoming for the same today', () => {
+      const project = insertProject(db, { title: 'Either Or', status: 'planned', plannedDate: FIXED_TODAY });
+
+      const data = service.getDashboardData({ today: FIXED_TODAY });
+      const overdueIds = data.overdue.map((p) => p.id);
+      const upcomingIds = data.upcoming.map((p) => p.id);
+      const intersection = overdueIds.filter((id) => upcomingIds.includes(id));
+      expect(intersection).toEqual([]);
+    });
+  });
+
+  // ─── getDashboardData: application-local today boundary ─────────────
+
+  describe('getDashboardData — application-local today boundary', () => {
+    it('uses the default local today (not UTC) when no today is injected', () => {
+      // Set a system time at local noon on 2025-06-15. The local date is
+      // 2025-06-15 in every timezone.
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(2025, 5, 15, 12, 0, 0));
+      try {
+        const project = insertProject(db, { title: 'Default Local Today', status: 'planned', plannedDate: '2025-06-16' });
+
+        const data = service.getDashboardData();
+        // The default `today` is the local calendar date of `new Date()`.
+        expect(data.today).toBe('2025-06-15');
+        expect(data.upcoming.map((p) => p.id)).toContain(project.id);
+        expect(data.overdue.map((p) => p.id)).not.toContain(project.id);
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 
   // ─── getDashboardData: workflow summary ────────────────────────────
 
   describe('getDashboardData — workflow summary', () => {
-    it('computes total projects from project counts', () => {
+    it('derives total projects from internal status counts without exposing them', () => {
       insertProject(db, { title: 'Alpha', status: 'tbd' });
       insertProject(db, { title: 'Beta', status: 'planned' });
       insertProject(db, { title: 'Gamma', status: 'in-progress' });
 
       const data = service.getDashboardData();
       expect(data.workflowSummary.totalProjects).toBe(3);
-      expect(data.projectCounts).toEqual({
-        tbd: 1, planned: 1, 'in-progress': 1, ready: 0, completed: 0, archived: 0,
-      });
+      expect(data).not.toHaveProperty('projectCounts');
     });
 
     it('computes total assets and missing asset summary', () => {
@@ -671,51 +704,32 @@ describe('workflow query service', () => {
       const data = service.getDashboardData();
       expect(data.workflowSummary.totalAssets).toBe(3);
       expect(data.workflowSummary.missingAssetSummary.total).toBe(1);
-      expect(data.workflowSummary.missingAssetSummary.referencedByReleases).toBe(0);
+      expect(data.workflowSummary.missingAssetSummary).not.toHaveProperty('referencedByReleases');
     });
 
-    it('computes missing assets referenced by non-archived releases', () => {
-      const project = insertProject(db, { title: 'Ref Project' });
-      const present = insertAsset(db, { projectId: project.id, relativePath: 'p.txt', filename: 'p.txt', isPresent: 1 });
-      const missing = insertAsset(db, { projectId: project.id, relativePath: 'm.txt', filename: 'm.txt', isPresent: 0 });
-      const release = insertRelease(db, {
+    it('counts all release records, including archived releases', () => {
+      const project = insertProject(db, { title: 'Release Count Project' });
+      insertRelease(db, { projectId: project.id, title: 'Active Release' });
+      insertRelease(db, {
         projectId: project.id,
-        title: 'Ref Release',
-        status: 'planned',
-        plannedDate: '2099-01-01',
+        title: 'Archived Release',
+        archivedAt: '2026-01-01 00:00:00',
       });
-      linkAssetToRelease(db, { releaseId: release.id, assetId: present.id });
-      linkAssetToRelease(db, { releaseId: release.id, assetId: missing.id });
 
       const data = service.getDashboardData();
-      expect(data.workflowSummary.missingAssetSummary.total).toBe(1);
-      expect(data.workflowSummary.missingAssetSummary.referencedByReleases).toBe(1);
+
+      expect(data.workflowSummary.totalReleases).toBe(2);
     });
 
-    it('excludes missing-assets-referenced count for archived releases', () => {
-      const project = insertProject(db, { title: 'Archived Ref Project' });
-      const missing = insertAsset(db, { projectId: project.id, relativePath: 'm.txt', filename: 'm.txt', isPresent: 0 });
-      const release = insertRelease(db, {
-        projectId: project.id,
-        title: 'Archived Ref Release',
-        status: 'tbd',
-        plannedDate: null,
-        archivedAt: '2024-01-01 00:00:00',
-      });
-      linkAssetToRelease(db, { releaseId: release.id, assetId: missing.id });
-
-      const data = service.getDashboardData();
-      expect(data.workflowSummary.missingAssetSummary.referencedByReleases).toBe(0);
-    });
-
-    it('does not expose release-status counts', () => {
+    it('does not expose removed release-status or project-status counts', () => {
       const project = insertProject(db, { title: 'Project Counts Project', status: 'ready' });
       insertRelease(db, { projectId: project.id, title: 'First' });
       insertRelease(db, { projectId: project.id, title: 'Second' });
 
       const data = service.getDashboardData();
       expect(data.workflowSummary).not.toHaveProperty('releaseStatusCounts');
-      expect(data.projectCounts.ready).toBe(1);
+      expect(data.workflowSummary.totalProjects).toBe(1);
+      expect(data).not.toHaveProperty('projectCounts');
     });
   });
 
@@ -747,58 +761,266 @@ describe('workflow query service', () => {
         insertProject(db, { title: `P${i}` });
       }
 
-      const data = service.getDashboardData({ limits: { recentlyUpdatedProjects: 5 } });
+      const data = service.getDashboardData({
+        dashboardDefaults: dashboardDefaults({ 'recently-updated': { visible: true, itemCount: 5 } }),
+      });
       expect(data.recentlyUpdated).toHaveLength(5);
     });
 
-    it('dashboard composition executes a fixed number of statements as dataset size grows', () => {
-      const smallProject = insertProject(db, { title: 'Dashboard Query Small', status: 'planned' });
-      const smallRelease = insertRelease(db, {
-        projectId: smallProject.id,
-        title: 'Small Upcoming',
-        status: 'planned',
-        plannedDate: '2099-01-01',
-      });
-      const smallAsset = insertAsset(db, {
-        projectId: smallProject.id,
-        relativePath: 'small.txt',
-        filename: 'small.txt',
-        isPresent: 1,
-      });
-      linkAssetToRelease(db, { releaseId: smallRelease.id, assetId: smallAsset.id });
+    it('attaches primary image and tag data to recently-updated projects', () => {
+      const tag = tagRepository.create({ displayName: 'Recent Tag', normalizedName: 'recent-tag' });
+      const project = insertProject(db, { title: 'Enriched Recent' });
+      tagRepository.assignToProject(project.id, tag.id);
+
+      const data = service.getDashboardData();
+      const row = data.recentlyUpdated.find((p) => p.id === project.id);
+      expect(row.tags).toEqual([{ displayName: 'Recent Tag' }]);
+      expect(row.primaryImage.state).toBe('none');
+    });
+
+    it('composes configured sections with bounded, deduplicated enrichment', () => {
+      const fixedToday = '2026-07-29';
+      const nextDay = new Date(`${fixedToday}T00:00:00.000Z`);
+      nextDay.setUTCDate(nextDay.getUTCDate() + 1);
+      const upcomingDate = nextDay.toISOString().slice(0, 10);
+      const configuredDefaults = dashboardDefaults(Object.fromEntries([
+        'overdue',
+        'upcoming',
+        'recently-updated',
+        'status:tbd',
+        'status:planned',
+        'status:in-progress',
+        'status:ready',
+        'status:completed',
+        'status:archived',
+      ].map((sectionId) => [sectionId, { visible: true, itemCount: 8 }])));
+
+      function insertDashboardFixture(label) {
+        const overdue = insertProject(db, {
+          title: `${label} Overdue`, status: 'planned', plannedDate: fixedToday,
+        });
+        const upcoming = insertProject(db, {
+          title: `${label} Upcoming`, status: 'planned', plannedDate: upcomingDate,
+        });
+        const recentlyUpdated = insertProject(db, { title: `${label} Recent`, status: 'ready' });
+        const statuses = [
+          insertProject(db, { title: `${label} TBD`, status: 'tbd' }),
+          insertProject(db, { title: `${label} In Progress`, status: 'in-progress' }),
+          insertProject(db, { title: `${label} Completed`, status: 'completed' }),
+          insertProject(db, { title: `${label} Archived`, status: 'tbd', archivedAt: '2026-01-01 00:00:00' }),
+        ];
+
+        const availableAsset = insertAsset(db, {
+          projectId: overdue.id,
+          relativePath: `${label}-overdue.png`,
+          filename: `${label}-overdue.png`,
+          extension: 'png',
+          mimeType: 'image/png',
+          modifiedAt: '2026-08-02T12:00:00.000Z',
+        });
+        const unavailableAsset = insertAsset(db, {
+          projectId: upcoming.id,
+          relativePath: `${label}-upcoming.png`,
+          filename: `${label}-upcoming.png`,
+          extension: 'png',
+          mimeType: 'image/png',
+        });
+        const recentAsset = insertAsset(db, {
+          projectId: recentlyUpdated.id,
+          relativePath: `${label}-recent.png`,
+          filename: `${label}-recent.png`,
+          extension: 'png',
+          mimeType: 'image/png',
+        });
+        primaryImageRepository.setPrimaryImage(overdue.id, availableAsset.id);
+        primaryImageRepository.setPrimaryImage(upcoming.id, unavailableAsset.id);
+        primaryImageRepository.setPrimaryImage(recentlyUpdated.id, recentAsset.id);
+        db.prepare('UPDATE assets SET is_present = 0, missing_since = datetime(\'now\') WHERE id = ?')
+          .run(unavailableAsset.id);
+
+        return {
+          overdue,
+          upcoming,
+          recentlyUpdated,
+          statuses,
+          availableAsset,
+          unavailableAsset,
+          recentAsset,
+        };
+      }
+
+      const smallFixture = insertDashboardFixture('Dashboard Query Small');
 
       const counter = instrumentStatementExecution(db);
       const instrumentedService = createWorkflowQueryService({ db });
 
+      const smallStatementStart = counter.statements().length;
       counter.reset();
-      const smallData = instrumentedService.getDashboardData({ today: '2026-07-29' });
+      const smallData = instrumentedService.getDashboardData({
+        today: fixedToday,
+        dashboardDefaults: configuredDefaults,
+      });
       const smallCount = counter.count();
 
-      for (let i = 1; i <= 60; i++) {
-        const project = insertProject(db, { title: `Dashboard Query Large ${i}`, status: i % 2 === 0 ? 'ready' : 'planned' });
-        const release = insertRelease(db, {
-          projectId: project.id,
-          title: `Large Release ${i}`,
-          status: i % 3 === 0 ? 'ready' : 'planned',
-          plannedDate: `2099-02-${String((i % 20) + 1).padStart(2, '0')}`,
-        });
-        const asset = insertAsset(db, {
-          projectId: project.id,
-          relativePath: `large-${i}.txt`,
-          filename: `large-${i}.txt`,
-          isPresent: 1,
-        });
-        linkAssetToRelease(db, { releaseId: release.id, assetId: asset.id });
+      expect(smallData.overdue.map((project) => project.id)).toContain(smallFixture.overdue.id);
+      expect(smallData.upcoming.map((project) => project.id)).toContain(smallFixture.upcoming.id);
+      expect(smallData.recentlyUpdated.map((project) => project.id)).toContain(smallFixture.recentlyUpdated.id);
+      expect(smallData.overdue.find((project) => project.id === smallFixture.overdue.id).primaryImage)
+        .toMatchObject({ selectedAssetId: smallFixture.availableAsset.id, state: 'available' });
+      expect(smallData.upcoming.find((project) => project.id === smallFixture.upcoming.id).primaryImage)
+        .toMatchObject({ selectedAssetId: smallFixture.unavailableAsset.id, state: 'unavailable' });
+      expect(smallData.recentlyUpdated.find((project) => project.id === smallFixture.recentlyUpdated.id).primaryImage)
+        .toMatchObject({ selectedAssetId: smallFixture.recentAsset.id, state: 'available' });
+      expect(smallData.sections['status:archived'].map((project) => project.id))
+        .toContain(smallFixture.statuses[3].id);
+      expect(smallData.sections.overdue[0]).toBe(
+        smallData.sections['status:planned'].find((project) => project.id === smallFixture.overdue.id)
+      );
+      expect(['tbd', 'planned', 'in-progress', 'ready', 'completed', 'archived'].every(
+        (status) => smallData.sections[`status:${status}`].length > 0
+      )).toBe(true);
+      const smallStatements = counter.statements().slice(smallStatementStart);
+      expect(smallStatements.filter((statement) => statement.includes('requested_statuses'))).toHaveLength(1);
+
+      for (let i = 1; i <= 20; i++) {
+        insertDashboardFixture(`Dashboard Query Large ${i}`);
       }
 
+      const largeStatementStart = counter.statements().length;
       counter.reset();
-      const largeData = instrumentedService.getDashboardData({ today: '2026-07-29' });
+      const largeData = instrumentedService.getDashboardData({
+        today: fixedToday,
+        dashboardDefaults: configuredDefaults,
+      });
       const largeCount = counter.count();
 
-      expect(smallData.workflowSummary.totalProjects).toBe(1);
+      expect(smallData.overdue).toHaveLength(1);
+      expect(smallData.upcoming).toHaveLength(1);
+      expect(smallData.recentlyUpdated).toHaveLength(6);
+      expect(largeData.overdue).toHaveLength(8);
+      expect(largeData.upcoming).toHaveLength(8);
+      expect(largeData.recentlyUpdated).toHaveLength(8);
       expect(largeData.workflowSummary.totalProjects).toBeGreaterThan(smallData.workflowSummary.totalProjects);
-      expect(smallCount).toBe(DASHBOARD_FIXED_STATEMENT_EXECUTIONS);
-      expect(largeCount).toBe(DASHBOARD_FIXED_STATEMENT_EXECUTIONS);
+      expect(smallCount).toBe(largeCount);
+      expect(smallCount).toBe(13);
+      expect(largeCount).toBe(13);
+      const largeStatements = counter.statements().slice(largeStatementStart);
+      expect(largeStatements.filter((statement) => statement.includes('requested_statuses'))).toHaveLength(1);
+    });
+
+    it('uses default eight-item sections and skips hidden project-list queries', () => {
+      const fixedToday = '2026-07-29';
+      for (let i = 0; i < 10; i++) {
+        insertProject(db, { title: `Default Overdue ${i}`, status: 'planned', plannedDate: fixedToday });
+        insertProject(db, { title: `Default Upcoming ${i}`, status: 'planned', plannedDate: '2026-07-30' });
+        insertProject(db, { title: `Default Recent ${i}`, status: 'tbd' });
+        for (const status of ['tbd', 'planned', 'in-progress', 'ready', 'completed', 'archived']) {
+          insertProject(db, {
+            title: `Default ${status} ${i}`,
+            status,
+            archivedAt: status === 'archived' ? '2026-01-01 00:00:00' : null,
+          });
+        }
+      }
+
+      const defaults = service.getDashboardData({ today: fixedToday });
+      expect(defaults.overdue).toHaveLength(8);
+      expect(defaults.upcoming).toHaveLength(8);
+      expect(defaults.recentlyUpdated).toHaveLength(8);
+      for (const status of ['tbd', 'planned', 'in-progress', 'ready', 'completed', 'archived']) {
+        expect(defaults.sections[`status:${status}`]).toHaveLength(8);
+      }
+
+      const allHidden = dashboardDefaults(Object.fromEntries([
+        'overdue',
+        'upcoming',
+        'recently-updated',
+        'status:tbd',
+        'status:planned',
+        'status:in-progress',
+        'status:ready',
+        'status:completed',
+        'status:archived',
+      ].map((sectionId) => [sectionId, { visible: false, itemCount: 8 }])));
+      const counter = instrumentStatementExecution(db);
+      const instrumentedService = createWorkflowQueryService({ db });
+      const statementStart = counter.statements().length;
+      counter.reset();
+      const hiddenData = instrumentedService.getDashboardData({
+        today: fixedToday,
+        dashboardDefaults: allHidden,
+      });
+
+      expect(counter.count()).toBe(5);
+      expect(Object.values(hiddenData.sections).every((projects) => projects.length === 0)).toBe(true);
+      expect(counter.statements().slice(statementStart).some(
+        (statement) => statement.includes('requested_statuses')
+      )).toBe(false);
+    });
+
+    it('uses independent visible status limits in one status query', () => {
+      for (let i = 0; i < 4; i++) {
+        insertProject(db, { title: `TBD status ${i}`, status: 'tbd' });
+        insertProject(db, { title: `Ready status ${i}`, status: 'ready' });
+      }
+      const counter = instrumentStatementExecution(db);
+      const instrumentedService = createWorkflowQueryService({ db });
+      const statementStart = counter.statements().length;
+      counter.reset();
+      const data = instrumentedService.getDashboardData({
+        dashboardDefaults: dashboardDefaults({
+          overdue: { visible: false, itemCount: 8 },
+          upcoming: { visible: false, itemCount: 8 },
+          'recently-updated': { visible: false, itemCount: 8 },
+          'status:tbd': { visible: true, itemCount: 2 },
+          'status:ready': { visible: true, itemCount: 3 },
+          'status:planned': { visible: false, itemCount: 8 },
+          'status:in-progress': { visible: false, itemCount: 8 },
+          'status:completed': { visible: false, itemCount: 8 },
+          'status:archived': { visible: false, itemCount: 8 },
+        }),
+      });
+
+      expect(data.sections['status:tbd']).toHaveLength(2);
+      expect(data.sections['status:ready']).toHaveLength(3);
+      expect(data.sections['status:planned']).toEqual([]);
+      expect(counter.statements().slice(statementStart).filter(
+        (statement) => statement.includes('requested_statuses')
+      )).toHaveLength(1);
+    });
+  });
+
+  // ─── getDashboardData: release-count source ───────────────────────
+
+  describe('getDashboardData — release-count source', () => {
+    it('uses the established all-records release count without release-attention queries', () => {
+      const releaseRepositorySpy = {
+        findOverdue: vi.fn(),
+        findUpcoming: vi.fn(),
+        findActiveWithoutPlannedDate: vi.fn(),
+        findReleasesWithMissingSelectedAssets: vi.fn(),
+        findReleasesWithoutSelectedAssets: vi.fn(),
+        countMissingAssetsReferenced: vi.fn(),
+        countFiltered: vi.fn(() => 7),
+      };
+      const spiedService = createWorkflowQueryService({
+        db,
+        projectPrimaryImageRepository: primaryImageRepository,
+        tagRepository,
+        releaseRepository: releaseRepositorySpy,
+      });
+
+      const data = spiedService.getDashboardData();
+
+      expect(data.workflowSummary.totalReleases).toBe(7);
+      expect(releaseRepositorySpy.countFiltered).toHaveBeenCalledOnce();
+      expect(releaseRepositorySpy.countFiltered).toHaveBeenCalledWith({ includeArchived: true });
+      expect(releaseRepositorySpy.findOverdue).not.toHaveBeenCalled();
+      expect(releaseRepositorySpy.findUpcoming).not.toHaveBeenCalled();
+      expect(releaseRepositorySpy.findActiveWithoutPlannedDate).not.toHaveBeenCalled();
+      expect(releaseRepositorySpy.findReleasesWithMissingSelectedAssets).not.toHaveBeenCalled();
+      expect(releaseRepositorySpy.findReleasesWithoutSelectedAssets).not.toHaveBeenCalled();
+      expect(releaseRepositorySpy.countMissingAssetsReferenced).not.toHaveBeenCalled();
     });
   });
 
@@ -1237,576 +1459,6 @@ describe('workflow query service', () => {
       });
       const ws = service.getProjectWorkspace(project.id);
       expect(ws.releaseSummary.active.map((r) => r.id)).toEqual([release.id]);
-    });
-  });
-
-  // ─── Phase 6B regression: dashboard today-classification boundary ──
-  //
-  // Upcoming must include today (planned_date >= today). Overdue must
-  // remain strictly before today. The same injected today value must be
-  // used for every date-sensitive section so a release cannot fall
-  // between sections due to per-call clock drift.
-
-  describe('getDashboardData — today classification boundary', () => {
-    const FIXED_TODAY = '2025-06-15';
-
-    it('release planned today appears in upcoming (not overdue)', () => {
-      const project = insertProject(db, { title: 'Today Project' });
-      const release = insertRelease(db, {
-        projectId: project.id,
-        title: 'Planned Today',
-        status: 'planned',
-        plannedDate: FIXED_TODAY,
-      });
-      // Link a present asset so the release is not flagged for missing
-      // selection (we want a clean upcoming/overdue classification).
-      const asset = insertAsset(db, {
-        projectId: project.id,
-        relativePath: 'a.txt',
-        filename: 'a.txt',
-        isPresent: 1,
-      });
-      linkAssetToRelease(db, { releaseId: release.id, assetId: asset.id });
-
-      const data = service.getDashboardData({ today: FIXED_TODAY });
-      expect(data.releasesNeedingAttention.overdue).toEqual([]);
-      const allUpcoming = data.upcomingReleases.flatMap((g) => g.releases);
-      expect(allUpcoming.map((r) => r.id)).toContain(release.id);
-    });
-
-    it('release planned yesterday appears overdue', () => {
-      const project = insertProject(db, { title: 'Yesterday Project' });
-      const release = insertRelease(db, {
-        projectId: project.id,
-        title: 'Planned Yesterday',
-        status: 'planned',
-        plannedDate: '2025-06-14',
-      });
-      const asset = insertAsset(db, {
-        projectId: project.id,
-        relativePath: 'a.txt',
-        filename: 'a.txt',
-        isPresent: 1,
-      });
-      linkAssetToRelease(db, { releaseId: release.id, assetId: asset.id });
-
-      const data = service.getDashboardData({ today: FIXED_TODAY });
-      expect(data.releasesNeedingAttention.overdue.map((r) => r.id)).toContain(release.id);
-      const allUpcoming = data.upcomingReleases.flatMap((g) => g.releases);
-      expect(allUpcoming.map((r) => r.id)).not.toContain(release.id);
-    });
-
-    it('release planned tomorrow appears upcoming', () => {
-      const project = insertProject(db, { title: 'Tomorrow Project' });
-      const release = insertRelease(db, {
-        projectId: project.id,
-        title: 'Planned Tomorrow',
-        status: 'planned',
-        plannedDate: '2025-06-16',
-      });
-      const asset = insertAsset(db, {
-        projectId: project.id,
-        relativePath: 'a.txt',
-        filename: 'a.txt',
-        isPresent: 1,
-      });
-      linkAssetToRelease(db, { releaseId: release.id, assetId: asset.id });
-
-      const data = service.getDashboardData({ today: FIXED_TODAY });
-      expect(data.releasesNeedingAttention.overdue).toEqual([]);
-      const allUpcoming = data.upcomingReleases.flatMap((g) => g.releases);
-      expect(allUpcoming.map((r) => r.id)).toContain(release.id);
-    });
-
-    it('uses the same injected today value across every date-sensitive section', () => {
-      const project = insertProject(db, { title: 'Shared Today Project' });
-      const yesterday = insertRelease(db, {
-        projectId: project.id,
-        title: 'Yesterday',
-        status: 'planned',
-        plannedDate: '2025-06-14',
-      });
-      const today = insertRelease(db, {
-        projectId: project.id,
-        title: 'Today',
-        status: 'planned',
-        plannedDate: '2025-06-15',
-      });
-      const tomorrow = insertRelease(db, {
-        projectId: project.id,
-        title: 'Tomorrow',
-        status: 'planned',
-        plannedDate: '2025-06-16',
-      });
-      // Link a present asset to each so they do not appear in missing
-      // selection.
-      const asset = insertAsset(db, {
-        projectId: project.id,
-        relativePath: 'a.txt',
-        filename: 'a.txt',
-        isPresent: 1,
-      });
-      for (const r of [yesterday, today, tomorrow]) {
-        linkAssetToRelease(db, { releaseId: r.id, assetId: asset.id });
-      }
-
-      const data = service.getDashboardData({ today: FIXED_TODAY });
-
-      // The injected value is exposed in the view-model so the template
-      // and any consumer can rely on a single value.
-      expect(data.today).toBe(FIXED_TODAY);
-
-      // Yesterday is overdue, today AND tomorrow are upcoming. A single
-      // today value drives both classifications consistently.
-      expect(data.releasesNeedingAttention.overdue.map((r) => r.id)).toEqual([yesterday.id]);
-      const allUpcoming = data.upcomingReleases.flatMap((g) => g.releases).map((r) => r.id);
-      expect(allUpcoming).toContain(today.id);
-      expect(allUpcoming).toContain(tomorrow.id);
-      expect(allUpcoming).not.toContain(yesterday.id);
-    });
-  });
-
-  // ─── Phase 6B regression: missing-selection attention category ─────
-  //
-  // The dashboard previously surfaced only "selected assets that became
-  // missing" (findReleasesWithMissingSelectedAssets). Releases with zero
-  // selected assets at all were invisible to the dashboard. The new
-  // findReleasesWithoutSelectedAssets query must surface them as a
-  // distinct "missing selection" category — separate from
-  // "missing selected assets" which still requires a present selection
-  // with at least one missing file.
-
-  describe('getDashboardData — missing selection category', () => {
-    it('active release with zero assets appears in missing selection', () => {
-      const project = insertProject(db, { title: 'No Selection Project' });
-      const release = insertRelease(db, {
-        projectId: project.id,
-        title: 'No Selection Release',
-        status: 'planned',
-        plannedDate: '2099-01-01',
-      });
-      // Deliberately do NOT link any asset.
-
-      const data = service.getDashboardData();
-      expect(data.releasesNeedingAttention.releasesWithoutAssets.map((r) => r.id))
-        .toContain(release.id);
-      // The release is upcoming, not overdue, not in missing-assets (no
-      // selection at all).
-      expect(data.releasesNeedingAttention.missingSelectedAssets).toEqual([]);
-      const allUpcoming = data.upcomingReleases.flatMap((g) => g.releases);
-      expect(allUpcoming.map((r) => r.id)).toContain(release.id);
-    });
-
-    it('active release with assets but missing files appears in missing assets only', () => {
-      const project = insertProject(db, { title: 'Missing Files Project' });
-      const release = insertRelease(db, {
-        projectId: project.id,
-        title: 'Missing Files Release',
-        status: 'planned',
-        plannedDate: '2099-01-01',
-      });
-      const missingAsset = insertAsset(db, {
-        projectId: project.id,
-        relativePath: 'gone.txt',
-        filename: 'gone.txt',
-        isPresent: 0,
-      });
-      linkAssetToRelease(db, { releaseId: release.id, assetId: missingAsset.id });
-
-      const data = service.getDashboardData();
-      // Has a selection — not in missing-selection.
-      expect(data.releasesNeedingAttention.releasesWithoutAssets).toEqual([]);
-      // Has a missing file — IS in missing-assets.
-      expect(data.releasesNeedingAttention.missingSelectedAssets.map((r) => r.id))
-        .toContain(release.id);
-      expect(data.releasesNeedingAttention.missingSelectedAssets[0].missing_asset_count).toBe(1);
-    });
-
-    it('active release with valid assets appears in neither missing category', () => {
-      const project = insertProject(db, { title: 'Valid Selection Project' });
-      const release = insertRelease(db, {
-        projectId: project.id,
-        title: 'Valid Selection Release',
-        status: 'planned',
-        plannedDate: '2099-01-01',
-      });
-      const present = insertAsset(db, {
-        projectId: project.id,
-        relativePath: 'ok.txt',
-        filename: 'ok.txt',
-        isPresent: 1,
-      });
-      linkAssetToRelease(db, { releaseId: release.id, assetId: present.id });
-
-      const data = service.getDashboardData();
-      expect(data.releasesNeedingAttention.releasesWithoutAssets).toEqual([]);
-      expect(data.releasesNeedingAttention.missingSelectedAssets).toEqual([]);
-    });
-
-    it('does not include terminal or archived releases in missing selection', () => {
-      const project = insertProject(db, { title: 'Terminal Selection Project' });
-      const published = insertRelease(db, {
-        projectId: project.id,
-        title: 'Published No Selection',
-        status: 'published',
-        publishedDate: '2020-01-01',
-      });
-      const archivedUnpublished = insertRelease(db, {
-        projectId: project.id,
-        title: 'Archived No Selection',
-        archivedAt: '2024-01-01 00:00:00',
-      });
-      const archivedActive = insertRelease(db, {
-        projectId: project.id,
-        title: 'Archived Active No Selection',
-        status: 'planned',
-        plannedDate: '2099-01-01',
-        archivedAt: '2024-01-01 00:00:00',
-      });
-
-      const data = service.getDashboardData();
-      const ids = data.releasesNeedingAttention.releasesWithoutAssets.map((r) => r.id);
-      expect(ids).not.toContain(published.id);
-      expect(ids).not.toContain(archivedUnpublished.id);
-      expect(ids).not.toContain(archivedActive.id);
-    });
-  });
-
-  // ─── Phase 6B regression: archived parent project hides dashboard releases ──
-  //
-  // Active releases whose parent project has been archived must not appear on
-  // the dashboard. They are not actionable — mutations reject archived
-  // projects — so surfacing them on the dashboard would mislead the user.
-  // The release rows remain in the database and stay visible through the
-  // project workspace's recent list and status counts.
-
-  describe('getDashboardData — archived parent project hides active releases', () => {
-    it('active release with active parent project appears on the dashboard', () => {
-      const project = insertProject(db, { title: 'Active Parent', status: 'planned' });
-      const release = insertRelease(db, {
-        projectId: project.id,
-        title: 'Should Appear',
-        status: 'planned',
-        plannedDate: '2099-01-01',
-      });
-      // Link a present asset so the release is not flagged for missing
-      // selection — this test focuses on overdue/upcoming classification.
-      const asset = insertAsset(db, {
-        projectId: project.id,
-        relativePath: 'a.txt',
-        filename: 'a.txt',
-        isPresent: 1,
-      });
-      linkAssetToRelease(db, { releaseId: release.id, assetId: asset.id });
-
-      const data = service.getDashboardData();
-      const allUpcoming = data.upcomingReleases.flatMap((g) => g.releases);
-      expect(allUpcoming.map((r) => r.id)).toContain(release.id);
-      expect(data.releasesNeedingAttention.overdue).toEqual([]);
-    });
-
-    it('active release with archived parent project does NOT appear on the dashboard', () => {
-      const project = insertProject(db, { title: 'Archived Parent', status: 'planned' });
-      const release = insertRelease(db, {
-        projectId: project.id,
-        title: 'Hidden From Dashboard',
-        status: 'planned',
-        plannedDate: '2099-01-01',
-      });
-      // Archive only the project — the release itself stays active and
-      // non-archived. The dashboard must hide it because the parent is
-      // archived.
-      db.prepare(`UPDATE projects SET archived_at = datetime('now') WHERE id = ?`).run(project.id);
-
-      const data = service.getDashboardData();
-      const allUpcoming = data.upcomingReleases.flatMap((g) => g.releases);
-      expect(allUpcoming.map((r) => r.id)).not.toContain(release.id);
-      expect(data.releasesNeedingAttention.overdue.map((r) => r.id)).not.toContain(release.id);
-      expect(data.releasesNeedingAttention.missingPlannedDate.map((r) => r.id)).not.toContain(release.id);
-      expect(data.releasesNeedingAttention.missingSelectedAssets.map((r) => r.id)).not.toContain(release.id);
-      expect(data.releasesNeedingAttention.releasesWithoutAssets.map((r) => r.id)).not.toContain(release.id);
-    });
-
-    it('overdue release with archived parent project does NOT appear on the dashboard', () => {
-      const project = insertProject(db, { title: 'Archived Parent Overdue' });
-      const release = insertRelease(db, {
-        projectId: project.id,
-        title: 'Hidden Overdue',
-        status: 'planned',
-        plannedDate: '2020-01-01',
-      });
-      const asset = insertAsset(db, {
-        projectId: project.id,
-        relativePath: 'a.txt',
-        filename: 'a.txt',
-        isPresent: 1,
-      });
-      linkAssetToRelease(db, { releaseId: release.id, assetId: asset.id });
-      db.prepare(`UPDATE projects SET archived_at = datetime('now') WHERE id = ?`).run(project.id);
-
-      const data = service.getDashboardData();
-      expect(data.releasesNeedingAttention.overdue).toEqual([]);
-      const allUpcoming = data.upcomingReleases.flatMap((g) => g.releases);
-      expect(allUpcoming.map((r) => r.id)).not.toContain(release.id);
-    });
-
-    it('release without planned date and archived parent project does NOT appear on the dashboard', () => {
-      const project = insertProject(db, { title: 'Archived Parent No Date' });
-      const release = insertRelease(db, {
-        projectId: project.id,
-        title: 'Hidden No Date',
-        status: 'in-progress',
-        plannedDate: null,
-      });
-      db.prepare(`UPDATE projects SET archived_at = datetime('now') WHERE id = ?`).run(project.id);
-
-      const data = service.getDashboardData();
-      expect(data.releasesNeedingAttention.missingPlannedDate.map((r) => r.id)).not.toContain(release.id);
-    });
-
-    it('release without selected assets and archived parent project does NOT appear on missing-selection', () => {
-      const project = insertProject(db, { title: 'Archived Parent No Selection' });
-      const release = insertRelease(db, {
-        projectId: project.id,
-        title: 'Hidden No Selection',
-        status: 'planned',
-        plannedDate: '2099-01-01',
-      });
-      db.prepare(`UPDATE projects SET archived_at = datetime('now') WHERE id = ?`).run(project.id);
-
-      const data = service.getDashboardData();
-      expect(data.releasesNeedingAttention.releasesWithoutAssets.map((r) => r.id)).not.toContain(release.id);
-    });
-
-    it('release with missing selected assets and archived parent project does NOT appear on missing-assets', () => {
-      const project = insertProject(db, { title: 'Archived Parent Missing' });
-      const release = insertRelease(db, {
-        projectId: project.id,
-        title: 'Hidden Missing Selected',
-        status: 'planned',
-        plannedDate: '2099-01-01',
-      });
-      const missingAsset = insertAsset(db, {
-        projectId: project.id,
-        relativePath: 'gone.txt',
-        filename: 'gone.txt',
-        isPresent: 0,
-      });
-      linkAssetToRelease(db, { releaseId: release.id, assetId: missingAsset.id });
-      db.prepare(`UPDATE projects SET archived_at = datetime('now') WHERE id = ?`).run(project.id);
-
-      const data = service.getDashboardData();
-      expect(data.releasesNeedingAttention.missingSelectedAssets.map((r) => r.id)).not.toContain(release.id);
-    });
-
-    it('historical release information remains available through project workspace', () => {
-      // The dashboard hides active releases under archived parents, but the
-      // project workspace still surfaces them through the recent list so
-      // publication and archive history is not lost.
-      const project = insertProject(db, { title: 'Archived History Dashboard' });
-      const published = insertRelease(db, {
-        projectId: project.id,
-        title: 'Published In Archived',
-        status: 'published',
-        plannedDate: '2020-01-01',
-        publishedDate: '2020-01-15',
-      });
-      const archivedUnpublished = insertRelease(db, {
-        projectId: project.id,
-        title: 'Archived In Archived',
-        plannedDate: '2020-02-01',
-        archivedAt: '2024-01-01 00:00:00',
-      });
-      db.prepare(`UPDATE projects SET archived_at = datetime('now') WHERE id = ?`).run(project.id);
-
-      // Dashboard: not surfaced as attention
-      const dash = service.getDashboardData();
-      const allAttentionIds = [
-        ...dash.releasesNeedingAttention.overdue,
-        ...dash.releasesNeedingAttention.missingPlannedDate,
-        ...dash.releasesNeedingAttention.missingSelectedAssets,
-        ...dash.releasesNeedingAttention.releasesWithoutAssets,
-      ].map((r) => r.id);
-      expect(allAttentionIds).not.toContain(published.id);
-      expect(allAttentionIds).not.toContain(archivedUnpublished.id);
-
-      // Project workspace: history remains
-      const ws = service.getProjectWorkspace(project.id);
-      const recentIds = ws.releaseSummary.recent.map((r) => r.id);
-      expect(recentIds).toContain(published.id);
-      expect(recentIds).toContain(archivedUnpublished.id);
-      expect(ws.releaseSummary).not.toHaveProperty('statusCounts');
-      expect(ws.releaseSummary.recent.find((release) => release.id === published.id).published_date)
-        .toBe('2020-01-15');
-    });
-
-    it('archived parent project does not appear in recently-updated projects', () => {
-      // Cross-check: the existing archive filter on the project list
-      // already covers this. Pin it down so a future change cannot
-      // regress the active-project-only list.
-      const project = insertProject(db, { title: 'Archived Recently Updated' });
-      db.prepare(`UPDATE projects SET archived_at = datetime('now') WHERE id = ?`).run(project.id);
-
-      const data = service.getDashboardData();
-      const ids = data.recentlyUpdated.map((p) => p.id);
-      expect(ids).not.toContain(project.id);
-    });
-  });
-
-  // ─── Phase 6B regression: dashboard date boundary ──────────────────
-  //
-  // The dashboard previously used `new Date().toISOString()` (UTC) for the
-  // today-classification boundary, so a release planned for "today" near
-  // local midnight could be misclassified as overdue (or upcoming). The
-  // fix injects a single application-local `today` value into every
-  // date-sensitive section. The default value comes from the local-date
-  // helper; tests pin down the boundary behaviour.
-
-  describe('getDashboardData — application-local today boundary', () => {
-    it('uses the default local today (not UTC) when no today is injected', () => {
-      // Set a system time at local noon on 2025-06-15. The local date is
-      // 2025-06-15 in every timezone.
-      vi.useFakeTimers();
-      vi.setSystemTime(new Date(2025, 5, 15, 12, 0, 0));
-      try {
-        const project = insertProject(db, { title: 'Default Local Today' });
-        insertRelease(db, {
-          projectId: project.id,
-          title: 'Planned Today',
-          status: 'planned',
-          plannedDate: '2025-06-15',
-        });
-
-        const data = service.getDashboardData();
-        // The default `today` is the local calendar date of `new Date()`.
-        expect(data.today).toBe('2025-06-15');
-        // The release planned for today must be in upcoming, not overdue.
-        const allUpcoming = data.upcomingReleases.flatMap((g) => g.releases);
-        expect(allUpcoming.map((r) => r.title)).toContain('Planned Today');
-        expect(data.releasesNeedingAttention.overdue).toEqual([]);
-      } finally {
-        vi.useRealTimers();
-      }
-    });
-
-    it('classifies a release planned for "today" as upcoming, not overdue', () => {
-      // The injected boundary value is 2025-06-15. A release planned for
-      // exactly that date must appear in upcoming.
-      const project = insertProject(db, { title: 'Today Boundary' });
-      const release = insertRelease(db, {
-        projectId: project.id,
-        title: 'Exactly Today',
-        status: 'planned',
-        plannedDate: '2025-06-15',
-      });
-      const asset = insertAsset(db, {
-        projectId: project.id,
-        relativePath: 'a.txt',
-        filename: 'a.txt',
-        isPresent: 1,
-      });
-      linkAssetToRelease(db, { releaseId: release.id, assetId: asset.id });
-
-      const data = service.getDashboardData({ today: '2025-06-15' });
-      expect(data.releasesNeedingAttention.overdue.map((r) => r.id)).not.toContain(release.id);
-      const allUpcoming = data.upcomingReleases.flatMap((g) => g.releases);
-      expect(allUpcoming.map((r) => r.id)).toContain(release.id);
-    });
-
-    it('UTC midnight boundary: a release planned for today local is upcoming even when UTC date differs', () => {
-      // The dashboard receives 2025-06-16 as today. A release planned for
-      // 2025-06-16 must appear in upcoming regardless of what the UTC
-      // boundary would say. (This is the same contract as the local-date
-      // helper, applied at the dashboard level.)
-      const project = insertProject(db, { title: 'UTC Midnight Boundary' });
-      const release = insertRelease(db, {
-        projectId: project.id,
-        title: 'Local Today UTC Tomorrow',
-        status: 'planned',
-        plannedDate: '2025-06-16',
-      });
-      const asset = insertAsset(db, {
-        projectId: project.id,
-        relativePath: 'a.txt',
-        filename: 'a.txt',
-        isPresent: 1,
-      });
-      linkAssetToRelease(db, { releaseId: release.id, assetId: asset.id });
-
-      const data = service.getDashboardData({ today: '2025-06-16' });
-      const allUpcoming = data.upcomingReleases.flatMap((g) => g.releases);
-      expect(allUpcoming.map((r) => r.id)).toContain(release.id);
-      expect(data.releasesNeedingAttention.overdue).toEqual([]);
-    });
-
-    it('uses the same today value across overdue, upcoming, and ready sections', () => {
-      // A single injected today must drive every date-sensitive section so
-      // a release cannot fall between sections due to per-call clock drift.
-      const project = insertProject(db, { title: 'Shared Today Across Sections' });
-      const yesterday = insertRelease(db, {
-        projectId: project.id,
-        title: 'Yesterday',
-        status: 'planned',
-        plannedDate: '2025-06-14',
-      });
-      const today = insertRelease(db, {
-        projectId: project.id,
-        title: 'Today',
-        status: 'planned',
-        plannedDate: '2025-06-15',
-      });
-      const tomorrow = insertRelease(db, {
-        projectId: project.id,
-        title: 'Tomorrow',
-        status: 'planned',
-        plannedDate: '2025-06-16',
-      });
-      const asset = insertAsset(db, {
-        projectId: project.id,
-        relativePath: 'a.txt',
-        filename: 'a.txt',
-        isPresent: 1,
-      });
-      for (const r of [yesterday, today, tomorrow]) {
-        linkAssetToRelease(db, { releaseId: r.id, assetId: asset.id });
-      }
-
-      const data = service.getDashboardData({ today: '2025-06-15' });
-      expect(data.today).toBe('2025-06-15');
-      expect(data.releasesNeedingAttention.overdue.map((r) => r.id)).toEqual([yesterday.id]);
-      const allUpcoming = data.upcomingReleases.flatMap((g) => g.releases).map((r) => r.id);
-      expect(allUpcoming).toContain(today.id);
-      expect(allUpcoming).toContain(tomorrow.id);
-      expect(allUpcoming).not.toContain(yesterday.id);
-    });
-
-    it('does not classify a release as both overdue AND upcoming for the same today', () => {
-      // The repository methods must not independently calculate today and
-      // disagree. Inject a single today and verify the same release does
-      // not appear in both overdue and upcoming.
-      const project = insertProject(db, { title: 'No Double Classification' });
-      const release = insertRelease(db, {
-        projectId: project.id,
-        title: 'Either Or',
-        status: 'planned',
-        plannedDate: '2025-06-15',
-      });
-      const asset = insertAsset(db, {
-        projectId: project.id,
-        relativePath: 'a.txt',
-        filename: 'a.txt',
-        isPresent: 1,
-      });
-      linkAssetToRelease(db, { releaseId: release.id, assetId: asset.id });
-
-      const data = service.getDashboardData({ today: '2025-06-15' });
-      const overdueIds = data.releasesNeedingAttention.overdue.map((r) => r.id);
-      const upcomingIds = data.upcomingReleases.flatMap((g) => g.releases).map((r) => r.id);
-      expect(overdueIds).not.toContain(release.id);
-      expect(upcomingIds).toContain(release.id);
-      // Intersection must be empty.
-      const intersection = overdueIds.filter((id) => upcomingIds.includes(id));
-      expect(intersection).toEqual([]);
     });
   });
 
@@ -4872,12 +4524,18 @@ describe('workflow query service', () => {
     });
 
     it('getDashboardData returns at most the configured limits', () => {
+      for (let i = 0; i < 20; i++) {
+        insertProject(db, {
+          title: `Bounded Overdue Project ${i}`, status: 'planned', plannedDate: '2020-01-01',
+        });
+        insertProject(db, {
+          title: `Bounded Upcoming Project ${i}`, status: 'planned', plannedDate: '2099-01-01',
+        });
+      }
+
       const data = service.getDashboardData({ today: '2099-01-01' });
-      expect(data.releasesNeedingAttention.overdue.length).toBeLessThanOrEqual(5);
-      expect(data.releasesNeedingAttention.missingPlannedDate.length).toBeLessThanOrEqual(5);
-      expect(data.releasesNeedingAttention.missingSelectedAssets.length).toBeLessThanOrEqual(5);
-      expect(data.releasesNeedingAttention.releasesWithoutAssets.length).toBeLessThanOrEqual(5);
-      expect(data.upcomingReleases.reduce((sum, g) => sum + g.releases.length, 0)).toBeLessThanOrEqual(10);
+      expect(data.overdue.length).toBeLessThanOrEqual(8);
+      expect(data.upcoming.length).toBeLessThanOrEqual(8);
     });
 
     it('getReleaseList returns at most pageSize releases', () => {

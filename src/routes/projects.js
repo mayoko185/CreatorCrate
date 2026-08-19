@@ -484,6 +484,7 @@ function isEnhancedProjectsNsfwRequest(req) {
 
 function readProjectsNsfwReturnUrl(req) {
   const candidate = typeof req.body?.returnTo === 'string' ? req.body.returnTo : '';
+  if (candidate === '/') return '/';
   if (!candidate.startsWith('/projects') || candidate.startsWith('//')) return '/projects';
 
   try {

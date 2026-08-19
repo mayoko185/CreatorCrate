@@ -39,6 +39,7 @@ import { createBookService } from './services/book-service.js';
 import { createChapterService } from './services/chapter-service.js';
 import { createMarkdownRenderer } from './services/markdown-renderer.js';
 import { createPageDefaultsService } from './services/page-defaults-service.js';
+import { createDashboardDefaultsService } from './services/dashboard-defaults-service.js';
 import { createOpenLocallySettingsService } from './services/open-locally-settings-service.js';
 import { createPreviewCategorySettingsService } from './services/preview-category-settings-service.js';
 import { createNsfwFilterSettingsService } from './services/nsfw-filter-settings-service.js';
@@ -214,6 +215,10 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   const pageDefaultsService =
     opts.pageDefaultsService || createPageDefaultsService({ appMetaRepository });
   app.locals.pageDefaultsService = pageDefaultsService;
+
+  const dashboardDefaultsService =
+    opts.dashboardDefaultsService || createDashboardDefaultsService({ appMetaRepository });
+  app.locals.dashboardDefaultsService = dashboardDefaultsService;
 
   // Phase: Open locally v2 — one app-scoped settings service over the shared
   // app-meta repository. Owns the configured Windows projects root used to

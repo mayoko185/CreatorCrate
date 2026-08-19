@@ -362,27 +362,17 @@ describe('project HTTP workflow', () => {
     return asset;
   }
 
-  it('dashboard renders counts and a new project action', async () => {
+  it('dashboard renders the four summary concepts and a new project action', async () => {
     const res = await agent.get('/').expect(200);
     expect(res.text).toContain('CreatorCrate');
     expect(res.text).toContain('New Project');
-    expect(res.text).toContain('TBD');
-    expect(res.text).toContain('View All Projects');
-  });
-
-  it('dashboard archived count reflects archived projects', async () => {
-    const createRes = await agent
-      .post('/projects')
-      .send('title=Archive+Count')
-      .send('status=tbd')
-      .send('priority=normal')
-      .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken));
-    const id = createRes.headers.location.replace('/projects/', '');
-    await agent.post(`/projects/${id}/archive`).send('_csrf=' + encodeURIComponent(csrfToken));
-
-    const res = await agent.get('/').expect(200);
-    expect(res.text).toContain('<span class="count">1</span> Archived');
+    expect(res.text).toContain('<span class="summary-card-label">Projects</span>');
+    expect(res.text).toContain('<span class="summary-card-label">Assets</span>');
+    expect(res.text).toContain('<span class="summary-card-label">Missing assets</span>');
+    expect(res.text).toContain('<span class="summary-card-label">Releases</span>');
+    expect(res.text).not.toContain('TBD');
+    expect(res.text).not.toContain('View All Projects');
+    expect(res.text).not.toContain('View All Releases');
   });
 
   it('project list renders with application fallbacks and no canonical redirect when defaults are absent', async () => {
@@ -546,7 +536,7 @@ describe('project HTTP workflow', () => {
     expect((await agent.get('/projects')).text).toContain('aria-pressed="false"');
   });
 
-  it('preserves the current Projects query in the normal NSFW fallback redirect', async () => {
+  it('preserves a valid Projects NSFW return URL query', async () => {
     const returnTo = '/projects?search=needle&status=ready&tag=2&tag=3&view=list&page=2';
     const response = await agent
       .post('/projects/nsfw-filter')
@@ -556,6 +546,32 @@ describe('project HTTP workflow', () => {
 
     expect(response.headers.location).toBe(returnTo);
     expect(app.locals.nsfwFilterSettingsService.isEnabled()).toBe(true);
+  });
+
+  it('returns the Dashboard NSFW toggle to the exact root URL', async () => {
+    const response = await agent
+      .post('/projects/nsfw-filter')
+      .type('form')
+      .send({ enabled: '1', returnTo: '/', _csrf: csrfToken })
+      .expect(302);
+
+    expect(response.headers.location).toBe('/');
+  });
+
+  it.each([
+    ['//example.com', 'protocol-relative external URL'],
+    ['https://example.com', 'absolute external URL'],
+    ['/assets', 'unrelated application path'],
+    ['/\\example.com', 'backslash path-confusion URL'],
+    ['///example.com', 'malformed protocol-relative URL'],
+  ])('falls back to /projects for unsafe NSFW return URL: %s (%s)', async (returnTo) => {
+    const response = await agent
+      .post('/projects/nsfw-filter')
+      .type('form')
+      .send({ enabled: '1', returnTo, _csrf: csrfToken })
+      .expect(302);
+
+    expect(response.headers.location).toBe('/projects');
   });
 
   it('loads persisted Projects defaults in the dialog rather than active query values', async () => {
@@ -2547,7 +2563,7 @@ describe('project HTTP workflow', () => {
     expect(list.text).not.toContain('Hidden Project');
   });
 
-  it('archived project appears under archived filter and dashboard count', async () => {
+  it('archived project appears under the archived filter', async () => {
     const createRes = await agent
       .post('/projects')
       .send('title=Filter+Archive')
@@ -2564,9 +2580,6 @@ describe('project HTTP workflow', () => {
     expect(archivedList.text).toContain('Filter Archive');
     expect(archivedList.text).toContain('Archived List Display');
     expect(archivedList.text).toContain('class="project-card project-card--grid project-grid-card project-card--archived" data-project-card');
-
-    const dashboard = await agent.get('/').expect(200);
-    expect(dashboard.text).toContain('<span class="count">1</span> Archived');
   });
 
   it('project id and status query parameters affect results', async () => {

@@ -1,14 +1,40 @@
 {% extends "layout.njk" %}
 {% import "partials/page-heading.njk" as pageHeading %}
+{% import "partials/project-card.njk" as projectCard %}
+{% import "partials/icons.njk" as icons %}
+{% import "partials/dashboard-defaults-dialog.njk" as dashboardDefaultsDialog %}
 
 {% set page_title = "Dashboard" %}
 
 {% block content %}
   {% call pageHeading.render("Organize your art projects in one self-hosted place.") %}
     <a class="button button-primary" href="/projects/new">New Project</a>
-    <a class="button" href="/projects">View All Projects</a>
-    <a class="button" href="/releases">View All Releases</a>
   {% endcall %}
+
+  <div class="asset-viewer-display-controls" data-project-grid-size-controls>
+    {% set gridSizeLabelsInteractive = true %}
+    {% include "partials/asset-grid-size-control.njk" %}
+
+    <div class="project-filter-actions project-filter-actions--projects">
+    <a class="asset-viewer-defaults-link button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--left"
+       href="/?defaults=1" aria-label="Dashboard defaults"
+       data-dialog-open="dashboard-defaults-dialog" data-tooltip="Dashboard defaults" data-dashboard-defaults-link>
+      {{ icons.icon('settings') }}
+    </a>
+      {% set nsfwToggleLabel = "Disable NSFW filter" if nsfwFilterEnabled else "Enable NSFW filter" %}
+      <form method="post" action="/projects/nsfw-filter" class="inline-form" data-projects-nsfw-filter>
+        <input type="hidden" name="_csrf" value="{{ _csrf }}">
+        <input type="hidden" name="enabled" value="{{ '0' if nsfwFilterEnabled else '1' }}" data-projects-nsfw-value>
+        <input type="hidden" name="returnTo" value="/">
+        <button class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--left"
+                id="projects-nsfw-toggle" type="submit" data-projects-nsfw-toggle
+                aria-pressed="{{ 'true' if nsfwFilterEnabled else 'false' }}"
+                aria-label="{{ nsfwToggleLabel }}" data-tooltip="{{ nsfwToggleLabel }}">
+          {{ icons.icon('nsfw-filter') }}
+        </button>
+      </form>
+    </div>
+  </div>
 
   {# ─── Summary cards ─────────────────────────────────────────────── #}
   <section class="summary-cards" aria-label="Overview">
@@ -17,177 +43,65 @@
       <span class="summary-card-label">Projects</span>
       <span class="summary-card-context">Projects currently tracked</span>
     </a>
-    <div class="summary-card">
+    <a class="summary-card" href="{{ assetsUrl }}">
       <span class="summary-card-value">{{ summary.totalAssets }}</span>
       <span class="summary-card-label">Assets</span>
       <span class="summary-card-context">Across all projects</span>
-    </div>
-    {% if attention.totalCount > 0 %}
-      <a class="summary-card summary-card--attention" href="#needs-attention">
-        <span class="summary-card-value">{{ attention.totalCount }}</span>
-        <span class="summary-card-label">Need attention</span>
-        <span class="summary-card-context">Releases requiring review</span>
-      </a>
-    {% else %}
-      <div class="summary-card">
-        <span class="summary-card-value">0</span>
-        <span class="summary-card-label">Need attention</span>
-        <span class="summary-card-context">Releases requiring review</span>
-      </div>
-    {% endif %}
+    </a>
     {% if summary.missingAssetSummary.total > 0 %}
-      <div class="summary-card summary-card--warning">
-        <span class="summary-card-value">{{ summary.missingAssetSummary.total }}</span>
-        <span class="summary-card-label">Missing assets</span>
-        <span class="summary-card-context">Files missing at the last scan{% if summary.missingAssetSummary.referencedByReleases > 0 %}; {{ summary.missingAssetSummary.referencedByReleases }} referenced{% endif %}</span>
-      </div>
-    {% else %}
-      <div class="summary-card">
+      <a class="summary-card summary-card--warning" href="{{ missingAssetsUrl }}">
         <span class="summary-card-value">{{ summary.missingAssetSummary.total }}</span>
         <span class="summary-card-label">Missing assets</span>
         <span class="summary-card-context">Files missing at the last scan</span>
-      </div>
-    {% endif %}
-  </section>
-
-  {# ─── Releases needing attention ──────────────────────────────────── #}
-  <section class="needs-attention" id="needs-attention">
-    <h2>Releases needing attention</h2>
-
-    {% if attention.totalCount == 0 %}
-      {% set emptyHeading = "All releases are in good shape" %}
-      {% set emptyDescription = "Nothing needs attention right now." %}
-      {% set emptyHeadingLevel = "h3" %}
-      {% include "partials/empty-state.njk" %}
+      </a>
     {% else %}
-      {% if attention.overdue.length > 0 %}
-        <div class="attention-group attention-overdue">
-          <h3>Overdue ({{ attention.overdue.length }})</h3>
-          <ul class="release-list">
-            {% for r in attention.overdue %}
-              <li>
-                <a href="/releases/{{ r.id }}">{{ r.title }}</a>
-                <span class="meta">{% set status = r.project_status %}{% include "partials/status-badge.njk" %} · planned {{ r.planned_date }}</span>
-              </li>
-            {% endfor %}
-          </ul>
-        </div>
-      {% endif %}
-
-      {% if attention.missingPlannedDate.length > 0 %}
-        <div class="attention-group attention-scheduling">
-          <h3>Active without planned date ({{ attention.missingPlannedDate.length }})</h3>
-          <ul class="release-list">
-            {% for r in attention.missingPlannedDate %}
-              <li>
-                <a href="/releases/{{ r.id }}">{{ r.title }}</a>
-                <span class="meta">{% set status = r.project_status %}{% include "partials/status-badge.njk" %}</span>
-              </li>
-            {% endfor %}
-          </ul>
-        </div>
-      {% endif %}
-
-      {% if attention.releasesWithoutAssets.length > 0 %}
-        <div class="attention-group attention-selection">
-          <h3>Missing selection ({{ attention.releasesWithoutAssets.length }})</h3>
-          <ul class="release-list">
-            {% for r in attention.releasesWithoutAssets %}
-              <li>
-                <a href="/releases/{{ r.id }}">{{ r.title }}</a>
-                <span class="meta">
-                  {% set status = r.project_status %}{% include "partials/status-badge.njk" %}{% if r.planned_date %} · planned {{ r.planned_date }}{% endif %}
-                  · no assets selected
-                </span>
-              </li>
-            {% endfor %}
-          </ul>
-        </div>
-      {% endif %}
-
-      {% if attention.missingSelectedAssets.length > 0 %}
-        <div class="attention-group attention-warning">
-          <h3>Missing selected assets ({{ attention.missingSelectedAssets.length }})</h3>
-          <ul class="release-list">
-            {% for r in attention.missingSelectedAssets %}
-              <li>
-                <a href="/releases/{{ r.id }}">{{ r.title }}</a>
-                <span class="meta">
-                  {% set status = r.project_status %}{% include "partials/status-badge.njk" %}{% if r.planned_date %} · planned {{ r.planned_date }}{% endif %}
-                  · {{ r.missing_asset_count }} missing
-                </span>
-              </li>
-            {% endfor %}
-          </ul>
-        </div>
-      {% endif %}
+      <a class="summary-card" href="{{ missingAssetsUrl }}">
+        <span class="summary-card-value">{{ summary.missingAssetSummary.total }}</span>
+        <span class="summary-card-label">Missing assets</span>
+        <span class="summary-card-context">Files missing at the last scan</span>
+      </a>
     {% endif %}
+    <a class="summary-card" href="/releases">
+      <span class="summary-card-value">{{ summary.totalReleases }}</span>
+      <span class="summary-card-label">Releases</span>
+      <span class="summary-card-context">Including archived releases</span>
+    </a>
   </section>
 
-  {# ─── Upcoming releases ──────────────────────────────────────────── #}
-  <section class="upcoming-releases">
-    <h2>Upcoming releases</h2>
-    {% if upcomingReleases.length > 0 %}
-      <div class="upcoming-grouped">
-        {% for group in upcomingReleases %}
-          <h3 class="upcoming-date">{{ group.plannedDate }}</h3>
-          <ul class="release-list">
-            {% for r in group.releases %}
-              <li>
-                <a href="/releases/{{ r.id }}">{{ r.title }}</a>
-                <span class="meta">{% set status = r.project_status %}{% include "partials/status-badge.njk" %}</span>
-              </li>
-            {% endfor %}
-          </ul>
-        {% endfor %}
-      </div>
-    {% else %}
-      {% set emptyHeading = "No upcoming releases scheduled" %}
-      {% set emptyDescription = "Add planned dates to active releases to see them here." %}
-      {% set emptyHeadingLevel = "h3" %}
-      {% include "partials/empty-state.njk" %}
-    {% endif %}
-  </section>
+  {% for section in dashboardSections %}
+    <section class="dashboard-project-section" data-dashboard-section="{{ section.id }}">
+      <h2>{{ section.label }}</h2>
+      {% if section.projects.length > 0 %}
+        <ul class="project-grid">
+          {% for project in section.projects %}
+            {{ projectCard.render(project, 'grid', 'h3') }}
+          {% endfor %}
+        </ul>
+      {% else %}
+        {% set emptyActionUrl = "" %}
+        {% set emptyActionLabel = "" %}
+        {% if section.id == 'overdue' %}
+          {% set emptyHeading = "No overdue projects" %}
+          {% set emptyDescription = "Projects with no releases and a planned date today or earlier will show up here." %}
+        {% elif section.id == 'upcoming' %}
+          {% set emptyHeading = "No upcoming projects scheduled" %}
+          {% set emptyDescription = "Add planned dates to active projects to see them here." %}
+        {% elif section.id == 'recently-updated' %}
+          {% set emptyHeading = "No projects are currently tracked" %}
+          {% set emptyDescription = "Create a project to start organizing releases and assets." %}
+          {% set emptyActionUrl = "/projects/new" %}
+          {% set emptyActionLabel = "New Project" %}
+        {% else %}
+          {% set emptyHeading = "No " + (section.label | lower) + " projects" %}
+          {% set emptyDescription = "No projects currently have the " + (section.label | lower) + " status." %}
+        {% endif %}
+        {% set emptyHeadingLevel = "h3" %}
+        {% include "partials/empty-state.njk" %}
+      {% endif %}
+    </section>
+  {% endfor %}
+{% endblock %}
 
-  {# ─── Workflow summary ──────────────────────────────────────────── #}
-  <section class="workflow-summary">
-    <h2>Workflow summary</h2>
-
-    <details class="project-counts-details">
-      <summary>Project counts</summary>
-      <div class="count-grid">
-        <div class="count-card"><span class="count">{{ projectCounts.tbd }}</span> TBD</div>
-        <div class="count-card"><span class="count">{{ projectCounts.planned }}</span> Planned</div>
-        <div class="count-card"><span class="count">{{ projectCounts['in-progress'] }}</span> In Progress</div>
-        <div class="count-card"><span class="count">{{ projectCounts.ready }}</span> Ready</div>
-        <div class="count-card"><span class="count">{{ projectCounts.archived }}</span> Archived</div>
-      </div>
-    </details>
-  </section>
-
-  {# ─── Recently updated ──────────────────────────────────────────── #}
-  <section class="recent-projects">
-    <h2>Recently updated projects</h2>
-    {% if recentlyUpdated.length > 0 %}
-      <ul class="project-list">
-        {% for project in recentlyUpdated %}
-          <li>
-            <a href="/projects/{{ project.id }}">{{ project.title }}</a>
-            {% set status = project.status %}
-            <span class="meta">
-              {% include "partials/status-badge.njk" %}
-              · updated {{ project.updated_at }}
-            </span>
-          </li>
-        {% endfor %}
-      </ul>
-    {% else %}
-      {% set emptyHeading = "No projects are currently tracked" %}
-      {% set emptyDescription = "Create a project to start organizing releases and assets." %}
-      {% set emptyActionUrl = "/projects/new" %}
-      {% set emptyActionLabel = "New Project" %}
-      {% set emptyHeadingLevel = "h3" %}
-      {% include "partials/empty-state.njk" %}
-    {% endif %}
-  </section>
+{% block overlay %}
+  {{ dashboardDefaultsDialog.render(dashboardDefaults, dashboardSectionRegistry, dashboardDefaultsDialogOpen, _csrf, dashboardDefaultsFormState or {}) }}
 {% endblock %}

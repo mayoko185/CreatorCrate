@@ -3,6 +3,7 @@ import {
   enhanceAppDialogs,
   enhanceCategoryReorder,
   enhanceConfirmations,
+  enhanceDashboardDefaultsDialog,
   enhanceDropdowns,
   enhanceProjectAssetCategoryManagement,
 } from '../src/static/creatorcrate.js';
@@ -73,11 +74,13 @@ function makeElement(tagName = 'div', attrs = {}) {
         const candidate = part.trim();
         if (candidate.startsWith('#')) return this.id === candidate.slice(1);
         if (candidate.includes(':checked') && !this.checked) return false;
+        if (candidate.includes(':not([type="hidden"])') && this.type === 'hidden') return false;
         const tag = candidate.match(/^[a-z][\w-]*/i)?.[0];
         if (tag && this.tagName !== tag.toUpperCase()) return false;
         const classMatch = candidate.match(/\.([\w-]+)/);
         if (classMatch && !this.classList.contains(classMatch[1])) return false;
-        return [...candidate.matchAll(/\[([^\]=]+)(?:="([^"]*)")?\]/g)].every(([, name, expected]) => {
+        const attributeCandidate = candidate.replace(':not([type="hidden"])', '');
+        return [...attributeCandidate.matchAll(/\[([^\]=]+)(?:="([^"]*)")?\]/g)].every(([, name, expected]) => {
           const actual = this.getAttribute(name);
           return actual !== null && (expected === undefined || actual === expected);
         });
@@ -558,6 +561,117 @@ function makeCategoryDialogPage() {
     initial,
     setReplacement(next) { replacement = next; },
   };
+}
+
+function makeDashboardDefaultsDialogPage({ includeStatusSection = false } = {}) {
+  const page = makeDialogPage();
+  page.dialog.setAttribute('id', 'dashboard-defaults-dialog');
+  page.trigger.setAttribute('data-dialog-open', 'dashboard-defaults-dialog');
+  page.form.setAttribute('id', 'dashboard-defaults-form');
+  page.form.setAttribute('action', '/dashboard/defaults');
+  page.form.setAttribute('data-dashboard-defaults-reorder-form', '');
+
+  const orderInput = makeElement('input', {
+    type: 'hidden',
+    name: 'orderedSectionIds',
+    value: 'overdue,upcoming,recently-updated',
+    'data-dashboard-defaults-order-input': '',
+  });
+  const list = makeElement('ol', {
+    'data-dashboard-defaults-reorder-list': '',
+    'data-reorder-form-target': 'dashboard-defaults-form',
+  });
+  const detachListItem = (child) => {
+    const currentParent = child.parentNode;
+    const currentIndex = currentParent?.children?.indexOf(child) ?? -1;
+    if (currentIndex >= 0) currentParent.children.splice(currentIndex, 1);
+    child.parentNode = list;
+    child.parentElement = list;
+    child.ownerDocument = list.ownerDocument;
+  };
+  list.appendChild = (child) => {
+    detachListItem(child);
+    list.children.push(child);
+    return child;
+  };
+  list.insertBefore = (child, reference) => {
+    detachListItem(child);
+    const index = list.children.indexOf(reference);
+    list.children.splice(index < 0 ? list.children.length : index, 0, child);
+    return child;
+  };
+  const sections = {};
+  const dashboardSections = [
+    ['overdue', 'Overdue', true, '8'],
+    ['upcoming', 'Upcoming releases', true, '10'],
+    ['recently-updated', 'Recently updated', false, '12'],
+  ];
+  if (includeStatusSection) dashboardSections.push(['status:ready', 'Ready', true, '6']);
+  dashboardSections.forEach(([id, label, visible, count]) => {
+    const row = makeElement('li', {
+      'data-dashboard-defaults-reorder-item': '',
+      'data-dashboard-section-id': id,
+      'data-dashboard-section-label': label,
+    });
+    Object.defineProperty(row, 'nextSibling', {
+      get() {
+        return list.children[list.children.indexOf(row) + 1] || null;
+      },
+    });
+    row.getBoundingClientRect = () => ({ top: 0, height: 20 });
+    const handle = makeElement('button', {
+      type: 'button',
+      'data-dashboard-defaults-reorder-handle': '',
+    });
+    const body = makeElement('div');
+    const title = makeElement('span', { textContent: label });
+    const visibleField = makeElement('div', { 'data-dialog-field': `sections[${id}][visible]` });
+    const hiddenVisible = makeElement('input', {
+      type: 'hidden', name: `sections[${id}][visible]`, value: '0',
+    });
+    const visibleControl = makeElement('input', {
+      id: `dashboard-defaults-section-${id}-visible`,
+      type: 'checkbox', name: `sections[${id}][visible]`, value: '1',
+    });
+    visibleControl.checked = visible;
+    visibleField.appendChild(hiddenVisible);
+    visibleField.appendChild(visibleControl);
+    const countField = makeElement('div', { 'data-dialog-field': `sections[${id}][itemCount]` });
+    const countControl = makeElement('input', {
+      type: 'number', name: `sections[${id}][itemCount]`, value: count,
+    });
+    countField.appendChild(countControl);
+    body.appendChild(title);
+    body.appendChild(visibleField);
+    body.appendChild(countField);
+    row.appendChild(handle);
+    row.appendChild(body);
+    list.appendChild(row);
+    sections[id] = { row, handle, body, title, visibleField, visibleControl, countField, countControl };
+  });
+  orderInput.value = dashboardSections.map(([id]) => id).join(',');
+  const live = makeElement('div', { 'data-dashboard-defaults-reorder-live': '' });
+  page.form.appendChild(orderInput);
+  page.form.appendChild(list);
+  page.form.appendChild(live);
+  return { ...page, list, orderInput, live, sections };
+}
+
+function dashboardSectionOrder(page) {
+  return page.list.querySelectorAll('[data-dashboard-defaults-reorder-item]')
+    .map((item) => item.getAttribute('data-dashboard-section-id'));
+}
+
+function enhanceDashboardDefaults(page) {
+  enhanceAppDialogs(page.document);
+  enhanceDashboardDefaultsDialog(page.document);
+}
+
+function dragDashboardSection(page, source, target) {
+  const transfer = { setData: vi.fn() };
+  source.row.dispatch('dragstart', { target: source.title, dataTransfer: transfer });
+  page.list.dispatch('dragover', { target: target.row, clientY: 0, dataTransfer: {} });
+  page.list.dispatch('drop', { target: target.row });
 }
 
 async function flush() {
@@ -1197,6 +1311,167 @@ describe('Reusable app dialog enhancement', () => {
     expect(page.dialog.open).toBe(true);
     expect(page.dialog.querySelector('[data-dialog-status]').textContent).toContain('Could not save defaults');
     expect(page.dialog.querySelector('[data-dialog-error-text]').textContent).toContain('Your selections were kept');
+  });
+});
+
+describe('Dashboard defaults dialog client behavior', () => {
+  it('wires the shared dedicated reorder engine for keyboard and full-row pointer drag movement', () => {
+    const page = makeDashboardDefaultsDialogPage();
+    Object.defineProperty(page.windowObject, 'localStorage', {
+      get() { throw new Error('Dashboard defaults must not use localStorage.'); },
+    });
+    enhanceDashboardDefaults(page);
+
+    expect(dashboardSectionOrder(page)).toEqual(['overdue', 'upcoming', 'recently-updated']);
+    expect(page.orderInput.value).toBe('overdue,upcoming,recently-updated');
+    expect(page.sections.overdue.row.getAttribute('aria-posinset')).toBe('1');
+    expect(page.sections.overdue.row.getAttribute('aria-setsize')).toBe('3');
+
+    page.sections.overdue.handle.dispatch('keydown', { key: 'ArrowDown' });
+    expect(dashboardSectionOrder(page)).toEqual(['upcoming', 'overdue', 'recently-updated']);
+    expect(page.orderInput.value).toBe('upcoming,overdue,recently-updated');
+    expect(page.document.activeElement).toBe(page.sections.overdue.handle);
+    expect(page.sections.overdue.row.getAttribute('aria-posinset')).toBe('2');
+    expect(page.live.textContent).toContain('Overdue moved to position 2 of 3');
+
+    page.sections.overdue.handle.dispatch('keydown', { key: 'ArrowUp' });
+    expect(dashboardSectionOrder(page)).toEqual(['overdue', 'upcoming', 'recently-updated']);
+    page.sections['recently-updated'].handle.dispatch('keydown', { key: 'Home' });
+    expect(dashboardSectionOrder(page)).toEqual(['recently-updated', 'overdue', 'upcoming']);
+    page.sections['recently-updated'].handle.dispatch('keydown', { key: 'End' });
+    expect(dashboardSectionOrder(page)).toEqual(['overdue', 'upcoming', 'recently-updated']);
+    expect(page.orderInput.value).toBe('overdue,upcoming,recently-updated');
+
+    dragDashboardSection(page, page.sections['recently-updated'], page.sections.overdue);
+    expect(dashboardSectionOrder(page)).toEqual(['recently-updated', 'overdue', 'upcoming']);
+    expect(page.orderInput.value).toBe('recently-updated,overdue,upcoming');
+  });
+
+  it('does not start a Dashboard row drag from interactive controls', () => {
+    const page = makeDashboardDefaultsDialogPage();
+    enhanceDashboardDefaults(page);
+
+    const visibilityDrag = page.sections.overdue.row.dispatch('dragstart', {
+      target: page.sections.overdue.visibleControl,
+      dataTransfer: { setData: vi.fn() },
+    });
+    expect(visibilityDrag.defaultPrevented).toBe(true);
+    expect(page.sections.overdue.row.classList.contains('is-dragging')).toBe(false);
+    expect(page.sections.overdue.visibleControl.dispatch('click').defaultPrevented).toBe(false);
+
+    const countDrag = page.sections.overdue.row.dispatch('dragstart', {
+      target: page.sections.overdue.countControl,
+      dataTransfer: { setData: vi.fn() },
+    });
+    expect(countDrag.defaultPrevented).toBe(true);
+    expect(page.sections.overdue.row.classList.contains('is-dragging')).toBe(false);
+    expect(page.sections.overdue.countControl.dispatch('click').defaultPrevented).toBe(false);
+
+    dragDashboardSection(page, page.sections['recently-updated'], page.sections.overdue);
+    expect(dashboardSectionOrder(page)).toEqual(['recently-updated', 'overdue', 'upcoming']);
+    expect(page.orderInput.value).toBe('recently-updated,overdue,upcoming');
+  });
+
+  it('restores confirmed order and values after Escape and X cancellation', () => {
+    const page = makeDashboardDefaultsDialogPage();
+    enhanceDashboardDefaults(page);
+    page.document.dispatch('click', { target: page.trigger });
+    dragDashboardSection(page, page.sections.overdue, page.sections['recently-updated']);
+    page.sections.overdue.visibleControl.checked = false;
+    page.sections.upcoming.countControl.value = '25';
+    page.dialog.dispatch('keydown', { key: 'Escape' });
+
+    expect(dashboardSectionOrder(page)).toEqual(['overdue', 'upcoming', 'recently-updated']);
+    expect(page.orderInput.value).toBe('overdue,upcoming,recently-updated');
+    expect(page.sections.overdue.visibleControl.checked).toBe(true);
+    expect(page.sections.upcoming.countControl.value).toBe('10');
+
+    page.document.dispatch('click', { target: page.trigger });
+    dragDashboardSection(page, page.sections['recently-updated'], page.sections.overdue);
+    page.sections['recently-updated'].visibleControl.checked = true;
+    page.sections.overdue.countControl.value = '1';
+    page.close.dispatch('click');
+
+    expect(dashboardSectionOrder(page)).toEqual(['overdue', 'upcoming', 'recently-updated']);
+    expect(page.sections['recently-updated'].visibleControl.checked).toBe(false);
+    expect(page.sections.overdue.countControl.value).toBe('8');
+  });
+
+  it('navigates once to the server-rendered Dashboard after a successful enhanced save', async () => {
+    const page = makeDashboardDefaultsDialogPage();
+    const assign = vi.fn();
+    page.windowObject.location = { assign };
+    page.windowObject.fetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ status: 'success', message: 'Dashboard defaults saved successfully.', values: {} }),
+    });
+    enhanceDashboardDefaults(page);
+    page.document.dispatch('click', { target: page.trigger });
+    page.sections.overdue.handle.dispatch('keydown', { key: 'End' });
+    page.sections.overdue.visibleControl.checked = false;
+    page.sections.upcoming.countControl.value = '22';
+    page.form.dispatch('submit', { submitter: page.save });
+    await flush();
+
+    expect(page.windowObject.fetch).toHaveBeenCalledTimes(1);
+    expect(assign).toHaveBeenCalledTimes(1);
+    expect(assign).toHaveBeenCalledWith('/?notice=dashboard_defaults_saved');
+    expect(page.dialog.close).not.toHaveBeenCalled();
+  });
+
+  it('marks a status visibility switch invalid on 422, retains attempted state, then restores the confirmed baseline on Escape', async () => {
+    const page = makeDashboardDefaultsDialogPage({ includeStatusSection: true });
+    const assign = vi.fn();
+    page.windowObject.location = { assign };
+    page.windowObject.fetch.mockResolvedValue({
+      ok: false,
+      status: 422,
+      json: async () => ({
+        status: 'error',
+        message: 'Dashboard defaults could not be saved. Fix the invalid fields and try again.',
+        errors: {
+          'sections[status:ready][visible]': 'Show section must be explicitly enabled or disabled.',
+        },
+        values: {
+          orderedSectionIds: 'status:ready,overdue,upcoming,recently-updated',
+          sections: {
+            overdue: { visible: false, itemCount: '8' },
+            upcoming: { visible: true, itemCount: '10' },
+            'recently-updated': { visible: false, itemCount: '12' },
+            'status:ready': { visible: false, itemCount: '6' },
+          },
+        },
+      }),
+    });
+    enhanceDashboardDefaults(page);
+    page.document.dispatch('click', { target: page.trigger });
+    page.sections['status:ready'].handle.dispatch('keydown', { key: 'Home' });
+    page.sections.overdue.visibleControl.checked = false;
+    page.sections['status:ready'].visibleControl.checked = false;
+    page.sections.upcoming.countControl.value = '10';
+    page.form.dispatch('submit', { submitter: page.save });
+    await flush();
+
+    expect(page.dialog.open).toBe(true);
+    expect(dashboardSectionOrder(page)).toEqual(['status:ready', 'overdue', 'upcoming', 'recently-updated']);
+    expect(page.orderInput.value).toBe('status:ready,overdue,upcoming,recently-updated');
+    expect(page.sections.overdue.visibleControl.checked).toBe(false);
+    expect(page.sections['status:ready'].visibleControl.checked).toBe(false);
+    expect(page.sections.upcoming.countControl.value).toBe('10');
+    expect(page.sections['status:ready'].visibleField.classList.contains('field-error')).toBe(true);
+    expect(page.sections['status:ready'].visibleControl.getAttribute('aria-invalid')).toBe('true');
+    expect(page.sections['status:ready'].visibleControl.getAttribute('aria-describedby')).toBe('dashboard-defaults-section-status:ready-visible-error');
+    expect(page.sections['status:ready'].visibleField.children.find((child) => child.className === 'field-error-message')?.textContent)
+      .toBe('Show section must be explicitly enabled or disabled.');
+    expect(page.dialog.querySelector('[data-dialog-error-list]').textContent)
+      .not.toContain('[object Object]');
+    expect(assign).not.toHaveBeenCalled();
+
+    page.dialog.dispatch('keydown', { key: 'Escape', target: page.dialog });
+    expect(dashboardSectionOrder(page)).toEqual(['overdue', 'upcoming', 'recently-updated', 'status:ready']);
+    expect(page.sections.overdue.visibleControl.checked).toBe(true);
+    expect(page.sections['status:ready'].visibleControl.checked).toBe(true);
+    expect(page.sections.upcoming.countControl.value).toBe('10');
   });
 });
 

@@ -1,0 +1,84 @@
+{% import "partials/dialog.njk" as dialog %}
+{% import "partials/form-switch.njk" as formSwitch %}
+
+{% macro render(dashboardDefaults, dashboardSectionRegistry, open=false, csrfToken='', formState={}) %}
+  {% set fieldErrors = formState.fieldErrors or {} %}
+  {% set submittedSections = formState.sections or {} %}
+  {% set displayOrder = formState.order or dashboardDefaults.order %}
+  {% call dialog.render('dashboard-defaults-dialog', 'Dashboard defaults', open, 'dashboard-defaults-description', 'dashboard-defaults-form') %}
+    <form id="dashboard-defaults-form" method="post" action="/dashboard/defaults" class="app-dialog-form project-form"
+          data-dialog-form data-dashboard-defaults-reorder-form novalidate>
+      <p id="dashboard-defaults-description" class="app-dialog-description">
+        Choose which project sections appear on the Dashboard, how many projects each shows, and their order.
+      </p>
+
+      <div class="app-dialog-error" data-dialog-error role="alert"{% if not formState.generalError %} hidden{% endif %}>
+        <p data-dialog-error-text>{{ formState.generalError or '' }}</p>
+        <ul data-dialog-error-list></ul>
+      </div>
+
+      <input type="hidden" name="_csrf" value="{{ csrfToken }}">
+      <input type="hidden" name="orderedSectionIds" data-dashboard-defaults-order-input value="{% for sectionId in displayOrder %}{{ sectionId }}{% if not loop.last %},{% endif %}{% endfor %}">
+
+      <div class="app-dialog-body">
+        <section class="settings-section dashboard-defaults-settings-section" aria-labelledby="dashboard-defaults-sections-heading">
+          <h3 id="dashboard-defaults-sections-heading">Project sections</h3>
+          <p id="dashboard-defaults-reorder-instructions" class="help-text">
+            Drag a handle to move a section, or focus a handle and use Arrow Up, Arrow Down, Home, or End. Select Save defaults to keep the new order.
+          </p>
+
+          <ol class="notes-reorder-list dashboard-defaults-section-list" data-dashboard-defaults-reorder-list
+              data-reorder-form-target="dashboard-defaults-form"
+              aria-label="Dashboard sections in current order"
+              aria-describedby="dashboard-defaults-reorder-instructions">
+            {% for sectionId in displayOrder %}
+              {% set sectionPosition = loop.index %}
+              {% for section in dashboardSectionRegistry %}
+                {% if section.id == sectionId %}
+                  {% set sectionDefaults = dashboardDefaults.sections[section.id] %}
+                  {% set submittedSection = submittedSections[section.id] or {} %}
+                  {% set sectionErrors = fieldErrors[section.id] or {} %}
+                  {% set itemCount = submittedSection.itemCount if submittedSection.itemCount is defined else sectionDefaults.itemCount %}
+                  {% set visible = submittedSection.visible if submittedSection.visible is defined else sectionDefaults.visible %}
+                  {% set visibilityId = 'dashboard-defaults-section-' ~ section.id ~ '-visible' %}
+                  {% set visibilityError = sectionErrors.visible or '' %}
+                  {% set countId = 'dashboard-defaults-section-' ~ section.id ~ '-item-count' %}
+                  {% set countError = sectionErrors.itemCount or '' %}
+                  <li class="notes-reorder-row dashboard-defaults-section" data-dashboard-defaults-reorder-item
+                      data-dashboard-section-id="{{ section.id }}" data-dashboard-section-label="{{ section.label }}"
+                      draggable="true" aria-posinset="{{ sectionPosition }}" aria-setsize="{{ displayOrder.length }}">
+                    <button type="button" class="notes-reorder-handle" data-dashboard-defaults-reorder-handle draggable="true"
+                            aria-label="Reorder {{ section.label }}"
+                            aria-describedby="dashboard-defaults-reorder-instructions"
+                            title="Drag to reorder; use the arrow keys to move"><span aria-hidden="true">⠿</span></button>
+                    <div class="dashboard-defaults-section-content">
+                      <div class="dashboard-defaults-section-identity">
+                        <h4>{{ section.label }}</h4>
+                      </div>
+                      <div class="field app-dialog-field dashboard-defaults-section-visibility{% if visibilityError %} field-error{% endif %}" data-dialog-field="sections[{{ section.id }}][visible]">
+                        {{ formSwitch.control(visibilityId, 'sections[' ~ section.id ~ '][visible]', visible, 'Show ' ~ section.label, visibilityId ~ '-error' if visibilityError else null, visibilityError) }}
+                        {% if visibilityError %}<span class="field-error-message" id="{{ visibilityId }}-error">{{ visibilityError }}</span>{% endif %}
+                      </div>
+                      <div class="field app-dialog-field dashboard-defaults-section-item-count{% if countError %} field-error{% endif %}" data-dialog-field="sections[{{ section.id }}][itemCount]">
+                        <label class="sr-only" for="{{ countId }}">Items to show for {{ section.label }}</label>
+                        <input id="{{ countId }}" type="number" name="sections[{{ section.id }}][itemCount]" value="{{ itemCount }}"
+                               min="1" max="25" step="1" required{% if countError %} aria-describedby="{{ countId }}-error" aria-invalid="true"{% endif %}>
+                        {% if countError %}<span class="field-error-message" id="{{ countId }}-error">{{ countError }}</span>{% endif %}
+                      </div>
+                    </div>
+                  </li>
+                {% endif %}
+              {% endfor %}
+            {% endfor %}
+          </ol>
+          <div class="sr-only" data-dashboard-defaults-reorder-live aria-live="polite" aria-atomic="true"></div>
+        </section>
+      </div>
+
+      <div class="app-dialog-status" data-dialog-status role="status" aria-live="polite"></div>
+      <footer class="app-dialog-footer">
+        <button class="button button-primary" type="submit" data-dialog-submit>Save defaults</button>
+      </footer>
+    </form>
+  {% endcall %}
+{% endmacro %}
