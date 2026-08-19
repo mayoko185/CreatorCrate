@@ -11,7 +11,7 @@ const notesCss = fs.readFileSync(
   'utf8',
 );
 const notesEditorJs = fs.readFileSync(
-  fileURLToPath(new URL('../src/static/creatorcrate.js', import.meta.url)),
+  fileURLToPath(new URL('../src/static/client/notes-editor.js', import.meta.url)),
   'utf8',
 );
 

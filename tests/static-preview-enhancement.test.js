@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import fs from 'node:fs';
+import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   enhancePreview,
@@ -273,23 +274,32 @@ describe('static preview enhancement helpers', () => {
   });
 
   it('does not use innerHTML for DOM replacement', () => {
-    const source = fs.readFileSync(
+    const staticDirectory = fileURLToPath(new URL('../src/static/', import.meta.url));
+    const sourcePaths = [
       fileURLToPath(new URL('../src/static/creatorcrate.js', import.meta.url)),
-      'utf8'
-    );
+      ...fs.readdirSync(path.join(staticDirectory, 'client'), { recursive: true })
+        .filter((entry) => entry.endsWith('.js'))
+        .map((entry) => path.join(staticDirectory, 'client', entry)),
+    ];
 
-    expect(source).not.toMatch(/innerHTML/i);
+    sourcePaths.forEach((sourcePath) => {
+      expect(fs.readFileSync(sourcePath, 'utf8')).not.toMatch(/innerHTML/i);
+    });
   });
 
   it('uses only browser-local storage for the presentation preference', () => {
-    const source = fs.readFileSync(
-      fileURLToPath(new URL('../src/static/creatorcrate.js', import.meta.url)),
+    const sizePreferencesSource = fs.readFileSync(
+      fileURLToPath(new URL('../src/static/client/size-preferences.js', import.meta.url)),
+      'utf8'
+    );
+    const liveRegionsSource = fs.readFileSync(
+      fileURLToPath(new URL('../src/static/client/live-regions.js', import.meta.url)),
       'utf8'
     );
 
-    expect(source).toMatch(/localStorage/);
-    expect(source).not.toMatch(/sessionStorage|XMLHttpRequest/i);
-    expect(source).toMatch(/fetch\(/i);
+    expect(sizePreferencesSource).toMatch(/localStorage/);
+    expect(sizePreferencesSource).not.toMatch(/sessionStorage|XMLHttpRequest/i);
+    expect(liveRegionsSource).toMatch(/fetch\(/i);
   });
 
   it('initializes the live book-content reorder enhancement from the shared client boot', () => {
