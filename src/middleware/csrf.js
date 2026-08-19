@@ -120,12 +120,13 @@ export function getAnonCsrfSecret(req) {
  *
  * @param {import('node:http').ServerResponse} res
  * @param {string} secret
+ * @param {{secure?: boolean}} cookieOptions
  */
-export function setAnonCsrfCookie(res, secret) {
+export function setAnonCsrfCookie(res, secret, cookieOptions) {
   res.cookie(ANON_CSRF_PREFIX, secret, {
     httpOnly: true,
     sameSite: 'Lax',
-    secure: false,
+    secure: !!cookieOptions.secure,
     path: '/login',
     maxAge: 5 * 60 * 1000,
   });
@@ -135,9 +136,15 @@ export function setAnonCsrfCookie(res, secret) {
  * Clear the anonymous CSRF cookie.
  *
  * @param {import('node:http').ServerResponse} res
+ * @param {{secure?: boolean}} cookieOptions
  */
-export function clearAnonCsrfCookie(res) {
-  res.clearCookie(ANON_CSRF_PREFIX, { path: '/login' });
+export function clearAnonCsrfCookie(res, cookieOptions) {
+  res.clearCookie(ANON_CSRF_PREFIX, {
+    httpOnly: true,
+    sameSite: 'Lax',
+    secure: !!cookieOptions.secure,
+    path: '/login',
+  });
 }
 
 // ─── Disabled-mode CSRF (Phase 13) ─────────────────────────────────────

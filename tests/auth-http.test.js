@@ -501,22 +501,33 @@ describe('authenticated app — login/logout/CSRF/routes', () => {
       expect(sessionCookie).not.toMatch(/Secure/i);
     });
 
-    it('sets Secure flag when cookieSecure is true', async () => {
+    it('sets Secure flag on anonymous CSRF and session cookies when cookieSecure is true', async () => {
       const secureApp = createApp(
         { appName: 'CreatorCrate', db },
         { authConfig: { ...AUTH_CONFIG, cookieSecure: true } }
       );
       const agent = request.agent(secureApp);
       const loginPage = await agent.get('/login').expect(200);
+      const anonCsrfCookie = loginPage.headers['set-cookie'].find((c) => c.startsWith('cc_csrf='));
+      expect(anonCsrfCookie).toMatch(/Secure/i);
+      expect(anonCsrfCookie).toMatch(/Path=\/login/i);
       const csrfToken = extractCsrfToken(loginPage.text);
       const res = await agent
         .post('/login')
+        // Supertest's HTTP agent correctly excludes Secure cookies; replay this
+        // test-only HTTPS-browser equivalent so the login CSRF check can run.
+        .set('Cookie', anonCsrfCookie.split(';', 1)[0])
         .type('form')
         .send({ username: 'admin', password: TEST_PASSWORD, _csrf: csrfToken })
         .expect(302);
 
       const sessionCookie = res.headers['set-cookie'].find((c) => c.startsWith('cc_session='));
       expect(sessionCookie).toMatch(/Secure/i);
+      const clearedAnonCsrfCookie = res.headers['set-cookie'].find((c) => c.startsWith('cc_csrf='));
+      expect(clearedAnonCsrfCookie).toMatch(/HttpOnly/i);
+      expect(clearedAnonCsrfCookie).toMatch(/SameSite=Lax/i);
+      expect(clearedAnonCsrfCookie).toMatch(/Secure/i);
+      expect(clearedAnonCsrfCookie).toMatch(/Path=\/login/i);
     });
   });
 

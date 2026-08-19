@@ -66,6 +66,7 @@ export class LoginThrottler {
     const previous = this.records.get(key);
     const failures = previous ? previous.failures + 1 : 1;
     const delay = Math.min(this.baseDelayMs * 2 ** Math.max(0, failures - 1), this.maxDelayMs);
+    if (previous) this.records.delete(key);
     this.records.set(key, {
       failures,
       availableAt: now + delay,

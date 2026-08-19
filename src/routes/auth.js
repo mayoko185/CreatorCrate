@@ -61,7 +61,7 @@ export function createAuthRouter({ appName, authService, cookieOptions, loginThr
     }
 
     const { secret, token } = generateAnonCsrf();
-    setAnonCsrfCookie(res, secret);
+    setAnonCsrfCookie(res, secret, cookieOptions);
 
     const nextPath = sanitizeNext(req.query.next);
     res.render('login.njk', { appName, error: null, notice: resolveLoginNotice(req.query.notice), next: nextPath, _csrf: token });
@@ -79,7 +79,7 @@ export function createAuthRouter({ appName, authService, cookieOptions, loginThr
     if (!anonSecret || !submittedCsrf || !verifyAnonCsrf(submittedCsrf, anonSecret)) {
       // Regenerate anonymous CSRF for the re-rendered form
       const { secret, token } = generateAnonCsrf();
-      setAnonCsrfCookie(res, secret);
+      setAnonCsrfCookie(res, secret, cookieOptions);
       res.status(403);
       res.render('login.njk', { appName, error: 'Invalid or expired form submission. Please try again.', notice: null, next: nextPath, _csrf: token });
       return;
@@ -98,7 +98,7 @@ export function createAuthRouter({ appName, authService, cookieOptions, loginThr
       }
       // Regenerate anonymous CSRF for the re-rendered form
       const { secret, token } = generateAnonCsrf();
-      setAnonCsrfCookie(res, secret);
+      setAnonCsrfCookie(res, secret, cookieOptions);
       // Retain normalized username but never the password
       const retainedUsername = typeof username === 'string' ? username.trim().toLowerCase() : '';
       res.status(401);
@@ -108,7 +108,7 @@ export function createAuthRouter({ appName, authService, cookieOptions, loginThr
 
     loginThrottler?.recordSuccess(username, clientAddress);
     // Clear anonymous CSRF cookie now that login succeeded
-    clearAnonCsrfCookie(res);
+    clearAnonCsrfCookie(res, cookieOptions);
     setSessionCookie(res, result.token, cookieOptions);
     res.redirect(nextPath || '/');
   });

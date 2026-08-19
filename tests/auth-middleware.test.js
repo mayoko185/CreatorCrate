@@ -212,9 +212,13 @@ describe('authenticated app integration', () => {
     );
     const agent = request.agent(secureApp);
     const loginPage = await agent.get('/login').expect(200);
+    const anonCsrfCookie = loginPage.headers['set-cookie'].find((c) => c.startsWith('cc_csrf='));
     const csrfToken = extractCsrfToken(loginPage.text);
     const res = await agent
       .post('/login')
+      // Supertest's HTTP agent correctly excludes Secure cookies; replay this
+      // test-only HTTPS-browser equivalent so the login CSRF check can run.
+      .set('Cookie', anonCsrfCookie.split(';', 1)[0])
       .type('form')
       .send({ username: 'admin', password: PASSWORD, _csrf: csrfToken })
       .expect(302);

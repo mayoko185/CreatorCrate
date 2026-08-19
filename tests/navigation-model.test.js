@@ -102,20 +102,35 @@ describe('navigation model — Notes active state', () => {
       label: 'Notes',
       href: '/notes',
       icon: 'notes',
-      matches: ['/notes', '/notes/new', '/notes/:id', '/notes/:id/edit'],
     });
   });
 
-  it('is active across the Notes section route family', () => {
-    expect(activeKeys('/notes')).toEqual(['notes']);
-    expect(activeKeys('/notes/new')).toEqual(['notes']);
-    expect(activeKeys('/notes/42')).toEqual(['notes']);
-    expect(activeKeys('/notes/42/edit')).toEqual(['notes']);
-    expect(activeKeys('/notes?view=list')).toEqual(['notes']);
+  it('is active for every rendered Books, Chapters, and direct Notes page route', () => {
+    const renderedNotesPagePaths = [
+      '/notes',
+      '/notes/books/new',
+      '/notes/books/order',
+      '/notes/books/42',
+      '/notes/books/42/edit',
+      '/notes/books/42/order',
+      '/notes/books/42/chapters/new',
+      '/notes/chapters/7',
+      '/notes/chapters/7/edit',
+      '/notes/chapters/7/notes/order',
+      '/notes/new',
+      '/notes/42',
+      '/notes/42/edit',
+      '/notes?view=list',
+    ];
+
+    for (const path of renderedNotesPagePaths) {
+      expect(activeKeys(path)).toEqual(['notes']);
+    }
   });
 
   it('does not activate Notes for sibling prefixes', () => {
     expect(activeKeys('/notes-old')).toEqual([]);
+    expect(activeKeys('/notes-archive')).toEqual([]);
     expect(activeKeys('/notebook')).toEqual([]);
   });
 });

@@ -141,6 +141,22 @@ describe('login throttling', () => {
     expect(throttler.size()).toBe(0);
   });
 
+  it('keeps a recently updated record when evicting entries at capacity', () => {
+    let clock = 1000;
+    const throttler = createLoginThrottler({ now: () => clock, baseDelayMs: 100, maxDelayMs: 250, windowMs: 1000, maxEntries: 3 });
+    throttler.recordFailure('target', '127.0.0.1');
+    throttler.recordFailure('other-a', '127.0.0.2');
+    throttler.recordFailure('other-b', '127.0.0.3');
+
+    clock += 101;
+    expect(throttler.recordFailure('target', '127.0.0.1')).toEqual({ delayMs: 200, failures: 2 });
+    throttler.recordFailure('other-c', '127.0.0.4');
+
+    expect(throttler.recordFailure('other-a', '127.0.0.2')).toEqual({ delayMs: 100, failures: 1 });
+
+    expect(throttler.check('target', '127.0.0.1')).toEqual({ limited: true, retryAfterMs: 200 });
+  });
+
   it('resets counters on successful login and bounds memory entries', () => {
     let clock = 1;
     const throttler = createLoginThrottler({ now: () => clock, maxEntries: 2 });
