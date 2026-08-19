@@ -95,23 +95,7 @@ export function verifyAnonCsrf(token, secret) {
  * @returns {string|null}
  */
 export function getAnonCsrfSecret(req) {
-  const header = req.headers.cookie;
-  if (!header) return null;
-  for (const part of header.split(';')) {
-    const idx = part.indexOf('=');
-    if (idx === -1) continue;
-    const key = part.slice(0, idx).trim();
-    if (key === ANON_CSRF_PREFIX) {
-      const rawValue = part.slice(idx + 1).trim();
-      if (rawValue.length === 0) return null;
-      try {
-        return decodeURIComponent(rawValue);
-      } catch {
-        return rawValue;
-      }
-    }
-  }
-  return null;
+  return getCookie(req, ANON_CSRF_PREFIX);
 }
 
 /**

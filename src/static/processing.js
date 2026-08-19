@@ -1888,7 +1888,6 @@ function buildRequestBody(root) {
     const normalizedOptions = normalizeWatermarkPresetConfig(options);
     delete normalizedOptions.watermarkId;
     normalizedOptions.watermarkId = requireSelectedWatermarkId(root);
-    delete normalizedOptions.scaleMapId;
     return { scope, options: normalizedOptions };
   }
   return { scope, options };

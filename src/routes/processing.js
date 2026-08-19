@@ -183,7 +183,7 @@ function parseExecutionRequest(body, { operation, projectId, assetRepository, pr
       throw new ProcessingRouteError('A request must use either options or presetId, not both.', { field: 'options' });
     }
     const runtimeResources = input.runtimeResources ?? {};
-    assertAllowedKeys(runtimeResources, new Set(['watermarkId', 'scaleMapId']), 'runtimeResources');
+    assertAllowedKeys(runtimeResources, new Set(['watermarkId']), 'runtimeResources');
     const normalizedRuntimeResources = normalizeRuntimeResources(runtimeResources);
     const preset = processingPresetService.resolvePresetForExecution(
       parsePositiveId(input.presetId, 'presetId'),
@@ -212,6 +212,9 @@ function parseExecutionRequest(body, { operation, projectId, assetRepository, pr
   }
   let options = parseJsonObject(input.options, 'options');
   assertNoForbiddenPathKeys(options);
+  if (operation === 'watermark' && Object.hasOwn(options, 'scaleMapId')) {
+    throw new ProcessingRouteError('options contains an unsupported field: scaleMapId.', { field: 'scaleMapId' });
+  }
   if (operation === 'watermark') options = normalizeWatermarkRequestOptions(options);
   return { scope, options, preset: null };
 }
@@ -370,7 +373,7 @@ export function createProcessingRouter({
   });
   router.post('/processing/presets', (req, res, next) => {
     try {
-      const body = assertResourceRequest(req.body, ['operationType', 'displayName', 'config', 'watermarkId', 'scaleMapId']);
+      const body = assertResourceRequest(req.body, ['operationType', 'displayName', 'config', 'watermarkId']);
       assertNoForbiddenPathKeys(body.config);
       const preset = processingPresetService.createPreset(body);
       return res.status(201).json({ ok: true, preset });
@@ -392,7 +395,7 @@ export function createProcessingRouter({
   });
   router.post('/processing/presets/:id/replace', (req, res, next) => {
     try {
-      const body = assertResourceRequest(req.body, ['config', 'watermarkId', 'scaleMapId']);
+      const body = assertResourceRequest(req.body, ['config', 'watermarkId']);
       assertNoForbiddenPathKeys(body.config);
       const preset = processingPresetService.replacePreset(parsePositiveId(req.params.id, 'presetId'), body);
       return res.json({ ok: true, preset });

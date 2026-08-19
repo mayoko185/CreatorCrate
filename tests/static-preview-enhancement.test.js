@@ -7,7 +7,6 @@ import {
   enhanceProjectCards,
   enhanceAutoSubmit,
   enhanceCategoryReorder,
-  enhanceNoteReorder,
   enhanceBookReorder,
   enhanceChapterPageReorder,
   enhanceBookContentReorder,
@@ -293,13 +292,12 @@ describe('static preview enhancement helpers', () => {
     expect(source).toMatch(/fetch\(/i);
   });
 
-  it('initializes the Notes reorder enhancement from the shared client boot', () => {
+  it('initializes the live book-content reorder enhancement from the shared client boot', () => {
     const source = fs.readFileSync(
       fileURLToPath(new URL('../src/static/creatorcrate.js', import.meta.url)),
       'utf8'
     );
 
-    expect(source).toContain('enhanceNoteReorder(document)');
     expect(source).toContain('enhanceBookContentReorder(document)');
   });
 });
@@ -811,67 +809,6 @@ function makeCategoryReorderFixture({
   };
 }
 
-function makeNoteReorderFixture({
-  action = '/notes/reorder',
-  csrfToken = 'csrf-note-reorder',
-  noteIds = ['11', '22', '33'],
-} = {}) {
-  const document = makeCategoryNode({ tagName: 'document' });
-  document.ownerDocument = document;
-  document.getElementById = (id) => document
-    .querySelectorAll('[data-note-reorder-form]')
-    .find((form) => form.getAttribute('id') === id) || null;
-  const section = makeCategoryNode();
-  const form = makeCategoryNode({
-    tagName: 'form',
-    attrs: { id: 'notes-reorder-form', 'data-note-reorder-form': '' },
-  });
-  form.action = action;
-  form.method = 'post';
-  form.csrfToken = csrfToken;
-  const orderInput = makeCategoryNode({ tagName: 'input', attrs: { 'data-note-order-input': '' } });
-  const live = makeCategoryNode({ attrs: { 'data-note-reorder-live': '' } });
-  const list = makeCategoryNode({ tagName: 'tbody', attrs: {
-    'data-note-reorder-list': '',
-    'data-reorder-form-target': 'notes-reorder-form',
-  } });
-  const items = noteIds.map((id, index) => {
-    const item = makeCategoryNode({
-      tagName: 'tr',
-      attrs: {
-        'data-note-reorder-item': '',
-        'data-note-id': id,
-        'data-note-label': `Note ${id}`,
-      },
-      rect: { top: index * 50, height: 40 },
-    });
-    const handle = makeCategoryNode({ tagName: 'button', attrs: { 'data-note-reorder-handle': '' } });
-    item.appendChild(handle);
-    item.handle = handle;
-    return item;
-  });
-
-  document.appendChild(section);
-  section.appendChild(form);
-  form.appendChild(orderInput);
-  section.appendChild(list);
-  items.forEach((item) => list.appendChild(item));
-  section.appendChild(live);
-  let submitCount = 0;
-  form.requestSubmit = () => { submitCount += 1; };
-  return {
-    document,
-    section,
-    form,
-    orderInput,
-    live,
-    list,
-    items,
-    get submitCount() { return submitCount; },
-    order() { return list.querySelectorAll('[data-note-reorder-item]').map((item) => item.dataset.noteId); },
-  };
-}
-
 function makeDedicatedReorderFixture({
   action,
   csrfToken,
@@ -1328,105 +1265,6 @@ describe('project category reorder enhancement', () => {
   });
 });
 
-describe('Notes reorder enhancement', () => {
-  it('is scoped and no-ops when the Notes reorder list is absent', () => {
-    const scope = {
-      querySelectorAll(selector) {
-        expect(selector).toBe('[data-note-reorder-list]');
-        return [];
-      },
-    };
-
-    expect(enhanceNoteReorder(scope)).toBe(0);
-  });
-
-  it('moves only from the explicit handle, posts the complete order, and keeps links out of drag behavior', async () => {
-    const fixture = makeNoteReorderFixture();
-    const link = makeCategoryNode({ tagName: 'a' });
-    fixture.items[0].appendChild(link);
-    const calls = [];
-
-    await withBrowserGlobals(async (action, options) => {
-      calls.push({ action, options });
-      return { ok: true };
-    }, async () => {
-      expect(enhanceNoteReorder(fixture.document)).toBe(1);
-
-      const linkDrag = fixture.items[0].dispatch('dragstart', {
-        target: link,
-        dataTransfer: { setData() {} },
-      });
-      expect(linkDrag.defaultPrevented).toBe(true);
-
-      fixture.items[0].handle.dispatch('dragstart', { dataTransfer: { setData() {} } });
-      fixture.list.dispatch('dragover', {
-        target: fixture.items[2],
-        clientY: 130,
-        dataTransfer: {},
-      });
-      fixture.list.dispatch('drop', { target: fixture.items[2] });
-      await flushAsync();
-
-      expect(fixture.order()).toEqual(['22', '33', '11']);
-      expect(fixture.orderInput.value).toBe('22,33,11');
-      expect(calls).toHaveLength(1);
-      expect(calls[0].action).toBe('/notes/reorder');
-      expect(calls[0].options.method).toBe('POST');
-      expect(calls[0].options.body).toBeInstanceOf(URLSearchParams);
-      expect(calls[0].options.body.getAll('_csrf')).toEqual(['csrf-note-reorder']);
-      expect(calls[0].options.body.getAll('orderedNoteIds')).toEqual(['22,33,11']);
-      expect(fixture.submitCount).toBe(0);
-    });
-  });
-
-  it('supports keyboard moves, ARIA positions, announcements, focus, and rollback', async () => {
-    const fixture = makeNoteReorderFixture();
-    const calls = [];
-
-    await withBrowserGlobals(async (action, options) => {
-      calls.push({ action, options });
-      return { ok: true };
-    }, async () => {
-      enhanceNoteReorder(fixture.document);
-
-      fixture.items[1].handle.dispatch('keydown', { key: 'ArrowUp' });
-      expect(fixture.order()).toEqual(['22', '11', '33']);
-      expect(fixture.items[1].handle.focused).toBe(true);
-      expect(fixture.items[1].getAttribute('aria-posinset')).toBe('1');
-      expect(fixture.live.textContent).toContain('moved to position 1 of 3');
-      await flushAsync();
-      expect(calls).toHaveLength(1);
-      expect(calls[0].options.body.getAll('orderedNoteIds')).toEqual(['22,11,33']);
-
-      fixture.items[2].handle.dispatch('keydown', { key: 'End' });
-      expect(calls).toHaveLength(1);
-      expect(fixture.order()).toEqual(['22', '11', '33']);
-    });
-
-    const failure = makeNoteReorderFixture();
-    await withBrowserGlobals(async () => ({ ok: false, status: 503 }), async () => {
-      enhanceNoteReorder(failure.document);
-      failure.items[1].handle.dispatch('keydown', { key: 'ArrowUp' });
-      await flushAsync();
-      expect(failure.order()).toEqual(['11', '22', '33']);
-      expect(failure.items[1].getAttribute('aria-posinset')).toBe('2');
-      expect(failure.live.textContent).toContain('previous order was restored');
-    });
-  });
-
-  it('is idempotent and ignores boundary keyboard moves', () => {
-    const fixture = makeNoteReorderFixture();
-
-    expect(enhanceNoteReorder(fixture.document)).toBe(1);
-    expect(enhanceNoteReorder(fixture.document)).toBe(1);
-    expect(fixture.items[0].handle.listeners.filter((listener) => listener.type === 'keydown')).toHaveLength(1);
-    expect(fixture.list.listeners.filter((listener) => listener.type === 'dragover')).toHaveLength(1);
-
-    fixture.items[0].handle.dispatch('keydown', { key: 'ArrowUp' });
-    fixture.items[2].handle.dispatch('keydown', { key: 'ArrowDown' });
-    expect(fixture.order()).toEqual(['11', '22', '33']);
-  });
-});
 
 describe('top-level Book reorder enhancement', () => {
   it('is scoped and no-ops when the Book reorder list is absent', () => {

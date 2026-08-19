@@ -440,8 +440,6 @@ export function createAssetProcessingPlanner({
       throw plannerError('Managed scale maps are unavailable.', 'SCALE_MAP_UNAVAILABLE');
     }
     try {
-      // Transition: the current UI may submit scaleMapId, but it is intentionally
-      // ignored. Planning is bound only to the canonical system-keyed map.
       return scaleMapService.resolveForProcessing();
     } catch (cause) {
       throw plannerError(cause?.message || 'Managed scale map is unavailable.', cause?.code || 'SCALE_MAP_INVALID', cause);

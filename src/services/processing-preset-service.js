@@ -272,11 +272,6 @@ export function createProcessingPresetService({ repository, watermarkService } =
     return record;
   }
 
-  function normalizeBindings() {
-    // The column remains legacy schema; Scale Maps are no longer preset resources.
-    return { watermarkId: null, scaleMapId: null };
-  }
-
   function resolveWatermarkForExecution(watermarkId) {
     try {
       return watermarkService.resolveForProcessing(watermarkId).watermark;
@@ -307,10 +302,8 @@ export function createProcessingPresetService({ repository, watermarkService } =
     getPreset(id) { return publicRecord(requireRecord(id)); },
     createPreset({ operationType, displayName, config } = {}) {
       const normalizedOperation = normalizeOperationType(operationType);
-      // Transition: accept the legacy UI field but never store a Scale Map binding.
-      const bindings = normalizeBindings();
       try {
-        return publicRecord(repository.create({ operationType: normalizedOperation, displayName: normalizeDisplayName(displayName), configVersion: CONFIG_VERSION, configJson: stableJson(normalizeConfig(normalizedOperation, config)), ...bindings }));
+        return publicRecord(repository.create({ operationType: normalizedOperation, displayName: normalizeDisplayName(displayName), configVersion: CONFIG_VERSION, configJson: stableJson(normalizeConfig(normalizedOperation, config)), watermarkId: null }));
       } catch (cause) { mapRepositoryError(cause); }
     },
     importPresetBundle(bundle = {}) {
@@ -345,10 +338,8 @@ export function createProcessingPresetService({ repository, watermarkService } =
     replacePreset(id, { config } = {}) {
       const current = requireRecord(id);
       const normalizedConfig = normalizeConfig(current.operation_type, config);
-      // A submitted legacy scaleMapId is intentionally ignored during this transition.
-      const bindings = normalizeBindings();
       try {
-        return publicRecord(repository.replace(id, { configJson: stableJson(normalizedConfig), ...bindings }));
+        return publicRecord(repository.replace(id, { configJson: stableJson(normalizedConfig), watermarkId: null }));
       } catch (cause) { mapRepositoryError(cause); }
     },
     deletePreset(id) {
@@ -371,8 +362,6 @@ export function createProcessingPresetService({ repository, watermarkService } =
         throw new ProcessingPresetServiceError('watermarkId must be a positive integer.', { code: 'INVALID_WATERMARK_ID' });
       }
       const watermarkId = runtimeResources.watermarkId;
-      // Scale maps resolve in Planner/Apply through the canonical singleton.
-      // A legacy runtime scaleMapId is accepted by the route but intentionally ignored.
       const watermark = resolveWatermarkForExecution(watermarkId);
       return {
         ...preset,
@@ -388,7 +377,6 @@ export function createProcessingPresetService({ repository, watermarkService } =
         configVersion: CONFIG_VERSION,
         configJson: stableJson(normalizeConfig(preset.operationType, preset.config)),
         watermarkId: null,
-        scaleMapId: null,
       }));
       return repository.seedReferenceData({
         markerKey: SEED_MARKER_KEY,

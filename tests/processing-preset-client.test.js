@@ -544,7 +544,7 @@ function makeFetchMock() {
       if (existing) return fail(409, 'PRESET_NAME_CONFLICT', 'A preset with that operation type and display name already exists.');
       const preset = {
         id: nextId, operationType: body.operationType, displayName: body.displayName,
-        config: body.config, watermarkId: body.watermarkId ?? null, scaleMapId: body.scaleMapId ?? null,
+        config: body.config, watermarkId: body.watermarkId ?? null,
       };
       nextId += 1;
       presets.set(String(preset.id), preset);
@@ -567,7 +567,7 @@ function makeFetchMock() {
         if (displayName !== baseName) renamed += 1;
         const preset = {
           id: nextId, operationType: body.operationType, displayName,
-          config: entry.config, watermarkId: null, scaleMapId: null,
+          config: entry.config, watermarkId: null,
         };
         nextId += 1;
         presets.set(String(preset.id), preset);
@@ -591,7 +591,6 @@ function makeFetchMock() {
       if (!preset) return fail(404, 'PRESET_NOT_FOUND', 'Processing preset not found.');
       preset.config = body.config;
       if (Object.hasOwn(body, 'watermarkId')) preset.watermarkId = body.watermarkId;
-      if (Object.hasOwn(body, 'scaleMapId')) preset.scaleMapId = body.scaleMapId;
       return ok({ ok: true, preset });
     }
     const deleteMatch = url.match(/^\/processing\/presets\/(\d+)\/delete$/);
@@ -695,12 +694,12 @@ describe('Processing dialog preset management', () => {
       fetchState.seed({
         id: 5, operationType: 'convert', displayName: 'Patreon',
         config: { format: 'webp', quality: 85, originalHandling: 'move' },
-        systemKey: 'convert-system', watermarkId: null, scaleMapId: null,
+        systemKey: 'convert-system', watermarkId: null,
       });
       fetchState.seed({
         id: 6, operationType: 'convert', displayName: 'Social',
         config: { format: 'png', quality: 72, originalHandling: 'keep' },
-        watermarkId: null, scaleMapId: null,
+        watermarkId: null,
       });
       enhanceProcessingDialogs(doc);
       await openDialog(fixture);
@@ -829,7 +828,7 @@ describe('Processing dialog preset management', () => {
 
     it('marks Modified from preset after editing a field, and Update persists the change while keeping the same preset selected', async () => {
       const fixture = buildConvertRoot(doc);
-      fetchState.seed({ id: 5, operationType: 'convert', displayName: 'WebP 85', config: { format: 'webp', quality: 85, originalHandling: 'keep' }, watermarkId: null, scaleMapId: null });
+      fetchState.seed({ id: 5, operationType: 'convert', displayName: 'WebP 85', config: { format: 'webp', quality: 85, originalHandling: 'keep' }, watermarkId: null });
       enhanceProcessingDialogs(doc);
       await openDialog(fixture);
 
@@ -860,7 +859,7 @@ describe('Processing dialog preset management', () => {
 
     it('renames the selected preset and updates the selector label immediately, remaining selected', async () => {
       const fixture = buildConvertRoot(doc);
-      fetchState.seed({ id: 5, operationType: 'convert', displayName: 'Old name', config: { format: 'webp', quality: 85, originalHandling: 'keep' }, watermarkId: null, scaleMapId: null });
+      fetchState.seed({ id: 5, operationType: 'convert', displayName: 'Old name', config: { format: 'webp', quality: 85, originalHandling: 'keep' }, watermarkId: null });
       enhanceProcessingDialogs(doc);
       await openDialog(fixture);
 
@@ -883,7 +882,7 @@ describe('Processing dialog preset management', () => {
 
     it('cleanly reports a duplicate preset name inside the dialog, without alert()', async () => {
       const fixture = buildConvertRoot(doc);
-      fetchState.seed({ id: 5, operationType: 'convert', displayName: 'Taken', config: { format: 'webp', quality: 85, originalHandling: 'keep' }, watermarkId: null, scaleMapId: null });
+      fetchState.seed({ id: 5, operationType: 'convert', displayName: 'Taken', config: { format: 'webp', quality: 85, originalHandling: 'keep' }, watermarkId: null });
       const alertSpy = vi.fn();
       vi.stubGlobal('alert', alertSpy);
       enhanceProcessingDialogs(doc);
@@ -903,7 +902,7 @@ describe('Processing dialog preset management', () => {
 
     it('deletes the selected preset with confirmation, switches to Custom, and preserves the current form values', async () => {
       const fixture = buildConvertRoot(doc);
-      fetchState.seed({ id: 5, operationType: 'convert', displayName: 'Doomed', config: { format: 'webp', quality: 85, originalHandling: 'keep' }, watermarkId: null, scaleMapId: null });
+      fetchState.seed({ id: 5, operationType: 'convert', displayName: 'Doomed', config: { format: 'webp', quality: 85, originalHandling: 'keep' }, watermarkId: null });
       enhanceProcessingDialogs(doc);
       await openDialog(fixture);
 
@@ -1028,14 +1027,14 @@ describe('Processing dialog preset management', () => {
             { type: 'prepend', text: 'extra abs, ' },
             { type: 'append', text: ', low quality' },
           ],
-        }, watermarkId: null, scaleMapId: null,
+        }, watermarkId: null,
       });
       fetchState.seed({
         id: 12, operationType: 'workflow-prompt', displayName: 'Workflow second',
         config: {
           positive: [{ type: 'append', text: 'positive' }],
           negative: [{ type: 'remove', text: 'negative' }],
-        }, watermarkId: null, scaleMapId: null,
+        }, watermarkId: null,
       });
       enhanceProcessingDialogs(doc);
       await openDialog(fixture);

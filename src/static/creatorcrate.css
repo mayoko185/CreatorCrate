@@ -887,51 +887,6 @@
         outline: 2px solid var(--focus-ring);
         outline-offset: 2px;
       }
-      .notes-reorder-form { display: none; }
-      .notes-table .notes-reorder-heading,
-      .notes-table .notes-reorder-cell {
-        width: 2.5rem;
-        padding-right: var(--space-sm);
-        padding-left: var(--space-sm);
-        text-align: center;
-      }
-      .notes-table tbody[data-note-reorder-list] tr[data-note-reorder-item] {
-        transition: opacity var(--transition-fast), box-shadow var(--transition-fast), background var(--transition-fast);
-      }
-      .notes-table tbody[data-note-reorder-list] tr[data-note-reorder-item].is-dragging {
-        opacity: 0.55;
-      }
-      .notes-table tbody[data-note-reorder-list] tr[data-note-reorder-item].is-drop-before td {
-        box-shadow: 0 -3px 0 var(--accent);
-      }
-      .notes-table tbody[data-note-reorder-list] tr[data-note-reorder-item].is-drop-after td {
-        box-shadow: 0 3px 0 var(--accent);
-      }
-      .notes-reorder-handle {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        width: 2rem;
-        min-height: 2rem;
-        padding: 0;
-        color: var(--muted);
-        background: transparent;
-        border: 1px solid transparent;
-        border-radius: var(--radius-sm);
-        cursor: grab;
-        font-size: 1.25rem;
-        line-height: 1;
-      }
-      .notes-reorder-handle:hover {
-        color: var(--text);
-        background: var(--surface-card);
-        border-color: var(--border);
-      }
-      .notes-reorder-handle:active { cursor: grabbing; }
-      .notes-reorder-handle:focus-visible {
-        outline: 2px solid var(--focus-ring);
-        outline-offset: 2px;
-      }
       .notes-editor,
       .notes-editor-host {
         width: 100%;

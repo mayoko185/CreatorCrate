@@ -6,6 +6,7 @@ import { createIndexRouter } from './routes/index.js';
 import { createHealthRouter } from './routes/health.js';
 import { createProjectsRouter } from './routes/projects.js';
 import { createAssetsRouter } from './routes/assets.js';
+import { createProjectAssetCategoryManagementRouter } from './routes/project-asset-category-management.js';
 import { createProcessingRouter } from './routes/processing.js';
 import { createAssetLibraryRouter } from './routes/asset-library.js';
 import { createProjectAssetCategoriesRouter } from './routes/project-asset-categories.js';
@@ -632,10 +633,10 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     app.use('/projects', createMediaRouter({ mediaService }));
   }
 
-  // The Assets router combines database-backed browser queries with
-  // filesystem-backed scanning and mutation handlers. Rootless applications
-  // intentionally do not construct those filesystem services, so omit the
-  // complete router instead of mounting handlers that would receive null
+  // The Assets and category-management routers combine database-backed browser
+  // queries with filesystem-backed scanning and mutation handlers. Rootless
+  // applications intentionally do not construct those filesystem services, so
+  // omit both routers instead of mounting handlers that would receive null
   // dependencies and fail at request time.
   if (projectsRoot) {
 
@@ -652,6 +653,14 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
       autoRenameService,
       projectPrimaryImageService,
       previewProbe: previewService?.inspectKritaPreviewSource,
+    }));
+    app.use('/projects', createProjectAssetCategoryManagementRouter({
+      appName,
+      projectService,
+      workflowQueryService,
+      releaseService,
+      projectAssetCategoryService,
+      assetBrowserPreferenceService,
     }));
 
     if (typeof workflowQueryService.getProjectAssetViewer === 'function') {

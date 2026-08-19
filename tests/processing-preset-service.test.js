@@ -285,7 +285,7 @@ describe('processing preset service', () => {
     service.seedReferencePresets();
     const patreon = service.listPresets().find(({ systemKey }) => systemKey === 'watermark-patreon');
     expect(() => service.resolvePresetForExecution(patreon.id)).toThrow(expect.objectContaining({ code: 'WATERMARK_REQUIRED' }));
-    const resolved = service.resolvePresetForExecution(patreon.id, { watermarkId: 1, scaleMapId: 999 });
+    const resolved = service.resolvePresetForExecution(patreon.id, { watermarkId: 1 });
     expect(resolved).toMatchObject({ watermark: { id: 1 }, watermarkId: 1 });
     expect(resolved).not.toHaveProperty('scaleMap');
     expect(resolved).not.toHaveProperty('scaleMapId');

@@ -38,6 +38,7 @@ const dependencyInstrumentation = vi.hoisted(() => ({
   workflowQueryServices: [],
   openLocallySettingsServices: [],
   assetRouters: [],
+  projectAssetCategoryManagementRouters: [],
   noteRouters: [],
   projectAssetCategoryRouters: [],
   settingsRouters: [],
@@ -331,6 +332,18 @@ vi.mock('../src/routes/assets.js', async (importOriginal) => {
   };
 });
 
+vi.mock('../src/routes/project-asset-category-management.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    createProjectAssetCategoryManagementRouter(...args) {
+      const router = actual.createProjectAssetCategoryManagementRouter(...args);
+      dependencyInstrumentation.projectAssetCategoryManagementRouters.push({ args, router });
+      return router;
+    },
+  };
+});
+
 vi.mock('../src/routes/notes.js', async (importOriginal) => {
   const actual = await importOriginal();
   return {
@@ -369,6 +382,7 @@ vi.mock('../src/routes/settings.js', async (importOriginal) => {
 
 import { createApp } from '../src/app.js';
 import { createAssetsRouter } from '../src/routes/assets.js';
+import { createProjectAssetCategoryManagementRouter } from '../src/routes/project-asset-category-management.js';
 import { createProjectAssetCategoriesRouter } from '../src/routes/project-asset-categories.js';
 import { createSettingsRouter } from '../src/routes/settings.js';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
@@ -741,6 +755,7 @@ describe('app construction — asset actions chunk 3 wiring', () => {
     );
 
     expect(dependencyInstrumentation.assetRouters).toHaveLength(0);
+    expect(dependencyInstrumentation.projectAssetCategoryManagementRouters).toHaveLength(0);
     expect(dependencyInstrumentation.projectAssetCategoryRouters).toHaveLength(0);
     expect(dependencyInstrumentation.settingsRouters).toHaveLength(1);
     expect(app.locals.assetActionService).toBeNull();
@@ -754,6 +769,7 @@ describe('app construction — asset actions chunk 3 wiring', () => {
     const app = buildApp();
 
     expect(dependencyInstrumentation.assetRouters).toHaveLength(1);
+    expect(dependencyInstrumentation.projectAssetCategoryManagementRouters).toHaveLength(1);
     const [routerCall] = dependencyInstrumentation.assetRouters;
     const dependencies = routerCall.args[0];
 
@@ -765,11 +781,28 @@ describe('app construction — asset actions chunk 3 wiring', () => {
     expect(dependencies.assetActionService).toBe(app.locals.assetActionService);
     expect(dependencies.assetBrowserPreferenceService).toBe(app.locals.assetBrowserPreferenceService);
     expect(dependencies.projectPrimaryImageService).toBe(app.locals.projectPrimaryImageService);
+    expect(dependencyInstrumentation.projectAssetCategoryManagementRouters[0].args[0]).toMatchObject({
+      projectService: expect.anything(),
+      releaseService: expect.anything(),
+      projectAssetCategoryService: app.locals.projectAssetCategoryService,
+      assetBrowserPreferenceService: app.locals.assetBrowserPreferenceService,
+    });
   });
 
   it('fails clearly when the Assets router preference dependency is absent', () => {
     expect(() => createAssetsRouter({})).toThrow(
       'createAssetsRouter requires an assetBrowserPreferenceService dependency.'
+    );
+  });
+
+  it('fails clearly when the category-management router dependencies are absent', () => {
+    expect(() => createProjectAssetCategoryManagementRouter({})).toThrow(
+      'createProjectAssetCategoryManagementRouter requires an assetBrowserPreferenceService dependency.'
+    );
+    expect(() => createProjectAssetCategoryManagementRouter({
+      assetBrowserPreferenceService: { resolveEffectiveCategory() {} },
+    })).toThrow(
+      'createProjectAssetCategoryManagementRouter requires a projectAssetCategoryService dependency.'
     );
   });
 
@@ -805,10 +838,13 @@ describe('app construction — asset actions chunk 3 wiring', () => {
   it('passes the exact app-scoped preference service to all rooted preference-aware routers', () => {
     const app = buildApp();
     expect(dependencyInstrumentation.assetRouters).toHaveLength(1);
+    expect(dependencyInstrumentation.projectAssetCategoryManagementRouters).toHaveLength(1);
     expect(dependencyInstrumentation.projectAssetCategoryRouters).toHaveLength(1);
     expect(dependencyInstrumentation.settingsRouters).toHaveLength(1);
 
     expect(dependencyInstrumentation.assetRouters[0].args[0].assetBrowserPreferenceService)
+      .toBe(app.locals.assetBrowserPreferenceService);
+    expect(dependencyInstrumentation.projectAssetCategoryManagementRouters[0].args[0].assetBrowserPreferenceService)
       .toBe(app.locals.assetBrowserPreferenceService);
     expect(dependencyInstrumentation.projectAssetCategoryRouters[0].args[0].assetBrowserPreferenceService)
       .toBe(app.locals.assetBrowserPreferenceService);
@@ -816,12 +852,13 @@ describe('app construction — asset actions chunk 3 wiring', () => {
       .toBe(app.locals.assetBrowserPreferenceService);
   });
 
-  it('keeps the standalone category router read-only while Assets owns category POST routes', () => {
+  it('keeps the standalone category router read-only while the management router owns category POST routes', () => {
     const app = buildApp();
-    const assetsDependencies = dependencyInstrumentation.assetRouters[0].args[0];
+    const managementDependencies = dependencyInstrumentation.projectAssetCategoryManagementRouters[0].args[0];
     const categoryDependencies = dependencyInstrumentation.projectAssetCategoryRouters[0].args[0];
 
-    expect(assetsDependencies.projectAssetCategoryService).toBe(app.locals.projectAssetCategoryService);
+    expect(managementDependencies.projectAssetCategoryService).toBe(app.locals.projectAssetCategoryService);
+    expect(managementDependencies.releaseService).toBeTruthy();
     expect(categoryDependencies).not.toHaveProperty('releaseService');
   });
 

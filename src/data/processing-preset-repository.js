@@ -169,11 +169,11 @@ export function createProcessingPresetRepository(db) {
   return {
     findById(id) { return findByIdStmt.get(id); },
     list(operationType) { return operationType === undefined ? listStmt.all() : listByOperationStmt.all(operationType); },
-    create({ operationType, displayName, systemKey = null, configVersion, configJson, watermarkId = null, scaleMapId = null }) {
-      return insertStmt.get(operationType, displayName, systemKey, configVersion, configJson, watermarkId, scaleMapId);
+    create({ operationType, displayName, systemKey = null, configVersion, configJson, watermarkId = null }) {
+      return insertStmt.get(operationType, displayName, systemKey, configVersion, configJson, watermarkId, null);
     },
     rename(id, displayName) { return renameStmt.get(displayName, id); },
-    replace(id, { configJson, watermarkId, scaleMapId }) { return replaceStmt.get(configJson, watermarkId, scaleMapId, id); },
+    replace(id, { configJson, watermarkId }) { return replaceStmt.get(configJson, watermarkId, null, id); },
     delete(id) { return deleteStmt.get(id); },
     importPresets,
     seedReferenceData,

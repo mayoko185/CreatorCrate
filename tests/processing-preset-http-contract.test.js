@@ -115,13 +115,9 @@ describe('Processing preset HTTP contract (seeded presets, client-shaped payload
     expect(renamed.body.preset.displayName).toBe('Benji v2');
   });
 
-  it('drops legacy scaleMapId values on create and replace while keeping Watermark identity runtime-only', async () => {
+  it('rejects legacy scaleMapId values on create and replace while keeping Watermark identity runtime-only', async () => {
     const preset = await findSeeded('Social Watermark', 'watermark');
     expect(preset.watermarkId).toBeNull();
-    const legacyScaleMapId = Number(db.prepare(`
-      INSERT INTO watermark_scale_maps (display_name, definition_json)
-      VALUES ('Historical map', '{}')
-    `).run().lastInsertRowid);
 
     const updateBody = {
       config: {
@@ -130,7 +126,6 @@ describe('Processing preset HTTP contract (seeded presets, client-shaped payload
         makeArchives: false, makeCbz: false, archiveFormat: 'zip', archivePrefix: '', additionalFormats: [],
       },
       watermarkId: 1,
-      scaleMapId: legacyScaleMapId,
     };
     const updated = await request(app).post(`/processing/presets/${preset.id}/replace`).send(updateBody).expect(200);
     expect(updated.body.preset.watermarkId).toBeNull();
@@ -144,12 +139,22 @@ describe('Processing preset HTTP contract (seeded presets, client-shaped payload
     expect(db.prepare('SELECT scale_map_id FROM processing_presets WHERE id = ?').get(preset.id)).toEqual({ scale_map_id: null });
 
     const created = await request(app).post('/processing/presets').send({
-      operationType: 'watermark', displayName: 'Imported legacy map', scaleMapId: legacyScaleMapId,
+      operationType: 'watermark', displayName: 'No scale-map binding',
       config: updateBody.config,
     }).expect(201);
     expect(created.body.preset).not.toHaveProperty('scaleMapId');
     expect(db.prepare('SELECT scale_map_id FROM processing_presets WHERE id = ?').get(created.body.preset.id))
       .toEqual({ scale_map_id: null });
+
+    for (const requestWithLegacyScaleMap of [
+      request(app).post(`/processing/presets/${preset.id}/replace`).send({ ...updateBody, scaleMapId: 999 }),
+      request(app).post('/processing/presets').send({
+        operationType: 'watermark', displayName: 'Rejected scale-map binding', config: updateBody.config, scaleMapId: 999,
+      }),
+    ]) {
+      const response = await requestWithLegacyScaleMap.expect(400);
+      expect(response.body.error).toMatchObject({ code: 'INVALID_REQUEST', field: 'scaleMapId' });
+    }
   });
 
   it('rejects a preset payload that smuggles scope/runtime-only fields inside config, exactly as the client never sends them', async () => {

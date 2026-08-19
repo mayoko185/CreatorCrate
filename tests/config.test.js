@@ -52,9 +52,12 @@ describe('createConfig', () => {
     expect(config.databasePath).toBe(path.resolve('/tmp/app/test.db'));
   });
 
-  it.each(['0', '-1', '70000', 'abc'])('rejects invalid port %s', (port) => {
-    expect(() => createConfig(env({ PORT: port }))).toThrow(ConfigError);
-  });
+  it.each(['0', '-1', '70000', 'abc', '3e3', '0x1F', '3000.0', ' 3000', '3000 '])(
+    'rejects invalid port %s',
+    (port) => {
+      expect(() => createConfig(env({ PORT: port }))).toThrow(ConfigError);
+    }
+  );
 
   it('rejects database path outside app data root', () => {
     expect(() =>
@@ -169,9 +172,12 @@ describe('createConfig', () => {
     expect(config.backupRetentionCount).toBe(0);
   });
 
-  it.each(['-1', '1.5', 'abc'])('rejects invalid BACKUP_RETENTION_COUNT %s', (value) => {
-    expect(() => createConfig(env({ BACKUP_RETENTION_COUNT: value }))).toThrow(ConfigError);
-  });
+  it.each(['-1', '1.5', 'abc', '3e3', '0x1F', '3000.0', ' 3000', '3000 '])(
+    'rejects invalid BACKUP_RETENTION_COUNT %s',
+    (value) => {
+      expect(() => createConfig(env({ BACKUP_RETENTION_COUNT: value }))).toThrow(ConfigError);
+    }
+  );
 
   // ─── Automatic scan interval (deployment-controlled, scheduler deferred) ──
 

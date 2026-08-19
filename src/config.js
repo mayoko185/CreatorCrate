@@ -41,6 +41,15 @@ function getEnv(rawEnv, key) {
   return value === undefined || value === '' ? DEFAULTS[key] : value;
 }
 
+function parseCanonicalInteger(rawValue) {
+  if (typeof rawValue !== 'string' || !/^(?:0|[1-9]\d*)$/.test(rawValue)) {
+    return null;
+  }
+
+  const value = Number(rawValue);
+  return Number.isSafeInteger(value) ? value : null;
+}
+
 function parseOptionalPositiveIntegerEnv(rawEnv, key) {
   const rawValue = rawEnv[key];
   if (rawValue === undefined || rawValue === '') return null;
@@ -66,8 +75,8 @@ export function createConfig(rawEnv = process.env) {
   const appName = getEnv(rawEnv, 'APP_NAME');
 
   const portRaw = getEnv(rawEnv, 'PORT');
-  const port = Number(portRaw);
-  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+  const port = parseCanonicalInteger(portRaw);
+  if (port === null || port < 1 || port > 65535) {
     throw new ConfigError(`Invalid PORT "${portRaw}". Expected an integer between 1 and 65535.`);
   }
 
@@ -101,8 +110,8 @@ export function createConfig(rawEnv = process.env) {
   // (all managed backups are kept indefinitely) rather than being treated
   // as invalid, so operators have an explicit opt-out.
   const retentionRaw = getEnv(rawEnv, 'BACKUP_RETENTION_COUNT');
-  const backupRetentionCount = Number(retentionRaw);
-  if (!Number.isInteger(backupRetentionCount) || backupRetentionCount < 0) {
+  const backupRetentionCount = parseCanonicalInteger(retentionRaw);
+  if (backupRetentionCount === null || backupRetentionCount < 0) {
     throw new ConfigError(
       `Invalid BACKUP_RETENTION_COUNT "${retentionRaw}". Expected a non-negative integer (0 disables automatic pruning).`
     );

@@ -202,6 +202,42 @@ describe('processing HTTP routes', () => {
     );
   });
 
+  it('rejects legacy scaleMapId runtime resources before resolving a preset', async () => {
+    const { app, services } = createHarness();
+    const response = await request(app)
+      .post('/projects/1/assets/processing/convert/plan')
+      .send({ scope: { type: 'project' }, presetId: 12, runtimeResources: { scaleMapId: 999 } });
+
+    expect(response.status).toBe(400);
+    expect(response.body.error).toMatchObject({ code: 'INVALID_REQUEST', field: 'scaleMapId' });
+    expect(services.processingPresetService.resolvePresetForExecution).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['plan', '/projects/1/assets/processing/watermark/plan', 'planWatermark'],
+    ['apply', '/projects/1/assets/processing/watermark/apply', 'watermarkAssets'],
+    ['preview-image', '/projects/1/assets/processing/watermark/preview-image', 'renderWatermarkPreview'],
+  ])('rejects legacy scaleMapId in direct Watermark %s requests before execution', async (_mode, route, method) => {
+    const { app, services } = createHarness();
+    const response = await request(app)
+      .post(route)
+      .send({
+        scope: { type: 'selected', assetIds: [9] },
+        options: { mode: 'patreon', outputFormat: 'png', deleteSource: false, watermarkId: 10, scaleMapId: 999 },
+      });
+
+    expect(response.status).toBe(400);
+    expect(response.body).toEqual({
+      ok: false,
+      error: {
+        code: 'INVALID_REQUEST',
+        message: 'options contains an unsupported field: scaleMapId.',
+        field: 'scaleMapId',
+      },
+    });
+    expect(services.assetProcessingPlanner[method] ?? services.assetProcessingService[method]).not.toHaveBeenCalled();
+  });
+
   it('adapts category scope to present assets in canonical repository order', async () => {
     const { app, services } = createHarness();
     const response = await request(app)

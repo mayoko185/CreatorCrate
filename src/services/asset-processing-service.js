@@ -583,8 +583,6 @@ export function createAssetProcessingService({
       throw new AssetProcessingError('Managed scale maps are unavailable.', { code: 'SCALE_MAP_UNAVAILABLE' });
     }
     try {
-      // Transition: legacy request scaleMapId values are accepted by the route
-      // but never influence Apply; execution uses the canonical singleton.
       return scaleMapService.resolveForProcessing();
     } catch (cause) {
       throw new AssetProcessingError(cause?.message || 'Managed scale map is unavailable.', {
