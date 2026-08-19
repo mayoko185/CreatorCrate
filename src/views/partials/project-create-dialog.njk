@@ -1,0 +1,37 @@
+{% import "partials/dialog.njk" as dialog %}
+
+{% macro render(projectCreateForm, returnTo, csrfToken, open=false) %}
+  {% set values = projectCreateForm.values %}
+  {% set errors = projectCreateForm.errors %}
+  {% set statuses = projectCreateForm.statuses %}
+  {% set tags = projectCreateForm.tags %}
+  {% set selectedTagIds = projectCreateForm.selectedTagIds %}
+  {% call dialog.render('project-create-dialog', 'New Project', open, 'project-create-description', 'project-create-form', 'project-form-dialog') %}
+    <p id="project-create-description" class="app-dialog-description">
+      Create a tracked project record.
+    </p>
+
+    <div class="app-dialog-body project-edit-dialog-body">
+      <form id="project-create-form" method="post" action="/projects" class="app-dialog-form project-form project-edit-dialog-form"
+            data-dialog-form data-dialog-async="false" novalidate>
+        <input type="hidden" name="_csrf" value="{{ csrfToken }}">
+        <input type="hidden" name="returnTo" value="{{ returnTo }}">
+
+        {% if errors.general %}
+          <div class="error-summary" role="alert">
+            <p>{{ errors.general }}</p>
+          </div>
+        {% endif %}
+
+        {% set projectFormDialog = true %}
+        {% include "partials/project-form-fields.njk" %}
+      </form>
+    </div>
+
+    <div class="app-dialog-status" data-dialog-status role="status" aria-live="polite"></div>
+
+    <footer class="app-dialog-footer">
+      <button class="button button-primary" type="submit" form="project-create-form" data-dialog-submit>Create project</button>
+    </footer>
+  {% endcall %}
+{% endmacro %}

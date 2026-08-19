@@ -3,12 +3,13 @@
 {% import "partials/project-card.njk" as projectCard %}
 {% import "partials/icons.njk" as icons %}
 {% import "partials/dashboard-defaults-dialog.njk" as dashboardDefaultsDialog %}
+{% import "partials/project-create-dialog.njk" as projectCreateDialog %}
 
 {% set page_title = "Dashboard" %}
 
 {% block content %}
   {% call pageHeading.render("Organize your art projects in one self-hosted place.") %}
-    <a class="button button-primary" href="/projects/new">New Project</a>
+    <a class="button button-primary" href="/projects/new" data-dialog-open="project-create-dialog">New Project</a>
   {% endcall %}
 
   <div class="asset-viewer-display-controls" data-project-grid-size-controls>
@@ -80,6 +81,7 @@
       {% else %}
         {% set emptyActionUrl = "" %}
         {% set emptyActionLabel = "" %}
+        {% set emptyActionDialogId = "" %}
         {% if section.id == 'overdue' %}
           {% set emptyHeading = "No overdue projects" %}
           {% set emptyDescription = "Projects with no releases and a planned date today or earlier will show up here." %}
@@ -91,6 +93,7 @@
           {% set emptyDescription = "Create a project to start organizing releases and assets." %}
           {% set emptyActionUrl = "/projects/new" %}
           {% set emptyActionLabel = "New Project" %}
+          {% set emptyActionDialogId = "project-create-dialog" %}
         {% else %}
           {% set emptyHeading = "No " + (section.label | lower) + " projects" %}
           {% set emptyDescription = "No projects currently have the " + (section.label | lower) + " status." %}
@@ -104,4 +107,5 @@
 
 {% block overlay %}
   {{ dashboardDefaultsDialog.render(dashboardDefaults, dashboardSectionRegistry, dashboardDefaultsDialogOpen, _csrf, dashboardDefaultsFormState or {}) }}
+  {{ projectCreateDialog.render(projectCreateForm, '/', _csrf, projectCreateDialogOpen) }}
 {% endblock %}

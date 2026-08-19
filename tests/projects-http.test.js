@@ -92,6 +92,10 @@ function extractProjectFormTagsField(html) {
   return html.match(/<fieldset class="field[^"]*">\s*<legend>Tags<\/legend>[\s\S]*?<\/fieldset>/)?.[0] || '';
 }
 
+function extractProjectCreateDialog(html) {
+  return html.match(/<dialog id="project-create-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+}
+
 const VOID_HTML_ELEMENTS = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr']);
 
 function extractHtmlElement(html, start) {
@@ -1717,6 +1721,40 @@ describe('project HTTP workflow', () => {
     expect(res.text).not.toContain('id="priority"');
   });
 
+  it('renders one closed native New Project dialog with host returnTo and standalone defaults', async () => {
+    saveNewProjectDefault('status', 'ready');
+    app.locals.tagService.createTag({ name: 'Projects dialog tag' });
+
+    const [projects, standalone] = await Promise.all([
+      agent.get('/projects').expect(200),
+      agent.get('/projects/new').expect(200),
+    ]);
+    const dialog = projects.text.match(/<dialog id="project-create-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+    const ids = [...projects.text.matchAll(/\bid="([^"]+)"/g)].map((match) => match[1]);
+    const newProjectOpeners = projects.text.match(/<a class="button button-primary" href="\/projects\/new" data-dialog-open="project-create-dialog">New Project<\/a>/g) || [];
+
+    expect((projects.text.match(/<dialog id="project-create-dialog"/g) || [])).toHaveLength(1);
+    expect(newProjectOpeners).toHaveLength(2);
+    expect(dialog).not.toBe('');
+    expect(dialog).not.toMatch(/<dialog\b[^>]*\bopen(?:\s|>|=)/);
+    expect(dialog).toContain('<form id="project-create-form" method="post" action="/projects"');
+    expect(dialog).toContain('data-dialog-form data-dialog-async="false"');
+    expect(dialog).toContain('name="returnTo" value="/projects"');
+    expect(dialog).toMatch(/name="status"[^>]*value="ready"[^>]*checked/);
+    expect(standalone.text).toMatch(/name="status"[^>]*value="ready"[^>]*checked/);
+    expect(dialog).toContain('Projects dialog tag');
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it('does not add dialog attributes to unrelated empty-state actions', async () => {
+    await createProject({ title: 'Existing Project' });
+
+    const res = await agent.get('/projects?search=no-match').expect(200);
+
+    expect(res.text).toContain('<a class="button button-primary" href="/projects">Reset</a>');
+    expect(res.text).not.toContain('<a class="button button-primary" href="/projects" data-dialog-open=');
+  });
+
   it('new-project form uses the tbd fallback when no status default is saved', async () => {
     const res = await agent.get('/projects/new').expect(200);
 
@@ -1782,6 +1820,7 @@ describe('project HTTP workflow', () => {
       .send('description=A+test')
       .send('notes=notes')
       .send('status=tbd')
+      .send('returnTo=/projects')
       .set('Content-Type', 'application/x-www-form-urlencoded')
         .send('_csrf=' + encodeURIComponent(csrfToken))
       .expect(302);
@@ -1882,6 +1921,76 @@ describe('project HTTP workflow', () => {
     expect(res.text).toContain('>Scheduling</h3>');
     expect(res.text).toContain('Links');
     expect(res.text).toContain('href="/projects"');
+    expect(res.text).toContain('<form id="project-form" method="post" action="/projects" class="project-form" novalidate>');
+    expect(res.text).not.toContain('id="project-create-dialog"');
+  });
+
+  it('validation failure from the Dashboard dialog rerenders the Dashboard with submitted dialog state', async () => {
+    const tag = app.locals.tagService.createTag({ name: 'Dashboard retry tag' });
+
+    const res = await agent
+      .post('/projects')
+      .send('title=Dashboard+Preserves')
+      .send('description=Dashboard+description')
+      .send('status=in-progress')
+      .send('patreonUrl=not-a-url')
+      .send(`tagIds[]=${tag.id}`)
+      .send('returnTo=/')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .expect(422);
+
+    const dialog = extractProjectCreateDialog(res.text);
+    expect(res.text).toContain('Dashboard');
+    expect(dialog).toMatch(/<dialog id="project-create-dialog"[^>]*\bopen\b/);
+    expect(dialog).toContain('Project link must be a valid absolute HTTP or HTTPS URL.');
+    expect(dialog).toContain('value="Dashboard Preserves"');
+    expect(dialog).toContain('Dashboard description');
+    expect(dialog).toMatch(/name="status"[^>]*value="in-progress"[^>]*checked/);
+    expect(dialog).toMatch(new RegExp(`name="tagIds\\[\\]"[^>]*value="${tag.id}"[^>]*checked`));
+    expect(dialog).toContain('Dashboard retry tag');
+    expect(dialog).toContain('name="returnTo" value="/"');
+  });
+
+  it('validation failure from the Projects dialog rerenders Projects with submitted dialog state', async () => {
+    const tag = app.locals.tagService.createTag({ name: 'Projects retry tag' });
+
+    const res = await agent
+      .post('/projects')
+      .send('title=Projects+Preserves')
+      .send('status=planned')
+      .send('patreonUrl=not-a-url')
+      .send(`tagIds[]=${tag.id}`)
+      .send('returnTo=/projects')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .expect(422);
+
+    const dialog = extractProjectCreateDialog(res.text);
+    expect(res.text).toContain('<form id="project-filters"');
+    expect(dialog).toMatch(/<dialog id="project-create-dialog"[^>]*\bopen\b/);
+    expect(dialog).toContain('Project link must be a valid absolute HTTP or HTTPS URL.');
+    expect(dialog).toContain('value="Projects Preserves"');
+    expect(dialog).toMatch(/name="status"[^>]*value="planned"[^>]*checked/);
+    expect(dialog).toMatch(new RegExp(`name="tagIds\\[\\]"[^>]*value="${tag.id}"[^>]*checked`));
+    expect(dialog).toContain('Projects retry tag');
+    expect(dialog).toContain('name="returnTo" value="/projects"');
+  });
+
+  it('does not trust an invalid dialog returnTo on validation failure', async () => {
+    const res = await agent
+      .post('/projects')
+      .send('title=Invalid+Host')
+      .send('status=tbd')
+      .send('patreonUrl=not-a-url')
+      .send('returnTo=https%3A%2F%2Fevil.example%2Fprojects')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .expect(422);
+
+    expect(res.text).toContain('<form id="project-form" method="post" action="/projects" class="project-form" novalidate>');
+    expect(res.text).not.toContain('id="project-create-dialog"');
+    expect(res.text).not.toContain('name="returnTo" value="https://evil.example/projects"');
   });
 
   it('rejects archived status on create', async () => {
@@ -1931,6 +2040,7 @@ describe('project HTTP workflow', () => {
     expect(toolbar).not.toContain('aria-label="Open locally"');
     expect((toolbar.match(/<a\b/g) || [])).toHaveLength(2);
     expect(dialog).not.toBe('');
+    expect(dialog).toContain('<dialog id="project-edit-dialog" class="app-dialog project-form-dialog"');
     expect(dialog).toContain('<h2 id="project-edit-dialog-title">Edit Project</h2>');
     expect(dialog).toContain('Edit project details, status, scheduling, and links.');
     expect(dialog).not.toContain('Update project metadata and planning fields.');
@@ -2004,23 +2114,24 @@ describe('project HTTP workflow', () => {
     expect(summary.indexOf('project-detail-action-toolbar')).toBeGreaterThanOrEqual(0);
     expect(summary.indexOf('project-detail-action-toolbar')).toBeLessThan(summary.indexOf('project-detail-health'));
     const css = await fetchProjectCss(app);
-    expect(css).toMatch(/#project-edit-dialog\s*\{[^}]*width:\s*min\(51rem,\s*calc\(100vw - 2rem\)\)/);
-    expect(css).not.toMatch(/#project-edit-dialog\s*\{[^}]*width:\s*min\(68rem,\s*calc\(100vw - 2rem\)\)/);
+    const projectFormDialogWidthRule = css.match(/#project-edit-dialog,\s*#project-create-dialog\s*\{[^}]*\}/)?.[0] || '';
+    expect(projectFormDialogWidthRule).toContain('width: min(51rem, calc(100vw - 2rem));');
+    expect(projectFormDialogWidthRule).toContain('max-width: calc(100vw - 2rem);');
     expect(css).toMatch(/#project-asset-category-management-dialog\s*\{[^}]*width:\s*min\(68rem,\s*calc\(100vw - 2rem\)\)/);
     expect(css).toMatch(/\.project-detail-meta\s*\{[^}]*justify-content:\s*space-between/);
     expect(css).toMatch(/\.project-detail-action-toolbar\s*\{[^}]*margin-left:\s*auto/);
     expect(css).toMatch(/\.project-detail-action\s*\{[^}]*display:\s*inline-flex[^}]*align-items:\s*center[^}]*justify-content:\s*center[^}]*min-block-size:\s*2\.25rem[^}]*min-inline-size:\s*2\.25rem[^}]*padding:\s*var\(--space-sm\)/);
     expect(css).toMatch(/\.project-detail-action svg\s*\{[^}]*width:\s*1\.25rem[^}]*height:\s*1\.25rem/);
-    const projectEditBodyRule = css.match(/#project-edit-dialog \.app-dialog-body > \*\s*\{[^}]*\}/)?.[0] || '';
+    const projectEditBodyRule = css.match(/\.project-form-dialog \.app-dialog-body > \*\s*\{[^}]*\}/)?.[0] || '';
     expect(projectEditBodyRule).toContain('flex-shrink: 0');
-    const projectEditPanelRule = css.match(/#project-edit-dialog \.project-edit-dialog-section\s*\{[^}]*\}/)?.[0] || '';
+    const projectEditPanelRule = css.match(/\.project-form-dialog \.project-edit-dialog-section\s*\{[^}]*\}/)?.[0] || '';
     expect(projectEditPanelRule).toContain('background: var(--surface)');
     expect(projectEditPanelRule).toContain('border: 1px solid var(--border)');
     expect(projectEditPanelRule).toContain('border-radius: var(--radius-lg)');
     expect(projectEditPanelRule).toContain('overflow: visible');
-    expect(css).toContain('#project-edit-dialog .project-edit-dialog-section > h3');
+    expect(css).toContain('.project-form-dialog .project-edit-dialog-section > h3');
     expect(css).toContain('grid-template-columns: repeat(2, minmax(0, 1fr));');
-    expect(css).toMatch(/@media \(max-width: 767px\)[\s\S]*#project-edit-dialog \.status-row,[\s\S]*#project-edit-dialog \.scheduling-row[\s\S]*grid-template-columns: minmax\(0, 1fr\)/);
+    expect(css).toMatch(/@media \(max-width: 767px\)[\s\S]*\.project-form-dialog \.status-row,[\s\S]*\.project-form-dialog \.scheduling-row[\s\S]*grid-template-columns: minmax\(0, 1fr\)/);
     const healthRule = css.match(/\.project-detail-health\s*\{[^}]*\}/)?.[0] || '';
     expect(healthRule).toContain('margin-top: var(--space-xs)');
     expect(healthRule).not.toContain('padding:');
@@ -2881,7 +2992,7 @@ describe('project HTTP workflow', () => {
       expect(detail.text).not.toMatch(/[A-Z]:\\/);
     });
 
-    it('filesystem conflict during creation renders safe error with preserved values', async () => {
+    it('filesystem conflict from the Dashboard dialog rerenders the host with a safe error', async () => {
       // Block the expected path for project id=1 (first project in a fresh DB)
       const slug = parseSlug('Conflict+Create');
       const conflictPath = path.join(projectsRoot, `000001-${slug}`);
@@ -2893,13 +3004,18 @@ describe('project HTTP workflow', () => {
         .send('description=Value+kept')
         .send('status=tbd')
         .send('priority=normal')
+        .send('returnTo=/')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(500);
 
-      expect(res.text).toContain('Project creation failed');
-      expect(res.text).toContain('Conflict Create');
-      expect(res.text).toContain('Value kept');
+      const dialog = extractProjectCreateDialog(res.text);
+      expect(res.text).toContain('Dashboard');
+      expect(dialog).toMatch(/<dialog id="project-create-dialog"[^>]*\bopen\b/);
+      expect(dialog).toContain('Project creation failed');
+      expect(dialog).toContain('Conflict Create');
+      expect(dialog).toContain('Value kept');
+      expect(dialog).toContain('name="returnTo" value="/"');
       expect(res.text).not.toMatch(/[A-Z]:\\/);
     });
   });
@@ -4283,4 +4399,5 @@ describe('asset-category dependency wiring through createApp', () => {
       { displayName: 'Fake', directorySlug: 'fake', displayOrder: 0, enabled: true },
     ]);
   });
+
 });

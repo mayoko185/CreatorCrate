@@ -5,6 +5,7 @@
 {% import "partials/icons.njk" as icons %}
 {% import "partials/dialog.njk" as dialog %}
 {% import "partials/dropdown.njk" as dropdown %}
+{% import "partials/project-create-dialog.njk" as projectCreateDialog %}
 
 {% set page_title = "Projects" %}
 
@@ -24,7 +25,7 @@
 
 {% block content %}
   {% call pageHeading.render("Browse active and archived project records.") %}
-    <a class="button button-primary" href="/projects/new">New Project</a>
+    <a class="button button-primary" href="/projects/new" data-dialog-open="project-create-dialog">New Project</a>
   {% endcall %}
 
   {% if notice %}
@@ -196,14 +197,16 @@
         </nav>
       {% endif %}
     {% else %}
-      {% if filtersActive and hasAnyProjects %}
-        {% set emptyHeading = "No projects found" %}
+    {% if filtersActive and hasAnyProjects %}
+      {% set emptyActionDialogId = "" %}
+      {% set emptyHeading = "No projects found" %}
         {% set emptyDescription = "No projects match the current filters." %}
         {% set emptyActionUrl = resetFiltersUrl %}
         {% set emptyActionLabel = "Reset" %}
         {% set emptyHeadingLevel = "h2" %}
-      {% else %}
-        {% set emptyHeading = "No projects yet" %}
+    {% else %}
+      {% set emptyActionDialogId = "project-create-dialog" %}
+      {% set emptyHeading = "No projects yet" %}
         {% set emptyDescription = "Create your first project to get started." %}
         {% set emptyActionUrl = "/projects/new" %}
         {% set emptyActionLabel = "New Project" %}
@@ -216,6 +219,8 @@
 {% endblock %}
 
 {% block overlay %}
+  {{ projectCreateDialog.render(projectCreateForm, '/projects', _csrf, projectCreateDialogOpen) }}
+
   {% call dialog.render('projects-defaults-dialog', 'Projects defaults', projectsDefaultsDialogOpen, 'projects-defaults-description', 'projects-defaults-form') %}
     <form id="projects-defaults-form" method="post" action="/projects/defaults" class="app-dialog-form project-form"
           data-dialog-form data-dialog-async novalidate>

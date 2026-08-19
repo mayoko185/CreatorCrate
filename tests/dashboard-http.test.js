@@ -62,6 +62,10 @@ function extractDashboardDefaultsDialog(html) {
   return html.match(/<dialog id="dashboard-defaults-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
 }
 
+function extractProjectCreateDialog(html) {
+  return html.match(/<dialog id="project-create-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+}
+
 function extractProjectCard(html, projectId) {
   const cards = html.match(/<article\b[^>]*data-project-card[^>]*>[\s\S]*?<\/article>/g) || [];
   return cards.find((card) => card.includes(`data-project-card-link href="/projects/${projectId}"`)) || '';
@@ -934,6 +938,36 @@ describe('dashboard HTTP composition', () => {
       expect(res.text).toContain('summary-card-value');
       expect(res.text).toContain('project-grid');
       expect(res.text).toContain('Projects currently tracked');
+    });
+
+    it('renders one closed native New Project dialog with the standalone form defaults', async () => {
+      app.locals.pageDefaultsService.saveDefault('new_project', 'status', 'ready');
+      app.locals.tagService.createTag({ name: 'Dashboard dialog tag' });
+
+      const [dashboard, standalone] = await Promise.all([
+        app.testAgent.get('/').expect(200),
+        app.testAgent.get('/projects/new').expect(200),
+      ]);
+      const dialog = extractProjectCreateDialog(dashboard.text);
+      const ids = [...dashboard.text.matchAll(/\bid="([^"]+)"/g)].map((match) => match[1]);
+      const newProjectOpeners = dashboard.text.match(/<a class="button button-primary" href="\/projects\/new" data-dialog-open="project-create-dialog">New Project<\/a>/g) || [];
+
+      expect((dashboard.text.match(/<dialog id="project-create-dialog"/g) || [])).toHaveLength(1);
+      expect(newProjectOpeners).toHaveLength(2);
+      expect(extractSection(dashboard.text, 'recent-projects')).toContain('<a class="button button-primary" href="/projects/new" data-dialog-open="project-create-dialog">New Project</a>');
+      expect(dialog).not.toBe('');
+      expect(dialog).not.toMatch(/<dialog\b[^>]*\bopen(?:\s|>|=)/);
+      const footer = dialog.match(/<footer class="app-dialog-footer">[\s\S]*?<\/footer>/)?.[0] || '';
+      expect(footer).toContain('Create project');
+      expect(footer).not.toContain('Cancel');
+      expect((footer.match(/<button\b/g) || [])).toHaveLength(1);
+      expect(dialog).toContain('<form id="project-create-form" method="post" action="/projects"');
+      expect(dialog).toContain('data-dialog-form data-dialog-async="false"');
+      expect(dialog).toContain('name="returnTo" value="/"');
+      expect(dialog).toMatch(/name="status"[^>]*value="ready"[^>]*checked/);
+      expect(standalone.text).toMatch(/name="status"[^>]*value="ready"[^>]*checked/);
+      expect(dialog).toContain('Dashboard dialog tag');
+      expect(new Set(ids).size).toBe(ids.length);
     });
   });
 });

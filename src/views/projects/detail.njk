@@ -189,7 +189,7 @@
     {% set statuses = projectEditForm.statuses %}
     {% set tags = projectEditForm.tags %}
     {% set selectedTagIds = projectEditForm.selectedTagIds %}
-    {% call dialog.render('project-edit-dialog', 'Edit Project', projectEditDialogOpen, 'project-edit-description', 'project-edit-form') %}
+    {% call dialog.render('project-edit-dialog', 'Edit Project', projectEditDialogOpen, 'project-edit-description', 'project-edit-form', 'project-form-dialog') %}
       <p id="project-edit-description" class="app-dialog-description">
         Edit project details, status, scheduling, and links.
       </p>

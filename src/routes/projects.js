@@ -16,6 +16,8 @@ import {
   parseEnabledField,
 } from '../services/asset-category-validation.js';
 import { buildOpenLocallyUri } from '../util/open-locally.js';
+import { buildNewProjectFormModel, createFormValues } from './project-create-form.js';
+import { renderDashboardPage } from './dashboard-render.js';
 import {
   buildPageDefaultsDialogModel,
   handlePageDefaultsPost,
@@ -155,17 +157,16 @@ export function createProjectsRouter({ appName, db, projectService, workflowQuer
 
   router.get('/new', (req, res, next) => {
     try {
-      const { tags, selectedTagIds } = buildTagFormModel(req);
       res.render('projects/form.njk', {
         appName,
         project: null,
-        values: createNewProjectFormValues(req.query || {}, getPageDefaultsService(req)),
-        errors: {},
-        statuses: WORKFLOW_STATUSES,
+        ...buildNewProjectFormModel({
+          tagService: getTagService(req),
+          pageDefaultsService: getPageDefaultsService(req),
+          query: req.query || {},
+        }),
         action: 'Create',
         submitUrl: '/projects',
-        tags,
-        selectedTagIds,
       });
     } catch (err) {
       next(err);
@@ -183,30 +184,24 @@ export function createProjectsRouter({ appName, db, projectService, workflowQuer
       res.redirect(`/projects/${project.id}`);
     } catch (err) {
       if (err instanceof ProjectValidationError) {
-        res.status(422).render('projects/form.njk', {
+        renderProjectCreateError(req, res, next, {
           appName,
-          project: null,
-          values: createFormValues(req.body),
+          projectService,
+          workflowQueryService,
+          status: 422,
           errors: err.errors,
-          statuses: WORKFLOW_STATUSES,
-          action: 'Create',
-          submitUrl: '/projects',
-          tags: loadAvailableTags(req),
-          selectedTagIds: buildSubmittedSelectedTagIds(parsedTags),
+          parsedTags,
         });
         return;
       }
       // Filesystem or other error: render form with safe message + preserved values
-      res.status(500).render('projects/form.njk', {
+      renderProjectCreateError(req, res, next, {
         appName,
-        project: null,
-        values: createFormValues(req.body),
+        projectService,
+        workflowQueryService,
+        status: 500,
         errors: { general: 'Project creation failed. Please try again.' },
-        statuses: WORKFLOW_STATUSES,
-        action: 'Create',
-        submitUrl: '/projects',
-        tags: loadAvailableTags(req),
-        selectedTagIds: buildSubmittedSelectedTagIds(parsedTags),
+        parsedTags,
       });
     }
   });
@@ -400,6 +395,65 @@ function getPageDefaultsService(req) {
   return service;
 }
 
+function readProjectCreateDialogHost(body) {
+  switch (body?.returnTo) {
+    case '/':
+      return '/';
+    case '/projects':
+      return '/projects';
+    default:
+      return null;
+  }
+}
+
+function renderProjectCreateError(req, res, next, {
+  appName,
+  projectService,
+  workflowQueryService,
+  status,
+  errors,
+  parsedTags,
+}) {
+  const projectCreateForm = buildNewProjectFormModel({
+    tagService: getTagService(req),
+    values: req.body,
+    errors,
+    selectedTagIds: buildSubmittedSelectedTagIds(parsedTags),
+  });
+
+  switch (readProjectCreateDialogHost(req.body)) {
+    case '/':
+      renderDashboardPage(req, res, next, {
+        appName,
+        workflowQueryService,
+        status,
+        projectCreateDialogOpen: true,
+        projectCreateForm,
+      });
+      return;
+    case '/projects':
+      renderProjectsPage(req, res, {
+        appName,
+        projectService,
+        workflowQueryService,
+        status,
+        notice: null,
+        projectCreateDialogOpen: true,
+        projectCreateForm,
+        allowSavedDefaultsRedirect: false,
+      });
+      return;
+    default:
+      res.status(status).render('projects/form.njk', {
+        appName,
+        project: null,
+        ...projectCreateForm,
+        action: 'Create',
+        submitUrl: '/projects',
+      });
+  }
+}
+
 function renderProjectsPage(req, res, {
   appName,
   projectService,
@@ -409,6 +463,8 @@ function renderProjectsPage(req, res, {
   projectsDefaultsDialogOpen = req.query.defaults === '1',
   projectsDefaultsSubmittedValues = null,
   projectsDefaultsErrors = {},
+  projectCreateDialogOpen = false,
+  projectCreateForm,
   allowSavedDefaultsRedirect = req.query.defaults !== '1',
 } = {}) {
   const pageDefaultsService = getPageDefaultsService(req);
@@ -475,6 +531,11 @@ function renderProjectsPage(req, res, {
       errors: projectsDefaultsErrors,
     }),
     projectsDefaultsDialogOpen: Boolean(projectsDefaultsDialogOpen),
+    projectCreateDialogOpen: Boolean(projectCreateDialogOpen),
+    projectCreateForm: projectCreateForm || buildNewProjectFormModel({
+      tagService: getTagService(req),
+      pageDefaultsService,
+    }),
   });
 }
 
@@ -787,19 +848,6 @@ function parseProjectInput(body) {
     plannedDate: body.plannedDate || null,
     publishedDate: body.publishedDate || null,
     patreonUrl: body.patreonUrl || null,
-  };
-}
-
-function createFormValues(values) {
-  const formValues = { ...values };
-  delete formValues.priority;
-  return formValues;
-}
-
-function createNewProjectFormValues(query, pageDefaultsService) {
-  return {
-    ...createFormValues(query),
-    status: pageDefaultsService.resolve('new_project', 'status', query.status),
   };
 }
 

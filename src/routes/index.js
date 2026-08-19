@@ -1,25 +1,15 @@
 import express from 'express';
-import { NSFW_TAG_NAME } from '../services/nsfw-filter-settings-service.js';
 import {
   DASHBOARD_DEFAULTS_VERSION,
   DASHBOARD_ITEM_COUNT_MAX,
   DASHBOARD_ITEM_COUNT_MIN,
   DASHBOARD_SECTION_REGISTRY,
 } from '../services/dashboard-defaults-service.js';
-import { buildAssetLibraryUrl } from './asset-library-query.js';
+import { renderDashboardPage } from './dashboard-render.js';
 
-const NSFW_TAG_NORMALIZED_NAME = NSFW_TAG_NAME.toLowerCase();
 const DASHBOARD_DEFAULTS_SAVED_NOTICE = 'dashboard_defaults_saved';
 const DASHBOARD_DEFAULTS_SAVED_MESSAGE = 'Dashboard defaults saved successfully.';
 const DASHBOARD_DEFAULTS_VALIDATION_MESSAGE = 'Dashboard defaults could not be saved. Fix the invalid fields and try again.';
-
-function getNsfwFilterSettingsService(req) {
-  const service = req.app?.locals?.nsfwFilterSettingsService;
-  if (!service) {
-    throw new Error('Dashboard requires app.locals.nsfwFilterSettingsService.');
-  }
-  return service;
-}
 
 function getDashboardDefaultsService(req) {
   const service = req.app?.locals?.dashboardDefaultsService;
@@ -27,19 +17,6 @@ function getDashboardDefaultsService(req) {
     throw new Error('Dashboard requires app.locals.dashboardDefaultsService.');
   }
   return service;
-}
-
-function isNsfwTag(tag) {
-  return [tag?.displayName, tag?.display_name, tag?.normalizedName, tag?.normalized_name].some((value) => (
-    typeof value === 'string' && value.trim().toLowerCase() === NSFW_TAG_NORMALIZED_NAME
-  ));
-}
-
-function withNsfwBlur(project, tags, filterEnabled) {
-  return {
-    ...project,
-    nsfwBlur: Boolean(filterEnabled && Array.isArray(tags) && tags.some(isNsfwTag)),
-  };
 }
 
 function isPlainObject(value) {
@@ -160,63 +137,28 @@ function parseDashboardDefaultsSubmission(body) {
   return { valid, errors, values, validOrder: order };
 }
 
-export function createIndexRouter({ appName, workflowQueryService }) {
-  const router = express.Router();
-
-  function renderDashboard(req, res, next, {
-    status = 200,
-    dashboardDefaultsDialogOpen = req.query.defaults === '1',
-    dashboardDefaultsFormState = {},
-  } = {}) {
-    try {
-      const dashboardDefaults = getDashboardDefaultsService(req).getDefaults();
-      const dashboard = workflowQueryService.getDashboardData({ dashboardDefaults });
-      const nsfwFilterEnabled = getNsfwFilterSettingsService(req).isEnabled();
-      const blurProjects = (projects) => projects.map(
-        (project) => withNsfwBlur(project, project.tags, nsfwFilterEnabled)
-      );
-      const sectionMetadataById = new Map(
-        DASHBOARD_SECTION_REGISTRY.map((section) => [section.id, section])
-      );
-      const dashboardSections = dashboardDefaults.order.flatMap((sectionId) => {
-        const sectionDefaults = dashboardDefaults.sections[sectionId];
-        if (!sectionDefaults.visible) return [];
-
-        const section = sectionMetadataById.get(sectionId);
-        return [{
-          id: section.id,
-          label: section.label,
-          visible: true,
-          itemCount: sectionDefaults.itemCount,
-          projects: blurProjects(dashboard.sections[sectionId]),
-        }];
-      });
-      const sectionProjectsById = Object.fromEntries(
-        dashboardSections.map(({ id, projects }) => [id, projects])
-      );
-
-      res.status(status).render('index.njk', {
-        appName,
-        overdue: sectionProjectsById.overdue || [],
-        upcoming: sectionProjectsById.upcoming || [],
-        recentlyUpdated: sectionProjectsById['recently-updated'] || [],
-        dashboardSections,
-        dashboardDefaults,
-        dashboardSectionRegistry: DASHBOARD_SECTION_REGISTRY,
-        dashboardDefaultsDialogOpen,
-        dashboardDefaultsFormState,
-        summary: dashboard.workflowSummary,
-        nsfwFilterEnabled,
-        assetsUrl: buildAssetLibraryUrl(),
-        missingAssetsUrl: buildAssetLibraryUrl({}, { presence: 'missing' }),
-      });
-    } catch (err) {
-      next(err);
-    }
+export function createIndexRouter({
+  appName,
+  workflowQueryService,
+  pageDefaultsService,
+  tagService,
+} = {}) {
+  if (!pageDefaultsService) {
+    throw new Error('createIndexRouter requires a pageDefaultsService dependency.');
+  }
+  if (!tagService) {
+    throw new Error('createIndexRouter requires a tagService dependency.');
   }
 
+  const router = express.Router();
+
   router.get('/', (req, res, next) => {
-    renderDashboard(req, res, next);
+    renderDashboardPage(req, res, next, {
+      appName,
+      workflowQueryService,
+      pageDefaultsService,
+      tagService,
+    });
   });
 
   router.post('/dashboard/defaults', (req, res, next) => {
@@ -234,7 +176,11 @@ export function createIndexRouter({ appName, workflowQueryService }) {
         return;
       }
 
-      renderDashboard(req, res, next, {
+      renderDashboardPage(req, res, next, {
+        appName,
+        workflowQueryService,
+        pageDefaultsService,
+        tagService,
         status: 422,
         dashboardDefaultsDialogOpen: true,
         dashboardDefaultsFormState: {

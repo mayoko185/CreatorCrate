@@ -601,7 +601,12 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   // already fully handled above and never reach this middleware.
   app.use(requireAuth);
 
-  app.use('/', createIndexRouter({ appName, workflowQueryService }));
+  app.use('/', createIndexRouter({
+    appName,
+    workflowQueryService,
+    pageDefaultsService,
+    tagService,
+  }));
   app.use('/health', createHealthRouter({ db, maintenanceState }));
   app.use('/projects', createProjectsRouter({ appName, db, projectService, workflowQueryService }));
   app.use('/assets', createAssetLibraryRouter({ appName, db, workflowQueryService }));

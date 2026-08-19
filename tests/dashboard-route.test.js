@@ -56,6 +56,8 @@ function createTestApp({
   if (withDashboardDefaultsService) {
     app.locals.dashboardDefaultsService = dashboardDefaultsService;
   }
+  const pageDefaultsService = { resolve: vi.fn((_page, _field, value) => value || 'tbd') };
+  const tagService = { listTags: vi.fn(() => []) };
 
   app.use((req, res, next) => {
     res.render = (view, locals) => {
@@ -66,9 +68,21 @@ function createTestApp({
   });
 
   const workflowQueryService = { getDashboardData: vi.fn(() => dashboard) };
-  app.use('/', createIndexRouter({ appName: 'Test App', workflowQueryService }));
+  app.use('/', createIndexRouter({
+    appName: 'Test App',
+    workflowQueryService,
+    pageDefaultsService,
+    tagService,
+  }));
 
-  return { app, dashboardDefaultsService, getCaptured: () => captured, workflowQueryService };
+  return {
+    app,
+    dashboardDefaultsService,
+    getCaptured: () => captured,
+    pageDefaultsService,
+    tagService,
+    workflowQueryService,
+  };
 }
 
 describe('dashboard route wiring', () => {
@@ -79,6 +93,8 @@ describe('dashboard route wiring', () => {
       app,
       dashboardDefaultsService,
       getCaptured,
+      pageDefaultsService,
+      tagService,
       workflowQueryService,
     } = createTestApp({ dashboard, dashboardDefaults });
 
@@ -88,6 +104,8 @@ describe('dashboard route wiring', () => {
     expect(view).toBe('index.njk');
     expect(dashboardDefaultsService.getDefaults).toHaveBeenCalledOnce();
     expect(workflowQueryService.getDashboardData).toHaveBeenCalledWith({ dashboardDefaults });
+    expect(pageDefaultsService.resolve).toHaveBeenCalledWith('new_project', 'status', undefined);
+    expect(tagService.listTags).toHaveBeenCalledOnce();
     expect(locals).toMatchObject({
       appName: 'Test App',
       summary: dashboard.workflowSummary,
@@ -98,6 +116,22 @@ describe('dashboard route wiring', () => {
       missingAssetsUrl: '/assets?presence=missing',
     });
     expect(locals).not.toHaveProperty('projectCounts');
+    expect(locals.projectCreateForm).toMatchObject({
+      values: { status: 'tbd' },
+      tags: [],
+      selectedTagIds: [],
+    });
+  });
+
+  it('declares the New Project form services at router composition time', () => {
+    const workflowQueryService = { getDashboardData: vi.fn() };
+    const pageDefaultsService = { resolve: vi.fn() };
+    const tagService = { listTags: vi.fn() };
+
+    expect(() => createIndexRouter({ appName: 'Test App', workflowQueryService, tagService }))
+      .toThrow('createIndexRouter requires a pageDefaultsService dependency.');
+    expect(() => createIndexRouter({ appName: 'Test App', workflowQueryService, pageDefaultsService }))
+      .toThrow('createIndexRouter requires a tagService dependency.');
   });
 
   it('builds ordered visible section view-models with canonical labels and independent counts', async () => {
