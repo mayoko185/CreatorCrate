@@ -5,6 +5,7 @@ import {
   STATUSES,
   WORKFLOW_STATUSES,
 } from '../services/project-service.js';
+import { PROJECT_TYPES } from '../data/project-repository.js';
 import {
   ProjectNotFoundError as ProjectTagProjectNotFoundError,
   ProjectTagValidationError,
@@ -275,6 +276,7 @@ export function createProjectsRouter({ appName, db, projectService, workflowQuer
             values: createFormValues(req.body),
             errors: err.errors,
             statuses: WORKFLOW_STATUSES,
+            projectTypes: PROJECT_TYPES,
             tags: loadAvailableTags(req),
             selectedTagIds: buildSubmittedSelectedTagIds(parsedTags),
           },
@@ -296,6 +298,7 @@ export function createProjectsRouter({ appName, db, projectService, workflowQuer
           values: createFormValues(req.body),
           errors: { general: 'Project update failed. Please try again.' },
           statuses: WORKFLOW_STATUSES,
+          projectTypes: PROJECT_TYPES,
           tags: loadAvailableTags(req),
           selectedTagIds: buildSubmittedSelectedTagIds(parsedTags),
         },
@@ -366,6 +369,7 @@ function renderProjectDetailPage(req, res, {
       values: projectToFormValues(workspace.project),
       errors: {},
       statuses: WORKFLOW_STATUSES,
+      projectTypes: PROJECT_TYPES,
       tags: loadAvailableTags(req),
       selectedTagIds: assignedProjectTags.map((tag) => String(tag.id)),
     };
@@ -474,6 +478,7 @@ function renderProjectsPage(req, res, {
     ...option,
     selected: parsedQuery.tagIds.includes(Number(option.value)),
   }));
+  const projectTypeOptions = buildProjectTypeFilterOptions(parsedQuery.projectTypes);
   const { total } = projectService.list({ ...parsedQuery, limit: 0 });
   const { total: totalProjects } = projectService.list({ includeArchived: true, limit: 0 });
   const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
@@ -487,7 +492,8 @@ function renderProjectsPage(req, res, {
   const { rows } = workflowQueryService.getProjectList({ ...parsedQuery, offset, limit: PAGE_SIZE });
   const pageUrl = buildPageUrl(req, parsedQuery, currentPage, pageDefaultsService);
   const filtersActive = Boolean(
-    parsedQuery.search || parsedQuery.statuses.length > 0 || parsedQuery.tagIds.length > 0 || parsedQuery.projectId != null,
+    parsedQuery.search || parsedQuery.statuses.length > 0 || parsedQuery.projectTypes.length > 0
+      || parsedQuery.tagIds.length > 0 || parsedQuery.projectId != null,
   );
   const projectOptions = workflowQueryService.getProjectsPageFilterOptions();
   const selectedProject = projectOptions.find((project) => project.id === parsedQuery.projectId) || null;
@@ -507,6 +513,7 @@ function renderProjectsPage(req, res, {
     query: {
       search: parsedQuery.search,
       statuses: parsedQuery.statuses,
+      projectTypes: parsedQuery.projectTypes,
       tagIds: parsedQuery.tagIds.map(String),
       projectId: parsedQuery.projectId,
       sort: parsedQuery.sortBy,
@@ -516,6 +523,7 @@ function renderProjectsPage(req, res, {
     view: parsedQuery.view,
     statuses: STATUSES,
     statusOptions: buildStatusFilterOptions(parsedQuery.statuses),
+    projectTypeOptions,
     sortOptions: SORT_OPTIONS,
     tagOptions,
     projectOptions,
@@ -602,6 +610,20 @@ function buildStatusFilterOptions(selectedStatuses) {
       .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
       .join(' '),
     selected: selectedStatuses.includes(value),
+  }));
+}
+
+function buildProjectTypeFilterOptions(selectedProjectTypes) {
+  const labels = {
+    images: 'Images',
+    comic: 'Comic',
+    animation: 'Animation',
+    wallpaper: 'Wallpaper',
+  };
+  return PROJECT_TYPES.map((value) => ({
+    value,
+    label: labels[value],
+    selected: selectedProjectTypes.includes(value),
   }));
 }
 
@@ -759,6 +781,7 @@ function parseListQuery(raw, pageDefaultsService, tagOptions = []) {
   const rawQuery = raw && typeof raw === 'object' ? raw : {};
   const resolvedPresentation = pageDefaultsService.resolvePageDefaults('projects', rawQuery);
   const statuses = parseStatusFilterValues(rawQuery.status);
+  const projectTypes = parseProjectTypeFilterValues(rawQuery.type);
   const search = typeof rawQuery.search === 'string' ? rawQuery.search.trim() : '';
   const tagIds = parseTagFilterIds(rawQuery.tag, tagOptions);
   const projectId = parseProjectFilterId(rawQuery.project);
@@ -776,6 +799,8 @@ function parseListQuery(raw, pageDefaultsService, tagOptions = []) {
   return {
     status: statuses.length === 1 ? statuses[0] : undefined,
     statuses,
+    projectType: projectTypes.length === 1 ? projectTypes[0] : undefined,
+    projectTypes,
     search,
     tagId: tagIds.length === 1 ? tagIds[0] : undefined,
     tagIds,
@@ -794,6 +819,12 @@ function parseStatusFilterValues(value) {
   const values = Array.isArray(value) ? value : [value];
   const selected = new Set(values.filter((candidate) => typeof candidate === 'string'));
   return STATUSES.filter((status) => selected.has(status));
+}
+
+function parseProjectTypeFilterValues(value) {
+  const values = Array.isArray(value) ? value : [value];
+  const selected = new Set(values.filter((candidate) => typeof candidate === 'string'));
+  return PROJECT_TYPES.filter((projectType) => selected.has(projectType));
 }
 
 function parseTagFilterIds(value, tagOptions) {
@@ -845,6 +876,7 @@ function parseProjectInput(body) {
     description: body.description,
     notes: body.notes,
     status: body.status,
+    projectType: body.projectType,
     plannedDate: body.plannedDate || null,
     publishedDate: body.publishedDate || null,
     patreonUrl: body.patreonUrl || null,
@@ -871,6 +903,7 @@ function projectToFormValues(project) {
     description: project.description,
     notes: project.notes,
     status: project.status,
+    projectType: project.project_type,
     plannedDate: project.planned_date || '',
     publishedDate: project.published_date || '',
     patreonUrl: project.patreon_url || '',
@@ -885,7 +918,7 @@ function buildPageUrl(req, parsedQuery, currentPage, pageDefaultsService) {
   return function pageUrl(overrides) {
     const query = { ...baseQuery };
     for (const [key, value] of Object.entries(overrides)) {
-      if (!['search', 'status', 'tag', 'project', 'sort', 'order', 'page', 'view'].includes(key)) continue;
+      if (!['search', 'status', 'type', 'tag', 'project', 'sort', 'order', 'page', 'view'].includes(key)) continue;
       if (value === undefined || value === null || value === '') {
         delete query[key];
       } else if (Array.isArray(value) && value.length === 0) {
@@ -914,6 +947,7 @@ function buildCanonicalPageQuery(req, parsedQuery, currentPage, pageDefaultsServ
 
   if (parsedQuery.search) query.search = parsedQuery.search;
   if (parsedQuery.statuses.length > 0) query.status = parsedQuery.statuses;
+  if (parsedQuery.projectTypes.length > 0) query.type = parsedQuery.projectTypes;
   if (parsedQuery.tagIds.length > 0) query.tag = parsedQuery.tagIds.map(String);
   if (parsedQuery.projectId != null) query.project = String(parsedQuery.projectId);
 

@@ -1,4 +1,5 @@
 import { WORKFLOW_STATUSES } from '../services/project-service.js';
+import { PROJECT_TYPES, DEFAULT_PROJECT_TYPE } from '../data/project-repository.js';
 
 export function createFormValues(values) {
   const formValues = { ...values };
@@ -10,6 +11,7 @@ function createNewProjectFormValues(query, pageDefaultsService) {
   return {
     ...createFormValues(query),
     status: pageDefaultsService.resolve('new_project', 'status', query.status),
+    projectType: query.projectType || DEFAULT_PROJECT_TYPE,
   };
 }
 
@@ -34,6 +36,7 @@ export function buildNewProjectFormModel({
       : createFormValues(values),
     errors,
     statuses: WORKFLOW_STATUSES,
+    projectTypes: PROJECT_TYPES,
     tags: loadAvailableTags(tagService),
     selectedTagIds,
   };

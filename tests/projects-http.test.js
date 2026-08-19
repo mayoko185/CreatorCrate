@@ -59,6 +59,10 @@ function extractStatusFilter(html) {
   return html.match(/<fieldset class="field[^"]*asset-viewer-filter-field[^"]*">\s*<legend>Status<\/legend>[\s\S]*?<\/fieldset>/)?.[0] || '';
 }
 
+function extractProjectTypeFilter(html) {
+  return html.match(/<fieldset class="field[^\"]*asset-viewer-filter-field[^\"]*">\s*<legend>Project Type<\/legend>[\s\S]*?<\/fieldset>/)?.[0] || '';
+}
+
 function extractSortFilter(html) {
   return html.match(/<fieldset class="field[^"]*asset-viewer-filter-field[^"]*">\s*<legend>Sort<\/legend>[\s\S]*?<\/fieldset>/)?.[0] || '';
 }
@@ -177,28 +181,37 @@ function expectProjectFormSchedulingStructure(html, { statusError = false, tagEr
 
   const statusChildren = extractDirectHtmlChildren(statusRow);
   const schedulingChildren = extractDirectHtmlChildren(schedulingRow);
-  expect(statusChildren).toHaveLength(2);
+  expect(statusChildren).toHaveLength(3);
   expect(schedulingChildren).toHaveLength(2);
   expect(statusChildren.every((child) => child.startsWith('<div '))).toBe(true);
   expect(schedulingChildren.every((child) => child.startsWith('<div '))).toBe(true);
 
   const statusItem = statusChildren.find((child) => child.includes('project-status-form-trigger')) || '';
+  const projectTypeItem = statusChildren.find((child) => child.includes('project-type-form-trigger')) || '';
   const tagsItem = statusChildren.find((child) => child.includes('project-tags-form-trigger')) || '';
   const plannedDateItem = schedulingChildren.find((child) => child.includes('id="plannedDate"')) || '';
   const publishedDateItem = schedulingChildren.find((child) => child.includes('id="publishedDate"')) || '';
 
   expect(statusItem).not.toBe('');
+  expect(projectTypeItem).not.toBe('');
   expect(tagsItem).not.toBe('');
   expect(plannedDateItem).not.toBe('');
   expect(publishedDateItem).not.toBe('');
   expect(statusItem).toMatch(/^<div class="field status-field">/);
+  expect(projectTypeItem).toMatch(/^<div class="field status-field">/);
   expect(tagsItem).toMatch(/^<div class="field status-field">/);
   expect(plannedDateItem).toMatch(/^<div class="field scheduling-field/);
   expect(publishedDateItem).toMatch(/^<div class="field scheduling-field/);
   expect(statusItem).toContain('data-cc-dropdown data-cc-dropdown-mode="single"');
+  expect(projectTypeItem).toContain('data-cc-dropdown data-cc-dropdown-mode="single"');
+  expect(projectTypeItem).toContain('id="project-type-form-trigger" aria-controls="project-type-form-options"');
+  expect(projectTypeItem).toContain('name="projectType"');
+  expect(projectTypeItem).toContain('role="radiogroup" aria-label="Project type options"');
   expect(tagsItem).toContain('data-cc-dropdown data-cc-dropdown-mode="multiple"');
   expect(tagsItem).toContain('<span class="help-text">Add new tags in <a href="/settings/tags">Settings › Tags</a>.</span>');
   expect(statusChildren.indexOf(statusItem)).toBeLessThan(statusChildren.indexOf(tagsItem));
+  expect(statusChildren.indexOf(statusItem)).toBeLessThan(statusChildren.indexOf(projectTypeItem));
+  expect(statusChildren.indexOf(projectTypeItem)).toBeLessThan(statusChildren.indexOf(tagsItem));
   expect(schedulingChildren.indexOf(plannedDateItem)).toBeLessThan(schedulingChildren.indexOf(publishedDateItem));
 
   expect(statusItem.includes('id="status-error"')).toBe(statusError);
@@ -293,12 +306,13 @@ describe('project HTTP workflow', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  async function createProject({ title, status = 'tbd', plannedDate, publishedDate }) {
+  async function createProject({ title, status = 'tbd', projectType, plannedDate, publishedDate }) {
     const fields = new URLSearchParams({
       title,
       status,
       _csrf: csrfToken,
     });
+    if (projectType) fields.set('projectType', projectType);
     if (plannedDate) fields.set('plannedDate', plannedDate);
     if (publishedDate) fields.set('publishedDate', publishedDate);
 
@@ -387,6 +401,7 @@ describe('project HTTP workflow', () => {
     expect(res.text).toContain('href="/projects?view=list"');
     expectProjectSortOrderSelection(res.text, 'created', 'desc');
     expect(extractStatusFilter(res.text)).toContain('aria-label="Status filter: All active"');
+    expect(extractProjectTypeFilter(res.text)).toContain('aria-label="Project Type filter: All types"');
     expect(extractTagFilter(res.text)).toContain('aria-label="Tag filter: All tags"');
     expect(extractTagFilter(res.text)).toContain('No tags available');
     expect(extractProjectFilter(res.text)).toContain('aria-label="Project filter: All projects"');
@@ -713,8 +728,9 @@ describe('project HTTP workflow', () => {
     expect(css).not.toMatch(/#(?:project|asset)-project-filter\s+\.asset-project-filter-option-list/);
     expect(css).toMatch(/\.asset-viewer-project-filter\s+\.asset-filter-multiselect-summary-current\s*\{[^}]*text-overflow:\s*ellipsis/);
     const statusFilter = extractStatusFilter(res.text);
+    const projectTypeFilter = extractProjectTypeFilter(res.text);
     const tagFilter = extractTagFilter(res.text);
-    for (const [filter, inputName, mode] of [[statusFilter, 'status', 'multiple'], [tagFilter, 'tag', 'multiple']]) {
+    for (const [filter, inputName, mode] of [[statusFilter, 'status', 'multiple'], [projectTypeFilter, 'type', 'multiple'], [tagFilter, 'tag', 'multiple']]) {
       expect(filter).toContain(`data-cc-dropdown data-cc-dropdown-mode="${mode}"`);
       expect(filter).not.toContain('data-asset-viewer-filter-disclosure');
       expect(filter).not.toContain('data-asset-viewer-filter-single-select');
@@ -728,6 +744,11 @@ describe('project HTTP workflow', () => {
     expect(statusFilter).toMatch(/name="status"[^>]+value="planned" checked/);
     expect(statusFilter).toMatch(/name="status"[^>]+value="ready" checked/);
     expect((statusFilter.match(/name="status"/g) || [])).toHaveLength(6);
+    expect(projectTypeFilter).toContain('aria-label="Project Type filter: All types"');
+    for (const [value, label] of [['images', 'Images'], ['comic', 'Comic'], ['animation', 'Animation'], ['wallpaper', 'Wallpaper']]) {
+      expect(projectTypeFilter).toMatch(new RegExp(`name="type"[^>]+value="${value}"`));
+      expect(projectTypeFilter).toContain(`<span>${label}</span>`);
+    }
     expect(tagFilter).toContain('aria-label="Tag filter: 2 tags selected"');
     expect(tagFilter).toMatch(new RegExp(`name="tag"[^>]+value="${firstTag.id}" checked`));
     expect(tagFilter).toMatch(new RegExp(`name="tag"[^>]+value="${secondTag.id}" checked`));
@@ -801,11 +822,11 @@ describe('project HTTP workflow', () => {
     expect(liveRegion).not.toMatch(/<select[^>]+(?:id="sort"|id="order"|name="sort"|name="order")/);
   });
 
-  it('reset removes all selected status, tag, and project values', async () => {
+  it('reset removes all selected status, Project Type, tag, and project values', async () => {
     const tag = app.locals.tagService.createTag({ name: 'Reset Filter Tag' });
     const projectId = await createProject({ title: 'Reset Filter Project', status: 'planned' });
     const selected = await agent
-      .get(`/projects?status=planned&status=ready&tag=${tag.id}&project=${projectId}`)
+      .get(`/projects?status=planned&status=ready&type=wallpaper&tag=${tag.id}&project=${projectId}`)
       .expect(200);
 
     expect(selected.text).toContain('href="/projects"');
@@ -818,6 +839,8 @@ describe('project HTTP workflow', () => {
     const cleared = await agent.get('/projects').expect(200);
     expect(extractStatusFilter(cleared.text)).toContain('aria-label="Status filter: All active"');
     expect(extractStatusFilter(cleared.text)).not.toMatch(/name="status"[^>]+checked/);
+    expect(extractProjectTypeFilter(cleared.text)).toContain('aria-label="Project Type filter: All types"');
+    expect(extractProjectTypeFilter(cleared.text)).not.toMatch(/name="type"[^>]+checked/);
     expect(extractTagFilter(cleared.text)).toContain('aria-label="Tag filter: All tags"');
     expect(extractTagFilter(cleared.text)).not.toMatch(/name="tag"[^>]+checked/);
     expect(extractProjectFilter(cleared.text)).toContain('aria-label="Project filter: All projects"');
@@ -1015,7 +1038,7 @@ describe('project HTTP workflow', () => {
     expect(availableCard).not.toContain('/thumbnail');
     expect(availableCard).not.toContain('project-grid-card-top');
     expect(availableCard).toMatch(
-      /<div class="project-grid-card-status" aria-label="Project status">\s*<span class="status-badge status-badge--active">Ready<\/span>\s*<\/div>\s*<div class="project-grid-card-preview[\s\S]*?<a class="project-grid-card-preview-link"/
+      /<div class="project-grid-card-status" aria-label="Project badges">\s*<span class="status-badge project-type-badge project-type-badge--images">Images<\/span>\s*<span class="status-badge status-badge--active">Ready<\/span>\s*<\/div>\s*<div class="project-grid-card-preview[\s\S]*?<a class="project-grid-card-preview-link"/
     );
     expect(availableCard).not.toContain('project-grid-card-priority');
     expect(availableCard).not.toMatch(/Priority:\s*High/);
@@ -1025,7 +1048,10 @@ describe('project HTTP workflow', () => {
     );
     expect(availableCard).toContain('data-project-grid-preview');
     expect(availableCard).toContain('<dl class="project-grid-card-info-list">');
-    expect((availableCard.match(/class="project-grid-card-info-row"/g) || [])).toHaveLength(4);
+    expect(availableCard).toMatch(
+      /<dt>Type<\/dt>\s*<dd>[\s\S]*?<span class="status-badge project-type-badge project-type-badge--images">Images<\/span>[\s\S]*?<\/dd>/
+    );
+    expect((availableCard.match(/class="project-grid-card-info-row"/g) || [])).toHaveLength(5);
     expect(availableCard).toContain('<div class="project-grid-card-info-section">');
     expect(availableCard).toContain('<span class="project-grid-card-info-section-label">Tags</span>');
     expect(availableCard).toContain('class="project-grid-card-info-empty">No tags assigned</span>');
@@ -1628,6 +1654,30 @@ describe('project HTTP workflow', () => {
     expect(extractTagFilter(pageTwo.text)).toContain('aria-label="Tag filter: 2 tags selected"');
     expect((extractStatusFilter(pageTwo.text).match(/name="status"[^>]+checked/g) || [])).toHaveLength(2);
     expect((extractTagFilter(pageTwo.text).match(/name="tag"[^>]+checked/g) || [])).toHaveLength(2);
+  });
+
+  it('preserves repeated Project Type selections through canonical pagination, view, sort, and order links', async () => {
+    saveProjectDefault('view', 'list');
+    saveProjectDefault('sort', 'title');
+    saveProjectDefault('order', 'asc');
+
+    for (let i = 0; i < 26; i += 1) {
+      await createProject({
+        title: `Project Type State ${String(i).padStart(2, '0')}`,
+        projectType: i % 2 === 0 ? 'images' : 'comic',
+      });
+    }
+
+    const redirect = await agent.get('/projects?type=comic&type=images&page=2').expect(302);
+    const canonical = '/projects?type=images&type=comic&sort=title&order=asc&view=list&page=2';
+    expect(redirect.headers.location).toBe(canonical);
+
+    const pageTwo = await agent.get(canonical).expect(200);
+    expect(extractProjectTypeFilter(pageTwo.text)).toContain('aria-label="Project Type filter: 2 types selected"');
+    expect(pageTwo.text).toContain('href="/projects?type=images&amp;type=comic&amp;sort=title&amp;order=asc&amp;view=grid&amp;page=2"');
+
+    const pageOne = await agent.get('/projects?type=images&type=comic&sort=title&order=asc&view=list').expect(200);
+    expect(pageOne.text).toContain('href="/projects?type=images&amp;type=comic&amp;sort=title&amp;order=asc&amp;view=list&amp;page=2"');
   });
 
   it('new-project form renders with available tags and no selected tags', async () => {
@@ -2705,6 +2755,38 @@ describe('project HTTP workflow', () => {
     const status = await agent.get('/projects?status=ready').expect(200);
     expect(status.text).toContain('Project Beta');
     expect(extractProjectCards(status.text).join('')).not.toContain('Project Alpha');
+  });
+
+  it('filters Projects by every valid Project Type, multiple types, and Status while normalizing invalid types', async () => {
+    await Promise.all([
+      createProject({ title: 'Type Images', status: 'planned', projectType: 'images' }),
+      createProject({ title: 'Type Comic', status: 'planned', projectType: 'comic' }),
+      createProject({ title: 'Type Animation', status: 'ready', projectType: 'animation' }),
+      createProject({ title: 'Type Wallpaper', status: 'ready', projectType: 'wallpaper' }),
+    ]);
+    const names = ['Images', 'Comic', 'Animation', 'Wallpaper'];
+    const types = ['images', 'comic', 'animation', 'wallpaper'];
+
+    for (const [index, type] of types.entries()) {
+      const response = await agent.get(`/projects?type=${type}`).expect(200);
+      expect(extractProjectCards(response.text).join('')).toContain(`Type ${names[index]}`);
+      expect(extractProjectTypeFilter(response.text)).toMatch(new RegExp(`name="type"[^>]+value="${type}"[^>]*checked`));
+    }
+
+    const multiple = await agent.get('/projects?type=wallpaper&type=comic&sort=title&order=asc').expect(200);
+    expect(extractProjectCards(multiple.text).join('')).toContain('Type Comic');
+    expect(extractProjectCards(multiple.text).join('')).toContain('Type Wallpaper');
+    expect(extractProjectCards(multiple.text).join('')).not.toContain('Type Images');
+    expect(extractProjectTypeFilter(multiple.text)).toContain('aria-label="Project Type filter: 2 types selected"');
+
+    const combined = await agent.get('/projects?type=images&type=comic&status=planned').expect(200);
+    expect(extractProjectCards(combined.text).join('')).toContain('Type Images');
+    expect(extractProjectCards(combined.text).join('')).toContain('Type Comic');
+    expect(extractProjectCards(combined.text).join('')).not.toContain('Type Animation');
+
+    const invalid = await agent.get('/projects?type=not-a-type').expect(200);
+    expect(extractProjectTypeFilter(invalid.text)).toContain('aria-label="Project Type filter: All types"');
+    expect(extractProjectTypeFilter(invalid.text)).not.toMatch(/name="type"[^>]+checked/);
   });
 
   it('project list preserves title sort ordering in the card grid', async () => {

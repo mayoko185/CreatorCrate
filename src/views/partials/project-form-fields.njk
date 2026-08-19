@@ -35,6 +35,16 @@
     {% endif %}
   {% endfor %}
 
+  {% set projectTypeSummary = '' %}
+  {% set projectTypeOptions = [] %}
+  {% for projectType in projectTypes %}
+    {% set projectTypeLabel = projectType | title %}
+    {% set _ = projectTypeOptions.push({ value: projectType, label: projectTypeLabel }) %}
+    {% if values.projectType == projectType %}
+      {% set projectTypeSummary = projectTypeLabel %}
+    {% endif %}
+  {% endfor %}
+
   {% set tagSummary = 'No tags selected' %}
   {% if selectedTagIds.length == 1 %}
     {% for tag in tags %}
@@ -80,6 +90,31 @@
         panelLabel: "Status options"
       }) }}
       {% if errors.status %}<span class="field-error-message" id="status-error">{{ errors.status }}</span>{% endif %}
+    </div>
+
+    <div class="field status-field">
+      {{ dropdown.singleSelect({
+        id: "project-type-form",
+        name: "projectType",
+        label: "Project type",
+        required: true,
+        options: projectTypeOptions,
+        selected: values.projectType,
+        summary: projectTypeSummary,
+        triggerAriaLabel: "Project type: " ~ projectTypeSummary,
+        summaryAttributes: [
+          ["aria-describedby", "projectType-error" if errors.projectType else none],
+          ["aria-invalid", "true" if errors.projectType else none]
+        ],
+        inputAttributes: [
+          ["required", true],
+          ["aria-describedby", "projectType-error" if errors.projectType else none],
+          ["aria-invalid", "true" if errors.projectType else none]
+        ],
+        fieldClasses: "status-field asset-viewer-filter-field" ~ (" field-error" if errors.projectType else ""),
+        panelLabel: "Project type options"
+      }) }}
+      {% if errors.projectType %}<span class="field-error-message" id="projectType-error">{{ errors.projectType }}</span>{% endif %}
     </div>
 
     <div class="field status-field">

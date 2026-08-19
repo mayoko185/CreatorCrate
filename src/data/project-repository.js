@@ -8,6 +8,8 @@ import {
 
 export const STATUSES = ['tbd', 'planned', 'in-progress', 'ready', 'completed', 'archived'];
 export const WORKFLOW_STATUSES = ['tbd', 'planned', 'in-progress', 'ready', 'completed'];
+export const PROJECT_TYPES = ['images', 'comic', 'animation', 'wallpaper'];
+export const DEFAULT_PROJECT_TYPE = 'images';
 
 const COLUMNS = [
   'id',
@@ -16,6 +18,7 @@ const COLUMNS = [
   'description',
   'notes',
   'status',
+  'project_type',
   'planned_date',
   'published_date',
   'patreon_url',
@@ -35,6 +38,7 @@ const SELECT_ALL = `SELECT ${COLUMNS.join(', ')} FROM projects`;
  * @property {string} description
  * @property {string} notes
  * @property {string} status
+ * @property {string} project_type
  * @property {string|null} planned_date
  * @property {string|null} published_date
  * @property {string|null} patreon_url
@@ -50,14 +54,15 @@ export function createProjectRepository(db) {
   const countBySlug = db.prepare('SELECT COUNT(*) AS c FROM projects WHERE slug = ?');
   const insert = db.prepare(`
     INSERT INTO projects (
-      title, slug, description, notes, status,
+      title, slug, description, notes, status, project_type,
       planned_date, published_date, patreon_url
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     RETURNING ${COLUMNS.join(', ')}
   `);
   const update = db.prepare(`
     UPDATE projects
     SET title = ?, slug = ?, description = ?, notes = ?, status = ?,
+        project_type = COALESCE(?, project_type),
         planned_date = ?, published_date = ?, patreon_url = ?,
         updated_at = datetime('now')
     WHERE id = ? AND archived_at IS NULL
@@ -165,6 +170,7 @@ export function createProjectRepository(db) {
         input.description,
         input.notes,
         input.status,
+        input.projectType ?? DEFAULT_PROJECT_TYPE,
         input.plannedDate ?? null,
         input.publishedDate ?? null,
         input.patreonUrl ?? null,
@@ -184,6 +190,7 @@ export function createProjectRepository(db) {
         input.description,
         input.notes,
         input.status,
+        input.projectType ?? null,
         input.plannedDate ?? null,
         input.publishedDate ?? null,
         input.patreonUrl ?? null,
@@ -405,6 +412,8 @@ export function createProjectRepository(db) {
      * @param {Object} [options]
      * @param {string|string[]} [options.status]
      * @param {string[]} [options.statuses]
+     * @param {string|string[]} [options.projectType]
+     * @param {string[]} [options.projectTypes]
      * @param {string} [options.search]
      * @param {number} [options.tagId]
      * @param {number[]} [options.tagIds]
@@ -420,6 +429,8 @@ export function createProjectRepository(db) {
       const {
         status,
         statuses,
+        projectType,
+        projectTypes,
         search,
         tagId,
         tagIds,
@@ -432,6 +443,7 @@ export function createProjectRepository(db) {
       } = options;
 
       const selectedStatuses = normalizeStatusSelection(statuses === undefined ? status : statuses);
+      const selectedProjectTypes = normalizeProjectTypeSelection(projectTypes === undefined ? projectType : projectTypes);
       const selectedTagIds = normalizeTagSelection(tagIds === undefined ? tagId : tagIds);
 
       const conditions = [];
@@ -462,6 +474,12 @@ export function createProjectRepository(db) {
         conditions.push(statusConditions.length === 1
           ? statusConditions[0]
           : `(${statusConditions.join(' OR ')})`);
+      }
+
+      if (selectedProjectTypes.length > 0) {
+        const placeholders = selectedProjectTypes.map(() => '?').join(',');
+        conditions.push(`project_type IN (${placeholders})`);
+        params.push(...selectedProjectTypes);
       }
 
       if (search && search.trim()) {
@@ -503,6 +521,11 @@ function escapeLike(value) {
 function normalizeStatusSelection(value) {
   const values = new Set(Array.isArray(value) ? value : [value]);
   return STATUSES.filter((status) => values.has(status));
+}
+
+function normalizeProjectTypeSelection(value) {
+  const values = new Set(Array.isArray(value) ? value : [value]);
+  return PROJECT_TYPES.filter((projectType) => values.has(projectType));
 }
 
 function normalizeDashboardStatusLimits(limitByStatus) {

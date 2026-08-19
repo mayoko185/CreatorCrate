@@ -71,10 +71,11 @@ function extractProjectCard(html, projectId) {
   return cards.find((card) => card.includes(`data-project-card-link href="/projects/${projectId}"`)) || '';
 }
 
-async function createProject(app, { title, status = 'tbd', plannedDate = null }) {
+async function createProject(app, { title, status = 'tbd', plannedDate = null, projectType = 'images' }) {
   const parts = [
     `title=${encodeURIComponent(title)}`,
     `status=${status}`,
+    `projectType=${projectType}`,
     'priority=normal',
   ];
   if (plannedDate) parts.push(`plannedDate=${plannedDate}`);
@@ -831,17 +832,18 @@ describe('dashboard HTTP composition', () => {
   // ─── Recently updated projects ──────────────────────────────────────
 
   describe('dashboard recently updated projects section', () => {
-    it('renders recently updated projects as project cards with status badges, no Priority', async () => {
-      await createProject(app, { title: 'Recent Card Project', status: 'ready' });
+    it('renders recently updated projects through shared cards with Status and Project Type badges, no Priority', async () => {
+      const projectId = await createProject(app, { title: 'Recent Card Project', status: 'ready', projectType: 'comic' });
 
       const res = await app.testAgent.get('/').expect(200);
       const section = extractSection(res.text, 'recent-projects');
+      const card = extractProjectCard(section, projectId);
       expect(section).toContain('<ul class="project-grid">');
-      expect(section).toMatch(/<article class="project-card project-card--grid project-grid-card" data-project-card>/);
-      expect(section).toContain('Recent Card Project');
-      expect(section).toContain('status-badge');
-      expect(section).toContain('Ready');
-      expect(section).not.toMatch(/\bpriority\b/i);
+      expect(card).toMatch(/<article class="project-card project-card--grid project-grid-card" data-project-card>/);
+      expect(card).toContain('Recent Card Project');
+      expect(card).toContain('status-badge status-badge--active">Ready</span>');
+      expect(card.match(/project-type-badge--comic/g) || []).toHaveLength(2);
+      expect(card).not.toMatch(/\bpriority\b/i);
     });
 
     it('shows the established empty-state contract when no projects are tracked', async () => {

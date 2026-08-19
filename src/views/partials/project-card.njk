@@ -35,7 +35,10 @@
                 <a class="project-list-card-link project-card-link" data-project-card-link href="/projects/{{ project.id }}">{{ project.title }}</a>
               </{{ headingLevel }}>
             </div>
-            <div class="project-list-card-indicators" aria-label="Project status">
+            <div class="project-list-card-indicators" aria-label="Project badges">
+              <span class="project-list-card-type">
+                {% set projectType = project.project_type %}{% include "partials/project-type-badge.njk" %}
+              </span>
               <span class="project-list-card-status">
                 {% set status = project.status %}{% include "partials/status-badge.njk" %}
               </span>
@@ -46,6 +49,10 @@
             <div class="project-list-card-meta">
               <dt>Status</dt>
               <dd>{% set status = project.status %}{% include "partials/status-badge.njk" %}</dd>
+            </div>
+            <div class="project-list-card-meta">
+              <dt>Type</dt>
+              <dd>{% set projectType = project.project_type %}{% include "partials/project-type-badge.njk" %}</dd>
             </div>
             <div class="project-list-card-meta project-list-card-meta--date">
               <dt>Updated</dt>
@@ -79,7 +86,8 @@
           </div>
         </div>
       {% else %}
-        <div class="project-grid-card-status" aria-label="Project status">
+        <div class="project-grid-card-status" aria-label="Project badges">
+          {% set projectType = project.project_type %}{% include "partials/project-type-badge.njk" %}
           {% set status = project.status %}{% include "partials/status-badge.njk" %}
         </div>
 
@@ -107,6 +115,10 @@
               <div class="project-grid-card-info-row">
                 <dt>Status</dt>
                 <dd>{% set status = project.status %}{% include "partials/status-badge.njk" %}</dd>
+              </div>
+              <div class="project-grid-card-info-row">
+                <dt>Type</dt>
+                <dd>{% set projectType = project.project_type %}{% include "partials/project-type-badge.njk" %}</dd>
               </div>
               <div class="project-grid-card-info-row">
                 <dt>Updated</dt>

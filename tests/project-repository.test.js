@@ -35,10 +35,11 @@ describe('project repository', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('creates a project without a priority field', () => {
+  it('creates a project with the default project type and without a priority field', () => {
     const project = repository.create(sampleProject({ title: 'Sunset Sketch' }));
     expect(project.title).toBe('Sunset Sketch');
     expect(project.status).toBe('tbd');
+    expect(project.project_type).toBe('images');
     expect(project).not.toHaveProperty('priority');
     expect(project.slug).toBe('sunset-sketch');
     expect(project.archived_at).toBeNull();
@@ -49,16 +50,25 @@ describe('project repository', () => {
     const found = repository.findById(created.id);
     expect(found).toBeTruthy();
     expect(found.id).toBe(created.id);
+    expect(found.project_type).toBe('images');
   });
 
   it('updates a project', () => {
-    const created = repository.create(sampleProject({ title: 'Landscape' }));
+    const created = repository.create(sampleProject({ title: 'Landscape', projectType: 'comic' }));
+    const unchangedType = repository.update(created.id, {
+      ...sampleProject({ title: 'Landscape' }),
+      status: 'in-progress',
+    });
+    expect(unchangedType.project_type).toBe('comic');
+
     const updated = repository.update(created.id, {
       ...sampleProject({ title: 'Mountain Landscape' }),
       status: 'in-progress',
+      projectType: 'animation',
     });
     expect(updated.title).toBe('Mountain Landscape');
     expect(updated.status).toBe('in-progress');
+    expect(updated.project_type).toBe('animation');
     expect(updated).not.toHaveProperty('priority');
   });
 
@@ -131,6 +141,39 @@ describe('project repository', () => {
       order: 'asc',
     });
     expect(combined.rows.map((project) => project.title)).toEqual(['Archived', 'Planned']);
+  });
+
+  it('filters by Project Type with OR semantics and composes it with status', () => {
+    const images = repository.create(sampleProject({ title: 'Images', status: 'planned', projectType: 'images' }));
+    const comic = repository.create(sampleProject({ title: 'Comic', status: 'planned', projectType: 'comic' }));
+    const animation = repository.create(sampleProject({ title: 'Animation', status: 'ready', projectType: 'animation' }));
+    const wallpaper = repository.create(sampleProject({ title: 'Wallpaper', status: 'ready', projectType: 'wallpaper' }));
+
+    for (const [projectType, expected] of [
+      ['images', images],
+      ['comic', comic],
+      ['animation', animation],
+      ['wallpaper', wallpaper],
+    ]) {
+      expect(repository.list({ projectType }).rows.map((project) => project.id)).toEqual([expected.id]);
+    }
+
+    const multiple = repository.list({ projectTypes: ['wallpaper', 'comic', 'invalid'], sortBy: 'title', order: 'asc' });
+    expect(multiple.rows.map((project) => project.id)).toEqual([comic.id, wallpaper.id]);
+
+    const combined = repository.list({ projectTypes: ['images', 'comic'], status: 'planned', sortBy: 'title', order: 'asc' });
+    expect(combined.rows.map((project) => project.id)).toEqual([comic.id, images.id]);
+
+    const tag = tagRepository.create({ displayName: 'Project Type', normalizedName: 'project-type' });
+    db.prepare('UPDATE projects SET description = ? WHERE id = ?').run('type search', images.id);
+    tagRepository.assignToProject(images.id, tag.id);
+    const composed = repository.list({
+      projectTypes: ['images', 'comic'],
+      status: 'planned',
+      search: 'type search',
+      tagId: tag.id,
+    });
+    expect(composed.rows.map((project) => project.id)).toEqual([images.id]);
   });
 
   it('searches title, description, and notes', () => {

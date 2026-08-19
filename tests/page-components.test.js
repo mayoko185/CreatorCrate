@@ -89,6 +89,11 @@ function hasClass(html, className) {
   return re.test(html);
 }
 
+function extractProjectCard(html, projectId) {
+  const cards = html.match(/<article\b[^>]*data-project-card[^>]*>[\s\S]*?<\/article>/g) || [];
+  return cards.find((card) => card.includes(`data-project-card-link href="/projects/${projectId}"`)) || '';
+}
+
 function hasNestedForms(html) {
   let depth = 0;
   for (const tag of html.match(/<\/?form\b[^>]*>/gi) || []) {
@@ -657,6 +662,89 @@ describe('Phase 10.5A: Shared page-level components', () => {
       expect(css).toContain('.status-badge--draft');
       expect(css).toContain('.status-badge--published');
       expect(css).toContain('.status-badge--archived');
+    });
+  });
+
+  describe('Project Type badges', () => {
+    it.each([
+      ['images', 'Images'],
+      ['comic', 'Comic'],
+      ['animation', 'Animation'],
+      ['wallpaper', 'Wallpaper'],
+    ])('renders the %s badge with its readable label and modifier', (projectType, label) => {
+      const html = renderPartial('partials/project-type-badge.njk', { projectType });
+
+      expect(html).toContain(`status-badge project-type-badge project-type-badge--${projectType}`);
+      expect(html).toContain(`>${label}</span>`);
+    });
+
+    it('uses a neutral readable fallback for an unknown Project Type', () => {
+      const html = renderPartial('partials/project-type-badge.njk', { projectType: 'legacy-type' });
+
+      expect(html).toContain('status-badge--neutral project-type-badge project-type-badge--unknown');
+      expect(html).toContain('>Legacy Type</span>');
+    });
+
+    it('renders Type beside unchanged Status badges in list and grid project cards', async () => {
+      const created = await agent
+        .post('/projects')
+        .send('title=Project+Type+Card')
+        .send('status=tbd')
+        .send('projectType=animation')
+        .send('priority=normal')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const projectId = created.headers.location.replace('/projects/', '');
+
+      for (const view of ['list', 'grid']) {
+        const res = await agent.get(`/projects?view=${view}`).expect(200);
+        const card = extractProjectCard(res.text, projectId);
+
+        expect(card).toContain('>Tbd</span>');
+        expect(card.match(/project-type-badge--animation/g) || []).toHaveLength(2);
+
+        const typeMeta = card.match(/<dt>Type<\/dt>\s*<dd>[\s\S]*?<\/dd>/)?.[0] || '';
+        expect(typeMeta.match(/project-type-badge--animation/g) || []).toHaveLength(1);
+
+        if (view === 'list') {
+          const indicators = card.match(/<div class="project-list-card-indicators"[\s\S]*?<\/div>/)?.[0] || '';
+          expect(indicators.match(/project-type-badge--animation/g) || []).toHaveLength(1);
+        } else {
+          const indicators = card.match(/<div class="project-grid-card-status"[\s\S]*?<\/div>/)?.[0] || '';
+          expect(indicators.match(/project-type-badge--animation/g) || []).toHaveLength(1);
+        }
+      }
+    });
+
+    it('renders Type beside Status once in the project detail summary', async () => {
+      const created = await agent
+        .post('/projects')
+        .send('title=Project+Type+Detail')
+        .send('status=ready')
+        .send('projectType=wallpaper')
+        .send('priority=normal')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      const res = await agent.get(created.headers.location).expect(200);
+      const meta = res.text.match(/<div class="project-detail-meta">[\s\S]*?<\/nav>/)?.[0] || '';
+
+      expect(meta).toContain('status-badge status-badge--active">Ready</span>');
+      expect(meta.match(/project-type-badge--wallpaper/g) || []).toHaveLength(1);
+      expect(meta.indexOf('status-badge--active')).toBeLessThan(meta.indexOf('project-type-badge--wallpaper'));
+    });
+
+    it('defines dedicated Project Type badge variants without changing Status badge classes', async () => {
+      const res = await agent.get('/projects').expect(200);
+      const css = await extractStyle(agent, res.text);
+
+      for (const projectType of ['images', 'comic', 'animation', 'wallpaper']) {
+        expect(css).toContain(`.project-type-badge--${projectType}`);
+      }
+      expect(css).toContain('.status-badge--neutral');
+      expect(css).toContain('.status-badge--active');
     });
   });
 

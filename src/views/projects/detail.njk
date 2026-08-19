@@ -43,6 +43,7 @@
     <div class="project-detail-summary">
       <div class="project-detail-meta">
         {% set status = project.status %}{% include "partials/status-badge.njk" %}
+        {% set projectType = project.project_type %}{% include "partials/project-type-badge.njk" %}
         <nav class="project-detail-action-toolbar" aria-label="Project actions">
           {% if not project.archived_at %}
             <a class="button button-small button-secondary project-detail-action asset-tooltip asset-tooltip--right"
@@ -187,6 +188,7 @@
     {% set values = projectEditForm.values %}
     {% set errors = projectEditForm.errors %}
     {% set statuses = projectEditForm.statuses %}
+    {% set projectTypes = projectEditForm.projectTypes %}
     {% set tags = projectEditForm.tags %}
     {% set selectedTagIds = projectEditForm.selectedTagIds %}
     {% call dialog.render('project-edit-dialog', 'Edit Project', projectEditDialogOpen, 'project-edit-description', 'project-edit-form', 'project-form-dialog') %}

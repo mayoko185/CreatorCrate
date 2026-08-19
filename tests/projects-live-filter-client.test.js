@@ -244,6 +244,8 @@ function makePage(values = {}) {
   fields.push(allProjects, project);
   const ready = add({ name: 'status', type: 'checkbox', value: 'ready' }, 'ready', values.statuses?.includes('ready') ?? true);
   const planned = add({ name: 'status', type: 'checkbox', value: 'planned' }, 'planned', values.statuses?.includes('planned') ?? false);
+  const images = add({ name: 'type', type: 'checkbox', value: 'images' }, 'images', values.types?.includes('images') ?? false);
+  const comic = add({ name: 'type', type: 'checkbox', value: 'comic' }, 'comic', values.types?.includes('comic') ?? false);
   const firstTag = add({ name: 'tag', type: 'checkbox', value: '2' }, '2', values.tags?.includes('2') ?? true);
   const secondTag = add({ name: 'tag', type: 'checkbox', value: '3' }, '3', values.tags?.includes('3') ?? true);
   const sort = add({ name: 'sort', type: 'radio', value: 'title' }, 'title', values.sort !== undefined ? values.sort === 'title' : true);
@@ -333,6 +335,8 @@ function makePage(values = {}) {
     project,
     ready,
     planned,
+    images,
+    comic,
     firstTag,
     secondTag,
     sort,
@@ -474,11 +478,11 @@ describe('Projects live filtering enhancement', () => {
   });
 
   it('serializes the GET form, preserves selected options, resets page, and pushes the server URL without navigating', async () => {
-    const initial = makePage({ project: 7 });
-    const next = makePage({ project: 7, statuses: ['ready', 'planned'], tags: ['2', '3'] });
+    const initial = makePage({ project: 7, types: ['images', 'comic'] });
+    const next = makePage({ project: 7, statuses: ['ready', 'planned'], types: ['images', 'comic'], tags: ['2', '3'] });
     const pages = new Map([['next', next.document]]);
     const windowObject = makeWindow(initial.document, pages);
-    const responseUrl = 'http://creatorcrate.test/projects?status=ready&status=planned&tag=2&tag=3&project=7&sort=title&order=asc&view=list';
+    const responseUrl = 'http://creatorcrate.test/projects?status=ready&status=planned&type=images&type=comic&tag=2&tag=3&project=7&sort=title&order=asc&view=list';
     windowObject.fetch.mockResolvedValue(responseFor(next, 'next', responseUrl));
 
     expect(initial.projectDropdown.getAttribute('data-cc-dropdown')).toBe('');
@@ -495,6 +499,7 @@ describe('Projects live filtering enhancement', () => {
     const requested = new URL(windowObject.fetch.mock.calls[0][0]);
     expect(requested.pathname).toBe('/projects');
     expect(requested.searchParams.getAll('status')).toEqual(['ready', 'planned']);
+    expect(requested.searchParams.getAll('type')).toEqual(['images', 'comic']);
     expect(requested.searchParams.getAll('tag')).toEqual(['2', '3']);
     expect(requested.searchParams.get('project')).toBe('7');
     expect(requested.searchParams.get('view')).toBe('list');

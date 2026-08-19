@@ -6,6 +6,8 @@ import {
   createProjectRepository,
   STATUSES,
   WORKFLOW_STATUSES,
+  PROJECT_TYPES,
+  DEFAULT_PROJECT_TYPE,
 } from '../data/project-repository.js';
 import { createReleaseRepository } from '../data/release-repository.js';
 import {
@@ -93,7 +95,7 @@ export function createProjectService(
   const releaseRepository = createReleaseRepository(db);
 
   function validate(input, options = {}) {
-    const { existingId } = options;
+    const { existingId, existingProjectType = DEFAULT_PROJECT_TYPE } = options;
     const errors = {};
 
     const title = typeof input.title === 'string' ? input.title.trim() : '';
@@ -116,6 +118,15 @@ export function createProjectService(
     const status = input.status;
     if (!WORKFLOW_STATUSES.includes(status)) {
       errors.status = `Status must be one of: ${WORKFLOW_STATUSES.join(', ')}.`;
+    }
+
+    // Empty project type follows form compatibility: create defaults to images;
+    // update retains the project's stored type rather than resetting it.
+    const projectType = input.projectType === undefined || input.projectType === null || input.projectType === ''
+      ? existingProjectType
+      : input.projectType;
+    if (!PROJECT_TYPES.includes(projectType)) {
+      errors.projectType = `Project type must be one of: ${PROJECT_TYPES.join(', ')}.`;
     }
 
     const plannedDate = input.plannedDate || null;
@@ -148,6 +159,7 @@ export function createProjectService(
       description,
       notes,
       status,
+      projectType,
       plannedDate,
       publishedDate,
       patreonUrl,
@@ -325,7 +337,10 @@ export function createProjectService(
       }
 
       // Phase 1: Validate input
-      const normalized = validate(input, { existingId: id });
+      const normalized = validate(input, {
+        existingId: id,
+        existingProjectType: project.project_type,
+      });
 
       // Phase 2: Compute changes and pre-flight validation.
       //
@@ -336,11 +351,10 @@ export function createProjectService(
       const slugChanged = normalized.slug !== project.slug;
       const dirNeedsChange = slugChanged;
 
-      // The manifest serializes every non-status field (title, slug,
-      // description, notes, planned/published date, patreon URL).
-      // A metadata-only update must rewrite project.json even when the
-      // slug is unchanged; only a pure status-only update skips the
-      // filesystem entirely. Fields are compared via their DB→input
+      // The manifest serializes title, slug, description, notes,
+      // planned/published date, and patreon URL. Status and project type are
+      // database/UI metadata, so either alone skips the filesystem entirely.
+      // Fields are compared via their DB→input
       // (snake_case→camelCase) mapping.
       const metadataChanged = [
         ['title', 'title'],
@@ -416,6 +430,7 @@ export function createProjectService(
         description: project.description,
         notes: project.notes,
         status: project.status,
+        projectType: project.project_type,
         plannedDate: project.planned_date,
         publishedDate: project.published_date,
         patreonUrl: project.patreon_url,

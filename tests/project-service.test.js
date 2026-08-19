@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { createAssetCategoryRepository } from '../src/data/asset-category-repository.js';
 import { createAssetBrowserPreferenceRepository } from '../src/data/asset-browser-preference-repository.js';
+import { PROJECT_TYPES, DEFAULT_PROJECT_TYPE } from '../src/data/project-repository.js';
 import { createAssetCategoryService } from '../src/services/asset-category-service.js';
 import {
   createProjectService,
@@ -100,6 +101,86 @@ describe('project service', () => {
     } catch (err) {
       expect(err.errors.title).toBe('Title is required.');
     }
+  });
+
+  describe('project type', () => {
+    it('defaults missing and empty create input to images', () => {
+      const missing = service.create(validInput({ title: 'Missing Project Type' }));
+      const empty = service.create(validInput({ title: 'Empty Project Type', projectType: '' }));
+
+      expect(missing.project_type).toBe(DEFAULT_PROJECT_TYPE);
+      expect(empty.project_type).toBe(DEFAULT_PROJECT_TYPE);
+    });
+
+    it.each(PROJECT_TYPES)('accepts the %s project type on create', (projectType) => {
+      const project = service.create(validInput({
+        title: `Project Type ${projectType}`,
+        projectType,
+      }));
+
+      expect(project.project_type).toBe(projectType);
+    });
+
+    it('rejects an invalid project type on create', () => {
+      expect(() => service.create(validInput({ projectType: 'invalid-type' }))).toThrow(
+        ProjectValidationError
+      );
+    });
+
+    it('preserves an existing non-default type when update input omits it', () => {
+      const project = service.create(validInput({
+        title: 'Preserved Project Type',
+        projectType: 'comic',
+      }));
+
+      const updated = service.update(project.id, validInput({
+        title: 'Preserved Project Type',
+        status: 'planned',
+      }));
+
+      expect(updated.project_type).toBe('comic');
+    });
+
+    it('treats an explicitly empty update type as no type change', () => {
+      const project = service.create(validInput({
+        title: 'Empty Update Project Type',
+        projectType: 'comic',
+      }));
+
+      const updated = service.update(project.id, validInput({
+        title: 'Empty Update Project Type',
+        projectType: '',
+      }));
+
+      expect(updated.project_type).toBe('comic');
+    });
+
+    it('accepts changing to another valid project type', () => {
+      const project = service.create(validInput({
+        title: 'Changed Project Type',
+        projectType: 'comic',
+      }));
+
+      const updated = service.update(project.id, validInput({
+        title: 'Changed Project Type',
+        projectType: 'animation',
+      }));
+
+      expect(updated.project_type).toBe('animation');
+    });
+
+    it('rejects an explicitly invalid project type on update', () => {
+      const project = service.create(validInput({
+        title: 'Invalid Update Project Type',
+        projectType: 'comic',
+      }));
+
+      expect(() => service.update(project.id, validInput({
+        title: 'Invalid Update Project Type',
+        projectType: 'invalid-type',
+      }))).toThrow(ProjectValidationError);
+      expect(service.findById(project.id).project_type).toBe('comic');
+    });
   });
 
   it('lists scan-eligible projects through the canonical active-project query', () => {
@@ -535,6 +616,31 @@ describe('project service', () => {
       expect(fs.readFileSync(manifestPath, 'utf8')).toBe(manifestBefore);
     });
 
+    it('type-only update is DB/UI-only and leaves the manifest byte-identical', () => {
+      const project = createTestProject({
+        title: 'Type Only Edit',
+        projectType: 'comic',
+      });
+      const { absPath: originalPath, relPath: originalRel } = getProjectDir(project);
+      const manifestPath = path.join(originalPath, MANIFEST_FILENAME);
+      const manifestBefore = fs.readFileSync(manifestPath, 'utf8');
+      const userFile = path.join(originalPath, 'user-data.txt');
+      fs.writeFileSync(userFile, 'custom content');
+
+      const updated = service.update(project.id, validInput({
+        title: 'Type Only Edit',
+        projectType: 'wallpaper',
+      }));
+
+      expect(updated.project_type).toBe('wallpaper');
+      expect(updated.project_dir).toBe(originalRel);
+      expect(fs.existsSync(userFile)).toBe(true);
+      expect(fs.readFileSync(userFile, 'utf8')).toBe('custom content');
+      expect(fs.readFileSync(manifestPath, 'utf8')).toBe(manifestBefore);
+      expect(JSON.parse(manifestBefore)).not.toHaveProperty('projectType');
+      expect(JSON.parse(manifestBefore)).not.toHaveProperty('project_type');
+    });
+
     it('metadata-only update rewrites project.json without renaming the directory', () => {
       const project = createTestProject({ title: 'Meta Only', description: 'Old desc' });
       const { absPath: originalPath, relPath: originalRel } = getProjectDir(project);
@@ -856,7 +962,7 @@ describe('project service', () => {
     });
 
     it('injected rename failure triggers compensation', () => {
-      const project = createTestProject({ title: 'Rename Fail' });
+      const project = createTestProject({ title: 'Rename Fail', projectType: 'comic' });
       const { absPath: originalPath, relPath: originalRel } = getProjectDir(project);
 
       // Spy on renameSync to inject failure
@@ -868,6 +974,7 @@ describe('project service', () => {
         service.update(project.id, validInput({
           title: 'Rename Fail New', // triggers slug change
           status: 'in-progress',
+          projectType: 'wallpaper',
         }));
         expect(true).toBe(false);
       } catch (err) {
@@ -881,6 +988,7 @@ describe('project service', () => {
       expect(found.title).toBe('Rename Fail');
       expect(found.slug).toBe('rename-fail');
       expect(found.status).toBe('tbd');
+      expect(found.project_type).toBe('comic');
       expect(found.project_dir).toBe(originalRel);
 
       // Directory still at original location

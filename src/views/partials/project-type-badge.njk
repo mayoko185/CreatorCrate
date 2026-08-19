@@ -1,0 +1,26 @@
+{#
+  Project Type badge partial.
+  Usage:
+    {% set projectType = project.project_type %}
+    {% include "partials/project-type-badge.njk" %}
+
+  Known project types use dedicated visual variants. Unknown values preserve the
+  Status badge fallback convention: readable neutral text without breaking the
+  surrounding template.
+
+  Parameters (set before including):
+    - projectType: the stored project type string
+#}
+{% if projectType %}
+  {% if projectType == "images" %}
+    <span class="status-badge project-type-badge project-type-badge--images">Images</span>
+  {% elif projectType == "comic" %}
+    <span class="status-badge project-type-badge project-type-badge--comic">Comic</span>
+  {% elif projectType == "animation" %}
+    <span class="status-badge project-type-badge project-type-badge--animation">Animation</span>
+  {% elif projectType == "wallpaper" %}
+    <span class="status-badge project-type-badge project-type-badge--wallpaper">Wallpaper</span>
+  {% else %}
+    <span class="status-badge status-badge--neutral project-type-badge project-type-badge--unknown">{{ projectType | replace("-", " ") | title }}</span>
+  {% endif %}
+{% endif %}

@@ -3937,6 +3937,12 @@
       .status-badge--published { background: rgba(52, 211, 153, 0.22); color: var(--success); }
       .status-badge--archived { background: rgba(136, 136, 136, 0.25); color: var(--badge-archived-fg); }
 
+      /* ── Project Type badges ── */
+      .project-type-badge--images { background: rgba(34, 211, 238, 0.18); color: var(--accent); }
+      .project-type-badge--comic { background: rgba(167, 139, 250, 0.18); color: var(--warning); }
+      .project-type-badge--animation { background: rgba(52, 211, 153, 0.18); color: var(--success); }
+      .project-type-badge--wallpaper { background: rgba(251, 113, 133, 0.18); color: var(--badge-danger-fg); }
+
       /* ── Action variants ── */
       .button-secondary { border-color: var(--border-strong); color: var(--muted); }
       .button-secondary:hover { color: var(--text); border-color: var(--text); }
@@ -4780,6 +4786,8 @@
       }
       .project-grid-card-status {
         display: flex;
+        flex-wrap: wrap;
+        gap: var(--space-sm);
         align-items: flex-start;
         padding: var(--space-sm) var(--space-sm) 0;
       }

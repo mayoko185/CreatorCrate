@@ -4,6 +4,7 @@
   {% set values = projectCreateForm.values %}
   {% set errors = projectCreateForm.errors %}
   {% set statuses = projectCreateForm.statuses %}
+  {% set projectTypes = projectCreateForm.projectTypes %}
   {% set tags = projectCreateForm.tags %}
   {% set selectedTagIds = projectCreateForm.selectedTagIds %}
   {% call dialog.render('project-create-dialog', 'New Project', open, 'project-create-description', 'project-create-form', 'project-form-dialog') %}

@@ -115,6 +115,20 @@
       }) }}
 
       {{ dropdown.multiSelect({
+        id: "project-type-filter",
+        name: "type",
+        label: "Project Type",
+        fieldClasses: "asset-viewer-filter-field",
+        options: projectTypeOptions,
+        optionIdPrefix: "project-type",
+        selectedValues: query.projectTypes,
+        summary: renderFilterSummary(query.projectTypes, projectTypeOptions, "All types", "types", ""),
+        emptySummary: "All types",
+        countLabel: "types",
+        panelLabel: "Project Type options"
+      }) }}
+
+      {{ dropdown.multiSelect({
         id: "project-tag-filter",
         name: "tag",
         label: "Tag",
