@@ -1224,6 +1224,7 @@ function enhanceAssetLibraryLiveRegion(region) {
   enhanceAssetViewerFilterDisclosures(liveRegionDocument(region));
   enhanceAssetViewerInfoCards(region);
   enhanceSlideshow(liveRegionDocument(region));
+  enhanceProjectAssetsPreviewSlideshow(region);
 }
 
 const assetLibraryLiveEngine = createLiveRegionEngine({

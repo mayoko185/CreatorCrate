@@ -2284,6 +2284,10 @@
         border: 1px solid var(--border);
         border-radius: var(--radius-lg);
       }
+      .asset-viewer-filters--asset-viewer {
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
+      }
       .asset-viewer-filters--project-assets > .asset-viewer-defaults-link,
       .asset-viewer-filters--asset-viewer > .asset-viewer-defaults-link {
         position: absolute;

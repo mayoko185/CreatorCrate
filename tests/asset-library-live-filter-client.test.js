@@ -276,9 +276,14 @@ function makePage(projectId = null) {
   form.appendChild(dropdown);
   region.appendChild(status);
   region.appendChild(form);
+  const preview = makeNode({
+    tagName: 'a',
+    attrs: { href: '/assets/7', 'data-project-assets-preview-id': '7' },
+  });
+  region.appendChild(preview);
   document.appendChild(region);
 
-  return { document, region, form, summary, all, alpha, search, currentSummary };
+  return { document, region, form, summary, all, alpha, search, currentSummary, preview };
 }
 
 function makeWindow(document, pages) {
@@ -368,5 +373,32 @@ describe('Asset Viewer Project live filtering enhancement', () => {
     enhanceAssetLibraryLiveFiltering(next.region);
     enhanceAssetLibraryLiveFiltering(next.region);
     expect(next.form.listeners.filter(({ type }) => type === 'change')).toHaveLength(1);
+  });
+
+  it('re-binds replaced preview links to the existing slideshow', async () => {
+    const initial = makePage();
+    const next = makePage('1');
+    const openSingleById = vi.fn(() => true);
+    const scaffold = makeNode({ attrs: { 'data-slideshow-scaffold': '' } });
+    scaffold.__creatorCrateSlideshowState = { openSingleById };
+    initial.document.appendChild(scaffold);
+
+    const pages = new Map([['filtered', next.document]]);
+    const windowObject = makeWindow(initial.document, pages);
+    windowObject.fetch.mockResolvedValue({
+      ok: true,
+      url: 'http://creatorcrate.test/assets?project=1',
+      text: vi.fn(async () => 'filtered'),
+    });
+
+    expect(enhanceAssetLibraryLiveFiltering(initial.document)).toBe(1);
+    initial.all.checked = false;
+    initial.alpha.checked = true;
+    initial.alpha.dispatch('change');
+    await flush();
+
+    const event = next.preview.dispatch('click', { button: 0 });
+    expect(openSingleById).toHaveBeenCalledWith('7', next.preview);
+    expect(event.defaultPrevented).toBe(true);
   });
 });

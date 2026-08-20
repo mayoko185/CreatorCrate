@@ -301,13 +301,21 @@ describe('cross-project Asset Viewer HTTP route', () => {
     `).run(release.id, released.id);
 
     const response = await request(app).get('/assets?view=list').expect(200);
+    const listCards = response.text.match(/<article class="asset-list-card"[\s\S]*?<\/article>/g) || [];
+    const releasedListCard = listCards.find((card) => card.includes(`data-asset-id="${released.id}"`));
 
     expect(response.headers.location).toBeUndefined();
     expect(response.text).toContain('<ul class="asset-list" role="list" aria-label="Assets across active projects">');
     expect(response.text).not.toContain('<table class="data-table asset-table">');
     expect((response.text.match(/<article class="asset-list-card"/g) || [])).toHaveLength(2);
+    expect(releasedListCard).toBeDefined();
+    expect(releasedListCard).toContain('<div class="asset-list-card-status" role="group" aria-label="Asset status">');
+    expect(releasedListCard).toContain('class="asset-list-card-presence"');
+    expect(releasedListCard).toContain('<span class="status-badge status-badge--success">Present at last scan</span>');
+    expect(releasedListCard).toContain(`class="asset-details-link asset-tooltip asset-tooltip--right" href="/projects/${project.id}/assets/${released.id}"`);
+    expect(releasedListCard).toContain('aria-label="View details for hero.png" data-tooltip="View asset details"');
     expect(response.text).toContain(`class="asset-list-card-media-link" href="/projects/${project.id}/assets/${released.id}"`);
-    expect(response.text).not.toContain('data-project-assets-preview-id');
+    expect(response.text).toContain(`data-project-assets-preview-id="${released.id}"`);
     expect(response.text).toMatch(new RegExp(`class="asset-list-card-media-image"[^>]*src="/projects/${project.id}/assets/${released.id}/preview\\?v=`));
     expect(response.text).not.toContain(`/projects/${project.id}/assets/${released.id}/thumbnail`);
     expect(response.text).toContain('alt=""');
@@ -386,14 +394,18 @@ describe('cross-project Asset Viewer HTTP route', () => {
     expect((topRow?.match(/class="asset-indicator\b/g) || [])).toHaveLength(2);
     expect(topRow).toContain('asset-indicator--present');
     expect(topRow).toContain('asset-indicator--used');
-    expect(topRow).not.toContain('asset-details-link');
+    expect(topRow).toContain(`class="asset-details-link asset-tooltip asset-tooltip--right" href="/projects/${project.id}/assets/${released.id}"`);
+    expect(topRow).toContain('aria-label="View details for hero.png" data-tooltip="View asset details"');
+    expect(topRow).toContain('<circle cx="12" cy="12" r="9"/><path d="M12 10v6M12 7h.01"/>');
+    expect(topRow).toContain('<span class="sr-only">View details</span>');
     expect(topRow).not.toContain('asset-select-checkbox');
     expect(releasedCard).toContain(`class="asset-card-media-link asset-viewer-grid-card-preview-link" href="/projects/${project.id}/assets/${released.id}"`);
-    expect(releasedCard).not.toContain('data-project-assets-preview-id');
+    expect(releasedCard).toContain(`data-project-assets-preview-id="${released.id}"`);
     expect(releasedCard).toContain('aria-label="View preview of hero.png"');
     expect(releasedCard).toContain('alt=""');
     expect(releasedCard).toContain(`class="asset-file-link" href="/projects/${project.id}/assets/${released.id}"`);
     expect(releasedCard).toContain('>hero.png</a>');
+    expect(releasedCard).not.toMatch(/class="asset-file-link"[^>]*aria-label=/);
     expect(releasedCard).toContain('data-asset-viewer-preview');
     expect(releasedCard).toContain('data-asset-info-card');
     expect(releasedCard).toContain('renders/hero.png');
@@ -418,7 +430,6 @@ describe('cross-project Asset Viewer HTTP route', () => {
     expect(unreleasedCard).toContain('Not in any release');
     expect(releasedCard).toContain('Used in 2 releases');
     expect(response.text).toContain('Not used by a release');
-    expect(response.text).not.toContain('asset-details-link');
     expect(response.text).not.toMatch(/Rename|Move file|selectedAssetIds|asset-select-checkbox/);
   });
 

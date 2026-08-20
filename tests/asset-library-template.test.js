@@ -439,11 +439,16 @@ describe('cross-project Asset Viewer template', () => {
     expect(topRow).toContain('aria-label="Present"');
     expect(topRow).toContain('asset-indicator--used');
     expect(topRow).toContain('aria-label="Used in 2 releases"');
+    expect(topRow).toContain('class="asset-details-link asset-tooltip asset-tooltip--right" href="/projects/1/assets/101"');
+    expect(topRow).toContain('aria-label="View details for shared.png" data-tooltip="View asset details"');
+    expect(topRow).toContain('<circle cx="12" cy="12" r="9"/><path d="M12 10v6M12 7h.01"/>');
+    expect(topRow).toContain('<span class="sr-only">View details</span>');
 
     expect(alphaCard).toContain('data-asset-viewer-preview');
     expect(alphaCard).toContain('data-asset-info-card');
     expect(alphaCard).toContain('aria-label="View preview of shared.png"');
     expect(alphaCard).toContain('class="asset-file-link" href="/projects/1/assets/101"');
+    expect(alphaCard).not.toMatch(/class="asset-file-link"[^>]*aria-label=/);
     expect(alphaCard).toContain('src="/projects/1/assets/101/preview?v=alpha"');
     expect(alphaCard).toContain('alt=""');
     expect(alphaCard).toContain('>Alpha Project</a>');
@@ -477,8 +482,6 @@ describe('cross-project Asset Viewer template', () => {
     expect(alphaCard).toContain('2026-08-01 10:00:00');
     expect(alphaCard).toContain('Present at last scan');
     expect(alphaCard).toContain('Used in 2 releases');
-    expect(alphaCard).not.toContain('asset-details-link');
-    expect(alphaCard).not.toContain('data-tooltip="View asset details"');
     expect(alphaCard).not.toContain('data-asset-info-trigger');
     expect(alphaCard).not.toContain('asset-select-checkbox');
     expect(alphaCard).not.toMatch(/\d+\s+of\s+\d+/);
@@ -747,6 +750,9 @@ describe('cross-project Asset Viewer template', () => {
     const css = fs.readFileSync(STYLESHEET_PATH, 'utf8');
 
     expect(css).toMatch(/\.asset-viewer-filters\s*\{[^}]*position:\s*relative/);
+    const assetViewerFiltersBorderRule = css.match(/(?:^|})\s*\.asset-viewer-filters--asset-viewer\s*\{([^}]*)\}/)?.[1] || '';
+    expect(assetViewerFiltersBorderRule).toMatch(/border:\s*1px solid var\(--border\)/);
+    expect(assetViewerFiltersBorderRule).toMatch(/border-radius:\s*var\(--radius-lg\)/);
     expect(css).toMatch(/\.asset-filter-multiselect-panel\s*\{[\s\S]*?max-height:\s*20rem[\s\S]*?overflow-y:\s*auto/);
     expect(css).toMatch(/\.asset-filter-multiselect summary:focus-visible\s*\{[\s\S]*?outline:\s*2px solid var\(--focus-ring\)/);
     expect(css).toMatch(/\.asset-filter-multiselect-option input:focus-visible\s*\{[\s\S]*?outline:\s*2px solid var\(--focus-ring\)/);
@@ -990,8 +996,8 @@ describe('cross-project Asset Viewer template', () => {
       submittedSelectedAssetIds: [],
     });
 
-    expect(html).toContain('class="asset-thumb-link" href="/projects/1/assets/73" aria-label="View details for table-preview.png" data-project-assets-preview-id="73"');
-    expect(html).toContain('class="asset-file-link" href="/projects/1/assets/73">table-preview</a>');
+    expect(html).toContain('class="asset-list-card-media-link" href="/projects/1/assets/73" aria-label="View preview of table-preview.png from Test Project" data-project-assets-preview-id="73"');
+    expect(html).toContain('class="asset-details-link asset-tooltip asset-tooltip--right" href="/projects/1/assets/73"');
   });
 
   it('renders the Asset Viewer defaults dialog in the overlay block', () => {

@@ -3843,11 +3843,9 @@ describe('asset browser HTTP workflow', () => {
     const projectMedia = assetListMediaHtml(assetListCardHtml(projectList.text, asset.id));
     const globalMedia = assetListMediaHtml(assetListCardHtml(globalList.text, asset.id));
     const projectPreviewPattern = /<div class="asset-list-card-media" data-preview-enhancement data-preview-state="loading">\s*<a class="asset-list-card-media-link" href="[^"]+" aria-label="[^"]+" data-project-assets-preview-id="\d+">\s*<img class="asset-list-card-media-image"\s+src="[^"]+"\s+alt=""\s+loading="lazy"\s+decoding="async"\s+data-preview-image>\s*<\/a>\s*<span class="asset-list-card-media-fallback" data-preview-fallback hidden>[^<]*<\/span>\s*<\/div>/;
-    const sharedPreviewPattern = /<div class="asset-list-card-media" data-preview-enhancement data-preview-state="loading">\s*<a class="asset-list-card-media-link" href="[^"]+" aria-label="[^"]+">\s*<img class="asset-list-card-media-image"\s+src="[^"]+"\s+alt=""\s+loading="lazy"\s+decoding="async"\s+data-preview-image>\s*<\/a>\s*<span class="asset-list-card-media-fallback" data-preview-fallback hidden>[^<]*<\/span>\s*<\/div>/;
 
     expect(projectMedia).toMatch(projectPreviewPattern);
-    expect(globalMedia).toMatch(sharedPreviewPattern);
-    expect(globalMedia).not.toContain('data-project-assets-preview-id');
+    expect(globalMedia).toMatch(projectPreviewPattern);
     expect(projectMedia).not.toContain('asset-thumb');
     const projectPreviewSrc = projectMedia.match(/<img\b[^>]*\bsrc="([^"]+)"/)?.[1] || '';
     const globalPreviewSrc = globalMedia.match(/<img\b[^>]*\bsrc="([^"]+)"/)?.[1] || '';
