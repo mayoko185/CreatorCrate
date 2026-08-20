@@ -4607,4 +4607,55 @@ describe('workflow query service', () => {
     });
   });
 
+  describe('getDashboardData — configured section sorting', () => {
+    it('uses configured trusted sorting for date-driven, recently updated, and status sections', () => {
+      const overdueZulu = insertProject(db, { title: 'Zulu overdue', status: 'planned', plannedDate: '2026-07-01' });
+      const overdueAlpha = insertProject(db, { title: 'Alpha overdue', status: 'planned', plannedDate: '2026-07-01' });
+      const upcomingZulu = insertProject(db, { title: 'Zulu upcoming', status: 'planned', plannedDate: '2026-08-01' });
+      const upcomingAlpha = insertProject(db, { title: 'Alpha upcoming', status: 'planned', plannedDate: '2026-08-01' });
+      const recentZulu = insertProject(db, { title: 'Zulu recent', status: 'tbd' });
+      const recentAlpha = insertProject(db, { title: 'Alpha recent', status: 'tbd' });
+      const readyZulu = insertProject(db, { title: 'Zulu ready', status: 'ready' });
+      const readyAlpha = insertProject(db, { title: 'Alpha ready', status: 'ready' });
+
+      const data = service.getDashboardData({
+        today: '2026-07-15',
+        dashboardDefaults: dashboardDefaults({
+          overdue: { visible: true, itemCount: 8, sort: 'title', order: 'asc' },
+          upcoming: { visible: true, itemCount: 8, sort: 'title', order: 'asc' },
+          'recently-updated': { visible: true, itemCount: 25, sort: 'title', order: 'asc' },
+          'status:ready': { visible: true, itemCount: 8, sort: 'title', order: 'asc' },
+        }),
+      });
+
+      expect(data.sections.overdue.slice(0, 2).map((project) => project.id))
+        .toEqual([overdueAlpha.id, overdueZulu.id]);
+      expect(data.sections.upcoming.slice(0, 2).map((project) => project.id))
+        .toEqual([upcomingAlpha.id, upcomingZulu.id]);
+      expect(data.sections['recently-updated'].map((project) => project.id))
+        .toContain(recentAlpha.id);
+      expect(data.sections['recently-updated'].findIndex((project) => project.id === recentAlpha.id))
+        .toBeLessThan(data.sections['recently-updated'].findIndex((project) => project.id === recentZulu.id));
+      expect(data.sections['status:ready'].map((project) => project.id))
+        .toEqual([readyAlpha.id, readyZulu.id]);
+    });
+
+    it('keeps the established planned-date and updated-date defaults when no sorting is stored', () => {
+      const overdueLater = insertProject(db, { title: 'Later overdue', status: 'planned', plannedDate: '2026-07-10' });
+      const overdueEarlier = insertProject(db, { title: 'Earlier overdue', status: 'planned', plannedDate: '2026-07-01' });
+      const readyFirst = insertProject(db, { title: 'First ready', status: 'ready' });
+      const readySecond = insertProject(db, { title: 'Second ready', status: 'ready' });
+
+      const data = service.getDashboardData({
+        today: '2026-07-15',
+        dashboardDefaults: { version: 1, sections: {} },
+      });
+
+      expect(data.sections.overdue.slice(0, 2).map((project) => project.id))
+        .toEqual([overdueEarlier.id, overdueLater.id]);
+      expect(data.sections['status:ready'].slice(0, 2).map((project) => project.id))
+        .toEqual([readySecond.id, readyFirst.id]);
+    });
+  });
+
 });

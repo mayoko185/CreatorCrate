@@ -10,10 +10,16 @@ import {
   createDashboardDefaultsService,
   DASHBOARD_DEFAULTS_KEY,
   DASHBOARD_SECTION_REGISTRY,
+  getDashboardSectionDefaultSorting,
 } from '../src/services/dashboard-defaults-service.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 const CANONICAL_IDS = DASHBOARD_SECTION_REGISTRY.map(({ id }) => id);
+const defaultSection = (id) => ({
+  visible: true,
+  itemCount: 8,
+  ...getDashboardSectionDefaultSorting(id),
+});
 
 describe('dashboard defaults service', () => {
   let tmpDir;
@@ -38,7 +44,7 @@ describe('dashboard defaults service', () => {
     expect(service.getDefaults()).toEqual({
       version: 1,
       order: CANONICAL_IDS,
-      sections: Object.fromEntries(CANONICAL_IDS.map((id) => [id, { visible: true, itemCount: 8 }])),
+      sections: Object.fromEntries(CANONICAL_IDS.map((id) => [id, defaultSection(id)])),
     });
   });
 
@@ -51,7 +57,7 @@ describe('dashboard defaults service', () => {
 
     expect(service.getDefaults().order).toEqual(CANONICAL_IDS);
     expect(service.getDefaults().sections).toEqual(
-      Object.fromEntries(CANONICAL_IDS.map((id) => [id, { visible: true, itemCount: 8 }]))
+      Object.fromEntries(CANONICAL_IDS.map((id) => [id, defaultSection(id)]))
     );
     expect(repository.getValue(DASHBOARD_DEFAULTS_KEY)).toBe(storedValue);
   });
@@ -88,13 +94,48 @@ describe('dashboard defaults service', () => {
     }));
 
     const defaults = service.getDefaults();
-    expect(defaults.sections.overdue).toEqual({ visible: false, itemCount: 1 });
-    expect(defaults.sections.upcoming).toEqual({ visible: true, itemCount: 25 });
-    expect(defaults.sections['recently-updated']).toEqual({ visible: true, itemCount: 8 });
-    expect(defaults.sections['status:tbd']).toEqual({ visible: true, itemCount: 8 });
-    expect(defaults.sections['status:planned']).toEqual({ visible: true, itemCount: 8 });
-    expect(defaults.sections['status:ready']).toEqual({ visible: true, itemCount: 12 });
-    expect(defaults.sections['status:completed']).toEqual({ visible: true, itemCount: 8 });
+    expect(defaults.sections.overdue).toEqual({ ...defaultSection('overdue'), visible: false, itemCount: 1 });
+    expect(defaults.sections.upcoming).toEqual({ ...defaultSection('upcoming'), itemCount: 25 });
+    expect(defaults.sections['recently-updated']).toEqual(defaultSection('recently-updated'));
+    expect(defaults.sections['status:tbd']).toEqual(defaultSection('status:tbd'));
+    expect(defaults.sections['status:planned']).toEqual(defaultSection('status:planned'));
+    expect(defaults.sections['status:ready']).toEqual({ ...defaultSection('status:ready'), itemCount: 12 });
+    expect(defaults.sections['status:completed']).toEqual(defaultSection('status:completed'));
+  });
+
+  it('adds per-section sorting defaults to saved version-one documents without changing existing settings', () => {
+    repository.setValue(DASHBOARD_DEFAULTS_KEY, JSON.stringify({
+      version: 1,
+      order: [...CANONICAL_IDS].reverse(),
+      sections: {
+        overdue: { visible: false, itemCount: 3 },
+        upcoming: { visible: true, itemCount: 11 },
+        'status:ready': { visible: true, itemCount: 17 },
+      },
+    }));
+
+    const defaults = service.getDefaults();
+    expect(defaults.order).toEqual([...CANONICAL_IDS].reverse());
+    expect(defaults.sections.overdue).toEqual({ ...defaultSection('overdue'), visible: false, itemCount: 3 });
+    expect(defaults.sections.upcoming).toEqual({ ...defaultSection('upcoming'), itemCount: 11 });
+    expect(defaults.sections['status:ready']).toEqual({ ...defaultSection('status:ready'), itemCount: 17 });
+  });
+
+  it('falls back to each section sorting default for unsupported stored sorting values', () => {
+    repository.setValue(DASHBOARD_DEFAULTS_KEY, JSON.stringify({
+      version: 1,
+      order: CANONICAL_IDS,
+      sections: {
+        overdue: { visible: true, itemCount: 8, sort: 'raw_sql', order: 'sideways' },
+        'recently-updated': { visible: true, itemCount: 8, sort: 'title', order: 'asc' },
+      },
+    }));
+
+    const defaults = service.getDefaults();
+    expect(defaults.sections.overdue).toEqual(defaultSection('overdue'));
+    expect(defaults.sections['recently-updated']).toEqual({
+      visible: true, itemCount: 8, sort: 'title', order: 'asc',
+    });
   });
 
   it('saves a complete normalized document while preserving independent per-section item counts', () => {
@@ -112,9 +153,9 @@ describe('dashboard defaults service', () => {
       'overdue',
       ...CANONICAL_IDS.filter((id) => !['status:ready', 'overdue'].includes(id)),
     ]);
-    expect(saved.sections.overdue).toEqual({ visible: false, itemCount: 5 });
-    expect(saved.sections['status:ready']).toEqual({ visible: true, itemCount: 12 });
-    expect(saved.sections.upcoming).toEqual({ visible: true, itemCount: 8 });
+    expect(saved.sections.overdue).toEqual({ ...defaultSection('overdue'), visible: false, itemCount: 5 });
+    expect(saved.sections['status:ready']).toEqual({ ...defaultSection('status:ready'), itemCount: 12 });
+    expect(saved.sections.upcoming).toEqual(defaultSection('upcoming'));
     expect(JSON.parse(repository.getValue(DASHBOARD_DEFAULTS_KEY))).toEqual(saved);
   });
 
@@ -135,8 +176,8 @@ describe('dashboard defaults service', () => {
         version: 1,
         order: [...CANONICAL_IDS, futureSectionId],
         sections: {
-          ...Object.fromEntries(CANONICAL_IDS.map((id) => [id, { visible: true, itemCount: 8 }])),
-          [futureSectionId]: { visible: true, itemCount: 8 },
+          ...Object.fromEntries(CANONICAL_IDS.map((id) => [id, defaultSection(id)])),
+          [futureSectionId]: { visible: true, itemCount: 8, sort: 'updated', order: 'desc' },
         },
       });
     } finally {

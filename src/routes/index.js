@@ -3,7 +3,10 @@ import {
   DASHBOARD_DEFAULTS_VERSION,
   DASHBOARD_ITEM_COUNT_MAX,
   DASHBOARD_ITEM_COUNT_MIN,
+  DASHBOARD_ORDER_VALUES,
   DASHBOARD_SECTION_REGISTRY,
+  DASHBOARD_SORT_VALUES,
+  getDashboardSectionDefaultSorting,
 } from '../services/dashboard-defaults-service.js';
 import { renderDashboardPage } from './dashboard-render.js';
 
@@ -93,9 +96,18 @@ function parseDashboardDefaultsSubmission(body) {
     const sectionErrors = {};
     const visible = parseVisibility(rawSection.visible);
     const itemCount = rawSection.itemCount;
+    const fallbackSorting = getDashboardSectionDefaultSorting(sectionId);
+    const sort = rawSection.sort === undefined ? fallbackSorting.sort : rawSection.sort;
+    const sortOrder = rawSection.order === undefined ? fallbackSorting.order : rawSection.order;
 
     if (visible === null) {
       sectionErrors.visible = 'Show section must be explicitly enabled or disabled.';
+    }
+    if (!DASHBOARD_SORT_VALUES.includes(sort)) {
+      sectionErrors.sort = 'Sort is unsupported.';
+    }
+    if (!DASHBOARD_ORDER_VALUES.includes(sortOrder)) {
+      sectionErrors.order = 'Sort order is unsupported.';
     }
 
     let parsedItemCount = null;
@@ -115,6 +127,8 @@ function parseDashboardDefaultsSubmission(body) {
     values.sections[sectionId] = {
       visible: visible === null ? false : visible,
       itemCount,
+      sort,
+      order: sortOrder,
     };
     if (Object.keys(sectionErrors).length > 0) errors.sections[sectionId] = sectionErrors;
   }
@@ -129,6 +143,8 @@ function parseDashboardDefaultsSubmission(body) {
         sections: Object.fromEntries(sectionIds.map((sectionId) => [sectionId, {
           visible: values.sections[sectionId].visible,
           itemCount: Number(values.sections[sectionId].itemCount),
+          sort: values.sections[sectionId].sort,
+          order: values.sections[sectionId].order,
         }])),
       },
     };

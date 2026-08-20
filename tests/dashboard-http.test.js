@@ -114,6 +114,8 @@ function buildDashboardDefaultsForm(app, {
       return [sectionId, {
         visible: section.visible ? ['0', '1'] : '0',
         itemCount: String(section.itemCount),
+        sort: section.sort,
+        order: section.order,
       }];
     })),
   };
@@ -369,6 +371,7 @@ describe('dashboard HTTP composition', () => {
       const res = await app.testAgent.get('/?defaults=1').expect(200);
       const dialog = extractDashboardDefaultsDialog(res.text);
       const renderedIds = Array.from(dialog.matchAll(/data-dashboard-section-id="([^"]+)"/g), ([, id]) => id);
+      const sortDialog = res.text.match(/<dialog id="dashboard-defaults-sort-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
 
       expect(dialog).toContain('class="app-dialog" data-app-dialog open');
       expect(dialog).toContain('method="post" action="/dashboard/defaults"');
@@ -382,7 +385,7 @@ describe('dashboard HTTP composition', () => {
       expect(dialog).not.toContain('data-dashboard-section-id="releases"');
 
       for (const sectionId of defaults.order) {
-        const section = defaults.sections[sectionId];
+        const section = app.locals.dashboardDefaultsService.getDefaults().sections[sectionId];
         const id = 'dashboard-defaults-section-' + sectionId;
         const checkbox = dialog.match(new RegExp('<input\\s+type="checkbox"\\s+id="' + id + '-visible"[^>]*>'))?.[0] || '';
 
@@ -394,6 +397,9 @@ describe('dashboard HTTP composition', () => {
         expect(checkbox).toContain('name="sections[' + sectionId + '][visible]"');
         expect(checkbox.includes('checked')).toBe(section.visible);
         expect(dialog).toContain('id="' + id + '-item-count" type="number" name="sections[' + sectionId + '][itemCount]" value="' + section.itemCount + '"');
+        expect(dialog).toContain('name="sections[' + sectionId + '][sort]" value="' + section.sort + '" data-dashboard-defaults-sort-input');
+        expect(dialog).toContain('name="sections[' + sectionId + '][order]" value="' + section.order + '" data-dashboard-defaults-section-order-input');
+        expect(dialog).toContain('data-dashboard-defaults-sort-options-trigger data-dialog-open="dashboard-defaults-sort-dialog"');
       }
 
       expect(dialog).toContain('class="notes-reorder-list dashboard-defaults-section-list"');
@@ -408,6 +414,11 @@ describe('dashboard HTTP composition', () => {
       expect(dialog).not.toMatch(/<button[^>]+(?:aria-label|title)="[^"]*\b(?:Up|Down)\b/i);
       expect(dialog).not.toContain('>Cancel</button>');
       expect(dialog).toContain('>Save defaults</button>');
+      expect((dialog.match(/aria-label="Sort options for [^"]+"/g) || [])).toHaveLength(9);
+      expect((res.text.match(/id="dashboard-defaults-sort-dialog"/g) || [])).toHaveLength(1);
+      expect(sortDialog).toContain('Sort by');
+      expect(sortDialog).toContain('value="published"');
+      expect(sortDialog).toContain('data-dashboard-defaults-sort-apply');
     });
 
     it('keeps the shared dialog body as the Dashboard Defaults scroll owner', async () => {
@@ -416,9 +427,10 @@ describe('dashboard HTTP composition', () => {
 
       expect(dialog).toContain('class="app-dialog-body"');
       expect(dialog).toContain('class="settings-section dashboard-defaults-settings-section"');
-      expect(SERVED_CSS).toContain('#dashboard-defaults-dialog .app-dialog-form {\n        flex: 1 1 auto;\n        min-height: 0;\n        overflow: hidden;\n      }');
-      expect(SERVED_CSS).toContain('#dashboard-defaults-dialog .app-dialog-body {\n        flex: 1 1 auto;\n        min-height: 0;\n      }');
-      expect(SERVED_CSS).toContain('#dashboard-defaults-dialog .dashboard-defaults-settings-section {\n        flex: 0 0 auto;\n        gap: var(--space-md);\n        margin-bottom: 0;\n        padding-bottom: var(--space-md);\n        overflow: visible;\n      }');
+      expect(SERVED_CSS).toMatch(/#dashboard-defaults-dialog \.app-dialog-form \{\r?\n        flex: 1 1 auto;\r?\n        min-height: 0;\r?\n        overflow: hidden;\r?\n      \}/);
+      expect(SERVED_CSS).toMatch(/#dashboard-defaults-dialog \.app-dialog-body \{\r?\n        flex: 1 1 auto;\r?\n        min-height: 0;\r?\n      \}/);
+      expect(SERVED_CSS).toMatch(/#dashboard-defaults-dialog \.dashboard-defaults-settings-section \{\r?\n        flex: 0 0 auto;\r?\n        gap: var\(--space-md\);\r?\n        margin-bottom: 0;\r?\n        padding-bottom: var\(--space-md\);\r?\n        overflow: visible;\r?\n      \}/);
+      expect(SERVED_CSS).toContain('grid-template-columns: minmax(0, 1fr) auto auto minmax(7rem, 7.5rem);');
     });
   });
 
@@ -438,7 +450,7 @@ describe('dashboard HTTP composition', () => {
         .expect('Location', '/?notice=dashboard_defaults_saved')
         .expect(302);
 
-      expect(app.locals.dashboardDefaultsService.getDefaults()).toEqual({
+      expect(app.locals.dashboardDefaultsService.getDefaults()).toMatchObject({
         version: 1,
         order,
         sections,
@@ -465,7 +477,7 @@ describe('dashboard HTTP composition', () => {
         message: 'Dashboard defaults saved successfully.',
         values: {},
       });
-      expect(app.locals.dashboardDefaultsService.getDefaults()).toEqual({ version: 1, order, sections });
+      expect(app.locals.dashboardDefaultsService.getDefaults()).toMatchObject({ version: 1, order, sections });
     });
 
     it.each([
@@ -483,6 +495,48 @@ describe('dashboard HTTP composition', () => {
 
       expect(res.body.status).toBe('error');
       expect(res.body.errors.order).toBeTruthy();
+      expect(app.locals.dashboardDefaultsService.getDefaults()).toEqual(previous);
+    });
+
+    it('persists valid per-section sort and order values', async () => {
+      const form = buildDashboardDefaultsForm(app, {
+        sections: {
+          overdue: { sort: 'title', order: 'desc' },
+          upcoming: { sort: 'created', order: 'asc' },
+          'recently-updated': { sort: 'published', order: 'desc' },
+          'status:ready': { sort: 'planned', order: 'asc' },
+        },
+      });
+
+      await app.testAgent
+        .post('/dashboard/defaults')
+        .type('form')
+        .send(form)
+        .expect(302);
+
+      const saved = app.locals.dashboardDefaultsService.getDefaults();
+      expect(saved.sections.overdue).toMatchObject({ sort: 'title', order: 'desc' });
+      expect(saved.sections.upcoming).toMatchObject({ sort: 'created', order: 'asc' });
+      expect(saved.sections['recently-updated']).toMatchObject({ sort: 'published', order: 'desc' });
+      expect(saved.sections['status:ready']).toMatchObject({ sort: 'planned', order: 'asc' });
+    });
+
+    it.each([
+      ['sort', 'unexpected'],
+      ['order', 'sideways'],
+    ])('rejects an unsupported section %s without changing saved defaults', async (field, value) => {
+      const previous = app.locals.dashboardDefaultsService.getDefaults();
+      const form = buildDashboardDefaultsForm(app);
+      form.sections.overdue[field] = value;
+
+      const res = await app.testAgent
+        .post('/dashboard/defaults')
+        .set('Accept', 'application/json')
+        .type('form')
+        .send(form)
+        .expect(422);
+
+      expect(res.body.errors[`sections[overdue][${field}]`]).toBeTruthy();
       expect(app.locals.dashboardDefaultsService.getDefaults()).toEqual(previous);
     });
 

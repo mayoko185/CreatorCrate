@@ -1,5 +1,7 @@
 {% import "partials/dialog.njk" as dialog %}
 {% import "partials/form-switch.njk" as formSwitch %}
+{% import "partials/dropdown.njk" as dropdown %}
+{% import "partials/icons.njk" as icons %}
 
 {% macro render(dashboardDefaults, dashboardSectionRegistry, open=false, csrfToken='', formState={}) %}
   {% set fieldErrors = formState.fieldErrors or {} %}
@@ -40,6 +42,8 @@
                   {% set sectionErrors = fieldErrors[section.id] or {} %}
                   {% set itemCount = submittedSection.itemCount if submittedSection.itemCount is defined else sectionDefaults.itemCount %}
                   {% set visible = submittedSection.visible if submittedSection.visible is defined else sectionDefaults.visible %}
+                  {% set sort = submittedSection.sort if submittedSection.sort is defined else sectionDefaults.sort %}
+                  {% set order = submittedSection.order if submittedSection.order is defined else sectionDefaults.order %}
                   {% set visibilityId = 'dashboard-defaults-section-' ~ section.id ~ '-visible' %}
                   {% set visibilityError = sectionErrors.visible or '' %}
                   {% set countId = 'dashboard-defaults-section-' ~ section.id ~ '-item-count' %}
@@ -54,6 +58,13 @@
                     <div class="dashboard-defaults-section-content">
                       <div class="dashboard-defaults-section-identity">
                         <h4>{{ section.label }}</h4>
+                      </div>
+                      <div class="dashboard-defaults-section-sort-options">
+                        <input type="hidden" name="sections[{{ section.id }}][sort]" value="{{ sort }}" data-dashboard-defaults-sort-input>
+                        <input type="hidden" name="sections[{{ section.id }}][order]" value="{{ order }}" data-dashboard-defaults-section-order-input>
+                        <button type="button" class="button button-small button-secondary dashboard-defaults-sort-options-trigger"
+                                data-dashboard-defaults-sort-options-trigger data-dialog-open="dashboard-defaults-sort-dialog"
+                                aria-label="Sort options for {{ section.label }}" title="Sort options for {{ section.label }}">{{ icons.icon('sort') }}</button>
                       </div>
                       <div class="field app-dialog-field dashboard-defaults-section-visibility{% if visibilityError %} field-error{% endif %}" data-dialog-field="sections[{{ section.id }}][visible]">
                         {{ formSwitch.control(visibilityId, 'sections[' ~ section.id ~ '][visible]', visible, 'Show ' ~ section.label, visibilityId ~ '-error' if visibilityError else null, visibilityError) }}
@@ -80,5 +91,41 @@
         <button class="button button-primary" type="submit" data-dialog-submit>Save defaults</button>
       </footer>
     </form>
+  {% endcall %}
+
+  {% call dialog.render('dashboard-defaults-sort-dialog', 'Sort options', false, 'dashboard-defaults-sort-description') %}
+    <div class="app-dialog-body dashboard-defaults-sort-dialog-body">
+      <p id="dashboard-defaults-sort-description" class="app-dialog-description">
+        Choose how projects appear in <strong data-dashboard-defaults-sort-section-label></strong>.
+      </p>
+      <div class="dashboard-defaults-sort-controls">
+        {{ dropdown.singleSelect({
+          id: 'dashboard-defaults-sort-select-dropdown',
+          label: 'Sort by',
+          options: [
+            { value: 'updated', label: 'Recently updated' },
+            { value: 'created', label: 'Recently created' },
+            { value: 'title', label: 'Title' },
+            { value: 'published', label: 'Published' },
+            { value: 'planned', label: 'Planned' }
+          ],
+          selected: 'updated',
+          nativeSelect: { id: 'dashboard-defaults-sort-select' }
+        }) }}
+        {{ dropdown.singleSelect({
+          id: 'dashboard-defaults-order-select-dropdown',
+          label: 'Order',
+          options: [
+            { value: 'asc', label: 'Ascending' },
+            { value: 'desc', label: 'Descending' }
+          ],
+          selected: 'asc',
+          nativeSelect: { id: 'dashboard-defaults-order-select' }
+        }) }}
+      </div>
+    </div>
+    <footer class="app-dialog-footer">
+      <button class="button button-primary" type="button" data-dashboard-defaults-sort-apply>Apply</button>
+    </footer>
   {% endcall %}
 {% endmacro %}

@@ -193,6 +193,10 @@ describe('asset browser HTTP workflow', () => {
     return assetListStart >= 0 ? panel.slice(0, assetListStart) : panel;
   }
 
+  function projectAssetsDisplayActions(html) {
+    return html.match(/<div class="project-filter-actions project-filter-actions--projects">([\s\S]*?)<\/div>/)?.[1] || '';
+  }
+
   function assetListCardHtml(html, assetId) {
     return html.match(new RegExp(`<article\\b(?=[^>]*class="[^"]*\\basset-list-card\\b[^"]*")(?=[^>]*data-asset-id="${assetId}"[^>]*)[^>]*>[\\s\\S]*?<\\/article>`))?.[0] || '';
   }
@@ -308,10 +312,12 @@ describe('asset browser HTTP workflow', () => {
     expect(res2.text).toContain('class="page-heading"');
     const pageHeading = res2.text.match(/<header class="page-heading">([\s\S]*?)<\/header>/)?.[1] || '';
     const headingActions = pageHeading.match(/<div class="page-heading-actions">([\s\S]*?)<\/div>/)?.[1] || '';
+    const displayActions = projectAssetsDisplayActions(res2.text);
     expect(pageHeading).toContain(`<a class="button button-secondary page-heading-lead" href="/projects/${id}">Project: Browser Title Test</a>`);
     expect(pageHeading.indexOf('page-heading-lead')).toBeLessThan(pageHeading.indexOf('<div class="page-heading-actions">'));
     expect(headingActions).toContain('Scan Now');
-    expect(headingActions).toContain(`href="/projects/${id}/edit">Edit project</a>`);
+    expect(headingActions).not.toContain('Edit project');
+    expect(displayActions).toContain(`href="/projects/${id}/edit"`);
     expect(headingActions).not.toContain('Project: Browser Title Test');
     expect(res2.text).not.toContain('Back to Project');
     expect((res2.text.match(/<h1\b/g) || []).length).toBe(1);
@@ -340,7 +346,7 @@ describe('asset browser HTTP workflow', () => {
     expect(active.text).toContain(`action="/projects/${id}/assets/remove-missing"`);
     expect(active.text).toContain('data-dialog-async="false"');
     expect(active.text).toContain(`name="returnTo" value="/projects/${id}/assets"`);
-    expect(active.text).toContain(`href="/projects/${id}/edit">Edit project</a>`);
+    expect(projectAssetsDisplayActions(active.text)).toContain(`href="/projects/${id}/edit"`);
     expect(active.text).toContain('Only asset records currently marked missing will be removed.');
 
     const emptyRes = await createProject('No Missing Cleanup Control');
@@ -352,10 +358,8 @@ describe('asset browser HTTP workflow', () => {
     await agent.post(`/projects/${id}/archive`).type('form').send({ _csrf: csrfToken }).expect(302);
     const archived = await agent.get(`/projects/${id}/assets`).expect(200);
     const archivedHeading = archived.text.match(/<header class="page-heading">([\s\S]*?)<\/header>/)?.[1] || '';
-    const archivedActions = archivedHeading.match(/<div class="page-heading-actions">([\s\S]*?)<\/div>/)?.[1] || '';
     expect(archivedHeading).toContain(`<a class="button button-secondary page-heading-lead" href="/projects/${id}">Project: Missing Cleanup Controls</a>`);
-    expect(archivedHeading.indexOf('page-heading-lead')).toBeLessThan(archivedHeading.indexOf('<div class="page-heading-actions">'));
-    expect(archivedActions).not.toContain('Project: Missing Cleanup Controls');
+    expect(archivedHeading).not.toContain('<div class="page-heading-actions">');
     expect(archived.text).not.toContain('Back to Project');
     expect(archived.text).not.toContain('remove-missing-assets-dialog');
     expect(archived.text).not.toContain('Scan Now');
@@ -3112,16 +3116,15 @@ describe('asset browser HTTP workflow', () => {
     });
   });
 
-  // ─── Open locally action on the project assets page ────────────────
+  // ─── Project Assets display actions ────────────────────────────────
   //
-  // The assets browser renders a page-level "Open locally" action in the
-  // page-heading action area, built from the shared URI builder with
-  // project-folder semantics (select=0). The href is Nunjucks-escaped
-  // (autoescape), so ampersands appear as &amp; in the markup; browsers
-  // decode them when following the link. The action must never leak the
+  // The display controls render project-level icon actions immediately before
+  // Project Assets defaults. Open locally keeps the category-aware URI from
+  // the assets page model; its href is Nunjucks-escaped (autoescape), so
+  // ampersands appear as &amp; in the markup. The action must never leak the
   // container root or an absolute path.
 
-  describe('open locally action on the project assets page', () => {
+  describe('Project Assets display actions', () => {
     function configureWindowsRoot() {
       db.prepare('INSERT INTO app_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
         .run('open_locally.windows_projects_path', 'D:\\example');
@@ -3139,7 +3142,7 @@ describe('asset browser HTTP workflow', () => {
       return { id, projectDir };
     }
 
-    it('renders the Open locally action in the page heading when a windows root is configured', async () => {
+    it('renders active-project edit and open-locally actions immediately before Project Assets defaults', async () => {
       const { id, projectDir } = await createAssetsProject('Assets Open Locally');
       const row = db.prepare('SELECT project_dir FROM projects WHERE id = ?').get(id);
       configureWindowsRoot();
@@ -3148,12 +3151,22 @@ describe('asset browser HTTP workflow', () => {
         .get(`/projects/${id}/assets`)
         .expect(200);
 
-      const actions = extractPageHeadingActions(res.text);
-      expect(actions).toContain('Open locally');
+      const actions = projectAssetsDisplayActions(res.text);
+      const headingActions = extractPageHeadingActions(res.text);
+      const editIndex = actions.indexOf('aria-label="Edit project"');
+      const openLocallyIndex = actions.indexOf('aria-label="Open locally"');
+      const defaultsIndex = actions.indexOf('aria-label="Project Assets defaults"');
+
+      expect(actions).toContain(`href="/projects/${id}/edit"`);
       expect(actions).toContain('creatorcrate-open://');
       expect(actions).toContain(
         `href="creatorcrate-open://open?v=2&amp;path=${encodeURIComponent(`D:\\example\\${row.project_dir}`)}&amp;select=0"`
       );
+      expect(editIndex).toBeGreaterThanOrEqual(0);
+      expect(openLocallyIndex).toBeGreaterThan(editIndex);
+      expect(defaultsIndex).toBeGreaterThan(openLocallyIndex);
+      expect(headingActions).not.toContain('Edit project');
+      expect(headingActions).not.toContain('Open locally');
       expect(projectDir).toBeTruthy();
     });
 
@@ -3166,7 +3179,7 @@ describe('asset browser HTTP workflow', () => {
         .get(`/projects/${id}/assets`)
         .expect(200);
 
-      const actions = extractPageHeadingActions(res.text);
+      const actions = projectAssetsDisplayActions(res.text);
       const href = actions.match(/href="(creatorcrate-open:[^"]+)"/)?.[1] || '';
 
       expect(href).toMatch(/^creatorcrate-open:\/\/open\?v=2/);
@@ -3189,7 +3202,7 @@ describe('asset browser HTTP workflow', () => {
         .get(`/projects/${id}/assets?category=${category.id}`)
         .expect(200);
 
-      const href = extractPageHeadingActions(res.text).match(/href="(creatorcrate-open:[^"]+)"/)?.[1] || '';
+      const href = projectAssetsDisplayActions(res.text).match(/href="(creatorcrate-open:[^"]+)"/)?.[1] || '';
       expect(href).toContain(
         `path=${encodeURIComponent(`D:\\example\\${row.project_dir}\\${category.directory_slug}`)}`
       );
@@ -3206,22 +3219,22 @@ describe('asset browser HTTP workflow', () => {
         .get(`/projects/${id}/assets?category=all`)
         .expect(200);
 
-      const href = extractPageHeadingActions(res.text).match(/href="(creatorcrate-open:[^"]+)"/)?.[1] || '';
+      const href = projectAssetsDisplayActions(res.text).match(/href="(creatorcrate-open:[^"]+)"/)?.[1] || '';
       expect(href).toContain(`path=${encodeURIComponent(`D:\\example\\${row.project_dir}`)}&amp;select=0`);
     });
 
-    it('omits the action from the page heading when no windows root is configured', async () => {
+    it('omits Open locally when no windows root is configured', async () => {
       const { id } = await createAssetsProject('Assets Open Locally No Root');
 
       const res = await agent
         .get(`/projects/${id}/assets`)
         .expect(200);
 
-      expect(extractPageHeadingActions(res.text)).not.toContain('Open locally');
+      expect(projectAssetsDisplayActions(res.text)).not.toContain('Open locally');
       expect(res.text).not.toContain('creatorcrate-open://');
     });
 
-    it('omits the action from the page heading when project_dir is missing', async () => {
+    it('omits Open locally when project_dir is missing', async () => {
       const { id } = await createAssetsProject('Assets Open Locally Missing Dir');
       db.prepare('UPDATE projects SET project_dir = NULL WHERE id = ?').run(id);
       configureWindowsRoot();
@@ -3230,11 +3243,11 @@ describe('asset browser HTTP workflow', () => {
         .get(`/projects/${id}/assets`)
         .expect(200);
 
-      expect(extractPageHeadingActions(res.text)).not.toContain('Open locally');
+      expect(projectAssetsDisplayActions(res.text)).not.toContain('Open locally');
       expect(res.text).not.toContain('creatorcrate-open://');
     });
 
-    it('omits the action from the page heading when project_dir is invalid', async () => {
+    it('omits Open locally when project_dir is invalid', async () => {
       const { id } = await createAssetsProject('Assets Open Locally Invalid Dir');
       db.prepare('UPDATE projects SET project_dir = ? WHERE id = ?').run('../escape', id);
       configureWindowsRoot();
@@ -3243,8 +3256,23 @@ describe('asset browser HTTP workflow', () => {
         .get(`/projects/${id}/assets`)
         .expect(200);
 
-      expect(extractPageHeadingActions(res.text)).not.toContain('Open locally');
+      expect(projectAssetsDisplayActions(res.text)).not.toContain('Open locally');
       expect(res.text).not.toContain('creatorcrate-open://');
+    });
+
+    it('keeps Open locally but omits Edit project for archived projects', async () => {
+      const { id } = await createAssetsProject('Archived Assets Open Locally');
+      configureWindowsRoot();
+      db.prepare("UPDATE projects SET archived_at = datetime('now') WHERE id = ?").run(id);
+
+      const res = await agent
+        .get(`/projects/${id}/assets`)
+        .expect(200);
+
+      const actions = projectAssetsDisplayActions(res.text);
+      expect(actions).not.toContain('aria-label="Edit project"');
+      expect(actions).toContain('aria-label="Open locally"');
+      expect(extractPageHeadingActions(res.text)).not.toContain('Open locally');
     });
   });
 

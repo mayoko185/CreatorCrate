@@ -1,10 +1,12 @@
-import { STATUSES } from '../data/project-repository.js';
+import { DASHBOARD_SORTS, STATUSES } from '../data/project-repository.js';
 
 export const DASHBOARD_DEFAULTS_KEY = 'page_defaults.dashboard';
 export const DASHBOARD_DEFAULTS_VERSION = 1;
 export const DASHBOARD_DEFAULT_ITEM_COUNT = 8;
 export const DASHBOARD_ITEM_COUNT_MIN = 1;
 export const DASHBOARD_ITEM_COUNT_MAX = 25;
+export const DASHBOARD_SORT_VALUES = Object.freeze(Object.keys(DASHBOARD_SORTS));
+export const DASHBOARD_ORDER_VALUES = Object.freeze(['asc', 'desc']);
 
 const STATUS_SECTION_LABELS = Object.freeze({
   tbd: 'TBD',
@@ -38,15 +40,30 @@ function isPlainObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-function defaultSection() {
-  return { visible: true, itemCount: DASHBOARD_DEFAULT_ITEM_COUNT };
+function defaultSorting(sectionId) {
+  if (sectionId === 'overdue' || sectionId === 'upcoming') {
+    return { sort: 'planned', order: 'asc' };
+  }
+  return { sort: 'updated', order: 'desc' };
+}
+
+export function getDashboardSectionDefaultSorting(sectionId) {
+  return defaultSorting(sectionId);
+}
+
+function defaultSection(sectionId) {
+  return {
+    visible: true,
+    itemCount: DASHBOARD_DEFAULT_ITEM_COUNT,
+    ...defaultSorting(sectionId),
+  };
 }
 
 function canonicalDefaults() {
   return {
     version: DASHBOARD_DEFAULTS_VERSION,
     order: [...SECTION_IDS],
-    sections: Object.fromEntries(SECTION_IDS.map((sectionId) => [sectionId, defaultSection()])),
+    sections: Object.fromEntries(SECTION_IDS.map((sectionId) => [sectionId, defaultSection(sectionId)])),
   };
 }
 
@@ -68,16 +85,19 @@ function normalizeOrder(order) {
   return normalized;
 }
 
-function normalizeSection(section) {
-  if (!isPlainObject(section)) return defaultSection();
+function normalizeSection(section, sectionId) {
+  const fallback = defaultSection(sectionId);
+  if (!isPlainObject(section)) return fallback;
 
   return {
-    visible: typeof section.visible === 'boolean' ? section.visible : true,
+    visible: typeof section.visible === 'boolean' ? section.visible : fallback.visible,
     itemCount: Number.isInteger(section.itemCount)
       && section.itemCount >= DASHBOARD_ITEM_COUNT_MIN
       && section.itemCount <= DASHBOARD_ITEM_COUNT_MAX
       ? section.itemCount
-      : DASHBOARD_DEFAULT_ITEM_COUNT,
+      : fallback.itemCount,
+    sort: DASHBOARD_SORT_VALUES.includes(section.sort) ? section.sort : fallback.sort,
+    order: DASHBOARD_ORDER_VALUES.includes(section.order) ? section.order : fallback.order,
   };
 }
 
@@ -92,7 +112,7 @@ export function normalizeDashboardDefaults(document) {
     order: normalizeOrder(document.order),
     sections: Object.fromEntries(SECTION_IDS.map((sectionId) => [
       sectionId,
-      normalizeSection(sections[sectionId]),
+      normalizeSection(sections[sectionId], sectionId),
     ])),
   };
 }

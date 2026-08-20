@@ -413,18 +413,22 @@ export function createWorkflowQueryService({
       sections.overdue = projectRepository.findOverdueWithoutReleases(
         sectionDefaults.overdue.itemCount,
         today,
+        sectionDefaults.overdue.sort,
+        sectionDefaults.overdue.order,
       );
     }
     if (sectionDefaults.upcoming.visible) {
       sections.upcoming = projectRepository.findUpcomingPlanned(
         sectionDefaults.upcoming.itemCount,
         today,
+        sectionDefaults.upcoming.sort,
+        sectionDefaults.upcoming.order,
       );
     }
     if (sectionDefaults['recently-updated'].visible) {
       sections['recently-updated'] = projectRepository.list({
-        sortBy: 'updated',
-        order: 'desc',
+        sortBy: sectionDefaults['recently-updated'].sort,
+        order: sectionDefaults['recently-updated'].order,
         limit: sectionDefaults['recently-updated'].itemCount,
         includeArchived: false,
       }).rows;
@@ -433,7 +437,14 @@ export function createWorkflowQueryService({
     const statusLimits = Object.fromEntries(
       DASHBOARD_SECTION_REGISTRY
         .filter(({ status }) => status && sectionDefaults[`status:${status}`].visible)
-        .map(({ status }) => [status, sectionDefaults[`status:${status}`].itemCount])
+        .map(({ status }) => {
+          const section = sectionDefaults[`status:${status}`];
+          return [status, {
+            limit: section.itemCount,
+            sort: section.sort,
+            order: section.order,
+          }];
+        })
     );
     if (Object.keys(statusLimits).length > 0) {
       for (const project of projectRepository.findDashboardProjectsByStatus(statusLimits)) {

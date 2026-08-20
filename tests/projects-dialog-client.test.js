@@ -625,6 +625,21 @@ function makeDashboardDefaultsDialogPage({ includeStatusSection = false } = {}) 
     });
     const body = makeElement('div');
     const title = makeElement('span', { textContent: label });
+    const sortOptions = makeElement('div');
+    const sortControl = makeElement('button', {
+      type: 'button',
+      'data-dashboard-defaults-sort-options-trigger': '',
+      'data-dialog-open': 'dashboard-defaults-sort-dialog',
+      'aria-label': `Sort options for ${label}`,
+    });
+    const sortInput = makeElement('input', {
+      type: 'hidden', name: `sections[${id}][sort]`, value: id === 'overdue' ? 'planned' : 'updated',
+      'data-dashboard-defaults-sort-input': '',
+    });
+    const orderInput = makeElement('input', {
+      type: 'hidden', name: `sections[${id}][order]`, value: id === 'overdue' ? 'asc' : 'desc',
+      'data-dashboard-defaults-section-order-input': '',
+    });
     const visibleField = makeElement('div', { 'data-dialog-field': `sections[${id}][visible]` });
     const hiddenVisible = makeElement('input', {
       type: 'hidden', name: `sections[${id}][visible]`, value: '0',
@@ -641,20 +656,62 @@ function makeDashboardDefaultsDialogPage({ includeStatusSection = false } = {}) 
       type: 'number', name: `sections[${id}][itemCount]`, value: count,
     });
     countField.appendChild(countControl);
+    sortOptions.appendChild(sortInput);
+    sortOptions.appendChild(orderInput);
+    sortOptions.appendChild(sortControl);
     body.appendChild(title);
+    body.appendChild(sortOptions);
     body.appendChild(visibleField);
     body.appendChild(countField);
     row.appendChild(handle);
     row.appendChild(body);
     list.appendChild(row);
-    sections[id] = { row, handle, body, title, visibleField, visibleControl, countField, countControl };
+    sections[id] = {
+      row, handle, body, title, sortOptions, sortControl, sortInput, orderInput,
+      visibleField, visibleControl, countField, countControl,
+    };
   });
   orderInput.value = dashboardSections.map(([id]) => id).join(',');
   const live = makeElement('div', { 'data-dashboard-defaults-reorder-live': '' });
   page.form.appendChild(orderInput);
   page.form.appendChild(list);
   page.form.appendChild(live);
-  return { ...page, list, orderInput, live, sections };
+
+  const sortDialog = makeElement('dialog', {
+    id: 'dashboard-defaults-sort-dialog',
+    'data-app-dialog': '',
+  });
+  sortDialog.showModal = vi.fn(() => {
+    sortDialog.open = true;
+    sortDialog.setAttribute('open', '');
+  });
+  sortDialog.close = vi.fn(() => {
+    sortDialog.open = false;
+    sortDialog.removeAttribute('open');
+    sortDialog.dispatch('close');
+  });
+  const sortCard = makeElement('div');
+  const sortClose = makeElement('button', { type: 'button', 'data-dialog-close': '' });
+  const sectionLabel = makeElement('strong', { 'data-dashboard-defaults-sort-section-label': '' });
+  const sortSelect = makeElement('select', { id: 'dashboard-defaults-sort-select' });
+  ['updated', 'created', 'title', 'published', 'planned'].forEach((value) => addOption(sortSelect, value, value === 'updated'));
+  sortSelect.value = 'updated';
+  const orderSelect = makeElement('select', { id: 'dashboard-defaults-order-select' });
+  ['asc', 'desc'].forEach((value) => addOption(orderSelect, value, value === 'asc'));
+  orderSelect.value = 'asc';
+  const apply = makeElement('button', { type: 'button', 'data-dashboard-defaults-sort-apply': '' });
+  sortCard.appendChild(sortClose);
+  sortCard.appendChild(sectionLabel);
+  sortCard.appendChild(sortSelect);
+  sortCard.appendChild(orderSelect);
+  sortCard.appendChild(apply);
+  sortDialog.appendChild(sortCard);
+  page.document.body.appendChild(sortDialog);
+
+  return {
+    ...page, list, orderInput, live, sections,
+    sortDialog, sortClose, sectionLabel, sortSelect, orderSelect, apply,
+  };
 }
 
 function dashboardSectionOrder(page) {
@@ -1384,9 +1441,52 @@ describe('Dashboard defaults dialog client behavior', () => {
     expect(page.sections.overdue.row.classList.contains('is-dragging')).toBe(false);
     expect(page.sections.overdue.countControl.dispatch('click').defaultPrevented).toBe(false);
 
+    const sortDrag = page.sections.overdue.row.dispatch('dragstart', {
+      target: page.sections.overdue.sortControl,
+      dataTransfer: { setData: vi.fn() },
+    });
+    expect(sortDrag.defaultPrevented).toBe(true);
+    expect(page.sections.overdue.row.classList.contains('is-dragging')).toBe(false);
+    expect(page.sections.overdue.sortControl.dispatch('click').defaultPrevented).toBe(false);
+
     dragDashboardSection(page, page.sections['recently-updated'], page.sections.overdue);
     expect(dashboardSectionOrder(page)).toEqual(['recently-updated', 'overdue', 'upcoming']);
     expect(page.orderInput.value).toBe('recently-updated,overdue,upcoming');
+  });
+
+  it('stages sort options per section in one secondary dialog and restores focus after Apply', () => {
+    const page = makeDashboardDefaultsDialogPage();
+    enhanceDashboardDefaults(page);
+    page.document.dispatch('click', { target: page.trigger });
+
+    page.sections.overdue.sortControl.dispatch('click');
+    page.document.dispatch('click', { target: page.sections.overdue.sortControl });
+    expect(page.sortDialog.open).toBe(true);
+    expect(page.dialog.open).toBe(true);
+    expect(page.sectionLabel.textContent).toBe('Overdue');
+    expect(page.sortSelect.value).toBe('planned');
+    expect(page.orderSelect.value).toBe('asc');
+
+    page.sortSelect.value = 'published';
+    page.orderSelect.value = 'desc';
+    page.apply.dispatch('click');
+    expect(page.sortDialog.open).toBe(false);
+    expect(page.sections.overdue.sortInput.value).toBe('published');
+    expect(page.sections.overdue.orderInput.value).toBe('desc');
+    expect(page.sections.upcoming.sortInput.value).toBe('updated');
+    expect(page.sections.upcoming.orderInput.value).toBe('desc');
+    expect(page.document.activeElement).toBe(page.sections.overdue.sortControl);
+
+    page.sections.upcoming.sortControl.dispatch('click');
+    page.document.dispatch('click', { target: page.sections.upcoming.sortControl });
+    expect(page.sectionLabel.textContent).toBe('Upcoming releases');
+    expect(page.sortSelect.value).toBe('updated');
+    expect(page.orderSelect.value).toBe('desc');
+    page.sortDialog.dispatch('keydown', { key: 'Escape', target: page.sortDialog });
+    expect(page.sortDialog.open).toBe(false);
+    expect(page.dialog.open).toBe(true);
+    expect(page.document.activeElement).toBe(page.sections.upcoming.sortControl);
+    expect(page.document.body.classList.contains('app-dialog-open')).toBe(true);
   });
 
   it('restores confirmed order and values after Escape and X cancellation', () => {
@@ -1396,22 +1496,33 @@ describe('Dashboard defaults dialog client behavior', () => {
     dragDashboardSection(page, page.sections.overdue, page.sections['recently-updated']);
     page.sections.overdue.visibleControl.checked = false;
     page.sections.upcoming.countControl.value = '25';
+    page.sections.overdue.sortControl.dispatch('click');
+    page.document.dispatch('click', { target: page.sections.overdue.sortControl });
+    page.sortSelect.value = 'published';
+    page.orderSelect.value = 'desc';
+    page.apply.dispatch('click');
     page.dialog.dispatch('keydown', { key: 'Escape' });
 
     expect(dashboardSectionOrder(page)).toEqual(['overdue', 'upcoming', 'recently-updated']);
     expect(page.orderInput.value).toBe('overdue,upcoming,recently-updated');
     expect(page.sections.overdue.visibleControl.checked).toBe(true);
     expect(page.sections.upcoming.countControl.value).toBe('10');
+    expect(page.sections.overdue.sortInput.value).toBe('planned');
+    expect(page.sections.overdue.orderInput.value).toBe('asc');
 
     page.document.dispatch('click', { target: page.trigger });
     dragDashboardSection(page, page.sections['recently-updated'], page.sections.overdue);
     page.sections['recently-updated'].visibleControl.checked = true;
     page.sections.overdue.countControl.value = '1';
+    page.sections.upcoming.sortInput.value = 'published';
+    page.sections.upcoming.orderInput.value = 'asc';
     page.close.dispatch('click');
 
     expect(dashboardSectionOrder(page)).toEqual(['overdue', 'upcoming', 'recently-updated']);
     expect(page.sections['recently-updated'].visibleControl.checked).toBe(false);
     expect(page.sections.overdue.countControl.value).toBe('8');
+    expect(page.sections.upcoming.sortInput.value).toBe('updated');
+    expect(page.sections.upcoming.orderInput.value).toBe('desc');
   });
 
   it('navigates once to the server-rendered Dashboard after a successful enhanced save', async () => {
@@ -1427,6 +1538,8 @@ describe('Dashboard defaults dialog client behavior', () => {
     page.sections.overdue.handle.dispatch('keydown', { key: 'End' });
     page.sections.overdue.visibleControl.checked = false;
     page.sections.upcoming.countControl.value = '22';
+    page.sections.overdue.sortInput.value = 'published';
+    page.sections.overdue.orderInput.value = 'desc';
     page.form.dispatch('submit', { submitter: page.save });
     await flush();
 
@@ -1434,6 +1547,10 @@ describe('Dashboard defaults dialog client behavior', () => {
     expect(assign).toHaveBeenCalledTimes(1);
     expect(assign).toHaveBeenCalledWith('/?notice=dashboard_defaults_saved');
     expect(page.dialog.close).not.toHaveBeenCalled();
+    expect([...page.windowObject.fetch.mock.calls[0][1].body.entries()])
+      .toContainEqual(['sections[overdue][sort]', 'published']);
+    expect([...page.windowObject.fetch.mock.calls[0][1].body.entries()])
+      .toContainEqual(['sections[overdue][order]', 'desc']);
   });
 
   it('marks a status visibility switch invalid on 422, retains attempted state, then restores the confirmed baseline on Escape', async () => {

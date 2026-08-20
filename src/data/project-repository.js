@@ -10,6 +10,13 @@ export const STATUSES = ['tbd', 'planned', 'in-progress', 'ready', 'completed', 
 export const WORKFLOW_STATUSES = ['tbd', 'planned', 'in-progress', 'ready', 'completed'];
 export const PROJECT_TYPES = ['images', 'comic', 'animation', 'wallpaper'];
 export const DEFAULT_PROJECT_TYPE = 'images';
+export const DASHBOARD_SORTS = Object.freeze({
+  updated: Object.freeze({ column: 'updated_at' }),
+  created: Object.freeze({ column: 'created_at' }),
+  title: Object.freeze({ column: 'title COLLATE NOCASE' }),
+  published: Object.freeze({ column: 'published_date', nullsLast: true }),
+  planned: Object.freeze({ column: 'date(planned_date)', nullsLast: true }),
+});
 
 const COLUMNS = [
   'id',
@@ -106,24 +113,6 @@ export function createProjectRepository(db) {
     WHERE effective_date IS NOT NULL AND effective_date >= ? AND effective_date < ?
     ORDER BY effective_date ASC, id ASC
   `);
-  const findOverdueWithoutReleasesStmt = db.prepare(`
-    ${SELECT_ALL}
-    WHERE archived_at IS NULL AND status <> 'archived'
-      AND planned_date IS NOT NULL
-      AND date(planned_date) <= ?
-      AND NOT EXISTS (SELECT 1 FROM releases WHERE releases.project_id = projects.id)
-    ORDER BY date(planned_date) ASC, id ASC
-    LIMIT ?
-  `);
-  const findUpcomingPlannedStmt = db.prepare(`
-    ${SELECT_ALL}
-    WHERE archived_at IS NULL AND status <> 'archived'
-      AND planned_date IS NOT NULL
-      AND date(planned_date) > ?
-    ORDER BY date(planned_date) ASC, id ASC
-    LIMIT ?
-  `);
-
   return {
     /**
      * @param {number} id
@@ -338,8 +327,17 @@ export function createProjectRepository(db) {
      * @param {string} today ISO date string YYYY-MM-DD
      * @returns {ProjectRecord[]}
      */
-    findOverdueWithoutReleases(limit, today) {
-      return findOverdueWithoutReleasesStmt.all(today, limit);
+    findOverdueWithoutReleases(limit, today, sortBy, order) {
+      const orderClause = buildDashboardOrderClause(sortBy, order);
+      return db.prepare(`
+        ${SELECT_ALL}
+        WHERE archived_at IS NULL AND status <> 'archived'
+          AND planned_date IS NOT NULL
+          AND date(planned_date) <= ?
+          AND NOT EXISTS (SELECT 1 FROM releases WHERE releases.project_id = projects.id)
+        ${orderClause}
+        LIMIT ?
+      `).all(today, limit);
     },
 
     /**
@@ -353,8 +351,16 @@ export function createProjectRepository(db) {
      * @param {string} today ISO date string YYYY-MM-DD
      * @returns {ProjectRecord[]}
      */
-    findUpcomingPlanned(limit, today) {
-      return findUpcomingPlannedStmt.all(today, limit);
+    findUpcomingPlanned(limit, today, sortBy, order) {
+      const orderClause = buildDashboardOrderClause(sortBy, order);
+      return db.prepare(`
+        ${SELECT_ALL}
+        WHERE archived_at IS NULL AND status <> 'archived'
+          AND planned_date IS NOT NULL
+          AND date(planned_date) > ?
+        ${orderClause}
+        LIMIT ?
+      `).all(today, limit);
     },
 
     /**
@@ -365,19 +371,19 @@ export function createProjectRepository(db) {
      * safe integer from 1 through 25, so malformed input can never create an
      * unbounded query.
      *
-     * @param {Object.<string, number>} limitByStatus
+     * @param {Object.<string, {limit: number, sort?: string, order?: string}>} configurationByStatus
      * @returns {Array<ProjectRecord & {effective_status: string}>}
      */
-    findDashboardProjectsByStatus(limitByStatus) {
-      const requested = normalizeDashboardStatusLimits(limitByStatus);
+    findDashboardProjectsByStatus(configurationByStatus) {
+      const requested = normalizeDashboardStatusConfigurations(configurationByStatus);
       if (requested.length === 0) return [];
 
-      const requestedStatusCte = requested.map(() => '(?, ?)').join(', ');
-      const params = requested.flatMap(({ status, limit }) => [status, limit]);
+      const requestedStatusCte = requested.map(() => '(?, ?, ?, ?)').join(', ');
+      const params = requested.flatMap(({ status, limit, sort, order }) => [status, limit, sort, order]);
       const projectColumns = COLUMNS.map((column) => `projects.${column}`).join(', ');
 
       const rows = db.prepare(`
-        WITH requested_statuses(status, item_limit) AS (
+        WITH requested_statuses(status, item_limit, sort_by, sort_order) AS (
           VALUES ${requestedStatusCte}
         ),
         effective_projects AS (
@@ -393,7 +399,26 @@ export function createProjectRepository(db) {
           SELECT effective_projects.*, requested_statuses.item_limit,
             ROW_NUMBER() OVER (
               PARTITION BY effective_projects.effective_status
-              ORDER BY effective_projects.updated_at DESC, effective_projects.id DESC
+              ORDER BY
+                CASE WHEN requested_statuses.sort_by IN ('published', 'planned')
+                  THEN CASE requested_statuses.sort_by
+                    WHEN 'published' THEN effective_projects.published_date IS NULL
+                    WHEN 'planned' THEN effective_projects.planned_date IS NULL
+                  END
+                  ELSE 0
+                END ASC,
+                CASE WHEN requested_statuses.sort_by = 'updated' AND requested_statuses.sort_order = 'asc' THEN effective_projects.updated_at END ASC,
+                CASE WHEN requested_statuses.sort_by = 'updated' AND requested_statuses.sort_order = 'desc' THEN effective_projects.updated_at END DESC,
+                CASE WHEN requested_statuses.sort_by = 'created' AND requested_statuses.sort_order = 'asc' THEN effective_projects.created_at END ASC,
+                CASE WHEN requested_statuses.sort_by = 'created' AND requested_statuses.sort_order = 'desc' THEN effective_projects.created_at END DESC,
+                CASE WHEN requested_statuses.sort_by = 'title' AND requested_statuses.sort_order = 'asc' THEN effective_projects.title END COLLATE NOCASE ASC,
+                CASE WHEN requested_statuses.sort_by = 'title' AND requested_statuses.sort_order = 'desc' THEN effective_projects.title END COLLATE NOCASE DESC,
+                CASE WHEN requested_statuses.sort_by = 'published' AND requested_statuses.sort_order = 'asc' THEN effective_projects.published_date END ASC,
+                CASE WHEN requested_statuses.sort_by = 'published' AND requested_statuses.sort_order = 'desc' THEN effective_projects.published_date END DESC,
+                CASE WHEN requested_statuses.sort_by = 'planned' AND requested_statuses.sort_order = 'asc' THEN date(effective_projects.planned_date) END ASC,
+                CASE WHEN requested_statuses.sort_by = 'planned' AND requested_statuses.sort_order = 'desc' THEN date(effective_projects.planned_date) END DESC,
+                CASE WHEN requested_statuses.sort_order = 'asc' THEN effective_projects.id END ASC,
+                CASE WHEN requested_statuses.sort_order = 'desc' THEN effective_projects.id END DESC
             ) AS status_rank
           FROM effective_projects
           INNER JOIN requested_statuses
@@ -402,7 +427,7 @@ export function createProjectRepository(db) {
         SELECT ${COLUMNS.join(', ')}, effective_status
         FROM ranked_projects
         WHERE status_rank <= item_limit
-        ORDER BY effective_status ASC, updated_at DESC, id DESC
+        ORDER BY effective_status ASC, status_rank ASC
       `).all(...params);
 
       return rows;
@@ -528,15 +553,21 @@ function normalizeProjectTypeSelection(value) {
   return PROJECT_TYPES.filter((projectType) => values.has(projectType));
 }
 
-function normalizeDashboardStatusLimits(limitByStatus) {
-  if (!limitByStatus || typeof limitByStatus !== 'object' || Array.isArray(limitByStatus)) {
+function normalizeDashboardStatusConfigurations(configurationByStatus) {
+  if (!configurationByStatus || typeof configurationByStatus !== 'object' || Array.isArray(configurationByStatus)) {
     return [];
   }
 
   return STATUSES.flatMap((status) => {
-    const limit = limitByStatus[status];
+    const configuration = configurationByStatus[status];
+    const limit = typeof configuration === 'number' ? configuration : configuration?.limit;
     return Number.isSafeInteger(limit) && limit >= 1 && limit <= 25
-      ? [{ status, limit }]
+      ? [{
+        status,
+        limit,
+        sort: DASHBOARD_SORTS[configuration?.sort] ? configuration.sort : 'updated',
+        order: configuration?.order === 'asc' ? 'asc' : 'desc',
+      }]
       : [];
   });
 }
@@ -547,12 +578,13 @@ function normalizeTagSelection(value) {
     .sort((left, right) => left - right);
 }
 
-const ALLOWED_SORTS = {
-  updated: { column: 'updated_at' },
-  created: { column: 'created_at' },
-  title: { column: 'title COLLATE NOCASE' },
-  published: { column: 'published_date', nullsLast: true },
-};
+const ALLOWED_SORTS = Object.freeze({
+  updated: DASHBOARD_SORTS.updated,
+  created: DASHBOARD_SORTS.created,
+  title: DASHBOARD_SORTS.title,
+  published: DASHBOARD_SORTS.published,
+  planned: DASHBOARD_SORTS.planned,
+});
 
 function buildOrderClause(sortBy, order) {
   const sort = ALLOWED_SORTS[sortBy] || ALLOWED_SORTS.updated;
@@ -561,4 +593,11 @@ function buildOrderClause(sortBy, order) {
     return `ORDER BY (${sort.column} IS NULL) ASC, ${sort.column} ${direction}`;
   }
   return `ORDER BY ${sort.column} ${direction}`;
+}
+
+function buildDashboardOrderClause(sortBy, order) {
+  const sort = DASHBOARD_SORTS[sortBy] || DASHBOARD_SORTS.planned;
+  const direction = order === 'desc' ? 'DESC' : 'ASC';
+  const nullsLast = sort.nullsLast ? `(${sort.column} IS NULL) ASC, ` : '';
+  return `ORDER BY ${nullsLast}${sort.column} ${direction}, id ${direction}`;
 }

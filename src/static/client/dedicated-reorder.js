@@ -1,4 +1,5 @@
 import { isEnhancementBound, markEnhancementBound } from './dom.js';
+import { syncCreatorCrateDropdownFromNative } from './dropdowns.js';
 
 const BOOK_REORDER_LIST_SELECTOR = '[data-book-reorder-list]';
 const BOOK_REORDER_ITEM_SELECTOR = '[data-book-reorder-item]';
@@ -18,6 +19,14 @@ const DASHBOARD_DEFAULTS_REORDER_LIST_SELECTOR = '[data-dashboard-defaults-reord
 const DASHBOARD_DEFAULTS_REORDER_ITEM_SELECTOR = '[data-dashboard-defaults-reorder-item]';
 const DASHBOARD_DEFAULTS_REORDER_HANDLE_SELECTOR = '[data-dashboard-defaults-reorder-handle]';
 const DASHBOARD_DEFAULTS_ORDER_INPUT_SELECTOR = '[data-dashboard-defaults-order-input]';
+const DASHBOARD_DEFAULTS_SORT_DIALOG_ID = 'dashboard-defaults-sort-dialog';
+const DASHBOARD_DEFAULTS_SORT_OPTIONS_TRIGGER_SELECTOR = '[data-dashboard-defaults-sort-options-trigger]';
+const DASHBOARD_DEFAULTS_SORT_INPUT_SELECTOR = '[data-dashboard-defaults-sort-input]';
+const DASHBOARD_DEFAULTS_SECTION_ORDER_INPUT_SELECTOR = '[data-dashboard-defaults-section-order-input]';
+const DASHBOARD_DEFAULTS_SORT_SELECT_SELECTOR = '#dashboard-defaults-sort-select';
+const DASHBOARD_DEFAULTS_ORDER_SELECT_SELECTOR = '#dashboard-defaults-order-select';
+const DASHBOARD_DEFAULTS_SORT_SECTION_LABEL_SELECTOR = '[data-dashboard-defaults-sort-section-label]';
+const DASHBOARD_DEFAULTS_SORT_APPLY_SELECTOR = '[data-dashboard-defaults-sort-apply]';
 
 function dedicatedReorderItems(list, config) {
   return Array.from(list?.querySelectorAll?.(config.itemSelector) || []);
@@ -342,6 +351,12 @@ function dashboardDefaultsItemId(item) {
     || '';
 }
 
+function dashboardDefaultsItemLabel(item) {
+  return item?.dataset?.dashboardSectionLabel
+    || item?.getAttribute?.('data-dashboard-section-label')
+    || dashboardDefaultsItemId(item);
+}
+
 function dashboardDefaultsSnapshot(list) {
   const items = Array.from(list?.querySelectorAll?.(DASHBOARD_DEFAULTS_REORDER_ITEM_SELECTOR) || []);
   return {
@@ -349,9 +364,13 @@ function dashboardDefaultsSnapshot(list) {
     values: new Map(items.map((item) => {
       const visible = item.querySelector?.('input[type="checkbox"]');
       const itemCount = item.querySelector?.('input[type="number"]');
+      const sort = item.querySelector?.(DASHBOARD_DEFAULTS_SORT_INPUT_SELECTOR);
+      const order = item.querySelector?.(DASHBOARD_DEFAULTS_SECTION_ORDER_INPUT_SELECTOR);
       return [dashboardDefaultsItemId(item), {
         visible: Boolean(visible?.checked),
         itemCount: String(itemCount?.value ?? ''),
+        sort: String(sort?.value ?? ''),
+        order: String(order?.value ?? ''),
       }];
     })),
   };
@@ -371,8 +390,12 @@ function restoreDashboardDefaultsSnapshot(state) {
     const item = itemsById.get(id);
     const visible = item?.querySelector?.('input[type="checkbox"]');
     const itemCount = item?.querySelector?.('input[type="number"]');
+    const sort = item?.querySelector?.(DASHBOARD_DEFAULTS_SORT_INPUT_SELECTOR);
+    const order = item?.querySelector?.(DASHBOARD_DEFAULTS_SECTION_ORDER_INPUT_SELECTOR);
     if (visible) visible.checked = values.visible;
     if (itemCount) itemCount.value = values.itemCount;
+    if (sort) sort.value = values.sort;
+    if (order) order.value = values.order;
   });
   updateDedicatedReorderMetadata(list, {
     itemSelector: DASHBOARD_DEFAULTS_REORDER_ITEM_SELECTOR,
@@ -394,13 +417,14 @@ export function enhanceDashboardDefaultsDialog(scope = globalThis.document) {
 
   const dialogs = Array.from(document.querySelectorAll(APP_DIALOG_SELECTOR))
     .filter((dialog) => (dialog.id || dialog.getAttribute?.('id')) === DASHBOARD_DEFAULTS_DIALOG_ID);
+  const sortDialog = document.getElementById?.(DASHBOARD_DEFAULTS_SORT_DIALOG_ID);
   dialogs.forEach((dialog) => {
     const form = dialog.querySelector?.('[data-dashboard-defaults-reorder-form]');
     const list = dialog.querySelector?.(DASHBOARD_DEFAULTS_REORDER_LIST_SELECTOR);
     const appDialogState = dialog.__creatorCrateAppDialogState;
     if (!form || !list || !appDialogState || dialog.__creatorCrateDashboardDefaultsState) return;
 
-    const state = { list, form, confirmed: dashboardDefaultsSnapshot(list) };
+    const state = { list, form, confirmed: dashboardDefaultsSnapshot(list), activeSortTrigger: null };
     dialog.__creatorCrateDashboardDefaultsState = state;
     enhanceDedicatedReorder(dialog, {
       listSelector: DASHBOARD_DEFAULTS_REORDER_LIST_SELECTOR,
@@ -431,6 +455,42 @@ export function enhanceDashboardDefaultsDialog(scope = globalThis.document) {
       windowObject.location.assign('/?notice=dashboard_defaults_saved');
       return true;
     };
+
+    const sortSelect = sortDialog?.querySelector?.(DASHBOARD_DEFAULTS_SORT_SELECT_SELECTOR);
+    const orderSelect = sortDialog?.querySelector?.(DASHBOARD_DEFAULTS_ORDER_SELECT_SELECTOR);
+    const sectionLabel = sortDialog?.querySelector?.(DASHBOARD_DEFAULTS_SORT_SECTION_LABEL_SELECTOR);
+    const apply = sortDialog?.querySelector?.(DASHBOARD_DEFAULTS_SORT_APPLY_SELECTOR);
+    if (!sortSelect || !orderSelect || !apply || sortDialog.__creatorCrateDashboardDefaultsSortState) return;
+
+    sortDialog.__creatorCrateDashboardDefaultsSortState = state;
+    Array.from(list.querySelectorAll?.(DASHBOARD_DEFAULTS_SORT_OPTIONS_TRIGGER_SELECTOR) || []).forEach((trigger) => {
+      if (isEnhancementBound(trigger, 'dashboardDefaultsSortOptionsBound')) return;
+      markEnhancementBound(trigger, 'dashboardDefaultsSortOptionsBound');
+      trigger.addEventListener?.('click', () => {
+        const item = trigger.closest?.(DASHBOARD_DEFAULTS_REORDER_ITEM_SELECTOR);
+        const sort = item?.querySelector?.(DASHBOARD_DEFAULTS_SORT_INPUT_SELECTOR);
+        const order = item?.querySelector?.(DASHBOARD_DEFAULTS_SECTION_ORDER_INPUT_SELECTOR);
+        if (!item || !sort || !order) return;
+        state.activeSortTrigger = trigger;
+        sortSelect.value = sort.value;
+        orderSelect.value = order.value;
+        if (sectionLabel) sectionLabel.textContent = dashboardDefaultsItemLabel(item);
+        syncCreatorCrateDropdownFromNative(sortSelect);
+        syncCreatorCrateDropdownFromNative(orderSelect);
+      });
+    });
+
+    markEnhancementBound(apply, 'dashboardDefaultsSortApplyBound');
+    apply.addEventListener?.('click', (event) => {
+      event.preventDefault?.();
+      const item = state.activeSortTrigger?.closest?.(DASHBOARD_DEFAULTS_REORDER_ITEM_SELECTOR);
+      const sort = item?.querySelector?.(DASHBOARD_DEFAULTS_SORT_INPUT_SELECTOR);
+      const order = item?.querySelector?.(DASHBOARD_DEFAULTS_SECTION_ORDER_INPUT_SELECTOR);
+      if (!sort || !order) return;
+      sort.value = sortSelect.value;
+      order.value = orderSelect.value;
+      sortDialog.close?.();
+    });
   });
   return dialogs.length;
 }

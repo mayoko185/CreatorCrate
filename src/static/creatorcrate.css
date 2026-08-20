@@ -8367,7 +8367,7 @@
       .dashboard-defaults-section:focus-within { border-color: var(--border-strong); }
       .dashboard-defaults-section-content {
         display: grid;
-        grid-template-columns: minmax(0, 1fr) auto minmax(4.75rem, 5.5rem);
+        grid-template-columns: minmax(0, 1fr) auto auto minmax(7rem, 7.5rem);
         align-items: center;
         gap: var(--space-sm);
         min-width: 0;
@@ -8387,6 +8387,18 @@
       .dashboard-defaults-section .dashboard-defaults-section-item-count {
         width: 100%;
       }
+      .dashboard-defaults-section-sort-options-trigger {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 2rem;
+        min-height: 2rem;
+        padding: 0;
+      }
+      .dashboard-defaults-section-sort-options-trigger svg {
+        width: 1rem;
+        height: 1rem;
+      }
       .dashboard-defaults-section .dashboard-defaults-section-item-count :is(input[type="number"], .cc-number-stepper) {
         width: 100%;
         min-width: 0;
@@ -8399,6 +8411,10 @@
         cursor: auto;
       }
       .dashboard-defaults-section .form-switch-label { cursor: pointer; }
+      .dashboard-defaults-sort-controls {
+        display: grid;
+        gap: var(--space-md);
+      }
       @media (max-width: 767px) {
         .dashboard-defaults-section-content {
           grid-template-columns: minmax(0, 1fr);

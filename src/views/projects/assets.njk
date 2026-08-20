@@ -316,11 +316,7 @@
 {% block content %}
   {% set assetsHeadingDescription = "Browse scanned files, category, and release usage." %}
   {% if project.archived_at %}
-    {% call pageHeading.render(assetsHeadingDescription, "archived", "", "/projects/" ~ project.id, "Project: " ~ project.title) %}
-      {% if openLocallyUri %}
-        <a class="button button-secondary" href="{{ openLocallyUri }}">Open locally</a>
-      {% endif %}
-    {% endcall %}
+    {{ pageHeading.render(assetsHeadingDescription, "archived", "", "/projects/" ~ project.id, "Project: " ~ project.title) }}
   {% else %}
     {% call pageHeading.render(assetsHeadingDescription, "", "", "/projects/" ~ project.id, "Project: " ~ project.title) %}
     {% if not project.archived_at %}
@@ -333,11 +329,7 @@
         <a class="button button-danger" href="{{ removeMissingAssetsDialogUrl }}"
            data-dialog-open="remove-missing-assets-dialog">Remove missing assets</a>
       {% endif %}
-      <a class="button" href="/projects/{{ project.id }}/edit">Edit project</a>
       {% endif %}
-    {% if openLocallyUri %}
-      <a class="button button-secondary" href="{{ openLocallyUri }}">Open locally</a>
-    {% endif %}
     {% endcall %}
   {% endif %}
 
@@ -506,6 +498,18 @@
         {% endif %}
 
         <div class="project-filter-actions project-filter-actions--projects">
+          {% if not project.archived_at %}
+            <a class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--left"
+               href="/projects/{{ project.id }}/edit" aria-label="Edit project" data-tooltip="Edit project">
+              {{ icons.icon('edit') }}
+            </a>
+          {% endif %}
+          {% if openLocallyUri %}
+            <a class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--left"
+               href="{{ openLocallyUri }}" aria-label="Open locally" data-tooltip="Open locally">
+              {{ icons.icon('open-locally') }}
+            </a>
+          {% endif %}
            <a class="asset-viewer-defaults-link button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--left"
               href="{{ projectAssetsDefaultsUrl }}" aria-label="Project Assets defaults"
               data-dialog-open="project-assets-defaults-dialog" data-tooltip="Project Assets defaults" data-asset-viewer-defaults-link>
