@@ -2001,7 +2001,7 @@ export function createAssetRepository(db) {
           SELECT COUNT(*) AS total FROM filtered
         )
         SELECT
-          ${buildAssetBrowserSelectColumns()},
+          ${buildAssetBrowserSelectColumns({ includeCategorySlug: true })},
           f.filtered_position,
           f.previous_asset_id,
           f.next_asset_id,

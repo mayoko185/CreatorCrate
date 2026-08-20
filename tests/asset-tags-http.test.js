@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -23,7 +23,7 @@ function headingActions(html) {
 }
 
 function section(html, className) {
-  return html.match(new RegExp(`<section class="${className}"[\\s\\S]*?<\\/section>`))?.[0] || '';
+  return html.match(new RegExp(`<section class="[^"]*\\b${className}\\b[^"]*"[\\s\\S]*?<\\/section>`))?.[0] || '';
 }
 
 function checkboxMarkup(html, tagId) {
@@ -137,13 +137,13 @@ describe('asset tags — HTTP', () => {
     };
   }
 
-  it('shows assigned display names in service order, an untagged state, and a heading Manage tags action', async () => {
+  it('shows assigned display names in service order and an untagged state without a redundant Manage tags action', async () => {
     const untaggedProjectId = await createProject('Untagged Asset');
     const untaggedAsset = createAsset(untaggedProjectId, 'untagged.png');
     const untagged = await agent.get(`/projects/${untaggedProjectId}/assets/${untaggedAsset.id}`).expect(200);
     const untaggedTags = section(untagged.text, 'asset-tags-section');
     expect(untaggedTags).toContain('No tags assigned to this asset.');
-    expect(headingActions(untagged.text)).toContain(
+    expect(headingActions(untagged.text)).not.toContain(
       `href="/projects/${untaggedProjectId}/assets/${untaggedAsset.id}/tags">Manage tags</a>`,
     );
 
@@ -161,7 +161,15 @@ describe('asset tags — HTTP', () => {
     expect(tags).not.toContain('normalized_name');
     expect(tags).not.toContain(`>${alpha.id}<`);
     expect(tags).not.toContain(`>${zebra.id}<`);
-    expect(detail.text).not.toContain('name="tagIds[]"');
+    const editDialog = detail.text.match(/<dialog id="asset-edit-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+    expect(editDialog).toContain(`id="asset-edit-form" method="post" action="/projects/${projectId}/assets/${asset.id}/tags"`);
+    expect(editDialog).toContain('<input type="hidden" name="origin" value="asset-edit">');
+    expect(editDialog).toContain('name="tagIds[]"');
+    expect(editDialog).toContain('data-autosubmit="submit"');
+    expect(editDialog).toContain('data-dialog-backdrop-static');
+    expect(editDialog).not.toContain('Save tags');
+    expect(editDialog).not.toContain('app-dialog-footer');
+    expect(tags).not.toContain('name="tagIds[]"');
   });
 
   it('renders the management page with Projects active, all catalog tags, checked assignments, and Settings link', async () => {
@@ -204,7 +212,7 @@ describe('asset tags — HTTP', () => {
     expect(response.text).not.toContain(`action="/projects/${projectId}/assets/${asset.id}/tags"`);
   });
 
-  it('replaces the complete set, deduplicates IDs, redirects with a notice, and preserves owner and project-tag rows', async () => {
+  it('replaces the complete Edit Asset tag set, deduplicates IDs, redirects with a notice, and preserves owner and project-tag rows', async () => {
     const projectId = await createProject('Replace Asset Tags');
     const asset = createAsset(projectId, 'replace.png');
     const original = createTag('Original Tag');
@@ -219,11 +227,15 @@ describe('asset tags — HTTP', () => {
     const response = await agent
       .post(`/projects/${projectId}/assets/${asset.id}/tags`)
       .type('form')
-      .send({ tagIds: [String(added.id), String(retained.id), String(retained.id)], _csrf: csrfToken })
+      .send({
+        origin: 'asset-edit',
+        tagIds: [String(added.id), String(retained.id), String(retained.id)],
+        _csrf: csrfToken,
+      })
       .expect(302);
 
     expect(response.headers.location).toBe(
-      `/projects/${projectId}/assets/${asset.id}?notice=asset_tags_updated`,
+      `/projects/${projectId}/assets/${asset.id}?notice=asset_tags_updated&edit=1`,
     );
     expect(assetTagRows(asset.id).map(({ tag_id: tagId }) => tagId)).toEqual([added.id, retained.id]);
     expect(db.prepare('SELECT * FROM projects WHERE id = ?').get(projectId)).toEqual(before.project);
@@ -233,6 +245,10 @@ describe('asset tags — HTTP', () => {
 
     const redirected = await agent.get(response.headers.location).expect(200);
     expect(redirected.text).toContain('Asset tags updated successfully.');
+    expect(redirected.text).toMatch(/<dialog id="asset-edit-dialog"[^>]*\bopen\b/);
+    const redirectedEditDialog = redirected.text.match(/<dialog id="asset-edit-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+    expect(redirectedEditDialog).toMatch(new RegExp(`value="${added.id}"[^>]*checked`));
+    expect(redirectedEditDialog).toMatch(new RegExp(`value="${retained.id}"[^>]*checked`));
     const tags = section(redirected.text, 'asset-tags-section');
     expect(tags).toContain('Added Tag');
     expect(tags).toContain('Retained Tag');
@@ -259,6 +275,28 @@ describe('asset tags — HTTP', () => {
     expect(assetTagRows(asset.id)).toEqual([]);
   });
 
+  it('redirects Edit Asset empty selections back to the open dialog', async () => {
+    const projectId = await createProject('Clear Edit Asset Tags');
+    const asset = createAsset(projectId, 'clear-edit.png');
+    const assigned = createTag('Assigned Before Clear');
+    assignAssetTags(asset.id, [assigned.id]);
+
+    const response = await agent
+      .post(`/projects/${projectId}/assets/${asset.id}/tags`)
+      .type('form')
+      .send({ origin: 'asset-edit', _csrf: csrfToken })
+      .expect(302);
+
+    expect(response.headers.location).toBe(
+      `/projects/${projectId}/assets/${asset.id}?notice=asset_tags_updated&edit=1`,
+    );
+    expect(assetTagRows(asset.id)).toEqual([]);
+
+    const redirected = await agent.get(response.headers.location).expect(200);
+    expect(redirected.text).toMatch(/<dialog id="asset-edit-dialog"[^>]*\bopen\b/);
+    expect(section(redirected.text, 'asset-tags-section')).toContain('No tags assigned to this asset.');
+  });
+
   it('returns 422 for invalid submitted IDs with retained selections and no partial changes', async () => {
     const projectId = await createProject('Invalid Asset Tag ID');
     const asset = createAsset(projectId, 'invalid.png');
@@ -267,18 +305,51 @@ describe('asset tags — HTTP', () => {
     assignAssetTags(asset.id, [existing.id]);
     const before = assetTagRows(asset.id);
 
+    const renderSpy = vi.spyOn(app, 'render');
+    let response;
+    try {
+      response = await agent
+        .post(`/projects/${projectId}/assets/${asset.id}/tags`)
+        .type('form')
+        .send({ origin: 'asset-edit', tagIds: [String(added.id), 'not-a-tag'], _csrf: csrfToken })
+        .expect(422);
+
+      const viewerModel = renderSpy.mock.calls.find(([view]) => view === 'projects/asset-viewer.njk')?.[1];
+      expect(viewerModel).toEqual(expect.objectContaining({
+        assetEditDialogOpen: true,
+        selectedAssetTagIds: [String(added.id), 'not-a-tag'],
+      }));
+    } finally {
+      renderSpy.mockRestore();
+    }
+
+    expect(response.text).toContain('Could not update the asset tags. No changes were made.');
+    expect(response.text).toContain('canonical positive integer IDs');
+    expect(response.text).toContain('Added Invalid Test');
+    expect(response.text).toMatch(new RegExp(`value="${added.id}"[^>]*checked`));
+    expect(response.text).toContain('Existing Invalid Test');
+    expect(response.text).toMatch(/<dialog id="asset-edit-dialog"[^>]*\bopen\b/);
+    expect(response.text).toContain('asset-metadata-section');
+    expect(response.text).toContain('asset-release-usage-section');
+    expect(response.text).not.toContain('<h2>Manage tags</h2>');
+    expect(assetTagRows(asset.id)).toEqual(before);
+  });
+
+  it('keeps standalone controlled tag failures on the Manage Tags page', async () => {
+    const projectId = await createProject('Standalone Invalid Asset Tag ID');
+    const asset = createAsset(projectId, 'standalone-invalid.png');
+    const added = createTag('Standalone Added Invalid Test');
+
     const response = await agent
       .post(`/projects/${projectId}/assets/${asset.id}/tags`)
       .type('form')
       .send({ tagIds: [String(added.id), 'not-a-tag'], _csrf: csrfToken })
       .expect(422);
 
-    expect(response.text).toContain('Could not update the asset tags. No changes were made.');
+    expect(response.text).toContain('<h2>Manage tags</h2>');
     expect(response.text).toContain('canonical positive integer IDs');
-    expect(response.text).toContain('Added Invalid Test');
     expect(checkboxMarkup(response.text, added.id)).toContain('checked');
-    expect(response.text).toContain('Existing Invalid Test');
-    expect(assetTagRows(asset.id)).toEqual(before);
+    expect(response.text).not.toContain('<dialog id="asset-edit-dialog"');
   });
 
   it('returns 422 when a tag disappears between GET and POST without partial changes', async () => {
@@ -312,7 +383,7 @@ describe('asset tags — HTTP', () => {
 
     const detail = await agent.get(`/projects/${projectId}/assets/${asset.id}`).expect(200);
     expect(section(detail.text, 'asset-tags-section')).toContain('Missing Existing');
-    expect(headingActions(detail.text)).toContain(
+    expect(headingActions(detail.text)).not.toContain(
       `href="/projects/${projectId}/assets/${asset.id}/tags">Manage tags</a>`,
     );
 

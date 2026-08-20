@@ -4414,6 +4414,61 @@ describe('workflow query service', () => {
       expect(supportedResult.asset.original_url).toBe(`/projects/${project.id}/assets/${supported.id}/original`);
     });
 
+    it('exposes persisted category directory slugs without changing category presentation state', () => {
+      const assetCategoryRepo = createAssetCategoryRepository(db);
+      const project = insertProject(db, { title: 'Viewer Category Directory Slugs' });
+      const enabledCategory = assetCategoryRepo.addProjectCategory({
+        projectId: project.id,
+        displayName: 'Final Renders',
+        directorySlug: 'authoritative-final-renders',
+        displayOrder: 0,
+        enabled: true,
+      });
+      const disabledCategory = assetCategoryRepo.addProjectCategory({
+        projectId: project.id,
+        displayName: 'Legacy Archive',
+        directorySlug: 'persisted-disabled-archive',
+        displayOrder: 1,
+        enabled: false,
+      });
+      const categorized = addViewerAsset(project, 'render.png', {
+        extension: 'png',
+        mimeType: 'image/png',
+      });
+      const disabledMissing = addViewerAsset(project, 'legacy.png', {
+        extension: 'png',
+        mimeType: 'image/png',
+        isPresent: 0,
+      });
+      const uncategorized = addViewerAsset(project, 'root.png', {
+        extension: 'png',
+        mimeType: 'image/png',
+      });
+      db.prepare('UPDATE assets SET category_id = ? WHERE id = ?').run(enabledCategory.id, categorized.id);
+      db.prepare('UPDATE assets SET category_id = ? WHERE id = ?').run(disabledCategory.id, disabledMissing.id);
+
+      const categorizedResult = service.getProjectAssetViewer(project.id, categorized.id);
+      const disabledMissingResult = service.getProjectAssetViewer(project.id, disabledMissing.id);
+      const uncategorizedResult = service.getProjectAssetViewer(project.id, uncategorized.id);
+
+      expect(categorizedResult.asset.category).toEqual({
+        id: enabledCategory.id,
+        displayName: 'Final Renders',
+        directorySlug: 'authoritative-final-renders',
+        enabled: true,
+        displayOrder: 0,
+      });
+      expect(disabledMissingResult.asset).toMatchObject({ missing: true });
+      expect(disabledMissingResult.asset.category).toEqual({
+        id: disabledCategory.id,
+        displayName: 'Legacy Archive',
+        directorySlug: 'persisted-disabled-archive',
+        enabled: false,
+        displayOrder: 1,
+      });
+      expect(uncategorizedResult.asset.category).toBeNull();
+    });
+
     it('returns the same not-found convention for unknown and cross-project assets', () => {
       const project = insertProject(db, { title: 'Viewer Owner' });
       const other = insertProject(db, { title: 'Viewer Other Owner' });

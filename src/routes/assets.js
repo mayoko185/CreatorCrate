@@ -546,13 +546,13 @@ export function createAssetsRouter({
         return next(createNotFound());
       }
 
-      const assetTags = getAssetTagsForViewer(req, data.asset.id);
+      const assetTagEditor = getAssetTagEditorData(req, data.asset.id);
 
       let primaryImage;
       try {
         primaryImage = projectPrimaryImageService.getPrimaryImage(projectId);
       } catch (err) {
-        return handlePrimaryImageFailure(err, { next });
+        return await handlePrimaryImageFailure(err, { next });
       }
 
       const viewerEligibility = await probePrimaryImageViewerEligibility(data, previewProbe);
@@ -561,8 +561,8 @@ export function createAssetsRouter({
 
       res.render('projects/asset-viewer.njk', {
         appName,
-        ...buildAssetViewerRenderModel(data, buildPrimaryImageViewerState(data, primaryImage, viewerEligibility), req),
-        assetTags,
+        ...buildAssetViewerRenderModel(data, buildPrimaryImageViewerState(data, primaryImage, viewerEligibility), req, workflowQueryService),
+        ...assetTagEditor,
         notice,
         noticeMessage: notice ? ASSET_ACTION_NOTICE_MESSAGES[notice] : null,
       });
@@ -588,8 +588,8 @@ export function createAssetsRouter({
       } catch (err) {
         return handleAssetActionFailure(err, {
           appName, workflowQueryService, projectPrimaryImageService, req, res, next,
-          projectId, assetId, action: 'delete',
-        });
+          projectId, assetId, action: 'delete', previewProbe,
+        }).catch(next);
       }
 
       return res.redirect(buildAssetsRedirectUrl(
@@ -617,7 +617,10 @@ export function createAssetsRouter({
       try {
         await projectPrimaryImageService.setPrimaryImage(projectId, assetId);
       } catch (err) {
-        return handlePrimaryImageFailure(err, { next });
+        return handlePrimaryImageFailure(err, {
+          appName, workflowQueryService, projectPrimaryImageService, req, res, next,
+          projectId, assetId, previewProbe,
+        }).catch(next);
       }
 
       res.redirect(buildAssetViewerRedirectUrl(
@@ -625,7 +628,7 @@ export function createAssetsRouter({
         projectId,
         assetId,
         req.body,
-        { notice: 'primary-image-set' },
+        { notice: 'primary-image-set', edit: 1 },
       ));
     } catch (err) {
       next(err);
@@ -645,7 +648,10 @@ export function createAssetsRouter({
       try {
         projectPrimaryImageService.clearPrimaryImage(projectId, assetId);
       } catch (err) {
-        return handlePrimaryImageFailure(err, { next });
+        return handlePrimaryImageFailure(err, {
+          appName, workflowQueryService, projectPrimaryImageService, req, res, next,
+          projectId, assetId, previewProbe,
+        }).catch(next);
       }
 
       res.redirect(buildAssetViewerRedirectUrl(
@@ -653,7 +659,7 @@ export function createAssetsRouter({
         projectId,
         assetId,
         req.body,
-        { notice: 'primary-image-removed' },
+        { notice: 'primary-image-removed', edit: 1 },
       ));
     } catch (err) {
       next(err);
@@ -686,7 +692,8 @@ export function createAssetsRouter({
           pageDefaultsService,
           project, projectId, assetId, action: 'rename', origin: 'viewer',
           submittedFilename: typeof filename === 'string' ? filename : '',
-        });
+          previewProbe,
+        }).catch(next);
       }
 
       let renamed;
@@ -700,7 +707,8 @@ export function createAssetsRouter({
           pageDefaultsService,
           project, projectId, assetId, action: 'rename', origin,
           submittedFilename: typeof filename === 'string' ? filename : '',
-        });
+          previewProbe,
+        }).catch(next);
       }
 
       const redirectUrl = origin === 'assets'
@@ -711,7 +719,13 @@ export function createAssetsRouter({
           { notice: 'asset-renamed' },
           pageDefaultsService,
         )
-        : buildAssetViewerRedirectUrl(workflowQueryService, projectId, renamed.id, req.body, { notice: 'asset-renamed' });
+        : buildAssetViewerRedirectUrl(
+          workflowQueryService,
+          projectId,
+          renamed.id,
+          req.body,
+          { notice: 'asset-renamed', edit: 1 },
+        );
       res.redirect(redirectUrl);
     } catch (err) {
       next(err);
@@ -739,8 +753,8 @@ export function createAssetsRouter({
         return handleAssetActionFailure({ code: 'DESTINATION_CATEGORY_MALFORMED' }, {
           appName, workflowQueryService, projectPrimaryImageService, req, res, next,
           projectId, assetId, action: 'move',
-          submittedDestinationCategory,
-        });
+          submittedDestinationCategory, previewProbe,
+        }).catch(next);
       }
 
       let moved;
@@ -750,11 +764,17 @@ export function createAssetsRouter({
         return handleAssetActionFailure(err, {
           appName, workflowQueryService, projectPrimaryImageService, req, res, next,
           projectId, assetId, action: 'move',
-          submittedDestinationCategory,
-        });
+          submittedDestinationCategory, previewProbe,
+        }).catch(next);
       }
 
-      res.redirect(buildAssetViewerRedirectUrl(workflowQueryService, projectId, moved.id, req.body, { notice: 'asset-moved' }));
+      res.redirect(buildAssetViewerRedirectUrl(
+        workflowQueryService,
+        projectId,
+        moved.id,
+        req.body,
+        { notice: 'asset-moved', edit: 1 },
+      ));
     } catch (err) {
       next(err);
     }
@@ -1338,10 +1358,68 @@ function getAssetTagService(req) {
   return service;
 }
 
+function getTagService(req) {
+  const service = req.app?.locals?.tagService;
+  if (!service) {
+    throw new Error('Asset Viewer requires app.locals.tagService.');
+  }
+  return service;
+}
+
 function getAssetTagsForViewer(req, assetId) {
   return getAssetTagService(req)
     .listAssetTags(assetId)
-    .map((tag) => ({ displayName: tag.display_name }));
+    .map((tag) => ({ id: tag.id, displayName: tag.display_name }));
+}
+
+function getAssetTagEditorData(req, assetId) {
+  const assetTags = getAssetTagsForViewer(req, assetId);
+  return {
+    assetTags,
+    assetTagOptions: getTagService(req).listTags().map((tag) => ({
+      value: String(tag.id),
+      label: tag.display_name,
+    })),
+    selectedAssetTagIds: assetTags.map((tag) => String(tag.id)),
+  };
+}
+
+/**
+ * Build the normal viewer model for a controlled tag failure submitted by its
+ * Edit Asset dialog. Kept here so tag routing does not duplicate the viewer
+ * model or depend on the assets router itself.
+ */
+export async function buildAssetViewerTagFailureRenderModel({
+  req,
+  data,
+  workflowQueryService,
+  projectPrimaryImageService,
+  submittedTagIds,
+  errors,
+  previewProbe,
+} = {}) {
+  const assetTagEditor = getAssetTagEditorData(req, data.asset.id);
+  const errorMessages = Object.values(errors || {});
+  const viewerEligibility = await probePrimaryImageViewerEligibility(data, previewProbe);
+
+  return buildAssetViewerRenderModel(data, {
+    ...buildPrimaryImageViewerState(
+      data,
+      projectPrimaryImageService.getPrimaryImage(data.project.id),
+      viewerEligibility,
+    ),
+    ...assetTagEditor,
+    assetEditDialogOpen: true,
+    selectedAssetTagIds: submittedTagIds === undefined
+      ? assetTagEditor.selectedAssetTagIds
+      : submittedTagIds,
+    formError: {
+      message: [
+        'Could not update the asset tags. No changes were made.',
+        ...errorMessages,
+      ].join(' '),
+    },
+  }, req, workflowQueryService);
 }
 
 
@@ -1830,7 +1908,10 @@ const PRIMARY_IMAGE_ERROR_MESSAGES = Object.freeze({
   [PRIMARY_IMAGE_ERROR_CODES.DATABASE_ERROR]: 'The primary image operation could not be completed. Please try again.',
 });
 
-function handlePrimaryImageFailure(err, { next }) {
+async function handlePrimaryImageFailure(err, {
+  appName, workflowQueryService, projectPrimaryImageService, req, res, next,
+  projectId, assetId, previewProbe,
+}) {
   const code = err && err.code;
   const status = code ? PRIMARY_IMAGE_ERROR_STATUS[code] : undefined;
 
@@ -1841,11 +1922,45 @@ function handlePrimaryImageFailure(err, { next }) {
     return next(createNotFound());
   }
 
-  const controlled = new Error(
-    PRIMARY_IMAGE_ERROR_MESSAGES[code] || 'The primary image operation could not be completed. Please try again.'
-  );
-  controlled.status = status;
-  return next(controlled);
+  const message = PRIMARY_IMAGE_ERROR_MESSAGES[code]
+    || 'The primary image operation could not be completed. Please try again.';
+
+  if (!res) {
+    const controlled = new Error(message);
+    controlled.status = status;
+    return next(controlled);
+  }
+
+  let data;
+  let primaryImageState;
+  let assetTagEditor;
+  try {
+    data = workflowQueryService.getProjectAssetViewer(projectId, assetId, req.body);
+    if (data) {
+      const viewerEligibility = await probePrimaryImageViewerEligibility(data, previewProbe);
+      primaryImageState = buildPrimaryImageViewerState(
+        data,
+        projectPrimaryImageService.getPrimaryImage(projectId),
+        viewerEligibility,
+      );
+      assetTagEditor = getAssetTagEditorData(req, data.asset.id);
+    }
+  } catch (renderErr) {
+    return next(renderErr);
+  }
+  if (!data) {
+    return next(createNotFound());
+  }
+
+  return res.status(status).render('projects/asset-viewer.njk', {
+    appName,
+    ...buildAssetViewerRenderModel(data, {
+      ...primaryImageState,
+      ...assetTagEditor,
+      assetEditDialogOpen: true,
+      formError: { message },
+    }, req, workflowQueryService),
+  });
 }
 
 // ─── Phase: asset list actions — batch move ──────────────────────────────
@@ -2123,12 +2238,22 @@ function buildPrimaryImageViewerState(data, selectedAsset, isEligiblePresentImag
  * @param {object} data - workflowQueryService.getProjectAssetViewer(...) result
  * @param {object} [overrides]
  */
-function buildAssetViewerRenderModel(data, overrides = {}, req) {
+function buildAssetViewerRenderModel(data, overrides = {}, req, workflowQueryService) {
   return {
     project: data.project,
     asset: data.asset,
     assetTags: [],
+    assetTagOptions: [],
+    selectedAssetTagIds: [],
     context: data.context,
+    assetEditDialogOpen: req?.query?.edit === '1',
+    assetEditDialogUrl: buildAssetViewerRedirectUrl(
+      workflowQueryService,
+      data.project.id,
+      data.asset.id,
+      data.context,
+      { edit: 1 },
+    ),
     filters: data.filters,
     contextFields: ASSET_BROWSER_CONTEXT_FIELDS,
     filteredOut: data.filteredOut,
@@ -2188,11 +2313,11 @@ function buildAssetViewerRenderModel(data, overrides = {}, req) {
  * @param {string} [ctx.submittedFilename]
  * @param {string} [ctx.submittedDestinationCategory]
  */
-function handleAssetActionFailure(err, {
+async function handleAssetActionFailure(err, {
   appName, workflowQueryService, projectPrimaryImageService, req, res, next,
   pageDefaultsService,
   project, projectId, assetId, action, origin = 'viewer',
-  submittedFilename, submittedDestinationCategory,
+  submittedFilename, submittedDestinationCategory, previewProbe,
 }) {
   const code = err && err.code;
   const status = code ? ASSET_ACTION_ERROR_STATUS[code] : undefined;
@@ -2215,15 +2340,17 @@ function handleAssetActionFailure(err, {
 
   let data;
   let primaryImageState;
-  let assetTags;
+  let assetTagEditor;
   try {
     data = workflowQueryService.getProjectAssetViewer(projectId, assetId, req.body);
     if (data) {
+      const viewerEligibility = await probePrimaryImageViewerEligibility(data, previewProbe);
       primaryImageState = buildPrimaryImageViewerState(
         data,
         projectPrimaryImageService.getPrimaryImage(projectId),
+        viewerEligibility,
       );
-      assetTags = getAssetTagsForViewer(req, data.asset.id);
+      assetTagEditor = getAssetTagEditorData(req, data.asset.id);
     }
   } catch (renderErr) {
     return next(renderErr);
@@ -2233,6 +2360,7 @@ function handleAssetActionFailure(err, {
   }
 
   const overrides = {
+    assetEditDialogOpen: true,
     formError: { message: describeAssetActionError(code, action) },
   };
   if (submittedFilename !== undefined) overrides.submittedFilename = submittedFilename;
@@ -2240,7 +2368,7 @@ function handleAssetActionFailure(err, {
 
   res.status(status).render('projects/asset-viewer.njk', {
     appName,
-    ...buildAssetViewerRenderModel(data, { ...primaryImageState, assetTags, ...overrides }, req),
+    ...buildAssetViewerRenderModel(data, { ...primaryImageState, ...assetTagEditor, ...overrides }, req, workflowQueryService),
   });
 }
 

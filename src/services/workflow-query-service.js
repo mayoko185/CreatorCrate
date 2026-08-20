@@ -1652,7 +1652,7 @@ export function createWorkflowQueryService({
    * (category_id IS NULL, or a join that could not resolve — e.g. a
    * cross-project category_id) return null.
    * @param {object} asset - repository row with category_* joined columns
-   * @returns {null | { id: number, displayName: string, enabled: boolean, displayOrder: number }}
+   * @returns {null | { id: number, displayName: string, directorySlug: string|null, enabled: boolean, displayOrder: number }}
    */
   function buildAssetCategoryModel(asset) {
     if (asset.category_id === null || asset.category_id === undefined || asset.category_display_name == null) {
@@ -1661,6 +1661,7 @@ export function createWorkflowQueryService({
     return {
       id: asset.category_id,
       displayName: asset.category_display_name,
+      directorySlug: asset.category_directory_slug ?? null,
       enabled: Boolean(asset.category_enabled),
       displayOrder: asset.category_display_order,
     };

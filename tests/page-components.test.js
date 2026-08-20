@@ -31,7 +31,11 @@ import { getDisabledModeCsrf } from './helpers/auth.js';
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 const VIEWS_DIR = fileURLToPath(new URL('../src/views', import.meta.url));
 const CREATORCRATE_CSS_PATH = fileURLToPath(new URL('../src/static/creatorcrate.css', import.meta.url));
+const ASSET_VIEWER_TEMPLATE_PATH = fileURLToPath(new URL('../src/views/projects/asset-viewer.njk', import.meta.url));
+const ASSET_EDIT_DIALOG_TEMPLATE_PATH = fileURLToPath(new URL('../src/views/partials/asset-edit-dialog.njk', import.meta.url));
 const creatorCrateCss = fs.readFileSync(CREATORCRATE_CSS_PATH, 'utf8');
+const assetViewerTemplate = fs.readFileSync(ASSET_VIEWER_TEMPLATE_PATH, 'utf8');
+const assetEditDialogTemplate = fs.readFileSync(ASSET_EDIT_DIALOG_TEMPLATE_PATH, 'utf8');
 function renderPartial(templateName, context = {}) {
   const env = nunjucks.configure(VIEWS_DIR, { autoescape: true, noCache: true });
   return env.render(templateName, context);
@@ -1180,6 +1184,122 @@ describe('Phase 10.5A: Shared page-level components', () => {
       // The shared scroll container must keep owning the dialog layout.
       expect(creatorCrateCss).toMatch(/\.app-dialog-body\s*\{[^}]*overflow-y:\s*auto/);
       expect(creatorCrateCss).toMatch(/\.app-dialog-card\s*\{[^}]*max-height:\s*calc\(100vh - 2rem\)/);
+    });
+
+    it('uses the shared settings-section layout for Asset Viewer and Edit Asset', () => {
+      expect(assetViewerTemplate).toContain('settings-section asset-viewer-section asset-metadata-section');
+      expect(assetViewerTemplate).toContain('settings-section asset-viewer-section asset-tags-section');
+      expect(assetViewerTemplate).toContain('settings-section asset-viewer-section asset-release-usage-section');
+      expect(assetViewerTemplate).toContain('asset-viewer-section-body asset-metadata-section-body');
+      expect(assetViewerTemplate).toContain('asset-viewer-section-body asset-tags-section-body');
+      expect(assetViewerTemplate).toContain('asset-viewer-section-body asset-release-usage-section-body');
+      expect(assetViewerTemplate).toContain('project-detail-action-toolbar asset-viewer-action-toolbar');
+
+      expect(assetEditDialogTemplate).toContain("'asset-edit-dialog asset-form-dialog'");
+      expect(assetEditDialogTemplate).toContain('asset-edit-dialog-section-body asset-tags-edit-section-body');
+      expect(assetEditDialogTemplate).toContain('asset-edit-dialog-section-body asset-primary-image-section-body');
+      expect(assetEditDialogTemplate).toContain('asset-edit-dialog-section-body asset-edit-dialog-actions-body');
+
+      expect(creatorCrateCss).toMatch(/#asset-edit-dialog\s*\{[^}]*width:\s*min\(51rem,\s*calc\(100vw - 2rem\)\)/);
+      expect(creatorCrateCss).toMatch(/\.asset-form-dialog \.app-dialog-body > \*\s*\{\s*flex-shrink:\s*0;/);
+      expect(creatorCrateCss).toMatch(/\.asset-form-dialog \.asset-filter-multiselect-panel\[data-cc-dropdown-overlay\]\s*\{[^}]*position:\s*fixed/);
+      expect(creatorCrateCss).toMatch(/\.asset-viewer-action-toolbar\s*\{[^}]*margin:\s*var\(--space-lg\) 0 var\(--space-xl\)/);
+      expect(creatorCrateCss).toMatch(/\.asset-viewer-section\s*\{[^}]*background:\s*var\(--surface\)/);
+      expect(creatorCrateCss).toMatch(/\.asset-viewer-section > h3\s*\{[^}]*background:\s*var\(--surface-hover\)/);
+
+      // The Viewer h3 sits inside a <section class="settings-section asset-viewer-section ...">,
+      // so it is simultaneously matched by the generic `.settings-section h3` rule and the
+      // Viewer-specific rule. Equal-specificity + later-source-order previously let the generic
+      // rule win, silently defeating the Viewer header color. Prove the Viewer-specific selector
+      // now wins the cascade outright, not merely that both rules exist.
+      expect(assetViewerTemplate).toMatch(
+        /<section class="settings-section asset-viewer-section[^"]*"[^>]*>\s*<h3[ >]/
+      );
+
+      const genericHeaderSelector = '.settings-section h3';
+      const viewerHeaderSelector = '.settings-section.asset-viewer-section > h3';
+      const viewerHeaderRule = new RegExp(
+        `${viewerHeaderSelector.replace(/\./g, '\\.')}\\s*\\{[^}]*background:\\s*var\\(--surface-hover\\)`
+      );
+      expect(creatorCrateCss).toMatch(viewerHeaderRule);
+      // Specificity: both selectors carry exactly one type selector (h3); the Viewer selector
+      // must carry strictly more classes than the generic one to win regardless of source order.
+      expect((viewerHeaderSelector.match(/\./g) ?? []).length).toBeGreaterThan(
+        (genericHeaderSelector.match(/\./g) ?? []).length
+      );
+      // Confirm the defect precondition still holds: the generic rule appears LATER in source
+      // than the Viewer-specific one, which is exactly the ordering that let equal-specificity
+      // selectors misbehave before this fix. The specificity check above is what proves the
+      // Viewer rule wins despite losing on source order.
+      expect(creatorCrateCss.lastIndexOf(genericHeaderSelector)).toBeGreaterThan(
+        creatorCrateCss.indexOf(viewerHeaderSelector)
+      );
+
+      // Same cascade defect, same fix, for the Viewer section's intended outer margin: the
+      // shared `.settings-section { margin-bottom: ... }` rule has equal specificity to the
+      // plain `.asset-viewer-section` margin rule and previously clobbered its margin-bottom.
+      const genericSectionSelector = '.settings-section';
+      const viewerSectionSelector = '.settings-section.asset-viewer-section';
+      expect(creatorCrateCss).toMatch(
+        /\.settings-section\s*\{[^}]*margin-bottom:\s*var\(--space-lg\)/
+      );
+      expect(creatorCrateCss).toMatch(
+        new RegExp(
+          `${viewerSectionSelector.replace(/\./g, '\\.')}\\s*\\{[^}]*margin:\\s*var\\(--space-xl\\) 0`
+        )
+      );
+      expect((viewerSectionSelector.match(/\./g) ?? []).length).toBeGreaterThan(
+        (genericSectionSelector.match(/\./g) ?? []).length
+      );
+      expect(creatorCrateCss.lastIndexOf('.settings-section {')).toBeGreaterThan(
+        creatorCrateCss.indexOf(viewerSectionSelector)
+      );
+
+      expect(creatorCrateCss).toMatch(/\.asset-metadata-section-body\s*\{[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/);
+      expect(creatorCrateCss).toMatch(/@media \(max-width: 540px\)\s*\{[\s\S]*?\.asset-metadata-section-body\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/);
+
+      expect(assetViewerTemplate).not.toContain('asset-metadata-identity-heading');
+      expect(assetViewerTemplate).not.toContain('>Identity</h4>');
+      expect(assetViewerTemplate).not.toContain('Canonical relative path');
+      expect(assetViewerTemplate).toContain('asset-metadata--summary');
+      expect(assetViewerTemplate).toContain('/{{ project.slug }}/{% if asset.category %}{{ asset.category.directorySlug }}/{% endif %}');
+      expect(assetViewerTemplate).toMatch(/<dl class="detail-list asset-metadata asset-metadata--summary">[\s\S]*?<dt>Filename<\/dt>\s*<dd><code>\{\{ asset\.filename \}\}<\/code><\/dd>[\s\S]*?<dt>Location<\/dt>\s*<dd>\/\{\{ project\.slug/);
+      for (const heading of ['File details', 'State and history']) {
+        expect(assetViewerTemplate).toContain(`asset-metadata-group-title">${heading}</h4>`);
+      }
+      expect(assetViewerTemplate.match(/asset-metadata-group asset-metadata-group--panel/g)).toHaveLength(2);
+      expect(assetViewerTemplate).toMatch(/asset-metadata-file-details-heading[\s\S]*?<dl class="detail-list asset-metadata">[\s\S]*?<dt>Category<\/dt>\s*<dd>/);
+      expect(assetViewerTemplate).toMatch(/asset-metadata-state-heading[\s\S]*?<dl class="detail-list asset-metadata">[\s\S]*?<dt>Presence<\/dt>\s*<dd>[\s\S]*?status-badge\.njk/);
+      expect(creatorCrateCss).toMatch(/\.asset-metadata-group--panel\s*\{[^}]*padding:\s*var\(--space-md\)[^}]*background:\s*var\(--surface-hover\)[^}]*border:\s*1px solid var\(--border\)[^}]*border-radius:\s*var\(--radius-md\)/);
+      for (const label of [
+        'Filename',
+        'Location',
+        'Category',
+        'Extension',
+        'Recorded MIME type',
+        'Size',
+        'Recorded modified time',
+        'Presence',
+        'Last seen',
+        'Missing since'
+      ]) {
+        expect(assetViewerTemplate).toContain(`<dt>${label}</dt>`);
+      }
+      expect(assetViewerTemplate.indexOf('asset-metadata-file-details-heading')).toBeLessThan(
+        assetViewerTemplate.indexOf('asset-metadata-state-heading')
+      );
+
+      const assetViewerHelpTextSelector = '.settings-section .asset-viewer-section-body .help-text';
+      const sharedSettingsHelpTextSelector = '.settings-section .help-text';
+      expect(creatorCrateCss).toMatch(
+        new RegExp(`${assetViewerHelpTextSelector.replace(/\./g, '\\.')}\\s*\\{[^}]*padding:\\s*0`)
+      );
+      expect(creatorCrateCss.indexOf(assetViewerHelpTextSelector)).toBeLessThan(
+        creatorCrateCss.indexOf(sharedSettingsHelpTextSelector)
+      );
+      expect((assetViewerHelpTextSelector.match(/\./g) ?? []).length).toBeGreaterThan(
+        (sharedSettingsHelpTextSelector.match(/\./g) ?? []).length
+      );
     });
 
     it('global category cards use native labelled switches, complete reorder semantics, and scoped layout classes', async () => {

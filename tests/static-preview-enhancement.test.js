@@ -614,6 +614,33 @@ describe('category enabled autosubmit enhancement', () => {
   });
 });
 
+describe('native autosubmit navigation', () => {
+  it('submits each declarative control once without submitting during enhancement', () => {
+    const selected = makeEnabledFixture({ action: '/projects/7/assets/11/tags', checked: false });
+    const deselected = makeEnabledFixture({ action: '/projects/7/assets/12/tags', checked: true });
+    selected.control.dataset.autosubmit = 'submit';
+    deselected.control.dataset.autosubmit = 'submit';
+
+    const scope = { querySelectorAll: () => [selected.control, deselected.control] };
+    enhanceAutoSubmit(scope);
+
+    expect(selected.form.requestSubmitCount).toBe(0);
+    expect(deselected.form.requestSubmitCount).toBe(0);
+
+    selected.control.checked = true;
+    selected.control.dispatch('change');
+    selected.control.checked = false;
+    selected.control.dispatch('change');
+    deselected.control.checked = false;
+    deselected.control.dispatch('change');
+
+    expect(selected.form.requestSubmitCount).toBe(1);
+    expect(deselected.form.requestSubmitCount).toBe(1);
+    expect(selected.form.submitCount).toBe(0);
+    expect(deselected.form.submitCount).toBe(0);
+  });
+});
+
 function makeCategoryNode({ tagName = 'div', attrs = {}, className = '', rect = null } = {}) {
   const listeners = [];
   const attributes = new Map();

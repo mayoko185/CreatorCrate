@@ -30,6 +30,18 @@ export function enhanceAutoSubmit(scope = globalThis.document) {
     if (isEnhancementBound(control, 'autoSubmitBound')) return;
     markEnhancementBound(control, 'autoSubmitBound');
 
+    if (control.dataset?.autosubmit === 'submit') {
+      let submitting = false;
+      control.addEventListener('change', () => {
+        const form = control.form;
+        if (!form || submitting) return;
+        submitting = true;
+        if (typeof form.requestSubmit === 'function') form.requestSubmit();
+        else form.submit?.();
+      });
+      return;
+    }
+
     const state = {
       confirmedChecked: Boolean(control.checked),
       pending: false,
@@ -812,6 +824,7 @@ function appDialogBind(state) {
   state.dialog.addEventListener?.('click', (event) => {
     if (event.target === state.dialog) {
       event.preventDefault?.();
+      if (state.dialog.hasAttribute?.('data-dialog-backdrop-static')) return;
       appDialogClose(state);
     }
   });

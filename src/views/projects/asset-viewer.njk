@@ -5,31 +5,26 @@
 {% set page_title = "Assets — " ~ project.title ~ " — " ~ asset.filename %}
 
 {% block content %}
-  {% if asset.missing %}
-    {% set viewerBadgeStatus = "missing" %}
-    {% set viewerBadgeText = "Missing" %}
-  {% elseif asset.preview_state == 'unsupported' %}
-    {% set viewerBadgeStatus = "unsupported" %}
-    {% set viewerBadgeText = "Unsupported" %}
-  {% elseif asset.preview.previewable and asset.preview_url %}
-    {% set viewerBadgeStatus = "present" %}
-    {% set viewerBadgeText = "Present" %}
-  {% else %}
-    {% set viewerBadgeStatus = "unavailable" %}
-    {% set viewerBadgeText = "Unavailable" %}
-  {% endif %}
-  {% call pageHeading.render("Asset preview, metadata, and release usage.", viewerBadgeStatus, viewerBadgeText, "/projects/" ~ project.id, "Project: " ~ project.title, "asset-viewer-project") %}
+  {% call pageHeading.render("", "", "", "/projects/" ~ project.id, "Project: " ~ project.title, "asset-viewer-project") %}
     <a class="button button-secondary asset-viewer-back" href="{{ backToAssetsLink.href }}">Back to Assets</a>
-    {% if canManageTags %}
-      <a class="button button-secondary asset-viewer-manage-tags" href="/projects/{{ project.id }}/assets/{{ asset.id }}/tags">Manage tags</a>
-    {% endif %}
-    {% if asset.original_url %}
-      <a class="button asset-viewer-original" href="{{ asset.original_url }}">View Original</a>
-    {% endif %}
-    {% if openLocallyUri %}
-      <a class="button button-secondary asset-viewer-open-locally" href="{{ openLocallyUri }}">Open locally</a>
-    {% endif %}
   {% endcall %}
+
+  {% if canMutate or canManageTags or canSetAsPrimaryImage or canRemovePrimaryImage or openLocallyUri %}
+    <nav class="project-detail-action-toolbar asset-viewer-action-toolbar" aria-label="Asset actions">
+      {% if canMutate or canManageTags or canSetAsPrimaryImage or canRemovePrimaryImage %}
+        <a class="button button-small button-secondary project-detail-action asset-viewer-action asset-viewer-edit asset-tooltip asset-tooltip--right"
+           href="{{ assetEditDialogUrl }}" aria-label="Edit asset" data-dialog-open="asset-edit-dialog" data-tooltip="Edit asset">
+          {{ icons.icon('edit') }}
+        </a>
+      {% endif %}
+      {% if openLocallyUri %}
+        <a class="button button-small button-secondary project-detail-action asset-viewer-action asset-viewer-open-locally asset-tooltip asset-tooltip--right"
+           href="{{ openLocallyUri }}" aria-label="Open locally" data-tooltip="Open locally">
+          {{ icons.icon('open-locally') }}
+        </a>
+      {% endif %}
+    </nav>
+  {% endif %}
 
   {% if filteredOut %}
     {% set noticeVariant = "warning" %}
@@ -43,7 +38,7 @@
     {% include "partials/notice.njk" %}
   {% endif %}
 
-  {% if formError %}
+  {% if formError and not assetEditDialogOpen %}
     {% set noticeVariant = "error" %}
     {% set noticeText = formError.message %}
     {% include "partials/notice.njk" %}
@@ -65,7 +60,7 @@
         </figure>
         <noscript>
           <p class="notice asset-preview-noscript">
-            JavaScript is disabled. If the preview does not load, {% if asset.original_url %}use View Original to open the asset{% else %}the asset cannot be opened as an original{% endif %}.
+            JavaScript is disabled. {% if asset.original_url %}Select the preview image to open the asset{% else %}The asset cannot be opened as an original{% endif %}.
           </p>
         </noscript>
       {% elseif asset.missing %}
@@ -93,208 +88,107 @@
     </div>
   </section>
 
-  <section class="asset-metadata-section" aria-labelledby="asset-metadata-heading">
-    <h2 id="asset-metadata-heading">Metadata</h2>
-    <dl class="detail-list asset-metadata">
-      <dt>Filename</dt>
-      <dd><code>{{ asset.filename }}</code></dd>
+  <section class="settings-section asset-viewer-section asset-metadata-section" aria-labelledby="asset-metadata-heading">
+    <h3 id="asset-metadata-heading">Metadata</h3>
+    <div class="asset-viewer-section-body asset-metadata-section-body">
+      <dl class="detail-list asset-metadata asset-metadata--summary">
+        <dt>Filename</dt>
+        <dd><code>{{ asset.filename }}</code></dd>
 
-      <dt>Category</dt>
-      <dd>
-        {{ asset.categoryLabel }}
-        {% if asset.categoryDisabled %}<em class="asset-category-disabled-marker">(disabled)</em>{% endif %}
-      </dd>
+        <dt>Location</dt>
+        <dd>/{{ project.slug }}/{% if asset.category %}{{ asset.category.directorySlug }}/{% endif %}</dd>
+      </dl>
 
-      <dt>Location</dt>
-      <dd>{{ asset.locationLabel }}</dd>
+      <section class="asset-metadata-group asset-metadata-group--panel" aria-labelledby="asset-metadata-file-details-heading">
+        <h4 id="asset-metadata-file-details-heading" class="asset-metadata-group-title">File details</h4>
+        <dl class="detail-list asset-metadata">
+          <dt>Category</dt>
+          <dd>
+            {{ asset.categoryLabel }}
+            {% if asset.categoryDisabled %}<em class="asset-category-disabled-marker">(disabled)</em>{% endif %}
+          </dd>
 
-      <dt>Canonical relative path</dt>
-      <dd><code>{{ asset.relative_path }}</code></dd>
+          <dt>Extension</dt>
+          <dd><code>{{ asset.extension or '—' }}</code></dd>
 
-      <dt>Presence</dt>
-      <dd>
-        {% if asset.is_present %}
-          {% set status = 'present-at-last-scan' %}{% include "partials/status-badge.njk" %}
-        {% else %}
-          {% set status = 'missing-at-last-scan' %}{% include "partials/status-badge.njk" %}
-        {% endif %}
-      </dd>
+          <dt>Recorded MIME type</dt>
+          <dd><code>{{ asset.mime_type or '—' }}</code></dd>
 
-      <dt>Extension</dt>
-      <dd><code>{{ asset.extension or '—' }}</code></dd>
-
-      <dt>Recorded MIME type</dt>
-      <dd><code>{{ asset.mime_type or '—' }}</code></dd>
-
-      <dt>Size</dt>
-      <dd>
-        {% if asset.size_bytes == 0 or asset.size_bytes %}
-          {{ asset.size_bytes }} bytes
-        {% else %}
-          —
-        {% endif %}
-      </dd>
-
-      <dt>Recorded modified time</dt>
-      <dd>{{ asset.modified_at or '—' }}</dd>
-
-      <dt>Last seen</dt>
-      <dd>{{ asset.last_seen_at or '—' }}</dd>
-
-      <dt>Missing since</dt>
-      <dd>{{ asset.missing_since or '—' }}</dd>
-    </dl>
-  </section>
-
-  <section class="asset-tags-section" aria-labelledby="asset-tags-heading">
-    <h2 id="asset-tags-heading">Tags</h2>
-    {% if assetTags.length > 0 %}
-      <ul>
-        {% for tag in assetTags %}
-          <li>{{ tag.displayName }}</li>
-        {% endfor %}
-      </ul>
-    {% else %}
-      <p class="help-text">No tags assigned to this asset.</p>
-    {% endif %}
-  </section>
-
-  {% if isPrimaryImage or canSetAsPrimaryImage %}
-    <section class="asset-primary-image-section" aria-labelledby="asset-primary-image-heading">
-      <h2 id="asset-primary-image-heading">Primary image</h2>
-      <div class="asset-actions-card">
-        <div class="asset-action-group">
-          {% if isPrimaryImage %}
-            {% if isPrimaryImageAvailable %}
-              <p class="asset-primary-image-status">Primary image</p>
+          <dt>Size</dt>
+          <dd>
+            {% if asset.size_bytes == 0 or asset.size_bytes %}
+              {{ asset.size_bytes }} bytes
             {% else %}
-              <p class="asset-primary-image-status">Primary image — unavailable until restored</p>
+              —
             {% endif %}
-            {% if canRemovePrimaryImage %}
-              <form method="post" action="/projects/{{ project.id }}/assets/{{ asset.id }}/primary-image/remove" class="asset-action-form asset-primary-image-remove-form">
-                <input type="hidden" name="_csrf" value="{{ _csrf }}">
-                {% for key in contextFields %}
-                  {% if context[key] is not none and context[key] != '' %}
-                    <input type="hidden" name="{{ key }}" value="{{ context[key] }}">
-                  {% endif %}
-                {% endfor %}
-                <div>
-                  <button class="button button-danger" type="submit">Remove primary image</button>
-                </div>
-              </form>
+          </dd>
+
+          <dt>Recorded modified time</dt>
+          <dd>{{ asset.modified_at or '—' }}</dd>
+        </dl>
+      </section>
+
+      <section class="asset-metadata-group asset-metadata-group--panel" aria-labelledby="asset-metadata-state-heading">
+        <h4 id="asset-metadata-state-heading" class="asset-metadata-group-title">State and history</h4>
+        <dl class="detail-list asset-metadata">
+          <dt>Presence</dt>
+          <dd>
+            {% if asset.is_present %}
+              {% set status = 'present-at-last-scan' %}{% include "partials/status-badge.njk" %}
+            {% else %}
+              {% set status = 'missing-at-last-scan' %}{% include "partials/status-badge.njk" %}
             {% endif %}
-          {% else %}
-            <form method="post" action="/projects/{{ project.id }}/assets/{{ asset.id }}/primary-image" class="asset-action-form asset-primary-image-set-form">
-              <input type="hidden" name="_csrf" value="{{ _csrf }}">
-              {% for key in contextFields %}
-                {% if context[key] is not none and context[key] != '' %}
-                  <input type="hidden" name="{{ key }}" value="{{ context[key] }}">
-                {% endif %}
-              {% endfor %}
-              <div>
-                <button class="button button-primary" type="submit">Set as primary image</button>
-              </div>
-            </form>
-          {% endif %}
-        </div>
-      </div>
-    </section>
-  {% endif %}
+          </dd>
 
-  {% if canMutate %}
-    <section class="asset-actions-section" aria-labelledby="asset-actions-heading">
-      <h2 id="asset-actions-heading">File actions</h2>
-      <div class="asset-actions-card">
+          <dt>Last seen</dt>
+          <dd>{{ asset.last_seen_at or '—' }}</dd>
 
-        <div class="asset-action-group">
-          <h3>Rename file</h3>
-          <p class="asset-action-description">Change only the filename. The category and folder stay the same.</p>
-          <form method="post" action="/projects/{{ project.id }}/assets/{{ asset.id }}/rename" class="asset-action-form asset-rename-form">
-            <input type="hidden" name="_csrf" value="{{ _csrf }}">
-            <input type="hidden" name="origin" value="viewer">
-            {% for key in contextFields %}
-              {% if context[key] is not none and context[key] != '' %}
-                <input type="hidden" name="{{ key }}" value="{{ context[key] }}">
-              {% endif %}
-            {% endfor %}
-            <div class="field">
-              <label for="rename-filename">New filename</label>
-              <input type="text" id="rename-filename" name="filename" value="{{ submittedFilename }}" required maxlength="255" autocomplete="off">
-            </div>
-            <div>
-              <button class="button button-primary" type="submit">Rename file</button>
-            </div>
-          </form>
-        </div>
+          <dt>Missing since</dt>
+          <dd>{{ asset.missing_since or '—' }}</dd>
+        </dl>
+      </section>
+    </div>
+  </section>
 
-        <hr class="asset-actions-divider">
-
-        <div class="asset-action-group">
-          <h3>Move file</h3>
-          <p class="asset-action-description">Move to a category root or Uncategorized. Nested subfolders are not preserved.</p>
-          <form method="post" action="/projects/{{ project.id }}/assets/{{ asset.id }}/move" class="asset-action-form asset-move-form">
-            <input type="hidden" name="_csrf" value="{{ _csrf }}">
-            {% for key in contextFields %}
-              {% if context[key] is not none and context[key] != '' %}
-                <input type="hidden" name="{{ key }}" value="{{ context[key] }}">
-              {% endif %}
-            {% endfor %}
-            <div class="field">
-              <label for="move-destination">Destination</label>
-              <select id="move-destination" name="destinationCategory">
-                <option value="uncategorized" {% if submittedDestinationCategory == 'uncategorized' %}selected{% endif %}>Uncategorized</option>
-                {% for category in enabledCategories %}
-                  <option value="{{ category.id }}" {% if submittedDestinationCategory == (category.id ~ '') %}selected{% endif %}>{{ category.displayName }}</option>
-                {% endfor %}
-              </select>
-            </div>
-            <div>
-              <button class="button button-primary" type="submit">Move file</button>
-            </div>
-          </form>
-        </div>
-
-        <hr class="asset-actions-divider">
-
-        <div class="asset-action-group">
-          <h3>Delete asset</h3>
-          <p class="asset-action-description">Permanently delete this file from disk. It cannot be restored through CreatorCrate.</p>
-          <form method="post" action="/projects/{{ project.id }}/assets/{{ asset.id }}/delete" class="asset-action-form asset-delete-form">
-            <input type="hidden" name="_csrf" value="{{ _csrf }}">
-            {% for key in contextFields %}
-              {% if context[key] is not none and context[key] != '' %}
-                <input type="hidden" name="{{ key }}" value="{{ context[key] }}">
-              {% endif %}
-            {% endfor %}
-            <div>
-              <button class="button button-danger" type="submit"
-                      data-confirm="The file will be permanently deleted from disk and cannot be restored through CreatorCrate. Continue?">Delete asset</button>
-            </div>
-          </form>
-        </div>
-
-      </div>
-    </section>
-  {% endif %}
-
-  <section class="asset-release-usage-section" aria-labelledby="asset-release-usage-heading">
-    <h2 id="asset-release-usage-heading">Release usage</h2>
-    {% if asset.release_usage_summary.count > 0 %}
-      <p>
-        Used by {{ asset.release_usage_summary.count }} release{% if asset.release_usage_summary.count != 1 %}s{% endif %}.
-      </p>
-      {% if asset.release_usage.length > 0 %}
-        <ul class="release-detail-list">
-          {% for usage in asset.release_usage %}
-            <li>
-              <a href="/releases/{{ usage.release_id }}">{{ usage.title }}</a>
-              <span class="release-role">{{ usage.role | title }}</span>
-            </li>
+  <section class="settings-section asset-viewer-section asset-tags-section" aria-labelledby="asset-tags-heading">
+    <h3 id="asset-tags-heading">Tags</h3>
+    <div class="asset-viewer-section-body asset-tags-section-body">
+      {% if assetTags.length > 0 %}
+        <ul class="tag-chip-list">
+          {% for tag in assetTags %}
+            <li class="tag-chip">{{ tag.displayName }}</li>
           {% endfor %}
         </ul>
+      {% else %}
+        <p class="help-text">No tags assigned to this asset.</p>
       {% endif %}
-    {% else %}
-      <p>Not used by a release.</p>
-    {% endif %}
+    </div>
   </section>
+
+
+  <section class="settings-section asset-viewer-section asset-release-usage-section" aria-labelledby="asset-release-usage-heading">
+    <h3 id="asset-release-usage-heading">Release usage</h3>
+    <div class="asset-viewer-section-body asset-release-usage-section-body">
+      {% if asset.release_usage_summary.count > 0 %}
+        <p>
+          Used by {{ asset.release_usage_summary.count }} release{% if asset.release_usage_summary.count != 1 %}s{% endif %}.
+        </p>
+        {% if asset.release_usage.length > 0 %}
+          <ul class="release-detail-list">
+            {% for usage in asset.release_usage %}
+              <li>
+                <a href="/releases/{{ usage.release_id }}">{{ usage.title }}</a>
+                <span class="release-role">{{ usage.role | title }}</span>
+              </li>
+            {% endfor %}
+          </ul>
+        {% endif %}
+      {% else %}
+        <p>Not used by a release.</p>
+      {% endif %}
+    </div>
+  </section>
+{% endblock %}
+{% block overlay %}
+  {% include "partials/asset-edit-dialog.njk" %}
 {% endblock %}

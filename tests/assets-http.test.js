@@ -2648,7 +2648,7 @@ describe('asset browser HTTP workflow', () => {
       `<img class="asset-preview-image" src="/projects/${id}/assets/${asset.id}/preview?v=${revision}" alt="Preview of hero.png" data-preview-image>`
     );
     const originalHref = `/projects/${id}/assets/${asset.id}/original`;
-    expectAnchorHref(res2.text, 'asset-viewer-original', originalHref);
+    expectNoAnchor(res2.text, 'asset-viewer-original');
     expectAnchorHref(res2.text, 'asset-preview-link', originalHref);
     const previewLink = anchorMatch(res2.text, 'asset-preview-link');
     expect(previewLink).not.toBeNull();
@@ -2658,7 +2658,8 @@ describe('asset browser HTTP workflow', () => {
     expect(res2.text).toMatch(
       /<a\b[^>]*class="[^"]*\basset-preview-link\b[^"]*"[^>]*aria-label="View original hero\.png"/
     );
-    expect(res2.text).toContain('<code>gallery/hero.png</code>');
+    expect(res2.text).toContain('<dt>Filename</dt>\n        <dd><code>hero.png</code></dd>');
+    expect(res2.text).toContain(`<dt>Location</dt>\n        <dd>/${slugify('Viewer Previewable', { lowercase: true })}/</dd>`);
     expect(res2.text).toContain('<code>png</code>');
     expect(res2.text).toContain('<code>image/png</code>');
     expect(res2.text).toContain(`${png.length} bytes`);
@@ -2973,7 +2974,8 @@ describe('asset browser HTTP workflow', () => {
       .get(`/projects/${id}/assets/${asset.id}`)
       .expect(200);
 
-    expect(res2.text).toContain('private/blob.bin');
+    expect(res2.text).toContain('<dt>Filename</dt>\n        <dd><code>blob.bin</code></dd>');
+    expect(res2.text).toContain(`<dt>Location</dt>\n        <dd>/${slugify('Viewer No Leaks', { lowercase: true })}/</dd>`);
     expect(res2.text).not.toContain(secret);
     expect(res2.text).not.toContain(tmpDir);
     expect(res2.text).not.toContain(projectsRoot);
@@ -3007,7 +3009,17 @@ describe('asset browser HTTP workflow', () => {
         .get(`/projects/${id}/assets/${asset.id}`)
         .expect(200);
 
-      expect(anchorText(res2.text, 'asset-viewer-open-locally')).toBe('Open locally');
+      expect(anchorText(res2.text, 'asset-viewer-open-locally')).toBe('');
+      expect(anchorMatch(res2.text, 'asset-viewer-open-locally')?.[0]).toMatch(
+        /aria-label="Open locally"[^>]*data-tooltip="Open locally"/
+      );
+      expect(anchorMatch(res2.text, 'asset-viewer-open-locally')?.[2]).toMatch(
+        /<svg\b[^>]*aria-hidden="true"[^>]*focusable="false"/
+      );
+      const actionToolbar = res2.text.match(/<nav class="project-detail-action-toolbar asset-viewer-action-toolbar" aria-label="Asset actions">([\s\S]*?)<\/nav>/)?.[1] || '';
+      const headingActions = res2.text.match(/<div class="page-heading-actions">([\s\S]*?)<\/div>/)?.[1] || '';
+      expect(actionToolbar).toContain('asset-viewer-open-locally');
+      expect(headingActions).not.toContain('asset-viewer-open-locally');
     });
 
     it('uses the creatorcrate-open scheme with the encoded absolute path and select=1', async () => {
@@ -3308,7 +3320,21 @@ describe('asset browser HTTP workflow', () => {
     expect(anchorText(res.text, 'asset-preview-nav--previous')).toBe('');
     expect(anchorText(res.text, 'asset-preview-nav--next')).toBe('');
     expect(res.text).toContain('Present at last scan');
-    expect(res.text).toContain('<dl class="detail-list asset-metadata">');
+    expect(res.text).toContain('<dl class="detail-list asset-metadata asset-metadata--summary">');
+    for (const label of [
+      'Filename',
+      'Location',
+      'Category',
+      'Extension',
+      'Recorded MIME type',
+      'Size',
+      'Recorded modified time',
+      'Presence',
+      'Last seen',
+      'Missing since'
+    ]) {
+      expect(res.text).toContain(`<dt>${label}</dt>`);
+    }
     expect(anchorText(res.text, 'asset-viewer-back')).toBe('Back to Assets');
     // The shell <main> carries tabindex="-1" so the skip link can move focus
     // into the content region (WCAG technique G1). The viewer baseline instead
@@ -3325,16 +3351,68 @@ describe('asset browser HTTP workflow', () => {
     expect(pageHeading).toMatch(new RegExp(`<a class="button button-secondary page-heading-lead asset-viewer-project" href="/projects/${id}">Project: Viewer Accessibility</a>`));
     expect(pageHeading.indexOf('asset-viewer-project')).toBeLessThan(pageHeading.indexOf('<div class="page-heading-actions">'));
     expect(headingActions).not.toContain('asset-viewer-project');
+    expect(pageHeading).not.toContain('status-badge');
+    expect(res.text).toMatch(/<section class="settings-section asset-viewer-section asset-metadata-section"[\s\S]*?Present at last scan/);
 
     expect(headingActions).not.toContain('asset-preview-nav--previous');
     expect(headingActions).not.toContain('asset-preview-nav--next');
-    const backIndex = headingActions.indexOf('asset-viewer-back');
-    const manageTagsIndex = headingActions.indexOf('asset-viewer-manage-tags');
-    const originalIndex = headingActions.indexOf('asset-viewer-original');
-    expect(backIndex).toBeLessThan(manageTagsIndex);
-    expect(manageTagsIndex).toBeLessThan(originalIndex);
+    expectNoAnchor(res.text, 'asset-viewer-original');
+    expect(headingActions).not.toContain('asset-viewer-manage-tags');
+    expect(headingActions).not.toContain('asset-viewer-edit');
+    expect(headingActions).not.toContain('asset-viewer-open-locally');
+
+    const actionToolbar = res.text.match(/<nav class="project-detail-action-toolbar asset-viewer-action-toolbar" aria-label="Asset actions">([\s\S]*?)<\/nav>/)?.[1] || '';
+    expect(actionToolbar).not.toBe('');
+    expect(res.text.indexOf('<nav class="project-detail-action-toolbar asset-viewer-action-toolbar"')).toBeGreaterThan(
+      res.text.indexOf('</header>')
+    );
+    const editHref = anchorHref(actionToolbar, 'asset-viewer-edit');
+    const editUrl = new URL(editHref, 'http://localhost');
+    expect(editUrl.pathname).toBe(`/projects/${id}/assets/${assets.bravo.id}`);
+    expect(editUrl.searchParams.get('pageSize')).toBe('1');
+    expect(editUrl.searchParams.get('edit')).toBe('1');
+    expect(anchorText(actionToolbar, 'asset-viewer-edit')).toBe('');
+    expect(anchorMatch(actionToolbar, 'asset-viewer-edit')?.[0]).toMatch(
+      /aria-label="Edit asset"[^>]*data-dialog-open="asset-edit-dialog"[^>]*data-tooltip="Edit asset"/
+    );
+    expect(anchorMatch(actionToolbar, 'asset-viewer-edit')?.[2]).toMatch(
+      /<svg\b[^>]*aria-hidden="true"[^>]*focusable="false"/
+    );
     expect(res.text.indexOf('asset-preview-nav--previous')).toBeGreaterThan(res.text.indexOf('asset-preview-viewer'));
     expect(res.text.indexOf('asset-preview-nav--next')).toBeGreaterThan(res.text.indexOf('asset-preview-viewer'));
+  });
+
+  it('renders viewer Metadata locations from persisted project and category directory slugs', async () => {
+    const res = await createProject('Viewer Metadata Location');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('Viewer Metadata Location');
+    if (!projectDir) throw new Error('projectDir not found for Viewer Metadata Location');
+    const project = db.prepare('SELECT slug FROM projects WHERE id = ?').get(id);
+    const enabledCategory = assetCategoryRepo.addProjectCategory({
+      projectId: id, displayName: 'Final renders', directorySlug: 'persisted-final', displayOrder: 0, enabled: true,
+    });
+    const disabledCategory = assetCategoryRepo.addProjectCategory({
+      projectId: id, displayName: 'Legacy archive', directorySlug: 'persisted-disabled', displayOrder: 1, enabled: false,
+    });
+    const categorized = writeIndexedAsset(id, projectDir, 'deep/render.png', 'render');
+    const disabled = writeIndexedAsset(id, projectDir, 'legacy.png', 'legacy');
+    const missing = assetRepo.upsert(id, 'missing.png', {
+      filename: 'missing.png', extension: 'png', mimeType: 'image/png', sizeBytes: 10, modifiedAt: null,
+    });
+    const root = writeIndexedAsset(id, projectDir, 'root.png', 'root');
+    db.prepare('UPDATE assets SET category_id = ? WHERE id = ?').run(enabledCategory.id, categorized.id);
+    db.prepare('UPDATE assets SET category_id = ? WHERE id = ?').run(disabledCategory.id, disabled.id);
+    db.prepare('UPDATE assets SET category_id = ?, is_present = 0 WHERE id = ?').run(enabledCategory.id, missing.id);
+
+    const metadata = async (asset) => {
+      const page = await agent.get(`/projects/${id}/assets/${asset.id}`).expect(200);
+      return page.text.match(/<section class="settings-section asset-viewer-section asset-metadata-section"[\s\S]*?<\/section>/)?.[0] || '';
+    };
+
+    expect(await metadata(categorized)).toContain(`<dt>Location</dt>\n        <dd>/${project.slug}/persisted-final/</dd>`);
+    expect(await metadata(disabled)).toContain(`<dt>Location</dt>\n        <dd>/${project.slug}/persisted-disabled/</dd>`);
+    expect(await metadata(missing)).toContain(`<dt>Location</dt>\n        <dd>/${project.slug}/persisted-final/</dd>`);
+    expect(await metadata(root)).toContain(`<dt>Location</dt>\n        <dd>/${project.slug}/</dd>`);
   });
 
   it('renders long viewer filenames, paths, MIME types, and release usage without truncation', async () => {
@@ -3355,7 +3433,8 @@ describe('asset browser HTTP workflow', () => {
 
     expect(res2.text).toContain(`<title>CreatorCrate — Assets — Viewer Long Content — ${filename}</title>`);
     expect(res2.text).toContain(`<h1 class="app-section-title">Assets — Viewer Long Content — ${filename}</h1>`);
-    expect(res2.text).toContain(`<code>${relativePath}</code>`);
+    expect(res2.text).not.toContain('Canonical relative path');
+    expect(res2.text).toContain(`<dd>/${slugify('Viewer Long Content', { lowercase: true })}/</dd>`);
     expect(res2.text).toContain('<code>application/vnd.example.extremely-long-mime-type</code>');
     expect(res2.text).toContain('Long Viewer Release');
   });
@@ -3392,7 +3471,8 @@ describe('asset browser HTTP workflow', () => {
     expect(res2.text).toContain('class="asset-preview-frame" data-preview-enhancement data-preview-state="loading"');
     expect(res2.text).toContain('data-preview-image');
     expect(res2.text).toContain('class="asset-preview-placeholder asset-preview-fallback" data-preview-fallback hidden>Preview unavailable</p>');
-    expectAnchorHref(res2.text, 'asset-viewer-original', `/projects/${id}/assets/${asset.id}/original`);
+    expectNoAnchor(res2.text, 'asset-viewer-original');
+    expectAnchorHref(res2.text, 'asset-preview-link', `/projects/${id}/assets/${asset.id}/original`);
   });
 
   it('renders a no-JavaScript viewer fallback without replacing the preview or original link', async () => {
@@ -3406,11 +3486,21 @@ describe('asset browser HTTP workflow', () => {
       .expect(200);
 
     expect(res2.text).toContain('<noscript>');
-    expect(res2.text).toContain('JavaScript is disabled. If the preview does not load, use View Original to open the asset.');
+    expect(res2.text).toContain('JavaScript is disabled. Select the preview image to open the asset.');
     expect(res2.text).toContain('data-preview-fallback hidden>Preview unavailable</p>');
     expect(res2.text).toContain('alt="Preview of viewer-fallback.png"');
-    expectAnchorHref(res2.text, 'asset-viewer-original', `/projects/${id}/assets/${asset.id}/original`);
-    expect(res2.text).not.toContain('aria-live');
+    expectNoAnchor(res2.text, 'asset-viewer-original');
+    expectAnchorHref(res2.text, 'asset-preview-link', `/projects/${id}/assets/${asset.id}/original`);
+    const dialogStart = res2.text.indexOf('<dialog id="asset-edit-dialog"');
+    const dialogEnd = res2.text.indexOf('</dialog>', dialogStart) + '</dialog>'.length;
+    const dialogHtml = res2.text.slice(dialogStart, dialogEnd);
+    const outsideDialog = res2.text.slice(0, dialogStart) + res2.text.slice(dialogEnd);
+    expect(dialogStart).toBeGreaterThan(-1);
+    expect(dialogHtml).toContain(
+      'class="app-dialog-status" data-dialog-status role="status" aria-live="polite"'
+    );
+    expect((res2.text.match(/aria-live="polite"/g) || [])).toHaveLength(1);
+    expect(outsideDialog).not.toContain('aria-live');
   });
 
   it('renders shared list-card loading hooks and pre-rendered failure fallback in project list cards', async () => {
@@ -3680,7 +3770,7 @@ describe('asset browser HTTP workflow', () => {
     expect(style).toMatch(/\.detail-list code\s*\{[^}]*overflow-wrap:\s*anywhere[^}]*word-break:\s*break-word/);
     expect(style).toMatch(/\.asset-preview-frame\s*\{[^}]*min-width:\s*0[^}]*max-width:\s*100%/);
     expect(style).toMatch(/\.asset-preview-image\s*\{[^}]*max-width:\s*100%[^}]*min-width:\s*0/);
-    expect(style).toMatch(/\.asset-release-usage-section,[\s\S]*?\.release-status\s*\{[^}]*overflow-wrap:\s*anywhere/);
+    expect(style).toMatch(/\.asset-viewer-section,[\s\S]*?\.release-status\s*\{[^}]*overflow-wrap:\s*anywhere/);
     expect(style).toMatch(/\.asset-browser-content\s*\{[^}]*width:\s*100%[^}]*min-width:\s*0/);
   });
 
@@ -5868,41 +5958,155 @@ describe('asset browser HTTP workflow', () => {
     // ─── Viewer rendering ──────────────────────────────────────────────
 
     describe('viewer rendering', () => {
-      it('renders a File actions card with distinct Rename, Move, and Delete subsections, CSRF fields, and no duplicate H1', async () => {
+      it('renders the server-rendered Edit Asset dialog with sibling Primary image and File action forms', async () => {
         const { id, asset } = await setupProjectWithAsset('Viewer Forms Mutable');
+        const selectedTag = app.locals.tagService.createTag({ name: 'Alpha dialog tag' });
+        const secondSelectedTag = app.locals.tagService.createTag({ name: 'Beta dialog tag' });
+        const availableTag = app.locals.tagService.createTag({ name: 'Available dialog tag' });
+        app.locals.assetTagService.replaceAssetTags(asset.id, [selectedTag.id, secondSelectedTag.id]);
 
         const res = await agent.get(`/projects/${id}/assets/${asset.id}`).expect(200);
+        const dialogStart = res.text.indexOf('<dialog id="asset-edit-dialog"');
+        const dialogEnd = res.text.indexOf('</dialog>', dialogStart);
+        const dialogHtml = res.text.slice(dialogStart, dialogEnd + '</dialog>'.length);
+        const pageHtml = res.text.slice(0, dialogStart) + res.text.slice(dialogEnd + '</dialog>'.length);
 
-        // One card section and card container.
-        expect(res.text).toContain('class="asset-actions-section"');
-        expect(res.text).toContain('class="asset-actions-card"');
-        expect(res.text).toContain('File actions');
+        expect(dialogStart).toBeGreaterThan(-1);
+        expect(dialogHtml).not.toMatch(/<dialog id="asset-edit-dialog"[^>]*\bopen\b/);
+        expect(dialogHtml).toContain('class="app-dialog-body asset-edit-dialog-body"');
+        expect(dialogHtml).toContain('class="app-dialog-status" data-dialog-status role="status" aria-live="polite"');
+        expect((dialogHtml.match(/<h3[^>]*>Primary image<\/h3>/g) || []).length).toBe(1);
+        const primaryImageSectionStart = dialogHtml.indexOf('class="settings-section asset-edit-dialog-section asset-primary-image-section"');
+        const primaryImageSectionEnd = dialogHtml.indexOf('</section>', primaryImageSectionStart);
+        const primaryImageSection = dialogHtml.slice(primaryImageSectionStart, primaryImageSectionEnd + '</section>'.length);
+        expect(primaryImageSection).toContain('class="asset-edit-dialog-section-body asset-primary-image-section-body"');
+        expect(primaryImageSection).not.toContain('asset-action-group');
+        expect(primaryImageSection).toContain('Choose the image used to represent this project.');
+        expect(dialogHtml).toContain('<h3 id="asset-actions-heading">File actions</h3>');
+        expect(dialogHtml).toContain('<h3 id="asset-tags-edit-heading">Tags</h3>');
+        expect(dialogHtml).toContain(`id="asset-edit-form" method="post" action="/projects/${id}/assets/${asset.id}/tags"`);
+        expect(dialogHtml).toContain('data-dialog-form data-dialog-async="false"');
+        expect(dialogHtml).toContain('name="tagIds[]"');
+        expect(dialogHtml).toContain(`value="${selectedTag.id}" checked`);
+        expect(dialogHtml).toContain(`value="${secondSelectedTag.id}" checked`);
+        expect(dialogHtml).toContain(`value="${availableTag.id}"`);
+        expect(dialogHtml).toContain('aria-label="Tags: 2 tags selected"');
+        expect(dialogHtml).not.toContain('Save tags');
+        expect(dialogHtml).not.toMatch(/<button[^>]*\bform="asset-edit-form"/);
+        expect(dialogHtml).not.toContain('data-dialog-submit');
+        expect(dialogHtml).not.toContain('app-dialog-footer');
+        expect(dialogHtml).toContain('id="asset-edit-form"');
+        expect(dialogHtml).toContain('data-autosubmit="submit"');
+        expect(dialogHtml).toContain('<summary>Rename file</summary>');
+        expect(dialogHtml).toContain('<summary>Move file</summary>');
+        expect(dialogHtml).toContain('<summary>Delete asset</summary>');
+        expect(dialogHtml).toContain('notes-workspace-disclosure--delete');
 
-        // Distinct subsection headings.
-        expect(res.text).toContain('<h3>Rename file</h3>');
-        expect(res.text).toContain('<h3>Move file</h3>');
-        expect(res.text).toContain('<h3>Delete asset</h3>');
+        expect(dialogHtml).toContain(`action="/projects/${id}/assets/${asset.id}/primary-image"`);
+        expect(dialogHtml).toContain(`action="/projects/${id}/assets/${asset.id}/rename"`);
+        expect(dialogHtml).toContain(`action="/projects/${id}/assets/${asset.id}/move"`);
+        expect(dialogHtml).toContain(`action="/projects/${id}/assets/${asset.id}/delete"`);
+        expect(dialogHtml).toContain('data-confirm="The file will be permanently deleted from disk and cannot be restored through CreatorCrate. Continue?"');
+        expect((dialogHtml.match(/name="_csrf"/g) || []).length).toBe(5);
+        expect((dialogHtml.match(/<form\b/g) || []).length).toBe(5);
+        expect((dialogHtml.match(/<\/form>/g) || []).length).toBe(5);
+        const tagFormStart = dialogHtml.indexOf('id="asset-edit-form"');
+        const tagFormEnd = dialogHtml.indexOf('</form>', tagFormStart);
+        expect(dialogHtml.slice(tagFormStart, tagFormEnd)).not.toContain('<form');
 
-        // Divider between the two groups.
-        expect(res.text).toContain('class="asset-actions-divider"');
-
-        // Both forms present and independent.
-        expect(res.text).toContain(`action="/projects/${id}/assets/${asset.id}/rename"`);
-        expect(res.text).toContain(`action="/projects/${id}/assets/${asset.id}/move"`);
-        expect(res.text).toContain(`action="/projects/${id}/assets/${asset.id}/delete"`);
-        expect(res.text).toContain('data-confirm="The file will be permanently deleted from disk and cannot be restored through CreatorCrate. Continue?"');
-
-        // No nested forms — verify each form open tag is followed by its own close tag before the next open.
-        const formOpenCount = (res.text.match(/<form\b/g) || []).length;
-        const formCloseCount = (res.text.match(/<\/form>/g) || []).length;
-        expect(formOpenCount).toBe(formCloseCount);
-
-        // No duplicate H1.
+        expect(pageHtml).not.toContain('Primary image');
+        expect(pageHtml).not.toContain('File actions');
+        expect(pageHtml).not.toContain(`action="/projects/${id}/assets/${asset.id}/rename"`);
+        expect(pageHtml).not.toContain('name="tagIds[]"');
+        const viewerTags = pageHtml.match(/<section class="[^"]*\basset-tags-section\b[^"]*"[\s\S]*?<\/section>/)?.[0] || '';
+        expect(viewerTags).toContain('<ul class="tag-chip-list">');
+        expect(viewerTags).toContain('<li class="tag-chip">Alpha dialog tag</li>');
+        expect(viewerTags).toContain('<li class="tag-chip">Beta dialog tag</li>');
+        expect(viewerTags.indexOf('Alpha dialog tag')).toBeLessThan(viewerTags.indexOf('Beta dialog tag'));
+        expect(viewerTags).not.toMatch(/<ul>\s*<li>/);
+        expect(pageHtml).toContain('Metadata');
+        expect(pageHtml).toContain('Tags');
+        expect(pageHtml).toContain('Release usage');
         expect((res.text.match(/<h1\b/g) || []).length).toBe(1);
+      });
 
-        // Each form carries its own CSRF hidden input.
-        const cardHtml = res.text.slice(res.text.indexOf('class="asset-actions-card"'));
-        expect((cardHtml.match(/name="_csrf"/g) || []).length).toBeGreaterThanOrEqual(3);
+      it('keeps the Viewer Tags empty state when no tags are assigned', async () => {
+        const { id, asset } = await setupProjectWithAsset('Viewer Tags Empty');
+        const res = await agent.get(`/projects/${id}/assets/${asset.id}`).expect(200);
+        const dialogStart = res.text.indexOf('<dialog id="asset-edit-dialog"');
+        const dialogEnd = res.text.indexOf('</dialog>', dialogStart);
+        const pageHtml = res.text.slice(0, dialogStart) + res.text.slice(dialogEnd + '</dialog>'.length);
+        const viewerTags = pageHtml.match(/<section class="[^"]*\basset-tags-section\b[^"]*"[\s\S]*?<\/section>/)?.[0] || '';
+
+        expect(viewerTags).toContain('No tags assigned to this asset.');
+        expect(viewerTags).not.toContain('tag-chip-list');
+        expect(viewerTags).not.toContain('class="tag-chip"');
+      });
+
+      it('supplies and renders Edit Asset dialog state without contaminating viewer navigation context', async () => {
+        const { id, assets } = await setupOrderedImageAssets('Viewer Edit Dialog Model');
+        const selectedTag = app.locals.tagService.createTag({ name: 'Viewer model selected tag' });
+        const availableTag = app.locals.tagService.createTag({ name: 'Viewer model available tag' });
+        app.locals.assetTagService.replaceAssetTags(assets.bravo.id, [selectedTag.id]);
+        const renderSpy = vi.spyOn(app, 'render');
+        const viewerUrl = `/projects/${id}/assets/${assets.bravo.id}?category=all&sort=modified&order=desc&view=list`;
+
+        try {
+          const normalResponse = await agent.get(viewerUrl).expect(200);
+          const normalModel = renderSpy.mock.calls.find(([view]) => view === 'projects/asset-viewer.njk')?.[1];
+          expect(normalModel.assetEditDialogOpen).toBe(false);
+          expect(normalModel.selectedAssetTagIds).toEqual([String(selectedTag.id)]);
+          expect(normalModel.assetTagOptions).toEqual(expect.arrayContaining([
+            { value: String(selectedTag.id), label: 'Viewer model selected tag' },
+            { value: String(availableTag.id), label: 'Viewer model available tag' },
+          ]));
+          const normalDialogTag = normalResponse.text.slice(
+            normalResponse.text.indexOf('<dialog id="asset-edit-dialog"'),
+            normalResponse.text.indexOf('>', normalResponse.text.indexOf('<dialog id="asset-edit-dialog"')) + 1,
+          );
+          expect(normalDialogTag).not.toContain(' open');
+
+          renderSpy.mockClear();
+          const editResponse = await agent.get(`${viewerUrl}&edit=1`).expect(200);
+          const editModel = renderSpy.mock.calls.find(([view]) => view === 'projects/asset-viewer.njk')?.[1];
+          expect(editModel.assetEditDialogOpen).toBe(true);
+          expect(editModel.contextFields).not.toContain('edit');
+          const editDialogTag = editResponse.text.slice(
+            editResponse.text.indexOf('<dialog id="asset-edit-dialog"'),
+            editResponse.text.indexOf('>', editResponse.text.indexOf('<dialog id="asset-edit-dialog"')) + 1,
+          );
+          expect(editDialogTag).toContain(' open');
+
+          const editUrl = new URL(editModel.assetEditDialogUrl, 'http://localhost');
+          expect(editUrl.pathname).toBe(`/projects/${id}/assets/${assets.bravo.id}`);
+          expect(editUrl.searchParams.get('category')).toBe('all');
+          expect(editUrl.searchParams.get('sort')).toBe('modified');
+          expect(editUrl.searchParams.get('order')).toBe('desc');
+          expect(editUrl.searchParams.get('view')).toBe('list');
+          expect(editUrl.searchParams.get('edit')).toBe('1');
+
+          for (const link of [editModel.backToAssetsLink, editModel.previousAssetLink, editModel.nextAssetLink]) {
+            expect(link?.href).not.toContain('edit=1');
+          }
+        } finally {
+          renderSpy.mockRestore();
+        }
+      });
+
+      it('opens the rendered Edit Asset dialog after a controlled viewer action failure', async () => {
+        const { id, asset } = await setupProjectWithAsset('Viewer Edit Dialog Failure', 'original.png');
+
+        const failure = await agent
+          .post(`/projects/${id}/assets/${asset.id}/rename`)
+          .send({ filename: '..', category: 'all', _csrf: csrfToken })
+          .type('form')
+          .expect(422);
+
+        const dialogStart = failure.text.indexOf('<dialog id="asset-edit-dialog"');
+        const dialogHtml = failure.text.slice(dialogStart, failure.text.indexOf('</dialog>', dialogStart) + '</dialog>'.length);
+        expect(dialogHtml).toContain(' open');
+        expect(dialogHtml).toContain('Enter a valid filename.');
+        expect(dialogHtml).toContain('value=".."');
       });
 
       it('the rename input contains the current filename', async () => {
@@ -5931,6 +6135,10 @@ describe('asset browser HTTP workflow', () => {
 
         const res = await agent.get(`/projects/${id}/assets/${asset.id}`).expect(200);
         expect(res.text).not.toContain('class="asset-actions-section"');
+        const dialogStart = res.text.indexOf('<dialog id="asset-edit-dialog"');
+        const dialogHtml = res.text.slice(dialogStart, res.text.indexOf('</dialog>', dialogStart) + '</dialog>'.length);
+        expect(dialogHtml).not.toContain('id="asset-edit-form"');
+        expect(dialogHtml).not.toContain('name="tagIds[]"');
       });
 
       it('hides the rename/move forms for a missing asset', async () => {
@@ -5965,10 +6173,16 @@ describe('asset browser HTTP workflow', () => {
 
         const res = await agent.get(`/projects/${id}/assets/${asset.id}`).expect(200);
 
-        expect(res.text).toContain('<p class="asset-primary-image-status">Primary image</p>');
+        expect(res.text).toContain('<p class="asset-primary-image-status">Currently set as the primary image.</p>');
         expect(res.text).toContain(`action="/projects/${id}/assets/${asset.id}/primary-image/remove"`);
         expect(res.text).toContain('>Remove primary image</button>');
         expect(res.text).not.toContain('>Set as primary image</button>');
+
+        const sectionStart = res.text.indexOf('class="settings-section asset-edit-dialog-section asset-primary-image-section"');
+        const sectionEnd = res.text.indexOf('</section>', sectionStart);
+        const section = res.text.slice(sectionStart, sectionEnd + '</section>'.length);
+        expect((section.match(/<h3[^>]*>Primary image<\/h3>/g) || []).length).toBe(1);
+        expect((section.match(/>Primary image</g) || []).length).toBe(1);
       });
 
       it('retains a missing selected asset and renders its unavailable state with Remove', async () => {
@@ -5984,7 +6198,7 @@ describe('asset browser HTTP workflow', () => {
 
         const res = await agent.get(`/projects/${id}/assets/${asset.id}`).expect(200);
 
-        expect(res.text).toContain('Primary image — unavailable until restored');
+        expect(res.text).toContain('Currently set as the primary image — unavailable until restored.');
         expect(res.text).toContain(`action="/projects/${id}/assets/${asset.id}/primary-image/remove"`);
         expect(res.text).toContain('>Remove primary image</button>');
         expect(res.text).not.toContain('>Set as primary image</button>');
@@ -6003,7 +6217,7 @@ describe('asset browser HTTP workflow', () => {
 
         const res = await agent.get(`/projects/${id}/assets/${asset.id}`).expect(200);
 
-        expect(res.text).toContain('Primary image — unavailable until restored');
+        expect(res.text).toContain('Currently set as the primary image — unavailable until restored.');
         expect(res.text).toContain(`action="/projects/${id}/assets/${asset.id}/primary-image/remove"`);
         expect(res.text).not.toContain('>Set as primary image</button>');
       });
@@ -6035,7 +6249,7 @@ describe('asset browser HTTP workflow', () => {
           .send({ _csrf: csrfToken })
           .expect(302);
         const mergedSelected = await agent.get(`/projects/${merged.id}/assets/${merged.asset.id}`).expect(200);
-        expect(mergedSelected.text).toContain('<p class="asset-primary-image-status">Primary image</p>');
+        expect(mergedSelected.text).toContain('<p class="asset-primary-image-status">Currently set as the primary image.</p>');
         expect(mergedSelected.text).toContain('>Remove primary image</button>');
 
         const previewOnly = await setupProjectWithKrita(
@@ -6079,11 +6293,54 @@ describe('asset browser HTTP workflow', () => {
 
         const res = await agent.get(`/projects/${id}/assets/${asset.id}`).expect(200);
 
-        expect(res.text).toContain('<p class="asset-primary-image-status">Primary image</p>');
+        expect(res.text).toContain('<p class="asset-primary-image-status">Currently set as the primary image.</p>');
         expect(res.text).not.toContain(`action="/projects/${id}/assets/${asset.id}/primary-image"`);
         expect(res.text).not.toContain(`action="/projects/${id}/assets/${asset.id}/primary-image/remove"`);
         expect(res.text).not.toContain(`action="/projects/${id}/assets/${asset.id}/rename"`);
         expect(res.text).not.toContain(`action="/projects/${id}/assets/${asset.id}/move"`);
+      });
+
+      it('keeps a present merged .kra Primary-image eligible across every controlled-rerender origin (D2 regression)', async () => {
+        const merged = await setupProjectWithKrita('D2 Merged KRA Rerender', 'kra', { merged: Buffer.from('merged-preview') });
+
+        const getRes = await agent.get(`/projects/${merged.id}/assets/${merged.asset.id}`).expect(200);
+        expect(getRes.text).toContain('>Set as primary image</button>');
+
+        // General viewer-action origin (handleAssetActionFailure): renaming
+        // to the asset's current filename triggers a controlled 409.
+        const renameFailure = await agent
+          .post(`/projects/${merged.id}/assets/${merged.asset.id}/rename`)
+          .type('form')
+          .send({ filename: merged.asset.filename, origin: 'viewer', _csrf: csrfToken })
+          .expect(409);
+        expect(renameFailure.text).toContain('>Set as primary image</button>');
+
+        // Tag-origin (buildAssetViewerTagFailureRenderModel): an invalid tag
+        // selection submitted from the Edit Asset dialog triggers a
+        // controlled 422.
+        const tagFailure = await agent
+          .post(`/projects/${merged.id}/assets/${merged.asset.id}/tags`)
+          .type('form')
+          .send({ origin: 'asset-edit', tagIds: { bad: 'not-an-id' }, _csrf: csrfToken })
+          .expect(422);
+        expect(tagFailure.text).toContain('>Set as primary image</button>');
+
+        // Primary-image origin (handlePrimaryImageFailure): set the merged
+        // KRA as primary, then race a stale clear against a different asset.
+        await agent
+          .post(`/projects/${merged.id}/assets/${merged.asset.id}/primary-image`)
+          .type('form')
+          .send({ _csrf: csrfToken })
+          .expect(302);
+        const other = writeIndexedAsset(merged.id, merged.projectDir, 'other.png', await makePng());
+        await app.locals.projectPrimaryImageService.setPrimaryImage(merged.id, other.id);
+        const primaryImageFailure = await agent
+          .post(`/projects/${merged.id}/assets/${merged.asset.id}/primary-image/remove`)
+          .type('form')
+          .send({ _csrf: csrfToken })
+          .expect(409);
+        expect(primaryImageFailure.text).toContain('The primary image changed before it could be removed.');
+        expect(primaryImageFailure.text).toContain('>Set as primary image</button>');
       });
     });
 
@@ -6124,8 +6381,14 @@ describe('asset browser HTTP workflow', () => {
         expect(firstLocation.searchParams.get('pageSize')).toBe('10');
         expect(firstLocation.searchParams.get('view')).toBe('list');
         expect(firstLocation.searchParams.get('notice')).toBe('primary-image-set');
+        expect(firstLocation.searchParams.get('edit')).toBe('1');
         expect(firstLocation.searchParams.has('returnUrl')).toBe(false);
         expect(app.locals.projectPrimaryImageService.getPrimaryImage(first.id).id).toBe(first.asset.id);
+
+        const firstViewer = await agent.get(setFirst.headers.location).expect(200);
+        expect(firstViewer.text).toMatch(/<dialog id="asset-edit-dialog"[^>]*\bopen\b/);
+        expect(firstViewer.text).toContain('Currently set as the primary image.');
+        expect(firstViewer.text).toContain('>Remove primary image</button>');
 
         await agent
           .post(`/projects/${first.id}/assets/${second.id}/primary-image`)
@@ -6172,6 +6435,29 @@ describe('asset browser HTTP workflow', () => {
           .send({ _csrf: csrfToken })
           .expect(409);
         expect(archivedRes.text).toContain('This project is archived and read-only.');
+      });
+
+      it('reopens the rendered Edit Asset dialog after a controlled primary-image failure', async () => {
+        const { id, asset } = await setupProjectWithAsset('Primary Set Edit Dialog Failure', 'source.kra');
+
+        const failure = await agent
+          .post(`/projects/${id}/assets/${asset.id}/primary-image`)
+          .type('form')
+          .send({ _csrf: csrfToken })
+          .expect(422);
+
+        const dialogStart = failure.text.indexOf('<dialog id="asset-edit-dialog"');
+        const dialogEnd = failure.text.indexOf('</dialog>', dialogStart) + '</dialog>'.length;
+        const dialogHtml = failure.text.slice(dialogStart, dialogEnd);
+        expect(dialogHtml).toContain(' open');
+        expect(dialogHtml).toContain('This asset type cannot be selected as the primary image.');
+
+        // D1 regression: the controlled-failure error must render exactly
+        // once, and only inside the open Edit Asset dialog.
+        const occurrences = failure.text.split('This asset type cannot be selected as the primary image.').length - 1;
+        expect(occurrences).toBe(1);
+        const outsideDialog = failure.text.slice(0, dialogStart) + failure.text.slice(dialogEnd);
+        expect(outsideDialog).not.toContain('This asset type cannot be selected as the primary image.');
       });
 
       it('rejects a missing CSRF token before changing the selection', async () => {
@@ -6224,10 +6510,12 @@ describe('asset browser HTTP workflow', () => {
         expect(location.searchParams.get('sort')).toBe('modified');
         expect(location.searchParams.get('order')).toBe('desc');
         expect(location.searchParams.get('notice')).toBe('primary-image-removed');
+        expect(location.searchParams.get('edit')).toBe('1');
         expect(location.searchParams.has('returnUrl')).toBe(false);
         expect(app.locals.projectPrimaryImageService.getPrimaryImage(id)).toBeUndefined();
 
         const viewer = await agent.get(removed.headers.location).expect(200);
+        expect(viewer.text).toMatch(/<dialog id="asset-edit-dialog"[^>]*\bopen\b/);
         expect(viewer.text).toContain('The primary image was removed.');
         expect(viewer.text).toContain('>Set as primary image</button>');
       });
@@ -6319,18 +6607,25 @@ describe('asset browser HTTP workflow', () => {
 
         const res = await agent
           .post(`/projects/${id}/assets/${asset.id}/rename`)
-          .send({ filename: 'new.png', category: 'all', _csrf: csrfToken })
+          .send({
+            filename: 'new.png', origin: 'viewer', category: 'all', sort: 'modified', order: 'desc', view: 'list', _csrf: csrfToken,
+          })
           .type('form')
           .expect(302);
 
         const location = new URL(res.headers.location, 'http://localhost');
         expect(location.pathname).toBe(`/projects/${id}/assets/${asset.id}`);
         expect(location.searchParams.get('category')).toBe('all');
+        expect(location.searchParams.get('sort')).toBe('modified');
+        expect(location.searchParams.get('order')).toBe('desc');
+        expect(location.searchParams.get('view')).toBe('list');
         expect(location.searchParams.get('notice')).toBe('asset-renamed');
+        expect(location.searchParams.get('edit')).toBe('1');
         expect(fs.existsSync(path.join(projectDir, 'new.png'))).toBe(true);
         expect(fs.existsSync(path.join(projectDir, 'old.png'))).toBe(false);
 
         const res2 = await agent.get(res.headers.location).expect(200);
+        expect(res2.text).toMatch(/<dialog id="asset-edit-dialog"[^>]*\bopen\b/);
         expect(res2.text).toContain('The file was renamed.');
         expect(res2.text).toContain('value="new.png"');
       });
@@ -6514,7 +6809,7 @@ describe('asset browser HTTP workflow', () => {
           .post(`/projects/${id}/assets/${asset.id}/delete`)
           .type('form')
           .send({
-            category: 'all', search: 'a', extension: '.PNG', presence: 'present', usage: 'unused',
+            category: 'all', search: 'a', extension: '.PNG', presence: 'present', usage: 'unused', edit: '1',
             sort: 'size', order: 'desc', page: '2', pageSize: '50', view: 'list',
             unknown: 'strip-me', _csrf: deleteCsrf,
           })
@@ -6536,6 +6831,7 @@ describe('asset browser HTTP workflow', () => {
         expect(location.searchParams.get('pageSize')).toBe('50');
         expect(location.searchParams.get('view')).toBe('list');
         expect(location.searchParams.get('assets_deleted')).toBe('1');
+        expect(location.searchParams.has('edit')).toBe(false);
         expect(location.searchParams.has('unknown')).toBe(false);
       });
 
@@ -6595,24 +6891,34 @@ describe('asset browser HTTP workflow', () => {
     // ─── Move POST ───────────────────────────────────────────────────────
 
     describe('POST /projects/:projectId/assets/:assetId/move', () => {
-      it('moves the file to an enabled category successfully', async () => {
+      it('moves the file to an enabled category, preserves Viewer context, and reopens Edit Asset', async () => {
         const { id, projectDir, asset } = await setupProjectWithAsset('Move Success Category');
         const category = makeEnabledCategory(id, projectDir, 'renders-move-success');
 
         const res = await agent
           .post(`/projects/${id}/assets/${asset.id}/move`)
-          .send({ destinationCategory: String(category.id), category: 'all', _csrf: csrfToken })
+          .send({
+            destinationCategory: String(category.id), category: 'all', sort: 'modified', order: 'desc', view: 'list', _csrf: csrfToken,
+          })
           .type('form')
           .expect(302);
 
         const location = new URL(res.headers.location, 'http://localhost');
         expect(location.pathname).toBe(`/projects/${id}/assets/${asset.id}`);
         expect(location.searchParams.get('category')).toBe('all');
+        expect(location.searchParams.get('sort')).toBe('modified');
+        expect(location.searchParams.get('order')).toBe('desc');
+        expect(location.searchParams.get('view')).toBe('list');
         expect(location.searchParams.get('notice')).toBe('asset-moved');
+        expect(location.searchParams.get('edit')).toBe('1');
 
         const updated = assetRepo.findById(asset.id);
         expect(updated.category_id).toBe(category.id);
         expect(fs.existsSync(path.join(projectDir, 'renders-move-success', 'a.png'))).toBe(true);
+
+        const viewer = await agent.get(res.headers.location).expect(200);
+        expect(viewer.text).toMatch(/<dialog id="asset-edit-dialog"[^>]*\bopen\b/);
+        expect(viewer.text).toMatch(/<dt>Category<\/dt>\s*<dd>\s*Renders\s*<\/dd>/);
       });
 
       it('moves the file to Uncategorized successfully', async () => {

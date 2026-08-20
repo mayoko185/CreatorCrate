@@ -4,6 +4,7 @@ import {
   AssetTagValidationError,
   TagNotFoundError,
 } from '../services/asset-tag-service.js';
+import { buildAssetViewerTagFailureRenderModel } from './assets.js';
 
 function createNotFound() {
   const err = new Error('Not found');
@@ -37,6 +38,22 @@ function getAssetTagService(req) {
     throw new Error('Asset Tags requires app.locals.assetTagService.');
   }
   return service;
+}
+
+function getProjectPrimaryImageService(req) {
+  const service = req.app?.locals?.projectPrimaryImageService;
+  if (!service) {
+    throw new Error('Asset Tags requires app.locals.projectPrimaryImageService.');
+  }
+  return service;
+}
+
+function getPreviewProbe(req) {
+  return req.app?.locals?.previewService?.inspectKritaPreviewSource;
+}
+
+function isAssetEditSubmission(req) {
+  return req.body?.origin === 'asset-edit';
 }
 
 function toProjectView(project) {
@@ -156,8 +173,23 @@ function renderAssetTagsPage(req, res, data, {
   });
 }
 
-function renderAssetTagsPageOrNext(req, res, next, data, options = {}) {
+async function renderAssetTagsPageOrNext(req, res, next, data, options = {}) {
   try {
+    if (options.assetEditSubmission) {
+      const renderModel = await buildAssetViewerTagFailureRenderModel({
+        req,
+        data,
+        workflowQueryService: options.workflowQueryService,
+        projectPrimaryImageService: getProjectPrimaryImageService(req),
+        submittedTagIds: options.submittedTagIds,
+        errors: options.errors,
+        previewProbe: getPreviewProbe(req),
+      });
+      return res.status(options.status || 200).render('projects/asset-viewer.njk', {
+        appName: options.appName,
+        ...renderModel,
+      });
+    }
     renderAssetTagsPage(req, res, data, options);
   } catch (err) {
     if (err instanceof AssetNotFoundError) return next(createNotFound());
@@ -202,47 +234,54 @@ export function createAssetTagsRouter({ appName, workflowQueryService } = {}) {
   router.get('/:projectId/assets/:assetId/tags', (req, res, next) => {
     const data = loadOr404(req, next);
     if (!data) return;
-    renderAssetTagsPageOrNext(req, res, next, data, { appName });
+    renderAssetTagsPageOrNext(req, res, next, data, { appName }).catch(next);
   });
 
   router.post('/:projectId/assets/:assetId/tags', (req, res, next) => {
     const data = loadOr404(req, next);
     if (!data) return;
+    const assetEditSubmission = isAssetEditSubmission(req);
+    const failureOptions = { appName, assetEditSubmission, workflowQueryService };
 
     if (isArchivedProject(data.project)) {
-      return renderAssetTagsPageOrNext(req, res, next, data, { appName, status: 409 });
+      return renderAssetTagsPageOrNext(req, res, next, data, {
+        ...failureOptions,
+        status: 409,
+        errors: { tagIds: 'This project is archived and read-only. Asset tag assignments cannot be changed.' },
+      }).catch(next);
     }
 
     const parsed = parseSubmittedTagIds(req.body?.tagIds);
     if (!parsed.valid) {
       return renderAssetTagsPageOrNext(req, res, next, data, {
-        appName,
+        ...failureOptions,
         status: 422,
         submittedTagIds: parsed.submittedTagIds,
         errors: { tagIds: parsed.error },
-      });
+      }).catch(next);
     }
 
     try {
       getAssetTagService(req).replaceAssetTags(data.asset.id, parsed.tagIds);
-      return res.redirect(`/projects/${data.project.id}/assets/${data.asset.id}?notice=asset_tags_updated`);
+      const editQuery = assetEditSubmission ? '&edit=1' : '';
+      return res.redirect(`/projects/${data.project.id}/assets/${data.asset.id}?notice=asset_tags_updated${editQuery}`);
     } catch (err) {
       if (err instanceof AssetNotFoundError) return next(createNotFound());
       if (err instanceof TagNotFoundError) {
         return renderAssetTagsPageOrNext(req, res, next, data, {
-          appName,
+          ...failureOptions,
           status: 422,
           submittedTagIds: parsed.submittedTagIds,
           errors: { tagIds: 'One or more selected tags no longer exists. Refresh and try again.' },
-        });
+        }).catch(next);
       }
       if (err instanceof AssetTagValidationError) {
         return renderAssetTagsPageOrNext(req, res, next, data, {
-          appName,
+          ...failureOptions,
           status: 422,
           submittedTagIds: parsed.submittedTagIds,
           errors: err.errors || { tagIds: err.message },
-        });
+        }).catch(next);
       }
       return next(err);
     }

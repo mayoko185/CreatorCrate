@@ -3717,32 +3717,72 @@
         word-break: break-word;
         text-align: center;
       }
-      .asset-metadata-section { margin: var(--space-xl) 0; }
-      .asset-metadata-section h2 { margin-top: 0; }
-      .asset-metadata {
-        background: var(--surface);
-        border: 1px solid var(--border);
-        border-radius: var(--radius-lg);
-        padding: var(--space-lg);
+      .asset-viewer-action-toolbar {
+        margin: var(--space-lg) 0 var(--space-xl);
       }
-      .asset-actions-section { margin: var(--space-xl) 0; }
-      .asset-actions-section h2 { margin-top: 0; }
-      .asset-primary-image-section { margin: var(--space-xl) 0; }
-      .asset-primary-image-section h2 { margin-top: 0; }
-      .asset-actions-card {
+      .asset-viewer-section {
+        min-width: 0;
+        margin: var(--space-xl) 0;
         background: var(--surface);
-        border: 1px solid var(--border);
-        border-radius: var(--radius-lg);
-        padding: var(--space-lg);
       }
+      .asset-viewer-section > h3 {
+        background: var(--surface-hover);
+      }
+      /* .settings-section h3 / .settings-section margin-bottom share equal
+         specificity with the rules above and appear later, so they win the
+         cascade. These compound selectors raise specificity just enough to
+         restore the intended Viewer treatment without touching
+         .settings-section itself. */
+      .settings-section.asset-viewer-section {
+        margin: var(--space-xl) 0;
+      }
+      .settings-section.asset-viewer-section > h3 {
+        background: var(--surface-hover);
+      }
+      .asset-viewer-section-body {
+        min-width: 0;
+        padding: var(--space-md) var(--space-lg) var(--space-lg);
+      }
+      .asset-viewer-section-body > :first-child { margin-top: 0; }
+      .asset-viewer-section-body > :last-child { margin-bottom: 0; }
+      .settings-section .asset-viewer-section-body .help-text {
+        padding: 0;
+      }
+      .asset-metadata-section-body {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: var(--space-lg);
+      }
+      .asset-metadata-group {
+        display: grid;
+        grid-template-rows: auto 1fr;
+        align-content: start;
+        gap: var(--space-sm);
+        min-width: 0;
+      }
+      .asset-metadata--summary { grid-column: 1 / -1; }
+      .asset-metadata-group--panel {
+        padding: var(--space-md);
+        background: var(--surface-hover);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+      }
+      .asset-metadata-group-title {
+        margin: 0;
+        color: var(--muted);
+        font-size: 0.75rem;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+      .asset-metadata { margin: 0; }
       .asset-action-group { display: flex; flex-direction: column; gap: var(--space-md); }
       .asset-action-group h3 { margin: 0; font-size: 1rem; font-weight: 600; }
       .asset-action-description { margin: 0; font-size: 0.875rem; color: var(--muted); }
+      .asset-primary-image-status { margin: 0; font-size: 0.875rem; color: var(--muted); }
       .asset-actions-divider { border: none; border-top: 1px solid var(--border); margin: var(--space-lg) 0; }
       .asset-action-form { display: flex; flex-direction: column; gap: var(--space-md); }
-      .asset-release-usage-section { margin: var(--space-xl) 0; }
-      .asset-release-usage-section h2 { margin-top: 0; }
-      .asset-release-usage-section,
+      .asset-viewer-section,
       .release-detail-list,
       .release-detail-list li,
       .release-detail-list a,
@@ -3808,6 +3848,10 @@
           .asset-preview-nav--next { right: var(--space-sm); }
         .asset-preview-image {
           max-height: 50vh;
+        }
+        .asset-metadata-section-body {
+          grid-template-columns: minmax(0, 1fr);
+          gap: var(--space-lg);
         }
         .asset-metadata {
           grid-template-columns: minmax(0, 1fr);
@@ -4184,6 +4228,10 @@
         width: min(51rem, calc(100vw - 2rem));
         max-width: calc(100vw - 2rem);
       }
+      #asset-edit-dialog {
+        width: min(51rem, calc(100vw - 2rem));
+        max-width: calc(100vw - 2rem);
+      }
       /* Keep project edit sections at content height so the shared
          viewport-capped dialog body remains the scroll owner. */
       .project-form-dialog .app-dialog-body {
@@ -4253,6 +4301,44 @@
         min-width: 0;
       }
       .project-form-dialog .asset-filter-multiselect-panel[data-cc-dropdown-overlay] {
+        position: fixed;
+        min-width: 0;
+      }
+      .asset-form-dialog .app-dialog-body {
+        gap: var(--space-md);
+        padding-bottom: var(--space-lg);
+      }
+      .asset-form-dialog .app-dialog-body > * {
+        flex-shrink: 0;
+      }
+      .asset-form-dialog .asset-edit-dialog-section {
+        flex: 0 0 auto;
+        min-width: 0;
+        margin: 0;
+        padding: 0;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
+        overflow: visible;
+      }
+      .asset-form-dialog .asset-edit-dialog-section > h3 {
+        margin: 0;
+        background: var(--surface-hover);
+      }
+      .asset-form-dialog .asset-edit-dialog-section-body {
+        display: flex;
+        flex-direction: column;
+        gap: var(--space-lg);
+        min-width: 0;
+        padding: var(--space-md) var(--space-lg) var(--space-lg);
+      }
+      .asset-form-dialog .asset-edit-tags-form {
+        gap: var(--space-md);
+      }
+      .asset-form-dialog .asset-edit-dialog-actions-body {
+        gap: var(--space-sm);
+      }
+      .asset-form-dialog .asset-filter-multiselect-panel[data-cc-dropdown-overlay] {
         position: fixed;
         min-width: 0;
       }

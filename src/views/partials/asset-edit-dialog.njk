@@ -1,0 +1,168 @@
+{% import "partials/dialog.njk" as dialog %}
+{% import "partials/dropdown.njk" as dropdown %}
+
+{% call dialog.render('asset-edit-dialog', 'Edit Asset', assetEditDialogOpen, 'asset-edit-description', '', 'asset-edit-dialog asset-form-dialog', [], false) %}
+  <p id="asset-edit-description" class="app-dialog-description">
+    Update this asset's primary-image selection or file details.
+  </p>
+
+  <div class="app-dialog-body asset-edit-dialog-body">
+    {% if formError %}
+      <div class="error-summary" role="alert">
+        <p>{{ formError.message }}</p>
+      </div>
+    {% endif %}
+
+    {% if canManageTags %}
+      <section class="settings-section asset-edit-dialog-section asset-tags-edit-section" aria-labelledby="asset-tags-edit-heading">
+        <h3 id="asset-tags-edit-heading">Tags</h3>
+        <div class="asset-edit-dialog-section-body asset-tags-edit-section-body">
+          <form id="asset-edit-form" method="post" action="/projects/{{ project.id }}/assets/{{ asset.id }}/tags"
+                class="app-dialog-form asset-edit-tags-form" data-dialog-form data-dialog-async="false">
+            <input type="hidden" name="_csrf" value="{{ _csrf }}">
+            <input type="hidden" name="origin" value="asset-edit">
+            {{ dropdown.multiSelect({
+              id: "asset-tags-form",
+              name: "tagIds[]",
+              label: "Tags",
+              options: assetTagOptions,
+              selectedValues: selectedAssetTagIds,
+              emptySummary: "No tags selected",
+              countLabel: "tags",
+              triggerAriaLabel: "Tags: " ~ ("No tags selected" if selectedAssetTagIds.length == 0 else (selectedAssetTagIds.length ~ " tags selected")),
+              emptyState: {
+                text: "No tags available.",
+                link: { text: "Add tags in Settings", href: "/settings/tags" },
+                suffix: "."
+              },
+              fieldClasses: "asset-edit-tags-field",
+              panelLabel: "Tag options",
+              inputAttributes: { "data-autosubmit": "submit" }
+            }) }}
+            <span class="help-text">Add new tags in <a href="/settings/tags">Settings › Tags</a>.</span>
+          </form>
+        </div>
+      </section>
+    {% endif %}
+
+    {% if isPrimaryImage or canSetAsPrimaryImage %}
+      <section class="settings-section asset-edit-dialog-section asset-primary-image-section" aria-labelledby="asset-primary-image-heading">
+        <h3 id="asset-primary-image-heading">Primary image</h3>
+        <div class="asset-edit-dialog-section-body asset-primary-image-section-body">
+          <p class="asset-action-description">Choose the image used to represent this project.</p>
+          {% if isPrimaryImage %}
+            {% if isPrimaryImageAvailable %}
+              <p class="asset-primary-image-status">Currently set as the primary image.</p>
+            {% else %}
+              <p class="asset-primary-image-status">Currently set as the primary image — unavailable until restored.</p>
+            {% endif %}
+            {% if canRemovePrimaryImage %}
+              <form method="post" action="/projects/{{ project.id }}/assets/{{ asset.id }}/primary-image/remove" class="asset-action-form asset-primary-image-remove-form">
+                <input type="hidden" name="_csrf" value="{{ _csrf }}">
+                {% for key in contextFields %}
+                  {% if context[key] is not none and context[key] != '' %}
+                    <input type="hidden" name="{{ key }}" value="{{ context[key] }}">
+                  {% endif %}
+                {% endfor %}
+                <div>
+                  <button class="button button-danger" type="submit">Remove primary image</button>
+                </div>
+              </form>
+            {% endif %}
+          {% else %}
+            <form method="post" action="/projects/{{ project.id }}/assets/{{ asset.id }}/primary-image" class="asset-action-form asset-primary-image-set-form">
+              <input type="hidden" name="_csrf" value="{{ _csrf }}">
+              {% for key in contextFields %}
+                {% if context[key] is not none and context[key] != '' %}
+                  <input type="hidden" name="{{ key }}" value="{{ context[key] }}">
+                {% endif %}
+              {% endfor %}
+              <div>
+                <button class="button button-primary" type="submit">Set as primary image</button>
+              </div>
+            </form>
+          {% endif %}
+        </div>
+      </section>
+    {% endif %}
+
+    {% if canMutate %}
+      <section class="settings-section asset-edit-dialog-section asset-actions-section" aria-labelledby="asset-actions-heading">
+        <h3 id="asset-actions-heading">File actions</h3>
+        <div class="asset-edit-dialog-section-body asset-edit-dialog-actions-body">
+          <details class="notes-workspace-disclosure">
+            <summary>Rename file</summary>
+            <div class="notes-workspace-disclosure-content">
+              <p class="asset-action-description">Change only the filename. The category and folder stay the same.</p>
+              <form method="post" action="/projects/{{ project.id }}/assets/{{ asset.id }}/rename" class="asset-action-form asset-rename-form">
+                <input type="hidden" name="_csrf" value="{{ _csrf }}">
+                <input type="hidden" name="origin" value="viewer">
+                {% for key in contextFields %}
+                  {% if context[key] is not none and context[key] != '' %}
+                    <input type="hidden" name="{{ key }}" value="{{ context[key] }}">
+                  {% endif %}
+                {% endfor %}
+                <div class="field">
+                  <label for="rename-filename">New filename</label>
+                  <input type="text" id="rename-filename" name="filename" value="{{ submittedFilename }}" required maxlength="255" autocomplete="off">
+                </div>
+                <div>
+                  <button class="button button-primary" type="submit">Rename file</button>
+                </div>
+              </form>
+            </div>
+          </details>
+
+          <details class="notes-workspace-disclosure">
+            <summary>Move file</summary>
+            <div class="notes-workspace-disclosure-content">
+              <p class="asset-action-description">Move to a category root or Uncategorized. Nested subfolders are not preserved.</p>
+              <form method="post" action="/projects/{{ project.id }}/assets/{{ asset.id }}/move" class="asset-action-form asset-move-form">
+                <input type="hidden" name="_csrf" value="{{ _csrf }}">
+                {% for key in contextFields %}
+                  {% if context[key] is not none and context[key] != '' %}
+                    <input type="hidden" name="{{ key }}" value="{{ context[key] }}">
+                  {% endif %}
+                {% endfor %}
+                <div class="field">
+                  <label for="move-destination">Destination</label>
+                  <select id="move-destination" name="destinationCategory">
+                    <option value="uncategorized" {% if submittedDestinationCategory == 'uncategorized' %}selected{% endif %}>Uncategorized</option>
+                    {% for category in enabledCategories %}
+                      <option value="{{ category.id }}" {% if submittedDestinationCategory == (category.id ~ '') %}selected{% endif %}>{{ category.displayName }}</option>
+                    {% endfor %}
+                  </select>
+                </div>
+                <div>
+                  <button class="button button-primary" type="submit">Move file</button>
+                </div>
+              </form>
+            </div>
+          </details>
+
+          <details class="notes-workspace-disclosure notes-workspace-disclosure--delete">
+            <summary>Delete asset</summary>
+            <div class="notes-workspace-disclosure-content">
+              <p class="notes-workspace-warning">Permanently delete this file from disk. It cannot be restored through CreatorCrate.</p>
+              <form method="post" action="/projects/{{ project.id }}/assets/{{ asset.id }}/delete" class="asset-action-form asset-delete-form">
+                <input type="hidden" name="_csrf" value="{{ _csrf }}">
+                {% for key in contextFields %}
+                  {% if context[key] is not none and context[key] != '' %}
+                    <input type="hidden" name="{{ key }}" value="{{ context[key] }}">
+                  {% endif %}
+                {% endfor %}
+                <div>
+                  <button class="button button-danger" type="submit"
+                          data-confirm="The file will be permanently deleted from disk and cannot be restored through CreatorCrate. Continue?">Delete asset</button>
+                </div>
+              </form>
+            </div>
+          </details>
+        </div>
+      </section>
+    {% endif %}
+  </div>
+
+  <div class="app-dialog-status" data-dialog-status role="status" aria-live="polite"></div>
+
+{% endcall %}

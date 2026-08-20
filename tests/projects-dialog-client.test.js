@@ -717,6 +717,23 @@ describe('Reusable app dialog enhancement', () => {
     expect(submit).not.toHaveBeenCalled();
   });
 
+  it('keeps a static-backdrop dialog open until X or Escape is used', () => {
+    const page = makeDialogPage();
+    page.dialog.setAttribute('data-dialog-backdrop-static', '');
+    page.region.appendChild(page.trigger);
+
+    enhanceAppDialogs(page.document);
+    page.document.dispatch('click', { target: page.trigger });
+    const backdropClick = page.dialog.dispatch('click', { target: page.dialog });
+
+    expect(backdropClick.defaultPrevented).toBe(true);
+    expect(page.dialog.open).toBe(true);
+    expect(page.dialog.close).not.toHaveBeenCalled();
+
+    page.close.dispatch('click');
+    expect(page.dialog.open).toBe(false);
+  });
+
   it('cancels Project Assets defaults without submitting or changing size storage', () => {
     const page = makeDialogPage({ standardDropdowns: true, projectAssetsDefaults: true });
     const storage = new Map([
