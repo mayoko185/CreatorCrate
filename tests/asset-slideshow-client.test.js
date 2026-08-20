@@ -19,6 +19,7 @@ function makeNode({ tagName = 'div', attrs = {}, textContent = '' } = {}) {
   const listeners = [];
   const attributes = new Map();
   const children = [];
+  let storedTextContent = textContent;
   const node = {
     tagName: tagName.toUpperCase(),
     dataset: {},
@@ -27,7 +28,10 @@ function makeNode({ tagName = 'div', attrs = {}, textContent = '' } = {}) {
     parentNode: null,
     ownerDocument: null,
     listeners,
-    textContent,
+    get textContent() {
+      return children.length ? children.map((child) => child.textContent).join('') : storedTextContent;
+    },
+    set textContent(value) { storedTextContent = value; },
     hidden: false,
     inert: false,
     disabled: false,
@@ -68,7 +72,13 @@ function makeNode({ tagName = 'div', attrs = {}, textContent = '' } = {}) {
     },
     matches(selector) {
       return selector.split(',').some((part) => {
-        const candidate = part.trim();
+        let candidate = part.trim();
+        let requiresChecked = false;
+        if (candidate.endsWith(':checked')) {
+          requiresChecked = true;
+          candidate = candidate.slice(0, -':checked'.length);
+        }
+        if (requiresChecked && this.checked !== true) return false;
         const tag = candidate.match(/^[a-z][\w-]*/i)?.[0];
         if (tag && this.tagName !== tag.toUpperCase()) return false;
         const attrsInSelector = [...candidate.matchAll(/\[([^\]=]+)(?:="([^"]*)")?\]/g)];
@@ -127,9 +137,13 @@ function makeNode({ tagName = 'div', attrs = {}, textContent = '' } = {}) {
     },
     querySelector(selector) { return this.querySelectorAll(selector)[0] || null; },
     focus(options) {
+      const previous = this.ownerDocument?.activeElement;
+      if (previous === this) return;
       this.focused = true;
       this.focusCalls.push(options);
+      if (previous) previous.dispatch('focusout', { relatedTarget: this });
       if (this.ownerDocument) this.ownerDocument.activeElement = this;
+      this.dispatch('focusin', { relatedTarget: previous });
     },
     dispatch(type, props = {}) {
       const event = {
@@ -186,7 +200,7 @@ function makeSlideshowPage(sequence = [], { fullscreen = false, standardSpeed = 
   const trigger = makeNode({ tagName: 'button', attrs: {
     'data-slideshow-trigger': '',
     'aria-label': 'Start slideshow',
-    title: 'Start slideshow',
+    'data-tooltip': 'Start slideshow',
   } });
 
   const scaffold = makeNode({ attrs: {
@@ -225,6 +239,7 @@ function makeSlideshowPage(sequence = [], { fullscreen = false, standardSpeed = 
     speedSummary = makeNode({ tagName: 'summary', attrs: {
       'aria-label': 'Slideshow speed: 4 s',
       'aria-expanded': 'false',
+      title: '4 s',
     } });
     const speedSummaryText = makeNode({ attrs: { class: 'asset-filter-multiselect-summary' } });
     const speedCurrent = makeNode({
@@ -262,15 +277,15 @@ function makeSlideshowPage(sequence = [], { fullscreen = false, standardSpeed = 
   const fullscreenBtn = makeNode({ tagName: 'button', attrs: {
     'data-slideshow-fullscreen': '',
     'aria-label': 'Enter fullscreen',
+    'data-tooltip': 'Enter fullscreen',
     'aria-pressed': 'false',
-    title: 'Enter fullscreen',
   } });
-  const closeBtn = makeNode({ tagName: 'button', attrs: { 'data-slideshow-close': '', 'aria-label': 'Close slideshow' } });
+  const closeBtn = makeNode({ tagName: 'button', attrs: { 'data-slideshow-close': '', 'aria-label': 'Close slideshow', 'data-tooltip': 'Close slideshow' } });
   const originalSizeBtn = makeNode({ tagName: 'button', attrs: {
     'data-slideshow-original-size': '',
     'aria-label': 'View original size',
+    'data-tooltip': 'View original size',
     'aria-pressed': 'false',
-    title: 'View original size',
   } });
   const mediaStatus = makeNode({ tagName: 'span', attrs: {
     'data-slideshow-media-status': '',
@@ -286,8 +301,8 @@ function makeSlideshowPage(sequence = [], { fullscreen = false, standardSpeed = 
   scaffold.appendChild(playPauseBtn);
   scaffold.appendChild(standardSpeed ? speedField : speedSelect);
   scaffold.appendChild(fullscreenBtn);
-  scaffold.appendChild(closeBtn);
   scaffold.appendChild(originalSizeBtn);
+  scaffold.appendChild(closeBtn);
   scaffold.appendChild(mediaStatus);
 
   if (fullscreen) {
@@ -582,6 +597,150 @@ function loadOriginal(page, { width = 1600, height = 1200 } = {}) {
   return originalImage;
 }
 
+describe('enhanceSlideshow — speed dropdown tooltip', () => {
+  const sequence = [
+    { id: 1, filename: 'first.png', previewUrl: '/p/1', viewerUrl: '/v/1' },
+    { id: 2, filename: 'second.png', previewUrl: '/p/2', viewerUrl: '/v/2' },
+  ];
+
+  it('uses the slideshow custom tooltip and restores it after the shared summary updater runs', () => {
+    const page = openStandardSpeedPage(sequence);
+    const speedCurrent = page.speedSummary.querySelector('[data-cc-dropdown-summary-current]');
+
+    expect(page.speedSummary.getAttribute('class')).toContain('asset-tooltip');
+    expect(page.speedSummary.getAttribute('class')).toContain('asset-tooltip--top');
+    expect(page.speedSummary.getAttribute('data-tooltip')).toBe(speedCurrent.textContent);
+    expect(page.speedSummary.hasAttribute('title')).toBe(false);
+
+    page.speedSelect.value = '6000';
+    speedCurrent.textContent = '6 s';
+    page.speedSummary.setAttribute('title', '6 s'); // Shared dropdown summary updater.
+    page.speedSelect.dispatch('change');
+
+    expect(speedCurrent.textContent).toBe('6 s');
+    expect(page.speedSummary.getAttribute('data-tooltip')).toBe('6 s');
+    expect(page.speedSummary.hasAttribute('title')).toBe(false);
+  });
+
+  it('does not regain the native title after selecting a speed through the enhanced dropdown', () => {
+    const page = openStandardSpeedPage(sequence);
+    const speedCurrent = page.speedSummary.querySelector('[data-cc-dropdown-summary-current]');
+    const sixSecondRadio = page.speedInputs.find((input) => input.value === '6000');
+
+    sixSecondRadio.checked = true;
+    sixSecondRadio.dispatch('change');
+
+    expect(speedCurrent.textContent).toBe('6 s');
+    expect(page.speedSummary.getAttribute('aria-label')).toBe('Slideshow speed: 6 s');
+    expect(page.speedSummary.getAttribute('data-tooltip')).toBe('6 s');
+    expect(page.speedSummary.hasAttribute('title')).toBe(false);
+    expect(page.speedSummary.getAttribute('class')).toContain('asset-tooltip');
+    expect(page.speedSummary.getAttribute('class')).toContain('asset-tooltip--top');
+    expect(page.speedDropdown.hasAttribute('open')).toBe(false);
+    expect(page.speedSummary.focused).toBe(true);
+  });
+
+  it('keeps the corrected tooltip while the speed control is hidden in single-image mode', () => {
+    const page = openStandardSpeedPage([{ id: 1, filename: 'only.png', previewUrl: '/p/1', viewerUrl: '/v/1' }]);
+
+    expect(page.speedField.hidden).toBe(true);
+    expect(page.speedSelect.disabled).toBe(true);
+    expect(page.speedSummary.disabled).toBe(true);
+    expect(page.speedSummary.hasAttribute('title')).toBe(false);
+    expect(page.speedSummary.getAttribute('class')).toContain('asset-tooltip--top');
+    expect(page.speedSummary.getAttribute('data-tooltip')).toBe('4 s');
+  });
+
+  it('keeps the corrected tooltip through idle chrome hiding and activity reveal', () => {
+    vi.useFakeTimers();
+    try {
+      const page = openStandardSpeedPage(sequence);
+
+      expect(page.scaffold.hasAttribute('data-slideshow-ui-hidden')).toBe(false);
+      vi.advanceTimersByTime(4000);
+      expect(page.scaffold.hasAttribute('data-slideshow-ui-hidden')).toBe(true);
+      expect(page.speedField.hidden).toBe(false);
+      expect(page.speedSummary.hasAttribute('title')).toBe(false);
+
+      page.preview.dispatch('pointermove');
+      expect(page.scaffold.hasAttribute('data-slideshow-ui-hidden')).toBe(false);
+      expect(page.speedSummary.getAttribute('data-tooltip')).toBe('4 s');
+      expect(page.speedSummary.hasAttribute('title')).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('enhanceSlideshow — single-image controls', () => {
+  const singleSequence = [
+    { id: 1, filename: 'only.png', previewUrl: '/p/1', viewerUrl: '/v/1' },
+  ];
+  const multiSequence = [
+    { id: 1, filename: 'first.png', previewUrl: '/p/1', viewerUrl: '/v/1' },
+    { id: 2, filename: 'second.png', previewUrl: '/p/2', viewerUrl: '/v/2' },
+  ];
+
+  it('hides genuine single-image controls, disables them, and excludes them from focus', () => {
+    const page = openStandardSpeedPage(singleSequence);
+
+    expect(page.prevBtn.hidden).toBe(true);
+    expect(page.nextBtn.hidden).toBe(true);
+    expect(page.playPauseBtn.hidden).toBe(true);
+    expect(page.status.hidden).toBe(true);
+    expect(page.speedField.hidden).toBe(true);
+    expect(page.prevBtn.disabled).toBe(true);
+    expect(page.nextBtn.disabled).toBe(true);
+    expect(page.playPauseBtn.disabled).toBe(true);
+    expect(page.speedSelect.disabled).toBe(true);
+    expect(page.speedSummary.disabled).toBe(true);
+
+    page.closeBtn.focus();
+    page.document.dispatch('keydown', { key: 'Tab' });
+    expect(page.document.activeElement).toBe(page.closeBtn);
+    page.document.dispatch('keydown', { key: 'Tab', shiftKey: true });
+    expect(page.document.activeElement).toBe(page.closeBtn);
+  });
+
+  it('restores multi-image controls and their normal enabled state', () => {
+    const page = openStandardSpeedPage(multiSequence);
+
+    expect(page.prevBtn.hidden).toBe(false);
+    expect(page.nextBtn.hidden).toBe(false);
+    expect(page.playPauseBtn.hidden).toBe(false);
+    expect(page.status.hidden).toBe(false);
+    expect(page.speedField.hidden).toBe(false);
+    expect(page.prevBtn.disabled).toBe(false);
+    expect(page.nextBtn.disabled).toBe(false);
+    expect(page.playPauseBtn.disabled).toBe(false);
+    expect(page.speedSelect.disabled).toBe(false);
+    expect(page.speedSummary.disabled).toBe(false);
+  });
+
+  it('resynchronizes controls for temporary and refreshed one-item sequences', () => {
+    const page = makeProjectPreviewPage(multiSequence);
+
+    page.previewLinks[0].dispatch('click');
+    expect(page.playPauseBtn.hidden).toBe(true);
+    expect(page.speedSelect.hidden).toBe(true);
+
+    page.closeBtn.dispatch('click');
+    expect(page.playPauseBtn.hidden).toBe(false);
+    expect(page.speedSelect.hidden).toBe(false);
+
+    page.trigger.dispatch('click');
+    page.scaffold.__creatorCrateSlideshowState.refreshSequence([multiSequence[0]]);
+    expect(page.prevBtn.hidden).toBe(true);
+    expect(page.nextBtn.hidden).toBe(true);
+    expect(page.status.hidden).toBe(true);
+
+    page.scaffold.__creatorCrateSlideshowState.refreshSequence(multiSequence);
+    expect(page.prevBtn.hidden).toBe(false);
+    expect(page.nextBtn.hidden).toBe(false);
+    expect(page.status.hidden).toBe(false);
+  });
+});
+
 // ─── Original-size inspection ─────────────────────────────────────────────────
 
 describe('enhanceSlideshow — original-size inspection', () => {
@@ -606,8 +765,102 @@ describe('enhanceSlideshow — original-size inspection', () => {
     const page = openOriginalPage(imageSequence);
     expect(page.originalSizeBtn.disabled).toBe(false);
     expect(page.originalSizeBtn.getAttribute('aria-label')).toBe('View original size');
-    expect(page.originalSizeBtn.getAttribute('title')).toBe('View original size');
+    expect(page.originalSizeBtn.getAttribute('data-tooltip')).toBe('View original size');
+    expect(page.originalSizeBtn.hasAttribute('title')).toBe(false);
     expect(page.originalSizeBtn.getAttribute('aria-pressed')).toBe('false');
+  });
+
+  it('clicking a fitted single image enters Original Size despite its internal playing state', () => {
+    const page = openOriginalPage([imageSequence[0]]);
+    const fittedImage = page.preview.children[0];
+
+    expect(page.playPauseBtn.getAttribute('aria-label')).toBe('Pause');
+    fittedImage.dispatch('click');
+
+    expect(page.preview.getAttribute('data-slideshow-mode')).toBe('original');
+    expect(page.preview.children[2].src).toBe('/original/1');
+    expect(page.playPauseBtn.getAttribute('aria-label')).toBe('Play');
+  });
+
+  it('clicking a fitted paused multi-image slideshow enters Original Size', () => {
+    const page = openOriginalPage(imageSequence);
+    page.playPauseBtn.dispatch('click');
+    page.preview.children[0].dispatch('click');
+
+    expect(page.preview.getAttribute('data-slideshow-mode')).toBe('original');
+    expect(page.preview.children[2].src).toBe('/original/1');
+  });
+
+  it('keeps an actively playing multi-image slideshow unchanged when its fitted image is clicked', () => {
+    vi.useFakeTimers();
+    const page = openOriginalPage(imageSequence);
+
+    page.preview.children[0].dispatch('click');
+
+    expect(page.preview.hasAttribute('data-slideshow-mode')).toBe(false);
+    expect(page.preview.children).toHaveLength(2);
+    expect(page.playPauseBtn.getAttribute('aria-label')).toBe('Pause');
+    expect(vi.getTimerCount()).toBe(2);
+    vi.useRealTimers();
+  });
+
+  it('ignores fitted-image clicks without an available original source', () => {
+    const page = openOriginalPage([{
+      id: 1,
+      filename: 'design.kra',
+      previewUrl: '/preview/1?v=abc',
+      viewerUrl: '/v/1',
+    }]);
+
+    page.preview.children[0].dispatch('click');
+
+    expect(page.preview.hasAttribute('data-slideshow-mode')).toBe(false);
+    expect(page.preview.children).toHaveLength(2);
+  });
+
+  it('does not exit Original Size when the fitted image receives a click', () => {
+    const page = openOriginalPage([imageSequence[0]]);
+    const originalImage = loadOriginal(page);
+
+    page.preview.children[0].dispatch('click');
+
+    expect(page.preview.getAttribute('data-slideshow-mode')).toBe('original');
+    expect(originalImage.src).toBe('/original/1');
+  });
+
+  it('ignores modified and non-primary fitted-image clicks', () => {
+    const page = openOriginalPage([imageSequence[0]]);
+    const fittedImage = page.preview.children[0];
+
+    fittedImage.dispatch('click', { ctrlKey: true });
+    fittedImage.dispatch('click', { button: 1 });
+
+    expect(page.preview.hasAttribute('data-slideshow-mode')).toBe(false);
+    expect(page.preview.children).toHaveLength(2);
+  });
+
+  it('keeps the fitted-image zoom affordance synchronized with eligibility', () => {
+    const single = openOriginalPage([imageSequence[0]]);
+    expect(single.preview.hasAttribute('data-slideshow-image-zoomable')).toBe(true);
+
+    const paused = openOriginalPage(imageSequence);
+    paused.playPauseBtn.dispatch('click');
+    expect(paused.preview.hasAttribute('data-slideshow-image-zoomable')).toBe(true);
+
+    const playing = openOriginalPage(imageSequence);
+    expect(playing.preview.hasAttribute('data-slideshow-image-zoomable')).toBe(false);
+
+    const unavailable = openOriginalPage([{
+      id: 1,
+      filename: 'design.kra',
+      previewUrl: '/preview/1?v=abc',
+      viewerUrl: '/v/1',
+    }]);
+    expect(unavailable.preview.hasAttribute('data-slideshow-image-zoomable')).toBe(false);
+
+    const original = openOriginalPage([imageSequence[0]]);
+    loadOriginal(original);
+    expect(original.preview.hasAttribute('data-slideshow-image-zoomable')).toBe(false);
   });
 
   it('loads no original source until the user enters Original Size', () => {
@@ -626,7 +879,7 @@ describe('enhanceSlideshow — original-size inspection', () => {
     page.originalSizeBtn.dispatch('click');
     expect(page.playPauseBtn.getAttribute('aria-label')).toBe('Play');
     expect(page.playPauseBtn.hasAttribute('data-slideshow-playing')).toBe(false);
-    expect(vi.getTimerCount()).toBe(0);
+    expect(vi.getTimerCount()).toBe(1);
     expect(page.mediaStatus.textContent).toBe('Loading original...');
     vi.advanceTimersByTime(8000);
     expect(page.status.textContent).toBe('1 of 2');
@@ -650,6 +903,7 @@ describe('enhanceSlideshow — original-size inspection', () => {
     expect(originalImage.style.height).toBe('1200px');
     expect(originalImage.getAttribute('alt')).toBe('a.png');
     expect(page.originalSizeBtn.getAttribute('aria-label')).toBe('Fit to screen');
+    expect(page.originalSizeBtn.getAttribute('data-tooltip')).toBe('Fit to screen');
     expect(page.originalSizeBtn.getAttribute('aria-pressed')).toBe('true');
     expect(page.mediaStatus.hidden).toBe(true);
     expect(page.playPauseBtn.getAttribute('aria-label')).toBe('Play');
@@ -667,7 +921,7 @@ describe('enhanceSlideshow — original-size inspection', () => {
     expect(page.originalSizeBtn.getAttribute('aria-label')).toBe('View original size');
     expect(page.originalSizeBtn.getAttribute('aria-pressed')).toBe('false');
     expect(page.playPauseBtn.getAttribute('aria-label')).toBe('Play');
-    expect(vi.getTimerCount()).toBe(0);
+    expect(vi.getTimerCount()).toBe(1);
     vi.useRealTimers();
   });
 
@@ -717,7 +971,7 @@ describe('enhanceSlideshow — original-size inspection', () => {
     expect(page.preview.children[0].src).toBe('/preview/1?v=abc');
     expect(page.originalSizeBtn.getAttribute('aria-label')).toBe('View original size');
     expect(page.playPauseBtn.getAttribute('aria-label')).toBe('Pause');
-    expect(vi.getTimerCount()).toBe(1);
+    expect(vi.getTimerCount()).toBe(2);
     vi.useRealTimers();
   });
 
@@ -1104,14 +1358,14 @@ describe('enhanceSlideshow — autoplay', () => {
   ];
   const seq1 = [{ id: 1, filename: 'a.png', previewUrl: '/p/1', viewerUrl: '/v/1' }];
 
-  it('play-pause button is enabled after enhancement (non-empty sequence)', () => {
-    const { document, playPauseBtn } = makeSlideshowPage(seq1);
+  it('play-pause button is enabled after enhancement (multi-image sequence)', () => {
+    const { document, playPauseBtn } = makeSlideshowPage(seq2);
     enhanceSlideshow(document);
     expect(playPauseBtn.disabled).toBe(false);
   });
 
-  it('speed select is enabled after enhancement (non-empty sequence)', () => {
-    const { document, speedSelect } = makeSlideshowPage(seq1);
+  it('speed select is enabled after enhancement (multi-image sequence)', () => {
+    const { document, speedSelect } = makeSlideshowPage(seq2);
     enhanceSlideshow(document);
     expect(speedSelect.disabled).toBe(false);
   });
@@ -1270,7 +1524,7 @@ describe('enhanceSlideshow — speed control', () => {
       filename: 'a.png',
       previewUrl: '/p/1',
       viewerUrl: '/v/1',
-    }]);
+    }, { id: 2, filename: 'b.png', previewUrl: '/p/2', viewerUrl: '/v/2' }]);
     expect(page.speedSelect.disabled).toBe(false);
     expect(page.speedSummary.disabled).toBe(false);
 
@@ -1291,7 +1545,7 @@ describe('enhanceSlideshow — fullscreen', () => {
   beforeEach(() => { vi.useFakeTimers(); });
   afterEach(() => { vi.useRealTimers(); });
 
-  const chromeHideDelay = 2500;
+  const chromeHideDelay = 4000;
 
   it('entering fullscreen starts with visible chrome', () => {
     const { scaffold, fullscreenBtn } = openPage(seq2, { fullscreen: true });
@@ -1308,10 +1562,62 @@ describe('enhanceSlideshow — fullscreen', () => {
     expect(scaffold.hasAttribute('data-slideshow-ui-hidden')).toBe(true);
   });
 
-  it('does not auto-hide chrome outside fullscreen', () => {
+  it('auto-hides chrome outside fullscreen after the same delay', () => {
     const { scaffold } = openPage(seq2);
-    vi.advanceTimersByTime(chromeHideDelay + 500);
+    vi.advanceTimersByTime(chromeHideDelay - 1);
     expect(scaffold.hasAttribute('data-slideshow-ui-hidden')).toBe(false);
+    vi.advanceTimersByTime(1);
+    expect(scaffold.hasAttribute('data-slideshow-ui-hidden')).toBe(true);
+  });
+
+  it('uses one idle state for the complete applicable chrome set and activity reveals it together', () => {
+    const page = makeSlideshowPage(seq2, { fullscreen: true, standardSpeed: true });
+    enhanceDropdowns(page.document);
+    enhanceSlideshow(page.document);
+    page.trigger.dispatch('click');
+
+    expect(page.fullscreenBtn.hidden).toBe(false);
+    expect(page.originalSizeBtn.hidden).toBe(false);
+    expect(page.closeBtn.hidden).toBe(false);
+    expect(page.prevBtn.hidden).toBe(false);
+    expect(page.nextBtn.hidden).toBe(false);
+    expect(page.playPauseBtn.hidden).toBe(false);
+    expect(page.status.hidden).toBe(false);
+    expect(page.speedField.hidden).toBe(false);
+
+    vi.advanceTimersByTime(chromeHideDelay);
+    expect(page.scaffold.hasAttribute('data-slideshow-ui-hidden')).toBe(true);
+
+    page.scaffold.dispatch('pointermove');
+    expect(page.scaffold.hasAttribute('data-slideshow-ui-hidden')).toBe(false);
+    expect(page.prevBtn.hidden).toBe(false);
+    expect(page.nextBtn.hidden).toBe(false);
+    expect(page.playPauseBtn.hidden).toBe(false);
+    expect(page.status.hidden).toBe(false);
+    expect(page.speedField.hidden).toBe(false);
+  });
+
+  it('uses the same inactivity behavior for single-image mode', () => {
+    const single = [{ id: 1, filename: 'a.png', previewUrl: '/p/1', viewerUrl: '/v/1' }];
+    const { scaffold } = openPage(single);
+
+    expect(scaffold.hasAttribute('data-slideshow-ui-hidden')).toBe(false);
+    vi.advanceTimersByTime(chromeHideDelay);
+    expect(scaffold.hasAttribute('data-slideshow-ui-hidden')).toBe(true);
+  });
+
+  it('replaces the prior inactivity timer when pointer activity repeats', () => {
+    const single = [{ id: 1, filename: 'a.png', previewUrl: '/p/1', viewerUrl: '/v/1' }];
+    const { scaffold } = openPage(single);
+
+    vi.advanceTimersByTime(chromeHideDelay - 1);
+    scaffold.dispatch('pointermove');
+    vi.advanceTimersByTime(1);
+    expect(scaffold.hasAttribute('data-slideshow-ui-hidden')).toBe(false);
+    vi.advanceTimersByTime(chromeHideDelay - 2);
+    expect(scaffold.hasAttribute('data-slideshow-ui-hidden')).toBe(false);
+    vi.advanceTimersByTime(1);
+    expect(scaffold.hasAttribute('data-slideshow-ui-hidden')).toBe(true);
   });
 
   it('pointer movement reveals chrome and restarts the inactivity timer', () => {
@@ -1329,8 +1635,9 @@ describe('enhanceSlideshow — fullscreen', () => {
   });
 
   it('the first control interaction reveals chrome and still activates the control', () => {
-    const { scaffold, fullscreenBtn, nextBtn, status } = openPage(seq2, { fullscreen: true });
+    const { scaffold, fullscreenBtn, nextBtn, playPauseBtn, status } = openPage(seq2, { fullscreen: true });
     fullscreenBtn.dispatch('click');
+    playPauseBtn.dispatch('click');
     vi.advanceTimersByTime(chromeHideDelay);
 
     nextBtn.dispatch('click');
@@ -1339,8 +1646,9 @@ describe('enhanceSlideshow — fullscreen', () => {
   });
 
   it('keyboard interaction reveals chrome and restarts the inactivity timer', () => {
-    const { document, scaffold, fullscreenBtn, status } = openPage(seq2, { fullscreen: true });
+    const { document, scaffold, fullscreenBtn, playPauseBtn, status } = openPage(seq2, { fullscreen: true });
     fullscreenBtn.dispatch('click');
+    playPauseBtn.dispatch('click');
     vi.advanceTimersByTime(chromeHideDelay);
 
     document.dispatch('keydown', { key: 'ArrowRight' });
@@ -1359,6 +1667,105 @@ describe('enhanceSlideshow — fullscreen', () => {
     expect(scaffold.hasAttribute('data-slideshow-ui-hidden')).toBe(false);
     vi.advanceTimersByTime(chromeHideDelay);
     expect(scaffold.hasAttribute('data-slideshow-ui-hidden')).toBe(true);
+  });
+
+  it('does not retain initial programmatic Close focus during idle hiding', () => {
+    const page = openPage(seq2, { fullscreen: true });
+
+    expect(page.document.activeElement).toBe(page.closeBtn);
+    vi.advanceTimersByTime(chromeHideDelay);
+
+    expect(page.scaffold.hasAttribute('data-slideshow-ui-hidden')).toBe(true);
+    expect(page.closeBtn.hasAttribute('data-slideshow-ui-focused')).toBe(false);
+    expect(page.fullscreenBtn.hasAttribute('data-slideshow-ui-focused')).toBe(false);
+  });
+
+  it('does not retain pointer-focused Exit Fullscreen during idle hiding', () => {
+    const page = openPage(seq2, { fullscreen: true });
+
+    page.fullscreenBtn.focus();
+    page.fullscreenBtn.dispatch('click');
+    expect(page.fullscreenBtn.getAttribute('aria-label')).toBe('Exit fullscreen');
+    vi.advanceTimersByTime(chromeHideDelay);
+
+    expect(page.scaffold.hasAttribute('data-slideshow-ui-hidden')).toBe(true);
+    expect(page.fullscreenBtn.hasAttribute('data-slideshow-ui-focused')).toBe(false);
+  });
+
+  it('keeps only genuinely keyboard-focused navigation or enhanced speed surfaces eligible', () => {
+    const navigationPage = openPage(seq2);
+
+    navigationPage.document.dispatch('keydown', { key: 'Tab' });
+    vi.advanceTimersByTime(chromeHideDelay);
+
+    expect(navigationPage.scaffold.hasAttribute('data-slideshow-ui-hidden')).toBe(true);
+    expect(navigationPage.document.activeElement).toBe(navigationPage.prevBtn);
+    expect(navigationPage.prevBtn.hasAttribute('data-slideshow-ui-focused')).toBe(true);
+    expect(navigationPage.closeBtn.hasAttribute('data-slideshow-ui-focused')).toBe(false);
+    expect(navigationPage.playPauseBtn.hasAttribute('data-slideshow-ui-focused')).toBe(false);
+
+    const speedPage = openStandardSpeedPage(seq2);
+    speedPage.speedSummary.focus();
+    speedPage.document.dispatch('keydown', { key: 'ArrowDown' });
+    vi.advanceTimersByTime(chromeHideDelay);
+
+    expect(speedPage.scaffold.hasAttribute('data-slideshow-ui-hidden')).toBe(true);
+    expect(speedPage.document.activeElement).toBe(speedPage.speedSummary);
+    expect(speedPage.speedDropdown.hasAttribute('data-slideshow-ui-focused')).toBe(true);
+    expect(speedPage.playPauseBtn.hasAttribute('data-slideshow-ui-focused')).toBe(false);
+    expect(speedPage.nextBtn.hasAttribute('data-slideshow-ui-focused')).toBe(false);
+  });
+
+  it('clears the focused surface on focusout when focus leaves the hidden slideshow', () => {
+    const page = openPage(seq2);
+    const outside = makeNode({ tagName: 'button' });
+    page.document.appendChild(outside);
+
+    page.document.dispatch('keydown', { key: 'Tab' });
+    vi.advanceTimersByTime(chromeHideDelay);
+
+    expect(page.scaffold.hasAttribute('data-slideshow-ui-hidden')).toBe(true);
+    expect(page.document.activeElement).toBe(page.prevBtn);
+    expect(page.prevBtn.hasAttribute('data-slideshow-ui-focused')).toBe(true);
+
+    outside.focus();
+
+    expect(page.document.activeElement).toBe(outside);
+    expect(page.scaffold.hasAttribute('data-slideshow-ui-hidden')).toBe(true);
+    expect([
+      page.fullscreenBtn,
+      page.originalSizeBtn,
+      page.closeBtn,
+      page.prevBtn,
+      page.playPauseBtn,
+      page.speedSelect,
+      page.nextBtn,
+    ].some((surface) => surface.hasAttribute('data-slideshow-ui-focused'))).toBe(false);
+  });
+
+  it('clears keyboard-qualified chrome before idle hiding after slideshow pointer interaction', () => {
+    const page = openPage(seq2);
+
+    page.document.dispatch('keydown', { key: 'Tab' });
+    vi.advanceTimersByTime(chromeHideDelay);
+
+    expect(page.scaffold.hasAttribute('data-slideshow-ui-hidden')).toBe(true);
+    expect(page.document.activeElement).toBe(page.prevBtn);
+    expect(page.prevBtn.hasAttribute('data-slideshow-ui-focused')).toBe(true);
+
+    page.scaffold.dispatch('pointerdown');
+    vi.advanceTimersByTime(chromeHideDelay);
+
+    expect(page.scaffold.hasAttribute('data-slideshow-ui-hidden')).toBe(true);
+    expect(page.prevBtn.hasAttribute('data-slideshow-ui-focused')).toBe(false);
+    expect([
+      page.fullscreenBtn,
+      page.originalSizeBtn,
+      page.closeBtn,
+      page.playPauseBtn,
+      page.speedSelect,
+      page.nextBtn,
+    ].some((surface) => surface.hasAttribute('data-slideshow-ui-focused'))).toBe(false);
   });
 
   it('hides the control when the Fullscreen API is unavailable without throwing', () => {
@@ -1383,7 +1790,8 @@ describe('enhanceSlideshow — fullscreen', () => {
     fullscreenBtn.dispatch('click');
     expect(document.fullscreenElement).toBe(scaffold);
     expect(fullscreenBtn.getAttribute('aria-label')).toBe('Exit fullscreen');
-    expect(fullscreenBtn.getAttribute('title')).toBe('Exit fullscreen');
+    expect(fullscreenBtn.getAttribute('data-tooltip')).toBe('Exit fullscreen');
+    expect(fullscreenBtn.hasAttribute('title')).toBe(false);
     expect(fullscreenBtn.getAttribute('aria-pressed')).toBe('true');
     expect(fullscreenBtn.hasAttribute('data-slideshow-fullscreen-active')).toBe(true);
   });
@@ -1399,39 +1807,46 @@ describe('enhanceSlideshow — fullscreen', () => {
     expect(fullscreenBtn.hasAttribute('data-slideshow-fullscreen-active')).toBe(false);
   });
 
-  it('exiting fullscreen clears the chrome timer and restores visibility', () => {
+  it('exiting fullscreen restarts the normal viewer inactivity timer', () => {
     const seq1 = [{ id: 1, filename: 'a.png', previewUrl: '/p/1', viewerUrl: '/v/1' }];
     const { scaffold, fullscreenBtn } = openPage(seq1, { fullscreen: true });
     fullscreenBtn.dispatch('click');
     expect(vi.getTimerCount()).toBe(1);
     fullscreenBtn.dispatch('click');
-    expect(vi.getTimerCount()).toBe(0);
+    expect(vi.getTimerCount()).toBe(1);
     expect(scaffold.hasAttribute('data-slideshow-ui-hidden')).toBe(false);
     vi.advanceTimersByTime(chromeHideDelay);
-    expect(scaffold.hasAttribute('data-slideshow-ui-hidden')).toBe(false);
+    expect(scaffold.hasAttribute('data-slideshow-ui-hidden')).toBe(true);
   });
 
-  it('closing fullscreen clears the chrome timer and resets visible state', () => {
+  it('closing clears the chrome timer and reopening starts visible with one new timer', () => {
     const seq1 = [{ id: 1, filename: 'a.png', previewUrl: '/p/1', viewerUrl: '/v/1' }];
-    const { scaffold, fullscreenBtn, closeBtn } = openPage(seq1, { fullscreen: true });
-    fullscreenBtn.dispatch('click');
+    const { scaffold, trigger, closeBtn } = openPage(seq1);
+
+    expect(vi.getTimerCount()).toBe(1);
     closeBtn.dispatch('click');
     expect(vi.getTimerCount()).toBe(0);
     expect(scaffold.hasAttribute('data-slideshow-ui-hidden')).toBe(false);
-    vi.advanceTimersByTime(chromeHideDelay);
+
+    trigger.dispatch('click');
     expect(scaffold.hasAttribute('data-slideshow-ui-hidden')).toBe(false);
+    expect(vi.getTimerCount()).toBe(1);
+    vi.advanceTimersByTime(chromeHideDelay);
+    expect(scaffold.hasAttribute('data-slideshow-ui-hidden')).toBe(true);
   });
 
   it('repeated fullscreen enter/exit keeps one chrome timer without duplicates', () => {
     const seq1 = [{ id: 1, filename: 'a.png', previewUrl: '/p/1', viewerUrl: '/v/1' }];
-    const { fullscreenBtn } = openPage(seq1, { fullscreen: true });
+    const { fullscreenBtn, closeBtn } = openPage(seq1, { fullscreen: true });
     fullscreenBtn.dispatch('click');
     expect(vi.getTimerCount()).toBe(1);
     fullscreenBtn.dispatch('click');
-    expect(vi.getTimerCount()).toBe(0);
+    expect(vi.getTimerCount()).toBe(1);
     fullscreenBtn.dispatch('click');
     expect(vi.getTimerCount()).toBe(1);
     fullscreenBtn.dispatch('click');
+    expect(vi.getTimerCount()).toBe(1);
+    closeBtn.dispatch('click');
     expect(vi.getTimerCount()).toBe(0);
   });
 
@@ -1608,14 +2023,11 @@ describe('enhanceSlideshow — autoplay edge cases', () => {
     expect(playPauseBtn.getAttribute('aria-label')).toBe('Pause');
   });
 
-  it('single-item Play/Pause state is coherent', () => {
+  it('single-item Play/Pause control is hidden and disabled', () => {
     const seq = [{ id: 1, filename: 'a.png', previewUrl: '/p/1', viewerUrl: '/v/1' }];
     const { playPauseBtn } = openPage(seq);
-    expect(playPauseBtn.getAttribute('aria-label')).toBe('Pause');
-    playPauseBtn.dispatch('click');
-    expect(playPauseBtn.getAttribute('aria-label')).toBe('Play');
-    playPauseBtn.dispatch('click');
-    expect(playPauseBtn.getAttribute('aria-label')).toBe('Pause');
+    expect(playPauseBtn.hidden).toBe(true);
+    expect(playPauseBtn.disabled).toBe(true);
   });
 
   it('Escape closes and clears the timer', () => {
@@ -1720,14 +2132,16 @@ describe('enhanceSlideshow — focus trap', () => {
     expect(document.activeElement).toBe(prevBtn);
   });
 
-  it('focus-trap order includes fullscreen before Close when supported', () => {
-    const { document, fullscreenBtn, closeBtn } = openPage(seq1, { fullscreen: true });
+  it('focus-trap order follows fullscreen, Original Size, then Close when supported', () => {
+    const { document, fullscreenBtn, originalSizeBtn, closeBtn } = openPage(originalSeq, { fullscreen: true });
     fullscreenBtn.focus();
+    document.dispatch('keydown', { key: 'Tab' });
+    expect(document.activeElement).toBe(originalSizeBtn);
     document.dispatch('keydown', { key: 'Tab' });
     expect(document.activeElement).toBe(closeBtn);
     closeBtn.focus();
     document.dispatch('keydown', { key: 'Tab', shiftKey: true });
-    expect(document.activeElement).toBe(fullscreenBtn);
+    expect(document.activeElement).toBe(originalSizeBtn);
   });
 
   it('focus trap includes Original Size and cycles back to Close', () => {
@@ -1737,6 +2151,15 @@ describe('enhanceSlideshow — focus trap', () => {
     expect(document.activeElement).toBe(originalSizeBtn);
     document.dispatch('keydown', { key: 'Tab' });
     expect(document.activeElement).toBe(closeBtn);
+  });
+
+  it('keeps Play and Pause tooltip labels synchronized with accessibility labels', () => {
+    const { playPauseBtn } = openPage(seq1);
+    expect(playPauseBtn.getAttribute('aria-label')).toBe('Pause');
+    expect(playPauseBtn.getAttribute('data-tooltip')).toBe('Pause');
+    playPauseBtn.dispatch('click');
+    expect(playPauseBtn.getAttribute('aria-label')).toBe('Play');
+    expect(playPauseBtn.getAttribute('data-tooltip')).toBe('Play');
   });
 
   it('Tab trap is inactive while dialog is closed', () => {
@@ -1834,6 +2257,15 @@ describe('slideshow CSS — presentation contract', () => {
     expect(css).toMatch(/\.slideshow-controls\s*>\s*\.slideshow-nav-btn\s*\{[^}]*position:\s*absolute/);
   });
 
+  it('supports above-control tooltips for bottom slideshow controls', () => {
+    expect(css).toMatch(/\.asset-tooltip--top\[data-tooltip\]::after\s*\{[^}]*top:\s*auto[^}]*bottom:\s*calc\(100% \+ var\(--space-xs\)\)/);
+    expect(css).toMatch(/\.asset-tooltip--top\[data-tooltip\]:hover::after,[\s\S]*\.asset-tooltip--top\[data-tooltip\]:focus-visible::after\s*\{[^}]*transform:\s*translate\(-50%, 0\)/);
+  });
+
+  it('uses a zoom cursor only for fitted images that can activate Original Size', () => {
+    expect(css).toMatch(/\.slideshow-preview\[data-slideshow-image-zoomable\]\s+\.slideshow-preview-img\s*\{[^}]*cursor:\s*zoom-in/);
+  });
+
   it('fullscreen keeps the same full-size scaffold geometry', () => {
     expect(css).toMatch(/\.slideshow-scaffold:fullscreen\s*\{[^}]*width:\s*100%[^}]*height:\s*100%/);
     expect(css).toMatch(/\.slideshow-scaffold::backdrop\s*\{[^}]*background:\s*var\(--bg\)/);
@@ -1847,9 +2279,11 @@ describe('slideshow CSS — presentation contract', () => {
     expect(hiddenCss).not.toMatch(/(?:width|height|inset|flex):/);
   });
 
-  it('header separates status/close from nav controls', () => {
+  it('keeps header actions right-aligned when sequence state hides the status', () => {
     expect(css).toMatch(/\.slideshow-header\s*\{[^}]*display:\s*flex/);
     expect(css).toMatch(/\.slideshow-header\s*\{[^}]*justify-content:\s*space-between/);
+    expect(css).toMatch(/\.slideshow-header-actions\s*\{[^}]*margin-left:\s*auto/);
+    expect(css).not.toMatch(/\[data-slideshow-[^\]]+\][^{]*\.slideshow-header-actions\s*\{[^}]*(?:left|margin-left):/);
   });
 
   it('slideshow speed uses the dark native theme and player control surface', () => {
@@ -1867,8 +2301,10 @@ describe('slideshow CSS — presentation contract', () => {
     expect(css).toMatch(/\.slideshow-speed:disabled\s+option\s*\{[^}]*color:\s*var\(--muted\)[^}]*background-color:\s*var\(--surface-card\)/);
   });
 
-  it('fullscreen chrome hide is scoped and keeps focused controls visible', () => {
-    expect(css).toMatch(/\[data-slideshow-ui-hidden\]\s+\.slideshow-header,[\s\S]*\[data-slideshow-ui-hidden\]\s+\.slideshow-controls,[\s\S]*\[data-slideshow-ui-hidden\]\s+\.slideshow-caption\s*\{[^}]*opacity:\s*0/);
-    expect(css).toMatch(/\[data-slideshow-ui-hidden\]\s+\.slideshow-header:focus-within,[\s\S]*\[data-slideshow-ui-hidden\]\s+\.slideshow-controls:focus-within\s*\{[^}]*opacity:\s*1/);
+  it('uses a per-surface idle exception without restoring chrome containers', () => {
+    expect(css).toMatch(/\[data-slideshow-ui-hidden\]\s+\.slideshow-header-actions\s*>\s*\*,[\s\S]*\[data-slideshow-ui-hidden\]\s+\.slideshow-controls\s*>\s*:not\(\.asset-filter-multiselect-field\),[\s\S]*\.cc-dropdown-native-select,[\s\S]*\.cc-dropdown,[\s\S]*opacity:\s*0[^}]*pointer-events:\s*none/);
+    expect(css).toMatch(/\[data-slideshow-ui-hidden\]\s+\.slideshow-header-actions\s*>\s*\[data-slideshow-ui-focused\],[\s\S]*\[data-slideshow-ui-hidden\]\s+\.slideshow-controls\s*>\s*\[data-slideshow-ui-focused\],[\s\S]*\[data-slideshow-ui-hidden\]\s+\.slideshow-controls\s*>\s*\.asset-filter-multiselect-field\s*>\s*\[data-slideshow-ui-focused\]\s*\{[^}]*opacity:\s*1[^}]*pointer-events:\s*auto/);
+    expect(css).not.toMatch(/\[data-slideshow-ui-hidden\]\s+\[data-slideshow-ui-focused\]\s*\{/);
+    expect(css).not.toMatch(/\.slideshow-header:focus-within|\.slideshow-controls:focus-within/);
   });
 });

@@ -1325,10 +1325,19 @@
         transform: translate(0, -0.25rem);
       }
       .asset-tooltip--right[data-tooltip]:hover::after,
-      .asset-tooltip--right[data-tooltip]:focus-visible::after {
-        transform: translate(0, 0);
-      }
-      .asset-usage-details { display: inline-block; }
+       .asset-tooltip--right[data-tooltip]:focus-visible::after {
+         transform: translate(0, 0);
+       }
+       .asset-tooltip--top[data-tooltip]::after {
+         top: auto;
+         bottom: calc(100% + var(--space-xs));
+         transform: translate(-50%, 0.25rem);
+       }
+       .asset-tooltip--top[data-tooltip]:hover::after,
+       .asset-tooltip--top[data-tooltip]:focus-visible::after {
+         transform: translate(-50%, 0);
+       }
+       .asset-usage-details { display: inline-block; }
       .asset-usage-details summary { list-style: none; cursor: pointer; }
       .asset-usage-details summary::-webkit-details-marker { display: none; }
       .asset-usage-details .release-detail-list { margin-top: var(--space-xs); }
@@ -7274,6 +7283,7 @@
          display: inline-flex;
          align-items: center;
          gap: var(--space-sm);
+         margin-left: auto;
          pointer-events: auto;
       }
       .slideshow-status {
@@ -7324,6 +7334,9 @@
          object-fit: contain;
          display: block;
          z-index: 1;
+      }
+      .slideshow-preview[data-slideshow-image-zoomable] .slideshow-preview-img {
+         cursor: zoom-in;
       }
       .slideshow-preview[data-slideshow-mode="original"] {
          cursor: default;
@@ -7402,25 +7415,22 @@
       }
       .slideshow-controls > [data-slideshow-prev] { left: var(--space-lg); }
       .slideshow-controls > [data-slideshow-next] { right: var(--space-lg); }
-      [data-slideshow-ui-hidden] .slideshow-header,
-      [data-slideshow-ui-hidden] .slideshow-controls,
-      [data-slideshow-ui-hidden] .slideshow-caption {
-         opacity: 0;
-      }
-      [data-slideshow-ui-hidden] .slideshow-header > *,
-      [data-slideshow-ui-hidden] .slideshow-controls > *,
-      [data-slideshow-ui-hidden] .slideshow-caption {
-         pointer-events: none;
-      }
-      /* Keep a focused control visible while fullscreen chrome is fading. */
-      [data-slideshow-ui-hidden] .slideshow-header:focus-within,
-      [data-slideshow-ui-hidden] .slideshow-controls:focus-within {
-         opacity: 1;
-      }
-      [data-slideshow-ui-hidden] .slideshow-header:focus-within > *,
-      [data-slideshow-ui-hidden] .slideshow-controls:focus-within > * {
-         pointer-events: auto;
-      }
+        [data-slideshow-ui-hidden] .slideshow-header > .slideshow-status,
+        [data-slideshow-ui-hidden] .slideshow-header > .slideshow-media-status,
+        [data-slideshow-ui-hidden] .slideshow-header-actions > *,
+        [data-slideshow-ui-hidden] .slideshow-controls > :not(.asset-filter-multiselect-field),
+        [data-slideshow-ui-hidden] .slideshow-controls > .asset-filter-multiselect-field > .cc-dropdown-native-select,
+        [data-slideshow-ui-hidden] .slideshow-controls > .asset-filter-multiselect-field > .cc-dropdown,
+        [data-slideshow-ui-hidden] .slideshow-caption {
+           opacity: 0;
+           pointer-events: none;
+        }
+        [data-slideshow-ui-hidden] .slideshow-header-actions > [data-slideshow-ui-focused],
+        [data-slideshow-ui-hidden] .slideshow-controls > [data-slideshow-ui-focused],
+        [data-slideshow-ui-hidden] .slideshow-controls > .asset-filter-multiselect-field > [data-slideshow-ui-focused] {
+           opacity: 1;
+           pointer-events: auto;
+        }
       .slideshow-nav-btn,
       .slideshow-play-pause,
       .slideshow-fullscreen,

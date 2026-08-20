@@ -26,7 +26,8 @@ const SLIDESHOW_ORIGINAL_SIZE_SELECTOR = '[data-slideshow-original-size]';
 const SLIDESHOW_MEDIA_STATUS_SELECTOR = '[data-slideshow-media-status]';
 const PROJECT_ASSETS_PREVIEW_SELECTOR = '[data-project-assets-preview-id]';
 const PROJECT_ASSETS_PREVIEW_BOUND_KEY = 'projectAssetsPreviewSlideshowBound';
-const SLIDESHOW_CHROME_HIDE_DELAY = 2500;
+const SLIDESHOW_CHROME_HIDE_DELAY = 4000;
+const SLIDESHOW_FOCUSED_SURFACE_ATTRIBUTE = 'data-slideshow-ui-focused';
 
 function parseSlideshowSequence(scaffold) {
   try {
@@ -73,6 +74,7 @@ export function enhanceSlideshow(scope = globalThis.document) {
   let sequence = normalSequence;
   let temporarySequenceActive = false;
   let returnFocusElement = null;
+  let keyboardFocusedChromeSurface = null;
 
   let currentIndex = 0;
   let isOpen = false;
@@ -106,22 +108,67 @@ export function enhanceSlideshow(scope = globalThis.document) {
     }
   }
 
+  function getChromeSurfaces() {
+    const speedDropdown = creatorCrateDropdownForNativeSelect(speedSelect);
+    return [
+      fullscreenBtn,
+      scaffold.querySelector?.(SLIDESHOW_ORIGINAL_SIZE_SELECTOR),
+      scaffold.querySelector?.(SLIDESHOW_CLOSE_SELECTOR),
+      scaffold.querySelector?.(SLIDESHOW_PREV_SELECTOR),
+      playPauseBtn,
+      speedDropdown,
+      speedSelect,
+      scaffold.querySelector?.(SLIDESHOW_NEXT_SELECTOR),
+    ];
+  }
+
+  function getActiveChromeSurface() {
+    const activeElement = scope.activeElement;
+    const surfaces = getChromeSurfaces();
+    return surfaces.find((surface) => surface === activeElement || surface?.contains?.(activeElement)) || null;
+  }
+
+  function getFocusedChromeSurface() {
+    const activeElement = scope.activeElement;
+    if (keyboardFocusedChromeSurface === activeElement
+      || keyboardFocusedChromeSurface?.contains?.(activeElement)) {
+      return keyboardFocusedChromeSurface;
+    }
+    return null;
+  }
+
+  function rememberKeyboardFocusedChromeSurface() {
+    keyboardFocusedChromeSurface = getActiveChromeSurface();
+  }
+
+  function clearKeyboardFocusedChromeSurface() {
+    keyboardFocusedChromeSurface = null;
+  }
+
+  function clearFocusedChromeSurface() {
+    getChromeSurfaces()
+      .forEach((surface) => surface?.removeAttribute?.(SLIDESHOW_FOCUSED_SURFACE_ATTRIBUTE));
+  }
+
   function setChromeHidden(hidden) {
     if (hidden) {
+      clearFocusedChromeSurface();
+      getFocusedChromeSurface()?.setAttribute?.(SLIDESHOW_FOCUSED_SURFACE_ATTRIBUTE, '');
       scaffold.setAttribute?.('data-slideshow-ui-hidden', '');
     } else {
+      clearFocusedChromeSurface();
       scaffold.removeAttribute?.('data-slideshow-ui-hidden');
     }
   }
 
   function hideSlideshowChrome() {
     chromeHideTimerId = null;
-    setChromeHidden(isOpen && isFullscreenActive());
+    setChromeHidden(isOpen);
   }
 
   function scheduleChromeHide() {
     clearChromeHideTimer();
-    if (!isOpen || !isFullscreenActive()) return;
+    if (!isOpen) return;
     chromeHideTimerId = setTimeout(hideSlideshowChrome, SLIDESHOW_CHROME_HIDE_DELAY);
   }
 
@@ -134,8 +181,8 @@ export function enhanceSlideshow(scope = globalThis.document) {
     if (!fullscreenBtn) return;
     const label = active ? 'Exit fullscreen' : 'Enter fullscreen';
     fullscreenBtn.setAttribute?.('aria-label', label);
+    fullscreenBtn.setAttribute?.('data-tooltip', label);
     fullscreenBtn.setAttribute?.('aria-pressed', active ? 'true' : 'false');
-    fullscreenBtn.setAttribute?.('title', label);
     if (active) {
       fullscreenBtn.setAttribute?.('data-slideshow-fullscreen-active', '');
     } else {
@@ -146,9 +193,9 @@ export function enhanceSlideshow(scope = globalThis.document) {
   function syncFullscreenState() {
     const active = isFullscreenActive();
     setFullscreenState(active && isOpen);
-    if (active && isOpen) {
+    if (isOpen) {
       showSlideshowChrome();
-      recomputeOriginalPanBounds?.();
+      if (active) recomputeOriginalPanBounds?.();
     } else {
       clearChromeHideTimer();
       setChromeHidden(false);
@@ -229,6 +276,23 @@ export function enhanceSlideshow(scope = globalThis.document) {
     return parseInt(speedSelect?.value || '', 10) || 4000;
   }
 
+  function syncSpeedDropdownTooltip() {
+    const speedSummary = creatorCrateDropdownSummaryForNativeSelect(speedSelect);
+    if (!speedSummary) return;
+
+    const currentSummary = speedSummary.querySelector?.('[data-cc-dropdown-summary-current]');
+    const summaryText = currentSummary?.textContent?.trim();
+    if (summaryText) speedSummary.setAttribute?.('data-tooltip', summaryText);
+    speedSummary.removeAttribute?.('title');
+
+    const classNames = new Set(
+      String(speedSummary.getAttribute?.('class') || '').split(/\s+/).filter(Boolean),
+    );
+    classNames.add('asset-tooltip');
+    classNames.add('asset-tooltip--top');
+    speedSummary.setAttribute?.('class', [...classNames].join(' '));
+  }
+
   function setMediaStatus(message) {
     if (!mediaStatus) return;
     if (message) {
@@ -252,12 +316,32 @@ export function enhanceSlideshow(scope = globalThis.document) {
         : 'Original size unavailable';
     originalSizeBtn.disabled = !available && !active;
     originalSizeBtn.setAttribute?.('aria-label', label);
-    originalSizeBtn.setAttribute?.('title', label);
+    originalSizeBtn.setAttribute?.('data-tooltip', label);
     originalSizeBtn.setAttribute?.('aria-pressed', active ? 'true' : 'false');
     if (active) {
       originalSizeBtn.setAttribute?.('data-slideshow-original-size-active', '');
     } else {
       originalSizeBtn.removeAttribute?.('data-slideshow-original-size-active');
+    }
+    syncImageOriginalSizeActivation();
+  }
+
+  function canActivateOriginalSizeFromImage() {
+    return Boolean(
+      isOpen
+      && !isOriginalMode
+      && originalSizeBtn
+      && !originalSizeBtn.disabled
+      && (sequence.length < 2 || !isPlaying)
+    );
+  }
+
+  function syncImageOriginalSizeActivation() {
+    if (!preview) return;
+    if (canActivateOriginalSizeFromImage()) {
+      preview.setAttribute?.('data-slideshow-image-zoomable', '');
+    } else {
+      preview.removeAttribute?.('data-slideshow-image-zoomable');
     }
   }
 
@@ -275,16 +359,34 @@ export function enhanceSlideshow(scope = globalThis.document) {
     setMediaStatus('');
   }
 
+  function setSlideshowControlHidden(control, hidden) {
+    if (!control) return;
+    control.hidden = hidden;
+    if (hidden) control.setAttribute?.('hidden', '');
+    else control.removeAttribute?.('hidden');
+  }
+
   function syncSequenceControls() {
     const activeAvailable = sequence.length > 0;
     const normalAvailable = normalSequence.length > 0;
+    const singleImageMode = sequence.length < 2;
+    const speedDropdown = creatorCrateDropdownForNativeSelect(speedSelect);
+    const speedControl = speedDropdown?.closest?.('fieldset') || speedDropdown || speedSelect;
+
     if (boundTrigger) boundTrigger.disabled = !normalAvailable;
-    if (playPauseBtn) playPauseBtn.disabled = !activeAvailable;
-    if (speedSelect) speedSelect.disabled = !activeAvailable;
-    syncCreatorCrateDropdownDisabledState(creatorCrateDropdownForNativeSelect(speedSelect));
+    if (playPauseBtn) playPauseBtn.disabled = singleImageMode;
+    if (speedSelect) speedSelect.disabled = singleImageMode;
+    syncCreatorCrateDropdownDisabledState(speedDropdown);
+    syncSpeedDropdownTooltip();
     if (fullscreenBtn && fullscreenApiAvailable) fullscreenBtn.disabled = !activeAvailable;
-    if (prevBtn) prevBtn.disabled = sequence.length < 2;
-    if (nextBtn) nextBtn.disabled = sequence.length < 2;
+    if (prevBtn) prevBtn.disabled = singleImageMode;
+    if (nextBtn) nextBtn.disabled = singleImageMode;
+
+    setSlideshowControlHidden(prevBtn, singleImageMode);
+    setSlideshowControlHidden(nextBtn, singleImageMode);
+    setSlideshowControlHidden(playPauseBtn, singleImageMode);
+    setSlideshowControlHidden(status, singleImageMode);
+    setSlideshowControlHidden(speedControl, singleImageMode);
   }
 
   function clearAutoplay() {
@@ -297,13 +399,16 @@ export function enhanceSlideshow(scope = globalThis.document) {
   function setPlayPauseState(playing) {
     isPlaying = playing;
     if (playPauseBtn) {
-      playPauseBtn.setAttribute?.('aria-label', playing ? 'Pause' : 'Play');
+      const label = playing ? 'Pause' : 'Play';
+      playPauseBtn.setAttribute?.('aria-label', label);
+      playPauseBtn.setAttribute?.('data-tooltip', label);
       if (playing) {
         playPauseBtn.setAttribute?.('data-slideshow-playing', '');
       } else {
         playPauseBtn.removeAttribute?.('data-slideshow-playing');
       }
     }
+    syncImageOriginalSizeActivation();
   }
 
   function scheduleNext() {
@@ -568,6 +673,7 @@ export function enhanceSlideshow(scope = globalThis.document) {
 
   function openSlideshow(focusTarget = trigger) {
     if (sequence.length === 0) return;
+    clearKeyboardFocusedChromeSurface();
     isOpen = true;
     returnFocusElement = focusTarget || trigger;
     leaveOriginalSize();
@@ -590,6 +696,8 @@ export function enhanceSlideshow(scope = globalThis.document) {
     leaveOriginalSize();
     const wasFullscreen = isFullscreenActive();
     isOpen = false;
+    clearKeyboardFocusedChromeSurface();
+    syncImageOriginalSizeActivation();
     clearChromeHideTimer();
     setChromeHidden(false);
     if (wasFullscreen) exitSlideshowFullscreen();
@@ -625,7 +733,7 @@ export function enhanceSlideshow(scope = globalThis.document) {
 
   function getFocusableControls() {
     const speedControl = creatorCrateDropdownSummaryForNativeSelect(speedSelect) || speedSelect;
-    return [fullscreenBtn, closeBtn, prevBtn, playPauseBtn, speedControl, nextBtn, originalSizeBtn].filter(
+    return [fullscreenBtn, originalSizeBtn, closeBtn, prevBtn, playPauseBtn, speedControl, nextBtn].filter(
       (el) => el && !el.disabled
     );
   }
@@ -633,6 +741,16 @@ export function enhanceSlideshow(scope = globalThis.document) {
   function handleSlideshowActivity() {
     if (!isOpen) return;
     showSlideshowChrome();
+  }
+
+  function handlePointerSlideshowActivity() {
+    clearKeyboardFocusedChromeSurface();
+    handleSlideshowActivity();
+  }
+
+  function handleKeyboardSlideshowActivity() {
+    rememberKeyboardFocusedChromeSurface();
+    handleSlideshowActivity();
   }
 
   let boundTrigger = null;
@@ -683,14 +801,22 @@ export function enhanceSlideshow(scope = globalThis.document) {
     if (isOriginalMode) leaveOriginalSize();
     else enterOriginalSize();
   });
+  img?.addEventListener?.('click', (event) => {
+    if (event.defaultPrevented) return;
+    if (event.button !== undefined && event.button !== 0) return;
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    if (!canActivateOriginalSizeFromImage()) return;
+    enterOriginalSize();
+  });
   if (fullscreenApiAvailable) fullscreenBtn?.addEventListener?.('click', toggleFullscreen);
 
   scaffold.addEventListener?.('pointermove', handleSlideshowActivity);
-  scaffold.addEventListener?.('pointerdown', handleSlideshowActivity);
+  scaffold.addEventListener?.('pointerdown', handlePointerSlideshowActivity);
   scaffold.addEventListener?.('pointerup', endPan);
   scaffold.addEventListener?.('pointercancel', endPan);
   scaffold.addEventListener?.('click', handleSlideshowActivity);
   scaffold.addEventListener?.('focusin', handleSlideshowActivity);
+  scaffold.addEventListener?.('focusout', clearFocusedChromeSurface);
   preview?.addEventListener?.('pointerdown', beginPan);
   preview?.addEventListener?.('pointermove', updatePan);
   preview?.addEventListener?.('pointerup', endPan);
@@ -707,16 +833,23 @@ export function enhanceSlideshow(scope = globalThis.document) {
   });
 
   speedSelect?.addEventListener?.('change', () => {
+    syncSpeedDropdownTooltip();
     handleSlideshowActivity();
     if (isPlaying) {
       clearAutoplay();
       scheduleNext();
     }
   });
+  scaffold.addEventListener?.('change', (event) => {
+    const speedDropdown = creatorCrateDropdownForNativeSelect(speedSelect);
+    if (event.target === speedSelect || speedDropdown?.contains?.(event.target)) {
+      syncSpeedDropdownTooltip();
+    }
+  });
 
   scope.addEventListener?.('keydown', (event) => {
     if (!isOpen) return;
-    handleSlideshowActivity();
+    handleKeyboardSlideshowActivity();
     if (event.key === 'Escape') {
       event.preventDefault?.();
       closeSlideshow();
@@ -735,10 +868,12 @@ export function enhanceSlideshow(scope = globalThis.document) {
         const prevIdx = idx <= 0 ? focusables.length - 1 : idx - 1;
         event.preventDefault?.();
         focusables[prevIdx].focus?.();
+        rememberKeyboardFocusedChromeSurface();
       } else {
         const nextIdx = idx >= focusables.length - 1 ? 0 : idx + 1;
         event.preventDefault?.();
         focusables[nextIdx].focus?.();
+        rememberKeyboardFocusedChromeSurface();
       }
     }
   });
@@ -769,4 +904,3 @@ export function enhanceProjectAssetsPreviewSlideshow(scope = globalThis.document
   });
   return links.length;
 }
-

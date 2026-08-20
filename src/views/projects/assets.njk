@@ -1168,20 +1168,20 @@
           <span class="slideshow-status" data-slideshow-status aria-live="polite" aria-atomic="true"></span>
           <span class="slideshow-media-status" data-slideshow-media-status role="status" aria-live="polite" hidden></span>
           <div class="slideshow-header-actions">
-            <button type="button" class="slideshow-fullscreen" data-slideshow-fullscreen aria-label="Enter fullscreen" aria-pressed="false" title="Enter fullscreen">
+            <button type="button" class="slideshow-fullscreen asset-tooltip" data-slideshow-fullscreen aria-label="Enter fullscreen" data-tooltip="Enter fullscreen" aria-pressed="false">
               <span class="slideshow-fullscreen-enter-icon" aria-hidden="true">{{ icons.icon('fullscreen') }}</span>
               <span class="slideshow-fullscreen-exit-icon" aria-hidden="true">{{ icons.icon('fullscreen-exit') }}</span>
             </button>
-            <button type="button" class="slideshow-close" data-slideshow-close aria-label="Close slideshow">{{ icons.icon('close') }}</button>
-            <button type="button" class="slideshow-original-size" data-slideshow-original-size aria-label="View original size" aria-pressed="false" title="View original size">
+            <button type="button" class="slideshow-original-size asset-tooltip" data-slideshow-original-size aria-label="View original size" data-tooltip="View original size" aria-pressed="false">
               {{ icons.icon('original-size') }}
             </button>
+            <button type="button" class="slideshow-close asset-tooltip asset-tooltip--right" data-slideshow-close aria-label="Close slideshow" data-tooltip="Close slideshow">{{ icons.icon('close') }}</button>
           </div>
         </div>
       <div class="slideshow-preview" data-slideshow-preview></div>
       <div class="slideshow-controls">
-        <button type="button" class="slideshow-nav-btn" data-slideshow-prev aria-label="Previous">{{ icons.icon('chevron-left') }}</button>
-        <button type="button" class="slideshow-play-pause" data-slideshow-play-pause aria-label="Play" disabled>
+        <button type="button" class="slideshow-nav-btn asset-tooltip asset-tooltip--left" data-slideshow-prev aria-label="Previous" data-tooltip="Previous">{{ icons.icon('chevron-left') }}</button>
+        <button type="button" class="slideshow-play-pause asset-tooltip asset-tooltip--top" data-slideshow-play-pause aria-label="Play" data-tooltip="Play" disabled>
           <span class="slideshow-play-icon" aria-hidden="true">{{ icons.icon('slideshow') }}</span>
           <span class="slideshow-pause-icon" aria-hidden="true">{{ icons.icon('pause') }}</span>
         </button>
@@ -1204,7 +1204,7 @@
             attributes: [["data-slideshow-speed", true], ["disabled", true]]
           }
         }) }}
-        <button type="button" class="slideshow-nav-btn" data-slideshow-next aria-label="Next">{{ icons.icon('chevron-right') }}</button>
+        <button type="button" class="slideshow-nav-btn asset-tooltip asset-tooltip--right" data-slideshow-next aria-label="Next" data-tooltip="Next">{{ icons.icon('chevron-right') }}</button>
       </div>
     </div>
   </div>

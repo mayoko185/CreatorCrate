@@ -1133,6 +1133,26 @@ describe('slideshow scaffold — static UI', () => {
     expect(html).toContain('aria-label="Enter fullscreen"');
   });
 
+  it('both slideshow scaffolds use custom tooltips, no native titles, and header control order', () => {
+    for (const html of [renderPage(), renderProjectAssetsPage()]) {
+      const scaffold = html.slice(html.indexOf('data-slideshow-scaffold'));
+      const fullscreenPos = scaffold.indexOf('data-slideshow-fullscreen');
+      const originalSizePos = scaffold.indexOf('data-slideshow-original-size');
+      const closePos = scaffold.indexOf('data-slideshow-close');
+
+      expect(fullscreenPos).toBeGreaterThan(-1);
+      expect(originalSizePos).toBeGreaterThan(fullscreenPos);
+      expect(closePos).toBeGreaterThan(originalSizePos);
+      expect(scaffold).not.toMatch(/<button\b[^>]*\btitle=/);
+      expect(scaffold).toMatch(/data-slideshow-fullscreen[^>]*class="[^"]*asset-tooltip|class="[^"]*asset-tooltip[^"]*"[^>]*data-slideshow-fullscreen/);
+      expect(scaffold).toMatch(/data-slideshow-original-size[^>]*data-tooltip="View original size"|data-tooltip="View original size"[^>]*data-slideshow-original-size/);
+      expect(scaffold).toMatch(/data-slideshow-close[^>]*asset-tooltip--right|asset-tooltip--right[^>]*data-slideshow-close/);
+      expect(scaffold).toMatch(/data-slideshow-prev[^>]*asset-tooltip--left|asset-tooltip--left[^>]*data-slideshow-prev/);
+      expect(scaffold).toMatch(/data-slideshow-next[^>]*asset-tooltip--right|asset-tooltip--right[^>]*data-slideshow-next/);
+      expect(scaffold).toMatch(/data-slideshow-play-pause[^>]*asset-tooltip--top|asset-tooltip--top[^>]*data-slideshow-play-pause/);
+    }
+  });
+
   it('asset-viewer page: speed select preserves 2 s, 4 s default, and 6 s options', () => {
     const html = renderPage();
     const speedSelect = html.match(/<select[^>]*data-slideshow-speed[^>]*>[\s\S]*?<\/select>/)?.[0] ?? '';
@@ -1193,10 +1213,7 @@ describe('slideshow scaffold — static UI', () => {
   it('project assets page: speed uses the compact shared dropdown beside play/pause', () => {
     const html = renderProjectAssetsPage();
     const controlsStart = html.indexOf('<div class="slideshow-controls">');
-    const nextStart = html.indexOf(
-      '<button type="button" class="slideshow-nav-btn" data-slideshow-next',
-      controlsStart,
-    );
+    const nextStart = html.indexOf('data-slideshow-next', controlsStart);
     const controls = html.slice(controlsStart, nextStart);
     const playPauseStart = controls.indexOf('data-slideshow-play-pause');
     const playPauseEnd = controls.indexOf('</button>', playPauseStart);
