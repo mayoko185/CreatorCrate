@@ -61,19 +61,3 @@ export function enhanceCategoryDetails(scope = globalThis.document) {
   });
   return forms.length;
 }
-
-export function enhanceConfirmations(scope = globalThis.document) {
-  if (!scope || typeof scope.querySelectorAll !== 'function') return 0;
-  const controls = scope.querySelectorAll('[data-confirm]');
-  controls.forEach((control) => {
-    if (isEnhancementBound(control, 'confirmationBound')) return;
-    markEnhancementBound(control, 'confirmationBound');
-    control.addEventListener('click', (event) => {
-      const message = control.getAttribute('data-confirm');
-      if (message && !globalThis.confirm(message)) {
-        event.preventDefault();
-      }
-    });
-  });
-  return controls.length;
-}

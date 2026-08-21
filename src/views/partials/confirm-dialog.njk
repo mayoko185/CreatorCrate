@@ -1,0 +1,11 @@
+{# Shared singleton confirmation dialog. #}
+{% import "partials/dialog.njk" as dialog %}
+{% call dialog.render('app-confirmation-dialog', 'Confirm action', false, 'app-confirmation-dialog-description', '', 'app-confirmation-dialog') %}
+  <div class="app-dialog-body">
+    <p id="app-confirmation-dialog-description" class="app-dialog-description" data-app-dialog-confirmation-message></p>
+    <footer class="app-dialog-footer">
+      <button class="button button-secondary" type="button" data-dialog-close data-app-dialog-confirmation-cancel>Cancel</button>
+      <button class="button button-danger" type="button" data-app-dialog-confirmation-confirm>Confirm</button>
+    </footer>
+  </div>
+{% endcall %}

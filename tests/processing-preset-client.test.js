@@ -12,7 +12,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { decorateWatermarkDropdownOptions, enhanceProcessingDialogs, syncWatermarkFormatSettings } from '../src/static/processing.js';
-import { enhanceNumberInputs } from '../src/static/creatorcrate.js';
+import { enhanceAppDialogs, enhanceNumberInputs } from '../src/static/creatorcrate.js';
 
 // ─── Minimal DOM shim ─────────────────────────────────────────────────────
 
@@ -344,6 +344,30 @@ function mountDialog(doc, dialogId, root) {
   doc.appendChild(dialog);
   doc.appendChild(trigger);
   return { dialog, trigger };
+}
+
+function attachSharedConfirmationDialog(doc) {
+  const dialog = makeNode('dialog', { id: 'app-confirmation-dialog', 'data-app-dialog': '' });
+  const title = makeNode('h2', { id: 'app-confirmation-dialog-title' });
+  title.textContent = 'Confirm action';
+  const message = makeNode('p', { 'data-app-dialog-confirmation-message': '' });
+  const close = makeNode('button', { type: 'button', 'data-dialog-close': '' });
+  const cancel = makeNode('button', { type: 'button', 'data-dialog-close': '', 'data-app-dialog-confirmation-cancel': '' });
+  const confirm = makeNode('button', { type: 'button', 'data-app-dialog-confirmation-confirm': '' });
+  confirm.textContent = 'Confirm';
+  dialog.showModal = vi.fn(() => { dialog.open = true; dialog.setAttribute('open', ''); });
+  dialog.close = vi.fn(() => { dialog.open = false; dialog.removeAttribute('open'); dialog.dispatch('close'); });
+  dialog.append(title, message, close, cancel, confirm);
+  doc.appendChild(dialog);
+  return { dialog, title, message, close, cancel, confirm };
+}
+
+function attachEnhancedPresetDropdown(fixture) {
+  const dropdown = makeNode('details', { 'data-cc-dropdown': '' });
+  const summary = makeNode('summary');
+  dropdown.appendChild(summary);
+  fixture.preset.wrap.appendChild(dropdown);
+  return summary;
 }
 
 function buildConvertRoot(doc, projectId = '1') {
@@ -900,9 +924,45 @@ describe('Processing dialog preset management', () => {
       expect(fixture.footer.errorText.textContent).not.toContain('SELECT ');
     });
 
-    it('deletes the selected preset with confirmation, switches to Custom, and preserves the current form values', async () => {
+    it('opens the shared Delete preset dialog once, blocks mutations while pending, and restores Delete focus on cancel', async () => {
       const fixture = buildConvertRoot(doc);
+      const confirmation = attachSharedConfirmationDialog(doc);
       fetchState.seed({ id: 5, operationType: 'convert', displayName: 'Doomed', config: { format: 'webp', quality: 85, originalHandling: 'keep' }, watermarkId: null });
+      const nativeConfirm = vi.fn();
+      doc.defaultView.confirm = nativeConfirm;
+      enhanceAppDialogs(doc);
+      enhanceProcessingDialogs(doc);
+      await openDialog(fixture);
+
+      fixture.preset.select.value = '5';
+      fixture.preset.select.dispatch('change', { target: fixture.preset.select });
+      fixture.preset.deleteBtn.dispatch('click');
+      fixture.preset.deleteBtn.dispatch('click');
+      fixture.preset.updateBtn.dispatch('click');
+      await flush();
+
+      expect(nativeConfirm).not.toHaveBeenCalled();
+      expect(confirmation.dialog.showModal).toHaveBeenCalledTimes(1);
+      expect(confirmation.title.textContent).toBe('Delete preset');
+      expect(confirmation.confirm.textContent).toBe('Delete preset');
+      expect(confirmation.message.textContent).toBe('Delete the preset "Doomed"? This does not delete Watermarks, scale maps, or generated files.');
+      expect(fetchState.calls.some((call) => call.url === '/processing/presets/5/replace')).toBe(false);
+
+      confirmation.cancel.dispatch('click');
+      await flush();
+
+      expect(fetchState.calls.some((call) => call.url === '/processing/presets/5/delete')).toBe(false);
+      expect(fixture.root.__ccPresetBusy).toBe(false);
+      expect(fixture.preset.deleteBtn.focused).toBe(true);
+    });
+
+    it('deletes the captured preset exactly once after confirmation and focuses the enhanced selector', async () => {
+      const fixture = buildConvertRoot(doc);
+      const confirmation = attachSharedConfirmationDialog(doc);
+      const dropdownSummary = attachEnhancedPresetDropdown(fixture);
+      fetchState.seed({ id: 5, operationType: 'convert', displayName: 'Doomed', config: { format: 'webp', quality: 85, originalHandling: 'keep' }, watermarkId: null });
+      fetchState.seed({ id: 6, operationType: 'convert', displayName: 'Keep me', config: { format: 'png', quality: 72, originalHandling: 'keep' }, watermarkId: null });
+      enhanceAppDialogs(doc);
       enhanceProcessingDialogs(doc);
       await openDialog(fixture);
 
@@ -910,20 +970,21 @@ describe('Processing dialog preset management', () => {
       fixture.preset.select.dispatch('change', { target: fixture.preset.select });
       fixture.quality.value = '42';
       fixture.quality.dispatch('change', { target: fixture.quality });
-
       fixture.root.__ccPreviewValid = true;
       fixture.footer.applyBtn.disabled = false;
-
-      doc.defaultView.confirm = vi.fn(() => false);
-      fixture.preset.deleteBtn.dispatch('click');
-      await flush();
-      expect(fetchState.calls.some((c) => c.url === '/processing/presets/5/delete')).toBe(false);
-
-      doc.defaultView.confirm = vi.fn(() => true);
       fixture.preset.deleteBtn.dispatch('click');
       await flush();
 
-      expect(fetchState.calls.some((c) => c.url === '/processing/presets/5/delete')).toBe(true);
+      fixture.preset.select.value = '6';
+      fixture.preset.select.dispatch('change', { target: fixture.preset.select });
+      fixture.preset.updateBtn.dispatch('click');
+      confirmation.confirm.dispatch('click');
+      await flush();
+
+      expect(fetchState.calls.filter((call) => call.url === '/processing/presets/5/delete')).toHaveLength(1);
+      expect(fetchState.calls.some((call) => call.url === '/processing/presets/6/delete')).toBe(false);
+      expect(fetchState.calls.some((call) => call.url === '/processing/presets/6/replace')).toBe(false);
+      expect(fixture.root.__ccPresetBusy).toBe(false);
       expect(fixture.preset.select.value).toBe('');
       expect(fixture.quality.value).toBe('42');
       expect(fixture.preset.modified.hidden).toBe(true);
@@ -931,6 +992,32 @@ describe('Processing dialog preset management', () => {
       expect(fixture.preset.updateBtn.disabled).toBe(true);
       expect(fixture.preset.renameBtn.disabled).toBe(true);
       expect(fixture.preset.deleteBtn.disabled).toBe(true);
+      expect(dropdownSummary.focused).toBe(true);
+      expect(fixture.preset.select.focused).not.toBe(true);
+    });
+
+    it('clears preset busy state when the confirmed deletion fails', async () => {
+      const fixture = buildConvertRoot(doc);
+      const confirmation = attachSharedConfirmationDialog(doc);
+      fetchState.seed({ id: 5, operationType: 'convert', displayName: 'Doomed', config: { format: 'webp', quality: 85, originalHandling: 'keep' }, watermarkId: null });
+      enhanceAppDialogs(doc);
+      enhanceProcessingDialogs(doc);
+      await openDialog(fixture);
+      fixture.preset.select.value = '5';
+      fixture.preset.select.dispatch('change', { target: fixture.preset.select });
+      fixture.preset.deleteBtn.dispatch('click');
+      await flush();
+      fetchState.fetchMock.mockImplementationOnce(async () => ({
+        ok: false,
+        status: 500,
+        json: async () => ({ ok: false, error: { message: 'Could not delete preset.' } }),
+      }));
+      confirmation.confirm.dispatch('click');
+      await flush();
+
+      expect(fixture.root.__ccPresetBusy).toBe(false);
+      expect(fixture.footer.error.hidden).toBe(false);
+      expect(fetchState.presets.has('5')).toBe(true);
     });
   });
 

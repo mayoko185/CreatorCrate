@@ -13,7 +13,7 @@ import {
   enhanceAssetRenames,
   enhanceAssetSelection,
 } from './asset-ordering.js';
-import { enhanceConfirmations } from './category-details.js';
+import { enhanceAppConfirmationControls } from './confirm-dialog.js';
 import {
   enhanceAssetViewerInfoCards,
   enhanceProjectInfoCards,
@@ -907,7 +907,7 @@ function enhanceProjectAssetsLiveRegion(region) {
   enhanceAssetGridSize(region);
   enhanceAssetListSize(region);
   enhanceAssetAutoRenameOrdering(region);
-  enhanceConfirmations(region);
+  enhanceAppConfirmationControls(region);
   enhanceProjectAssetCategoryFilter(region);
   enhanceDropdowns(liveRegionDocument(region));
   enhanceSlideshow(liveRegionDocument(region));

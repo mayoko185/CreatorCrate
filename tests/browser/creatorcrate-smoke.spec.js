@@ -846,10 +846,13 @@ test.describe('CreatorCrate development browser smoke', () => {
     }));
     expect(openLayoutState.documentWidth).toBeLessThanOrEqual(openLayoutState.viewportWidth);
 
-    page.once('dialog', (dialog) => dialog.accept());
+    const confirmationDialog = page.locator('#app-confirmation-dialog');
+    await page.getByRole('button', { name: 'Delete Chapter', exact: true }).click();
+    await expect(confirmationDialog).toBeVisible();
+    await expect(confirmationDialog).toContainText('Delete this Chapter permanently? This cannot be undone.');
     await Promise.all([
       page.waitForURL(new RegExp(`/notes/books/${bookId}$`)),
-      page.getByRole('button', { name: 'Delete Chapter', exact: true }).click(),
+      confirmationDialog.getByRole('button', { name: 'Confirm', exact: true }).click(),
     ]);
     await expect(page.locator('h1.app-section-title')).toContainText(bookTitle);
 
@@ -1239,10 +1242,13 @@ test.describe('CreatorCrate development browser smoke', () => {
     const emptyBookId = await createBrowserBook(page, devServer.baseURL, `Browser Empty Book ${Date.now()}`);
     await page.goto(`${devServer.baseURL}/notes/books/${emptyBookId}/edit`, { waitUntil: 'domcontentloaded' });
     await page.locator('details.notes-workspace-disclosure summary').click();
-    page.once('dialog', (dialog) => dialog.accept());
+    const confirmationDialog = page.locator('#app-confirmation-dialog');
+    await page.getByRole('button', { name: 'Delete Book', exact: true }).click();
+    await expect(confirmationDialog).toBeVisible();
+    await expect(confirmationDialog).toContainText('Delete this Book permanently? This cannot be undone.');
     await Promise.all([
       page.waitForURL(/\/notes$/),
-      page.getByRole('button', { name: 'Delete Book', exact: true }).click(),
+      confirmationDialog.getByRole('button', { name: 'Confirm', exact: true }).click(),
     ]);
 
     await page.goto(editUrl, { waitUntil: 'domcontentloaded' });

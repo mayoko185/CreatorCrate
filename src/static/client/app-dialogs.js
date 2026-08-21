@@ -4,7 +4,7 @@ import {
   setHidden,
 } from './dom.js';
 import { enhanceCategoryReorder } from './category-reorder.js';
-import { enhanceConfirmations } from './category-details.js';
+import { enhanceAppConfirmationControls } from './confirm-dialog.js';
 import {
   cleanupScrollableCategoryDialogDropdowns,
   CC_DROPDOWN_SELECTOR,
@@ -154,8 +154,11 @@ function appDialogBodyLock(state, locked) {
 function appDialogRestoreFocus(state) {
   const opener = state.opener && state.document.contains?.(state.opener)
     ? state.opener
-    : state.document.querySelector?.(`${APP_DIALOG_TRIGGER_SELECTOR}[data-dialog-open="${state.dialog.id}"]`);
+    : (state.openerAllowsFallback
+      ? state.document.querySelector?.(`${APP_DIALOG_TRIGGER_SELECTOR}[data-dialog-open="${state.dialog.id}"]`)
+      : null);
   state.opener = null;
+  state.openerAllowsFallback = true;
   opener?.focus?.({ preventScroll: true });
 }
 
@@ -567,7 +570,7 @@ function categoryManagementReplaceBody(state, html) {
   appDialogBindLiveAssetBrowserDefault(state);
   enhanceAutoSubmit(nextBody);
   enhanceCategoryReorder(nextBody);
-  enhanceConfirmations(nextBody);
+  enhanceAppConfirmationControls(nextBody);
   enhanceProjectAssetCategoryManagement(state.dialog);
   return nextBody;
 }
@@ -778,10 +781,11 @@ function appDialogBindForm(state) {
   });
 }
 
-function appDialogOpen(state, opener = null) {
-  state.opener = opener || state.document.querySelector?.(
-    `${APP_DIALOG_TRIGGER_SELECTOR}[data-dialog-open="${state.dialog.id}"]`
-  );
+function appDialogOpen(state, opener = null, openerAllowsFallback = true) {
+  state.opener = opener || (openerAllowsFallback
+    ? state.document.querySelector?.(`${APP_DIALOG_TRIGGER_SELECTOR}[data-dialog-open="${state.dialog.id}"]`)
+    : null);
+  state.openerAllowsFallback = openerAllowsFallback;
   appDialogApplyValues(state.form, state.savedValues || {});
   state.onOpen?.();
   try {
@@ -852,6 +856,22 @@ function appDialogBind(state) {
   if (state.dialog.hasAttribute?.('open')) appDialogOpen(state);
 }
 
+export function openAppDialogById(document, id, opener = null) {
+  const dialog = document?.getElementById?.(id);
+  const state = dialog?.__creatorCrateAppDialogState;
+  if (!state) return false;
+  appDialogOpen(state, opener, false);
+  return true;
+}
+
+export function closeAppDialogById(document, id) {
+  const dialog = document?.getElementById?.(id);
+  const state = dialog?.__creatorCrateAppDialogState;
+  if (!state || (!state.open && !dialog.open)) return false;
+  appDialogClose(state);
+  return true;
+}
+
 export function enhanceAppDialogs(scope = globalThis.document) {
   const document = appDialogDocument(scope);
   if (!document || typeof document.querySelectorAll !== 'function') return 0;
@@ -863,6 +883,7 @@ export function enhanceAppDialogs(scope = globalThis.document) {
       dialog,
       form: null,
       opener: null,
+      openerAllowsFallback: true,
       savedValues: null,
       open: false,
       submitting: false,

@@ -1,11 +1,13 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
+  closeAppDialogById,
   enhanceAppDialogs,
   enhanceCategoryReorder,
   enhanceConfirmations,
   enhanceDashboardDefaultsDialog,
   enhanceDropdowns,
   enhanceProjectAssetCategoryManagement,
+  openAppDialogById,
 } from '../src/static/creatorcrate.js';
 
 function makeElement(tagName = 'div', attrs = {}) {
@@ -563,6 +565,22 @@ function makeCategoryDialogPage() {
   };
 }
 
+function attachSharedConfirmationDialog(page) {
+  const dialog = makeElement('dialog', { id: 'app-confirmation-dialog', 'data-app-dialog': '' });
+  const title = makeElement('h2', { id: 'app-confirmation-dialog-title' });
+  const message = makeElement('p', { 'data-app-dialog-confirmation-message': '' });
+  const cancel = makeElement('button', { type: 'button', 'data-dialog-close': '', 'data-app-dialog-confirmation-cancel': '' });
+  const confirm = makeElement('button', { type: 'button', 'data-app-dialog-confirmation-confirm': '' });
+  dialog.showModal = vi.fn(() => { dialog.open = true; dialog.setAttribute('open', ''); });
+  dialog.close = vi.fn(() => { dialog.open = false; dialog.removeAttribute('open'); dialog.dispatch('close'); });
+  dialog.appendChild(title);
+  dialog.appendChild(message);
+  dialog.appendChild(cancel);
+  dialog.appendChild(confirm);
+  page.document.body.appendChild(dialog);
+  return { dialog, message, cancel, confirm };
+}
+
 function makeDashboardDefaultsDialogPage({ includeStatusSection = false } = {}) {
   const page = makeDialogPage();
   page.dialog.setAttribute('id', 'dashboard-defaults-dialog');
@@ -772,6 +790,48 @@ describe('Reusable app dialog enhancement', () => {
     expect(page.dialog.open).toBe(false);
     expect(replacement.focused).toBe(true);
     expect(submit).not.toHaveBeenCalled();
+  });
+
+  it('opens an enhanced dialog by ID and restores its explicit opener', () => {
+    const page = makeDialogPage();
+    const explicitOpener = makeElement('button', { type: 'button' });
+    page.region.appendChild(page.trigger);
+    page.region.appendChild(explicitOpener);
+
+    enhanceAppDialogs(page.document);
+
+    expect(openAppDialogById(page.document, page.dialog.id, explicitOpener)).toBe(true);
+    expect(page.dialog.open).toBe(true);
+    expect(page.dialog.__creatorCrateAppDialogState.opener).toBe(explicitOpener);
+    expect(page.dialog.__creatorCrateAppDialogState.openerAllowsFallback).toBe(false);
+
+    expect(closeAppDialogById(page.document, page.dialog.id)).toBe(true);
+    expect(explicitOpener.focused).toBe(true);
+  });
+
+  it('does not use a declarative opener fallback for programmatic opening', () => {
+    const page = makeDialogPage();
+    page.region.appendChild(page.trigger);
+
+    enhanceAppDialogs(page.document);
+
+    expect(openAppDialogById(page.document, page.dialog.id)).toBe(true);
+    expect(closeAppDialogById(page.document, page.dialog.id)).toBe(true);
+    expect(page.trigger.focused).not.toBe(true);
+  });
+
+  it('fails safely for missing or unenhanced dialogs', () => {
+    const page = makeDialogPage();
+    const unenhancedDialog = makeElement('dialog', {
+      id: 'unenhanced-dialog',
+      'data-app-dialog': '',
+    });
+    page.document.body.appendChild(unenhancedDialog);
+
+    expect(openAppDialogById(page.document, 'missing-dialog')).toBe(false);
+    expect(closeAppDialogById(page.document, 'missing-dialog')).toBe(false);
+    expect(openAppDialogById(page.document, 'unenhanced-dialog')).toBe(false);
+    expect(closeAppDialogById(page.document, 'unenhanced-dialog')).toBe(false);
   });
 
   it('keeps a static-backdrop dialog open until X or Escape is used', () => {
@@ -1643,6 +1703,48 @@ describe('Live project category mutations', () => {
     enhanceProjectAssetCategoryManagement(page.document);
     const replacementAddForm = page.dialog.querySelector('#project-category-management-add-form');
     expect(replacementAddForm.listeners.filter(({ type }) => type === 'submit')).toHaveLength(1);
+  });
+
+
+  it('replays category deletion through its native submitter after shared-dialog confirmation', async () => {
+    const page = makeCategoryDialogPage();
+    const confirmation = attachSharedConfirmationDialog(page);
+    page.windowObject.fetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        status: 'success',
+        message: 'Category deleted.',
+        focus: 'add-displayName',
+        html: '<server-rendered-category-management-body>',
+      }),
+    });
+
+    enhanceAppDialogs(page.document);
+    page.document.dispatch('click', { target: page.trigger });
+    enhanceConfirmations(page.document);
+    enhanceProjectAssetCategoryManagement(page.document);
+
+    const deleteForm = page.initial.body.querySelector('[data-category-management-delete-form]');
+    const deleteButton = deleteForm.querySelector('[data-confirm]');
+    deleteButton.click = () => {
+      const event = deleteButton.dispatch('click');
+      if (!event.defaultPrevented) deleteForm.dispatch('submit', { submitter: deleteButton });
+      return event;
+    };
+
+    expect(deleteButton.click().defaultPrevented).toBe(true);
+    expect(confirmation.dialog.open).toBe(true);
+    confirmation.cancel.dispatch('click');
+    await flush();
+    expect(page.windowObject.fetch).not.toHaveBeenCalled();
+
+    expect(deleteButton.click().defaultPrevented).toBe(true);
+    confirmation.confirm.dispatch('click');
+    await flush();
+
+    expect(page.windowObject.fetch).toHaveBeenCalledTimes(1);
+    expect(page.windowObject.fetch.mock.calls[0][0]).toBe('/projects/1/asset-categories/1/delete');
+    expect(page.dialog.open).toBe(true);
   });
 
   it('preserves inline rename errors and does not bypass delete confirmation', async () => {

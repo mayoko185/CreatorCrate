@@ -1,8 +1,10 @@
 import {
   enhanceNumberInputs,
   refreshProjectAssetsLiveRegion,
+  requestAppConfirmation,
   syncCreatorCrateDropdownFromNative,
 } from './creatorcrate.js';
+import { creatorCrateDropdownSummaryForNativeSelect } from './client/dropdowns.js';
 
 /**
  * Processing actions: Convert, Workflow Prompt Editor, Watermark, and Archives
@@ -1378,16 +1380,19 @@ async function updateSelectedPreset(root) {
   markPresetChanged(root);
 }
 
-async function deleteSelectedPreset(root) {
-  const id = root.querySelector('[data-processing-preset-select]')?.value;
+async function deleteSelectedPreset(root, presetId) {
+  const id = presetId || root.querySelector('[data-processing-preset-select]')?.value;
   if (!id) return;
   await processingFetchJson(`/processing/presets/${id}/delete`, { csrf: root.dataset.csrf, body: {} });
   await loadPresets(root);
   selectPresetOption(root, '');
+  const select = root.querySelector('[data-processing-preset-select]');
+  syncCreatorCrateDropdownFromNative?.(select);
   root.__ccPreservedWatermarkArchiveConfig = {};
   clearModifiedState(root);
   updatePresetActionState(root);
   markPresetChanged(root);
+  creatorCrateDropdownSummaryForNativeSelect(select)?.focus?.({ preventScroll: true });
 }
 
 function bindPresetActions(root) {
@@ -1435,17 +1440,24 @@ function bindPresetActions(root) {
       root.__ccPresetBusy = false;
     }
   });
-  root.querySelector('[data-processing-preset-delete]')?.addEventListener('click', async () => {
+  const deleteButton = root.querySelector('[data-processing-preset-delete]');
+  deleteButton?.addEventListener('click', async () => {
     const select = root.querySelector('[data-processing-preset-select]');
-    const preset = root.__ccPresets?.get(select?.value);
+    const presetId = select?.value;
+    const preset = root.__ccPresets?.get(presetId);
     if (!preset || root.__ccPresetBusy) return;
-    const window = liveDocument(root)?.defaultView || globalThis;
     const message = `Delete the preset "${preset.displayName}"? This does not delete Watermarks, scale maps, or generated files.`;
-    if (!window.confirm(message)) return;
     root.__ccPresetBusy = true;
     showError(root, '');
     try {
-      await deleteSelectedPreset(root);
+      const confirmed = await requestAppConfirmation(liveDocument(root), {
+        title: 'Delete preset',
+        message,
+        confirmLabel: 'Delete preset',
+        opener: deleteButton,
+      });
+      if (!confirmed) return;
+      await deleteSelectedPreset(root, presetId);
       setStatus(root, 'Preset deleted.');
     } catch (error) {
       showError(root, error.message);

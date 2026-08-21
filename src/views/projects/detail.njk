@@ -232,7 +232,7 @@
                 <p class="notes-workspace-warning">Permanently delete this project and its owned data. This cannot be undone.</p>
                 <form method="post" action="/projects/{{ project.id }}/delete">
                   <input type="hidden" name="_csrf" value="{{ _csrf }}">
-                  <button class="button button-small button-danger" type="submit" data-confirm="Delete this project permanently? This cannot be undone.">Delete project</button>
+                  <button class="button button-small button-danger" type="submit" data-confirm="Delete this project permanently? This cannot be undone." data-confirm-dialog-title="Delete project" data-confirm-dialog-confirm-label="Delete project">Delete project</button>
                 </form>
               </div>
             </details>

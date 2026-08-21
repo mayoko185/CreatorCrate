@@ -2244,44 +2244,14 @@ describe('asset grid rename enhancement', () => {
 });
 
 describe('Destructive confirmation enhancement', () => {
-  it('prevents an unconfirmed data-confirm submit action', () => {
-    const message = 'The selected files will be permanently deleted from disk and cannot be restored through CreatorCrate. Continue?';
-    const listeners = [];
-    const control = {
-      getAttribute(name) {
-        return name === 'data-confirm' ? message : null;
-      },
-      addEventListener(type, handler) {
-        listeners.push({ type, handler });
-      },
-    };
-    const scope = {
-      querySelectorAll(selector) {
-        return selector === '[data-confirm]' ? [control] : [];
-      },
-    };
-    const previousConfirm = globalThis.confirm;
-    let promptedMessage = null;
-    globalThis.confirm = (prompt) => {
-      promptedMessage = prompt;
-      return false;
-    };
-
-    try {
-      expect(enhanceConfirmations(scope)).toBe(1);
-      const click = listeners.find((listener) => listener.type === 'click');
-      expect(click).toBeDefined();
-      const event = {
-        defaultPrevented: false,
-        preventDefault() { this.defaultPrevented = true; },
-      };
-      click.handler(event);
-      expect(promptedMessage).toBe(message);
-      expect(event.defaultPrevented).toBe(true);
-    } finally {
-      if (previousConfirm === undefined) delete globalThis.confirm;
-      else globalThis.confirm = previousConfirm;
-    }
+  it('exports the shared dialog binder rather than a browser-native confirmation path', () => {
+    const source = fs.readFileSync(
+      fileURLToPath(new URL('../src/static/client/confirm-dialog.js', import.meta.url)),
+      'utf8',
+    );
+    expect(enhanceConfirmations).toBeDefined();
+    expect(source).toContain("querySelectorAll('[data-confirm]')");
+    expect(source).not.toContain('globalThis.confirm');
   });
 });
 

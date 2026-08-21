@@ -4461,7 +4461,11 @@
       .app-dialog--processing {
         width: min(51rem, calc(100vw - 2rem));
       }
+      .app-confirmation-dialog {
+        width: min(28rem, calc(100vw - 2rem));
+      }
       .app-dialog::backdrop { background: rgba(13, 15, 19, 0.78); }
+      .app-confirmation-dialog::backdrop { background: rgba(13, 15, 19, 0.84); }
       .app-dialog-card {
         display: flex;
         flex-direction: column;
